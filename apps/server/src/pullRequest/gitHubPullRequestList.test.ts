@@ -93,6 +93,31 @@ describe("decodeGitHubPullRequestListJson", () => {
     );
   });
 
+  it("carries the merge state, the author's node id, and no picture of its own", () => {
+    const rows = decodeRows([
+      { ...baseRow, number: 1, mergeable: "CONFLICTING" },
+      { ...baseRow, number: 2, mergeable: "UNKNOWN" },
+      { ...baseRow, number: 3, author: { login: "dependabot[bot]", is_bot: true, id: "BOT_1" } },
+      { ...baseRow, number: 4 },
+    ]);
+
+    assert.deepStrictEqual(
+      rows.map((row) => [row.number, row.mergeability, row.authorId]),
+      [
+        [1, "conflicting", null],
+        [2, "unknown", null],
+        [3, undefined, "BOT_1"],
+        [4, undefined, null],
+      ],
+    );
+    // `gh pr list --json author` names no picture; the provider resolves it.
+    assert.deepStrictEqual(rows[0]?.author, {
+      login: "octocat",
+      isBot: false,
+      avatarUrl: null,
+    });
+  });
+
   it("skips a malformed row and keeps the rest", () => {
     const rows = decodeRows([
       { ...baseRow, number: 0 },

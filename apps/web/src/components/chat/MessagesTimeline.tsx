@@ -81,7 +81,7 @@ import {
 import { Button } from "../ui/button";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import { Textarea } from "../ui/textarea";
-import { SpineRow, spineAccentRowStyle } from "../ui/threadline";
+import { SpineNode, SpineRow, spineAccentRowStyle, type SpineNodeKind } from "../ui/threadline";
 import { buildExpandedImagePreview, ExpandedImagePreview } from "./ExpandedImagePreview";
 import type { FilePreviewRequest } from "./FilePreviewDialog";
 import { loadChatAttachmentBlob } from "../../lib/attachmentPreviewQuery";
@@ -147,6 +147,7 @@ import {
 import { formatWorkspaceRelativePath } from "../../filePathDisplay";
 import { formatProviderDriverKindLabel } from "../../providerModels";
 import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
+import { useLocalImagePreview } from "~/hooks/useLocalImagePreview";
 import type {
   ParsedTranscriptHighlightContextEntry,
   TranscriptHighlightContextSelection,
@@ -1804,6 +1805,9 @@ type TimelineImagePreviewItem = {
   id: string;
   name: string;
   previewUrl?: string;
+  /** Set instead of `previewUrl` when the provider only named the file; the
+   *  grid loads it over the workspace RPC. */
+  path?: string;
 };
 
 const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: TimelineRow }) {
@@ -2063,7 +2067,6 @@ const TimelineImagePreviewGrid = memo(function TimelineImagePreviewGrid(props: {
   className?: string | undefined;
   imageClassName?: string | undefined;
 }) {
-  const ctx = use(TimelineRowCtx);
   if (props.images.length === 0) {
     return null;
   }
@@ -2077,37 +2080,69 @@ const TimelineImagePreviewGrid = memo(function TimelineImagePreviewGrid(props: {
       )}
     >
       {props.images.map((image) => (
-        <div
+        <TimelineImagePreviewTile
           key={image.id}
-          className="overflow-hidden rounded-lg border border-border/80 bg-background/70"
-        >
-          {image.previewUrl ? (
-            <button
-              type="button"
-              className="h-full w-full cursor-zoom-in"
-              aria-label={`Preview ${image.name}`}
-              onClick={() => {
-                const preview = buildExpandedImagePreview(props.images, image.id);
-                if (!preview) return;
-                ctx.onImageExpand(preview);
-              }}
-            >
-              <img
-                src={image.previewUrl}
-                alt={image.name}
-                className={cn("block h-auto w-full", props.imageClassName)}
-              />
-            </button>
-          ) : (
-            <div className="flex min-h-[72px] items-center justify-center px-2 py-3 text-center text-[11px] text-muted-foreground/70">
-              {image.name}
-            </div>
-          )}
-        </div>
+          image={image}
+          images={props.images}
+          imageClassName={props.imageClassName}
+        />
       ))}
     </div>
   );
 });
+
+/**
+ * One tile in the grid. A row that only named its image (a Codex `view_image`,
+ * a Claude `Read` of a screenshot) loads the bytes here, on mount — the
+ * timeline is virtualized, so only rows the reader has actually reached ask for
+ * anything. Until they arrive, and forever if they never do, the tile shows the
+ * file name exactly as it did before.
+ */
+function TimelineImagePreviewTile(props: {
+  image: TimelineImagePreviewItem;
+  images: ReadonlyArray<TimelineImagePreviewItem>;
+  imageClassName?: string | undefined;
+}) {
+  const ctx = use(TimelineRowCtx);
+  const loaded = useLocalImagePreview({
+    environmentId: ctx.activeThreadEnvironmentId,
+    cwd: ctx.markdownCwd,
+    path: props.image.previewUrl ? undefined : props.image.path,
+  });
+  const previewUrl = props.image.previewUrl ?? loaded.dataUrl;
+
+  return (
+    <div className="overflow-hidden rounded-lg border border-border/80 bg-background/70">
+      {previewUrl ? (
+        <button
+          type="button"
+          className="h-full w-full cursor-zoom-in"
+          aria-label={`Preview ${props.image.name}`}
+          onClick={() => {
+            const preview = buildExpandedImagePreview(
+              props.images.map((candidate) =>
+                candidate.id === props.image.id ? { ...candidate, previewUrl } : candidate,
+              ),
+              props.image.id,
+            );
+            if (!preview) return;
+            ctx.onImageExpand(preview);
+          }}
+        >
+          <img
+            src={previewUrl}
+            alt={props.image.name}
+            className={cn("block h-auto w-full", props.imageClassName)}
+          />
+        </button>
+      ) : (
+        <div className="flex min-h-[72px] items-center justify-center px-2 py-3 text-center text-[11px] text-muted-foreground/70">
+          {props.image.name}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function RevertUserMessageButton({ messageId }: { messageId: MessageId }) {
   const ctx = use(TimelineRowCtx);
@@ -2678,48 +2713,6 @@ function LiveMessageMeta({
 // re-render only the affected row, not the entire list.
 // ---------------------------------------------------------------------------
 
-/** Owns its own expand/collapse state so toggling re-renders only this row.
- *  State resets on unmount which is fine — work groups start collapsed. */
-type SpineNodeKind = "done" | "running" | "warning" | "error" | "group";
-
-const TONE_SPINE_DOT_CLASS_NAME = {
-  warning: "size-[6px] rounded-full bg-warning",
-  error: "size-[6px] rounded-full bg-destructive",
-} as const satisfies Record<"warning" | "error", string>;
-
-/** The glyph that sits on the activity spine for one row. The accent halo is
- *  reserved for the turn's working row below the timeline tail; a still-running
- *  step gets a small accent tick, settled steps are quiet solid dots,
- *  warnings/errors are compact tone dots, and a collapsed group of steps is a
- *  hollow ring (same family, reads as "openable"). */
-function SpineNode({ kind }: { kind: SpineNodeKind }) {
-  if (kind === "running") {
-    return (
-      <span
-        aria-hidden="true"
-        className="size-[5px] animate-status-pulse rounded-full bg-primary-graph/80"
-      />
-    );
-  }
-  if (kind === "warning" || kind === "error") {
-    return <span aria-hidden="true" className={TONE_SPINE_DOT_CLASS_NAME[kind]} />;
-  }
-  if (kind === "group") {
-    return (
-      <span
-        aria-hidden="true"
-        className="size-[7px] rounded-full border border-muted-foreground/45 bg-background"
-      />
-    );
-  }
-  return (
-    <span
-      aria-hidden="true"
-      className="relative z-10 size-[5px] rounded-full bg-[color-mix(in_oklab,var(--muted-foreground)_42%,var(--background))]"
-    />
-  );
-}
-
 function workEntryNodeKind(entry: TimelineWorkEntry): SpineNodeKind {
   if (entry.tone === "error") {
     return "error";
@@ -2750,6 +2743,8 @@ function spineStyle(): CSSProperties {
   } as CSSProperties;
 }
 
+/** Owns its own expand/collapse state so toggling re-renders only this row.
+ *  State resets on unmount which is fine — work groups start collapsed. */
 const WorkGroupSection = memo(function WorkGroupSection({
   row,
 }: {

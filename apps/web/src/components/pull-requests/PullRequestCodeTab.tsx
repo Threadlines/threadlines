@@ -18,17 +18,13 @@ import type {
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useMemo, useState } from "react";
 
-import { fnv1a32, getRenderablePatch } from "../../lib/diffRendering";
+import { buildFileDiffRenderKey, fnv1a32, getRenderablePatch } from "../../lib/diffRendering";
 import { openExternalUrl } from "../../lib/externalLinks";
 import { pullRequestReviewMutationOptions } from "../../lib/pullRequestsReactQuery";
 import { AnnotatedDiffView } from "../diffs/AnnotatedDiffView";
 import { DiffCommentDraft } from "../diffs/DiffCommentAnnotation";
 import { useDiffWorkerReady } from "../diffs/useDiffWorkerReady";
-import {
-  buildFileDiffRenderKey,
-  resolveFileDiffPath,
-  resolveFileDiffPrevPath,
-} from "../diffs/fileDiffPresentation";
+import { resolveFileDiffPath, resolveFileDiffPrevPath } from "../diffs/fileDiffPresentation";
 import { PendingReviewCommentCard, ReviewThreadCard } from "./PullRequestReviewAnnotations";
 import { PullRequestReviewBar } from "./PullRequestReviewBar";
 import {

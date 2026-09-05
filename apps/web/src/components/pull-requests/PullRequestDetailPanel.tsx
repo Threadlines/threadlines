@@ -10,18 +10,25 @@ import type {
   PullRequestReviewThread,
   PullRequestUpdateMethod,
   ScopedThreadRef,
+  SourceControlProviderKind,
 } from "@threadlines/contracts";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import * as Schema from "effect/Schema";
 import {
   ArrowDownUpIcon,
+  ArrowLeftIcon,
   ChevronDownIcon,
+  ExternalLinkIcon,
+  FileDiffIcon,
+  FolderGit2Icon,
+  GitBranchPlusIcon,
   LayersIcon,
   MessagesSquareIcon,
   MoreHorizontalIcon,
   PencilIcon,
   RefreshCwIcon,
+  TriangleAlertIcon,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
@@ -76,11 +83,13 @@ import {
 import {
   BackToListButton,
   CloseDetailButton,
-  META_SEPARATOR_CLASS,
   MetaSeparator,
+  PullRequestActorLabel,
   PullRequestDetailSkeleton,
   TEXT_BUTTON_CLASS,
+  pullRequestChecksTone,
   pullRequestHostName,
+  scrollPullRequestSummaryTo,
   changeRequestWord,
 } from "./pullRequestPresentation";
 import {
@@ -88,10 +97,14 @@ import {
   appendHandoffToDraft,
   buildReviewCommentHandoff,
   formatPullRequestBaseFreshness,
+  formatPullRequestBehindLabel,
+  formatPullRequestChecksHeadline,
   pullRequestBadgeTone,
   pullRequestUpdateMethodLabel,
   resolveDefaultMergeMethod,
   resolvePullRequestMergeBlock,
+  summarizePullRequestChecks,
+  type PullRequestChecksSummary,
 } from "./pullRequests.logic";
 
 /** The header actions are the main controls on a phone, so they grow to a touch size below md. */
@@ -119,6 +132,17 @@ function writeHandoffToComposer(target: ScopedThreadRef, handoff: string): void 
 /** Where the panel is standing, which decides only what chrome it carries. */
 export type PullRequestDetailContext = "page" | "thread";
 
+/** Where a checkout puts the branch: its own worktree, or the repository itself. */
+export type PullRequestCheckoutMode = "worktree" | "local";
+
+/** What the Check out menu, and a hand-off with nowhere else to land, ask for. */
+export interface PullRequestCheckoutRequest {
+  /** The prompt the new thread's composer opens with, when a hand-off started it. */
+  readonly initialPrompt?: string;
+  /** The button the checkout dialog opens on. Omitted leaves the dialog's own default. */
+  readonly mode?: PullRequestCheckoutMode;
+}
+
 export interface PullRequestDetailPanelProps {
   readonly environmentId: EnvironmentId;
   readonly reference: PullRequestRef;
@@ -134,8 +158,9 @@ export interface PullRequestDetailPanelProps {
   readonly autoFocusTitle?: boolean;
   readonly onClose?: () => void;
   /** Opens the checkout dialog, carrying the prompt the new draft should open
-   *  with. Absent where the surface cannot start a thread. */
-  readonly onReviewInThread?: (initialPrompt?: string) => void;
+   *  with and the way the branch should be taken. Absent where the surface
+   *  cannot start a thread. */
+  readonly onReviewInThread?: (request?: PullRequestCheckoutRequest) => void;
   /** Called after a hand-off lands beside a thread, so the route can put the
    *  cursor in the composer the user is about to send from. */
   readonly onComposerHandoff?: () => void;
@@ -192,6 +217,10 @@ export function PullRequestDetailPanel({
   const [timelineOpened, setTimelineOpened] = useState(false);
   const [timelineOrder, setTimelineOrder] = useState<PullRequestTimelineOrder>("newest");
   const [isRefreshing, setIsRefreshing] = useState(false);
+  // The Summary's Checks section, which the header's rollup scrolls to. Found
+  // through the panel rather than a ref passed down, because the tab that owns
+  // it is unmounted until it is opened.
+  const panelRoot = useRef<HTMLDivElement | null>(null);
 
   const detail = useQuery(pullRequestDetailQueryOptions({ environmentId, reference }));
   const activity = useQuery(pullRequestActivityQueryOptions({ environmentId, reference }));
@@ -242,7 +271,7 @@ export function PullRequestDetailPanel({
         openThread();
         return;
       }
-      onReviewInThread?.(handoff);
+      onReviewInThread?.({ initialPrompt: handoff });
     },
     [context, handoffTarget, onComposerHandoff, onReviewInThread, openThread],
   );
@@ -310,6 +339,19 @@ export function PullRequestDetailPanel({
 
   const panelId = `pull-request-${reference.projectId}-${reference.number}`;
 
+  // The check rollup in the tab strip and the Checks section it scrolls to are
+  // the same list read twice, so the strip's words are found here rather than
+  // reported up from the tab that draws the rows.
+  const checksSummary = useMemo(
+    () => summarizePullRequestChecks(detail.data?.checks ?? []),
+    [detail.data?.checks],
+  );
+  const scrollToChecks = useCallback(() => {
+    scrollPullRequestSummaryTo(
+      panelRoot.current?.querySelector<HTMLElement>("[data-pull-request-checks]") ?? null,
+    );
+  }, []);
+
   // Below the two-column width the detail stands in for the list, so even a
   // panel with nothing to show yet has to carry the way back.
   const closeControl =
@@ -356,7 +398,14 @@ export function PullRequestDetailPanel({
   const activeTab: DetailTab = !showCode && tab === "code" ? "summary" : tab;
 
   return (
-    <div className="flex h-full min-h-0 min-w-0 flex-col" data-testid="pull-request-detail">
+    <div
+      ref={panelRoot}
+      // The header and tabs answer to this panel's own width rather than the
+      // window's: beside a thread it is a sidebar 272px wide on a wide screen,
+      // and the phone layout is what fits there.
+      className="@container/pr flex h-full min-h-0 min-w-0 flex-col"
+      data-testid="pull-request-detail"
+    >
       <PullRequestDetailHeader
         environmentId={environmentId}
         reference={reference}
@@ -367,15 +416,22 @@ export function PullRequestDetailPanel({
         isRefreshing={isRefreshing || detail.isFetching}
         onRefresh={handleRefresh}
         {...(onClose ? { onClose } : {})}
-        {...(onReviewInThread ? { onReviewInThread: () => onReviewInThread() } : {})}
+        {...(onReviewInThread ? { onCheckout: onReviewInThread } : {})}
         onOpenThread={openThread}
         handoffs={handoffs}
       />
 
       {/* The order toggle shares the row but not the tablist: it is not a tab,
-          and inside one it would answer to the arrow keys as though it were. */}
+          and inside one it would answer to the arrow keys as though it were.
+          The tabs are drawn whole at every width; in a narrow panel they close
+          ranks and the control beside them keeps its glyph and loses its words,
+          so nothing is pushed past the edge. */}
       <div className="flex shrink-0 items-center border-b border-border px-4">
-        <div role="tablist" aria-label="Pull request" className="flex items-center gap-5">
+        <div
+          role="tablist"
+          aria-label="Pull request"
+          className="flex shrink-0 items-center gap-5 @max-md/pr:gap-3"
+        >
           <PageTabButton
             label={DETAIL_TAB_LABELS.summary}
             active={activeTab === "summary"}
@@ -405,16 +461,31 @@ export function PullRequestDetailPanel({
           />
         </div>
         {activeTab === "timeline" ? (
-          <button
-            type="button"
-            className={cn(TEXT_BUTTON_CLASS, "ml-auto inline-flex items-center gap-1 pb-2 text-xs")}
-            aria-label={timelineOrder === "newest" ? "Show oldest first" : "Show newest first"}
-            data-testid="pull-request-timeline-order"
-            onClick={() => setTimelineOrder(timelineOrder === "newest" ? "oldest" : "newest")}
+          <TooltipWrapper
+            tooltip={timelineOrder === "newest" ? "Show oldest first" : "Show newest first"}
           >
-            <ArrowDownUpIcon aria-hidden className="size-3" />
-            {timelineOrder === "newest" ? "Newest first" : "Oldest first"}
-          </button>
+            <button
+              type="button"
+              className={cn(
+                TEXT_BUTTON_CLASS,
+                "ml-auto inline-flex shrink-0 items-center gap-1 pb-2 text-xs",
+              )}
+              aria-label={timelineOrder === "newest" ? "Show oldest first" : "Show newest first"}
+              data-testid="pull-request-timeline-order"
+              onClick={() => setTimelineOrder(timelineOrder === "newest" ? "oldest" : "newest")}
+            >
+              <ArrowDownUpIcon aria-hidden className="size-3" />
+              <span className="@max-md/pr:sr-only">
+                {timelineOrder === "newest" ? "Newest first" : "Oldest first"}
+              </span>
+            </button>
+          </TooltipWrapper>
+        ) : null}
+        {/* The rollup the header used to spell out on a line of its own. It is
+            a way into the Summary's Checks section rather than a label, so it
+            is a button wherever that section is what the tab is showing. */}
+        {activeTab === "summary" ? (
+          <PullRequestChecksRollup summary={checksSummary} onShowChecks={scrollToChecks} />
         ) : null}
       </div>
 
@@ -491,6 +562,16 @@ function DiffViewerWarmup({
   return enabled ? <DiffWorkerPoolProvider>{children}</DiffWorkerPoolProvider> : children;
 }
 
+/**
+ * Everything above the tabs, in five rows: where this pull request lives and
+ * what can be done to it, its title, who wrote it and when it last moved, the
+ * branches it joins and how big it is, and the tabs themselves (drawn by the
+ * panel, since only it knows which one is open).
+ *
+ * The same five rows serve the page and a thread's Pull request tab. Only the
+ * first row differs: the page can check the branch out and can close the panel,
+ * and a thread's own chrome already owns both.
+ */
 function PullRequestDetailHeader({
   environmentId,
   reference,
@@ -501,7 +582,7 @@ function PullRequestDetailHeader({
   isRefreshing,
   onRefresh,
   onClose,
-  onReviewInThread,
+  onCheckout,
   onOpenThread,
   handoffs,
 }: {
@@ -514,83 +595,123 @@ function PullRequestDetailHeader({
   readonly isRefreshing: boolean;
   readonly onRefresh: () => void;
   readonly onClose?: () => void;
-  readonly onReviewInThread?: () => void;
+  readonly onCheckout?: (request?: PullRequestCheckoutRequest) => void;
   readonly onOpenThread: () => void;
   readonly handoffs: PullRequestHandoffActions | null;
 }) {
   const tone = pullRequestBadgeTone(detail.state, detail.isDraft);
-  const meta: readonly { key: string; node: React.ReactNode }[] = [
-    ...(detail.author ? [{ key: "author", node: <span>{detail.author.login}</span> }] : []),
-    { key: "updated", node: <span>updated {formatRelativeTimeLabel(detail.updatedAt)}</span> },
-    { key: "files", node: <span>{pluralize(detail.changedFiles, "file")}</span> },
-    ...(detail.additions > 0 || detail.deletions > 0
-      ? [
-          {
-            key: "stat",
-            node: <DiffStatLabel additions={detail.additions} deletions={detail.deletions} />,
-          },
-        ]
-      : []),
-    ...(detail.autoMergeEnabled === true
-      ? [{ key: "auto-merge", node: <span>Auto-merge on</span> }]
-      : []),
-    // Open is the resting state and the glyph already says it; the other three
-    // are news, so they get a word.
-    ...(detail.state === "open" && !detail.isDraft
-      ? []
-      : [{ key: "state", node: <span className={tone.className}>{tone.label}</span> }]),
-  ];
-  // Three labels is as many as the meta line can carry and still read as facts
-  // about the branch rather than a wall of tags.
-  const visibleLabels = detail.labels.slice(0, 3);
-  const hiddenLabels = detail.labels.slice(3);
+  const actions = usePullRequestActions({ environmentId, reference, detail, handoffs });
+  // A branch that no longer merges, said where the branches are named rather
+  // than on a line of its own.
+  const conflictLabel =
+    detail.state === "open" && !detail.isDraft && detail.mergeability === "conflicting"
+      ? `Conflicts with ${detail.baseBranch}`
+      : null;
+  const behindLabel = formatPullRequestBehindLabel(detail);
+  const freshness = formatPullRequestBaseFreshness(detail);
+  // Open is the resting state and the glyph already says it; the other three
+  // are news, so they get a word.
+  const stateWord = detail.state === "open" && !detail.isDraft ? null : tone.label;
+  // The page's way to start work on the branch, and to get back to the thread
+  // already doing it. A thread's own tab is standing in that thread already.
+  const showCheckout = context === "page" && (onCheckout !== undefined || linkedThread !== null);
 
   return (
-    <div className="shrink-0 px-4 pt-3 pb-2.5">
-      <div className="flex min-w-0 items-center gap-2">
-        {context === "page" && onClose ? <BackToListButton onClick={onClose} /> : null}
-        <span className={cn("shrink-0", tone.className)}>
-          <tone.Icon aria-hidden className="size-4" />
-          <span className="sr-only">{tone.label}</span>
-        </span>
-        <button
-          type="button"
-          className="shrink-0 cursor-pointer rounded-sm font-mono text-xs text-muted-foreground/70 underline-offset-2 transition-colors hover:text-foreground hover:underline focus-ring"
-          aria-label={`Open ${changeRequestWord(detail.provider)} #${detail.number} on ${pullRequestHostName(detail.provider)}`}
-          onClick={() => openExternalUrl(detail.url)}
-        >
-          #{detail.number}
-        </button>
+    <div className="shrink-0 px-4 pt-2 pb-3">
+      {/* Row 1: where it lives, and what can be done to it. */}
+      <div className="flex min-w-0 items-start gap-2 @max-md/pr:flex-wrap">
+        <div className="flex h-7 min-w-0 flex-1 items-center gap-1.5 font-mono text-xs text-muted-foreground">
+          {/* On a phone the list is not on screen, so the way back sits where
+              a back arrow belongs: first, at the top left. */}
+          {context === "page" && onClose ? <BackToListButton onClick={onClose} /> : null}
+          <span className={cn("shrink-0", tone.className)}>
+            <tone.Icon aria-hidden className="size-3.5" />
+            <span className="sr-only">{tone.label}</span>
+          </span>
+          <span className="min-w-0 truncate">{detail.repository}</span>
+          <button
+            type="button"
+            className="inline-flex shrink-0 cursor-pointer items-center gap-0.5 rounded-sm underline-offset-2 transition-colors hover:text-foreground hover:underline focus-ring"
+            aria-label={`Open ${changeRequestWord(detail.provider)} #${detail.number} on ${pullRequestHostName(detail.provider)}`}
+            onClick={() => openExternalUrl(detail.url)}
+          >
+            #{detail.number}
+            <ExternalLinkIcon aria-hidden className="size-3 opacity-70" />
+          </button>
+          {stateWord ? <span className={cn("shrink-0", tone.className)}>{stateWord}</span> : null}
+          {detail.autoMergeEnabled === true ? (
+            <span className="shrink-0">Auto-merge on</span>
+          ) : null}
+        </div>
+        <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5 @max-md/pr:w-full">
+          {showCheckout ? (
+            <PullRequestCheckoutMenu
+              detail={detail}
+              linkedThread={linkedThread}
+              {...(onCheckout ? { onCheckout } : {})}
+              onOpenThread={onOpenThread}
+            />
+          ) : null}
+          {actions.controls}
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            tooltip="Refresh"
+            aria-label="Refresh"
+            data-testid="pull-request-detail-refresh"
+            onClick={onRefresh}
+          >
+            <RefreshCwIcon
+              className={cn("size-3.5", isRefreshing && "animate-spin motion-reduce:animate-none")}
+            />
+          </Button>
+          {/* Beside a thread the tab strip owns the dismissal; a second ✕ next
+              to it would be two controls for one action. Below the two-column
+              width the back arrow at the row's start stands in for it. */}
+          {context === "page" && onClose ? <CloseDetailButton onClick={onClose} /> : null}
+        </div>
+      </div>
+
+      {/* Row 2: the title. */}
+      <div className="mt-1 flex min-w-0">
         <PullRequestTitle
           environmentId={environmentId}
           reference={reference}
           detail={detail}
           autoFocus={autoFocusTitle}
         />
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          tooltip="Refresh"
-          aria-label="Refresh"
-          data-testid="pull-request-detail-refresh"
-          onClick={onRefresh}
-        >
-          <RefreshCwIcon
-            className={cn("size-3.5", isRefreshing && "animate-spin motion-reduce:animate-none")}
-          />
-        </Button>
-        {/* Beside a thread the tab strip owns the dismissal; a second ✕ next
-            to it would be two controls for one action. */}
-        {context === "page" && onClose ? <CloseDetailButton onClick={onClose} /> : null}
       </div>
 
-      <div className="mt-1.5 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 font-mono text-[11px] text-muted-foreground/60">
-        <BranchCopyButton branch={detail.headBranch} />
-        <span aria-hidden className={META_SEPARATOR_CLASS}>
-          →
+      {/* Row 3: who wrote it, when it last moved, and the one command that
+          takes the branch on a machine this app is not running on. The command
+          drops to a line of its own before it can squeeze the author out. */}
+      <div className="mt-2 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+        <span className="flex min-w-0 flex-auto items-center gap-1.5">
+          {detail.author ? (
+            <>
+              <PullRequestActorLabel actor={detail.author} className="font-medium" />
+              <MetaSeparator />
+            </>
+          ) : null}
+          <span className="shrink-0">updated {formatRelativeTimeLabel(detail.updatedAt)}</span>
         </span>
-        <span className="flex min-w-0 items-center gap-1">
+        <PullRequestCheckoutCommand provider={detail.provider} number={detail.number} />
+      </div>
+
+      {/* Row 4: the branches this joins, and how much it changes. In a narrow
+          panel the counts drop to a line of their own: the branch names are
+          what the row is for, and sharing the line leaves them a letter each. */}
+      <div className="mt-3 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 font-mono text-xs text-muted-foreground/70">
+        <span className="flex min-w-0 flex-1 items-center gap-1.5">
           <BranchCopyButton branch={detail.baseBranch} />
+          {conflictLabel ? (
+            <TooltipWrapper tooltip={conflictLabel}>
+              <span className="shrink-0 text-destructive">
+                <TriangleAlertIcon aria-hidden className="size-3.5" />
+                <span className="sr-only">{conflictLabel}</span>
+              </span>
+            </TooltipWrapper>
+          ) : null}
           {/* A base that is not the default branch means this sits on other
               work, which changes how its diff should be read. */}
           {detail.isStacked ? (
@@ -601,81 +722,191 @@ function PullRequestDetailHeader({
               </span>
             </TooltipWrapper>
           ) : null}
-        </span>
-        {meta.map((item) => (
-          <span key={item.key} className="flex min-w-0 items-center gap-1.5">
-            <MetaSeparator />
-            {item.node}
-          </span>
-        ))}
-        {visibleLabels.map((label) => (
-          <span key={label.name} className="flex min-w-0 items-center gap-1">
-            <MetaSeparator />
-            <span
-              aria-hidden
-              className="size-1.5 shrink-0 rounded-full bg-muted-foreground/40"
-              style={label.color ? { backgroundColor: `#${label.color}` } : undefined}
-            />
-            <span className="max-w-40 truncate" title={label.name}>
-              {label.name}
-            </span>
-          </span>
-        ))}
-        {/* A long label list would push the facts off the line, so the rest is
-            a count that names them on hover. */}
-        {hiddenLabels.length > 0 ? (
-          <span className="flex shrink-0 items-center gap-1.5">
-            <MetaSeparator />
-            <TooltipWrapper tooltip={hiddenLabels.map((label) => label.name).join(", ")}>
-              <span>+{hiddenLabels.length}</span>
+          <ArrowLeftIcon
+            aria-label="receives changes from"
+            className="size-3.5 shrink-0 opacity-60"
+          />
+          <BranchCopyButton branch={detail.headBranch} />
+          {/* Being behind the base is the reason a merge is refused or a check
+              is stale, so the branch line says so where it names the branch. */}
+          {behindLabel ? (
+            <TooltipWrapper tooltip={freshness ?? behindLabel}>
+              <span className="shrink-0" data-testid="pull-request-behind">
+                {behindLabel}
+              </span>
             </TooltipWrapper>
+          ) : null}
+        </span>
+        <span className="flex shrink-0 items-center gap-2 @max-md/pr:w-full">
+          <span className="flex items-center gap-1">
+            <FileDiffIcon aria-hidden className="size-3.5" />
+            {pluralize(detail.changedFiles, "file")}
           </span>
-        ) : null}
+          {detail.additions > 0 || detail.deletions > 0 ? (
+            <DiffStatLabel additions={detail.additions} deletions={detail.deletions} />
+          ) : null}
+        </span>
       </div>
 
-      {/* A branch the host cannot merge is work for the checkout, not for the
-          host's own buttons, so the way out is offered where the problem is
-          stated rather than only as a reason the Merge button is off. */}
-      {detail.mergeability === "conflicting" && handoffs?.resolveConflicts ? (
-        <div className="mt-1.5 flex min-w-0 flex-wrap items-center gap-2 text-xs text-muted-foreground/60">
-          <span className="min-w-0 truncate">Conflicts with {detail.baseBranch}</span>
-          <button
-            type="button"
-            className={TEXT_BUTTON_CLASS}
-            data-testid="pull-request-resolve-conflicts"
-            onClick={handoffs.resolveConflicts}
-          >
-            Resolve conflicts
-          </button>
-        </div>
-      ) : null}
-
-      {context === "page" ? (
-        <div className="mt-1.5 text-xs text-muted-foreground/60">
-          {linkedThread ? (
-            <button
-              type="button"
-              className={cn(TEXT_BUTTON_CLASS, "inline-flex min-w-0 max-w-full items-center gap-1")}
-              onClick={onOpenThread}
-            >
-              <MessagesSquareIcon aria-hidden className="size-3 shrink-0" />
-              <span className="truncate">Thread: {linkedThread.title}</span>
-            </button>
-          ) : onReviewInThread ? (
-            <button type="button" className={TEXT_BUTTON_CLASS} onClick={onReviewInThread}>
-              Review in a thread
-            </button>
-          ) : null}
-        </div>
-      ) : null}
-
-      <PullRequestHeaderActions
-        environmentId={environmentId}
-        reference={reference}
-        detail={detail}
-        handoffs={handoffs}
-      />
+      {actions.notices}
+      {actions.dialog}
     </div>
+  );
+}
+
+/**
+ * The page's way onto the branch: a thread already working it, or the checkout
+ * dialog opened on one of its two ways in. Both ways stay in the menu whichever
+ * one is preset, because a worktree and the repository itself are choices a
+ * user changes their mind about at the dialog.
+ */
+function PullRequestCheckoutMenu({
+  detail,
+  linkedThread,
+  onCheckout,
+  onOpenThread,
+}: {
+  readonly detail: PullRequestDetail;
+  readonly linkedThread: SidebarThreadSummary | null;
+  readonly onCheckout?: (request?: PullRequestCheckoutRequest) => void;
+  readonly onOpenThread: () => void;
+}) {
+  return (
+    <Menu>
+      <MenuTrigger
+        render={
+          <Button
+            variant="outline"
+            size="xs"
+            className={PHONE_ACTION_CLASS}
+            data-testid="pull-request-checkout"
+          />
+        }
+      >
+        Check out
+        <ChevronDownIcon />
+      </MenuTrigger>
+      <MenuPopup align="end" className="w-72">
+        {linkedThread ? (
+          <MenuItem data-testid="pull-request-open-thread" onClick={onOpenThread}>
+            <MessagesSquareIcon className="mt-0.5 size-3.5 shrink-0 self-start" />
+            <span className="flex min-w-0 flex-col">
+              <span>Open the thread</span>
+              <span className="truncate text-xs text-muted-foreground">{linkedThread.title}</span>
+            </span>
+          </MenuItem>
+        ) : null}
+        {linkedThread && onCheckout ? <MenuSeparator /> : null}
+        {onCheckout ? (
+          <>
+            <MenuItem
+              data-testid="pull-request-checkout-worktree"
+              onClick={() => onCheckout({ mode: "worktree" })}
+            >
+              <GitBranchPlusIcon className="mt-0.5 size-3.5 shrink-0 self-start" />
+              <span className="flex min-w-0 flex-col">
+                <span>In a worktree</span>
+                <span className="text-xs text-muted-foreground">
+                  Takes the branch into its own folder, leaving this one alone.
+                </span>
+              </span>
+            </MenuItem>
+            <MenuItem
+              data-testid="pull-request-checkout-local"
+              onClick={() => onCheckout({ mode: "local" })}
+            >
+              <FolderGit2Icon className="mt-0.5 size-3.5 shrink-0 self-start" />
+              <span className="flex min-w-0 flex-col">
+                <span>In this repository</span>
+                <span className="text-xs text-muted-foreground">
+                  Switches the branch you are working in, the way{" "}
+                  {checkoutCommand(detail.provider, detail.number) ?? "a checkout"} does.
+                </span>
+              </span>
+            </MenuItem>
+          </>
+        ) : null}
+      </MenuPopup>
+    </Menu>
+  );
+}
+
+/**
+ * The rollup of the checks, beside the tabs: a glyph, a phrase, and a way down
+ * to the rows it counts. The glyph is drawn here rather than taken whole from
+ * the presentation module, because inside a button a second tooltip trigger
+ * would fight the button for the pointer. In a narrow panel the phrase is for
+ * screen readers and the tooltip only, and the glyph stands for it.
+ */
+function PullRequestChecksRollup({
+  summary,
+  onShowChecks,
+}: {
+  readonly summary: PullRequestChecksSummary;
+  readonly onShowChecks: () => void;
+}) {
+  const tone = pullRequestChecksTone(summary.state);
+  const headline = formatPullRequestChecksHeadline(summary);
+  return (
+    <TooltipWrapper tooltip={headline}>
+      <button
+        type="button"
+        className={cn(
+          TEXT_BUTTON_CLASS,
+          "ml-auto inline-flex shrink-0 items-center gap-1.5 pb-2 text-xs",
+        )}
+        data-testid="pull-request-checks-rollup"
+        onClick={onShowChecks}
+      >
+        {tone ? (
+          <span className={cn("shrink-0", tone.className)}>
+            <tone.Icon aria-hidden className="size-3.5" />
+          </span>
+        ) : null}
+        <span className="@max-md/pr:sr-only">{headline}</span>
+      </button>
+    </TooltipWrapper>
+  );
+}
+
+/**
+ * The command that takes this branch on a machine Threadlines is not running
+ * on, as a button that copies it. Only where the host's own tool has one: `gh`
+ * is GitHub's, and spelling it for a host that does not answer to it would be
+ * a command that fails when it is pasted.
+ */
+function checkoutCommand(provider: SourceControlProviderKind, number: number): string | null {
+  if (provider === "github") return `gh pr checkout ${number}`;
+  if (provider === "gitlab") return `glab mr checkout ${number}`;
+  return null;
+}
+
+function PullRequestCheckoutCommand({
+  provider,
+  number,
+}: {
+  readonly provider: SourceControlProviderKind;
+  readonly number: number;
+}) {
+  const { copyToClipboard, isCopied } = useCopyToClipboard({ timeout: 1200 });
+  const command = checkoutCommand(provider, number);
+  if (command === null) {
+    return null;
+  }
+  return (
+    <TooltipWrapper tooltip="Copy">
+      <button
+        type="button"
+        className={cn(TEXT_BUTTON_CLASS, "shrink-0 font-mono text-xs")}
+        // The word on the button is the only sign the copy worked, so the name
+        // says it too rather than staying "Copy" while the button reads Copied.
+        aria-label={isCopied ? `Copied ${command}` : `Copy ${command}`}
+        data-testid="pull-request-checkout-command"
+        onClick={() => copyToClipboard(command, undefined)}
+      >
+        {isCopied ? "Copied" : command}
+      </button>
+    </TooltipWrapper>
   );
 }
 
@@ -770,10 +1001,11 @@ function PullRequestTitle({
       tabIndex={-1}
       className="group/title flex min-w-0 flex-1 items-center gap-1.5 rounded-sm focus-ring"
     >
-      {/* A phone's column is narrow enough that one truncated line says almost
-          nothing, so there it wraps to two before it gives up. */}
+      {/* A phone's column, and a sidebar's, are narrow enough that one truncated
+          line says almost nothing, so there it wraps to two before it gives
+          up. */}
       <span
-        className="min-w-0 text-sm font-medium text-foreground/90 max-md:line-clamp-2 md:truncate"
+        className="min-w-0 text-base font-semibold leading-snug @max-lg/pr:line-clamp-2 @lg/pr:truncate"
         title={detail.title}
       >
         {detail.title}
@@ -829,16 +1061,29 @@ type PullRequestConfirmation =
 /** Remembered per computer: whoever deletes merged branches always does. */
 const DELETE_BRANCH_STORAGE_PREFIX = "threadlines:pull-requests:delete-branch:v1";
 
+/** The three pieces the header hangs in three different places. */
+interface PullRequestActionsView {
+  /** The buttons, for the right of the header's first row. */
+  readonly controls: ReactNode;
+  /** What a running or refused action has to say, under the header's rows. */
+  readonly notices: ReactNode;
+  readonly dialog: ReactNode;
+}
+
 /**
- * What the viewer may do to this pull request, under the meta line.
+ * What the viewer may do to this pull request, as the header's own controls.
  *
  * A write is offered only where the host says it takes that action and the
  * viewer's own permission covers it, so this hides what it knows cannot work
  * and never refuses on its own. The two irreversible ones ask first, by name
  * and by method; the rest simply run. The hand-offs are not writes to the host
  * at all, so a reader with no rights over this pull request still gets them.
+ *
+ * A hook rather than a component because its three parts land in three rows of
+ * the header, and the running action, the refusal and the confirmation are one
+ * piece of state between them.
  */
-function PullRequestHeaderActions({
+function usePullRequestActions({
   environmentId,
   reference,
   detail,
@@ -848,7 +1093,7 @@ function PullRequestHeaderActions({
   readonly reference: PullRequestRef;
   readonly detail: PullRequestDetail;
   readonly handoffs: PullRequestHandoffActions | null;
-}) {
+}): PullRequestActionsView {
   const queryClient = useQueryClient();
   const mutation = useMutation(
     pullRequestActionMutationOptions({ environmentId, reference, queryClient }),
@@ -895,21 +1140,31 @@ function PullRequestHeaderActions({
     canWrite && isOpen && detail.autoMergeEnabled === true && allows("disable-auto-merge");
   const showEnableAutoMerge =
     canWrite && isOpen && detail.autoMergeEnabled !== true && allows("enable-auto-merge");
-  const hasMenuWrites = showDraftToggle || showDisableAutoMerge || showEnableAutoMerge;
-  // The two menu halves: the hand-offs, and the writes that are not buttons.
-  const hasMenu = handoffs !== null || hasMenuWrites;
-
-  const freshness = formatPullRequestBaseFreshness(detail);
-  const canUpdateBranch = canWrite && isOpen && allows("update-branch");
-  const showFreshness = freshness !== null && canUpdateBranch;
-  if (!showMerge && !showClose && !showReopen && !hasMenu && !showFreshness) {
-    return null;
-  }
 
   const updateMethods = detail.capabilities.updateMethods;
   const mergeBlock = resolvePullRequestMergeBlock(detail);
   const mergeDisabled = isRunning || mergeBlock !== null;
   const defaultMergeMethod = resolveDefaultMergeMethod(detail.mergeMethods);
+  const canUpdateBranch = canWrite && isOpen && allows("update-branch");
+  const isBehind = detail.baseComparison === "behind";
+
+  // One primary action for the state the branch is in: work it cannot merge
+  // through first, then bringing it up to date, then the merge itself. The
+  // displaced merge is not lost — it moves into the menu beside the rest.
+  const primary: "resolve-conflicts" | "update-branch" | "merge" | null =
+    isOpen && !detail.isDraft && detail.mergeability === "conflicting" && handoffs?.resolveConflicts
+      ? "resolve-conflicts"
+      : canUpdateBranch && isBehind && detail.mergeability !== "conflicting"
+        ? "update-branch"
+        : showMerge
+          ? "merge"
+          : null;
+  const showMergeInMenu = showMerge && primary !== "merge" && mergeBlock === null;
+  const hasMenuWrites =
+    showDraftToggle || showDisableAutoMerge || showEnableAutoMerge || showMergeInMenu;
+  // The two menu halves: the hand-offs, and the writes that are not buttons.
+  const hasMenu = handoffs !== null || hasMenuWrites;
+
   const menuRunningWord =
     runningAction !== null && MENU_ACTIONS.has(runningAction)
       ? RUNNING_ACTION_WORDS[runningAction]
@@ -956,66 +1211,65 @@ function PullRequestHeaderActions({
     </span>
   );
 
-  return (
-    <div className="mt-2">
-      {/* Being behind the base is the reason a merge is refused or a check is
-          stale, so it is said here rather than left for the host to explain. */}
-      {showFreshness ? (
-        <div className="mb-1.5 flex min-w-0 flex-wrap items-center gap-2 text-xs text-muted-foreground/60">
-          <span className="min-w-0 truncate">{freshness}</span>
-          {updateMethods.length > 1 ? (
-            <Menu>
-              <MenuTrigger
-                render={
-                  <Button
-                    variant="ghost"
-                    size="xs"
-                    className="text-muted-foreground/70"
-                    disabled={isRunning}
-                    data-testid="pull-request-update-branch"
-                  />
-                }
-              >
-                {runningAction === "update-branch"
-                  ? RUNNING_ACTION_WORDS["update-branch"]
-                  : "Update branch"}
-                <ChevronDownIcon />
-              </MenuTrigger>
-              <MenuPopup align="start" className="w-56">
-                {updateMethods.map((method) => (
-                  <MenuItem
-                    key={method}
-                    onClick={() => run("update-branch", { updateMethod: method })}
-                  >
-                    {pullRequestUpdateMethodLabel(method, detail.baseBranch)}
-                  </MenuItem>
-                ))}
-              </MenuPopup>
-            </Menu>
-          ) : (
+  const updateBranchControl =
+    updateMethods.length > 1 ? (
+      <Menu>
+        <MenuTrigger
+          render={
             <Button
-              variant="ghost"
               size="xs"
-              className="text-muted-foreground/70"
+              className={PHONE_ACTION_CLASS}
               disabled={isRunning}
               data-testid="pull-request-update-branch"
-              onClick={() =>
-                run(
-                  "update-branch",
-                  updateMethods[0] ? { updateMethod: updateMethods[0] } : undefined,
-                )
-              }
-            >
-              {runningAction === "update-branch"
-                ? RUNNING_ACTION_WORDS["update-branch"]
-                : "Update branch"}
-            </Button>
-          )}
-        </div>
-      ) : null}
+            />
+          }
+        >
+          {runningAction === "update-branch"
+            ? RUNNING_ACTION_WORDS["update-branch"]
+            : "Update branch"}
+          <ChevronDownIcon />
+        </MenuTrigger>
+        <MenuPopup align="end" className="w-56">
+          {updateMethods.map((method) => (
+            <MenuItem key={method} onClick={() => run("update-branch", { updateMethod: method })}>
+              {pullRequestUpdateMethodLabel(method, detail.baseBranch)}
+            </MenuItem>
+          ))}
+        </MenuPopup>
+      </Menu>
+    ) : (
+      <Button
+        size="xs"
+        className={PHONE_ACTION_CLASS}
+        disabled={isRunning}
+        data-testid="pull-request-update-branch"
+        onClick={() =>
+          run("update-branch", updateMethods[0] ? { updateMethod: updateMethods[0] } : undefined)
+        }
+      >
+        {runningAction === "update-branch"
+          ? RUNNING_ACTION_WORDS["update-branch"]
+          : "Update branch"}
+      </Button>
+    );
 
-      <div className="flex flex-wrap items-center justify-end gap-1.5">
-        {showMerge ? (
+  const controls =
+    primary === null && !showClose && !showReopen && !hasMenu ? null : (
+      <>
+        {primary === "resolve-conflicts" && handoffs?.resolveConflicts ? (
+          // A branch the host cannot merge is work for an agent, not for the
+          // host's own buttons, so the way out stands where the merge would.
+          <Button
+            size="xs"
+            className={PHONE_ACTION_CLASS}
+            data-testid="pull-request-resolve-conflicts"
+            onClick={handoffs.resolveConflicts}
+          >
+            Resolve conflicts
+          </Button>
+        ) : null}
+        {primary === "update-branch" ? updateBranchControl : null}
+        {primary === "merge" ? (
           // A blocked merge stays on screen and says what is in the way: the
           // fix is on the host, and a vanished button explains nothing.
           mergeBlock === null ? (
@@ -1066,8 +1320,21 @@ function PullRequestHeaderActions({
               <MoreHorizontalIcon />
             </MenuTrigger>
             <MenuPopup align="end" className="w-60">
+              {/* Only where another action took the primary slot: the merge is
+                  still available, it is simply no longer the thing to do. */}
+              {showMergeInMenu ? (
+                <MenuItem
+                  data-testid="pull-request-merge-menu-item"
+                  onClick={() =>
+                    setConfirming({ action: "merge", mergeMethod: defaultMergeMethod })
+                  }
+                >
+                  Merge
+                </MenuItem>
+              ) : null}
               {handoffs ? (
                 <>
+                  {showMergeInMenu ? <MenuSeparator /> : null}
                   {handoffs.fixAll ? (
                     <MenuItem data-testid="pull-request-fix-all" onClick={handoffs.fixAll}>
                       Fix all findings
@@ -1081,7 +1348,10 @@ function PullRequestHeaderActions({
                   </MenuItem>
                 </>
               ) : null}
-              {handoffs && hasMenuWrites ? <MenuSeparator /> : null}
+              {(handoffs || showMergeInMenu) &&
+              (showDraftToggle || showDisableAutoMerge || showEnableAutoMerge) ? (
+                <MenuSeparator />
+              ) : null}
               {showDraftToggle ? (
                 detail.isDraft ? (
                   <MenuItem onClick={() => run("ready")}>Mark as ready</MenuItem>
@@ -1109,7 +1379,11 @@ function PullRequestHeaderActions({
             </MenuPopup>
           </Menu>
         ) : null}
-      </div>
+      </>
+    );
+
+  const notices = (
+    <>
       {/* The menu is gone by the time the host answers, so its running action
           says so here instead of on the item that started it. */}
       <p
@@ -1124,7 +1398,7 @@ function PullRequestHeaderActions({
       </p>
       {/* A disabled button cannot be focused, so the reason it is disabled is
           written out as well as tucked in its tooltip. */}
-      {showMerge && mergeBlock !== null ? (
+      {primary === "merge" && mergeBlock !== null ? (
         <p className="mt-1 text-right text-xs text-muted-foreground/60">{mergeBlock}</p>
       ) : null}
       {mutation.isError ? (
@@ -1134,67 +1408,71 @@ function PullRequestHeaderActions({
             : "The host refused that action."}
         </p>
       ) : null}
-
-      {confirming ? (
-        <AlertDialog
-          open
-          onOpenChange={(open) => {
-            if (!open) setConfirming(null);
-          }}
-        >
-          <AlertDialogPopup className="max-w-md">
-            <AlertDialogHeader>
-              <AlertDialogTitle>
-                {confirming.action === "merge"
-                  ? `Merge #${detail.number} into ${detail.baseBranch}?`
-                  : `Close #${detail.number} without merging?`}
-              </AlertDialogTitle>
-              <AlertDialogDescription>
-                {confirming.action === "merge"
-                  ? `${PULL_REQUEST_MERGE_METHOD_LABELS[confirming.mergeMethod]}.`
-                  : `The ${changeRequestWord(detail.provider)} stays on the host, and you can reopen it later.`}
-              </AlertDialogDescription>
-            </AlertDialogHeader>
-            {confirming.action === "merge" ? (
-              <label className="flex cursor-pointer items-center gap-2 text-sm text-foreground/85">
-                <Checkbox
-                  checked={deleteBranch}
-                  data-testid="pull-request-delete-branch"
-                  onCheckedChange={(checked) => setDeleteBranch(checked === true)}
-                />
-                Delete branch after merge
-              </label>
-            ) : null}
-            <AlertDialogFooter>
-              {/* Cancel takes the focus: neither a merge nor a close can be
-                  taken back, so a stray Enter must not run one. */}
-              <AlertDialogClose
-                render={<Button data-alert-dialog-primary-action="true" variant="outline" />}
-              >
-                Cancel
-              </AlertDialogClose>
-              <Button
-                variant={confirming.action === "close" ? "destructive" : "default"}
-                onClick={() => {
-                  setConfirming(null);
-                  if (confirming.action === "merge") {
-                    run("merge", {
-                      mergeMethod: confirming.mergeMethod,
-                      ...(deleteBranch ? { deleteBranch: true } : {}),
-                    });
-                  } else {
-                    run("close");
-                  }
-                }}
-              >
-                {confirming.action === "merge" ? "Merge" : "Close"}
-              </Button>
-            </AlertDialogFooter>
-          </AlertDialogPopup>
-        </AlertDialog>
-      ) : null}
-    </div>
+    </>
   );
+
+  const dialog = confirming ? (
+    <AlertDialog
+      open
+      onOpenChange={(open) => {
+        if (!open) setConfirming(null);
+      }}
+    >
+      <AlertDialogPopup className="max-w-md">
+        <AlertDialogHeader>
+          <AlertDialogTitle>
+            {confirming.action === "merge"
+              ? `Merge #${detail.number} into ${detail.baseBranch}?`
+              : `Close #${detail.number} without merging?`}
+          </AlertDialogTitle>
+          <AlertDialogDescription>
+            {confirming.action === "merge"
+              ? `${PULL_REQUEST_MERGE_METHOD_LABELS[confirming.mergeMethod]}.`
+              : `The ${changeRequestWord(detail.provider)} stays on the host, and you can reopen it later.`}
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        {/* Between the header and the footer, which each carry their own
+            padding, so the row has to bring its own to line up with them. */}
+        {confirming.action === "merge" ? (
+          <label className="flex cursor-pointer items-center gap-2 px-6 pb-4 text-sm text-foreground/85">
+            <Checkbox
+              checked={deleteBranch}
+              data-testid="pull-request-delete-branch"
+              onCheckedChange={(checked) => setDeleteBranch(checked === true)}
+            />
+            Delete branch after merge
+          </label>
+        ) : null}
+        <AlertDialogFooter>
+          {/* Cancel takes the focus: neither a merge nor a close can be
+              taken back, so a stray Enter must not run one. */}
+          <AlertDialogClose
+            render={<Button data-alert-dialog-primary-action="true" variant="outline" />}
+          >
+            Cancel
+          </AlertDialogClose>
+          <Button
+            variant={confirming.action === "close" ? "destructive" : "default"}
+            onClick={() => {
+              setConfirming(null);
+              if (confirming.action === "merge") {
+                run("merge", {
+                  mergeMethod: confirming.mergeMethod,
+                  ...(deleteBranch ? { deleteBranch: true } : {}),
+                });
+              } else {
+                run("close");
+              }
+            }}
+          >
+            {confirming.action === "merge" ? "Merge" : "Close"}
+          </Button>
+        </AlertDialogFooter>
+      </AlertDialogPopup>
+    </AlertDialog>
+  ) : null;
+
+  return { controls, notices, dialog };
 }
 
 /** A branch name that copies itself, the way branch chips do elsewhere. */
@@ -1204,7 +1482,7 @@ function BranchCopyButton({ branch }: { readonly branch: string }) {
     <button
       type="button"
       className="min-w-0 max-w-[14rem] shrink cursor-pointer truncate rounded-sm text-left transition-colors hover:text-foreground focus-ring"
-      aria-label={`Copy ${branch}`}
+      aria-label={isCopied ? `Copied ${branch}` : `Copy ${branch}`}
       onClick={() => copyToClipboard(branch, undefined)}
     >
       {isCopied ? "Copied" : branch}

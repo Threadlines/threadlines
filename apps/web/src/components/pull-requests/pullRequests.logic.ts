@@ -51,7 +51,7 @@ export type PullRequestProjectFailure = PullRequestListProjectError & {
 
 /** The reasons a row is put in front of the user, in priority order. */
 export type PullRequestNeedsYouReason =
-  | "Review requested"
+  | "Review required"
   | "Changes requested"
   | "Checks failing"
   | "Approved";
@@ -69,50 +69,71 @@ export interface PullRequestGroup {
 export interface PullRequestSelection {
   readonly environmentId: EnvironmentId;
   readonly projectId: ProjectId;
+  /**
+   * The repository the number belongs to: one project reads more than one
+   * remote, and #214 is a different pull request on each. Null only for a link
+   * written before the param carried it.
+   */
+  readonly repository: string | null;
   readonly number: number;
 }
 
 /** Whether the list keeps drafts, only drafts, or none of them. */
 export type PullRequestDraftFilter = "any" | "only" | "hide";
-export type PullRequestReviewFilter = "any" | PullRequestReviewDecision;
-export type PullRequestChecksFilter = "any" | "passing" | "failing";
-export type PullRequestSort = "updated" | "created" | "size";
+/** `none` is a row no reviewer has answered on yet, which the host omits. */
+export type PullRequestReviewFilter = "any" | "none" | PullRequestReviewDecision;
+export type PullRequestChecksFilter = "any" | "passing" | "failing" | "running";
+/** The same three groups the open list heads, as a narrowing of its own. */
+export type PullRequestInvolvementFilter = "all" | "needs-you" | "yours" | "others";
+export type PullRequestSort =
+  | "readiness"
+  | "updated"
+  | "newest"
+  | "oldest"
+  | "largest"
+  | "smallest";
 
 /**
- * What the Filters popover holds. The three text fields keep the user's own
+ * What the Filters menu holds. The two text fields keep the user's own
  * spelling rather than a parsed list, so the URL, the field and the chips all
  * agree and typing a comma is never undone underneath the cursor.
  */
 export interface PullRequestFilters {
+  readonly involvement: PullRequestInvolvementFilter;
   readonly author: string;
   /** Comma separated; a row must carry every one of them. */
   readonly labels: string;
-  /** Comma separated; a row carrying any of them is dropped. */
-  readonly excludeLabels: string;
   readonly draft: PullRequestDraftFilter;
   readonly review: PullRequestReviewFilter;
   readonly checks: PullRequestChecksFilter;
+  /** One project, spelled {@link pullRequestProjectKey}; empty for all of them. */
+  readonly project: string;
 }
 
 export const EMPTY_PULL_REQUEST_FILTERS: PullRequestFilters = {
+  involvement: "all",
   author: "",
   labels: "",
-  excludeLabels: "",
   draft: "any",
   review: "any",
   checks: "any",
+  project: "",
 };
 
 export const DEFAULT_PULL_REQUEST_SORT: PullRequestSort = "updated";
 
 export interface PullRequestsSearch {
   readonly state: PullRequestListState;
-  /** `<environmentId>:<projectId>:<number>`, absent when the list is alone. */
+  /**
+   * `<environmentId>:<projectId>:<number>:<repository>`, absent when the list
+   * is alone; see {@link formatPullRequestSelection}.
+   */
   readonly pr?: string;
   readonly author?: string;
   readonly labels?: string;
-  readonly excludeLabels?: string;
+  readonly project?: string;
   /** Absent while the filter is off, so a plain link stays plain. */
+  readonly involvement?: Exclude<PullRequestInvolvementFilter, "all">;
   readonly draft?: Exclude<PullRequestDraftFilter, "any">;
   readonly review?: Exclude<PullRequestReviewFilter, "any">;
   readonly checks?: Exclude<PullRequestChecksFilter, "any">;
@@ -128,23 +149,47 @@ export function parsePullRequestsSearch(search: Record<string, unknown>): PullRe
   const state = search["state"];
   const pr = search["pr"];
   const selection = typeof pr === "string" ? parsePullRequestSelection(pr) : null;
+  const involvement = search["involvement"];
   const draft = search["draft"];
   const review = search["review"];
   const checks = search["checks"];
-  const sort = search["sort"];
+  const sort = parseSort(search["sort"]);
   return {
     state: state === "merged" || state === "closed" ? state : "open",
     ...(selection ? { pr: formatPullRequestSelection(selection) } : {}),
     ...searchText(search["author"], "author"),
     ...searchText(search["labels"], "labels"),
-    ...searchText(search["excludeLabels"], "excludeLabels"),
+    ...searchText(search["project"], "project"),
+    ...(involvement === "needs-you" || involvement === "yours" || involvement === "others"
+      ? { involvement }
+      : {}),
     ...(draft === "only" || draft === "hide" ? { draft } : {}),
-    ...(review === "approved" || review === "changes-requested" || review === "review-required"
+    ...(review === "approved" ||
+    review === "changes-requested" ||
+    review === "review-required" ||
+    review === "none"
       ? { review }
       : {}),
-    ...(checks === "passing" || checks === "failing" ? { checks } : {}),
-    ...(sort === "created" || sort === "size" ? { sort } : {}),
+    ...(checks === "passing" || checks === "failing" || checks === "running" ? { checks } : {}),
+    ...(sort === null ? {} : { sort }),
   };
+}
+
+/**
+ * The sort a link asks for. The first spelling of this page offered `created`
+ * and `size`, which are now the first of a pair each, so an old link lands on
+ * the sort it used to mean rather than on the default.
+ */
+function parseSort(value: unknown): Exclude<PullRequestSort, "updated"> | null {
+  if (value === "created") return "newest";
+  if (value === "size") return "largest";
+  return value === "readiness" ||
+    value === "newest" ||
+    value === "oldest" ||
+    value === "largest" ||
+    value === "smallest"
+    ? value
+    : null;
 }
 
 /** One text param, dropped when it is missing or says nothing. */
@@ -158,12 +203,13 @@ function searchText<Key extends string>(value: unknown, key: Key): Partial<Recor
 
 export function pullRequestFiltersFromSearch(search: PullRequestsSearch): PullRequestFilters {
   return {
+    involvement: search.involvement ?? "all",
     author: search.author ?? "",
     labels: search.labels ?? "",
-    excludeLabels: search.excludeLabels ?? "",
     draft: search.draft ?? "any",
     review: search.review ?? "any",
     checks: search.checks ?? "any",
+    project: search.project ?? "",
   };
 }
 
@@ -175,7 +221,8 @@ export function pullRequestFiltersToSearch(
   return {
     ...searchText(filters.author, "author"),
     ...searchText(filters.labels, "labels"),
-    ...searchText(filters.excludeLabels, "excludeLabels"),
+    ...searchText(filters.project, "project"),
+    ...(filters.involvement === "all" ? {} : { involvement: filters.involvement }),
     ...(filters.draft === "any" ? {} : { draft: filters.draft }),
     ...(filters.review === "any" ? {} : { review: filters.review }),
     ...(filters.checks === "any" ? {} : { checks: filters.checks }),
@@ -183,28 +230,48 @@ export function pullRequestFiltersToSearch(
   };
 }
 
+/** A whole positive number and nothing else, which is what a segment must be. */
+const DIGITS = /^\d+$/;
+
+/**
+ * `environment:project:number:repository`, the repository last and
+ * percent-encoded so the `/` and `:` in a name cannot be read as separators.
+ * A link written before the param carried a repository ends in its number
+ * instead, which is how {@link parsePullRequestSelection} tells the two apart.
+ */
 export function formatPullRequestSelection(selection: PullRequestSelection): string {
-  return `${selection.environmentId}:${selection.projectId}:${selection.number}`;
+  const base = `${selection.environmentId}:${selection.projectId}:${selection.number}`;
+  return selection.repository === null
+    ? base
+    : `${base}:${encodeURIComponent(selection.repository)}`;
 }
 
 /**
  * Read from the right, so an environment id carrying a colon of its own still
- * parses. A value that does not resolve to a positive number is dropped rather
- * than rendered as a broken selection.
+ * parses, and the three-part form old links carry is still read (with no
+ * repository, which the page then falls back to the project's remote for). A
+ * value that does not resolve to a positive number is dropped rather than
+ * rendered as a broken selection.
  */
 export function parsePullRequestSelection(value: string): PullRequestSelection | null {
-  const lastSeparator = value.lastIndexOf(":");
-  if (lastSeparator <= 0) {
+  const parts = value.split(":");
+  const last = parts[parts.length - 1] ?? "";
+  // The last segment is the number in the old form and the repository in the
+  // new one, and only one of the two is ever all digits.
+  const carriesRepository = !DIGITS.test(last);
+  const repository = carriesRepository ? decodeRepositorySegment(last) : null;
+  if (carriesRepository && repository === null) {
     return null;
   }
-  const projectSeparator = value.lastIndexOf(":", lastSeparator - 1);
-  if (projectSeparator <= 0) {
+  const numberIndex = parts.length - (carriesRepository ? 2 : 1);
+  if (numberIndex < 2) {
     return null;
   }
-  const environmentId = value.slice(0, projectSeparator);
-  const projectId = value.slice(projectSeparator + 1, lastSeparator);
-  const number = Number(value.slice(lastSeparator + 1));
-  if (environmentId.length === 0 || projectId.length === 0) {
+  const numberPart = parts[numberIndex] ?? "";
+  const projectId = parts[numberIndex - 1] ?? "";
+  const environmentId = parts.slice(0, numberIndex - 1).join(":");
+  const number = Number(numberPart);
+  if (environmentId.length === 0 || projectId.length === 0 || !DIGITS.test(numberPart)) {
     return null;
   }
   if (!Number.isSafeInteger(number) || number <= 0) {
@@ -213,22 +280,67 @@ export function parsePullRequestSelection(value: string): PullRequestSelection |
   return {
     environmentId: EnvironmentId.make(environmentId),
     projectId: ProjectId.make(projectId),
+    repository,
     number,
   };
 }
 
+/** The repository the param spells, or null when it spells nothing readable. */
+function decodeRepositorySegment(value: string): string | null {
+  if (value.length === 0) {
+    return null;
+  }
+  try {
+    const decoded = decodeURIComponent(value);
+    return decoded.length === 0 ? null : decoded;
+  } catch {
+    return null;
+  }
+}
+
 /**
- * Identifies one row across environments and repositories. The project is
- * deliberately left out: a checkout and its worktrees are separate projects on
- * one remote, and the pull request is the same one from any of them.
+ * Whether a row is the one the route names. The repository and the number say
+ * which pull request; the environment in the link only says which computer
+ * reads it, and the row keeps matching after another one takes that seat. A
+ * link written before the param carried a repository names none, and then the
+ * project and the number are all there is to go on.
+ */
+export function matchesPullRequestSelection(
+  selection: PullRequestSelection,
+  entry: {
+    readonly environmentId: EnvironmentId;
+    readonly projectId: ProjectId;
+    readonly repository: string;
+    readonly number: number;
+  },
+): boolean {
+  if (selection.number !== entry.number) {
+    return false;
+  }
+  return selection.repository === null
+    ? selection.environmentId === entry.environmentId && selection.projectId === entry.projectId
+    : repositoryKey(selection.repository) === repositoryKey(entry.repository);
+}
+
+/**
+ * Identifies one pull request whichever environment or checkout listed it. The
+ * project is deliberately left out: a checkout and its worktrees are separate
+ * projects on one remote, and the pull request is the same one from any of
+ * them. So is the environment: two computers pointed at one remote read the
+ * same pull request, and {@link mergePullRequestListResults} keeps one row.
  */
 export function pullRequestEntryKey(entry: PullRequestEntry): string {
-  return `${entry.environmentId}:${repositoryKey(entry.repository)}:${entry.number}`;
+  return `${repositoryScopeKey(entry.provider, entry.repository)}:${entry.number}`;
 }
 
 /** Repository names are case-insensitive on every host here, so comparisons are too. */
 function repositoryKey(repository: string): string {
   return repository.toLowerCase();
+}
+
+/** One repository on one host: `owner/name` means something else on another host. */
+function repositoryScopeKey(provider: SourceControlProviderKind, repository: string): string {
+  return `${provider}:${repositoryKey(repository)}`;
 }
 
 /**
@@ -242,6 +354,13 @@ export function projectRepository(project: Project): string | null {
 /** The host a project's remote sits on, or null when it has none we can read. */
 export function projectProviderKind(project: Project): SourceControlProviderKind | null {
   return toChangeRequestProviderKind(project.repositoryIdentity?.provider);
+}
+
+/** The project's remote as {@link repositoryScopeKey} spells it, or null when it has none we can read. */
+function projectRepositoryScope(project: Project): string | null {
+  const provider = projectProviderKind(project);
+  const repository = projectRepository(project);
+  return provider === null || repository === null ? null : repositoryScopeKey(provider, repository);
 }
 
 function updatedAtMs(value: string): number {
@@ -260,6 +379,14 @@ function threadActivityMs(thread: SidebarThreadSummary): number {
 /**
  * One listing per environment, merged into the page's row list.
  *
+ * Two environments pointed at one remote both list the same pull request, and
+ * the page keeps one row for it. The first listing to carry it keeps the seat,
+ * and the results arrive with this device first, so a pull request is read
+ * and acted on from here whenever here can. The one exception is a row this
+ * device only found by searching the viewer's own work: a listing whose
+ * project actually holds the repository can check the branch out and knows
+ * the threads working it, so that row takes over.
+ *
  * The state filter is defensive: a host can answer a "closed" listing with a
  * merged row, and a row under the wrong tab reads as a bug in the page.
  */
@@ -275,7 +402,7 @@ export function mergePullRequestListResults(input: {
   readonly failures: readonly PullRequestProjectFailure[];
   readonly viewer: string | null;
 } {
-  const entries: PullRequestEntry[] = [];
+  const entries = new Map<string, PullRequestEntry>();
   const failures: PullRequestProjectFailure[] = [];
   let viewer: string | null = null;
 
@@ -284,11 +411,16 @@ export function mergePullRequestListResults(input: {
     viewer ??= result.data.viewer;
     for (const entry of result.data.entries) {
       if (entry.state !== input.state) continue;
-      entries.push({
+      const scoped = {
         ...entry,
         environmentId: result.environmentId,
         environmentLabel: result.environmentLabel,
-      });
+      };
+      const key = pullRequestEntryKey(scoped);
+      const seated = entries.get(key);
+      if (seated === undefined || (seated.origin === "authored" && entry.origin !== "authored")) {
+        entries.set(key, scoped);
+      }
     }
     for (const failure of result.data.errors) {
       failures.push({
@@ -299,17 +431,18 @@ export function mergePullRequestListResults(input: {
     }
   }
 
-  return { entries, failures, viewer };
+  return { entries: [...entries.values()], failures, viewer };
 }
 
 /**
  * The threads working each pull request, keyed by {@link pullRequestEntryKey}.
  *
- * A thread counts when its project points at the pull request's repository on
- * the same environment and it is checked out on the head branch. Matching by
- * repository rather than project lets a thread in a worktree project claim the
- * row its sibling checkout produced. Archived threads are past work, so they
- * never claim a row.
+ * A thread counts when its project points at the pull request's repository and
+ * it is checked out on the head branch. Matching by repository rather than
+ * project lets a thread in a worktree project claim the row its sibling
+ * checkout produced, and a thread on another computer claim the row this one
+ * listed: the row stands for the pull request, not for the listing that found
+ * it. Archived threads are past work, so they never claim a row.
  *
  * An authored row is on a repository no project here points at, and the project
  * it names is only the checkout its host tool runs in, so no thread is working
@@ -327,9 +460,9 @@ export function linkThreadsToPullRequests(
 
   const repositoryByProject = new Map<string, string>();
   for (const project of projects) {
-    const repository = projectRepository(project);
-    if (repository !== null) {
-      repositoryByProject.set(`${project.environmentId}:${project.id}`, repositoryKey(repository));
+    const scope = projectRepositoryScope(project);
+    if (scope !== null) {
+      repositoryByProject.set(`${project.environmentId}:${project.id}`, scope);
     }
   }
   const candidates = threads.flatMap((thread) => {
@@ -341,11 +474,9 @@ export function linkThreadsToPullRequests(
   });
   for (const entry of entries) {
     if (entry.origin === "authored") continue;
-    const entryRepository = repositoryKey(entry.repository);
+    const entryRepository = repositoryScopeKey(entry.provider, entry.repository);
     const matches = candidates.flatMap((candidate) =>
-      candidate.thread.environmentId === entry.environmentId &&
-      candidate.repository === entryRepository &&
-      candidate.thread.branch === entry.headBranch
+      candidate.repository === entryRepository && candidate.thread.branch === entry.headBranch
         ? [candidate.thread]
         : [],
     );
@@ -476,13 +607,14 @@ export function resolveThreadPullRequest(input: {
   if (fromStatus) {
     return fromStatus;
   }
-  if (repository === null) {
+  const scope = projectRepositoryScope(project);
+  if (scope === null) {
     return null;
   }
 
   const entry =
-    findThreadListEntry(thread, repository, input.openEntries) ??
-    findThreadListEntry(thread, repository, input.settledEntries ?? []);
+    findThreadListEntry(thread, scope, input.openEntries) ??
+    findThreadListEntry(thread, scope, input.settledEntries ?? []);
   if (!entry) {
     return null;
   }
@@ -497,21 +629,21 @@ export function resolveThreadPullRequest(input: {
 }
 
 /**
- * The listing row for a thread's branch on its own repository and computer. An
- * authored row is on a repository no project here points at, so it is never a
- * thread's own work however its branch happens to be spelled.
+ * The listing row for a thread's branch on its own repository, whichever
+ * computer listed it: the merged list keeps one row per pull request, and it
+ * may sit with another environment than the thread's. An authored row is on a
+ * repository no project here points at, so it is never a thread's own work
+ * however its branch happens to be spelled.
  */
 function findThreadListEntry(
   thread: ThreadPullRequestSubject,
-  repository: string,
+  scope: string,
   entries: readonly PullRequestEntry[],
 ): PullRequestEntry | undefined {
-  const entryRepository = repositoryKey(repository);
   return entries.find(
     (candidate) =>
       candidate.origin !== "authored" &&
-      candidate.environmentId === thread.environmentId &&
-      repositoryKey(candidate.repository) === entryRepository &&
+      repositoryScopeKey(candidate.provider, candidate.repository) === scope &&
       candidate.headBranch === thread.branch,
   );
 }
@@ -519,15 +651,22 @@ function findThreadListEntry(
 /**
  * Why this row is waiting on the user, or null when it is only news. First
  * match wins so a row states one thing rather than a list of conditions.
+ *
+ * Reviewing needs nothing but an account, so a review request always counts.
+ * The author-side reasons are all things the user answers by merging or
+ * landing the work, so they count only where the user may push: a contribution
+ * to someone else's repository is news however it is going, and belongs under
+ * Yours rather than in front of them. A host that does not say whether they may
+ * push is taken at its word and left as it was.
  */
 export function resolveNeedsYouReason(entry: PullRequestEntry): PullRequestNeedsYouReason | null {
   if (entry.state !== "open") {
     return null;
   }
   if (entry.viewerReviewRequested) {
-    return "Review requested";
+    return "Review required";
   }
-  if (!entry.viewerIsAuthor) {
+  if (!entry.viewerIsAuthor || entry.viewerCanWrite === false) {
     return null;
   }
   if (entry.reviewDecision === "changes-requested") {
@@ -553,6 +692,16 @@ export function countNeedsYou(entries: readonly PullRequestEntry[]): number {
   return count;
 }
 
+/** Which of the open list's three groups a row belongs to. */
+export function pullRequestInvolvement(
+  entry: PullRequestEntry,
+): Exclude<PullRequestInvolvementFilter, "all"> {
+  if (resolveNeedsYouReason(entry) !== null) {
+    return "needs-you";
+  }
+  return entry.viewerIsAuthor ? "yours" : "others";
+}
+
 /**
  * The open list answers "what needs me" first, then the user's own work, then
  * everything else; a row belongs to exactly one group. Without a signed-in
@@ -565,23 +714,27 @@ export function groupPullRequests(input: {
   readonly state: PullRequestListState;
   /** The order inside every group; the last update when nothing is asked for. */
   readonly sort?: PullRequestSort;
+  /**
+   * The involvement the list is already narrowed to. Only one group can be
+   * left, and heading a list with the filter the user just set says nothing.
+   */
+  readonly involvement?: PullRequestInvolvementFilter;
 }): readonly PullRequestGroup[] {
   const sorted = sortPullRequests(input.entries, input.sort ?? DEFAULT_PULL_REQUEST_SORT);
-  if (input.state !== "open" || input.viewer === null) {
+  if (
+    input.state !== "open" ||
+    input.viewer === null ||
+    (input.involvement !== undefined && input.involvement !== "all")
+  ) {
     return sorted.length === 0 ? [] : [{ id: "all", label: null, entries: sorted }];
   }
 
   const needsYou: PullRequestEntry[] = [];
   const yours: PullRequestEntry[] = [];
   const others: PullRequestEntry[] = [];
+  const byInvolvement = { "needs-you": needsYou, yours, others } as const;
   for (const entry of sorted) {
-    if (resolveNeedsYouReason(entry) !== null) {
-      needsYou.push(entry);
-    } else if (entry.viewerIsAuthor) {
-      yours.push(entry);
-    } else {
-      others.push(entry);
-    }
+    byInvolvement[pullRequestInvolvement(entry)].push(entry);
   }
 
   return (
@@ -628,11 +781,12 @@ export function narrowPullRequests(
 ): readonly PullRequestEntry[] {
   const author = filters.author.trim().toLowerCase();
   const included = parseNameList(filters.labels);
-  const excluded = parseNameList(filters.excludeLabels);
+  const project = filters.project.trim();
   if (
+    filters.involvement === "all" &&
     author.length === 0 &&
     included.length === 0 &&
-    excluded.length === 0 &&
+    project.length === 0 &&
     filters.draft === "any" &&
     filters.review === "any" &&
     filters.checks === "any"
@@ -640,23 +794,38 @@ export function narrowPullRequests(
     return entries;
   }
   return entries.filter((entry) => {
+    if (filters.involvement !== "all" && pullRequestInvolvement(entry) !== filters.involvement) {
+      return false;
+    }
     if (author.length > 0 && (entry.author?.login ?? "").toLowerCase() !== author) {
       return false;
     }
-    if (included.length > 0 || excluded.length > 0) {
+    if (included.length > 0) {
       const labels = new Set(entry.labels.map((label) => label.name.toLowerCase()));
       if (!included.every((name) => labels.has(name))) {
         return false;
       }
-      if (excluded.some((name) => labels.has(name))) {
-        return false;
-      }
+    }
+    // An authored row belongs to no project here, so naming one hides it.
+    if (
+      project.length > 0 &&
+      (entry.origin === "authored" || pullRequestProjectKey(entry) !== project)
+    ) {
+      return false;
     }
     if (filters.draft === "only" && !entry.isDraft) return false;
     if (filters.draft === "hide" && entry.isDraft) return false;
-    if (filters.review !== "any" && entry.reviewDecision !== filters.review) return false;
+    if (filters.review === "none" && entry.reviewDecision !== undefined) return false;
+    if (
+      filters.review !== "any" &&
+      filters.review !== "none" &&
+      entry.reviewDecision !== filters.review
+    ) {
+      return false;
+    }
     if (filters.checks === "passing" && entry.checksState !== "success") return false;
     if (filters.checks === "failing" && entry.checksState !== "failure") return false;
+    if (filters.checks === "running" && entry.checksState !== "pending") return false;
     return true;
   });
 }
@@ -671,33 +840,65 @@ function entrySize(entry: PullRequestEntry): number {
 }
 
 /**
- * The list's order. Every sort is largest-first in its own terms — newest,
- * newest, biggest — and falls back to the last update so two rows that tie
- * never swap places between reads.
+ * How close an open row is to being merged, smallest first. Read from the far
+ * end: a draft is furthest away whatever else is true of it, then a row that
+ * cannot merge at all, then one the checks or a reviewer turned down, then one
+ * still running. What is left is waiting on a reviewer, and a row that is
+ * approved and green is the next thing to merge.
+ */
+function readinessRank(entry: PullRequestEntry): number {
+  if (entry.state !== "open") return 7;
+  if (entry.isDraft) return 6;
+  if (entry.mergeability === "conflicting") return 5;
+  if (entry.checksState === "failure") return 4;
+  if (entry.reviewDecision === "changes-requested") return 3;
+  if (entry.checksState === "pending") return 2;
+  if (entry.reviewDecision === "approved" && entry.checksState === "success") return 0;
+  return 1;
+}
+
+/**
+ * The list's order. Every sort falls back to the last update, so two rows that
+ * tie never swap places between reads.
  */
 export function sortPullRequests(
   entries: readonly PullRequestEntry[],
   sort: PullRequestSort,
 ): readonly PullRequestEntry[] {
-  if (sort === "created") {
+  if (sort === "readiness") {
     return entries.toSorted(
-      (left, right) =>
-        createdAtMs(right.createdAt) - createdAtMs(left.createdAt) || byUpdatedAtDesc(left, right),
+      (left, right) => readinessRank(left) - readinessRank(right) || byUpdatedAtDesc(left, right),
     );
   }
-  if (sort === "size") {
+  if (sort === "newest" || sort === "oldest") {
+    const opened = (left: PullRequestEntry, right: PullRequestEntry) =>
+      createdAtMs(right.createdAt) - createdAtMs(left.createdAt);
     return entries.toSorted(
-      (left, right) => entrySize(right) - entrySize(left) || byUpdatedAtDesc(left, right),
+      (left, right) =>
+        (sort === "newest" ? opened(left, right) : opened(right, left)) ||
+        byUpdatedAtDesc(left, right),
+    );
+  }
+  if (sort === "largest" || sort === "smallest") {
+    const sized = (left: PullRequestEntry, right: PullRequestEntry) =>
+      entrySize(right) - entrySize(left);
+    return entries.toSorted(
+      (left, right) =>
+        (sort === "largest" ? sized(left, right) : sized(right, left)) ||
+        byUpdatedAtDesc(left, right),
     );
   }
   return entries.toSorted(byUpdatedAtDesc);
 }
 
-/** How each sort reads in the Filters popover. */
+/** How each sort reads in the Sort menu, in the order it is offered. */
 export const PULL_REQUEST_SORT_LABELS: Readonly<Record<PullRequestSort, string>> = {
-  updated: "Updated",
-  created: "Created",
-  size: "Size",
+  readiness: "Merge readiness",
+  updated: "Recently updated",
+  newest: "Newest",
+  oldest: "Oldest",
+  largest: "Largest",
+  smallest: "Smallest",
 };
 
 /** One narrowing, as a line of text and the filters without it. */
@@ -716,11 +917,23 @@ const REVIEW_CHIP_WORDS: Readonly<Record<Exclude<PullRequestReviewFilter, "any">
   approved: "Approved",
   "changes-requested": "Changes requested",
   "review-required": "Review required",
+  none: "No reviews",
 };
 
 const CHECKS_CHIP_WORDS: Readonly<Record<Exclude<PullRequestChecksFilter, "any">, string>> = {
   passing: "Checks passing",
   failing: "Checks failing",
+  running: "Checks running",
+};
+
+/** How each involvement reads, as a menu line and as a chip. */
+export const PULL_REQUEST_INVOLVEMENT_WORDS: Readonly<
+  Record<PullRequestInvolvementFilter, string>
+> = {
+  all: "All",
+  "needs-you": "Needs you",
+  yours: "Yours",
+  others: "Others",
 };
 
 /**
@@ -730,8 +943,17 @@ const CHECKS_CHIP_WORDS: Readonly<Record<Exclude<PullRequestChecksFilter, "any">
  */
 export function pullRequestFilterChips(
   filters: PullRequestFilters,
+  /** What the chosen project is called; the key stands in until the rows arrive. */
+  projectLabel?: string,
 ): readonly PullRequestFilterChip[] {
   const chips: PullRequestFilterChip[] = [];
+  if (filters.involvement !== "all") {
+    chips.push({
+      id: "involvement",
+      label: PULL_REQUEST_INVOLVEMENT_WORDS[filters.involvement],
+      next: { ...filters, involvement: "all" },
+    });
+  }
   const author = filters.author.trim();
   if (author.length > 0) {
     chips.push({ id: "author", label: `Author: ${author}`, next: { ...filters, author: "" } });
@@ -743,11 +965,12 @@ export function pullRequestFilterChips(
       next: { ...filters, labels: withoutNameAt(filters.labels, index) },
     });
   }
-  for (const [index, name] of parseNameList(filters.excludeLabels).entries()) {
+  const project = filters.project.trim();
+  if (project.length > 0) {
     chips.push({
-      id: `exclude-label:${name}`,
-      label: `Not label: ${name}`,
-      next: { ...filters, excludeLabels: withoutNameAt(filters.excludeLabels, index) },
+      id: "project",
+      label: `Project: ${projectLabel ?? project}`,
+      next: { ...filters, project: "" },
     });
   }
   if (filters.draft !== "any") {
@@ -774,11 +997,158 @@ export function pullRequestFilterChips(
   return chips;
 }
 
+/**
+ * A label's own colour, or nothing when the host did not give one we can
+ * paint with. Hosts spell it as six hexadecimal characters, sometimes with the
+ * `#` and sometimes without; anything else is not worth guessing at, and the
+ * dot falls back to the muted fill it already wears.
+ */
+export function pullRequestLabelColor(color: string | null | undefined): string | null {
+  const hex = color?.replace(/^#/u, "") ?? "";
+  return /^[0-9a-f]{6}$/iu.test(hex) ? `#${hex}` : null;
+}
+
+/**
+ * The words for a row whose branch no longer merges, or null when it does. A
+ * draft is not ready to merge in the first place, so it says draft instead,
+ * and a merged or closed row has nothing left to conflict with.
+ */
+export function pullRequestConflictLabel(entry: PullRequestEntry): string | null {
+  return entry.state === "open" && !entry.isDraft && entry.mergeability === "conflicting"
+    ? `Conflicts with ${entry.baseBranch}`
+    : null;
+}
+
+/** One author the loaded rows have seen, and how many of them they wrote. */
+export interface PullRequestAuthorFacet {
+  readonly login: string;
+  readonly avatarUrl: string | null;
+  readonly count: number;
+}
+
+/**
+ * The logins worth offering as an author filter, busiest first. Built from the
+ * rows the page already holds, so opening the menu never costs a read; the
+ * chosen author is kept even when this tab carries none of their work.
+ */
+export function pullRequestAuthorFacets(
+  entries: readonly PullRequestEntry[],
+): readonly PullRequestAuthorFacet[] {
+  const byLogin = new Map<string, { login: string; avatarUrl: string | null; count: number }>();
+  for (const entry of entries) {
+    const author = entry.author;
+    if (!author) continue;
+    const seen = byLogin.get(author.login.toLowerCase());
+    if (seen) {
+      seen.count += 1;
+      seen.avatarUrl ??= author.avatarUrl;
+    } else {
+      byLogin.set(author.login.toLowerCase(), {
+        login: author.login,
+        avatarUrl: author.avatarUrl,
+        count: 1,
+      });
+    }
+  }
+  return [...byLogin.values()].toSorted(
+    (left, right) => right.count - left.count || left.login.localeCompare(right.login),
+  );
+}
+
+/** One label the loaded rows have seen, with the colour the host paints it. */
+export interface PullRequestLabelFacet {
+  readonly name: string;
+  readonly color: string | null;
+  readonly count: number;
+}
+
+/** The labels worth offering, most used first. */
+export function pullRequestLabelFacets(
+  entries: readonly PullRequestEntry[],
+): readonly PullRequestLabelFacet[] {
+  const byName = new Map<string, { name: string; color: string | null; count: number }>();
+  for (const entry of entries) {
+    for (const label of entry.labels) {
+      const seen = byName.get(label.name.toLowerCase());
+      if (seen) {
+        seen.count += 1;
+        seen.color ??= label.color;
+      } else {
+        byName.set(label.name.toLowerCase(), { name: label.name, color: label.color, count: 1 });
+      }
+    }
+  }
+  return [...byName.values()].toSorted(
+    (left, right) => right.count - left.count || left.name.localeCompare(right.name),
+  );
+}
+
+/** One project with pull requests in it, as the Project filter names it. */
+export interface PullRequestProjectFacet {
+  readonly key: string;
+  readonly label: string;
+  readonly count: number;
+}
+
+/**
+ * A project across environments: two computers can hold the same project id,
+ * and they are not the same checkout.
+ */
+export function pullRequestProjectKey(entry: {
+  readonly environmentId: EnvironmentId;
+  readonly projectId: ProjectId;
+}): string {
+  return `${entry.environmentId}:${entry.projectId}`;
+}
+
+/**
+ * The projects the loaded rows came from, alphabetically. A pull request the
+ * user authored somewhere outside the workspace is left out: the project on it
+ * is only the checkout whose host answered the search, so filing it under that
+ * project would put strangers' repositories inside it.
+ */
+export function pullRequestProjectFacets(
+  entries: readonly PullRequestEntry[],
+): readonly PullRequestProjectFacet[] {
+  const byKey = new Map<string, { key: string; label: string; count: number }>();
+  for (const entry of entries) {
+    if (entry.origin === "authored") {
+      continue;
+    }
+    const key = pullRequestProjectKey(entry);
+    const seen = byKey.get(key);
+    if (seen) {
+      seen.count += 1;
+    } else {
+      byKey.set(key, { key, label: entry.projectTitle, count: 1 });
+    }
+  }
+  return [...byKey.values()].toSorted((left, right) => left.label.localeCompare(right.label));
+}
+
 /** The field with one of its names lifted out, respelled as a plain list. */
 function withoutNameAt(value: string, index: number): string {
   return parseNameList(value)
     .filter((_, position) => position !== index)
     .join(", ");
+}
+
+/**
+ * The labels field with one name added or taken out, which is what a checklist
+ * of labels writes back. Names are compared the way the filter reads them, so
+ * a differently cased label never lands in the list twice.
+ */
+export function togglePullRequestLabel(value: string, name: string): string {
+  const names = parseNameList(value);
+  const target = name.trim().toLowerCase();
+  return names.includes(target)
+    ? names.filter((entry) => entry !== target).join(", ")
+    : [...names, target].join(", ");
+}
+
+/** Whether the labels field already asks for this name. */
+export function hasPullRequestLabel(value: string, name: string): boolean {
+  return parseNameList(value).includes(name.trim().toLowerCase());
 }
 
 function entryHaystack(entry: PullRequestEntry): string {
@@ -928,6 +1298,27 @@ export function formatPullRequestChecksSummary(summary: PullRequestChecksSummary
     summary.skipped > 0 ? `${summary.skipped} skipped` : null,
   ].filter((part) => part !== null);
   return parts.length === 0 ? "No checks reported." : parts.join(", ");
+}
+
+/**
+ * The check rollup in one phrase, for the header's tab strip: what is wrong if
+ * anything is, and otherwise how far along the run is. Failures outrank running
+ * the way the glyph beside it does, and skipped checks count towards the total
+ * without ever being the thing the phrase is about.
+ */
+export function formatPullRequestChecksHeadline(summary: PullRequestChecksSummary): string {
+  if (summary.total === 0) {
+    return "No checks reported";
+  }
+  if (summary.failing > 0) {
+    return `${summary.failing} of ${summary.total} failing`;
+  }
+  if (summary.pending > 0) {
+    return `${summary.pending} of ${summary.total} running`;
+  }
+  return summary.passing === summary.total
+    ? "All checks passed"
+    : `${summary.passing} of ${summary.total} passing`;
 }
 
 /** How each merge method reads in a menu item and in the confirm dialog. */
@@ -1265,7 +1656,10 @@ export function buildPullRequestTimeline(
       id: commit.oid,
       at: commit.committedDate,
       kind: "commit",
-      actor: commit.authorLogin === null ? null : { login: commit.authorLogin, isBot: false },
+      actor:
+        commit.authorLogin === null
+          ? null
+          : { login: commit.authorLogin, isBot: false, avatarUrl: null },
       body: commit.messageHeadline.trim().length > 0 ? commit.messageHeadline : null,
       markdown: false,
       url: `${detail.url}/commits/${commit.oid}`,
@@ -1384,6 +1778,22 @@ export function formatPullRequestBaseFreshness(
     return `Behind ${detail.baseBranch}`;
   }
   return `Behind ${detail.baseBranch} by ${detail.behindBy} ${detail.behindBy === 1 ? "commit" : "commits"}`;
+}
+
+/**
+ * The same fact as {@link formatPullRequestBaseFreshness}, short enough for the
+ * branch line to carry it after the head branch. The line already names the
+ * base, so this says only how far behind it the branch is.
+ */
+export function formatPullRequestBehindLabel(
+  detail: Pick<PullRequestDetail, "baseComparison" | "behindBy">,
+): string | null {
+  if (detail.baseComparison !== "behind") {
+    return null;
+  }
+  return detail.behindBy === null || detail.behindBy <= 0
+    ? "behind"
+    : `behind by ${detail.behindBy}`;
 }
 
 /** How each way of bringing a branch up to date reads in the update menu. */
