@@ -12,6 +12,7 @@ import type {
   ScopedThreadRef,
   SourceControlProviderKind,
 } from "@threadlines/contracts";
+import { PullRequestMergeMethod as PullRequestMergeMethodSchema } from "@threadlines/contracts";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import * as Schema from "effect/Schema";
@@ -94,6 +95,7 @@ import {
 } from "./pullRequestPresentation";
 import {
   PULL_REQUEST_MERGE_METHOD_LABELS,
+  PULL_REQUEST_MERGE_METHOD_WORDS,
   appendHandoffToDraft,
   buildReviewCommentHandoff,
   formatPullRequestBaseFreshness,
@@ -400,7 +402,10 @@ export function PullRequestDetailPanel({
   return (
     <div
       ref={panelRoot}
-      className="flex h-full min-h-0 min-w-0 flex-col"
+      // The header and tabs answer to this panel's own width rather than the
+      // window's: beside a thread it is a sidebar 272px wide on a wide screen,
+      // and the phone layout is what fits there.
+      className="@container/pr flex h-full min-h-0 min-w-0 flex-col"
       data-testid="pull-request-detail"
     >
       <PullRequestDetailHeader
@@ -419,9 +424,16 @@ export function PullRequestDetailPanel({
       />
 
       {/* The order toggle shares the row but not the tablist: it is not a tab,
-          and inside one it would answer to the arrow keys as though it were. */}
+          and inside one it would answer to the arrow keys as though it were.
+          The tabs are drawn whole at every width; in a narrow panel they close
+          ranks and the control beside them keeps its glyph and loses its words,
+          so nothing is pushed past the edge. */}
       <div className="flex shrink-0 items-center border-b border-border px-4">
-        <div role="tablist" aria-label="Pull request" className="flex items-center gap-5">
+        <div
+          role="tablist"
+          aria-label="Pull request"
+          className="flex shrink-0 items-center gap-5 @max-md/pr:gap-3"
+        >
           <PageTabButton
             label={DETAIL_TAB_LABELS.summary}
             active={activeTab === "summary"}
@@ -451,16 +463,25 @@ export function PullRequestDetailPanel({
           />
         </div>
         {activeTab === "timeline" ? (
-          <button
-            type="button"
-            className={cn(TEXT_BUTTON_CLASS, "ml-auto inline-flex items-center gap-1 pb-2 text-xs")}
-            aria-label={timelineOrder === "newest" ? "Show oldest first" : "Show newest first"}
-            data-testid="pull-request-timeline-order"
-            onClick={() => setTimelineOrder(timelineOrder === "newest" ? "oldest" : "newest")}
+          <TooltipWrapper
+            tooltip={timelineOrder === "newest" ? "Show oldest first" : "Show newest first"}
           >
-            <ArrowDownUpIcon aria-hidden className="size-3" />
-            {timelineOrder === "newest" ? "Newest first" : "Oldest first"}
-          </button>
+            <button
+              type="button"
+              className={cn(
+                TEXT_BUTTON_CLASS,
+                "ml-auto inline-flex shrink-0 items-center gap-1 pb-2 text-xs",
+              )}
+              aria-label={timelineOrder === "newest" ? "Show oldest first" : "Show newest first"}
+              data-testid="pull-request-timeline-order"
+              onClick={() => setTimelineOrder(timelineOrder === "newest" ? "oldest" : "newest")}
+            >
+              <ArrowDownUpIcon aria-hidden className="size-3" />
+              <span className="@max-md/pr:sr-only">
+                {timelineOrder === "newest" ? "Newest first" : "Oldest first"}
+              </span>
+            </button>
+          </TooltipWrapper>
         ) : null}
         {/* The rollup the header used to spell out on a line of its own. It is
             a way into the Summary's Checks section rather than a label, so it
@@ -600,7 +621,7 @@ function PullRequestDetailHeader({
   return (
     <div className="shrink-0 px-4 pt-2 pb-3">
       {/* Row 1: where it lives, and what can be done to it. */}
-      <div className="flex min-w-0 items-start gap-2 max-md:flex-wrap">
+      <div className="flex min-w-0 items-start gap-2 @max-md/pr:flex-wrap">
         <div className="flex h-7 min-w-0 flex-1 items-center gap-1.5 font-mono text-xs text-muted-foreground">
           {/* On a phone the list is not on screen, so the way back sits where
               a back arrow belongs: first, at the top left. */}
@@ -624,7 +645,7 @@ function PullRequestDetailHeader({
             <span className="shrink-0">Auto-merge on</span>
           ) : null}
         </div>
-        <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5 max-md:w-full">
+        <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5 @max-md/pr:w-full">
           {showCheckout ? (
             <PullRequestCheckoutMenu
               detail={detail}
@@ -664,9 +685,10 @@ function PullRequestDetailHeader({
       </div>
 
       {/* Row 3: who wrote it, when it last moved, and the one command that
-          takes the branch on a machine this app is not running on. */}
-      <div className="mt-2 flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
-        <span className="flex min-w-0 flex-1 items-center gap-1.5">
+          takes the branch on a machine this app is not running on. The command
+          drops to a line of its own before it can squeeze the author out. */}
+      <div className="mt-2 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+        <span className="flex min-w-0 flex-auto items-center gap-1.5">
           {detail.author ? (
             <>
               <PullRequestActorLabel actor={detail.author} className="font-medium" />
@@ -678,9 +700,9 @@ function PullRequestDetailHeader({
         <PullRequestCheckoutCommand provider={detail.provider} number={detail.number} />
       </div>
 
-      {/* Row 4: the branches this joins, and how much it changes. Below `md`
-          the counts drop to a line of their own: the branch names are what the
-          row is for, and sharing the line leaves them a letter each. */}
+      {/* Row 4: the branches this joins, and how much it changes. In a narrow
+          panel the counts drop to a line of their own: the branch names are
+          what the row is for, and sharing the line leaves them a letter each. */}
       <div className="mt-3 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 font-mono text-xs text-muted-foreground/70">
         <span className="flex min-w-0 flex-1 items-center gap-1.5">
           <BranchCopyButton branch={detail.baseBranch} />
@@ -717,7 +739,7 @@ function PullRequestDetailHeader({
             </TooltipWrapper>
           ) : null}
         </span>
-        <span className="flex shrink-0 items-center gap-2 max-md:w-full">
+        <span className="flex shrink-0 items-center gap-2 @max-md/pr:w-full">
           <span className="flex items-center gap-1">
             <FileDiffIcon aria-hidden className="size-3.5" />
             {pluralize(detail.changedFiles, "file")}
@@ -815,7 +837,8 @@ function PullRequestCheckoutMenu({
  * The rollup of the checks, beside the tabs: a glyph, a phrase, and a way down
  * to the rows it counts. The glyph is drawn here rather than taken whole from
  * the presentation module, because inside a button a second tooltip trigger
- * would fight the button for the pointer.
+ * would fight the button for the pointer. In a narrow panel the phrase is for
+ * screen readers and the tooltip only, and the glyph stands for it.
  */
 function PullRequestChecksRollup({
   summary,
@@ -825,23 +848,26 @@ function PullRequestChecksRollup({
   readonly onShowChecks: () => void;
 }) {
   const tone = pullRequestChecksTone(summary.state);
+  const headline = formatPullRequestChecksHeadline(summary);
   return (
-    <button
-      type="button"
-      className={cn(
-        TEXT_BUTTON_CLASS,
-        "ml-auto inline-flex shrink-0 items-center gap-1.5 pb-2 text-xs",
-      )}
-      data-testid="pull-request-checks-rollup"
-      onClick={onShowChecks}
-    >
-      {tone ? (
-        <span className={cn("shrink-0", tone.className)}>
-          <tone.Icon aria-hidden className="size-3.5" />
-        </span>
-      ) : null}
-      {formatPullRequestChecksHeadline(summary)}
-    </button>
+    <TooltipWrapper tooltip={headline}>
+      <button
+        type="button"
+        className={cn(
+          TEXT_BUTTON_CLASS,
+          "ml-auto inline-flex shrink-0 items-center gap-1.5 pb-2 text-xs",
+        )}
+        data-testid="pull-request-checks-rollup"
+        onClick={onShowChecks}
+      >
+        {tone ? (
+          <span className={cn("shrink-0", tone.className)}>
+            <tone.Icon aria-hidden className="size-3.5" />
+          </span>
+        ) : null}
+        <span className="@max-md/pr:sr-only">{headline}</span>
+      </button>
+    </TooltipWrapper>
   );
 }
 
@@ -977,11 +1003,11 @@ function PullRequestTitle({
       tabIndex={-1}
       className="group/title flex min-w-0 flex-1 items-center gap-1.5 rounded-sm focus-ring"
     >
-      {/* A phone's column, and a tablet's, are narrow enough that one truncated
+      {/* A phone's column, and a sidebar's, are narrow enough that one truncated
           line says almost nothing, so there it wraps to two before it gives
           up. */}
       <span
-        className="min-w-0 text-base font-semibold leading-snug max-lg:line-clamp-2 lg:truncate"
+        className="min-w-0 text-base font-semibold leading-snug @max-lg/pr:line-clamp-2 @lg/pr:truncate"
         title={detail.title}
       >
         {detail.title}
@@ -1037,6 +1063,11 @@ type PullRequestConfirmation =
 /** Remembered per computer: whoever deletes merged branches always does. */
 const DELETE_BRANCH_STORAGE_PREFIX = "threadlines:pull-requests:delete-branch:v1";
 
+/** Remembered per repository: the merge method last run on it becomes the
+ *  Merge button's own, as the host's site does. */
+const MERGE_METHOD_STORAGE_PREFIX = "threadlines:pull-requests:merge-method:v1";
+const REMEMBERED_MERGE_METHOD_SCHEMA = Schema.NullOr(PullRequestMergeMethodSchema);
+
 /** The three pieces the header hangs in three different places. */
 interface PullRequestActionsView {
   /** The buttons, for the right of the header's first row. */
@@ -1080,6 +1111,11 @@ function usePullRequestActions({
     false,
     Schema.Boolean,
   );
+  const [rememberedMergeMethod, setRememberedMergeMethod] = useLocalStorage(
+    `${MERGE_METHOD_STORAGE_PREFIX}:${detail.provider}:${detail.repository}`,
+    null,
+    REMEMBERED_MERGE_METHOD_SCHEMA,
+  );
 
   const isRunning = mutation.isPending;
   const runningAction = isRunning ? (mutation.variables?.action ?? null) : null;
@@ -1120,7 +1156,7 @@ function usePullRequestActions({
   const updateMethods = detail.capabilities.updateMethods;
   const mergeBlock = resolvePullRequestMergeBlock(detail);
   const mergeDisabled = isRunning || mergeBlock !== null;
-  const defaultMergeMethod = resolveDefaultMergeMethod(detail.mergeMethods);
+  const defaultMergeMethod = resolveDefaultMergeMethod(detail.mergeMethods, rememberedMergeMethod);
   const canUpdateBranch = canWrite && isOpen && allows("update-branch");
   const isBehind = detail.baseComparison === "behind";
 
@@ -1156,7 +1192,9 @@ function usePullRequestActions({
         data-testid="pull-request-merge"
         onClick={() => setConfirming({ action: "merge", mergeMethod: defaultMergeMethod })}
       >
-        {runningAction === "merge" ? RUNNING_ACTION_WORDS.merge : "Merge"}
+        {runningAction === "merge"
+          ? RUNNING_ACTION_WORDS.merge
+          : PULL_REQUEST_MERGE_METHOD_WORDS[defaultMergeMethod]}
       </Button>
       {detail.mergeMethods.length > 1 ? (
         <Menu>
@@ -1305,7 +1343,7 @@ function usePullRequestActions({
                     setConfirming({ action: "merge", mergeMethod: defaultMergeMethod })
                   }
                 >
-                  Merge
+                  {PULL_REQUEST_MERGE_METHOD_LABELS[defaultMergeMethod]}
                 </MenuItem>
               ) : null}
               {handoffs ? (
@@ -1375,7 +1413,12 @@ function usePullRequestActions({
       {/* A disabled button cannot be focused, so the reason it is disabled is
           written out as well as tucked in its tooltip. */}
       {primary === "merge" && mergeBlock !== null ? (
-        <p className="mt-1 text-right text-xs text-muted-foreground/60">{mergeBlock}</p>
+        <p
+          className="mt-1 text-right text-xs text-muted-foreground/60"
+          data-testid="pull-request-merge-block"
+        >
+          {mergeBlock}
+        </p>
       ) : null}
       {mutation.isError ? (
         <p className="mt-1.5 break-words text-right text-xs text-destructive">
@@ -1432,6 +1475,7 @@ function usePullRequestActions({
             onClick={() => {
               setConfirming(null);
               if (confirming.action === "merge") {
+                setRememberedMergeMethod(confirming.mergeMethod);
                 run("merge", {
                   mergeMethod: confirming.mergeMethod,
                   ...(deleteBranch ? { deleteBranch: true } : {}),

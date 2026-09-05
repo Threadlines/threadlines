@@ -506,7 +506,7 @@ export const TraitsPicker = memo(function TraitsPicker({
           <SlidersHorizontalIcon
             aria-hidden="true"
             className={cn(
-              "size-3 shrink-0 opacity-70",
+              "size-3.5 shrink-0",
               ultracodeActive && "text-[#7c3aed] dark:text-[#c9a8ff]",
             )}
           />

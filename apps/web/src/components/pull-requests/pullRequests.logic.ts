@@ -299,9 +299,11 @@ function decodeRepositorySegment(value: string): string | null {
 }
 
 /**
- * Whether a row is the one the route names. A link written before the param
- * carried a repository names none, and then the project and the number are all
- * there is to go on.
+ * Whether a row is the one the route names. The repository and the number say
+ * which pull request; the environment in the link only says which computer
+ * reads it, and the row keeps matching after another one takes that seat. A
+ * link written before the param carried a repository names none, and then the
+ * project and the number are all there is to go on.
  */
 export function matchesPullRequestSelection(
   selection: PullRequestSelection,
@@ -312,27 +314,33 @@ export function matchesPullRequestSelection(
     readonly number: number;
   },
 ): boolean {
-  return (
-    selection.environmentId === entry.environmentId &&
-    selection.projectId === entry.projectId &&
-    selection.number === entry.number &&
-    (selection.repository === null ||
-      repositoryKey(selection.repository) === repositoryKey(entry.repository))
-  );
+  if (selection.number !== entry.number) {
+    return false;
+  }
+  return selection.repository === null
+    ? selection.environmentId === entry.environmentId && selection.projectId === entry.projectId
+    : repositoryKey(selection.repository) === repositoryKey(entry.repository);
 }
 
 /**
- * Identifies one row across environments and repositories. The project is
- * deliberately left out: a checkout and its worktrees are separate projects on
- * one remote, and the pull request is the same one from any of them.
+ * Identifies one pull request whichever environment or checkout listed it. The
+ * project is deliberately left out: a checkout and its worktrees are separate
+ * projects on one remote, and the pull request is the same one from any of
+ * them. So is the environment: two computers pointed at one remote read the
+ * same pull request, and {@link mergePullRequestListResults} keeps one row.
  */
 export function pullRequestEntryKey(entry: PullRequestEntry): string {
-  return `${entry.environmentId}:${repositoryKey(entry.repository)}:${entry.number}`;
+  return `${repositoryScopeKey(entry.provider, entry.repository)}:${entry.number}`;
 }
 
 /** Repository names are case-insensitive on every host here, so comparisons are too. */
 function repositoryKey(repository: string): string {
   return repository.toLowerCase();
+}
+
+/** One repository on one host: `owner/name` means something else on another host. */
+function repositoryScopeKey(provider: SourceControlProviderKind, repository: string): string {
+  return `${provider}:${repositoryKey(repository)}`;
 }
 
 /**
@@ -346,6 +354,13 @@ export function projectRepository(project: Project): string | null {
 /** The host a project's remote sits on, or null when it has none we can read. */
 export function projectProviderKind(project: Project): SourceControlProviderKind | null {
   return toChangeRequestProviderKind(project.repositoryIdentity?.provider);
+}
+
+/** The project's remote as {@link repositoryScopeKey} spells it, or null when it has none we can read. */
+function projectRepositoryScope(project: Project): string | null {
+  const provider = projectProviderKind(project);
+  const repository = projectRepository(project);
+  return provider === null || repository === null ? null : repositoryScopeKey(provider, repository);
 }
 
 function updatedAtMs(value: string): number {
@@ -364,6 +379,14 @@ function threadActivityMs(thread: SidebarThreadSummary): number {
 /**
  * One listing per environment, merged into the page's row list.
  *
+ * Two environments pointed at one remote both list the same pull request, and
+ * the page keeps one row for it. The first listing to carry it keeps the seat,
+ * and the results arrive with this device first, so a pull request is read
+ * and acted on from here whenever here can. The one exception is a row this
+ * device only found by searching the viewer's own work: a listing whose
+ * project actually holds the repository can check the branch out and knows
+ * the threads working it, so that row takes over.
+ *
  * The state filter is defensive: a host can answer a "closed" listing with a
  * merged row, and a row under the wrong tab reads as a bug in the page.
  */
@@ -379,7 +402,7 @@ export function mergePullRequestListResults(input: {
   readonly failures: readonly PullRequestProjectFailure[];
   readonly viewer: string | null;
 } {
-  const entries: PullRequestEntry[] = [];
+  const entries = new Map<string, PullRequestEntry>();
   const failures: PullRequestProjectFailure[] = [];
   let viewer: string | null = null;
 
@@ -388,11 +411,16 @@ export function mergePullRequestListResults(input: {
     viewer ??= result.data.viewer;
     for (const entry of result.data.entries) {
       if (entry.state !== input.state) continue;
-      entries.push({
+      const scoped = {
         ...entry,
         environmentId: result.environmentId,
         environmentLabel: result.environmentLabel,
-      });
+      };
+      const key = pullRequestEntryKey(scoped);
+      const seated = entries.get(key);
+      if (seated === undefined || (seated.origin === "authored" && entry.origin !== "authored")) {
+        entries.set(key, scoped);
+      }
     }
     for (const failure of result.data.errors) {
       failures.push({
@@ -403,17 +431,18 @@ export function mergePullRequestListResults(input: {
     }
   }
 
-  return { entries, failures, viewer };
+  return { entries: [...entries.values()], failures, viewer };
 }
 
 /**
  * The threads working each pull request, keyed by {@link pullRequestEntryKey}.
  *
- * A thread counts when its project points at the pull request's repository on
- * the same environment and it is checked out on the head branch. Matching by
- * repository rather than project lets a thread in a worktree project claim the
- * row its sibling checkout produced. Archived threads are past work, so they
- * never claim a row.
+ * A thread counts when its project points at the pull request's repository and
+ * it is checked out on the head branch. Matching by repository rather than
+ * project lets a thread in a worktree project claim the row its sibling
+ * checkout produced, and a thread on another computer claim the row this one
+ * listed: the row stands for the pull request, not for the listing that found
+ * it. Archived threads are past work, so they never claim a row.
  *
  * An authored row is on a repository no project here points at, and the project
  * it names is only the checkout its host tool runs in, so no thread is working
@@ -431,9 +460,9 @@ export function linkThreadsToPullRequests(
 
   const repositoryByProject = new Map<string, string>();
   for (const project of projects) {
-    const repository = projectRepository(project);
-    if (repository !== null) {
-      repositoryByProject.set(`${project.environmentId}:${project.id}`, repositoryKey(repository));
+    const scope = projectRepositoryScope(project);
+    if (scope !== null) {
+      repositoryByProject.set(`${project.environmentId}:${project.id}`, scope);
     }
   }
   const candidates = threads.flatMap((thread) => {
@@ -445,11 +474,9 @@ export function linkThreadsToPullRequests(
   });
   for (const entry of entries) {
     if (entry.origin === "authored") continue;
-    const entryRepository = repositoryKey(entry.repository);
+    const entryRepository = repositoryScopeKey(entry.provider, entry.repository);
     const matches = candidates.flatMap((candidate) =>
-      candidate.thread.environmentId === entry.environmentId &&
-      candidate.repository === entryRepository &&
-      candidate.thread.branch === entry.headBranch
+      candidate.repository === entryRepository && candidate.thread.branch === entry.headBranch
         ? [candidate.thread]
         : [],
     );
@@ -617,13 +644,14 @@ export function resolveThreadPullRequest(input: {
   if (fromStatus) {
     return fromStatus;
   }
-  if (repository === null) {
+  const scope = projectRepositoryScope(project);
+  if (scope === null) {
     return null;
   }
 
   const entry =
-    findThreadListEntry(thread, repository, input.openEntries) ??
-    findThreadListEntry(thread, repository, input.settledEntries ?? []);
+    findThreadListEntry(thread, scope, input.openEntries) ??
+    findThreadListEntry(thread, scope, input.settledEntries ?? []);
   if (!entry) {
     return null;
   }
@@ -638,21 +666,21 @@ export function resolveThreadPullRequest(input: {
 }
 
 /**
- * The listing row for a thread's branch on its own repository and computer. An
- * authored row is on a repository no project here points at, so it is never a
- * thread's own work however its branch happens to be spelled.
+ * The listing row for a thread's branch on its own repository, whichever
+ * computer listed it: the merged list keeps one row per pull request, and it
+ * may sit with another environment than the thread's. An authored row is on a
+ * repository no project here points at, so it is never a thread's own work
+ * however its branch happens to be spelled.
  */
 function findThreadListEntry(
   thread: ThreadPullRequestSubject,
-  repository: string,
+  scope: string,
   entries: readonly PullRequestEntry[],
 ): PullRequestEntry | undefined {
-  const entryRepository = repositoryKey(repository);
   return entries.find(
     (candidate) =>
       candidate.origin !== "authored" &&
-      candidate.environmentId === thread.environmentId &&
-      repositoryKey(candidate.repository) === entryRepository &&
+      repositoryScopeKey(candidate.provider, candidate.repository) === scope &&
       candidate.headBranch === thread.branch,
   );
 }
@@ -1337,25 +1365,41 @@ export const PULL_REQUEST_MERGE_METHOD_LABELS: Readonly<Record<PullRequestMergeM
   rebase: "Rebase and merge",
 };
 
+/** The one word the Merge button itself wears for each method. */
+export const PULL_REQUEST_MERGE_METHOD_WORDS: Readonly<Record<PullRequestMergeMethod, string>> = {
+  merge: "Merge",
+  squash: "Squash",
+  rebase: "Rebase",
+};
+
 /**
- * The method the Merge button runs without being asked. The repository lists
- * what it allows in its own order and the first one is its default; a host
- * that reports nothing still gets a plain merge offered, and refuses it itself
- * if it really is off.
+ * The method the Merge button runs without being asked: the one last used on
+ * this repository while the repository still allows it, the way the host's own
+ * site remembers a choice. Before any choice, the repository lists what it
+ * allows in its own order and the first one is its default; a host that reports
+ * nothing still gets a plain merge offered, and refuses it itself if it really
+ * is off.
  */
 export function resolveDefaultMergeMethod(
   mergeMethods: readonly PullRequestMergeMethod[],
+  remembered: PullRequestMergeMethod | null = null,
 ): PullRequestMergeMethod {
+  if (remembered !== null && mergeMethods.includes(remembered)) {
+    return remembered;
+  }
   return mergeMethods[0] ?? "merge";
 }
 
 /**
- * Why merging is off the table right now, or null when it is available. Both
- * answers are things the user fixes elsewhere, so the button stays visible and
- * says what is in the way rather than disappearing.
+ * Why merging is off the table right now, or null when it is available. Every
+ * answer is something the user fixes elsewhere or waits out, so the button
+ * stays visible and says what is in the way rather than disappearing. The
+ * host's own gate comes last: a draft or a conflict is the more useful thing
+ * to say when both hold.
  */
 export function resolvePullRequestMergeBlock(
-  detail: Pick<PullRequestDetail, "mergeability" | "isDraft">,
+  detail: Pick<PullRequestDetail, "mergeability" | "isDraft"> &
+    Partial<Pick<PullRequestDetail, "mergeGate" | "checks" | "reviewDecision">>,
 ): string | null {
   if (detail.isDraft) {
     return "Mark as ready first";
@@ -1363,7 +1407,55 @@ export function resolvePullRequestMergeBlock(
   if (detail.mergeability === "conflicting") {
     return "Resolve the conflicts first";
   }
+  if (detail.mergeGate === "behind") {
+    return "Update the branch first";
+  }
+  if (detail.mergeGate === "blocked") {
+    // The host does not say which rule refused, so this reads the most likely
+    // one off what it did say: running checks, then failed ones, then reviews.
+    const { pending, failing } = summarizePullRequestChecks(detail.checks ?? []);
+    if (pending > 0) {
+      return pending === 1 ? "Waiting on 1 check" : `Waiting on ${pending} checks`;
+    }
+    if (failing > 0) {
+      return failing === 1 ? "A check failed" : "Checks failed";
+    }
+    if (
+      detail.reviewDecision === "review-required" ||
+      detail.reviewDecision === "changes-requested"
+    ) {
+      return "Needs an approving review";
+    }
+    return "Blocked by branch rules";
+  }
   return null;
+}
+
+/** How long after a push the header waits for the host to register the new commit's checks. */
+export const PULL_REQUEST_FRESH_PUSH_WATCH_MS = 120_000;
+
+/**
+ * Whether the header should keep re-reading itself. A check still running is
+ * the plain case. The other is the quiet moment right after a push (an update
+ * from the base, a new commit) when the host has the commit but has not queued
+ * its checks or decided whether it merges: a read then shows no checks at all,
+ * and would otherwise sit on that answer until the user hit Refresh.
+ */
+export function shouldPollPullRequestDetail(
+  detail: Pick<PullRequestDetail, "state" | "checks" | "mergeability" | "updatedAt">,
+  now: number,
+): boolean {
+  if (detail.checks.some((check) => check.status === "pending")) {
+    return true;
+  }
+  if (detail.state !== "open") {
+    return false;
+  }
+  const unsettled = detail.checks.length === 0 || detail.mergeability === "unknown";
+  const updatedAt = Date.parse(detail.updatedAt);
+  return (
+    unsettled && Number.isFinite(updatedAt) && now - updatedAt < PULL_REQUEST_FRESH_PUSH_WATCH_MS
+  );
 }
 
 /**
