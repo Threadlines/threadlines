@@ -858,6 +858,8 @@ export const OrchestrationThreadShell = Schema.Struct({
   latestUserMessageAt: Schema.NullOr(IsoDateTime),
   hasPendingApprovals: Schema.Boolean,
   hasPendingUserInput: Schema.Boolean,
+  /** Older servers omit this; clients keep their existing pending-input status. */
+  hasBlockingUserInput: Schema.optional(Schema.Boolean),
   hasActionableProposedPlan: Schema.Boolean,
   /**
    * Sum of the turn file summaries this thread has produced since its checkout

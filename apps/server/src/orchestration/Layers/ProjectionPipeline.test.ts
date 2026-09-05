@@ -1733,11 +1733,13 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
           threadId: ThreadId.make("thread-stale-user-input"),
           activity: {
             id: EventId.make("activity-stale-user-input-requested"),
+            sequence: 1,
             tone: "info",
             kind: "user-input.requested",
             summary: "User input requested",
             payload: {
               requestId: "user-input-request-stale-1",
+              isBlocking: false,
               questions: [
                 {
                   id: "sandbox_mode",
@@ -1758,6 +1760,16 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
         },
       });
 
+      const pendingRows = yield* sql<{
+        readonly pendingUserInputCount: number;
+        readonly blockingUserInputCount: number;
+      }>`
+        SELECT pending_user_input_count AS "pendingUserInputCount",
+               blocking_user_input_count AS "blockingUserInputCount"
+        FROM projection_threads WHERE thread_id = 'thread-stale-user-input'
+      `;
+      assert.deepEqual(pendingRows, [{ pendingUserInputCount: 1, blockingUserInputCount: 0 }]);
+
       yield* appendAndProject({
         type: "thread.activity-appended",
         eventId: EventId.make("evt-stale-user-input-4"),
@@ -1772,6 +1784,7 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
           threadId: ThreadId.make("thread-stale-user-input"),
           activity: {
             id: EventId.make("activity-stale-user-input-failed"),
+            sequence: 2,
             tone: "error",
             kind: "provider.user-input.respond.failed",
             summary: "Provider user input response failed",
@@ -1781,19 +1794,21 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
                 "Provider adapter request failed (codex) for item/tool/requestUserInput: Unknown pending Codex user input request: user-input-request-stale-1",
             },
             turnId: null,
-            createdAt: "2026-02-26T12:35:03.000Z",
+            createdAt: "2026-02-26T12:35:01.000Z",
           },
         },
       });
 
       const threadRows = yield* sql<{
         readonly pendingUserInputCount: number;
+        readonly blockingUserInputCount: number;
       }>`
-        SELECT pending_user_input_count AS "pendingUserInputCount"
+        SELECT pending_user_input_count AS "pendingUserInputCount",
+               blocking_user_input_count AS "blockingUserInputCount"
         FROM projection_threads
         WHERE thread_id = 'thread-stale-user-input'
       `;
-      assert.deepEqual(threadRows, [{ pendingUserInputCount: 0 }]);
+      assert.deepEqual(threadRows, [{ pendingUserInputCount: 0, blockingUserInputCount: 0 }]);
     }),
   );
 

@@ -13,9 +13,8 @@ import * as Path from "effect/Path";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import {
-  collectOpenPendingRequests,
+  countPendingUserInputs,
   isStalePendingRequestFailureDetail,
-  USER_INPUT_ACTIVITY_KINDS,
 } from "@threadlines/shared/pendingRequests";
 
 import { toPersistenceSqlError, type ProjectionRepositoryError } from "../../persistence/Errors.ts";
@@ -106,17 +105,6 @@ function extractActivityRequestId(payload: unknown): ApprovalRequestId | null {
   }
   const requestId = (payload as Record<string, unknown>).requestId;
   return typeof requestId === "string" ? ApprovalRequestId.make(requestId) : null;
-}
-
-function derivePendingUserInputCountFromActivities(
-  activities: ReadonlyArray<ProjectionThreadActivity>,
-): number {
-  const ordered = [...activities].toSorted(
-    (left, right) =>
-      left.createdAt.localeCompare(right.createdAt) ||
-      left.activityId.localeCompare(right.activityId),
-  );
-  return collectOpenPendingRequests(ordered, USER_INPUT_ACTIVITY_KINDS).length;
 }
 
 function activityMayAffectThreadShellSummary(activity: { readonly kind: string }): boolean {
@@ -558,7 +546,9 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
       const pendingApprovalCount = pendingApprovals.filter(
         (approval) => approval.status === "pending",
       ).length;
-      const pendingUserInputCount = derivePendingUserInputCountFromActivities(activities);
+      // The repository returns canonical sequence order, including older rows
+      // without a sequence. Provider timestamps can arrive out of order.
+      const userInputCounts = countPendingUserInputs(activities);
       const hasActionableProposedPlan = deriveHasActionableProposedPlan({
         latestTurnId: existingRow.value.latestTurnId,
         proposedPlans,
@@ -568,7 +558,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         ...existingRow.value,
         latestUserMessageAt,
         pendingApprovalCount,
-        pendingUserInputCount,
+        ...userInputCounts,
         hasActionableProposedPlan: hasActionableProposedPlan ? 1 : 0,
       });
     });
@@ -603,6 +593,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             latestUserMessageAt: null,
             pendingApprovalCount: 0,
             pendingUserInputCount: 0,
+            blockingUserInputCount: 0,
             hasActionableProposedPlan: 0,
             deletedAt: null,
           });
@@ -1646,7 +1637,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           // rows.  Other activity kinds that happen to carry a requestId
           // (e.g. user-input.requested / user-input.resolved) must not
           // pollute this projection — they have their own accounting via
-          // derivePendingUserInputCountFromActivities.
+          // countPendingUserInputs.
           if (event.payload.activity.kind !== "approval.requested") {
             return;
           }

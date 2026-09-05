@@ -38,20 +38,43 @@ describe("ComposerPendingUserInputPanel", () => {
         respondingRequestIds={[]}
         answers={{}}
         questionIndex={0}
+        isAgentRunning
         onToggleOption={vi.fn()}
+        onPrevious={vi.fn()}
+        onCustomAnswerChange={vi.fn()}
         onAdvance={vi.fn()}
       />,
     );
     await expect.element(page.getByText("The agent keeps working while you answer.")).toBeVisible();
 
-    // A blocking question (the default) says nothing extra: the turn is paused on it.
+    screen.rerender(
+      <ComposerPendingUserInputPanel
+        pendingUserInputs={[{ ...makePendingUserInput(), isBlocking: false }]}
+        respondingRequestIds={[]}
+        answers={{}}
+        questionIndex={0}
+        isAgentRunning={false}
+        onToggleOption={vi.fn()}
+        onPrevious={vi.fn()}
+        onCustomAnswerChange={vi.fn()}
+        onAdvance={vi.fn()}
+      />,
+    );
+    await expect
+      .element(page.getByText("The agent finished. Your answer starts a follow-up."))
+      .toBeVisible();
+
+    // Blocking questions explain why the turn is waiting.
     screen.rerender(
       <ComposerPendingUserInputPanel
         pendingUserInputs={[makePendingUserInput()]}
         respondingRequestIds={[]}
         answers={{}}
         questionIndex={0}
+        isAgentRunning
         onToggleOption={vi.fn()}
+        onPrevious={vi.fn()}
+        onCustomAnswerChange={vi.fn()}
         onAdvance={vi.fn()}
       />,
     );
@@ -67,7 +90,10 @@ describe("ComposerPendingUserInputPanel", () => {
         respondingRequestIds={[]}
         answers={{}}
         questionIndex={0}
+        isAgentRunning
         onToggleOption={onToggleOption}
+        onPrevious={vi.fn()}
+        onCustomAnswerChange={vi.fn()}
         onAdvance={vi.fn()}
       />,
     );
@@ -77,6 +103,7 @@ describe("ComposerPendingUserInputPanel", () => {
       .toBeVisible();
 
     await page.getByLabelText("Collapse questions").click();
+    await expect.element(page.getByLabelText("Expand questions")).toHaveFocus();
 
     expect(screen.container.textContent).not.toContain("Split + pinned default");
     await expect
@@ -88,6 +115,7 @@ describe("ComposerPendingUserInputPanel", () => {
     expect(onToggleOption).not.toHaveBeenCalled();
 
     await page.getByLabelText("Expand questions").click();
+    await expect.element(page.getByLabelText("Collapse questions")).toHaveFocus();
     await expect
       .element(page.getByRole("button", { name: /Split \+ pinned default/ }))
       .toBeVisible();
@@ -104,8 +132,11 @@ describe("ComposerPendingUserInputPanel", () => {
       respondingRequestIds: [],
       answers: {},
       questionIndex: 0,
+      isAgentRunning: true,
       onToggleOption: vi.fn(),
       onAdvance: vi.fn(),
+      onPrevious: vi.fn(),
+      onCustomAnswerChange: vi.fn(),
     };
     const screen = await render(
       <ComposerPendingUserInputPanel {...props} isTimelineScrolledAway={false} />,

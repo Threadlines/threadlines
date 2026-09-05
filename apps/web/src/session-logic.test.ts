@@ -713,7 +713,7 @@ describe("derivePendingApprovals", () => {
 });
 
 describe("derivePendingUserInputs", () => {
-  it("keeps the provider's blocking flag, and treats a missing one as blocking", () => {
+  it("prioritizes blocking questions while keeping each group oldest first", () => {
     const question = {
       id: "approach",
       header: "Approach",
@@ -738,14 +738,32 @@ describe("derivePendingUserInputs", () => {
         tone: "info",
         payload: { requestId: "req-blocking", questions: [question] },
       }),
+      makeActivity({
+        id: "user-input-passing-later",
+        createdAt: "2026-02-23T00:00:03.000Z",
+        kind: "user-input.requested",
+        summary: "User input requested",
+        tone: "info",
+        payload: { requestId: "req-passing-later", questions: [question], isBlocking: false },
+      }),
+      makeActivity({
+        id: "user-input-blocking-later",
+        createdAt: "2026-02-23T00:00:04.000Z",
+        kind: "user-input.requested",
+        summary: "User input requested",
+        tone: "info",
+        payload: { requestId: "req-blocking-later", questions: [question], isBlocking: true },
+      }),
     ];
 
     const pending = derivePendingUserInputs(activities);
     expect(pending.map((input) => [input.requestId, input.isBlocking])).toEqual([
-      ["req-passing", false],
       ["req-blocking", undefined],
+      ["req-blocking-later", true],
+      ["req-passing", false],
+      ["req-passing-later", false],
     ]);
-    expect(pending.map(isBlockingUserInput)).toEqual([false, true]);
+    expect(pending.map(isBlockingUserInput)).toEqual([true, true, false, false]);
   });
 
   it("tracks open structured prompts and removes resolved ones", () => {

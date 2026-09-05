@@ -23,6 +23,7 @@ import { isProviderDriverKind, ProviderDriverKind } from "@threadlines/contracts
 import type { ThreadId, TurnId } from "@threadlines/contracts";
 import * as Schema from "effect/Schema";
 import { resolveModelSlugForProvider } from "@threadlines/shared/model";
+import { retainRecentActivitiesAndOpenRequests } from "@threadlines/shared/pendingRequests";
 import {
   MAX_THREAD_ACTIVITIES,
   MAX_THREAD_CHECKPOINTS,
@@ -51,6 +52,7 @@ import {
   findLatestProposedPlan,
   hasActionableProposedPlan,
   isWaitingOnBackgroundTasks,
+  isBlockingUserInput,
   sumTurnDiffStats,
 } from "./session-logic";
 import { getThreadFromEnvironmentState } from "./threadDerivation";
@@ -362,6 +364,7 @@ function mapThreadShell(
     latestUserMessageAt: thread.latestUserMessageAt,
     hasPendingApprovals: thread.hasPendingApprovals,
     hasPendingUserInput: thread.hasPendingUserInput,
+    hasBlockingUserInput: thread.hasBlockingUserInput ?? thread.hasPendingUserInput,
     hasActionableProposedPlan: thread.hasActionableProposedPlan,
     cumulativeDiffStat: thread.cumulativeDiffStat,
   };
@@ -435,6 +438,7 @@ function toSidebarThreadSummary(
     thread.latestTurn?.turnId ?? null,
   );
   const hasActivityEvidence = thread.activities.length > 0;
+  const pendingUserInputs = hasActivityEvidence ? derivePendingUserInputs(thread.activities) : [];
   const hasProposedPlanEvidence = thread.proposedPlans.length > 0;
   // The detail stream carries per-turn summaries, not the server's rollup, so
   // the open thread recomputes it rather than going stale behind the sidebar.
@@ -462,8 +466,11 @@ function toSidebarThreadSummary(
       ? derivePendingApprovals(thread.activities).length > 0
       : (previous?.hasPendingApprovals ?? false),
     hasPendingUserInput: hasActivityEvidence
-      ? derivePendingUserInputs(thread.activities).length > 0
+      ? pendingUserInputs.length > 0
       : (previous?.hasPendingUserInput ?? false),
+    hasBlockingUserInput: hasActivityEvidence
+      ? pendingUserInputs.some(isBlockingUserInput)
+      : (previous?.hasBlockingUserInput ?? previous?.hasPendingUserInput ?? false),
     hasActionableProposedPlan: hasProposedPlanEvidence
       ? hasActionableProposedPlan(latestProposedPlan)
       : (previous?.hasActionableProposedPlan ?? false),
@@ -558,6 +565,7 @@ function sidebarThreadSummariesEqual(
     left.latestUserMessageAt === right.latestUserMessageAt &&
     left.hasPendingApprovals === right.hasPendingApprovals &&
     left.hasPendingUserInput === right.hasPendingUserInput &&
+    left.hasBlockingUserInput === right.hasBlockingUserInput &&
     left.hasActionableProposedPlan === right.hasActionableProposedPlan &&
     threadDiffStatsEqual(left.cumulativeDiffStat, right.cumulativeDiffStat)
   );
@@ -1130,7 +1138,10 @@ function upsertThreadActivity(
     (activities.length === 0 ||
       compareActivities(activities[activities.length - 1]!, activity) <= 0)
   ) {
-    return capTail([...activities, nextActivity], MAX_THREAD_ACTIVITIES);
+    return retainRecentActivitiesAndOpenRequests(
+      [...activities, nextActivity],
+      MAX_THREAD_ACTIVITIES,
+    );
   }
 
   const nextActivities =
@@ -1141,7 +1152,10 @@ function upsertThreadActivity(
           nextActivity,
           ...activities.slice(existingIndex + 1),
         ];
-  return capTail(nextActivities.toSorted(compareActivities), MAX_THREAD_ACTIVITIES);
+  return retainRecentActivitiesAndOpenRequests(
+    nextActivities.toSorted(compareActivities),
+    MAX_THREAD_ACTIVITIES,
+  );
 }
 
 function buildLatestTurn(params: {

@@ -1966,9 +1966,7 @@ export default function ChatView(props: ChatViewProps) {
         : null,
     [activePendingDraftAnswers, activePendingUserInput],
   );
-  const activePendingIsResponding = activePendingUserInput
-    ? respondingUserInputRequestIds.includes(activePendingUserInput.requestId)
-    : false;
+
   const activeProposedPlan = useMemo(() => {
     if (!latestTurnSettled) {
       return null;
@@ -2046,7 +2044,7 @@ export default function ChatView(props: ChatViewProps) {
     activeLatestTurn,
     phase,
     activePendingApproval: activePendingApproval?.requestId ?? null,
-    activePendingUserInput: activePendingUserInput?.requestId ?? null,
+    activePendingUserInput: pendingUserInputs.find(isBlockingUserInput)?.requestId ?? null,
     threadError: activeThread?.error,
   });
   const isWorking =
@@ -4563,10 +4561,7 @@ export default function ChatView(props: ChatViewProps) {
       sendInFlightRef.current
     )
       return;
-    if (activePendingProgress) {
-      onAdvanceActivePendingUserInput();
-      return;
-    }
+    if (pendingUserInputs.some(isBlockingUserInput)) return;
     const sendCtx = composerRef.current?.getSendContext();
     if (!sendCtx) return;
     const {
@@ -5646,24 +5641,15 @@ export default function ChatView(props: ChatViewProps) {
           },
         };
       });
-      promptRef.current = "";
-      composerRef.current?.resetCursorState({ cursor: 0 });
     },
     [activePendingProgress?.activeQuestion, activePendingUserInput],
   );
 
   const onChangeActivePendingUserInputCustomAnswer = useCallback(
-    (
-      questionId: string,
-      value: string,
-      nextCursor: number,
-      expandedCursor: number,
-      _cursorAdjacentToMention: boolean,
-    ) => {
+    (questionId: string, value: string) => {
       if (!activePendingUserInput) {
         return;
       }
-      promptRef.current = value;
       setPendingUserInputAnswersByRequestId((existing) => ({
         ...existing,
         [activePendingUserInput.requestId]: {
@@ -5674,14 +5660,6 @@ export default function ChatView(props: ChatViewProps) {
           ),
         },
       }));
-      const snapshot = composerRef.current?.readSnapshot();
-      if (
-        snapshot?.value !== value ||
-        snapshot.cursor !== nextCursor ||
-        snapshot.expandedCursor !== expandedCursor
-      ) {
-        composerRef.current?.focusAt(nextCursor);
-      }
     },
     [activePendingUserInput],
   );
@@ -6803,9 +6781,6 @@ export default function ChatView(props: ChatViewProps) {
                   activePendingApproval={activePendingApproval}
                   pendingApprovals={pendingApprovals}
                   pendingUserInputs={pendingUserInputs}
-                  activePendingProgress={activePendingProgress}
-                  activePendingResolvedAnswers={activePendingResolvedAnswers}
-                  activePendingIsResponding={activePendingIsResponding}
                   activePendingDraftAnswers={activePendingDraftAnswers}
                   activePendingQuestionIndex={activePendingQuestionIndex}
                   respondingRequestIds={respondingRequestIds}

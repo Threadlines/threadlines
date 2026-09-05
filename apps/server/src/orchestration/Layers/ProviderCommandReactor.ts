@@ -7,7 +7,7 @@ import {
   CheckoutMissingError,
   CommandId,
   EventId,
-  type MessageId,
+  MessageId,
   type ModelSelection,
   type OrchestrationEvent,
   ProviderDriverKind,
@@ -33,6 +33,7 @@ import { isTemporaryWorktreeBranch, WORKTREE_BRANCH_PREFIX } from "@threadlines/
 import {
   APPROVAL_ACTIVITY_KINDS,
   collectOpenPendingRequests,
+  extractPendingRequestId,
   PENDING_REQUEST_EXPIRED_REASON,
   PENDING_REQUEST_INTERRUPTED_REASON,
   USER_INPUT_ACTIVITY_KINDS,
@@ -58,6 +59,7 @@ import { CheckpointStore } from "../../checkpointing/Services/CheckpointStore.ts
 import { ensureGeneralChatThreadScratchCwd } from "../generalChats.ts";
 import { pauseActiveThreadGoalForStop } from "../threadGoalLifecycle.ts";
 import { canReplaceThreadTitle } from "../threadTitle.ts";
+import { formatUserInputReply, readRequestedUserInput } from "../userInput.ts";
 import {
   increment,
   orchestrationEventsProcessedTotal,
@@ -356,6 +358,10 @@ const make = Effect.gen(function* () {
     );
 
   const threadModelSelections = new Map<string, ModelSelection>();
+  // Only explicit stops cancel durable message questions. Runtime reaping and
+  // reconnects leave them answerable. Keep shutdown notifications covered until
+  // a new session starts; no provider can send late notifications after restart.
+  const explicitlyStoppedThreads = new Set<ThreadId>();
 
   /**
    * Threads whose queued checkout switch is currently deferred because the
@@ -655,6 +661,7 @@ const make = Effect.gen(function* () {
     }>;
     readonly detail: string;
     readonly reason?: string;
+    readonly includeMessageQuestions?: boolean;
   }) {
     const expirations = [
       ...collectOpenPendingRequests(input.activities, APPROVAL_ACTIVITY_KINDS).map((open) => ({
@@ -662,11 +669,20 @@ const make = Effect.gen(function* () {
         kind: APPROVAL_ACTIVITY_KINDS.resolved,
         summary: "Approval request expired",
       })),
-      ...collectOpenPendingRequests(input.activities, USER_INPUT_ACTIVITY_KINDS).map((open) => ({
-        open,
-        kind: USER_INPUT_ACTIVITY_KINDS.resolved,
-        summary: "User input request expired",
-      })),
+      ...collectOpenPendingRequests(input.activities, USER_INPUT_ACTIVITY_KINDS)
+        .filter((open) => {
+          const question = readRequestedUserInput(open.activity.payload);
+          return (
+            input.includeMessageQuestions ||
+            Option.isNone(question) ||
+            question.value.responseMode !== "message"
+          );
+        })
+        .map((open) => ({
+          open,
+          kind: USER_INPUT_ACTIVITY_KINDS.resolved,
+          summary: "User input request expired",
+        })),
     ];
     if (expirations.length === 0) {
       return;
@@ -709,6 +725,7 @@ const make = Effect.gen(function* () {
       activities: input.activities,
       detail: "The provider turn was interrupted before the request was answered.",
       reason: PENDING_REQUEST_INTERRUPTED_REASON,
+      includeMessageQuestions: true,
     });
   });
 
@@ -2068,6 +2085,131 @@ const make = Effect.gen(function* () {
       if (!thread) {
         return;
       }
+      const openQuestion = collectOpenPendingRequests(
+        thread.activities,
+        USER_INPUT_ACTIVITY_KINDS,
+      ).find((open) => open.requestId === event.payload.requestId);
+      const requested = openQuestion
+        ? readRequestedUserInput(openQuestion.activity.payload)
+        : Option.none();
+      if (!openQuestion) {
+        const previous = thread.activities.findLast(
+          (activity) =>
+            activity.kind === USER_INPUT_ACTIVITY_KINDS.requested &&
+            extractPendingRequestId(activity.payload) === event.payload.requestId,
+        );
+        const previousQuestion = previous
+          ? readRequestedUserInput(previous.payload)
+          : Option.none();
+        if (Option.isSome(previousQuestion) && previousQuestion.value.responseMode === "message")
+          return;
+      }
+      if (Option.isSome(requested) && requested.value.responseMode === "message") {
+        const input = formatUserInputReply(requested.value.questions, event.payload.answers);
+        const fail = (detail: string) =>
+          appendProviderFailureActivity({
+            threadId: thread.id,
+            kind: "provider.user-input.respond.failed",
+            summary: "Could not send answer",
+            detail,
+            turnId: openQuestion?.activity.turnId ?? null,
+            createdAt: event.payload.createdAt,
+            requestId: event.payload.requestId,
+          });
+        if (!input) return yield* fail("Answer each question before submitting.");
+
+        // A stable message id lets a replay finish projection without sending
+        // the same answer twice after it has already reached the transcript.
+        const messageId = MessageId.make(`question-answer:${event.payload.requestId}`);
+        yield* Effect.gen(function* () {
+          if (!thread.messages.some((message) => message.id === messageId)) {
+            const activeTurnId = thread.session?.activeTurnId;
+            let steered = false;
+            if (thread.session?.status === "running" && activeTurnId) {
+              steered = yield* providerService
+                .steerTurn({
+                  threadId: thread.id,
+                  expectedTurnId: activeTurnId,
+                  messageId,
+                  input,
+                })
+                .pipe(
+                  Effect.as(true),
+                  Effect.catchCause((cause) =>
+                    isNoActiveTurnSteerError(cause)
+                      ? Effect.succeed(false)
+                      : Effect.failCause(cause),
+                  ),
+                );
+              if (steered) {
+                yield* orchestrationEngine.dispatch({
+                  type: "thread.follow-up.accept",
+                  commandId: CommandId.make(`question-answer-accepted:${event.payload.requestId}`),
+                  threadId: thread.id,
+                  turnId: activeTurnId,
+                  message: { messageId, role: "user", text: input, attachments: [] },
+                  createdAt: event.payload.createdAt,
+                });
+              } else {
+                // Codex may finish between displaying the question and receiving
+                // its answer. Only release the exact turn it rejected.
+                const latestThread = yield* resolveThread(thread.id);
+                const latestSession = latestThread?.session;
+                if (
+                  latestSession?.status === "interrupted" ||
+                  explicitlyStoppedThreads.has(thread.id)
+                ) {
+                  return;
+                }
+                if (latestSession?.activeTurnId && latestSession.activeTurnId !== activeTurnId) {
+                  return yield* fail("The active turn changed. Submit your answer again.");
+                }
+                if (latestSession?.activeTurnId === activeTurnId) {
+                  yield* setThreadSession({
+                    threadId: thread.id,
+                    session: {
+                      ...latestSession,
+                      status: "ready",
+                      activeTurnId: null,
+                      updatedAt: event.payload.createdAt,
+                    },
+                    createdAt: event.payload.createdAt,
+                  });
+                }
+              }
+            }
+            if (!steered) {
+              // Persist the answer through the normal turn path. If starting
+              // the provider fails, the transcript keeps the reply for Retry.
+              yield* orchestrationEngine.dispatch({
+                type: "thread.turn.start",
+                commandId: CommandId.make(`question-answer-start:${event.payload.requestId}`),
+                threadId: thread.id,
+                message: { messageId, role: "user", text: input, attachments: [] },
+                runtimeMode: thread.runtimeMode,
+                interactionMode: thread.interactionMode,
+                createdAt: event.payload.createdAt,
+              });
+            }
+          }
+          yield* orchestrationEngine.dispatch({
+            type: "thread.activity.append",
+            commandId: CommandId.make(`question-answer-resolved:${event.payload.requestId}`),
+            threadId: thread.id,
+            activity: {
+              id: EventId.make(`question-answer-resolved:${event.payload.requestId}`),
+              kind: "user-input.resolved",
+              tone: "info",
+              summary: "User input submitted",
+              payload: { requestId: event.payload.requestId, answers: event.payload.answers },
+              turnId: openQuestion?.activity.turnId ?? null,
+              createdAt: event.payload.createdAt,
+            },
+            createdAt: event.payload.createdAt,
+          });
+        }).pipe(Effect.catchCause((cause) => fail(formatFailureDetail(cause))));
+        return;
+      }
       const hasSession = thread.session && thread.session.status !== "stopped";
       if (!hasSession) {
         return yield* appendProviderFailureActivity({
@@ -2140,6 +2282,15 @@ const make = Effect.gen(function* () {
       }
       yield* providerService.stopSession({ threadId: thread.id });
     }
+
+    explicitlyStoppedThreads.add(thread.id);
+    const stoppedThread = yield* resolveThread(thread.id);
+    yield* expireOpenPendingRequests({
+      threadId: thread.id,
+      activities: stoppedThread?.activities ?? thread.activities,
+      detail: "The session was stopped before the question was answered.",
+      includeMessageQuestions: true,
+    });
 
     yield* setThreadSession({
       threadId: thread.id,
@@ -2239,17 +2390,19 @@ const make = Effect.gen(function* () {
   });
 
   /**
-   * Pending approval / user-input prompts are answered through the live
-   * provider session; once that session stops (explicit stop, inactivity
-   * reap, startup reconcile after a server restart) the provider-side
-   * request is gone and the prompt can never be answered. Close each open
-   * prompt with an expiry activity so clients stop offering a Submit that
-   * is guaranteed to fail.
+   * RPC prompts need their live provider session and expire when it stops.
+   * Message questions survive automatic session recycling and reconnects.
    */
   const processSessionSet = Effect.fn("processSessionSet")(function* (
     event: Extract<ProviderIntentEvent, { type: "thread.session-set" }>,
   ) {
     if (event.payload.session.status !== "stopped") {
+      if (
+        event.payload.session.status === "starting" ||
+        event.payload.session.status === "running"
+      ) {
+        explicitlyStoppedThreads.delete(event.payload.threadId);
+      }
       // Cheap payload precheck; the apply path re-validates against the
       // freshly projected thread before touching the session.
       const session = event.payload.session;
@@ -2324,6 +2477,7 @@ const make = Effect.gen(function* () {
           threadId: event.payload.threadId,
           activities: thread.activities,
           detail: "The provider session stopped before the request was answered.",
+          includeMessageQuestions: explicitlyStoppedThreads.has(thread.id),
         });
       }
     },

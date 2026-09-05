@@ -388,6 +388,7 @@ interface ApprovalCorrelation {
 
 interface PendingUserInput {
   readonly requestId: ApprovalRequestId;
+  readonly jsonRpcId: string;
   readonly turnId: TurnId | undefined;
   readonly itemId: ProviderItemId | undefined;
   readonly answers: Deferred.Deferred<ProviderUserInputAnswers>;
@@ -1564,7 +1565,7 @@ export const makeCodexSessionRuntime = (
       );
 
     const settlePendingUserInputs = (answers: ProviderUserInputAnswers) =>
-      Ref.get(pendingUserInputsRef).pipe(
+      Ref.getAndSet(pendingUserInputsRef, new Map()).pipe(
         Effect.flatMap((pendingUserInputs) =>
           Effect.forEach(
             Array.from(pendingUserInputs.values()),
@@ -1574,6 +1575,31 @@ export const makeCodexSessionRuntime = (
           ),
         ),
       );
+
+    const expirePendingUserInputs = (
+      matches: (pending: PendingUserInput) => boolean,
+      reason: "resolved" | "turn-completed",
+    ) =>
+      Effect.gen(function* () {
+        const expired = yield* Ref.modify(pendingUserInputsRef, (current) => {
+          const next = new Map(current);
+          const expired = Array.from(current.values()).filter(matches);
+          for (const pending of expired) next.delete(pending.requestId);
+          return [expired, next];
+        });
+        for (const pending of expired) {
+          yield* Deferred.succeed(pending.answers, {});
+          yield* emitEvent({
+            kind: "notification",
+            threadId: options.threadId,
+            method: "item/tool/requestUserInput/resolved",
+            requestId: pending.requestId,
+            ...(pending.turnId ? { turnId: pending.turnId } : {}),
+            ...(pending.itemId ? { itemId: pending.itemId } : {}),
+            payload: { reason },
+          });
+        }
+      });
 
     const handleRawNotification = (notification: CodexServerNotification) =>
       Effect.gen(function* () {
@@ -1628,6 +1654,10 @@ export const makeCodexSessionRuntime = (
             typeof notification.params.requestId === "string"
               ? notification.params.requestId
               : String(notification.params.requestId);
+          yield* expirePendingUserInputs(
+            (pending) => pending.jsonRpcId === rawRequestId,
+            "resolved",
+          );
           const correlation = rawRequestId
             ? (yield* Ref.get(approvalCorrelationsRef)).get(rawRequestId)
             : undefined;
@@ -1728,7 +1758,14 @@ export const makeCodexSessionRuntime = (
             status: payload.turn.status === "failed" ? "error" : "ready",
             activeTurnId: undefined,
             ...(lastError ? { lastError } : {}),
-          });
+          }).pipe(
+            Effect.andThen(
+              expirePendingUserInputs(
+                (pending) => pending.turnId === payload.turn.id,
+                "turn-completed",
+              ),
+            ),
+          );
         }),
       ),
     );
@@ -1755,63 +1792,65 @@ export const makeCodexSessionRuntime = (
       ),
     );
 
-    yield* client.handleServerRequest("item/commandExecution/requestApproval", (payload) =>
-      Effect.gen(function* () {
-        const requestId = ApprovalRequestId.make(yield* randomUUIDv4);
-        const turnId = TurnId.make(payload.turnId);
-        const itemId = ProviderItemId.make(payload.itemId);
-        const decision = yield* Deferred.make<ProviderApprovalDecision>();
+    yield* client.handleServerRequest(
+      "item/commandExecution/requestApproval",
+      (payload, metadata) =>
+        Effect.gen(function* () {
+          const requestId = ApprovalRequestId.make(yield* randomUUIDv4);
+          const turnId = TurnId.make(payload.turnId);
+          const itemId = ProviderItemId.make(payload.itemId);
+          const decision = yield* Deferred.make<ProviderApprovalDecision>();
 
-        yield* Ref.update(pendingApprovalsRef, (current) => {
-          const next = new Map(current);
-          next.set(requestId, {
-            requestId,
-            jsonRpcId: payload.approvalId ?? payload.itemId,
-            requestKind: "command",
-            turnId,
-            itemId,
-            decision,
+          yield* Ref.update(pendingApprovalsRef, (current) => {
+            const next = new Map(current);
+            next.set(requestId, {
+              requestId,
+              jsonRpcId: String(metadata.id),
+              requestKind: "command",
+              turnId,
+              itemId,
+              decision,
+            });
+            return next;
           });
-          return next;
-        });
-        yield* Ref.update(approvalCorrelationsRef, (current) => {
-          const next = new Map(current);
-          next.set(payload.approvalId ?? payload.itemId, {
+          yield* Ref.update(approvalCorrelationsRef, (current) => {
+            const next = new Map(current);
+            next.set(String(metadata.id), {
+              requestId,
+              requestKind: "command",
+              turnId,
+              itemId,
+            });
+            return next;
+          });
+
+          yield* emitEvent({
+            kind: "request",
+            threadId: options.threadId,
+            method: "item/commandExecution/requestApproval",
             requestId,
             requestKind: "command",
-            turnId,
-            itemId,
+            ...(turnId ? { turnId } : {}),
+            ...(itemId ? { itemId } : {}),
+            payload,
           });
-          return next;
-        });
 
-        yield* emitEvent({
-          kind: "request",
-          threadId: options.threadId,
-          method: "item/commandExecution/requestApproval",
-          requestId,
-          requestKind: "command",
-          ...(turnId ? { turnId } : {}),
-          ...(itemId ? { itemId } : {}),
-          payload,
-        });
-
-        const resolved = yield* Deferred.await(decision).pipe(
-          Effect.ensuring(
-            Ref.update(pendingApprovalsRef, (current) => {
-              const next = new Map(current);
-              next.delete(requestId);
-              return next;
-            }),
-          ),
-        );
-        return {
-          decision: resolved,
-        } satisfies EffectCodexSchema.CommandExecutionRequestApprovalResponse;
-      }),
+          const resolved = yield* Deferred.await(decision).pipe(
+            Effect.ensuring(
+              Ref.update(pendingApprovalsRef, (current) => {
+                const next = new Map(current);
+                next.delete(requestId);
+                return next;
+              }),
+            ),
+          );
+          return {
+            decision: resolved,
+          } satisfies EffectCodexSchema.CommandExecutionRequestApprovalResponse;
+        }),
     );
 
-    yield* client.handleServerRequest("item/fileChange/requestApproval", (payload) =>
+    yield* client.handleServerRequest("item/fileChange/requestApproval", (payload, metadata) =>
       Effect.gen(function* () {
         const requestId = ApprovalRequestId.make(yield* randomUUIDv4);
         const turnId = TurnId.make(payload.turnId);
@@ -1822,7 +1861,7 @@ export const makeCodexSessionRuntime = (
           const next = new Map(current);
           next.set(requestId, {
             requestId,
-            jsonRpcId: payload.itemId,
+            jsonRpcId: String(metadata.id),
             requestKind: "file-change",
             turnId,
             itemId,
@@ -1832,7 +1871,7 @@ export const makeCodexSessionRuntime = (
         });
         yield* Ref.update(approvalCorrelationsRef, (current) => {
           const next = new Map(current);
-          next.set(payload.itemId, {
+          next.set(String(metadata.id), {
             requestId,
             requestKind: "file-change",
             turnId,
@@ -1867,7 +1906,7 @@ export const makeCodexSessionRuntime = (
       }),
     );
 
-    yield* client.handleServerRequest("item/permissions/requestApproval", (payload) =>
+    yield* client.handleServerRequest("item/permissions/requestApproval", (payload, metadata) =>
       Effect.gen(function* () {
         const requestId = ApprovalRequestId.make(yield* randomUUIDv4);
         const turnId = TurnId.make(payload.turnId);
@@ -1878,7 +1917,7 @@ export const makeCodexSessionRuntime = (
           const next = new Map(current);
           next.set(requestId, {
             requestId,
-            jsonRpcId: payload.itemId,
+            jsonRpcId: String(metadata.id),
             requestKind: "permissions",
             turnId,
             itemId,
@@ -1888,7 +1927,7 @@ export const makeCodexSessionRuntime = (
         });
         yield* Ref.update(approvalCorrelationsRef, (current) => {
           const next = new Map(current);
-          next.set(payload.itemId, {
+          next.set(String(metadata.id), {
             requestId,
             requestKind: "permissions",
             turnId,
@@ -1921,7 +1960,7 @@ export const makeCodexSessionRuntime = (
       }),
     );
 
-    yield* client.handleServerRequest("item/tool/requestUserInput", (payload) =>
+    yield* client.handleServerRequest("item/tool/requestUserInput", (payload, metadata) =>
       Effect.gen(function* () {
         const requestId = ApprovalRequestId.make(yield* randomUUIDv4);
         const turnId = TurnId.make(payload.turnId);
@@ -1932,6 +1971,7 @@ export const makeCodexSessionRuntime = (
           const next = new Map(current);
           next.set(requestId, {
             requestId,
+            jsonRpcId: String(metadata.id),
             turnId,
             itemId,
             answers,
@@ -1946,7 +1986,7 @@ export const makeCodexSessionRuntime = (
           requestId,
           ...(turnId ? { turnId } : {}),
           ...(itemId ? { itemId } : {}),
-          payload,
+          payload: { ...payload, isBlocking: payload.isBlocking ?? true },
         });
 
         const resolvedAnswers = yield* Deferred.await(answers).pipe(
@@ -2569,18 +2609,17 @@ export const makeCodexSessionRuntime = (
         }),
       respondToUserInput: (requestId, answers) =>
         Effect.gen(function* () {
-          const pending = (yield* Ref.get(pendingUserInputsRef)).get(requestId);
+          const codexAnswers = yield* toCodexUserInputAnswers(answers);
+          const pending = yield* Ref.modify(pendingUserInputsRef, (current) => {
+            const next = new Map(current);
+            next.delete(requestId);
+            return [current.get(requestId), next];
+          });
           if (!pending) {
             return yield* new CodexSessionRuntimePendingUserInputNotFoundError({
               requestId,
             });
           }
-          const codexAnswers = yield* toCodexUserInputAnswers(answers);
-          yield* Ref.update(pendingUserInputsRef, (current) => {
-            const next = new Map(current);
-            next.delete(requestId);
-            return next;
-          });
           yield* Deferred.succeed(pending.answers, answers);
           yield* emitEvent({
             kind: "notification",

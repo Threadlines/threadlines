@@ -1227,7 +1227,7 @@ function toUserInputQuestions(questions: ReadonlyArray<CodexToolUserInputQuestio
       const id = trimText(question.id);
       const header = trimText(question.header);
       const prompt = trimText(question.question);
-      if (!id || !header || !prompt || options.length === 0) {
+      if (!id || !header || !prompt) {
         return undefined;
       }
       return {
@@ -1930,6 +1930,15 @@ export function mapToRuntimeEvents(
   }
 
   if (event.method === "item/started") {
+    const payload = readPayload(EffectCodexSchema.V2ItemStartedNotification, event.payload);
+    if (
+      payload?.item.type === "agentMessage" &&
+      payload.item.delivery === "async" &&
+      payload.item.questions?.length
+    ) {
+      // Questions are projected once the complete structured message arrives.
+      return [];
+    }
     const started = mapItemLifecycle(event, canonicalThreadId, "item.started");
     if (!started) {
       return [];
@@ -1943,6 +1952,35 @@ export function mapToRuntimeEvents(
     const item = payload?.item;
     if (!item) {
       return [];
+    }
+    if (item.type === "agentMessage" && item.delivery === "async" && item.questions?.length) {
+      const questionCount = item.questions.length;
+      const questions = item.questions.flatMap((question, index) => {
+        const title = question.title.trim();
+        if (!title) return [];
+        return [
+          {
+            id: `question-${index + 1}`,
+            header: questionCount > 1 ? `Question ${index + 1}` : "Question",
+            question: title,
+            options: (question.options ?? [])
+              .filter((label) => label.trim().length > 0)
+              .map((label) => ({ label: label.trim(), description: label.trim() })),
+            multiSelect: false,
+          },
+        ];
+      });
+      if (questions.length > 0) {
+        return [
+          {
+            ...runtimeEventBase(event, canonicalThreadId),
+            eventId: EventId.make(`codex-question:${canonicalThreadId}:${item.id}`),
+            requestId: RuntimeRequestId.make(`codex-question:${canonicalThreadId}:${item.id}`),
+            type: "user-input.requested",
+            payload: { questions, isBlocking: false, responseMode: "message" },
+          },
+        ];
+      }
     }
     const itemType = toCanonicalItemType(item.type);
     if (itemType === "plan") {
@@ -2264,6 +2302,17 @@ export function mapToRuntimeEvents(
           requestType,
           ...(event.payload !== undefined ? { resolution: event.payload } : {}),
         },
+      },
+    ];
+  }
+
+  if (event.method === "item/tool/requestUserInput/resolved") {
+    const reason = firstStringField(event.payload, ["reason"]) ?? "provider-resolved";
+    return [
+      {
+        ...runtimeEventBase(event, canonicalThreadId),
+        type: "user-input.resolved",
+        payload: { answers: {}, reason },
       },
     ];
   }

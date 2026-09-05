@@ -725,7 +725,11 @@ export function derivePendingUserInputs(
         },
       ];
     })
-    .toSorted((left, right) => left.createdAt.localeCompare(right.createdAt));
+    .toSorted(
+      (left, right) =>
+        Number(isBlockingUserInput(right)) - Number(isBlockingUserInput(left)) ||
+        left.createdAt.localeCompare(right.createdAt),
+    );
 }
 
 export function deriveActivePlanState(

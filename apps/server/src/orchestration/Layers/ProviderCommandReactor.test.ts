@@ -2671,7 +2671,7 @@ describe("ProviderCommandReactor", () => {
   it("does not restart when the provider reports the same workspace through a path alias", async () => {
     const realDir = fs.mkdtempSync(path.join(os.tmpdir(), "threadlines-cwd-alias-"));
     const linkPath = `${realDir}-link`;
-    fs.symlinkSync(realDir, linkPath);
+    fs.symlinkSync(realDir, linkPath, process.platform === "win32" ? "junction" : "dir");
     try {
       const harness = await createHarness();
       const now = "2026-01-01T00:00:00.000Z";
@@ -3704,6 +3704,239 @@ describe("ProviderCommandReactor", () => {
       answers: {
         sandbox_mode: "workspace-write",
       },
+    });
+  });
+
+  describe("async question replies", () => {
+    const now = "2026-01-01T00:00:00.000Z";
+    const requestId = asApprovalRequestId("async-sign-in-question");
+    const answerText =
+      "Are both providers signed in?\nBoth are signed in\n\nWhich page should I check?\nClone picker";
+
+    async function prepareQuestion(status: "running" | "ready" | "stopped" = "running") {
+      const harness = await createHarness();
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.make("cmd-async-question-session"),
+          threadId: ThreadId.make("thread-1"),
+          session: {
+            threadId: ThreadId.make("thread-1"),
+            status,
+            providerName: "codex",
+            providerInstanceId: ProviderInstanceId.make("codex"),
+            runtimeMode: "approval-required",
+            activeTurnId: status === "running" ? asTurnId("turn-1") : null,
+            lastError: null,
+            updatedAt: now,
+          },
+          createdAt: now,
+        }),
+      );
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.activity.append",
+          commandId: CommandId.make("cmd-async-question-requested"),
+          threadId: ThreadId.make("thread-1"),
+          activity: {
+            id: EventId.make("activity-async-question-requested"),
+            tone: "info",
+            kind: "user-input.requested",
+            summary: "User input requested",
+            payload: {
+              requestId,
+              isBlocking: false,
+              responseMode: "message",
+              questions: [
+                {
+                  id: "signed_in",
+                  header: "Sign in",
+                  question: "Are both providers signed in?",
+                  options: [],
+                },
+                { id: "page", header: "Page", question: "Which page should I check?", options: [] },
+              ],
+            },
+            turnId: asTurnId("turn-1"),
+            createdAt: now,
+          },
+          createdAt: now,
+        }),
+      );
+      await harness.drain();
+      return harness;
+    }
+
+    async function answerQuestion(
+      harness: Awaited<ReturnType<typeof createHarness>>,
+      commandId = "cmd-answer-async-question",
+      answers: Record<string, string> = { signed_in: "Both are signed in", page: "Clone picker" },
+    ) {
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.user-input.respond",
+          commandId: CommandId.make(commandId),
+          threadId: ThreadId.make("thread-1"),
+          requestId,
+          answers,
+          createdAt: now,
+        }),
+      );
+      await harness.drain();
+    }
+
+    it("steers a running turn, saves the answer in the transcript, and closes the question once", async () => {
+      const harness = await prepareQuestion();
+      await answerQuestion(harness);
+      await answerQuestion(harness, "cmd-answer-async-question-again");
+
+      expect(harness.steerTurn).toHaveBeenCalledTimes(1);
+      expect(harness.steerTurn.mock.calls[0]?.[0]).toMatchObject({
+        threadId: ThreadId.make("thread-1"),
+        expectedTurnId: asTurnId("turn-1"),
+        input: answerText,
+      });
+      expect(harness.sendTurn).not.toHaveBeenCalled();
+      expect(harness.respondToUserInput).not.toHaveBeenCalled();
+      const thread = (await harness.readModel()).threads[0];
+      expect(thread?.messages.filter((message) => message.role === "user")).toEqual([
+        expect.objectContaining({ text: answerText, turnId: asTurnId("turn-1") }),
+      ]);
+      expect(
+        thread?.activities.filter((activity) => activity.kind === "user-input.resolved"),
+      ).toEqual([
+        expect.objectContaining({
+          payload: {
+            requestId,
+            answers: { signed_in: "Both are signed in", page: "Clone picker" },
+          },
+        }),
+      ]);
+    });
+
+    for (const status of ["ready", "stopped"] as const) {
+      it(`starts a normal turn when an open question is answered with the provider ${status}`, async () => {
+        const harness = await prepareQuestion(status);
+        await answerQuestion(harness);
+        await answerQuestion(harness, "cmd-answer-finished-question-again");
+
+        expect(harness.sendTurn).toHaveBeenCalledTimes(1);
+        expect(harness.sendTurn.mock.calls[0]?.[0]).toMatchObject({ input: answerText });
+        expect(harness.steerTurn).not.toHaveBeenCalled();
+        expect(harness.respondToUserInput).not.toHaveBeenCalled();
+        const thread = (await harness.readModel()).threads[0];
+        expect(thread?.messages.filter((message) => message.role === "user")).toEqual([
+          expect.objectContaining({ text: answerText }),
+        ]);
+        expect(
+          thread?.activities.filter((activity) => activity.kind === "user-input.resolved"),
+        ).toHaveLength(1);
+      });
+    }
+
+    it("starts a new turn if Codex finishes just before the answer reaches it", async () => {
+      const harness = await prepareQuestion();
+      harness.steerTurn.mockImplementationOnce(() =>
+        Effect.fail(
+          new ProviderAdapterRequestError({
+            provider: "codex",
+            method: "turn/steer",
+            detail: "no active turn to steer",
+          }),
+        ),
+      );
+      await answerQuestion(harness);
+
+      expect(harness.steerTurn).toHaveBeenCalledTimes(1);
+      expect(harness.sendTurn).toHaveBeenCalledTimes(1);
+      expect(harness.sendTurn.mock.calls[0]?.[0]).toMatchObject({ input: answerText });
+      const thread = (await harness.readModel()).threads[0];
+      expect(thread?.messages.filter((message) => message.role === "user")).toEqual([
+        expect.objectContaining({ text: answerText }),
+      ]);
+      expect(
+        thread?.activities.filter((activity) => activity.kind === "user-input.resolved"),
+      ).toHaveLength(1);
+      expect(
+        thread?.activities.some(
+          (activity) => activity.kind === "provider.user-input.respond.failed",
+        ),
+      ).toBe(false);
+    });
+
+    it("keeps an incomplete answer pending so the user can finish and submit it", async () => {
+      const harness = await prepareQuestion();
+      await answerQuestion(harness, "cmd-answer-incomplete", { signed_in: "Both are signed in" });
+
+      expect(harness.steerTurn).not.toHaveBeenCalled();
+      expect(harness.sendTurn).not.toHaveBeenCalled();
+      let thread = (await harness.readModel()).threads[0];
+      expect(thread?.activities.some((activity) => activity.kind === "user-input.resolved")).toBe(
+        false,
+      );
+      expect(thread?.activities).toContainEqual(
+        expect.objectContaining({ kind: "provider.user-input.respond.failed" }),
+      );
+      expect(thread?.messages.filter((message) => message.role === "user")).toHaveLength(0);
+
+      await answerQuestion(harness, "cmd-answer-complete");
+      expect(harness.steerTurn).toHaveBeenCalledTimes(1);
+      thread = (await harness.readModel()).threads[0];
+      expect(
+        thread?.activities.filter((activity) => activity.kind === "user-input.resolved"),
+      ).toHaveLength(1);
+    });
+
+    it("closes open and delayed questions after an explicit Stop", async () => {
+      const harness = await prepareQuestion();
+      const question = (await harness.readModel()).threads[0]?.activities.find(
+        (activity) => activity.kind === "user-input.requested",
+      );
+      expect(question).toBeDefined();
+      if (!question) throw new Error("The async question was not projected");
+
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.session.stop",
+          commandId: CommandId.make("cmd-stop-open-async-question"),
+          threadId: ThreadId.make("thread-1"),
+          createdAt: now,
+        }),
+      );
+      await harness.drain();
+
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.activity.append",
+          commandId: CommandId.make("cmd-late-async-question-after-stop"),
+          threadId: ThreadId.make("thread-1"),
+          activity: {
+            ...question,
+            id: EventId.make("activity-late-async-question"),
+            payload: {
+              ...(question.payload as Record<string, unknown>),
+              requestId: "late-async-question",
+            },
+          },
+          createdAt: now,
+        }),
+      );
+      await harness.drain();
+      await answerQuestion(harness, "cmd-answer-question-after-stop");
+
+      const thread = (await harness.readModel()).threads[0];
+      expect(thread?.session?.status).toBe("stopped");
+      expect(
+        thread?.activities.filter((activity) => activity.kind === "user-input.resolved"),
+      ).toEqual([
+        expect.objectContaining({ payload: expect.objectContaining({ requestId }) }),
+        expect.objectContaining({
+          payload: expect.objectContaining({ requestId: "late-async-question" }),
+        }),
+      ]);
+      expect(harness.steerTurn).not.toHaveBeenCalled();
+      expect(harness.sendTurn).not.toHaveBeenCalled();
+      expect(thread?.messages.filter((message) => message.role === "user")).toHaveLength(0);
     });
   });
 

@@ -54,6 +54,7 @@ type ThreadStatusInput = Pick<
   | "hasActionableProposedPlan"
   | "hasPendingApprovals"
   | "hasPendingUserInput"
+  | "hasBlockingUserInput"
   | "interactionMode"
   | "latestTurn"
   | "session"
@@ -302,7 +303,7 @@ export function resolveThreadStatusPill(input: {
     };
   }
 
-  if (thread.hasPendingUserInput) {
+  if (thread.hasBlockingUserInput ?? thread.hasPendingUserInput) {
     return {
       label: "Awaiting Input",
       colorClass: "text-amber-600 dark:text-amber-300/90",
