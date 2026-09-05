@@ -40,11 +40,6 @@ describe("GitHubPullRequestProvider.runAction", () => {
       args: ["pr", "update-branch", "12", "--repo", "octocat/example-app", "--rebase"],
     },
     {
-      name: "disarms auto-merge",
-      input: { action: "disable-auto-merge" },
-      args: ["pr", "merge", "12", "--repo", "octocat/example-app", "--disable-auto"],
-    },
-    {
       name: "deletes the head branch after a merge when asked",
       input: { action: "merge", mergeMethod: "merge", deleteBranch: true },
       args: ["pr", "merge", "12", "--repo", "octocat/example-app", "--merge", "--delete-branch"],
@@ -127,6 +122,50 @@ describe("GitHubPullRequestProvider.runAction", () => {
         calls().map((call) => call.args[0]),
         ["api"],
       );
+    }).pipe(Effect.provide(layer)),
+  );
+
+  /** The host answers the standing read with whether the pull request is queued. */
+  const hostQueues = (isInMergeQueue: boolean) => {
+    mockExecute.mockImplementation((input) =>
+      Effect.succeed(
+        processOutput(
+          input.args[0] === "api" && String(input.stdin).includes("isInMergeQueue")
+            ? JSON.stringify({
+                data: { repository: { pullRequest: { id: "PR_kwDO123", isInMergeQueue } } },
+              })
+            : "",
+        ),
+      ),
+    );
+  };
+
+  it.effect("disarms auto-merge through gh while the pull request is not queued", () =>
+    Effect.gen(function* () {
+      hostQueues(false);
+      const provider = yield* GitHubPullRequestProvider.make();
+
+      yield* provider.runAction({ ...repository, number: 12, action: "disable-auto-merge" });
+
+      assert.deepStrictEqual(prCalls(), [
+        ["pr", "merge", "12", "--repo", "octocat/example-app", "--disable-auto"],
+      ]);
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("takes a queued pull request out of the merge queue by id instead", () =>
+    Effect.gen(function* () {
+      hostQueues(true);
+      const provider = yield* GitHubPullRequestProvider.make();
+
+      yield* provider.runAction({ ...repository, number: 12, action: "disable-auto-merge" });
+
+      // gh's own disarm returns without touching a queued pull request, so the
+      // only write is the dequeue mutation and nothing reaches `gh pr`.
+      assert.deepStrictEqual(prCalls(), []);
+      const writes = calls().filter((call) => String(call.stdin).includes("dequeuePullRequest"));
+      assert.equal(writes.length, 1);
+      assert.match(String(writes[0]?.stdin), /"id":"PR_kwDO123"/);
     }).pipe(Effect.provide(layer)),
   );
 

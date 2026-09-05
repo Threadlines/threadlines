@@ -45,16 +45,19 @@ import {
   decodeGitHubAuthoredPullRequestsJson,
   decodeGitHubDetailBaseStateJson,
   decodeGitHubImmediatelyMergeableJson,
+  decodeGitHubMergeQueueStandingJson,
   decodeGitHubPullRequestConversationJson,
   decodeGitHubPullRequestNodeIdJson,
   decodeGitHubReviewerCandidatesJson,
   decodeGitHubSubjectScopeJson,
+  DEQUEUE_PULL_REQUEST_GRAPHQL_MUTATION,
   DETAIL_BASE_STATE_GRAPHQL_QUERY,
   encodeGraphQlRequestJson,
   gitHubAuthoredSearchQuery,
   gitHubReactionContent,
   type GitHubDetailBaseState,
   type GitHubGraphQlVariable,
+  MERGE_QUEUE_STANDING_GRAPHQL_QUERY,
   PULL_REQUEST_CONVERSATION_GRAPHQL_QUERY,
   PULL_REQUEST_NODE_ID_GRAPHQL_QUERY,
   REACTION_SUBJECT_SCOPE_GRAPHQL_QUERY,
@@ -673,9 +676,33 @@ export const make = Effect.fn("makeGitHubPullRequestProvider")(function* () {
       // `gh pr merge --auto` merges outright when nothing is pending, which is
       // not what someone arming a merge asked for. The readiness is read first
       // and a ready pull request is sent back to the Merge button instead.
-      return input.action === "enable-auto-merge"
-        ? refuseIfImmediatelyMergeable(input).pipe(Effect.flatMap(action))
-        : action();
+      if (input.action === "enable-auto-merge") {
+        return refuseIfImmediatelyMergeable(input).pipe(Effect.flatMap(action));
+      }
+      // `gh pr merge --disable-auto` stops short on a pull request the host has
+      // already taken into its merge queue and leaves it there, so that case
+      // is taken out of the queue by name instead.
+      if (input.action === "disable-auto-merge") {
+        return graphqlRead({
+          operation: "runAction",
+          cwd: input.cwd,
+          query: MERGE_QUEUE_STANDING_GRAPHQL_QUERY,
+          variables: graphQlVariables(input),
+          decode: decodeGitHubMergeQueueStandingJson,
+        }).pipe(
+          Effect.flatMap((queuedId) =>
+            queuedId === null
+              ? action()
+              : graphql({
+                  operation: "runAction",
+                  cwd: input.cwd,
+                  query: DEQUEUE_PULL_REQUEST_GRAPHQL_MUTATION,
+                  variables: { id: queuedId },
+                }).pipe(Effect.asVoid),
+          ),
+        );
+      }
+      return action();
     },
 
     comment: (input) =>

@@ -113,6 +113,22 @@ export const AUTO_MERGE_READINESS_GRAPHQL_QUERY = `query($owner: String!, $name:
   }
 }`;
 
+/**
+ * What disarming has to know first: whether the host has already taken the
+ * pull request into its merge queue. `gh pr merge --disable-auto` stops short
+ * on a queued pull request without touching it, so that case is undone by the
+ * dequeue mutation instead, which is addressed by node id.
+ */
+export const MERGE_QUEUE_STANDING_GRAPHQL_QUERY = `query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) { id isInMergeQueue }
+  }
+}`;
+
+export const DEQUEUE_PULL_REQUEST_GRAPHQL_MUTATION = `mutation($id: ID!) {
+  dequeuePullRequest(input: { id: $id }) { mergeQueueEntry { id } }
+}`;
+
 /** Labels and outstanding review requests are short lists; this is room to spare. */
 const AUTHORED_CONNECTION_PAGE_SIZE = 20;
 
@@ -617,6 +633,39 @@ export function decodeGitHubImmediatelyMergeableJson(
   }
   const status = nonEmptyText(pullRequest?.mergeStateStatus)?.toUpperCase() ?? null;
   return Result.succeed(status !== null && IMMEDIATELY_MERGEABLE_STATES.has(status));
+}
+
+const RawMergeQueueStandingSchema = Schema.Struct({
+  data: Schema.Struct({
+    repository: Schema.NullOr(
+      Schema.Struct({
+        pullRequest: Schema.NullOr(
+          Schema.Struct({
+            id: Schema.optional(Schema.NullOr(Schema.String)),
+            isInMergeQueue: Schema.optional(Schema.NullOr(Schema.Boolean)),
+          }),
+        ),
+      }),
+    ),
+  }),
+});
+
+const decodeMergeQueueStanding = decodeJsonResult(RawMergeQueueStandingSchema);
+
+/**
+ * The node id to dequeue while the pull request sits in a merge queue, or null
+ * where it does not: a host that names no queue, or no id, has nothing to take
+ * it out of, and the plain disarm is the right call.
+ */
+export function decodeGitHubMergeQueueStandingJson(
+  raw: string,
+): Result.Result<string | null, DecodeFailure> {
+  const decoded = decodeMergeQueueStanding(raw);
+  if (!Result.isSuccess(decoded)) {
+    return Result.fail(decoded.failure);
+  }
+  const pullRequest = decoded.success.data.repository?.pullRequest ?? null;
+  return Result.succeed(pullRequest?.isInMergeQueue === true ? nonEmptyText(pullRequest.id) : null);
 }
 
 const RawAuthoredNodeSchema = Schema.Struct({
