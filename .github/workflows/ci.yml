@@ -5,6 +5,9 @@ on:
     branches:
       - main
   pull_request:
+  # Merge queue: GitHub re-runs the required checks on each queued merge result
+  # before it lands on main. Without this trigger nothing in the queue can pass.
+  merge_group:
   workflow_dispatch:
     inputs:
       deploy:
