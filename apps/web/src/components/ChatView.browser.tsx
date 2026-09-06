@@ -356,6 +356,7 @@ function createSnapshotForTargetUser(options: {
   targetText: string;
   targetAttachmentCount?: number;
   threadPinnedAt?: string | null;
+  threadPullRequestAutoFix?: boolean;
   sessionActiveTurnId?: TurnId | null;
   sessionStatus?: OrchestrationSessionStatus;
 }): OrchestrationReadModel {
@@ -432,6 +433,7 @@ function createSnapshotForTargetUser(options: {
         updatedAt: NOW_ISO,
         archivedAt: null,
         pinnedAt: options.threadPinnedAt ?? null,
+        pullRequestAutoFix: options.threadPullRequestAutoFix ?? false,
         doneOverride: null,
         lastSeenAt: null,
         deletedAt: null,
@@ -648,6 +650,7 @@ function addThreadToSnapshot(
         updatedAt: NOW_ISO,
         archivedAt: null,
         pinnedAt: null,
+        pullRequestAutoFix: false,
         doneOverride: null,
         lastSeenAt: null,
         deletedAt: null,
@@ -1213,6 +1216,7 @@ function createSnapshotWithSecondaryProject(options?: {
           updatedAt: isoAt(31),
           deletedAt: null,
           pinnedAt: null,
+          pullRequestAutoFix: false,
           doneOverride: null,
           lastSeenAt: null,
           messages: [],
@@ -1253,6 +1257,7 @@ function createSnapshotWithSecondaryProject(options?: {
           updatedAt: isoAt(25),
           deletedAt: null,
           pinnedAt: null,
+          pullRequestAutoFix: false,
           doneOverride: null,
           lastSeenAt: null,
           messages: [],

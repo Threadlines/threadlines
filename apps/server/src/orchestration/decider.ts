@@ -515,6 +515,32 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       };
     }
 
+    // Setting the switch to the value it already holds still emits: the event
+    // is the record of the user's word, and the projector writes the same
+    // value either way. There is no "no change" outcome in this decider.
+    case "thread.pull-request-automation.set": {
+      yield* requireThreadNotArchived({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const occurredAt = yield* nowIso;
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.pull-request-automation-changed",
+        payload: {
+          threadId: command.threadId,
+          autoFix: command.autoFix,
+          updatedAt: occurredAt,
+        },
+      };
+    }
+
     case "thread.done-override.set": {
       yield* requireThread({
         readModel,

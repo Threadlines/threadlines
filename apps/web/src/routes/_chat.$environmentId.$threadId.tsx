@@ -29,6 +29,7 @@ import {
   invalidateGitWorkingTreeDiffQueries,
 } from "../lib/gitReactQuery";
 import { useGitStatus } from "../lib/gitStatusState";
+import { setThreadPullRequestAutoFix } from "../lib/threadPullRequestCommands";
 import {
   PULL_REQUEST_COUNT_REFETCH_INTERVAL_MS,
   usePullRequestDetail,
@@ -527,6 +528,10 @@ function ChatThreadRouteView() {
             detail: threadPullRequestDetail,
             onOpen: () => selectTab("pullRequest"),
             onDismiss: () => dismissComposerPullRequest(composerPullRequestDismissalKey),
+            autoFix: serverThread?.pullRequestAutoFix ?? false,
+            onAutoFixChange: (next: boolean) => {
+              void setThreadPullRequestAutoFix(threadRef, next);
+            },
           }
         : null,
     [
@@ -534,6 +539,7 @@ function ChatThreadRouteView() {
       composerPullRequestDismissalKey,
       composerPullRequestDismissed,
       selectTab,
+      serverThread?.pullRequestAutoFix,
       threadPullRequest,
       threadPullRequestDetail,
       threadPullRequestReference,

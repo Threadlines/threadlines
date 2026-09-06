@@ -150,6 +150,7 @@ describe("OrchestrationEngine", () => {
           updatedAt: "2026-03-03T00:00:03.000Z",
           archivedAt: null,
           pinnedAt: null,
+          pullRequestAutoFix: false,
           doneOverride: null,
           lastSeenAt: null,
           deletedAt: null,

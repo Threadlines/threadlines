@@ -774,6 +774,8 @@ export const OrchestrationThread = Schema.Struct({
   updatedAt: IsoDateTime,
   archivedAt: Schema.NullOr(IsoDateTime).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
   pinnedAt: Schema.NullOr(IsoDateTime).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
+  /** See OrchestrationThreadShell.pullRequestAutoFix. */
+  pullRequestAutoFix: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   /** See OrchestrationThreadShell.doneOverride. */
   doneOverride: Schema.NullOr(OrchestrationThreadDoneOverride).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
@@ -844,6 +846,13 @@ export const OrchestrationThreadShell = Schema.Struct({
   updatedAt: IsoDateTime,
   archivedAt: Schema.NullOr(IsoDateTime).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
   pinnedAt: Schema.NullOr(IsoDateTime).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
+  /**
+   * While true, the server watches this thread's pull request and starts a turn
+   * asking the agent to fix a check that has just failed or a review comment
+   * that has just arrived. It only runs while the server does, so a closed
+   * desktop app watches nothing.
+   */
+  pullRequestAutoFix: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   /**
    * The user's last explicit Mark done / Reopen for this thread, or null if
    * they never gave one. Deliberately does not move `updatedAt`: the inbox
@@ -1077,6 +1086,17 @@ const ThreadUnpinCommand = Schema.Struct({
   type: Schema.Literal("thread.unpin"),
   commandId: CommandId,
   threadId: ThreadId,
+});
+
+/**
+ * Arm or disarm the server's watch on this thread's pull request. See
+ * `OrchestrationThreadShell.pullRequestAutoFix`.
+ */
+const ThreadPullRequestAutomationSetCommand = Schema.Struct({
+  type: Schema.Literal("thread.pull-request-automation.set"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  autoFix: Schema.Boolean,
 });
 
 /**
@@ -1365,6 +1385,7 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ThreadUnarchiveCommand,
   ThreadPinCommand,
   ThreadUnpinCommand,
+  ThreadPullRequestAutomationSetCommand,
   ThreadDoneOverrideSetCommand,
   ThreadSeenSetCommand,
   ThreadMetaUpdateCommand,
@@ -1400,6 +1421,7 @@ export const ClientOrchestrationCommand = Schema.Union([
   ThreadUnarchiveCommand,
   ThreadPinCommand,
   ThreadUnpinCommand,
+  ThreadPullRequestAutomationSetCommand,
   ThreadDoneOverrideSetCommand,
   ThreadSeenSetCommand,
   ThreadMetaUpdateCommand,
@@ -1613,6 +1635,7 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.unarchived",
   "thread.pinned",
   "thread.unpinned",
+  "thread.pull-request-automation-changed",
   "thread.done-override-set",
   "thread.seen-set",
   "thread.meta-updated",
@@ -1715,6 +1738,12 @@ export const ThreadPinnedPayload = Schema.Struct({
 
 export const ThreadUnpinnedPayload = Schema.Struct({
   threadId: ThreadId,
+  updatedAt: IsoDateTime,
+});
+
+export const ThreadPullRequestAutomationChangedPayload = Schema.Struct({
+  threadId: ThreadId,
+  autoFix: Schema.Boolean,
   updatedAt: IsoDateTime,
 });
 
@@ -1992,6 +2021,11 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.unpinned"),
     payload: ThreadUnpinnedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.pull-request-automation-changed"),
+    payload: ThreadPullRequestAutomationChangedPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,

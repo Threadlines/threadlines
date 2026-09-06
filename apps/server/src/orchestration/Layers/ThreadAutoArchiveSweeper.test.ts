@@ -64,6 +64,7 @@ function thread(
     updatedAt: daysAgo(45),
     archivedAt: null,
     pinnedAt: null,
+    pullRequestAutoFix: false,
     doneOverride: null,
     lastSeenAt: null,
     session: null,

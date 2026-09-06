@@ -188,6 +188,16 @@ export function composerAutoMergeControl(
   return offered ? { kind: "toggle", checked: detail.autoMergeEnabled } : { kind: "hidden" };
 }
 
+/**
+ * Whether the popover offers "Fix failing checks and review comments". Only
+ * GitHub is watched, and only while the detail says so: until it lands there is
+ * nothing to say the host is one the server can read, so the switch waits
+ * rather than appearing and then vanishing.
+ */
+export function composerAutoFixOffered(detail: PullRequestDetail | undefined): boolean {
+  return detail?.provider === "github";
+}
+
 /** The host's own checks page for a pull request. */
 export function pullRequestChecksUrl(url: string): string {
   return `${url.replace(/\/+$/u, "")}/checks`;

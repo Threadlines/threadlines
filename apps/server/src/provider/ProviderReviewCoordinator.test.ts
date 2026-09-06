@@ -47,6 +47,7 @@ function makeThreadShell(
     updatedAt: NOW,
     archivedAt: null,
     pinnedAt: null,
+    pullRequestAutoFix: false,
     doneOverride: null,
     lastSeenAt: null,
     session: null,

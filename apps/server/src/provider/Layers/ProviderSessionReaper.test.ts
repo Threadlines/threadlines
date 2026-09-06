@@ -110,6 +110,7 @@ function makeReadModel(
       updatedAt: now,
       archivedAt: null,
       pinnedAt: null,
+      pullRequestAutoFix: false,
       doneOverride: null,
       lastSeenAt: null,
       latestUserMessageAt: null,

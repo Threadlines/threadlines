@@ -11,6 +11,7 @@ import {
   ThreadDeletedPayload as ContractsThreadDeletedPayloadSchema,
   ThreadUnarchivedPayload as ContractsThreadUnarchivedPayloadSchema,
   ThreadUnpinnedPayload as ContractsThreadUnpinnedPayloadSchema,
+  ThreadPullRequestAutomationChangedPayload as ContractsThreadPullRequestAutomationChangedPayloadSchema,
   ThreadDoneOverrideSetPayload as ContractsThreadDoneOverrideSetPayloadSchema,
   ThreadSeenSetPayload as ContractsThreadSeenSetPayloadSchema,
   ThreadMessageSentPayload as ContractsThreadMessageSentPayloadSchema,
@@ -47,6 +48,8 @@ export const ThreadInteractionModeSetPayload = ContractsThreadInteractionModeSet
 export const ThreadDeletedPayload = ContractsThreadDeletedPayloadSchema;
 export const ThreadUnarchivedPayload = ContractsThreadUnarchivedPayloadSchema;
 export const ThreadUnpinnedPayload = ContractsThreadUnpinnedPayloadSchema;
+export const ThreadPullRequestAutomationChangedPayload =
+  ContractsThreadPullRequestAutomationChangedPayloadSchema;
 export const ThreadDoneOverrideSetPayload = ContractsThreadDoneOverrideSetPayloadSchema;
 export const ThreadSeenSetPayload = ContractsThreadSeenSetPayloadSchema;
 

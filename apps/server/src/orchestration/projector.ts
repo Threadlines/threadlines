@@ -35,6 +35,7 @@ import {
   ThreadSeenSetPayload,
   ThreadUnarchivedPayload,
   ThreadUnpinnedPayload,
+  ThreadPullRequestAutomationChangedPayload,
   ThreadRevertedPayload,
   ThreadSessionSetPayload,
   ThreadRealtimeStateSetPayload,
@@ -301,6 +302,7 @@ export function projectEvent(
             updatedAt: payload.updatedAt,
             archivedAt: null,
             pinnedAt: null,
+            pullRequestAutoFix: false,
             doneOverride: null,
             lastSeenAt: null,
             deletedAt: null,
@@ -372,6 +374,22 @@ export function projectEvent(
           ...nextBase,
           threads: updateThread(nextBase.threads, payload.threadId, {
             pinnedAt: null,
+            updatedAt: payload.updatedAt,
+          }),
+        })),
+      );
+
+    case "thread.pull-request-automation-changed":
+      return decodeForEvent(
+        ThreadPullRequestAutomationChangedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, {
+            pullRequestAutoFix: payload.autoFix,
             updatedAt: payload.updatedAt,
           }),
         })),
