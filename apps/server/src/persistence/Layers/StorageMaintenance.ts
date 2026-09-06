@@ -130,7 +130,10 @@ const makeStorageMaintenance = Effect.gen(function* () {
   /**
    * Trims `thread.activity-appended` events to the newest
    * `MAX_THREAD_ACTIVITIES` per thread. The activity projection already
-   * trims to the same cap, so pruned events are invisible to rebuilds.
+   * trims to the same cap, so pruned events are invisible to rebuilds. The
+   * few older rows the projection keeps on purpose (open prompts, the latest
+   * plan update; see `retainThreadActivities`) can still be pruned here, so
+   * a full rebuild may drop them; the live projection table never does.
    */
   const pruneActivityEventsBeyondCap = (minAppliedSequence: number) =>
     Effect.gen(function* () {

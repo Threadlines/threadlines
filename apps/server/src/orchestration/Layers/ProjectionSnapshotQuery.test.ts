@@ -1291,6 +1291,21 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           )
         `;
       }
+      // Only the newest plan update outlives the window: it is what the
+      // activity popover renders as the task list.
+      for (const [id, createdAt] of [
+        ["plan-stale", "2026-02-01T00:00:00.000Z"],
+        ["plan-latest", "2026-02-02T00:00:00.000Z"],
+      ] as const) {
+        yield* sql`
+          INSERT INTO projection_thread_activities (
+            activity_id, thread_id, tone, kind, summary, payload_json, sequence, created_at
+          ) VALUES (
+            ${id}, 'thread-activity-cap', 'info', 'turn.plan.updated', 'Plan updated',
+            '{"plan":[{"step":"Ship","status":"inProgress"}]}', 0, ${createdAt}
+          )
+        `;
+      }
       const retainedSnapshot = yield* snapshotQuery.getSnapshot();
       const retainedDetail = yield* snapshotQuery.getThreadDetailById(
         ThreadId.make("thread-activity-cap"),
@@ -1298,13 +1313,17 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       assert.equal(retainedDetail._tag, "Some");
       if (retainedDetail._tag === "Some") {
         const activities = retainedDetail.value.activities;
-        assert.equal(activities.length, MAX_THREAD_ACTIVITIES + 2);
+        assert.equal(activities.length, MAX_THREAD_ACTIVITIES + 3);
         assert.deepEqual(
-          activities.slice(0, 2).map((activity) => activity.id),
-          ["open-question", "open-approval"],
+          activities.slice(0, 3).map((activity) => activity.id),
+          ["plan-latest", "open-question", "open-approval"],
         );
         assert.equal(
           activities.some((activity) => activity.id === "closed-question"),
+          false,
+        );
+        assert.equal(
+          activities.some((activity) => activity.id === "plan-stale"),
           false,
         );
         assert.deepEqual(retainedSnapshot.threads[0]?.activities, activities);

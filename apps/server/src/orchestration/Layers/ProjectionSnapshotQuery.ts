@@ -39,7 +39,7 @@ import * as Struct from "effect/Struct";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as SqlSchema from "effect/unstable/sql/SqlSchema";
 import { MAX_THREAD_ACTIVITIES, MAX_THREAD_MESSAGES } from "@threadlines/shared/threadLimits";
-import { retainRecentActivitiesAndOpenRequests } from "@threadlines/shared/pendingRequests";
+import { retainThreadActivities } from "@threadlines/shared/threadActivityRetention";
 
 import {
   isPersistenceError,
@@ -719,6 +719,25 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                 activity.activity_id DESC
             ) AS activity_rank
           FROM projection_thread_activities AS activity
+        ), latest_plan_activities AS (
+          -- Ranking only the plan rows keeps this a cheap side scan instead of
+          -- a second sort of the whole table.
+          SELECT activity_id
+          FROM (
+            SELECT
+              activity.activity_id,
+              ROW_NUMBER() OVER (
+                PARTITION BY activity.thread_id
+                ORDER BY
+                  activity.event_sequence DESC,
+                  activity.sequence DESC,
+                  activity.created_at DESC,
+                  activity.activity_id DESC
+              ) AS plan_rank
+            FROM projection_thread_activities AS activity
+            WHERE activity.kind = 'turn.plan.updated'
+          )
+          WHERE plan_rank = 1
         )
         SELECT
           activity_id AS "activityId",
@@ -737,6 +756,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             'approval.requested', 'approval.resolved', 'provider.approval.respond.failed',
             'user-input.requested', 'user-input.resolved', 'provider.user-input.respond.failed'
           )
+          -- The newest plan update keeps the task list alive past the window
+          -- (see retainThreadActivities).
+          OR activity_id IN (SELECT activity_id FROM latest_plan_activities)
         ORDER BY
           thread_id ASC,
           event_sequence ASC,
@@ -1278,6 +1300,19 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               'approval.requested', 'approval.resolved', 'provider.approval.respond.failed',
               'user-input.requested', 'user-input.resolved', 'provider.user-input.respond.failed'
             )
+          UNION
+          SELECT * FROM (
+            SELECT *
+            FROM projection_thread_activities
+            WHERE thread_id = ${threadId}
+              AND kind = 'turn.plan.updated'
+            ORDER BY
+              event_sequence DESC,
+              sequence DESC,
+              created_at DESC,
+              activity_id DESC
+            LIMIT 1
+          )
         )
         SELECT
           activity_id AS "activityId",
@@ -1757,7 +1792,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                 messages: messagesByThread.get(row.threadId) ?? [],
                 proposedPlans: proposedPlansByThread.get(row.threadId) ?? [],
                 activities: dropStaleContextWindowActivities(
-                  retainRecentActivitiesAndOpenRequests(
+                  retainThreadActivities(
                     activitiesByThread.get(row.threadId) ?? [],
                     MAX_THREAD_ACTIVITIES,
                   ),
@@ -2692,10 +2727,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         messages: messageRows.map(mapThreadMessageRow),
         proposedPlans: proposedPlanRows.map(mapProposedPlanRow),
         activities: dropStaleContextWindowActivities(
-          retainRecentActivitiesAndOpenRequests(
-            activityRows.map(mapThreadActivityRow),
-            MAX_THREAD_ACTIVITIES,
-          ),
+          retainThreadActivities(activityRows.map(mapThreadActivityRow), MAX_THREAD_ACTIVITIES),
         ),
         subagents: subagentRows.map(mapThreadSubagentRow),
         checkpoints: checkpointRows.map((row) => ({
