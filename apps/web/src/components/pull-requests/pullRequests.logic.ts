@@ -56,7 +56,34 @@ export type PullRequestNeedsYouReason =
   | "Checks failing"
   | "Approved";
 
-export type PullRequestGroupId = "needs-you" | "yours" | "others" | "all";
+export type PullRequestGroupId = PullRequestInvolvement | "all";
+
+/**
+ * Where an open row stands with the viewer, from what they can act on down to
+ * what they can only watch. `yours` and `incoming` are on repositories the
+ * viewer can merge; `contributions` and `elsewhere` are the same two split on
+ * repositories they cannot.
+ */
+export type PullRequestInvolvement =
+  | "needs-you"
+  | "yours"
+  | "incoming"
+  | "contributions"
+  | "elsewhere";
+
+export const PULL_REQUEST_INVOLVEMENTS: readonly PullRequestInvolvement[] = [
+  "needs-you",
+  "yours",
+  "incoming",
+  "contributions",
+  "elsewhere",
+];
+
+function isPullRequestInvolvement(value: unknown): value is PullRequestInvolvement {
+  return (
+    typeof value === "string" && (PULL_REQUEST_INVOLVEMENTS as readonly string[]).includes(value)
+  );
+}
 
 export interface PullRequestGroup {
   readonly id: PullRequestGroupId;
@@ -83,8 +110,8 @@ export type PullRequestDraftFilter = "any" | "only" | "hide";
 /** `none` is a row no reviewer has answered on yet, which the host omits. */
 export type PullRequestReviewFilter = "any" | "none" | PullRequestReviewDecision;
 export type PullRequestChecksFilter = "any" | "passing" | "failing" | "running";
-/** The same three groups the open list heads, as a narrowing of its own. */
-export type PullRequestInvolvementFilter = "all" | "needs-you" | "yours" | "others";
+/** The same groups the open list heads, as a narrowing of its own. */
+export type PullRequestInvolvementFilter = "all" | PullRequestInvolvement;
 export type PullRequestSort =
   | "readiness"
   | "updated"
@@ -160,9 +187,7 @@ export function parsePullRequestsSearch(search: Record<string, unknown>): PullRe
     ...searchText(search["author"], "author"),
     ...searchText(search["labels"], "labels"),
     ...searchText(search["project"], "project"),
-    ...(involvement === "needs-you" || involvement === "yours" || involvement === "others"
-      ? { involvement }
-      : {}),
+    ...(isPullRequestInvolvement(involvement) ? { involvement } : {}),
     ...(draft === "only" || draft === "hide" ? { draft } : {}),
     ...(review === "approved" ||
     review === "changes-requested" ||
@@ -736,21 +761,29 @@ export function countNeedsYou(entries: readonly PullRequestEntry[]): number {
   return count;
 }
 
-/** Which of the open list's three groups a row belongs to. */
-export function pullRequestInvolvement(
-  entry: PullRequestEntry,
-): Exclude<PullRequestInvolvementFilter, "all"> {
+/**
+ * Which of the open list's groups a row belongs to. A host that does not say
+ * whether the viewer may push is taken as if they may, so a row is never
+ * demoted on a silence: it stays under Yours or Incoming as it always did.
+ */
+export function pullRequestInvolvement(entry: PullRequestEntry): PullRequestInvolvement {
   if (resolveNeedsYouReason(entry) !== null) {
     return "needs-you";
   }
-  return entry.viewerIsAuthor ? "yours" : "others";
+  const canMerge = entry.viewerCanWrite !== false;
+  if (entry.viewerIsAuthor) {
+    return canMerge ? "yours" : "contributions";
+  }
+  return canMerge ? "incoming" : "elsewhere";
 }
 
 /**
- * The open list answers "what needs me" first, then the user's own work, then
- * everything else; a row belongs to exactly one group. Without a signed-in
- * viewer none of that is knowable, so the list stays flat, as it does for the
- * merged and closed tabs where the question does not apply.
+ * The open list answers "what needs me" first, then what the user can land
+ * (their own work, then other people's work on their repositories), then what
+ * is out of their hands (their contributions elsewhere, then everything they
+ * only follow); a row belongs to exactly one group. Without a signed-in viewer
+ * none of that is knowable, so the list stays flat, as it does for the merged
+ * and closed tabs where the question does not apply.
  */
 export function groupPullRequests(input: {
   readonly entries: readonly PullRequestEntry[];
@@ -773,21 +806,18 @@ export function groupPullRequests(input: {
     return sorted.length === 0 ? [] : [{ id: "all", label: null, entries: sorted }];
   }
 
-  const needsYou: PullRequestEntry[] = [];
-  const yours: PullRequestEntry[] = [];
-  const others: PullRequestEntry[] = [];
-  const byInvolvement = { "needs-you": needsYou, yours, others } as const;
+  const byInvolvement = new Map<PullRequestInvolvement, PullRequestEntry[]>(
+    PULL_REQUEST_INVOLVEMENTS.map((involvement) => [involvement, []]),
+  );
   for (const entry of sorted) {
-    byInvolvement[pullRequestInvolvement(entry)].push(entry);
+    byInvolvement.get(pullRequestInvolvement(entry))?.push(entry);
   }
 
-  return (
-    [
-      { id: "needs-you", label: "Needs you", entries: needsYou },
-      { id: "yours", label: "Yours", entries: yours },
-      { id: "others", label: "Others", entries: others },
-    ] as const
-  ).filter((group) => group.entries.length > 0);
+  return PULL_REQUEST_INVOLVEMENTS.map((id) => ({
+    id,
+    label: PULL_REQUEST_INVOLVEMENT_WORDS[id],
+    entries: byInvolvement.get(id) ?? [],
+  })).filter((group) => group.entries.length > 0);
 }
 
 /**
@@ -977,7 +1007,9 @@ export const PULL_REQUEST_INVOLVEMENT_WORDS: Readonly<
   all: "All",
   "needs-you": "Needs you",
   yours: "Yours",
-  others: "Others",
+  incoming: "Incoming",
+  contributions: "Contributions",
+  elsewhere: "Elsewhere",
 };
 
 /**

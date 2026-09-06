@@ -191,7 +191,11 @@ Header block:
 List:
 
 - Group header: same voice as the General chats page (`font-mono text-[10px] uppercase
-tracking-wider text-muted-foreground/55`), text "Needs you · 3", "Yours · 5", "Others · 12".
+tracking-wider text-muted-foreground/55`), text "Needs you · 3", "Yours · 5", "Incoming · 12",
+"Contributions · 2", "Elsewhere · 1". Yours and Incoming are on repositories the viewer can merge
+(the viewer's own work, then other people's); Contributions and Elsewhere are the same two on
+repositories the viewer cannot. A host that does not say whether the viewer may push leaves the
+row under Yours or Incoming.
 - Rows separated by `divide-y divide-border/50`. Each row is a `button` (`hover:bg-muted`,
   `rounded-md`, `py-2.5`, same as `ChatRow`) laid out as a grid: glyph column, content column.
 - Glyph: `GitPullRequestIcon` emerald for open (reuse the exact classes from
@@ -261,7 +265,7 @@ Action `action:pull-requests`, title "Open pull requests", search terms
 - `pullRequests.logic.test.ts`: grouping and reasons (one row per group, first-match rule), thread
   linking (archived excluded, branch must match, project must match), query matching.
 - `PullRequestsView.browser.tsx`: with `__setEnvironmentApiOverrideForTests` stubbing
-  `pullRequests.list`: renders three groups with the right counts; the sign-in empty state when
+  `pullRequests.list`: renders the groups with the right counts; the sign-in empty state when
   every project is `unauthenticated`; clicking "Review in a thread" opens the dialog with the PR
   URL prefilled. Keep it to those three.
 - Regenerate `routeTree.gen.ts` the way the router plugin does (check `apps/web/vite.config.ts`
@@ -1006,8 +1010,9 @@ provider like the GitHub ones, on decoders and argv.
 # Step 5: your pull requests anywhere
 
 The page lists the repositories in the workspace. Will also wants the pull requests he opened on
-repositories that are not projects here, such as an upstream contribution. Those join the **Yours**
-group with the repository named; everything else stays as it is.
+repositories that are not projects here, such as an upstream contribution. Those show with the
+repository named, under **Yours** where he can merge them and **Contributions** where he cannot;
+everything else stays as it is.
 
 ## Contracts
 
@@ -1113,7 +1118,7 @@ text-muted-foreground`, dot `size-2 rounded-full` coloured from the label's hex 
   Largest/Smallest use `additions + deletions`. URL `sort` values: `readiness | updated | newest |
 oldest | largest | smallest` (today's `created` and `size` map to `newest` and `largest`).
 - Filters menu, one submenu per line with the current value right-aligned in muted text:
-  Involvement (All, Needs you, Yours, Others), separator, Author (searchable: an input at the top
+  Involvement (All, Needs you, Yours, Incoming, Contributions, Elsewhere), separator, Author (searchable: an input at the top
   of the submenu, then "Anyone" and the logins seen in the loaded rows of every state that has
   been read, avatar + login, selected one first, max ten shown), Labels (searchable checklist of
   the labels seen in loaded rows, with colour dots; "Any" clears), Draft (Any, Only drafts, No
