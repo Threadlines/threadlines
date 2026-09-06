@@ -183,6 +183,7 @@ import {
 } from "@threadlines/shared/fileAttachments";
 import { searchProviderSkills } from "../../providerSkillSearch";
 import { resolveComposerSkillReferences } from "../../providerSkillReferences";
+import { useHorizontalOverflow } from "../../hooks/useHorizontalOverflow";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { ComposerVoiceControls, type ComposerVoiceControlsProps } from "./ComposerVoiceControls";
 
@@ -1403,6 +1404,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const latestPromptSuggestionDisplayText = latestPromptSuggestion
     ? formatPromptSuggestionDisplayText(latestPromptSuggestion)
     : null;
+  const promptSuggestionOverflow = useHorizontalOverflow(
+    latestPromptSuggestionDisplayText ?? "",
+    latestPromptSuggestionDisplayText !== null,
+  );
 
   const composerFooterHasWideActions = showPlanFollowUpPrompt;
   const composerFooterActionLayoutKey = useMemo(() => {
@@ -3043,11 +3048,35 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   onClick={() => applyPromptSuggestion(latestPromptSuggestion)}
                 >
                   <SparklesIcon className="size-3.5 shrink-0 text-muted-foreground/65" />
-                  <span className="truncate">{latestPromptSuggestionDisplayText}</span>
+                  <span
+                    ref={promptSuggestionOverflow.elementRef}
+                    data-prompt-suggestion-text="true"
+                    className="truncate"
+                  >
+                    {latestPromptSuggestionDisplayText}
+                  </span>
                 </button>
               }
             />
-            <TooltipPopup side="top">Claude suggested this prompt</TooltipPopup>
+            {/* The chip clips long suggestions, so the tooltip carries the full text
+                whenever it is clipped; a suggestion that fits keeps the short label. */}
+            <TooltipPopup
+              side="top"
+              align="start"
+              className="max-w-96"
+              data-prompt-suggestion-tooltip="true"
+            >
+              {promptSuggestionOverflow.overflows ? (
+                <span className="block text-pretty">
+                  {latestPromptSuggestionDisplayText}
+                  <span className="mt-1 block text-muted-foreground">
+                    Claude suggested this prompt
+                  </span>
+                </span>
+              ) : (
+                "Claude suggested this prompt"
+              )}
+            </TooltipPopup>
           </Tooltip>
         </div>
       ) : null}
