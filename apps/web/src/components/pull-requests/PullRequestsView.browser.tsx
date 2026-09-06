@@ -329,13 +329,20 @@ describe("PullRequestsView", () => {
         makeEntry({ number: 2, title: "Mine and quiet", viewerIsAuthor: true }),
         makeEntry({ number: 3, title: "Mine and approved", viewerIsAuthor: true }),
         makeEntry({ number: 4, title: "Someone else's work" }),
+        makeEntry({
+          number: 5,
+          title: "Sent upstream",
+          viewerIsAuthor: true,
+          viewerCanWrite: false,
+        }),
       ],
       errors: [],
     });
 
     await expect.element(page.getByText("Needs you · 1")).toBeVisible();
     await expect.element(page.getByText("Yours · 2")).toBeVisible();
-    await expect.element(page.getByText("Others · 1")).toBeVisible();
+    await expect.element(page.getByText("Incoming · 1")).toBeVisible();
+    await expect.element(page.getByText("Contributions · 1")).toBeVisible();
 
     await rendered.cleanup();
   });
