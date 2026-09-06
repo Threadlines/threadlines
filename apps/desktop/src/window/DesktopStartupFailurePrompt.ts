@@ -31,6 +31,8 @@ const TRY_AGAIN_BUTTON_INDEX = 0;
 const OPEN_LOGS_BUTTON_INDEX = 1;
 const QUIT_BUTTON_INDEX = 2;
 const OPEN_RECOVERY_FOLDER_BUTTON_INDEX = 1;
+const KEEP_WAITING_BUTTON_INDEX = 0;
+const MIGRATION_QUIT_BUTTON_INDEX = 1;
 
 export type DesktopStartupFailureAction = "retry" | "quit";
 
@@ -45,6 +47,14 @@ export interface DesktopStartupFailurePromptShape {
   ) => Effect.Effect<DesktopStartupFailureAction>;
   /** Shows where the damaged database was preserved after startup recovers. */
   readonly notifyDatabaseRecovery: (result: DesktopDatabaseRecoveryResult) => Effect.Effect<void>;
+  /**
+   * Tells the user a database migration is still running at the readiness
+   * deadline. Closes itself when interrupted. Never fails.
+   */
+  readonly notifyMigrationInProgress: (info: {
+    readonly migrationId: number;
+    readonly totalMigrations: number;
+  }) => Effect.Effect<void>;
 }
 
 export class DesktopStartupFailurePrompt extends Context.Service<
@@ -52,9 +62,12 @@ export class DesktopStartupFailurePrompt extends Context.Service<
   DesktopStartupFailurePromptShape
 >()("threadlines/desktop/StartupFailurePrompt") {}
 
+/** Drops the colour codes the server's pretty logger writes around its output. */
+export const stripAnsiEscapes = (text: string): string =>
+  text.replaceAll("\u001b", "").replace(/\[[0-9;]*m/g, "");
+
 function extractStartupFailureCause(outputTail: string): string | undefined {
-  const normalized = outputTail.replaceAll("\u001b", "").replace(/\[[0-9;]*m/g, "");
-  const lines = normalized
+  const lines = stripAnsiEscapes(outputTail)
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter((line) => line.length > 0);
@@ -194,7 +207,35 @@ const makeDesktopStartupFailurePrompt = Effect.gen(function* () {
       }).pipe(Effect.catchCause(() => Effect.void)),
     );
 
-  return DesktopStartupFailurePrompt.of({ handle, notifyDatabaseRecovery });
+  const notifyMigrationInProgress: DesktopStartupFailurePromptShape["notifyMigrationInProgress"] =
+    Effect.fn("desktop.startupFailurePrompt.notifyMigrationInProgress")((info) =>
+      Effect.gen(function* () {
+        // The backend owns this dialog's lifetime: when it finally answers, or
+        // the run ends, the manager interrupts this fiber and the box closes
+        // by itself (see ElectronDialog.showMessageBox) instead of leaving a
+        // stale notice on screen. An interrupted fiber never reaches the
+        // response check below, so a closed box is never read as a choice.
+        const result = yield* electronDialog.showMessageBox({
+          type: "info",
+          title: `${environment.displayName} is updating its data`,
+          message: `${environment.displayName} is updating its data`,
+          detail: `Database update ${info.migrationId} of ${info.totalMigrations} is still running. Large histories can take several minutes, and ${environment.displayName} opens on its own when it finishes.\n\nQuitting now is safe. The update starts over next time.`,
+          buttons: ["Keep Waiting", "Quit"],
+          defaultId: KEEP_WAITING_BUTTON_INDEX,
+          cancelId: KEEP_WAITING_BUTTON_INDEX,
+          noLink: true,
+        });
+        if (result.response === MIGRATION_QUIT_BUTTON_INDEX) {
+          yield* electronApp.quit;
+        }
+      }).pipe(Effect.catchCause(() => Effect.void)),
+    );
+
+  return DesktopStartupFailurePrompt.of({
+    handle,
+    notifyDatabaseRecovery,
+    notifyMigrationInProgress,
+  });
 });
 
 export const layer = Layer.effect(DesktopStartupFailurePrompt, makeDesktopStartupFailurePrompt);

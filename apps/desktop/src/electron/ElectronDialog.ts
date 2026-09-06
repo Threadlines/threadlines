@@ -74,7 +74,10 @@ const make = ElectronDialog.of({
     });
     return result.response === CONFIRM_BUTTON_INDEX;
   }),
-  showMessageBox: (options) => Effect.promise(() => Electron.dialog.showMessageBox(options)),
+  // Interrupting the fiber aborts the signal, which closes the box as if the
+  // user had cancelled it, so a dialog never outlives the work that showed it.
+  showMessageBox: (options) =>
+    Effect.promise((signal) => Electron.dialog.showMessageBox({ ...options, signal })),
   showErrorBox: (title, content) =>
     Effect.sync(() => {
       Electron.dialog.showErrorBox(title, content);
