@@ -464,6 +464,15 @@ describe("mapClaudeSubagentTranscript", () => {
     const capped = mapClaudeSubagentTranscript(longLine);
     assert.equal(capped.entries[0]?.text.length, 4_000);
 
+    // A spawn prompt is read whole, so text sent to the agent keeps far more
+    // than the agent's own output does.
+    const longPrompt = transcriptLine({
+      type: "user",
+      message: { content: "p".repeat(40_000) },
+    });
+    const cappedPrompt = mapClaudeSubagentTranscript(longPrompt);
+    assert.equal(cappedPrompt.entries[0]?.text.length, 32_000);
+
     const many = Array.from({ length: 5 }, () =>
       transcriptLine({
         type: "assistant",

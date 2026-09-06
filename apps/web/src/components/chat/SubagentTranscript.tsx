@@ -55,16 +55,19 @@ const EMPTY_WORK_ENTRIES: ReadonlyArray<WorkLogEntry> = [];
  *  following, small enough that a deliberate scroll up releases. */
 const BOTTOM_STICK_THRESHOLD_PX = 48;
 
+interface SubagentTranscriptSection {
+  readonly agentId: string;
+  readonly result: ProviderSubagentTranscriptResult;
+  /** The transcript's first record, read separately when the loaded page
+   *  starts past it. Null once read and found to be no instruction; undefined
+   *  while unknown. */
+  readonly firstEntry?: ProviderSubagentTranscriptEntry | null;
+}
+
 type SubagentTranscriptFetchState =
   | { readonly status: "loading" }
   | { readonly status: "error"; readonly message: string }
-  | {
-      readonly status: "loaded";
-      readonly sections: ReadonlyArray<{
-        readonly agentId: string;
-        readonly result: ProviderSubagentTranscriptResult;
-      }>;
-    };
+  | { readonly status: "loaded"; readonly sections: ReadonlyArray<SubagentTranscriptSection> };
 
 interface SubagentTranscriptProps {
   environmentId: EnvironmentId;
@@ -179,30 +182,25 @@ function mergeTranscriptPages(
 }
 
 function mergeTranscriptSections(
-  current: ReadonlyArray<{
-    readonly agentId: string;
-    readonly result: ProviderSubagentTranscriptResult;
-  }>,
-  incoming: ReadonlyArray<{
-    readonly agentId: string;
-    readonly result: ProviderSubagentTranscriptResult;
-  }>,
-) {
+  current: ReadonlyArray<SubagentTranscriptSection>,
+  incoming: ReadonlyArray<SubagentTranscriptSection>,
+): ReadonlyArray<SubagentTranscriptSection> {
   const currentByAgentId = new Map(current.map((section) => [section.agentId, section]));
   return incoming.map((section) => {
     const existing = currentByAgentId.get(section.agentId);
-    return existing
-      ? { ...section, result: mergeTranscriptPages(existing.result, section.result) }
-      : section;
+    if (!existing) {
+      return section;
+    }
+    const firstEntry = section.firstEntry ?? existing.firstEntry;
+    return {
+      ...section,
+      result: mergeTranscriptPages(existing.result, section.result),
+      ...(firstEntry !== undefined ? { firstEntry } : {}),
+    };
   });
 }
 
-function transcriptRevision(
-  sections: ReadonlyArray<{
-    readonly agentId: string;
-    readonly result: ProviderSubagentTranscriptResult;
-  }>,
-): string {
+function transcriptRevision(sections: ReadonlyArray<SubagentTranscriptSection>): string {
   return sections
     .map((section) => {
       const lastEntry = section.result.entries.at(-1);
@@ -256,18 +254,53 @@ export function SubagentTranscript({
     let refreshTimeoutId: ReturnType<typeof setTimeout> | null = null;
     setState({ status: "loading" });
 
-    const readLatestSections = async () => {
-      return await Promise.all(
-        requestedAgentIds.map(async (agentId) => ({
+    // The spawn prompt is the transcript's first record, which the newest page
+    // stops short of on any agent that has done real work. It never changes, so
+    // it is read once per agent and then rides along on every refresh.
+    const firstEntries = new Map<string, ProviderSubagentTranscriptEntry | null>();
+    const readFirstEntry = async (
+      agentId: string,
+      result: ProviderSubagentTranscriptResult,
+    ): Promise<ProviderSubagentTranscriptEntry | null | undefined> => {
+      const known = firstEntries.get(agentId);
+      if (known !== undefined) {
+        return known;
+      }
+      // Cursor-only providers carry no offset and no leading message to read.
+      if (result.offset === undefined || result.offset === 0) {
+        return undefined;
+      }
+      try {
+        const firstPage = await readSubagentTranscriptPage({
+          environmentId,
+          threadId,
           agentId,
-          result: await readSubagentTranscriptPage({
+          offset: 0,
+          limit: 1,
+        });
+        const firstEntry = firstPage.offset === 0 ? (firstPage.entries[0] ?? null) : null;
+        firstEntries.set(agentId, firstEntry);
+        return firstEntry;
+      } catch {
+        // The thread itself loaded; a missing prompt is not worth blanking it.
+        // Left unknown, the next refresh tries again.
+        return undefined;
+      }
+    };
+
+    const readLatestSections = async (): Promise<ReadonlyArray<SubagentTranscriptSection>> => {
+      return await Promise.all(
+        requestedAgentIds.map(async (agentId): Promise<SubagentTranscriptSection> => {
+          const result = await readSubagentTranscriptPage({
             environmentId,
             threadId,
             agentId,
             limit: TRANSCRIPT_PAGE_SIZE,
             fromEnd: true,
-          }),
-        })),
+          });
+          const firstEntry = await readFirstEntry(agentId, result);
+          return { agentId, result, ...(firstEntry !== undefined ? { firstEntry } : {}) };
+        }),
       );
     };
 
@@ -357,7 +390,11 @@ export function SubagentTranscript({
       const items = buildSubagentTranscriptView(section.result.entries, section.result.offset ?? 0);
       const atTranscriptStart =
         section.result.nextCursor === undefined && (section.result.offset ?? 0) === 0;
-      const { lead, steps } = splitSubagentTranscriptLead(items, atTranscriptStart);
+      const { lead, steps } = splitSubagentTranscriptLead(
+        items,
+        atTranscriptStart,
+        section.firstEntry,
+      );
       const activityRun =
         sectionIndex === 0 ? buildSubagentTranscriptActivityRun(activityEntries, items) : null;
       return {
@@ -372,7 +409,6 @@ export function SubagentTranscript({
         instruction: resolveSubagentTranscriptInstruction(
           lead,
           sectionIndex === 0 ? objective : null,
-          atTranscriptStart,
         ),
       };
     });
@@ -575,6 +611,24 @@ export function SubagentTranscript({
                 !follow && sectionIndex === sectionViews.length - 1 && terminalNotice !== null;
               return (
                 <div key={section.agentId} className="space-y-2">
+                  {sectionViews.length > 1 ? (
+                    <p className="font-mono text-[10px] text-muted-foreground/50">
+                      Agent {section.agentId}
+                    </p>
+                  ) : null}
+                  {/* The instruction is the setup for whatever page is showing,
+                      so it stays pinned above the paging control: "load
+                      earlier" then reads as earlier steps, not as something
+                      before the prompt. */}
+                  {instruction ? (
+                    <TranscriptInstruction
+                      instruction={instruction}
+                      environmentId={environmentId}
+                      threadId={threadId}
+                      cwd={cwd}
+                      timestampFormat={timestampFormat}
+                    />
+                  ) : null}
                   {section.result.nextCursor !== undefined || (section.result.offset ?? 0) > 0 ? (
                     <Button
                       type="button"
@@ -591,20 +645,6 @@ export function SubagentTranscript({
                   ) : null}
                   {earlierLoadError ? (
                     <p className="text-[10px] text-destructive/80">{earlierLoadError}</p>
-                  ) : null}
-                  {sectionViews.length > 1 ? (
-                    <p className="font-mono text-[10px] text-muted-foreground/50">
-                      Agent {section.agentId}
-                    </p>
-                  ) : null}
-                  {instruction ? (
-                    <TranscriptInstruction
-                      instruction={instruction}
-                      environmentId={environmentId}
-                      threadId={threadId}
-                      cwd={cwd}
-                      timestampFormat={timestampFormat}
-                    />
                   ) : null}
                   <div style={TRANSCRIPT_SPINE_STYLE}>
                     {groupedSteps.map((step, stepIndex) => {
