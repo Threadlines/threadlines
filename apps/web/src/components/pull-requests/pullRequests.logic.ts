@@ -585,6 +585,10 @@ export interface ThreadPullRequest {
   readonly settledAt: string | null;
   /** Armed to merge on its own once its requirements pass; false where the source did not say. */
   readonly autoMergeEnabled: boolean;
+  /** The branch it merges from; null where the source did not say. */
+  readonly headBranch: string | null;
+  /** Lines added and removed; null where the source does not count them. */
+  readonly diffStat: { readonly additions: number; readonly deletions: number } | null;
 }
 
 /**
@@ -657,6 +661,9 @@ export function pullRequestFromGitStatus(
     // The status read carries no dates.
     settledAt: null,
     autoMergeEnabled: gitStatus.pr.autoMergeEnabled === true,
+    headBranch: gitStatus.pr.headRef,
+    // The status read does not count lines.
+    diffStat: null,
   };
 }
 
@@ -714,6 +721,8 @@ export function resolveThreadPullRequest(input: {
     // is at or after it.
     settledAt: entry.settledAt ?? (entry.state === "open" ? null : entry.updatedAt),
     autoMergeEnabled: entry.autoMergeEnabled === true,
+    headBranch: entry.headBranch,
+    diffStat: { additions: entry.additions, deletions: entry.deletions },
   };
 }
 
@@ -1585,11 +1594,23 @@ export const PULL_REQUEST_FRESH_PUSH_WATCH_MS = 120_000;
  * from the base, a new commit) when the host has the commit but has not queued
  * its checks or decided whether it merges: a read then shows no checks at all,
  * and would otherwise sit on that answer until the user hit Refresh. A pull
- * request sitting in a merge queue is the third: its place in the queue moves
- * on its own, and the host lands it without anyone here asking.
+ * request the host is landing on its own is the third: in a merge queue, or
+ * armed with nothing the host says is in the way, it can be queued or merged
+ * without anyone here asking, and the surfaces showing it should see that
+ * happen. Armed but blocked (a review still owed, a failed check) is a settled
+ * state: nothing moves until someone acts, and that act is re-read on its own.
  */
 export function shouldPollPullRequestDetail(
-  detail: Pick<PullRequestDetail, "state" | "checks" | "mergeability" | "updatedAt" | "mergeQueue">,
+  detail: Pick<
+    PullRequestDetail,
+    | "state"
+    | "checks"
+    | "mergeability"
+    | "updatedAt"
+    | "mergeQueue"
+    | "autoMergeEnabled"
+    | "mergeGate"
+  >,
   now: number,
 ): boolean {
   if (detail.checks.some((check) => check.status === "pending")) {
@@ -1598,7 +1619,7 @@ export function shouldPollPullRequestDetail(
   if (detail.state !== "open") {
     return false;
   }
-  if (detail.mergeQueue !== undefined && detail.mergeQueue.position !== null) {
+  if (pullRequestArmedToMerge(detail) && detail.mergeGate !== "blocked") {
     return true;
   }
   const unsettled = detail.checks.length === 0 || detail.mergeability === "unknown";

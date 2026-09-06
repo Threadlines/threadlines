@@ -3,7 +3,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import type { ThreadPullRequest } from "../pull-requests/pullRequests.logic";
 import {
-  canToggleComposerAutoMerge,
+  composerAutoMergeControl,
   composerPullRequestCheckBuckets,
   composerPullRequestChip,
   composerPullRequestRow,
@@ -18,6 +18,8 @@ const THREAD_PULL_REQUEST: ThreadPullRequest = {
   repository: "Threadlines/threadlines",
   settledAt: null,
   autoMergeEnabled: false,
+  headBranch: null,
+  diffStat: null,
 };
 
 function check(status: PullRequestCheck["status"], name: string): PullRequestCheck {
@@ -80,23 +82,44 @@ function detail(overrides: Partial<PullRequestDetail> = {}): PullRequestDetail {
 }
 
 describe("composerPullRequestRow", () => {
-  it("renders from the thread's own pull request before the detail arrives", () => {
-    const row = composerPullRequestRow({ pullRequest: THREAD_PULL_REQUEST, detail: undefined });
+  it("renders whole from the thread's own pull request before the detail arrives", () => {
+    const row = composerPullRequestRow({
+      pullRequest: {
+        ...THREAD_PULL_REQUEST,
+        headBranch: "fix/migration-050-backfill-speed",
+        diffStat: { additions: 26, deletions: 25 },
+      },
+      projectTitle: "threadlines",
+      detail: undefined,
+    });
 
     expect(row.number).toBe(234);
     expect(row.state).toBe("open");
     expect(row.title).toBe(THREAD_PULL_REQUEST.title);
-    // Nothing but the detail knows these, and a guessed branch or diff stat is
-    // worse than a row that simply has not filled in yet.
+    // The listing and the project already know these, so the row does not
+    // fill in a beat after it appears.
+    expect(row.headBranch).toBe("fix/migration-050-backfill-speed");
+    expect(row.projectTitle).toBe("threadlines");
+    expect(row.diffStat).toEqual({ additions: 26, deletions: 25 });
+    // Only the detail knows how the checks are going.
+    expect(row.chip).toEqual({ label: "CI", tone: "unknown", interactive: true });
+  });
+
+  it("leaves blank what no source has said rather than guessing", () => {
+    const row = composerPullRequestRow({
+      pullRequest: THREAD_PULL_REQUEST,
+      projectTitle: null,
+      detail: undefined,
+    });
     expect(row.headBranch).toBeNull();
     expect(row.projectTitle).toBeNull();
     expect(row.diffStat).toBeNull();
-    expect(row.chip).toEqual({ label: "CI", tone: "unknown", interactive: true });
   });
 
   it("takes the branch, project, size and state from the detail once it lands", () => {
     const row = composerPullRequestRow({
       pullRequest: THREAD_PULL_REQUEST,
+      projectTitle: null,
       // The listing behind the thread's resolution polls slowly, so a merge
       // shows up on the detail first and the row has to follow it.
       detail: detail({ state: "merged", checks: [check("success", "build")] }),
@@ -159,23 +182,38 @@ describe("composerPullRequestCheckBuckets", () => {
   });
 });
 
-describe("canToggleComposerAutoMerge", () => {
-  it("is off where the host does not say whether the pull request is armed", () => {
-    expect(canToggleComposerAutoMerge(detail({ autoMergeEnabled: null }))).toBe(false);
-    expect(canToggleComposerAutoMerge(undefined)).toBe(false);
+describe("composerAutoMergeControl", () => {
+  it("is hidden where the host does not say whether the pull request is armed", () => {
+    expect(composerAutoMergeControl(detail({ autoMergeEnabled: null }))).toEqual({
+      kind: "hidden",
+    });
+    expect(composerAutoMergeControl(undefined)).toEqual({ kind: "hidden" });
   });
 
-  it("is off where the host offers neither action", () => {
+  it("is hidden where the host offers neither action", () => {
     expect(
-      canToggleComposerAutoMerge(
+      composerAutoMergeControl(
         detail({
           capabilities: { ...detail().capabilities, actions: ["merge", "close"] },
         }),
       ),
-    ).toBe(false);
+    ).toEqual({ kind: "hidden" });
   });
 
-  it("is on where the host offers one of them", () => {
-    expect(canToggleComposerAutoMerge(detail())).toBe(true);
+  it("is a switch carrying the standing instruction where the host offers one of them", () => {
+    expect(composerAutoMergeControl(detail())).toEqual({ kind: "toggle", checked: false });
+    expect(composerAutoMergeControl(detail({ autoMergeEnabled: true }))).toEqual({
+      kind: "toggle",
+      checked: true,
+    });
+  });
+
+  it("stops being a switch once the host has taken the pull request into its queue", () => {
+    // GitHub drops the instruction on entry to the queue, so a switch would
+    // read as off while the merge is in motion, and flipping it would re-arm
+    // and disarm an entry that no longer needs it.
+    expect(
+      composerAutoMergeControl(detail({ autoMergeEnabled: false, mergeQueue: { position: 1 } })),
+    ).toEqual({ kind: "queued" });
   });
 });

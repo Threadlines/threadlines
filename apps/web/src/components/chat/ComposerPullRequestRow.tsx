@@ -18,13 +18,16 @@ import type {
   PullRequestRef,
 } from "@threadlines/contracts";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { ChevronDownIcon, ExternalLinkIcon } from "lucide-react";
+import { ChevronDownIcon, ExternalLinkIcon, XIcon } from "lucide-react";
 import { useState } from "react";
 
 import { isElectron } from "../../env";
 import { useSettings, updateSettings } from "../../hooks/useSettings";
 import { readLocalApi } from "../../localApi";
-import { pullRequestActionMutationOptions } from "../../lib/pullRequestsReactQuery";
+import {
+  pullRequestActionMutationOptions,
+  pullRequestQueryKeys,
+} from "../../lib/pullRequestsReactQuery";
 import { cn } from "../../lib/utils";
 import {
   PullRequestHoverCard,
@@ -36,7 +39,7 @@ import { Checkbox } from "../ui/checkbox";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import { DiffStatLabel } from "./DiffStatLabel";
 import {
-  canToggleComposerAutoMerge,
+  composerAutoMergeControl,
   composerPullRequestCheckBuckets,
   composerPullRequestRow,
   pullRequestChecksUrl,
@@ -49,10 +52,14 @@ export interface ComposerPullRequest {
   readonly reference: PullRequestRef;
   /** What the sidebar badge and the tab already resolved. */
   readonly pullRequest: ThreadPullRequest;
+  /** The thread's project, which is the pull request's too. */
+  readonly projectTitle: string | null;
   /** The shared read behind the Pull request tab; absent until it lands. */
   readonly detail: PullRequestDetail | undefined;
   /** Opens the Pull request tab, the same place the sidebar badge goes. */
   readonly onOpen: () => void;
+  /** Closes the row for this pull request in this thread. */
+  readonly onDismiss: () => void;
 }
 
 const CHIP_TONE_CLASS: Readonly<
@@ -78,6 +85,7 @@ export function ComposerPullRequestRow({
 }) {
   const row = composerPullRequestRow({
     pullRequest: pullRequest.pullRequest,
+    projectTitle: pullRequest.projectTitle,
     detail: pullRequest.detail,
   });
   const tone = pullRequestBadgeTone(row.state, row.isDraft, row.autoMergeEnabled);
@@ -132,6 +140,14 @@ export function ComposerPullRequestRow({
         chip={row.chip}
         checksUrl={pullRequestChecksUrl(row.url)}
       />
+      <button
+        type="button"
+        aria-label={`Hide pull request #${row.number} from the composer`}
+        className="inline-flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground/70 transition-colors hover:text-foreground focus-ring"
+        onClick={pullRequest.onDismiss}
+      >
+        <XIcon className="size-3.5" />
+      </button>
     </div>
   );
 }
@@ -212,15 +228,39 @@ function ComposerPullRequestChecksPopover({
   const detail = pullRequest.detail;
   const buckets = composerPullRequestCheckBuckets(detail?.checks ?? []);
   const wrapUpOnSettled = useSettings((settings) => settings.wrapUpThreadsOnPullRequestSettled);
-  const autoMergeEnabled = detail?.autoMergeEnabled === true;
-  const canToggleAutoMerge = canToggleComposerAutoMerge(detail);
-  const action = useMutation(
-    pullRequestActionMutationOptions({
-      environmentId: pullRequest.environmentId,
-      reference: pullRequest.reference,
-      queryClient,
-    }),
+  const autoMergeControl = composerAutoMergeControl(detail);
+  const detailQueryKey = pullRequestQueryKeys.detail(
+    pullRequest.environmentId,
+    pullRequest.reference.projectId,
+    pullRequest.reference.number,
   );
+  const actionOptions = pullRequestActionMutationOptions({
+    environmentId: pullRequest.environmentId,
+    reference: pullRequest.reference,
+    queryClient,
+  });
+  const action = useMutation({
+    ...actionOptions,
+    // The switch flips the moment it is clicked. The host takes seconds to arm
+    // the merge and seconds more to be re-read, and a switch that waits for
+    // both reads as one that did not take the click. If the host refuses, the
+    // detail it was read from comes back.
+    onMutate: (variables) => {
+      const previous = queryClient.getQueryData<PullRequestDetail>(detailQueryKey);
+      if (previous && variables.action.endsWith("auto-merge")) {
+        queryClient.setQueryData<PullRequestDetail>(detailQueryKey, {
+          ...previous,
+          autoMergeEnabled: variables.action === "enable-auto-merge",
+        });
+      }
+      return { previous };
+    },
+    onError: (_error, _variables, context) => {
+      if (context?.previous) {
+        queryClient.setQueryData(detailQueryKey, context.previous);
+      }
+    },
+  });
 
   return (
     <div className="w-full py-2 text-xs">
@@ -270,12 +310,11 @@ function ComposerPullRequestChecksPopover({
         })
       )}
       <div className="my-1.5 border-border border-t" />
-      {canToggleAutoMerge ? (
+      {autoMergeControl.kind === "toggle" ? (
         <label className="flex cursor-pointer items-center gap-2 px-3 py-1 transition-colors hover:bg-accent">
           <Checkbox
             className="size-3.5"
-            checked={autoMergeEnabled}
-            disabled={action.isPending}
+            checked={autoMergeControl.checked}
             onCheckedChange={(checked) => {
               const next: PullRequestAction = checked ? "enable-auto-merge" : "disable-auto-merge";
               action.mutate({ action: next });
@@ -283,6 +322,14 @@ function ComposerPullRequestChecksPopover({
           />
           Merge when checks pass
         </label>
+      ) : null}
+      {autoMergeControl.kind === "queued" ? (
+        // The host has taken it: there is no instruction left to switch off,
+        // and the queue lands it on its own.
+        <p className="flex items-center gap-2 px-3 py-1 text-muted-foreground">
+          <ChipDot className={CHIP_TONE_CLASS.queued.dot + " " + CHIP_TONE_CLASS.queued.chip} />
+          In the merge queue
+        </p>
       ) : null}
       <label className="flex cursor-pointer items-center gap-2 px-3 py-1 transition-colors hover:bg-accent">
         <Checkbox

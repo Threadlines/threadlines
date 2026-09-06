@@ -516,6 +516,8 @@ describe("resolveThreadPullRequest", () => {
       repository: "threadlines/threadlines",
       settledAt: null,
       autoMergeEnabled: false,
+      headBranch: "feature/pull-requests",
+      diffStat: null,
     });
   });
 
@@ -1141,6 +1143,7 @@ describe("shouldPollPullRequestDetail", () => {
     state: "open" as const,
     mergeability: "mergeable" as const,
     updatedAt: "2026-09-04T11:00:00.000Z",
+    autoMergeEnabled: null,
   };
 
   it("polls while a check runs, and for a while after a push before any check exists", () => {
@@ -1172,9 +1175,20 @@ describe("shouldPollPullRequestDetail", () => {
     expect(shouldPollPullRequestDetail({ ...inQueue, mergeQueue: { position: 2 } }, now)).toBe(
       true,
     );
-    // Merely armed under a queue is a settled state: nothing moves until the
-    // requirements pass, which the checks already say.
     expect(shouldPollPullRequestDetail({ ...inQueue, mergeQueue: { position: null } }, now)).toBe(
+      false,
+    );
+  });
+
+  it("keeps watching an armed pull request with nothing in its way", () => {
+    // The host can take or merge it at any moment, and the composer's chip and
+    // the sidebar badge are what say it happened.
+    const armed = { ...settled, checks: [check("success")], autoMergeEnabled: true };
+    expect(shouldPollPullRequestDetail({ ...armed, mergeGate: "clear" as const }, now)).toBe(true);
+    expect(shouldPollPullRequestDetail(armed, now)).toBe(true);
+    // Armed but blocked is a settled state: a review still owed does not
+    // clear itself, and reading every twenty seconds would only find that out.
+    expect(shouldPollPullRequestDetail({ ...armed, mergeGate: "blocked" as const }, now)).toBe(
       false,
     );
   });

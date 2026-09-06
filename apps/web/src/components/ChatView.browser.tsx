@@ -3034,6 +3034,17 @@ describe("ChatView timeline estimator parity (full app)", () => {
           dock!.getBoundingClientRect().bottom - composerSurface!.getBoundingClientRect().top,
         ),
       ).toBeLessThan(2);
+
+      // Closing the row takes it off the composer; the notice stays docked.
+      row.querySelector<HTMLButtonElement>('button[aria-label^="Hide pull request"]')!.click();
+      await waitForElement(
+        () =>
+          document.querySelector('[data-composer-pull-request-row="true"]') === null
+            ? document.querySelector<HTMLElement>('[data-composer-notice-dock="true"]')
+            : null,
+        "The pull request row did not leave the composer.",
+      );
+      expect(document.querySelector("[data-composer-notice-severity]")).toBeTruthy();
     } finally {
       await mounted.cleanup();
     }
