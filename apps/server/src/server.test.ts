@@ -64,6 +64,7 @@ import {
   ProviderAuthSessions,
   type ProviderAuthSessionsShape,
 } from "./provider/auth/ProviderAuthSessions.ts";
+import { DictationLive } from "./dictation/DictationService.ts";
 import { makeRoutesLayer } from "./server.ts";
 import { resolveAttachmentRelativePath } from "./attachmentPaths.ts";
 import {
@@ -633,6 +634,9 @@ const buildAppUnderTest = (options?: {
           // Real rather than mocked: it holds no resources and its whole
           // behaviour is the rendezvous, so a mock would only assert wiring.
           PreviewAutomationBroker.layer,
+          // Real too: with no models on disk it only reports "missing" and
+          // never starts the worker, so a mock would assert nothing.
+          DictationLive,
           Layer.mock(ProviderRegistry)({
             getProviders: Effect.succeed([]),
             refresh: () => Effect.succeed([]),

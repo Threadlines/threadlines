@@ -13,7 +13,7 @@ import * as PlatformError from "effect/PlatformError";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 
-import type * as Electron from "electron";
+import * as Electron from "electron";
 
 import * as DesktopAssets from "../app/DesktopAssets.ts";
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
@@ -483,6 +483,27 @@ const make = Effect.gen(function* () {
         event.preventDefault();
       }
     });
+
+    // Composer dictation is the only thing here that asks for a device. Grant
+    // audio-only capture (behind the OS prompt on macOS) and leave every other
+    // permission on the answer Electron gives today.
+    window.webContents.session.setPermissionRequestHandler(
+      (_contents, permission, callback, details) => {
+        const mediaTypes = "mediaTypes" in details ? (details.mediaTypes ?? []) : [];
+        const audioOnly =
+          permission === "media" &&
+          mediaTypes.length > 0 &&
+          mediaTypes.every((mediaType) => mediaType === "audio");
+        if (!audioOnly || environment.platform !== "darwin") {
+          callback(true);
+          return;
+        }
+        void Electron.systemPreferences
+          .askForMediaAccess("microphone")
+          .then((granted) => callback(granted))
+          .catch(() => callback(false));
+      },
+    );
 
     if (
       !environment.marketingCaptureMode &&

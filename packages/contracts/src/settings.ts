@@ -3,6 +3,7 @@ import * as Duration from "effect/Duration";
 import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
 import { ProjectId, TrimmedNonEmptyString, TrimmedString } from "./baseSchemas.ts";
+import { DictationModelId } from "./dictation.ts";
 import {
   DEFAULT_GIT_TEXT_GENERATION_MODEL,
   DEFAULT_GIT_TEXT_GENERATION_OPTIONS,
@@ -77,6 +78,12 @@ export const ClientSettingsSchema = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed([])),
   ),
   // When true, expanded diff files render only changed lines (zero context).
+  // Dictation is per device: whether the mic button records only while held,
+  // and which microphone this device records from (`null` = system default).
+  dictationHoldToRecord: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  dictationMicrophoneDeviceId: Schema.NullOr(TrimmedNonEmptyString).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
   diffChangesOnly: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   diffIgnoreWhitespace: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   diffRenderMode: DiffRenderMode.pipe(
@@ -445,6 +452,9 @@ export type SourceControlWritingStyleSettings = typeof SourceControlWritingStyle
 
 export const DEFAULT_AUTOMATIC_GIT_FETCH_INTERVAL = Duration.minutes(2);
 
+/** Parakeet is the accuracy default; Moonshine is the small/fast alternative. */
+export const DEFAULT_DICTATION_MODEL: DictationModelId = "parakeet";
+
 export const ServerSettings = Schema.Struct({
   enableAssistantStreaming: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   // Machine-wide thread retention policy (0 = disabled), enforced by the
@@ -466,6 +476,11 @@ export const ServerSettings = Schema.Struct({
   ),
   defaultThreadEnvMode: ThreadEnvMode.pipe(
     Schema.withDecodingDefault(Effect.succeed("local" as const satisfies ThreadEnvMode)),
+  ),
+  // Speech-to-text model used by composer dictation. The model files are
+  // downloaded on demand and shared by every client of this server.
+  dictationModel: DictationModelId.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_DICTATION_MODEL)),
   ),
   addProjectBaseDirectory: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
   textGenerationModelSelection: ModelSelection.pipe(
@@ -588,6 +603,7 @@ export const ServerSettingsPatch = Schema.Struct({
   usageAnalyticsEnabled: Schema.optionalKey(Schema.Boolean),
   automaticGitFetchInterval: Schema.optionalKey(Schema.DurationFromMillis),
   defaultThreadEnvMode: Schema.optionalKey(ThreadEnvMode),
+  dictationModel: Schema.optionalKey(DictationModelId),
   addProjectBaseDirectory: Schema.optionalKey(TrimmedString),
   textGenerationModelSelection: Schema.optionalKey(ModelSelectionPatch),
   textGenerationBackupModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelectionPatch)),
@@ -630,6 +646,8 @@ export const ClientSettingsPatch = Schema.Struct({
   confirmThreadArchive: Schema.optionalKey(Schema.Boolean),
   confirmThreadDelete: Schema.optionalKey(Schema.Boolean),
   wrapUpThreadsOnPullRequestSettled: Schema.optionalKey(Schema.Boolean),
+  dictationHoldToRecord: Schema.optionalKey(Schema.Boolean),
+  dictationMicrophoneDeviceId: Schema.optionalKey(Schema.NullOr(TrimmedNonEmptyString)),
   diffChangesOnly: Schema.optionalKey(Schema.Boolean),
   diffIgnoreWhitespace: Schema.optionalKey(Schema.Boolean),
   diffRenderMode: Schema.optionalKey(DiffRenderMode),

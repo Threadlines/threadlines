@@ -94,6 +94,15 @@ export interface WsRpcClient {
     readonly appendAudio: RpcUnaryMethod<typeof WS_METHODS.realtimeAppendAudio>;
     readonly subscribeAudio: RpcInputStreamMethod<typeof WS_METHODS.realtimeSubscribeAudio>;
   };
+  /** Composer dictation: model downloads and server-side speech-to-text. */
+  readonly dictation: {
+    readonly subscribeStatus: RpcStreamMethod<typeof WS_METHODS.dictationSubscribeStatus>;
+    readonly downloadModel: RpcUnaryMethod<typeof WS_METHODS.dictationDownloadModel>;
+    readonly cancelDownload: RpcUnaryMethod<typeof WS_METHODS.dictationCancelDownload>;
+    readonly removeModel: RpcUnaryMethod<typeof WS_METHODS.dictationRemoveModel>;
+    readonly warmUp: RpcUnaryNoArgMethod<typeof WS_METHODS.dictationWarmUp>;
+    readonly transcribe: RpcUnaryMethod<typeof WS_METHODS.dictationTranscribe>;
+  };
   /** Offering this client's browser panel as the page the agent acts on. */
   readonly previewAutomation: {
     readonly connect: RpcInputStreamMethod<typeof WS_METHODS.previewAutomationConnect>;
@@ -438,6 +447,25 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
             ...(options?.onComplete ? { onComplete: options.onComplete } : {}),
           },
         ),
+    },
+    dictation: {
+      // Status drives whether the mic records or opens the setup popover, so
+      // it has to survive a reconnect without the composer being remounted.
+      subscribeStatus: (listener, options) =>
+        transport.subscribe((client) => client[WS_METHODS.dictationSubscribeStatus]({}), listener, {
+          ...options,
+          tag: WS_METHODS.dictationSubscribeStatus,
+          resubscribe: true,
+        }),
+      downloadModel: (input) =>
+        transport.request((client) => client[WS_METHODS.dictationDownloadModel](input)),
+      cancelDownload: (input) =>
+        transport.request((client) => client[WS_METHODS.dictationCancelDownload](input)),
+      removeModel: (input) =>
+        transport.request((client) => client[WS_METHODS.dictationRemoveModel](input)),
+      warmUp: () => transport.request((client) => client[WS_METHODS.dictationWarmUp]({})),
+      transcribe: (input) =>
+        transport.request((client) => client[WS_METHODS.dictationTranscribe](input)),
     },
     previewAutomation: {
       connect: (input, listener, options) =>

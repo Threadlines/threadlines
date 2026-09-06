@@ -18,6 +18,7 @@ import * as Option from "effect/Option";
 import { ensureLocalApi } from "../../localApi";
 import { useRelativeTimeTick } from "../../hooks/useRelativeTimeTick";
 import { copyTextToClipboard } from "../../lib/clipboard";
+import { formatBytes } from "../../lib/formatBytes";
 import { cn } from "../../lib/utils";
 import { resolveAndPersistPreferredEditor } from "../../editorPreferences";
 import { formatRelativeTime } from "../../timestampFormat";
@@ -49,18 +50,6 @@ function formatCount(value: number): string {
 function formatDuration(value: number): string {
   if (value < 1_000) return `${Math.round(value)} ms`;
   return `${(value / 1_000).toFixed(value >= 10_000 ? 1 : 2)} s`;
-}
-
-function formatBytes(value: number): string {
-  if (value < 1024) return `${value} B`;
-  const units = ["KB", "MB", "GB"] as const;
-  let unitIndex = -1;
-  let next = value;
-  do {
-    next /= 1024;
-    unitIndex += 1;
-  } while (next >= 1024 && unitIndex < units.length - 1);
-  return `${next.toFixed(next >= 10 ? 1 : 2)} ${units[unitIndex]}`;
 }
 
 function formatRelative(value: DateTime.Utc | null): string {

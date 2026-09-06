@@ -117,6 +117,7 @@ import { redactServerSettingsForClient, ServerSettingsService } from "./serverSe
 import { ProviderAuthSessions } from "./provider/auth/ProviderAuthSessions.ts";
 import { TerminalManager } from "./terminal/Services/Manager.ts";
 import { realtimeAudioHub } from "./realtime/RealtimeAudioHub.ts";
+import { DictationService } from "./dictation/DictationService.ts";
 import { WorkspaceEntries } from "./workspace/Services/WorkspaceEntries.ts";
 import { WorkspaceFileSystem } from "./workspace/Services/WorkspaceFileSystem.ts";
 import { WorkspacePathOutsideRootError } from "./workspace/Services/WorkspacePaths.ts";
@@ -260,6 +261,7 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
       const vcsStatusBroadcaster = yield* VcsStatusBroadcaster;
       const terminalManager = yield* TerminalManager;
       const providerAuthSessions = yield* ProviderAuthSessions;
+      const dictation = yield* DictationService;
       const providerRegistry = yield* ProviderRegistry;
       const providerService = yield* ProviderService;
       const providerMaintenanceRunner = yield* ProviderMaintenanceRunner.ProviderMaintenanceRunner;
@@ -2302,6 +2304,36 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
             realtimeAudioHub.subscribe(input.threadId),
             { "rpc.aggregate": "realtime" },
           ),
+        [WS_METHODS.dictationSubscribeStatus]: (_input) =>
+          observeRpcStream(WS_METHODS.dictationSubscribeStatus, dictation.streamChanges, {
+            "rpc.aggregate": "dictation",
+          }),
+        [WS_METHODS.dictationDownloadModel]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.dictationDownloadModel,
+            dictation.downloadModel(input.model),
+            {
+              "rpc.aggregate": "dictation",
+            },
+          ),
+        [WS_METHODS.dictationCancelDownload]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.dictationCancelDownload,
+            dictation.cancelDownload(input.model),
+            { "rpc.aggregate": "dictation" },
+          ),
+        [WS_METHODS.dictationRemoveModel]: (input) =>
+          observeRpcEffect(WS_METHODS.dictationRemoveModel, dictation.removeModel(input.model), {
+            "rpc.aggregate": "dictation",
+          }),
+        [WS_METHODS.dictationWarmUp]: (_input) =>
+          observeRpcEffect(WS_METHODS.dictationWarmUp, dictation.warmUp, {
+            "rpc.aggregate": "dictation",
+          }),
+        [WS_METHODS.dictationTranscribe]: (input) =>
+          observeRpcEffect(WS_METHODS.dictationTranscribe, dictation.transcribe(input), {
+            "rpc.aggregate": "dictation",
+          }),
         [WS_METHODS.subscribeServerConfig]: (_input) =>
           observeRpcStreamEffect(
             WS_METHODS.subscribeServerConfig,
