@@ -1003,6 +1003,35 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
         assert.equal(yield* git(worktreePath, ["branch", "--show-current"]), "feature/doomed");
       }),
     );
+
+    // A removal that died halfway (a long-path failure, a kill mid-delete)
+    // leaves the folder without its `.git` file. Git lists the registration
+    // as prunable and refuses to remove it ("validation failed"), so the
+    // driver has to prune the dead registration and delete the leftovers.
+    it.effect("removes a half-deleted worktree whose .git file is gone", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        const { initialBranch } = yield* initRepoWithCommit(cwd);
+        const pathService = yield* Path.Path;
+        const worktreePath = pathService.join(yield* makeTmpDir("git-worktrees-"), "half-gone");
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+        const fileSystem = yield* FileSystem.FileSystem;
+
+        yield* driver.createWorktree({
+          cwd,
+          path: worktreePath,
+          refName: initialBranch,
+          newRefName: "feature/half-gone",
+        });
+        yield* fileSystem.remove(pathService.join(worktreePath, ".git"));
+        assert.match(yield* git(cwd, ["worktree", "list", "--porcelain"]), /^prunable /mu);
+
+        yield* driver.removeWorktree({ cwd, path: worktreePath, force: true });
+
+        assert.equal(yield* fileSystem.exists(worktreePath), false);
+        assert.notMatch(yield* git(cwd, ["worktree", "list", "--porcelain"]), /half-gone/u);
+      }),
+    );
   });
 
   describe("commit context", () => {
