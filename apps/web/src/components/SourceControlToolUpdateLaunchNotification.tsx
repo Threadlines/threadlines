@@ -1,10 +1,17 @@
 import { useNavigate } from "@tanstack/react-router";
-import { useEffect, useMemo, useRef } from "react";
+import { isSourceControlToolBusy } from "@threadlines/client-runtime";
+import type { EnvironmentId, SourceControlToolUpdateTarget } from "@threadlines/contracts";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import {
   updateSourceControlTool,
   useSourceControlDiscovery,
+  useSourceControlSetup,
 } from "../lib/sourceControlDiscoveryState";
+import {
+  sourceControlToolUpdateErrorCopy,
+  sourceControlToolUpdateResultCopy,
+} from "../lib/sourceControlToolUpdateCopy";
 import { useDismissedSourceControlToolAdvisoryKeys } from "../sourceControlToolAdvisoryDismissal";
 import { useStore } from "../store";
 import { useActiveEnvironmentFirstRunSetupPending } from "./chat/firstRunSetupState";
@@ -15,12 +22,45 @@ import {
 } from "./SourceControlToolUpdateLaunchNotification.logic";
 import { stackedThreadToast, toastManager } from "./ui/toast";
 
+const SOURCE_CONTROL_UPDATE_SUCCESS_VISIBLE_MS = 3_000;
+
 const seenSourceControlToolNoticeSetKeys = new Set<string>();
 type SourceControlToolNoticeToastId = ReturnType<typeof toastManager.add>;
 
 interface ActiveSourceControlToolNoticeToast {
+  /** "prompt" follows the notice set and closes when it changes; "update" owns a run and finishes on its own. */
+  readonly kind: "prompt" | "update";
   readonly key: string;
   readonly toastId: SourceControlToolNoticeToastId;
+}
+
+interface SourceControlToolUpdateInProgress {
+  readonly toastId: SourceControlToolNoticeToastId;
+  readonly environmentId: EnvironmentId;
+  readonly target: SourceControlToolUpdateTarget;
+}
+
+/**
+ * Mirrors the server's job message ("Updating. Windows will ask for
+ * permission…", "Checking installation.") into the running toast. Mounted only
+ * while an update toast is up, so the setup poll runs only then.
+ */
+function SourceControlToolUpdateToastProgress({
+  toastId,
+  environmentId,
+  target,
+}: SourceControlToolUpdateInProgress) {
+  const setup = useSourceControlSetup({ environmentId });
+  const job = setup.tools.find((tool) => tool.target === target);
+  const message = job && isSourceControlToolBusy(job.status) ? job.message : null;
+
+  useEffect(() => {
+    if (message) {
+      toastManager.update(toastId, { description: message });
+    }
+  }, [message, toastId]);
+
+  return null;
 }
 
 export function SourceControlToolUpdateLaunchNotification() {
@@ -29,6 +69,8 @@ export function SourceControlToolUpdateLaunchNotification() {
   const discovery = useSourceControlDiscovery({ environmentId: activeEnvironmentId });
   const firstRunSetupPending = useActiveEnvironmentFirstRunSetupPending();
   const activeToastRef = useRef<ActiveSourceControlToolNoticeToast | null>(null);
+  const [updateInProgress, setUpdateInProgress] =
+    useState<SourceControlToolUpdateInProgress | null>(null);
   const { dismissedNotificationKeys, dismissNotificationKeys } =
     useDismissedSourceControlToolAdvisoryKeys();
 
@@ -45,7 +87,7 @@ export function SourceControlToolUpdateLaunchNotification() {
 
   useEffect(() => {
     const activeToast = activeToastRef.current;
-    if (activeToast && activeToast.key !== noticeSetKey) {
+    if (activeToast?.kind === "prompt" && activeToast.key !== noticeSetKey) {
       toastManager.close(activeToast.toastId);
       activeToastRef.current = null;
     }
@@ -68,11 +110,14 @@ export function SourceControlToolUpdateLaunchNotification() {
     const copy = sourceControlToolUpdateToastCopy(notices);
 
     let toastId!: SourceControlToolNoticeToastId;
-    const dismiss = () => {
-      dismissNotificationKeys(dismissalKeys);
+    const release = () => {
       if (activeToastRef.current?.toastId === toastId) {
         activeToastRef.current = null;
       }
+    };
+    const dismiss = () => {
+      dismissNotificationKeys(dismissalKeys);
+      release();
     };
     const openSettings = () => {
       dismiss();
@@ -82,38 +127,88 @@ export function SourceControlToolUpdateLaunchNotification() {
     const runUpdate = () => {
       if (!directUpdateAction || !activeEnvironmentId) return;
       const notice = notices[0]!;
-      dismiss();
-      toastManager.close(toastId);
+      const operation = directUpdateAction.operation;
 
-      void updateSourceControlTool({
+      // The toast stays up as the progress surface, then finishes in place.
+      // If the user closes it mid-run, the outcome still gets its own toast.
+      let toastOpen = true;
+      activeToastRef.current = { kind: "update", key: noticeSetKey, toastId };
+      toastManager.update(toastId, {
+        type: "loading",
+        title: `${operation === "install" ? "Installing" : "Updating"} ${notice.label}`,
+        description: "Running the verified update command.",
+        timeout: 0,
+        actionProps: undefined,
+        data: {
+          hideCopyButton: true,
+          onClose: () => {
+            toastOpen = false;
+            release();
+          },
+        },
+      });
+      setUpdateInProgress({
+        toastId,
         environmentId: activeEnvironmentId,
         target: directUpdateAction.target,
-        ...(directUpdateAction.operation ? { operation: directUpdateAction.operation } : {}),
+      });
+
+      const finish = (options: Parameters<typeof toastManager.add>[0]) => {
+        setUpdateInProgress(null);
+        if (toastOpen) {
+          toastManager.update(toastId, options);
+        } else {
+          toastManager.add(options);
+        }
+      };
+
+      updateSourceControlTool({
+        environmentId: activeEnvironmentId,
+        target: directUpdateAction.target,
+        ...(operation ? { operation } : {}),
       })
         .then((result) => {
-          toastManager.add({
-            type: result.status === "succeeded" ? "success" : "info",
-            title:
-              result.status === "succeeded"
-                ? `${notice.label} updated`
-                : result.status === "started"
-                  ? `${notice.label} update started`
-                  : `${notice.label} is unchanged`,
-            description:
-              result.status === "succeeded"
-                ? `${result.previousVersion ?? "Previous version"} to ${result.currentVersion ?? "updated"}`
-                : result.status === "started"
-                  ? "The official installer is running. Finish any Windows permission prompt, then check again."
-                  : "The update command finished, but the detected version did not change.",
-          });
+          const outcome = sourceControlToolUpdateResultCopy({ label: notice.label, result });
+          finish(
+            outcome.type === "success"
+              ? {
+                  type: outcome.type,
+                  title: outcome.title,
+                  description: outcome.description,
+                  timeout: 0,
+                  actionProps: undefined,
+                  data: {
+                    hideCopyButton: true,
+                    onClose: dismiss,
+                    dismissAfterVisibleMs: SOURCE_CONTROL_UPDATE_SUCCESS_VISIBLE_MS,
+                  },
+                }
+              : stackedThreadToast({
+                  type: outcome.type,
+                  title: outcome.title,
+                  description: outcome.description,
+                  timeout: 0,
+                  actionProps: { children: "Settings", onClick: openSettings },
+                  actionVariant: "outline",
+                  data: { hideCopyButton: true, onClose: dismiss },
+                }),
+          );
         })
         .catch((error: unknown) => {
-          toastManager.add(
+          const failure = sourceControlToolUpdateErrorCopy({
+            label: notice.label,
+            operation,
+            error,
+          });
+          finish(
             stackedThreadToast({
               type: "error",
-              title: `Could not update ${notice.label}`,
-              description:
-                error instanceof Error ? error.message : "The verified update command failed.",
+              title: failure.title,
+              description: failure.description,
+              timeout: 0,
+              actionProps: { children: "Settings", onClick: openSettings },
+              actionVariant: "outline",
+              data: { hideCopyButton: true, onClose: dismiss },
             }),
           );
         });
@@ -136,8 +231,8 @@ export function SourceControlToolUpdateLaunchNotification() {
         },
       }),
     );
-    activeToastRef.current = { key: noticeSetKey, toastId };
+    activeToastRef.current = { kind: "prompt", key: noticeSetKey, toastId };
   }, [dismissNotificationKeys, firstRunSetupPending, navigate, noticeSetKey, notices]);
 
-  return null;
+  return updateInProgress ? <SourceControlToolUpdateToastProgress {...updateInProgress} /> : null;
 }
