@@ -291,6 +291,7 @@ describe("ProviderSessionReaper", () => {
         Layer.succeed(OrchestrationEngineService, {
           readEvents: () => Stream.empty,
           dispatch,
+          getCommandReceipt: () => Effect.succeed(Option.none()),
           streamDomainEvents: Stream.empty,
           subscribeDomainEvents: Effect.succeed(Stream.empty),
         }),

@@ -116,7 +116,8 @@ import { ComposerPendingUserInputPanel } from "./ComposerPendingUserInputPanel";
 import { ComposerGoalBar, type ComposerGoalSetInput } from "./ComposerGoalBar";
 import { ComposerPlanFollowUpBanner } from "./ComposerPlanFollowUpBanner";
 import type { ComposerNotice } from "./composerNotices";
-import { ComposerNoticeDock } from "./ComposerNoticeDock";
+import { ComposerDock, hasComposerDockContent } from "./ComposerDock";
+import type { ComposerPullRequest } from "./ComposerPullRequestRow";
 import { ComposerPendingDrawingContexts } from "./ComposerPendingDrawingContexts";
 import { ComposerPendingPickedElementContexts } from "./ComposerPendingPickedElementContexts";
 import { ComposerPendingTranscriptHighlightContexts } from "./ComposerPendingTranscriptHighlightContexts";
@@ -145,6 +146,7 @@ import {
   useProviderRateLimitResetCredit,
 } from "../ProviderRateLimitResetCredit";
 import { CircleAlertIcon, FileTextIcon, SparklesIcon, XIcon } from "lucide-react";
+import { Kbd } from "../ui/kbd";
 import { proposedPlanTitle } from "../../proposedPlan";
 import {
   getProviderDisplayName,
@@ -558,6 +560,13 @@ export interface ChatComposerProps {
    */
   notices: ReadonlyArray<ComposerNotice>;
 
+  /**
+   * The pull request the thread is working on, docked above the notices. Null
+   * where the thread has none, or where the surface has no route to resolve
+   * one (a draft, a general chat).
+   */
+  pullRequest: ComposerPullRequest | null;
+
   // Misc
   resolvedTheme: "light" | "dark";
   settings: UnifiedSettings;
@@ -655,6 +664,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     activeThreadModelSelection,
     activeThreadActivities,
     notices,
+    pullRequest,
     resolvedTheme,
     settings,
     keybindings,
@@ -2590,6 +2600,14 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         return true;
       }
     }
+    // Tab accepts the Claude suggestion floating above the composer. The
+    // suggestion only exists while the composer is empty, so this never
+    // clobbers typed text, and the menu branch above already claimed Tab when
+    // a slash or mention menu is open.
+    if (key === "Tab" && latestPromptSuggestion) {
+      applyPromptSuggestion(latestPromptSuggestion);
+      return true;
+    }
     if (key === "Enter" && !event.shiftKey) {
       submitComposer();
       return true;
@@ -3033,21 +3051,23 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     >
       {/* Float the suggestion above the composer (like the scroll-to-bottom button) so it
           overlays the bottom of the message list instead of consuming input-bar height.
-          Width is capped below half the composer so it never reaches the centered
-          scroll-to-bottom button that shares this band. */}
+          It is bare text rather than a chip: no border, fill, or shadow, so it reads as
+          a quiet hint instead of a second card stacked on the composer. Width is capped
+          below half the composer so it never reaches the centered scroll-to-bottom
+          button that shares this band. */}
       {latestPromptSuggestion && latestPromptSuggestionDisplayText && !isComposerCollapsedMobile ? (
-        <div className="absolute inset-x-0 bottom-full z-20 mb-1 flex px-1">
+        <div className="absolute inset-x-0 bottom-full z-20 mb-1.5 flex px-2">
           <Tooltip>
             <TooltipTrigger
               render={
                 <button
                   type="button"
                   data-prompt-suggestion="true"
-                  className="inline-flex max-w-[calc(50%-2rem)] cursor-pointer items-center gap-2 rounded-md border border-border/55 bg-card px-2.5 py-1.5 text-left text-muted-foreground text-xs shadow-sm shadow-black/5 transition-colors hover:border-border hover:bg-card hover:text-foreground focus-ring"
+                  className="group inline-flex max-w-[calc(50%-2rem)] cursor-pointer items-center gap-2 rounded-sm px-1 py-0.5 text-left text-muted-foreground text-xs transition-colors hover:text-foreground focus-ring"
                   aria-label={`Use Claude suggested prompt: ${latestPromptSuggestion}`}
                   onClick={() => applyPromptSuggestion(latestPromptSuggestion)}
                 >
-                  <SparklesIcon className="size-3.5 shrink-0 text-muted-foreground/65" />
+                  <SparklesIcon className="size-3.5 shrink-0 text-muted-foreground/65 transition-colors group-hover:text-foreground/80" />
                   <span
                     ref={promptSuggestionOverflow.elementRef}
                     data-prompt-suggestion-text="true"
@@ -3055,6 +3075,14 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   >
                     {latestPromptSuggestionDisplayText}
                   </span>
+                  {/* Tab hint stays hidden until hover or keyboard focus so the
+                      resting state is just the sparkle and the words. */}
+                  <Kbd
+                    aria-hidden="true"
+                    className="h-4 shrink-0 rounded-sm px-1 text-[10px] opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100"
+                  >
+                    Tab
+                  </Kbd>
                 </button>
               }
             />
@@ -3110,13 +3138,20 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         onDragLeave={onComposerDragLeave}
         onDrop={onComposerDrop}
       >
-        <ComposerNoticeDock notices={notices} />
+        {/* A collapsed composer drops the standing context, never a notice
+            about sending: those stay in front of the send button. */}
+        <ComposerDock
+          pullRequest={isComposerCollapsedMobile ? null : pullRequest}
+          notices={notices}
+        />
         <div
           ref={composerSurfaceRef}
           data-chat-composer-mobile-collapsed={isComposerCollapsedMobile ? "true" : "false"}
           className={cn(
             "rounded-xl border bg-card elevate-raised transition-colors duration-200 has-focus-visible:border-focus-ring/45",
-            notices.length > 0 && "rounded-t-none",
+            !isComposerCollapsedMobile &&
+              hasComposerDockContent({ pullRequest, notices }) &&
+              "rounded-t-none",
             isDragOverComposer ? "border-primary/70 bg-accent/30" : "border-border",
             environmentUnavailable ? "opacity-75" : null,
             composerProviderState.composerSurfaceClassName,

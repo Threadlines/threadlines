@@ -244,15 +244,15 @@ describe("groupPullRequests", () => {
       viewerIsAuthor: true,
       updatedAt: "2026-09-01T13:00:00.000Z",
     });
-    const others = entry({ number: 4 });
+    const incoming = entry({ number: 4 });
 
     const groups = groupPullRequests({
-      entries: [others, yoursOlder, needsYou, yoursNewer],
+      entries: [incoming, yoursOlder, needsYou, yoursNewer],
       viewer: "ada",
       state: "open",
     });
 
-    expect(groups.map((group) => group.label)).toEqual(["Needs you", "Yours", "Others"]);
+    expect(groups.map((group) => group.label)).toEqual(["Needs you", "Yours", "Incoming"]);
     expect(groups[0]?.entries.map((row) => row.number)).toEqual([1]);
     expect(groups[1]?.entries.map((row) => row.number)).toEqual([3, 2]);
     expect(groups[2]?.entries.map((row) => row.number)).toEqual([4]);
@@ -264,7 +264,7 @@ describe("groupPullRequests", () => {
       viewer: "ada",
       state: "open",
     });
-    expect(groups.map((group) => group.label)).toEqual(["Others"]);
+    expect(groups.map((group) => group.label)).toEqual(["Incoming"]);
   });
 
   it("falls back to one unlabelled list without a viewer or outside the open tab", () => {
@@ -296,7 +296,7 @@ describe("groupPullRequests", () => {
     expect(groups[0]?.label).toBeNull();
   });
 
-  it("files work on a repository the viewer cannot push to under Yours", () => {
+  it("ranks what the viewer can land above what is out of their hands", () => {
     const upstream = entry({
       number: 1,
       viewerIsAuthor: true,
@@ -304,15 +304,26 @@ describe("groupPullRequests", () => {
       reviewDecision: "approved",
     });
     const asked = entry({ number: 2, viewerCanWrite: false, viewerReviewRequested: true });
+    const followed = entry({ number: 3, viewerCanWrite: false });
+    const onMine = entry({ number: 4, viewerCanWrite: true });
+    // A host that never said is taken as if the viewer may push.
+    const unsaid = entry({ number: 5, viewerIsAuthor: true });
 
-    const groups = groupPullRequests({ entries: [upstream, asked], viewer: "ada", state: "open" });
+    const groups = groupPullRequests({
+      entries: [followed, upstream, onMine, asked, unsaid],
+      viewer: "ada",
+      state: "open",
+    });
 
     expect(groups.map((group) => [group.label, group.entries.map((row) => row.number)])).toEqual([
       ["Needs you", [2]],
-      ["Yours", [1]],
+      ["Yours", [5]],
+      ["Incoming", [4]],
+      ["Contributions", [1]],
+      ["Elsewhere", [3]],
     ]);
     // The sidebar count reads the same rows the page groups.
-    expect(countNeedsYou([upstream, asked])).toBe(1);
+    expect(countNeedsYou([upstream, asked, followed, onMine, unsaid])).toBe(1);
   });
 
   it("counts only the rows that need the viewer", () => {
@@ -682,6 +693,8 @@ describe("narrowPullRequests", () => {
       entry({ number: 1, viewerReviewRequested: true }),
       entry({ number: 2, viewerIsAuthor: true }),
       entry({ number: 3, projectId: OTHER_PROJECT_ID }),
+      entry({ number: 4, viewerIsAuthor: true, viewerCanWrite: false }),
+      entry({ number: 5, viewerCanWrite: false }),
     ];
     const involved = (filters: Partial<PullRequestFilters>) =>
       narrowPullRequests(grouped, { ...EMPTY_PULL_REQUEST_FILTERS, ...filters }).map(
@@ -690,7 +703,9 @@ describe("narrowPullRequests", () => {
 
     expect(involved({ involvement: "needs-you" })).toEqual([1]);
     expect(involved({ involvement: "yours" })).toEqual([2]);
-    expect(involved({ involvement: "others" })).toEqual([3]);
+    expect(involved({ involvement: "incoming" })).toEqual([3]);
+    expect(involved({ involvement: "contributions" })).toEqual([4]);
+    expect(involved({ involvement: "elsewhere" })).toEqual([5]);
     expect(involved({ project: `${ENVIRONMENT_ID}:${OTHER_PROJECT_ID}` })).toEqual([3]);
   });
 

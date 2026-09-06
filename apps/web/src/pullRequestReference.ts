@@ -1,5 +1,5 @@
 const GITHUB_PULL_REQUEST_URL_PATTERN =
-  /^https:\/\/github\.com\/[^/\s]+\/[^/\s]+\/pull\/(\d+)(?:[/?#].*)?$/i;
+  /^https:\/\/github\.com\/(?<repository>[^/\s]+\/[^/\s]+)\/pull\/(?<number>\d+)(?:[/?#].*)?$/i;
 const GITLAB_MERGE_REQUEST_URL_PATTERN =
   /^https:\/\/[^/\s]*gitlab[^/\s]*\/.+\/-\/merge_requests\/(\d+)(?:[/?#].*)?$/i;
 const AZURE_DEVOPS_PULL_REQUEST_URL_PATTERN =
@@ -46,7 +46,8 @@ export function parsePullRequestReference(input: string): string | null {
     GITHUB_PULL_REQUEST_URL_PATTERN.exec(normalizedInput) ??
     GITLAB_MERGE_REQUEST_URL_PATTERN.exec(normalizedInput) ??
     AZURE_DEVOPS_PULL_REQUEST_URL_PATTERN.exec(normalizedInput);
-  if (urlMatch?.[1]) {
+  // Every pattern requires a number, so a match is already a whole reference.
+  if (urlMatch) {
     return normalizedInput;
   }
 
@@ -56,4 +57,31 @@ export function parsePullRequestReference(input: string): string | null {
   }
 
   return null;
+}
+
+/** A GitHub pull request the app can address by itself: its repository and number. */
+export interface PullRequestUrlReference {
+  /** `owner/name`, in the spelling the link used. */
+  readonly repository: string;
+  readonly number: number;
+}
+
+/**
+ * The pull request a web address points at, or null when it points at
+ * something else. GitHub only for now: the chip this feeds colours itself from
+ * listings the app already holds, and nothing lists GitLab or Azure DevOps
+ * rows by repository yet.
+ *
+ * A deeper link into the same pull request (its files, one comment) still
+ * names it, so it resolves the same way. Whether a click opens the app's own
+ * tab is the stricter question `isLinkToPullRequest` answers.
+ */
+export function parsePullRequestUrl(href: string): PullRequestUrlReference | null {
+  const match = GITHUB_PULL_REQUEST_URL_PATTERN.exec(href.trim());
+  const repository = match?.groups?.["repository"];
+  const number = Number(match?.groups?.["number"] ?? Number.NaN);
+  if (repository === undefined || !Number.isSafeInteger(number) || number <= 0) {
+    return null;
+  }
+  return { repository, number };
 }
