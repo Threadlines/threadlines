@@ -192,10 +192,10 @@ List:
 
 - Group header: same voice as the General chats page (`font-mono text-[10px] uppercase
 tracking-wider text-muted-foreground/55`), text "Needs you · 3", "Yours · 5", "Incoming · 12",
-"Contributions · 2", "Elsewhere · 1". Yours and Incoming are on repositories the viewer can merge
-(the viewer's own work, then other people's); Contributions and Elsewhere are the same two on
-repositories the viewer cannot. A host that does not say whether the viewer may push leaves the
-row under Yours or Incoming.
+  "Contributions · 2", "Elsewhere · 1". Yours and Incoming are on repositories the viewer can merge
+  (the viewer's own work, then other people's); Contributions and Elsewhere are the same two on
+  repositories the viewer cannot. A host that does not say whether the viewer may push leaves the
+  row under Yours or Incoming.
 - Rows separated by `divide-y divide-border/50`. Each row is a `button` (`hover:bg-muted`,
   `rounded-md`, `py-2.5`, same as `ChatRow`) laid out as a grid: glyph column, content column.
 - Glyph: `GitPullRequestIcon` emerald for open (reuse the exact classes from
