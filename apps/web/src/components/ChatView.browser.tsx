@@ -2983,16 +2983,26 @@ describe("ChatView timeline estimator parity (full app)", () => {
   });
 
   it("docks the thread's pull request above the notices in one frame", async () => {
-    const snapshot = createSnapshotForTargetUser({
+    const built = createSnapshotForTargetUser({
       targetMessageId: "msg-user-pull-request-dock" as MessageId,
       targetText: "pull request dock",
     });
     // The transcript opens at its end, so the address that becomes a chip goes
     // in the last message, where it is on screen.
-    const lastMessage = snapshot.threads[0]!.messages.at(-1)!;
-    snapshot.threads[0]!.messages[snapshot.threads[0]!.messages.length - 1] = {
-      ...lastMessage,
-      text: `Opened ${PULL_REQUEST_URL} for review.`,
+    const snapshot: OrchestrationReadModel = {
+      ...built,
+      threads: built.threads.map((thread, threadIndex) =>
+        threadIndex === 0
+          ? {
+              ...thread,
+              messages: thread.messages.map((message, index, all) =>
+                index === all.length - 1
+                  ? { ...message, text: `Opened ${PULL_REQUEST_URL} for review.` }
+                  : message,
+              ),
+            }
+          : thread,
+      ),
     };
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
