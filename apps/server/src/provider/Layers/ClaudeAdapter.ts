@@ -803,8 +803,8 @@ function isClaudeDeferredCategory(
   return category.isDeferred === true || category.name.trim().toLowerCase().endsWith("(deferred)");
 }
 
-/** Keeps the SDK's category order: legend colors are assigned by index, so
- *  reordering would make them flicker between updates. */
+/** Keeps the SDK's category order so snapshot equality stays a cheap
+ *  element-wise compare; the client sorts for display and colors by name. */
 function normalizeClaudeContextCategories(
   value: SDKControlGetContextUsageResponse["categories"] | undefined,
 ): ThreadTokenUsageSnapshot["contextCategories"] {

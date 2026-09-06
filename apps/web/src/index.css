@@ -76,14 +76,12 @@
   --color-secondary: var(--secondary);
   --color-provider-claude: var(--provider-claude);
   --color-provider-codex: var(--provider-codex);
-  --color-context-cat-1: var(--context-cat-1);
-  --color-context-cat-2: var(--context-cat-2);
-  --color-context-cat-3: var(--context-cat-3);
-  --color-context-cat-4: var(--context-cat-4);
-  --color-context-cat-5: var(--context-cat-5);
-  --color-context-cat-6: var(--context-cat-6);
-  --color-context-cat-7: var(--context-cat-7);
-  --color-context-cat-8: var(--context-cat-8);
+  --color-context-system-prompt: var(--context-system-prompt);
+  --color-context-system-tools: var(--context-system-tools);
+  --color-context-mcp-tools: var(--context-mcp-tools);
+  --color-context-memory-files: var(--context-memory-files);
+  --color-context-skills: var(--context-skills);
+  --color-context-other: var(--context-other);
   --color-primary-graph: var(--primary-graph);
   --color-primary-readable: var(--primary-readable);
   --color-primary-foreground: var(--primary-foreground);
@@ -256,16 +254,15 @@
   --success-foreground: var(--color-emerald-700);
   --warning: var(--color-amber-500);
   --warning-foreground: var(--color-amber-700);
-  /* Categorical swatches for breakdown bars (context window usage). Assigned by
-     index, so the hues stay far enough apart to stay distinguishable in order. */
-  --context-cat-1: oklch(0.55 0.14 255);
-  --context-cat-2: oklch(0.55 0.14 55);
-  --context-cat-3: oklch(0.55 0.12 155);
-  --context-cat-4: oklch(0.55 0.12 95);
-  --context-cat-5: oklch(0.55 0.13 5);
-  --context-cat-6: oklch(0.55 0.12 300);
-  --context-cat-7: oklch(0.55 0.1 200);
-  --context-cat-8: oklch(0.55 0.09 30);
+  /* Context window breakdown swatches, keyed by category name. Messages use
+     --primary; these cover what the session was given. Shared lightness and
+     chroma so no category shouts. */
+  --context-system-prompt: oklch(0.55 0.12 300);
+  --context-system-tools: oklch(0.55 0.14 55);
+  --context-mcp-tools: oklch(0.55 0.1 200);
+  --context-memory-files: oklch(0.55 0.12 155);
+  --context-skills: oklch(0.55 0.13 5);
+  --context-other: oklch(0.55 0.12 95);
   /* Matches the macOS default text-selection blue so ::selection and the kept
      transcript-note highlight paint identically. */
   --text-selection: oklch(0.85 0.07 258);
@@ -323,14 +320,12 @@
     --success-foreground: var(--color-emerald-400);
     --warning: var(--color-amber-500);
     --warning-foreground: var(--color-amber-400);
-    --context-cat-1: oklch(0.62 0.14 255);
-    --context-cat-2: oklch(0.68 0.14 55);
-    --context-cat-3: oklch(0.65 0.12 155);
-    --context-cat-4: oklch(0.72 0.12 95);
-    --context-cat-5: oklch(0.65 0.13 5);
-    --context-cat-6: oklch(0.62 0.12 300);
-    --context-cat-7: oklch(0.68 0.1 200);
-    --context-cat-8: oklch(0.66 0.09 30);
+    --context-system-prompt: oklch(0.62 0.12 300);
+    --context-system-tools: oklch(0.68 0.14 55);
+    --context-mcp-tools: oklch(0.68 0.1 200);
+    --context-memory-files: oklch(0.65 0.12 155);
+    --context-skills: oklch(0.65 0.13 5);
+    --context-other: oklch(0.72 0.12 95);
     --text-selection: oklch(0.49 0.07 258);
   }
 }

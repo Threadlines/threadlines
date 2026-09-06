@@ -55,18 +55,27 @@ function AccountUsageBar(props: {
   );
 }
 
-/** Categorical swatches assigned by index (cycled), so a category keeps its
- *  color as long as the provider keeps its order. */
-const CONTEXT_CATEGORY_COLOR_CLASS_NAMES = [
-  "bg-context-cat-1",
-  "bg-context-cat-2",
-  "bg-context-cat-3",
-  "bg-context-cat-4",
-  "bg-context-cat-5",
-  "bg-context-cat-6",
-  "bg-context-cat-7",
-  "bg-context-cat-8",
-] as const;
+/** Swatches keyed by the provider's category name so a category looks the same
+ *  in every thread: conversation content is the primary color, the things the
+ *  session was given (prompt, tools, memory, skills) each get a fixed hue, and
+ *  reserved-but-empty space is gray. Unknown names share one fallback. */
+const CONTEXT_CATEGORY_COLOR_CLASS_NAMES: Readonly<Record<string, string>> = {
+  messages: "bg-primary",
+  "system prompt": "bg-context-system-prompt",
+  "system tools": "bg-context-system-tools",
+  "mcp tools": "bg-context-mcp-tools",
+  "memory files": "bg-context-memory-files",
+  skills: "bg-context-skills",
+  "autocompact buffer": "bg-muted-foreground/45",
+};
+const CONTEXT_CATEGORY_FALLBACK_COLOR_CLASS_NAME = "bg-context-other";
+
+function contextCategoryColorClassName(name: string): string {
+  return (
+    CONTEXT_CATEGORY_COLOR_CLASS_NAMES[name.trim().toLowerCase()] ??
+    CONTEXT_CATEGORY_FALLBACK_COLOR_CLASS_NAME
+  );
+}
 
 type ContextBreakdownSegment = {
   readonly key: string;
@@ -89,17 +98,15 @@ function buildContextBreakdownSegments(
   const toPercentage = (tokens: number) => Math.max(0, Math.min(100, (tokens / maxTokens) * 100));
   const categories = usage.contextCategories ?? null;
   if (categories && categories.length > 0) {
-    // Colors are keyed to the provider's order (stable across updates), then
-    // the bar and legend display largest-first.
+    // The bar and legend display largest-first; colors come from the name, so
+    // the sort never reshuffles them.
     return categories
       .map((category, index) => ({
         key: `${index}-${category.name}`,
         name: category.name,
         tokens: category.tokens,
         percentage: toPercentage(category.tokens),
-        colorClassName:
-          CONTEXT_CATEGORY_COLOR_CLASS_NAMES[index % CONTEXT_CATEGORY_COLOR_CLASS_NAMES.length] ??
-          CONTEXT_CATEGORY_COLOR_CLASS_NAMES[0],
+        colorClassName: contextCategoryColorClassName(category.name),
       }))
       .sort((left, right) => right.tokens - left.tokens);
   }
