@@ -47,6 +47,7 @@ const readModelAfterProviderDelivery: OrchestrationReadModel = {
       updatedAt: now,
       archivedAt: null,
       pinnedAt: null,
+      pullRequestAutoFix: false,
       doneOverride: null,
       lastSeenAt: null,
       deletedAt: null,

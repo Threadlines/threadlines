@@ -159,6 +159,10 @@
       "types": "./src/previewInjectedScript.ts",
       "import": "./src/previewInjectedScript.ts"
     },
+    "./pullRequestAutoFix": {
+      "types": "./src/pullRequestAutoFix.ts",
+      "import": "./src/pullRequestAutoFix.ts"
+    },
     "./pendingRequests": {
       "types": "./src/pendingRequests.ts",
       "import": "./src/pendingRequests.ts"

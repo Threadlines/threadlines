@@ -3,6 +3,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import type { ThreadPullRequest } from "../pull-requests/pullRequests.logic";
 import {
+  composerAutoFixOffered,
   composerAutoMergeControl,
   composerPullRequestCheckBuckets,
   composerPullRequestChip,
@@ -215,5 +216,13 @@ describe("composerAutoMergeControl", () => {
     expect(
       composerAutoMergeControl(detail({ autoMergeEnabled: false, mergeQueue: { position: 1 } })),
     ).toEqual({ kind: "queued" });
+  });
+});
+
+describe("composerAutoFixOffered", () => {
+  it("is offered on GitHub only, and not before the detail says which host it is", () => {
+    expect(composerAutoFixOffered(detail())).toBe(true);
+    expect(composerAutoFixOffered(detail({ provider: "gitlab" }))).toBe(false);
+    expect(composerAutoFixOffered(undefined)).toBe(false);
   });
 });

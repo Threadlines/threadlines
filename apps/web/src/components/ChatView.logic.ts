@@ -181,6 +181,7 @@ export function mergeLocalDraftThreadWithServerThread(
     createdAt: serverThread.createdAt,
     archivedAt: serverThread.archivedAt,
     pinnedAt: serverThread.pinnedAt,
+    pullRequestAutoFix: serverThread.pullRequestAutoFix ?? false,
     doneOverride: serverThread.doneOverride,
     lastSeenAt: serverThread.lastSeenAt,
     updatedAt: serverThread.updatedAt,

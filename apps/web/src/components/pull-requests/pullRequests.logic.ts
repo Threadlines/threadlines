@@ -24,6 +24,7 @@ import {
   changeRequestRepositoryName,
   toChangeRequestProviderKind,
 } from "@threadlines/shared/sourceControl";
+import { quotePullRequestBody } from "@threadlines/shared/pullRequestAutoFix";
 import {
   GitMergeIcon,
   GitPullRequestClosedIcon,
@@ -1640,13 +1641,7 @@ export function buildReviewCommentHandoff(input: {
   readonly body: string;
 }): string {
   const by = input.author === null ? "" : ` by ${input.author}`;
-  const quoted = input.body
-    .replace(/\r\n/gu, "\n")
-    .trimEnd()
-    .split("\n")
-    .map((line) => (line.length === 0 ? ">" : `> ${line}`))
-    .join("\n");
-  return `Address this review comment on pull request #${input.number}${by}:\n\n${quoted}`;
+  return `Address this review comment on pull request #${input.number}${by}:\n\n${quotePullRequestBody(input.body)}`;
 }
 
 /**

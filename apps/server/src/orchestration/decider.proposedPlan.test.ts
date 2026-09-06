@@ -57,6 +57,7 @@ function makeReadModel(proposedPlan: OrchestrationProposedPlan): OrchestrationRe
         updatedAt: now,
         archivedAt: null,
         pinnedAt: null,
+        pullRequestAutoFix: false,
         doneOverride: null,
         lastSeenAt: null,
         deletedAt: null,

@@ -6,8 +6,8 @@
  * everything about it; neither is in view while you are writing the next
  * message, which is exactly when "did the checks pass" decides what you type.
  * The row is one line: which pull request, on which branch, how big, and how
- * its checks are going, with the two switches that decide what happens when
- * they pass.
+ * its checks are going, with the switches that decide what happens when they
+ * pass, and what happens when they do not.
  *
  * @module ComposerPullRequestRow
  */
@@ -18,7 +18,7 @@ import type {
   PullRequestRef,
 } from "@threadlines/contracts";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { ChevronDownIcon, ExternalLinkIcon, XIcon } from "lucide-react";
+import { ChevronDownIcon, ExternalLinkIcon, WrenchIcon, XIcon } from "lucide-react";
 import { useState } from "react";
 
 import { isElectron } from "../../env";
@@ -37,14 +37,19 @@ import { CHECK_TONES } from "../pull-requests/pullRequestPresentation";
 import { pullRequestBadgeTone, type ThreadPullRequest } from "../pull-requests/pullRequests.logic";
 import { Checkbox } from "../ui/checkbox";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { DiffStatLabel } from "./DiffStatLabel";
 import {
+  composerAutoFixOffered,
   composerAutoMergeControl,
   composerPullRequestCheckBuckets,
   composerPullRequestRow,
   pullRequestChecksUrl,
   type ComposerPullRequestChipTone,
 } from "./composerPullRequest.logic";
+
+/** Said the same way on the marker and its tooltip, so they read as one thing. */
+const AUTO_FIX_MARKER_LABEL = "Fixes failing checks and review comments on its own";
 
 /** Everything the thread route hands the composer about its pull request. */
 export interface ComposerPullRequest {
@@ -60,6 +65,9 @@ export interface ComposerPullRequest {
   readonly onOpen: () => void;
   /** Closes the row for this pull request in this thread. */
   readonly onDismiss: () => void;
+  /** The thread's own switch: the server watches this pull request while it is on. */
+  readonly autoFix: boolean;
+  readonly onAutoFixChange: (next: boolean) => void;
 }
 
 const CHIP_TONE_CLASS: Readonly<
@@ -134,6 +142,24 @@ export function ComposerPullRequestRow({
             separator="space"
           />
         </span>
+      ) : null}
+      {pullRequest.autoFix ? (
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <span
+                role="img"
+                aria-label={AUTO_FIX_MARKER_LABEL}
+                className="inline-flex shrink-0 items-center text-muted-foreground"
+              >
+                <WrenchIcon aria-hidden className="size-3.5" />
+              </span>
+            }
+          />
+          <TooltipPopup side="top" sideOffset={6} className="max-w-72">
+            {AUTO_FIX_MARKER_LABEL}
+          </TooltipPopup>
+        </Tooltip>
       ) : null}
       <ComposerPullRequestChecksChip
         pullRequest={pullRequest}
@@ -331,6 +357,12 @@ function ComposerPullRequestChecksPopover({
           In the merge queue
         </p>
       ) : null}
+      {composerAutoFixOffered(detail) ? (
+        <ComposerPullRequestAutoFixSwitch
+          autoFix={pullRequest.autoFix}
+          onAutoFixChange={pullRequest.onAutoFixChange}
+        />
+      ) : null}
       <label className="flex cursor-pointer items-center gap-2 px-3 py-1 transition-colors hover:bg-accent">
         <Checkbox
           className="size-3.5"
@@ -345,5 +377,41 @@ function ComposerPullRequestChecksPopover({
         <span className="ml-auto text-[11px] text-muted-foreground">Settings</span>
       </label>
     </div>
+  );
+}
+
+/**
+ * The thread's own switch, held optimistically. The command is a round trip to
+ * the server and back through the read model, and a switch that waits for both
+ * reads as one that did not take the click; the read model wins again as soon
+ * as it says something different from what was clicked.
+ */
+function ComposerPullRequestAutoFixSwitch({
+  autoFix,
+  onAutoFixChange,
+}: {
+  readonly autoFix: boolean;
+  readonly onAutoFixChange: (next: boolean) => void;
+}) {
+  // `from` is what the read model said when the click happened. Once it says
+  // anything else the round trip has landed, so the click stops standing in.
+  const [pending, setPending] = useState<{ next: boolean; from: boolean } | null>(null);
+  if (pending !== null && pending.from !== autoFix) {
+    setPending(null);
+  }
+
+  return (
+    <label className="flex cursor-pointer items-center gap-2 px-3 py-1 transition-colors hover:bg-accent">
+      <Checkbox
+        className="size-3.5"
+        checked={pending?.next ?? autoFix}
+        onCheckedChange={(checked) => {
+          const next = Boolean(checked);
+          setPending({ next, from: autoFix });
+          onAutoFixChange(next);
+        }}
+      />
+      Fix failing checks and review comments
+    </label>
   );
 }
