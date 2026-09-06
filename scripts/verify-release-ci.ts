@@ -154,13 +154,27 @@ function formatCheckRunStatus(checkName: string, checkRun: CheckRun | undefined)
   return `${checkName}: status=${checkRun.status ?? "unknown"}, conclusion=${checkRun.conclusion ?? "unknown"} (${checkRun.html_url ?? checkRun.details_url ?? "no URL"})`;
 }
 
-function evaluateRequiredChecks(
+function isCancelled(checkRun: CheckRun): boolean {
+  return checkRun.status === "completed" && checkRun.conclusion === "cancelled";
+}
+
+/**
+ * Picks the newest run of each required check and grades it. A cancelled run
+ * is not a verdict on the commit, so it yields to the newest run that has one:
+ * a merge landing on main cancels the previous main CI run, but the merge
+ * queue already ran the same checks on that exact commit.
+ */
+export function evaluateRequiredChecks(
   requiredChecks: ReadonlyArray<string>,
   checkRuns: ReadonlyArray<CheckRun>,
 ): CheckRunEvaluation {
   const checksByName = new Map<string, CheckRun>();
-  for (const checkRun of checkRuns) {
-    if (checkRun.name && !checksByName.has(checkRun.name)) {
+  for (const checkRun of [...checkRuns].sort(compareCheckRuns)) {
+    if (!checkRun.name) {
+      continue;
+    }
+    const current = checksByName.get(checkRun.name);
+    if (!current || (isCancelled(current) && !isCancelled(checkRun))) {
       checksByName.set(checkRun.name, checkRun);
     }
   }
@@ -196,8 +210,7 @@ async function fetchRequiredGithubActionCheckRuns({
   const requiredCheckSet = new Set(requiredChecks);
   return (await fetchCheckRuns(repository, ref, token))
     .filter((run) => requiredCheckSet.has(run.name ?? ""))
-    .filter((run) => !run.app?.slug || run.app.slug === "github-actions")
-    .sort(compareCheckRuns);
+    .filter((run) => !run.app?.slug || run.app.slug === "github-actions");
 }
 
 async function waitForRequiredChecks({
@@ -296,4 +309,6 @@ async function main(): Promise<void> {
   console.log(`Required CI checks passed for ${ref}.`);
 }
 
-await main();
+if (import.meta.main) {
+  await main();
+}
