@@ -2104,7 +2104,13 @@ function extractContentBlockText(block: unknown): string {
 const SUBAGENT_LIVE_TEXT_MAX_CHARS = 4_000;
 
 const SUBAGENT_TRANSCRIPT_DEFAULT_LIMIT = 200;
+/** Cap on the agent's own words per record; long output truncates rather than
+ *  growing transcript pages unboundedly. */
 const SUBAGENT_TRANSCRIPT_TEXT_MAX_CHARS = 4_000;
+/** Cap on text sent *to* the agent: its spawn prompt and any follow-up
+ *  message. A spawn prompt routinely runs past 10k characters and is the one
+ *  record a reader opens the transcript to read whole, so it keeps far more. */
+const SUBAGENT_TRANSCRIPT_INPUT_TEXT_MAX_CHARS = 32_000;
 const SUBAGENT_TRANSCRIPT_OUTPUT_PREVIEW_MAX_CHARS = 2_000;
 /** Agent ids come from the client and end up in a filesystem path; anything
  *  outside this shape is rejected before it can traverse. */
@@ -2336,9 +2342,13 @@ export function mapClaudeSubagentTranscriptLines(
       options?.onModel?.(recordModel);
     }
     const content = (message as { content?: unknown } | undefined)?.content;
+    const textMaxChars =
+      type === "user"
+        ? SUBAGENT_TRANSCRIPT_INPUT_TEXT_MAX_CHARS
+        : SUBAGENT_TRANSCRIPT_TEXT_MAX_CHARS;
 
     if (typeof content === "string") {
-      const text = capTranscriptText(content, SUBAGENT_TRANSCRIPT_TEXT_MAX_CHARS);
+      const text = capTranscriptText(content, textMaxChars);
       if (text.length > 0) {
         push({ role: type, text, ...(at ? { at } : {}), toolUses: [] });
       }
@@ -2405,7 +2415,7 @@ export function mapClaudeSubagentTranscriptLines(
       }
     }
 
-    const text = capTranscriptText(texts.join("\n"), SUBAGENT_TRANSCRIPT_TEXT_MAX_CHARS);
+    const text = capTranscriptText(texts.join("\n"), textMaxChars);
     const outputPreview = capTranscriptText(
       resultPreviews.join("\n"),
       SUBAGENT_TRANSCRIPT_OUTPUT_PREVIEW_MAX_CHARS,
