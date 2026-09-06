@@ -24,7 +24,7 @@ import { isProviderDriverKind, ProviderDriverKind } from "@threadlines/contracts
 import type { ThreadId, TurnId } from "@threadlines/contracts";
 import * as Schema from "effect/Schema";
 import { resolveModelSlugForProvider } from "@threadlines/shared/model";
-import { retainRecentActivitiesAndOpenRequests } from "@threadlines/shared/pendingRequests";
+import { retainThreadActivities } from "@threadlines/shared/threadActivityRetention";
 import {
   MAX_THREAD_ACTIVITIES,
   MAX_THREAD_CHECKPOINTS,
@@ -1146,10 +1146,7 @@ function upsertThreadActivity(
     (activities.length === 0 ||
       compareActivities(activities[activities.length - 1]!, activity) <= 0)
   ) {
-    return retainRecentActivitiesAndOpenRequests(
-      [...activities, nextActivity],
-      MAX_THREAD_ACTIVITIES,
-    );
+    return retainThreadActivities([...activities, nextActivity], MAX_THREAD_ACTIVITIES);
   }
 
   const nextActivities =
@@ -1160,10 +1157,7 @@ function upsertThreadActivity(
           nextActivity,
           ...activities.slice(existingIndex + 1),
         ];
-  return retainRecentActivitiesAndOpenRequests(
-    nextActivities.toSorted(compareActivities),
-    MAX_THREAD_ACTIVITIES,
-  );
+  return retainThreadActivities(nextActivities.toSorted(compareActivities), MAX_THREAD_ACTIVITIES);
 }
 
 function buildLatestTurn(params: {

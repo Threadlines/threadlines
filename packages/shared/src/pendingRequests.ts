@@ -144,21 +144,3 @@ export function countPendingUserInputs(
   }).length;
   return { pendingUserInputCount: requests.length, blockingUserInputCount };
 }
-
-/** Keep open prompts answerable even after their activity leaves the recent log. */
-export function retainRecentActivitiesAndOpenRequests<A extends PendingRequestActivityLike>(
-  orderedActivities: ReadonlyArray<A>,
-  recentLimit: number,
-): A[] {
-  if (orderedActivities.length <= recentLimit) return [...orderedActivities];
-  const openActivities = new Set(
-    [
-      ...collectOpenPendingRequests(orderedActivities, APPROVAL_ACTIVITY_KINDS),
-      ...collectOpenPendingRequests(orderedActivities, USER_INPUT_ACTIVITY_KINDS),
-    ].map(({ activity }) => activity),
-  );
-  const recentStart = orderedActivities.length - recentLimit;
-  return orderedActivities.filter(
-    (activity, index) => index >= recentStart || openActivities.has(activity),
-  );
-}
