@@ -3033,21 +3033,23 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     >
       {/* Float the suggestion above the composer (like the scroll-to-bottom button) so it
           overlays the bottom of the message list instead of consuming input-bar height.
-          Width is capped below half the composer so it never reaches the centered
-          scroll-to-bottom button that shares this band. */}
+          It is bare text rather than a chip: no border, fill, or shadow, so it reads as
+          a quiet hint instead of a second card stacked on the composer. Width is capped
+          below half the composer so it never reaches the centered scroll-to-bottom
+          button that shares this band. */}
       {latestPromptSuggestion && latestPromptSuggestionDisplayText && !isComposerCollapsedMobile ? (
-        <div className="absolute inset-x-0 bottom-full z-20 mb-1 flex px-1">
+        <div className="absolute inset-x-0 bottom-full z-20 mb-1.5 flex px-2">
           <Tooltip>
             <TooltipTrigger
               render={
                 <button
                   type="button"
                   data-prompt-suggestion="true"
-                  className="inline-flex max-w-[calc(50%-2rem)] cursor-pointer items-center gap-2 rounded-md border border-border/55 bg-card px-2.5 py-1.5 text-left text-muted-foreground text-xs shadow-sm shadow-black/5 transition-colors hover:border-border hover:bg-card hover:text-foreground focus-ring"
+                  className="group inline-flex max-w-[calc(50%-2rem)] cursor-pointer items-center gap-2 rounded-sm px-1 py-0.5 text-left text-muted-foreground text-xs transition-colors hover:text-foreground focus-ring"
                   aria-label={`Use Claude suggested prompt: ${latestPromptSuggestion}`}
                   onClick={() => applyPromptSuggestion(latestPromptSuggestion)}
                 >
-                  <SparklesIcon className="size-3.5 shrink-0 text-muted-foreground/65" />
+                  <SparklesIcon className="size-3.5 shrink-0 text-muted-foreground/65 transition-colors group-hover:text-foreground/80" />
                   <span
                     ref={promptSuggestionOverflow.elementRef}
                     data-prompt-suggestion-text="true"
