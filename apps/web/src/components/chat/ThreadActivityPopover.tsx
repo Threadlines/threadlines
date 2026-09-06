@@ -10,11 +10,9 @@ import {
 } from "react";
 import {
   ChevronDownIcon,
-  ClockIcon,
   ExternalLinkIcon,
   FileTextIcon,
   ListTodoIcon,
-  LoaderIcon,
   RadarIcon,
   SquareIcon,
   TerminalSquareIcon,
@@ -28,7 +26,13 @@ import { cn } from "~/lib/utils";
 import { useHorizontalOverflow } from "../../hooks/useHorizontalOverflow";
 import { Button } from "../ui/button";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
-import { SpineNode, SpineRow, spineAccentRowStyle, type SpineNodeKind } from "../ui/threadline";
+import {
+  LiveNode,
+  SpineNode,
+  SpineRow,
+  spineAccentRowStyle,
+  type SpineNodeKind,
+} from "../ui/threadline";
 import { Tooltip, TooltipPopup, TooltipTrigger, TooltipWrapper } from "../ui/tooltip";
 import {
   backgroundRunCommandText,
@@ -530,11 +534,7 @@ function TaskSection({
                 nodeOffset={TASK_STEP_NODE_OFFSET_PX}
                 connectTop={index > 0}
                 connectBottom={index < visiblePlanStepRows.length - 1}
-                style={
-                  liveStepIndex >= 0
-                    ? spineAccentRowStyle(Math.abs(index - liveStepIndex))
-                    : undefined
-                }
+                style={liveStepIndex >= 0 ? spineAccentRowStyle(liveStepIndex - index) : undefined}
               >
                 <div
                   className={cn(
@@ -663,124 +663,109 @@ function BackgroundRunsSection({
         <span className={badgeClassName("active", true)}>{backgroundRuns.length}</span>
       </div>
 
-      <div className="space-y-1.5 pr-1">
-        {backgroundRuns.map((run) => {
-          const metaItems = backgroundRunMetaItems(run);
+      {/* Runs are rows on their own spine, drawn the same way as the task
+          steps above so the popover reads as one surface. Every run is live,
+          so each row carries the halo node. */}
+      <div className="pr-1" style={TASK_SPINE_STYLE}>
+        {backgroundRuns.map((run, index) => {
+          const metaItems = [backgroundRunSourceLabel(run), ...backgroundRunMetaItems(run)];
           const commandText = backgroundRunCommandText(run);
           const showCommandText = isInformativeBackgroundRunCommand(commandText);
           const primaryUrl = run.urls[0] ?? null;
           const extraUrlCount = Math.max(0, run.urls.length - 1);
 
           return (
-            <div
+            <SpineRow
               key={run.id}
-              className={cn(
-                "rounded-md bg-primary/5 px-2.5 py-2",
-                run.source === "terminal" && run.terminalVisible && "ring-1 ring-primary/25",
-              )}
+              node={<LiveNode className="size-1.5" />}
+              nodeOffset={TASK_STEP_NODE_OFFSET_PX}
+              connectTop={index > 0}
+              connectBottom={index < backgroundRuns.length - 1}
             >
-              <div className="flex min-w-0 items-start gap-2">
-                <span className="mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary-readable ring-1 ring-primary/15">
-                  <LoaderIcon className="size-3 animate-spin" aria-hidden="true" />
-                </span>
-
-                <div className="min-w-0 flex-1">
-                  <div className="flex min-w-0 items-center gap-1.5">
-                    <div className="min-w-0 flex-1 truncate text-[12px] font-medium leading-snug text-foreground/90">
-                      {run.label}
-                    </div>
-                    <div className="flex shrink-0 items-center gap-1">
-                      <span className="rounded-[var(--app-radius-badge)] bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium leading-none text-primary-readable">
-                        {run.statusLabel}
-                      </span>
-                      {run.terminalId ? (
-                        <TooltipWrapper
-                          tooltip={`${run.terminalVisible ? "Close" : "Open"} ${run.label}`}
-                        >
-                          <button
-                            type="button"
-                            className={cn(
-                              "inline-flex size-6 cursor-pointer items-center justify-center rounded-md text-muted-foreground/70 transition-colors hover:bg-background/70 hover:text-foreground focus-ring",
-                              run.terminalVisible && "bg-background/70 text-foreground",
-                            )}
-                            aria-label={`${run.terminalVisible ? "Close" : "Open"} ${run.label}`}
-                            aria-pressed={run.terminalVisible}
-                            onClick={() => {
-                              if (run.terminalId) {
-                                onToggleBackgroundRunTerminal(run.terminalId);
-                              }
-                            }}
-                          >
-                            <TerminalSquareIcon className="size-3" aria-hidden="true" />
-                          </button>
-                        </TooltipWrapper>
-                      ) : null}
-                      {run.canStop ? (
-                        <TooltipWrapper tooltip={`Stop ${run.label}`}>
-                          <button
-                            type="button"
-                            className="inline-flex h-6 cursor-pointer items-center gap-1 rounded-md bg-destructive/10 px-1.5 text-[10px] font-medium text-destructive transition-colors hover:bg-destructive/15 focus-ring"
-                            aria-label={`Stop ${run.label}`}
-                            onClick={() => {
-                              onStopBackgroundRun(run);
-                            }}
-                          >
-                            <SquareIcon className="size-2.5 fill-current" aria-hidden="true" />
-                            <span>Stop</span>
-                          </button>
-                        </TooltipWrapper>
-                      ) : null}
-                    </div>
+              <div className="min-w-0 py-1">
+                <div className="flex min-w-0 items-center gap-1.5">
+                  <div className="min-w-0 flex-1 truncate text-[12px] font-medium leading-4 text-foreground">
+                    {run.label}
                   </div>
-
-                  <div className="mt-1 flex min-w-0 flex-wrap items-center gap-1">
-                    <span className="text-[10px] leading-none text-muted-foreground/55">
-                      {backgroundRunSourceLabel(run)}
-                    </span>
-                    {metaItems.map((item) => (
-                      <span
-                        key={item}
-                        className="inline-flex h-4 items-center gap-1 rounded-[var(--app-radius-badge)] bg-background/55 px-1.5 font-mono text-[10px] leading-none text-muted-foreground ring-1 ring-border/40"
+                  <span className="shrink-0 text-[10px] leading-none text-primary-readable">
+                    {run.statusLabel}
+                  </span>
+                  {run.terminalId ? (
+                    <TooltipWrapper
+                      tooltip={`${run.terminalVisible ? "Close" : "Open"} ${run.label}`}
+                    >
+                      <button
+                        type="button"
+                        className={cn(
+                          "inline-flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground/70 transition-colors hover:bg-muted hover:text-foreground focus-ring",
+                          run.terminalVisible && "bg-muted text-foreground",
+                        )}
+                        aria-label={`${run.terminalVisible ? "Close" : "Open"} ${run.label}`}
+                        aria-pressed={run.terminalVisible}
+                        onClick={() => {
+                          if (run.terminalId) {
+                            onToggleBackgroundRunTerminal(run.terminalId);
+                          }
+                        }}
                       >
-                        {item.startsWith("Up ") ? (
-                          <ClockIcon className="size-2.5" aria-hidden="true" />
-                        ) : null}
-                        {item}
-                      </span>
-                    ))}
-                  </div>
-
-                  {primaryUrl || showCommandText ? (
-                    <div className="mt-1 flex min-w-0 items-center gap-1">
-                      {primaryUrl ? (
-                        <Button
-                          render={<a href={primaryUrl} target="_blank" rel="noreferrer" />}
-                          variant="ghost"
-                          size="xs"
-                          className="h-5 min-w-0 flex-1 justify-start gap-1 rounded-md bg-background/40 px-1.5 text-[10px] text-muted-foreground hover:bg-background/75 hover:text-foreground"
-                          tooltip={primaryUrl}
-                        >
-                          <ExternalLinkIcon className="size-2.5 shrink-0" aria-hidden="true" />
-                          <span className="truncate">{primaryUrl}</span>
-                          {extraUrlCount > 0 ? (
-                            <span className="shrink-0 text-muted-foreground/50">
-                              +{extraUrlCount}
-                            </span>
-                          ) : null}
-                        </Button>
-                      ) : null}
-                      {showCommandText ? (
-                        <TooltipWrapper tooltip={commandText}>
-                          <div className="min-w-0 flex-1 truncate rounded-md bg-background/30 px-1.5 py-1 font-mono text-[10px] leading-3 text-muted-foreground/60">
-                            {commandText}
-                          </div>
-                        </TooltipWrapper>
-                      ) : null}
-                    </div>
+                        <TerminalSquareIcon className="size-3" aria-hidden="true" />
+                      </button>
+                    </TooltipWrapper>
+                  ) : null}
+                  {run.canStop ? (
+                    <TooltipWrapper tooltip={`Stop ${run.label}`}>
+                      <button
+                        type="button"
+                        className="inline-flex h-5 shrink-0 cursor-pointer items-center gap-1 rounded-md px-1.5 text-[10px] font-medium text-destructive transition-colors hover:bg-destructive/10 focus-ring"
+                        aria-label={`Stop ${run.label}`}
+                        onClick={() => {
+                          onStopBackgroundRun(run);
+                        }}
+                      >
+                        <SquareIcon className="size-2 fill-current" aria-hidden="true" />
+                        <span>Stop</span>
+                      </button>
+                    </TooltipWrapper>
                   ) : null}
                 </div>
+
+                <div className="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-1.5 text-[10px] leading-3.5 text-muted-foreground/70">
+                  {metaItems.map((item, itemIndex) => (
+                    <span key={item} className="inline-flex items-center gap-1.5">
+                      {itemIndex > 0 ? (
+                        <span aria-hidden="true" className="text-muted-foreground/40">
+                          ·
+                        </span>
+                      ) : null}
+                      <span className={itemIndex > 0 ? "font-mono" : undefined}>{item}</span>
+                    </span>
+                  ))}
+                </div>
+
+                {primaryUrl ? (
+                  <Button
+                    render={<a href={primaryUrl} target="_blank" rel="noreferrer" />}
+                    variant="ghost"
+                    size="xs"
+                    className="mt-0.5 h-5 w-full min-w-0 justify-start gap-1 rounded-md px-0 text-[10px] text-muted-foreground hover:bg-transparent hover:text-foreground"
+                    tooltip={primaryUrl}
+                  >
+                    <ExternalLinkIcon className="size-2.5 shrink-0" aria-hidden="true" />
+                    <span className="truncate">{primaryUrl}</span>
+                    {extraUrlCount > 0 ? (
+                      <span className="shrink-0 text-muted-foreground/50">+{extraUrlCount}</span>
+                    ) : null}
+                  </Button>
+                ) : null}
+                {showCommandText ? (
+                  <TooltipWrapper tooltip={commandText}>
+                    <div className="mt-0.5 min-w-0 truncate font-mono text-[10px] leading-3.5 text-muted-foreground/60">
+                      {commandText}
+                    </div>
+                  </TooltipWrapper>
+                ) : null}
               </div>
-            </div>
+            </SpineRow>
           );
         })}
       </div>
