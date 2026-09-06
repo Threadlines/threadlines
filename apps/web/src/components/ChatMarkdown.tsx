@@ -614,7 +614,7 @@ function MarkdownPullRequestChip({
 }) {
   const chip = usePullRequestChip(repository, number);
   const tone = chip.state
-    ? pullRequestBadgeTone(chip.state.state, chip.state.isDraft)
+    ? pullRequestBadgeTone(chip.state.state, chip.state.isDraft, chip.state.autoMergeEnabled)
     : // Nothing here has listed this repository, so the glyph says "a pull
       // request" without claiming to know how it is going.
       { Icon: GitPullRequestIcon, className: "text-muted-foreground", label: "Pull request" };

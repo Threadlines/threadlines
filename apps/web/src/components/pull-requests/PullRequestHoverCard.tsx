@@ -36,6 +36,7 @@ import {
 import { PullRequestActorAvatar } from "./pullRequestPresentation";
 import {
   projectRepository,
+  pullRequestArmedToMerge,
   pullRequestBadgeTone,
   type ThreadPullRequest,
 } from "./pullRequests.logic";
@@ -44,6 +45,8 @@ import {
 export interface PullRequestChipState {
   readonly state: PullRequestState;
   readonly isDraft: boolean;
+  /** The host is landing it on its own: armed, or already in the merge queue. */
+  readonly autoMergeEnabled: boolean;
 }
 
 /** Everything the card needs to draw itself and then read the rest. */
@@ -103,6 +106,7 @@ export function usePullRequestChip(
               reference: { projectId: scope.projectId, repository: scope.repository, number },
               state: state?.state ?? "open",
               isDraft: state?.isDraft ?? false,
+              autoMergeEnabled: state?.autoMergeEnabled ?? false,
             },
     }),
     [number, scope, state],
@@ -162,6 +166,7 @@ export function PullRequestHoverCardProvider({
       byKey.set(chipKey(entry.repository, entry.number), {
         state: entry.state,
         isDraft: entry.isDraft,
+        autoMergeEnabled: entry.autoMergeEnabled === true,
       });
     }
     // The thread's own resolution wins: it is the one read that can see a
@@ -170,6 +175,7 @@ export function PullRequestHoverCardProvider({
       byKey.set(chipKey(threadPullRequest.repository, threadPullRequest.number), {
         state: threadPullRequest.state,
         isDraft: threadPullRequest.isDraft,
+        autoMergeEnabled: threadPullRequest.autoMergeEnabled,
       });
     }
     return byKey;
@@ -221,9 +227,14 @@ function PullRequestHoverCardContent({
   reference,
   state,
   isDraft,
+  autoMergeEnabled,
 }: PullRequestHoverCardPayload) {
   const detail = useQuery(pullRequestDetailQueryOptions({ environmentId, reference })).data;
-  const tone = pullRequestBadgeTone(detail?.state ?? state, detail?.isDraft ?? isDraft);
+  const tone = pullRequestBadgeTone(
+    detail?.state ?? state,
+    detail?.isDraft ?? isDraft,
+    detail ? pullRequestArmedToMerge(detail) : autoMergeEnabled,
+  );
   const settledAt = detail ? (detail.mergedAt ?? detail.closedAt) : null;
   const timestamp = detail ? formatRelativeTimeLabel(settledAt ?? detail.updatedAt) : null;
 

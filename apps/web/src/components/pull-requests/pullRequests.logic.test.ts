@@ -37,6 +37,7 @@ import {
   pullRequestFilterChips,
   pullRequestProjectFacets,
   pullRequestFiltersFromSearch,
+  pullRequestArmedToMerge,
   pullRequestBadgeTone,
   pullRequestFiltersToSearch,
   pullRequestLabelColor,
@@ -600,6 +601,18 @@ describe("pullRequestBadgeTone", () => {
     // A draft cannot be armed, and a settled row has nothing left to land.
     expect(pullRequestBadgeTone("open", true, true).label).toBe("Draft");
     expect(pullRequestBadgeTone("merged", false, true).label).toBe("Merged");
+  });
+});
+
+describe("pullRequestArmedToMerge", () => {
+  it("counts a queue position as armed even once the instruction is gone", () => {
+    expect(pullRequestArmedToMerge({ autoMergeEnabled: null, mergeQueue: { position: 2 } })).toBe(
+      true,
+    );
+    expect(
+      pullRequestArmedToMerge({ autoMergeEnabled: true, mergeQueue: { position: null } }),
+    ).toBe(true);
+    expect(pullRequestArmedToMerge({ autoMergeEnabled: false })).toBe(false);
   });
 });
 

@@ -1564,6 +1564,18 @@ export function pullRequestMergeQueueLabel(
     : null;
 }
 
+/**
+ * Whether the host is landing this pull request on its own: armed by the
+ * standing instruction, or already taken into the base's merge queue. A queued
+ * pull request need not carry the instruction any more, so the queue's own
+ * position counts as much as the instruction does.
+ */
+export function pullRequestArmedToMerge(
+  detail: Pick<PullRequestDetail, "autoMergeEnabled" | "mergeQueue">,
+): boolean {
+  return detail.autoMergeEnabled === true || (detail.mergeQueue?.position ?? null) !== null;
+}
+
 /** How long after a push the header waits for the host to register the new commit's checks. */
 export const PULL_REQUEST_FRESH_PUSH_WATCH_MS = 120_000;
 

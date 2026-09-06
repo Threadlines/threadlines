@@ -80,12 +80,13 @@ export function ComposerPullRequestRow({
     pullRequest: pullRequest.pullRequest,
     detail: pullRequest.detail,
   });
-  const tone = pullRequestBadgeTone(row.state, row.isDraft);
+  const tone = pullRequestBadgeTone(row.state, row.isDraft, row.autoMergeEnabled);
   const hoverCardPayload: PullRequestHoverCardPayload = {
     environmentId: pullRequest.environmentId,
     reference: pullRequest.reference,
     state: row.state,
     isDraft: row.isDraft,
+    autoMergeEnabled: row.autoMergeEnabled,
   };
 
   return (

@@ -17,6 +17,7 @@ const THREAD_PULL_REQUEST: ThreadPullRequest = {
   url: "https://github.com/Threadlines/threadlines/pull/234",
   repository: "Threadlines/threadlines",
   settledAt: null,
+  autoMergeEnabled: false,
 };
 
 function check(status: PullRequestCheck["status"], name: string): PullRequestCheck {
