@@ -4609,11 +4609,15 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     // beat after removal starts, and until it exits its working directory
     // pins the folder. Finish the deletion ourselves once the holder lets go,
     // but only when git really did unregister the worktree.
-    const finishInterruptedRemoval = (cause: GitCommandError) =>
-      Effect.gen(function* () {
-        if (yield* isWorktreeRegistered(input.cwd, input.path)) {
-          return yield* Effect.fail(cause);
-        }
+    //
+    // A removal that died halfway (a long-path failure before core.longpaths,
+    // a kill mid-delete) leaves the folder without its `.git` file. Git then
+    // lists the registration as prunable and refuses to remove it
+    // ("validation failed ... '.git' does not exist"). Nothing left in that
+    // folder is a checkout anymore, so drop the dead registration and delete
+    // the leftovers ourselves.
+    const deleteLeftoverFolder = Effect.fn("GitVcsDriver.removeWorktree.deleteLeftover")(
+      function* () {
         for (let attempt = 0; attempt < LEFTOVER_WORKTREE_REMOVE_ATTEMPTS; attempt += 1) {
           if (attempt > 0) {
             yield* Effect.sleep(LEFTOVER_WORKTREE_REMOVE_DELAY);
@@ -4625,20 +4629,34 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
             .exists(input.path)
             .pipe(Effect.catch(() => Effect.succeed(false)));
           if (!stillThere) {
-            return;
+            return true;
           }
         }
-        return yield* Effect.fail(cause);
+        return false;
+      },
+    );
+
+    const recoverFailedRemoval = (cause: GitCommandError) =>
+      Effect.gen(function* () {
+        const registration = yield* readWorktreeRegistration(input.cwd, input.path);
+        if (registration === "prunable") {
+          yield* executeGit("GitVcsDriver.removeWorktree.prune", input.cwd, ["worktree", "prune"], {
+            timeoutMs: 15_000,
+            fallbackErrorMessage: "git worktree prune failed",
+          });
+        } else if (registration !== "absent" || !/failed to delete/iu.test(cause.detail ?? "")) {
+          return yield* Effect.fail(cause);
+        }
+        if (!(yield* deleteLeftoverFolder())) {
+          return yield* Effect.fail(cause);
+        }
       });
 
     yield* executeGit("GitVcsDriver.removeWorktree", input.cwd, args, {
       timeoutMs: 15_000,
       fallbackErrorMessage: "git worktree remove failed",
     }).pipe(
-      Effect.catchIf(
-        (error) => /failed to delete/iu.test(error.detail ?? ""),
-        finishInterruptedRemoval,
-      ),
+      Effect.catch(recoverFailedRemoval),
       Effect.mapError((error) =>
         createGitCommandError(
           "GitVcsDriver.removeWorktree",
@@ -4651,8 +4669,13 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     );
   });
 
-  /** Whether `git worktree list` still knows the checkout at `worktreePath`. */
-  const isWorktreeRegistered = Effect.fn("isWorktreeRegistered")(function* (
+  /**
+   * How `git worktree list` sees the checkout at `worktreePath`: a live
+   * registration, a dead one git would prune (its `.git` link is gone), or
+   * none at all. A listing that fails reads as "registered" so no caller
+   * treats a checkout as gone on a hunch.
+   */
+  const readWorktreeRegistration = Effect.fn("readWorktreeRegistration")(function* (
     cwd: string,
     worktreePath: string,
   ) {
@@ -4663,19 +4686,26 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
         : forwardSlashes;
     };
     const result = yield* executeGit(
-      "GitVcsDriver.isWorktreeRegistered",
+      "GitVcsDriver.readWorktreeRegistration",
       cwd,
       ["worktree", "list", "--porcelain"],
       { timeoutMs: 5_000, allowNonZeroExit: true },
     ).pipe(Effect.catch(() => Effect.succeed(null)));
     if (result === null || result.exitCode !== 0) {
-      return true;
+      return "registered" as const;
     }
     const target = normalize(worktreePath);
-    return result.stdout
-      .split("\n")
-      .filter((line) => line.startsWith("worktree "))
-      .some((line) => normalize(line.slice("worktree ".length)) === target);
+    for (const block of result.stdout.split("\n\n")) {
+      const lines = block.split("\n");
+      const header = lines.find((line) => line.startsWith("worktree "));
+      if (header === undefined || normalize(header.slice("worktree ".length)) !== target) {
+        continue;
+      }
+      return lines.some((line) => line.startsWith("prunable"))
+        ? ("prunable" as const)
+        : ("registered" as const);
+    }
+    return "absent" as const;
   });
 
   const renameBranch: GitVcsDriver.GitVcsDriverShape["renameBranch"] = Effect.fn("renameBranch")(
