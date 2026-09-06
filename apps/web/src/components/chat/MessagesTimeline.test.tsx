@@ -791,8 +791,8 @@ describe("MessagesTimeline", () => {
 
     expect(markup).toContain("Claude API connection issue");
     expect(markup).toContain("Runtime error");
-    expect(markup).toContain("size-[6px] rounded-full bg-warning");
-    expect(markup).toContain("size-[6px] rounded-full bg-destructive");
+    expect(markup).toContain("size-[5px] rounded-full bg-warning");
+    expect(markup).toContain("size-[5px] rounded-full bg-destructive");
     expect(markup).not.toContain("border-warning/65");
     expect(markup).not.toContain("border-destructive/70");
     expect(markup).not.toContain("lucide-circle-alert");
