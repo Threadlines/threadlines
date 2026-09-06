@@ -13,6 +13,8 @@ import { create } from "zustand";
 export interface PullRequestTabStatus {
   readonly state: PullRequestState;
   readonly isDraft: boolean;
+  /** Armed to merge on its own once its requirements pass. */
+  readonly autoMergeEnabled: boolean;
 }
 
 export interface PullRequestTab extends PullRequestTabStatus {
@@ -29,7 +31,7 @@ export interface PullRequestTab extends PullRequestTabStatus {
  * is optional because the route can open a tab for a row no listing on screen
  * carries; it then rests on open until a listing says otherwise.
  */
-export type PullRequestTabTarget = Omit<PullRequestTab, "id" | "state" | "isDraft"> &
+export type PullRequestTabTarget = Omit<PullRequestTab, "id" | keyof PullRequestTabStatus> &
   Partial<PullRequestTabStatus>;
 
 /**
@@ -81,6 +83,7 @@ export const usePullRequestTabsStore = create<PullRequestTabsState>((set, get) =
       number: target.number,
       state: target.state ?? "open",
       isDraft: target.isDraft ?? false,
+      autoMergeEnabled: target.autoMergeEnabled ?? false,
     };
     set({ tabs: [...tabs, tab], activeId: id });
     return tab;
@@ -105,11 +108,16 @@ export const usePullRequestTabsStore = create<PullRequestTabsState>((set, get) =
     let changed = false;
     const next = tabs.map((tab) => {
       const status = statusById.get(tab.id);
-      if (!status || (status.state === tab.state && status.isDraft === tab.isDraft)) {
+      if (
+        !status ||
+        (status.state === tab.state &&
+          status.isDraft === tab.isDraft &&
+          status.autoMergeEnabled === tab.autoMergeEnabled)
+      ) {
         return tab;
       }
       changed = true;
-      return { ...tab, state: status.state, isDraft: status.isDraft };
+      return { ...tab, ...status };
     });
     // Only when something moved: this runs off every listing read, and a fresh
     // array each time would re-render the strip on every poll.

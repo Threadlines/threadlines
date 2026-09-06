@@ -554,7 +554,7 @@ function createGitHubCliWithFakeGh(scenario: FakeGhScenario = {}): {
             "--limit",
             String(input.limit ?? 1),
             "--json",
-            "number,title,url,baseRefName,headRefName,state,mergedAt,isCrossRepository,headRepository,headRepositoryOwner",
+            "number,title,url,baseRefName,headRefName,state,mergedAt,autoMergeRequest,isCrossRepository,headRepository,headRepositoryOwner",
           ],
         }).pipe(
           Effect.map((result) => JSON.parse(result.stdout) as unknown[]),
@@ -598,7 +598,7 @@ function createGitHubCliWithFakeGh(scenario: FakeGhScenario = {}): {
             "view",
             input.reference,
             "--json",
-            "number,title,url,baseRefName,headRefName,state,mergedAt,isCrossRepository,headRepository,headRepositoryOwner",
+            "number,title,url,baseRefName,headRefName,state,mergedAt,autoMergeRequest,isCrossRepository,headRepository,headRepositoryOwner",
           ],
         }).pipe(Effect.map((result) => JSON.parse(result.stdout) as GitHubPullRequestSummary)),
       getRepositoryCloneUrls: (input) =>
@@ -1163,7 +1163,7 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
           state: "open",
         });
         expect(ghCalls).toContain(
-          "pr list --head jasonLaster:statemachine --state all --limit 20 --json number,title,url,baseRefName,headRefName,state,mergedAt,updatedAt,isCrossRepository,headRepository,headRepositoryOwner",
+          "pr list --head jasonLaster:statemachine --state all --limit 20 --json number,title,url,baseRefName,headRefName,state,mergedAt,updatedAt,autoMergeRequest,isCrossRepository,headRepository,headRepositoryOwner",
         );
       }),
     20_000,

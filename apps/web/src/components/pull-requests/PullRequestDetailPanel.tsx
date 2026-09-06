@@ -603,7 +603,13 @@ function PullRequestDetailHeader({
   readonly onOpenThread: () => void;
   readonly handoffs: PullRequestHandoffActions | null;
 }) {
-  const tone = pullRequestBadgeTone(detail.state, detail.isDraft);
+  // A queued pull request need not carry a standing instruction any more, so
+  // the queue's own position arms the glyph as much as the instruction does.
+  const tone = pullRequestBadgeTone(
+    detail.state,
+    detail.isDraft,
+    detail.autoMergeEnabled === true || (detail.mergeQueue?.position ?? null) !== null,
+  );
   const actions = usePullRequestActions({ environmentId, reference, detail, handoffs });
   // A branch that no longer merges, said where the branches are named rather
   // than on a line of its own.

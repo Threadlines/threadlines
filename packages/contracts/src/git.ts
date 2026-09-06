@@ -451,6 +451,8 @@ const VcsStatusChangeRequest = Schema.Struct({
   baseRef: TrimmedNonEmptyStringSchema,
   headRef: TrimmedNonEmptyStringSchema,
   state: VcsStatusChangeRequestState,
+  /** Armed to merge on its own once its requirements pass; absent where the host does not say. */
+  autoMergeEnabled: Schema.optional(Schema.Boolean),
 });
 
 const VcsStatusLocalShape = {

@@ -61,7 +61,9 @@ describe("pullRequestTabsStore", () => {
     const tab = store().open(target(1));
     expect(tab.state).toBe("open");
 
-    store().markStatus(new Map([[tab.id, { state: "merged", isDraft: false }]]));
+    store().markStatus(
+      new Map([[tab.id, { state: "merged", isDraft: false, autoMergeEnabled: false }]]),
+    );
     expect(store().tabs[0]?.state).toBe("merged");
 
     // No listing on screen carries the row any more, so the glyph it was last

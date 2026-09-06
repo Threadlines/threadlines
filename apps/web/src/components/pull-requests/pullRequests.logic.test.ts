@@ -37,6 +37,7 @@ import {
   pullRequestFilterChips,
   pullRequestProjectFacets,
   pullRequestFiltersFromSearch,
+  pullRequestBadgeTone,
   pullRequestFiltersToSearch,
   pullRequestLabelColor,
   pullRequestMergeQueueLabel,
@@ -502,7 +503,29 @@ describe("resolveThreadPullRequest", () => {
       url: "https://github.com/threadlines/threadlines/pull/7",
       repository: "threadlines/threadlines",
       settledAt: null,
+      autoMergeEnabled: false,
     });
+  });
+
+  it("carries the standing merge instruction from whichever source it reads", () => {
+    const openStatusPr = { ...MERGED_STATUS_PR, state: "open", autoMergeEnabled: true } as const;
+    expect(
+      resolveThreadPullRequest({
+        thread: thread(),
+        gitStatus: gitStatus({ pr: openStatusPr }),
+        openEntries: [],
+        projects: PROJECTS,
+      }),
+    ).toMatchObject({ number: 7, autoMergeEnabled: true });
+
+    expect(
+      resolveThreadPullRequest({
+        thread: thread(),
+        gitStatus: null,
+        openEntries: [entry({ number: 412, autoMergeEnabled: true })],
+        projects: PROJECTS,
+      }),
+    ).toMatchObject({ number: 412, autoMergeEnabled: true });
   });
 
   it("falls back to the open listing when the checkout stands on another branch", () => {
@@ -556,6 +579,16 @@ describe("resolveThreadPullRequest", () => {
         }),
       ).toBeNull();
     }
+  });
+});
+
+describe("pullRequestBadgeTone", () => {
+  it("wears the armed glyph only while open and not a draft", () => {
+    expect(pullRequestBadgeTone("open", false, true).label).toBe("Auto-merge");
+    expect(pullRequestBadgeTone("open", false, false).label).toBe("Open");
+    // A draft cannot be armed, and a settled row has nothing left to land.
+    expect(pullRequestBadgeTone("open", true, true).label).toBe("Draft");
+    expect(pullRequestBadgeTone("merged", false, true).label).toBe("Merged");
   });
 });
 
