@@ -112,6 +112,18 @@ function isImageGenerationPayloadRecord(value: Record<string, unknown>): boolean
   );
 }
 
+/** A Claude `tool_result` image block's `source`: `{type: "base64", media_type:
+ *  "image/...", data}`. The data only works whole -- a trimmed copy draws as a
+ *  broken image -- so it keeps its full length. */
+function isBase64ImageSourceRecord(value: Record<string, unknown>): boolean {
+  return (
+    value.type === "base64" &&
+    typeof value.media_type === "string" &&
+    value.media_type.toLowerCase().startsWith("image/") &&
+    typeof value.data === "string"
+  );
+}
+
 function compactActivityPayloadData(
   value: unknown,
   key?: string | undefined,
@@ -147,12 +159,17 @@ function compactActivityPayloadData(
 
   const entries = Object.entries(value as Record<string, unknown>);
   const compacted: Record<string, unknown> = {};
-  const preserveImageResult = isImageGenerationPayloadRecord(value as Record<string, unknown>);
+  const record = value as Record<string, unknown>;
+  const preserveImageResult = isImageGenerationPayloadRecord(record);
+  const preserveImageData = isBase64ImageSourceRecord(record);
   for (const [entryKey, entryValue] of entries.slice(0, MAX_THREAD_ACTIVITY_PAYLOAD_OBJECT_KEYS)) {
-    compacted[entryKey] =
-      preserveImageResult && entryKey === "result" && typeof entryValue === "string"
-        ? entryValue
-        : compactActivityPayloadData(entryValue, entryKey, depth + 1, limits);
+    const preserved =
+      typeof entryValue === "string" &&
+      ((preserveImageResult && entryKey === "result") ||
+        (preserveImageData && entryKey === "data"));
+    compacted[entryKey] = preserved
+      ? entryValue
+      : compactActivityPayloadData(entryValue, entryKey, depth + 1, limits);
   }
   if (entries.length > MAX_THREAD_ACTIVITY_PAYLOAD_OBJECT_KEYS) {
     compacted.__truncatedKeys = entries.length - MAX_THREAD_ACTIVITY_PAYLOAD_OBJECT_KEYS;

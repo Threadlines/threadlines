@@ -3904,7 +3904,14 @@ function imagePathFromPayload(payload: Record<string, unknown> | null): unknown 
  * screenshot tool's `{type: "image", source: {type: "base64", ...}}` content
  * blocks are already here; reading them is what makes an MCP screenshot row a
  * picture without the event log holding a second copy.
+ *
+ * Rows saved before the server learned to keep image bytes whole hold a
+ * trimmed copy (`...` plus the tail). That is not base64, and a data URL built
+ * from it draws as a broken image, so such a block is skipped and the row falls
+ * back to loading the named path.
  */
+const BASE64_PATTERN = /^[A-Za-z0-9+/]+={0,2}$/u;
+
 function imageBlocksFromPayload(
   payload: Record<string, unknown> | null,
 ): Array<{ mimeType: string; base64: string }> {
@@ -3922,7 +3929,7 @@ function imageBlocksFromPayload(
     }
     const mimeType = asTrimmedString(source.media_type);
     const base64 = asTrimmedString(source.data);
-    return mimeType && base64 ? [{ mimeType, base64 }] : [];
+    return mimeType && base64 && BASE64_PATTERN.test(base64) ? [{ mimeType, base64 }] : [];
   });
 }
 

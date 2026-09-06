@@ -2843,6 +2843,48 @@ describe("deriveWorkLogEntries", () => {
     expect(entry?.images?.[0]?.previewUrl).toBeUndefined();
   });
 
+  it("falls back to the file path when a stored image block was trimmed", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "claude-read-trimmed",
+        kind: "tool.completed",
+        summary: "Read icon.png",
+        payload: {
+          itemType: "image_view",
+          title: "Read icon.png",
+          data: {
+            toolName: "Read",
+            input: { file_path: "C:\\Users\\wilfr\\AppData\\Local\\Temp\\icon.png" },
+            result: {
+              type: "tool_result",
+              tool_use_id: "toolu_read",
+              content: [
+                {
+                  type: "image",
+                  source: {
+                    type: "base64",
+                    media_type: "image/png",
+                    data: "...uLW518pMPMrvYRRZoMTJG",
+                  },
+                },
+              ],
+            },
+            item: { id: "toolu_read" },
+          },
+        },
+      }),
+    ];
+
+    const [entry] = deriveWorkLogEntries(activities);
+    expect(entry?.images).toEqual([
+      {
+        id: "toolu_read",
+        name: "icon.png",
+        path: "C:\\Users\\wilfr\\AppData\\Local\\Temp\\icon.png",
+      },
+    ]);
+  });
+
   it("previews the image blocks a screenshot tool returned inline", () => {
     const screenshotBase64 =
       "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=";

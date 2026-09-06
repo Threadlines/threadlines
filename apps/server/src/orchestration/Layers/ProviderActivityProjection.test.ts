@@ -433,6 +433,42 @@ describe("ProviderActivityProjection", () => {
     expect(payload?.data?.item?.result?.startsWith("...")).toBe(false);
   });
 
+  it("preserves base64 image blocks on Claude tool results", () => {
+    const imageData = `iVBORw0KGgo${"A".repeat(MAX_THREAD_ACTIVITY_PAYLOAD_TEXT_LENGTH + 128)}`;
+    const activities = projectRuntimeEventToActivities({
+      type: "item.completed",
+      eventId: EventId.make("evt-read-image-completed"),
+      provider: ProviderDriverKind.make("claude"),
+      threadId: ThreadId.make("thread-1"),
+      turnId: TurnId.make("turn-1"),
+      createdAt: "2026-06-01T12:00:00.000Z",
+      payload: {
+        itemType: "image_view",
+        title: "Read screenshot.png",
+        data: {
+          toolName: "Read",
+          input: { file_path: "C:\\shots\\screenshot.png" },
+          result: {
+            type: "tool_result",
+            tool_use_id: "tool-read-1",
+            content: [
+              {
+                type: "image",
+                source: { type: "base64", media_type: "image/png", data: imageData },
+              },
+            ],
+          },
+        },
+      },
+    } satisfies ProviderRuntimeEvent);
+
+    const payload = activities[0]?.payload as
+      | { data?: { result?: { content?: Array<{ source?: { data?: string } }> } } }
+      | undefined;
+
+    expect(payload?.data?.result?.content?.[0]?.source?.data).toBe(imageData);
+  });
+
   it("still compacts non-image result payload strings", () => {
     const largeResult = Array.from({ length: 1_000 }, (_, index) => `line ${index}`).join("\n");
     const activities = projectRuntimeEventToActivities({
