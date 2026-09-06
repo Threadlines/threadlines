@@ -1,5 +1,11 @@
 import type { ScopedThreadRef } from "@threadlines/contracts";
-import { memo, useCallback, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
+import {
+  memo,
+  useCallback,
+  type ComponentProps,
+  type MouseEvent as ReactMouseEvent,
+  type ReactNode,
+} from "react";
 
 import { isElectron } from "../../env";
 import { readLocalApi } from "../../localApi";
@@ -9,7 +15,15 @@ import { stackedThreadToast, toastManager } from "../ui/toast";
 import { copyTextWithToast } from "./copyTextWithToast";
 import { useThreadPullRequestLink } from "./ThreadPullRequestLinkContext";
 
-export interface ChatWebLinkProps {
+/**
+ * The anchor's own props ride along, `ref` included, so a hover-card trigger
+ * or tooltip can wrap the link and reach the element: a wrapper that dropped
+ * them would leave the card with nothing to listen to.
+ */
+export interface ChatWebLinkProps extends Omit<
+  ComponentProps<"a">,
+  "href" | "children" | "className" | "title"
+> {
   href: string;
   /** Null when the transcript is rendered without a thread to open pages in. */
   threadRef: ScopedThreadRef | null;
@@ -36,6 +50,9 @@ export const ChatWebLink = memo(function ChatWebLink({
   children,
   className,
   title,
+  onClick,
+  onContextMenu,
+  ...anchorProps
 }: ChatWebLinkProps) {
   const pullRequestLink = useThreadPullRequestLink();
   const opensPullRequestTab =
@@ -43,7 +60,8 @@ export const ChatWebLink = memo(function ChatWebLink({
 
   const handleClick = useCallback(
     (event: ReactMouseEvent<HTMLAnchorElement>) => {
-      if (!isPlainPrimaryClick(event)) {
+      onClick?.(event);
+      if (event.defaultPrevented || !isPlainPrimaryClick(event)) {
         return;
       }
       if (opensPullRequestTab) {
@@ -61,13 +79,14 @@ export const ChatWebLink = memo(function ChatWebLink({
       event.preventDefault();
       event.stopPropagation();
     },
-    [href, opensPullRequestTab, pullRequestLink, threadRef],
+    [href, onClick, opensPullRequestTab, pullRequestLink, threadRef],
   );
 
   const handleContextMenu = useCallback(
     async (event: ReactMouseEvent<HTMLAnchorElement>) => {
+      onContextMenu?.(event);
       const api = readLocalApi();
-      if (!api) return;
+      if (!api || event.defaultPrevented) return;
 
       event.preventDefault();
       event.stopPropagation();
@@ -105,16 +124,17 @@ export const ChatWebLink = memo(function ChatWebLink({
         copyTextWithToast(href, "Link address");
       }
     },
-    [href, opensPullRequestTab, threadRef],
+    [href, onContextMenu, opensPullRequestTab, threadRef],
   );
 
   return (
     <a
+      target="_blank"
+      rel="noopener noreferrer"
+      {...anchorProps}
       href={href}
       className={className}
       title={title}
-      target="_blank"
-      rel="noopener noreferrer"
       onClick={handleClick}
       onContextMenu={handleContextMenu}
     >

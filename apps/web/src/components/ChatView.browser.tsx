@@ -2983,12 +2983,20 @@ describe("ChatView timeline estimator parity (full app)", () => {
   });
 
   it("docks the thread's pull request above the notices in one frame", async () => {
+    const snapshot = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-pull-request-dock" as MessageId,
+      targetText: "pull request dock",
+    });
+    // The transcript opens at its end, so the address that becomes a chip goes
+    // in the last message, where it is on screen.
+    const lastMessage = snapshot.threads[0]!.messages.at(-1)!;
+    snapshot.threads[0]!.messages[snapshot.threads[0]!.messages.length - 1] = {
+      ...lastMessage,
+      text: `Opened ${PULL_REQUEST_URL} for review.`,
+    };
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
-      snapshot: createSnapshotForTargetUser({
-        targetMessageId: "msg-user-pull-request-dock" as MessageId,
-        targetText: "pull request dock",
-      }),
+      snapshot,
       configureFixture: withPullRequestFixture,
       resolveRpc: resolvePullRequestRpc,
     });
@@ -3034,6 +3042,23 @@ describe("ChatView timeline estimator parity (full app)", () => {
           dock!.getBoundingClientRect().bottom - composerSurface!.getBoundingClientRect().top,
         ),
       ).toBeLessThan(2);
+
+      // The address in the message is a chip, and the chip shares the row's
+      // hover card: the trigger has to reach the anchor through the link
+      // component, which is the part that silently broke once.
+      const chip = await waitForElement(
+        () => document.querySelector<HTMLAnchorElement>("a.chat-markdown-pull-request-chip"),
+        "Unable to find the pull request chip in the transcript.",
+      );
+      expect(chip.textContent).toBe(`#${PULL_REQUEST_NUMBER}`);
+      await page.elementLocator(chip).hover();
+      const card = await waitForElement(
+        () => document.querySelector<HTMLElement>('[data-testid="pull-request-hover-card"]'),
+        "Hovering the transcript chip did not open the pull request card.",
+      );
+      expect(card.textContent).toContain(`${PULL_REQUEST_REPOSITORY} #${PULL_REQUEST_NUMBER}`);
+      // Move off so the card does not sit over the row's close control.
+      await page.elementLocator(composerSurface!).hover();
 
       // Closing the row takes it off the composer; the notice stays docked.
       row.querySelector<HTMLButtonElement>('button[aria-label^="Hide pull request"]')!.click();
