@@ -141,6 +141,7 @@ Threadlines is dense and flat. When building or changing any user-facing surface
 - Comments describe how a thing is used: concise notes above functions and classes, not line-by-line narration. When you change code, keep its comments in sync.
 - Be careful with destructive actions (deleting files, dropping data, rewriting history) that the developer did not explicitly request.
 - No continuously repainting animations; they peg the GPU on high-refresh displays.
+- A migration that rewrites existing rows must be timed against a database with real history (hundreds of thousands of events) before it merges. In-memory tests cannot tell a two-second backfill from one that takes hours on a user's install.
 - If a rule here fights the task in front of you, say so loudly and get sign-off before breaking it.
 
 ## Reference Repos

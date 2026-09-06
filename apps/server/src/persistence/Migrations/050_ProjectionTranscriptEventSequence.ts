@@ -9,25 +9,29 @@ const decodeActivity = Schema.decodeUnknownOption(
   Schema.fromJsonString(ThreadActivityAppendedPayload),
 );
 
-/** Order transcript entries by their first durable event, even after a clock correction. */
+/**
+ * Order transcript entries by their first durable event, even after a clock correction.
+ *
+ * Each backfill is an UPDATE ... FROM so SQLite materializes the first-event lookup once.
+ * A correlated subquery over the CTE re-scans the whole event log per projected row,
+ * which took hours on a multi-gigabyte database and stalled startup.
+ */
 export default Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
 
   yield* sql`ALTER TABLE projection_thread_messages ADD COLUMN event_sequence INTEGER`;
   yield* sql`
-    WITH first_events AS (
+    UPDATE projection_thread_messages
+    SET event_sequence = first_events.first_sequence
+    FROM (
       SELECT stream_id, json_extract(payload_json, '$.messageId') AS item_id,
              MIN(sequence) AS first_sequence
       FROM orchestration_events
       WHERE event_type IN ('thread.message-sent', 'thread.follow-up-accepted')
       GROUP BY stream_id, json_extract(payload_json, '$.messageId')
-    )
-    UPDATE projection_thread_messages
-    SET event_sequence = (
-      SELECT first_sequence FROM first_events
-      WHERE stream_id = projection_thread_messages.thread_id
-        AND item_id = projection_thread_messages.message_id
-    )
+    ) AS first_events
+    WHERE first_events.stream_id = projection_thread_messages.thread_id
+      AND first_events.item_id = projection_thread_messages.message_id
   `;
   yield* sql`
     CREATE INDEX idx_projection_thread_messages_event_order
@@ -36,19 +40,17 @@ export default Effect.gen(function* () {
 
   yield* sql`ALTER TABLE projection_thread_proposed_plans ADD COLUMN event_sequence INTEGER`;
   yield* sql`
-    WITH first_events AS (
+    UPDATE projection_thread_proposed_plans
+    SET event_sequence = first_events.first_sequence
+    FROM (
       SELECT stream_id, json_extract(payload_json, '$.proposedPlan.id') AS item_id,
              MIN(sequence) AS first_sequence
       FROM orchestration_events
       WHERE event_type IN ('thread.proposed-plan-upserted')
       GROUP BY stream_id, json_extract(payload_json, '$.proposedPlan.id')
-    )
-    UPDATE projection_thread_proposed_plans
-    SET event_sequence = (
-      SELECT first_sequence FROM first_events
-      WHERE stream_id = projection_thread_proposed_plans.thread_id
-        AND item_id = projection_thread_proposed_plans.plan_id
-    )
+    ) AS first_events
+    WHERE first_events.stream_id = projection_thread_proposed_plans.thread_id
+      AND first_events.item_id = projection_thread_proposed_plans.plan_id
   `;
   yield* sql`
     CREATE INDEX idx_projection_thread_proposed_plans_event_order
@@ -57,19 +59,17 @@ export default Effect.gen(function* () {
 
   yield* sql`ALTER TABLE projection_thread_activities ADD COLUMN event_sequence INTEGER`;
   yield* sql`
-    WITH first_events AS (
+    UPDATE projection_thread_activities
+    SET event_sequence = first_events.first_sequence
+    FROM (
       SELECT stream_id, json_extract(payload_json, '$.activity.id') AS item_id,
              MIN(sequence) AS first_sequence
       FROM orchestration_events
       WHERE event_type IN ('thread.activity-appended')
       GROUP BY stream_id, json_extract(payload_json, '$.activity.id')
-    )
-    UPDATE projection_thread_activities
-    SET event_sequence = (
-      SELECT first_sequence FROM first_events
-      WHERE stream_id = projection_thread_activities.thread_id
-        AND item_id = projection_thread_activities.activity_id
-    )
+    ) AS first_events
+    WHERE first_events.stream_id = projection_thread_activities.thread_id
+      AND first_events.item_id = projection_thread_activities.activity_id
   `;
   yield* sql`
     CREATE INDEX idx_projection_thread_activities_event_order
