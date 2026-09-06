@@ -102,6 +102,7 @@ import {
   formatPullRequestBehindLabel,
   formatPullRequestChecksHeadline,
   pullRequestBadgeTone,
+  pullRequestArmedToMerge,
   pullRequestMergeQueueLabel,
   pullRequestUpdateMethodLabel,
   resolveDefaultMergeMethod,
@@ -603,7 +604,7 @@ function PullRequestDetailHeader({
   readonly onOpenThread: () => void;
   readonly handoffs: PullRequestHandoffActions | null;
 }) {
-  const tone = pullRequestBadgeTone(detail.state, detail.isDraft);
+  const tone = pullRequestBadgeTone(detail.state, detail.isDraft, pullRequestArmedToMerge(detail));
   const actions = usePullRequestActions({ environmentId, reference, detail, handoffs });
   // A branch that no longer merges, said where the branches are named rather
   // than on a line of its own.

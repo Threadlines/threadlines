@@ -30,6 +30,8 @@ import {
   GitPullRequestDraftIcon,
   GitPullRequestIcon,
 } from "lucide-react";
+import { MergeQueueIcon } from "../Icons";
+import type { ElementType } from "react";
 
 import type { Project, SidebarThreadSummary } from "../../types";
 
@@ -517,7 +519,8 @@ export function linkThreadsToPullRequests(
 
 /** How one pull request state reads: its glyph, its colour, and its word. */
 export interface PullRequestBadgeTone {
-  readonly Icon: typeof GitPullRequestIcon;
+  /** Takes the class and `aria-hidden` every surface hands it; a Lucide glyph or one of ours. */
+  readonly Icon: ElementType<{ className?: string; "aria-hidden"?: boolean }>;
   readonly className: string;
   readonly label: string;
 }
@@ -530,6 +533,11 @@ export interface PullRequestBadgeTone {
 export function pullRequestBadgeTone(
   state: PullRequestState,
   isDraft: boolean,
+  /**
+   * Armed to land on its own, or already in the base's merge queue. Only an
+   * open, non-draft row can be, so the settled and draft glyphs win over it.
+   */
+  autoMergeEnabled = false,
 ): PullRequestBadgeTone {
   if (state === "merged") {
     return {
@@ -547,6 +555,14 @@ export function pullRequestBadgeTone(
   }
   if (isDraft) {
     return { Icon: GitPullRequestDraftIcon, className: "text-muted-foreground/60", label: "Draft" };
+  }
+  if (autoMergeEnabled) {
+    // The amber of a check still running: the host is on its way to landing it.
+    return {
+      Icon: MergeQueueIcon,
+      className: "text-amber-600/90 dark:text-amber-400/80",
+      label: "Auto-merge",
+    };
   }
   return {
     Icon: GitPullRequestIcon,
@@ -567,6 +583,8 @@ export interface ThreadPullRequest {
   readonly repository: string | null;
   /** When it merged or closed; null while open, or where the source did not say. */
   readonly settledAt: string | null;
+  /** Armed to merge on its own once its requirements pass; false where the source did not say. */
+  readonly autoMergeEnabled: boolean;
 }
 
 /**
@@ -638,6 +656,7 @@ export function pullRequestFromGitStatus(
     repository,
     // The status read carries no dates.
     settledAt: null,
+    autoMergeEnabled: gitStatus.pr.autoMergeEnabled === true,
   };
 }
 
@@ -694,6 +713,7 @@ export function resolveThreadPullRequest(input: {
     // A host that does not date the landing gets the row's last update, which
     // is at or after it.
     settledAt: entry.settledAt ?? (entry.state === "open" ? null : entry.updatedAt),
+    autoMergeEnabled: entry.autoMergeEnabled === true,
   };
 }
 
@@ -1542,6 +1562,18 @@ export function pullRequestMergeQueueLabel(
         tooltip: "Joins the merge queue once every requirement passes",
       }
     : null;
+}
+
+/**
+ * Whether the host is landing this pull request on its own: armed by the
+ * standing instruction, or already taken into the base's merge queue. A queued
+ * pull request need not carry the instruction any more, so the queue's own
+ * position counts as much as the instruction does.
+ */
+export function pullRequestArmedToMerge(
+  detail: Pick<PullRequestDetail, "autoMergeEnabled" | "mergeQueue">,
+): boolean {
+  return detail.autoMergeEnabled === true || (detail.mergeQueue?.position ?? null) !== null;
 }
 
 /** How long after a push the header waits for the host to register the new commit's checks. */

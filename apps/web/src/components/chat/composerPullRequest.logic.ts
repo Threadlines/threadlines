@@ -13,6 +13,7 @@ import type { PullRequestCheck, PullRequestDetail, PullRequestState } from "@thr
 
 import {
   summarizePullRequestChecks,
+  pullRequestArmedToMerge,
   type ThreadPullRequest,
 } from "../pull-requests/pullRequests.logic";
 
@@ -55,6 +56,8 @@ export interface ComposerPullRequestRowModel {
   readonly number: number;
   readonly state: PullRequestState;
   readonly isDraft: boolean;
+  /** The host is landing it on its own: armed, or already in the merge queue. */
+  readonly autoMergeEnabled: boolean;
   readonly title: string;
   readonly url: string;
   /** Absent until the detail arrives. */
@@ -134,6 +137,7 @@ export function composerPullRequestRow(input: {
     number: pullRequest.number,
     state,
     isDraft: detail?.isDraft ?? pullRequest.isDraft,
+    autoMergeEnabled: detail ? pullRequestArmedToMerge(detail) : pullRequest.autoMergeEnabled,
     title: detail?.title ?? pullRequest.title,
     url: detail?.url ?? pullRequest.url,
     projectTitle: detail?.projectTitle ?? null,
