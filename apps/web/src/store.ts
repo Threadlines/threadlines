@@ -1,3 +1,4 @@
+import { compareTranscriptOrder } from "@threadlines/shared/transcriptOrder";
 import type {
   EnvironmentId,
   MessageId,
@@ -23,6 +24,7 @@ import { isProviderDriverKind, ProviderDriverKind } from "@threadlines/contracts
 import type { ThreadId, TurnId } from "@threadlines/contracts";
 import * as Schema from "effect/Schema";
 import { resolveModelSlugForProvider } from "@threadlines/shared/model";
+import { retainRecentActivitiesAndOpenRequests } from "@threadlines/shared/pendingRequests";
 import {
   MAX_THREAD_ACTIVITIES,
   MAX_THREAD_CHECKPOINTS,
@@ -50,6 +52,8 @@ import {
   derivePendingUserInputs,
   findLatestProposedPlan,
   hasActionableProposedPlan,
+  isWaitingOnBackgroundTasks,
+  isBlockingUserInput,
   sumTurnDiffStats,
 } from "./session-logic";
 import { getThreadFromEnvironmentState } from "./threadDerivation";
@@ -216,6 +220,7 @@ function mapMessage(environmentId: EnvironmentId, message: OrchestrationMessage)
     text: message.text,
     turnId: message.turnId,
     createdAt: message.createdAt,
+    ...(message.eventSequence !== undefined ? { eventSequence: message.eventSequence } : {}),
     streaming: message.streaming,
     ...(message.streaming ? {} : { completedAt: message.updatedAt }),
     ...(attachments && attachments.length > 0 ? { attachments } : {}),
@@ -232,6 +237,9 @@ function mapProposedPlan(proposedPlan: OrchestrationProposedPlan): ProposedPlan 
     implementationThreadId: proposedPlan.implementationThreadId,
     dismissedAt: proposedPlan.dismissedAt,
     createdAt: proposedPlan.createdAt,
+    ...(proposedPlan.eventSequence !== undefined
+      ? { eventSequence: proposedPlan.eventSequence }
+      : {}),
     updatedAt: proposedPlan.updatedAt,
   };
 }
@@ -362,6 +370,7 @@ function mapThreadShell(
     latestUserMessageAt: thread.latestUserMessageAt,
     hasPendingApprovals: thread.hasPendingApprovals,
     hasPendingUserInput: thread.hasPendingUserInput,
+    hasBlockingUserInput: thread.hasBlockingUserInput ?? thread.hasPendingUserInput,
     hasActionableProposedPlan: thread.hasActionableProposedPlan,
     cumulativeDiffStat: thread.cumulativeDiffStat,
   };
@@ -421,10 +430,7 @@ function toSidebarThreadSummary(
   const latestDetailUserMessageAt =
     thread.messages
       .filter((message) => message.role === "user")
-      .toSorted(
-        (left, right) =>
-          left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id),
-      )
+      .toSorted(compareTranscriptOrder)
       .at(-1)?.createdAt ?? null;
   const latestUserMessageAt = latestIso(
     previous?.latestUserMessageAt ?? null,
@@ -435,6 +441,7 @@ function toSidebarThreadSummary(
     thread.latestTurn?.turnId ?? null,
   );
   const hasActivityEvidence = thread.activities.length > 0;
+  const pendingUserInputs = hasActivityEvidence ? derivePendingUserInputs(thread.activities) : [];
   const hasProposedPlanEvidence = thread.proposedPlans.length > 0;
   // The detail stream carries per-turn summaries, not the server's rollup, so
   // the open thread recomputes it rather than going stale behind the sidebar.
@@ -462,8 +469,11 @@ function toSidebarThreadSummary(
       ? derivePendingApprovals(thread.activities).length > 0
       : (previous?.hasPendingApprovals ?? false),
     hasPendingUserInput: hasActivityEvidence
-      ? derivePendingUserInputs(thread.activities).length > 0
+      ? pendingUserInputs.length > 0
       : (previous?.hasPendingUserInput ?? false),
+    hasBlockingUserInput: hasActivityEvidence
+      ? pendingUserInputs.some(isBlockingUserInput)
+      : (previous?.hasBlockingUserInput ?? previous?.hasPendingUserInput ?? false),
     hasActionableProposedPlan: hasProposedPlanEvidence
       ? hasActionableProposedPlan(latestProposedPlan)
       : (previous?.hasActionableProposedPlan ?? false),
@@ -558,6 +568,7 @@ function sidebarThreadSummariesEqual(
     left.latestUserMessageAt === right.latestUserMessageAt &&
     left.hasPendingApprovals === right.hasPendingApprovals &&
     left.hasPendingUserInput === right.hasPendingUserInput &&
+    left.hasBlockingUserInput === right.hasBlockingUserInput &&
     left.hasActionableProposedPlan === right.hasActionableProposedPlan &&
     threadDiffStatsEqual(left.cumulativeDiffStat, right.cumulativeDiffStat)
   );
@@ -1065,6 +1076,9 @@ function compareActivities(
   left: Thread["activities"][number],
   right: Thread["activities"][number],
 ): number {
+  if (left.eventSequence !== undefined || right.eventSequence !== undefined) {
+    return compareTranscriptOrder(left, right);
+  }
   if (left.sequence !== undefined && right.sequence !== undefined) {
     if (left.sequence !== right.sequence) {
       return left.sequence - right.sequence;
@@ -1123,14 +1137,20 @@ function upsertThreadActivity(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
   activity: OrchestrationThreadActivity,
 ): OrchestrationThreadActivity[] {
-  const nextActivity = { ...activity };
   const existingIndex = activities.findIndex((entry) => entry.id === activity.id);
+  const nextActivity = {
+    ...activity,
+    ...(existingIndex !== -1 ? { eventSequence: activities[existingIndex]?.eventSequence } : {}),
+  };
   if (
     existingIndex === -1 &&
     (activities.length === 0 ||
       compareActivities(activities[activities.length - 1]!, activity) <= 0)
   ) {
-    return capTail([...activities, nextActivity], MAX_THREAD_ACTIVITIES);
+    return retainRecentActivitiesAndOpenRequests(
+      [...activities, nextActivity],
+      MAX_THREAD_ACTIVITIES,
+    );
   }
 
   const nextActivities =
@@ -1141,7 +1161,10 @@ function upsertThreadActivity(
           nextActivity,
           ...activities.slice(existingIndex + 1),
         ];
-  return capTail(nextActivities.toSorted(compareActivities), MAX_THREAD_ACTIVITIES);
+  return retainRecentActivitiesAndOpenRequests(
+    nextActivities.toSorted(compareActivities),
+    MAX_THREAD_ACTIVITIES,
+  );
 }
 
 function buildLatestTurn(params: {
@@ -1222,10 +1245,7 @@ function retainThreadMessagesAfterRevert(
             message.turnId === null ||
             retainedTurnIds.has(message.turnId)),
       )
-      .toSorted(
-        (left, right) =>
-          left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id),
-      )
+      .toSorted(compareTranscriptOrder)
       .slice(0, missingUserCount);
     for (const message of fallbackUserMessages) {
       retainedMessageIds.add(message.id);
@@ -1246,10 +1266,7 @@ function retainThreadMessagesAfterRevert(
             message.turnId === null ||
             retainedTurnIds.has(message.turnId)),
       )
-      .toSorted(
-        (left, right) =>
-          left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id),
-      )
+      .toSorted(compareTranscriptOrder)
       .slice(0, missingAssistantCount);
     for (const message of fallbackAssistantMessages) {
       retainedMessageIds.add(message.id);
@@ -1719,6 +1736,7 @@ function applyEnvironmentOrchestrationEvent(
       return updateThreadState(state, event.payload.threadId, (thread) => {
         const message = mapMessage(thread.environmentId, {
           id: event.payload.messageId,
+          eventSequence: event.sequence,
           role: event.payload.role,
           text: event.payload.text,
           ...(event.payload.attachments !== undefined
@@ -1765,6 +1783,7 @@ function applyEnvironmentOrchestrationEvent(
       return updateThreadState(state, event.payload.threadId, (thread) => {
         const message = mapMessage(thread.environmentId, {
           id: event.payload.messageId,
+          eventSequence: event.sequence,
           role: event.payload.role,
           text: event.payload.text,
           ...(event.payload.attachments !== undefined
@@ -1891,15 +1910,18 @@ function applyEnvironmentOrchestrationEvent(
 
     case "thread.proposed-plan-upserted":
       return updateThreadState(state, event.payload.threadId, (thread) => {
-        const proposedPlan = mapProposedPlan(event.payload.proposedPlan);
+        const existingPlan = thread.proposedPlans.find(
+          (entry) => entry.id === event.payload.proposedPlan.id,
+        );
+        const proposedPlan = mapProposedPlan({
+          ...event.payload.proposedPlan,
+          eventSequence: existingPlan ? existingPlan.eventSequence : event.sequence,
+        });
         const proposedPlans = [
           ...thread.proposedPlans.filter((entry) => entry.id !== proposedPlan.id),
           proposedPlan,
         ]
-          .toSorted(
-            (left, right) =>
-              left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id),
-          )
+          .toSorted(compareTranscriptOrder)
           .slice(-MAX_THREAD_PROPOSED_PLANS);
         return {
           ...thread,
@@ -2034,7 +2056,10 @@ function applyEnvironmentOrchestrationEvent(
       return updateThreadState(state, event.payload.threadId, (thread) => {
         return {
           ...thread,
-          activities: upsertThreadActivity(thread.activities, event.payload.activity),
+          activities: upsertThreadActivity(thread.activities, {
+            ...event.payload.activity,
+            eventSequence: event.sequence,
+          }),
           updatedAt: event.occurredAt,
         };
       });
@@ -2196,6 +2221,24 @@ export function selectSidebarThreadsAcrossEnvironments(state: AppState): Sidebar
       const thread = environmentState.sidebarThreadSummaryById[threadId];
       return thread && thread.environmentId === environmentId ? [thread] : [];
     }),
+  );
+}
+
+/**
+ * Sidebar threads with live agent work, across every environment: the session
+ * is running a turn, or the turn settled and background provider tasks
+ * (subagents, deferred commands) will start it back up on their own. Drives the
+ * taskbar badge and the quit and update warnings, so a thread that is only
+ * waiting on its subagents must not read as finished here.
+ */
+export function selectRunningSidebarThreadsAcrossEnvironments(
+  state: AppState,
+): SidebarThreadSummary[] {
+  return selectSidebarThreadsAcrossEnvironments(state).filter(
+    (thread) =>
+      thread.session?.status === "running" ||
+      thread.session?.orchestrationStatus === "running" ||
+      isWaitingOnBackgroundTasks(thread.latestTurn, thread.session),
   );
 }
 

@@ -14,7 +14,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as Context from "effect/Context";
-import { session, type Session } from "electron";
+import { app, session, type Session } from "electron";
 import { PREVIEW_PARTITION } from "@threadlines/shared/preview";
 
 export { PREVIEW_PARTITION };
@@ -79,6 +79,18 @@ export const make = Effect.gen(function* PreviewSessionMake() {
         // request handler, so both have to agree or copy buttons fail.
         previewSession.setPermissionCheckHandler((_contents, permission) =>
           ALLOWED_PREVIEW_PERMISSIONS.has(permission),
+        );
+        // The partitioned session starts without any spellchecker
+        // configuration of its own, so the note fields the annotate overlay
+        // injects never showed a squiggle. The user's languages, narrowed to
+        // dictionaries that exist, with US English as the fallback.
+        previewSession.setSpellCheckerEnabled(true);
+        const dictionaries = new Set(previewSession.availableSpellCheckerLanguages);
+        const preferred = app
+          .getPreferredSystemLanguages()
+          .filter((language) => dictionaries.has(language));
+        previewSession.setSpellCheckerLanguages(
+          preferred.length > 0 ? preferred : dictionaries.has("en-US") ? ["en-US"] : [],
         );
         cached = previewSession;
         return previewSession;

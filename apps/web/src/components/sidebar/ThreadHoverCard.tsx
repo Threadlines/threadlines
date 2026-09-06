@@ -38,6 +38,15 @@ export interface ThreadHoverCardPayload {
  */
 type ThreadCardHandle = ReturnType<typeof createPreviewCardHandle<ThreadHoverCardPayload>>;
 const ThreadCardHandleContext = createContext<ThreadCardHandle | null>(null);
+
+/**
+ * The surface's card, for a control inside a row that wants it out of the
+ * way: a badge with a tooltip of its own has no use for a second popup over
+ * it. Null outside a provider.
+ */
+export function useThreadHoverCardHandle(): ThreadCardHandle | null {
+  return useContext(ThreadCardHandleContext);
+}
 import {
   HOVER_CARD_POPUP_CLASS_NAME,
   HoverCardDetailRow,

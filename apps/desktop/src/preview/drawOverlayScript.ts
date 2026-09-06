@@ -101,9 +101,8 @@ export function buildDrawOverlayScript(mode: "draw" | "erase" | "idle"): string 
     ":host([data-mode='erase']) .hit{pointer-events:stroke;cursor:pointer}" +
     // The same card the picker uses, so attaching a drawing and attaching an
     // element look like the same act.
-    // One row: a field and the two things you can do with it. The keys still
-    // work and the hint still says so, but quietly -- a line of instructions is
-    // not what you want to read every time you draw a circle.
+    // One row: a field and the two things you can do with it, each button
+    // carrying its key quietly rather than a separate line of instructions.
     ".note{position:fixed;display:flex;align-items:center;gap:6px;" +
     "padding:6px;border-radius:8px;background:#16181c;pointer-events:auto;" +
     "border:1px solid rgba(255,255,255,0.14);box-shadow:0 4px 16px rgba(0,0,0,0.45)}" +
@@ -112,15 +111,24 @@ export function buildDrawOverlayScript(mode: "draw" | "erase" | "idle"): string 
     "font:400 12px/1.4 ui-sans-serif,system-ui,sans-serif}" +
     ".input:focus{border-color:" + INK + "}" +
     ".input::placeholder{color:rgba(232,230,225,0.4)}" +
-    ".act{padding:5px 10px;border-radius:5px;cursor:pointer;border:1px solid transparent;" +
+    ".act{display:inline-flex;align-items:center;gap:5px;padding:5px 10px;border-radius:5px;" +
+    "cursor:pointer;border:1px solid transparent;" +
     "font:500 12px/1.2 ui-sans-serif,system-ui,sans-serif}" +
     ".attach{background:" + INK + ";color:#0b1220}" +
     ".attach:hover{filter:brightness(1.08)}" +
     ".cancel{background:none;color:rgba(232,230,225,0.7);" +
     "border-color:rgba(255,255,255,0.16)}" +
     ".cancel:hover{color:#e8e6e1;background:rgba(255,255,255,0.06)}" +
-    ".hint{margin-left:2px;white-space:nowrap;color:rgba(232,230,225,0.3);" +
-    "font:400 10px/1.2 ui-sans-serif,system-ui,sans-serif}" +
+    // Worn as a small centred chip rather than trailing text, which dangled
+    // off the label's baseline at a different size.
+    ".key{display:inline-flex;align-items:center;justify-content:center;height:14px;" +
+    "padding:0 3px;border-radius:3px;" +
+    "font:600 8px/1 ui-monospace,SFMono-Regular,Menlo,monospace;" +
+    "letter-spacing:0.05em;text-transform:uppercase}" +
+    ".attach .key{background:rgba(11,18,32,0.16)}" +
+    // Caps-only mono sits optically high when its line box is centred; with
+    // border-box height, 2px of top padding nets a 1px drop of the glyphs.
+    ".cancel .key{background:rgba(255,255,255,0.09);box-sizing:border-box;padding-top:2px}" +
     "[hidden]{display:none !important}" +
     "</style>" +
     "<svg xmlns='" + SVG_NS + "'></svg>";
@@ -309,9 +317,14 @@ export function buildDrawOverlayScript(mode: "draw" | "erase" | "idle"): string 
     noteField.className = "note";
     noteField.innerHTML =
       "<input class='input' type='text' placeholder='Describe the change…' />" +
-      "<button type='button' class='act attach'>Attach</button>" +
-      "<button type='button' class='act cancel'>Cancel</button>" +
-      "<span class='hint'>⏎ · esc</span>";
+      // The return glyph as drawn strokes rather than a font character: at
+      // chip size the text glyph renders hairline-thin and ragged.
+      "<button type='button' class='act attach'>Attach<span class='key'>" +
+      "<svg width='9' height='9' viewBox='0 0 24 24' fill='none' stroke='currentColor' " +
+      "stroke-width='3' stroke-linecap='round' stroke-linejoin='round'>" +
+      "<path d='M20 4v7a4 4 0 0 1-4 4H4'/><path d='m9 10-5 5 5 5'/></svg>" +
+      "</span></button>" +
+      "<button type='button' class='act cancel'>Cancel<span class='key'>esc</span></button>";
     root.appendChild(noteField);
     const input = noteField.querySelector(".input");
 

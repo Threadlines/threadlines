@@ -59,6 +59,40 @@ function claudeSpawnActivity(input: {
   });
 }
 
+/** The completion the adapter synthesizes from a `<task-notification>` for an
+ *  agent it holds no spawn for: keyed by the call it knows the agent by, with
+ *  the notification's task id and the agent's final text under `data`. */
+function notificationReceipt(input: {
+  id: string;
+  toolCallId: string;
+  taskId: string;
+  text: string;
+  createdAt?: string;
+}): OrchestrationThreadActivity {
+  return activity({
+    id: input.id,
+    kind: "tool.completed",
+    ...(input.createdAt ? { createdAt: input.createdAt } : {}),
+    payload: {
+      itemType: "collab_agent_tool_call",
+      toolCallId: input.toolCallId,
+      status: "completed",
+      title: "Subagent task",
+      detail: 'Agent "Fix missing-worktree bug trio" finished',
+      data: {
+        toolName: "Agent",
+        input: {},
+        result: {
+          type: "tool_result",
+          tool_use_id: input.toolCallId,
+          content: [{ type: "text", text: input.text }],
+        },
+        taskNotification: { taskId: input.taskId, status: "completed" },
+      },
+    },
+  });
+}
+
 describe("projectSubagentActivity", () => {
   it("creates a roster row from a Claude Agent tool call", () => {
     const roster = projectSubagentActivity(
@@ -415,6 +449,179 @@ describe("projectSubagentActivity", () => {
     expect(settled[0]?.objective).toBe("Review");
   });
 
+  it("ignores a flag-only metadata patch that names no known agent", () => {
+    const spawned = projectSubagentActivity(
+      [],
+      claudeSpawnActivity({
+        id: "a1",
+        kind: "tool.started",
+        status: "inProgress",
+        turnId: TURN_ID,
+      }),
+    );
+
+    // A shell command the harness moved to the background reports the same
+    // flag under its own tool call. It is not an agent and gets no row.
+    const afterCommand = projectSubagentActivity(
+      spawned,
+      activity({
+        id: "a2",
+        kind: "subagent.metadata",
+        payload: { callId: "toolu_bash_background", isBackgrounded: true },
+      }),
+    );
+    expect(afterCommand).toHaveLength(1);
+
+    // A resumed agent restates its depth and background flags under the call
+    // that resumed it. Still one agent, and nothing to key a second row by.
+    const afterResumeFlags = projectSubagentActivity(
+      afterCommand,
+      activity({
+        id: "a3",
+        kind: "subagent.metadata",
+        turnId: RESUME_TURN_ID,
+        payload: { callId: "toolu_01SendMessageResume", treeDepth: 1, isBackgrounded: true },
+      }),
+    );
+    expect(afterResumeFlags).toHaveLength(1);
+
+    // The same flags addressed to the spawn still land on its row.
+    const flagged = projectSubagentActivity(
+      afterResumeFlags,
+      activity({
+        id: "a4",
+        kind: "subagent.metadata",
+        payload: { callId: SPAWN_TOOL_USE_ID, isBackgrounded: true },
+      }),
+    );
+    expect(flagged).toHaveLength(1);
+    expect(flagged[0]?.isBackgrounded).toBe(true);
+    expect(flagged[0]?.status).toBe("running");
+  });
+
+  it("files a resumed agent's replayed report on its row by task id", () => {
+    const spawned = projectSubagentActivity(
+      [],
+      claudeSpawnActivity({
+        id: "a1",
+        kind: "tool.started",
+        status: "inProgress",
+        turnId: TURN_ID,
+      }),
+    );
+    const linked = projectSubagentActivity(
+      spawned,
+      activity({
+        id: "a2",
+        kind: "task.started",
+        turnId: TURN_ID,
+        payload: {
+          taskId: "a53e9dad4acb0ffce",
+          toolUseId: SPAWN_TOOL_USE_ID,
+          taskType: "local_agent",
+          subagentType: "claude",
+        },
+      }),
+    );
+
+    // After a restart the adapter holds no spawn for the agent and files its
+    // final report as a completion of the call that resumed it.
+    const reported = projectSubagentActivity(
+      linked,
+      notificationReceipt({
+        id: "a3",
+        toolCallId: "toolu_01SendMessageResume",
+        taskId: "a53e9dad4acb0ffce",
+        text: "## Report\n\nStep 4a done.",
+        createdAt: "2026-08-15T00:10:00.000Z",
+      }),
+    );
+    expect(reported).toHaveLength(1);
+    expect(reported[0]).toMatchObject({
+      spawnCallId: SPAWN_TOOL_USE_ID,
+      status: "completed",
+      resultBody: "## Report\n\nStep 4a done.",
+      objective: "Fix missing-worktree bug trio",
+    });
+
+    // A report naming no known agent stands for itself: the output is kept.
+    const orphan = projectSubagentActivity(
+      reported,
+      notificationReceipt({
+        id: "a4",
+        toolCallId: "toolu_01Unknown",
+        taskId: "unknown-task",
+        text: "Lost agent output.",
+        createdAt: "2026-08-15T00:20:00.000Z",
+      }),
+    );
+    expect(orphan).toHaveLength(2);
+    expect(orphan[1]?.resultBody).toBe("Lost agent output.");
+  });
+
+  it("keeps a completed Codex agent settled after a message and reopens on a real child turn", () => {
+    const completed = projectSubagentActivity(
+      [],
+      activity({
+        id: "child-result",
+        kind: "subagent.result",
+        turnId: TURN_ID,
+        payload: {
+          itemType: "collab_agent_tool_call",
+          data: {
+            item: {
+              tool: "wait",
+              receiverThreadIds: ["child"],
+              agentsStates: { child: { status: "completed", message: "Review complete." } },
+            },
+          },
+        },
+      }),
+    );
+    const messaged = projectSubagentActivity(
+      completed,
+      activity({
+        id: "child-message",
+        kind: "tool.completed",
+        turnId: RESUME_TURN_ID,
+        payload: {
+          itemType: "collab_agent_tool_call",
+          data: {
+            item: {
+              type: "subAgentActivity",
+              kind: "interacted",
+              agentThreadId: "child",
+              tool: "sendInput",
+              status: "inProgress",
+              agentsStates: { child: { status: "running" } },
+            },
+          },
+        },
+      }),
+    );
+    expect(messaged).toEqual(completed);
+    const resumed = projectSubagentActivity(
+      messaged,
+      activity({
+        id: "child-turn-started",
+        kind: "subagent.metadata",
+        turnId: RESUME_TURN_ID,
+        payload: { agentThreadId: "child", status: "running" },
+      }),
+    );
+    expect(resumed).toMatchObject([{ status: "running", turnId: RESUME_TURN_ID }]);
+    const settled = projectSubagentActivity(
+      resumed,
+      activity({
+        id: "child-turn-completed",
+        kind: "subagent.metadata",
+        turnId: RESUME_TURN_ID,
+        payload: { agentThreadId: "child", status: "completed" },
+      }),
+    );
+    expect(settled).toMatchObject([{ status: "completed", resultBody: "Review complete." }]);
+  });
+
   it("still folds Codex-shaped collab items", () => {
     const roster = projectSubagentActivity(
       [],
@@ -441,5 +648,49 @@ describe("projectSubagentActivity", () => {
     expect(roster).toHaveLength(1);
     expect(roster[0]?.agentThreadId).toBe("agent-codex-1");
     expect(roster[0]?.spawnCallId).toBe("call-1");
+  });
+});
+
+it("keeps result and live event positions through metadata updates", () => {
+  let roster = projectSubagentActivity([], {
+    ...activity({
+      id: "live-order",
+      kind: "tool.updated",
+      payload: {
+        itemType: "collab_agent_tool_call",
+        data: {
+          subagentLiveText: "Reading files",
+          item: {
+            id: "spawn-order",
+            tool: "spawnAgent",
+            status: "inProgress",
+            agentThreadId: "agent-order",
+          },
+        },
+      },
+    }),
+    eventSequence: 10,
+  });
+  for (const [eventSequence, payload] of [
+    [20, { agentThreadId: "agent-order", status: "completed", resultBody: "Done" }],
+    [30, { agentThreadId: "agent-order", resultBody: "Done", role: "Reviewer" }],
+    [40, { agentThreadId: "agent-order", isBackgrounded: true }],
+  ] as const) {
+    roster = projectSubagentActivity(roster, {
+      ...activity({
+        id: `metadata-${eventSequence}`,
+        kind: "subagent.metadata",
+        payload,
+        createdAt: "2026-08-14T23:00:00.000Z",
+      }),
+      eventSequence,
+    });
+  }
+  expect(roster[0]).toMatchObject({
+    resultBody: "Done",
+    resultEventSequence: 20,
+    liveEventSequence: 10,
+    role: "Reviewer",
+    isBackgrounded: true,
   });
 });

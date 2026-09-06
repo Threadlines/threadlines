@@ -53,6 +53,17 @@ const LatestGitHubReleaseResponse = Schema.Struct({
   tag_name: Schema.String,
 });
 
+// The client keys toast dismissals on this. Keying on the latest release
+// rather than the hard-coded security floor means a closed toast returns when
+// the next release ships, the same way provider update prompts behave.
+function updateNotificationKey(
+  target: SourceControlToolVersionTarget,
+  version: string | null,
+  fallbackVersion: string,
+): string {
+  return `${target}:${version ?? fallbackVersion}`;
+}
+
 function nonEmpty(value: string | null | undefined): string | null {
   const trimmed = value?.trim() ?? "";
   return trimmed.length > 0 ? trimmed : null;
@@ -424,7 +435,11 @@ function createGitHubCliAdvisory(input: {
       recommendedVersion: GH_SECURITY_VERSION,
       checkedAt: input.checkedAt,
       message: availabilityNote ? `${baseMessage} ${availabilityNote}` : baseMessage,
-      notificationKey: `github-cli:security:${GH_SECURITY_VERSION}`,
+      notificationKey: updateNotificationKey(
+        "github-cli",
+        input.latestVersion,
+        GH_SECURITY_VERSION,
+      ),
       actions,
     });
   }
@@ -451,7 +466,11 @@ function createGitHubCliAdvisory(input: {
       recommendedVersion: input.latestVersion,
       checkedAt: input.checkedAt,
       message: availabilityNote ?? "A newer GitHub CLI version is available for this environment.",
-      notificationKey: null,
+      notificationKey: updateNotificationKey(
+        "github-cli",
+        input.latestVersion,
+        input.latestVersion,
+      ),
       actions,
     });
   }
@@ -503,7 +522,11 @@ function createGitForWindowsAdvisory(input: {
       checkedAt: input.checkedAt,
       message:
         "This Git for Windows version is below the recommended security-fix release. The official updater may close open Git Bash windows during installation.",
-      notificationKey: `git-for-windows:security:${GIT_FOR_WINDOWS_SECURITY_VERSION}`,
+      notificationKey: updateNotificationKey(
+        "git-for-windows",
+        input.latestVersion,
+        GIT_FOR_WINDOWS_SECURITY_VERSION,
+      ),
       actions,
     });
   }
@@ -522,7 +545,11 @@ function createGitForWindowsAdvisory(input: {
       checkedAt: input.checkedAt,
       message:
         "A newer Git for Windows release is available. The official updater may close open Git Bash windows during installation.",
-      notificationKey: null,
+      notificationKey: updateNotificationKey(
+        "git-for-windows",
+        input.latestVersion,
+        input.latestVersion,
+      ),
       actions,
     });
   }

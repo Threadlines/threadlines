@@ -996,6 +996,33 @@ export function GeneralSettingsPanel({ surface = "full" }: { surface?: "full" | 
         />
 
         <SettingsRow
+          title="Wrap up merged threads"
+          description="File a thread under Wrapped once its pull request merges or closes. A new message in the thread brings it back."
+          resetAction={
+            settings.wrapUpThreadsOnPullRequestSettled !==
+            DEFAULT_UNIFIED_SETTINGS.wrapUpThreadsOnPullRequestSettled ? (
+              <SettingResetButton
+                label="wrap up merged threads"
+                onClick={() =>
+                  updateSettings({
+                    wrapUpThreadsOnPullRequestSettled:
+                      DEFAULT_UNIFIED_SETTINGS.wrapUpThreadsOnPullRequestSettled,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Switch
+              checked={settings.wrapUpThreadsOnPullRequestSettled}
+              onCheckedChange={(checked) =>
+                updateSettings({ wrapUpThreadsOnPullRequestSettled: Boolean(checked) })
+              }
+              aria-label="Wrap up merged threads"
+            />
+          }
+        />
+        <SettingsRow
           title="Delete confirmation"
           description="Ask before deleting a thread and its chat history."
           resetAction={

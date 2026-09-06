@@ -24,6 +24,7 @@ function renderChatHeader(overrides: Partial<ComponentProps<typeof ChatHeader>> 
     terminalToggleShortcutLabel: null,
     railToggleShortcutLabel: null,
     railOpen: false,
+    railTabs: [],
     sourceControlAvailable: false,
     browserAvailable: true,
     browserOpen: false,
@@ -86,21 +87,33 @@ describe("ChatHeader", () => {
     expect(markup).toContain("cursor-default");
   });
 
-  it("shows the working-tree diffstat on the closed rail toggle", () => {
-    const markup = renderChatHeader({
+  it("shows the working-tree diffstat on the rail toggle while no Source tab is showing", () => {
+    const closed = renderChatHeader({
       sourceControlAvailable: true,
       railOpen: false,
       workingTreeDiffStat: { insertions: 38, deletions: 12 },
     });
 
-    expect(markup).toContain("+38");
-    expect(markup).toContain("−12");
+    expect(closed).toContain("+38");
+    expect(closed).toContain("−12");
+
+    // Open on other tabs, the strip has nowhere else to show the total.
+    const openElsewhere = renderChatHeader({
+      sourceControlAvailable: true,
+      railOpen: true,
+      railTabs: ["agents", "diff"],
+      workingTreeDiffStat: { insertions: 38, deletions: 12 },
+    });
+
+    expect(openElsewhere).toContain("+38");
+    expect(openElsewhere).toContain("−12");
   });
 
-  it("drops the diffstat once the rail is open and shows its own counts", () => {
+  it("drops the diffstat once a Source tab is in the strip to show its own counts", () => {
     const markup = renderChatHeader({
       sourceControlAvailable: true,
       railOpen: true,
+      railTabs: ["agents", "sourceControl"],
       workingTreeDiffStat: { insertions: 38, deletions: 12 },
     });
 
@@ -118,17 +131,18 @@ describe("ChatHeader", () => {
     expect(markup).toContain("↓2");
   });
 
-  it("drops the behind-remote count once the rail is open", () => {
+  it("drops the behind-remote count once a Source tab is in the strip", () => {
     const markup = renderChatHeader({
       sourceControlAvailable: true,
       railOpen: true,
+      railTabs: ["sourceControl"],
       remoteBehindCount: 2,
     });
 
     expect(markup).not.toContain("↓2");
   });
 
-  it("nodes the closed rail toggle while agents are live, counting past one", () => {
+  it("nodes the rail toggle while agents are live and no Agents tab is showing", () => {
     const single = renderChatHeader({
       railOpen: false,
       liveAgents: { count: 1, waitingCount: 0 },
@@ -144,6 +158,14 @@ describe("ChatHeader", () => {
     expect(several).toContain('data-header-live-agents="running"');
     expect(several).toContain('data-header-live-agents-count="true"');
     expect(several).toContain(">2<");
+
+    // Open on the Source tab alone, nothing in the strip says an agent is live.
+    const openElsewhere = renderChatHeader({
+      railOpen: true,
+      railTabs: ["sourceControl"],
+      liveAgents: { count: 1, waitingCount: 0 },
+    });
+    expect(openElsewhere).toContain('data-header-live-agents="running"');
   });
 
   it("turns the node amber when an agent is waiting on the user", () => {
@@ -156,9 +178,10 @@ describe("ChatHeader", () => {
     expect(markup).toContain("bg-amber-500");
   });
 
-  it("drops the live-agent node once the rail is open, where the Agents tab owns it", () => {
+  it("drops the live-agent node once an Agents tab is in the strip, where that tab owns it", () => {
     const markup = renderChatHeader({
       railOpen: true,
+      railTabs: ["sourceControl", "agents"],
       liveAgents: { count: 2, waitingCount: 0 },
     });
 

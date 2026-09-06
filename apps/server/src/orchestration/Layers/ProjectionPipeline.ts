@@ -1,3 +1,4 @@
+import { compareTranscriptOrder } from "@threadlines/shared/transcriptOrder";
 import {
   ApprovalRequestId,
   type ChatAttachment,
@@ -13,9 +14,8 @@ import * as Path from "effect/Path";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import {
-  collectOpenPendingRequests,
+  countPendingUserInputs,
   isStalePendingRequestFailureDetail,
-  USER_INPUT_ACTIVITY_KINDS,
 } from "@threadlines/shared/pendingRequests";
 
 import { toPersistenceSqlError, type ProjectionRepositoryError } from "../../persistence/Errors.ts";
@@ -108,17 +108,6 @@ function extractActivityRequestId(payload: unknown): ApprovalRequestId | null {
   return typeof requestId === "string" ? ApprovalRequestId.make(requestId) : null;
 }
 
-function derivePendingUserInputCountFromActivities(
-  activities: ReadonlyArray<ProjectionThreadActivity>,
-): number {
-  const ordered = [...activities].toSorted(
-    (left, right) =>
-      left.createdAt.localeCompare(right.createdAt) ||
-      left.activityId.localeCompare(right.activityId),
-  );
-  return collectOpenPendingRequests(ordered, USER_INPUT_ACTIVITY_KINDS).length;
-}
-
 function activityMayAffectThreadShellSummary(activity: { readonly kind: string }): boolean {
   switch (activity.kind) {
     case "approval.requested":
@@ -165,7 +154,9 @@ function deriveHasActionableProposedPlan(input: {
 }): boolean {
   const sorted = [...input.proposedPlans].toSorted(
     (left, right) =>
-      left.updatedAt.localeCompare(right.updatedAt) || left.planId.localeCompare(right.planId),
+      (left.eventSequence === undefined && right.eventSequence === undefined
+        ? left.updatedAt.localeCompare(right.updatedAt)
+        : compareTranscriptOrder(left, right)) || left.planId.localeCompare(right.planId),
   );
 
   let latestForTurn: ProjectionThreadProposedPlan | null = null;
@@ -235,8 +226,7 @@ function retainProjectionMessagesAfterRevert(
       )
       .toSorted(
         (left, right) =>
-          left.createdAt.localeCompare(right.createdAt) ||
-          left.messageId.localeCompare(right.messageId),
+          compareTranscriptOrder(left, right) || left.messageId.localeCompare(right.messageId),
       )
       .slice(0, missingUserCount);
     for (const message of fallbackUserMessages) {
@@ -258,8 +248,7 @@ function retainProjectionMessagesAfterRevert(
       )
       .toSorted(
         (left, right) =>
-          left.createdAt.localeCompare(right.createdAt) ||
-          left.messageId.localeCompare(right.messageId),
+          compareTranscriptOrder(left, right) || left.messageId.localeCompare(right.messageId),
       )
       .slice(0, missingAssistantCount);
     for (const message of fallbackAssistantMessages) {
@@ -558,7 +547,13 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
       const pendingApprovalCount = pendingApprovals.filter(
         (approval) => approval.status === "pending",
       ).length;
-      const pendingUserInputCount = derivePendingUserInputCountFromActivities(activities);
+      // Provider timestamps can arrive out of order; count in transcript order.
+      const userInputCounts = countPendingUserInputs(
+        [...activities].toSorted(
+          (left, right) =>
+            compareTranscriptOrder(left, right) || left.activityId.localeCompare(right.activityId),
+        ),
+      );
       const hasActionableProposedPlan = deriveHasActionableProposedPlan({
         latestTurnId: existingRow.value.latestTurnId,
         proposedPlans,
@@ -568,7 +563,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         ...existingRow.value,
         latestUserMessageAt,
         pendingApprovalCount,
-        pendingUserInputCount,
+        ...userInputCounts,
         hasActionableProposedPlan: hasActionableProposedPlan ? 1 : 0,
       });
     });
@@ -603,6 +598,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             latestUserMessageAt: null,
             pendingApprovalCount: 0,
             pendingUserInputCount: 0,
+            blockingUserInputCount: 0,
             hasActionableProposedPlan: 0,
             deletedAt: null,
           });
@@ -998,6 +994,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           const nextSkills = event.payload.skills ?? previousMessage?.skills;
           yield* projectionThreadMessageRepository.upsert({
             messageId: event.payload.messageId,
+            eventSequence: previousMessage?.eventSequence ?? event.sequence,
             threadId: event.payload.threadId,
             turnId: event.payload.turnId,
             role: event.payload.role,
@@ -1025,6 +1022,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           const nextSkills = event.payload.skills ?? previousMessage?.skills;
           yield* projectionThreadMessageRepository.upsert({
             messageId: event.payload.messageId,
+            eventSequence: previousMessage?.eventSequence ?? event.sequence,
             threadId: event.payload.threadId,
             turnId: event.payload.turnId,
             role: event.payload.role,
@@ -1083,6 +1081,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         case "thread.proposed-plan-upserted":
           yield* projectionThreadProposedPlanRepository.upsert({
             planId: event.payload.proposedPlan.id,
+            eventSequence: event.sequence,
             threadId: event.payload.threadId,
             turnId: event.payload.proposedPlan.turnId,
             planMarkdown: event.payload.proposedPlan.planMarkdown,
@@ -1135,6 +1134,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         case "thread.activity-appended": {
           yield* projectionThreadActivityRepository.upsert({
             activityId: event.payload.activity.id,
+            eventSequence: event.sequence,
             threadId: event.payload.threadId,
             turnId: event.payload.activity.turnId,
             tone: event.payload.activity.tone,
@@ -1149,7 +1149,10 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           const existingSubagents = yield* projectionThreadSubagentRepository.listByThreadId({
             threadId: event.payload.threadId,
           });
-          const nextSubagents = projectSubagentActivity(existingSubagents, event.payload.activity);
+          const nextSubagents = projectSubagentActivity(existingSubagents, {
+            ...event.payload.activity,
+            eventSequence: event.sequence,
+          });
           if (nextSubagents !== existingSubagents) {
             yield* projectionThreadSubagentRepository.replaceByThreadId(
               event.payload.threadId,
@@ -1193,6 +1196,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
                 payload: row.payload,
                 turnId: row.turnId,
                 ...(row.sequence !== undefined ? { sequence: row.sequence } : {}),
+                ...(row.eventSequence !== undefined ? { eventSequence: row.eventSequence } : {}),
                 createdAt: row.createdAt,
               }),
             [],
@@ -1646,7 +1650,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           // rows.  Other activity kinds that happen to carry a requestId
           // (e.g. user-input.requested / user-input.resolved) must not
           // pollute this projection — they have their own accounting via
-          // derivePendingUserInputCountFromActivities.
+          // countPendingUserInputs.
           if (event.payload.activity.kind !== "approval.requested") {
             return;
           }

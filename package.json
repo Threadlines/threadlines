@@ -52,7 +52,7 @@
   },
   "devDependencies": {
     "@effect/tsgo": "catalog:",
-    "@oxlint/plugins": "^1.79.0",
+    "@oxlint/plugins": "^1.80.0",
     "@types/node": "catalog:",
     "@typescript/native-preview": "catalog:",
     "vite": "catalog:",
@@ -61,7 +61,7 @@
   "engines": {
     "node": "^22.22.2 || ^24.15.0 || >=26"
   },
-  "packageManager": "pnpm@10.24.0",
+  "packageManager": "pnpm@10.34.5",
   "msw": {
     "workerDirectory": [
       "apps/web/public"

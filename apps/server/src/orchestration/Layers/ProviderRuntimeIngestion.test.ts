@@ -1451,6 +1451,56 @@ describe("ProviderRuntimeIngestion", () => {
     );
 
     harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-subagent-result-before-abort-1"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:03.500Z",
+      turnId: asTurnId("turn-abort"),
+      itemId: asItemId("item-subagent-result-before-abort"),
+      providerRefs: {
+        providerThreadId: "agent-live-before-abort",
+        providerTurnId: "agent-turn-before-abort",
+        providerItemId: asItemId("item-subagent-result-before-abort"),
+      },
+      payload: {
+        streamKind: "assistant_text",
+        delta: "First chunk. ",
+      },
+    });
+    await waitForThread(harness.readModel, (thread) =>
+      thread.activities.some((activity) => {
+        const payload = activity.payload as {
+          sourceAgentThreadId?: string;
+          data?: { subagentLiveText?: string };
+        };
+        return (
+          activity.kind === "subagent.result" &&
+          payload.sourceAgentThreadId === "agent-live-before-abort" &&
+          payload.data?.subagentLiveText === "First chunk. "
+        );
+      }),
+    );
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-subagent-result-before-abort-2"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:04.000Z",
+      turnId: asTurnId("turn-abort"),
+      itemId: asItemId("item-subagent-result-before-abort"),
+      providerRefs: {
+        providerThreadId: "agent-live-before-abort",
+        providerTurnId: "agent-turn-before-abort",
+        providerItemId: asItemId("item-subagent-result-before-abort"),
+      },
+      payload: {
+        streamKind: "assistant_text",
+        delta: "Second chunk.",
+      },
+    });
+
+    harness.emit({
       type: "turn.aborted",
       eventId: asEventId("evt-turn-aborted"),
       provider: ProviderDriverKind.make("codex"),
@@ -1482,6 +1532,29 @@ describe("ProviderRuntimeIngestion", () => {
         (subagent) => subagent.agentThreadId === "agent-completed-before-abort",
       )?.status,
     ).toBe("completed");
+    const streamedResult = thread.activities.find((activity) => {
+      const payload = activity.payload as { sourceAgentThreadId?: string };
+      return (
+        activity.kind === "subagent.result" &&
+        payload.sourceAgentThreadId === "agent-live-before-abort"
+      );
+    });
+    expect(streamedResult?.payload).toMatchObject({
+      data: {
+        subagentLiveText: "First chunk. Second chunk.",
+      },
+    });
+
+    await Effect.runPromise(Effect.sleep("150 millis"));
+    await harness.drain();
+    const settledThread = (await harness.readModel()).threads.find(
+      (entry) => entry.id === "thread-1",
+    );
+    expect(
+      settledThread?.subagents?.find(
+        (subagent) => subagent.agentThreadId === "agent-live-before-abort",
+      )?.status,
+    ).toBe("interrupted");
   });
 
   it("settles live subagents when turn.completed reports an interruption", async () => {
@@ -1540,6 +1613,71 @@ describe("ProviderRuntimeIngestion", () => {
         (subagent) => subagent.spawnCallId === "call-waiting-before-interrupted-completion",
       )?.status,
     ).toBe("interrupted");
+  });
+
+  it("settles a foreground subagent when its turn completes and leaves a background one running", async () => {
+    const harness = await createHarness();
+    const turnId = asTurnId("turn-foreground-settle");
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-turn-started-foreground-settle"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:00.000Z",
+      turnId,
+    });
+    // A foreground agent blocks its turn until it returns, so once the turn
+    // has ended on its own the agent's stop event can only be missing. A
+    // background agent legitimately keeps working after the turn that
+    // spawned it.
+    harness.emit({
+      type: "subagent.metadata.updated",
+      eventId: asEventId("evt-subagent-foreground-running"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:01.000Z",
+      turnId,
+      payload: { callId: "call-foreground", status: "running", isBackgrounded: false },
+    });
+    harness.emit({
+      type: "subagent.metadata.updated",
+      eventId: asEventId("evt-subagent-background-running"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:02.000Z",
+      turnId,
+      payload: { callId: "call-background", status: "running", isBackgrounded: true },
+    });
+    await waitForThread(
+      harness.readModel,
+      (thread) =>
+        (thread.subagents ?? []).filter((subagent) => subagent.status === "running").length === 2,
+    );
+
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("evt-turn-completed-foreground-settle"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:03.000Z",
+      turnId,
+      payload: { state: "completed" },
+    });
+
+    const thread = await waitForThread(harness.readModel, (entry) =>
+      (entry.subagents ?? []).some(
+        (subagent) => subagent.spawnCallId === "call-foreground" && subagent.status === "completed",
+      ),
+    );
+    const foreground = thread.subagents?.find(
+      (subagent) => subagent.spawnCallId === "call-foreground",
+    );
+    expect(foreground?.status).toBe("completed");
+    expect(foreground?.updatedAt).toBe("2026-01-01T00:00:03.000Z");
+    expect(
+      thread.subagents?.find((subagent) => subagent.spawnCallId === "call-background")?.status,
+    ).toBe("running");
   });
 
   it("applies provider session.state.changed transitions directly", async () => {
@@ -2171,6 +2309,282 @@ describe("ProviderRuntimeIngestion", () => {
       status: "completed",
       message: "The runtime path is correct.",
     });
+
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-child-final-late-delta"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-parent"),
+      itemId: asItemId("child-message-final"),
+      providerRefs: {
+        providerThreadId: "child-provider-thread",
+        providerTurnId: "child-turn-1",
+        providerItemId: asItemId("child-message-final"),
+      },
+      payload: {
+        streamKind: "assistant_text",
+        delta: " Late duplicate text.",
+      },
+    });
+    await harness.drain();
+
+    const afterLateDelta = (await harness.readModel()).threads.find(
+      (entry) => entry.id === "thread-1",
+    );
+    const finalActivity = afterLateDelta?.activities.find((entry) => entry.id === activity?.id);
+    expect(finalActivity?.payload).toMatchObject({
+      status: "completed",
+      data: {
+        item: {
+          agentsStates: {
+            "child-provider-thread": {
+              status: "completed",
+              message: "The runtime path is correct.",
+            },
+          },
+        },
+      },
+    });
+  });
+
+  it("retains a child result when turn and session completion arrive before item completion", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-set-out-of-order-child-completion"),
+        threadId: ThreadId.make("thread-1"),
+        session: {
+          threadId: ThreadId.make("thread-1"),
+          status: "running",
+          providerName: "codex",
+          runtimeMode: "approval-required",
+          activeTurnId: asTurnId("turn-out-of-order-child-completion"),
+          providerThreadId: "parent-provider-thread",
+          updatedAt: now,
+          lastError: null,
+        },
+        createdAt: now,
+      }),
+    );
+
+    for (const [index, delta] of ["Full child ", "result."].entries()) {
+      harness.emit({
+        type: "content.delta",
+        eventId: asEventId(`evt-out-of-order-child-delta-${index}`),
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: now,
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-out-of-order-child-completion"),
+        itemId: asItemId("out-of-order-child-message"),
+        providerRefs: {
+          providerThreadId: "out-of-order-child-provider-thread",
+          providerTurnId: "out-of-order-child-turn",
+          providerItemId: asItemId("out-of-order-child-message"),
+        },
+        payload: {
+          streamKind: "assistant_text",
+          delta,
+        },
+      });
+    }
+
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("evt-out-of-order-parent-turn-completed"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-out-of-order-child-completion"),
+      payload: {
+        state: "completed",
+      },
+    });
+    harness.emit({
+      type: "session.exited",
+      eventId: asEventId("evt-out-of-order-session-exited"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: now,
+      payload: {
+        reason: "provider exited",
+        exitKind: "graceful",
+      },
+    });
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-out-of-order-child-item-completed"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-out-of-order-child-completion"),
+      itemId: asItemId("out-of-order-child-message"),
+      providerRefs: {
+        providerThreadId: "out-of-order-child-provider-thread",
+        providerTurnId: "out-of-order-child-turn",
+        providerItemId: asItemId("out-of-order-child-message"),
+      },
+      payload: {
+        itemType: "assistant_message",
+        status: "completed",
+        data: {
+          item: {
+            phase: "final_answer",
+          },
+        },
+      },
+    });
+    await harness.drain();
+
+    const thread = (await harness.readModel()).threads.find((entry) => entry.id === "thread-1");
+    const result = thread?.activities.find((entry) => {
+      const resultPayload = entry.payload as { sourceAgentThreadId?: string; status?: string };
+      return (
+        entry.kind === "subagent.result" &&
+        resultPayload.sourceAgentThreadId === "out-of-order-child-provider-thread" &&
+        resultPayload.status === "completed"
+      );
+    });
+    expect(result?.payload).toMatchObject({
+      data: {
+        item: {
+          agentsStates: {
+            "out-of-order-child-provider-thread": {
+              status: "completed",
+              message: "Full child result.",
+            },
+          },
+        },
+      },
+    });
+  });
+
+  it("keeps rapid updates from three child agents independent", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    const childProviderThreadIds = ["child-provider-a", "child-provider-b", "child-provider-c"];
+    const readSubagentResultEvents = async () => {
+      const events = await Effect.runPromise(
+        Stream.runCollect(harness.engine.readEvents(0)).pipe(
+          Effect.map((chunk) => Array.from(chunk)),
+        ),
+      );
+      return events.filter((event) => {
+        if (event.type !== "thread.activity-appended") {
+          return false;
+        }
+        const activity = event.payload.activity;
+        return (
+          activity.kind === "subagent.result" &&
+          childProviderThreadIds.includes(
+            (activity.payload as { sourceAgentThreadId?: string }).sourceAgentThreadId ?? "",
+          )
+        );
+      });
+    };
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-set-three-streaming-children"),
+        threadId: ThreadId.make("thread-1"),
+        session: {
+          threadId: ThreadId.make("thread-1"),
+          status: "running",
+          providerName: "codex",
+          runtimeMode: "approval-required",
+          activeTurnId: asTurnId("turn-three-streaming-children"),
+          providerThreadId: "parent-provider-thread",
+          updatedAt: now,
+          lastError: null,
+        },
+        createdAt: now,
+      }),
+    );
+
+    for (const [childIndex, childProviderThreadId] of childProviderThreadIds.entries()) {
+      harness.emit({
+        type: "content.delta",
+        eventId: asEventId(`evt-three-streaming-children-${childIndex}-0`),
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: now,
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-three-streaming-children"),
+        itemId: asItemId(`child-message-${childIndex}`),
+        providerRefs: {
+          providerThreadId: childProviderThreadId,
+          providerTurnId: `child-turn-${childIndex}`,
+          providerItemId: asItemId(`child-message-${childIndex}`),
+        },
+        payload: {
+          streamKind: "assistant_text",
+          delta: `${childProviderThreadId}:0`,
+        },
+      });
+    }
+
+    await waitForThread(harness.readModel, (thread) => {
+      const sources = new Set(
+        thread.activities
+          .filter((activity) => activity.kind === "subagent.result")
+          .map(
+            (activity) =>
+              (activity.payload as { sourceAgentThreadId?: string }).sourceAgentThreadId,
+          ),
+      );
+      return childProviderThreadIds.every((childProviderThreadId) =>
+        sources.has(childProviderThreadId),
+      );
+    });
+    expect(await readSubagentResultEvents()).toHaveLength(3);
+
+    for (let updateIndex = 1; updateIndex < 10; updateIndex += 1) {
+      for (const [childIndex, childProviderThreadId] of childProviderThreadIds.entries()) {
+        harness.emit({
+          type: "content.delta",
+          eventId: asEventId(`evt-three-streaming-children-${childIndex}-${updateIndex}`),
+          provider: ProviderDriverKind.make("codex"),
+          createdAt: now,
+          threadId: asThreadId("thread-1"),
+          turnId: asTurnId("turn-three-streaming-children"),
+          itemId: asItemId(`child-message-${childIndex}`),
+          providerRefs: {
+            providerThreadId: childProviderThreadId,
+            providerTurnId: `child-turn-${childIndex}`,
+            providerItemId: asItemId(`child-message-${childIndex}`),
+          },
+          payload: {
+            streamKind: "assistant_text",
+            delta: `|${updateIndex}`,
+          },
+        });
+      }
+    }
+
+    const thread = await waitForThread(harness.readModel, (entry) =>
+      childProviderThreadIds.every((childProviderThreadId) =>
+        entry.activities.some((activity) => {
+          const payload = activity.payload as {
+            sourceAgentThreadId?: string;
+            data?: { subagentLiveText?: string };
+          };
+          return (
+            activity.kind === "subagent.result" &&
+            payload.sourceAgentThreadId === childProviderThreadId &&
+            payload.data?.subagentLiveText === `${childProviderThreadId}:0|1|2|3|4|5|6|7|8|9`
+          );
+        }),
+      ),
+    );
+    expect(
+      thread.activities.filter((activity) => activity.kind === "subagent.result"),
+    ).toHaveLength(3);
+
+    expect(await readSubagentResultEvents()).toHaveLength(6);
   });
 
   it("uses the durable child roster when the projected parent provider id is missing", async () => {

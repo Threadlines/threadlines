@@ -44,6 +44,29 @@ export const IMAGE_MIME_TYPE_BY_EXTENSION: Record<string, string> = {
   ".webp": "image/webp",
 };
 
+/**
+ * The mime type a byte prefix actually is, for the raster formats a browser
+ * renders inline, or null when the bytes match no known format.
+ *
+ * Extensions lie; this reads the file's own signature. SVG is deliberately
+ * absent: it is text, so no signature can tell a drawing from a renamed script.
+ */
+export function detectRasterImageMimeType(bytes: Uint8Array): string | null {
+  const startsWith = (...signature: ReadonlyArray<number>) =>
+    signature.length <= bytes.length && signature.every((byte, index) => bytes[index] === byte);
+  const asciiAt = (offset: number, text: string) =>
+    offset + text.length <= bytes.length &&
+    [...text].every((char, index) => bytes[offset + index] === char.charCodeAt(0));
+
+  if (startsWith(0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a)) return "image/png";
+  if (startsWith(0xff, 0xd8, 0xff)) return "image/jpeg";
+  if (asciiAt(0, "GIF87a") || asciiAt(0, "GIF89a")) return "image/gif";
+  if (asciiAt(0, "RIFF") && asciiAt(8, "WEBP")) return "image/webp";
+  if (asciiAt(0, "BM")) return "image/bmp";
+  if (asciiAt(4, "ftyp") && (asciiAt(8, "avif") || asciiAt(8, "avis"))) return "image/avif";
+  return null;
+}
+
 export function parseBase64DataUrl(
   dataUrl: string,
 ): { readonly mimeType: string; readonly base64: string } | null {

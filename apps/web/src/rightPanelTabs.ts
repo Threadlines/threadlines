@@ -28,7 +28,7 @@ import {
 
 /** A surface the sidebar can open, and the key its active state is filed under
  *  in the URL. */
-export type RightPanelTab = "sourceControl" | "diff" | "agents";
+export type RightPanelTab = "sourceControl" | "diff" | "pullRequest" | "agents";
 
 /** Launcher order and `+` menu order. The strip itself is ordered by when each
  *  tab was opened, like a browser's, so this is only how the fixed menus list
@@ -36,6 +36,7 @@ export type RightPanelTab = "sourceControl" | "diff" | "agents";
 export const RIGHT_PANEL_TAB_ORDER: ReadonlyArray<RightPanelTab> = [
   "sourceControl",
   "diff",
+  "pullRequest",
   "agents",
 ];
 
@@ -62,6 +63,11 @@ export const RIGHT_PANEL_SURFACES: Readonly<Record<RightPanelTab, RightPanelSurf
     id: "diff",
     label: "Diff",
     description: "Review this thread's diff.",
+  },
+  pullRequest: {
+    id: "pullRequest",
+    label: "Pull request",
+    description: "This branch's pull request.",
   },
   agents: {
     id: "agents",
@@ -306,6 +312,9 @@ export function activeRightPanelTabFromSearch(search: DiffRouteSearch): RightPan
   if (search.diff === "1") {
     return "diff";
   }
+  if (search.pullRequest === "1") {
+    return "pullRequest";
+  }
   if (search.agents === "1") {
     return "agents";
   }
@@ -321,7 +330,7 @@ export function isRightPanelClosedInSearch(search: DiffRouteSearch): boolean {
   if (activeRightPanelTabFromSearch(search) !== null) {
     return false;
   }
-  return search.sourceControl === "0" || search.agents === "0";
+  return search.sourceControl === "0" || search.pullRequest === "0" || search.agents === "0";
 }
 
 /**
@@ -347,12 +356,13 @@ export function rightPanelTabSearchParams<T extends Record<string, unknown>>(
       ...(diffTarget?.diffFilePath ? { diffFilePath: diffTarget.diffFilePath } : {}),
     };
   }
-  // The tab that is not active is written as an explicit `0`, not merely
+  // The tabs that are not active are written as an explicit `0`, not merely
   // stripped: otherwise the default-open setting reclaims the sidebar behind
   // the tab the user just picked.
   return {
     ...rest,
     sourceControl: tab === "sourceControl" ? ("1" as const) : ("0" as const),
+    pullRequest: tab === "pullRequest" ? ("1" as const) : ("0" as const),
     agents: tab === "agents" ? ("1" as const) : ("0" as const),
   };
 }

@@ -75,6 +75,7 @@ export function PreviewAutomationMount({
   const setAgentActivity = useBrowserPanelStore((store) => store.setAgentActivity);
   const selectTab = useBrowserPanelStore((store) => store.selectTab);
   const setTabUrl = useBrowserPanelStore((store) => store.setTabUrl);
+  const setTabViewport = useBrowserPanelStore((store) => store.setTabViewport);
   const setPendingBrowserApproval = useBrowserPanelStore(
     (store) => store.setPendingBrowserApproval,
   );
@@ -290,8 +291,24 @@ export function PreviewAutomationMount({
           }));
         },
         viewport: () => {
+          // The size the page was given, when it was given one. The frame is
+          // scaled to fit the panel, so its on-screen box is not the page's own
+          // viewport; a responsive page is exactly as big as its element. Read
+          // now rather than from the state above: a resize in this same request
+          // has just written it.
+          const current = selectThreadBrowserState(
+            useBrowserPanelStore.getState().browserStateByThreadKey,
+            threadRef,
+          );
+          const fixed = current.tabs.find((entry) => entry.id === tabId)?.viewport;
+          if (fixed !== undefined && fixed.width !== null && fixed.height !== null) {
+            return { width: fixed.width, height: fixed.height };
+          }
           const rect = webview?.getBoundingClientRect();
           return { width: Math.round(rect?.width ?? 0), height: Math.round(rect?.height ?? 0) };
+        },
+        setViewport: (viewport) => {
+          if (tabId !== "") setTabViewport(threadRef, tabId, viewport);
         },
         // The address belongs to the element, so this is the one operation the
         // main process cannot do on the agent's behalf.
@@ -343,6 +360,7 @@ export function PreviewAutomationMount({
       setAgentTab,
       setPendingBrowserApproval,
       setTabUrl,
+      setTabViewport,
       threadRef,
     ],
   );

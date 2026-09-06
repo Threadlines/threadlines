@@ -16,7 +16,7 @@ import {
   settingsSectionLabelForPath,
 } from "../components/settings/settingsNavigation";
 import { Button } from "../components/ui/button";
-import { DesktopPageTitlebar } from "../components/DesktopPageTitlebar";
+import { PageTitlebar } from "../components/PageTitlebar";
 import { SidebarInset } from "../components/ui/sidebar";
 import { isElectron } from "../env";
 import { cn } from "../lib/utils";
@@ -130,13 +130,13 @@ function SettingsContentLayout() {
           </header>
         )}
 
-        <DesktopPageTitlebar label="Settings">
+        <PageTitlebar label="Settings" mobile="none">
           {showRestoreDefaults ? (
             <div className="ms-auto flex items-center gap-2">
               <RestoreDefaultsButton onRestored={handleRestored} />
             </div>
           ) : null}
-        </DesktopPageTitlebar>
+        </PageTitlebar>
 
         <div key={restoreSignal} className="min-h-0 flex flex-1 flex-col">
           <Outlet />

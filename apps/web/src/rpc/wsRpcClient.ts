@@ -178,6 +178,26 @@ export interface WsRpcClient {
     readonly authRemediationPlan: RpcUnaryMethod<typeof WS_METHODS.gitAuthRemediationPlan>;
     readonly applyAuthRemediation: RpcUnaryMethod<typeof WS_METHODS.gitApplyAuthRemediation>;
   };
+  /**
+   * Pull requests read from the hosting provider through the server. One call
+   * covers every eligible project in the environment.
+   */
+  readonly pullRequests: {
+    readonly list: RpcUnaryMethod<typeof WS_METHODS.pullRequestsList>;
+    readonly detail: RpcUnaryMethod<typeof WS_METHODS.pullRequestsDetail>;
+    readonly activity: RpcUnaryMethod<typeof WS_METHODS.pullRequestsActivity>;
+    readonly diff: RpcUnaryMethod<typeof WS_METHODS.pullRequestsDiff>;
+    readonly comment: RpcUnaryMethod<typeof WS_METHODS.pullRequestsComment>;
+    readonly runAction: RpcUnaryMethod<typeof WS_METHODS.pullRequestsRunAction>;
+    readonly submitReview: RpcUnaryMethod<typeof WS_METHODS.pullRequestsSubmitReview>;
+    readonly replyToThread: RpcUnaryMethod<typeof WS_METHODS.pullRequestsReplyToThread>;
+    readonly setThreadResolution: RpcUnaryMethod<typeof WS_METHODS.pullRequestsSetThreadResolution>;
+    readonly setReaction: RpcUnaryMethod<typeof WS_METHODS.pullRequestsSetReaction>;
+    readonly update: RpcUnaryMethod<typeof WS_METHODS.pullRequestsUpdate>;
+    readonly updateComment: RpcUnaryMethod<typeof WS_METHODS.pullRequestsUpdateComment>;
+    readonly reviewerCandidates: RpcUnaryMethod<typeof WS_METHODS.pullRequestsReviewerCandidates>;
+    readonly requestReviewers: RpcUnaryMethod<typeof WS_METHODS.pullRequestsRequestReviewers>;
+  };
   readonly server: {
     readonly getConfig: RpcUnaryNoArgMethod<typeof WS_METHODS.serverGetConfig>;
     /**
@@ -221,6 +241,11 @@ export interface WsRpcClient {
     readonly updateSourceControlTool: RpcUnaryMethod<
       typeof WS_METHODS.serverUpdateSourceControlTool
     >;
+    readonly getSourceControlSetup: RpcUnaryNoArgMethod<
+      typeof WS_METHODS.serverGetSourceControlSetup
+    >;
+    readonly startGitHubAuth: RpcUnaryNoArgMethod<typeof WS_METHODS.serverStartGitHubAuth>;
+    readonly cancelGitHubAuth: RpcUnaryNoArgMethod<typeof WS_METHODS.serverCancelGitHubAuth>;
     readonly getTraceDiagnostics: RpcUnaryNoArgMethod<typeof WS_METHODS.serverGetTraceDiagnostics>;
     readonly getProcessDiagnostics: RpcUnaryNoArgMethod<
       typeof WS_METHODS.serverGetProcessDiagnostics
@@ -554,6 +579,34 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
       applyAuthRemediation: (input) =>
         transport.request((client) => client[WS_METHODS.gitApplyAuthRemediation](input)),
     },
+    pullRequests: {
+      list: (input) => transport.request((client) => client[WS_METHODS.pullRequestsList](input)),
+      detail: (input) =>
+        transport.request((client) => client[WS_METHODS.pullRequestsDetail](input)),
+      activity: (input) =>
+        transport.request((client) => client[WS_METHODS.pullRequestsActivity](input)),
+      diff: (input) => transport.request((client) => client[WS_METHODS.pullRequestsDiff](input)),
+      comment: (input) =>
+        transport.request((client) => client[WS_METHODS.pullRequestsComment](input)),
+      runAction: (input) =>
+        transport.request((client) => client[WS_METHODS.pullRequestsRunAction](input)),
+      submitReview: (input) =>
+        transport.request((client) => client[WS_METHODS.pullRequestsSubmitReview](input)),
+      replyToThread: (input) =>
+        transport.request((client) => client[WS_METHODS.pullRequestsReplyToThread](input)),
+      setThreadResolution: (input) =>
+        transport.request((client) => client[WS_METHODS.pullRequestsSetThreadResolution](input)),
+      setReaction: (input) =>
+        transport.request((client) => client[WS_METHODS.pullRequestsSetReaction](input)),
+      update: (input) =>
+        transport.request((client) => client[WS_METHODS.pullRequestsUpdate](input)),
+      updateComment: (input) =>
+        transport.request((client) => client[WS_METHODS.pullRequestsUpdateComment](input)),
+      reviewerCandidates: (input) =>
+        transport.request((client) => client[WS_METHODS.pullRequestsReviewerCandidates](input)),
+      requestReviewers: (input) =>
+        transport.request((client) => client[WS_METHODS.pullRequestsRequestReviewers](input)),
+    },
     server: {
       // Pure read, and the only thing standing between "Add computer" and a
       // closed dialog. A plain request is pinned to the transport session it
@@ -602,6 +655,12 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
         transport.request((client) => client[WS_METHODS.serverDiscoverSourceControl]({})),
       updateSourceControlTool: (input) =>
         transport.request((client) => client[WS_METHODS.serverUpdateSourceControlTool](input)),
+      getSourceControlSetup: () =>
+        transport.request((client) => client[WS_METHODS.serverGetSourceControlSetup]({})),
+      startGitHubAuth: () =>
+        transport.request((client) => client[WS_METHODS.serverStartGitHubAuth]({})),
+      cancelGitHubAuth: () =>
+        transport.request((client) => client[WS_METHODS.serverCancelGitHubAuth]({})),
       getTraceDiagnostics: () =>
         transport.request((client) =>
           client[WS_METHODS.serverGetTraceDiagnostics]({}).pipe(Effect.withTracerEnabled(false)),

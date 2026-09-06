@@ -62,10 +62,18 @@ export interface PreviewAutomationHostTarget {
    * Everything else is a CDP command and goes over the bridge.
    */
   readonly navigate: (url: string) => Promise<void>;
-  /** How big the page is right now. The panel is the only one that knows: the
-   *  main process cannot see the element and this module should not reach for
-   *  it. A question about layout is a question about this. */
+  /** How big the page is right now, in its own CSS pixels: the size it was
+   *  given, or the panel's when it fills it. The panel is the only one that
+   *  knows: the main process cannot see the element and this module should not
+   *  reach for it. A question about layout is a question about this. */
   readonly viewport: () => { width: number; height: number };
+  /**
+   * Records the CSS viewport the agent asked for on the tab, the same as a drag
+   * on the frame's edges: the panel scales the frame to fit and the device
+   * toolbar shows the size. The guest is told separately, by this module, so
+   * the answer read straight afterwards does not race a render.
+   */
+  readonly setViewport: (viewport: { width: number | null; height: number | null }) => void;
   /** Where the agent just acted, so the panel can show it happening. */
   readonly onAgentPoint: (point: {
     x: number;
@@ -168,6 +176,13 @@ function describeSubject(operation: PreviewAutomationOperation, input: unknown):
   }
   if (operation === "press") {
     return typeof value.key === "string" ? value.key : null;
+  }
+  if (operation === "resize") {
+    // The size is the whole story of a resize; "resized" alone reads as a
+    // panel that changed shape for no reason.
+    return typeof value.width === "number" && typeof value.height === "number"
+      ? `${Math.round(value.width)}×${Math.round(value.height)}`
+      : "to fit the panel";
   }
   if (operation === "selectTab") {
     if (typeof value.tabId === "string") return value.tabId;
@@ -450,9 +465,14 @@ async function dispatch(
         height: shot.height,
       };
     }
-    case "resize":
+    case "resize": {
       await call(bridge.previewSetViewport, input);
+      // Recorded on the tab only once the guest has taken it, so a frame never
+      // shows a size the page was not given.
+      const size = input as { width?: number | null; height?: number | null };
+      target.setViewport({ width: size.width ?? null, height: size.height ?? null });
       return toStatus(target.tabId ?? "", await call(bridge.previewStatus, {}), target.viewport());
+    }
     case "setAppearance":
       await call(bridge.previewSetColorScheme, input);
       return toStatus(target.tabId ?? "", await call(bridge.previewStatus, {}), target.viewport());

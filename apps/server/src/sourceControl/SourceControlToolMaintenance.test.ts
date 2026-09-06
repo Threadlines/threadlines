@@ -6,7 +6,7 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import { ChildProcessSpawner } from "effect/unstable/process";
-import { VcsProcessExitError } from "@threadlines/contracts";
+import { VcsProcessExitError, VcsProcessTimeoutError } from "@threadlines/contracts";
 
 import { ServerConfig } from "../config.ts";
 import * as VcsProcess from "../vcs/VcsProcess.ts";
@@ -333,6 +333,105 @@ it.effect("explains when WinGet has no applicable GitHub CLI update", () => {
   }).pipe(Effect.provide(layer));
 });
 
+it.effect("explains a cancelled Windows installer and lets the user retry", () => {
+  const cancelledExitCodes = [0x8a15010c, 0x8a15010c - 2 ** 32];
+  const layer = Layer.effect(
+    SourceControlToolMaintenance.SourceControlToolMaintenance,
+    SourceControlToolMaintenance.make({
+      platform: "win32",
+      commandAvailable: (command) => command === "winget",
+    }),
+  ).pipe(
+    Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "source-tool-update-test-" })),
+    Layer.provide(
+      Layer.mock(VcsProcess.VcsProcess)({
+        run: (input) => {
+          const exitCode = cancelledExitCodes.shift();
+          return exitCode === undefined
+            ? Effect.succeed(processOutput)
+            : Effect.fail(
+                new VcsProcessExitError({
+                  operation: input.operation,
+                  command: [input.command, ...input.args].join(" "),
+                  cwd: input.cwd,
+                  exitCode,
+                  detail: "Installer transcript",
+                }),
+              );
+        },
+      }),
+    ),
+    Layer.provideMerge(NodeServices.layer),
+  );
+
+  return Effect.gen(function* () {
+    const maintenance = yield* SourceControlToolMaintenance.SourceControlToolMaintenance;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const result = yield* Effect.result(
+        maintenance.update({ target: "git", operation: "install" }),
+      );
+      assert.strictEqual(result._tag, "Failure");
+      if (result._tag === "Failure") {
+        assert.strictEqual(
+          result.failure.reason,
+          "Git installation was cancelled. Try again and approve the Windows permission prompt.",
+        );
+        assert.strictEqual((yield* maintenance.getState)[0]?.message, result.failure.reason);
+      }
+    }
+    yield* maintenance.update({ target: "git", operation: "install" });
+    assert.strictEqual((yield* maintenance.getState)[0]?.status, "succeeded");
+  }).pipe(Effect.provide(layer));
+});
+
+it.effect("asks the user to rescan after a Windows installer times out", () => {
+  const layer = Layer.effect(
+    SourceControlToolMaintenance.SourceControlToolMaintenance,
+    SourceControlToolMaintenance.make({
+      platform: "win32",
+      commandAvailable: (command) => command === "winget",
+    }),
+  ).pipe(
+    Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "source-tool-update-test-" })),
+    Layer.provide(
+      Layer.mock(VcsProcess.VcsProcess)({
+        run: (input) =>
+          Effect.fail(
+            new VcsProcessTimeoutError({
+              operation: input.operation,
+              command: [input.command, ...input.args].join(" "),
+              cwd: input.cwd,
+              timeoutMs: 300_000,
+            }),
+          ),
+      }),
+    ),
+    Layer.provideMerge(NodeServices.layer),
+  );
+
+  return Effect.gen(function* () {
+    const maintenance = yield* SourceControlToolMaintenance.SourceControlToolMaintenance;
+    const result = yield* Effect.result(
+      maintenance.update({ target: "github-cli", operation: "install" }),
+    );
+    assert.strictEqual(result._tag, "Failure");
+    if (result._tag === "Failure") {
+      assert.strictEqual(
+        result.failure.reason,
+        "GitHub CLI installation timed out. Check for a Windows permission prompt, then rescan before retrying. The installer may still finish.",
+      );
+      assert.deepStrictEqual(yield* maintenance.getState, [
+        {
+          target: "github-cli",
+          operation: "install",
+          status: "failed",
+          message: result.failure.reason,
+        },
+      ]);
+    }
+  }).pipe(Effect.provide(layer));
+});
+
 it.effect("explains when Homebrew does not manage the tool it was asked to upgrade", () => {
   const layer = Layer.effect(
     SourceControlToolMaintenance.SourceControlToolMaintenance,
@@ -372,44 +471,63 @@ it.effect("explains when Homebrew does not manage the tool it was asked to upgra
   }).pipe(Effect.provide(layer));
 });
 
-it.effect("serializes all source control updates through one WinGet lock", () =>
-  Effect.gen(function* () {
-    const started = yield* Deferred.make<void>();
-    const release = yield* Deferred.make<void>();
-    let calls = 0;
-    const layer = Layer.effect(
-      SourceControlToolMaintenance.SourceControlToolMaintenance,
-      SourceControlToolMaintenance.make({
-        platform: "win32",
-        commandAvailable: (command) => command === "winget" || command === "git",
-      }),
-    ).pipe(
-      Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "source-tool-update-test-" })),
-      Layer.provide(
-        Layer.mock(VcsProcess.VcsProcess)({
-          run: () => {
-            calls += 1;
-            return Deferred.succeed(started, undefined).pipe(
-              Effect.andThen(Deferred.await(release)),
-              Effect.as(processOutput),
-            );
-          },
+it.effect(
+  "queues different tools, rejects duplicates, and keeps installing after the caller leaves",
+  () =>
+    Effect.gen(function* () {
+      const started = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      let calls = 0;
+      const layer = Layer.effect(
+        SourceControlToolMaintenance.SourceControlToolMaintenance,
+        SourceControlToolMaintenance.make({
+          platform: "win32",
+          commandAvailable: (command) => command === "winget" || command === "git",
         }),
-      ),
-      Layer.provideMerge(NodeServices.layer),
-    );
+      ).pipe(
+        Layer.provide(
+          ServerConfig.layerTest(process.cwd(), { prefix: "source-tool-update-test-" }),
+        ),
+        Layer.provide(
+          Layer.mock(VcsProcess.VcsProcess)({
+            run: () => {
+              calls += 1;
+              return Deferred.succeed(started, undefined).pipe(
+                Effect.andThen(Deferred.await(release)),
+                Effect.as(processOutput),
+              );
+            },
+          }),
+        ),
+        Layer.provideMerge(NodeServices.layer),
+      );
 
-    yield* Effect.gen(function* () {
-      const maintenance = yield* SourceControlToolMaintenance.SourceControlToolMaintenance;
-      const first = yield* maintenance.update({ target: "github-cli" }).pipe(Effect.forkScoped);
-      yield* Deferred.await(started);
+      yield* Effect.gen(function* () {
+        const maintenance = yield* SourceControlToolMaintenance.SourceControlToolMaintenance;
+        const first = yield* maintenance.update({ target: "github-cli" }).pipe(Effect.forkScoped);
+        yield* Deferred.await(started);
 
-      const second = yield* Effect.result(maintenance.update({ target: "git" }));
-      assert.strictEqual(second._tag, "Failure");
-      assert.strictEqual(calls, 1);
+        const duplicate = yield* Effect.result(maintenance.update({ target: "github-cli" }));
+        assert.strictEqual(duplicate._tag, "Failure");
+        const second = yield* maintenance.update({ target: "git" }).pipe(Effect.forkScoped);
+        yield* Effect.yieldNow;
+        assert.deepStrictEqual(
+          (yield* maintenance.getState).map((state) => [state.target, state.status]),
+          [
+            ["github-cli", "running"],
+            ["git", "queued"],
+          ],
+        );
+        assert.strictEqual(calls, 1);
 
-      yield* Deferred.succeed(release, undefined);
-      yield* Fiber.join(first);
-    }).pipe(Effect.provide(layer));
-  }),
+        yield* Fiber.interrupt(first);
+        yield* Deferred.succeed(release, undefined);
+        yield* Fiber.join(second);
+        assert.strictEqual(calls, 2);
+        assert.deepStrictEqual(
+          (yield* maintenance.getState).map((state) => state.status),
+          ["succeeded", "succeeded"],
+        );
+      }).pipe(Effect.provide(layer));
+    }),
 );

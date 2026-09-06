@@ -52,6 +52,9 @@ describe("parseClaudeLine", () => {
       outputTokens: 499,
       reasoningTokens: 0,
     });
+    // The 1h share of the cache write is what separates it from a 5m write at
+    // pricing time.
+    expect(record?.cacheCreation1hTokens).toBe(15501);
     expect(record?.dedupeKey).toBe("msg_1:req_011CdtPMPBEdPXGLpcmo3hze");
   });
 

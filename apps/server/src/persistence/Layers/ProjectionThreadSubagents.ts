@@ -1,4 +1,4 @@
-import type { OrchestrationSubagent } from "@threadlines/contracts";
+import { NonNegativeInt, type OrchestrationSubagent } from "@threadlines/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
@@ -18,14 +18,21 @@ import {
 export const ProjectionThreadSubagentDbRowSchema = ProjectionThreadSubagent.mapFields(
   Struct.assign({
     isBackgrounded: Schema.NullOr(Schema.Number),
+    resultEventSequence: Schema.NullOr(NonNegativeInt),
+    liveEventSequence: Schema.NullOr(NonNegativeInt),
   }),
 );
 
 export function toProjectionThreadSubagent(
   row: Schema.Schema.Type<typeof ProjectionThreadSubagentDbRowSchema>,
 ): ProjectionThreadSubagent {
-  const { isBackgrounded, ...rest } = row;
-  return isBackgrounded === null ? rest : { ...rest, isBackgrounded: isBackgrounded === 1 };
+  const { isBackgrounded, resultEventSequence, liveEventSequence, ...rest } = row;
+  return {
+    ...rest,
+    ...(isBackgrounded !== null ? { isBackgrounded: isBackgrounded === 1 } : {}),
+    ...(resultEventSequence !== null ? { resultEventSequence } : {}),
+    ...(liveEventSequence !== null ? { liveEventSequence } : {}),
+  };
 }
 
 export function subagentBackgroundedColumn(row: OrchestrationSubagent): number | null {
@@ -50,6 +57,7 @@ const makeProjectionThreadSubagentRepository = Effect.gen(function* () {
         reasoning_effort AS "reasoningEffort", model_provenance AS "modelProvenance",
         reasoning_effort_provenance AS "reasoningEffortProvenance",
         result_body AS "resultBody", result_created_at AS "resultCreatedAt",
+        result_event_sequence AS "resultEventSequence", live_event_sequence AS "liveEventSequence",
         created_at AS "createdAt", updated_at AS "updatedAt"
       FROM projection_thread_subagents
       WHERE thread_id = ${threadId}
@@ -96,6 +104,8 @@ const makeProjectionThreadSubagentRepository = Effect.gen(function* () {
             model_provenance: row.modelProvenance,
             reasoning_effort_provenance: row.reasoningEffortProvenance,
             result_body: row.resultBody,
+            result_event_sequence: row.resultEventSequence ?? null,
+            live_event_sequence: row.liveEventSequence ?? null,
             result_created_at: row.resultCreatedAt,
             created_at: row.createdAt,
             updated_at: row.updatedAt,

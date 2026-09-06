@@ -25,7 +25,7 @@ import {
   useUsageEnvironmentTargets,
 } from "../../lib/usageReactQuery";
 import { formatRelativeTimeLabel } from "../../timestampFormat";
-import { DesktopPageTitlebar } from "../DesktopPageTitlebar";
+import { PageTitlebar } from "../PageTitlebar";
 import { ClaudeAI, OpenAI, type Icon } from "../Icons";
 import { Button } from "../ui/button";
 import { Skeleton } from "../ui/skeleton";
@@ -154,7 +154,7 @@ export function UsageView() {
           </div>
         </header>
       ) : null}
-      <DesktopPageTitlebar label="Usage" />
+      <PageTitlebar label="Usage" mobile="none" />
       {/* The pane-wide element scrolls so the scrollbar hugs the pane's edge
           (like Settings); the reading column centers inside it. */}
       <div className="min-h-0 flex-1 overflow-y-auto" data-testid="usage-scroll">

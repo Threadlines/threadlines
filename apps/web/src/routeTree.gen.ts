@@ -14,6 +14,7 @@ import { Route as PairRouteImport } from './routes/pair'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as ChatIndexRouteImport } from './routes/_chat.index'
 import { Route as ChatChatsRouteImport } from './routes/_chat.chats'
+import { Route as ChatPullRequestsRouteImport } from './routes/_chat.pull-requests'
 import { Route as ChatUsageRouteImport } from './routes/_chat.usage'
 import { Route as SettingsIndexRouteImport } from './routes/settings.index'
 import { Route as SettingsArchivedRouteImport } from './routes/settings.archived'
@@ -50,6 +51,11 @@ const ChatIndexRoute = ChatIndexRouteImport.update({
 const ChatChatsRoute = ChatChatsRouteImport.update({
   id: '/chats',
   path: '/chats',
+  getParentRoute: () => ChatRoute,
+} as any)
+const ChatPullRequestsRoute = ChatPullRequestsRouteImport.update({
+  id: '/pull-requests',
+  path: '/pull-requests',
   getParentRoute: () => ChatRoute,
 } as any)
 const ChatUsageRoute = ChatUsageRouteImport.update({
@@ -124,6 +130,7 @@ export interface FileRoutesByFullPath {
   '/pair': typeof PairRoute
   '/settings': typeof SettingsRouteWithChildren
   '/chats': typeof ChatChatsRoute
+  '/pull-requests': typeof ChatPullRequestsRoute
   '/usage': typeof ChatUsageRoute
   '/settings/archived': typeof SettingsArchivedRoute
   '/settings/connections': typeof SettingsConnectionsRoute
@@ -141,6 +148,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/pair': typeof PairRoute
   '/chats': typeof ChatChatsRoute
+  '/pull-requests': typeof ChatPullRequestsRoute
   '/usage': typeof ChatUsageRoute
   '/settings/archived': typeof SettingsArchivedRoute
   '/settings/connections': typeof SettingsConnectionsRoute
@@ -162,6 +170,7 @@ export interface FileRoutesById {
   '/pair': typeof PairRoute
   '/settings': typeof SettingsRouteWithChildren
   '/_chat/chats': typeof ChatChatsRoute
+  '/_chat/pull-requests': typeof ChatPullRequestsRoute
   '/_chat/usage': typeof ChatUsageRoute
   '/settings/archived': typeof SettingsArchivedRoute
   '/settings/connections': typeof SettingsConnectionsRoute
@@ -184,6 +193,7 @@ export interface FileRouteTypes {
     | '/pair'
     | '/settings'
     | '/chats'
+    | '/pull-requests'
     | '/usage'
     | '/settings/archived'
     | '/settings/connections'
@@ -201,6 +211,7 @@ export interface FileRouteTypes {
   to:
     | '/pair'
     | '/chats'
+    | '/pull-requests'
     | '/usage'
     | '/settings/archived'
     | '/settings/connections'
@@ -221,6 +232,7 @@ export interface FileRouteTypes {
     | '/pair'
     | '/settings'
     | '/_chat/chats'
+    | '/_chat/pull-requests'
     | '/_chat/usage'
     | '/settings/archived'
     | '/settings/connections'
@@ -278,6 +290,13 @@ declare module '@tanstack/react-router' {
       path: '/chats'
       fullPath: '/chats'
       preLoaderRoute: typeof ChatChatsRouteImport
+      parentRoute: typeof ChatRoute
+    }
+    '/_chat/pull-requests': {
+      id: '/_chat/pull-requests'
+      path: '/pull-requests'
+      fullPath: '/pull-requests'
+      preLoaderRoute: typeof ChatPullRequestsRouteImport
       parentRoute: typeof ChatRoute
     }
     '/_chat/usage': {
@@ -376,6 +395,7 @@ declare module '@tanstack/react-router' {
 
 interface ChatRouteChildren {
   ChatChatsRoute: typeof ChatChatsRoute
+  ChatPullRequestsRoute: typeof ChatPullRequestsRoute
   ChatUsageRoute: typeof ChatUsageRoute
   ChatIndexRoute: typeof ChatIndexRoute
   ChatEnvironmentIdThreadIdRoute: typeof ChatEnvironmentIdThreadIdRoute
@@ -384,6 +404,7 @@ interface ChatRouteChildren {
 
 const ChatRouteChildren: ChatRouteChildren = {
   ChatChatsRoute: ChatChatsRoute,
+  ChatPullRequestsRoute: ChatPullRequestsRoute,
   ChatUsageRoute: ChatUsageRoute,
   ChatIndexRoute: ChatIndexRoute,
   ChatEnvironmentIdThreadIdRoute: ChatEnvironmentIdThreadIdRoute,

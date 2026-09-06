@@ -5,6 +5,7 @@ import { useCallback, useMemo } from "react";
 import { useShallow } from "zustand/react/shallow";
 import {
   composerDraftHasUserContent,
+  type DraftId,
   type DraftThreadEnvMode,
   type DraftThreadState,
   useComposerDraftStore,
@@ -47,6 +48,9 @@ function useNewThreadState() {
         worktreePath?: string | null;
         envMode?: DraftThreadEnvMode;
         replace?: boolean;
+        /** Words the draft opens with, for surfaces that hand work over. Only
+         *  ever written into a draft with nothing of the user's in it. */
+        initialPrompt?: string;
       },
     ): Promise<void> => {
       const {
@@ -58,7 +62,14 @@ function useNewThreadState() {
         applyStickyState,
         setDraftThreadContext,
         setLogicalProjectDraftThreadId,
+        setPrompt,
       } = useComposerDraftStore.getState();
+      const initialPrompt = options?.initialPrompt?.trim() ?? "";
+      const writeInitialPrompt = (draftId: DraftId) => {
+        if (initialPrompt.length > 0) {
+          setPrompt(draftId, initialPrompt);
+        }
+      };
       const currentRouteTarget = getCurrentRouteTarget();
       // Read projects at call time: a project created moments ago reaches the
       // store before this callback is recreated, and a stale list here means
@@ -115,6 +126,7 @@ function useNewThreadState() {
               threadId: emptyStoredDraftThread.threadId,
             },
           );
+          writeInitialPrompt(emptyStoredDraftThread.draftId);
           if (
             currentRouteTarget?.kind === "draft" &&
             currentRouteTarget.draftId === emptyStoredDraftThread.draftId
@@ -156,6 +168,7 @@ function useNewThreadState() {
           ...(hasWorktreePathOption ? { worktreePath: options?.worktreePath ?? null } : {}),
           ...(hasEnvModeOption ? { envMode: options?.envMode } : {}),
         });
+        writeInitialPrompt(currentRouteTarget.draftId);
         return Promise.resolve();
       }
 
@@ -172,6 +185,7 @@ function useNewThreadState() {
           runtimeMode: DEFAULT_NEW_THREAD_RUNTIME_MODE,
         });
         applyStickyState(draftId);
+        writeInitialPrompt(draftId);
 
         await router.navigate({
           to: "/draft/$draftId",

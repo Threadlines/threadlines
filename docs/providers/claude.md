@@ -269,15 +269,17 @@ different API keys, base URLs, or router settings, use Environment variables.
 
 Do not put environment variable assignments in `Launch arguments`.
 
-## Claude Fable 5
+## Claude Fable 5 And 5.1
 
-Threadlines shows Claude Fable 5 when the configured Claude Code binary is `2.1.170` or newer.
-Fable is not a default Claude Code model; select `Claude Fable 5` in the model picker when you want
-Anthropic's highest-capability widely available model for long-running or difficult work.
+Threadlines shows Claude Fable 5.1 when the configured Claude Code binary is `2.1.257` or newer,
+and Claude Fable 5 from `2.1.170`. Select a Fable model in the model picker when you want
+Anthropic's highest-capability widely available model for long-running or difficult work. Claude
+Code `2.1.257` makes Fable 5.1 the model its bare `fable` alias resolves to, and Threadlines
+normalizes the alias the same way.
 
-Anthropic documents Fable 5 on the Claude API as a 1M-context model where the 1M maximum is also the
-default. Threadlines does not expose a 200k Fable selector because the bare `claude-fable-5` model id
-still runs with the 1M window on the Claude API.
+Anthropic documents Fable 5 and 5.1 on the Claude API as 1M-context models where the 1M maximum is
+also the default. Threadlines does not expose a 200k Fable selector because the bare
+`claude-fable-5` and `claude-fable-5-1` model ids still run with the 1M window on the Claude API.
 
 Fable availability and usage-credit requirements depend on the active Claude account and plan. The
 live Claude model catalog is the authoritative signal for the current provider instance; the curated

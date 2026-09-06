@@ -114,6 +114,19 @@ export function resolveBranchToolbarValue(input: {
   return currentGitBranch ?? activeThreadBranch;
 }
 
+/**
+ * Base branch a worktree draft starts from when the user has not picked one:
+ * the repository's default branch. "New worktree" means a fresh branch off
+ * main, not off whatever the project checkout happens to have out.
+ */
+export function resolveDefaultWorktreeBaseBranch(input: {
+  refs: ReadonlyArray<Pick<VcsRef, "name" | "isDefault" | "isRemote">>;
+  currentGitBranch: string | null;
+}): string | null {
+  const defaultRef = input.refs.find((ref) => ref.isDefault && !ref.isRemote);
+  return defaultRef?.name ?? input.currentGitBranch;
+}
+
 export function resolveBranchSelectionTarget(input: {
   activeProjectCwd: string;
   activeWorktreePath: string | null;

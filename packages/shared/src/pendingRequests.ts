@@ -128,3 +128,37 @@ export function collectOpenPendingRequests<A extends PendingRequestActivityLike>
 
   return [...openByRequestId.values()];
 }
+
+/** Counts all open questions and the subset that pauses the provider turn. */
+export function countPendingUserInputs(
+  orderedActivities: ReadonlyArray<PendingRequestActivityLike>,
+): { pendingUserInputCount: number; blockingUserInputCount: number } {
+  const requests = collectOpenPendingRequests(orderedActivities, USER_INPUT_ACTIVITY_KINDS);
+  const blockingUserInputCount = requests.filter(({ activity }) => {
+    const payload = activity.payload;
+    return (
+      typeof payload !== "object" ||
+      payload === null ||
+      (payload as { isBlocking?: unknown }).isBlocking !== false
+    );
+  }).length;
+  return { pendingUserInputCount: requests.length, blockingUserInputCount };
+}
+
+/** Keep open prompts answerable even after their activity leaves the recent log. */
+export function retainRecentActivitiesAndOpenRequests<A extends PendingRequestActivityLike>(
+  orderedActivities: ReadonlyArray<A>,
+  recentLimit: number,
+): A[] {
+  if (orderedActivities.length <= recentLimit) return [...orderedActivities];
+  const openActivities = new Set(
+    [
+      ...collectOpenPendingRequests(orderedActivities, APPROVAL_ACTIVITY_KINDS),
+      ...collectOpenPendingRequests(orderedActivities, USER_INPUT_ACTIVITY_KINDS),
+    ].map(({ activity }) => activity),
+  );
+  const recentStart = orderedActivities.length - recentLimit;
+  return orderedActivities.filter(
+    (activity, index) => index >= recentStart || openActivities.has(activity),
+  );
+}

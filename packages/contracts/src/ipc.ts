@@ -53,6 +53,30 @@ import type {
   VcsStatusLocalResult,
   VcsStatusResult,
 } from "./git.ts";
+import type {
+  PullRequestActionInput,
+  PullRequestActionResult,
+  PullRequestActivity,
+  PullRequestActivityInput,
+  PullRequestCommentInput,
+  PullRequestCommentResult,
+  PullRequestCommentUpdateInput,
+  PullRequestDetail,
+  PullRequestDetailInput,
+  PullRequestDiffInput,
+  PullRequestDiffResult,
+  PullRequestListInput,
+  PullRequestListResult,
+  PullRequestReactionInput,
+  PullRequestRef,
+  PullRequestReviewerCandidateList,
+  PullRequestReviewerRequestInput,
+  PullRequestReviewInput,
+  PullRequestReviewResult,
+  PullRequestThreadReplyInput,
+  PullRequestThreadResolutionInput,
+  PullRequestUpdateInput,
+} from "./pullRequest.ts";
 import type { FilesystemBrowseInput, FilesystemBrowseResult } from "./filesystem.ts";
 import type { UsageSummary, UsageSummaryInput } from "./usage.ts";
 import type {
@@ -190,6 +214,8 @@ import type {
   SourceControlRepositoryLookupInput,
   SourceControlToolUpdateInput,
   SourceControlToolUpdateResult,
+  SourceControlSetupState,
+  GitHubAuthState,
 } from "./sourceControl.ts";
 
 export interface ContextMenuItem<T extends string = string> {
@@ -343,9 +369,10 @@ export const DesktopUpdateCheckResultSchema = Schema.Struct({
   state: DesktopUpdateStateSchema,
 });
 
-export type DesktopTaskbarThreadState = "running" | "completed";
+/** "waiting": the turn settled but background provider tasks keep the thread live. */
+export type DesktopTaskbarThreadState = "running" | "waiting" | "completed";
 
-export const DesktopTaskbarThreadStateSchema = Schema.Literals(["running", "completed"]);
+export const DesktopTaskbarThreadStateSchema = Schema.Literals(["running", "waiting", "completed"]);
 
 /** A thread surfaced in the desktop status item menu (click-to-open). */
 export interface DesktopTaskbarThreadSummary {
@@ -449,6 +476,18 @@ export const DesktopPreviewEvaluateInputSchema = Schema.Struct({
   expression: Schema.String,
 });
 export type DesktopPreviewEvaluateInput = typeof DesktopPreviewEvaluateInputSchema.Type;
+
+/** A browser gesture forwarded from the desktop process; see
+ *  onPreviewBrowserCommand. */
+export type DesktopPreviewBrowserCommand =
+  | "back"
+  | "forward"
+  | "find"
+  | "address"
+  | "reload"
+  | "zoom-in"
+  | "zoom-out"
+  | "zoom-reset";
 
 export const DesktopPreviewConsoleEntrySchema = Schema.Struct({
   level: Schema.String,
@@ -1000,6 +1039,12 @@ export interface DesktopBridge {
   ) => () => void;
   /** Fires for genuine keyboard, pointer, or wheel input inside a guest page. */
   onPreviewUserControl?: (listener: (event: DesktopPreviewUserControl) => void) => () => void;
+  /** Fires for browser gestures the renderer cannot see itself: the mouse's
+   *  back/forward buttons (window-level app commands), and browser shortcuts
+   *  pressed inside a guest page, which keeps its own keystrokes. */
+  onPreviewBrowserCommand?: (
+    listener: (command: DesktopPreviewBrowserCommand) => void,
+  ) => () => void;
   previewClearBrowsingData?: () => Promise<void>;
   previewClearCache?: () => Promise<void>;
   setTheme: (theme: DesktopTheme) => Promise<void>;
@@ -1082,6 +1127,9 @@ export interface LocalApi {
     getSettings: () => Promise<ServerSettings>;
     updateSettings: (patch: ServerSettingsPatch) => Promise<ServerSettings>;
     discoverSourceControl: () => Promise<SourceControlDiscoveryResult>;
+    getSourceControlSetup: () => Promise<SourceControlSetupState>;
+    startGitHubAuth: () => Promise<GitHubAuthState>;
+    cancelGitHubAuth: () => Promise<void>;
     updateSourceControlTool: (
       input: SourceControlToolUpdateInput,
     ) => Promise<SourceControlToolUpdateResult>;
@@ -1339,6 +1387,22 @@ export interface EnvironmentApi {
     applyAuthRemediation: (
       input: GitApplyAuthRemediationInput,
     ) => Promise<GitApplyAuthRemediationResult>;
+  };
+  pullRequests: {
+    list: (input: PullRequestListInput) => Promise<PullRequestListResult>;
+    detail: (input: PullRequestDetailInput) => Promise<PullRequestDetail>;
+    activity: (input: PullRequestActivityInput) => Promise<PullRequestActivity>;
+    diff: (input: PullRequestDiffInput) => Promise<PullRequestDiffResult>;
+    comment: (input: PullRequestCommentInput) => Promise<PullRequestCommentResult>;
+    runAction: (input: PullRequestActionInput) => Promise<PullRequestActionResult>;
+    submitReview: (input: PullRequestReviewInput) => Promise<PullRequestReviewResult>;
+    replyToThread: (input: PullRequestThreadReplyInput) => Promise<void>;
+    setThreadResolution: (input: PullRequestThreadResolutionInput) => Promise<void>;
+    setReaction: (input: PullRequestReactionInput) => Promise<void>;
+    update: (input: PullRequestUpdateInput) => Promise<void>;
+    updateComment: (input: PullRequestCommentUpdateInput) => Promise<void>;
+    reviewerCandidates: (input: PullRequestRef) => Promise<PullRequestReviewerCandidateList>;
+    requestReviewers: (input: PullRequestReviewerRequestInput) => Promise<void>;
   };
   orchestration: {
     dispatchCommand: (command: ClientOrchestrationCommand) => Promise<{ sequence: number }>;

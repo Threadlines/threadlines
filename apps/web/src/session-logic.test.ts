@@ -17,6 +17,7 @@ import {
   derivePendingApprovals,
   derivePendingUserInputs,
   isBlockingUserInput,
+  deriveSubagentActivityState,
   deriveSubagentLiveEntries,
   deriveSubagentProgressState,
   deriveSubagentResultEntries,
@@ -40,6 +41,7 @@ function makeActivity(overrides: {
   payload?: Record<string, unknown>;
   turnId?: string;
   sequence?: number;
+  eventSequence?: number;
 }): OrchestrationThreadActivity {
   const payload = overrides.payload ?? {};
   return {
@@ -51,6 +53,7 @@ function makeActivity(overrides: {
     payload,
     turnId: overrides.turnId ? TurnId.make(overrides.turnId) : null,
     ...(overrides.sequence !== undefined ? { sequence: overrides.sequence } : {}),
+    ...(overrides.eventSequence !== undefined ? { eventSequence: overrides.eventSequence } : {}),
   };
 }
 
@@ -328,6 +331,27 @@ describe("deriveThreadSubagentHistory", () => {
     expect(history[0]?.resultBody).toBe("50 .tsx files.");
   });
 
+  it("derives every active-chat subagent view from the shared activity state", () => {
+    const activities = codexSpawnActivities();
+    const latestTurnId = TurnId.make("turn-1");
+    const state = deriveSubagentActivityState({
+      activities,
+      latestTurnId,
+      latestTurnSettled: false,
+    });
+
+    expect(state).toEqual({
+      progress: deriveSubagentProgressState({
+        activities,
+        latestTurnId,
+        latestTurnSettled: false,
+      }),
+      history: deriveThreadSubagentHistory(activities),
+      resultEntries: deriveSubagentResultEntries(activities),
+      liveEntries: deriveSubagentLiveEntries(activities),
+    });
+  });
+
   it("keeps durable child identity and explicit spawn settings after lifecycle rows age out", () => {
     const durable: OrchestrationSubagent = {
       id: "codex-child-1",
@@ -350,6 +374,7 @@ describe("deriveThreadSubagentHistory", () => {
       reasoningEffortProvenance: "explicit",
       resultBody: "Found the capped projection.",
       resultCreatedAt: "2026-08-13T20:41:00.000Z",
+      resultEventSequence: 20,
       createdAt: "2026-08-13T20:35:56.000Z",
       updatedAt: "2026-08-13T20:41:00.000Z",
     };
@@ -369,6 +394,59 @@ describe("deriveThreadSubagentHistory", () => {
         resultBody: "Found the capped projection.",
       },
     ]);
+
+    const retainedResultActivity = makeActivity({
+      id: "reused-result-activity",
+      kind: "subagent.result",
+      turnId: "turn-1",
+      eventSequence: 4,
+      createdAt: durable.resultCreatedAt!,
+      payload: {
+        itemType: "collab_agent_tool_call",
+        status: "completed",
+        data: {
+          item: {
+            type: "collabAgentToolCall",
+            tool: "wait",
+            status: "completed",
+            receiverThreadIds: [durable.agentThreadId],
+            agentsStates: {
+              "codex-child-1": { status: "completed", message: durable.resultBody },
+            },
+          },
+        },
+      },
+    });
+    for (const activities of [[], [retainedResultActivity]]) {
+      const timeline = deriveTimelineEntries(
+        [
+          {
+            id: MessageId.make("before-result"),
+            role: "user",
+            text: "Find the issue.",
+            createdAt: "2026-08-13T20:45:00.000Z",
+            eventSequence: 10,
+            streaming: false,
+          },
+          {
+            id: MessageId.make("after-result"),
+            role: "assistant",
+            text: "The fix is ready.",
+            createdAt: "2026-08-13T20:35:00.000Z",
+            eventSequence: 30,
+            streaming: false,
+          },
+        ],
+        [],
+        [],
+        deriveSubagentResultEntries(activities, [durable]),
+      );
+      expect(timeline.map((entry) => entry.id)).toEqual([
+        "before-result",
+        "subagent-result:turn-1:codex-child-1",
+        "after-result",
+      ]);
+    }
   });
 
   it("keeps a model stated on the spawn over the turn's dispatched selection", () => {
@@ -500,6 +578,40 @@ describe("deriveThreadSubagentHistory", () => {
       reasoningEffort: "high",
     });
   });
+});
+
+it("keeps pending approvals and questions in request order after a clock rollback", () => {
+  for (const { kind, derive } of [
+    { kind: "approval.requested", derive: derivePendingApprovals },
+    { kind: "user-input.requested", derive: derivePendingUserInputs },
+  ]) {
+    const payload = {
+      requestKind: "command",
+      questions: [
+        {
+          id: "approach",
+          header: "Approach",
+          question: "Which approach?",
+          options: [{ label: "a", description: "Option A" }],
+        },
+      ],
+    };
+    const activities = [
+      makeActivity({
+        kind,
+        eventSequence: 10,
+        createdAt: "2026-02-23T00:00:10.000Z",
+        payload: { ...payload, requestId: "first" },
+      }),
+      makeActivity({
+        kind,
+        eventSequence: 20,
+        createdAt: "2026-02-23T00:00:01.000Z",
+        payload: { ...payload, requestId: "second" },
+      }),
+    ];
+    expect(derive(activities).map((request) => request.requestId)).toEqual(["first", "second"]);
+  }
 });
 
 describe("derivePendingApprovals", () => {
@@ -691,7 +803,7 @@ describe("derivePendingApprovals", () => {
 });
 
 describe("derivePendingUserInputs", () => {
-  it("keeps the provider's blocking flag, and treats a missing one as blocking", () => {
+  it("prioritizes blocking questions while keeping each group oldest first", () => {
     const question = {
       id: "approach",
       header: "Approach",
@@ -716,14 +828,32 @@ describe("derivePendingUserInputs", () => {
         tone: "info",
         payload: { requestId: "req-blocking", questions: [question] },
       }),
+      makeActivity({
+        id: "user-input-passing-later",
+        createdAt: "2026-02-23T00:00:03.000Z",
+        kind: "user-input.requested",
+        summary: "User input requested",
+        tone: "info",
+        payload: { requestId: "req-passing-later", questions: [question], isBlocking: false },
+      }),
+      makeActivity({
+        id: "user-input-blocking-later",
+        createdAt: "2026-02-23T00:00:04.000Z",
+        kind: "user-input.requested",
+        summary: "User input requested",
+        tone: "info",
+        payload: { requestId: "req-blocking-later", questions: [question], isBlocking: true },
+      }),
     ];
 
     const pending = derivePendingUserInputs(activities);
     expect(pending.map((input) => [input.requestId, input.isBlocking])).toEqual([
-      ["req-passing", false],
       ["req-blocking", undefined],
+      ["req-blocking-later", true],
+      ["req-passing", false],
+      ["req-passing-later", false],
     ]);
-    expect(pending.map(isBlockingUserInput)).toEqual([false, true]);
+    expect(pending.map(isBlockingUserInput)).toEqual([true, true, false, false]);
   });
 
   it("tracks open structured prompts and removes resolved ones", () => {
@@ -1004,6 +1134,22 @@ describe("deriveActivePlanState", () => {
 });
 
 describe("findLatestProposedPlan", () => {
+  it("selects the later plan when its timestamp moves backward", () => {
+    const plans = [10, 11].map((eventSequence) => ({
+      id: `plan-${eventSequence}`,
+      eventSequence,
+      turnId: TurnId.make("turn-1"),
+      planMarkdown: `Plan ${eventSequence}`,
+      implementedAt: null,
+      implementationThreadId: null,
+      dismissedAt: null,
+      createdAt: "2026-02-23T00:00:00.000Z",
+      updatedAt: eventSequence === 10 ? "2026-02-23T00:10:00.000Z" : "2026-02-23T00:05:00.000Z",
+    }));
+    expect(findLatestProposedPlan(plans, "turn-1")?.id).toBe("plan-11");
+    expect(findLatestProposedPlan(plans, null)?.id).toBe("plan-11");
+  });
+
   it("prefers the latest proposed plan for the active turn", () => {
     expect(
       findLatestProposedPlan(
@@ -2663,6 +2809,81 @@ describe("deriveWorkLogEntries", () => {
     });
   });
 
+  it("carries the file path when a viewed image has no inline bytes", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "codex-view-image",
+        kind: "tool.completed",
+        summary: "C:\\Users\\wilfr\\AppData\\Local\\Temp\\shot.png",
+        payload: {
+          itemType: "image_view",
+          title: "Image view",
+          data: {
+            item: {
+              id: "iv_789",
+              path: "C:\\Users\\wilfr\\AppData\\Local\\Temp\\shot.png",
+              type: "imageView",
+            },
+          },
+        },
+      }),
+    ];
+
+    const [entry] = deriveWorkLogEntries(activities);
+    expect(entry).toMatchObject({
+      itemType: "image_view",
+      images: [
+        {
+          id: "iv_789",
+          name: "shot.png",
+          path: "C:\\Users\\wilfr\\AppData\\Local\\Temp\\shot.png",
+        },
+      ],
+    });
+    expect(entry?.images?.[0]?.previewUrl).toBeUndefined();
+  });
+
+  it("previews the image blocks a screenshot tool returned inline", () => {
+    const screenshotBase64 =
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=";
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "mcp-screenshot",
+        kind: "tool.completed",
+        summary: "Tool call",
+        payload: {
+          itemType: "dynamic_tool_call",
+          title: "browser_screenshot",
+          data: {
+            toolName: "browser_screenshot",
+            input: {},
+            result: {
+              type: "tool_result",
+              tool_use_id: "toolu_shot",
+              content: [
+                { type: "text", text: "Captured the page." },
+                {
+                  type: "image",
+                  source: { type: "base64", media_type: "image/png", data: screenshotBase64 },
+                },
+              ],
+            },
+            item: { id: "toolu_shot" },
+          },
+        },
+      }),
+    ];
+
+    const [entry] = deriveWorkLogEntries(activities);
+    expect(entry?.images).toEqual([
+      {
+        id: "toolu_shot",
+        name: "toolu_shot.png",
+        previewUrl: `data:image/png;base64,${screenshotBase64}`,
+      },
+    ]);
+  });
+
   it("extracts changed file paths for file-change tool activities", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({
@@ -3476,6 +3697,7 @@ describe("deriveWorkLogEntries", () => {
       }),
       makeActivity({
         id: "legacy-read-complete",
+        eventSequence: 20,
         createdAt: "2026-02-23T00:00:02.000Z",
         kind: "tool.completed",
         summary: "Read File",
@@ -3491,6 +3713,7 @@ describe("deriveWorkLogEntries", () => {
     expect(entries).toHaveLength(1);
     expect(entries[0]).toMatchObject({
       id: "legacy-read-update",
+      eventSequence: undefined,
       toolTitle: "Read File",
       itemType: "dynamic_tool_call",
     });
@@ -3651,6 +3874,86 @@ describe("deriveWorkLogEntries", () => {
 });
 
 describe("deriveTimelineEntries", () => {
+  it("keeps messages, plans, and collapsed tools in event order when the clock moves backward", () => {
+    const before = "2026-02-23T00:10:00.000Z";
+    const after = "2026-02-23T00:05:00.000Z";
+    const work = deriveWorkLogEntries([
+      makeActivity({
+        id: "tool-start",
+        eventSequence: 11,
+        sequence: 9,
+        createdAt: before,
+        kind: "tool.started",
+        payload: {
+          itemType: "command_execution",
+          data: { toolCallId: "command-1", kind: "execute" },
+        },
+      }),
+      makeActivity({
+        id: "tool-end",
+        eventSequence: 14,
+        sequence: 1,
+        createdAt: after,
+        kind: "tool.completed",
+        payload: {
+          itemType: "command_execution",
+          data: { toolCallId: "command-1", kind: "execute" },
+        },
+      }),
+    ]);
+    const entries = deriveTimelineEntries(
+      [
+        {
+          id: MessageId.make("first"),
+          role: "user",
+          text: "Start",
+          createdAt: before,
+          streaming: false,
+          eventSequence: 10,
+        },
+        {
+          id: MessageId.make("reply"),
+          role: "assistant",
+          text: "Done",
+          createdAt: after,
+          streaming: false,
+          eventSequence: 13,
+        },
+        {
+          id: MessageId.make("follow-up"),
+          role: "user",
+          text: "Continue",
+          createdAt: after,
+          streaming: false,
+          eventSequence: 15,
+        },
+      ],
+      [
+        {
+          id: "plan",
+          turnId: null,
+          planMarkdown: "Plan",
+          implementedAt: null,
+          implementationThreadId: null,
+          dismissedAt: null,
+          createdAt: after,
+          updatedAt: after,
+          eventSequence: 12,
+        },
+      ],
+      work,
+    );
+
+    expect(work).toHaveLength(1);
+    expect(work[0]).toMatchObject({
+      id: "tool-start",
+      eventSequence: 11,
+      executionState: "completed",
+    });
+    expect(entries.map((entry) => entry.eventSequence)).toEqual([10, 11, 12, 13, 15]);
+    expect(entries.map((entry) => entry.createdAt)).toEqual([before, before, after, after, after]);
+  });
+
   it("includes proposed plans alongside messages and work entries in chronological order", () => {
     const entries = deriveTimelineEntries(
       [
@@ -4216,6 +4519,210 @@ describe("subagent.metadata promoted-run lifecycle", () => {
     expect(state?.items).toHaveLength(1);
     expect(state?.items[0]?.agentThreadId).toBe("codex-exec:01a00cbf");
     expect(state?.items[0]?.status).toBe("completed");
+  });
+});
+
+describe("subagent task stream across a provider restart", () => {
+  it("does not show a background command as an agent when the harness moves it to the background", () => {
+    const activities = [
+      makeActivity({
+        id: "bash-started",
+        kind: "task.started",
+        tone: "info",
+        turnId: "turn-1",
+        createdAt: "2026-09-02T15:16:43.720Z",
+        payload: {
+          taskId: "bidsyv2wg",
+          taskType: "local_bash",
+          toolUseId: "toolu_bash",
+          detail: "List the failing server test files",
+        },
+      }),
+      // The long-running command hit its foreground limit; the SDK restates it
+      // as backgrounded under the command's own tool call.
+      makeActivity({
+        id: "bash-backgrounded",
+        kind: "subagent.metadata",
+        tone: "info",
+        turnId: "turn-1",
+        createdAt: "2026-09-02T15:26:40.735Z",
+        payload: { callId: "toolu_bash", isBackgrounded: true },
+      }),
+      makeActivity({
+        id: "bash-completed",
+        kind: "task.completed",
+        tone: "info",
+        createdAt: "2026-09-02T15:32:25.755Z",
+        payload: { taskId: "bidsyv2wg", toolUseId: "toolu_bash", status: "completed" },
+      }),
+    ];
+
+    expect(deriveThreadSubagentHistory(activities)).toEqual([]);
+    expect(
+      deriveSubagentProgressState({
+        activities,
+        latestTurnId: TurnId.make("turn-2"),
+        latestTurnSettled: false,
+      }),
+    ).toBeNull();
+  });
+
+  it("keeps one row for an agent the model resumes after a provider restart", () => {
+    // The roster as the server holds it once the resume has landed: the
+    // spawn owns the row, the task id is the transcript link.
+    const durable: OrchestrationSubagent = {
+      id: "toolu_spawn",
+      agentThreadId: "toolu_spawn",
+      parentAgentThreadId: null,
+      spawnCallId: "toolu_spawn",
+      transcriptAgentId: "a53e9dad4acb0ffce",
+      turnId: TurnId.make("turn-resume"),
+      agentPath: null,
+      parentAgentPath: null,
+      treeDepth: 0,
+      isBackgrounded: true,
+      nickname: null,
+      role: "general-purpose",
+      objective: "Build step 4a server",
+      status: "running",
+      requestedModel: "opus",
+      resolvedModel: "claude-opus-5",
+      reasoningEffort: null,
+      modelProvenance: "explicit",
+      reasoningEffortProvenance: null,
+      resultBody: null,
+      resultCreatedAt: null,
+      createdAt: "2026-09-02T05:05:13.409Z",
+      updatedAt: "2026-09-02T19:58:31.950Z",
+    };
+    const activities = [
+      // The reaper replaced the provider process: the roster sweep closed the row.
+      makeActivity({
+        id: "sweep",
+        kind: "subagent.metadata",
+        tone: "info",
+        turnId: "turn-before",
+        createdAt: "2026-09-02T15:39:31.835Z",
+        payload: { agentThreadId: "toolu_spawn", callId: "toolu_spawn", status: "interrupted" },
+      }),
+      // The fresh process knows the lost agent by its task id alone.
+      makeActivity({
+        id: "lost",
+        kind: "task.completed",
+        tone: "info",
+        createdAt: "2026-09-02T19:57:13.220Z",
+        payload: {
+          taskId: "a53e9dad4acb0ffce",
+          status: "stopped",
+          detail: "No completion record was found for background agent",
+        },
+      }),
+      // SendMessage resumed it: the same task, reported under the resuming
+      // call, which also restates the spawn flags.
+      makeActivity({
+        id: "resume-flags",
+        kind: "subagent.metadata",
+        tone: "info",
+        turnId: "turn-resume",
+        createdAt: "2026-09-02T19:58:31.948Z",
+        payload: { callId: "toolu_send_message", treeDepth: 1, isBackgrounded: true },
+      }),
+      makeActivity({
+        id: "resume-start",
+        kind: "task.started",
+        tone: "info",
+        turnId: "turn-resume",
+        createdAt: "2026-09-02T19:58:31.950Z",
+        payload: {
+          taskId: "a53e9dad4acb0ffce",
+          toolUseId: "toolu_send_message",
+          taskType: "local_agent",
+          subagentType: "general-purpose",
+          detail: "Build step 4a server",
+        },
+      }),
+      makeActivity({
+        id: "resume-progress",
+        kind: "task.progress",
+        tone: "info",
+        createdAt: "2026-09-02T20:01:00.000Z",
+        payload: {
+          taskId: "a53e9dad4acb0ffce",
+          toolUseId: "toolu_send_message",
+          subagentType: "general-purpose",
+          detail: "Reading logic test conventions",
+          usage: { total_tokens: 231_000, tool_uses: 40 },
+        },
+      }),
+    ];
+
+    const state = deriveSubagentProgressState({
+      activities,
+      subagents: [durable],
+      latestTurnId: TurnId.make("turn-resume"),
+      latestTurnSettled: true,
+    });
+    expect(state?.items).toHaveLength(1);
+    expect(state?.items[0]).toMatchObject({
+      agentThreadId: "toolu_spawn",
+      status: "running",
+      turnId: "turn-resume",
+      model: "claude-opus-5",
+      telemetry: expect.objectContaining({
+        step: "Reading logic test conventions",
+        totalTokens: 231_000,
+      }),
+    });
+    expect(deriveThreadSubagentHistory(activities, [durable])).toHaveLength(1);
+
+    // The run ends. The adapter holds no spawn for the agent, so it files the
+    // final report as a completion of the resuming call, task id attached.
+    const finished = deriveThreadSubagentHistory(
+      [
+        ...activities,
+        makeActivity({
+          id: "resume-done",
+          kind: "task.completed",
+          tone: "info",
+          createdAt: "2026-09-02T20:10:00.000Z",
+          payload: {
+            taskId: "a53e9dad4acb0ffce",
+            toolUseId: "toolu_send_message",
+            status: "completed",
+          },
+        }),
+        makeActivity({
+          id: "resume-report",
+          kind: "tool.completed",
+          createdAt: "2026-09-02T20:10:00.500Z",
+          payload: {
+            itemType: "collab_agent_tool_call",
+            toolCallId: "toolu_send_message",
+            status: "completed",
+            title: "Subagent task",
+            detail: 'Agent "Build step 4a server" finished',
+            data: {
+              toolName: "Agent",
+              input: {},
+              result: {
+                type: "tool_result",
+                tool_use_id: "toolu_send_message",
+                content: [{ type: "text", text: "## Report\n\nStep 4a done." }],
+              },
+              taskNotification: { taskId: "a53e9dad4acb0ffce", status: "completed" },
+            },
+          },
+        }),
+      ],
+      [durable],
+    );
+    expect(finished).toHaveLength(1);
+    expect(finished[0]?.item).toMatchObject({
+      agentThreadId: "toolu_spawn",
+      status: "completed",
+      objective: "Build step 4a server",
+    });
+    expect(finished[0]?.resultBody).toBe("## Report\n\nStep 4a done.");
   });
 });
 
@@ -4962,6 +5469,91 @@ describe("deriveSubagentProgressState", () => {
         latestTurnSettled: false,
       }),
     ).toBeNull();
+  });
+
+  it("keeps a finished Codex agent idle after a message until its child turn starts", () => {
+    const activities = [
+      makeActivity({
+        id: "child-result",
+        createdAt: "2026-09-05T06:38:52.000Z",
+        kind: "subagent.result",
+        turnId: "turn-1",
+        payload: {
+          itemType: "collab_agent_tool_call",
+          status: "completed",
+          data: {
+            item: {
+              id: "subagent-response:agent-child",
+              type: "collabAgentToolCall",
+              tool: "wait",
+              status: "completed",
+              receiverThreadIds: ["agent-child"],
+              agentsStates: {
+                "agent-child": { status: "completed", message: "Review complete." },
+              },
+            },
+          },
+        },
+      }),
+      // Saved activities from older servers claim that any interaction starts
+      // work, including a send_message delivered after the child's final reply.
+      makeActivity({
+        id: "child-message",
+        createdAt: "2026-09-05T06:40:10.000Z",
+        kind: "tool.completed",
+        turnId: "turn-2",
+        payload: {
+          itemType: "collab_agent_tool_call",
+          status: "completed",
+          data: {
+            item: {
+              id: "message-call",
+              type: "subAgentActivity",
+              kind: "interacted",
+              agentThreadId: "agent-child",
+              agentPath: "/root/review",
+              tool: "sendInput",
+              status: "inProgress",
+              receiverThreadIds: ["agent-child"],
+              agentsStates: { "agent-child": { status: "running" } },
+            },
+          },
+        },
+      }),
+    ];
+    const settled = deriveSubagentActivityState({
+      activities,
+      latestTurnId: TurnId.make("turn-2"),
+      latestTurnSettled: true,
+    });
+
+    expect(settled.progress).toBeNull();
+    expect(settled.history).toMatchObject([
+      { item: { status: "completed", turnId: "turn-1" }, resultBody: "Review complete." },
+    ]);
+    expect(settled.resultEntries).toMatchObject([{ body: "Review complete." }]);
+    expect(settled.liveEntries).toEqual([]);
+
+    const resumed = deriveSubagentActivityState({
+      activities: [
+        ...activities,
+        makeActivity({
+          id: "child-turn-started",
+          createdAt: "2026-09-05T06:41:00.000Z",
+          kind: "subagent.metadata",
+          turnId: "turn-2",
+          payload: { agentThreadId: "agent-child", status: "running" },
+        }),
+      ],
+      latestTurnId: TurnId.make("turn-2"),
+      latestTurnSettled: true,
+    });
+
+    expect(resumed.progress).toMatchObject({
+      activeCount: 1,
+      items: [{ agentThreadId: "agent-child", status: "running" }],
+    });
+    expect(resumed.history).toHaveLength(1);
   });
 
   it("does not expose root conversation interactions as running subagents", () => {

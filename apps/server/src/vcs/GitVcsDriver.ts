@@ -110,6 +110,12 @@ export interface GitRemoteStatusDetails {
   aheadOfDefaultCount: number;
 }
 
+/** Start point for a new worktree: a local branch or a remote-tracking ref. */
+export interface GitWorktreeBaseRef {
+  readonly refName: string;
+  readonly isRemote: boolean;
+}
+
 export interface GitRemoteStatusOptions {
   readonly forceRefresh?: boolean;
 }
@@ -304,6 +310,17 @@ export interface GitVcsDriverShape {
   readonly createWorktree: (
     input: VcsCreateWorktreeInput,
   ) => Effect.Effect<VcsCreateWorktreeResult, GitCommandError>;
+  /**
+   * Where a worktree cut "from `branch`" should start. Fetches the branch's
+   * upstream (best effort, bounded) and answers with the upstream ref when it
+   * is strictly ahead of the local branch, so a thread started from `main`
+   * begins at the latest `main` rather than at a stale local copy. The local
+   * branch wins whenever it has commits of its own or has no upstream.
+   */
+  readonly resolveFreshWorktreeBase: (input: {
+    readonly cwd: string;
+    readonly branch: string;
+  }) => Effect.Effect<GitWorktreeBaseRef, GitCommandError>;
   readonly fetchPullRequestBranch: (
     input: GitFetchPullRequestBranchInput,
   ) => Effect.Effect<void, GitCommandError>;

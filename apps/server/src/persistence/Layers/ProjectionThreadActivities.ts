@@ -20,6 +20,7 @@ const ProjectionThreadActivityDbRowSchema = ProjectionThreadActivity.mapFields(
   Struct.assign({
     payload: Schema.fromJsonString(Schema.Unknown),
     sequence: Schema.NullOr(NonNegativeInt),
+    eventSequence: Schema.NullOr(NonNegativeInt),
   }),
 );
 
@@ -39,6 +40,7 @@ const makeProjectionThreadActivityRepository = Effect.gen(function* () {
       sql`
             INSERT INTO projection_thread_activities (
               activity_id,
+              event_sequence,
               thread_id,
               turn_id,
               tone,
@@ -50,6 +52,7 @@ const makeProjectionThreadActivityRepository = Effect.gen(function* () {
             )
             VALUES (
               ${row.activityId},
+          ${row.eventSequence ?? null},
               ${row.threadId},
               ${row.turnId},
               ${row.tone},
@@ -79,6 +82,7 @@ const makeProjectionThreadActivityRepository = Effect.gen(function* () {
       sql`
         SELECT
           activity_id AS "activityId",
+          event_sequence AS "eventSequence",
           thread_id AS "threadId",
           turn_id AS "turnId",
           tone,
@@ -90,7 +94,7 @@ const makeProjectionThreadActivityRepository = Effect.gen(function* () {
         FROM projection_thread_activities
         WHERE thread_id = ${threadId}
         ORDER BY
-          CASE WHEN sequence IS NULL THEN 0 ELSE 1 END ASC,
+          event_sequence ASC,
           sequence ASC,
           created_at ASC,
           activity_id ASC
@@ -127,6 +131,7 @@ const makeProjectionThreadActivityRepository = Effect.gen(function* () {
       Effect.map((rows) =>
         rows.map((row) => ({
           activityId: row.activityId,
+          ...(row.eventSequence !== null ? { eventSequence: row.eventSequence } : {}),
           threadId: row.threadId,
           turnId: row.turnId,
           tone: row.tone,

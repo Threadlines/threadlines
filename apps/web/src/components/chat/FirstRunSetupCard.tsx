@@ -31,9 +31,19 @@ import { useShallow } from "zustand/react/shallow";
 
 import { useCommandPaletteStore } from "../../commandPaletteStore";
 import { cn } from "../../lib/utils";
+import {
+  useSourceControlDiscovery,
+  useSourceControlSetup,
+} from "../../lib/sourceControlDiscoveryState";
+import { openExternalUrl } from "../../lib/externalLinks";
 import { selectWorkspaceProjectsAcrossEnvironments, useStore } from "../../store";
 import { ProjectFavicon } from "../ProjectFavicon";
 import { ProviderInstallAction } from "../settings/ProviderInstallAction";
+import {
+  CompactVersionAdvisory,
+  SourceControlToolProgress,
+} from "../settings/CompactVersionAdvisory";
+import { GitHubSignInAction, GitHubSignInStatus } from "../settings/GitHubSignInAction";
 import { useProviderConnectFlow } from "../settings/useProviderConnectFlow";
 import { riseDelay, ThreadlinesFigure } from "../ThreadlinesFigure";
 import { Button } from "../ui/button";
@@ -74,7 +84,7 @@ function SetupRow({
 }) {
   return (
     <li
-      className="flex items-center gap-3 border-b border-border py-3.5"
+      className="flex flex-wrap items-center gap-3 border-b border-border py-3.5"
       data-testid="first-run-setup-row"
       data-row-id={rowId}
       data-row-state={state}
@@ -92,7 +102,9 @@ function SetupRow({
         </span>
       ) : null}
       <span className="min-w-0 flex-1 text-[13px] text-muted-foreground">{description}</span>
-      <span className="flex min-w-0 shrink-0 items-center justify-end gap-2">{action}</span>
+      <span className="flex min-w-0 max-w-full shrink-0 flex-wrap items-center justify-end gap-2">
+        {action}
+      </span>
     </li>
   );
 }
@@ -144,7 +156,96 @@ function providerRowAction(row: FirstRunProviderRow): ReactNode {
   );
 }
 
+function SourceControlSetupRows({
+  environmentId,
+}: {
+  readonly environmentId: EnvironmentId | null;
+}) {
+  const { data } = useSourceControlDiscovery({ environmentId });
+  useSourceControlSetup({ environmentId });
+  const git = data?.versionControlSystems.find((item) => item.kind === "git");
+  const github = data?.sourceControlProviders.find((item) => item.kind === "github");
+  return (
+    <>
+      {git ? (
+        <SetupRow
+          rowId="git"
+          state={git.status}
+          dotClassName={git.status === "available" ? "bg-success" : "bg-warning"}
+          name="Git"
+          description="Tracks code changes and supports Git repositories."
+          action={
+            git.status === "available" ? (
+              <SourceControlToolProgress target="git" environmentId={environmentId} />
+            ) : git.versionAdvisory ? (
+              <CompactVersionAdvisory
+                advisory={git.versionAdvisory}
+                environmentId={environmentId}
+                label="Git"
+              />
+            ) : (
+              <Button
+                size="xs"
+                variant="outline"
+                onClick={() => openExternalUrl("https://git-scm.com/downloads")}
+              >
+                Install guide
+              </Button>
+            )
+          }
+        />
+      ) : null}
+      {github ? (
+        <SetupRow
+          rowId="github"
+          state={github.status === "available" ? github.auth.status : github.status}
+          dotClassName={
+            github.status === "available" && github.auth.status === "authenticated"
+              ? "bg-success"
+              : "bg-muted-foreground/55"
+          }
+          name="GitHub"
+          description="Optional: browse your GitHub repositories and pull requests."
+          action={
+            github.status !== "available" ? (
+              github.versionAdvisory ? (
+                <CompactVersionAdvisory
+                  advisory={github.versionAdvisory}
+                  environmentId={environmentId}
+                  label="GitHub CLI"
+                />
+              ) : (
+                <Button
+                  size="xs"
+                  variant="outline"
+                  onClick={() => openExternalUrl("https://cli.github.com/")}
+                >
+                  Install guide
+                </Button>
+              )
+            ) : (
+              <>
+                <SourceControlToolProgress target="github-cli" environmentId={environmentId} />
+                {github.auth.status === "authenticated" ? (
+                  <GitHubSignInStatus environmentId={environmentId} />
+                ) : null}
+                {github.auth.status !== "authenticated" ? (
+                  <GitHubSignInAction
+                    key={environmentId ?? "primary"}
+                    environmentId={environmentId}
+                  />
+                ) : null}
+              </>
+            )
+          }
+        />
+      ) : null}
+    </>
+  );
+}
+
 export interface FirstRunSetupCardProps {
+  readonly setupEnvironmentId?: EnvironmentId | null;
   /** Enabled and disabled instances alike; disabled ones are filtered out. */
   readonly providers: ReadonlyArray<FirstRunSetupProvider>;
   readonly projectName: string | null;
@@ -159,6 +260,7 @@ export interface FirstRunSetupCardProps {
 }
 
 export function FirstRunSetupCard({
+  setupEnvironmentId,
   providers,
   projectName,
   projectCwd,
@@ -225,7 +327,9 @@ export function FirstRunSetupCard({
       className="flex w-full max-w-140 flex-col items-center pb-10"
       data-testid="first-run-setup-card"
     >
-      <ThreadlinesFigure compact />
+      <div className="flex w-full justify-center px-14">
+        <ThreadlinesFigure compact />
+      </div>
       <h2
         className="no-thread-rise text-[19px] font-semibold tracking-tight text-foreground"
         style={riseDelay("0.16s")}
@@ -274,6 +378,7 @@ export function FirstRunSetupCard({
             }
           />
         ) : null}
+        <SourceControlSetupRows environmentId={setupEnvironmentId ?? null} />
         {projectRowLeads ? null : projectSetupRow}
       </ul>
 
@@ -365,6 +470,7 @@ export function useFirstRunSetupCard(input: UseFirstRunSetupCardInput): FirstRun
     }
     return (
       <FirstRunSetupCard
+        setupEnvironmentId={environmentId ?? null}
         providers={providers}
         projectName={project?.name ?? null}
         projectCwd={project?.cwd ?? null}

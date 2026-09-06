@@ -14,6 +14,7 @@ import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
 import { makeManagedServerProvider } from "./makeManagedServerProvider.ts";
+import type { ProviderMaintenanceCapabilities } from "./providerMaintenance.ts";
 
 const emptyCapabilities = createModelCapabilities({ optionDescriptors: [] });
 const fastModeCapabilities = createModelCapabilities({
@@ -116,6 +117,31 @@ const enrichedSnapshotSecond: ServerProvider = {
 };
 
 describe("makeManagedServerProvider", () => {
+  it.effect("exposes the installation manager discovered during refresh", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        let capabilities: ProviderMaintenanceCapabilities = maintenanceCapabilities;
+        const provider = yield* makeManagedServerProvider<TestSettings>({
+          get maintenanceCapabilities() {
+            return capabilities;
+          },
+          getSettings: Effect.succeed({ enabled: true }),
+          streamSettings: Stream.never,
+          haveSettingsChanged: () => false,
+          initialSnapshot: () => Effect.succeed(initialSnapshot),
+          checkProvider: Effect.sync(() => {
+            capabilities = {
+              ...maintenanceCapabilities,
+              update: { ...maintenanceCapabilities.update, command: "native update" },
+            };
+            return refreshedSnapshot;
+          }),
+        });
+        yield* provider.refresh;
+        assert.strictEqual(provider.maintenanceCapabilities.update?.command, "native update");
+      }),
+    ),
+  );
   it.effect(
     "runs the initial provider check in the background and streams the refreshed snapshot",
     () =>

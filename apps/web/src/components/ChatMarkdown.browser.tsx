@@ -2,6 +2,8 @@ import "../index.css";
 
 import { scopeThreadRef } from "@threadlines/client-runtime";
 import { EnvironmentId, type EnvironmentApi, ThreadId } from "@threadlines/contracts";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import type { ReactElement, ReactNode } from "react";
 import { page } from "vite-plus/test/browser";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { render } from "vitest-browser-react";
@@ -49,6 +51,7 @@ vi.mock("../localApi", () => ({
 }));
 
 import ChatMarkdown from "./ChatMarkdown";
+import { ThreadPullRequestLinkContext } from "./chat/ThreadPullRequestLinkContext";
 import {
   __resetEnvironmentApiOverridesForTests,
   __setEnvironmentApiOverrideForTests,
@@ -62,6 +65,32 @@ const CHAT_MARKDOWN_THREAD_REF = scopeThreadRef(
   CHAT_MARKDOWN_ENVIRONMENT_ID,
   CHAT_MARKDOWN_THREAD_ID,
 );
+// The pull request the thread route would hand a transcript, with its opener
+// mocked so a click can be observed.
+const THREAD_PULL_REQUEST_LINK = {
+  url: "https://github.com/Threadlines/threadlines/pull/223",
+  open: vi.fn(),
+};
+
+// The inline image loader reads files through react-query, so those renders
+// need the provider the app root supplies.
+function renderWithQueryClient(ui: ReactElement) {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false, gcTime: 0 } },
+  });
+  return render(ui, {
+    wrapper: ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+    ),
+  });
+}
+
+function installReadFileEnvironment(readFile: EnvironmentApi["projects"]["readFile"]) {
+  __setEnvironmentApiOverrideForTests(CHAT_MARKDOWN_ENVIRONMENT_ID, {
+    filesystem: { browse: filesystemBrowseMock },
+    projects: { readFile },
+  } as unknown as EnvironmentApi);
+}
 
 function installFilesystemBrowseEnvironment() {
   __setEnvironmentApiOverrideForTests(CHAT_MARKDOWN_ENVIRONMENT_ID, {
@@ -518,6 +547,54 @@ describe("ChatMarkdown", () => {
     }
   });
 
+  it("opens the thread's own pull request in its tab and leaves deeper links alone", async () => {
+    const { url: pullRequestUrl, open } = THREAD_PULL_REQUEST_LINK;
+    open.mockClear();
+    const screen = await render(
+      <ThreadPullRequestLinkContext.Provider value={THREAD_PULL_REQUEST_LINK}>
+        <ChatMarkdown
+          text={`Opened [the PR](${pullRequestUrl}); see [its files](${pullRequestUrl}/files).`}
+          cwd="/repo/project"
+          environmentId={CHAT_MARKDOWN_ENVIRONMENT_ID}
+          threadId={CHAT_MARKDOWN_THREAD_ID}
+        />
+      </ThreadPullRequestLinkContext.Provider>,
+    );
+
+    // A click the link leaves alone bubbles past React's root to the window,
+    // still unclaimed; catching it there keeps the test page from actually
+    // leaving. A click the link claims is stopped before it gets here.
+    let leftAlone = false;
+    const observeClick = (event: Event) => {
+      leftAlone = !event.defaultPrevented;
+      event.preventDefault();
+    };
+    window.addEventListener("click", observeClick);
+
+    try {
+      const click = (name: string) => {
+        const anchor = Array.from(document.querySelectorAll("a")).find(
+          (candidate) => candidate.textContent === name,
+        );
+        if (!anchor) {
+          throw new Error(`No link named ${name}`);
+        }
+        leftAlone = false;
+        return anchor.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+      };
+
+      expect(click("the PR")).toBe(false);
+      expect(open).toHaveBeenCalledTimes(1);
+
+      click("its files");
+      expect(leftAlone).toBe(true);
+      expect(open).toHaveBeenCalledTimes(1);
+    } finally {
+      window.removeEventListener("click", observeClick);
+      await screen.unmount();
+    }
+  });
+
   it("keeps normal web links unchanged", async () => {
     const screen = await render(
       <ChatMarkdown text="[OpenAI](https://openai.com/docs)" cwd="/repo/project" />,
@@ -632,6 +709,71 @@ describe("ChatMarkdown", () => {
         expect(pre?.style.backgroundColor).not.toBe("");
         expect(pre?.textContent).toContain("function identity(value) {}");
       });
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("shows a picture for an image path an agent wrote in prose", async () => {
+    const pixelBase64 =
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=";
+    const readFile = vi.fn(async (_input: { cwd: string; relativePath: string }) => ({
+      kind: "image" as const,
+      relativePath: "../Temp/shot.png",
+      mimeType: "image/png",
+      base64: pixelBase64,
+      size: 70,
+    }));
+    installReadFileEnvironment(readFile as unknown as EnvironmentApi["projects"]["readFile"]);
+
+    const screen = await renderWithQueryClient(
+      <ChatMarkdown
+        text="Saved the screenshot to /tmp/Temp/shot.png for review."
+        cwd="/tmp/project"
+        environmentId={CHAT_MARKDOWN_ENVIRONMENT_ID}
+      />,
+    );
+
+    try {
+      const thumbnail = page.getByRole("img", { name: "shot.png" });
+      await expect.element(thumbnail).toBeInTheDocument();
+      await expect
+        .element(thumbnail)
+        .toHaveAttribute("src", `data:image/png;base64,${pixelBase64}`);
+      // The chip stays under the picture and still opens the file.
+      await expect.element(page.getByRole("link", { name: "shot.png" })).toBeInTheDocument();
+      expect(readFile.mock.calls[0]?.[0]).toEqual({
+        cwd: "/tmp/project",
+        relativePath: "../Temp/shot.png",
+      });
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("shows only the chip when a referenced image is gone", async () => {
+    const readFile = vi.fn(async () => ({
+      kind: "missing" as const,
+      relativePath: "shots/gone.png",
+    }));
+    installReadFileEnvironment(readFile as unknown as EnvironmentApi["projects"]["readFile"]);
+
+    const screen = await renderWithQueryClient(
+      <ChatMarkdown
+        text="![before](shots/gone.png)"
+        cwd="/repo/project"
+        environmentId={CHAT_MARKDOWN_ENVIRONMENT_ID}
+      />,
+    );
+
+    try {
+      await expect.element(page.getByRole("link", { name: "before" })).toBeInTheDocument();
+      await vi.waitFor(() => {
+        expect(readFile).toHaveBeenCalled();
+      });
+      // Only the chip's file-type glyph; no thumbnail and no error box.
+      expect(document.querySelector('img[alt="before"]')).toBeNull();
+      expect(document.querySelector('button[aria-label="Preview before"]')).toBeNull();
     } finally {
       await screen.unmount();
     }

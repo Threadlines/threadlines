@@ -33,6 +33,9 @@ export interface PickedElementContext {
   width: number;
   height: number;
   url: string;
+  /** Ties elements attached in one act to the note they share, so they show
+   *  as one chip and serialize as one block. Absent on a lone pick. */
+  groupId?: string;
 }
 
 export interface PickedElementContextDraft extends PickedElementContext {
@@ -43,8 +46,12 @@ export interface PickedElementContextDraft extends PickedElementContext {
 
 export function pickedElementFromPreview(
   element: DesktopPreviewPickedElement,
+  groupId?: string,
 ): PickedElementContext {
   return {
+    // The key is present only when set: persisted drafts must not carry an
+    // explicit undefined through the schema.
+    ...(groupId === undefined ? {} : { groupId }),
     note: element.note,
     styleChanges: element.styleChanges.map((change) => ({ ...change })),
     tagName: element.tagName,
@@ -79,9 +86,48 @@ export function normalizePickedElementContextDraft(
   };
 }
 
-/** Two picks of the same element on the same page are one context. */
+/**
+ * Two picks are one context only when the second adds nothing: the same
+ * element on the same page, carrying the same note, grouping and style
+ * tweaks. That still collapses the miss-click and the re-check, but a
+ * re-pick that says something new is a new statement about the element,
+ * and silently dropping it would lose what the user said.
+ */
 export function pickedElementContextDedupKey(context: PickedElementContext): string {
-  return `${context.url}::${context.selector}`;
+  return [
+    context.url,
+    context.selector,
+    context.groupId ?? "",
+    context.note ?? "",
+    context.styleChanges.map(formatStyleChange).join(";"),
+  ].join("::");
+}
+
+/**
+ * Clusters contexts the way the user attached them: elements sharing a
+ * groupId travel together, everything else stands alone. Cluster order
+ * follows each cluster's first appearance, so nothing visibly reorders.
+ */
+export function groupPickedElementContexts<T extends PickedElementContext>(
+  contexts: ReadonlyArray<T>,
+): T[][] {
+  const clusters: T[][] = [];
+  const byGroup = new Map<string, T[]>();
+  for (const context of contexts) {
+    if (context.groupId === undefined) {
+      clusters.push([context]);
+      continue;
+    }
+    const cluster = byGroup.get(context.groupId);
+    if (cluster === undefined) {
+      const opened = [context];
+      byGroup.set(context.groupId, opened);
+      clusters.push(opened);
+    } else {
+      cluster.push(context);
+    }
+  }
+  return clusters;
 }
 
 /** Enough words to recognise a region by, without turning a chip into a paragraph. */
@@ -151,18 +197,57 @@ export function formatPickedElementContextBlock(context: PickedElementContext): 
   return `<selected_element>\n${lines.join("\n")}\n</selected_element>`;
 }
 
+/**
+ * One block for elements that share a note: the note said once over the
+ * list, rather than repeated on every element as if it were several
+ * requests. The elements share one page by construction, so the url is
+ * group-level too; "element:" opens each member.
+ */
+export function formatPickedElementGroupBlock(
+  contexts: ReadonlyArray<PickedElementContext>,
+): string {
+  const note = contexts.find((context) => context.note !== null)?.note ?? null;
+  const lines = [
+    ...(note === null ? [] : [`note: ${note}`]),
+    `url: ${contexts[0]?.url ?? ""}`,
+    ...contexts.flatMap((context) => [
+      `element: ${context.tagName}`,
+      ...(context.role === null ? [] : [`role: ${context.role}`]),
+      ...(context.name === null ? [] : [`name: ${context.name}`]),
+      `selector: ${context.selector}`,
+      ...(context.text === null || context.text === context.name ? [] : [`text: ${context.text}`]),
+      `size: ${context.width}x${context.height}`,
+      ...(context.styleChanges.length === 0
+        ? []
+        : [`proposed styles: ${context.styleChanges.map(formatStyleChange).join("; ")}`]),
+    ]),
+  ];
+  return `<selected_elements>\n${lines.join("\n")}\n</selected_elements>`;
+}
+
 export function appendPickedElementContextsToPrompt(
   prompt: string,
   contexts: ReadonlyArray<PickedElementContext>,
 ): string {
   const seen = new Set<string>();
-  return contexts.reduce((current, context) => {
+  const deduped = contexts.filter((context) => {
     const key = pickedElementContextDedupKey(context);
     if (seen.has(key)) {
-      return current;
+      return false;
     }
     seen.add(key);
-    return appendBlockToPrompt(current, formatPickedElementContextBlock(context));
+    return true;
+  });
+  return groupPickedElementContexts(deduped).reduce((current, cluster) => {
+    const [first] = cluster;
+    if (first === undefined) {
+      return current;
+    }
+    const block =
+      cluster.length === 1
+        ? formatPickedElementContextBlock(first)
+        : formatPickedElementGroupBlock(cluster);
+    return appendBlockToPrompt(current, block);
   }, prompt);
 }
 
@@ -170,6 +255,12 @@ export function appendPickedElementContextsToPrompt(
 // with the earlier block's fields overwritten by the later's.
 const TRAILING_SELECTED_ELEMENT_BLOCK_PATTERN =
   /\n*<selected_element>\n((?:(?!<\/selected_element>)[\s\S])*)\n<\/selected_element>\s*$/;
+
+// The two patterns cannot take each other's blocks: the singular pattern
+// needs "<selected_element>\n" exactly, which the plural tag's trailing "s"
+// breaks, and vice versa.
+const TRAILING_SELECTED_ELEMENTS_GROUP_BLOCK_PATTERN =
+  /\n*<selected_elements>\n((?:(?!<\/selected_elements>)[\s\S])*)\n<\/selected_elements>\s*$/;
 
 /** The keys formatPickedElementContextBlock writes, in the order it writes them. */
 const SELECTED_ELEMENT_BLOCK_KEYS = [
@@ -243,8 +334,82 @@ export function parsePickedElementContextBlock(block: string): PickedElementCont
   };
 }
 
+/** The keys formatPickedElementGroupBlock writes; "element" opens a member. */
+const SELECTED_ELEMENTS_GROUP_BLOCK_KEYS = [
+  "note",
+  "url",
+  "element",
+  "role",
+  "name",
+  "selector",
+  "text",
+  "size",
+  "proposed styles",
+] as const;
+
+type SelectedElementsGroupBlockKey = (typeof SELECTED_ELEMENTS_GROUP_BLOCK_KEYS)[number];
+
 /**
- * Peel trailing <selected_element> blocks off a sent message.
+ * The inverse of formatPickedElementGroupBlock. Fields before the first
+ * "element:" line belong to the group; each "element:" opens a member that
+ * owns the fields after it. The members come back sharing a fresh groupId,
+ * so they render as the one chip they were attached as.
+ */
+export function parsePickedElementGroupBlock(block: string): PickedElementContext[] | null {
+  const groupFields = new Map<SelectedElementsGroupBlockKey, string>();
+  const members: Array<Map<SelectedElementsGroupBlockKey, string>> = [];
+  let fields = groupFields;
+  let currentKey: SelectedElementsGroupBlockKey | null = null;
+  for (const line of block.split("\n")) {
+    const key = SELECTED_ELEMENTS_GROUP_BLOCK_KEYS.find((candidate) =>
+      line.startsWith(`${candidate}: `),
+    );
+    if (key === "element") {
+      fields = new Map();
+      members.push(fields);
+    }
+    if (key !== undefined) {
+      currentKey = key;
+      fields.set(key, line.slice(key.length + 2));
+      continue;
+    }
+    if (currentKey !== null) {
+      fields.set(currentKey, `${fields.get(currentKey) ?? ""}\n${line}`);
+    }
+  }
+  const groupId = crypto.randomUUID();
+  const note = groupFields.get("note") ?? null;
+  const url = groupFields.get("url") ?? "";
+  const contexts = members.flatMap((member): PickedElementContext[] => {
+    // The same rule as the single block: without a selector there is nothing
+    // to act on, and a chip would promise otherwise.
+    const selector = member.get("selector")?.trim() ?? "";
+    if (selector === "") {
+      return [];
+    }
+    const size = /^(\d+)x(\d+)$/.exec(member.get("size")?.trim() ?? "");
+    return [
+      {
+        groupId,
+        note,
+        styleChanges: parseStyleChanges(member.get("proposed styles") ?? ""),
+        tagName: member.get("element")?.trim() || "element",
+        role: member.get("role") ?? null,
+        name: member.get("name") ?? null,
+        selector,
+        text: member.get("text") ?? null,
+        width: size === null ? 0 : Number(size[1]),
+        height: size === null ? 0 : Number(size[2]),
+        url,
+      },
+    ];
+  });
+  return contexts.length === 0 ? null : contexts;
+}
+
+/**
+ * Peel trailing <selected_element> and <selected_elements> blocks off a sent
+ * message.
  *
  * Stops at the first block it cannot represent as a chip: hiding text the chip
  * would not carry loses what the user said, so anything unparseable stays
@@ -256,16 +421,26 @@ export function extractTrailingPickedElementContexts(
   const contexts: PickedElementContext[] = [];
   let remaining = prompt;
   for (;;) {
-    const match = TRAILING_SELECTED_ELEMENT_BLOCK_PATTERN.exec(remaining);
-    if (match === null) {
+    const single = TRAILING_SELECTED_ELEMENT_BLOCK_PATTERN.exec(remaining);
+    if (single !== null) {
+      const parsed = parsePickedElementContextBlock(single[1] ?? "");
+      if (parsed === null) {
+        break;
+      }
+      contexts.unshift(parsed);
+      remaining = remaining.slice(0, single.index);
+      continue;
+    }
+    const group = TRAILING_SELECTED_ELEMENTS_GROUP_BLOCK_PATTERN.exec(remaining);
+    if (group === null) {
       break;
     }
-    const parsed = parsePickedElementContextBlock(match[1] ?? "");
+    const parsed = parsePickedElementGroupBlock(group[1] ?? "");
     if (parsed === null) {
       break;
     }
-    contexts.unshift(parsed);
-    remaining = remaining.slice(0, match.index);
+    contexts.unshift(...parsed);
+    remaining = remaining.slice(0, group.index);
   }
   return {
     promptText: contexts.length === 0 ? prompt : remaining.replace(/\n+$/, ""),

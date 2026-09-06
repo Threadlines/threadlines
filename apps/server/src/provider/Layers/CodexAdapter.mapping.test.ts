@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import {
   EventId,
+  type OrchestrationSubagent,
   ProviderDriverKind,
   ProviderItemId,
   ThreadId,
@@ -16,6 +17,9 @@ import {
   mapToRuntimeEvents,
   readCodexSubagentParentThreadId,
 } from "./CodexAdapter.ts";
+import { projectRuntimeEventToActivities } from "../../orchestration/Layers/ProviderActivityProjection.ts";
+import { projectSubagentActivity } from "../../orchestration/subagentProjection.ts";
+import { readCollabChildTurnStatus, type CodexServerNotification } from "./CodexSessionRuntime.ts";
 
 describe("CodexAdapter item mapping", () => {
   it("maps structured automatic approval review outcomes", () => {
@@ -175,6 +179,100 @@ describe("CodexAdapter item mapping", () => {
         agentThreadId: "019f5cf1-e2fc-74f2-a6c0-16502ecc4826",
         agentPath: "/root/implement_pull_server",
       });
+    }
+  });
+
+  it("tracks actual child turns without restarting a finished agent on message delivery", () => {
+    const parentThreadId = ThreadId.make("thread-parent");
+    const parentTurnId = TurnId.make("turn-parent");
+    const eventBase = {
+      kind: "notification",
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-09-05T06:40:10.000Z",
+      threadId: parentThreadId,
+      turnId: parentTurnId,
+    } as const;
+    let roster: ReadonlyArray<OrchestrationSubagent> = [];
+    const foldEvents = (events: ReturnType<typeof mapToRuntimeEvents>) => {
+      for (const activity of events.flatMap((event) => projectRuntimeEventToActivities(event))) {
+        roster = projectSubagentActivity(roster, activity);
+      }
+    };
+    const nativeActivity = (kind: "started" | "interacted") =>
+      mapToRuntimeEvents(
+        {
+          ...eventBase,
+          id: EventId.make(`native-${kind}`),
+          method: "item/completed",
+          payload: {
+            completedAtMs: 1_788_590_410_000,
+            threadId: "provider-parent",
+            turnId: "provider-parent-turn",
+            item: {
+              id: `native-${kind}`,
+              type: "subAgentActivity",
+              kind,
+              agentThreadId: "provider-child",
+              agentPath: "/root/github_install_order",
+            },
+          },
+        },
+        parentThreadId,
+      );
+    const childLifecycle = (notification: CodexServerNotification) => {
+      const metadata = readCollabChildTurnStatus(notification);
+      assert.ok(metadata);
+      const events = mapToRuntimeEvents(
+        {
+          ...eventBase,
+          id: EventId.make(`child-${notification.method}`),
+          method: "subagent/status/changed",
+          providerThreadId: "provider-child",
+          payload: metadata,
+        },
+        parentThreadId,
+      );
+      assert.deepStrictEqual(
+        events.map((event) => event.type),
+        ["subagent.metadata.updated"],
+      );
+      foldEvents(events);
+      assert.equal(roster.length, 1);
+      assert.equal(roster[0]?.agentThreadId, "provider-child");
+    };
+
+    foldEvents(nativeActivity("started"));
+    childLifecycle({
+      method: "turn/started",
+      params: {
+        threadId: "provider-child",
+        turn: { id: "child-turn", status: "inProgress", items: [] },
+      },
+    });
+    assert.equal(roster[0]?.status, "running");
+
+    for (const status of ["completed", "failed", "interrupted"] as const) {
+      childLifecycle({
+        method: "turn/completed",
+        params: {
+          threadId: "provider-child",
+          turn: { id: "child-turn", status, items: [] },
+        },
+      });
+      assert.equal(roster[0]?.status, status);
+
+      foldEvents(nativeActivity("interacted"));
+      assert.equal(roster.length, 1);
+      assert.equal(roster[0]?.status, status);
+
+      childLifecycle({
+        method: "turn/started",
+        params: {
+          threadId: "provider-child",
+          turn: { id: "child-followup-turn", status: "inProgress", items: [] },
+        },
+      });
+      assert.equal(roster[0]?.status, "running");
     }
   });
 
@@ -405,7 +503,7 @@ describe("CodexAdapter item mapping", () => {
     assert.equal(readCodexSubagentParentThreadId(thread), "parent-thread");
     assert.deepStrictEqual(mapCodexSubagentTranscript(thread), {
       truncated: false,
-      agent: { id: "child-thread" },
+      agent: { id: "child-thread", directInput: "unknown" },
       offset: 0,
       totalEntries: 4,
       entries: [
@@ -628,28 +726,28 @@ describe("CodexAdapter item mapping", () => {
     assert.equal(readCodexSubagentParentThreadId(thread), "child-thread");
     assert.deepStrictEqual(mapCodexSubagentTranscript(thread, { limit: 1 }), {
       truncated: true,
-      agent: { id: "grandchild-thread" },
+      agent: { id: "grandchild-thread", directInput: "unknown" },
       offset: 0,
       totalEntries: 2,
       entries: [{ role: "assistant", text: "First", toolUses: [] }],
     });
     assert.deepStrictEqual(mapCodexSubagentTranscript(thread, { limit: 1, fromEnd: true }), {
       truncated: true,
-      agent: { id: "grandchild-thread" },
+      agent: { id: "grandchild-thread", directInput: "unknown" },
       offset: 1,
       totalEntries: 2,
       entries: [{ role: "assistant", text: "Second", toolUses: [] }],
     });
     assert.deepStrictEqual(mapCodexSubagentTranscript(thread, { limit: 1, offset: 1 }), {
       truncated: true,
-      agent: { id: "grandchild-thread" },
+      agent: { id: "grandchild-thread", directInput: "unknown" },
       offset: 1,
       totalEntries: 2,
       entries: [{ role: "assistant", text: "Second", toolUses: [] }],
     });
     assert.deepStrictEqual(mapCodexSubagentTranscript(thread, { limit: 0 }), {
       truncated: false,
-      agent: { id: "grandchild-thread" },
+      agent: { id: "grandchild-thread", directInput: "unknown" },
       offset: 0,
       totalEntries: 2,
       entries: [

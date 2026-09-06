@@ -5,7 +5,10 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { hideWindowsConsole } from "@threadlines/shared/childProcess";
-import { resolveKnownWindowsCliDirs } from "@threadlines/shared/shell";
+import {
+  buildWindowsEnvironmentCaptureCommand,
+  resolveKnownWindowsCliDirs,
+} from "@threadlines/shared/shell";
 
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 
@@ -120,19 +123,6 @@ const capturePosixEnvironmentCommand = (names: ReadonlyArray<string>) =>
     })
     .join("; ");
 
-const captureWindowsEnvironmentCommand = (names: ReadonlyArray<string>) =>
-  [
-    "$ErrorActionPreference = 'Stop'",
-    ...names.flatMap((name) => {
-      return [
-        `Write-Output '${startMarker(name)}'`,
-        `$value = [Environment]::GetEnvironmentVariable('${name}')`,
-        "if ($null -ne $value -and $value.Length -gt 0) { Write-Output $value }",
-        `Write-Output '${endMarker(name)}'`,
-      ];
-    }),
-  ].join("; ");
-
 const extractEnvironment = (output: string, names: ReadonlyArray<string>): EnvironmentPatch => {
   const environment: EnvironmentPatch = {};
 
@@ -219,7 +209,7 @@ const readWindowsEnvironment = Effect.fn("desktop.shellEnvironment.readWindowsEn
       ...(options.loadProfile ? ([] as const) : (["-NoProfile"] as const)),
       "-NonInteractive",
       "-Command",
-      captureWindowsEnvironmentCommand(names),
+      buildWindowsEnvironmentCaptureCommand(names),
     ];
 
     for (const command of WINDOWS_SHELL_CANDIDATES) {

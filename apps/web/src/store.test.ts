@@ -13,6 +13,8 @@ import {
   type OrchestrationEvent,
 } from "@threadlines/contracts";
 import { describe, expect, it } from "vite-plus/test";
+import { MAX_THREAD_ACTIVITIES } from "@threadlines/shared/threadLimits";
+import { deriveTimelineEntries } from "./session-logic";
 
 import {
   applyOrchestrationEvent,
@@ -28,12 +30,14 @@ import {
   selectThreadCheckout,
   setThreadBranch,
   selectThreadsAcrossEnvironments,
+  selectRunningSidebarThreadsAcrossEnvironments,
   type AppState,
   type EnvironmentState,
 } from "./store";
 import {
   DEFAULT_INTERACTION_MODE,
   DEFAULT_COMPOSER_RUNTIME_MODE,
+  type SidebarThreadSummary,
   type Thread,
   type ThreadSession,
 } from "./types";
@@ -526,6 +530,44 @@ describe("setThreadBranch", () => {
 });
 
 describe("incremental orchestration updates", () => {
+  it("preserves message order through clock rollback and streaming updates", () => {
+    const thread = makeThread();
+    const before = "2026-02-27T00:10:00.000Z";
+    const after = "2026-02-27T00:05:00.000Z";
+    let state = makeState(thread);
+    const messages = [
+      { id: "first", role: "user", text: "Start", createdAt: before, streaming: false },
+      { id: "reply", role: "assistant", text: "Working", createdAt: before, streaming: true },
+      { id: "follow-up", role: "user", text: "Continue", createdAt: after, streaming: false },
+      { id: "reply", role: "assistant", text: "Done", createdAt: after, streaming: false },
+    ] as const;
+    for (const [index, message] of messages.entries()) {
+      state = applyOrchestrationEvent(
+        state,
+        makeEvent(
+          "thread.message-sent",
+          {
+            threadId: thread.id,
+            messageId: MessageId.make(message.id),
+            role: message.role,
+            text: message.text,
+            createdAt: message.createdAt,
+            updatedAt: message.createdAt,
+            streaming: message.streaming,
+            turnId: null,
+          },
+          { sequence: index + 10 },
+        ),
+        localEnvironmentId,
+      );
+    }
+    const result = threadsOf(state)[0]!;
+    const timeline = deriveTimelineEntries(result.messages, [], []);
+    expect(timeline.map((entry) => entry.eventSequence)).toEqual([10, 11, 12]);
+    expect(result.messages.map((message) => message.id)).toEqual(["first", "reply", "follow-up"]);
+    expect(result.messages[1]).toMatchObject({ text: "Done", streaming: false, createdAt: before });
+  });
+
   it("projects realtime voice state into thread detail and shell state", () => {
     const state = makeState(makeThread());
 
@@ -565,6 +607,88 @@ describe("incremental orchestration updates", () => {
       localEnvironmentStateOf(next).sidebarThreadSummaryById[ThreadId.make("thread-1")]
         ?.effectiveCwd,
     ).toBe("/tmp/project/.worktrees/feature");
+  });
+
+  it("keeps an async question answerable after its activity leaves the recent log", () => {
+    const threadId = ThreadId.make("thread-1");
+    const requested = applyOrchestrationEvent(
+      makeState(makeThread()),
+      makeEvent("thread.activity-appended", {
+        threadId,
+        activity: {
+          id: EventId.make("question-requested"),
+          tone: "info",
+          kind: "user-input.requested",
+          summary: "Question",
+          payload: {
+            requestId: "async-question",
+            isBlocking: false,
+            questions: [
+              {
+                id: "choice",
+                header: "Choice",
+                question: "Which option?",
+                options: [{ label: "First", description: "Use the first" }],
+              },
+            ],
+          },
+          turnId: null,
+          createdAt: "2026-09-05T00:00:00.000Z",
+        },
+      }),
+      localEnvironmentId,
+    );
+    expect(localEnvironmentStateOf(requested).sidebarThreadSummaryById[threadId]).toMatchObject({
+      hasPendingUserInput: true,
+      hasBlockingUserInput: false,
+    });
+
+    const working = applyOrchestrationEvents(
+      requested,
+      Array.from({ length: MAX_THREAD_ACTIVITIES + 5 }, (_, index) =>
+        makeEvent("thread.activity-appended", {
+          threadId,
+          activity: {
+            id: EventId.make(`working-${index}`),
+            tone: "info",
+            kind: "runtime.note",
+            summary: "Still working",
+            payload: {},
+            turnId: null,
+            createdAt: "2026-09-05T00:00:01.000Z",
+          },
+        }),
+      ),
+      localEnvironmentId,
+    );
+    expect(threadsOf(working)[0]?.activities).toHaveLength(MAX_THREAD_ACTIVITIES + 1);
+    expect(threadsOf(working)[0]?.activities[0]?.id).toBe("question-requested");
+    expect(localEnvironmentStateOf(working).sidebarThreadSummaryById[threadId]).toMatchObject({
+      hasPendingUserInput: true,
+      hasBlockingUserInput: false,
+    });
+
+    const resolved = applyOrchestrationEvent(
+      working,
+      makeEvent("thread.activity-appended", {
+        threadId,
+        activity: {
+          id: EventId.make("question-resolved"),
+          tone: "info",
+          kind: "user-input.resolved",
+          summary: "Answered",
+          payload: { requestId: "async-question" },
+          turnId: null,
+          createdAt: "2026-09-05T00:00:02.000Z",
+        },
+      }),
+      localEnvironmentId,
+    );
+    expect(localEnvironmentStateOf(resolved).sidebarThreadSummaryById[threadId]).toMatchObject({
+      hasPendingUserInput: false,
+      hasBlockingUserInput: false,
+    });
+    expect(threadsOf(resolved)[0]?.activities).toHaveLength(MAX_THREAD_ACTIVITIES);
   });
 
   it("carries the server's per-thread diff stat from a shell upsert into the sidebar summary", () => {
@@ -1548,5 +1672,74 @@ describe("incremental orchestration updates", () => {
       state: "running",
     });
     expect(threadsOf(next)[0]?.latestTurn?.sourceProposedPlan).toBeUndefined();
+  });
+});
+
+describe("selectRunningSidebarThreadsAcrossEnvironments", () => {
+  function makeSidebarSummary(
+    overrides: Partial<SidebarThreadSummary> & Pick<SidebarThreadSummary, "id">,
+  ): SidebarThreadSummary {
+    return {
+      environmentId: localEnvironmentId,
+      projectId: ProjectId.make("project-1"),
+      title: "Thread",
+      interactionMode: DEFAULT_INTERACTION_MODE,
+      session: null,
+      createdAt: "2026-02-13T00:00:00.000Z",
+      archivedAt: null,
+      pinnedAt: null,
+      doneOverride: null,
+      lastSeenAt: null,
+      latestTurn: null,
+      branch: null,
+      worktreePath: null,
+      effectiveCwd: null,
+      latestUserMessageAt: null,
+      hasPendingApprovals: false,
+      hasPendingUserInput: false,
+      hasActionableProposedPlan: false,
+      cumulativeDiffStat: null,
+      ...overrides,
+    };
+  }
+
+  it("keeps a settled thread live while background provider tasks are still running", () => {
+    const settledSession: ThreadSession = {
+      provider: ProviderDriverKind.make("claude"),
+      status: "ready",
+      orchestrationStatus: "ready",
+      checkoutCwd: "/tmp/project",
+      createdAt: "2026-02-13T00:00:00.000Z",
+      updatedAt: "2026-02-13T00:05:00.000Z",
+    };
+    const settledTurn = {
+      turnId: TurnId.make("turn-1"),
+      state: "completed" as const,
+      assistantMessageId: null,
+      requestedAt: "2026-02-13T00:00:00.000Z",
+      startedAt: "2026-02-13T00:00:00.000Z",
+      completedAt: "2026-02-13T00:05:00.000Z",
+    };
+    const waiting = makeSidebarSummary({
+      id: ThreadId.make("thread-waiting"),
+      session: { ...settledSession, pendingBackgroundTaskCount: 2 },
+      latestTurn: settledTurn,
+    });
+    const finished = makeSidebarSummary({
+      id: ThreadId.make("thread-finished"),
+      session: { ...settledSession, pendingBackgroundTaskCount: 0 },
+      latestTurn: settledTurn,
+    });
+    const state = makeEmptyState({
+      threadIds: [waiting.id, finished.id],
+      sidebarThreadSummaryById: {
+        [waiting.id]: waiting,
+        [finished.id]: finished,
+      },
+    });
+
+    expect(selectRunningSidebarThreadsAcrossEnvironments(state).map((thread) => thread.id)).toEqual(
+      [waiting.id],
+    );
   });
 });

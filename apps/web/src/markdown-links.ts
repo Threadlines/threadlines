@@ -1,4 +1,5 @@
 import { formatWorkspaceRelativePath } from "./filePathDisplay";
+import { isImageFilePath } from "./lib/imageFilePaths";
 import { resolvePathLinkTarget, splitPathAndPosition } from "./terminal-links";
 
 const WINDOWS_DRIVE_PATH_PATTERN = /^[A-Za-z]:[\\/]/;
@@ -129,6 +130,51 @@ export function localhostUrlFromText(text: string): string | null {
     return null;
   }
   return scheme ? trimmed : `http://${trimmed}`;
+}
+
+/**
+ * A path shaped like nothing else, so it can be picked out of running prose.
+ *
+ * Only the four forms that cannot be mistaken for an English word: a Windows
+ * drive (`C:\`, `C:/`), a POSIX absolute (`/`), a home path (`~/`), and an
+ * explicit relative (`./`, `../`). A bare `screenshot.png` is deliberately not
+ * here — it is as likely to be the name of a file being discussed as a file to
+ * go and fetch, and guessing wrong means an unexpected picture in the middle of
+ * a sentence.
+ */
+const BARE_IMAGE_PATH_REGEX = /(?:[A-Za-z]:[\\/]|~[\\/]|\.{1,2}[\\/]|\/)[^\s"'`<>|*?]+/g;
+/** Characters that make a path run part of something longer. */
+const BARE_PATH_BOUNDARY_BLOCKERS = /[A-Za-z0-9._\-/\\:@]/;
+
+export interface BareImagePathMatch {
+  readonly start: number;
+  readonly end: number;
+  /** The path as written, so the transcript still reads the way it was sent. */
+  readonly text: string;
+}
+
+/**
+ * Every bare image path in a stretch of plain text, in order.
+ *
+ * Scoped to plain text on purpose: paths inside links and backticks are already
+ * recognised by the markdown pre-pass, and this only has to cover the case
+ * where an agent simply typed where it put the screenshot.
+ */
+export function findBareImagePaths(text: string): BareImagePathMatch[] {
+  const matches: BareImagePathMatch[] = [];
+  for (const match of text.matchAll(BARE_IMAGE_PATH_REGEX)) {
+    const start = match.index ?? 0;
+    const previous = start === 0 ? "" : text[start - 1]!;
+    if (previous !== "" && BARE_PATH_BOUNDARY_BLOCKERS.test(previous)) {
+      continue;
+    }
+    const raw = trimUrlTrailingPunctuation(match[0]);
+    if (raw.length === 0 || !isImageFilePath(raw) || !isLikelyPathCandidate(raw)) {
+      continue;
+    }
+    matches.push({ start, end: start + raw.length, text: raw });
+  }
+  return matches;
 }
 
 export interface MarkdownFileLinkMeta {

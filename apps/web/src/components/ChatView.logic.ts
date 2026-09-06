@@ -17,6 +17,8 @@ import {
   isProviderAuthErrorMessage,
   providerAuthReconnectCommand,
 } from "@threadlines/shared/providerAuth";
+import { isTemporaryWorktreeBranch } from "@threadlines/shared/git";
+import { normalizeFilesystemPathForComparison } from "@threadlines/shared/path";
 import { normalizeTerminalActivityCommand } from "@threadlines/shared/terminalCommandTracker";
 import type { DesktopCapturedScreenshot } from "@threadlines/contracts";
 import { getModelPickerProviderAvailability } from "./chat/modelPickerEmptyState";
@@ -2144,4 +2146,35 @@ export function resolveRemoteBehindCount(
     return null;
   }
   return status.behindCount > 0 ? status.behindCount : null;
+}
+
+/**
+ * The branch a thread should record after its own worktree moved. Only a
+ * thread that owns a worktree follows the checkout, and only while the status
+ * being read is that worktree's: a shared checkout's ref says nothing about
+ * any one thread in it, and a status read from elsewhere says nothing about
+ * this one. Temporary worktree branches are the server's to rename, so those
+ * are left alone on both sides. Null when there is nothing to record.
+ */
+export function resolveThreadBranchToRecord(input: {
+  readonly thread: Pick<Thread, "branch" | "worktreePath"> | undefined;
+  readonly cwd: string | null;
+  readonly checkoutRef: string | null;
+}): string | null {
+  const { thread, cwd, checkoutRef } = input;
+  if (!thread || thread.worktreePath === null || cwd === null || checkoutRef === null) {
+    return null;
+  }
+  if (!isPathWithin(cwd, thread.worktreePath)) return null;
+  if (checkoutRef === thread.branch) return null;
+  if (isTemporaryWorktreeBranch(checkoutRef)) return null;
+  if (thread.branch !== null && isTemporaryWorktreeBranch(thread.branch)) return null;
+  return checkoutRef;
+}
+
+/** Whether `cwd` is `root` or sits inside it, however the separators are spelled. */
+function isPathWithin(cwd: string, root: string): boolean {
+  const inner = normalizeFilesystemPathForComparison(cwd);
+  const outer = normalizeFilesystemPathForComparison(root);
+  return inner === outer || inner.startsWith(`${outer}\\`) || inner.startsWith(`${outer}/`);
 }

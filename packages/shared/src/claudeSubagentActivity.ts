@@ -73,6 +73,26 @@ export function isTerminalClaudeSubagentState(stateStatus: string): boolean {
   return stateStatus === "completed" || stateStatus === "errored" || stateStatus === "interrupted";
 }
 
+/** Whether a task-stream payload (`task.started`, `task.progress`,
+ *  `task.completed`) describes a spawned agent. Background commands share those
+ *  activity kinds and must never move, or create, an agent's row. */
+export function isClaudeAgentTaskPayload(payload: UnknownRecord | null | undefined): boolean {
+  const taskType = asTrimmedString(payload?.taskType)?.toLowerCase();
+  return (
+    asTrimmedString(payload?.subagentType) !== null ||
+    taskType === "local_agent" ||
+    taskType === "remote_agent"
+  );
+}
+
+/** The task id a replayed task-notification result carries. The adapter files a
+ *  background agent's final report as a completion of the call it knows the
+ *  agent by. After a provider restart that is the call that resumed the agent,
+ *  which owns no roster row, and the task id is what still names the agent. */
+export function claudeSubagentNotificationTaskId(data: UnknownRecord | null): string | null {
+  return asTrimmedString(asRecord(data?.taskNotification)?.taskId);
+}
+
 export function extractClaudeSubagentResultText(result: unknown): string | null {
   const direct = asTrimmedString(result);
   if (direct) {

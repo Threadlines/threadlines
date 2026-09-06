@@ -11,7 +11,6 @@ import {
   type RefObject,
 } from "react";
 import {
-  CheckIcon,
   ChevronDownIcon,
   ClockIcon,
   ExternalLinkIcon,
@@ -30,6 +29,7 @@ import { type ActivePlanState, type LatestProposedPlanState } from "../../sessio
 import { cn } from "~/lib/utils";
 import { Button } from "../ui/button";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
+import { SpineNode, SpineRow, spineAccentRowStyle, type SpineNodeKind } from "../ui/threadline";
 import { Tooltip, TooltipPopup, TooltipTrigger, TooltipWrapper } from "../ui/tooltip";
 import {
   backgroundRunCommandText,
@@ -338,35 +338,25 @@ function TriggerContent({ state }: { state: ActivityTriggerState }) {
   );
 }
 
-function taskStatusIcon(status: ActivePlanState["steps"][number]["status"]): ReactNode {
-  if (status === "completed") {
-    return (
-      <span className="flex size-4 shrink-0 items-center justify-center rounded-full bg-success/20 text-success">
-        <CheckIcon className="size-2.5" aria-hidden="true" />
-      </span>
-    );
-  }
+type PlanStepStatus = ActivePlanState["steps"][number]["status"];
 
-  if (status === "inProgress") {
-    return (
-      <span className="flex size-4 shrink-0 items-center justify-center rounded-full bg-primary/20 text-primary-readable">
-        <LoaderIcon className="size-2.5 animate-spin" aria-hidden="true" />
-      </span>
-    );
-  }
-
-  return (
-    <span className="flex size-4 shrink-0 items-center justify-center rounded-full border border-border/70 bg-muted/45">
-      <span className="size-1.5 rounded-full bg-muted-foreground/45" />
-    </span>
-  );
+function taskStepNodeKind(status: PlanStepStatus): SpineNodeKind {
+  if (status === "completed") return "done";
+  if (status === "inProgress") return "running";
+  return "pending";
 }
 
-function taskStatusLabel(status: ActivePlanState["steps"][number]["status"]): string {
+/** Spoken status for each step; the spine node carries it visually. */
+function taskStatusLabel(status: PlanStepStatus): string {
   if (status === "completed") return "Done";
   if (status === "inProgress") return "Now";
   return "Next";
 }
+
+// Step rows are 12px text on a 16px line over 4px of top padding, so the node
+// lands on the first line's centre.
+const TASK_STEP_NODE_OFFSET_PX = 12;
+const TASK_SPINE_STYLE = { ["--spine"]: "var(--border)" } as CSSProperties;
 
 function taskSummary(activePlan: ActivePlanState | null, activeProposedPlan: boolean): string {
   if (!activePlan) {
@@ -532,6 +522,7 @@ function TaskSection({
     shouldCollapsePlanSteps && !expanded && collapsedWindow
       ? planStepRows.slice(collapsedWindow.start, collapsedWindow.end)
       : planStepRows;
+  const liveStepIndex = visiblePlanStepRows.findIndex(({ step }) => step.status === "inProgress");
 
   return (
     <section className="min-w-0 space-y-1.5">
@@ -594,33 +585,37 @@ function TaskSection({
 
       {activePlan && activePlan.steps.length > 0 ? (
         <div className="space-y-1.5">
-          <div className={cn("space-y-1 pr-1", expanded && "max-h-56 overflow-y-auto")}>
-            {visiblePlanStepRows.map(({ key, step }) => (
-              <div
+          <div
+            className={cn("pr-1", expanded && "max-h-56 overflow-y-auto")}
+            style={TASK_SPINE_STYLE}
+          >
+            {visiblePlanStepRows.map(({ key, step }, index) => (
+              <SpineRow
                 key={key}
-                className={cn(
-                  "grid grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-2 rounded-md px-2 py-1.5 transition-colors",
-                  step.status === "inProgress" && "bg-primary/10",
-                  step.status === "completed" && "bg-success/10",
-                )}
+                node={<SpineNode kind={taskStepNodeKind(step.status)} />}
+                nodeOffset={TASK_STEP_NODE_OFFSET_PX}
+                connectTop={index > 0}
+                connectBottom={index < visiblePlanStepRows.length - 1}
+                style={
+                  liveStepIndex >= 0
+                    ? spineAccentRowStyle(Math.abs(index - liveStepIndex))
+                    : undefined
+                }
               >
-                <div className="mt-0.5">{taskStatusIcon(step.status)}</div>
                 <div
                   className={cn(
-                    "min-w-0 text-[12px] leading-snug",
+                    "min-w-0 py-1 text-[12px] leading-4 break-words",
                     step.status === "completed"
-                      ? "text-muted-foreground/65 line-through decoration-muted-foreground/30"
+                      ? "text-muted-foreground/70"
                       : step.status === "inProgress"
-                        ? "font-medium text-foreground/95"
+                        ? "font-medium text-foreground"
                         : "text-muted-foreground/85",
                   )}
                 >
+                  <span className="sr-only">{taskStatusLabel(step.status)}: </span>
                   {step.step}
                 </div>
-                <div className="pt-0.5 text-[10px] text-muted-foreground/65">
-                  {taskStatusLabel(step.status)}
-                </div>
-              </div>
+              </SpineRow>
             ))}
           </div>
           {shouldCollapsePlanSteps ? (

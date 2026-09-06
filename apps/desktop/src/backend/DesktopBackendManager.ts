@@ -23,6 +23,8 @@ import { hideWindowsConsole } from "@threadlines/shared/childProcess";
 import {
   DESKTOP_LAUNCH_ID_HEADER,
   DesktopBackendBootstrap,
+  MIGRATION_FINISHED_LOG_PREFIX,
+  MIGRATION_RUNNING_LOG_PREFIX,
   type DesktopBackendBootstrap as DesktopBackendBootstrapValue,
 } from "@threadlines/contracts";
 
@@ -104,15 +106,59 @@ class BackendProcessSpawnError extends Data.TaggedError("BackendProcessSpawnErro
 
 type BackendProcessError = BackendProcessBootstrapEncodeError | BackendProcessSpawnError;
 
+/**
+ * What to do when the readiness deadline passes: give up on this run, or drop
+ * the deadline and keep probing until the backend answers or the process dies.
+ */
+export type BackendReadinessTimeoutDecision = "give-up" | "keep-waiting";
+
 interface RunBackendProcessOptions extends DesktopBackendStartConfig {
   readonly readinessTimeout?: Duration.Duration;
   readonly onStarted?: (pid: number) => Effect.Effect<void>;
   readonly onReady?: () => Effect.Effect<void>;
-  readonly onReadinessFailure?: (error: BackendTimeoutError) => Effect.Effect<void>;
+  readonly onReadinessTimeout?: (
+    error: BackendTimeoutError,
+  ) => Effect.Effect<BackendReadinessTimeoutDecision>;
   readonly onOutput?: (
     streamName: BackendProcessOutputStream,
     chunk: Uint8Array,
   ) => Effect.Effect<void>;
+}
+
+export interface BackendMigrationInProgress {
+  readonly id: number;
+  readonly name: string;
+  readonly total: number;
+}
+
+const MIGRATION_RUNNING_PATTERN = new RegExp(
+  `${MIGRATION_RUNNING_LOG_PREFIX}(\\d+)_(\\S+) \\((?:\\d+) of (\\d+)\\)`,
+);
+
+/**
+ * Reads the backend's captured output for a migration that started and has not
+ * reported finishing. The SQLite driver is synchronous, so nothing else is
+ * logged while a long statement runs: the last unfinished "Running migration"
+ * line is the whole story. Lines carry the server's pretty-logger prefix, so
+ * the match is anywhere in the line.
+ */
+export function findMigrationInProgress(
+  outputTail: string,
+): Option.Option<BackendMigrationInProgress> {
+  const lines = DesktopStartupFailurePrompt.stripAnsiEscapes(outputTail).split(/\r?\n/);
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const match = lines[index]?.match(MIGRATION_RUNNING_PATTERN);
+    const id = match?.[1];
+    const name = match?.[2];
+    const total = match?.[3];
+    if (id === undefined || name === undefined || total === undefined) {
+      continue;
+    }
+    const finishedMarker = `${MIGRATION_FINISHED_LOG_PREFIX}${id}_${name}`;
+    const finished = lines.slice(index + 1).some((line) => line.includes(finishedMarker));
+    return finished ? Option.none() : Option.some({ id: Number(id), name, total: Number(total) });
+  }
+  return Option.none();
 }
 
 export interface DesktopBackendSnapshot {
@@ -135,8 +181,11 @@ export class DesktopBackendManager extends Context.Service<
   DesktopBackendManagerShape
 >()("threadlines/desktop/BackendManager") {}
 
-const { logWarning: logBackendManagerWarning, logError: logBackendManagerError } =
-  DesktopObservability.makeComponentLogger("desktop-backend-manager");
+const {
+  logInfo: logBackendManagerInfo,
+  logWarning: logBackendManagerWarning,
+  logError: logBackendManagerError,
+} = DesktopObservability.makeComponentLogger("desktop-backend-manager");
 
 interface ActiveBackendRun {
   readonly id: number;
@@ -328,13 +377,22 @@ const runBackendProcess = Effect.fn("runBackendProcess")(function* (
       yield* drainBackendOutput("stderr", handle.stderr, onOutput).pipe(Effect.forkScoped),
     );
   }
-  yield* waitForHttpReady(
-    options.httpBaseUrl,
-    options.readinessTimeout ?? DEFAULT_BACKEND_READINESS_TIMEOUT,
-    options.bootstrap.desktopLaunchId,
-  ).pipe(
-    Effect.tap(() => options.onReady?.() ?? Effect.void),
-    Effect.catch((error) => options.onReadinessFailure?.(error) ?? Effect.void),
+  const awaitReady = (timeout: Duration.Duration) =>
+    waitForHttpReady(options.httpBaseUrl, timeout, options.bootstrap.desktopLaunchId).pipe(
+      Effect.tap(() => options.onReady?.() ?? Effect.void),
+    );
+  yield* awaitReady(options.readinessTimeout ?? DEFAULT_BACKEND_READINESS_TIMEOUT).pipe(
+    Effect.catch((error) =>
+      (options.onReadinessTimeout?.(error) ?? Effect.succeed("give-up" as const)).pipe(
+        // "keep-waiting" drops the deadline rather than the probe: if the
+        // process dies meanwhile, the exit path below ends the run anyway.
+        Effect.flatMap((decision) =>
+          decision === "keep-waiting"
+            ? awaitReady(Duration.infinity).pipe(Effect.ignore)
+            : Effect.void,
+        ),
+      ),
+    ),
     Effect.forkScoped,
   );
 
@@ -500,6 +558,20 @@ const makeDesktopBackendManager = Effect.fn("makeDesktopBackendManager")(functio
         const stdoutDecoder = new TextDecoder();
         const stderrDecoder = new TextDecoder();
         const readinessTimeoutRef = yield* Ref.make(Option.none<BackendTimeoutError>());
+        // The "still migrating" dialog belongs to this run: readiness and the
+        // run ending both close it.
+        const migrationNoticeRef = yield* Ref.make(Option.none<Fiber.Fiber<void, never>>());
+        const closeMigrationNotice = Ref.getAndSet(
+          migrationNoticeRef,
+          Option.none<Fiber.Fiber<void, never>>(),
+        ).pipe(
+          Effect.flatMap(
+            Option.match({
+              onNone: () => Effect.void,
+              onSome: (fiber) => Fiber.interrupt(fiber).pipe(Effect.asVoid),
+            }),
+          ),
+        );
         const runIdOption = yield* Ref.modify(state, (latest) =>
           latest.intentGeneration === startIntentGeneration && latest.desiredRunning
             ? ([
@@ -528,6 +600,7 @@ const makeDesktopBackendManager = Effect.fn("makeDesktopBackendManager")(functio
           exitCode: Option.Option<number>,
           flushOutput: Effect.Effect<void>,
         ) {
+          yield* closeMigrationNotice;
           const restartAfterRecovery = yield* mutex.withPermits(1)(
             Effect.gen(function* () {
               const { isCurrentRun, nextState, pid } = yield* Ref.modify(
@@ -735,6 +808,7 @@ const makeDesktopBackendManager = Effect.fn("makeDesktopBackendManager")(functio
               return;
             }
 
+            yield* closeMigrationNotice;
             yield* Ref.set(desktopState.backendReady, true);
             yield* desktopWindow.handleBackendReady.pipe(
               Effect.catch((error) =>
@@ -754,24 +828,46 @@ const makeDesktopBackendManager = Effect.fn("makeDesktopBackendManager")(functio
               );
             }
           }),
-          onReadinessFailure: (error) =>
+          // Three ways the deadline can pass, and only one of them is a
+          // failure. Once a window exists, an unresponsive restart is visible
+          // and recoverable, so keep probing quietly. Before the first window
+          // a migration still running is healthy work that a kill would only
+          // make restart from zero, so keep probing and say so. Anything else
+          // is a process that is alive but unresponsive and would sit
+          // invisible forever: mark the run and kill it so finalizeRun
+          // surfaces the failure instead of scheduling a restart.
+          onReadinessTimeout: (error) =>
             Effect.gen(function* () {
               yield* logBackendManagerWarning("backend readiness check failed during bootstrap", {
                 error: error.message,
               });
               const latest = yield* Ref.get(state);
               if (latest.everReady) {
-                return;
+                return "keep-waiting" as const;
               }
-              // Before the first readiness there is no window: a process that
-              // is alive but unresponsive would sit invisible forever. Mark
-              // the run and kill it so finalizeRun surfaces the failure
-              // instead of scheduling a restart.
+              const migration = findMigrationInProgress(yield* Ref.get(outputTailRef));
+              if (Option.isSome(migration)) {
+                yield* logBackendManagerInfo("backend still migrating at readiness deadline", {
+                  migrationId: migration.value.id,
+                  migrationName: migration.value.name,
+                  totalMigrations: migration.value.total,
+                });
+                const noticeFiber = yield* Effect.forkIn(
+                  startupFailurePrompt.notifyMigrationInProgress({
+                    migrationId: migration.value.id,
+                    totalMigrations: migration.value.total,
+                  }),
+                  parentScope,
+                );
+                yield* Ref.set(migrationNoticeRef, Option.some(noticeFiber));
+                return "keep-waiting" as const;
+              }
               yield* Ref.set(readinessTimeoutRef, Option.some(error));
               const run = Option.getOrUndefined(latest.active);
               if (run?.id === runId) {
                 yield* Effect.forkIn(closeRun(run), parentScope);
               }
+              return "give-up" as const;
             }),
           onOutput: (streamName, chunk) =>
             backendOutputLog.writeOutputChunk(streamName, chunk).pipe(

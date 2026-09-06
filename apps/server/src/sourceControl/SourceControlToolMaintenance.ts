@@ -3,14 +3,18 @@ import {
   type SourceControlDiscoveryResult,
   type SourceControlToolUpdateInput,
   type SourceControlToolUpdateTarget,
+  type SourceControlToolMaintenanceState,
   type VcsError,
 } from "@threadlines/contracts";
-import { isCommandAvailable } from "@threadlines/shared/shell";
+import { isCommandAvailable, refreshWindowsPath } from "@threadlines/shared/shell";
 import * as Context from "effect/Context";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
+import * as Fiber from "effect/Fiber";
+import * as Semaphore from "effect/Semaphore";
 
 import { ServerConfig } from "../config.ts";
 import * as VcsProcess from "../vcs/VcsProcess.ts";
@@ -21,14 +25,16 @@ import {
   sourceControlToolPackageRecipe,
 } from "./SourceControlToolPackages.ts";
 import { parseGitHubCliVersion, parseGitVersion } from "./SourceControlToolVersionAdvisory.ts";
-import { isWinGetUpdateNotApplicable } from "./SourceControlWinGet.ts";
+import { isWinGetInstallCancelled, isWinGetUpdateNotApplicable } from "./SourceControlWinGet.ts";
 
 const UPDATE_TIMEOUT_MS = 5 * 60_000;
 const UPDATE_OUTPUT_MAX_BYTES = 10_000;
 
 export interface SourceControlToolMaintenanceShape {
+  readonly getState: Effect.Effect<ReadonlyArray<SourceControlToolMaintenanceState>>;
   readonly update: (
     input: SourceControlToolUpdateInput,
+    verify?: () => Effect.Effect<void, SourceControlToolUpdateError>,
   ) => Effect.Effect<SourceControlToolMaintenanceResult, SourceControlToolUpdateError>;
 }
 
@@ -65,6 +71,12 @@ function packageManagerFailureReason(input: {
   readonly manager: "homebrew" | "winget";
   readonly cause: VcsError;
 }): string {
+  if (input.manager === "winget" && input.cause._tag === "VcsProcessTimeoutError") {
+    return `${sourceControlToolLabel(input.target)} ${input.operation === "install" ? "installation" : "update"} timed out. Check for a Windows permission prompt, then rescan before retrying. The installer may still finish.`;
+  }
+  if (input.manager === "winget" && isWinGetInstallCancelled(input.cause)) {
+    return `${sourceControlToolLabel(input.target)} ${input.operation === "install" ? "installation" : "update"} was cancelled. Try again and approve the Windows permission prompt.`;
+  }
   if (
     input.manager === "winget" &&
     input.operation === "update" &&
@@ -151,11 +163,17 @@ export const make = Effect.fn("makeSourceControlToolMaintenance")(function* (
   const platform = options?.platform ?? process.platform;
   const commandAvailable =
     options?.commandAvailable ?? ((command: string) => isCommandAvailable(command, { platform }));
-  const updateActive = yield* Ref.make(false);
+  const scope = yield* Effect.scope;
+  const installerLock = yield* Semaphore.make(1);
+  const states = yield* Ref.make<
+    ReadonlyMap<SourceControlToolUpdateTarget, SourceControlToolMaintenanceState>
+  >(new Map());
+  const setState = (state: SourceControlToolMaintenanceState) =>
+    Ref.update(states, (current) => new Map(current).set(state.target, state));
 
   const update: SourceControlToolMaintenanceShape["update"] = Effect.fn(
     "SourceControlToolMaintenance.update",
-  )(function* (input) {
+  )(function* (input, verify) {
     const { target } = input;
     const operation = input.operation ?? "update";
     const useGitForWindowsUpdater =
@@ -189,60 +207,128 @@ export const make = Effect.fn("makeSourceControlToolMaintenance")(function* (
       );
     }
 
-    const acquired = yield* Ref.modify(updateActive, (active) => [!active, true] as const);
-    if (!acquired) {
-      return yield* updateError(target, "Another source control tool update is already running.");
-    }
-
-    return yield* Effect.gen(function* () {
-      let updaterStarted = false;
-      for (const step of recipe.steps) {
-        const output = yield* vcsProcess
-          .run({
-            operation: `source-control.tool.${operation}`,
-            command: step.command,
-            args: step.args,
-            cwd: config.cwd,
-            timeoutMs: UPDATE_TIMEOUT_MS,
-            maxOutputBytes: UPDATE_OUTPUT_MAX_BYTES,
-            appendTruncationMarker: true,
-            ...(useGitForWindowsUpdater ? { allowNonZeroExit: true } : {}),
-          })
-          .pipe(
-            Effect.mapError((cause) =>
-              useGitForWindowsUpdater
-                ? updateError(
-                    target,
-                    `The official Git for Windows updater failed: ${cause.message || "unknown process error"}`,
-                  )
-                : updateError(
-                    target,
-                    packageManagerFailureReason({
-                      target,
-                      operation,
-                      manager: packageManager!,
-                      cause,
-                    }),
-                  ),
-            ),
-          );
-
-        if (useGitForWindowsUpdater) {
-          if (output.exitCode !== 0 && output.exitCode !== 2) {
-            const detail = output.stderr.trim() || output.stdout.trim();
-            return yield* updateError(
+    return yield* Effect.uninterruptibleMask((restore) =>
+      Effect.gen(function* () {
+        const acquired = yield* Ref.modify(states, (current) => {
+          const existing = current.get(target);
+          if (existing && ["queued", "running", "checking"].includes(existing.status))
+            return [false, current] as const;
+          return [
+            true,
+            new Map(current).set(target, {
               target,
-              `The official Git for Windows updater exited with code ${output.exitCode}${detail ? `: ${detail}` : "."}`,
-            );
-          }
-          updaterStarted ||= output.exitCode === 2;
+              operation,
+              status: "queued",
+              message: "Waiting for another install to finish.",
+            } satisfies SourceControlToolMaintenanceState),
+          ] as const;
+        });
+        if (!acquired) {
+          return yield* updateError(
+            target,
+            "This tool already has an install or update in progress.",
+          );
         }
-      }
-      return { status: updaterStarted ? "started" : "completed" } as const;
-    }).pipe(Effect.ensuring(Ref.set(updateActive, false)));
+
+        const run = Effect.gen(function* () {
+          yield* setState({
+            target,
+            operation,
+            status: "running",
+            message: `${operation === "install" ? "Installing." : "Updating."}${platform === "win32" ? " Check for a Windows permission prompt." : ""}`,
+          });
+          let updaterStarted = false;
+          for (const step of recipe.steps) {
+            const output = yield* vcsProcess
+              .run({
+                operation: `source-control.tool.${operation}`,
+                command: step.command,
+                args: step.args,
+                cwd: config.cwd,
+                timeoutMs: UPDATE_TIMEOUT_MS,
+                maxOutputBytes: UPDATE_OUTPUT_MAX_BYTES,
+                appendTruncationMarker: true,
+                ...(useGitForWindowsUpdater ? { allowNonZeroExit: true } : {}),
+              })
+              .pipe(
+                Effect.mapError((cause) =>
+                  useGitForWindowsUpdater
+                    ? updateError(
+                        target,
+                        `The official Git for Windows updater failed: ${cause.message || "unknown process error"}`,
+                      )
+                    : updateError(
+                        target,
+                        packageManagerFailureReason({
+                          target,
+                          operation,
+                          manager: packageManager!,
+                          cause,
+                        }),
+                      ),
+                ),
+              );
+
+            if (useGitForWindowsUpdater) {
+              if (output.exitCode !== 0 && output.exitCode !== 2) {
+                const detail = output.stderr.trim() || output.stdout.trim();
+                return yield* updateError(
+                  target,
+                  `The official Git for Windows updater exited with code ${output.exitCode}${detail ? `: ${detail}` : "."}`,
+                );
+              }
+              updaterStarted ||= output.exitCode === 2;
+            }
+          }
+          yield* Effect.sync(() => refreshWindowsPath({ platform }));
+          yield* setState({
+            target,
+            operation,
+            status: "checking",
+            message: "Checking installation.",
+          });
+          if (verify) yield* verify();
+          yield* setState({
+            target,
+            operation,
+            status: updaterStarted ? "started" : "succeeded",
+            message: updaterStarted
+              ? "Finish the Windows installer, then rescan."
+              : operation === "install"
+                ? "Installed."
+                : "Update finished.",
+          });
+          return { status: updaterStarted ? "started" : "completed" } as const;
+        });
+        // The environment owns this job. Closing Settings or reconnecting only
+        // detaches the caller; it does not interrupt the installer.
+        return yield* installerLock
+          .withPermits(1)(run)
+          .pipe(
+            Effect.catchCause((cause) => {
+              const error = Cause.squash(cause);
+              return setState({
+                target,
+                operation,
+                status: "failed",
+                message:
+                  error instanceof SourceControlToolUpdateError
+                    ? error.reason
+                    : "The installer stopped unexpectedly. Try again.",
+              }).pipe(Effect.andThen(Effect.failCause(cause)));
+            }),
+            Effect.interruptible,
+            Effect.forkIn(scope),
+            Effect.flatMap((fiber) => restore(Fiber.join(fiber))),
+          );
+      }),
+    );
   });
 
-  return SourceControlToolMaintenance.of({ update });
+  return SourceControlToolMaintenance.of({
+    update,
+    getState: Ref.get(states).pipe(Effect.map((current) => [...current.values()])),
+  });
 });
 
 export const layer = Layer.effect(SourceControlToolMaintenance, make());

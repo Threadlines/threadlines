@@ -9,7 +9,7 @@ import {
   SKILL_CHIP_ICON_SVG,
 } from "../composerInlineChip";
 import { splitSearchTextHighlightSegments } from "../../lib/searchTextHighlight";
-import { findBareLocalhostUrls } from "../../markdown-links";
+import { findBareImagePaths, findBareLocalhostUrls } from "../../markdown-links";
 import { ChatWebLink } from "./ChatWebLink";
 
 const SKILL_TOKEN_REGEX = /(^|\s)\$([a-zA-Z][a-zA-Z0-9:_-]*)(?=\s|$)/g;
@@ -25,6 +25,14 @@ export interface InlineMarkdownContext {
   readonly skills: ReadonlyArray<InlineSkill>;
   readonly searchHighlightQuery?: string | undefined;
   readonly threadRef?: ScopedThreadRef | null;
+  /**
+   * Turns an image path written bare in prose into a preview. Supplied by the
+   * markdown document, which owns the file chip; absent on a streaming tail (a
+   * half-typed path would fetch) and while a search hit is highlighted.
+   */
+  readonly renderBareImagePath?:
+    | ((input: { readonly path: string; readonly key: string }) => ReactNode)
+    | undefined;
 }
 
 interface InlineToken {
@@ -73,6 +81,19 @@ function collectInlineTokens(text: string, context: InlineMarkdownContext): Inli
         </ChatWebLink>
       ),
     });
+  }
+
+  if (context.renderBareImagePath) {
+    for (const match of findBareImagePaths(text)) {
+      tokens.push({
+        start: match.start,
+        end: match.end,
+        node: context.renderBareImagePath({
+          path: match.text,
+          key: `image:${match.start}`,
+        }),
+      });
+    }
   }
 
   tokens.sort((left, right) => left.start - right.start);

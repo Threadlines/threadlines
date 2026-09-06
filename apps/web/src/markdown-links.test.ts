@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  findBareImagePaths,
   findBareLocalhostUrls,
   localhostUrlFromText,
   resolveMarkdownFileLinkMeta,
@@ -221,5 +222,31 @@ describe("localhostUrlFromText", () => {
     expect(localhostUrlFromText("run localhost:5173")).toBeNull();
     expect(localhostUrlFromText("localhost:5173 and more")).toBeNull();
     expect(localhostUrlFromText("example.com:5173")).toBeNull();
+  });
+});
+
+describe("findBareImagePaths", () => {
+  it("finds unambiguous image paths written in prose", () => {
+    const windowsPath = String.raw`C:\Users\me\AppData\Local\Temp\ui.png`;
+    expect(
+      findBareImagePaths(`Saved to ${windowsPath} and /tmp/before.jpg, plus ./docs/after.webp`).map(
+        (match) => match.text,
+      ),
+    ).toEqual([windowsPath, "/tmp/before.jpg", "./docs/after.webp"]);
+  });
+
+  it("drops sentence punctuation that is not part of the path", () => {
+    expect(findBareImagePaths("See ~/shots/home.png.").map((match) => match.text)).toEqual([
+      "~/shots/home.png",
+    ]);
+    expect(findBareImagePaths("(../out/diff.gif)").map((match) => match.text)).toEqual([
+      "../out/diff.gif",
+    ]);
+  });
+
+  it("ignores bare names, non-image paths, and paths inside longer runs", () => {
+    expect(findBareImagePaths("open screenshot.png now")).toEqual([]);
+    expect(findBareImagePaths("edit ./src/main.ts now")).toEqual([]);
+    expect(findBareImagePaths("https://example.com/logo.png")).toEqual([]);
   });
 });

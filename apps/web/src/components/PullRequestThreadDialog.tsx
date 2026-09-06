@@ -30,6 +30,12 @@ interface PullRequestThreadDialogProps {
   threadId: ThreadId;
   cwd: string | null;
   initialReference: string | null;
+  /**
+   * The way in the caller asked for, which this opens on: its button takes the
+   * emphasis and Enter in the field runs it. Both ways stay offered, because
+   * this is where someone changes their mind about which one they wanted.
+   */
+  defaultMode?: "local" | "worktree";
   onOpenChange: (open: boolean) => void;
   onPrepared: (input: { branch: string; worktreePath: string | null }) => Promise<void> | void;
 }
@@ -40,6 +46,7 @@ export function PullRequestThreadDialog({
   threadId,
   cwd,
   initialReference,
+  defaultMode,
   onOpenChange,
   onPrepared,
 }: PullRequestThreadDialogProps) {
@@ -225,7 +232,7 @@ export function PullRequestThreadDialog({
                 }
                 event.preventDefault();
                 if (!isResolving && !preparePullRequestThreadMutation.isPending) {
-                  void handleConfirm("local");
+                  void handleConfirm(defaultMode ?? "local");
                 }
               }}
             />
@@ -270,7 +277,7 @@ export function PullRequestThreadDialog({
           <Button
             type="button"
             size="sm"
-            variant="outline"
+            variant={defaultMode === "local" ? "default" : "outline"}
             onClick={() => {
               void handleConfirm("local");
             }}
@@ -286,6 +293,7 @@ export function PullRequestThreadDialog({
           <Button
             type="button"
             size="sm"
+            variant={defaultMode === "local" ? "outline" : "default"}
             onClick={() => {
               void handleConfirm("worktree");
             }}

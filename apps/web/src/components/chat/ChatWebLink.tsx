@@ -4,8 +4,10 @@ import { memo, useCallback, type MouseEvent as ReactMouseEvent, type ReactNode }
 import { isElectron } from "../../env";
 import { readLocalApi } from "../../localApi";
 import { isPlainPrimaryClick, openUrlInBrowserPanel } from "../browser/openInBrowserPanel";
+import { isLinkToPullRequest } from "../pull-requests/pullRequests.logic";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { copyTextWithToast } from "./copyTextWithToast";
+import { useThreadPullRequestLink } from "./ThreadPullRequestLinkContext";
 
 export interface ChatWebLinkProps {
   href: string;
@@ -20,11 +22,13 @@ export interface ChatWebLinkProps {
 /**
  * A web address in a transcript.
  *
- * The plain click goes to the thread's own browser, because a link an agent
- * wrote is about the work in front of you and leaving the app to read it costs
- * you the place you were. Everything else -- modifiers, middle click, and any
- * thread without a panel -- falls through to the anchor's own behaviour, so the
- * link is never less capable than an ordinary one.
+ * The plain click stays in the app, because a link an agent wrote is about the
+ * work in front of you and leaving to read it costs you the place you were. A
+ * link to the thread's own pull request opens the Pull request tab, the same
+ * place the sidebar badge goes; any other page goes to the thread's browser.
+ * Everything else -- modifiers, middle click, and any thread without a panel --
+ * falls through to the anchor's own behaviour, so the link is never less
+ * capable than an ordinary one.
  */
 export const ChatWebLink = memo(function ChatWebLink({
   href,
@@ -33,9 +37,22 @@ export const ChatWebLink = memo(function ChatWebLink({
   className,
   title,
 }: ChatWebLinkProps) {
+  const pullRequestLink = useThreadPullRequestLink();
+  const opensPullRequestTab =
+    pullRequestLink !== null && isLinkToPullRequest(href, pullRequestLink.url);
+
   const handleClick = useCallback(
     (event: ReactMouseEvent<HTMLAnchorElement>) => {
-      if (!isPlainPrimaryClick(event) || !isElectron || threadRef === null) {
+      if (!isPlainPrimaryClick(event)) {
+        return;
+      }
+      if (opensPullRequestTab) {
+        event.preventDefault();
+        event.stopPropagation();
+        pullRequestLink?.open();
+        return;
+      }
+      if (!isElectron || threadRef === null) {
         return;
       }
       if (!openUrlInBrowserPanel(threadRef, href)) {
@@ -44,7 +61,7 @@ export const ChatWebLink = memo(function ChatWebLink({
       event.preventDefault();
       event.stopPropagation();
     },
-    [href, threadRef],
+    [href, opensPullRequestTab, pullRequestLink, threadRef],
   );
 
   const handleContextMenu = useCallback(
@@ -55,14 +72,23 @@ export const ChatWebLink = memo(function ChatWebLink({
       event.preventDefault();
       event.stopPropagation();
 
+      // The browser-panel entry only appears where the plain click no longer
+      // goes there, so every destination stays one right-click away.
       const clicked = await api.contextMenu.show(
         [
+          ...(opensPullRequestTab && threadRef !== null
+            ? [{ id: "open-browser-panel", label: "Open in browser panel" } as const]
+            : []),
           { id: "open-external", label: "Open in external browser" },
           { id: "copy-link", label: "Copy link address" },
         ] as const,
         { x: event.clientX, y: event.clientY },
       );
 
+      if (clicked === "open-browser-panel" && threadRef !== null) {
+        openUrlInBrowserPanel(threadRef, href);
+        return;
+      }
       if (clicked === "open-external") {
         void api.shell.openExternal(href).catch((error: unknown) => {
           toastManager.add(
@@ -79,7 +105,7 @@ export const ChatWebLink = memo(function ChatWebLink({
         copyTextWithToast(href, "Link address");
       }
     },
-    [href],
+    [href, opensPullRequestTab, threadRef],
   );
 
   return (

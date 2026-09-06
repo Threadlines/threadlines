@@ -120,7 +120,7 @@ export class PreviewAutomationNoHostError extends Schema.TaggedError<PreviewAuto
   { threadId: ThreadId, operation: PreviewAutomationOperationSchema },
 ) {
   override get message(): string {
-    return `No browser preview is open for this thread, so ${this.operation} has nothing to act on. Ask the user to open the browser panel.`;
+    return `No Threadlines desktop window is showing this thread, so ${this.operation} has nothing to act on. The browser panel opens itself once the user views this thread in the desktop app; ask them to do that rather than using another browser.`;
   }
 }
 

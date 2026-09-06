@@ -374,3 +374,42 @@ it.effect("turns latest-release fetch failures into a null version", () => {
     assert.strictEqual(requestCount, 1);
   }).pipe(Effect.provide(httpLayer));
 });
+
+it.effect("keys update notifications on the latest release, security floor or not", () =>
+  Effect.gen(function* () {
+    const item = (version: string): SourceControlProviderDiscoveryItem => ({
+      kind: "github",
+      label: "GitHub",
+      executable: "gh",
+      status: "available",
+      version: Option.some(`gh version ${version}`),
+      installHint: "Install GitHub CLI.",
+      detail: Option.none(),
+      auth: {
+        status: "authenticated",
+        account: Option.some("octocat"),
+        host: Option.some("github.com"),
+        detail: Option.none(),
+      },
+    });
+    const enrich = (version: string) =>
+      withSourceControlToolVersionAdvisory({
+        platform: "darwin",
+        packageManager: "homebrew",
+        canRunUpdate: true,
+        latestVersionResolver: () => Effect.succeed("2.98.0"),
+        item: item(version),
+      });
+
+    const behindLatest = yield* enrich("2.97.0");
+    assert.strictEqual(behindLatest.versionAdvisory?.status, "behind_latest");
+    assert.strictEqual(behindLatest.versionAdvisory?.notificationKey, "github-cli:2.98.0");
+
+    const belowSecurityFloor = yield* enrich("2.92.0");
+    assert.strictEqual(belowSecurityFloor.versionAdvisory?.status, "recommended_update");
+    assert.strictEqual(belowSecurityFloor.versionAdvisory?.notificationKey, "github-cli:2.98.0");
+
+    const current = yield* enrich("2.98.0");
+    assert.strictEqual(current.versionAdvisory?.notificationKey, null);
+  }),
+);

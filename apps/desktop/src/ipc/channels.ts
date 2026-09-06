@@ -26,6 +26,7 @@ export const PREVIEW_SET_VIEWPORT_CHANNEL = "desktop:preview-set-viewport";
 export const PREVIEW_SET_NAVIGATION_POLICY_CHANNEL = "desktop:preview-set-navigation-policy";
 export const PREVIEW_NAVIGATION_BLOCKED_CHANNEL = "desktop:preview-navigation-blocked";
 export const PREVIEW_USER_CONTROL_CHANNEL = "desktop:preview-user-control";
+export const PREVIEW_BROWSER_COMMAND_CHANNEL = "desktop:preview-browser-command";
 export const PREVIEW_CLEAR_BROWSING_DATA_CHANNEL = "desktop:preview-clear-browsing-data";
 export const PREVIEW_CLEAR_CACHE_CHANNEL = "desktop:preview-clear-cache";
 export const SET_THEME_CHANNEL = "desktop:set-theme";

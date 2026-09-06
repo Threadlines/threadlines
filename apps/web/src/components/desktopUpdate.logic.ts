@@ -120,6 +120,11 @@ export function compactVersionLabel(version: string): string {
   return releaseTriple.startsWith("v") ? releaseTriple : `v${releaseTriple}`;
 }
 
+/** "1.2.3-nightly.4" → "v1.2.3-nightly.4": the whole version, for surfaces with room. */
+export function fullVersionLabel(version: string): string {
+  return version.startsWith("v") ? version : `v${version}`;
+}
+
 const NIGHTLY_VERSION_PATTERN = /^v?(\d+\.\d+\.\d+)-nightly\.(\d{8})\.(\d+)$/;
 
 /**
@@ -167,11 +172,7 @@ function getSidebarDesktopUpdateTagTooltip(input: {
   /** Full target version string: the tooltip is where ambiguity goes to die. */
   readonly targetVersion: string | null;
 }): string {
-  const fullLabel = input.targetVersion
-    ? input.targetVersion.startsWith("v")
-      ? input.targetVersion
-      : `v${input.targetVersion}`
-    : null;
+  const fullLabel = input.targetVersion ? fullVersionLabel(input.targetVersion) : null;
   if (input.isDownloading) {
     const subject = fullLabel ? `Downloading ${fullLabel}` : "Downloading";
     return input.downloadPercent !== null

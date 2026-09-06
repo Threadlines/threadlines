@@ -8,7 +8,13 @@
  * ensuring the database schema is always up-to-date before the application starts.
  */
 
+import {
+  MIGRATION_FINISHED_LOG_PREFIX,
+  MIGRATION_RUNNING_LOG_PREFIX,
+} from "@threadlines/contracts";
 import * as Migrator from "effect/unstable/sql/Migrator";
+import * as Duration from "effect/Duration";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as Layer from "effect/Layer";
 import * as Effect from "effect/Effect";
 
@@ -62,6 +68,8 @@ import Migration0046 from "./Migrations/046_ProjectionTurnsCheckpointCompletedAt
 import Migration0047 from "./Migrations/047_ProjectionThreadSubagents.ts";
 import Migration0048 from "./Migrations/048_BackfillThreadSubagents.ts";
 import Migration0049 from "./Migrations/049_ProjectionThreadSubagentsBackgrounded.ts";
+import Migration0050 from "./Migrations/050_ProjectionTranscriptEventSequence.ts";
+import Migration0051 from "./Migrations/051_ProjectionThreadsBlockingUserInput.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -123,14 +131,44 @@ export const migrationEntries = [
   [47, "ProjectionThreadSubagents", Migration0047],
   [48, "BackfillThreadSubagents", Migration0048],
   [49, "ProjectionThreadSubagentsBackgrounded", Migration0049],
+  [50, "ProjectionTranscriptEventSequence", Migration0050],
+  [51, "ProjectionThreadsBlockingUserInput", Migration0051],
 ] as const;
+
+/** Highest id in the full registry, so the "n of total" count is the real total. */
+const latestMigrationId = migrationEntries.reduce((latest, [id]) => Math.max(latest, id), 0);
+
+/**
+ * Wraps one migration so a slow one is attributable in the logs. The SQLite
+ * driver is synchronous, so a long statement freezes the whole backend: without
+ * these lines a busy process looks exactly like a hung one, both in support
+ * logs and to the desktop's readiness watchdog, which reads them back out of
+ * the backend's stdout.
+ */
+const withMigrationLogging = (
+  id: number,
+  name: string,
+  migration: Effect.Effect<void, unknown, SqlClient.SqlClient>,
+) =>
+  Effect.gen(function* () {
+    yield* Effect.log(
+      `${MIGRATION_RUNNING_LOG_PREFIX}${id}_${name} (${id} of ${latestMigrationId})`,
+    );
+    const [duration] = yield* Effect.timed(migration);
+    yield* Effect.log(
+      `${MIGRATION_FINISHED_LOG_PREFIX}${id}_${name} in ${Duration.format(duration)}`,
+    );
+  });
 
 export const makeMigrationLoader = (throughId?: number) =>
   Migrator.fromRecord(
     Object.fromEntries(
       migrationEntries
         .filter(([id]) => throughId === undefined || id <= throughId)
-        .map(([id, name, migration]) => [`${id}_${name}`, migration]),
+        .map(([id, name, migration]) => [
+          `${id}_${name}`,
+          withMigrationLogging(id, name, migration),
+        ]),
     ),
   );
 

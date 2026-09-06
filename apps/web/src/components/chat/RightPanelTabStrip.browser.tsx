@@ -1,6 +1,7 @@
 import "../../index.css";
 
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
+import { page } from "vite-plus/test/browser";
 import { render } from "vitest-browser-react";
 
 import { RightPanelTabStrip } from "./RightPanelTabStrip";
@@ -158,6 +159,44 @@ describe("RightPanelTabStrip drag reorder", () => {
       // Give the settle timer window a beat to prove no reorder sneaks in.
       await new Promise((resolve) => setTimeout(resolve, 200));
       expect(onReorderTab).not.toHaveBeenCalled();
+    } finally {
+      await mounted.unmount();
+    }
+  });
+});
+
+describe("RightPanelTabStrip + menu", () => {
+  afterEach(() => {
+    document.body.innerHTML = "";
+  });
+
+  it("draws a live tab's row with the live node instead of its icon", async () => {
+    const mounted = await render(
+      <div style={{ width: 480 }}>
+        <RightPanelTabStrip
+          openTabs={["sourceControl"]}
+          availableTabs={["sourceControl", "diff", "pullRequest", "agents"]}
+          activeTab="sourceControl"
+          liveTabs={["agents"]}
+          onSelectTab={vi.fn()}
+          onCloseTab={vi.fn()}
+          onReorderTab={vi.fn()}
+        />
+      </div>,
+    );
+
+    try {
+      await page.getByRole("button", { name: "Open panel" }).click();
+
+      const agents = page.getByRole("menuitem", { name: "Agents" });
+      await expect.element(agents).toHaveAttribute("data-right-panel-menu-tab-live", "true");
+      expect(agents.element().querySelector(".thread-halo")).not.toBeNull();
+      expect(agents.element().querySelector("svg")).toBeNull();
+
+      const diff = page.getByRole("menuitem", { name: "Diff" });
+      await expect.element(diff).not.toHaveAttribute("data-right-panel-menu-tab-live");
+      expect(diff.element().querySelector(".thread-halo")).toBeNull();
+      expect(diff.element().querySelector("svg")).not.toBeNull();
     } finally {
       await mounted.unmount();
     }

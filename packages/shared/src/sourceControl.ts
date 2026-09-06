@@ -1,4 +1,65 @@
-import type { SourceControlProviderInfo, SourceControlProviderKind } from "@threadlines/contracts";
+import type {
+  RepositoryIdentity,
+  SourceControlProviderInfo,
+  SourceControlProviderKind,
+} from "@threadlines/contracts";
+
+/** The hosts Threadlines reads change requests from. */
+const CHANGE_REQUEST_PROVIDER_KINDS = [
+  "github",
+  "gitlab",
+  "bitbucket",
+  "azure-devops",
+] as const satisfies ReadonlyArray<SourceControlProviderKind>;
+
+type ChangeRequestProviderKind = (typeof CHANGE_REQUEST_PROVIDER_KINDS)[number];
+
+/** A recorded provider, but only as one of the hosts with change requests. */
+export function toChangeRequestProviderKind(
+  value: string | undefined,
+): ChangeRequestProviderKind | null {
+  const kinds: ReadonlyArray<string> = CHANGE_REQUEST_PROVIDER_KINDS;
+  return kinds.includes(value ?? "") ? (value as ChangeRequestProviderKind) : null;
+}
+
+/**
+ * How a host names the repository a change request lives in, which is the name
+ * the server asks with and the client compares rows against.
+ *
+ * `displayName` is the whole path below the host, which is what a nested GitLab
+ * group needs; `owner/name` is the two-segment fallback for an identity
+ * recorded before that field existed. Azure DevOps is the exception:
+ * `az repos pr` takes a repository's own name and reads the organisation and
+ * project from the checkout it detects, so the recorded `org/project/_git/repo`
+ * path is reduced to its last segment.
+ *
+ * Null for an identity that names no repository, and for a host with no change
+ * requests to read.
+ */
+export function changeRequestRepositoryName(
+  identity: RepositoryIdentity | null | undefined,
+): string | null {
+  const provider = toChangeRequestProviderKind(identity?.provider);
+  if (!identity || provider === null) {
+    return null;
+  }
+
+  const displayName = identity.displayName?.trim() ?? "";
+  const owner = identity.owner?.trim() ?? "";
+  const name = identity.name?.trim() ?? "";
+
+  if (provider === "azure-devops") {
+    if (name.length > 0) {
+      return name;
+    }
+    const segments = displayName.split("/").filter((segment) => segment !== "_git");
+    return segments.at(-1)?.trim() || null;
+  }
+  if (displayName.includes("/")) {
+    return displayName;
+  }
+  return owner.length > 0 && name.length > 0 ? `${owner}/${name}` : null;
+}
 
 export interface ChangeRequestPresentation {
   readonly icon: "github" | "gitlab" | "azure-devops" | "bitbucket" | "change-request";

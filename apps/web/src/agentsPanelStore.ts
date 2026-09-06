@@ -30,10 +30,6 @@ export interface AgentsPanelSource {
    *  the live items so the panel and the conversation's receipts resolve the
    *  same set of agents. */
   history: ReadonlyArray<ThreadSubagentHistoryEntry>;
-  /** Child-owned work remains in this durable log even though the main
-   *  conversation suppresses it. The inspector uses it to fill provider
-   *  transcript gaps. */
-  workEntries: ReadonlyArray<WorkLogEntry>;
   /** Provider driver label, e.g. `codex`; drives the trunk hue and run chips. */
   providerLabel: string | null;
   /** True from the moment a turn is dispatched until it settles. Lets the panel
@@ -49,8 +45,19 @@ export interface AgentsPanelSource {
   onStopBackgroundRun: (run: ThreadBackgroundRunItem) => void;
 }
 
+export interface AgentsPanelActivitySource {
+  environmentId: EnvironmentId;
+  threadId: ThreadId;
+  /** Child-owned work remains in this durable log even though the main
+   *  conversation suppresses it. Only a drilled-in inspector subscribes. */
+  workEntries: ReadonlyArray<WorkLogEntry>;
+}
+
+const EMPTY_WORK_ENTRIES: ReadonlyArray<WorkLogEntry> = [];
+
 interface AgentsPanelStoreState {
   source: AgentsPanelSource | null;
+  activitySource: AgentsPanelActivitySource | null;
   /**
    * The agent whose transcript the panel is drilled into. It lives here rather
    * than inside the panel because the drill-in is reachable from outside it:
@@ -59,11 +66,13 @@ interface AgentsPanelStoreState {
    */
   selectedAgentId: string | null;
   publishSource: (source: AgentsPanelSource | null) => void;
+  publishActivitySource: (source: AgentsPanelActivitySource | null) => void;
   selectAgent: (agentId: string | null) => void;
 }
 
 export const useAgentsPanelStore = create<AgentsPanelStoreState>((set) => ({
   source: null,
+  activitySource: null,
   selectedAgentId: null,
   publishSource: (source) => {
     set((state) => ({
@@ -72,6 +81,9 @@ export const useAgentsPanelStore = create<AgentsPanelStoreState>((set) => ({
       // thread drops it rather than pointing the panel at a stale agent.
       selectedAgentId: state.source?.threadId === source?.threadId ? state.selectedAgentId : null,
     }));
+  },
+  publishActivitySource: (activitySource) => {
+    set({ activitySource });
   },
   selectAgent: (agentId) => {
     set({ selectedAgentId: agentId });
@@ -86,8 +98,30 @@ export function useSelectedAgentId(): string | null {
   return useAgentsPanelStore((state) => state.selectedAgentId);
 }
 
+/** Detailed child activity changes much more often than the tree. Keep it out
+ * of the route subscription and wake only the inspector that can render it. */
+export function useAgentsPanelWorkEntries(input: {
+  environmentId: EnvironmentId;
+  threadId: ThreadId;
+  enabled?: boolean;
+}): ReadonlyArray<WorkLogEntry> {
+  return useAgentsPanelStore((state) => {
+    if (input.enabled === false) {
+      return EMPTY_WORK_ENTRIES;
+    }
+    const source = state.activitySource;
+    return source?.environmentId === input.environmentId && source.threadId === input.threadId
+      ? source.workEntries
+      : EMPTY_WORK_ENTRIES;
+  });
+}
+
 export function publishAgentsPanelSource(source: AgentsPanelSource | null): void {
   useAgentsPanelStore.getState().publishSource(source);
+}
+
+export function publishAgentsPanelActivitySource(source: AgentsPanelActivitySource | null): void {
+  useAgentsPanelStore.getState().publishActivitySource(source);
 }
 
 export function selectAgentsPanelAgent(agentId: string | null): void {
@@ -95,5 +129,5 @@ export function selectAgentsPanelAgent(agentId: string | null): void {
 }
 
 export function resetAgentsPanelSourceForTests(): void {
-  useAgentsPanelStore.setState({ source: null, selectedAgentId: null });
+  useAgentsPanelStore.setState({ source: null, activitySource: null, selectedAgentId: null });
 }

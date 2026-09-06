@@ -54,6 +54,13 @@ export interface RightPanelLauncherTurnDiffSummary {
   readonly files: ReadonlyArray<unknown>;
 }
 
+/** Just enough of the thread's resolved pull request to name it on the row. */
+export interface RightPanelLauncherPullRequest {
+  readonly number: number;
+  readonly state: "open" | "merged" | "closed";
+  readonly isDraft: boolean;
+}
+
 /**
  * How many of the thread's turns actually changed a file. This is what the diff
  * panel's mode picker lists beneath "Uncommitted changes" and "All chat
@@ -167,6 +174,28 @@ function diffState(input: {
 }
 
 /**
+ * Pull request names the one it found and what state it is in, so the row
+ * answers "is this branch up for review yet" without opening the surface. A
+ * branch with nothing on it is dimmed but still opens, onto the empty state
+ * that points at Source, where the New PR action lives.
+ */
+function pullRequestState(
+  pullRequest: RightPanelLauncherPullRequest | null,
+): RightPanelSurfaceState {
+  if (pullRequest === null) {
+    return { description: "No pull request on this branch yet.", empty: true };
+  }
+  const word = pullRequest.isDraft
+    ? "Draft"
+    : pullRequest.state === "merged"
+      ? "Merged"
+      : pullRequest.state === "closed"
+        ? "Closed"
+        : "Open";
+  return { description: `#${pullRequest.number} · ${word}`, empty: false };
+}
+
+/**
  * Agents reports what the thread has actually run: how many, and how many of
  * them are still going or asking for something. The counts come from the same
  * view and live summary the panel itself renders from, so the row and the
@@ -212,6 +241,10 @@ export function buildRightPanelLauncherStates(input: {
    *  tree, so a clean tree says nothing about whether it is empty. */
   readonly diffHasExplicitTarget: boolean;
   readonly agents: RightPanelLauncherAgentsInput | null;
+  /** The pull request this thread's branch resolved to, or null when it has
+   *  none. Unlike the other rows there is no "not knowable yet" state: an
+   *  unanswered listing reads the same as no pull request. */
+  readonly pullRequest?: RightPanelLauncherPullRequest | null;
   /** The checkout folder itself no longer exists; the tree-backed rows must
    *  not describe a working tree that is not there. */
   readonly checkoutMissing?: boolean;
@@ -225,6 +258,7 @@ export function buildRightPanelLauncherStates(input: {
       hasExplicitTarget: input.diffHasExplicitTarget,
       checkoutMissing,
     }),
+    pullRequest: pullRequestState(input.pullRequest ?? null),
     agents: agentsState(input.agents),
   };
 }
@@ -246,8 +280,12 @@ export function useRightPanelLauncherStates(input: {
    *  picker reads. Null means "not knowable here", not "none". */
   readonly turnDiffSummaries: ReadonlyArray<RightPanelLauncherTurnDiffSummary> | null;
   readonly agents: RightPanelLauncherAgentsInput | null;
+  /** The thread's resolved pull request, which the route already reads for the
+   *  surface itself. */
+  readonly pullRequest?: RightPanelLauncherPullRequest | null;
 }): RightPanelLauncherStates | undefined {
   const { agents, enabled } = input;
+  const pullRequest = input.pullRequest ?? null;
   const gitStatus = useGitStatus({
     environmentId: enabled ? input.environmentId : null,
     cwd: enabled ? input.cwd : null,
@@ -264,6 +302,7 @@ export function useRightPanelLauncherStates(input: {
             reviewableTurnCount,
             diffHasExplicitTarget,
             agents,
+            pullRequest,
             checkoutMissing,
           })
         : undefined,
@@ -272,6 +311,7 @@ export function useRightPanelLauncherStates(input: {
       checkoutMissing,
       diffHasExplicitTarget,
       enabled,
+      pullRequest,
       reviewableTurnCount,
       workingTreeFileCount,
     ],

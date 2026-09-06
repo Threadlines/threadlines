@@ -1103,6 +1103,33 @@ routing.layer("ProviderServiceLive routing", (it) => {
     }),
   );
 
+  it.effect("labels direct subagent input as unsupported when the driver lacks it", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      yield* provider.startSession(asThreadId("thread-subagent-input"), {
+        provider: ProviderDriverKind.make("codex"),
+        providerInstanceId: codexInstanceId,
+        threadId: asThreadId("thread-subagent-input"),
+        cwd: "/tmp/project",
+        runtimeMode: "full-access",
+      });
+
+      const result = yield* provider
+        .sendSubagentInput({
+          threadId: asThreadId("thread-subagent-input"),
+          agentId: "agent-1",
+          text: "Check the router.",
+        })
+        .pipe(Effect.result);
+
+      assert.equal(result._tag, "Failure");
+      if (result._tag === "Failure") {
+        assert.instanceOf(result.failure, ProviderValidationError);
+        assert.equal(result.failure.code, "subagent_input_unsupported_provider");
+      }
+    }),
+  );
+
   it.effect("bootstraps a provider session for reviews on new threads", () =>
     Effect.gen(function* () {
       const provider = yield* ProviderService;

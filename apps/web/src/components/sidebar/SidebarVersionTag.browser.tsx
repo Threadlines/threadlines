@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { render } from "vitest-browser-react";
 
 import { APP_BUILD_CHANNEL_LABEL, APP_VERSION } from "../../branding";
+import { DesktopUpdateInstallDialog } from "../desktop/DesktopUpdateInstallDialog";
 import { SidebarVersionTag } from "./SidebarVersionTag";
 
 const idleUpdateState: DesktopUpdateState = {
@@ -65,6 +66,8 @@ async function mountTag() {
       <div style={{ position: "fixed", bottom: 8, left: 8 }}>
         <SidebarVersionTag />
       </div>
+      {/* Root-mounted in the app; the card's Restart action opens it. */}
+      <DesktopUpdateInstallDialog />
     </QueryClientProvider>,
   );
   return mounted;
@@ -206,7 +209,7 @@ describe("SidebarVersionTag", () => {
 
   it("uses compact controls for download, downloading, and restart states", async () => {
     let updateStateListener: ((state: DesktopUpdateState) => void) | null = null;
-    stubDesktopBridge({
+    const bridge = stubDesktopBridge({
       getUpdateState: vi.fn().mockResolvedValue({
         ...idleUpdateState,
         status: "available",
@@ -258,6 +261,22 @@ describe("SidebarVersionTag", () => {
     await expect.element(page.getByText("Restart")).toBeVisible();
     const downloaded = versionCard().element().getBoundingClientRect();
     expect(Math.abs(downloaded.height - available.height)).toBeLessThanOrEqual(1);
+
+    // Restart goes through the in-app confirmation, which names the incoming
+    // version and the running-session situation before touching the bridge.
+    await versionCard().getByRole("button", { name: "Restart to install" }).click();
+    const dialog = page.getByRole("alertdialog");
+    await expect.element(dialog).toBeVisible();
+    await expect.element(dialog.getByText("v1.0.1", { exact: true })).toBeVisible();
+    await expect
+      .element(dialog.getByText("No agent sessions are running.", { exact: false }))
+      .toBeVisible();
+    expect(bridge.installUpdate).not.toHaveBeenCalled();
+    await dialog.getByRole("button", { name: "Restart", exact: true }).click();
+    await vi.waitFor(() => {
+      expect(bridge.installUpdate).toHaveBeenCalledTimes(1);
+    });
+    await expect.element(page.getByRole("alertdialog")).not.toBeInTheDocument();
   });
 
   it("omits updater controls when no desktop bridge is present", async () => {

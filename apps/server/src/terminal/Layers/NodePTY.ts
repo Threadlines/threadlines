@@ -122,6 +122,19 @@ export const layer = Layer.effect(
 
     const nodePty = yield* Effect.promise(() => import("node-pty"));
 
+    // node-pty's Windows kill path forks a helper to list the shell's console
+    // processes and takes the first IPC message back as the answer. Under
+    // `node --watch` the server carries WATCH_REPORT_DEPENDENCIES, which the
+    // forked helper inherits; its module loader then reports its own requires
+    // over that same channel, node-pty reads `consoleProcessList` off the
+    // wrong message, and the resulting unhandled rejection takes the server
+    // down. The fork is deferred until the pty reports ready, so the variable
+    // has to stay unset rather than be hidden around the kill call. The server
+    // loads its module graph eagerly, so watch mode loses nothing here.
+    if (globalThis.process.platform === "win32") {
+      delete globalThis.process.env.WATCH_REPORT_DEPENDENCIES;
+    }
+
     const ensureNodePtySpawnHelperExecutableCached = yield* Effect.cached(
       ensureNodePtySpawnHelperExecutable().pipe(
         Effect.provideService(FileSystem.FileSystem, fs),

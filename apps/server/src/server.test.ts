@@ -129,6 +129,7 @@ import * as VcsDriverRegistry from "./vcs/VcsDriverRegistry.ts";
 import * as VcsProvisioningService from "./vcs/VcsProvisioningService.ts";
 import * as GitAuthRemediationService from "./git/GitAuthRemediationService.ts";
 import * as GitWorkflowService from "./git/GitWorkflowService.ts";
+import { PullRequestService } from "./pullRequest/PullRequestService.ts";
 import * as SourceControlRepositoryService from "./sourceControl/SourceControlRepositoryService.ts";
 import { ServerSecretStoreLive } from "./auth/Layers/ServerSecretStore.ts";
 import { ServerAuthLive } from "./auth/Layers/ServerAuth.ts";
@@ -773,9 +774,12 @@ const buildAppUnderTest = (options?: {
       Layer.provide(gitAuthRemediationLayer),
       Layer.provide(vcsProvisioningLayer),
       Layer.provide(
-        Layer.mock(SourceControlRepositoryService.SourceControlRepositoryService)({
-          ...options?.layers?.sourceControlRepositoryService,
-        }),
+        Layer.mergeAll(
+          Layer.mock(SourceControlRepositoryService.SourceControlRepositoryService)({
+            ...options?.layers?.sourceControlRepositoryService,
+          }),
+          Layer.mock(PullRequestService)({}),
+        ),
       ),
       Layer.provideMerge(vcsStatusBroadcasterLayer),
       Layer.provide(
@@ -3185,6 +3189,8 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
               Effect.succeed({
                 worktree: { path: "/tmp/wt", refName: "feature/demo" },
               }),
+            resolveFreshWorktreeBase: (input) =>
+              Effect.succeed({ refName: input.branch, isRemote: false }),
             workingTreeDiff: () => Effect.succeed({ diff: "" }),
             discardChanges: (input) => Effect.succeed({ discardedPaths: [...input.filePaths] }),
             stageChanges: (input) => Effect.succeed({ stagedPaths: [...input.filePaths] }),
@@ -4458,6 +4464,8 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           layers: {
             gitVcsDriver: {
               createWorktree,
+              resolveFreshWorktreeBase: (input) =>
+                Effect.succeed({ refName: input.branch, isRemote: false }),
             },
             vcsStatusBroadcaster: {
               refreshStatus,
@@ -4578,6 +4586,8 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         layers: {
           gitVcsDriver: {
             createWorktree,
+            resolveFreshWorktreeBase: (input) =>
+              Effect.succeed({ refName: input.branch, isRemote: false }),
           },
           orchestrationEngine: {
             dispatch: (command) =>
@@ -4679,6 +4689,8 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         layers: {
           gitVcsDriver: {
             createWorktree,
+            resolveFreshWorktreeBase: (input) =>
+              Effect.succeed({ refName: input.branch, isRemote: false }),
           },
           orchestrationEngine: {
             dispatch: (command) => {
@@ -4782,6 +4794,8 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         layers: {
           gitVcsDriver: {
             createWorktree,
+            resolveFreshWorktreeBase: (input) =>
+              Effect.succeed({ refName: input.branch, isRemote: false }),
           },
           orchestrationEngine: {
             dispatch: (command) =>

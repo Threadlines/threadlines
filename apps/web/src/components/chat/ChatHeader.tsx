@@ -29,6 +29,7 @@ import type { ThreadBackgroundRunItem } from "./threadActivity";
 import type { LiveAgentIndicator } from "./agentsPanel.logic";
 import { LiveNode } from "../ui/threadline";
 import { cn } from "../../lib/utils";
+import type { RightPanelTab } from "../../rightPanelTabs";
 
 export interface ForkHeaderContext {
   readonly sourceThreadId: ThreadId;
@@ -49,8 +50,14 @@ interface ChatHeaderProps {
   terminalOpen: boolean;
   terminalToggleShortcutLabel: string | null;
   railToggleShortcutLabel: string | null;
-  /** Whether the right rail is showing, on either of its tabs. */
+  /** Whether the right rail is showing, on any of its tabs or the launcher. */
   railOpen: boolean;
+  /**
+   * The tabs in the rail's strip while it is showing; empty while it is hidden.
+   * The toggle repeats only what the strip does not already carry: the diffstat
+   * and behind count belong to the Source tab, the live node to the Agents tab.
+   */
+  railTabs: ReadonlyArray<RightPanelTab>;
   /** False for capability-gated threads (General Chats) even when a project
    *  name exists: the rail still opens, just without its Source tab. */
   sourceControlAvailable: boolean;
@@ -58,21 +65,21 @@ interface ChatHeaderProps {
   browserAvailable: boolean;
   browserOpen: boolean;
   /**
-   * Working-tree diffstat, surfaced on the closed rail toggle so the size of
-   * the pending change is legible without opening the rail. Null when the tree
-   * is clean or the status has not loaded.
+   * Working-tree diffstat, surfaced on the rail toggle while no Source tab is
+   * showing, so the size of the pending change is legible without opening one.
+   * Null when the tree is clean or the status has not loaded.
    */
   workingTreeDiffStat: { readonly insertions: number; readonly deletions: number } | null;
   /**
-   * Commits the branch is behind its upstream, surfaced on the closed rail
-   * toggle as a pull-available hint. Null when there is nothing to pull or the
-   * status has not loaded.
+   * Commits the branch is behind its upstream, surfaced on the rail toggle as a
+   * pull-available hint while no Source tab is showing. Null when there is
+   * nothing to pull or the status has not loaded.
    */
   remoteBehindCount: number | null;
   /**
-   * Agents running right now, surfaced on the closed rail toggle the same way
-   * the diffstat is. Null when nothing is live. While the rail is open its Agents
-   * tab carries the live node itself, so these stay closed-only.
+   * Agents running right now, surfaced on the rail toggle the same way the
+   * diffstat is. Null when nothing is live. An open Agents tab carries the live
+   * node itself, so the toggle drops it while that tab is in the strip.
    */
   liveAgents: LiveAgentIndicator | null;
   /** False for General Chats: their scratch workspace has no files worth browsing. */
@@ -151,6 +158,7 @@ export const ChatHeader = memo(function ChatHeader({
   terminalToggleShortcutLabel,
   railToggleShortcutLabel,
   railOpen,
+  railTabs,
   sourceControlAvailable,
   browserAvailable,
   browserOpen,
@@ -186,6 +194,12 @@ export const ChatHeader = memo(function ChatHeader({
   const continueInProjectState = resolveContinueInProjectHeaderState(
     continueInProjectDisabledReason,
   );
+  // The rail toggle repeats only what the strip does not already carry: a
+  // Source tab lists the per-file counts, an Agents tab draws its own live node.
+  const showSourceCounts =
+    !railTabs.includes("sourceControl") &&
+    (workingTreeDiffStat !== null || remoteBehindCount !== null);
+  const liveAgentsOnToggle = railTabs.includes("agents") ? null : liveAgents;
 
   return (
     <div
@@ -381,11 +395,7 @@ export const ChatHeader = memo(function ChatHeader({
                       // on both sides -- the icon otherwise sits against the
                       // hover fill -- and less between them: the base gap is
                       // sized for icons, not for a label that belongs to one.
-                      (workingTreeDiffStat !== null ||
-                        remoteBehindCount !== null ||
-                        liveAgents !== null) &&
-                        !railOpen &&
-                        "gap-1 px-1.5",
+                      (showSourceCounts || liveAgentsOnToggle !== null) && "gap-1 px-1.5",
                     )}
                     pressed={railOpen}
                     onPressedChange={onToggleRail}
@@ -394,10 +404,10 @@ export const ChatHeader = memo(function ChatHeader({
                     size="xs"
                   >
                     <PanelRightIcon className="size-3" />
-                    {/* Only while closed: once the rail is open its Source tab
-                        shows the per-file counts, and repeating the total is
+                    {/* Only while no Source tab is showing: that tab lists the
+                        per-file counts, and repeating the total beside it is
                         noise. */}
-                    {!railOpen && (workingTreeDiffStat || remoteBehindCount !== null) ? (
+                    {showSourceCounts ? (
                       <span className="font-mono text-[10px] leading-none">
                         {workingTreeDiffStat ? (
                           <>
@@ -424,14 +434,14 @@ export const ChatHeader = memo(function ChatHeader({
                     ) : null}
                     {/* Typographic, like the counts beside it: a node and at most
                         a digit. An agent waiting on the user turns it amber. */}
-                    {!railOpen && liveAgents ? (
+                    {liveAgentsOnToggle ? (
                       <span
                         className="inline-flex shrink-0 items-center gap-0.5"
                         data-header-live-agents={
-                          liveAgents.waitingCount > 0 ? "waiting" : "running"
+                          liveAgentsOnToggle.waitingCount > 0 ? "waiting" : "running"
                         }
                       >
-                        {liveAgents.waitingCount > 0 ? (
+                        {liveAgentsOnToggle.waitingCount > 0 ? (
                           <span
                             aria-hidden="true"
                             className="block size-1.5 rounded-full bg-amber-500"
@@ -439,12 +449,12 @@ export const ChatHeader = memo(function ChatHeader({
                         ) : (
                           <LiveNode className="size-1.5" />
                         )}
-                        {liveAgents.count > 1 ? (
+                        {liveAgentsOnToggle.count > 1 ? (
                           <span
                             className="font-mono text-[10px] leading-none text-muted-foreground"
                             data-header-live-agents-count="true"
                           >
-                            {liveAgents.count}
+                            {liveAgentsOnToggle.count}
                           </span>
                         ) : null}
                       </span>
@@ -454,12 +464,12 @@ export const ChatHeader = memo(function ChatHeader({
               />
               <TooltipPopup side="bottom">
                 {railToggleShortcutLabel ? `Panel (${railToggleShortcutLabel})` : "Panel"}
-                {!railOpen && liveAgents ? (
+                {liveAgentsOnToggle ? (
                   <div className="text-muted-foreground">
-                    {formatLiveAgentsTooltip(liveAgents)} Open the Agents tab.
+                    {formatLiveAgentsTooltip(liveAgentsOnToggle)} Open the Agents tab.
                   </div>
                 ) : null}
-                {!railOpen && sourceControlAvailable && remoteBehindCount !== null ? (
+                {showSourceCounts && sourceControlAvailable && remoteBehindCount !== null ? (
                   <div className="text-muted-foreground">
                     {remoteBehindCount === 1
                       ? "1 commit behind the remote."

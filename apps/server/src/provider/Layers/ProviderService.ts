@@ -1897,10 +1897,11 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     });
     const send = routed.adapter.sendSubagentInput;
     if (send === undefined) {
-      return yield* toValidationError(
-        "ProviderService.sendSubagentInput",
-        `Provider '${routed.adapter.provider}' does not accept direct input to subagents.`,
-      );
+      return yield* new ProviderValidationError({
+        operation: "ProviderService.sendSubagentInput",
+        issue: `Provider '${routed.adapter.provider}' does not accept direct input to subagents.`,
+        code: "subagent_input_unsupported_provider",
+      });
     }
     return yield* send(routed.threadId, input);
   });

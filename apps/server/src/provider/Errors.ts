@@ -60,6 +60,9 @@ export class ProviderAdapterRequestError extends Schema.TaggedError<ProviderAdap
     provider: Schema.String,
     method: Schema.String,
     detail: Schema.String,
+    /** Stable machine-readable reason when a caller needs product copy rather
+     * than this adapter diagnostic. */
+    code: Schema.optional(Schema.String),
     cause: Schema.optional(Schema.Defect()),
   },
 ) {
@@ -93,6 +96,7 @@ export class ProviderValidationError extends Schema.TaggedError<ProviderValidati
   {
     operation: Schema.String,
     issue: Schema.String,
+    code: Schema.optional(Schema.String),
     cause: Schema.optional(Schema.Defect()),
   },
 ) {

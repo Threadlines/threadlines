@@ -162,56 +162,58 @@ function probeCli(input: {
   readonly cwd: string;
   readonly commandAvailable: CommandAvailability;
 }): Effect.Effect<DiscoveryProbeResult> {
-  if (!input.commandAvailable(input.spec.executable)) {
-    return Effect.succeed({
-      kind: input.spec.kind,
-      label: input.spec.label,
-      executable: input.spec.executable,
-      status: "missing" as const,
-      version: Option.none<string>(),
-      installHint: input.spec.installHint,
-      detail: Option.some(`${input.spec.executable} was not found on the server PATH.`),
-    } satisfies DiscoveryProbeResult);
-  }
+  return Effect.suspend(() => {
+    if (!input.commandAvailable(input.spec.executable)) {
+      return Effect.succeed({
+        kind: input.spec.kind,
+        label: input.spec.label,
+        executable: input.spec.executable,
+        status: "missing" as const,
+        version: Option.none<string>(),
+        installHint: input.spec.installHint,
+        detail: Option.some(`${input.spec.executable} was not found on the server PATH.`),
+      } satisfies DiscoveryProbeResult);
+    }
 
-  return input.process
-    .run({
-      operation: "source-control.discovery.probe",
-      command: input.spec.executable,
-      args: input.spec.versionArgs,
-      cwd: input.cwd,
-      ...(input.spec.env !== undefined ? { env: input.spec.env } : {}),
-      timeoutMs: 5_000,
-      maxOutputBytes: 8_000,
-      appendTruncationMarker: true,
-    })
-    .pipe(
-      Effect.map(
-        (result) =>
-          ({
+    return input.process
+      .run({
+        operation: "source-control.discovery.probe",
+        command: input.spec.executable,
+        args: input.spec.versionArgs,
+        cwd: input.cwd,
+        ...(input.spec.env !== undefined ? { env: input.spec.env } : {}),
+        timeoutMs: 5_000,
+        maxOutputBytes: 8_000,
+        appendTruncationMarker: true,
+      })
+      .pipe(
+        Effect.map(
+          (result) =>
+            ({
+              kind: input.spec.kind,
+              label: input.spec.label,
+              executable: input.spec.executable,
+              status: "available" as const,
+              version: Option.orElse(firstNonEmptyLine(result.stdout), () =>
+                firstNonEmptyLine(result.stderr),
+              ),
+              installHint: input.spec.installHint,
+              detail: Option.none<string>(),
+            }) satisfies DiscoveryProbeResult,
+        ),
+        Effect.catch((cause) =>
+          Effect.succeed({
             kind: input.spec.kind,
             label: input.spec.label,
             executable: input.spec.executable,
-            status: "available" as const,
-            version: Option.orElse(firstNonEmptyLine(result.stdout), () =>
-              firstNonEmptyLine(result.stderr),
-            ),
+            status: "missing" as const,
+            version: Option.none<string>(),
             installHint: input.spec.installHint,
-            detail: Option.none<string>(),
-          }) satisfies DiscoveryProbeResult,
-      ),
-      Effect.catch((cause) =>
-        Effect.succeed({
-          kind: input.spec.kind,
-          label: input.spec.label,
-          executable: input.spec.executable,
-          status: "missing" as const,
-          version: Option.none<string>(),
-          installHint: input.spec.installHint,
-          detail: detailFromCause(cause),
-        } satisfies DiscoveryProbeResult),
-      ),
-    );
+            detail: detailFromCause(cause),
+          } satisfies DiscoveryProbeResult),
+        ),
+      );
+  });
 }
 
 export function probeSourceControlProvider(input: {

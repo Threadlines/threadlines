@@ -20,7 +20,7 @@ import {
   type ProviderExternalThreadTranscriptMessage,
   ProviderInstanceId,
   type ProviderRuntimeEvent,
-  type SubagentMetadataUpdatedPayload,
+  SubagentMetadataUpdatedPayload,
   type ProviderRequestKind,
   type ProviderRealtimeAudioChunk,
   type ProviderSubagentTranscriptEntry,
@@ -469,7 +469,7 @@ export function mapCodexSubagentTranscript(
   return {
     entries: page,
     truncated: offset > 0 || offset + page.length < entries.length,
-    agent: { id: thread.id },
+    agent: { id: thread.id, directInput: mapCodexSubagentDirectInput(thread) },
     offset,
     totalEntries: entries.length,
   };
@@ -496,6 +496,14 @@ function readCodexThreadSpawnMetadata(
   };
 }
 
+function mapCodexSubagentDirectInput(thread: CodexStoredThread) {
+  return thread.canAcceptDirectInput === true
+    ? ("available" as const)
+    : thread.canAcceptDirectInput === false
+      ? ("parentOnly" as const)
+      : ("unknown" as const);
+}
+
 function mapCodexSubagentIdentity(thread: CodexStoredThread) {
   const spawn = readCodexThreadSpawnMetadata(thread);
   const agentType = thread.agentRole?.trim() || spawn?.agentRole;
@@ -505,6 +513,7 @@ function mapCodexSubagentIdentity(thread: CodexStoredThread) {
     ...(agentType ? { agentType } : {}),
     ...(description ? { description } : {}),
     ...(spawn ? { spawnDepth: spawn.depth } : {}),
+    directInput: mapCodexSubagentDirectInput(thread),
   };
 }
 
@@ -759,19 +768,17 @@ function toCanonicalItemType(raw: string | undefined | null): CanonicalItemType 
 }
 
 function canonicalSubAgentActivityItem(item: CodexSubAgentActivityItem): Record<string, unknown> {
+  // A message to an idle agent also emits "interacted". Only the child's
+  // turn lifecycle can tell us whether that interaction started more work.
+  if (item.kind === "interacted") return item;
   // "completed" (Codex 0.150+) and "interrupted" both end the agent; only the
   // first is a clean finish.
-  const running = item.kind === "started" || item.kind === "interacted";
+  const running = item.kind === "started";
   return {
     ...item,
     // Keep the native fields above while exposing the stable collab-agent
     // fields consumed by projections shared across providers.
-    tool:
-      item.kind === "started"
-        ? "spawnAgent"
-        : item.kind === "interacted"
-          ? "sendInput"
-          : "closeAgent",
+    tool: item.kind === "started" ? "spawnAgent" : "closeAgent",
     status: running ? "inProgress" : "completed",
     receiverThreadIds: [item.agentThreadId],
     agentsStates: {
@@ -1218,7 +1225,7 @@ function toUserInputQuestions(questions: ReadonlyArray<CodexToolUserInputQuestio
       const id = trimText(question.id);
       const header = trimText(question.header);
       const prompt = trimText(question.question);
-      if (!id || !header || !prompt || options.length === 0) {
+      if (!id || !header || !prompt) {
         return undefined;
       }
       return {
@@ -1619,6 +1626,19 @@ export function mapToRuntimeEvents(
     ];
   }
 
+  if (event.method === "subagent/status/changed") {
+    const metadata = readPayload(SubagentMetadataUpdatedPayload, event.payload);
+    return metadata
+      ? [
+          {
+            ...runtimeEventBase(event, canonicalThreadId),
+            type: "subagent.metadata.updated",
+            payload: metadata,
+          },
+        ]
+      : [];
+  }
+
   if (event.method === "thread/settings/updated") {
     const metadata = childSettingsMetadata(event.payload);
     if (!metadata) {
@@ -1921,6 +1941,15 @@ export function mapToRuntimeEvents(
   }
 
   if (event.method === "item/started") {
+    const payload = readPayload(EffectCodexSchema.V2ItemStartedNotification, event.payload);
+    if (
+      payload?.item.type === "agentMessage" &&
+      payload.item.delivery === "async" &&
+      payload.item.questions?.length
+    ) {
+      // Questions are projected once the complete structured message arrives.
+      return [];
+    }
     const started = mapItemLifecycle(event, canonicalThreadId, "item.started");
     if (!started) {
       return [];
@@ -1934,6 +1963,35 @@ export function mapToRuntimeEvents(
     const item = payload?.item;
     if (!item) {
       return [];
+    }
+    if (item.type === "agentMessage" && item.delivery === "async" && item.questions?.length) {
+      const questionCount = item.questions.length;
+      const questions = item.questions.flatMap((question, index) => {
+        const title = question.title.trim();
+        if (!title) return [];
+        return [
+          {
+            id: `question-${index + 1}`,
+            header: questionCount > 1 ? `Question ${index + 1}` : "Question",
+            question: title,
+            options: (question.options ?? [])
+              .filter((label) => label.trim().length > 0)
+              .map((label) => ({ label: label.trim(), description: label.trim() })),
+            multiSelect: false,
+          },
+        ];
+      });
+      if (questions.length > 0) {
+        return [
+          {
+            ...runtimeEventBase(event, canonicalThreadId),
+            eventId: EventId.make(`codex-question:${canonicalThreadId}:${item.id}`),
+            requestId: RuntimeRequestId.make(`codex-question:${canonicalThreadId}:${item.id}`),
+            type: "user-input.requested",
+            payload: { questions, isBlocking: false, responseMode: "message" },
+          },
+        ];
+      }
     }
     const itemType = toCanonicalItemType(item.type);
     if (itemType === "plan") {
@@ -2255,6 +2313,17 @@ export function mapToRuntimeEvents(
           requestType,
           ...(event.payload !== undefined ? { resolution: event.payload } : {}),
         },
+      },
+    ];
+  }
+
+  if (event.method === "item/tool/requestUserInput/resolved") {
+    const reason = firstStringField(event.payload, ["reason"]) ?? "provider-resolved";
+    return [
+      {
+        ...runtimeEventBase(event, canonicalThreadId),
+        type: "user-input.resolved",
+        payload: { answers: {}, reason },
       },
     ];
   }
@@ -3275,7 +3344,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     threadId: ThreadId,
     agentId: string,
     options: {
-      readonly requestError: (detail: string) => ProviderAdapterRequestError;
+      readonly requestError: (detail: string, code?: string) => ProviderAdapterRequestError;
       readonly parentThreadDetail: string;
     },
   ) {
@@ -3284,7 +3353,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
       Effect.mapError((cause) => mapCodexRuntimeError(threadId, "thread/read", cause)),
     );
     if (agentId === rootThreadId) {
-      return yield* requestError(options.parentThreadDetail);
+      return yield* requestError(options.parentThreadDetail, "subagent_input_invalid_target");
     }
 
     const readStoredThreadMetadata = (providerThreadId: string) =>
@@ -3303,6 +3372,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
       if (!parentThreadId || visited.has(parentThreadId)) {
         return yield* requestError(
           `Codex thread '${agentId}' is not a subagent of this conversation.`,
+          "subagent_input_invalid_target",
         );
       }
       visited.add(parentThreadId);
@@ -3311,17 +3381,19 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
 
     return yield* requestError(
       `Codex thread '${agentId}' exceeded the supported subagent nesting depth.`,
+      "subagent_input_invalid_target",
     );
   });
 
   const sendSubagentInput: NonNullable<CodexAdapterShape["sendSubagentInput"]> = Effect.fn(
     "sendSubagentInput",
   )(function* (threadId, input) {
-    const requestError = (detail: string) =>
+    const requestError = (detail: string, code?: string) =>
       new ProviderAdapterRequestError({
         provider: PROVIDER,
         method: "sendSubagentInput",
         detail,
+        ...(code ? { code } : {}),
       });
     const context = yield* requireSession(threadId);
     const candidate = yield* authorizeSubagentThread(context, threadId, input.agentId, {
@@ -3329,7 +3401,10 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
       parentThreadDetail: "Send to the parent thread through the composer instead.",
     });
     if (candidate.canAcceptDirectInput === false) {
-      return yield* requestError("This agent does not accept direct input right now.");
+      return yield* requestError(
+        "This agent only accepts messages from its parent.",
+        "subagent_input_parent_only",
+      );
     }
     const response = yield* context.runtime
       .startStoredThreadTurn(candidate.id, input.text)
@@ -3339,7 +3414,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
 
   const readSubagentTranscript: NonNullable<CodexAdapterShape["readSubagentTranscript"]> =
     Effect.fn("readSubagentTranscript")(function* (threadId, input) {
-      const requestError = (detail: string) =>
+      const requestError = (detail: string, _code?: string) =>
         new ProviderAdapterRequestError({
           provider: PROVIDER,
           method: "readSubagentTranscript",

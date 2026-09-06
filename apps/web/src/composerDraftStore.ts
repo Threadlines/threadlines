@@ -167,6 +167,9 @@ export const PersistedPickedElementContextDraft = Schema.Struct({
   width: Schema.Number,
   height: Schema.Number,
   url: Schema.String,
+  // Elements attached in one act share a groupId; drafts from before groups
+  // existed simply lack the key.
+  groupId: Schema.optionalKey(Schema.String),
 });
 type PersistedPickedElementContextDraft = typeof PersistedPickedElementContextDraft.Type;
 

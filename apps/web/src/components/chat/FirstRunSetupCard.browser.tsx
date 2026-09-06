@@ -3,6 +3,8 @@ import "../../index.css";
 import {
   ProviderDriverKind,
   ProviderInstanceId,
+  EnvironmentId,
+  type SourceControlDiscoveryResult,
   type ServerProvider,
 } from "@threadlines/contracts";
 import {
@@ -15,6 +17,9 @@ import {
 import { page } from "vite-plus/test/browser";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { render } from "vitest-browser-react";
+import * as Option from "effect/Option";
+import { AppAtomRegistryProvider, resetAppAtomRegistryForTests } from "../../rpc/atomRegistry";
+import { resetSourceControlDiscoveryStateForTests } from "../../lib/sourceControlDiscoveryState";
 
 /**
  * The sign-in row drives the real server-side auth flow, so the card needs a
@@ -42,12 +47,28 @@ const providerAuthHarness = vi.hoisted(() => {
   }>();
   const startCalls: Array<{ instanceId: string; flow: string }> = [];
   const installCalls: Array<{ provider: string; instanceId?: string; action?: string }> = [];
+  let discovery: SourceControlDiscoveryResult = {
+    versionControlSystems: [],
+    sourceControlProviders: [],
+  };
+  const externalUrls: string[] = [];
+  const remoteDiscovery = new Map<string, SourceControlDiscoveryResult>();
 
   return {
     startCalls,
     installCalls,
+    externalUrls,
+    remoteDiscovery,
+    setDiscovery(value: SourceControlDiscoveryResult) {
+      discovery = value;
+    },
     // The install row calls the same server RPC the Update button uses.
     server: {
+      discoverSourceControl: async () => discovery,
+      getSourceControlSetup: async () => ({
+        tools: [],
+        githubAuth: { status: "idle", verificationUrl: null, userCode: null, message: null },
+      }),
       updateProvider: (input: { provider: string; instanceId?: string; action?: string }) => {
         installCalls.push(input);
         return Promise.resolve({ providers: [] });
@@ -57,6 +78,9 @@ const providerAuthHarness = vi.hoisted(() => {
       listeners.clear();
       startCalls.length = 0;
       installCalls.length = 0;
+      externalUrls.length = 0;
+      remoteDiscovery.clear();
+      discovery = { versionControlSystems: [], sourceControlProviders: [] };
     },
     emit(event: AuthEvent) {
       for (const entry of listeners) {
@@ -83,6 +107,11 @@ const providerAuthHarness = vi.hoisted(() => {
     },
   };
 });
+
+vi.mock("../../lib/externalLinks", () => ({
+  openExternalUrl: (url: string) => providerAuthHarness.externalUrls.push(url),
+}));
+vi.mock("../ProjectFavicon", () => ({ ProjectFavicon: () => null }));
 
 vi.mock("../../environments/runtime", () => {
   const primaryConnection = {
@@ -113,7 +142,19 @@ vi.mock("../../environments/runtime", () => {
     getPrimaryEnvironmentConnection: () => primaryConnection,
     markRelaySavedEnvironmentLinkExpired: notUsed,
     readBackendEnvironmentConnection: () => primaryConnection,
-    readEnvironmentConnection: () => primaryConnection,
+    readEnvironmentConnection: (environmentId: string) =>
+      providerAuthHarness.remoteDiscovery.has(environmentId)
+        ? ({
+            client: {
+              providerAuth: providerAuthHarness.client,
+              server: {
+                ...providerAuthHarness.server,
+                discoverSourceControl: async () =>
+                  providerAuthHarness.remoteDiscovery.get(environmentId)!,
+              },
+            },
+          } as never)
+        : primaryConnection,
     reconnectSavedEnvironment: notUsed,
     RELAY_LINK_EXPIRED_MESSAGE: "",
     removeSavedEnvironment: notUsed,
@@ -216,6 +257,8 @@ const SIGNED_IN_CLAUDE = buildProvider({
  * throwaway memory router rather than special-casing one test.
  */
 function renderCard(props: {
+  readonly setupEnvironmentId?: EnvironmentId;
+  readonly projectEnvironmentId?: EnvironmentId;
   readonly providers: ReadonlyArray<FirstRunSetupProvider>;
   readonly projectName: string | null;
   readonly onChooseProject?: () => void;
@@ -225,10 +268,11 @@ function renderCard(props: {
   const rootRoute = createRootRoute({
     component: () => (
       <FirstRunSetupCard
+        setupEnvironmentId={props.setupEnvironmentId ?? null}
         providers={props.providers}
         projectName={props.projectName}
         projectCwd={props.projectName === null ? null : "C:/code/B-git-project"}
-        projectEnvironmentId={null}
+        projectEnvironmentId={props.projectEnvironmentId ?? null}
         isOnlyWorkspaceProject
         onChooseProject={props.onChooseProject ?? vi.fn()}
         onSkip={props.onSkip ?? vi.fn()}
@@ -246,7 +290,11 @@ function renderCard(props: {
     history: createMemoryHistory({ initialEntries: ["/"] }),
   });
 
-  return render(<RouterProvider router={router} />);
+  return render(
+    <AppAtomRegistryProvider>
+      <RouterProvider router={router} />
+    </AppAtomRegistryProvider>,
+  );
 }
 
 function rowStates(): Record<string, string> {
@@ -260,11 +308,100 @@ function rowStates(): Record<string, string> {
 
 describe("FirstRunSetupCard", () => {
   beforeEach(() => {
+    resetSourceControlDiscoveryStateForTests();
+    resetAppAtomRegistryForTests();
     providerAuthHarness.reset();
   });
 
   afterEach(() => {
+    resetSourceControlDiscoveryStateForTests();
     document.body.innerHTML = "";
+  });
+
+  it("offers Git setup and keeps GitHub optional when an agent is ready", async () => {
+    providerAuthHarness.setDiscovery({
+      versionControlSystems: [
+        {
+          kind: "git",
+          label: "Git",
+          executable: "git",
+          implemented: true,
+          status: "missing",
+          version: Option.none(),
+          detail: Option.none(),
+          installHint: "Install Git.",
+          versionAdvisory: {
+            status: "install_available",
+            severity: "info",
+            currentVersion: null,
+            latestVersion: null,
+            recommendedVersion: null,
+            checkedAt: null,
+            message: null,
+            notificationKey: null,
+            actions: [{ kind: "runUpdate", target: "git", operation: "install", label: "Install" }],
+          },
+        },
+      ],
+      sourceControlProviders: [
+        {
+          kind: "github",
+          label: "GitHub",
+          executable: "gh",
+          status: "available",
+          version: Option.some("2.98.0"),
+          detail: Option.none(),
+          installHint: "Install GitHub CLI.",
+          auth: {
+            status: "unauthenticated",
+            account: Option.none(),
+            host: Option.none(),
+            detail: Option.none(),
+          },
+        },
+      ],
+    });
+    await renderCard({ providers: [SIGNED_IN_CLAUDE], projectName: "B-git-project" });
+    await expect
+      .element(page.getByRole("button", { name: "Install Git", exact: true }))
+      .toBeVisible();
+    await expect.element(page.getByRole("button", { name: "Sign in to GitHub" })).toBeVisible();
+    await expect
+      .element(page.getByText("Optional: browse your GitHub repositories and pull requests."))
+      .toBeVisible();
+    await expect.element(page.getByTestId("first-run-setup-start")).toBeEnabled();
+    const card = document.querySelector<HTMLElement>("[data-testid='first-run-setup-card']")!;
+    card.style.width = "320px";
+    expect(card.scrollWidth).toBeLessThanOrEqual(card.clientWidth);
+  });
+
+  it("checks tools in the setup environment when the chosen project lives elsewhere", async () => {
+    providerAuthHarness.remoteDiscovery.set("setup-environment", {
+      versionControlSystems: [
+        {
+          kind: "git",
+          label: "Git",
+          executable: "git",
+          implemented: true,
+          status: "available",
+          version: Option.some("2.55.0"),
+          installHint: "Install Git.",
+          detail: Option.none(),
+        },
+      ],
+      sourceControlProviders: [],
+    });
+    providerAuthHarness.remoteDiscovery.set("project-environment", {
+      versionControlSystems: [],
+      sourceControlProviders: [],
+    });
+    await renderCard({
+      providers: [SIGNED_IN_CLAUDE],
+      projectName: "B-git-project",
+      setupEnvironmentId: EnvironmentId.make("setup-environment"),
+      projectEnvironmentId: EnvironmentId.make("project-environment"),
+    });
+    await expect.poll(() => rowStates().git).toBe("available");
   });
 
   it("gives every provider state its own dot and action, and holds the start button back", async () => {

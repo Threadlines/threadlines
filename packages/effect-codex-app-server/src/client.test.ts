@@ -1,4 +1,6 @@
 import * as Exit from "effect/Exit";
+import * as Deferred from "effect/Deferred";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Effect from "effect/Effect";
@@ -23,7 +25,6 @@ it.layer(NodeServices.layer)("effect-codex-app-server client", (it) => {
       const path = yield* Path.Path;
       const command = ChildProcess.make(process.execPath, [yield* mockPeerPath], {
         cwd: path.join(import.meta.dirname, ".."),
-        shell: process.platform === "win32",
       });
       return yield* spawner.spawn(command);
     });
@@ -124,6 +125,38 @@ it.layer(NodeServices.layer)("effect-codex-app-server client", (it) => {
           turnId: "turn-1",
         },
       ]);
+    }),
+  );
+
+  it.effect("keeps requests and notifications flowing while a question awaits its answer", () =>
+    Effect.gen(function* () {
+      const handle = yield* makeHandle();
+      const scope = yield* Scope.make();
+      const context = yield* Layer.buildWithScope(CodexClient.layerChildProcess(handle), scope);
+      yield* Effect.gen(function* () {
+        const client = yield* CodexClient.CodexAppServerClient;
+        const requested = yield* Deferred.make<number | string>();
+        const answer = yield* Deferred.make<void>();
+        const message = yield* Deferred.make<string>();
+        yield* client.handleServerRequest("item/tool/requestUserInput", (_, metadata) =>
+          Deferred.succeed(requested, metadata.id).pipe(
+            Effect.andThen(Deferred.await(answer)),
+            Effect.as({ answers: { approved: { answers: ["yes"] } } }),
+          ),
+        );
+        yield* client.handleServerNotification("item/agentMessage/delta", (payload) =>
+          Deferred.succeed(message, payload.delta).pipe(Effect.asVoid),
+        );
+        const skills = yield* client
+          .request("skills/list", { cwds: [process.cwd()] })
+          .pipe(Effect.forkScoped);
+        assert.equal(yield* Deferred.await(requested), 10_000);
+        assert.equal((yield* client.request("account/read", {})).requiresOpenaiAuth, false);
+        yield* client.notify("initialized", undefined);
+        assert.equal(yield* Deferred.await(message), "Mock server is ready.");
+        yield* Deferred.succeed(answer, undefined);
+        assert.equal((yield* Fiber.join(skills)).data.length, 1);
+      }).pipe(Effect.provide(context), Effect.ensuring(Scope.close(scope, Exit.void)));
     }),
   );
 

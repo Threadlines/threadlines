@@ -24,9 +24,8 @@ export interface ProviderMaintenanceCapabilities {
   readonly update: ProviderMaintenanceCommandAction | null;
   /**
    * How Threadlines would put this provider's CLI on the machine when it is
-   * missing. There is no installed binary to inspect in that state, so this
-   * is only ever the default manager (npm global) and only when `npm` itself
-   * resolves. `null` means the UI falls back to the provider's install guide.
+   * missing. Uses the platform installer when available, otherwise npm.
+   * `null` means the UI falls back to the provider's install guide.
    */
   readonly install: ProviderMaintenanceCommandAction | null;
   readonly manualUpdateCommand: string | null;
@@ -47,6 +46,7 @@ export interface ProviderMaintenanceCommandDefinition {
   readonly lockKey: string;
   readonly displayCommand?: string | null | undefined;
   readonly advisoryMessage?: string | null | undefined;
+  readonly environmentPatch?: Readonly<Record<string, string>>;
 }
 
 export interface ProviderMaintenanceCapabilityResolutionOptions {
@@ -66,6 +66,7 @@ export interface PackageManagedProviderMaintenanceDefinition {
   readonly provider: ProviderDriverKind;
   readonly npmPackageName: string;
   readonly homebrewFormula: string | null;
+  readonly nativeInstall?: Partial<Record<NodeJS.Platform, ProviderMaintenanceCommandDefinition>>;
   readonly nativeUpdate:
     | (ProviderMaintenanceCommandDefinition & {
         readonly isCommandPath: (commandPath: string) => boolean;
@@ -170,19 +171,51 @@ function makeNpmGlobalCommandAction(input: {
   };
 }
 
-/**
- * The install command for a provider whose CLI could not be located. There is
- * no binary whose origin we could inspect, so the manager is the default one
- * (npm global) and the only question is whether `npm` is on the server's PATH.
- * A configured `NPM_CONFIG_PREFIX` is carried into the command's environment
- * patch so the install lands in the same prefix the rest of the process uses.
- */
-function resolveNpmGlobalInstallAction(
+/** Runs a provider's official Windows installer without interpolating shell arguments. */
+export function makeWindowsNativeInstaller(input: {
+  readonly url: string;
+  readonly lockKey: string;
+  readonly environmentPatch?: Readonly<Record<string, string>>;
+}): ProviderMaintenanceCommandDefinition {
+  const command = `irm '${input.url.replaceAll("'", "''")}' | iex`;
+  const script = `$ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue'; ${command}`;
+  return {
+    executable: "powershell.exe",
+    args: [
+      "-NoProfile",
+      "-NonInteractive",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-EncodedCommand",
+      Buffer.from(script, "utf16le").toString("base64"),
+    ],
+    lockKey: input.lockKey,
+    displayCommand: `powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "${command}"`,
+    ...(input.environmentPatch ? { environmentPatch: input.environmentPatch } : {}),
+  };
+}
+
+/** Prefer a native platform installer, preserving an explicitly configured npm prefix. */
+function resolveDefaultInstallAction(
   definition: PackageManagedProviderMaintenanceDefinition,
   options?: ProviderMaintenanceCapabilityResolutionOptions,
 ): ProviderMaintenanceCommandAction | null {
   const env = options?.env ?? process.env;
   const platform = options?.platform ?? process.platform;
+  const nativeInstall = definition.nativeInstall?.[platform];
+  // An explicit npm prefix is a user's installation choice.
+  if (nativeInstall && !nonEmptyString(env.NPM_CONFIG_PREFIX)) {
+    return {
+      executable: nativeInstall.executable,
+      args: nativeInstall.args,
+      lockKey: nativeInstall.lockKey,
+      command:
+        nativeInstall.displayCommand ?? [nativeInstall.executable, ...nativeInstall.args].join(" "),
+      ...(nativeInstall.environmentPatch
+        ? { environmentPatch: nativeInstall.environmentPatch }
+        : {}),
+    };
+  }
   if (!resolveCommandPath("npm", { platform, env })) {
     return null;
   }
@@ -287,6 +320,7 @@ function makeNativeProviderMaintenanceCapabilities(
     updateArgs: update.args,
     updateLockKey: update.lockKey,
     updateDisplayCommand: update.displayCommand,
+    ...(update.environmentPatch ? { updateEnvironmentPatch: update.environmentPatch } : {}),
     advisoryMessage: update.advisoryMessage ?? definition.nativeUpdate.advisoryMessage,
   });
 }
@@ -403,7 +437,7 @@ export function resolvePackageManagedProviderMaintenance(
   const platform = options?.platform ?? process.platform;
   if (!binaryPath) {
     return makeNpmGlobalProviderMaintenanceCapabilities(definition, {
-      install: resolveNpmGlobalInstallAction(definition, options),
+      install: resolveDefaultInstallAction(definition, options),
     });
   }
 
@@ -473,7 +507,7 @@ export function resolvePackageManagedProviderMaintenance(
   if (!hasPathSeparator(binaryPath)) {
     return makeNpmGlobalProviderMaintenanceCapabilities(definition, {
       install:
-        resolvedCommandPath === null ? resolveNpmGlobalInstallAction(definition, options) : null,
+        resolvedCommandPath === null ? resolveDefaultInstallAction(definition, options) : null,
     });
   }
 

@@ -67,6 +67,7 @@ import { GitManager, type GitRunStackedActionOptions } from "./GitManager.ts";
 import {
   GitVcsDriver,
   type GitRemoteStatusOptions,
+  type GitWorktreeBaseRef,
   type GitWorktreeEntry,
 } from "../vcs/GitVcsDriver.ts";
 import { VcsDriverRegistry, type VcsDriverHandle } from "../vcs/VcsDriverRegistry.ts";
@@ -144,6 +145,11 @@ export interface GitWorkflowServiceShape {
   readonly createWorktree: (
     input: VcsCreateWorktreeInput,
   ) => Effect.Effect<VcsCreateWorktreeResult, GitCommandError>;
+  /** See GitVcsDriverShape.resolveFreshWorktreeBase. */
+  readonly resolveFreshWorktreeBase: (input: {
+    readonly cwd: string;
+    readonly branch: string;
+  }) => Effect.Effect<GitWorktreeBaseRef, GitCommandError>;
   readonly removeWorktree: (input: VcsRemoveWorktreeInput) => Effect.Effect<void, GitCommandError>;
   readonly createRef: (
     input: VcsCreateRefInput,
@@ -519,6 +525,10 @@ export const make = Effect.fn("makeGitWorkflowService")(function* () {
     createWorktree: (input) =>
       ensureGitCommand("GitWorkflowService.createWorktree", input.cwd).pipe(
         Effect.andThen(git.createWorktree(input)),
+      ),
+    resolveFreshWorktreeBase: (input) =>
+      ensureGitCommand("GitWorkflowService.resolveFreshWorktreeBase", input.cwd).pipe(
+        Effect.andThen(git.resolveFreshWorktreeBase(input)),
       ),
     removeWorktree: (input) =>
       ensureGitCommand("GitWorkflowService.removeWorktree", input.cwd).pipe(

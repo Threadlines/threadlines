@@ -63,6 +63,7 @@ export type ChatAttachment = ChatImageAttachment | ChatFileAttachment;
 
 export interface ChatMessage {
   id: MessageId;
+  eventSequence?: number | undefined;
   role: "user" | "assistant" | "system";
   text: string;
   attachments?: ChatAttachment[];
@@ -75,6 +76,7 @@ export interface ChatMessage {
 
 export interface ProposedPlan {
   id: OrchestrationProposedPlanId;
+  eventSequence?: number | undefined;
   turnId: TurnId | null;
   planMarkdown: string;
   implementedAt: string | null;
@@ -223,6 +225,7 @@ export interface SidebarThreadSummary {
   latestUserMessageAt: string | null;
   hasPendingApprovals: boolean;
   hasPendingUserInput: boolean;
+  hasBlockingUserInput?: boolean;
   hasActionableProposedPlan: boolean;
   /**
    * What this thread changed, summed over its own turns. Null until a turn has

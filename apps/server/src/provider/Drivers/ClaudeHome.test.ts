@@ -14,6 +14,14 @@ import {
 
 it.layer(NodeServices.layer)("ClaudeHome", (it) => {
   describe("Claude home resolution", () => {
+    it.effect("uses refreshed PATH when a retained environment is passed to a new process", () =>
+      Effect.gen(function* () {
+        const baseEnv = { PATH: "/old/bin" };
+        const environment = yield* makeClaudeEnvironment({ homePath: "" }, baseEnv);
+        baseEnv.PATH = "/new/bin";
+        expect({ ...environment }.PATH).toBe("/new/bin");
+      }),
+    );
     it.effect("uses the process home when no Claude home override is configured", () =>
       Effect.gen(function* () {
         const path = yield* Path.Path;

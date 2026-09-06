@@ -26,6 +26,7 @@ import { cn } from "../../lib/utils";
 import {
   refreshSourceControlDiscovery,
   useSourceControlDiscovery,
+  useSourceControlSetup,
 } from "../../lib/sourceControlDiscoveryState";
 import { useStore } from "../../store";
 import { Badge } from "../ui/badge";
@@ -71,7 +72,8 @@ import {
   SettingsRow,
   SettingsSection,
 } from "./settingsLayout";
-import { CompactVersionAdvisory } from "./CompactVersionAdvisory";
+import { CompactVersionAdvisory, SourceControlToolProgress } from "./CompactVersionAdvisory";
+import { GitHubSignInAction, GitHubSignInStatus } from "./GitHubSignInAction";
 
 const EMPTY_DISCOVERY_RESULT: SourceControlDiscoveryResult = {
   versionControlSystems: [],
@@ -220,6 +222,8 @@ function itemSummary({
     }
 
     if (auth.status === "unauthenticated") {
+      if (item.kind === "github")
+        return <span>Sign in to browse your repositories and use pull requests.</span>;
       return (
         <span>
           {item.label} is not authenticated on this server. Sign in or configure credentials using
@@ -277,6 +281,11 @@ function DiscoveryItemRow({
                   environmentId={environmentId}
                   label={item.label}
                 />
+              ) : item.kind === "git" || item.kind === "github" ? (
+                <SourceControlToolProgress
+                  target={item.kind === "git" ? "git" : "github-cli"}
+                  environmentId={environmentId}
+                />
               ) : null}
               {isVcsNotReady(item) ? (
                 <Badge variant="warning" size="sm">
@@ -294,6 +303,17 @@ function DiscoveryItemRow({
             </p>
           </div>
           <div className="flex w-full shrink-0 items-center gap-2 sm:w-auto sm:justify-end">
+            {isProviderDiscoveryItem(item) &&
+            item.kind === "github" &&
+            item.auth.status === "authenticated" ? (
+              <GitHubSignInStatus environmentId={environmentId} />
+            ) : null}
+            {isProviderDiscoveryItem(item) &&
+            item.kind === "github" &&
+            item.status === "available" &&
+            item.auth.status !== "authenticated" ? (
+              <GitHubSignInAction key={environmentId ?? "primary"} environmentId={environmentId} />
+            ) : null}
             {hasDetails ? (
               <Button
                 size="sm"
@@ -692,6 +712,7 @@ function EmptySourceControlDiscovery({
 
 export function SourceControlSettingsPanel() {
   const activeEnvironmentId = useStore((state) => state.activeEnvironmentId);
+  useSourceControlSetup({ environmentId: activeEnvironmentId });
   const discovery = useSourceControlDiscovery({ environmentId: activeEnvironmentId });
   const result = discovery.data ?? EMPTY_DISCOVERY_RESULT;
   const hasDiscoveryItems =

@@ -44,7 +44,7 @@ function openedOn(tab: RightPanelTab): RightPanelTabsState {
 
 describe("availableRightPanelTabs", () => {
   it("offers only the surfaces a thread actually has", () => {
-    expect(ALL_TABS).toEqual(["sourceControl", "diff", "agents"]);
+    expect(ALL_TABS).toEqual(["sourceControl", "diff", "pullRequest", "agents"]);
     // No repository, so no changes and no diff.
     expect(availableRightPanelTabs({ isGeneralChat: true, isDraft: false })).toEqual(["agents"]);
     // No turn yet, so no agents.
@@ -61,6 +61,7 @@ describe("activeRightPanelTabFromSearch", () => {
     expect(activeRightPanelTabFromSearch({})).toBeNull();
     expect(activeRightPanelTabFromSearch({ sourceControl: "1" })).toBe("sourceControl");
     expect(activeRightPanelTabFromSearch({ agents: "1" })).toBe("agents");
+    expect(activeRightPanelTabFromSearch({ pullRequest: "1" })).toBe("pullRequest");
     expect(activeRightPanelTabFromSearch({ diff: "1" })).toBe("diff");
     // The diff key wins, which is what `parseDiffRouteSearch` already enforces.
     expect(activeRightPanelTabFromSearch({ diff: "1", sourceControl: "1" })).toBe("diff");
@@ -68,8 +69,11 @@ describe("activeRightPanelTabFromSearch", () => {
 
   it("reads an explicit zero as closed and no params as undecided", () => {
     expect(isRightPanelClosedInSearch({})).toBe(false);
-    expect(isRightPanelClosedInSearch({ sourceControl: "0", agents: "0" })).toBe(true);
+    expect(isRightPanelClosedInSearch({ sourceControl: "0", pullRequest: "0", agents: "0" })).toBe(
+      true,
+    );
     expect(isRightPanelClosedInSearch({ sourceControl: "0", agents: "1" })).toBe(false);
+    expect(isRightPanelClosedInSearch({ pullRequest: "1" })).toBe(false);
   });
 });
 
@@ -83,7 +87,13 @@ describe("rightPanelTabSearchParams", () => {
     });
     expect(rightPanelTabSearchParams({}, "agents")).toMatchObject({
       sourceControl: "0",
+      pullRequest: "0",
       agents: "1",
+    });
+    expect(rightPanelTabSearchParams({}, "pullRequest")).toMatchObject({
+      sourceControl: "0",
+      pullRequest: "1",
+      agents: "0",
     });
   });
 
@@ -108,6 +118,7 @@ describe("rightPanelTabSearchParams", () => {
     expect(rightPanelTabSearchParams({ diff: "1" }, null)).toMatchObject({
       diff: undefined,
       sourceControl: "0",
+      pullRequest: "0",
       agents: "0",
     });
   });

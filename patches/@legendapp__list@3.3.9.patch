@@ -1,0 +1,68 @@
+diff --git a/react-native.web.js b/react-native.web.js
+index 5b7b716e1edb046cbb6386b417490fab793f666b..f18e5e31563875eeec7e5a26cb52e16b35ff09b3 100644
+--- a/react-native.web.js
++++ b/react-native.web.js
+@@ -6560,8 +6560,11 @@ function ScrollAdjust() {
+               window.getComputedStyle(contentNode)[axis.paddingEndProp]
+             );
+             const temporaryPaddingEnd = `${(currentPaddingEnd || 0) + pad}px`;
+-            temporaryPaddingRef.current = { baseline: baselinePaddingEnd, value: temporaryPaddingEnd };
++            // Record the value the browser actually stored, not the string we wrote:
++            // CSS serialization rounds long decimals (140.46875px -> 140.469px), so a
++            // string compare on the next frame would fail and leave the padding in place.
+             contentNode.style[axis.paddingEndProp] = temporaryPaddingEnd;
++            temporaryPaddingRef.current = { baseline: baselinePaddingEnd, value: contentNode.style[axis.paddingEndProp] };
+             void contentNode.offsetHeight;
+             scrollBy();
+             if (resetPaddingRafRef.current !== void 0) {
+diff --git a/react-native.web.mjs b/react-native.web.mjs
+index f64169616ea5d761bf82a562084e04f2b98ce7c2..61e9b022a3bc345a244be903cb175953a5faf665 100644
+--- a/react-native.web.mjs
++++ b/react-native.web.mjs
+@@ -6539,8 +6539,11 @@ function ScrollAdjust() {
+               window.getComputedStyle(contentNode)[axis.paddingEndProp]
+             );
+             const temporaryPaddingEnd = `${(currentPaddingEnd || 0) + pad}px`;
+-            temporaryPaddingRef.current = { baseline: baselinePaddingEnd, value: temporaryPaddingEnd };
++            // Record the value the browser actually stored, not the string we wrote:
++            // CSS serialization rounds long decimals (140.46875px -> 140.469px), so a
++            // string compare on the next frame would fail and leave the padding in place.
+             contentNode.style[axis.paddingEndProp] = temporaryPaddingEnd;
++            temporaryPaddingRef.current = { baseline: baselinePaddingEnd, value: contentNode.style[axis.paddingEndProp] };
+             void contentNode.offsetHeight;
+             scrollBy();
+             if (resetPaddingRafRef.current !== void 0) {
+diff --git a/react.js b/react.js
+index 5b7b716e1edb046cbb6386b417490fab793f666b..f18e5e31563875eeec7e5a26cb52e16b35ff09b3 100644
+--- a/react.js
++++ b/react.js
+@@ -6560,8 +6560,11 @@ function ScrollAdjust() {
+               window.getComputedStyle(contentNode)[axis.paddingEndProp]
+             );
+             const temporaryPaddingEnd = `${(currentPaddingEnd || 0) + pad}px`;
+-            temporaryPaddingRef.current = { baseline: baselinePaddingEnd, value: temporaryPaddingEnd };
++            // Record the value the browser actually stored, not the string we wrote:
++            // CSS serialization rounds long decimals (140.46875px -> 140.469px), so a
++            // string compare on the next frame would fail and leave the padding in place.
+             contentNode.style[axis.paddingEndProp] = temporaryPaddingEnd;
++            temporaryPaddingRef.current = { baseline: baselinePaddingEnd, value: contentNode.style[axis.paddingEndProp] };
+             void contentNode.offsetHeight;
+             scrollBy();
+             if (resetPaddingRafRef.current !== void 0) {
+diff --git a/react.mjs b/react.mjs
+index f64169616ea5d761bf82a562084e04f2b98ce7c2..61e9b022a3bc345a244be903cb175953a5faf665 100644
+--- a/react.mjs
++++ b/react.mjs
+@@ -6539,8 +6539,11 @@ function ScrollAdjust() {
+               window.getComputedStyle(contentNode)[axis.paddingEndProp]
+             );
+             const temporaryPaddingEnd = `${(currentPaddingEnd || 0) + pad}px`;
+-            temporaryPaddingRef.current = { baseline: baselinePaddingEnd, value: temporaryPaddingEnd };
++            // Record the value the browser actually stored, not the string we wrote:
++            // CSS serialization rounds long decimals (140.46875px -> 140.469px), so a
++            // string compare on the next frame would fail and leave the padding in place.
+             contentNode.style[axis.paddingEndProp] = temporaryPaddingEnd;
++            temporaryPaddingRef.current = { baseline: baselinePaddingEnd, value: contentNode.style[axis.paddingEndProp] };
+             void contentNode.offsetHeight;
+             scrollBy();
+             if (resetPaddingRafRef.current !== void 0) {

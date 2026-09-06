@@ -5,7 +5,11 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Struct from "effect/Struct";
-import { ChatAttachmentListLenient, ChatSkillReferenceList } from "@threadlines/contracts";
+import {
+  ChatAttachmentListLenient,
+  ChatSkillReferenceList,
+  NonNegativeInt,
+} from "@threadlines/contracts";
 
 import { toPersistenceSqlError } from "../Errors.ts";
 import {
@@ -20,6 +24,7 @@ import {
 const ProjectionThreadMessageDbRowSchema = ProjectionThreadMessage.mapFields(
   Struct.assign({
     isStreaming: Schema.Number,
+    eventSequence: Schema.NullOr(NonNegativeInt),
     attachments: Schema.NullOr(Schema.fromJsonString(ChatAttachmentListLenient)),
     skills: Schema.NullOr(Schema.fromJsonString(ChatSkillReferenceList)),
   }),
@@ -30,6 +35,7 @@ function toProjectionThreadMessage(
 ): ProjectionThreadMessage {
   return {
     messageId: row.messageId,
+    ...(row.eventSequence !== null ? { eventSequence: row.eventSequence } : {}),
     threadId: row.threadId,
     turnId: row.turnId,
     role: row.role,
@@ -54,6 +60,7 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
       return sql`
         INSERT INTO projection_thread_messages (
           message_id,
+          event_sequence,
           thread_id,
           turn_id,
           role,
@@ -66,6 +73,7 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
         )
         VALUES (
           ${row.messageId},
+          ${row.eventSequence ?? null},
           ${row.threadId},
           ${row.turnId},
           ${row.role},
@@ -118,6 +126,7 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
       sql`
         SELECT
           message_id AS "messageId",
+          event_sequence AS "eventSequence",
           thread_id AS "threadId",
           turn_id AS "turnId",
           role,
@@ -140,6 +149,7 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
       sql`
         SELECT
           message_id AS "messageId",
+          event_sequence AS "eventSequence",
           thread_id AS "threadId",
           turn_id AS "turnId",
           role,
@@ -151,7 +161,7 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
           updated_at AS "updatedAt"
         FROM projection_thread_messages
         WHERE thread_id = ${threadId}
-        ORDER BY created_at ASC, message_id ASC
+        ORDER BY event_sequence ASC, created_at ASC, message_id ASC
       `,
   });
 

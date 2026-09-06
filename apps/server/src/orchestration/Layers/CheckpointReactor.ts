@@ -19,6 +19,7 @@ import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 import { makeDrainableWorker } from "@threadlines/shared/DrainableWorker";
 import { normalizeWorkspacePath } from "@threadlines/shared/path";
+import { compareTranscriptOrder } from "@threadlines/shared/transcriptOrder";
 
 import { parseTurnDiffFilesFromUnifiedDiff } from "../../checkpointing/Diffs.ts";
 import { normalizeCheckpointFilePath } from "../../checkpointing/SelectiveRevert.ts";
@@ -116,16 +117,14 @@ function targetUserMessageIdForCheckpointRewind(input: {
       readonly id: MessageId;
       readonly role: string;
       readonly createdAt: string;
+      readonly eventSequence?: number | undefined;
     }>;
   };
   readonly targetTurnCount: number;
 }): MessageId | undefined {
   const userMessages = input.thread.messages
     .filter((message) => message.role === "user")
-    .toSorted(
-      (left, right) =>
-        left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id),
-    );
+    .toSorted(compareTranscriptOrder);
 
   // Native provider file checkpointing rewinds to the state at a user message.
   // To keep turns 0..N, target the first user message being removed: N + 1.

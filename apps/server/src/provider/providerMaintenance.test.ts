@@ -13,6 +13,7 @@ import {
   makePackageManagedProviderMaintenanceResolver,
   makeProviderMaintenanceCapabilities,
   makeStaticProviderMaintenanceResolver,
+  makeWindowsNativeInstaller,
   normalizeCommandPath,
   resolveProviderMaintenanceCapabilitiesEffect,
 } from "./providerMaintenance.ts";
@@ -33,6 +34,21 @@ const makeTempDir = Effect.fn("makeTempDir")(function* (name: string) {
 });
 
 const WINDOWS_PATHEXT = ".COM;.EXE;.BAT;.CMD";
+const nativeWindowsInstall = makeWindowsNativeInstaller({
+  url: "https://example.test/install.ps1",
+  lockKey: "package-tool-native",
+  environmentPatch: { PACKAGE_TOOL_NON_INTERACTIVE: "1" },
+});
+const nativeWindowsTool = makePackageManagedProviderMaintenanceResolver({
+  provider: driver("packageTool"),
+  npmPackageName: "@example/package-tool",
+  homebrewFormula: null,
+  nativeInstall: { win32: nativeWindowsInstall },
+  nativeUpdate: {
+    ...nativeWindowsInstall,
+    isCommandPath: (value) => value.endsWith("package-tool.exe"),
+  },
+});
 
 /**
  * Put an executable named `name` in `dir` for the platform the test is
@@ -137,6 +153,56 @@ afterEach(() => {
 });
 
 describe("providerMaintenance", () => {
+  it("installs a missing Windows provider without npm and keeps its native updater", () => {
+    const install = nativeWindowsTool.resolve({
+      binaryPath: "missing-package-tool",
+      platform: "win32",
+      env: { PATH: "" },
+    }).install;
+    expect(install).toMatchObject({
+      executable: "powershell.exe",
+      lockKey: "package-tool-native",
+      environmentPatch: { PACKAGE_TOOL_NON_INTERACTIVE: "1" },
+    });
+    const encoded = install?.args.at(-1);
+    expect(Buffer.from(encoded ?? "", "base64").toString("utf16le")).toContain(
+      "irm 'https://example.test/install.ps1' | iex",
+    );
+    expect(
+      nativeWindowsTool.resolve({
+        binaryPath: "C:\\Users\\alice\\.local\\bin\\package-tool.exe",
+        platform: "win32",
+        env: { PATH: "" },
+      }).update,
+    ).toEqual(install);
+  });
+
+  it.effect("preserves an explicit npm install prefix even when a native installer exists", () =>
+    Effect.gen(function* () {
+      const tempDir = yield* makeTempDir("t3-native-install-prefix");
+      mkdirSync(tempDir, { recursive: true });
+      writeFileSync(path.join(tempDir, "npm.cmd"), "@echo off\r\n");
+      const install = nativeWindowsTool.resolve({
+        binaryPath: "missing-package-tool",
+        platform: "win32",
+        env: { PATH: tempDir, PATHEXT: WINDOWS_PATHEXT, NPM_CONFIG_PREFIX: tempDir },
+      }).install;
+      expect(install).toMatchObject({
+        executable: "npm",
+        environmentPatch: { NPM_CONFIG_PREFIX: tempDir },
+      });
+    }),
+  );
+
+  it("does not offer a default install for an explicit custom binary path", () => {
+    expect(
+      nativeWindowsTool.resolve({
+        binaryPath: "C:\\custom\\missing.exe",
+        platform: "win32",
+        env: { PATH: "" },
+      }).install,
+    ).toBeNull();
+  });
   it("marks providers with unknown current versions as unknown", () => {
     expect(
       createProviderVersionAdvisory({

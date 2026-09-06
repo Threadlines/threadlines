@@ -35,6 +35,7 @@ import {
   resolveBranchSelectionTarget,
   resolveBranchToolbarValue,
   resolveCheckoutPickerRefsCwd,
+  resolveDefaultWorktreeBaseBranch,
   resolveDraftEnvModeAfterBranchChange,
   resolveEffectiveEnvMode,
   shouldIncludeBranchPickerItem,
@@ -502,16 +503,22 @@ export function BranchToolbarBranchSelector({
   };
 
   useEffect(() => {
-    if (
-      effectiveEnvMode !== "worktree" ||
-      activeWorktreePath ||
-      activeThreadBranch ||
-      !currentGitBranch
-    ) {
+    if (effectiveEnvMode !== "worktree" || activeWorktreePath || activeThreadBranch) {
       return;
     }
-    setThreadBranch(currentGitBranch, null);
-  }, [activeThreadBranch, activeWorktreePath, currentGitBranch, effectiveEnvMode, setThreadBranch]);
+    const baseBranch = resolveDefaultWorktreeBaseBranch({ refs, currentGitBranch });
+    if (!baseBranch) {
+      return;
+    }
+    setThreadBranch(baseBranch, null);
+  }, [
+    activeThreadBranch,
+    activeWorktreePath,
+    currentGitBranch,
+    effectiveEnvMode,
+    refs,
+    setThreadBranch,
+  ]);
 
   // ---------------------------------------------------------------------------
   // Combobox / list plumbing

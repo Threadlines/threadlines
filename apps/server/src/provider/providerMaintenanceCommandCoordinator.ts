@@ -59,20 +59,24 @@ export const makeProviderMaintenanceCommandCoordinator = Effect.fn(
     onQueued,
     run,
   }) =>
-    Effect.gen(function* () {
-      const acquired = yield* acquireTarget(targetKey);
-      if (!acquired) {
-        return yield* Effect.fail(input.makeAlreadyRunningError(targetKey));
-      }
-
-      return yield* Effect.gen(function* () {
-        const lock = yield* getLock(lockKey);
-        if (onQueued) {
-          yield* onQueued;
+    Effect.uninterruptibleMask((restore) =>
+      Effect.gen(function* () {
+        const acquired = yield* acquireTarget(targetKey);
+        if (!acquired) {
+          return yield* Effect.fail(input.makeAlreadyRunningError(targetKey));
         }
-        return yield* lock.withPermits(1)(run);
-      }).pipe(Effect.ensuring(releaseTarget(targetKey)));
-    });
+
+        return yield* restore(
+          Effect.gen(function* () {
+            const lock = yield* getLock(lockKey);
+            if (onQueued) {
+              yield* onQueued;
+            }
+            return yield* lock.withPermits(1)(run);
+          }),
+        ).pipe(Effect.ensuring(releaseTarget(targetKey)));
+      }),
+    );
 
   return {
     withCommandLock,

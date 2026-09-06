@@ -80,16 +80,14 @@ import {
   deriveActiveStatusLabel,
   deriveActiveWorkStartedAt,
   deriveActivePlanState,
-  deriveSubagentProgressState,
-  deriveSubagentLiveEntries,
-  deriveSubagentResultEntries,
-  deriveThreadSubagentHistory,
+  deriveSubagentActivityState,
   findSidebarProposedPlan,
   findLatestProposedPlan,
   deriveWorkLogEntries,
   hasActionableProposedPlan,
   hasToolActivityForTurn,
   isLatestTurnSettled,
+  isWaitingOnBackgroundTasks,
   formatElapsed,
   type McpAuthReconnectAction,
   type ProviderAuthReconnectAction,
@@ -139,7 +137,11 @@ import {
   draftRightPanelStateKey,
   useChatHeaderBottomVarRef,
 } from "../rightPanelLayout";
-import { publishAgentsPanelSource, selectAgentsPanelAgent } from "../agentsPanelStore";
+import {
+  publishAgentsPanelActivitySource,
+  publishAgentsPanelSource,
+  selectAgentsPanelAgent,
+} from "../agentsPanelStore";
 import { summarizeLiveAgents } from "./chat/agentsPanel.logic";
 import { buildTemporaryWorktreeBranchName } from "@threadlines/shared/git";
 import { BranchToolbar } from "./BranchToolbar";
@@ -226,7 +228,10 @@ import {
   type PickedElementContextDraft,
 } from "../lib/pickedElementContext";
 import type { ThreadBackgroundRunItem } from "./chat/threadActivity";
-import { type ExpandedImagePreview } from "./chat/ExpandedImagePreview";
+import {
+  type ExpandedImagePreview,
+  setActiveExpandedImageOpener,
+} from "./chat/ExpandedImagePreview";
 import { FilePreviewDialog, type FilePreviewRequest } from "./chat/FilePreviewDialog";
 import { NoActiveThreadState } from "./NoActiveThreadState";
 import { resolveEffectiveEnvMode, resolveEnvironmentOptionLabel } from "./BranchToolbar.logic";
@@ -287,6 +292,7 @@ import {
   resolveRemoteBehindCount,
   resolveWorkingTreeDiffStat,
   type RevertConfirmView,
+  resolveThreadBranchToRecord,
 } from "./ChatView.logic";
 import { useLocalStorage } from "~/hooks/useLocalStorage";
 import { selectThreadBrowserState, useBrowserPanelStore } from "../browserPanelStore";
@@ -786,6 +792,7 @@ type ChatViewProps =
       threadId: ThreadId;
       onDiffPanelOpen?: () => void;
       reserveTitleBarControlInset?: boolean;
+      composerFocusRequest?: number;
       routeKind: "server";
       draftId?: never;
     }
@@ -794,6 +801,7 @@ type ChatViewProps =
       threadId: ThreadId;
       onDiffPanelOpen?: () => void;
       reserveTitleBarControlInset?: boolean;
+      composerFocusRequest?: number;
       routeKind: "draft";
       draftId: DraftId;
     };
@@ -1078,6 +1086,7 @@ export default function ChatView(props: ChatViewProps) {
     routeKind,
     onDiffPanelOpen,
     reserveTitleBarControlInset = true,
+    composerFocusRequest = 0,
   } = props;
   const draftId = routeKind === "draft" ? props.draftId : null;
   const routeThreadRef = useMemo(
@@ -1345,10 +1354,15 @@ export default function ChatView(props: ChatViewProps) {
   // The sidebar's tab strip is owned by the route that renders it; the header
   // reads the same store so its panel button and activity chip agree with what
   // is on screen. The button reflects the sidebar as a whole — it stays pressed
-  // on any tab, and on the launcher.
+  // on any tab, and on the launcher — and its counts stand in for whichever
+  // tabs the strip is showing without.
   const rightPanelTabs = useRightPanelTabs(rightPanelStateKey);
   const rightPanelEngaged = rightPanelTabs.visible;
   const agentsPanelOpen = rightPanelTabs.activeTab === "agents";
+  const railTabs = useMemo(
+    () => (rightPanelTabs.visible ? rightPanelTabs.openTabs : []),
+    [rightPanelTabs.visible, rightPanelTabs.openTabs],
+  );
   const activeThreadId = activeThread?.id ?? null;
   const activeThreadRef = useMemo(
     () => (activeThread ? scopeThreadRef(activeThread.environmentId, activeThread.id) : null),
@@ -1391,8 +1405,10 @@ export default function ChatView(props: ChatViewProps) {
   const latestTurnSettled = isLatestTurnSettled(activeLatestTurn, activeThread?.session ?? null);
   // Same rule as the sidebar's "Background" pill: settled, but a provider
   // task will start the thread back up on its own.
-  const isWaitingOnBackgroundTasks =
-    latestTurnSettled && (activeThread?.session?.pendingBackgroundTaskCount ?? 0) > 0;
+  const waitingOnBackgroundTasks = isWaitingOnBackgroundTasks(
+    activeLatestTurn,
+    activeThread?.session ?? null,
+  );
   const activeProjectRef = activeThread
     ? scopeProjectRef(activeThread.environmentId, activeThread.projectId)
     : null;
@@ -1420,8 +1436,19 @@ export default function ChatView(props: ChatViewProps) {
    * out of the prompt you are still writing.
    */
   const appendPickedElementToComposer = useCallback(
-    (element: DesktopPreviewPickedElement) => {
-      composerRef.current?.addPickedElementContext(pickedElementFromPreview(element));
+    (element: DesktopPreviewPickedElement, groupId: string | null) => {
+      composerRef.current?.addPickedElementContext(
+        pickedElementFromPreview(element, groupId ?? undefined),
+      );
+    },
+    [composerRef],
+  );
+
+  // The preview's reported errors travel as a small text attachment: a chip
+  // like any other file, rather than a wall of pasted text.
+  const appendPageErrorsToComposer = useCallback(
+    (attachment: { name: string; text: string }) => {
+      composerRef.current?.addTextFileAttachment(attachment);
     },
     [composerRef],
   );
@@ -1939,9 +1966,7 @@ export default function ChatView(props: ChatViewProps) {
         : null,
     [activePendingDraftAnswers, activePendingUserInput],
   );
-  const activePendingIsResponding = activePendingUserInput
-    ? respondingUserInputRequestIds.includes(activePendingUserInput.requestId)
-    : false;
+
   const activeProposedPlan = useMemo(() => {
     if (!latestTurnSettled) {
       return null;
@@ -1986,9 +2011,9 @@ export default function ChatView(props: ChatViewProps) {
         : null,
     [activePlan, taskProgressBadge, taskProgressLabel, taskProgressProposedPlan],
   );
-  const subagentProgress = useMemo(
+  const subagentActivityState = useMemo(
     () =>
-      deriveSubagentProgressState({
+      deriveSubagentActivityState({
         activities: threadActivities,
         subagents: activeThread?.subagents ?? [],
         latestTurnId: activeLatestTurn?.turnId ?? null,
@@ -1996,13 +2021,11 @@ export default function ChatView(props: ChatViewProps) {
       }),
     [activeLatestTurn?.turnId, activeThread?.subagents, latestTurnSettled, threadActivities],
   );
+  const subagentProgress = subagentActivityState.progress;
   // The turn-scoped progress above empties when the turn settles. The panel's
   // history section and the conversation's receipts both need the thread's whole
   // roster, which the same activities answer without the turn filter.
-  const subagentHistory = useMemo(
-    () => deriveThreadSubagentHistory(threadActivities, activeThread?.subagents),
-    [activeThread?.subagents, threadActivities],
-  );
+  const subagentHistory = subagentActivityState.history;
   const showPlanFollowUpPrompt =
     pendingUserInputs.length === 0 &&
     interactionMode === "plan" &&
@@ -2014,16 +2037,19 @@ export default function ChatView(props: ChatViewProps) {
     markLocalDispatchAccepted,
     resetLocalDispatch,
     localDispatchStartedAt,
-    isPreparingWorktree,
+    isPreparingWorktree: isPreparingWorktreeDispatch,
     isSendBusy,
   } = useLocalDispatchState({
     activeThread,
     activeLatestTurn,
     phase,
     activePendingApproval: activePendingApproval?.requestId ?? null,
-    activePendingUserInput: activePendingUserInput?.requestId ?? null,
+    activePendingUserInput: pendingUserInputs.find(isBlockingUserInput)?.requestId ?? null,
     threadError: activeThread?.error,
   });
+  // Raised for the whole bootstrap request; dropped as soon as the thread
+  // reports its worktree so the label never outlives the work it describes.
+  const isPreparingWorktree = isPreparingWorktreeDispatch && !activeThread?.worktreePath;
   const isWorking =
     phase === "running" ||
     phase === "connecting" ||
@@ -2316,7 +2342,15 @@ export default function ChatView(props: ChatViewProps) {
     if (pendingMessages.length === 0) {
       return serverMessagesWithPreviewHandoff;
     }
-    return [...serverMessagesWithPreviewHandoff, ...pendingMessages];
+    // Pending rows have no server event yet. Keep their submission order at
+    // the end until the server replaces them with acknowledged messages.
+    return [
+      ...serverMessagesWithPreviewHandoff,
+      ...pendingMessages.map((message, index) => ({
+        ...message,
+        eventSequence: Number.MAX_SAFE_INTEGER - pendingMessages.length + index,
+      })),
+    ];
   }, [
     serverMessages,
     queuedSteeringMessageIds,
@@ -2329,15 +2363,15 @@ export default function ChatView(props: ChatViewProps) {
         timelineMessages,
         activeThread?.proposedPlans ?? [],
         workLogEntries,
-        deriveSubagentResultEntries(threadActivities, activeThread?.subagents),
+        subagentActivityState.resultEntries,
         forkContextEntries,
-        deriveSubagentLiveEntries(threadActivities, activeThread?.subagents),
+        subagentActivityState.liveEntries,
       ),
     [
       activeThread?.proposedPlans,
-      activeThread?.subagents,
       forkContextEntries,
-      threadActivities,
+      subagentActivityState.liveEntries,
+      subagentActivityState.resultEntries,
       timelineMessages,
       workLogEntries,
     ],
@@ -2419,6 +2453,33 @@ export default function ChatView(props: ChatViewProps) {
       })
     : null;
   const gitStatusQuery = useGitStatus({ environmentId, cwd: gitCwd });
+  // A thread that owns its worktree follows the branch that worktree is on: a
+  // checkout switched from the shell or by the agent must not leave the record,
+  // and with it the pull request badge, on the branch the thread began with.
+  const branchToRecord = resolveThreadBranchToRecord({
+    thread: isServerThread ? serverThread : undefined,
+    cwd: gitCwd,
+    checkoutRef: gitStatusQuery.data?.refName ?? null,
+  });
+  const recordedBranchKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (branchToRecord === null || !serverThread) return;
+    const key = `${routeThreadKey}:${branchToRecord}`;
+    if (recordedBranchKeyRef.current === key) return;
+    recordedBranchKeyRef.current = key;
+    const api = readEnvironmentApi(environmentId);
+    if (!api) return;
+    api.orchestration
+      .dispatchCommand({
+        type: "thread.meta.update",
+        commandId: newCommandId(),
+        threadId: serverThread.id,
+        branch: branchToRecord,
+      })
+      .catch((error: unknown) => {
+        console.warn("[chat] failed to record the worktree branch", error);
+      });
+  }, [branchToRecord, environmentId, routeThreadKey, serverThread]);
   // Watched separately from the thread's own checkout: when that checkout is
   // gone, the project root's status is what tells us whether there is still a
   // repository to fall back to. Same key as every other subscriber of this
@@ -2681,8 +2742,10 @@ export default function ChatView(props: ChatViewProps) {
   const splitChatFraction = useBrowserPanelStore((store) => store.splitChatFraction);
   const setSplitChatFraction = useBrowserPanelStore((store) => store.setSplitChatFraction);
   const browserExpanded = useBrowserPanelStore((store) => store.expanded);
+  // The preview is a Chromium webview, which only the desktop app can host: a
+  // web build has no browser to toggle, so it gets no button and no panel.
   // General chats have no project and therefore no dev server to look at.
-  const browserAvailable = !isGeneralChatThread;
+  const browserAvailable = isElectron && !isGeneralChatThread;
   const browserOpen = browserAvailable && browserPanelState.open;
 
   const handleToggleBrowser = useCallback(() => {
@@ -2881,6 +2944,11 @@ export default function ChatView(props: ChatViewProps) {
       focusComposer();
     });
   }, [focusComposer]);
+  useEffect(() => {
+    if (composerFocusRequest > 0) {
+      scheduleComposerFocus();
+    }
+  }, [composerFocusRequest, scheduleComposerFocus]);
   const addTerminalContextToDraft = useCallback((selection: TerminalContextSelection) => {
     composerRef.current?.addTerminalContext(selection);
   }, []);
@@ -3377,7 +3445,6 @@ export default function ChatView(props: ChatViewProps) {
       subagents: subagentProgress?.items ?? EMPTY_SUBAGENT_ITEMS,
       subagentRuns: promotedSubagentRuns,
       history: subagentHistory,
-      workEntries: workLogEntries,
       providerLabel: activeProviderDriver,
       turnInFlight: activeTurnInProgress,
       hydrated: threadDetailHydrated,
@@ -3395,9 +3462,25 @@ export default function ChatView(props: ChatViewProps) {
     subagentHistory,
     subagentProgress?.items,
     threadDetailHydrated,
-    workLogEntries,
   ]);
-  useEffect(() => () => publishAgentsPanelSource(null), []);
+  useEffect(() => {
+    if (!activeThreadId) {
+      publishAgentsPanelActivitySource(null);
+      return;
+    }
+    publishAgentsPanelActivitySource({
+      environmentId,
+      threadId: activeThreadId,
+      workEntries: workLogEntries,
+    });
+  }, [activeThreadId, environmentId, workLogEntries]);
+  useEffect(
+    () => () => {
+      publishAgentsPanelSource(null);
+      publishAgentsPanelActivitySource(null);
+    },
+    [],
+  );
 
   const confirmPendingTerminalKill = useCallback(() => {
     if (!pendingTerminalKill) return;
@@ -4186,9 +4269,15 @@ export default function ChatView(props: ChatViewProps) {
     activeThread.worktreePath === null &&
     !envLocked,
   );
-  const envMode: DraftThreadEnvMode = canOverrideServerThreadEnvMode
-    ? (pendingServerThreadEnvMode ?? draftThread?.envMode ?? derivedEnvMode)
-    : derivedEnvMode;
+  // The server records the thread a beat before it cuts the worktree, so the
+  // merged thread briefly carries the project root and its branch. Hold the
+  // requested mode until the worktree path lands instead of flashing "Current
+  // checkout" at the user who just picked "New worktree".
+  const envMode: DraftThreadEnvMode = isPreparingWorktree
+    ? "worktree"
+    : canOverrideServerThreadEnvMode
+      ? (pendingServerThreadEnvMode ?? draftThread?.envMode ?? derivedEnvMode)
+      : derivedEnvMode;
   const activeThreadBranch =
     canOverrideServerThreadEnvMode && pendingServerThreadBranch !== undefined
       ? pendingServerThreadBranch
@@ -4516,10 +4605,7 @@ export default function ChatView(props: ChatViewProps) {
       sendInFlightRef.current
     )
       return;
-    if (activePendingProgress) {
-      onAdvanceActivePendingUserInput();
-      return;
-    }
+    if (pendingUserInputs.some(isBlockingUserInput)) return;
     const sendCtx = composerRef.current?.getSendContext();
     if (!sendCtx) return;
     const {
@@ -4874,7 +4960,9 @@ export default function ChatView(props: ChatViewProps) {
                 : {}),
             }
           : undefined;
-      beginLocalDispatch({ preparingWorktree: false });
+      // The worktree is cut inside this request; the flag stays up until the
+      // thread reports its worktree path.
+      beginLocalDispatch({ preparingWorktree: Boolean(baseBranchForWorktree) });
       await api.orchestration.dispatchCommand({
         type: "thread.turn.start",
         commandId: newCommandId(),
@@ -5602,24 +5690,15 @@ export default function ChatView(props: ChatViewProps) {
           },
         };
       });
-      promptRef.current = "";
-      composerRef.current?.resetCursorState({ cursor: 0 });
     },
     [activePendingProgress?.activeQuestion, activePendingUserInput],
   );
 
   const onChangeActivePendingUserInputCustomAnswer = useCallback(
-    (
-      questionId: string,
-      value: string,
-      nextCursor: number,
-      expandedCursor: number,
-      _cursorAdjacentToMention: boolean,
-    ) => {
+    (questionId: string, value: string) => {
       if (!activePendingUserInput) {
         return;
       }
-      promptRef.current = value;
       setPendingUserInputAnswersByRequestId((existing) => ({
         ...existing,
         [activePendingUserInput.requestId]: {
@@ -5630,14 +5709,6 @@ export default function ChatView(props: ChatViewProps) {
           ),
         },
       }));
-      const snapshot = composerRef.current?.readSnapshot();
-      if (
-        snapshot?.value !== value ||
-        snapshot.cursor !== nextCursor ||
-        snapshot.expandedCursor !== expandedCursor
-      ) {
-        composerRef.current?.focusAt(nextCursor);
-      }
     },
     [activePendingUserInput],
   );
@@ -6395,9 +6466,15 @@ export default function ChatView(props: ChatViewProps) {
         return;
       }
       if (isLocalDraftThread) {
+        // Leaving an existing worktree for a new one also drops its branch as
+        // the base: that branch is the previous thread's work (often a
+        // throwaway `threadlines/...` name), not what "new worktree" means.
+        // The branch selector refills the base from the default branch.
         setDraftThreadContext(composerDraftTarget, {
           envMode: mode,
-          ...(mode === "worktree" && draftThread?.worktreePath ? { worktreePath: null } : {}),
+          ...(mode === "worktree" && draftThread?.worktreePath
+            ? { worktreePath: null, branch: null }
+            : {}),
         });
       }
       scheduleComposerFocus();
@@ -6416,6 +6493,12 @@ export default function ChatView(props: ChatViewProps) {
   const onExpandTimelineImage = useCallback((preview: ExpandedImagePreview) => {
     setExpandedImage(preview);
   }, []);
+  // Inline pictures in chat markdown are rendered far below here and open the
+  // same dialog; registering the opener beats drilling it through every layer.
+  useEffect(() => {
+    setActiveExpandedImageOpener(onExpandTimelineImage);
+    return () => setActiveExpandedImageOpener(null);
+  }, [onExpandTimelineImage]);
   /** A "view diff" link in the conversation opens or retargets the one Diff
    *  tab, leaving the rest of the strip alone. */
   const onOpenTurnDiff = useCallback(
@@ -6573,6 +6656,7 @@ export default function ChatView(props: ChatViewProps) {
           terminalToggleShortcutLabel={terminalToggleShortcutLabel}
           railToggleShortcutLabel={sourceControlPanelShortcutLabel}
           railOpen={rightPanelEngaged}
+          railTabs={railTabs}
           sourceControlAvailable={activeProject !== undefined && !isGeneralChatThread}
           browserAvailable={browserAvailable}
           browserOpen={browserOpen}
@@ -6660,7 +6744,7 @@ export default function ChatView(props: ChatViewProps) {
               key={activeThread.id}
               emptyState={firstRunSetupEmptyState ?? draftTimelineEmptyState}
               isWorking={isWorking}
-              isWaitingOnBackgroundTasks={isWaitingOnBackgroundTasks}
+              isWaitingOnBackgroundTasks={waitingOnBackgroundTasks}
               activeStatusLabel={activeStatusLabel}
               activeTurnInProgress={isWorking || !latestTurnSettled}
               activeTurnId={activeLatestTurn?.turnId ?? null}
@@ -6752,9 +6836,6 @@ export default function ChatView(props: ChatViewProps) {
                   activePendingApproval={activePendingApproval}
                   pendingApprovals={pendingApprovals}
                   pendingUserInputs={pendingUserInputs}
-                  activePendingProgress={activePendingProgress}
-                  activePendingResolvedAnswers={activePendingResolvedAnswers}
-                  activePendingIsResponding={activePendingIsResponding}
                   activePendingDraftAnswers={activePendingDraftAnswers}
                   activePendingQuestionIndex={activePendingQuestionIndex}
                   respondingRequestIds={respondingRequestIds}
@@ -6894,7 +6975,9 @@ export default function ChatView(props: ChatViewProps) {
                 threadId={activeThread.id}
                 {...(routeKind === "draft" && draftId ? { draftId } : {})}
                 onEnvModeChange={onEnvModeChange}
-                {...(canOverrideServerThreadEnvMode ? { effectiveEnvModeOverride: envMode } : {})}
+                {...(canOverrideServerThreadEnvMode || isPreparingWorktree
+                  ? { effectiveEnvModeOverride: envMode }
+                  : {})}
                 {...(canOverrideServerThreadEnvMode
                   ? {
                       activeThreadBranchOverride: activeThreadBranch,
@@ -6933,7 +7016,10 @@ export default function ChatView(props: ChatViewProps) {
         {/* The agent's end of the browser is mounted with the thread, not with
             the panel: a closed panel is a closed panel, not the absence of a
             browser, and a request for the browser opens it. */}
-        {browserAvailable && routeThreadRef !== null ? (
+        {!isGeneralChatThread && routeThreadRef !== null ? (
+          // Mounted on the web build too: the host reads the desktop bridge at
+          // effect time and refuses to connect without one, so it costs nothing
+          // there and keeps working if the preload attaches late.
           // The project is passed alongside the thread because a local draft
           // thread has no shell to look it up from, and browser approvals are
           // recorded per project.
@@ -6958,6 +7044,7 @@ export default function ChatView(props: ChatViewProps) {
               onPickElement={appendPickedElementToComposer}
               onScreenshot={(shot) => composerRef.current?.addScreenshotAttachment(shot) ?? false}
               onDrawing={(drawing) => composerRef.current?.addDrawingContext(drawing)}
+              onAttachPageErrors={appendPageErrorsToComposer}
               pendingReveal={pendingElementReveal}
               onRevealHandled={() => setPendingElementReveal(null)}
             />

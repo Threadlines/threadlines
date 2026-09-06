@@ -10,6 +10,7 @@ import { render } from "vitest-browser-react";
 import { useUiStateStore } from "../../uiStateStore";
 import { __resetClientSettingsPersistenceForTests } from "../../hooks/useSettings";
 import { ThreadlinesFigure } from "../ThreadlinesFigure";
+import { deriveTimelineEntries } from "../../session-logic";
 
 const scrollToEndSpy = vi.fn();
 const getStateSpy = vi.fn(() => ({ isAtEnd: true }));
@@ -278,6 +279,56 @@ function buildTurnSubagent(
 }
 
 describe("MessagesTimeline", () => {
+  it("shows a follow-up below the original conversation after a clock correction", async () => {
+    const entries = deriveTimelineEntries(
+      [
+        {
+          id: MessageId.make("original"),
+          role: "user",
+          text: "Original request",
+          createdAt: "2026-09-05T06:53:37.000Z",
+          eventSequence: 10,
+          streaming: false,
+        },
+        {
+          id: MessageId.make("answer"),
+          role: "assistant",
+          text: "Original answer",
+          createdAt: "2026-09-05T06:53:41.000Z",
+          eventSequence: 11,
+          streaming: false,
+        },
+        {
+          id: MessageId.make("follow-up"),
+          role: "user",
+          text: "Request after restart",
+          createdAt: "2026-09-05T06:53:05.000Z",
+          eventSequence: 12,
+          streaming: false,
+        },
+      ],
+      [],
+      [],
+    );
+    const screen = await renderTimeline(
+      <MessagesTimeline {...buildProps()} timelineEntries={entries} />,
+    );
+    try {
+      await expect.element(page.getByText("Request after restart", { exact: true })).toBeVisible();
+      const original = page.getByText("Original request", { exact: true }).element();
+      const answer = page.getByText("Original answer", { exact: true }).element();
+      const followUp = page.getByText("Request after restart", { exact: true }).element();
+      expect(
+        original.compareDocumentPosition(answer) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+      expect(
+        answer.compareDocumentPosition(followUp) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+    } finally {
+      await screen.unmount();
+    }
+  });
+
   afterEach(() => {
     scrollToEndSpy.mockReset();
     getStateSpy.mockClear();

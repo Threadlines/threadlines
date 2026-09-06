@@ -1,6 +1,7 @@
 import type { KeyboardEvent, ReactNode } from "react";
 
 import { cn } from "~/lib/utils";
+import { Skeleton } from "./ui/skeleton";
 
 export type DiffPanelMode = "inline" | "sheet" | "sidebar";
 
@@ -57,20 +58,50 @@ export function DiffPanelShell(props: {
 }
 
 /**
- * Waiting for the diff says so in one line, on the panel's gutter. It used to be
- * a framed pane of skeleton bars, which drew a whole fake document over a delay
- * that is usually shorter than reading the word "loading" -- and made the panel
- * look like an embedded app rather than a sidebar.
+ * Placeholder rows in the shape of the list that is coming: one open file
+ * with a run of lines, then a few closed ones. Bars only, no frame, so it
+ * reads as the same edge-to-edge list before the data lands. The reveal is
+ * held back a beat (see `.diff-panel-loading`) so a fast load never flashes it.
  */
+const LOADING_ROWS: ReadonlyArray<{
+  readonly path: string;
+  readonly lines?: readonly string[];
+}> = [
+  { path: "w-44", lines: ["w-3/5", "w-2/5", "w-4/5", "w-1/3", "w-1/2", "w-3/4", "w-2/5"] },
+  { path: "w-32" },
+  { path: "w-52" },
+  { path: "w-40" },
+];
+
 export function DiffPanelLoadingState(props: { label: string }) {
   return (
     <div
-      className="min-h-0 flex-1 px-3 py-2 text-[12px] text-muted-foreground/55"
+      className="diff-panel-loading min-h-0 flex-1 overflow-hidden"
       role="status"
       aria-live="polite"
       data-diff-panel-loading="true"
     >
-      {props.label}
+      <span className="sr-only">{props.label}</span>
+      {LOADING_ROWS.map((row, rowIndex) => (
+        <div key={rowIndex} className="border-b border-border" aria-hidden="true">
+          <div className="flex h-9 items-center gap-1.5 pl-1.5 pr-2">
+            <Skeleton className="size-4 shrink-0" />
+            <Skeleton className="size-4 shrink-0" />
+            <Skeleton className={cn("h-2.5", row.path)} />
+            <Skeleton className="ml-auto h-2.5 w-10 shrink-0" />
+          </div>
+          {row.lines ? (
+            <div className="space-y-2.5 px-2 pt-1.5 pb-3">
+              {row.lines.map((width, lineIndex) => (
+                <div key={lineIndex} className="flex items-center gap-3">
+                  <Skeleton className="h-2.5 w-7 shrink-0" />
+                  <Skeleton className={cn("h-2.5", width)} />
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      ))}
     </div>
   );
 }

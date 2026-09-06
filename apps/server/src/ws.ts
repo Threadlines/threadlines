@@ -78,6 +78,7 @@ import {
 } from "./observability/RpcInstrumentation.ts";
 import { PreviewAutomationBroker } from "./preview/PreviewAutomationBroker.ts";
 import { ProjectFaviconResolver } from "./project/Services/ProjectFaviconResolver.ts";
+import { PullRequestService } from "./pullRequest/PullRequestService.ts";
 import { ProviderRegistry } from "./provider/Services/ProviderRegistry.ts";
 import { ProviderService } from "./provider/Services/ProviderService.ts";
 import { readCodexInlineVisualization } from "./provider/CodexInlineVisualization.ts";
@@ -131,6 +132,8 @@ import * as ProcessResourceMonitor from "./diagnostics/ProcessResourceMonitor.ts
 import * as TraceDiagnostics from "./diagnostics/TraceDiagnostics.ts";
 import * as SourceControlDiscoveryLayer from "./sourceControl/SourceControlDiscovery.ts";
 import * as SourceControlToolMaintenance from "./sourceControl/SourceControlToolMaintenance.ts";
+import * as GitHubAuth from "./sourceControl/GitHubAuth.ts";
+import { refreshWindowsPath } from "@threadlines/shared/shell";
 import { SourceControlRepositoryService } from "./sourceControl/SourceControlRepositoryService.ts";
 import * as AzureDevOpsCli from "./sourceControl/AzureDevOpsCli.ts";
 import * as BitbucketApi from "./sourceControl/BitbucketApi.ts";
@@ -248,6 +251,7 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
       const externalLauncher = yield* ExternalLauncher.ExternalLauncher;
       const gitWorkflow = yield* GitWorkflowService;
       const gitAuthRemediation = yield* GitAuthRemediationService;
+      const pullRequests = yield* PullRequestService;
       const vcsProvisioning = yield* VcsProvisioningService;
       const previewAutomationBroker = yield* PreviewAutomationBroker;
       const vcsStatusBroadcaster = yield* VcsStatusBroadcaster;
@@ -271,6 +275,7 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
       const sourceControlDiscovery = yield* SourceControlDiscoveryLayer.SourceControlDiscovery;
       const sourceControlToolMaintenance =
         yield* SourceControlToolMaintenance.SourceControlToolMaintenance;
+      const githubAuth = yield* GitHubAuth.GitHubAuth;
       const automaticGitFetchInterval = serverSettings.getSettings.pipe(
         Effect.map((settings) => settings.automaticGitFetchInterval),
         Effect.catch((cause) =>
@@ -650,9 +655,15 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
             }
 
             if (bootstrap?.prepareWorktree) {
+              // "From main" means the latest main: start from the upstream
+              // when the local branch has fallen behind it.
+              const base = yield* gitWorkflow.resolveFreshWorktreeBase({
+                cwd: bootstrap.prepareWorktree.projectCwd,
+                branch: bootstrap.prepareWorktree.baseBranch,
+              });
               const worktree = yield* gitWorkflow.createWorktree({
                 cwd: bootstrap.prepareWorktree.projectCwd,
-                refName: bootstrap.prepareWorktree.baseBranch,
+                refName: base.refName,
                 newRefName: bootstrap.prepareWorktree.branch,
                 path: null,
               });
@@ -1081,10 +1092,14 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
         [WS_METHODS.serverRefreshProviders]: (input) =>
           observeRpcEffect(
             WS_METHODS.serverRefreshProviders,
-            (input.instanceId !== undefined
-              ? providerRegistry.refreshInstance(input.instanceId)
-              : providerRegistry.refresh()
-            ).pipe(Effect.map((providers) => ({ providers }))),
+            Effect.sync(() => refreshWindowsPath()).pipe(
+              Effect.andThen(
+                input.instanceId !== undefined
+                  ? providerRegistry.refreshInstance(input.instanceId)
+                  : providerRegistry.refresh(),
+              ),
+              Effect.map((providers) => ({ providers })),
+            ),
             { "rpc.aggregate": "server" },
           ),
         [WS_METHODS.serverStartProviderReview]: (input) =>
@@ -1117,15 +1132,34 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
           observeRpcEffect(
             WS_METHODS.serverSendSubagentInput,
             providerService.sendSubagentInput(input).pipe(
-              Effect.mapError(
-                (error) =>
-                  new ProviderSubagentInputError({
-                    message:
-                      error.message.trim().length > 0
-                        ? error.message
-                        : "Failed to send the message to the agent.",
-                  }),
-              ),
+              Effect.mapError((error) => {
+                const reason =
+                  error._tag === "ProviderAdapterRequestError" &&
+                  error.code === "subagent_input_parent_only"
+                    ? "parentOnly"
+                    : error._tag === "ProviderAdapterRequestError" &&
+                        error.code === "subagent_input_invalid_target"
+                      ? "invalidTarget"
+                      : error._tag === "ProviderValidationError" &&
+                          error.code === "subagent_input_unsupported_provider"
+                        ? "unsupportedProvider"
+                        : error._tag === "ProviderSessionNotFoundError" ||
+                            error._tag === "ProviderAdapterSessionNotFoundError" ||
+                            error._tag === "ProviderAdapterSessionClosedError"
+                          ? "unavailable"
+                          : "unknown";
+                const message =
+                  reason === "parentOnly"
+                    ? "Not sent. This agent only accepts messages from its parent."
+                    : reason === "unsupportedProvider"
+                      ? "Not sent. This provider does not support direct agent messages."
+                      : reason === "invalidTarget"
+                        ? "Not sent. This agent does not belong to the current conversation."
+                        : reason === "unavailable"
+                          ? "Not sent. This agent is no longer available."
+                          : "Not sent. Could not send this message to the agent.";
+                return new ProviderSubagentInputError({ message, reason });
+              }),
             ),
             { "rpc.aggregate": "server" },
           ),
@@ -1217,11 +1251,20 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
         [WS_METHODS.serverDiscoverSourceControl]: (_input) =>
           observeRpcEffect(
             WS_METHODS.serverDiscoverSourceControl,
-            sourceControlDiscovery.discover,
+            Effect.sync(() => refreshWindowsPath()).pipe(
+              Effect.andThen(sourceControlDiscovery.discover),
+            ),
             {
               "rpc.aggregate": "server",
             },
           ),
+        [WS_METHODS.serverGetSourceControlSetup]: () =>
+          Effect.all({
+            tools: sourceControlToolMaintenance.getState,
+            githubAuth: githubAuth.getState,
+          }),
+        [WS_METHODS.serverStartGitHubAuth]: () => githubAuth.start,
+        [WS_METHODS.serverCancelGitHubAuth]: () => githubAuth.cancel,
         [WS_METHODS.serverUpdateSourceControlTool]: (input) =>
           observeRpcEffect(
             WS_METHODS.serverUpdateSourceControlTool,
@@ -1246,10 +1289,42 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
                 input.target,
               );
 
-              const maintenanceResult = yield* sourceControlToolMaintenance.update({
-                ...input,
-                operation,
-              });
+              const maintenanceResult = yield* sourceControlToolMaintenance.update(
+                {
+                  ...input,
+                  operation,
+                },
+                () =>
+                  sourceControlDiscovery.discover.pipe(
+                    Effect.flatMap((after) =>
+                      SourceControlToolMaintenance.currentSourceControlToolVersion(
+                        after,
+                        input.target,
+                      ) !== null
+                        ? Effect.void
+                        : Effect.fail(
+                            new SourceControlToolUpdateError({
+                              target: input.target,
+                              reason:
+                                "The installer finished, but the tool could not be found. Check the installer, then rescan or retry.",
+                            }),
+                          ),
+                    ),
+                    Effect.andThen(() =>
+                      input.target === "git" && operation === "install"
+                        ? githubAuth.configureGit.pipe(
+                            Effect.mapError(
+                              (error) =>
+                                new SourceControlToolUpdateError({
+                                  target: input.target,
+                                  reason: error.detail,
+                                }),
+                            ),
+                          )
+                        : Effect.void,
+                    ),
+                  ),
+              );
 
               const discovery = yield* sourceControlDiscovery.discover;
               const currentVersion = SourceControlToolMaintenance.currentSourceControlToolVersion(
@@ -1260,7 +1335,7 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
                 return yield* new SourceControlToolUpdateError({
                   target: input.target,
                   reason:
-                    "The package-manager command finished, but Threadlines could not verify the installed tool version afterward. Rescan after restarting the desktop app.",
+                    "The installer finished, but the tool could not be found. Check the installer, then rescan or retry.",
                 });
               }
 
@@ -1937,6 +2012,76 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
             gitAuthRemediation.apply(input).pipe(Effect.tap(() => refreshGitStatus(input.cwd))),
             { "rpc.aggregate": "git" },
           ),
+        [WS_METHODS.pullRequestsList]: (input) =>
+          observeRpcEffect(WS_METHODS.pullRequestsList, pullRequests.list(input), {
+            "rpc.aggregate": "pullRequests",
+          }),
+        [WS_METHODS.pullRequestsDetail]: (input) =>
+          observeRpcEffect(WS_METHODS.pullRequestsDetail, pullRequests.detail(input), {
+            "rpc.aggregate": "pullRequests",
+          }),
+        [WS_METHODS.pullRequestsActivity]: (input) =>
+          observeRpcEffect(WS_METHODS.pullRequestsActivity, pullRequests.activity(input), {
+            "rpc.aggregate": "pullRequests",
+          }),
+        [WS_METHODS.pullRequestsDiff]: (input) =>
+          observeRpcEffect(WS_METHODS.pullRequestsDiff, pullRequests.diff(input), {
+            "rpc.aggregate": "pullRequests",
+          }),
+        [WS_METHODS.pullRequestsComment]: (input) =>
+          observeRpcEffect(WS_METHODS.pullRequestsComment, pullRequests.comment(input), {
+            "rpc.aggregate": "pullRequests",
+          }),
+        [WS_METHODS.pullRequestsRunAction]: (input) =>
+          observeRpcEffect(WS_METHODS.pullRequestsRunAction, pullRequests.runAction(input), {
+            "rpc.aggregate": "pullRequests",
+          }),
+        [WS_METHODS.pullRequestsSubmitReview]: (input) =>
+          observeRpcEffect(WS_METHODS.pullRequestsSubmitReview, pullRequests.submitReview(input), {
+            "rpc.aggregate": "pullRequests",
+          }),
+        [WS_METHODS.pullRequestsReplyToThread]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.pullRequestsReplyToThread,
+            pullRequests.replyToThread(input),
+            {
+              "rpc.aggregate": "pullRequests",
+            },
+          ),
+        [WS_METHODS.pullRequestsSetThreadResolution]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.pullRequestsSetThreadResolution,
+            pullRequests.setThreadResolution(input),
+            { "rpc.aggregate": "pullRequests" },
+          ),
+        [WS_METHODS.pullRequestsSetReaction]: (input) =>
+          observeRpcEffect(WS_METHODS.pullRequestsSetReaction, pullRequests.setReaction(input), {
+            "rpc.aggregate": "pullRequests",
+          }),
+        [WS_METHODS.pullRequestsUpdate]: (input) =>
+          observeRpcEffect(WS_METHODS.pullRequestsUpdate, pullRequests.update(input), {
+            "rpc.aggregate": "pullRequests",
+          }),
+        [WS_METHODS.pullRequestsUpdateComment]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.pullRequestsUpdateComment,
+            pullRequests.updateComment(input),
+            {
+              "rpc.aggregate": "pullRequests",
+            },
+          ),
+        [WS_METHODS.pullRequestsReviewerCandidates]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.pullRequestsReviewerCandidates,
+            pullRequests.reviewerCandidates(input),
+            { "rpc.aggregate": "pullRequests" },
+          ),
+        [WS_METHODS.pullRequestsRequestReviewers]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.pullRequestsRequestReviewers,
+            pullRequests.requestReviewers(input),
+            { "rpc.aggregate": "pullRequests" },
+          ),
         [WS_METHODS.vcsListRefs]: (input) =>
           observeRpcEffect(WS_METHODS.vcsListRefs, gitWorkflow.listRefs(input), {
             "rpc.aggregate": "vcs",
@@ -2232,8 +2377,11 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
   );
 
 export const websocketRpcRouteLayer = Layer.unwrap(
-  Effect.succeed(
-    HttpRouter.add(
+  Effect.gen(function* () {
+    const maintenance = yield* SourceControlToolMaintenance.SourceControlToolMaintenance;
+    const providerMaintenance = yield* ProviderMaintenanceRunner.ProviderMaintenanceRunner;
+    const githubSignIn = yield* GitHubAuth.GitHubAuth;
+    return HttpRouter.add(
       "GET",
       "/ws",
       Effect.gen(function* () {
@@ -2246,11 +2394,20 @@ export const websocketRpcRouteLayer = Layer.unwrap(
         }).pipe(
           Effect.provide(
             makeWsRpcLayer(session.sessionId).pipe(
-              Layer.provideMerge(RpcSerialization.layerJson),
-              Layer.provide(ProviderMaintenanceRunner.layer),
               Layer.provide(
-                SourceControlToolMaintenance.layer.pipe(Layer.provide(VcsProcess.layer)),
+                Layer.succeed(
+                  SourceControlToolMaintenance.SourceControlToolMaintenance,
+                  maintenance,
+                ),
               ),
+              Layer.provide(
+                Layer.succeed(
+                  ProviderMaintenanceRunner.ProviderMaintenanceRunner,
+                  providerMaintenance,
+                ),
+              ),
+              Layer.provide(Layer.succeed(GitHubAuth.GitHubAuth, githubSignIn)),
+              Layer.provideMerge(RpcSerialization.layerJson),
               Layer.provide(
                 SourceControlDiscoveryLayer.layer.pipe(
                   Layer.provide(
@@ -2304,6 +2461,6 @@ export const websocketRpcRouteLayer = Layer.unwrap(
           () => sessions.markDisconnected(session.sessionId),
         );
       }).pipe(Effect.scoped, Effect.catchTag("AuthError", respondToAuthError)),
-    ),
-  ),
+    );
+  }),
 );
