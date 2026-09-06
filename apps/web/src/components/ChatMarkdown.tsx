@@ -64,7 +64,12 @@ import {
   rewriteMarkdownFileUriHref,
 } from "../markdown-links";
 import { readLocalApi } from "../localApi";
+import { GitPullRequestIcon } from "lucide-react";
+
 import { ChatWebLink } from "./chat/ChatWebLink";
+import { PullRequestHoverCard, usePullRequestChip } from "./pull-requests/PullRequestHoverCard";
+import { pullRequestBadgeTone } from "./pull-requests/pullRequests.logic";
+import { parsePullRequestUrl } from "../pullRequestReference";
 import { copyTextWithToast } from "./chat/copyTextWithToast";
 import { isBrowserPanelHref } from "./browser/openInBrowserPanel";
 import {
@@ -564,6 +569,72 @@ const renderBareImagePath: NonNullable<InlineMarkdownContext["renderBareImagePat
   <MarkdownBareImagePath key={input.key} rawPath={input.path} />
 );
 
+/** The visible words of a link, flattened out of whatever markdown made them. */
+function markdownChildrenText(children: ReactNode): string {
+  let text = "";
+  Children.forEach(children, (child) => {
+    if (typeof child === "string" || typeof child === "number") {
+      text += String(child);
+      return;
+    }
+    if (isValidElement<{ children?: ReactNode }>(child)) {
+      text += markdownChildrenText(child.props.children);
+    }
+  });
+  return text;
+}
+
+/** A link whose words only repeat the number the chip already prints. */
+const REDUNDANT_PULL_REQUEST_LINK_TEXT = /^(?:pr\s*)?#?\d+$/i;
+
+/**
+ * A pull request address in a transcript, as a chip rather than a URL: the
+ * state glyph and `#number`, which is how the sidebar, the composer's row and
+ * the pull requests page all name one. The words the author wrote are kept
+ * after the number unless they only repeat it.
+ *
+ * The click behaviour is unchanged -- {@link ChatWebLink} still decides whether
+ * this opens the thread's own Pull request tab or the browser panel.
+ */
+function MarkdownPullRequestChip({
+  href,
+  repository,
+  number,
+  label,
+  threadRef,
+  title,
+}: {
+  readonly href: string;
+  readonly repository: string;
+  readonly number: number;
+  /** Empty when the link's own text said nothing the number does not. */
+  readonly label: string;
+  readonly threadRef: ScopedThreadRef | null;
+  readonly title?: string | undefined;
+}) {
+  const chip = usePullRequestChip(repository, number);
+  const tone = chip.state
+    ? pullRequestBadgeTone(chip.state.state, chip.state.isDraft)
+    : // Nothing here has listed this repository, so the glyph says "a pull
+      // request" without claiming to know how it is going.
+      { Icon: GitPullRequestIcon, className: "text-muted-foreground", label: "Pull request" };
+
+  return (
+    <PullRequestHoverCard payload={chip.payload}>
+      <ChatWebLink
+        href={href}
+        threadRef={threadRef}
+        title={title}
+        className="inline-flex items-center gap-1 rounded-sm bg-muted px-1.5 font-mono text-[12px] no-underline transition-colors hover:bg-accent"
+      >
+        <tone.Icon aria-hidden className={cn("size-3 shrink-0", tone.className)} />
+        <span>#{number}</span>
+        {label ? <span className="font-sans">{label}</span> : null}
+      </ChatWebLink>
+    </PullRequestHoverCard>
+  );
+}
+
 function MarkdownAnchor({ node: _node, href, children, ...props }: MarkdownRendererProps<"a">) {
   const {
     cwd,
@@ -580,6 +651,21 @@ function MarkdownAnchor({ node: _node, href, children, ...props }: MarkdownRende
       resolveMarkdownFileLinkMeta(normalizedHref, cwd))
     : null;
   if (!fileLinkMeta) {
+    const pullRequest = href ? parsePullRequestUrl(href) : null;
+    if (href && pullRequest) {
+      const text = markdownChildrenText(children).trim();
+      const label = text === href.trim() || REDUNDANT_PULL_REQUEST_LINK_TEXT.test(text) ? "" : text;
+      return (
+        <MarkdownPullRequestChip
+          href={href}
+          repository={pullRequest.repository}
+          number={pullRequest.number}
+          label={label}
+          threadRef={threadRef}
+          title={props.title}
+        />
+      );
+    }
     if (href && isBrowserPanelHref(href)) {
       return (
         <ChatWebLink
