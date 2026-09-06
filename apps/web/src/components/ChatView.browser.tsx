@@ -1325,6 +1325,70 @@ function createSnapshotWithPlanFollowUpPrompt(options?: {
   };
 }
 
+const CLAUDE_TEST_PROVIDER: ServerConfig["providers"][number] = {
+  driver: ProviderDriverKind.make("claudeAgent"),
+  instanceId: ProviderInstanceId.make("claudeAgent"),
+  enabled: true,
+  installed: true,
+  version: "2.1.117",
+  status: "ready",
+  auth: { status: "authenticated" },
+  checkedAt: NOW_ISO,
+  models: [],
+  slashCommands: [],
+  skills: [],
+};
+
+/** A Claude thread whose last turn completed and left a prompt suggestion behind. */
+function createSnapshotWithPromptSuggestion(suggestion: string): OrchestrationReadModel {
+  const snapshot = createSnapshotForTargetUser({
+    targetMessageId: "msg-user-prompt-suggestion-target" as MessageId,
+    targetText: "prompt suggestion thread",
+  });
+  const modelSelection = {
+    instanceId: ProviderInstanceId.make("claudeAgent"),
+    model: "claude-opus-4-7",
+  };
+  const turnId = "turn-prompt-suggestion" as TurnId;
+
+  return {
+    ...snapshot,
+    threads: snapshot.threads.map((thread) =>
+      thread.id === THREAD_ID
+        ? Object.assign({}, thread, {
+            modelSelection,
+            latestTurn: {
+              turnId,
+              state: "completed",
+              requestedAt: isoAt(1_000),
+              startedAt: isoAt(1_001),
+              completedAt: isoAt(1_010),
+              assistantMessageId: null,
+            },
+            activities: [
+              {
+                id: EventId.make("activity-prompt-suggestion"),
+                tone: "info" as const,
+                kind: "prompt-suggestion.updated",
+                summary: "Prompt suggestion updated",
+                payload: { suggestion },
+                turnId,
+                createdAt: isoAt(1_011),
+              },
+            ],
+            session: {
+              ...thread.session,
+              providerName: "claudeAgent",
+              status: "ready",
+              updatedAt: isoAt(1_010),
+            },
+            updatedAt: isoAt(1_011),
+          })
+        : thread,
+    ),
+  };
+}
+
 function resolveWsRpc(body: NormalizedWsRpcRequestBody): unknown {
   const customResult = customWsRpcResolver?.(body);
   if (customResult !== undefined) {
@@ -9949,6 +10013,70 @@ describe("ChatView timeline estimator parity (full app)", () => {
         },
         { timeout: 8_000, interval: 16 },
       );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  // Mount a Claude thread that ended with a prompt suggestion, wait for the
+  // chip to show it, then hover to open its tooltip.
+  const mountPromptSuggestionChip = async (suggestion: string) => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotWithPromptSuggestion(suggestion),
+      configureFixture: (nextFixture) => {
+        nextFixture.serverConfig = {
+          ...nextFixture.serverConfig,
+          providers: [...nextFixture.serverConfig.providers, CLAUDE_TEST_PROVIDER],
+        };
+      },
+    });
+    const chip = await waitForElement(
+      () => document.querySelector<HTMLElement>('[data-prompt-suggestion="true"]'),
+      "Unable to find the prompt suggestion chip.",
+    );
+    const text = await waitForElement(
+      () => {
+        const found = chip.querySelector<HTMLElement>('[data-prompt-suggestion-text="true"]');
+        return found?.textContent === suggestion ? found : null;
+      },
+      () =>
+        `Prompt suggestion chip never showed "${suggestion}"; it shows "${
+          chip.querySelector('[data-prompt-suggestion-text="true"]')?.textContent ?? ""
+        }".`,
+    );
+    await page.getByRole("button", { name: /^Use Claude suggested prompt:/ }).hover();
+    const tooltip = await waitForElement(
+      () => document.querySelector<HTMLElement>('[data-prompt-suggestion-tooltip="true"]'),
+      "Hovering the prompt suggestion chip never opened its tooltip.",
+    );
+    return { mounted, chip, text, tooltip };
+  };
+
+  it("shows the full prompt suggestion in the tooltip when the chip clips it", async () => {
+    const suggestion =
+      "Run the full browser suite against the composer changes, then update the changelog entry for the suggestion chip";
+    const { mounted, chip, text, tooltip } = await mountPromptSuggestionChip(suggestion);
+    try {
+      expect(text.scrollWidth).toBeGreaterThan(text.clientWidth + 1);
+      expect(tooltip.textContent).toContain(suggestion);
+      expect(tooltip.textContent).toContain("Claude suggested this prompt");
+      // The full text wraps inside a capped-width tooltip instead of running
+      // off as one long line.
+      const tooltipRect = tooltip.getBoundingClientRect();
+      expect(tooltipRect.width).toBeLessThanOrEqual(400);
+      expect(tooltipRect.height).toBeGreaterThan(chip.getBoundingClientRect().height);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("keeps the short tooltip label when the prompt suggestion fits the chip", async () => {
+    const suggestion = "Run the tests";
+    const { mounted, text, tooltip } = await mountPromptSuggestionChip(suggestion);
+    try {
+      expect(text.scrollWidth).toBeLessThanOrEqual(text.clientWidth + 1);
+      expect(tooltip.textContent).toBe("Claude suggested this prompt");
     } finally {
       await mounted.cleanup();
     }

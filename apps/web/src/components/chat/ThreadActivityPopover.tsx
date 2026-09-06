@@ -1,13 +1,11 @@
 import {
   memo,
-  useCallback,
   useLayoutEffect,
   useMemo,
   useRef,
   useState,
   type CSSProperties,
   type ReactNode,
-  type RefCallback,
   type RefObject,
 } from "react";
 import {
@@ -27,6 +25,7 @@ import { proposedPlanTitle } from "../../proposedPlan";
 import { formatRelativeTimeLabel } from "../../timestampFormat";
 import { type ActivePlanState, type LatestProposedPlanState } from "../../session-logic";
 import { cn } from "~/lib/utils";
+import { useHorizontalOverflow } from "../../hooks/useHorizontalOverflow";
 import { Button } from "../ui/button";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import { SpineNode, SpineRow, spineAccentRowStyle, type SpineNodeKind } from "../ui/threadline";
@@ -80,7 +79,6 @@ const ACTIVITY_POPOVER_PREFERRED_MIN_WIDTH_PX = 320;
 const ACTIVITY_POPOVER_MAX_WIDTH_PX = 480;
 const ACTIVITY_POPOVER_VIEWPORT_WIDTH_RATIO = 0.36;
 const ACTIVITY_POPOVER_BOUNDARY_GUTTER_PX = 12;
-const OVERFLOW_MEASUREMENT_EPSILON_PX = 1;
 
 type ActivityPopoverWidthStyle = CSSProperties & {
   "--thread-activity-popover-width": string;
@@ -123,70 +121,6 @@ function resolveActivityPopoverWidth(input: {
     input.triggerRight - input.boundaryLeft - ACTIVITY_POPOVER_BOUNDARY_GUTTER_PX;
   const usableWidth = Math.max(ACTIVITY_POPOVER_MIN_WIDTH_PX, availableBeforeBoundary);
   return Math.round(Math.min(preferredWidth, usableWidth));
-}
-
-function hasHorizontalOverflow(element: HTMLElement): boolean {
-  return element.scrollWidth - element.clientWidth > OVERFLOW_MEASUREMENT_EPSILON_PX;
-}
-
-function useHorizontalOverflow(
-  contentKey: string,
-  enabled: boolean,
-): {
-  elementRef: RefCallback<HTMLSpanElement>;
-  overflows: boolean;
-} {
-  const [element, setElement] = useState<HTMLSpanElement | null>(null);
-  const [overflows, setOverflows] = useState(false);
-  const elementRef = useCallback<RefCallback<HTMLSpanElement>>((node) => {
-    setElement(node);
-  }, []);
-
-  useLayoutEffect(() => {
-    if (!enabled || typeof window === "undefined") {
-      return;
-    }
-
-    if (!element) {
-      setOverflows(false);
-      return;
-    }
-
-    let frameId: number | null = null;
-
-    const measure = () => {
-      frameId = null;
-      const nextOverflows = hasHorizontalOverflow(element);
-      setOverflows((current) => (current === nextOverflows ? current : nextOverflows));
-    };
-
-    const scheduleMeasure = () => {
-      if (frameId !== null) {
-        window.cancelAnimationFrame(frameId);
-      }
-      frameId = window.requestAnimationFrame(measure);
-    };
-
-    measure();
-
-    const resizeObserver =
-      typeof ResizeObserver === "undefined" ? null : new ResizeObserver(scheduleMeasure);
-    resizeObserver?.observe(element);
-    if (element.parentElement) {
-      resizeObserver?.observe(element.parentElement);
-    }
-    window.addEventListener("resize", scheduleMeasure);
-
-    return () => {
-      if (frameId !== null) {
-        window.cancelAnimationFrame(frameId);
-      }
-      resizeObserver?.disconnect();
-      window.removeEventListener("resize", scheduleMeasure);
-    };
-  }, [contentKey, element, enabled]);
-
-  return { elementRef, overflows };
 }
 
 function useActivityPopoverAnchorLayout(open: boolean): {
