@@ -150,6 +150,7 @@ describe("ThreadAutoArchiveSweeper", () => {
       });
     const orchestrationEngine: OrchestrationEngineShape = {
       readEvents: () => Stream.empty,
+      getCommandReceipt: () => Effect.succeed(Option.none()),
       dispatch: (command) => {
         if (command.type !== "thread.archive") {
           return Effect.die(`Unexpected command: ${command.type}`);
