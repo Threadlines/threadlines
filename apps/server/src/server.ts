@@ -26,6 +26,7 @@ import { ProviderEventLoggersLive } from "./provider/Layers/ProviderEventLoggers
 import { ProviderServiceLive } from "./provider/Layers/ProviderService.ts";
 import { ProviderSessionReaperLive } from "./provider/Layers/ProviderSessionReaper.ts";
 import { ThreadAutoArchiveSweeperLive } from "./orchestration/Layers/ThreadAutoArchiveSweeper.ts";
+import { BootstrapTurnStartRunsLive } from "./orchestration/Layers/BootstrapTurnStartRuns.ts";
 import { CheckpointDiffQueryLive } from "./checkpointing/Layers/CheckpointDiffQuery.ts";
 import { CheckpointRevertLive } from "./checkpointing/Layers/CheckpointRevert.ts";
 import { CheckpointStoreLive } from "./checkpointing/Layers/CheckpointStore.ts";
@@ -415,6 +416,9 @@ export const makeRoutesLayer = Layer.mergeAll(
   Layer.provide(SourceControlToolMaintenance.layer.pipe(Layer.provide(VcsProcess.layer))),
   Layer.provide(GitHubAuth.layer),
   Layer.provide(ProviderMaintenanceRunner.layer),
+  // One registry for the whole server: a retried bootstrap turn start must
+  // find the run in flight even when it arrives on a different socket.
+  Layer.provide(BootstrapTurnStartRunsLive),
 );
 
 export const makeServerLayer = Layer.unwrap(

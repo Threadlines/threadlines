@@ -802,6 +802,7 @@ const buildAppUnderTest = (options?: {
         Layer.mock(OrchestrationEngineService)({
           readEvents: () => Stream.empty,
           dispatch: () => Effect.succeed({ sequence: 0 }),
+          getCommandReceipt: () => Effect.succeed(Option.none()),
           streamDomainEvents: Stream.empty,
           subscribeDomainEvents: Effect.succeed(Stream.empty),
           ...options?.layers?.orchestrationEngine,
@@ -4659,6 +4660,133 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       });
       assertTrue(dispatchedCommands.every((command) => command.type !== "thread.delete"));
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect(
+    "a retried bootstrap turn start joins the run in flight and later retries read the receipt",
+    () =>
+      Effect.gen(function* () {
+        const dispatchedCommands: Array<OrchestrationCommand> = [];
+        const receiptSequences = new Map<CommandId, number>();
+        const worktreeRequested = yield* Deferred.make<void>();
+        const worktreeGate = yield* Deferred.make<void>();
+        const createWorktree = vi.fn(
+          (_: Parameters<GitVcsDriver.GitVcsDriverShape["createWorktree"]>[0]) =>
+            Deferred.succeed(worktreeRequested, undefined).pipe(
+              Effect.andThen(Deferred.await(worktreeGate)),
+              Effect.as({
+                worktree: {
+                  refName: "threadlines/bootstrap-refName",
+                  path: "/tmp/bootstrap-worktree",
+                },
+              }),
+            ),
+        );
+        const createdAt = "2026-01-01T00:00:00.000Z";
+        const threadId = ThreadId.make("thread-bootstrap-retry");
+
+        yield* buildAppUnderTest({
+          layers: {
+            gitVcsDriver: {
+              createWorktree,
+              resolveFreshWorktreeBase: (input) =>
+                Effect.succeed({ refName: input.branch, isRemote: false }),
+            },
+            orchestrationEngine: {
+              // Like the real engine, every dispatch leaves a receipt under
+              // its command id, so the final turn start receipts the client's.
+              dispatch: (command) =>
+                Effect.sync(() => {
+                  dispatchedCommands.push(command);
+                  receiptSequences.set(command.commandId, dispatchedCommands.length);
+                  return { sequence: dispatchedCommands.length };
+                }),
+              getCommandReceipt: (commandId) =>
+                Effect.sync(() => {
+                  const resultSequence = receiptSequences.get(commandId);
+                  return resultSequence === undefined
+                    ? Option.none()
+                    : Option.some({
+                        commandId,
+                        aggregateKind: "thread" as const,
+                        aggregateId: threadId,
+                        acceptedAt: createdAt,
+                        resultSequence,
+                        status: "accepted" as const,
+                        error: null,
+                      });
+                }),
+              readEvents: () => Stream.empty,
+            },
+          },
+        });
+
+        const wsUrl = yield* getWsServerUrl("/ws");
+        const dispatch = () =>
+          Effect.scoped(
+            withWsRpcClient(wsUrl, (client) =>
+              client[ORCHESTRATION_WS_METHODS.dispatchCommand]({
+                type: "thread.turn.start",
+                commandId: CommandId.make("cmd-bootstrap-turn-start-retry"),
+                threadId,
+                message: {
+                  messageId: MessageId.make("msg-bootstrap-retry"),
+                  role: "user",
+                  text: "hello",
+                  attachments: [],
+                },
+                modelSelection: defaultModelSelection,
+                runtimeMode: "full-access",
+                interactionMode: "default",
+                bootstrap: {
+                  createThread: {
+                    projectId: defaultProjectId,
+                    title: "Bootstrap Thread",
+                    modelSelection: defaultModelSelection,
+                    runtimeMode: "full-access",
+                    interactionMode: "default",
+                    branch: "main",
+                    worktreePath: null,
+                    createdAt,
+                  },
+                  prepareWorktree: {
+                    projectCwd: "/tmp/project",
+                    baseBranch: "main",
+                    branch: "threadlines/bootstrap-refName",
+                  },
+                },
+                createdAt,
+              }),
+            ),
+          );
+
+        const first = yield* Effect.forkChild(dispatch());
+        yield* Deferred.await(worktreeRequested);
+        // The client re-sends after a reconnect, so the retry lands on a new
+        // socket while the first run is still cutting the worktree.
+        const retry = yield* Effect.forkChild(dispatch());
+        yield* wallClockSleep(200);
+        yield* Deferred.succeed(worktreeGate, undefined);
+        const [firstResponse, retryResponse] = yield* Effect.all([
+          Fiber.join(first),
+          Fiber.join(retry),
+        ]);
+
+        assert.equal(firstResponse.sequence, 3);
+        assert.equal(retryResponse.sequence, 3);
+        assert.deepEqual(
+          dispatchedCommands.map((command) => command.type),
+          ["thread.create", "thread.meta.update", "thread.turn.start"],
+        );
+        assert.equal(createWorktree.mock.calls.length, 1);
+
+        // A retry after the run finished is answered from the receipt without
+        // touching the thread again.
+        const lateResponse = yield* dispatch();
+        assert.equal(lateResponse.sequence, 3);
+        assert.equal(dispatchedCommands.length, 3);
+        assert.equal(createWorktree.mock.calls.length, 1);
+      }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
   it.effect("does not misattribute setup activity dispatch failures as setup launch failures", () =>
