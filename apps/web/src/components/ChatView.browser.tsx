@@ -10282,6 +10282,35 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
+  it("accepts the prompt suggestion with Tab from the focused composer", async () => {
+    const suggestion = "Commit this and open the PR";
+    const { mounted } = await mountPromptSuggestionChip(suggestion);
+    try {
+      const composerEditor = await waitForComposerEditor();
+      composerEditor.focus();
+      composerEditor.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true }),
+      );
+
+      await waitForElement(
+        () => (composerEditor.textContent?.trim() === suggestion ? composerEditor : null),
+        () =>
+          `Tab never moved the suggestion into the composer; it holds "${
+            composerEditor.textContent ?? ""
+          }".`,
+      );
+      // Accepting the suggestion consumes it, so the chip goes away.
+      await waitForElement(
+        () => (document.querySelector('[data-prompt-suggestion="true"]') ? null : document.body),
+        "The prompt suggestion chip stayed visible after Tab accepted it.",
+      );
+      // Focus stays in the composer instead of tabbing out to the toolbar.
+      expect(document.activeElement).toBe(composerEditor);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("keeps the slash-command menu visible above the composer", async () => {
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,

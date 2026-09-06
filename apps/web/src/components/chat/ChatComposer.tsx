@@ -146,6 +146,7 @@ import {
   useProviderRateLimitResetCredit,
 } from "../ProviderRateLimitResetCredit";
 import { CircleAlertIcon, FileTextIcon, SparklesIcon, XIcon } from "lucide-react";
+import { Kbd } from "../ui/kbd";
 import { proposedPlanTitle } from "../../proposedPlan";
 import {
   getProviderDisplayName,
@@ -2599,6 +2600,14 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         return true;
       }
     }
+    // Tab accepts the Claude suggestion floating above the composer. The
+    // suggestion only exists while the composer is empty, so this never
+    // clobbers typed text, and the menu branch above already claimed Tab when
+    // a slash or mention menu is open.
+    if (key === "Tab" && latestPromptSuggestion) {
+      applyPromptSuggestion(latestPromptSuggestion);
+      return true;
+    }
     if (key === "Enter" && !event.shiftKey) {
       submitComposer();
       return true;
@@ -3066,6 +3075,14 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   >
                     {latestPromptSuggestionDisplayText}
                   </span>
+                  {/* Tab hint stays hidden until hover or keyboard focus so the
+                      resting state is just the sparkle and the words. */}
+                  <Kbd
+                    aria-hidden="true"
+                    className="h-4 shrink-0 rounded-sm px-1 text-[10px] opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100"
+                  >
+                    Tab
+                  </Kbd>
                 </button>
               }
             />
