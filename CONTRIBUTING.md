@@ -75,8 +75,10 @@ Node.js 22.22.2+, 24.15+, or 26+ is required. Odd-numbered Node releases are
 not supported.
 
 Before considering a change done, all of `vp fmt`, `vp lint`, and
-`vp run typecheck` must pass, and run the test suite with `vp run test`
-(never `bun test`).
+`vp run typecheck` must pass. Run the tests that cover the code you changed,
+for example `vp run --cache '@threadlines/server#test' <filename substring>`.
+Web UI changes also need `vp run --cache '@threadlines/web#test:browser'`.
+Reserve `vp run test` (the full suite) for broad changes. Never run `bun test`.
 
 On Windows:
 
