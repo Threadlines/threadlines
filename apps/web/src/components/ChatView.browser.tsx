@@ -477,6 +477,149 @@ function buildFixture(snapshot: OrchestrationReadModel): TestFixture {
   };
 }
 
+const PULL_REQUEST_NUMBER = 234;
+const PULL_REQUEST_REPOSITORY = "Threadlines/threadlines";
+// The fixture thread is checked out on `main`, which is what links it to the
+// listing row the way the sidebar badge and the Pull request tab do.
+const PULL_REQUEST_HEAD_BRANCH = "main";
+const PULL_REQUEST_URL = `https://github.com/${PULL_REQUEST_REPOSITORY}/pull/${PULL_REQUEST_NUMBER}`;
+
+/**
+ * A workspace whose project sits on GitHub, whose server can list pull
+ * requests, and whose version skew raises a notice, so the dock has both kinds
+ * of row to hold at once.
+ */
+function withPullRequestFixture(nextFixture: TestFixture): void {
+  const capabilities = { repositoryIdentity: true, pullRequests: true } as const;
+  nextFixture.serverConfig = {
+    ...nextFixture.serverConfig,
+    environment: {
+      ...nextFixture.serverConfig.environment,
+      serverVersion: "9.9.9",
+      capabilities,
+    },
+  };
+  nextFixture.welcome = {
+    ...nextFixture.welcome,
+    environment: { ...nextFixture.welcome.environment, capabilities },
+  };
+  nextFixture.snapshot = {
+    ...nextFixture.snapshot,
+    projects: nextFixture.snapshot.projects.map((project) => ({
+      ...project,
+      repositoryIdentity: {
+        canonicalKey: `github.com/${PULL_REQUEST_REPOSITORY}`.toLowerCase(),
+        locator: {
+          source: "git-remote" as const,
+          remoteName: "origin",
+          remoteUrl: `https://github.com/${PULL_REQUEST_REPOSITORY}.git`,
+        },
+        displayName: PULL_REQUEST_REPOSITORY,
+        provider: "github",
+        owner: "Threadlines",
+        name: "threadlines",
+      },
+    })),
+  };
+}
+
+/** The listing row and the detail behind the composer's docked pull request. */
+function resolvePullRequestRpc(body: NormalizedWsRpcRequestBody): unknown | undefined {
+  if (body._tag === WS_METHODS.pullRequestsList) {
+    const state = (body as { state?: string }).state;
+    return {
+      viewer: "badcuban",
+      errors: [],
+      entries:
+        state === "open"
+          ? [
+              {
+                provider: "github",
+                projectId: PROJECT_ID,
+                projectTitle: "threadlines",
+                repository: PULL_REQUEST_REPOSITORY,
+                number: PULL_REQUEST_NUMBER,
+                title: "fix(server): migration 050 no longer stalls startup",
+                url: PULL_REQUEST_URL,
+                author: { login: "badcuban", isBot: false, avatarUrl: null },
+                headBranch: PULL_REQUEST_HEAD_BRANCH,
+                baseBranch: "main",
+                state: "open",
+                isDraft: false,
+                additions: 26,
+                deletions: 25,
+                createdAt: NOW_ISO,
+                updatedAt: NOW_ISO,
+                viewerIsAuthor: true,
+                viewerReviewRequested: false,
+                labels: [],
+                origin: "workspace",
+              },
+            ]
+          : [],
+    };
+  }
+  if (body._tag === WS_METHODS.pullRequestsDetail) {
+    return {
+      provider: "github",
+      projectId: PROJECT_ID,
+      projectTitle: "threadlines",
+      workspaceRoot: "/repo/project",
+      repository: PULL_REQUEST_REPOSITORY,
+      number: PULL_REQUEST_NUMBER,
+      title: "fix(server): migration 050 no longer stalls startup",
+      body: "",
+      url: PULL_REQUEST_URL,
+      author: { login: "badcuban", isBot: false, avatarUrl: null },
+      state: "open",
+      isDraft: false,
+      mergeability: "mergeable",
+      additions: 26,
+      deletions: 25,
+      changedFiles: 2,
+      headBranch: PULL_REQUEST_HEAD_BRANCH,
+      baseBranch: "main",
+      createdAt: NOW_ISO,
+      updatedAt: NOW_ISO,
+      mergedAt: null,
+      closedAt: null,
+      viewerIsAuthor: true,
+      reviewers: [],
+      labels: [],
+      checks: [
+        { name: "build", status: "pending", description: null, url: null },
+        { name: "test", status: "pending", description: null, url: null },
+        { name: "lint", status: "success", description: null, url: null },
+      ],
+      checksState: "pending",
+      viewer: { canWrite: true, canReview: false, canManage: true },
+      mergeMethods: ["squash"],
+      capabilities: {
+        diff: true,
+        comment: true,
+        actions: ["merge", "close", "enable-auto-merge", "disable-auto-merge"],
+        mergeMethods: ["squash"],
+        updateMethods: ["merge"],
+        reactions: true,
+        review: {
+          inlineComment: true,
+          reply: true,
+          resolve: true,
+          verdicts: ["approve", "comment"],
+        },
+        reviewers: { request: true, listCandidates: true },
+        edit: { pullRequest: true, comment: true },
+      },
+      baseComparison: "up-to-date",
+      behindBy: 0,
+      autoMergeEnabled: false,
+      isStacked: false,
+      defaultBranch: "main",
+    };
+  }
+  return undefined;
+}
+
 function addThreadToSnapshot(
   snapshot: OrchestrationReadModel,
   threadId: ThreadId,
@@ -2834,6 +2977,63 @@ describe("ChatView timeline estimator parity (full app)", () => {
         },
         { timeout: 8_000, interval: 16 },
       );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("docks the thread's pull request above the notices in one frame", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-pull-request-dock" as MessageId,
+        targetText: "pull request dock",
+      }),
+      configureFixture: withPullRequestFixture,
+      resolveRpc: resolvePullRequestRpc,
+    });
+
+    try {
+      // The branch, the project and the size only exist on the detail, so
+      // waiting for the branch is waiting for the shared read to reach the row.
+      const row = await waitForElement(() => {
+        const candidate = document.querySelector<HTMLElement>(
+          '[data-composer-pull-request-row="true"]',
+        );
+        return candidate?.textContent?.includes(PULL_REQUEST_HEAD_BRANCH) ? candidate : null;
+      }, "Unable to find the composer pull request row with its branch.");
+      expect(row.textContent).toContain(`#${PULL_REQUEST_NUMBER}`);
+      expect(row.textContent).toContain("+26");
+      // Two checks are still running, which is what the chip's word covers and
+      // its dot colours.
+      expect(row.textContent).toContain("CI");
+
+      // The state glyph is the open one the sidebar badge and the pull
+      // requests page use, in the same tone.
+      const stateIcon = row.querySelector("svg");
+      expect(stateIcon?.getAttribute("class")).toContain("text-emerald-600");
+
+      // One frame, not two: the notice the version skew raises sits inside the
+      // same dock, under the pull request row, and the dock's bottom edge is
+      // the composer's top edge.
+      const dock = document.querySelector<HTMLElement>('[data-composer-notice-dock="true"]');
+      expect(dock).toBeTruthy();
+      expect(dock!.contains(row)).toBe(true);
+      const notice = dock!.querySelector("[data-composer-notice-severity]");
+      expect(notice).toBeTruthy();
+      expect(row.getBoundingClientRect().bottom).toBeLessThanOrEqual(
+        notice!.getBoundingClientRect().top + 1,
+      );
+
+      const composerSurface = document.querySelector<HTMLElement>(
+        "[data-chat-composer-mobile-collapsed]",
+      );
+      expect(composerSurface).toBeTruthy();
+      expect(
+        Math.abs(
+          dock!.getBoundingClientRect().bottom - composerSurface!.getBoundingClientRect().top,
+        ),
+      ).toBeLessThan(2);
     } finally {
       await mounted.cleanup();
     }

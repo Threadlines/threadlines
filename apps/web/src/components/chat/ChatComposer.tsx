@@ -116,7 +116,8 @@ import { ComposerPendingUserInputPanel } from "./ComposerPendingUserInputPanel";
 import { ComposerGoalBar, type ComposerGoalSetInput } from "./ComposerGoalBar";
 import { ComposerPlanFollowUpBanner } from "./ComposerPlanFollowUpBanner";
 import type { ComposerNotice } from "./composerNotices";
-import { ComposerNoticeDock } from "./ComposerNoticeDock";
+import { ComposerDock, hasComposerDockContent } from "./ComposerDock";
+import type { ComposerPullRequest } from "./ComposerPullRequestRow";
 import { ComposerPendingDrawingContexts } from "./ComposerPendingDrawingContexts";
 import { ComposerPendingPickedElementContexts } from "./ComposerPendingPickedElementContexts";
 import { ComposerPendingTranscriptHighlightContexts } from "./ComposerPendingTranscriptHighlightContexts";
@@ -558,6 +559,13 @@ export interface ChatComposerProps {
    */
   notices: ReadonlyArray<ComposerNotice>;
 
+  /**
+   * The pull request the thread is working on, docked above the notices. Null
+   * where the thread has none, or where the surface has no route to resolve
+   * one (a draft, a general chat).
+   */
+  pullRequest: ComposerPullRequest | null;
+
   // Misc
   resolvedTheme: "light" | "dark";
   settings: UnifiedSettings;
@@ -655,6 +663,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     activeThreadModelSelection,
     activeThreadActivities,
     notices,
+    pullRequest,
     resolvedTheme,
     settings,
     keybindings,
@@ -3112,13 +3121,20 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         onDragLeave={onComposerDragLeave}
         onDrop={onComposerDrop}
       >
-        <ComposerNoticeDock notices={notices} />
+        {/* A collapsed composer drops the standing context, never a notice
+            about sending: those stay in front of the send button. */}
+        <ComposerDock
+          pullRequest={isComposerCollapsedMobile ? null : pullRequest}
+          notices={notices}
+        />
         <div
           ref={composerSurfaceRef}
           data-chat-composer-mobile-collapsed={isComposerCollapsedMobile ? "true" : "false"}
           className={cn(
             "rounded-xl border bg-card elevate-raised transition-colors duration-200 has-focus-visible:border-focus-ring/45",
-            notices.length > 0 && "rounded-t-none",
+            !isComposerCollapsedMobile &&
+              hasComposerDockContent({ pullRequest, notices }) &&
+              "rounded-t-none",
             isDragOverComposer ? "border-primary/70 bg-accent/30" : "border-border",
             environmentUnavailable ? "opacity-75" : null,
             composerProviderState.composerSurfaceClassName,

@@ -1,0 +1,1437 @@
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Mockup: pull request strip, chat chips, and hover card</title>
+    <style>
+      /* Tokens lifted from apps/web/src/index.css so the mockup reads like the app. */
+      :root {
+        --font-sans:
+          "Schibsted Grotesk", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+        --font-mono: "Cascadia Mono", "SF Mono", Consolas, Menlo, monospace;
+        --radius-badge: 4px;
+        --radius-control: 6px;
+        --radius-panel: 7px;
+        --radius-surface: 8px;
+        --radius-large: 10px;
+
+        --background: oklch(0.98 0 0);
+        --chrome: oklch(0.95 0 0);
+        --rail: oklch(0.965 0 0);
+        --card: #fff;
+        --popover: #fff;
+        --foreground: oklch(0.285 0 0);
+        --muted-foreground: oklch(0.5 0 0);
+        --muted: rgb(0 0 0 / 4%);
+        --accent: rgb(0 0 0 / 4%);
+        --border: rgb(0 0 0 / 8%);
+        --input: rgb(0 0 0 / 10%);
+        --primary: #00347d;
+        --primary-readable: oklch(0.488 0.217 264);
+        --success-fg: #059669;
+        --violet-fg: #7c3aed;
+        --warning-fg: #b45309;
+        --danger-fg: #dc2626;
+        --shadow: 0 4px 12px rgb(0 0 0 / 6%);
+      }
+      .dark {
+        --background: oklch(0.228 0 0);
+        --chrome: oklch(0.19 0 0);
+        --rail: oklch(0.26 0 0);
+        --card: oklch(0.292 0 0);
+        --popover: oklch(0.312 0 0);
+        --foreground: oklch(0.93 0 0);
+        --muted-foreground: oklch(0.68 0 0);
+        --muted: rgb(255 255 255 / 9%);
+        --accent: rgb(255 255 255 / 9%);
+        --border: rgb(255 255 255 / 14%);
+        --input: rgb(255 255 255 / 13%);
+        --primary-readable: oklch(0.65 0.19 264);
+        --success-fg: rgb(110 231 183 / 90%);
+        --violet-fg: rgb(196 181 253 / 90%);
+        --warning-fg: #fbbf24;
+        --danger-fg: #f87171;
+        --shadow: 0 6px 18px rgb(0 0 0 / 35%);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+      }
+      body {
+        font-family: var(--font-sans);
+        font-size: 14px;
+        line-height: 1.5;
+        color: var(--foreground);
+        background: var(--chrome);
+        -webkit-font-smoothing: antialiased;
+      }
+      svg {
+        display: block;
+        flex: none;
+      }
+      button {
+        font: inherit;
+        color: inherit;
+        background: none;
+        border: 0;
+        padding: 0;
+        cursor: pointer;
+      }
+      .mono {
+        font-family: var(--font-mono);
+        font-size: 12px;
+      }
+      .muted {
+        color: var(--muted-foreground);
+      }
+
+      /* ---- Demo bar (not part of the app) ---- */
+      .demo-bar {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 8px 14px;
+        font-size: 12px;
+        background: var(--chrome);
+        border-bottom: 1px solid var(--border);
+        color: var(--muted-foreground);
+      }
+      .demo-bar strong {
+        color: var(--foreground);
+        font-weight: 600;
+      }
+      .demo-bar button {
+        padding: 3px 9px;
+        border-radius: var(--radius-control);
+        border: 1px solid var(--border);
+        color: var(--foreground);
+        background: var(--card);
+      }
+      .demo-bar button:hover {
+        background: var(--accent);
+      }
+      .demo-bar .spacer {
+        flex: 1;
+      }
+      .demo-bar button.on {
+        background: var(--accent);
+        border-color: var(--foreground);
+      }
+
+      /* ---- App frame ---- */
+      .app {
+        display: grid;
+        grid-template-columns: 216px 1fr;
+        height: calc(100vh - 38px);
+        min-height: 640px;
+        background: var(--background);
+      }
+      .sidebar {
+        background: var(--rail);
+        border-right: 1px solid var(--border);
+        padding: 10px 8px;
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        font-size: 13px;
+        overflow: hidden;
+      }
+      .sidebar .brand {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 4px 8px 10px;
+        font-weight: 600;
+      }
+      .sidebar .item {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 5px 8px;
+        border-radius: var(--radius-control);
+        color: var(--foreground);
+      }
+      .sidebar .item:hover {
+        background: var(--accent);
+      }
+      .sidebar .item.active {
+        background: rgb(255 255 255 / 10%);
+      }
+      .dark .sidebar .item.active {
+        background: rgb(255 255 255 / 10%);
+      }
+      html:not(.dark) .sidebar .item.active {
+        background: rgb(0 0 0 / 6%);
+      }
+      .sidebar .section {
+        padding: 12px 8px 4px;
+        font-size: 11px;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: var(--muted-foreground);
+      }
+      .sidebar .thread {
+        display: flex;
+        flex-direction: column;
+        gap: 1px;
+        padding: 6px 8px;
+        border-radius: var(--radius-control);
+      }
+      .sidebar .thread:hover {
+        background: var(--accent);
+      }
+      .sidebar .thread .top {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 11px;
+        color: var(--muted-foreground);
+      }
+      .sidebar .thread .top .num {
+        display: inline-flex;
+        align-items: center;
+        gap: 3px;
+        font-family: var(--font-mono);
+      }
+      .sidebar .thread .title {
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      .main {
+        display: flex;
+        flex-direction: column;
+        min-width: 0;
+      }
+      .topbar {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 12px 18px;
+        font-size: 14px;
+        border-bottom: 1px solid var(--border);
+      }
+      .topbar .crumb {
+        color: var(--muted-foreground);
+      }
+      .topbar .sep {
+        color: var(--muted-foreground);
+      }
+
+      .scroll {
+        flex: 1;
+        overflow: auto;
+      }
+      .column {
+        max-width: 720px;
+        margin: 0 auto;
+        padding: 28px 24px 12px;
+      }
+
+      /* ---- Transcript ---- */
+      .msg {
+        margin: 0 0 14px;
+      }
+      .msg p {
+        margin: 0 0 8px;
+      }
+      .msg .tool {
+        color: var(--muted-foreground);
+        margin: 6px 0;
+        font-size: 13px;
+      }
+      .msg .quote {
+        border-left: 2px solid var(--border);
+        padding-left: 12px;
+        margin: 6px 0 10px;
+      }
+      .user {
+        display: flex;
+        justify-content: flex-end;
+        margin: 18px 0;
+      }
+      .user .bubble {
+        background: var(--card);
+        border-radius: var(--radius-large);
+        padding: 9px 13px;
+        max-width: 78%;
+      }
+      .status {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        color: var(--muted-foreground);
+        font-size: 13px;
+        margin-top: 8px;
+      }
+      .status .spark {
+        color: #e08b66;
+      }
+
+      /* PR chip in chat: icon + number, state-tinted icon only. */
+      .pr-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        vertical-align: baseline;
+        height: 19px;
+        padding: 0 6px 0 5px;
+        border-radius: var(--radius-badge);
+        background: var(--muted);
+        font-family: var(--font-mono);
+        font-size: 12px;
+        color: var(--foreground);
+        text-decoration: none;
+        position: relative;
+        top: -1px;
+      }
+      .pr-chip:hover {
+        background: var(--accent);
+        filter: brightness(1.15);
+      }
+      html:not(.dark) .pr-chip:hover {
+        filter: brightness(0.96);
+      }
+      .st-open {
+        color: var(--success-fg);
+      }
+      .st-merged {
+        color: var(--violet-fg);
+      }
+      .st-queued {
+        color: var(--warning-fg);
+      }
+      .st-closed {
+        color: var(--muted-foreground);
+      }
+      .st-failed {
+        color: var(--danger-fg);
+      }
+
+      /* ---- Hover card ---- */
+      .hover-card {
+        position: absolute;
+        z-index: 40;
+        width: 372px;
+        background: var(--popover);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-panel);
+        box-shadow: var(--shadow);
+        padding: 9px 11px 8px;
+        font-size: 12px;
+        display: none;
+      }
+      .hover-card.show {
+        display: block;
+      }
+      .hover-card .row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .hover-card .state {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        padding: 1px 7px 1px 5px;
+        border-radius: 999px;
+        font-weight: 600;
+        font-size: 11px;
+        background: color-mix(in srgb, currentColor 14%, transparent);
+      }
+      .hover-card .state {
+        white-space: nowrap;
+      }
+      .hover-card .repo {
+        color: var(--muted-foreground);
+        font-family: var(--font-mono);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        min-width: 0;
+      }
+      .hover-card .ago {
+        margin-left: auto;
+        color: var(--muted-foreground);
+        white-space: nowrap;
+      }
+      .hover-card .title {
+        font-size: 13px;
+        font-weight: 600;
+        margin: 7px 0 8px;
+        line-height: 1.35;
+      }
+      .hover-card .foot {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        color: var(--muted-foreground);
+      }
+      .hover-card .avatar {
+        width: 16px;
+        height: 16px;
+        border-radius: 50%;
+        background: linear-gradient(135deg, #7aa2f7, #bb9af7);
+      }
+      .hover-card .foot .right {
+        margin-left: auto;
+        display: flex;
+        gap: 8px;
+        align-items: center;
+      }
+      .hover-card .foot .pill {
+        padding: 1px 6px;
+        border-radius: var(--radius-badge);
+        background: var(--muted);
+      }
+      .diff .add {
+        color: var(--success-fg);
+      }
+      .diff .del {
+        color: var(--danger-fg);
+      }
+
+      /* ---- Bottom: PR strip + composer ---- */
+      .bottom {
+        padding: 0 24px 14px;
+        max-width: 720px;
+        margin: 0 auto;
+        width: 100%;
+      }
+
+      /* Rows with a hairline between them, no box around the group. */
+      .pr-strip {
+        border-top: 1px solid var(--border);
+        margin-bottom: 8px;
+      }
+      .pr-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        height: 34px;
+        border-bottom: 1px solid var(--border);
+        font-size: 13px;
+      }
+      .pr-row .num {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        font-family: var(--font-mono);
+        font-size: 12px;
+        cursor: default;
+      }
+      .pr-row .num:hover {
+        color: var(--primary-readable);
+      }
+      .pr-row .project {
+        color: var(--muted-foreground);
+      }
+      .pr-row .branch {
+        color: var(--muted-foreground);
+        font-family: var(--font-mono);
+        font-size: 12px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        min-width: 0;
+      }
+      .pr-row .right {
+        margin-left: auto;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .pr-row .diff {
+        font-family: var(--font-mono);
+        font-size: 12px;
+      }
+      .pr-row .note {
+        color: var(--muted-foreground);
+        font-size: 12px;
+      }
+      .ci-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        height: 22px;
+        padding: 0 6px 0 7px;
+        border-radius: var(--radius-control);
+        border: 1px solid var(--border);
+        font-size: 12px;
+      }
+      .ci-chip:hover,
+      .ci-chip[aria-expanded="true"] {
+        background: var(--accent);
+      }
+      .ci-chip .dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: currentColor;
+      }
+      .ci-chip .dot.pending {
+        background: transparent;
+        border: 1.5px solid currentColor;
+      }
+      .icon-btn {
+        width: 22px;
+        height: 22px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: var(--radius-control);
+        color: var(--muted-foreground);
+      }
+      .icon-btn:hover {
+        background: var(--accent);
+        color: var(--foreground);
+      }
+
+      /* CI popover */
+      .ci-pop {
+        position: absolute;
+        z-index: 40;
+        width: 300px;
+        background: var(--popover);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-panel);
+        box-shadow: var(--shadow);
+        font-size: 12px;
+        display: none;
+      }
+      .ci-pop.show {
+        display: block;
+      }
+      .ci-pop .head {
+        display: flex;
+        align-items: center;
+        padding: 9px 11px 4px;
+        color: var(--muted-foreground);
+      }
+      .ci-pop .head .ext {
+        margin-left: auto;
+        color: var(--muted-foreground);
+      }
+      .ci-pop .head .ext:hover {
+        color: var(--foreground);
+      }
+      .ci-pop .check {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 4px 11px;
+      }
+      .ci-pop .check .count {
+        margin-left: auto;
+        font-family: var(--font-mono);
+        color: var(--muted-foreground);
+      }
+      .ci-pop .check .name {
+        color: var(--foreground);
+      }
+      .ci-pop hr {
+        border: 0;
+        border-top: 1px solid var(--border);
+        margin: 6px 0;
+      }
+      .ci-pop label {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 4px 11px;
+        cursor: pointer;
+      }
+      .ci-pop label:hover {
+        background: var(--accent);
+      }
+      .ci-pop label .hint {
+        margin-left: auto;
+        color: var(--muted-foreground);
+        font-size: 11px;
+      }
+      .ci-pop input[type="checkbox"] {
+        width: 13px;
+        height: 13px;
+        margin: 0;
+        accent-color: var(--primary);
+      }
+      .ci-pop .tail {
+        padding: 2px 0 6px;
+      }
+
+      /* Variant A: rows docked into the top of the composer card. */
+      .composer-head {
+        display: none;
+      }
+      .composer-head.show {
+        display: block;
+      }
+      .composer-head .pr-row {
+        padding: 0 14px;
+        height: 32px;
+        border-bottom: 1px solid var(--border);
+      }
+      .composer-head .pr-row:hover {
+        background: var(--accent);
+      }
+
+      /* Variant B: folded into the branch row under the composer. */
+      .under .pr-inline {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .under .pr-inline .num {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        font-family: var(--font-mono);
+        font-size: 12px;
+        color: var(--foreground);
+      }
+      .under-extra {
+        display: none;
+      }
+      .under-extra.show {
+        display: block;
+      }
+      .under-extra .under {
+        padding-top: 4px;
+      }
+
+      /* Variant C: filled tiles, the Claude Code shape. */
+      .pr-tiles {
+        display: none;
+        margin-bottom: 6px;
+      }
+      .pr-tiles.show {
+        display: block;
+      }
+      .pr-tiles .pr-row {
+        height: 36px;
+        padding: 0 12px;
+        margin-bottom: 6px;
+        border: 1px solid var(--border);
+        border-radius: var(--radius-surface);
+        background: var(--card);
+      }
+      .pr-tiles .pr-row:hover {
+        background: var(--popover);
+      }
+
+      /* Composer card, matching the real one: text area, then model row. */
+      .composer {
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-large);
+        overflow: hidden;
+      }
+      .composer-body {
+        padding: 12px 14px 10px;
+      }
+      .composer .input {
+        min-height: 44px;
+        color: var(--muted-foreground);
+      }
+      .composer .tools {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        margin-top: 10px;
+        font-size: 13px;
+      }
+      .composer .tools .pick {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        color: var(--foreground);
+      }
+      .composer .tools .pick .spark {
+        color: #e08b66;
+      }
+      .composer .tools .right {
+        margin-left: auto;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      .composer .send {
+        width: 28px;
+        height: 28px;
+        border-radius: 50%;
+        background: var(--primary);
+        color: #fff;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .ring {
+        width: 22px;
+        height: 22px;
+        border-radius: 50%;
+        border: 1.5px solid var(--border);
+      }
+      .under {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 8px 4px 0;
+        font-size: 13px;
+        color: var(--muted-foreground);
+      }
+      .under .right {
+        margin-left: auto;
+      }
+
+      .legend {
+        padding: 10px 24px 18px;
+        max-width: 720px;
+        margin: 0 auto;
+        color: var(--muted-foreground);
+        font-size: 12px;
+      }
+      .legend b {
+        color: var(--foreground);
+        font-weight: 600;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="demo-bar">
+      <strong>Mockup</strong> pull request strip above the composer, PR chips in chat, shared hover
+      card.
+      <span class="spacer"></span>
+      <span>Placement:</span>
+      <button data-variant="docked" class="variant-btn">Docked in composer</button>
+      <button data-variant="footer" class="variant-btn">In the branch row</button>
+      <button data-variant="tiles" class="variant-btn">Tiles</button>
+      <button data-variant="strip" class="variant-btn">Bare rows (old)</button>
+      <span class="spacer"></span>
+      <span>Scenario: <span id="scenario-label">1 of 6</span></span>
+      <button id="prev">◀ Back</button>
+      <button id="next">Advance ▶</button>
+      <button id="theme">Light / dark</button>
+    </div>
+
+    <div class="app">
+      <aside class="sidebar">
+        <div class="brand">
+          <svg
+            width="18"
+            height="14"
+            viewBox="0 0 18 14"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.6"
+          >
+            <path d="M1 7h5c2 0 2-5 5-5h6M1 7h5c2 0 2 5 5 5h6" />
+          </svg>
+          Threadlines
+        </div>
+        <div class="item muted">
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+          >
+            <circle cx="11" cy="11" r="7" />
+            <path d="m21 21-4-4" />
+          </svg>
+          Search
+        </div>
+        <div class="item">
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+          >
+            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+          </svg>
+          General Chats
+        </div>
+        <div class="item">
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+          >
+            <circle cx="18" cy="18" r="3" />
+            <circle cx="6" cy="6" r="3" />
+            <path d="M13 6h3a2 2 0 0 1 2 2v7M6 9v12" />
+          </svg>
+          Pull Requests
+        </div>
+        <div class="section">This device</div>
+        <div class="thread item active">
+          <div style="min-width: 0">
+            <div class="top">
+              <span class="num st-open" id="sb-badge"
+                ><svg
+                  width="11"
+                  height="11"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2.4"
+                >
+                  <circle cx="18" cy="18" r="3" />
+                  <circle cx="6" cy="6" r="3" />
+                  <path d="M13 6h3a2 2 0 0 1 2 2v7M6 9v12" /></svg
+                >#234</span
+              >
+              Threadlines · worktree · 3m
+            </div>
+            <div class="title">Nightly .275 update logs</div>
+          </div>
+        </div>
+        <div class="thread">
+          <div class="top">Threadlines · 33m ago</div>
+          <div class="title">Evaluate fx as Third Provider</div>
+        </div>
+        <div class="thread">
+          <div class="top">Threadlines · 5m ago</div>
+          <div class="title">Recover Deleted Composer Image</div>
+        </div>
+        <div class="section">Wrapped (41)</div>
+        <div class="thread">
+          <div class="top">
+            <span class="num st-merged"
+              ><svg
+                width="11"
+                height="11"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2.4"
+              >
+                <circle cx="18" cy="18" r="3" />
+                <circle cx="6" cy="6" r="3" />
+                <path d="M6 21V9a9 9 0 0 0 9 9" /></svg
+              >#237</span
+            >
+            21m ago
+          </div>
+          <div class="title">Persist Source Control Toasts</div>
+        </div>
+        <div class="thread">
+          <div class="top">
+            <span class="num st-merged"
+              ><svg
+                width="11"
+                height="11"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2.4"
+              >
+                <circle cx="18" cy="18" r="3" />
+                <circle cx="6" cy="6" r="3" />
+                <path d="M6 21V9a9 9 0 0 0 9 9" /></svg
+              >#236</span
+            >
+            33m ago
+          </div>
+          <div class="title">Standardize Claude Context Colors</div>
+        </div>
+        <div class="thread">
+          <div class="top">
+            <span class="num st-merged"
+              ><svg
+                width="11"
+                height="11"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2.4"
+              >
+                <circle cx="18" cy="18" r="3" />
+                <circle cx="6" cy="6" r="3" />
+                <path d="M6 21V9a9 9 0 0 0 9 9" /></svg
+              >#233</span
+            >
+            20h ago
+          </div>
+          <div class="title">Investigate migration stall</div>
+        </div>
+      </aside>
+
+      <section class="main">
+        <div class="topbar">
+          <span class="crumb">Threadlines</span><span class="sep">/</span
+          ><span>Nightly .275 update logs</span>
+        </div>
+
+        <div class="scroll">
+          <div class="column">
+            <div class="msg">
+              <p>
+                <b>Step 5 shrinks to one sentence.</b> The "one concern per PR" rule already exists
+                in the repo guidelines and
+                <a class="pr-chip" href="#" data-pr="221"
+                  ><svg
+                    class="st-merged"
+                    width="11"
+                    height="11"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2.4"
+                  >
+                    <circle cx="18" cy="18" r="3" />
+                    <circle cx="6" cy="6" r="3" />
+                    <path d="M6 21V9a9 9 0 0 0 9 9" /></svg
+                  >#221</a
+                >
+                ignored it, so a new rule would not have helped there. What is worth adding is a
+                single line in AGENTS.md saying that migrations touching existing rows must be timed
+                against a big database before merge.
+              </p>
+              <p>
+                So the plan becomes: PR one is the migration fix. PR two is "desktop waits while
+                migrating" plus the per-migration timing log. And one sentence in the guidelines.
+                Nothing else.
+              </p>
+            </div>
+            <div class="user"><div class="bubble">alright yeah lets do that plan</div></div>
+            <div class="msg">
+              <p>
+                Starting with PR 1: adding the one-line guideline, committing the migration fix on a
+                descriptively named branch, pushing, and opening the PR.
+              </p>
+              <div class="tool">Ran 8 commands ›</div>
+              <div class="quote">
+                PR
+                <a class="pr-chip" href="#" data-pr="234"
+                  ><svg
+                    class="st-open pr-234-icon"
+                    width="11"
+                    height="11"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2.4"
+                  >
+                    <circle cx="18" cy="18" r="3" />
+                    <circle cx="6" cy="6" r="3" />
+                    <path d="M13 6h3a2 2 0 0 1 2 2v7M6 9v12" /></svg
+                  >#234</a
+                >
+                is open. I found that SQLite's synchronous driver freezes the backend during long
+                statements, so the readiness signal must be written before migration starts rather
+                than reported mid-process. Now gathering the runtime-state file pattern and the test
+                harness to write PR 2's spec.
+              </div>
+              <div class="tool">Ran 5 commands ›</div>
+              <p id="msg-235" style="display: none">
+                All gates green. PR
+                <a class="pr-chip" href="#" data-pr="235"
+                  ><svg
+                    class="st-open pr-235-icon"
+                    width="11"
+                    height="11"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2.4"
+                  >
+                    <circle cx="18" cy="18" r="3" />
+                    <circle cx="6" cy="6" r="3" />
+                    <path d="M13 6h3a2 2 0 0 1 2 2v7M6 9v12" /></svg
+                  >#235</a
+                >
+                is open with the desktop wait and the per-migration timing log.
+              </p>
+              <div class="status">
+                <span class="spark">✸</span>
+                <span id="status-text">3m 41s · 2.6k tokens · Almost done thinking…</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="bottom">
+          <div class="pr-strip" id="pr-strip"></div>
+          <div class="pr-tiles" id="pr-tiles"></div>
+
+          <div class="composer">
+            <div class="composer-head" id="pr-dock"></div>
+            <div class="composer-body">
+              <div class="input">Ask a follow-up, or describe the next change…</div>
+              <div class="tools">
+                <span class="pick"><span class="spark">✸</span> Fable 5.1 ▾</span>
+                <span class="pick muted">☰ High ▾</span>
+                <span class="pick muted">Build</span>
+                <span class="pick muted">Auto ▾</span>
+                <span class="right">
+                  <span class="icon-btn">⌂</span><span class="icon-btn">+</span
+                  ><span class="ring"></span>
+                  <span class="send">↑</span>
+                </span>
+              </div>
+            </div>
+          </div>
+          <div class="under">
+            <span>⎇ Worktree · <span class="mono">threadlines/nightly-275</span></span>
+            <span class="pr-inline" id="pr-footer"></span>
+            <span class="right">From main ▾</span>
+          </div>
+          <div class="under-extra" id="pr-footer-extra"></div>
+        </div>
+
+        <div class="legend">
+          <b>Placement</b> buttons at the top switch where the PRs live. <b>Try it:</b> hover any
+          <span class="mono">#234</span> chip for the card. Click the CI chip on a strip row for the
+          checks popover. Advance the scenario to watch the rows change state: open → checks pass →
+          second PR → queued → merged → wrapped up.
+        </div>
+      </section>
+    </div>
+
+    <!-- Shared hover card, positioned next to whatever chip is hovered -->
+    <div class="hover-card" id="hover-card">
+      <div class="row">
+        <span class="state" id="hc-state"></span>
+        <span class="repo" id="hc-repo"></span>
+        <span class="ago" id="hc-ago"></span>
+      </div>
+      <div class="title" id="hc-title"></div>
+      <div class="foot">
+        <span class="avatar"></span><span id="hc-author">badcuban</span>
+        <span class="right"
+          ><span class="pill diff" id="hc-diff"></span><span class="pill" id="hc-files"></span
+        ></span>
+      </div>
+    </div>
+
+    <!-- CI popover -->
+    <div class="ci-pop" id="ci-pop">
+      <div class="head">
+        <span>Checks</span
+        ><button class="ext" title="Open checks on GitHub">
+          <svg
+            width="13"
+            height="13"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+          >
+            <path
+              d="M15 3h6v6M10 14 21 3M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5"
+            />
+          </svg>
+        </button>
+      </div>
+      <div id="ci-rows"></div>
+      <hr />
+      <label><input type="checkbox" id="opt-fix" /> Fix failing checks and review comments</label>
+      <label><input type="checkbox" id="opt-merge" /> Merge when checks pass</label>
+      <label
+        ><input type="checkbox" id="opt-wrap" checked /> Wrap up thread after merge or close
+        <span class="hint">Settings</span></label
+      >
+      <div class="tail"></div>
+    </div>
+
+    <script>
+      const ICON = {
+        open: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M13 6h3a2 2 0 0 1 2 2v7M6 9v12"/></svg>',
+        merged:
+          '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M6 21V9a9 9 0 0 0 9 9"/></svg>',
+        queued:
+          '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><circle cx="6" cy="6" r="3"/><path d="M6 9v12M13 6h3a2 2 0 0 1 2 2v3"/><path d="M15 18h6M18 15v6"/></svg>',
+      };
+      const CHECK_ICON = {
+        progress:
+          '<span class="ci-chip" style="border:0;padding:0;height:auto"><span class="dot pending"></span></span>',
+        passed:
+          '<svg class="st-open" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><circle cx="12" cy="12" r="9"/><path d="m8 12 3 3 5-6"/></svg>',
+        failed:
+          '<svg class="st-failed" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><circle cx="12" cy="12" r="9"/><path d="m9 9 6 6M15 9l-6 6"/></svg>',
+        skipped:
+          '<svg class="muted" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><circle cx="12" cy="12" r="9"/><path d="M8 12h8"/></svg>',
+      };
+
+      const PRS = {
+        221: {
+          repo: "Threadlines/threadlines",
+          title: "fix(server): backfill migration for thread cwd",
+          state: "merged",
+          ago: "21h ago",
+          add: 84,
+          del: 12,
+          files: 5,
+        },
+        234: {
+          repo: "Threadlines/threadlines",
+          title: "fix(server): migration 050 no longer stalls startup on large databases",
+          branch: "fix/migration-050-backfill-speed",
+          add: 26,
+          del: 25,
+          files: 2,
+        },
+        235: {
+          repo: "Threadlines/threadlines",
+          title: "fix(desktop): a slow database migration no longer counts as a failed start",
+          branch: "feat/desktop-waits-for-migrations",
+          add: 306,
+          del: 23,
+          files: 6,
+        },
+      };
+
+      // Each scenario: which PRs are on the strip and what state each is in.
+      const SCENARIOS = [
+        {
+          label: "PR #234 opened, checks running",
+          status: "3m 41s · 2.6k tokens · Almost done thinking…",
+          rows: [
+            {
+              n: 234,
+              state: "open",
+              ago: "3m ago",
+              ci: "pending",
+              checks: { progress: 2, passed: 11, skipped: 2 },
+            },
+          ],
+        },
+        {
+          label: "Checks passed",
+          status: "6m 02s · 4.1k tokens · Writing PR 2 spec…",
+          rows: [
+            {
+              n: 234,
+              state: "open",
+              ago: "6m ago",
+              ci: "success",
+              checks: { passed: 13, skipped: 2 },
+            },
+          ],
+        },
+        {
+          label: "Second PR opened; one check failed",
+          status: "3m 31s · 119.8k tokens · Waiting for Claude…",
+          show235: true,
+          rows: [
+            {
+              n: 235,
+              state: "open",
+              ago: "1m ago",
+              ci: "failure",
+              checks: { progress: 1, passed: 10, failed: 1, skipped: 2 },
+            },
+            {
+              n: 234,
+              state: "open",
+              ago: "14m ago",
+              ci: "success",
+              checks: { passed: 13, skipped: 2 },
+            },
+          ],
+        },
+        {
+          label: "#234 queued to merge",
+          status: "1m 37s · 880 tokens · 1 running task · Running tools…",
+          show235: true,
+          rows: [
+            {
+              n: 235,
+              state: "open",
+              ago: "9m ago",
+              ci: "success",
+              checks: { passed: 13, skipped: 2 },
+            },
+            {
+              n: 234,
+              state: "queued",
+              ago: "22m ago",
+              ci: "queued",
+              checks: { passed: 13, skipped: 2 },
+            },
+          ],
+        },
+        {
+          label: "#234 merged, #235 queued",
+          status: "Idle",
+          show235: true,
+          rows: [
+            {
+              n: 235,
+              state: "queued",
+              ago: "12m ago",
+              ci: "queued",
+              checks: { passed: 13, skipped: 2 },
+            },
+            {
+              n: 234,
+              state: "merged",
+              ago: "25m ago",
+              ci: "merged",
+              checks: { passed: 13, skipped: 2 },
+            },
+          ],
+        },
+        {
+          label: "Both merged; wrap-up dismissed #234's row",
+          status: "Idle",
+          show235: true,
+          rows: [
+            {
+              n: 235,
+              state: "merged",
+              ago: "38m ago",
+              ci: "merged",
+              checks: { passed: 13, skipped: 2 },
+            },
+          ],
+        },
+      ];
+
+      let current = {};
+      let scenario = 0;
+      let variant = "docked";
+
+      function stateWord(s) {
+        return s === "merged"
+          ? "Merged"
+          : s === "queued"
+            ? "Queued"
+            : s === "closed"
+              ? "Closed"
+              : "Open";
+      }
+
+      function ciChip(row) {
+        if (row.ci === "queued")
+          return `<span class="ci-chip st-queued">${ICON.queued} Queued ▾</span>`;
+        if (row.ci === "merged")
+          return `<span class="ci-chip st-merged"><span class="dot"></span> Merged</span>`;
+        const cls = row.ci === "success" ? "st-open" : row.ci === "failure" ? "st-failed" : "muted";
+        const dot =
+          row.ci === "pending" ? '<span class="dot pending"></span>' : '<span class="dot"></span>';
+        return `<span class="ci-chip ${cls}">${dot} <span style="color:var(--foreground)">CI</span> ▾</span>`;
+      }
+
+      function render() {
+        const sc = SCENARIOS[scenario];
+        document.getElementById("scenario-label").textContent =
+          `${scenario + 1} of ${SCENARIOS.length}: ${sc.label}`;
+        document.getElementById("status-text").textContent = sc.status;
+        document.getElementById("msg-235").style.display = sc.show235 ? "" : "none";
+
+        current = {};
+        for (const r of sc.rows) current[r.n] = r;
+        // Merged PRs that left the strip still exist for chat chips.
+        if (!current[234]) current[234] = { n: 234, state: "merged", ago: "1h ago", ci: "merged" };
+        if (!current[235] && sc.show235)
+          current[235] = { n: 235, state: "merged", ago: "38m ago", ci: "merged" };
+
+        const rowHtml = (r, compact) => {
+          const pr = PRS[r.n];
+          const iconState =
+            r.state === "merged" ? "merged" : r.state === "queued" ? "queued" : "open";
+          const cls =
+            r.state === "merged" ? "st-merged" : r.state === "queued" ? "st-queued" : "st-open";
+          const num = `<span class="num ${cls}" data-pr="${r.n}">${ICON[iconState]}<span style="color:var(--foreground)">#${r.n}</span></span>`;
+          const diff = `<span class="diff"><span class="add">+${pr.add}</span> <span class="del">−${pr.del}</span></span>`;
+          const ci = `<button class="ci-toggle" data-ci="${r.n}" aria-expanded="false">${ciChip(r)}</button>`;
+          if (compact) {
+            return `<span class="muted">·</span>${num}${diff}${ci}<button class="icon-btn" title="Remove from this thread">×</button>`;
+          }
+          return `<div class="pr-row" data-row="${r.n}">
+        ${num}
+        <span class="project">threadlines</span>
+        <span class="branch">${pr.branch}</span>
+        <span class="right">${diff}${ci}<button class="icon-btn" title="Remove from this thread">×</button></span>
+      </div>`;
+        };
+        const full = sc.rows.map((r) => rowHtml(r, false)).join("");
+        const strip = document.getElementById("pr-strip");
+        const tiles = document.getElementById("pr-tiles");
+        const dock = document.getElementById("pr-dock");
+        const footer = document.getElementById("pr-footer");
+        const footerExtra = document.getElementById("pr-footer-extra");
+        strip.innerHTML =
+          tiles.innerHTML =
+          dock.innerHTML =
+          footer.innerHTML =
+          footerExtra.innerHTML =
+            "";
+        strip.style.display = "none";
+        tiles.classList.remove("show");
+        dock.classList.remove("show");
+        footerExtra.classList.remove("show");
+        const any = sc.rows.length > 0;
+        if (variant === "strip" && any) {
+          strip.innerHTML = full;
+          strip.style.display = "";
+        }
+        if (variant === "tiles" && any) {
+          tiles.innerHTML = full;
+          tiles.classList.add("show");
+        }
+        if (variant === "docked" && any) {
+          dock.innerHTML = full;
+          dock.classList.add("show");
+        }
+        if (variant === "footer" && any) {
+          // Newest PR sits on the branch row itself; older ones stack under it.
+          footer.innerHTML = rowHtml(sc.rows[0], true);
+          const rest = sc.rows.slice(1);
+          if (rest.length) {
+            footerExtra.innerHTML = rest
+              .map(
+                (r) =>
+                  `<div class="under"><span class="muted" style="visibility:hidden">⎇ Worktree · <span class="mono">threadlines/nightly-275</span></span><span class="pr-inline">${rowHtml(r, true)}</span></div>`,
+              )
+              .join("");
+            footerExtra.classList.add("show");
+          }
+        }
+        document
+          .querySelectorAll(".variant-btn")
+          .forEach((b) => b.classList.toggle("on", b.dataset.variant === variant));
+
+        // Chat chips and the sidebar badge follow the same state.
+        for (const n of [234, 235]) {
+          const s = current[n]?.state ?? "open";
+          const cls = s === "merged" ? "st-merged" : s === "queued" ? "st-queued" : "st-open";
+          document.querySelectorAll(`.pr-${n}-icon`).forEach((el) => {
+            el.setAttribute("class", `${cls} pr-${n}-icon`);
+            el.innerHTML =
+              s === "merged"
+                ? '<circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M6 21V9a9 9 0 0 0 9 9"/>'
+                : '<circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M13 6h3a2 2 0 0 1 2 2v7M6 9v12"/>';
+          });
+        }
+        const badgeState = current[234].state;
+        const badge = document.getElementById("sb-badge");
+        badge.className = `num ${badgeState === "merged" ? "st-merged" : badgeState === "queued" ? "st-queued" : "st-open"}`;
+        badge.innerHTML = `${badgeState === "merged" ? ICON.merged : ICON.open}#234`.replace(
+          'width="13" height="13"',
+          'width="11" height="11"',
+        );
+        hideCi();
+      }
+
+      // ----- hover card -----
+      const card = document.getElementById("hover-card");
+      let hideTimer = null;
+      function showCard(target) {
+        const n = Number(target.dataset.pr);
+        const pr = PRS[n];
+        const live = current[n] ?? { state: pr.state, ago: pr.ago };
+        const state = live.state;
+        const stEl = document.getElementById("hc-state");
+        stEl.className = `state ${state === "merged" ? "st-merged" : state === "queued" ? "st-queued" : "st-open"}`;
+        stEl.innerHTML = `${ICON[state === "merged" ? "merged" : state === "queued" ? "queued" : "open"]} ${stateWord(state)}`;
+        document.getElementById("hc-repo").textContent = `${pr.repo} #${n}`;
+        document.getElementById("hc-ago").textContent = live.ago ?? pr.ago;
+        document.getElementById("hc-title").textContent = pr.title;
+        document.getElementById("hc-diff").innerHTML =
+          `<span class="add">+${pr.add}</span> <span class="del">−${pr.del}</span>`;
+        document.getElementById("hc-files").textContent = `${pr.files} files`;
+        const r = target.getBoundingClientRect();
+        card.classList.add("show");
+        const h = card.offsetHeight;
+        const above = r.top - h - 8 > 0;
+        card.style.left = `${Math.min(r.left, window.innerWidth - 360)}px`;
+        card.style.top = `${above ? r.top - h - 8 + window.scrollY : r.bottom + 8 + window.scrollY}px`;
+      }
+      function scheduleHide() {
+        hideTimer = setTimeout(() => card.classList.remove("show"), 120);
+      }
+      document.addEventListener("mouseover", (e) => {
+        const t = e.target.closest("[data-pr]");
+        if (t) {
+          clearTimeout(hideTimer);
+          showCard(t);
+        }
+      });
+      document.addEventListener("mouseout", (e) => {
+        const t = e.target.closest("[data-pr]");
+        if (t && !card.contains(e.relatedTarget)) scheduleHide();
+      });
+      card.addEventListener("mouseenter", () => clearTimeout(hideTimer));
+      card.addEventListener("mouseleave", scheduleHide);
+
+      // ----- CI popover -----
+      const pop = document.getElementById("ci-pop");
+      function hideCi() {
+        pop.classList.remove("show");
+        document
+          .querySelectorAll(".ci-toggle")
+          .forEach((b) => b.setAttribute("aria-expanded", "false"));
+      }
+      document.addEventListener("click", (e) => {
+        const btn = e.target.closest(".ci-toggle");
+        if (!btn) {
+          if (!pop.contains(e.target)) hideCi();
+          return;
+        }
+        const n = Number(btn.dataset.ci);
+        const row = current[n];
+        if (btn.getAttribute("aria-expanded") === "true") {
+          hideCi();
+          return;
+        }
+        hideCi();
+        btn.setAttribute("aria-expanded", "true");
+        const c = row.checks ?? {};
+        const lines = [
+          c.progress &&
+            `<div class="check">${CHECK_ICON.progress}<span class="name">In progress</span><span class="count">${c.progress}</span></div>`,
+          c.failed &&
+            `<div class="check">${CHECK_ICON.failed}<span class="name">Failed</span><span class="count">${c.failed}</span></div>`,
+          c.passed &&
+            `<div class="check">${CHECK_ICON.passed}<span class="name">Passed</span><span class="count">${c.passed}</span></div>`,
+          c.skipped &&
+            `<div class="check">${CHECK_ICON.skipped}<span class="name">Skipped</span><span class="count">${c.skipped}</span></div>`,
+        ]
+          .filter(Boolean)
+          .join("");
+        document.getElementById("ci-rows").innerHTML =
+          lines || `<div class="check muted">No checks on this pull request</div>`;
+        document.getElementById("opt-merge").checked = row.ci === "queued";
+        const r = btn.getBoundingClientRect();
+        pop.classList.add("show");
+        pop.style.left = `${r.right - pop.offsetWidth}px`;
+        pop.style.top = `${r.top - pop.offsetHeight - 6 + window.scrollY}px`;
+      });
+
+      document.getElementById("next").onclick = () => {
+        scenario = (scenario + 1) % SCENARIOS.length;
+        render();
+      };
+      document.getElementById("prev").onclick = () => {
+        scenario = (scenario - 1 + SCENARIOS.length) % SCENARIOS.length;
+        render();
+      };
+      document.querySelectorAll(".variant-btn").forEach((b) => {
+        b.onclick = () => {
+          variant = b.dataset.variant;
+          render();
+        };
+      });
+      document.getElementById("theme").onclick = () =>
+        document.documentElement.classList.toggle("dark");
+      render();
+    </script>
+  </body>
+</html>

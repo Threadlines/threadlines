@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { parsePullRequestReference } from "./pullRequestReference";
+import { parsePullRequestReference, parsePullRequestUrl } from "./pullRequestReference";
 
 describe("parsePullRequestReference", () => {
   it("accepts GitHub pull request URLs", () => {
@@ -71,5 +71,31 @@ describe("parsePullRequestReference", () => {
 
   it("rejects non-pull-request input", () => {
     expect(parsePullRequestReference("feature/my-branch")).toBeNull();
+  });
+});
+
+describe("parsePullRequestUrl", () => {
+  it("names the repository and number a GitHub address points at", () => {
+    expect(parsePullRequestUrl("https://github.com/Threadlines/threadlines/pull/234")).toEqual({
+      repository: "Threadlines/threadlines",
+      number: 234,
+    });
+  });
+
+  it("resolves a link into one part of the same pull request", () => {
+    expect(
+      parsePullRequestUrl("https://github.com/Threadlines/threadlines/pull/234/files"),
+    ).toEqual({ repository: "Threadlines/threadlines", number: 234 });
+  });
+
+  it("names nothing for the hosts whose rows nothing here lists by repository", () => {
+    expect(parsePullRequestUrl("https://gitlab.com/group/project/-/merge_requests/42")).toBeNull();
+    expect(
+      parsePullRequestUrl("https://dev.azure.com/acme/project/_git/t3code/pullrequest/42"),
+    ).toBeNull();
+  });
+
+  it("names nothing for a GitHub address that is not a pull request", () => {
+    expect(parsePullRequestUrl("https://github.com/Threadlines/threadlines/issues/234")).toBeNull();
   });
 });
