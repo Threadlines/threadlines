@@ -174,6 +174,7 @@ const makeServerConfig = (input: MarketingStudioSeedInput): ServerConfigShape =>
     environmentIdPath: NodePath.join(stateDir, "environment-id"),
     serverRuntimeStatePath: NodePath.join(stateDir, "server-runtime.json"),
     secretsDir: NodePath.join(stateDir, "secrets"),
+    speechModelsDir: NodePath.join(input.baseDir, "models", "speech"),
   };
 };
 

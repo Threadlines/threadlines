@@ -102,6 +102,7 @@ import {
   type ProviderSettingsRow,
 } from "./SettingsPanels.logic";
 import { useRelativeTimeTick } from "../../hooks/useRelativeTimeTick";
+import { DictationSettings } from "./DictationSettings";
 import {
   SettingResetButton,
   SettingsPageContainer,
@@ -933,6 +934,8 @@ export function GeneralSettingsPanel({ surface = "full" }: { surface?: "full" | 
           </>
         ) : null}
       </SettingsSection>
+
+      <DictationSettings />
 
       <SettingsSection title="Projects & Threads">
         {!isPhoneSurface ? (

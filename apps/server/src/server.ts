@@ -52,6 +52,7 @@ import { ThreadDiffStatBaselineReactorLive } from "./orchestration/Layers/Thread
 import { SleepInhibitorLive } from "./power/Layers/SleepInhibitor.ts";
 import { StorageMaintenanceDaemonLive } from "./persistence/Layers/StorageMaintenance.ts";
 import * as McpHttpServer from "./mcp/McpHttpServer.ts";
+import { DictationLive } from "./dictation/DictationService.ts";
 import * as PreviewAutomationBroker from "./preview/PreviewAutomationBroker.ts";
 import { ProviderAuthSessionsLive } from "./provider/auth/ProviderAuthSessions.ts";
 import { ProviderRegistryLive } from "./provider/Layers/ProviderRegistry.ts";
@@ -345,7 +346,10 @@ const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
   // The browser side of the agent's tools. Holds no resources of its own --
   // it is a rendezvous between a provider turn and whichever client is showing
   // the thread -- so it merges in flat, with nothing beneath it.
-  Layer.provideMerge(PreviewAutomationBroker.layer),
+  // `DictationLive` sits alongside the broker: local speech-to-text, owning a
+  // worker child process and the model downloads, reading the selected model
+  // from the settings layer below.
+  Layer.provideMerge(Layer.mergeAll(PreviewAutomationBroker.layer, DictationLive)),
   Layer.provideMerge(PersistenceLayerLive),
   Layer.provideMerge(KeybindingsLive),
   Layer.provideMerge(ProviderRegistryLive),

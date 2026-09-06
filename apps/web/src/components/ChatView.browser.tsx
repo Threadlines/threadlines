@@ -268,6 +268,15 @@ function createMockEnvironmentApi(input: {
     git: {} as EnvironmentApi["git"],
     pullRequests: {} as EnvironmentApi["pullRequests"],
     realtime: {} as EnvironmentApi["realtime"],
+    dictation: {
+      // The composer subscribes on mount, so this one has to be callable.
+      subscribeStatus: () => () => undefined,
+      downloadModel: async () => undefined,
+      cancelDownload: async () => undefined,
+      removeModel: async () => undefined,
+      warmUp: async () => undefined,
+      transcribe: async () => ({ text: "" }),
+    },
     orchestration: {
       dispatchCommand: input.dispatchCommand,
       getTurnDiff: (() => {

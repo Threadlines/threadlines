@@ -22,6 +22,14 @@ export function createEnvironmentApi(rpcClient: WsRpcClient): EnvironmentApi {
       subscribeAudio: (input, callback, options?: { readonly onComplete?: () => void }) =>
         rpcClient.realtime.subscribeAudio(input, callback, options),
     },
+    dictation: {
+      subscribeStatus: (callback) => rpcClient.dictation.subscribeStatus(callback),
+      downloadModel: rpcClient.dictation.downloadModel,
+      cancelDownload: rpcClient.dictation.cancelDownload,
+      removeModel: rpcClient.dictation.removeModel,
+      warmUp: rpcClient.dictation.warmUp,
+      transcribe: rpcClient.dictation.transcribe,
+    },
     previewAutomation: {
       connect: (input, listener) => rpcClient.previewAutomation.connect(input, listener),
       respond: (response) => rpcClient.previewAutomation.respond(response),

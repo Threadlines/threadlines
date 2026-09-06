@@ -93,6 +93,12 @@ import type {
 } from "./project.ts";
 import type { ProviderInstanceId } from "./providerInstance.ts";
 import type {
+  DictationModelRequest,
+  DictationStatus,
+  DictationTranscribeInput,
+  DictationTranscribeResult,
+} from "./dictation.ts";
+import type {
   ProviderRealtimeAppendAudioInput,
   ProviderRealtimeAudioChunk,
   ProviderRealtimeStartInput,
@@ -1239,6 +1245,18 @@ export interface EnvironmentApi {
       input: ProviderRealtimeStartInput,
       callback: (audio: ProviderRealtimeAudioChunk) => void,
     ) => () => void;
+  };
+  /**
+   * Composer dictation. The runtime, the speech models and the transcription
+   * all live on this environment's server, so every call is environment-scoped.
+   */
+  dictation: {
+    subscribeStatus: (callback: (status: DictationStatus) => void) => () => void;
+    downloadModel: (input: DictationModelRequest) => Promise<void>;
+    cancelDownload: (input: DictationModelRequest) => Promise<void>;
+    removeModel: (input: DictationModelRequest) => Promise<void>;
+    warmUp: () => Promise<void>;
+    transcribe: (input: DictationTranscribeInput) => Promise<DictationTranscribeResult>;
   };
   projects: {
     searchEntries: (input: ProjectSearchEntriesInput) => Promise<ProjectSearchEntriesResult>;

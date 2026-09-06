@@ -115,7 +115,7 @@ import { ComposerPendingApprovalPanel } from "./ComposerPendingApprovalPanel";
 import { ComposerPendingUserInputPanel } from "./ComposerPendingUserInputPanel";
 import { ComposerGoalBar, type ComposerGoalSetInput } from "./ComposerGoalBar";
 import { ComposerPlanFollowUpBanner } from "./ComposerPlanFollowUpBanner";
-import type { ComposerNotice } from "./composerNotices";
+import { type ComposerNotice, selectComposerNotices } from "./composerNotices";
 import { ComposerDock, hasComposerDockContent } from "./ComposerDock";
 import type { ComposerPullRequest } from "./ComposerPullRequestRow";
 import { ComposerPendingDrawingContexts } from "./ComposerPendingDrawingContexts";
@@ -187,7 +187,8 @@ import { searchProviderSkills } from "../../providerSkillSearch";
 import { resolveComposerSkillReferences } from "../../providerSkillReferences";
 import { useHorizontalOverflow } from "../../hooks/useHorizontalOverflow";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
-import { ComposerVoiceControls, type ComposerVoiceControlsProps } from "./ComposerVoiceControls";
+import { ComposerDictationControl } from "./ComposerDictationControl";
+import { useDictation } from "../../dictation/useDictation";
 
 const ATTACHMENT_SIZE_LIMIT_LABEL = `${Math.round(PROVIDER_SEND_TURN_MAX_IMAGE_BYTES / (1024 * 1024))}MB`;
 const ALL_ATTACHMENT_ACCEPT = `image/*,${FILE_ATTACHMENT_ACCEPT}`;
@@ -593,7 +594,6 @@ export interface ChatComposerProps {
   // Callbacks
   onSend: (e?: { preventDefault: () => void }) => void;
   onInterrupt: () => void;
-  voiceControl?: ComposerVoiceControlsProps | undefined;
   // Goal (Codex goal mode)
   goalDispatching?: boolean | undefined;
   /** Freshly dispatched goal state not yet confirmed by the projection —
@@ -683,7 +683,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     scheduleStickToBottom,
     onSend,
     onInterrupt,
-    voiceControl,
     goalDispatching,
     optimisticGoal,
     onSetThreadGoal,
@@ -1515,6 +1514,17 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const attachmentsDisabledReason = attachmentsDisabled
     ? "Finish the pending prompt before adding attachments"
     : null;
+  // Dictation writes into the prompt, so it is blocked by everything that
+  // blocks typing, named the way the placeholder names it.
+  const dictationDisabledReason = isComposerApprovalState
+    ? "Resolve the approval first"
+    : hasBlockingQuestion
+      ? "Answer the question first"
+      : environmentUnavailable
+        ? `${environmentUnavailable.label} is ${
+            environmentUnavailable.connectionState === "connecting" ? "connecting" : "disconnected"
+          }`
+        : null;
 
   // ------------------------------------------------------------------
   // Prompt helpers
@@ -2333,6 +2343,37 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     [promptRef, setPrompt],
   );
 
+  // Dictation adds to what is typed instead of replacing it, so it lands at
+  // the caret through the same replacement path the command menu uses, with a
+  // space added on either side only where the neighbouring character needs one.
+  const insertDictatedText = useCallback(
+    (text: string) => {
+      const currentText = promptRef.current;
+      const cursor = Math.max(0, Math.min(currentText.length, composerCursor));
+      const before = currentText.slice(0, cursor).slice(-1);
+      const after = currentText.slice(cursor).slice(0, 1);
+      const prefix = before !== "" && !/\s/.test(before) ? " " : "";
+      const suffix = after !== "" && !/\s/.test(after) ? " " : "";
+      applyPromptReplacement(cursor, cursor, `${prefix}${text}${suffix}`, {
+        focusEditorAfterReplace: true,
+      });
+    },
+    [applyPromptReplacement, composerCursor, promptRef],
+  );
+
+  const dictation = useDictation({ environmentId, onText: insertDictatedText });
+  const dictationNotice: ComposerNotice | null = dictation.error
+    ? {
+        id: "dictation",
+        severity: "error",
+        lead: "Dictation failed.",
+        detail: dictation.error,
+        dismissLabel: "Dismiss",
+        onDismiss: dictation.clearError,
+      }
+    : null;
+  const dockedNotices = selectComposerNotices([...notices, dictationNotice]);
+
   const readComposerSnapshot = useCallback((): {
     value: string;
     cursor: number;
@@ -3142,7 +3183,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
             about sending: those stay in front of the send button. */}
         <ComposerDock
           pullRequest={isComposerCollapsedMobile ? null : pullRequest}
-          notices={notices}
+          notices={dockedNotices}
         />
         <div
           ref={composerSurfaceRef}
@@ -3150,7 +3191,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           className={cn(
             "rounded-xl border bg-card elevate-raised transition-colors duration-200 has-focus-visible:border-focus-ring/45",
             !isComposerCollapsedMobile &&
-              hasComposerDockContent({ pullRequest, notices }) &&
+              hasComposerDockContent({ pullRequest, notices: dockedNotices }) &&
               "rounded-t-none",
             isDragOverComposer ? "border-primary/70 bg-accent/30" : "border-border",
             environmentUnavailable ? "opacity-75" : null,
@@ -3300,14 +3341,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   isComposerCollapsedMobile && "hidden",
                 )}
               >
-                {voiceControl?.state.error ? (
-                  <div
-                    role="alert"
-                    className="mb-2 rounded-md border border-destructive/25 bg-destructive/5 px-2.5 py-1.5 text-destructive text-xs"
-                  >
-                    {voiceControl.state.error}
-                  </div>
-                ) : null}
                 {composerMenuOpen && !isComposerApprovalState && (
                   <div className="absolute inset-x-0 bottom-full z-20 mb-2 px-1">
                     <ComposerCommandMenu
@@ -3690,7 +3723,14 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                       onAttachFiles={openAttachmentFilePicker}
                       onCaptureScreenshot={onCaptureScreenshot}
                     />
-                    {voiceControl ? <ComposerVoiceControls {...voiceControl} /> : null}
+                    <ComposerDictationControl
+                      environmentId={environmentId}
+                      disabled={dictationDisabledReason !== null}
+                      disabledReason={dictationDisabledReason}
+                      isMobileViewport={isMobileViewport}
+                      dictation={dictation}
+                    />
+
                     <ComposerFooterPrimaryActions
                       compact={isComposerPrimaryActionsCompact}
                       activeContextWindow={activeContextWindow}
