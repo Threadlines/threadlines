@@ -3,9 +3,9 @@
  * feed it: the thread's own pull request (which the sidebar badge and the tab
  * already resolve) and, once it arrives, the detail the Pull request tab reads.
  *
- * The row renders from the first alone, so it appears with the thread rather
- * than a beat later, and gains its branch, its diff stat and its check rollup
- * when the detail lands.
+ * The row renders whole from the first: the listing behind it already knows
+ * the branch and the size, and the project is the thread's own. The detail
+ * only sharpens what is there and adds the check rollup.
  *
  * @module composerPullRequest.logic
  */
@@ -60,7 +60,6 @@ export interface ComposerPullRequestRowModel {
   readonly autoMergeEnabled: boolean;
   readonly title: string;
   readonly url: string;
-  /** Absent until the detail arrives. */
   readonly projectTitle: string | null;
   readonly headBranch: string | null;
   readonly diffStat: { readonly additions: number; readonly deletions: number } | null;
@@ -107,7 +106,7 @@ export function composerPullRequestChip(input: {
   if (detail === undefined) {
     return { label: "CI", tone: "unknown", interactive: true };
   }
-  if (detail.mergeQueue !== undefined && detail.mergeQueue.position !== null) {
+  if (isInMergeQueue(detail)) {
     return { label: "Queued", tone: "queued", interactive: true };
   }
   if (detail.checksState === undefined && detail.checks.length === 0) {
@@ -121,12 +120,15 @@ export function composerPullRequestChip(input: {
 }
 
 /**
- * The row for one thread's pull request. The state, number and title come from
- * the thread's own resolution so the row is never blank; everything the detail
- * alone knows waits for it rather than being guessed at.
+ * The row for one thread's pull request. Everything the thread's own
+ * resolution and its project know is drawn at once; the detail, which is a
+ * slower read, replaces those figures with fresher ones when it lands rather
+ * than being what the row waits for.
  */
 export function composerPullRequestRow(input: {
   readonly pullRequest: ThreadPullRequest;
+  /** The thread's project, which is the pull request's too. */
+  readonly projectTitle: string | null;
   readonly detail: PullRequestDetail | undefined;
 }): ComposerPullRequestRowModel {
   const { pullRequest, detail } = input;
@@ -140,26 +142,50 @@ export function composerPullRequestRow(input: {
     autoMergeEnabled: detail ? pullRequestArmedToMerge(detail) : pullRequest.autoMergeEnabled,
     title: detail?.title ?? pullRequest.title,
     url: detail?.url ?? pullRequest.url,
-    projectTitle: detail?.projectTitle ?? null,
-    headBranch: detail?.headBranch ?? null,
-    diffStat: detail ? { additions: detail.additions, deletions: detail.deletions } : null,
+    projectTitle: input.projectTitle ?? detail?.projectTitle ?? null,
+    headBranch: detail?.headBranch ?? pullRequest.headBranch,
+    diffStat: detail
+      ? { additions: detail.additions, deletions: detail.deletions }
+      : pullRequest.diffStat,
     chip: composerPullRequestChip({ state, detail }),
   };
 }
 
+function isInMergeQueue(detail: Pick<PullRequestDetail, "mergeQueue">): boolean {
+  return detail.mergeQueue !== undefined && detail.mergeQueue.position !== null;
+}
+
 /**
- * Whether the "Merge when checks pass" toggle has anything to do. A host that
- * does not say whether the pull request is armed cannot be asked to arm it,
- * and neither can one that offers neither action.
+ * What the popover shows in place of "Merge when checks pass".
+ *
+ * `toggle` is the ordinary case: the switch arms or disarms the host's standing
+ * instruction. `queued` is a pull request the host has already taken into its
+ * merge queue: GitHub drops the instruction at that point, so a switch would
+ * read as off while the merge is in motion, and flipping it would re-arm and
+ * disarm a queue entry that no longer needs it. `hidden` is a host that does
+ * not say whether the pull request is armed, or offers neither action.
  */
-export function canToggleComposerAutoMerge(detail: PullRequestDetail | undefined): boolean {
-  if (detail === undefined || detail.autoMergeEnabled === null) {
-    return false;
+export type ComposerAutoMergeControl =
+  | { readonly kind: "hidden" }
+  | { readonly kind: "queued" }
+  | { readonly kind: "toggle"; readonly checked: boolean };
+
+export function composerAutoMergeControl(
+  detail: PullRequestDetail | undefined,
+): ComposerAutoMergeControl {
+  if (detail === undefined) {
+    return { kind: "hidden" };
   }
-  return (
+  if (isInMergeQueue(detail)) {
+    return { kind: "queued" };
+  }
+  if (detail.autoMergeEnabled === null) {
+    return { kind: "hidden" };
+  }
+  const offered =
     detail.capabilities.actions.includes("enable-auto-merge") ||
-    detail.capabilities.actions.includes("disable-auto-merge")
-  );
+    detail.capabilities.actions.includes("disable-auto-merge");
+  return offered ? { kind: "toggle", checked: detail.autoMergeEnabled } : { kind: "hidden" };
 }
 
 /** The host's own checks page for a pull request. */

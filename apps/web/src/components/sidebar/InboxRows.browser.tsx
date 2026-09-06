@@ -59,6 +59,8 @@ const OPEN_PULL_REQUEST: ThreadPullRequest = {
   number: 123,
   state: "open",
   settledAt: null,
+  headBranch: null,
+  diffStat: null,
   isDraft: false,
   autoMergeEnabled: false,
   title: "Add the pull requests page",

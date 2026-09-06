@@ -625,7 +625,7 @@ function MarkdownPullRequestChip({
         href={href}
         threadRef={threadRef}
         title={title}
-        className="inline-flex items-center gap-1 rounded-sm bg-muted px-1.5 font-mono text-[12px] no-underline transition-colors hover:bg-accent"
+        className="chat-markdown-pull-request-chip inline-flex items-center gap-1 rounded-sm bg-muted px-1.5 align-middle font-mono text-[12px] transition-colors hover:bg-accent"
       >
         <tone.Icon aria-hidden className={cn("size-3 shrink-0", tone.className)} />
         <span>#{number}</span>

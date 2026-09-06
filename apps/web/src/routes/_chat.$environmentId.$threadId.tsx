@@ -37,6 +37,11 @@ import {
 import { LazyPullRequestDetailPanel } from "../components/pull-requests/LazyPullRequestDetailPanel";
 import { PullRequestHoverCardProvider } from "../components/pull-requests/PullRequestHoverCard";
 import type { ComposerPullRequest } from "../components/chat/ComposerPullRequestRow";
+import {
+  composerPullRequestDismissalKey as composerPullRequestDismissalKeyFor,
+  dismissComposerPullRequest,
+  useIsComposerPullRequestDismissed,
+} from "../components/chat/composerPullRequestDismissals";
 import { resolveThreadPullRequest } from "../components/pull-requests/pullRequests.logic";
 import { Button } from "~/components/ui/button";
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader } from "~/components/ui/empty";
@@ -493,18 +498,47 @@ function ChatThreadRouteView() {
     environmentId: threadPullRequestReference ? (threadRef?.environmentId ?? null) : null,
     reference: threadPullRequestReference,
   });
+  // Closing the row is per pull request: a thread that moves on to another one
+  // gets the row back for it.
+  const composerPullRequestDismissalKey =
+    threadPullRequestReference && currentThreadKey !== null
+      ? composerPullRequestDismissalKeyFor({
+          threadKey: currentThreadKey,
+          repository: threadPullRequestReference.repository,
+          number: threadPullRequestReference.number,
+        })
+      : null;
+  const composerPullRequestDismissed = useIsComposerPullRequestDismissed(
+    composerPullRequestDismissalKey,
+  );
+  const activeProjectTitle = activeProject?.name ?? null;
   const composerPullRequest = useMemo<ComposerPullRequest | null>(
     () =>
-      threadRef && threadPullRequest && threadPullRequestReference
+      threadRef &&
+      threadPullRequest &&
+      threadPullRequestReference &&
+      composerPullRequestDismissalKey !== null &&
+      !composerPullRequestDismissed
         ? {
             environmentId: threadRef.environmentId,
             reference: threadPullRequestReference,
             pullRequest: threadPullRequest,
+            projectTitle: activeProjectTitle,
             detail: threadPullRequestDetail,
             onOpen: () => selectTab("pullRequest"),
+            onDismiss: () => dismissComposerPullRequest(composerPullRequestDismissalKey),
           }
         : null,
-    [selectTab, threadPullRequest, threadPullRequestDetail, threadPullRequestReference, threadRef],
+    [
+      activeProjectTitle,
+      composerPullRequestDismissalKey,
+      composerPullRequestDismissed,
+      selectTab,
+      threadPullRequest,
+      threadPullRequestDetail,
+      threadPullRequestReference,
+      threadRef,
+    ],
   );
   const closeTab = useCallback(
     (tab: RightPanelTab) => {

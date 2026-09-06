@@ -633,6 +633,12 @@ label:has(> select#reasoning-effort) select {
   opacity: 0.8;
 }
 
+/* A pull request chip is a link drawn as a badge: the badge carries the
+   affordance, so the underline would only cut through it. */
+.chat-markdown a.chat-markdown-pull-request-chip {
+  text-decoration: none;
+}
+
 .chat-markdown blockquote {
   border-left: 2px solid var(--border);
   padding-left: 0.8rem;
