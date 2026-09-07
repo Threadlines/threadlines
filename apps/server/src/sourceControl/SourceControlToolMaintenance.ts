@@ -235,9 +235,14 @@ export const make = Effect.fn("makeSourceControlToolMaintenance")(function* (
             target,
             operation,
             status: "running",
-            // Elevation requested by this background process lands in the
-            // taskbar instead of on top of the app, so say where to look.
-            message: `${operation === "install" ? "Installing." : "Updating."}${platform === "win32" ? " Windows will ask for permission. If the prompt doesn't come to the front, click the flashing shield in the taskbar." : ""}`,
+            // The package manager downloads before requesting elevation. A
+            // background permission prompt may need opening from the taskbar.
+            message:
+              platform === "win32"
+                ? "Downloading and installing. Windows may ask for permission after the download finishes. You can stay on this page. If the prompt stays behind the app, click the flashing shield in the taskbar."
+                : operation === "install"
+                  ? "Installing."
+                  : "Updating.",
           });
           let updaterStarted = false;
           for (const step of recipe.steps) {

@@ -136,7 +136,7 @@ export function SourceControlToolUpdateLaunchNotification() {
       toastManager.update(toastId, {
         type: "loading",
         title: `${operation === "install" ? "Installing" : "Updating"} ${notice.label}`,
-        description: "Running the verified update command.",
+        description: "Checking the available update before starting.",
         timeout: 0,
         actionProps: undefined,
         data: {

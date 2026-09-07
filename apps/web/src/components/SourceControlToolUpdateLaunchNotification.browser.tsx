@@ -10,6 +10,8 @@ import {
 } from "@threadlines/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
+  Link,
+  Outlet,
   RouterProvider,
   createMemoryHistory,
   createRootRoute,
@@ -104,9 +106,18 @@ function TestAppProviders({ children }: { children: ReactNode }) {
 
 function renderWithTestRouter(children: ReactNode) {
   const rootRoute = createRootRoute({ component: () => children });
-  const indexRoute = createRoute({ getParentRoute: () => rootRoute, path: "/" });
+  const indexRoute = createRoute({
+    getParentRoute: () => rootRoute,
+    path: "/",
+    component: () => <Link to="/settings/general">General settings</Link>,
+  });
+  const generalRoute = createRoute({
+    getParentRoute: () => rootRoute,
+    path: "/settings/general",
+    component: () => <h1>General</h1>,
+  });
   const router = createRouter({
-    routeTree: rootRoute.addChildren([indexRoute]),
+    routeTree: rootRoute.addChildren([indexRoute, generalRoute]),
     history: createMemoryHistory({ initialEntries: ["/"] }),
   });
   return render(<RouterProvider router={router} />);
@@ -144,7 +155,7 @@ describe("SourceControlToolUpdateLaunchNotification", () => {
     document.body.innerHTML = "";
   });
 
-  it("turns the prompt into live progress on Update now and finishes in place", async () => {
+  it("starts outside Settings and keeps progress across pages without opening Source Control", async () => {
     let resolveUpdate!: (result: SourceControlToolUpdateResult) => void;
     const updateSourceControlTool = vi.fn(
       () =>
@@ -164,6 +175,7 @@ describe("SourceControlToolUpdateLaunchNotification", () => {
     mounted = await renderWithTestRouter(
       <TestAppProviders>
         <SourceControlToolUpdateLaunchNotification />
+        <Outlet />
       </TestAppProviders>,
     );
 
@@ -185,13 +197,37 @@ describe("SourceControlToolUpdateLaunchNotification", () => {
           target: "github-cli",
           operation: "update",
           status: "running",
-          message: "Updating. Windows will ask for permission.",
+          message:
+            "Downloading and installing. Windows may ask for permission after the download finishes.",
         },
       ],
     };
     await expect
-      .element(page.getByText("Updating. Windows will ask for permission."), { timeout: 5_000 })
+      .element(
+        page.getByText(
+          "Downloading and installing. Windows may ask for permission after the download finishes.",
+        ),
+        { timeout: 5_000 },
+      )
       .toBeVisible();
+
+    await page.getByRole("link", { name: "General settings" }).click();
+    await expect.element(page.getByRole("heading", { name: "General" })).toBeVisible();
+    setup = {
+      ...IDLE_SETUP,
+      tools: [
+        {
+          target: "github-cli",
+          operation: "update",
+          status: "checking",
+          message: "Checking installation.",
+        },
+      ],
+    };
+    await expect
+      .element(page.getByText("Checking installation."), { timeout: 5_000 })
+      .toBeVisible();
+    expect(updateSourceControlTool).toHaveBeenCalledTimes(1);
 
     resolveUpdate({
       target: "github-cli",

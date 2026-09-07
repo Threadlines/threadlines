@@ -128,7 +128,7 @@ export function createSourceControlSetupManager(config: {
           target: input.target,
           operation: input.operation ?? "update",
           status: "queued",
-          message: "Waiting to start…",
+          message: "Checking availability before starting…",
         },
       ],
     });
