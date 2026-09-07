@@ -4444,6 +4444,12 @@ describe("ProviderCommandReactor", () => {
     expect(harness.pauseThreadGoalForStop.mock.invocationCallOrder[0]).toBeLessThan(
       harness.stopSession.mock.invocationCallOrder[0] ?? Number.MAX_SAFE_INTEGER,
     );
+    await waitFor(async () => {
+      const readModel = await harness.readModel();
+      const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+      return thread?.session?.status === "stopped";
+    });
+
     const readModel = await harness.readModel();
     const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
     expect(thread?.session).not.toBeNull();
