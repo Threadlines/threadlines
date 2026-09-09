@@ -18,11 +18,11 @@ import type {
   PullRequestRef,
 } from "@threadlines/contracts";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { Link } from "@tanstack/react-router";
 import { ChevronDownIcon, ExternalLinkIcon, WrenchIcon, XIcon } from "lucide-react";
 import { useState } from "react";
 
 import { isElectron } from "../../env";
-import { useSettings, updateSettings } from "../../hooks/useSettings";
 import { readLocalApi } from "../../localApi";
 import {
   pullRequestActionMutationOptions,
@@ -68,6 +68,13 @@ export interface ComposerPullRequest {
   /** The thread's own switch: the server watches this pull request while it is on. */
   readonly autoFix: boolean;
   readonly onAutoFixChange: (next: boolean) => void;
+  /**
+   * Whether this thread files itself under Wrapped once the pull request
+   * merges or closes: the thread's own word, or the app setting until it
+   * gives one.
+   */
+  readonly wrapUpOnSettled: boolean;
+  readonly onWrapUpOnSettledChange: (next: boolean) => void;
 }
 
 const CHIP_TONE_CLASS: Readonly<
@@ -253,7 +260,6 @@ function ComposerPullRequestChecksPopover({
   const queryClient = useQueryClient();
   const detail = pullRequest.detail;
   const buckets = composerPullRequestCheckBuckets(detail?.checks ?? []);
-  const wrapUpOnSettled = useSettings((settings) => settings.wrapUpThreadsOnPullRequestSettled);
   const autoMergeControl = composerAutoMergeControl(detail);
   const detailQueryKey = pullRequestQueryKeys.detail(
     pullRequest.environmentId,
@@ -363,19 +369,28 @@ function ComposerPullRequestChecksPopover({
           onAutoFixChange={pullRequest.onAutoFixChange}
         />
       ) : null}
-      <label className="flex cursor-pointer items-center gap-2 px-3 py-1 transition-colors hover:bg-accent">
-        <Checkbox
-          className="size-3.5"
-          checked={wrapUpOnSettled}
-          onCheckedChange={(checked) => {
-            updateSettings({ wrapUpThreadsOnPullRequestSettled: Boolean(checked) });
-          }}
-        />
-        Wrap up thread after merge or close
-        {/* This one switch is not about this pull request: it is the app-wide
-            setting, and the hint says so before it is flipped. */}
-        <span className="ml-auto text-[11px] text-muted-foreground">Settings</span>
-      </label>
+      {/* This thread's own choice. The link goes to the app-wide default it
+          stands in for until the box is clicked, and sits outside the label so
+          following it does not also flip the box. */}
+      <div className="flex items-center gap-2 px-3 py-1 transition-colors hover:bg-accent">
+        <label className="flex min-w-0 flex-1 cursor-pointer items-center gap-2">
+          <Checkbox
+            className="size-3.5"
+            checked={pullRequest.wrapUpOnSettled}
+            onCheckedChange={(checked) => {
+              pullRequest.onWrapUpOnSettledChange(Boolean(checked));
+            }}
+          />
+          Wrap up thread after merge or close
+        </label>
+        <Link
+          to="/settings/general"
+          hash="wrap-up-merged-threads"
+          className="shrink-0 rounded-sm text-[11px] text-muted-foreground transition-colors hover:text-foreground focus-ring"
+        >
+          Settings
+        </Link>
+      </div>
     </div>
   );
 }

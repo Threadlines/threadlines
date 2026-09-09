@@ -24,6 +24,7 @@ import { useAgentsPanelSource } from "../agentsPanelStore";
 import { preloadDiffPanel, schedulePreloadDiffPanel } from "../diffPanelPreload";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { useSettings } from "../hooks/useSettings";
+import { useUiStateStore } from "../uiStateStore";
 import {
   gitWorkingTreeDiffQueryOptions,
   invalidateGitWorkingTreeDiffQueries,
@@ -513,9 +514,19 @@ function ChatThreadRouteView() {
     composerPullRequestDismissalKey,
   );
   const activeProjectTitle = activeProject?.name ?? null;
+  // The app setting is the default; a thread that has said otherwise wins.
+  const wrapUpOnSettledDefault = useSettings(
+    (settings) => settings.wrapUpThreadsOnPullRequestSettled,
+  );
+  const threadWrapUpOnSettled = useUiStateStore((store) =>
+    currentThreadKey === null
+      ? undefined
+      : store.threadWrapUpOnPullRequestSettledById[currentThreadKey],
+  );
   const composerPullRequest = useMemo<ComposerPullRequest | null>(
     () =>
       threadRef &&
+      currentThreadKey !== null &&
       threadPullRequest &&
       threadPullRequestReference &&
       composerPullRequestDismissalKey !== null &&
@@ -532,18 +543,27 @@ function ChatThreadRouteView() {
             onAutoFixChange: (next: boolean) => {
               void setThreadPullRequestAutoFix(threadRef, next);
             },
+            wrapUpOnSettled: threadWrapUpOnSettled ?? wrapUpOnSettledDefault,
+            onWrapUpOnSettledChange: (next: boolean) => {
+              useUiStateStore
+                .getState()
+                .setThreadWrapUpOnPullRequestSettled(currentThreadKey, next);
+            },
           }
         : null,
     [
       activeProjectTitle,
       composerPullRequestDismissalKey,
       composerPullRequestDismissed,
+      currentThreadKey,
       selectTab,
       serverThread?.pullRequestAutoFix,
       threadPullRequest,
       threadPullRequestDetail,
       threadPullRequestReference,
       threadRef,
+      threadWrapUpOnSettled,
+      wrapUpOnSettledDefault,
     ],
   );
   const closeTab = useCallback(

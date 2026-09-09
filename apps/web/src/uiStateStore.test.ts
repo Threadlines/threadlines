@@ -15,6 +15,7 @@ import {
   setDefaultAdvertisedEndpointKey,
   setProjectExpanded,
   setThreadChangedFilesExpanded,
+  setThreadWrapUpOnPullRequestSettled,
   syncProjects,
   syncThreads,
   type UiState,
@@ -28,6 +29,7 @@ function makeUiState(overrides: Partial<UiState> = {}): UiState {
     threadSeedVisitedAtById: {},
     threadChangedFilesExpandedById: {},
     doneThreadOverlays: {},
+    threadWrapUpOnPullRequestSettledById: {},
     inboxProjectScopeKey: null,
     inboxEnvironmentScopeId: null,
     defaultAdvertisedEndpointKey: null,
@@ -340,6 +342,10 @@ describe("uiStateStore pure functions", () => {
           "turn-2": false,
         },
       },
+      threadWrapUpOnPullRequestSettledById: {
+        [thread1]: false,
+        [thread2]: true,
+      },
     });
 
     const next = syncThreads(initialState, [{ key: thread1 }]);
@@ -352,6 +358,7 @@ describe("uiStateStore pure functions", () => {
         "turn-1": false,
       },
     });
+    expect(next.threadWrapUpOnPullRequestSettledById).toEqual({ [thread1]: false });
   });
 
   it("syncThreads seeds visit state for unseen snapshot threads", () => {
@@ -642,6 +649,17 @@ describe("uiStateStore persistence round-trip", () => {
       localStorageStub.getItem(PERSISTED_STATE_KEY) ?? "{}",
     ) as PersistedUiState;
     expect(persisted.defaultAdvertisedEndpointKey).toBe("desktop-core:lan:http");
+  });
+
+  it("keeps a thread's own wrap-up choice across a restart", () => {
+    const threadKey = "env-1:thread-1";
+    const state = setThreadWrapUpOnPullRequestSettled(makeUiState(), threadKey, false);
+
+    persistState(state);
+
+    expect(readPersistedState().threadWrapUpOnPullRequestSettledById).toEqual({
+      [threadKey]: false,
+    });
   });
 
   it("persists changed-files tree overrides for both default modes", () => {
