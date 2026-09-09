@@ -49,6 +49,7 @@ export function ChatRightPanel(props: {
         onSelectTab={props.onSelectTab}
         onCloseTab={props.onCloseTab}
         onReorderTab={props.onReorderTab}
+        overlay={onDismiss !== undefined}
         {...(onDismiss
           ? {
               trailing: (
