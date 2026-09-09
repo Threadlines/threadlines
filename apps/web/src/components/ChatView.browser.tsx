@@ -30,6 +30,7 @@ import {
 import { scopedThreadKey, scopeThreadRef } from "@threadlines/client-runtime";
 import { createModelCapabilities, createModelSelection } from "@threadlines/shared/model";
 import { RouterProvider, createMemoryHistory } from "@tanstack/react-router";
+import { StrictMode } from "react";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { HttpResponse, http, ws } from "msw";
@@ -2376,6 +2377,8 @@ async function mountChatView(options: {
   resolveRpc?: (body: NormalizedWsRpcRequestBody) => unknown | undefined;
   initialPath?: string;
   waitForBootstrap?: boolean;
+  /** Mount under StrictMode, as main.tsx does, so mount-time effect cleanups run. */
+  strictMode?: boolean;
 }): Promise<MountedChatView> {
   fixture = buildFixture(options.snapshot);
   options.configureFixture?.(fixture);
@@ -2401,14 +2404,14 @@ async function mountChatView(options: {
     }),
   );
 
-  const screen = await render(
+  const app = (
     <AppAtomRegistryProvider>
       <RouterProvider router={router} />
-    </AppAtomRegistryProvider>,
-    {
-      container: host,
-    },
+    </AppAtomRegistryProvider>
   );
+  const screen = await render(options.strictMode ? <StrictMode>{app}</StrictMode> : app, {
+    container: host,
+  });
 
   await waitForWsClient();
   if (options.waitForBootstrap !== false) {
@@ -7830,6 +7833,31 @@ describe("ChatView timeline estimator parity (full app)", () => {
         (path) => UUID_ROUTE_RE.test(path),
         "Route should have changed to a new draft thread UUID from the command palette.",
       );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("stays open under StrictMode", async () => {
+    // The app mounts under StrictMode, which runs every new effect's cleanup
+    // once right after mount. An unmount reset on the open dialog turned that
+    // into a palette that closed the instant it opened, in dev only.
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-command-palette-strict-mode" as MessageId,
+        targetText: "command palette strict mode",
+      }),
+      strictMode: true,
+    });
+
+    try {
+      await openCommandPaletteFromTrigger();
+      await waitForLayout();
+      await waitForLayout();
+
+      expect(useCommandPaletteStore.getState().open).toBe(true);
+      await expect.element(page.getByTestId("command-palette")).toBeInTheDocument();
     } finally {
       await mounted.cleanup();
     }

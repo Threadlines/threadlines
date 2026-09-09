@@ -450,6 +450,19 @@ export function CommandPalette({ children }: { children: ReactNode }) {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [keybindings, terminalOpen, toggleOpen]);
 
+  // The store outlives this tree, so a palette left open when the shell goes
+  // away (auth gate, pairing route, a test harness unmounting) must not greet
+  // the next mount already open. This wrapper mounts once with the shell, so
+  // its cleanup is the real teardown -- unlike the open dialog's, which
+  // StrictMode also runs right after mount.
+  useEffect(() => {
+    return () => {
+      if (useCommandPaletteStore.getState().open) {
+        setOpen(false);
+      }
+    };
+  }, [setOpen]);
+
   return (
     <ComposerHandleContext value={composerHandleRef}>
       <CommandDialog open={open} onOpenChange={setOpen}>
@@ -479,17 +492,12 @@ function OpenCommandPaletteDialog() {
   const composerHandleRef = useComposerHandleContext();
   // This component mounts once per palette session, so its mount-time
   // generation identifies the session every deferred close below belongs to.
-  // Async flows and the unmount reset close via `closeIfGeneration`: if the
-  // user closed or reopened the palette while a request was in flight (or
-  // React deferred the unmount cleanup past a new session), the stale close
-  // is a no-op instead of slamming a palette it does not own.
+  // Async flows close via `closeIfGeneration`: if the user closed or reopened
+  // the palette while a request was in flight, the stale close is a no-op
+  // instead of slamming a palette it does not own. There is deliberately no
+  // unmount cleanup here: React StrictMode runs a new effect's cleanup once
+  // right after mount, which closed the palette the instant it opened in dev.
   const [sessionGeneration] = useState(() => useCommandPaletteStore.getState().openGeneration);
-
-  useEffect(() => {
-    return () => {
-      closeIfGeneration(sessionGeneration);
-    };
-  }, [closeIfGeneration, sessionGeneration]);
   const [query, setQuery] = useState("");
   const deferredQuery = useDeferredValue(query);
   const isActionsOnly = deferredQuery.startsWith(">");
