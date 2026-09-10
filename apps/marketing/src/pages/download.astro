@@ -88,6 +88,23 @@ import Layout from "../layouts/Layout.astro";
           rel="noopener noreferrer">GitHub</a
         >
       </p>
+      <section class="dl-onboarding" aria-labelledby="dl-onboarding-title">
+        <h2 id="dl-onboarding-title">From setup to your first thread</h2>
+        <p id="dl-onboarding-description">Check your tools, choose a folder, and start your first thread.</p>
+        <video
+          controls
+          playsinline
+          preload="none"
+          width="1600"
+          height="934"
+          poster="/Screenshots/onboarding-landscape-poster.png"
+          aria-label="Threadlines first-run walkthrough"
+          aria-describedby="dl-onboarding-description"
+        >
+          <source src="/Screenshots/onboarding-landscape.mp4" type="video/mp4" />
+          <a href="/Screenshots/onboarding-landscape.mp4">Watch the first-run walkthrough</a>
+        </video>
+      </section>
     </div>
   </section>
 </Layout>
@@ -173,6 +190,40 @@ import Layout from "../layouts/Layout.astro";
 
   .dl-inner {
     text-align: center;
+  }
+
+  .dl-inner [hidden] {
+    display: none;
+  }
+
+  .dl-onboarding {
+    max-width: 960px;
+    margin: 32px auto 0;
+    padding-top: 24px;
+    border-top: 1px solid var(--border);
+  }
+
+  .dl-onboarding h2 {
+    margin: 0 0 8px;
+    font-size: 20px;
+    font-weight: 500;
+  }
+
+  .dl-onboarding p {
+    margin: 0 0 16px;
+    color: var(--fg-dim);
+    font-size: 15px;
+  }
+
+  .dl-onboarding video {
+    display: block;
+    width: 100%;
+    height: auto;
+  }
+
+  .dl-onboarding video:focus-visible {
+    outline: 2px solid var(--fg);
+    outline-offset: 4px;
   }
 
   .dl-title {

@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+  <meta charset="utf-8" /><meta
+    name="viewport"
+    content="width=device-width,initial-scale=1"
+  /><title>Threadlines three-image post</title
+  ><style>
+    html {
+      background: #111318;
+      color: #eee;
+      font: 16px/1.5 system-ui;
+    }
+    body {
+      max-width: 1440px;
+      margin: 32px auto;
+      padding: 0 20px;
+    }
+    h1 {
+      font-size: 24px;
+      font-weight: 550;
+    }
+    p {
+      max-width: 720px;
+      color: #bcbfc7;
+    }
+    .images {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+      margin: 24px 0;
+    }
+    img {
+      display: block;
+      width: 100%;
+      height: auto;
+    }
+    a {
+      color: inherit;
+    }
+    a:focus-visible {
+      outline: 2px solid #6d9bf3;
+      outline-offset: 4px;
+    }
+    @media (max-width: 700px) {
+      .images {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+  <h1>Threadlines, in three views</h1>
+  <p>
+    Codex and Claude Code, with the work around them. Keep active threads, pull requests, and code
+    review together in Threadlines. Free and open source.
+  </p>
+  <div class="images">
+    <a href="1-inbox.png"
+      ><img
+        src="1-inbox.png"
+        alt="Threadlines inbox showing working and waiting project threads, wrapped threads, agent conversation, and source control." /></a
+    ><a href="2-pull-requests.png"
+      ><img
+        src="2-pull-requests.png"
+        alt="An open pull request beside its Threadlines conversation, with an inline review comment and CI checks popup above the composer." /></a
+    ><a href="3-source-control.png"
+      ><img
+        src="3-source-control.png"
+        alt="A code diff beside the Threadlines conversation that produced it, with project threads visible in the inbox."
+    /></a>
+  </div>
+  <p>
+    Upload the three numbered PNG files in order. Each is 1664 by 1664 pixels. Click a view to see
+    it at full size.
+  </p>
+</html>

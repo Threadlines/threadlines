@@ -1,0 +1,51 @@
+{
+  "workspace": {
+    "guided": true,
+    "stillSecond": 1
+  },
+  "inbox": {
+    "take": "clean-inbox-1",
+    "stillSecond": 6,
+    "maxSeconds": 14
+  },
+  "activity": {
+    "take": "clean-activity-1",
+    "stillSecond": 2.5,
+    "maxSeconds": 14
+  },
+  "pull-requests": {
+    "take": "clean-pull-requests-2",
+    "stillSecond": 7.5,
+    "maxSeconds": 14
+  },
+  "source-control": {
+    "take": "clean-source-control-1",
+    "stillSecond": 4.8,
+    "maxSeconds": 14
+  },
+  "git-history": {
+    "take": "clean-git-history-1",
+    "stillSecond": 3,
+    "maxSeconds": 14
+  },
+  "browser": {
+    "take": "clean-browser-1",
+    "stillSecond": 4,
+    "maxSeconds": 14
+  },
+  "files": {
+    "take": "clean-files-4",
+    "stillSecond": 4.5,
+    "maxSeconds": 14
+  },
+  "context": {
+    "take": "clean-context-1",
+    "stillSecond": 7,
+    "maxSeconds": 14
+  },
+  "provider-switch": {
+    "take": "refresh-provider-switch-1",
+    "stillSecond": 7,
+    "maxSeconds": 14
+  }
+}
