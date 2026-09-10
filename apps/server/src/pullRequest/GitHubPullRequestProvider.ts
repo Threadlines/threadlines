@@ -4,6 +4,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Result from "effect/Result";
 import type * as Schema from "effect/Schema";
 
+import { withGitHubMergeQueue } from "../sourceControl/gitHubMergeQueue.ts";
 import type {
   PullRequestAction,
   PullRequestActivity,
@@ -522,6 +523,7 @@ export const make = Effect.fn("makeGitHubPullRequestProvider")(function* () {
             ? Effect.succeed(decoded.success)
             : Effect.fail(decodeError("list", "PR list", decoded.failure));
         }),
+        Effect.flatMap((rows) => withGitHubMergeQueue(github.execute, input.cwd, rows)),
         Effect.flatMap((rows) => withAuthorAvatars({ operation: "list", cwd: input.cwd, rows })),
       ),
 

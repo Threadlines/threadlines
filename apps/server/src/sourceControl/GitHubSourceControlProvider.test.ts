@@ -140,7 +140,7 @@ it.effect("uses gh json listing for non-open change request state queries", () =
       "--limit",
       "10",
       "--json",
-      "number,title,url,baseRefName,headRefName,state,mergedAt,updatedAt,autoMergeRequest,isCrossRepository,headRepository,headRepositoryOwner",
+      "id,number,title,url,baseRefName,headRefName,state,mergedAt,updatedAt,autoMergeRequest,isCrossRepository,headRepository,headRepositoryOwner",
     ]);
     assert.strictEqual(changeRequests[0]?.provider, "github");
     assert.strictEqual(changeRequests[0]?.state, "merged");
@@ -148,6 +148,42 @@ it.effect("uses gh json listing for non-open change request state queries", () =
       changeRequests[0]?.updatedAt,
       Option.some(DateTime.makeUnsafe("2026-01-02T00:00:00.000Z")),
     );
+  }),
+);
+
+it.effect("includes queue membership for open PRs in an all-state branch listing", () =>
+  Effect.gen(function* () {
+    const provider = yield* makeProvider({
+      execute: (input) =>
+        Effect.succeed(
+          processResult(
+            JSON.stringify(
+              input.args[0] === "api"
+                ? {
+                    data: { nodes: [{ id: "PR_7", isInMergeQueue: true, autoMergeRequest: null }] },
+                  }
+                : [
+                    {
+                      id: "PR_7",
+                      number: 7,
+                      title: "Queued work",
+                      url: "https://github.com/Threadlines/threadlines/pull/7",
+                      baseRefName: "main",
+                      headRefName: "feature/queue",
+                      state: "OPEN",
+                      autoMergeRequest: null,
+                    },
+                  ],
+            ),
+          ),
+        ),
+    });
+    const rows = yield* provider.listChangeRequests({
+      cwd: "/repo",
+      headSelector: "feature/queue",
+      state: "all",
+    });
+    assert.equal(rows[0]?.autoMergeEnabled, true);
   }),
 );
 

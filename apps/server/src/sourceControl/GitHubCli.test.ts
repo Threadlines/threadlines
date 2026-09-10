@@ -34,6 +34,44 @@ afterEach(() => {
 });
 
 describe("GitHubCli.layer", () => {
+  it.effect("includes merge queue membership in branch listings and PR summaries", () =>
+    Effect.gen(function* () {
+      mockRun.mockImplementation((input) => {
+        const row = {
+          id: "PR_42",
+          number: 42,
+          title: "Queued work",
+          url: "https://github.com/Threadlines/threadlines/pull/42",
+          baseRefName: "main",
+          headRefName: "feature/queue",
+          state: "OPEN",
+          autoMergeRequest: null,
+        };
+        // @effect-diagnostics-next-line preferSchemaOverJson:off
+        return Effect.succeed(
+          processOutput(
+            JSON.stringify(
+              input.args[0] === "api"
+                ? {
+                    data: {
+                      nodes: [{ id: "PR_42", isInMergeQueue: true, autoMergeRequest: null }],
+                    },
+                  }
+                : input.args[1] === "list"
+                  ? [row]
+                  : row,
+            ),
+          ),
+        );
+      });
+      const gh = yield* GitHubCli.GitHubCli;
+      const rows = yield* gh.listOpenPullRequests({ cwd: "/repo", headSelector: "feature/queue" });
+      assert.equal(rows[0]?.autoMergeEnabled, true);
+      const pr = yield* gh.getPullRequest({ cwd: "/repo", reference: "42" });
+      assert.equal(pr.autoMergeEnabled, true);
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("parses pull request view output", () =>
     Effect.gen(function* () {
       mockRun.mockReturnValueOnce(
@@ -87,7 +125,7 @@ describe("GitHubCli.layer", () => {
           "view",
           "#42",
           "--json",
-          "number,title,url,baseRefName,headRefName,state,mergedAt,autoMergeRequest,isCrossRepository,headRepository,headRepositoryOwner",
+          "id,number,title,url,baseRefName,headRefName,state,mergedAt,autoMergeRequest,isCrossRepository,headRepository,headRepositoryOwner",
         ],
         cwd: "/repo",
         env: GITHUB_CLI_BACKGROUND_ENV,
