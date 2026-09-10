@@ -1,0 +1,750 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Threadlines promotional kit</title>
+    <style>
+      :root {
+        color-scheme: dark;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0 auto;
+        max-width: 1200px;
+        padding: 28px 24px;
+        background: #09090b;
+        color: #fafafa;
+        font:
+          16px/1.55 system-ui,
+          sans-serif;
+      }
+      h1 {
+        font-size: 36px;
+        line-height: 1.12;
+        font-weight: 600;
+        letter-spacing: -1px;
+        margin: 12px 0;
+      }
+      h2 {
+        font-size: 20px;
+        margin: 0 0 8px;
+      }
+      p,
+      figcaption {
+        color: #a1a1aa;
+      }
+      p {
+        margin: 8px 0 16px;
+      }
+      a {
+        color: #fafafa;
+        text-underline-offset: 4px;
+      }
+      a:hover {
+        color: #a1a1aa;
+      }
+      a:focus-visible,
+      video:focus-visible {
+        outline: 2px solid #fafafa;
+        outline-offset: 4px;
+      }
+      nav {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px 24px;
+        padding: 16px 0;
+        border-block: 1px solid #27272a;
+      }
+      section {
+        padding: 28px 0;
+        border-top: 1px solid #27272a;
+      }
+      .media-pair {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 20px;
+        align-items: start;
+      }
+      figure {
+        margin: 0;
+      }
+      video,
+      figure img {
+        display: block;
+        width: 100%;
+        height: auto;
+        border-radius: 14px;
+      }
+      video {
+        aspect-ratio: 1600 / 934;
+      }
+      figcaption {
+        font-size: 14px;
+        padding-top: 8px;
+      }
+      .projects {
+        display: flex;
+        gap: 16px;
+        flex-wrap: wrap;
+        margin: 20px 0;
+        font-size: 14px;
+      }
+      .projects span {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .projects img {
+        width: 20px;
+        height: 20px;
+        object-fit: contain;
+      }
+      .note {
+        font-size: 14px;
+      }
+      .spotlight-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 28px 20px;
+      }
+      .spotlight-grid article {
+        min-width: 0;
+      }
+      .spotlight-grid h3 {
+        font-size: 17px;
+        margin: 12px 0 8px;
+      }
+      .spotlight-grid p,
+      .spotlight-grid details {
+        font-size: 14px;
+      }
+      .spotlight-grid video.portrait-video {
+        aspect-ratio: 4 / 5;
+      }
+      .download-default {
+        margin: 12px 0 8px;
+      }
+      details summary {
+        cursor: pointer;
+        color: #a1a1aa;
+      }
+      details summary:focus-visible {
+        outline: 2px solid #fafafa;
+        outline-offset: 4px;
+      }
+      details li {
+        margin-bottom: 8px;
+      }
+      .library-heading {
+        padding: 28px 0 0;
+        border-top: 1px solid #27272a;
+      }
+      @media (max-width: 1000px) {
+        .spotlight-grid {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+      }
+      @media (max-width: 760px) {
+        .spotlight-grid {
+          grid-template-columns: 1fr;
+        }
+        .media-pair {
+          grid-template-columns: 1fr;
+        }
+        body {
+          padding: 24px 16px;
+        }
+        h1 {
+          font-size: 30px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <p>Threadlines | Promotional materials</p>
+    <h1>Threadlines in use. Feature videos for X.</h1>
+    <p>
+      Start with the workspace overview. For a feature post, use the portrait video below. The guide
+      has your first three posts and another five weeks of drafts.
+    </p>
+    <nav aria-label="Promotional kit files">
+      <a href="launch-plan.md">Read the posting guide</a>
+      <a href="x-posts.csv" download>Download 18 post drafts</a>
+      <a href="assets.md">Read the asset notes</a>
+      <a href="assets/release-0.4.0/index.html">Watch the next-stable preview</a>
+      <a href="assets/onboarding/preview.html">Watch the first-run walkthrough</a>
+      <a href="assets/triptych/index.html">View the three-image post</a>
+      <a href="https://publish.buffer.com/channels/6aa253b3cd8b9c702c4065fe/schedule?tab=drafts"
+        >Review Buffer drafts</a
+      >
+    </nav>
+    <div class="projects" aria-label="Projects in the captures">
+      <span><img src="source/threadlines.ico" alt="" />Threadlines</span>
+      <span><img src="source/facpmanuals.svg" alt="" />facpmanuals-next</span>
+      <span><img src="source/game-idea.ico" alt="" />game-idea</span>
+      <span><img src="source/portfolio.svg" alt="" />wilfredoleon.com</span>
+    </div>
+    <p class="note">
+      The real app renders recreated conversations and staged thread, PR, and check states. The
+      pointer follows the demo's automated input. These clips explain the controls, not real agent
+      or CI speed. The workspace overview runs 30 seconds; the feature stories are about 9 to 12
+      seconds. No audio is recorded.
+    </p>
+    <section id="launch">
+      <h2>Start here: the workspace overview</h2>
+      <p>
+        30 seconds showing the inbox, PR checks, and changed files, with locked framing and short
+        dissolves.
+      </p>
+      <div class="media-pair">
+        <figure>
+          <video
+            controls
+            playsinline
+            preload="none"
+            poster="assets/launch-video-poster.png"
+            aria-label="A Threadlines overview showing the inbox, pull requests and CI, and changed files."
+          >
+            <source src="assets/launch-overview.mp4" type="video/mp4" />
+          </video>
+          <figcaption>
+            <a href="assets/launch-overview.mp4" download>Download video</a> | Silent MP4
+          </figcaption>
+        </figure>
+        <figure>
+          <a href="assets/launch-social.png"
+            ><img
+              src="assets/launch-social.png"
+              alt="Threadlines with a recreated conversation beside its review tools."
+              loading="lazy"
+              width="1600"
+              height="934"
+          /></a>
+          <figcaption>
+            <a href="assets/launch-social.png" download>Download image</a> | 1600 x 934 PNG
+          </figcaption>
+        </figure>
+      </div>
+    </section>
+    <section id="spotlights">
+      <h2>Feature videos for X</h2>
+      <p>
+        Use the portrait download for each post. Each clip keeps the controls and their result in
+        view. Square and landscape versions are available if you need them.
+      </p>
+      <div class="spotlight-grid">
+        <article>
+          <h3>Keep track of your threads</h3>
+          <p>Working and Wrapped threads, with PR and terminal indicators.</p>
+          <video
+            class="portrait-video"
+            controls
+            playsinline
+            preload="none"
+            poster="assets/spotlights/inbox-portrait-poster.png"
+            aria-label="A close view of the Threadlines inbox with thread states and project names."
+          >
+            <source src="assets/spotlights/inbox-portrait.mp4" type="video/mp4" />
+          </video>
+          <p class="download-default">
+            <a href="assets/spotlights/inbox-portrait.mp4" download
+              >Download portrait video for X</a
+            >
+          </p>
+          <details>
+            <summary>Other formats and images</summary>
+            <ul>
+              <li>
+                <a href="assets/spotlights/inbox-square.mp4" download>Square video</a> | 1080 x 1080
+              </li>
+              <li>
+                <a href="assets/spotlights/inbox-landscape.mp4" download>Landscape video</a> | 1600
+                x 934
+              </li>
+              <li>
+                <a href="assets/spotlights/inbox-portrait.png" download>Portrait image</a> | 1080 x
+                1350
+              </li>
+              <li>
+                <a href="assets/spotlights/inbox-square.png" download>Square image</a> | 1080 x 1080
+              </li>
+            </ul>
+          </details>
+        </article>
+        <article>
+          <h3>Review the PR and its checks</h3>
+          <p>Follow the pull request and CI details beside the thread.</p>
+          <video
+            class="portrait-video"
+            controls
+            playsinline
+            preload="none"
+            poster="assets/spotlights/pull-requests-portrait-poster.png"
+            aria-label="A staged open Threadlines pull request with its title, review panel, and CI checks visible together."
+          >
+            <source src="assets/spotlights/pull-requests-portrait.mp4" type="video/mp4" />
+          </video>
+          <p class="download-default">
+            <a href="assets/spotlights/pull-requests-portrait.mp4" download
+              >Download portrait video for X</a
+            >
+          </p>
+          <details>
+            <summary>Other formats and images</summary>
+            <ul>
+              <li>
+                <a href="assets/spotlights/pull-requests-square.mp4" download>Square video</a> |
+                1080 x 1080
+              </li>
+              <li>
+                <a href="assets/spotlights/pull-requests-landscape.mp4" download>Landscape video</a>
+                | 1600 x 934
+              </li>
+              <li>
+                <a href="assets/spotlights/pull-requests-portrait.png" download>Portrait image</a> |
+                1080 x 1350
+              </li>
+              <li>
+                <a href="assets/spotlights/pull-requests-square.png" download>Square image</a> |
+                1080 x 1080
+              </li>
+            </ul>
+          </details>
+        </article>
+        <article>
+          <h3>Read the changes</h3>
+          <p>Review a changed file before committing.</p>
+          <video
+            class="portrait-video"
+            controls
+            playsinline
+            preload="none"
+            poster="assets/spotlights/source-control-portrait-poster.png"
+            aria-label="A close view of a changed-file diff in Threadlines source control."
+          >
+            <source src="assets/spotlights/source-control-portrait.mp4" type="video/mp4" />
+          </video>
+          <p class="download-default">
+            <a href="assets/spotlights/source-control-portrait.mp4" download
+              >Download portrait video for X</a
+            >
+          </p>
+          <details>
+            <summary>Other formats and images</summary>
+            <ul>
+              <li>
+                <a href="assets/spotlights/source-control-square.mp4" download>Square video</a> |
+                1080 x 1080
+              </li>
+              <li>
+                <a href="assets/spotlights/source-control-landscape.mp4" download
+                  >Landscape video</a
+                >
+                | 1600 x 934
+              </li>
+              <li>
+                <a href="assets/spotlights/source-control-portrait.png" download>Portrait image</a>
+                | 1080 x 1350
+              </li>
+              <li>
+                <a href="assets/spotlights/source-control-square.png" download>Square image</a> |
+                1080 x 1080
+              </li>
+            </ul>
+          </details>
+        </article>
+        <article>
+          <h3>Bring the page into the chat</h3>
+          <p>Find text on FACPManuals and attach a screenshot to the conversation.</p>
+          <video
+            class="portrait-video"
+            controls
+            playsinline
+            preload="none"
+            poster="assets/spotlights/browser-portrait-poster.png"
+            aria-label="The public FACPManuals page stays visible while the cursor finds text, captures a screenshot, and returns to its attachment in chat."
+          >
+            <source src="assets/spotlights/browser-portrait.mp4" type="video/mp4" />
+          </video>
+          <p class="download-default">
+            <a href="assets/spotlights/browser-portrait.mp4" download
+              >Download portrait video for X</a
+            >
+          </p>
+          <details>
+            <summary>Other formats and images</summary>
+            <ul>
+              <li>
+                <a href="assets/spotlights/browser-square.mp4" download>Square video</a> | 1080 x
+                1080
+              </li>
+              <li>
+                <a href="assets/spotlights/browser-landscape.mp4" download>Landscape video</a> |
+                1600 x 934
+              </li>
+              <li>
+                <a href="assets/spotlights/browser-portrait.png" download>Portrait image</a> | 1080
+                x 1350
+              </li>
+              <li>
+                <a href="assets/spotlights/browser-square.png" download>Square image</a> | 1080 x
+                1080
+              </li>
+            </ul>
+          </details>
+        </article>
+        <article>
+          <h3>Point to the content you mean</h3>
+          <p>Attach exact context to the composer.</p>
+          <video
+            class="portrait-video"
+            controls
+            playsinline
+            preload="none"
+            poster="assets/spotlights/context-portrait-poster.png"
+            aria-label="The cursor selects a file line, clicks Add selection to chat, and writes a question beside the attached reference."
+          >
+            <source src="assets/spotlights/context-portrait.mp4" type="video/mp4" />
+          </video>
+          <p class="download-default">
+            <a href="assets/spotlights/context-portrait.mp4" download
+              >Download portrait video for X</a
+            >
+          </p>
+          <details>
+            <summary>Other formats and images</summary>
+            <ul>
+              <li>
+                <a href="assets/spotlights/context-square.mp4" download>Square video</a> | 1080 x
+                1080
+              </li>
+              <li>
+                <a href="assets/spotlights/context-landscape.mp4" download>Landscape video</a> |
+                1600 x 934
+              </li>
+              <li>
+                <a href="assets/spotlights/context-portrait.png" download>Portrait image</a> | 1080
+                x 1350
+              </li>
+              <li>
+                <a href="assets/spotlights/context-square.png" download>Square image</a> | 1080 x
+                1080
+              </li>
+            </ul>
+          </details>
+        </article>
+      </div>
+    </section>
+    <div class="library-heading">
+      <h2>Full workspace demos and original images</h2>
+      <p>
+        These wider takes show more of the app. The workspace overview is above; the other nine
+        topics follow.
+      </p>
+    </div>
+    <section id="inbox">
+      <h2>Threads across projects</h2>
+      <p>Working, finished, and Wrapped threads, with PR and terminal indicators.</p>
+      <div class="media-pair">
+        <figure>
+          <video
+            controls
+            playsinline
+            preload="none"
+            poster="assets/inbox-video-poster.png"
+            aria-label="Threadlines inbox with current and Wrapped threads, PR badges, and terminal activity."
+          >
+            <source src="assets/inbox.mp4" type="video/mp4" />
+          </video>
+          <figcaption>
+            <a href="assets/inbox.mp4" download>Download video</a> | Silent MP4
+          </figcaption>
+        </figure>
+        <figure>
+          <a href="assets/inbox-social.png"
+            ><img
+              src="assets/inbox-social.png"
+              alt="Threadlines inbox with current and Wrapped threads, PR badges, and terminal activity."
+              loading="lazy"
+              width="1600"
+              height="934"
+          /></a>
+          <figcaption>
+            <a href="assets/inbox-social.png" download>Download image</a> | 1600 x 934 PNG
+          </figcaption>
+        </figure>
+      </div>
+    </section>
+    <section id="pull-requests">
+      <h2>Pull requests and CI</h2>
+      <p>An open PR and its check details beside the thread.</p>
+      <div class="media-pair">
+        <figure>
+          <video
+            controls
+            playsinline
+            preload="none"
+            poster="assets/pull-requests-video-poster.png"
+            aria-label="A staged pull request with its CI checks open above the Threadlines composer."
+          >
+            <source src="assets/pull-requests.mp4" type="video/mp4" />
+          </video>
+          <figcaption>
+            <a href="assets/pull-requests.mp4" download>Download video</a> | Silent MP4
+          </figcaption>
+        </figure>
+        <figure>
+          <a href="assets/pull-requests-social.png"
+            ><img
+              src="assets/pull-requests-social.png"
+              alt="A staged pull request with its CI checks open above the Threadlines composer."
+              loading="lazy"
+              width="1600"
+              height="934"
+          /></a>
+          <figcaption>
+            <a href="assets/pull-requests-social.png" download>Download image</a> | 1600 x 934 PNG
+          </figcaption>
+        </figure>
+      </div>
+    </section>
+    <section id="browser">
+      <h2>Desktop browser</h2>
+      <p>Expand FACPManuals, find text on the page, and attach a screenshot to the chat.</p>
+      <div class="media-pair">
+        <figure>
+          <video
+            controls
+            playsinline
+            preload="none"
+            poster="assets/browser-video-poster.png"
+            aria-label="The public FACPManuals homepage expanded in the Threadlines desktop browser."
+          >
+            <source src="assets/browser.mp4" type="video/mp4" />
+          </video>
+          <figcaption>
+            <a href="assets/browser.mp4" download>Download video</a> | Silent MP4
+          </figcaption>
+        </figure>
+        <figure>
+          <a href="assets/browser-social.png"
+            ><img
+              src="assets/browser-social.png"
+              alt="The public FACPManuals homepage expanded in the Threadlines desktop browser."
+              loading="lazy"
+              width="1600"
+              height="934"
+          /></a>
+          <figcaption>
+            <a href="assets/browser-social.png" download>Download image</a> | 1600 x 934 PNG
+          </figcaption>
+        </figure>
+      </div>
+    </section>
+    <section id="files">
+      <h2>Project files</h2>
+      <p>Open and read a file in the app.</p>
+      <div class="media-pair">
+        <figure>
+          <video
+            controls
+            playsinline
+            preload="none"
+            poster="assets/files-video-poster.png"
+            aria-label="The Threadlines project file browser and editor beside a conversation."
+          >
+            <source src="assets/files.mp4" type="video/mp4" />
+          </video>
+          <figcaption>
+            <a href="assets/files.mp4" download>Download video</a> | Silent MP4
+          </figcaption>
+        </figure>
+        <figure>
+          <a href="assets/files-social.png"
+            ><img
+              src="assets/files-social.png"
+              alt="The Threadlines project file browser and editor beside a conversation."
+              loading="lazy"
+              width="1600"
+              height="934"
+          /></a>
+          <figcaption>
+            <a href="assets/files-social.png" download>Download image</a> | 1600 x 934 PNG
+          </figcaption>
+        </figure>
+      </div>
+    </section>
+    <section id="context">
+      <h2>Exact context</h2>
+      <p>Attach the part you want the agent to work on.</p>
+      <div class="media-pair">
+        <figure>
+          <video
+            controls
+            playsinline
+            preload="none"
+            poster="assets/context-video-poster.png"
+            aria-label="Selected content attached to the Threadlines composer."
+          >
+            <source src="assets/context.mp4" type="video/mp4" />
+          </video>
+          <figcaption>
+            <a href="assets/context.mp4" download>Download video</a> | Silent MP4
+          </figcaption>
+        </figure>
+        <figure>
+          <a href="assets/context-social.png"
+            ><img
+              src="assets/context-social.png"
+              alt="Selected content attached to the Threadlines composer."
+              loading="lazy"
+              width="1600"
+              height="934"
+          /></a>
+          <figcaption>
+            <a href="assets/context-social.png" download>Download image</a> | 1600 x 934 PNG
+          </figcaption>
+        </figure>
+      </div>
+    </section>
+    <section id="source-control">
+      <h2>Source control</h2>
+      <p>Review changed files and staged changes.</p>
+      <div class="media-pair">
+        <figure>
+          <video
+            controls
+            playsinline
+            preload="none"
+            poster="assets/source-control-video-poster.png"
+            aria-label="A changed-file diff in the Threadlines source-control panel."
+          >
+            <source src="assets/source-control.mp4" type="video/mp4" />
+          </video>
+          <figcaption>
+            <a href="assets/source-control.mp4" download>Download video</a> | Silent MP4
+          </figcaption>
+        </figure>
+        <figure>
+          <a href="assets/source-control-social.png"
+            ><img
+              src="assets/source-control-social.png"
+              alt="A changed-file diff in the Threadlines source-control panel."
+              loading="lazy"
+              width="1600"
+              height="934"
+          /></a>
+          <figcaption>
+            <a href="assets/source-control-social.png" download>Download image</a> | 1600 x 934 PNG
+          </figcaption>
+        </figure>
+      </div>
+    </section>
+    <section id="git-history">
+      <h2>Git history</h2>
+      <p>Read commit details and follow branch history beside the conversation.</p>
+      <div class="media-pair">
+        <figure>
+          <video
+            controls
+            playsinline
+            preload="none"
+            poster="assets/git-history-video-poster.png"
+            aria-label="Commit detail popovers and branch history beside a Threadlines project thread."
+          >
+            <source src="assets/git-history.mp4" type="video/mp4" />
+          </video>
+          <figcaption>
+            <a href="assets/git-history.mp4" download>Download video</a> | Silent MP4
+          </figcaption>
+        </figure>
+        <figure>
+          <a href="assets/git-history-social.png"
+            ><img
+              src="assets/git-history-social.png"
+              alt="Commit detail popovers and branch history beside a Threadlines project thread."
+              loading="lazy"
+              width="1600"
+              height="934"
+          /></a>
+          <figcaption>
+            <a href="assets/git-history-social.png" download>Download image</a> | 1600 x 934 PNG
+          </figcaption>
+        </figure>
+      </div>
+    </section>
+    <section id="provider-switch">
+      <h2>Provider switching</h2>
+      <p>Choose Claude and review the recap confirmation before switching.</p>
+      <div class="media-pair">
+        <figure>
+          <video
+            controls
+            playsinline
+            preload="none"
+            poster="assets/provider-switch-video-poster.png"
+            aria-label="The Claude provider picker and Switch to Claude confirmation in an existing Threadlines thread."
+          >
+            <source src="assets/provider-switch.mp4" type="video/mp4" />
+          </video>
+          <figcaption>
+            <a href="assets/provider-switch.mp4" download>Download video</a> | Silent MP4
+          </figcaption>
+        </figure>
+        <figure>
+          <a href="assets/provider-switch-social.png"
+            ><img
+              src="assets/provider-switch-social.png"
+              alt="The Claude provider picker and Switch to Claude confirmation in an existing Threadlines thread."
+              loading="lazy"
+              width="1600"
+              height="934"
+          /></a>
+          <figcaption>
+            <a href="assets/provider-switch-social.png" download>Download image</a> | 1600 x 934 PNG
+          </figcaption>
+        </figure>
+      </div>
+    </section>
+    <section id="activity">
+      <h2>Tasks and activity</h2>
+      <p>Follow tasks, subagents, and background work.</p>
+      <div class="media-pair">
+        <figure>
+          <video
+            controls
+            playsinline
+            preload="none"
+            poster="assets/activity-video-poster.png"
+            aria-label="The Threadlines activity panel with staged tasks, subagents, and background work."
+          >
+            <source src="assets/activity.mp4" type="video/mp4" />
+          </video>
+          <figcaption>
+            <a href="assets/activity.mp4" download>Download video</a> | Silent MP4
+          </figcaption>
+        </figure>
+        <figure>
+          <a href="assets/activity-social.png"
+            ><img
+              src="assets/activity-social.png"
+              alt="The Threadlines activity panel with staged tasks, subagents, and background work."
+              loading="lazy"
+              width="1600"
+              height="934"
+          /></a>
+          <figcaption>
+            <a href="assets/activity-social.png" download>Download image</a> | 1600 x 934 PNG
+          </figcaption>
+        </figure>
+      </div>
+    </section>
+    <p class="note">
+      Real project names and original favicons. No private chat history or game address. Check the
+      stable download before posting a feature. Nothing in this kit is scheduled or published.
+    </p>
+  </body>
+</html>

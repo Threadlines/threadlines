@@ -1,0 +1,100 @@
+{
+  "inbox": {
+    "posterSecond": 8.5,
+    "shots": [
+      {
+        "start": 1.3,
+        "sourceSeconds": 5.9,
+        "seconds": 10,
+        "crops": {
+          "portrait": [0, 120, 520],
+          "square": [0, 125, 640]
+        },
+        "frames": {
+          "landscape": [0, 0, 1600, 934]
+        }
+      }
+    ]
+  },
+  "pull-requests": {
+    "posterSecond": 9.7,
+    "shots": [
+      {
+        "start": 0,
+        "sourceSeconds": 9,
+        "seconds": 11.5,
+        "frames": {
+          "portrait": [0, 0, 1600, 934],
+          "square": [0, 0, 1600, 934],
+          "landscape": [0, 0, 1600, 934]
+        }
+      }
+    ]
+  },
+  "source-control": {
+    "posterSecond": 7,
+    "shots": [
+      {
+        "start": 1,
+        "sourceSeconds": 5.2,
+        "seconds": 10,
+        "crops": {},
+        "frames": {
+          "landscape": [0, 0, 1600, 934],
+          "portrait": [1000, 0, 600, 934],
+          "square": [1000, 0, 600, 934]
+        }
+      }
+    ]
+  },
+  "browser": {
+    "posterSecond": 10.5,
+    "shots": [
+      {
+        "start": 0.4,
+        "sourceSeconds": 8.6,
+        "seconds": 9,
+        "frames": {
+          "portrait": [325, 0, 1274, 934],
+          "square": [325, 0, 1274, 934],
+          "landscape": [0, 0, 1600, 934]
+        }
+      },
+      {
+        "start": 9,
+        "sourceSeconds": 1.8,
+        "seconds": 3,
+        "frames": {
+          "portrait": [325, 550, 1080, 384],
+          "square": [325, 550, 1080, 384],
+          "landscape": [0, 0, 1600, 934]
+        }
+      }
+    ]
+  },
+  "context": {
+    "posterSecond": 10,
+    "shots": [
+      {
+        "start": 0.1,
+        "sourceSeconds": 4,
+        "seconds": 4.5,
+        "frames": {
+          "portrait": [100, 40, 1400, 840],
+          "square": [100, 40, 1400, 840],
+          "landscape": [0, 0, 1600, 934]
+        }
+      },
+      {
+        "start": 4.1,
+        "sourceSeconds": 5.4,
+        "seconds": 7,
+        "frames": {
+          "portrait": [325, 550, 720, 384],
+          "square": [325, 550, 720, 384],
+          "landscape": [0, 0, 1600, 934]
+        }
+      }
+    ]
+  }
+}
