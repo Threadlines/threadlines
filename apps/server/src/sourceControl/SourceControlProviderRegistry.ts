@@ -72,6 +72,7 @@ function unsupportedProvider(
   return SourceControlProvider.SourceControlProvider.of({
     kind,
     listChangeRequests: () => unsupported("listChangeRequests"),
+    listRecentMergedChangeRequests: () => unsupported("listRecentMergedChangeRequests"),
     getChangeRequest: () => unsupported("getChangeRequest"),
     createChangeRequest: () => unsupported("createChangeRequest"),
     getRepositoryCloneUrls: () => unsupported("getRepositoryCloneUrls"),
@@ -130,6 +131,11 @@ function bindProviderContext(
     kind: provider.kind,
     listChangeRequests: (input) =>
       provider.listChangeRequests({
+        ...input,
+        context: input.context ?? context,
+      }),
+    listRecentMergedChangeRequests: (input) =>
+      provider.listRecentMergedChangeRequests({
         ...input,
         context: input.context ?? context,
       }),

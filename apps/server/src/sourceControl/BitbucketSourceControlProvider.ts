@@ -65,6 +65,9 @@ export const make = Effect.fn("makeBitbucketSourceControlProvider")(function* ()
           Effect.mapError((error) => providerError("listChangeRequests", error)),
         );
     },
+    // Pull request samples are not collected for Bitbucket yet; generated text
+    // falls back to the repository's commit subjects.
+    listRecentMergedChangeRequests: () => Effect.succeed([]),
     getChangeRequest: (input) =>
       bitbucket.getPullRequest(input).pipe(
         Effect.map(toChangeRequest),
