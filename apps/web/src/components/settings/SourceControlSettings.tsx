@@ -460,7 +460,8 @@ const WRITING_STYLE_OPTIONS: ReadonlyArray<{
   {
     value: "repo_conventions",
     label: "Repository conventions",
-    description: "In each project, matches the style of recent commit messages and PR titles.",
+    description:
+      "In each project, matches the style of recent commit messages and merged pull requests.",
   },
   {
     value: "conventional_commits",

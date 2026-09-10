@@ -10,6 +10,7 @@ import {
   type SourceControlRepositoryInfo,
 } from "@threadlines/contracts";
 import { parseGitHubRepositoryNameWithOwnerFromRemoteUrl } from "@threadlines/shared/git";
+import { decodeJsonResult } from "@threadlines/shared/schemaJson";
 
 import { withGitHubMergeQueue } from "./gitHubMergeQueue.ts";
 import * as GitHubCli from "./GitHubCli.ts";
@@ -19,6 +20,23 @@ import * as GitHubPullRequests from "./gitHubPullRequests.ts";
 import * as SourceControlProvider from "./SourceControlProvider.ts";
 import * as SourceControlProviderDiscovery from "./SourceControlProviderDiscovery.ts";
 const isSourceControlProviderError = Schema.is(SourceControlProviderError);
+
+const MERGED_SAMPLE_FETCH_MULTIPLIER = 4;
+
+const GitHubMergedPullRequestSampleSchema = Schema.Array(
+  Schema.Struct({
+    title: Schema.String,
+    body: Schema.optional(Schema.NullOr(Schema.String)),
+    author: Schema.optional(
+      Schema.NullOr(
+        Schema.Struct({
+          is_bot: Schema.optional(Schema.Boolean),
+        }),
+      ),
+    ),
+  }),
+);
+const decodeMergedPullRequestSamples = decodeJsonResult(GitHubMergedPullRequestSampleSchema);
 
 function providerError(
   operation: string,
@@ -224,9 +242,64 @@ export const make = Effect.fn("makeGitHubSourceControlProvider")(function* () {
         );
     };
 
+  const listRecentMergedChangeRequests: SourceControlProvider.SourceControlProviderShape["listRecentMergedChangeRequests"] =
+    (input) =>
+      github
+        .execute({
+          cwd: input.cwd,
+          args: [
+            "pr",
+            "list",
+            ...repositoryFlagArgs(repositoryFromContext(input.context)),
+            "--state",
+            "merged",
+            // Bot pull requests (dependency bumps) are dropped below, so fetch
+            // a few more than asked for to still fill the sample.
+            "--limit",
+            String(input.limit * MERGED_SAMPLE_FETCH_MULTIPLIER),
+            "--json",
+            "title,body,author",
+          ],
+        })
+        .pipe(
+          Effect.flatMap((result) => {
+            const raw = result.stdout.trim();
+            if (raw.length === 0) {
+              return Effect.succeed([]);
+            }
+            const decoded = decodeMergedPullRequestSamples(raw);
+            if (!Result.isSuccess(decoded)) {
+              return Effect.fail(
+                new SourceControlProviderError({
+                  provider: "github",
+                  operation: "listRecentMergedChangeRequests",
+                  detail: "GitHub CLI returned invalid merged pull request JSON.",
+                  cause: decoded.failure,
+                }),
+              );
+            }
+            return Effect.succeed(
+              decoded.success
+                .filter((entry) => entry.author?.is_bot !== true)
+                .map((entry) => ({
+                  title: entry.title.trim(),
+                  body: entry.body?.trim() ?? "",
+                }))
+                .filter((sample) => sample.title.length > 0)
+                .slice(0, input.limit),
+            );
+          }),
+          Effect.mapError((error) =>
+            isSourceControlProviderError(error)
+              ? error
+              : providerError("listRecentMergedChangeRequests", error),
+          ),
+        );
+
   return SourceControlProvider.SourceControlProvider.of({
     kind: "github",
     listChangeRequests,
+    listRecentMergedChangeRequests,
     getChangeRequest: (input) =>
       github
         .getPullRequest({

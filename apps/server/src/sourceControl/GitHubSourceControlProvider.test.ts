@@ -394,3 +394,46 @@ it("parses GitHub auth status accounts by host and active state", () => {
     },
   );
 });
+
+it.effect("samples merged pull requests written by people, newest first", () =>
+  Effect.gen(function* () {
+    const calls: string[][] = [];
+    const provider = yield* makeProvider({
+      execute: (input) => {
+        calls.push([...input.args]);
+        return Effect.succeed(
+          processResult(
+            JSON.stringify([
+              {
+                title: "chore(deps): bump vitest",
+                body: "Bumps vitest from 4 to 5.",
+                author: { login: "app/dependabot", is_bot: true },
+              },
+              {
+                title: "fix(web): command palette stays open ",
+                body: "  The palette closed under StrictMode.\n\nNow it stays open.  ",
+                author: { login: "badcuban", is_bot: false },
+              },
+              { title: "   ", body: null, author: null },
+              { title: "feat(server): retry pushes", body: null },
+              { title: "docs: fourth sample", body: "Over the limit.", author: null },
+            ]),
+          ),
+        );
+      },
+    });
+
+    const samples = yield* provider.listRecentMergedChangeRequests({ cwd: "/repo", limit: 2 });
+
+    assert.deepStrictEqual(samples, [
+      {
+        title: "fix(web): command palette stays open",
+        body: "The palette closed under StrictMode.\n\nNow it stays open.",
+      },
+      { title: "feat(server): retry pushes", body: "" },
+    ]);
+    assert.deepStrictEqual(calls, [
+      ["pr", "list", "--state", "merged", "--limit", "8", "--json", "title,body,author"],
+    ]);
+  }),
+);

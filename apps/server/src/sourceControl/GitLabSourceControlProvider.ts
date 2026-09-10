@@ -129,6 +129,9 @@ export const make = Effect.fn("makeGitLabSourceControlProvider")(function* () {
           Effect.mapError((error) => providerError("listChangeRequests", error)),
         );
     },
+    // Merge request samples are not collected for GitLab yet; generated text
+    // falls back to the repository's commit subjects.
+    listRecentMergedChangeRequests: () => Effect.succeed([]),
     getChangeRequest: (input) =>
       gitlab.getMergeRequest(input).pipe(
         Effect.map(toChangeRequest),
