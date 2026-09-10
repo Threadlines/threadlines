@@ -8,6 +8,7 @@ import { PositiveInt, TrimmedNonEmptyString } from "@threadlines/contracts";
 import { decodeJsonResult, formatSchemaError } from "@threadlines/shared/schemaJson";
 
 export interface NormalizedGitHubPullRequestRecord {
+  readonly id?: string;
   readonly number: number;
   readonly title: string;
   readonly url: string;
@@ -15,7 +16,7 @@ export interface NormalizedGitHubPullRequestRecord {
   readonly headRefName: string;
   readonly state: "open" | "closed" | "merged";
   readonly updatedAt: Option.Option<DateTime.Utc>;
-  /** Present only when the read asked for `autoMergeRequest`. */
+  /** Auto-merge or queue membership; absent where neither was reported. */
   readonly autoMergeEnabled?: boolean;
   readonly isCrossRepository?: boolean;
   readonly headRepositoryNameWithOwner?: string | null;
@@ -23,6 +24,7 @@ export interface NormalizedGitHubPullRequestRecord {
 }
 
 const GitHubPullRequestSchema = Schema.Struct({
+  id: Schema.optional(Schema.NullOr(Schema.String)),
   number: PositiveInt,
   title: TrimmedNonEmptyString,
   url: TrimmedNonEmptyString,
@@ -83,6 +85,7 @@ function normalizeGitHubPullRequestRecord(
       : null);
 
   return {
+    ...(raw.id ? { id: raw.id } : {}),
     number: raw.number,
     title: raw.title,
     url: raw.url,

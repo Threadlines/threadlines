@@ -11,6 +11,7 @@ import {
 } from "@threadlines/contracts";
 import { parseGitHubRepositoryNameWithOwnerFromRemoteUrl } from "@threadlines/shared/git";
 
+import { withGitHubMergeQueue } from "./gitHubMergeQueue.ts";
 import * as GitHubCli from "./GitHubCli.ts";
 import { THREADLINES_GITHUB_CLI_ENV } from "./GitHubCliEnvironment.ts";
 import { findAuthenticatedGitHubAccount, parseGitHubAuthStatus } from "./gitHubAuthStatus.ts";
@@ -184,7 +185,7 @@ export const make = Effect.fn("makeGitHubSourceControlProvider")(function* () {
             "--limit",
             String(input.limit ?? 20),
             "--json",
-            "number,title,url,baseRefName,headRefName,state,mergedAt,updatedAt,autoMergeRequest,isCrossRepository,headRepository,headRepositoryOwner",
+            "id,number,title,url,baseRefName,headRefName,state,mergedAt,updatedAt,autoMergeRequest,isCrossRepository,headRepository,headRepositoryOwner",
           ],
         })
         .pipe(
@@ -196,11 +197,13 @@ export const make = Effect.fn("makeGitHubSourceControlProvider")(function* () {
             return Effect.sync(() => GitHubPullRequests.decodeGitHubPullRequestListJson(raw)).pipe(
               Effect.flatMap((decoded) =>
                 Result.isSuccess(decoded)
-                  ? Effect.succeed(
-                      decoded.success.map((item) => ({
-                        ...toChangeRequest(item),
-                        updatedAt: item.updatedAt,
-                      })),
+                  ? withGitHubMergeQueue(github.execute, input.cwd, decoded.success).pipe(
+                      Effect.map((rows) =>
+                        rows.map((item) => ({
+                          ...toChangeRequest(item),
+                          updatedAt: item.updatedAt,
+                        })),
+                      ),
                     )
                   : Effect.fail(
                       new SourceControlProviderError({

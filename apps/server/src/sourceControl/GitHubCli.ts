@@ -5,6 +5,7 @@ import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as SchemaIssue from "effect/SchemaIssue";
 
+import { withGitHubMergeQueue } from "./gitHubMergeQueue.ts";
 import {
   TrimmedNonEmptyString,
   type SourceControlRepositoryVisibility,
@@ -34,7 +35,7 @@ export interface GitHubPullRequestSummary {
   readonly baseRefName: string;
   readonly headRefName: string;
   readonly state?: "open" | "closed" | "merged";
-  /** Armed to merge on its own once its requirements pass. */
+  /** Auto-merge is enabled or the PR is in the merge queue. */
   readonly autoMergeEnabled?: boolean;
   readonly isCrossRepository?: boolean;
   readonly headRepositoryNameWithOwner?: string | null;
@@ -304,7 +305,7 @@ export const make = Effect.fn("makeGitHubCli")(function* () {
           "--limit",
           String(input.limit ?? 1),
           "--json",
-          "number,title,url,baseRefName,headRefName,state,mergedAt,autoMergeRequest,isCrossRepository,headRepository,headRepositoryOwner",
+          "id,number,title,url,baseRefName,headRefName,state,mergedAt,autoMergeRequest,isCrossRepository,headRepository,headRepositoryOwner",
         ],
       }).pipe(
         Effect.map((result) => result.stdout.trim()),
@@ -323,8 +324,10 @@ export const make = Effect.fn("makeGitHubCli")(function* () {
                     );
                   }
 
-                  return Effect.succeed(
-                    decoded.success.map(({ updatedAt: _updatedAt, ...summary }) => summary),
+                  return withGitHubMergeQueue(execute, input.cwd, decoded.success).pipe(
+                    Effect.map((rows) =>
+                      rows.map(({ id: _id, updatedAt: _updatedAt, ...summary }) => summary),
+                    ),
                   );
                 }),
               ),
@@ -339,7 +342,7 @@ export const make = Effect.fn("makeGitHubCli")(function* () {
           input.reference,
           ...repositoryFlagArgs(input.repository),
           "--json",
-          "number,title,url,baseRefName,headRefName,state,mergedAt,autoMergeRequest,isCrossRepository,headRepository,headRepositoryOwner",
+          "id,number,title,url,baseRefName,headRefName,state,mergedAt,autoMergeRequest,isCrossRepository,headRepository,headRepositoryOwner",
         ],
       }).pipe(
         Effect.map((result) => result.stdout.trim()),
@@ -356,8 +359,12 @@ export const make = Effect.fn("makeGitHubCli")(function* () {
                 );
               }
 
-              return Effect.succeed(
-                (({ updatedAt: _updatedAt, ...summary }) => summary)(decoded.success),
+              return withGitHubMergeQueue(execute, input.cwd, [decoded.success]).pipe(
+                Effect.map((rows) =>
+                  (({ id: _id, updatedAt: _updatedAt, ...summary }) => summary)(
+                    rows[0] ?? decoded.success,
+                  ),
+                ),
               );
             }),
           ),

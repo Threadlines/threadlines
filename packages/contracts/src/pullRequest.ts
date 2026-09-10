@@ -105,7 +105,7 @@ export const PullRequestListEntry = Schema.Struct({
   checksState: Schema.optionalKey(PullRequestChecksState),
   /** Absent where the host does not say whether the branch still merges. */
   mergeability: Schema.optionalKey(PullRequestMergeability),
-  /** Armed to merge on its own once its requirements pass; absent where the host does not say. */
+  /** Auto-merge is enabled or the PR is in the merge queue; absent where the host does not say. */
   autoMergeEnabled: Schema.optionalKey(Schema.Boolean),
   labels: Schema.Array(PullRequestLabel),
   origin: PullRequestListEntryOrigin,
