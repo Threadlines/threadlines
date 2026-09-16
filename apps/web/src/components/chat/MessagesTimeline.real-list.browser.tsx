@@ -7,7 +7,7 @@ import {
 } from "@threadlines/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createRef, type ReactElement, type ReactNode } from "react";
-import type { LegendListRef } from "@legendapp/list/react";
+import { LegendList, type LegendListRef } from "@legendapp/list/react";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { render } from "vitest-browser-react";
 
@@ -114,6 +114,75 @@ describe("MessagesTimeline with the real virtual list", () => {
     document.body.innerHTML = "";
   });
 
+  it("does not move streamed text back down as the response grows", async () => {
+    const props = buildProps();
+    const sentence =
+      "This is a plain streamed sentence with enough words to wrap onto another line. ";
+    const message: ChatMessage = {
+      id: "streaming-response" as ChatMessage["id"],
+      role: "assistant",
+      turnId: ACTIVE_TURN_ID,
+      text: sentence.repeat(20),
+      streaming: true,
+      createdAt: props.activeTurnStartedAt,
+    };
+    const renderList = (text: string) => (
+      <div style={{ height: 400, width: 600 }}>
+        <MessagesTimeline
+          {...props}
+          timelineEntries={[
+            {
+              id: message.id,
+              kind: "message",
+              createdAt: message.createdAt,
+              message: { ...message, text },
+            },
+          ]}
+        />
+      </div>
+    );
+    const screen = await renderTimeline(renderList(message.text));
+    let frame = 0;
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      const body = document.querySelector<HTMLElement>('[data-assistant-message-body="true"]')!;
+      const list = document.querySelector<HTMLElement>('[data-chat-messages-list="true"]')!;
+      expect(list.scrollHeight).toBeGreaterThan(list.clientHeight);
+      const positions: number[] = [];
+      const sample = () => {
+        positions.push(body.getBoundingClientRect().top);
+        frame = requestAnimationFrame(sample);
+      };
+      frame = requestAnimationFrame(sample);
+      for (let length = 15; length <= 900; length += 15) {
+        await screen.rerender(renderList(message.text + sentence.repeat(12).slice(0, length)));
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      cancelAnimationFrame(frame);
+      const downwardSteps = positions.slice(1).map((top, index) => top - positions[index]!);
+      expect(
+        Math.max(...downwardSteps),
+        "new lines must not make earlier text bounce down",
+      ).toBeLessThanOrEqual(1);
+      expect(positions.at(-1)).toBeLessThan(positions[0]! - 100);
+      expect(list.scrollHeight - list.clientHeight - list.scrollTop).toBeLessThanOrEqual(1);
+
+      // Reading above the tail must still hold the reader's position as the
+      // response grows, instead of pulling them back into bottom-follow mode.
+      list.dispatchEvent(new WheelEvent("wheel", { deltaY: -150, bubbles: true }));
+      list.scrollTop -= 150;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      const readingTop = body.getBoundingClientRect().top;
+      await screen.rerender(renderList(message.text + sentence.repeat(20)));
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      expect(Math.abs(body.getBoundingClientRect().top - readingTop)).toBeLessThanOrEqual(1);
+    } finally {
+      cancelAnimationFrame(frame);
+      await screen.unmount();
+    }
+  });
+
   it("keeps the affected ongoing-thread snapshot at the bottom of the list", async () => {
     const fixture = await loadAffectedThreadFixture();
     const startedAtMs = Date.parse(fixture.activeTurnStartedAt);
@@ -185,30 +254,30 @@ describe("MessagesTimeline with the real virtual list", () => {
   // stored value instead; this replay pins that with a read-back that never
   // matches the written string.
   it("clears the list's temporary end padding when the browser rounds the written value", async () => {
-    const fixture = await loadAffectedThreadFixture();
-    const startedAtMs = Date.parse(fixture.activeTurnStartedAt);
-    const props = buildProps();
-    const renderList = (state: ReturnType<typeof deriveAffectedThreadRenderState>) => (
-      <div style={{ height: 710, width: 900 }}>
-        <MessagesTimeline
-          {...props}
-          activeTurnId={fixture.activeTurnId}
-          activeTurnStartedAt={fixture.activeTurnStartedAt}
-          timelineEntries={state.timelineEntries}
-          turnAgents={state.turnAgents}
-          onOpenAgentsPanel={vi.fn()}
+    // Exercise the library's anchored mode directly: the chat now disables
+    // this mode while following streaming text at the bottom.
+    const renderList = (height: number) => (
+      <div style={{ height: 400, width: 600 }}>
+        <LegendList
+          data={[
+            { id: "response", height },
+            { id: "tail", height: 40 },
+          ]}
+          keyExtractor={(item) => item.id}
+          renderItem={({ item }) => <div style={{ height: item.height }}>{item.id}</div>}
+          estimatedItemSize={200}
+          initialScrollAtEnd
+          maintainScrollAtEnd={{ animated: false }}
+          maintainVisibleContentPosition
+          style={{ height: "100%" }}
         />
       </div>
     );
-    const screen = await renderTimeline(
-      renderList(deriveAffectedThreadRenderState(fixture, startedAtMs)),
-    );
+    const screen = await renderTimeline(renderList(600));
     let restorePaddingAccessor: (() => void) | null = null;
 
     try {
-      await vi.waitFor(() => {
-        expect(document.querySelector('[data-turn-working-anchor="true"]')).not.toBeNull();
-      });
+      await new Promise((resolve) => setTimeout(resolve, 300));
       const content = document.querySelector<HTMLElement>(".legend-list-content-container");
       expect(content).not.toBeNull();
       const style = content!.style;
@@ -228,17 +297,8 @@ describe("MessagesTimeline with the real virtual list", () => {
         delete (style as unknown as Record<string, unknown>)["paddingBottom"];
       };
 
-      const finalCutoffMs = Date.parse(fixture.cutoff);
-      const replayTicks = Array.from(
-        new Set(
-          fixture.activities
-            .map((activity) => Date.parse(activity.createdAt))
-            .filter((at) => at > startedAtMs && at <= finalCutoffMs)
-            .map((at) => Math.floor(at / 100) * 100),
-        ),
-      ).sort((left, right) => left - right);
-      for (const cutoffMs of replayTicks) {
-        await screen.rerender(renderList(deriveAffectedThreadRenderState(fixture, cutoffMs)));
+      for (let step = 1; step <= 6; step++) {
+        await screen.rerender(renderList(600 + step * 23.46875));
         await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
       }
 

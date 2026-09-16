@@ -1420,7 +1420,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
                 : false
             }
             maintainScrollAtEndThreshold={TIMELINE_MAINTAIN_END_THRESHOLD_RATIO}
-            maintainVisibleContentPosition
+            // Anchoring and bottom-following both adjust for streamed line wraps.
+            // Use anchoring only while reading above the tail to avoid overshoot.
+            maintainVisibleContentPosition={!autoStickToBottom && !stickToBottomRequestPending}
             onScroll={handleScroll}
             onWheelCapture={handleWheelCapture}
             onPointerDownCapture={handlePointerDownCapture}
