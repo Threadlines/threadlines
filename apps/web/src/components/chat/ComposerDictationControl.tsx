@@ -422,10 +422,10 @@ export const ComposerDictationControl = memo(function ComposerDictationControl(
           </MenuTrigger>
           <MenuPopup align="end" side="top" className="w-72 max-w-[calc(100vw-2rem)]">
             <MenuGroup>
-              {/* The gear rides in the label's empty right half instead of
-                  spending a row and a divider on a "Dictation settings…" item. */}
-              <MenuGroupLabel className="flex items-center justify-between pe-1">
-                <span>Microphone</span>
+              {/* Keep the settings link beside the label: Base UI hides the
+                  label itself from the accessibility tree. */}
+              <div className="flex items-center justify-between pe-1">
+                <MenuGroupLabel>Microphone</MenuGroupLabel>
                 <Button
                   variant="ghost"
                   size="icon-xs"
@@ -439,7 +439,7 @@ export const ComposerDictationControl = memo(function ComposerDictationControl(
                 >
                   <Settings2Icon className="size-3.5" aria-hidden="true" />
                 </Button>
-              </MenuGroupLabel>
+              </div>
               {/* "Follow the system default" is stored as null. Chromium lists
                   that default as a device of its own, so it stands in for the
                   plain "Default" row wherever it exists. */}

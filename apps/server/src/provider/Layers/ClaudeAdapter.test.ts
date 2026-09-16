@@ -253,7 +253,7 @@ function makeContextUsageResponse(input: {
     // A category-less response is treated as a partially started process and
     // ignored by the adapter, so a usable fixture needs at least one category.
     categories: input.categories ?? [
-      { name: "Messages", tokens: input.totalTokens, color: "#000000" },
+      { name: "Messages", tokens: input.totalTokens, color: "#000000", kind: "used" },
     ],
     totalTokens: input.totalTokens,
     maxTokens: input.maxTokens,
@@ -5870,11 +5870,11 @@ describe("ClaudeAdapterLive", () => {
       // Both snapshots carry an equal-but-not-identical category array: the
       // dedupe has to compare the entries, not the array reference.
       const categories = [
-        { name: "System prompt", tokens: 3000, color: "#111111" },
-        { name: "MCP tools", tokens: 700, color: "#444444", isDeferred: true },
-        { name: "System tools (deferred)", tokens: 5000, color: "#555555" },
-        { name: "Messages", tokens: 19000, color: "#222222" },
-        { name: "Free space", tokens: 178000, color: "#333333" },
+        { name: "System prompt", tokens: 3000, color: "#111111", kind: "used" },
+        { name: "MCP tools", tokens: 700, color: "#444444", isDeferred: true, kind: "deferred" },
+        { name: "System tools (deferred)", tokens: 5000, color: "#555555", kind: "deferred" },
+        { name: "Messages", tokens: 19000, color: "#222222", kind: "used" },
+        { name: "Free space", tokens: 178000, color: "#333333", kind: "free" },
       ] satisfies SDKControlGetContextUsageResponse["categories"];
       harness.query.setContextUsageResponses([
         makeContextUsageResponse({
