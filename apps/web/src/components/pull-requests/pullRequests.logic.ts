@@ -1531,6 +1531,22 @@ export function resolveMergeWhenReadyBlock(
   return null;
 }
 
+/** GitHub's auto-merge command merges immediately when its gate is clear. */
+export function resolvePullRequestAutoMergeBlock(detail: PullRequestDetail): string | null {
+  const block = resolveMergeWhenReadyBlock(detail);
+  if (block !== null) {
+    return block;
+  }
+  if (
+    detail.provider === "github" &&
+    detail.mergeQueue === undefined &&
+    detail.mergeGate === "clear"
+  ) {
+    return "This pull request can merge right now. Use Merge instead.";
+  }
+  return null;
+}
+
 /** `1` reads as first and needs no ordinal; the rest are 2nd, 3rd, 4th… */
 function englishOrdinal(value: number): string {
   const remainderOfTen = value % 10;

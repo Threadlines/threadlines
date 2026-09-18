@@ -191,22 +191,76 @@ describe("composerAutoMergeControl", () => {
     expect(composerAutoMergeControl(undefined)).toEqual({ kind: "hidden" });
   });
 
-  it("is hidden where the host offers neither action", () => {
+  it("explains when the host does not offer auto-merge", () => {
     expect(
       composerAutoMergeControl(
         detail({
           capabilities: { ...detail().capabilities, actions: ["merge", "close"] },
         }),
       ),
-    ).toEqual({ kind: "hidden" });
+    ).toEqual({ kind: "unavailable", reason: "Auto-merge is not available for this repository" });
   });
 
-  it("is a switch carrying the standing instruction where the host offers one of them", () => {
+  it("is a switch carrying the standing instruction where the host offers the next action", () => {
     expect(composerAutoMergeControl(detail())).toEqual({ kind: "toggle", checked: false });
     expect(composerAutoMergeControl(detail({ autoMergeEnabled: true }))).toEqual({
       kind: "toggle",
       checked: true,
     });
+  });
+
+  it("does not mistake permission to cancel for permission to enable auto-merge", () => {
+    const capabilities = { ...detail().capabilities, actions: ["disable-auto-merge"] as const };
+    expect(composerAutoMergeControl(detail({ capabilities }))).toEqual({
+      kind: "unavailable",
+      reason: "Auto-merge is not available for this repository",
+    });
+    expect(composerAutoMergeControl(detail({ capabilities, autoMergeEnabled: true }))).toEqual({
+      kind: "toggle",
+      checked: true,
+    });
+  });
+
+  it("directs a ready GitHub PR to Merge, but still lets it join a queue", () => {
+    expect(composerAutoMergeControl(detail({ mergeGate: "clear" }))).toEqual({
+      kind: "unavailable",
+      reason: "This pull request can merge right now. Use Merge instead.",
+    });
+    expect(
+      composerAutoMergeControl(detail({ mergeGate: "clear", mergeQueue: { position: null } })),
+    ).toEqual({ kind: "toggle", checked: false });
+    expect(composerAutoMergeControl(detail({ mergeGate: "blocked" }))).toEqual({
+      kind: "toggle",
+      checked: false,
+    });
+  });
+
+  it.each([
+    [{ isDraft: true }, "Mark as ready first"],
+    [{ mergeability: "conflicting" }, "Resolve the conflicts first"],
+    [
+      { viewer: { canWrite: false, canManage: true, canReview: false } },
+      "Write access is needed to merge",
+    ],
+  ] as const)("explains why arming is unavailable: %s", (overrides, reason) => {
+    expect(composerAutoMergeControl(detail(overrides))).toEqual({ kind: "unavailable", reason });
+  });
+
+  it("still lets an armed draft or conflicting PR cancel auto-merge", () => {
+    expect(composerAutoMergeControl(detail({ autoMergeEnabled: true, isDraft: true }))).toEqual({
+      kind: "toggle",
+      checked: true,
+    });
+    expect(
+      composerAutoMergeControl(detail({ autoMergeEnabled: true, mergeability: "conflicting" })),
+    ).toEqual({
+      kind: "toggle",
+      checked: true,
+    });
+  });
+
+  it.each(["merged", "closed"] as const)("offers no merge action for a %s PR", (state) => {
+    expect(composerAutoMergeControl(detail({ state }))).toEqual({ kind: "hidden" });
   });
 
   it("stops being a switch once the host has taken the pull request into its queue", () => {

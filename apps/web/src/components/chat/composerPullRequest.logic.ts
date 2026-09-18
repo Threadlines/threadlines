@@ -14,6 +14,7 @@ import type { PullRequestCheck, PullRequestDetail, PullRequestState } from "@thr
 import {
   summarizePullRequestChecks,
   pullRequestArmedToMerge,
+  resolvePullRequestAutoMergeBlock,
   type ThreadPullRequest,
 } from "../pull-requests/pullRequests.logic";
 
@@ -161,31 +162,41 @@ function isInMergeQueue(detail: Pick<PullRequestDetail, "mergeQueue">): boolean 
  * `toggle` is the ordinary case: the switch arms or disarms the host's standing
  * instruction. `queued` is a pull request the host has already taken into its
  * merge queue: GitHub drops the instruction at that point, so a switch would
- * read as off while the merge is in motion, and flipping it would re-arm and
- * disarm a queue entry that no longer needs it. `hidden` is a host that does
- * not say whether the pull request is armed, or offers neither action.
+ * read as off while the merge is in motion. Unavailable actions explain why
+ * and lead to the full merge controls instead.
  */
 export type ComposerAutoMergeControl =
   | { readonly kind: "hidden" }
   | { readonly kind: "queued" }
+  | { readonly kind: "unavailable"; readonly reason: string }
   | { readonly kind: "toggle"; readonly checked: boolean };
 
 export function composerAutoMergeControl(
   detail: PullRequestDetail | undefined,
 ): ComposerAutoMergeControl {
-  if (detail === undefined) {
+  if (detail === undefined || detail.state !== "open") {
     return { kind: "hidden" };
   }
   if (isInMergeQueue(detail)) {
     return { kind: "queued" };
   }
+  if (!detail.viewer.canWrite) {
+    return { kind: "unavailable", reason: "Write access is needed to merge" };
+  }
   if (detail.autoMergeEnabled === null) {
     return { kind: "hidden" };
   }
-  const offered =
-    detail.capabilities.actions.includes("enable-auto-merge") ||
-    detail.capabilities.actions.includes("disable-auto-merge");
-  return offered ? { kind: "toggle", checked: detail.autoMergeEnabled } : { kind: "hidden" };
+  const nextAction = detail.autoMergeEnabled ? "disable-auto-merge" : "enable-auto-merge";
+  if (!detail.capabilities.actions.includes(nextAction)) {
+    return { kind: "unavailable", reason: "Auto-merge is not available for this repository" };
+  }
+  if (!detail.autoMergeEnabled) {
+    const reason = resolvePullRequestAutoMergeBlock(detail);
+    if (reason !== null) {
+      return { kind: "unavailable", reason };
+    }
+  }
+  return { kind: "toggle", checked: detail.autoMergeEnabled };
 }
 
 /**
