@@ -48,7 +48,19 @@ function fieldError(field: McpElicitationField, value: unknown): string | undefi
     (field.options !== undefined && !field.options.some((option) => option.value === value))
   )
     return invalid;
-  if (field.format === "email" && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) return invalid;
+  if (field.format === "email") {
+    // Tool-provided input can be large; separator checks avoid regex backtracking.
+    const at = value.indexOf("@");
+    const dot = value.indexOf(".", at + 2);
+    if (
+      at <= 0 ||
+      value.indexOf("@", at + 1) !== -1 ||
+      dot === -1 ||
+      dot === value.length - 1 ||
+      /\s/.test(value)
+    )
+      return invalid;
+  }
   if (field.format === "uri" && !URL.canParse(value)) return invalid;
   if (
     field.format === "date" &&

@@ -124,6 +124,7 @@ const handleMethod = (message: Record<string, unknown>) => {
                   properties: {
                     count: { type: "integer", title: "Count", minimum: 1, maximum: 5 },
                     enabled: { type: "boolean", title: "Enabled" },
+                    email: { type: "string", title: "Email", format: "email" },
                     tags: { type: "array", items: { type: "string", enum: ["code", "docs"] } },
                   },
                 },

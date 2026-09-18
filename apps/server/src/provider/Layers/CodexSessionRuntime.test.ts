@@ -96,7 +96,30 @@ describe("Codex user input lifecycle", () => {
             })
             .pipe(Effect.result);
           assert.equal(invalid._tag, "Failure");
-          const content = { count: 2, enabled: false, tags: ["code"] };
+          const content = {
+            count: 2,
+            enabled: false,
+            tags: ["code"],
+            email: "export+daily@example.test",
+          };
+          if (action === "accept") {
+            for (const email of [
+              "@example.test",
+              "export@example",
+              "export@.test",
+              "export@example.",
+              "export@example.test@other.test",
+              "export @example.test",
+              `!@!.${"!.".repeat(100_000)} `,
+            ]) {
+              yield* runtime
+                .respondToUserInput(request.requestId, { action, content: { ...content, email } })
+                .pipe(
+                  Effect.result,
+                  Effect.map((result) => assert.equal(result._tag, "Failure")),
+                );
+            }
+          }
           if (action === "interrupt") yield* runtime.interruptTurn(TurnId.make("turn-1"));
           else yield* runtime.respondToUserInput(request.requestId, { action, content });
           const response = yield* Deferred.await(reply);
