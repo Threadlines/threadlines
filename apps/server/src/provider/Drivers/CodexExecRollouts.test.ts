@@ -2,6 +2,7 @@
 import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { zstdCompressSync } from "node:zlib";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
@@ -17,6 +18,7 @@ import {
   parseCodexExecAgentId,
   readCodexExecFinalMessage,
   readCodexExecRolloutHead,
+  readCodexExecRolloutLines,
   readCodexExecTurnContext,
 } from "./CodexExecRollouts.ts";
 
@@ -254,8 +256,8 @@ describe("codexExecSessionsRoot", () => {
     Effect.gen(function* () {
       const pathService = yield* Path.Path;
       assert.equal(
-        codexExecSessionsRoot({ CODEX_HOME: "/tmp/codex-work" }, pathService),
-        path.join("/tmp/codex-work", "sessions"),
+        codexExecSessionsRoot({ CODEX_HOME: path.join(os.tmpdir(), "codex-work") }, pathService),
+        path.join(os.tmpdir(), "codex-work", "sessions"),
       );
       assert.equal(
         codexExecSessionsRoot({}, pathService),
@@ -388,6 +390,19 @@ describe("findCodexExecRollout", () => {
           yield* locateCodexExecRolloutBySessionId({ sessionsRoot: root, sessionId: SESSION_B }),
           null,
         );
+        const contents = sessionMeta({ sessionId: SESSION_A, cwd });
+        writeFileSync(`${rolloutPath}.zst`, zstdCompressSync(contents));
+        rmSync(rolloutPath);
+        const compressedPath = yield* locateCodexExecRolloutBySessionId({
+          sessionsRoot: root,
+          sessionId: SESSION_A,
+        });
+        assert.equal(compressedPath, `${rolloutPath}.zst`);
+        assert.deepEqual(yield* readCodexExecRolloutLines(compressedPath!), [contents]);
+        assert.deepEqual(yield* readCodexExecRolloutLines(rolloutPath), [contents]);
+        writeFileSync(rolloutPath, contents);
+        rmSync(`${rolloutPath}.zst`);
+        assert.deepEqual(yield* readCodexExecRolloutLines(compressedPath!), [contents]);
       } finally {
         cleanup();
       }

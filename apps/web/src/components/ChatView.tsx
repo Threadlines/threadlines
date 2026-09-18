@@ -5686,7 +5686,7 @@ export default function ChatView(props: ChatViewProps) {
   );
 
   const onAdvanceActivePendingUserInput = useCallback(() => {
-    if (!activePendingUserInput || !activePendingProgress) {
+    if (!activePendingUserInput || activePendingUserInput.elicitation || !activePendingProgress) {
       return;
     }
     if (activePendingProgress.isLastQuestion) {
@@ -6872,6 +6872,7 @@ export default function ChatView(props: ChatViewProps) {
                   onRespondToApproval={onRespondToApproval}
                   onSelectActivePendingUserInputOption={onSelectActivePendingUserInputOption}
                   onAdvanceActivePendingUserInput={onAdvanceActivePendingUserInput}
+                  onRespondToUserInput={onRespondToUserInput}
                   onPreviousActivePendingUserInputQuestion={
                     onPreviousActivePendingUserInputQuestion
                   }

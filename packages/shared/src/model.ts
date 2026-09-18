@@ -13,6 +13,31 @@ import {
 
 const DEFAULT_PROVIDER_DRIVER_KIND = ProviderDriverKind.make("codex");
 
+/** ChatGPT retirements do not apply to API-key or third-party model providers. */
+export function codexModelRetirementNotice(
+  model: string,
+  authType: string | undefined,
+  now = Date.now(),
+) {
+  if (authType !== "chatgpt") return undefined;
+  const slug = normalizeModelSlug(model, DEFAULT_PROVIDER_DRIVER_KIND);
+  const retirement =
+    slug === "gpt-5.3-codex-spark"
+      ? { label: "Spark", at: Date.parse("2026-09-14T00:00:00Z"), date: "September 14, 2026" }
+      : slug === "gpt-5.5"
+        ? { label: "GPT-5.5", at: Date.parse("2026-10-14T00:00:00Z"), date: "October 14, 2026" }
+        : undefined;
+  if (!retirement) return undefined;
+  const retired = now >= retirement.at;
+  return {
+    replacement: "gpt-5.6-sol",
+    retired,
+    message: retired
+      ? `${retirement.label} is no longer available with ChatGPT sign-in. Choose another model.`
+      : `${retirement.label} retires from Codex with ChatGPT sign-in on ${retirement.date}.`,
+  };
+}
+
 export interface SelectableModelOption {
   slug: string;
   name: string;

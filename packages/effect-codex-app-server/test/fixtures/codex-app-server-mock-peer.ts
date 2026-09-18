@@ -86,7 +86,7 @@ const handleMethod = (message: Record<string, unknown>) => {
         modelProvider: "openai",
         sandbox: { type: "dangerFullAccess" },
         thread: {
-          cliVersion: "0.153.4",
+          cliVersion: "0.155.0",
           createdAt: 0,
           cwd: process.cwd(),
           ephemeral: true,
@@ -107,12 +107,40 @@ const handleMethod = (message: Record<string, unknown>) => {
       respond(message.id as number | string, {
         turn: { id: "turn-1", status: "inProgress", items: [] },
       });
+      const elicitationMode = process.env.CODEX_APP_SERVER_TEST_ELICITATION;
+      if (elicitationMode) {
+        pendingUserInputRequestId = sendRequest("mcpServer/elicitation/request", {
+          threadId: "thread-1",
+          turnId: "turn-1",
+          serverName: "test-tool",
+          message: "Choose the export settings.",
+          ...(elicitationMode === "url"
+            ? { mode: "url", url: "https://example.com/connect", elicitationId: "connect-1" }
+            : {
+                mode: "form",
+                requestedSchema: {
+                  type: "object",
+                  required: ["count", "enabled"],
+                  properties: {
+                    count: { type: "integer", title: "Count", minimum: 1, maximum: 5 },
+                    enabled: { type: "boolean", title: "Enabled" },
+                    tags: { type: "array", items: { type: "string", enum: ["code", "docs"] } },
+                  },
+                },
+              }),
+        });
+        return;
+      }
       pendingUserInputRequestId = sendRequest("item/tool/requestUserInput", {
         itemId: "question-item",
         threadId: "thread-1",
         turnId: "turn-1",
         questions: [{ id: "proceed", header: "Proceed", question: "Continue?" }],
       });
+      return;
+    }
+    case "turn/interrupt": {
+      respond(message.id as number | string, {});
       return;
     }
     case "turn/steer": {
@@ -166,6 +194,17 @@ const handleMethod = (message: Record<string, unknown>) => {
 };
 
 const handleResponse = (message: Record<string, unknown>) => {
+  if (process.env.CODEX_APP_SERVER_TEST_ELICITATION) {
+    writeMessage({
+      method: "item/agentMessage/delta",
+      params: {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        itemId: "elicitation-reply",
+        delta: JSON.stringify(message),
+      },
+    });
+  }
   if (message.id !== pendingUserInputRequestId) {
     return;
   }

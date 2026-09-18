@@ -803,6 +803,43 @@ describe("derivePendingApprovals", () => {
 });
 
 describe("derivePendingUserInputs", () => {
+  it("keeps free-text questions and tool forms visible", () => {
+    const question = {
+      id: "details",
+      header: "Details",
+      question: "What should change?",
+      options: [],
+      multiSelect: false,
+    };
+    const elicitation = {
+      mode: "url",
+      serverName: "tool",
+      message: "Connect your account",
+      url: "https://example.com/connect",
+    };
+    const pending = derivePendingUserInputs([
+      makeActivity({
+        id: "text-prompt",
+        kind: "user-input.requested",
+        summary: "Question",
+        tone: "info",
+        createdAt: "2026-09-18T00:00:00Z",
+        payload: { requestId: "text", questions: [question] },
+      }),
+      makeActivity({
+        id: "tool-prompt",
+        kind: "user-input.requested",
+        summary: "Connect",
+        tone: "info",
+        createdAt: "2026-09-18T00:00:01Z",
+        payload: { requestId: "tool", questions: [], elicitation },
+      }),
+    ]);
+    expect(pending).toEqual([
+      expect.objectContaining({ requestId: "text", questions: [question] }),
+      expect.objectContaining({ requestId: "tool", questions: [], elicitation }),
+    ]);
+  });
   it("prioritizes blocking questions while keeping each group oldest first", () => {
     const question = {
       id: "approach",

@@ -58,7 +58,6 @@ const makeHandle = (env?: Record<string, string>) =>
     const path = yield* Path.Path;
     const command = ChildProcess.make(process.execPath, [yield* mockPeerPath], {
       cwd: path.join(import.meta.dirname, ".."),
-      shell: process.platform === "win32",
       ...(env ? { env: { ...process.env, ...env } } : {}),
     });
     return yield* spawner.spawn(command);

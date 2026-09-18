@@ -612,6 +612,7 @@ export interface ChatComposerProps {
   ) => Promise<void>;
   onSelectActivePendingUserInputOption: (questionId: string, optionLabel: string) => void;
   onAdvanceActivePendingUserInput: () => void;
+  onRespondToUserInput?: (requestId: ApprovalRequestId, answers: Record<string, unknown>) => void;
   onPreviousActivePendingUserInputQuestion: () => void;
   onChangeActivePendingUserInputCustomAnswer: (questionId: string, value: string) => void;
 
@@ -695,6 +696,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     onRespondToApproval,
     onSelectActivePendingUserInputOption,
     onAdvanceActivePendingUserInput,
+    onRespondToUserInput,
     onPreviousActivePendingUserInputQuestion,
     onChangeActivePendingUserInputCustomAnswer,
     onProviderModelSelect,
@@ -3234,6 +3236,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   isTimelineScrolledAway={isTimelineScrolledAway}
                   onToggleOption={onSelectActivePendingUserInputOption}
                   onAdvance={onAdvanceActivePendingUserInput}
+                  {...(onRespondToUserInput ? { onRespond: onRespondToUserInput } : {})}
                   onPrevious={onPreviousActivePendingUserInputQuestion}
                   onCustomAnswerChange={onChangeActivePendingUserInputCustomAnswer}
                   isUnavailable={environmentUnavailable !== null}
