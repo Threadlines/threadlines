@@ -43,52 +43,59 @@ const waitForState = (auth: GitHubAuthShape, predicate: (state: GitHubAuthState)
     assert.fail("GitHub sign-in did not reach the expected state.");
   });
 
-it.effect("keeps the device code available until login and credential verification finish", () =>
-  Effect.gen(function* () {
-    const loginExit = yield* Deferred.make<ChildProcessSpawner.ExitCode>();
-    const calls: ReadonlyArray<string>[] = [];
-    const spawner = ChildProcessSpawner.make((command) => {
-      assert.strictEqual(command._tag, "StandardCommand");
-      const standard = command as ChildProcess.StandardCommand;
-      calls.push(standard.args);
-      return Effect.succeed(
-        calls.length === 1
-          ? handle({
-              chunks: [
-                "! First copy your one-time co",
-                "de: ABCD-1234\nOpen this URL in your web browser: https://github.com/login/device\n",
-                "private auth transcript should not appear in state",
-              ],
-              exitCode: Deferred.await(loginExit),
-            })
-          : handle(),
-      );
-    });
-    const auth = yield* make({ commandAvailable: () => true, environment: () => ({}) }).pipe(
-      Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
-    );
-    assert.strictEqual((yield* auth.start).status, "running");
-    const prompt = yield* waitForState(auth, (state) => state.userCode !== null);
-    assert.strictEqual(prompt?.userCode, "ABCD-1234");
-    assert.strictEqual(prompt?.verificationUrl, "https://github.com/login/device");
-    assert.strictEqual((yield* auth.start).userCode, "ABCD-1234");
-    assert.strictEqual(calls.length, 1);
+for (const prompt of [
+  { name: "default", chunks: ["! First copy your one-time co", "de: ABCD-1234\n"] },
+  { name: "clipboard", chunks: ["! One-time code (AB", "CD-1234) copied to clipboard\n"] },
+]) {
+  it.effect(
+    `keeps the ${prompt.name} device code available until login and verification finish`,
+    () =>
+      Effect.gen(function* () {
+        const loginExit = yield* Deferred.make<ChildProcessSpawner.ExitCode>();
+        const calls: ReadonlyArray<string>[] = [];
+        const spawner = ChildProcessSpawner.make((command) => {
+          assert.strictEqual(command._tag, "StandardCommand");
+          const standard = command as ChildProcess.StandardCommand;
+          calls.push(standard.args);
+          return Effect.succeed(
+            calls.length === 1
+              ? handle({
+                  chunks: [
+                    ...prompt.chunks,
+                    "Open this URL to continue in your web browser: https://github.com/login/device\n",
+                    "private auth transcript should not appear in state",
+                  ],
+                  exitCode: Deferred.await(loginExit),
+                })
+              : handle(),
+          );
+        });
+        const auth = yield* make({ commandAvailable: () => true, environment: () => ({}) }).pipe(
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+        );
+        assert.strictEqual((yield* auth.start).status, "running");
+        const state = yield* waitForState(auth, (state) => state.userCode !== null);
+        assert.strictEqual(state?.userCode, "ABCD-1234");
+        assert.strictEqual(state?.verificationUrl, "https://github.com/login/device");
+        assert.strictEqual((yield* auth.start).userCode, "ABCD-1234");
+        assert.strictEqual(calls.length, 1);
 
-    yield* Deferred.succeed(loginExit, ChildProcessSpawner.ExitCode(0));
-    const completed = yield* waitForState(auth, (state) => state.status === "succeeded");
-    assert.deepStrictEqual(completed, {
-      status: "succeeded",
-      userCode: null,
-      verificationUrl: null,
-      message: "Signed in to GitHub.",
-    });
-    assert.deepStrictEqual(calls, [
-      ["auth", "login", "--hostname", "github.com", "--web"],
-      ["api", "--hostname", "github.com", "user", "--silent"],
-      ["auth", "setup-git", "--hostname", "github.com"],
-    ]);
-  }).pipe(Effect.scoped),
-);
+        yield* Deferred.succeed(loginExit, ChildProcessSpawner.ExitCode(0));
+        const completed = yield* waitForState(auth, (state) => state.status === "succeeded");
+        assert.deepStrictEqual(completed, {
+          status: "succeeded",
+          userCode: null,
+          verificationUrl: null,
+          message: "Signed in to GitHub.",
+        });
+        assert.deepStrictEqual(calls, [
+          ["auth", "login", "--hostname", "github.com", "--web"],
+          ["api", "--hostname", "github.com", "user", "--silent"],
+          ["auth", "setup-git", "--hostname", "github.com"],
+        ]);
+      }).pipe(Effect.scoped),
+  );
+}
 
 it.effect("cancels only its login process and can start a fresh sign-in", () =>
   Effect.gen(function* () {
