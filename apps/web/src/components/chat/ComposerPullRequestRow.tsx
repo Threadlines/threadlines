@@ -277,9 +277,14 @@ function ComposerPullRequestChecksPopover({
     // the merge and seconds more to be re-read, and a switch that waits for
     // both reads as one that did not take the click. If the host refuses, the
     // detail it was read from comes back.
-    onMutate: (variables) => {
+    onMutate: async (variables) => {
+      await queryClient.cancelQueries({ queryKey: detailQueryKey });
       const previous = queryClient.getQueryData<PullRequestDetail>(detailQueryKey);
-      if (previous && variables.action.endsWith("auto-merge")) {
+      if (
+        previous &&
+        previous.mergeQueue?.position == null &&
+        variables.action.endsWith("auto-merge")
+      ) {
         queryClient.setQueryData<PullRequestDetail>(detailQueryKey, {
           ...previous,
           autoMergeEnabled: variables.action === "enable-auto-merge",
@@ -347,6 +352,7 @@ function ComposerPullRequestChecksPopover({
           <Checkbox
             className="size-3.5"
             checked={autoMergeControl.checked}
+            disabled={action.isPending}
             onCheckedChange={(checked) => {
               const next: PullRequestAction = checked ? "enable-auto-merge" : "disable-auto-merge";
               action.mutate({ action: next });
@@ -355,12 +361,44 @@ function ComposerPullRequestChecksPopover({
           Merge when checks pass
         </label>
       ) : null}
+      {autoMergeControl.kind === "unavailable" ? (
+        <div className="px-3 py-1">
+          <p className="text-muted-foreground">{autoMergeControl.reason}</p>
+          <button
+            type="button"
+            className="mt-1 cursor-pointer rounded-sm text-primary-readable hover:text-foreground focus-ring"
+            onClick={() => {
+              onOpenExternal();
+              pullRequest.onOpen();
+            }}
+          >
+            Open merge controls
+          </button>
+        </div>
+      ) : null}
       {autoMergeControl.kind === "queued" ? (
         // The host has taken it: there is no instruction left to switch off,
         // and the queue lands it on its own.
         <p className="flex items-center gap-2 px-3 py-1 text-muted-foreground">
           <ChipDot className={CHIP_TONE_CLASS.queued.dot + " " + CHIP_TONE_CLASS.queued.chip} />
           In the merge queue
+          {detail?.viewer.canWrite && detail.capabilities.actions.includes("disable-auto-merge") ? (
+            <button
+              type="button"
+              disabled={action.isPending}
+              className="ml-auto cursor-pointer rounded-sm hover:text-foreground disabled:cursor-default disabled:opacity-60 focus-ring"
+              onClick={() => action.mutate({ action: "disable-auto-merge" })}
+            >
+              {action.isPending ? "Leaving…" : "Leave queue"}
+            </button>
+          ) : null}
+        </p>
+      ) : null}
+      {action.isError ? (
+        <p role="alert" className="break-words px-3 py-1 text-destructive">
+          {action.error instanceof Error && action.error.message.trim().length > 0
+            ? action.error.message
+            : "The host refused that action."}
         </p>
       ) : null}
       {composerAutoFixOffered(detail) ? (

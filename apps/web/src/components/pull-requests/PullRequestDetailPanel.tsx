@@ -107,6 +107,7 @@ import {
   pullRequestUpdateMethodLabel,
   resolveDefaultMergeMethod,
   resolveMergeWhenReadyBlock,
+  resolvePullRequestAutoMergeBlock,
   resolvePullRequestMergeBlock,
   summarizePullRequestChecks,
   type PullRequestChecksSummary,
@@ -1181,7 +1182,8 @@ function usePullRequestActions({
     !isQueued;
   const showMergeWhenReady = queue !== null && showEnableAutoMerge;
   // Outside a queue the arming lives in the menu; under one it is the button.
-  const showEnableAutoMergeInMenu = queue === null && showEnableAutoMerge;
+  const showEnableAutoMergeInMenu =
+    queue === null && showEnableAutoMerge && resolvePullRequestAutoMergeBlock(detail) === null;
 
   const updateMethods = detail.capabilities.updateMethods;
   const mergeBlock = resolvePullRequestMergeBlock(detail);

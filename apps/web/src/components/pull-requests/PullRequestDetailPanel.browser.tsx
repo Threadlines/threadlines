@@ -13,7 +13,7 @@ import {
   type PullRequestReviewThread,
   type ScopedThreadRef,
 } from "@threadlines/contracts";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import {
   RouterProvider,
   createMemoryHistory,
@@ -32,6 +32,8 @@ import {
   __setEnvironmentApiOverrideForTests,
 } from "../../environmentApi";
 import { PullRequestDetailPanel } from "./PullRequestDetailPanel";
+import { ComposerPullRequestRow } from "../chat/ComposerPullRequestRow";
+import { pullRequestQueryKeys } from "../../lib/pullRequestsReactQuery";
 import { pullRequestReviewKey, usePullRequestReviewStore } from "./pullRequestReviewStore";
 
 const ENVIRONMENT_ID = EnvironmentId.make("pull-request-detail-test");
@@ -141,6 +143,163 @@ const THREAD: PullRequestReviewThread = {
     },
   ],
 };
+
+async function renderComposerPullRequest(
+  overrides: Partial<PullRequestDetail> = {},
+  beforeWrite: () => Promise<void> = async () => {},
+) {
+  let detail: PullRequestDetail = {
+    ...DETAIL,
+    viewer: { canWrite: true, canManage: true, canReview: false },
+    mergeGate: "blocked",
+    ...overrides,
+  };
+  const onOpen = vi.fn();
+  const runAction = vi.fn(async (input: { action: string }) => {
+    await beforeWrite();
+    detail = {
+      ...detail,
+      autoMergeEnabled: input.action === "enable-auto-merge",
+      ...(detail.mergeQueue ? { mergeQueue: { position: null } } : {}),
+    };
+    return { state: detail.state, isDraft: detail.isDraft };
+  });
+  __setEnvironmentApiOverrideForTests(ENVIRONMENT_ID, {
+    pullRequests: { runAction },
+  } as unknown as EnvironmentApi);
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  });
+  const queryKey = pullRequestQueryKeys.detail(ENVIRONMENT_ID, PROJECT_ID, REFERENCE.number);
+  queryClient.setQueryData(queryKey, detail);
+  function Composer() {
+    const query = useQuery({ queryKey, queryFn: async () => detail, staleTime: Infinity });
+    return (
+      <ComposerPullRequestRow
+        divided={false}
+        pullRequest={{
+          environmentId: ENVIRONMENT_ID,
+          reference: REFERENCE,
+          pullRequest: { ...DETAIL, autoMergeEnabled: false, settledAt: null, diffStat: null },
+          detail: query.data,
+          projectTitle: DETAIL.projectTitle,
+          onOpen,
+          onDismiss: vi.fn(),
+          autoFix: false,
+          onAutoFixChange: vi.fn(),
+          wrapUpOnSettled: false,
+          onWrapUpOnSettledChange: vi.fn(),
+        }}
+      />
+    );
+  }
+  const router = createTestRouter(
+    <QueryClientProvider client={queryClient}>
+      <Composer />
+    </QueryClientProvider>,
+  );
+  const screen = await render(<RouterProvider router={router} />);
+  await page.getByRole("button", { name: "Checks", exact: true }).click();
+  return {
+    runAction,
+    onOpen,
+    async cleanup() {
+      await screen.unmount();
+      queryClient.clear();
+    },
+  };
+}
+
+describe("Composer pull request merge controls", () => {
+  afterEach(() => __resetEnvironmentApiOverridesForTests());
+
+  it.each([false, true])(
+    "arms and cancels auto-merge with merge queue enabled: %s",
+    async (queued) => {
+      let finishWrite = () => {};
+      const pending = new Promise<void>((resolve) => {
+        finishWrite = resolve;
+      });
+      const rendered = await renderComposerPullRequest(
+        queued ? { mergeQueue: { position: null }, mergeGate: "clear" } : {},
+        () => pending,
+      );
+      try {
+        const checkbox = page.getByRole("checkbox", { name: "Merge when checks pass" });
+        await checkbox.click();
+        await expect.element(checkbox).toBeChecked();
+        await expect.element(checkbox).toBeDisabled();
+        finishWrite();
+        await expect.element(checkbox).toBeEnabled();
+        await expect.element(checkbox).toBeChecked();
+        expect(rendered.runAction).toHaveBeenLastCalledWith({
+          ...REFERENCE,
+          action: "enable-auto-merge",
+        });
+        await checkbox.click();
+        await expect.element(checkbox).not.toBeChecked();
+        await expect.element(checkbox).toBeEnabled();
+        expect(rendered.runAction).toHaveBeenLastCalledWith({
+          ...REFERENCE,
+          action: "disable-auto-merge",
+        });
+      } finally {
+        finishWrite();
+        await rendered.cleanup();
+      }
+    },
+  );
+
+  it("rolls back the checkmark and shows a refused request", async () => {
+    const rendered = await renderComposerPullRequest({}, async () => {
+      throw new Error("Auto-merge is not enabled for this repository");
+    });
+    try {
+      const checkbox = page.getByRole("checkbox", { name: "Merge when checks pass" });
+      await checkbox.click();
+      await expect
+        .element(page.getByRole("alert"))
+        .toHaveTextContent("Auto-merge is not enabled for this repository");
+      await expect.element(checkbox).not.toBeChecked();
+      await expect.element(checkbox).toBeEnabled();
+    } finally {
+      await rendered.cleanup();
+    }
+  });
+
+  it("opens the full merge controls for a ready PR without sending an auto-merge request", async () => {
+    const rendered = await renderComposerPullRequest({ mergeGate: "clear" });
+    try {
+      await expect
+        .element(page.getByText("This pull request can merge right now. Use Merge instead."))
+        .toBeVisible();
+      await page.getByRole("button", { name: "Open merge controls" }).click();
+      expect(rendered.onOpen).toHaveBeenCalledOnce();
+      expect(rendered.runAction).not.toHaveBeenCalled();
+    } finally {
+      await rendered.cleanup();
+    }
+  });
+
+  it("leaves a queue after GitHub has dropped the auto-merge instruction", async () => {
+    const rendered = await renderComposerPullRequest({
+      mergeQueue: { position: 2 },
+      autoMergeEnabled: false,
+    });
+    try {
+      await page.getByRole("button", { name: "Leave queue" }).click();
+      await expect
+        .element(page.getByRole("checkbox", { name: "Merge when checks pass" }))
+        .not.toBeChecked();
+      expect(rendered.runAction).toHaveBeenCalledWith({
+        ...REFERENCE,
+        action: "disable-auto-merge",
+      });
+    } finally {
+      await rendered.cleanup();
+    }
+  });
+});
 
 function makeComment(id: string, createdAt: string, body = `body ${id}`): PullRequestComment {
   return {
