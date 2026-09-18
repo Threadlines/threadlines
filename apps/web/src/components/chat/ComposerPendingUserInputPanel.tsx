@@ -8,6 +8,7 @@ import {
 import { CheckIcon, ChevronsDownUpIcon, ChevronsUpDownIcon, PencilLineIcon } from "lucide-react";
 import { cn } from "~/lib/utils";
 import { Button } from "../ui/button";
+import { ComposerMcpElicitation } from "./ComposerMcpElicitation";
 import { formatPendingPrimaryActionLabel } from "./ComposerPrimaryActions";
 
 interface PendingUserInputPanelProps {
@@ -23,6 +24,7 @@ interface PendingUserInputPanelProps {
   onCustomAnswerChange: (questionId: string, value: string) => void;
   isUnavailable?: boolean;
   isAgentRunning: boolean;
+  onRespond?: (requestId: ApprovalRequestId, answers: Record<string, unknown>) => void;
 }
 
 export const ComposerPendingUserInputPanel = memo(function ComposerPendingUserInputPanel({
@@ -37,10 +39,22 @@ export const ComposerPendingUserInputPanel = memo(function ComposerPendingUserIn
   onCustomAnswerChange,
   isUnavailable = false,
   isAgentRunning,
+  onRespond,
 }: PendingUserInputPanelProps) {
   if (pendingUserInputs.length === 0) return null;
   const activePrompt = pendingUserInputs[0];
   if (!activePrompt) return null;
+  if (activePrompt.elicitation)
+    return (
+      <ComposerMcpElicitation
+        key={activePrompt.requestId}
+        prompt={activePrompt.elicitation}
+        disabled={
+          isUnavailable || respondingRequestIds.includes(activePrompt.requestId) || !onRespond
+        }
+        onRespond={(answers) => onRespond?.(activePrompt.requestId, answers)}
+      />
+    );
 
   return (
     <ComposerPendingUserInputCard

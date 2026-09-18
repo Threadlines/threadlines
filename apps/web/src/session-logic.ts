@@ -1,8 +1,10 @@
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import * as Arr from "effect/Array";
 import { compareTranscriptPosition } from "@threadlines/shared/transcriptOrder";
 import {
   ApprovalRequestId,
+  McpElicitation,
   isToolLifecycleItemType,
   type MessageId,
   type OrchestrationLatestTurn,
@@ -211,6 +213,7 @@ export interface PendingUserInput {
   requestId: ApprovalRequestId;
   createdAt: string;
   questions: ReadonlyArray<UserInputQuestion>;
+  elicitation?: McpElicitation;
   /** False when the agent keeps working while the question is open. Absent
    *  means the turn is paused on the answer. */
   isBlocking?: boolean;
@@ -692,9 +695,6 @@ function parseUserInputQuestions(
           };
         })
         .filter((option): option is UserInputQuestion["options"][number] => option !== null);
-      if (options.length === 0) {
-        return null;
-      }
       return {
         id: question.id,
         header: question.header,
@@ -720,15 +720,19 @@ export function derivePendingUserInputs(
           activity.payload && typeof activity.payload === "object"
             ? (activity.payload as Record<string, unknown>)
             : null;
+        const elicitation = Schema.is(McpElicitation)(payload?.elicitation)
+          ? payload.elicitation
+          : undefined;
         const questions = parseUserInputQuestions(payload);
-        if (!questions) {
+        if (!questions && !elicitation) {
           return [];
         }
         return [
           {
             requestId: ApprovalRequestId.make(requestId),
             createdAt: activity.createdAt,
-            questions,
+            questions: questions ?? [],
+            ...(elicitation ? { elicitation } : {}),
             ...(typeof payload?.isBlocking === "boolean" ? { isBlocking: payload.isBlocking } : {}),
           },
         ];

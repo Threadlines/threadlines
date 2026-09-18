@@ -3,6 +3,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./mcpElicitation": {
+      "types": "./src/mcpElicitation.ts",
+      "import": "./src/mcpElicitation.ts"
+    },
     "./transcriptOrder": {
       "types": "./src/transcriptOrder.ts",
       "import": "./src/transcriptOrder.ts"

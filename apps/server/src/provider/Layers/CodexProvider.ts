@@ -762,9 +762,7 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
         cwds: [input.cwd],
       }),
       requestAllCodexModels(client),
-      client
-        .request("account/rateLimits/read", undefined)
-        .pipe(Effect.orElseSucceed(() => undefined)),
+      client.request("account/rateLimits/read", null).pipe(Effect.orElseSucceed(() => undefined)),
       client.request("account/usage/read", {}).pipe(Effect.orElseSucceed(() => undefined)),
     ],
     { concurrency: "unbounded" },

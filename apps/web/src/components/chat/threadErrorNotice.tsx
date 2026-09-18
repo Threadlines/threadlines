@@ -55,11 +55,14 @@ export function buildThreadErrorNotice({
     });
   }
 
+  const isOpenElsewhere = error.includes("already has an active writer");
   return {
     id: "thread-error",
-    severity: "error",
-    lead: "Turn failed.",
-    detail: error,
+    severity: isOpenElsewhere ? "warning" : "error",
+    lead: isOpenElsewhere ? "Conversation open elsewhere." : "Turn failed.",
+    detail: isOpenElsewhere
+      ? "Close this conversation in the other Codex window, then retry. Your saved messages are still here."
+      : error,
     actions: (
       <>
         {retry ? (

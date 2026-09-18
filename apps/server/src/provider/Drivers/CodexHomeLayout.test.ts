@@ -89,17 +89,20 @@ it.layer(NodeServices.layer)("CodexHomeLayout", (it) => {
   describe("Codex inline visualizations", () => {
     const providerThreadId = "019f8ca0-8000-7992-a481-9125813cb125";
 
-    it("derives the local date shard from a native UUIDv7 thread id", () => {
-      const timestamp = new Date(Number.parseInt("019f8ca08000", 16));
-      const expected = [
-        String(timestamp.getFullYear()).padStart(4, "0"),
-        String(timestamp.getMonth() + 1).padStart(2, "0"),
-        String(timestamp.getDate()).padStart(2, "0"),
-      ].join("/");
+    it.effect("derives the local date shard from a native UUIDv7 thread id", () =>
+      Effect.gen(function* () {
+        const path = yield* Path.Path;
+        const timestamp = new Date(Number.parseInt("019f8ca08000", 16));
+        const expected = path.join(
+          String(timestamp.getFullYear()).padStart(4, "0"),
+          String(timestamp.getMonth() + 1).padStart(2, "0"),
+          String(timestamp.getDate()).padStart(2, "0"),
+        );
 
-      expect(codexVisualizationDateShard(providerThreadId)).toBe(expected);
-      expect(codexVisualizationDateShard("not-a-native-thread-id")).toBeNull();
-    });
+        expect(codexVisualizationDateShard(providerThreadId)).toBe(expected);
+        expect(codexVisualizationDateShard("not-a-native-thread-id")).toBeNull();
+      }),
+    );
 
     it.effect("reads only the expected visualization fragment", () =>
       Effect.gen(function* () {

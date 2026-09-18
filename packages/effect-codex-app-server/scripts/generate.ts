@@ -12,7 +12,7 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
-const CODEX_PROTOCOL_VERSION = "0.153.4";
+const CODEX_PROTOCOL_VERSION = "0.155.0";
 const UPSTREAM_REF = `rust-v${CODEX_PROTOCOL_VERSION}`;
 const CODEX_SCHEMA_BINARY_ENV = "THREADLINES_CODEX_SCHEMA_BINARY";
 

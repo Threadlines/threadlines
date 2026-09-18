@@ -384,6 +384,36 @@ async function clickModelPickerTab(tabId: string) {
 }
 
 describe("ProviderModelPicker", () => {
+  it("offers a replacement for a retired ChatGPT model saved on a thread", async () => {
+    const provider = buildCodexProvider([
+      {
+        slug: "gpt-5.6-sol",
+        name: "GPT-5.6 Sol",
+        isCustom: false,
+        capabilities: createModelCapabilities({ optionDescriptors: [] }),
+      },
+    ]);
+    const mounted = await mountPicker({
+      model: "gpt-5.3-codex-spark",
+      lockedProvider: null,
+      providers: [{ ...provider, auth: { status: "authenticated", type: "chatgpt" } }],
+    });
+    try {
+      await openModelPicker();
+      await expect
+        .element(
+          page.getByText(
+            "Spark is no longer available with ChatGPT sign-in. Choose another model.",
+            { exact: true },
+          ),
+        )
+        .toBeVisible();
+      await page.getByRole("button", { name: "Use GPT-5.6 Sol" }).click();
+      expect(mounted.onInstanceModelChange).toHaveBeenCalledWith(CODEX_INSTANCE_ID, "gpt-5.6-sol");
+    } finally {
+      await mounted.cleanup();
+    }
+  });
   beforeEach(async () => {
     // Reset test environment before each test
     await __resetLocalApiForTests();

@@ -17,6 +17,7 @@
  */
 // @effect-diagnostics nodeBuiltinImport:off
 import { homedir } from "node:os";
+import { zstdDecompress } from "node:zlib";
 
 import type { ProviderSubagentTranscriptEntry } from "@threadlines/contracts";
 import * as Effect from "effect/Effect";
@@ -602,11 +603,26 @@ export function mapCodexExecRolloutTranscript(lines: Iterable<string>): CodexExe
   };
 }
 
-function readFileLines(
-  fileSystem: FileSystem.FileSystem,
-  filePath: string,
-): Effect.Effect<ReadonlyArray<string>, PlatformError.PlatformError> {
-  return fileSystem.readFileString(filePath).pipe(Effect.map((text) => text.split("\n")));
+function readFileLines(fileSystem: FileSystem.FileSystem, filePath: string) {
+  const plainPath = filePath.endsWith(".zst") ? filePath.slice(0, -4) : filePath;
+  const compressed = fileSystem.readFile(`${plainPath}.zst`).pipe(
+    Effect.flatMap((bytes) =>
+      Effect.tryPromise(
+        () =>
+          new Promise<string>((resolve, reject) => {
+            zstdDecompress(bytes, { maxOutputLength: 256 * 1024 * 1024 }, (error, result) => {
+              if (error) reject(error);
+              else resolve(result.toString("utf8"));
+            });
+          }),
+      ),
+    ),
+  );
+  // Codex can compress a cold rollout or materialize it again after discovery.
+  return fileSystem.readFileString(plainPath).pipe(
+    Effect.catch(() => compressed),
+    Effect.map((text) => text.split("\n")),
+  );
 }
 
 /**
@@ -776,7 +792,10 @@ export const locateCodexExecRolloutBySessionId = Effect.fn("locateCodexExecRollo
           scanned += 1;
           const directory = path.join(input.sessionsRoot, year, month, day);
           for (const entry of yield* readSorted(directory)) {
-            if (entry.startsWith("rollout-") && entry.endsWith(suffix)) {
+            if (
+              entry.startsWith("rollout-") &&
+              (entry.endsWith(suffix) || entry.endsWith(`${suffix}.zst`))
+            ) {
               return path.join(directory, entry);
             }
           }

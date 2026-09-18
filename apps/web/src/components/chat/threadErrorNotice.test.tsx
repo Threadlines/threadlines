@@ -27,6 +27,17 @@ function idleSignIn(overrides: Partial<ProviderSignInFlowView> = {}): ProviderSi
 }
 
 describe("buildThreadErrorNotice", () => {
+  it("explains writer conflicts and keeps retry available", () => {
+    const markup = renderNotice(
+      buildThreadErrorNotice({
+        error: "thread abc already has an active writer (code -32600)",
+        retry: { isRetrying: false, onRetry: () => {} },
+      }),
+    );
+    expect(markup).toContain("Conversation open elsewhere.");
+    expect(markup).toContain("Close this conversation in the other Codex window");
+    expect(markup).toContain("Retry last message");
+  });
   it("produces nothing without an error", () => {
     expect(buildThreadErrorNotice({ error: null })).toBe(null);
   });
