@@ -74,6 +74,7 @@ const CLAUDE_AUTO_MODE_UNSUPPORTED_SLUGS: ReadonlySet<string> = new Set([
 export function claudeModelSupportsAutoRuntimeMode(modelSlug: string | null | undefined): boolean {
   return modelSlug ? !CLAUDE_AUTO_MODE_UNSUPPORTED_SLUGS.has(modelSlug) : true;
 }
+const MINIMUM_CLAUDE_OPUS_5_5_VERSION = "2.1.280";
 const MINIMUM_CLAUDE_FABLE_5_1_VERSION = "2.1.257";
 const MINIMUM_CLAUDE_FABLE_5_VERSION = "2.1.170";
 const MINIMUM_CLAUDE_SONNET_5_VERSION = "2.1.197";
@@ -108,6 +109,13 @@ const CLAUDE_EFFORT_OPTIONS = {
     { value: "xhigh", label: "Extra High" },
     { value: "max", label: "Max" },
     { value: "ultracode", label: "Ultracode" },
+  ],
+  opus55: [
+    { value: "low", label: "Low" },
+    { value: "medium", label: "Medium" },
+    { value: "high", label: "High", isDefault: true },
+    { value: "xhigh", label: "Extra High" },
+    { value: "max", label: "Max" },
   ],
   opus5: [
     { value: "low", label: "Low" },
@@ -192,6 +200,25 @@ const BUILT_IN_MODEL_DEFINITIONS: ReadonlyArray<ServerProviderModel> = [
           id: "effort",
           label: "Reasoning",
           options: CLAUDE_EFFORT_OPTIONS.sonnet5,
+        }),
+      ],
+    }),
+  },
+  {
+    slug: "claude-opus-5-5",
+    name: "Claude Opus 5.5",
+    isCustom: false,
+    capabilities: createModelCapabilities({
+      optionDescriptors: [
+        buildSelectOptionDescriptor({
+          id: "effort",
+          label: "Reasoning",
+          options: CLAUDE_EFFORT_OPTIONS.opus55,
+        }),
+        buildBooleanOptionDescriptor({
+          id: "fastMode",
+          label: "Fast Mode",
+          description: CLAUDE_FAST_MODE_DESCRIPTION,
         }),
       ],
     }),
@@ -358,6 +385,10 @@ function supportsClaudeOpus48(version: string | null | undefined): boolean {
   return version ? compareSemverVersions(version, MINIMUM_CLAUDE_OPUS_4_8_VERSION) >= 0 : false;
 }
 
+function supportsClaudeOpus55(version: string | null | undefined): boolean {
+  return version ? compareSemverVersions(version, MINIMUM_CLAUDE_OPUS_5_5_VERSION) >= 0 : false;
+}
+
 function supportsClaudeOpus5(version: string | null | undefined): boolean {
   return version ? compareSemverVersions(version, MINIMUM_CLAUDE_OPUS_5_VERSION) >= 0 : false;
 }
@@ -417,6 +448,9 @@ function getBuiltInClaudeModelsForVersion(
     }
     if (model.slug === "claude-sonnet-5") {
       return supportsClaudeSonnet5(version);
+    }
+    if (model.slug === "claude-opus-5-5") {
+      return supportsClaudeOpus55(version);
     }
     if (model.slug === "claude-opus-5") {
       return supportsClaudeOpus5(version);
@@ -486,6 +520,13 @@ function formatClaudeUpgradeMessage(version: string | null): string | undefined 
       version,
       modelName: "Claude Fable 5.1",
       minimumVersion: MINIMUM_CLAUDE_FABLE_5_1_VERSION,
+    });
+  }
+  if (!supportsClaudeOpus55(version)) {
+    return formatClaudeModelUpgradeMessage({
+      version,
+      modelName: "Claude Opus 5.5",
+      minimumVersion: MINIMUM_CLAUDE_OPUS_5_5_VERSION,
     });
   }
   return undefined;
@@ -715,9 +756,12 @@ type ClaudeCapabilitiesProbe = {
   readonly slashCommands: ReadonlyArray<ServerProviderSlashCommand>;
 };
 
+// Models whose 1M window is their only window. The CLI lists them as
+// `<slug>[1m]` and nothing else, so the suffix is dropped from the slug.
 const CLAUDE_NATIVE_1M_MODEL_SLUGS: ReadonlySet<string> = new Set([
   "claude-fable-5-1",
   "claude-fable-5",
+  "claude-opus-5-5",
   "claude-opus-5",
   "claude-sonnet-5",
 ]);
@@ -737,14 +781,27 @@ function canonicalClaudeDiscoveredModelSlug(model: ClaudeModelInfo): string | un
   return normalizeModelSlug(canonicalCandidate, PROVIDER) ?? undefined;
 }
 
-function claudeDiscoveredModelName(slug: string, displayName: string): string {
-  const canonicalMatch = slug.match(/^claude-(fable|mythos|opus|sonnet|haiku)-(\d+)(?:-(\d+))?$/i);
+/**
+ * Human name for a discovered model. Canonical `claude-<family>-<major>[-<minor>]`
+ * slugs are named from the slug, with a 1M marker when the slug keeps its
+ * `[1m]` suffix. The CLI's display name is only a fallback for unfamiliar
+ * slugs, and never for the `default` alias row: its label ("Default
+ * (recommended)") describes the alias, not the model behind it.
+ */
+function claudeDiscoveredModelName(slug: string, model: ClaudeModelInfo): string {
+  const has1mSuffix = /\[1m\]$/i.test(slug);
+  const baseSlug = slug.replace(/\[1m\]$/i, "");
+  const canonicalMatch = baseSlug.match(
+    /^claude-(fable|mythos|opus|sonnet|haiku)-(\d+)(?:-(\d+))?$/i,
+  );
   if (canonicalMatch) {
     const [, family, major, minor] = canonicalMatch;
     const familyName = `${family![0]!.toUpperCase()}${family!.slice(1).toLowerCase()}`;
-    return `Claude ${familyName} ${major}${minor ? `.${minor}` : ""}`;
+    const version = `${major}${minor ? `.${minor}` : ""}`;
+    return `Claude ${familyName} ${version}${has1mSuffix ? " (1M)" : ""}`;
   }
-  return nonEmptyProbeString(displayName) ?? slug;
+  const isDefaultAlias = model.value.trim() === "default";
+  return (isDefaultAlias ? undefined : nonEmptyProbeString(model.displayName)) ?? slug;
 }
 
 function claudeDiscoveredModelCapabilities(model: ClaudeModelInfo): ModelCapabilities {
@@ -810,8 +867,7 @@ function mergeClaudeDiscoveredModels(
       ...curated,
       ...existing,
       slug,
-      name:
-        curated?.name ?? existing?.name ?? claudeDiscoveredModelName(slug, discovered.displayName),
+      name: curated?.name ?? existing?.name ?? claudeDiscoveredModelName(slug, discovered),
       ...(liveDescription ? { description: liveDescription } : {}),
       isCustom: false,
       ...(isDefault ? { isDefault: true } : {}),
