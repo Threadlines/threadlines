@@ -148,6 +148,9 @@ export function buildPickOverlayScript(
     // crosses them, and easing a box in from its neighbour's position reads as
     // the selection sliding around rather than changing.
     ".box.member{transition:none;outline-width:1.5px}" +
+    // What a click would add to an open note's selection: dashed and lighter,
+    // so it never reads as already chosen.
+    ".box.candidate{outline:1.5px dashed #4c8dff;background:rgba(76,141,255,0.06)}" +
     // The dragged rectangle itself, distinct from what it has caught.
     ".band{position:fixed;box-sizing:border-box;border:1px dashed #4c8dff;border-radius:2px;" +
     "background:rgba(76,141,255,0.07);pointer-events:none}" +
@@ -249,6 +252,11 @@ export function buildPickOverlayScript(
     "<div class='band' hidden></div><div class='tag' hidden></div>";
   const band = root.querySelector(".band");
   const tag = root.querySelector(".tag");
+  // Outside the pool below, which belongs to the selection itself.
+  const candidateBox = document.createElement("div");
+  candidateBox.className = "box candidate";
+  candidateBox.hidden = true;
+  root.appendChild(candidateBox);
   document.documentElement.appendChild(host);
 
   // One box per highlighted element, kept in a pool: element mode uses one,
@@ -324,6 +332,36 @@ export function buildPickOverlayScript(
   // The elements chosen so far. One in element mode, however many the
   // rectangle caught in region mode; the note field appears once it is filled.
   let chosen = [];
+
+  const hideCandidate = () => {
+    candidateBox.hidden = true;
+  };
+
+  // While a note is open a click adds to its selection, so the pointer keeps
+  // showing what it would add. Nothing is shown over the note card, or inside
+  // something already chosen, where a click takes that thing back out.
+  const onCandidateMove = (event) => {
+    if (chosen.length === 0 || origin !== null) return;
+    if (event.composedPath().includes(host)) {
+      hideCandidate();
+      return;
+    }
+    const element = document.elementFromPoint(event.clientX, event.clientY);
+    if (
+      !element ||
+      element === host ||
+      chosen.some((candidate) => candidate === element || candidate.contains(element))
+    ) {
+      hideCandidate();
+      return;
+    }
+    const rect = element.getBoundingClientRect();
+    candidateBox.hidden = false;
+    candidateBox.style.left = rect.left + "px";
+    candidateBox.style.top = rect.top + "px";
+    candidateBox.style.width = rect.width + "px";
+    candidateBox.style.height = rect.height + "px";
+  };
 
   // Registered while the note field is open, removed on settle: if the
   // document dies mid-note, what was typed attaches rather than vanishing.
@@ -657,6 +695,7 @@ export function buildPickOverlayScript(
       teardownNote();
       chosen = [];
       hide();
+      hideCandidate();
       if (!REGION_MODE) {
         document.addEventListener("mousemove", onMove, true);
       }
@@ -733,6 +772,8 @@ export function buildPickOverlayScript(
         existing >= 0
           ? chosen.filter((candidate, index) => index !== existing)
           : [...chosen, element];
+      // The pointer is now over something chosen, which shows its own box.
+      hideCandidate();
       if (chosen.length === 0) {
         if (discardNote !== null) discardNote();
       } else if (updateNoteSelection !== null) {
@@ -932,6 +973,8 @@ export function buildPickOverlayScript(
   };
 
   const onScroll = () => {
+    // Measured before the page moved; the next pointer move re-places it.
+    hideCandidate();
     if (chosen.length > 0) {
       // The selection, its tag, and the note card all belong to elements in
       // the page, so they move with them rather than floating in place.
@@ -951,6 +994,7 @@ export function buildPickOverlayScript(
     }
     cursorStyle.remove();
     document.removeEventListener("mousemove", onMove, true);
+    document.removeEventListener("mousemove", onCandidateMove, true);
     document.removeEventListener("mousedown", onRegionDown, true);
     document.removeEventListener("mousemove", onRegionMove, true);
     document.removeEventListener("mouseup", onRegionUp, true);
@@ -962,6 +1006,8 @@ export function buildPickOverlayScript(
   }
   host.__threadlinesDispose = dispose;
 
+  // Ahead of the region handlers, which swallow every move they see.
+  document.addEventListener("mousemove", onCandidateMove, true);
   if (REGION_MODE) {
     document.addEventListener("mousedown", onRegionDown, true);
     document.addEventListener("mousemove", onRegionMove, true);
