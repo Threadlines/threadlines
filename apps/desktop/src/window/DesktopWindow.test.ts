@@ -706,6 +706,72 @@ describe("DesktopWindow", () => {
     }),
   );
 
+  it.effect("offers copy for text selected in a preview page and copies from that page", () =>
+    Effect.gen(function* () {
+      const fakeWindow = makeFakeBrowserWindow();
+      const createCount = yield* Ref.make(0);
+      const mainWindow = yield* Ref.make<Option.Option<Electron.BrowserWindow>>(Option.none());
+      const popupTemplate = vi.fn((input: ElectronMenu.ElectronMenuTemplateInput) =>
+        Effect.sync(() => {
+          const copy = input.template.find((item) => item.label === "Copy");
+          copy?.click?.({} as Electron.MenuItem, fakeWindow.window, {} as KeyboardEvent);
+        }),
+      );
+      const layer = makeTestLayer({
+        window: fakeWindow.window,
+        createCount,
+        mainWindow,
+        electronMenu: {
+          setApplicationMenu: () => Effect.void,
+          popupTemplate,
+          showContextMenu: () => Effect.succeed(Option.none()),
+        },
+      });
+
+      yield* Effect.gen(function* () {
+        const desktopWindow = yield* DesktopWindow.DesktopWindow;
+        yield* desktopWindow.handleBackendReady;
+
+        const guestHandlers = new Map<string, (...args: unknown[]) => void>();
+        const guest = {
+          on: vi.fn((eventName: string, listener: (...args: unknown[]) => void) => {
+            guestHandlers.set(eventName, listener);
+          }),
+          isDestroyed: () => false,
+          copy: vi.fn(),
+        };
+        fakeWindow.emitWebContents("did-attach-webview", {}, guest);
+
+        const preventDefault = vi.fn();
+        guestHandlers.get("context-menu")?.({ preventDefault }, {
+          misspelledWord: "",
+          dictionarySuggestions: [],
+          linkURL: "",
+          mediaType: "none",
+          editFlags: {
+            canUndo: false,
+            canRedo: false,
+            canCut: false,
+            canCopy: true,
+            canPaste: false,
+            canDelete: false,
+            canSelectAll: true,
+            canEditRichly: false,
+          },
+          frame: {} as Electron.WebFrameMain,
+          menuSourceType: "mouse",
+        } satisfies Partial<Electron.ContextMenuParams>);
+        yield* waitForMockCalls(popupTemplate);
+
+        assert.equal(preventDefault.mock.calls.length, 1);
+        const template = popupTemplate.mock.calls[0]?.[0].template ?? [];
+        assert.equal(template.find((item) => item.label === "Copy")?.enabled, true);
+        assert.equal(template.find((item) => item.label === "Paste")?.enabled, false);
+        assert.equal(guest.copy.mock.calls.length, 1);
+      }).pipe(Effect.provide(layer));
+    }),
+  );
+
   it.effect("restores maximized windows from persisted state", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;

@@ -548,9 +548,18 @@ const make = Effect.gen(function* () {
       );
     });
 
+    // The edit menu for a right-click in the app or in a guest preview page:
+    // spelling suggestions, link and image copies, then cut/copy/paste. The
+    // edit actions call the clicked contents directly rather than using menu
+    // roles, which act on whichever contents has focus and would miss a guest.
+    // A page that handles contextmenu itself cancels the event, and Electron
+    // then never reports it here, so its own menu is left alone.
     let contextMenuRequestVersion = 0;
-    window.webContents.on("context-menu", (event, params) => {
-      event.preventDefault();
+    const showEditContextMenu = (
+      contents: Electron.WebContents,
+      isGone: () => boolean,
+      params: Electron.ContextMenuParams,
+    ) => {
       const requestVersion = ++contextMenuRequestVersion;
 
       void runPromise(
@@ -576,8 +585,8 @@ const make = Effect.gen(function* () {
                   if (requestVersion !== contextMenuRequestVersion) {
                     return;
                   }
-                  window.webContents.replaceMisspelling(suggestion);
-                  window.webContents.focus();
+                  contents.replaceMisspelling(suggestion);
+                  contents.focus();
                 },
               });
             }
@@ -587,7 +596,7 @@ const make = Effect.gen(function* () {
             menuTemplate.push({ type: "separator" });
           }
 
-          if (window.isDestroyed()) {
+          if (window.isDestroyed() || isGone()) {
             return;
           }
 
@@ -606,16 +615,40 @@ const make = Effect.gen(function* () {
           if (params.mediaType === "image") {
             menuTemplate.push({
               label: "Copy Image",
-              click: () => window.webContents.copyImageAt(params.x, params.y),
+              click: () => contents.copyImageAt(params.x, params.y),
             });
             menuTemplate.push({ type: "separator" });
           }
 
           menuTemplate.push(
-            { role: "cut", enabled: params.editFlags.canCut },
-            { role: "copy", enabled: params.editFlags.canCopy },
-            { role: "paste", enabled: params.editFlags.canPaste },
-            { role: "selectAll", enabled: params.editFlags.canSelectAll },
+            {
+              label: "Cut",
+              accelerator: "CmdOrCtrl+X",
+              registerAccelerator: false,
+              enabled: params.editFlags.canCut,
+              click: () => contents.cut(),
+            },
+            {
+              label: "Copy",
+              accelerator: "CmdOrCtrl+C",
+              registerAccelerator: false,
+              enabled: params.editFlags.canCopy,
+              click: () => contents.copy(),
+            },
+            {
+              label: "Paste",
+              accelerator: "CmdOrCtrl+V",
+              registerAccelerator: false,
+              enabled: params.editFlags.canPaste,
+              click: () => contents.paste(),
+            },
+            {
+              label: "Select All",
+              accelerator: "CmdOrCtrl+A",
+              registerAccelerator: false,
+              enabled: params.editFlags.canSelectAll,
+              click: () => contents.selectAll(),
+            },
           );
 
           yield* electronMenu.popupTemplate({
@@ -626,13 +659,13 @@ const make = Effect.gen(function* () {
           });
         }),
       );
+    };
+
+    window.webContents.on("context-menu", (event, params) => {
+      event.preventDefault();
+      showEditContextMenu(window.webContents, () => false, params);
     });
 
-    // Guest preview pages have no context menu of their own, which left the
-    // note fields the annotate overlay injects with squiggles but no way to
-    // accept a suggestion. Only the spelling section applies in a guest --
-    // the page under development owns every other right-click, so anything
-    // without a misspelling under the cursor is left alone.
     window.webContents.on("did-attach-webview", (_event, guest) => {
       // Browser shortcuts pressed inside a guest page never reach the
       // renderer: the guest keeps its keystrokes, and the application menu's
@@ -666,43 +699,8 @@ const make = Effect.gen(function* () {
       });
 
       guest.on("context-menu", (event, params) => {
-        if (!params.misspelledWord) {
-          return;
-        }
         event.preventDefault();
-        const requestVersion = ++contextMenuRequestVersion;
-
-        void runPromise(
-          Effect.gen(function* () {
-            const suggestions =
-              params.dictionarySuggestions.length > 0
-                ? params.dictionarySuggestions
-                : yield* electronSpelling.platformSuggestionsFor(params.misspelledWord);
-            if (requestVersion !== contextMenuRequestVersion || guest.isDestroyed()) {
-              return;
-            }
-            const menuTemplate: Electron.MenuItemConstructorOptions[] =
-              suggestions.length === 0
-                ? [{ label: "No suggestions", enabled: false }]
-                : suggestions.slice(0, 5).map((suggestion) => ({
-                    label: suggestion,
-                    click: () => {
-                      if (requestVersion !== contextMenuRequestVersion) {
-                        return;
-                      }
-                      guest.replaceMisspelling(suggestion);
-                      guest.focus();
-                    },
-                  }));
-
-            yield* electronMenu.popupTemplate({
-              window,
-              template: menuTemplate,
-              frame: params.frame,
-              sourceType: params.menuSourceType,
-            });
-          }),
-        );
+        showEditContextMenu(guest, () => guest.isDestroyed(), params);
       });
     });
 
