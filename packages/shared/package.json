@@ -167,6 +167,10 @@
       "types": "./src/pullRequestAutoFix.ts",
       "import": "./src/pullRequestAutoFix.ts"
     },
+    "./pullRequestAutoMerge": {
+      "types": "./src/pullRequestAutoMerge.ts",
+      "import": "./src/pullRequestAutoMerge.ts"
+    },
     "./pendingRequests": {
       "types": "./src/pendingRequests.ts",
       "import": "./src/pendingRequests.ts"

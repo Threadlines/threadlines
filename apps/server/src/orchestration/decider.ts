@@ -535,7 +535,8 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         type: "thread.pull-request-automation-changed",
         payload: {
           threadId: command.threadId,
-          autoFix: command.autoFix,
+          ...(command.autoFix === undefined ? {} : { autoFix: command.autoFix }),
+          ...(command.autoMerge === undefined ? {} : { autoMerge: command.autoMerge }),
           updatedAt: occurredAt,
         },
       };

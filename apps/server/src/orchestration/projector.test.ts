@@ -94,6 +94,7 @@ describe("orchestration projector", () => {
         archivedAt: null,
         pinnedAt: null,
         pullRequestAutoFix: false,
+        pullRequestAutoMerge: null,
         doneOverride: null,
         lastSeenAt: null,
         deletedAt: null,
@@ -573,7 +574,26 @@ describe("orchestration projector", () => {
       ),
     );
     expect(armed.threads[0]?.pullRequestAutoFix).toBe(true);
+    expect(armed.threads[0]?.pullRequestAutoMerge).toBeNull();
     expect(armed.threads[0]?.updatedAt).toBe(later);
+
+    // Each switch is set on its own and leaves the other as it was.
+    const mergeArmed = await Effect.runPromise(
+      projectEvent(
+        armed,
+        makeEvent({
+          sequence: 3,
+          type: "thread.pull-request-automation-changed",
+          aggregateKind: "thread",
+          aggregateId: "thread-1",
+          occurredAt: later,
+          commandId: "cmd-thread-auto-merge",
+          payload: { threadId: "thread-1", autoMerge: "squash", updatedAt: later },
+        }),
+      ),
+    );
+    expect(mergeArmed.threads[0]?.pullRequestAutoMerge).toBe("squash");
+    expect(mergeArmed.threads[0]?.pullRequestAutoFix).toBe(true);
   });
 
   it("keeps projector forward-compatible for unhandled event types", async () => {
