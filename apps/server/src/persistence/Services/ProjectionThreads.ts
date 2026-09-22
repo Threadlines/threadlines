@@ -13,6 +13,7 @@ import {
   OrchestrationThreadGoal,
   ProjectId,
   ProviderInteractionMode,
+  PullRequestMergeMethod,
   RuntimeMode,
   ThreadDoneOverrideState,
   ThreadEffectiveCwdSource,
@@ -61,6 +62,12 @@ export const ProjectionThread = Schema.Struct({
    * what the migration's column default gives every existing row.
    */
   pullRequestAutoFix: Schema.optional(NonNegativeInt),
+  /**
+   * How the server merges this thread's pull request once its checks pass, or
+   * null while it has not been asked. Optional so rows written before
+   * migration 053 decode; absent reads as null.
+   */
+  pullRequestAutoMerge: Schema.optional(Schema.NullOr(PullRequestMergeMethod)),
   /**
    * The user's explicit inbox filing and its stamp. Optional so rows written
    * before migration 042 decode; absent reads as "never filed". Kept as two

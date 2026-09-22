@@ -1,5 +1,6 @@
 import { DEFAULT_NEW_THREAD_RUNTIME_MODE } from "@threadlines/contracts";
 import type {
+  PullRequestMergeMethod,
   ChatFileAttachmentKind,
   ChatSkillReference,
   EnvironmentId,
@@ -134,6 +135,8 @@ export interface Thread {
   pinnedAt: string | null;
   /** See ThreadShell.pullRequestAutoFix. */
   pullRequestAutoFix?: boolean;
+  /** See ThreadShell.pullRequestAutoMerge. */
+  pullRequestAutoMerge?: PullRequestMergeMethod | null;
   /** See ThreadShell.doneOverride. */
   doneOverride: OrchestrationThreadDoneOverride | null;
   /** See ThreadShell.lastSeenAt. */
@@ -184,6 +187,11 @@ export interface ThreadShell {
    * when a check fails or a review comment arrives. Absent means off.
    */
   pullRequestAutoFix?: boolean;
+  /**
+   * How the server merges this thread's pull request once its checks pass,
+   * where the host cannot arm that itself. Absent or null means off.
+   */
+  pullRequestAutoMerge?: PullRequestMergeMethod | null;
   /**
    * The user's last explicit Mark done / Reopen, held on the server so every
    * device agrees on the inbox's Active/Wrapped split. Null when never filed.

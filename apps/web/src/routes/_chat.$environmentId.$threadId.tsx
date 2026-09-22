@@ -30,7 +30,10 @@ import {
   invalidateGitWorkingTreeDiffQueries,
 } from "../lib/gitReactQuery";
 import { useGitStatus } from "../lib/gitStatusState";
-import { setThreadPullRequestAutoFix } from "../lib/threadPullRequestCommands";
+import {
+  setThreadPullRequestAutoFix,
+  setThreadPullRequestAutoMerge,
+} from "../lib/threadPullRequestCommands";
 import {
   PULL_REQUEST_COUNT_REFETCH_INTERVAL_MS,
   usePullRequestDetail,
@@ -543,6 +546,10 @@ function ChatThreadRouteView() {
             onAutoFixChange: (next: boolean) => {
               void setThreadPullRequestAutoFix(threadRef, next);
             },
+            autoMerge: serverThread?.pullRequestAutoMerge ?? null,
+            onAutoMergeChange: (next) => {
+              void setThreadPullRequestAutoMerge(threadRef, next);
+            },
             wrapUpOnSettled: threadWrapUpOnSettled ?? wrapUpOnSettledDefault,
             onWrapUpOnSettledChange: (next: boolean) => {
               useUiStateStore
@@ -558,6 +565,7 @@ function ChatThreadRouteView() {
       currentThreadKey,
       selectTab,
       serverThread?.pullRequestAutoFix,
+      serverThread?.pullRequestAutoMerge,
       threadPullRequest,
       threadPullRequestDetail,
       threadPullRequestReference,

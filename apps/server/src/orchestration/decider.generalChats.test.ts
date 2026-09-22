@@ -261,6 +261,7 @@ function makeThread(input: {
     archivedAt: null,
     pinnedAt: null,
     pullRequestAutoFix: false,
+    pullRequestAutoMerge: null,
     doneOverride: null,
     lastSeenAt: null,
     deletedAt: null,

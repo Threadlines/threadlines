@@ -1,4 +1,4 @@
-import type { ScopedThreadRef } from "@threadlines/contracts";
+import type { PullRequestMergeMethod, ScopedThreadRef } from "@threadlines/contracts";
 
 import { readEnvironmentApi } from "../environmentApi";
 import { newCommandId } from "./utils";
@@ -22,5 +22,25 @@ export async function setThreadPullRequestAutoFix(
     commandId: newCommandId(),
     threadId: threadRef.threadId,
     autoFix,
+  });
+}
+
+/**
+ * Ask the server to merge this thread's pull request, by `mergeMethod`, once
+ * its checks pass; null takes the request back. This is for a host that cannot
+ * hold the instruction itself, and like the auto-fix watch it only runs while
+ * the server does.
+ */
+export async function setThreadPullRequestAutoMerge(
+  threadRef: ScopedThreadRef,
+  mergeMethod: PullRequestMergeMethod | null,
+): Promise<void> {
+  const api = readEnvironmentApi(threadRef.environmentId);
+  if (!api) return;
+  await api.orchestration.dispatchCommand({
+    type: "thread.pull-request-automation.set",
+    commandId: newCommandId(),
+    threadId: threadRef.threadId,
+    autoMerge: mergeMethod,
   });
 }

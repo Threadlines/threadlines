@@ -2,11 +2,15 @@ import { randomUUID } from "node:crypto";
 
 import {
   CommandId,
+  EventId,
   MessageId,
   type OrchestrationProjectShell,
   type OrchestrationThreadShell,
   type PullRequestActivity,
   type PullRequestDetail,
+  type PullRequestMergeMethod,
+  type PullRequestRef,
+  PullRequestServiceError,
   type ThreadId,
 } from "@threadlines/contracts";
 import {
@@ -14,12 +18,15 @@ import {
   type PullRequestAutoFixCheck,
   type PullRequestAutoFixComment,
 } from "@threadlines/shared/pullRequestAutoFix";
+import { resolvePullRequestAutoMergeStep } from "@threadlines/shared/pullRequestAutoMerge";
 import { changeRequestRepositoryName } from "@threadlines/shared/sourceControl";
 import { resolveThreadWorkingCwd } from "@threadlines/shared/threadCwd";
 import * as Cause from "effect/Cause";
+import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
 import * as Schedule from "effect/Schedule";
@@ -30,9 +37,9 @@ import { PullRequestService } from "../../pullRequest/PullRequestService.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
 import {
-  PullRequestAutoFixWatcher,
-  type PullRequestAutoFixWatcherShape,
-} from "../Services/PullRequestAutoFixWatcher.ts";
+  PullRequestAutomationWatcher,
+  type PullRequestAutomationWatcherShape,
+} from "../Services/PullRequestAutomationWatcher.ts";
 
 const DEFAULT_SWEEP_INTERVAL_MS = 120 * 1_000;
 
@@ -127,11 +134,11 @@ function failingCheckNames(detail: PullRequestDetail): ReadonlySet<string> {
   );
 }
 
-export interface PullRequestAutoFixWatcherLiveOptions {
+export interface PullRequestAutomationWatcherLiveOptions {
   readonly sweepIntervalMs?: number;
 }
 
-const makePullRequestAutoFixWatcher = (options?: PullRequestAutoFixWatcherLiveOptions) =>
+const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcherLiveOptions) =>
   Effect.gen(function* () {
     const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
     const orchestrationEngine = yield* OrchestrationEngineService;
@@ -205,11 +212,172 @@ const makePullRequestAutoFixWatcher = (options?: PullRequestAutoFixWatcherLiveOp
         return started;
       });
 
+    /** Turns "Merge when checks pass" off, the same way the thread's own switch does. */
+    const disarmAutoMerge = (threadId: ThreadId) =>
+      orchestrationEngine
+        .dispatch({
+          type: "thread.pull-request-automation.set",
+          commandId: CommandId.make(`pull-request-auto-merge:${threadId}:${randomUUID()}`),
+          threadId,
+          autoMerge: null,
+        })
+        .pipe(
+          Effect.asVoid,
+          Effect.catchCause((cause) =>
+            Effect.logWarning("pull-request.auto-merge.disarm-failed", {
+              threadId,
+              cause: Cause.pretty(cause),
+            }),
+          ),
+        );
+
+    /** A line in the thread's timeline, so a merge nobody watched still has a record. */
+    const appendAutoMergeActivity = (input: {
+      readonly threadId: ThreadId;
+      readonly tone: "info" | "warning" | "error";
+      readonly kind: string;
+      readonly summary: string;
+      readonly detail: string | null;
+      readonly number: number;
+    }) =>
+      Effect.gen(function* () {
+        const createdAt = yield* nowIso;
+        yield* orchestrationEngine.dispatch({
+          type: "thread.activity.append",
+          commandId: CommandId.make(`pull-request-auto-merge:${input.threadId}:${randomUUID()}`),
+          threadId: input.threadId,
+          activity: {
+            id: EventId.make(randomUUID()),
+            tone: input.tone,
+            kind: input.kind,
+            summary: input.summary,
+            payload: {
+              number: input.number,
+              ...(input.detail === null ? {} : { detail: input.detail }),
+            },
+            turnId: null,
+            createdAt,
+          },
+          createdAt,
+        });
+      }).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("pull-request.auto-merge.activity-failed", {
+            threadId: input.threadId,
+            cause: Cause.pretty(cause),
+          }),
+        ),
+      );
+
+    /**
+     * "Merge when checks pass" for one open pull request: merge it once the
+     * shared rule says so, give up where waiting would never end, and otherwise
+     * leave it for the next sweep. Answers whether it merged. Either way it
+     * ends, the switch goes off and the thread's timeline says why.
+     */
+    const sweepAutoMerge = Effect.fn("PullRequestAutomationWatcher.sweepAutoMerge")(
+      function* (input: {
+        readonly thread: OrchestrationThreadShell;
+        readonly reference: PullRequestRef;
+        readonly detail: PullRequestDetail;
+        readonly mergeMethod: PullRequestMergeMethod;
+        readonly unpushedCommits: number;
+        /** The auto-fix watch is on and still has turns left to fix a failure. */
+        readonly autoFix: boolean;
+      }) {
+        const { thread, detail } = input;
+        const number = input.reference.number;
+        const now = yield* Clock.currentTimeMillis;
+        const step = resolvePullRequestAutoMergeStep({
+          detail,
+          autoFix: input.autoFix,
+          unpushedCommits: input.unpushedCommits,
+          now,
+        });
+        if (step.kind === "wait") {
+          return false;
+        }
+        if (step.kind === "stop") {
+          yield* disarmAutoMerge(thread.id);
+          // A pull request merged or closed by someone else is not news.
+          if (detail.state === "open") {
+            yield* appendAutoMergeActivity({
+              threadId: thread.id,
+              tone: "warning",
+              kind: "pull-request.auto-merge.stopped",
+              summary: `Stopped waiting to merge #${number}`,
+              detail: step.reason,
+              number,
+            });
+          }
+          return false;
+        }
+
+        // The method the user chose, unless the repository has since stopped
+        // allowing it; then the host's own first choice.
+        const mergeMethod = detail.mergeMethods.includes(input.mergeMethod)
+          ? input.mergeMethod
+          : detail.mergeMethods[0];
+        const outcome = yield* Effect.exit(
+          pullRequestService.runAction({
+            projectId: input.reference.projectId,
+            repository: input.reference.repository,
+            number,
+            action: "merge",
+            ...(mergeMethod === undefined ? {} : { mergeMethod }),
+          }),
+        );
+        // Another environment may have landed it first: a merged pull request
+        // is the outcome that was asked for, whoever ran the merge.
+        const merged = Exit.isSuccess(outcome)
+          ? outcome.value.state === "merged"
+          : (yield* attempt(
+              "detail-read",
+              thread.id,
+              pullRequestService.detail({ ...input.reference, force: true }),
+            ))?.state === "merged";
+        yield* disarmAutoMerge(thread.id);
+        if (merged) {
+          yield* Effect.logInfo("pull-request.auto-merge.merged", { threadId: thread.id, number });
+          yield* appendAutoMergeActivity({
+            threadId: thread.id,
+            tone: "info",
+            kind: "pull-request.auto-merge.merged",
+            summary: `Merged #${number} after its checks passed`,
+            detail: null,
+            number,
+          });
+          return true;
+        }
+        const failure = Exit.isFailure(outcome) ? Cause.squash(outcome.cause) : null;
+        const reason =
+          failure instanceof PullRequestServiceError
+            ? failure.detail
+            : failure instanceof Error
+              ? failure.message
+              : "GitHub did not merge it";
+        yield* Effect.logWarning("pull-request.auto-merge.merge-failed", {
+          threadId: thread.id,
+          number,
+          reason,
+        });
+        yield* appendAutoMergeActivity({
+          threadId: thread.id,
+          tone: "error",
+          kind: "pull-request.auto-merge.failed",
+          summary: `Could not merge #${number}`,
+          detail: reason,
+          number,
+        });
+        return false;
+      },
+    );
+
     /**
      * One candidate thread. Answers whether it started a turn, and leaves the
      * baseline holding what its pull request looks like now.
      */
-    const sweepThread = Effect.fn("PullRequestAutoFixWatcher.sweepThread")(function* (input: {
+    const sweepThread = Effect.fn("PullRequestAutomationWatcher.sweepThread")(function* (input: {
       readonly thread: OrchestrationThreadShell;
       readonly project: OrchestrationProjectShell;
       readonly repository: string;
@@ -222,8 +390,17 @@ const makePullRequestAutoFixWatcher = (options?: PullRequestAutoFixWatcherLiveOp
       });
 
       const remote = yield* attempt("status-read", thread.id, gitManager.remoteStatus({ cwd }));
-      const pullRequest = remote?.pr ?? null;
-      if (pullRequest === null || pullRequest.state !== "open") {
+      if (remote === null || remote.pr === null) {
+        return false;
+      }
+      const pullRequest = remote.pr;
+      const autoMerge = thread.pullRequestAutoMerge;
+      if (pullRequest.state !== "open") {
+        // Merged or closed some other way: the instruction has nothing left
+        // to act on, and must not carry over to the next pull request.
+        if (autoMerge !== null) {
+          yield* disarmAutoMerge(thread.id);
+        }
         return false;
       }
 
@@ -231,7 +408,9 @@ const makePullRequestAutoFixWatcher = (options?: PullRequestAutoFixWatcherLiveOp
       const turnCount = yield* Ref.get(turnCountsRef).pipe(
         Effect.map((counts) => counts.get(key) ?? 0),
       );
-      if (turnCount >= MAX_AUTO_TURNS_PER_PULL_REQUEST) {
+      const autoFixCapped =
+        thread.pullRequestAutoFix && turnCount >= MAX_AUTO_TURNS_PER_PULL_REQUEST;
+      if (autoFixCapped) {
         const alreadyLogged = yield* Ref.modify(cappedLoggedRef, (logged) => {
           const seen = logged.has(key);
           logged.add(key);
@@ -244,6 +423,9 @@ const makePullRequestAutoFixWatcher = (options?: PullRequestAutoFixWatcherLiveOp
             cap: MAX_AUTO_TURNS_PER_PULL_REQUEST,
           });
         }
+      }
+      const autoFixActive = thread.pullRequestAutoFix && !autoFixCapped;
+      if (!autoFixActive && autoMerge === null) {
         return false;
       }
 
@@ -257,6 +439,24 @@ const makePullRequestAutoFixWatcher = (options?: PullRequestAutoFixWatcherLiveOp
       if (detail === null) {
         return false;
       }
+
+      if (autoMerge !== null) {
+        const merged = yield* sweepAutoMerge({
+          thread,
+          reference,
+          detail,
+          mergeMethod: autoMerge,
+          unpushedCommits: remote.aheadCount,
+          autoFix: autoFixActive,
+        });
+        if (merged) {
+          return false;
+        }
+      }
+      if (!autoFixActive) {
+        return false;
+      }
+
       const activity = yield* attempt(
         "activity-read",
         thread.id,
@@ -375,9 +575,11 @@ const makePullRequestAutoFixWatcher = (options?: PullRequestAutoFixWatcherLiveOp
       // Deleted threads never reach the shell snapshot, so archived, unbranched
       // and busy are the only ones left to rule out here.
       const candidates = snapshot.threads.flatMap((thread) => {
-        if (!thread.pullRequestAutoFix || thread.archivedAt !== null || thread.branch === null) {
+        const armed = thread.pullRequestAutoFix || thread.pullRequestAutoMerge !== null;
+        if (!armed || thread.archivedAt !== null || thread.branch === null) {
           return [];
         }
+        // Busy is also "not yet" for a merge: the agent may be about to push.
         if (hasWorkInProgress(thread)) {
           return [];
         }
@@ -404,9 +606,9 @@ const makePullRequestAutoFixWatcher = (options?: PullRequestAutoFixWatcherLiveOp
 
     const sweep = sweepSemaphore.withPermits(1)(runSweep);
 
-    const sweepNow: PullRequestAutoFixWatcherShape["sweepNow"] = () => sweep;
+    const sweepNow: PullRequestAutomationWatcherShape["sweepNow"] = () => sweep;
 
-    const start: PullRequestAutoFixWatcherShape["start"] = () =>
+    const start: PullRequestAutomationWatcherShape["start"] = () =>
       Effect.gen(function* () {
         yield* Effect.forkScoped(
           sweep.pipe(Effect.repeat(Schedule.spaced(Duration.millis(sweepIntervalMs)))),
@@ -414,10 +616,11 @@ const makePullRequestAutoFixWatcher = (options?: PullRequestAutoFixWatcherLiveOp
         yield* Effect.logInfo("pull-request.auto-fix.started", { sweepIntervalMs });
       });
 
-    return { start, sweepNow } satisfies PullRequestAutoFixWatcherShape;
+    return { start, sweepNow } satisfies PullRequestAutomationWatcherShape;
   });
 
-export const makePullRequestAutoFixWatcherLive = (options?: PullRequestAutoFixWatcherLiveOptions) =>
-  Layer.effect(PullRequestAutoFixWatcher, makePullRequestAutoFixWatcher(options));
+export const makePullRequestAutomationWatcherLive = (
+  options?: PullRequestAutomationWatcherLiveOptions,
+) => Layer.effect(PullRequestAutomationWatcher, makePullRequestAutomationWatcher(options));
 
-export const PullRequestAutoFixWatcherLive = makePullRequestAutoFixWatcherLive();
+export const PullRequestAutomationWatcherLive = makePullRequestAutomationWatcherLive();

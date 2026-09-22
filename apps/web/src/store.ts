@@ -296,6 +296,7 @@ function mapThread(thread: OrchestrationThread, environmentId: EnvironmentId): T
     archivedAt: thread.archivedAt,
     pinnedAt: thread.pinnedAt,
     pullRequestAutoFix: thread.pullRequestAutoFix ?? false,
+    pullRequestAutoMerge: thread.pullRequestAutoMerge ?? null,
     doneOverride: thread.doneOverride,
     lastSeenAt: thread.lastSeenAt,
     updatedAt: thread.updatedAt,
@@ -336,6 +337,7 @@ function mapThreadShell(
     archivedAt: thread.archivedAt,
     pinnedAt: thread.pinnedAt,
     pullRequestAutoFix: thread.pullRequestAutoFix ?? false,
+    pullRequestAutoMerge: thread.pullRequestAutoMerge ?? null,
     doneOverride: thread.doneOverride,
     lastSeenAt: thread.lastSeenAt,
     updatedAt: thread.updatedAt,
@@ -398,6 +400,7 @@ function toThreadShell(thread: Thread): ThreadShell {
     archivedAt: thread.archivedAt,
     pinnedAt: thread.pinnedAt,
     pullRequestAutoFix: thread.pullRequestAutoFix ?? false,
+    pullRequestAutoMerge: thread.pullRequestAutoMerge ?? null,
     doneOverride: thread.doneOverride,
     lastSeenAt: thread.lastSeenAt,
     updatedAt: thread.updatedAt,
@@ -592,6 +595,7 @@ function threadShellsEqual(left: ThreadShell | undefined, right: ThreadShell): b
     left.archivedAt === right.archivedAt &&
     left.pinnedAt === right.pinnedAt &&
     left.pullRequestAutoFix === right.pullRequestAutoFix &&
+    left.pullRequestAutoMerge === right.pullRequestAutoMerge &&
     doneOverridesEqual(left.doneOverride, right.doneOverride) &&
     left.lastSeenAt === right.lastSeenAt &&
     left.updatedAt === right.updatedAt &&
@@ -1569,6 +1573,7 @@ function applyEnvironmentOrchestrationEvent(
           archivedAt: null,
           pinnedAt: null,
           pullRequestAutoFix: false,
+          pullRequestAutoMerge: null,
           doneOverride: null,
           lastSeenAt: null,
           deletedAt: null,
@@ -1618,7 +1623,12 @@ function applyEnvironmentOrchestrationEvent(
     case "thread.pull-request-automation-changed":
       return updateThreadState(state, event.payload.threadId, (thread) => ({
         ...thread,
-        pullRequestAutoFix: event.payload.autoFix,
+        ...(event.payload.autoFix === undefined
+          ? {}
+          : { pullRequestAutoFix: event.payload.autoFix }),
+        ...(event.payload.autoMerge === undefined
+          ? {}
+          : { pullRequestAutoMerge: event.payload.autoMerge }),
         updatedAt: event.payload.updatedAt,
       }));
 

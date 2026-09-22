@@ -22,6 +22,7 @@ import {
   TurnId,
 } from "./baseSchemas.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
+import { PullRequestMergeMethod } from "./pullRequest.ts";
 
 export const ORCHESTRATION_WS_METHODS = {
   dispatchCommand: "orchestration.dispatchCommand",
@@ -776,6 +777,10 @@ export const OrchestrationThread = Schema.Struct({
   pinnedAt: Schema.NullOr(IsoDateTime).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
   /** See OrchestrationThreadShell.pullRequestAutoFix. */
   pullRequestAutoFix: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  /** See OrchestrationThreadShell.pullRequestAutoMerge. */
+  pullRequestAutoMerge: Schema.NullOr(PullRequestMergeMethod).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
   /** See OrchestrationThreadShell.doneOverride. */
   doneOverride: Schema.NullOr(OrchestrationThreadDoneOverride).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
@@ -853,6 +858,15 @@ export const OrchestrationThreadShell = Schema.Struct({
    * desktop app watches nothing.
    */
   pullRequestAutoFix: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  /**
+   * How the server merges this thread's pull request once its checks pass, or
+   * null while the thread has not asked. This stands in for a host that cannot
+   * arm the merge itself (GitHub with auto-merge off, or with no required
+   * checks), and like the auto-fix watch it only runs while the server does.
+   */
+  pullRequestAutoMerge: Schema.NullOr(PullRequestMergeMethod).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
   /**
    * The user's last explicit Mark done / Reopen for this thread, or null if
    * they never gave one. Deliberately does not move `updatedAt`: the inbox
@@ -1089,14 +1103,16 @@ const ThreadUnpinCommand = Schema.Struct({
 });
 
 /**
- * Arm or disarm the server's watch on this thread's pull request. See
- * `OrchestrationThreadShell.pullRequestAutoFix`.
+ * Arm or disarm the server's watches on this thread's pull request. See
+ * `OrchestrationThreadShell.pullRequestAutoFix` and `pullRequestAutoMerge`.
+ * A switch left out keeps the value it had.
  */
 const ThreadPullRequestAutomationSetCommand = Schema.Struct({
   type: Schema.Literal("thread.pull-request-automation.set"),
   commandId: CommandId,
   threadId: ThreadId,
-  autoFix: Schema.Boolean,
+  autoFix: Schema.optional(Schema.Boolean),
+  autoMerge: Schema.optional(Schema.NullOr(PullRequestMergeMethod)),
 });
 
 /**
@@ -1741,9 +1757,11 @@ export const ThreadUnpinnedPayload = Schema.Struct({
   updatedAt: IsoDateTime,
 });
 
+/** A switch left out kept its value; events from before auto-merge carry only `autoFix`. */
 export const ThreadPullRequestAutomationChangedPayload = Schema.Struct({
   threadId: ThreadId,
-  autoFix: Schema.Boolean,
+  autoFix: Schema.optional(Schema.Boolean),
+  autoMerge: Schema.optional(Schema.NullOr(PullRequestMergeMethod)),
   updatedAt: IsoDateTime,
 });
 

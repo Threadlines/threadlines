@@ -187,6 +187,8 @@ async function renderComposerPullRequest(
           onDismiss: vi.fn(),
           autoFix: false,
           onAutoFixChange: vi.fn(),
+          autoMerge: null,
+          onAutoMergeChange: vi.fn(),
           wrapUpOnSettled: false,
           onWrapUpOnSettledChange: vi.fn(),
         }}

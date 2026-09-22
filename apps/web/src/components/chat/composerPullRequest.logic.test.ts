@@ -1,4 +1,8 @@
-import type { PullRequestCheck, PullRequestDetail } from "@threadlines/contracts";
+import type {
+  PullRequestCheck,
+  PullRequestDetail,
+  PullRequestMergeMethod,
+} from "@threadlines/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import type { ThreadPullRequest } from "../pull-requests/pullRequests.logic";
@@ -92,6 +96,7 @@ describe("composerPullRequestRow", () => {
       },
       projectTitle: "threadlines",
       detail: undefined,
+      threadAutoMerge: false,
     });
 
     expect(row.number).toBe(234);
@@ -111,6 +116,7 @@ describe("composerPullRequestRow", () => {
       pullRequest: THREAD_PULL_REQUEST,
       projectTitle: null,
       detail: undefined,
+      threadAutoMerge: false,
     });
     expect(row.headBranch).toBeNull();
     expect(row.projectTitle).toBeNull();
@@ -124,6 +130,7 @@ describe("composerPullRequestRow", () => {
       // The listing behind the thread's resolution polls slowly, so a merge
       // shows up on the detail first and the row has to follow it.
       detail: detail({ state: "merged", checks: [check("success", "build")] }),
+      threadAutoMerge: false,
     });
 
     expect(row.state).toBe("merged");
@@ -183,18 +190,37 @@ describe("composerPullRequestCheckBuckets", () => {
   });
 });
 
+/** An hour after the fixture's last update, so nothing reads as a fresh push. */
+const NOW = Date.parse("2026-09-01T02:00:00.000Z");
+
+function control(
+  value: PullRequestDetail | undefined,
+  thread: {
+    readonly threadAutoMerge?: PullRequestMergeMethod | null;
+    readonly autoFix?: boolean;
+  } = {},
+) {
+  return composerAutoMergeControl({
+    detail: value,
+    threadAutoMerge: thread.threadAutoMerge ?? null,
+    autoFix: thread.autoFix ?? false,
+    now: NOW,
+  });
+}
+
 describe("composerAutoMergeControl", () => {
   it("is hidden where the host does not say whether the pull request is armed", () => {
-    expect(composerAutoMergeControl(detail({ autoMergeEnabled: null }))).toEqual({
+    expect(control(detail({ provider: "gitlab", autoMergeEnabled: null }))).toEqual({
       kind: "hidden",
     });
-    expect(composerAutoMergeControl(undefined)).toEqual({ kind: "hidden" });
+    expect(control(undefined)).toEqual({ kind: "hidden" });
   });
 
-  it("explains when the host does not offer auto-merge", () => {
+  it("explains when a host other than GitHub does not offer auto-merge", () => {
     expect(
-      composerAutoMergeControl(
+      control(
         detail({
+          provider: "gitlab",
           capabilities: { ...detail().capabilities, actions: ["merge", "close"] },
         }),
       ),
@@ -202,8 +228,8 @@ describe("composerAutoMergeControl", () => {
   });
 
   it("is a switch carrying the standing instruction where the host offers the next action", () => {
-    expect(composerAutoMergeControl(detail())).toEqual({ kind: "toggle", checked: false });
-    expect(composerAutoMergeControl(detail({ autoMergeEnabled: true }))).toEqual({
+    expect(control(detail())).toEqual({ kind: "toggle", checked: false });
+    expect(control(detail({ autoMergeEnabled: true }))).toEqual({
       kind: "toggle",
       checked: true,
     });
@@ -211,28 +237,81 @@ describe("composerAutoMergeControl", () => {
 
   it("does not mistake permission to cancel for permission to enable auto-merge", () => {
     const capabilities = { ...detail().capabilities, actions: ["disable-auto-merge"] as const };
-    expect(composerAutoMergeControl(detail({ capabilities }))).toEqual({
+    expect(control(detail({ capabilities }))).toEqual({
       kind: "unavailable",
       reason: "Auto-merge is not available for this repository",
     });
-    expect(composerAutoMergeControl(detail({ capabilities, autoMergeEnabled: true }))).toEqual({
+    expect(control(detail({ capabilities, autoMergeEnabled: true }))).toEqual({
       kind: "toggle",
       checked: true,
     });
   });
 
   it("directs a ready GitHub PR to Merge, but still lets it join a queue", () => {
-    expect(composerAutoMergeControl(detail({ mergeGate: "clear" }))).toEqual({
+    const passed = [check("success", "build")];
+    expect(control(detail({ mergeGate: "clear", checks: passed }))).toEqual({
       kind: "unavailable",
       reason: "This pull request can merge right now. Use Merge instead.",
     });
-    expect(
-      composerAutoMergeControl(detail({ mergeGate: "clear", mergeQueue: { position: null } })),
-    ).toEqual({ kind: "toggle", checked: false });
-    expect(composerAutoMergeControl(detail({ mergeGate: "blocked" }))).toEqual({
+    expect(control(detail({ mergeGate: "clear", mergeQueue: { position: null } }))).toEqual({
       kind: "toggle",
       checked: false,
     });
+    expect(control(detail({ mergeGate: "blocked" }))).toEqual({
+      kind: "toggle",
+      checked: false,
+    });
+  });
+
+  it("falls back to the server where GitHub cannot hold the merge itself", () => {
+    const running = [check("pending", "build")];
+    // Auto-merge switched off on the repository.
+    const noAutoMerge = { ...detail().capabilities, actions: ["merge", "close"] as const };
+    expect(control(detail({ capabilities: noAutoMerge, checks: running }))).toEqual({
+      kind: "server",
+      checked: false,
+      status: null,
+    });
+    // No required checks: GitHub would merge at once, so it cannot be asked to wait.
+    expect(control(detail({ mergeGate: "clear", checks: running }))).toEqual({
+      kind: "server",
+      checked: false,
+      status: null,
+    });
+  });
+
+  it("offers the server's wait only while there is something to wait for", () => {
+    const noAutoMerge = { ...detail().capabilities, actions: ["merge", "close"] as const };
+    expect(control(detail({ capabilities: noAutoMerge }))).toEqual({
+      kind: "unavailable",
+      reason: "No checks to wait for. Use Merge instead.",
+    });
+    const failed = detail({ capabilities: noAutoMerge, checks: [check("failure", "build")] });
+    expect(control(failed)).toEqual({
+      kind: "unavailable",
+      reason: "A check failed. Turn on fixing below to wait for a fix.",
+    });
+    // With fixing on, a failure is something the server waits out.
+    expect(control(failed, { autoFix: true })).toEqual({
+      kind: "server",
+      checked: false,
+      status: null,
+    });
+  });
+
+  it("keeps a thread's own request in view, saying what it waits on", () => {
+    const running = detail({ mergeGate: "clear", checks: [check("pending", "build")] });
+    expect(control(running, { threadAutoMerge: "squash" })).toEqual({
+      kind: "server",
+      checked: true,
+      status: "Waiting for checks",
+    });
+    // Even where the viewer has since lost the right to merge, so it can be taken back.
+    expect(
+      control(detail({ viewer: { canWrite: false, canManage: true, canReview: false } }), {
+        threadAutoMerge: "squash",
+      }),
+    ).toEqual({ kind: "server", checked: true, status: "Write access is needed to merge" });
   });
 
   it.each([
@@ -243,33 +322,32 @@ describe("composerAutoMergeControl", () => {
       "Write access is needed to merge",
     ],
   ] as const)("explains why arming is unavailable: %s", (overrides, reason) => {
-    expect(composerAutoMergeControl(detail(overrides))).toEqual({ kind: "unavailable", reason });
+    expect(control(detail(overrides))).toEqual({ kind: "unavailable", reason });
   });
 
   it("still lets an armed draft or conflicting PR cancel auto-merge", () => {
-    expect(composerAutoMergeControl(detail({ autoMergeEnabled: true, isDraft: true }))).toEqual({
+    expect(control(detail({ autoMergeEnabled: true, isDraft: true }))).toEqual({
       kind: "toggle",
       checked: true,
     });
-    expect(
-      composerAutoMergeControl(detail({ autoMergeEnabled: true, mergeability: "conflicting" })),
-    ).toEqual({
+    expect(control(detail({ autoMergeEnabled: true, mergeability: "conflicting" }))).toEqual({
       kind: "toggle",
       checked: true,
     });
   });
 
   it.each(["merged", "closed"] as const)("offers no merge action for a %s PR", (state) => {
-    expect(composerAutoMergeControl(detail({ state }))).toEqual({ kind: "hidden" });
+    expect(control(detail({ state }))).toEqual({ kind: "hidden" });
+    expect(control(detail({ state }), { threadAutoMerge: "merge" })).toEqual({ kind: "hidden" });
   });
 
   it("stops being a switch once the host has taken the pull request into its queue", () => {
     // GitHub drops the instruction on entry to the queue, so a switch would
     // read as off while the merge is in motion, and flipping it would re-arm
     // and disarm an entry that no longer needs it.
-    expect(
-      composerAutoMergeControl(detail({ autoMergeEnabled: false, mergeQueue: { position: 1 } })),
-    ).toEqual({ kind: "queued" });
+    expect(control(detail({ autoMergeEnabled: false, mergeQueue: { position: 1 } }))).toEqual({
+      kind: "queued",
+    });
   });
 });
 

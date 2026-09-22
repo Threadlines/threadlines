@@ -26,7 +26,7 @@ import { ProviderEventLoggersLive } from "./provider/Layers/ProviderEventLoggers
 import { ProviderServiceLive } from "./provider/Layers/ProviderService.ts";
 import { ProviderSessionReaperLive } from "./provider/Layers/ProviderSessionReaper.ts";
 import { ThreadAutoArchiveSweeperLive } from "./orchestration/Layers/ThreadAutoArchiveSweeper.ts";
-import { PullRequestAutoFixWatcherLive } from "./orchestration/Layers/PullRequestAutoFixWatcher.ts";
+import { PullRequestAutomationWatcherLive } from "./orchestration/Layers/PullRequestAutomationWatcher.ts";
 import { BootstrapTurnStartRunsLive } from "./orchestration/Layers/BootstrapTurnStartRuns.ts";
 import { CheckpointDiffQueryLive } from "./checkpointing/Layers/CheckpointDiffQuery.ts";
 import { CheckpointRevertLive } from "./checkpointing/Layers/CheckpointRevert.ts";
@@ -197,7 +197,7 @@ const ReactorLayerLive = Layer.empty.pipe(
   Layer.provideMerge(StorageMaintenanceDaemonLive),
   Layer.provideMerge(RuntimeReceiptBusLive),
   Layer.provideMerge(AutomaticGitFetchSupervisorLive),
-  Layer.provideMerge(PullRequestAutoFixWatcherLive),
+  Layer.provideMerge(PullRequestAutomationWatcherLive),
 );
 
 const ProviderSessionDirectoryLayerLive = ProviderSessionDirectoryLive.pipe(
