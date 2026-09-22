@@ -27,6 +27,17 @@ function idleSignIn(overrides: Partial<ProviderSignInFlowView> = {}): ProviderSi
 }
 
 describe("buildThreadErrorNotice", () => {
+  it("explains writer conflicts and keeps retry available", () => {
+    const markup = renderNotice(
+      buildThreadErrorNotice({
+        error: "thread abc already has an active writer (code -32600)",
+        retry: { isRetrying: false, onRetry: () => {} },
+      }),
+    );
+    expect(markup).toContain("Conversation open elsewhere.");
+    expect(markup).toContain("Close this conversation in the other Codex window");
+    expect(markup).toContain("Retry last message");
+  });
   it("produces nothing without an error", () => {
     expect(buildThreadErrorNotice({ error: null })).toBe(null);
   });
@@ -112,6 +123,7 @@ describe("buildThreadErrorNotice", () => {
     const markup = renderNotice(
       buildThreadErrorNotice({
         error: "You've hit your usage limit.",
+        providerLabel: "Codex",
         usageReset: {
           availableCount: 2,
           onReset: () => {},
@@ -123,6 +135,19 @@ describe("buildThreadErrorNotice", () => {
     expect(markup).toContain("usage limit.");
     expect(markup).toContain("Reset usage");
     expect(markup).toContain("Reset Codex usage");
+  });
+
+  it("links to the provider's own reset page when resets cannot be claimed here", () => {
+    const markup = renderNotice(
+      buildThreadErrorNotice({
+        error: "You've hit your usage limit.",
+        providerLabel: "Claude",
+        usageResetLink: { label: "Use on claude.ai", url: "https://claude.ai/settings/usage" },
+      }),
+    );
+
+    expect(markup).toContain("Use on claude.ai");
+    expect(markup).not.toContain("Reset usage");
   });
 
   it("renders a retry action for retryable turn failures", () => {

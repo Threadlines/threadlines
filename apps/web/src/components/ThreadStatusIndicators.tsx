@@ -52,8 +52,8 @@ export function prStatusIndicator(
 ): PrStatusIndicator | null {
   if (!pr) return null;
   const presentation = resolveChangeRequestPresentation(provider);
-  const tone = pullRequestBadgeTone(pr.state, pr.isDraft);
-  const word = pr.isDraft ? "draft" : pr.state;
+  const tone = pullRequestBadgeTone(pr.state, pr.isDraft, pr.autoMergeEnabled);
+  const word = tone.label.toLowerCase();
   return {
     label: `${presentation.shortName} ${word}`,
     colorClass: tone.className,

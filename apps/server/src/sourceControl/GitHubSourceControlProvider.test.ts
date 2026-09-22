@@ -140,7 +140,7 @@ it.effect("uses gh json listing for non-open change request state queries", () =
       "--limit",
       "10",
       "--json",
-      "number,title,url,baseRefName,headRefName,state,mergedAt,updatedAt,isCrossRepository,headRepository,headRepositoryOwner",
+      "id,number,title,url,baseRefName,headRefName,state,mergedAt,updatedAt,autoMergeRequest,isCrossRepository,headRepository,headRepositoryOwner",
     ]);
     assert.strictEqual(changeRequests[0]?.provider, "github");
     assert.strictEqual(changeRequests[0]?.state, "merged");
@@ -148,6 +148,42 @@ it.effect("uses gh json listing for non-open change request state queries", () =
       changeRequests[0]?.updatedAt,
       Option.some(DateTime.makeUnsafe("2026-01-02T00:00:00.000Z")),
     );
+  }),
+);
+
+it.effect("includes queue membership for open PRs in an all-state branch listing", () =>
+  Effect.gen(function* () {
+    const provider = yield* makeProvider({
+      execute: (input) =>
+        Effect.succeed(
+          processResult(
+            JSON.stringify(
+              input.args[0] === "api"
+                ? {
+                    data: { nodes: [{ id: "PR_7", isInMergeQueue: true, autoMergeRequest: null }] },
+                  }
+                : [
+                    {
+                      id: "PR_7",
+                      number: 7,
+                      title: "Queued work",
+                      url: "https://github.com/Threadlines/threadlines/pull/7",
+                      baseRefName: "main",
+                      headRefName: "feature/queue",
+                      state: "OPEN",
+                      autoMergeRequest: null,
+                    },
+                  ],
+            ),
+          ),
+        ),
+    });
+    const rows = yield* provider.listChangeRequests({
+      cwd: "/repo",
+      headSelector: "feature/queue",
+      state: "all",
+    });
+    assert.equal(rows[0]?.autoMergeEnabled, true);
   }),
 );
 
@@ -358,3 +394,46 @@ it("parses GitHub auth status accounts by host and active state", () => {
     },
   );
 });
+
+it.effect("samples merged pull requests written by people, newest first", () =>
+  Effect.gen(function* () {
+    const calls: string[][] = [];
+    const provider = yield* makeProvider({
+      execute: (input) => {
+        calls.push([...input.args]);
+        return Effect.succeed(
+          processResult(
+            JSON.stringify([
+              {
+                title: "chore(deps): bump vitest",
+                body: "Bumps vitest from 4 to 5.",
+                author: { login: "app/dependabot", is_bot: true },
+              },
+              {
+                title: "fix(web): command palette stays open ",
+                body: "  The palette closed under StrictMode.\n\nNow it stays open.  ",
+                author: { login: "badcuban", is_bot: false },
+              },
+              { title: "   ", body: null, author: null },
+              { title: "feat(server): retry pushes", body: null },
+              { title: "docs: fourth sample", body: "Over the limit.", author: null },
+            ]),
+          ),
+        );
+      },
+    });
+
+    const samples = yield* provider.listRecentMergedChangeRequests({ cwd: "/repo", limit: 2 });
+
+    assert.deepStrictEqual(samples, [
+      {
+        title: "fix(web): command palette stays open",
+        body: "The palette closed under StrictMode.\n\nNow it stays open.",
+      },
+      { title: "feat(server): retry pushes", body: "" },
+    ]);
+    assert.deepStrictEqual(calls, [
+      ["pr", "list", "--state", "merged", "--limit", "8", "--json", "title,body,author"],
+    ]);
+  }),
+);

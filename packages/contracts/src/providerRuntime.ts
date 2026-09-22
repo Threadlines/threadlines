@@ -589,8 +589,47 @@ export const UserInputQuestion = Schema.Struct({
 });
 export type UserInputQuestion = typeof UserInputQuestion.Type;
 
+export const McpElicitationField = Schema.Struct({
+  name: Schema.String,
+  title: Schema.String,
+  description: Schema.optional(Schema.String),
+  type: Schema.Literals(["string", "number", "integer", "boolean", "array"]),
+  required: Schema.Boolean,
+  options: Schema.optional(
+    Schema.Array(Schema.Struct({ value: Schema.String, label: Schema.String })),
+  ),
+  defaultValue: Schema.optional(
+    Schema.Union([Schema.String, Schema.Number, Schema.Boolean, Schema.Array(Schema.String)]),
+  ),
+  minimum: Schema.optional(Schema.Number),
+  maximum: Schema.optional(Schema.Number),
+  minLength: Schema.optional(Schema.Number),
+  maxLength: Schema.optional(Schema.Number),
+  minItems: Schema.optional(Schema.Number),
+  maxItems: Schema.optional(Schema.Number),
+  format: Schema.optional(Schema.Literals(["email", "uri", "date", "date-time"])),
+});
+export type McpElicitationField = typeof McpElicitationField.Type;
+
+export const McpElicitation = Schema.Union([
+  Schema.Struct({
+    mode: Schema.Literal("form"),
+    serverName: Schema.String,
+    message: Schema.String,
+    fields: Schema.Array(McpElicitationField),
+  }),
+  Schema.Struct({
+    mode: Schema.Literal("url"),
+    serverName: Schema.String,
+    message: Schema.String,
+    url: Schema.String,
+  }),
+]);
+export type McpElicitation = typeof McpElicitation.Type;
+
 export const UserInputRequestedPayload = Schema.Struct({
   questions: Schema.Array(UserInputQuestion),
+  elicitation: Schema.optional(McpElicitation),
   /** False when the agent keeps working while the question is open (Codex
    *  0.150+ non-blocking `request_user_input`). Absent means blocking. */
   isBlocking: Schema.optional(Schema.Boolean),

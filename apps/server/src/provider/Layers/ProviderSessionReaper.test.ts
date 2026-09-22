@@ -110,6 +110,7 @@ function makeReadModel(
       updatedAt: now,
       archivedAt: null,
       pinnedAt: null,
+      pullRequestAutoFix: false,
       doneOverride: null,
       lastSeenAt: null,
       latestUserMessageAt: null,
@@ -291,6 +292,7 @@ describe("ProviderSessionReaper", () => {
         Layer.succeed(OrchestrationEngineService, {
           readEvents: () => Stream.empty,
           dispatch,
+          getCommandReceipt: () => Effect.succeed(Option.none()),
           streamDomainEvents: Stream.empty,
           subscribeDomainEvents: Effect.succeed(Stream.empty),
         }),

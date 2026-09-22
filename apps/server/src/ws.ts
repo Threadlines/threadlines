@@ -65,6 +65,8 @@ import { fileAttachmentMimeTypeForExtension } from "@threadlines/shared/fileAtta
 import { IMAGE_MIME_TYPE_BY_EXTENSION } from "./imageMime.ts";
 import { Keybindings } from "./keybindings.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
+import { OrchestrationCommandPreviouslyRejectedError } from "./orchestration/Errors.ts";
+import { BootstrapTurnStartRuns } from "./orchestration/Layers/BootstrapTurnStartRuns.ts";
 import { normalizeDispatchCommand } from "./orchestration/Normalizer.ts";
 import { coalesceLatestAggregateEvents } from "./orchestration/shellStreamCoalescing.ts";
 import { OrchestrationEngineService } from "./orchestration/Services/OrchestrationEngine.ts";
@@ -115,6 +117,7 @@ import { redactServerSettingsForClient, ServerSettingsService } from "./serverSe
 import { ProviderAuthSessions } from "./provider/auth/ProviderAuthSessions.ts";
 import { TerminalManager } from "./terminal/Services/Manager.ts";
 import { realtimeAudioHub } from "./realtime/RealtimeAudioHub.ts";
+import { DictationService } from "./dictation/DictationService.ts";
 import { WorkspaceEntries } from "./workspace/Services/WorkspaceEntries.ts";
 import { WorkspaceFileSystem } from "./workspace/Services/WorkspaceFileSystem.ts";
 import { WorkspacePathOutsideRootError } from "./workspace/Services/WorkspacePaths.ts";
@@ -245,6 +248,7 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
       const threadSearch = yield* ThreadSearch;
       const usage = yield* UsageService;
       const orchestrationEngine = yield* OrchestrationEngineService;
+      const bootstrapTurnStartRuns = yield* BootstrapTurnStartRuns;
       const checkpointDiffQuery = yield* CheckpointDiffQuery;
       const checkpointRevert = yield* CheckpointRevert;
       const keybindings = yield* Keybindings;
@@ -257,6 +261,7 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
       const vcsStatusBroadcaster = yield* VcsStatusBroadcaster;
       const terminalManager = yield* TerminalManager;
       const providerAuthSessions = yield* ProviderAuthSessions;
+      const dictation = yield* DictationService;
       const providerRegistry = yield* ProviderRegistry;
       const providerService = yield* ProviderService;
       const providerMaintenanceRunner = yield* ProviderMaintenanceRunner.ProviderMaintenanceRunner;
@@ -460,10 +465,35 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
         }
       };
 
-      const dispatchBootstrapTurnStart = (
+      // The client re-sends a command whose socket dropped or whose response
+      // was slow, so the whole bootstrap has to be idempotent under the
+      // command id: a retry joins the run in flight, and a retry that lands
+      // after the run finished is answered from the receipt the final turn
+      // start left, exactly as a plain dispatch would answer it.
+      const runBootstrapTurnStart = (
         command: Extract<OrchestrationCommand, { type: "thread.turn.start" }>,
       ): Effect.Effect<{ readonly sequence: number }, OrchestrationDispatchCommandError> =>
         Effect.gen(function* () {
+          const receipt = yield* orchestrationEngine
+            .getCommandReceipt(command.commandId)
+            .pipe(
+              Effect.mapError((cause) =>
+                toDispatchCommandError(cause, "Failed to read orchestration command receipt"),
+              ),
+            );
+          if (Option.isSome(receipt)) {
+            if (receipt.value.status === "accepted") {
+              return { sequence: receipt.value.resultSequence };
+            }
+            return yield* toDispatchCommandError(
+              new OrchestrationCommandPreviouslyRejectedError({
+                commandId: command.commandId,
+                detail: receipt.value.error ?? "Previously rejected.",
+              }),
+              "Command previously rejected.",
+            );
+          }
+
           const bootstrap = command.bootstrap;
           const { bootstrap: _bootstrap, ...finalTurnStartCommand } = command;
           let createdThread = false;
@@ -695,6 +725,11 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
             }),
           );
         });
+
+      const dispatchBootstrapTurnStart = (
+        command: Extract<OrchestrationCommand, { type: "thread.turn.start" }>,
+      ): Effect.Effect<{ readonly sequence: number }, OrchestrationDispatchCommandError> =>
+        bootstrapTurnStartRuns.run(command.commandId, runBootstrapTurnStart(command));
 
       const dispatchNormalizedCommand = (
         normalizedCommand: OrchestrationCommand,
@@ -2269,6 +2304,36 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
             realtimeAudioHub.subscribe(input.threadId),
             { "rpc.aggregate": "realtime" },
           ),
+        [WS_METHODS.dictationSubscribeStatus]: (_input) =>
+          observeRpcStream(WS_METHODS.dictationSubscribeStatus, dictation.streamChanges, {
+            "rpc.aggregate": "dictation",
+          }),
+        [WS_METHODS.dictationDownloadModel]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.dictationDownloadModel,
+            dictation.downloadModel(input.model),
+            {
+              "rpc.aggregate": "dictation",
+            },
+          ),
+        [WS_METHODS.dictationCancelDownload]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.dictationCancelDownload,
+            dictation.cancelDownload(input.model),
+            { "rpc.aggregate": "dictation" },
+          ),
+        [WS_METHODS.dictationRemoveModel]: (input) =>
+          observeRpcEffect(WS_METHODS.dictationRemoveModel, dictation.removeModel(input.model), {
+            "rpc.aggregate": "dictation",
+          }),
+        [WS_METHODS.dictationWarmUp]: (_input) =>
+          observeRpcEffect(WS_METHODS.dictationWarmUp, dictation.warmUp, {
+            "rpc.aggregate": "dictation",
+          }),
+        [WS_METHODS.dictationTranscribe]: (input) =>
+          observeRpcEffect(WS_METHODS.dictationTranscribe, dictation.transcribe(input), {
+            "rpc.aggregate": "dictation",
+          }),
         [WS_METHODS.subscribeServerConfig]: (_input) =>
           observeRpcStreamEffect(
             WS_METHODS.subscribeServerConfig,
@@ -2381,6 +2446,7 @@ export const websocketRpcRouteLayer = Layer.unwrap(
     const maintenance = yield* SourceControlToolMaintenance.SourceControlToolMaintenance;
     const providerMaintenance = yield* ProviderMaintenanceRunner.ProviderMaintenanceRunner;
     const githubSignIn = yield* GitHubAuth.GitHubAuth;
+    const bootstrapTurnStartRuns = yield* BootstrapTurnStartRuns;
     return HttpRouter.add(
       "GET",
       "/ws",
@@ -2407,6 +2473,7 @@ export const websocketRpcRouteLayer = Layer.unwrap(
                 ),
               ),
               Layer.provide(Layer.succeed(GitHubAuth.GitHubAuth, githubSignIn)),
+              Layer.provide(Layer.succeed(BootstrapTurnStartRuns, bootstrapTurnStartRuns)),
               Layer.provideMerge(RpcSerialization.layerJson),
               Layer.provide(
                 SourceControlDiscoveryLayer.layer.pipe(

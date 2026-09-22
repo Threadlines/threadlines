@@ -102,6 +102,7 @@ import {
   type ProviderSettingsRow,
 } from "./SettingsPanels.logic";
 import { useRelativeTimeTick } from "../../hooks/useRelativeTimeTick";
+import { DictationSettings } from "./DictationSettings";
 import {
   SettingResetButton,
   SettingsPageContainer,
@@ -934,6 +935,8 @@ export function GeneralSettingsPanel({ surface = "full" }: { surface?: "full" | 
         ) : null}
       </SettingsSection>
 
+      <DictationSettings />
+
       <SettingsSection title="Projects & Threads">
         {!isPhoneSurface ? (
           <>
@@ -996,8 +999,9 @@ export function GeneralSettingsPanel({ surface = "full" }: { surface?: "full" | 
         />
 
         <SettingsRow
+          id="wrap-up-merged-threads"
           title="Wrap up merged threads"
-          description="File a thread under Wrapped once its pull request merges or closes. A new message in the thread brings it back."
+          description="File a thread under Wrapped once its pull request merges or closes; a thread's pull request row can say otherwise. A new message in the thread brings it back."
           resetAction={
             settings.wrapUpThreadsOnPullRequestSettled !==
             DEFAULT_UNIFIED_SETTINGS.wrapUpThreadsOnPullRequestSettled ? (
@@ -1590,6 +1594,7 @@ export function ProviderSettingsPanel({
                     ? () =>
                         requestRateLimitResetCredit({
                           instanceId: row.instanceId,
+                          providerLabel: liveProvider?.displayName?.trim() || resetLabel,
                           resetCredits: providerResetCredits,
                         })
                     : undefined

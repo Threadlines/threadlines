@@ -68,6 +68,10 @@ import {
   type GitStatusDetails,
 } from "../vcs/GitVcsDriver.ts";
 import { SourceControlProviderRegistry } from "../sourceControl/SourceControlProviderRegistry.ts";
+import type {
+  ChangeRequestSample,
+  SourceControlProviderShape,
+} from "../sourceControl/SourceControlProvider.ts";
 import type { ChangeRequest } from "@threadlines/contracts";
 
 export interface GitActionProgressReporter {
@@ -140,6 +144,8 @@ interface OpenPrInfo {
   url: string;
   baseRefName: string;
   headRefName: string;
+  /** Armed to merge on its own; absent where the host did not say. */
+  autoMergeEnabled?: boolean;
 }
 
 interface PullRequestInfo extends OpenPrInfo, PullRequestHeadRemoteInfo {
@@ -339,6 +345,9 @@ function toPullRequestInfo(summary: ChangeRequest): PullRequestInfo {
     headRefName: summary.headRefName,
     state: summary.state ?? "open",
     updatedAt: summary.updatedAt,
+    ...(summary.autoMergeEnabled !== undefined
+      ? { autoMergeEnabled: summary.autoMergeEnabled }
+      : {}),
     ...(summary.isCrossRepository !== undefined
       ? { isCrossRepository: summary.isCrossRepository }
       : {}),
@@ -460,12 +469,30 @@ interface TextGenerationSelections {
 }
 
 const RECENT_COMMIT_SUBJECT_SAMPLE_SIZE = 20;
+const RECENT_CHANGE_REQUEST_SAMPLE_SIZE = 4;
+const RECENT_CHANGE_REQUEST_BODY_MAX_CHARS = 600;
 
 function withRecentCommitSubjects(
   instructions: string | undefined,
   subjects: ReadonlyArray<string>,
 ): string {
   const suffix = `\n\nRecent commit subjects from this repository:\n${subjects.join("\n")}`;
+  return `${instructions ?? ""}${suffix}`;
+}
+
+/** Append merged pull request samples so generated titles and bodies can mirror them. */
+function withRecentChangeRequests(
+  instructions: string | undefined,
+  samples: ReadonlyArray<ChangeRequestSample>,
+): string {
+  const rendered = samples.map((sample, index) => {
+    const body =
+      sample.body.length > RECENT_CHANGE_REQUEST_BODY_MAX_CHARS
+        ? `${sample.body.slice(0, RECENT_CHANGE_REQUEST_BODY_MAX_CHARS).trimEnd()}\n[truncated]`
+        : sample.body;
+    return `Example ${index + 1}\nTitle: ${sample.title}\nBody:\n${body.length > 0 ? body : "(empty)"}`;
+  });
+  const suffix = `\n\nRecent merged pull requests from this repository:\n\n${rendered.join("\n\n")}`;
   return `${instructions ?? ""}${suffix}`;
 }
 
@@ -516,6 +543,7 @@ function toStatusPr(pr: PullRequestInfo): {
   baseRef: string;
   headRef: string;
   state: "open" | "closed" | "merged";
+  autoMergeEnabled?: boolean;
 } {
   return {
     number: pr.number,
@@ -524,6 +552,7 @@ function toStatusPr(pr: PullRequestInfo): {
     baseRef: pr.baseRefName,
     headRef: pr.headRefName,
     state: pr.state,
+    ...(pr.autoMergeEnabled !== undefined ? { autoMergeEnabled: pr.autoMergeEnabled } : {}),
   };
 }
 
@@ -1047,6 +1076,36 @@ export const makeGitManager = Effect.fn("makeGitManager")(function* () {
       changeRequestInstructions: withRecentCommitSubjects(
         repositoryConventionsTextGenerationPolicy.changeRequestInstructions,
         subjects,
+      ),
+    } satisfies TextGenerationPolicy;
+  });
+
+  /**
+   * Repository conventions also cover how the repository writes its pull
+   * requests, so the PR policy carries a few merged samples from the host.
+   * Sampling is best effort: a failed or empty lookup leaves the policy as is.
+   */
+  const withChangeRequestSamples = Effect.fn("withChangeRequestSamples")(function* (
+    cwd: string,
+    provider: SourceControlProviderShape,
+    policy: TextGenerationPolicy,
+  ): Effect.fn.Return<TextGenerationPolicy, never> {
+    if (!policy.inferRepositoryConventions) {
+      return policy;
+    }
+
+    const samples = yield* provider
+      .listRecentMergedChangeRequests({ cwd, limit: RECENT_CHANGE_REQUEST_SAMPLE_SIZE })
+      .pipe(Effect.orElseSucceed(() => [] as ReadonlyArray<ChangeRequestSample>));
+    if (samples.length === 0) {
+      return policy;
+    }
+
+    return {
+      ...policy,
+      changeRequestInstructions: withRecentChangeRequests(
+        policy.changeRequestInstructions,
+        samples,
       ),
     } satisfies TextGenerationPolicy;
   });
@@ -1647,7 +1706,9 @@ export const makeGitManager = Effect.fn("makeGitManager")(function* () {
       label: `Generating ${terms.shortLabel} content...`,
     });
     const rangeContext = yield* gitCore.readRangeContext(cwd, baseBranch);
-    const policy = yield* resolveStylePolicy(cwd, textGenerationSelections.writingStyle);
+    const policy = yield* resolveStylePolicy(cwd, textGenerationSelections.writingStyle).pipe(
+      Effect.flatMap((stylePolicy) => withChangeRequestSamples(cwd, provider, stylePolicy)),
+    );
     // Only GitHub PR bodies are template-shaped; the other providers have no
     // equivalent convention, so asking the model to follow one invents structure.
     const prTemplate =

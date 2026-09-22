@@ -4,6 +4,7 @@ import {
   type ResolvedKeybindingsConfig,
 } from "@threadlines/contracts";
 import { memo, useEffect, useMemo, useState, type CSSProperties } from "react";
+import { codexModelRetirementNotice } from "@threadlines/shared/model";
 import type { VariantProps } from "class-variance-authority";
 import { ChevronDownIcon } from "lucide-react";
 import { Button, buttonVariants } from "../ui/button";
@@ -70,13 +71,17 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
 
   const activeInstanceId = props.activeInstanceId;
   const selectedInstanceOptions = props.modelOptionsByInstance.get(activeInstanceId) ?? [];
+  const retirement =
+    activeEntry?.driverKind === "codex"
+      ? codexModelRetirementNotice(props.model, activeEntry.snapshot.auth.type)
+      : undefined;
   // If the current slug belongs to a different instance (for example after
   // a provider switch or disable), prefer the active instance's first
   // option so the trigger icon and label stay in sync instead of showing
   // a stale foreign slug.
   const selectedModel =
     selectedInstanceOptions.find((option) => option.slug === props.model) ??
-    selectedInstanceOptions[0];
+    (retirement ? undefined : selectedInstanceOptions[0]);
   const triggerTitle = selectedModel
     ? activeEntry
       ? getProviderScopedDisplayModelName(selectedModel, activeEntry.driverKind, {
@@ -198,6 +203,31 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
         }
       >
         <ModelPickerContent
+          notice={
+            retirement ? (
+              <div
+                className="shrink-0 border-b border-border px-3 py-2 text-xs text-muted-foreground"
+                role="status"
+              >
+                <p>{retirement.message}</p>
+                {selectedInstanceOptions.some(
+                  (option) => option.slug === retirement.replacement,
+                ) ? (
+                  <Button
+                    type="button"
+                    size="xs"
+                    variant="ghost"
+                    className="mt-1"
+                    onClick={() =>
+                      handleInstanceModelChange(activeInstanceId, retirement.replacement)
+                    }
+                  >
+                    Use GPT-5.6 Sol
+                  </Button>
+                ) : null}
+              </div>
+            ) : null
+          }
           activeInstanceId={activeInstanceId}
           model={props.model}
           lockedProvider={props.lockedProvider}

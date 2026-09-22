@@ -14,6 +14,13 @@ import {
   FilesystemBrowseResult,
   FilesystemBrowseError,
 } from "./filesystem.ts";
+import {
+  DictationError,
+  DictationModelRequest,
+  DictationStatus,
+  DictationTranscribeInput,
+  DictationTranscribeResult,
+} from "./dictation.ts";
 import { UsageReadError, UsageSummary, UsageSummaryInput } from "./usage.ts";
 import {
   GitActionProgressEvent,
@@ -362,6 +369,14 @@ export const WS_METHODS = {
   // Realtime audio methods
   realtimeAppendAudio: "realtime.appendAudio",
   realtimeSubscribeAudio: "realtime.subscribeAudio",
+
+  // Composer dictation (local speech-to-text)
+  dictationSubscribeStatus: "dictation.subscribeStatus",
+  dictationDownloadModel: "dictation.downloadModel",
+  dictationCancelDownload: "dictation.cancelDownload",
+  dictationRemoveModel: "dictation.removeModel",
+  dictationWarmUp: "dictation.warmUp",
+  dictationTranscribe: "dictation.transcribe",
 
   // Server meta
   serverGetConfig: "server.getConfig",
@@ -1306,6 +1321,42 @@ export const WsRealtimeSubscribeAudioRpc = Rpc.make(WS_METHODS.realtimeSubscribe
   stream: true,
 });
 
+export const WsDictationSubscribeStatusRpc = Rpc.make(WS_METHODS.dictationSubscribeStatus, {
+  payload: Schema.Struct({}),
+  success: DictationStatus,
+  stream: true,
+});
+
+export const WsDictationDownloadModelRpc = Rpc.make(WS_METHODS.dictationDownloadModel, {
+  payload: DictationModelRequest,
+  success: Schema.Void,
+  error: DictationError,
+});
+
+export const WsDictationCancelDownloadRpc = Rpc.make(WS_METHODS.dictationCancelDownload, {
+  payload: DictationModelRequest,
+  success: Schema.Void,
+  error: DictationError,
+});
+
+export const WsDictationRemoveModelRpc = Rpc.make(WS_METHODS.dictationRemoveModel, {
+  payload: DictationModelRequest,
+  success: Schema.Void,
+  error: DictationError,
+});
+
+export const WsDictationWarmUpRpc = Rpc.make(WS_METHODS.dictationWarmUp, {
+  payload: Schema.Struct({}),
+  success: Schema.Void,
+  error: DictationError,
+});
+
+export const WsDictationTranscribeRpc = Rpc.make(WS_METHODS.dictationTranscribe, {
+  payload: DictationTranscribeInput,
+  success: DictationTranscribeResult,
+  error: DictationError,
+});
+
 export const WsSubscribeServerConfigRpc = Rpc.make(WS_METHODS.subscribeServerConfig, {
   payload: Schema.Struct({}),
   success: ServerConfigStreamEvent,
@@ -1445,6 +1496,12 @@ export const WsRpcGroup = RpcGroup.make(
   WsProviderAuthSubscribeRpc,
   WsRealtimeAppendAudioRpc,
   WsRealtimeSubscribeAudioRpc,
+  WsDictationSubscribeStatusRpc,
+  WsDictationDownloadModelRpc,
+  WsDictationCancelDownloadRpc,
+  WsDictationRemoveModelRpc,
+  WsDictationWarmUpRpc,
+  WsDictationTranscribeRpc,
   WsSubscribeServerConfigRpc,
   WsSubscribeServerLifecycleRpc,
   WsSubscribeAuthAccessRpc,

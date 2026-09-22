@@ -332,6 +332,56 @@ describe("GitHubPullRequestProvider.listChangeRequests", () => {
     labels: [],
   });
 
+  it.effect("keeps queued rows armed and clears rows removed from the queue", () =>
+    Effect.gen(function* () {
+      let queued = true;
+      let lookupFails = false;
+      mockExecute.mockImplementation((input) => {
+        if (input.args[0] === "api" && lookupFails) {
+          return Effect.fail(
+            new GitHubCli.GitHubCliError({ operation: "execute", detail: "offline" }),
+          );
+        }
+        return Effect.succeed(
+          processOutput(
+            JSON.stringify(
+              input.args[0] === "api"
+                ? {
+                    data: {
+                      nodes: [
+                        { id: "PR_1", isInMergeQueue: queued, autoMergeRequest: null },
+                        { id: "PR_2", isInMergeQueue: false, autoMergeRequest: {} },
+                      ],
+                    },
+                  }
+                : [1, 2].map((number) => ({
+                    ...listRow({ number, author: { login: "octocat" } }),
+                    id: `PR_${number}`,
+                    autoMergeRequest: number === 1 ? null : {},
+                  })),
+            ),
+          ),
+        );
+      });
+      const provider = yield* GitHubPullRequestProvider.make();
+      const read = () => provider.listChangeRequests({ ...repository, state: "open", limit: 30 });
+      assert.deepStrictEqual(
+        (yield* read()).map((row) => row.autoMergeEnabled),
+        [true, true],
+      );
+      queued = false;
+      assert.deepStrictEqual(
+        (yield* read()).map((row) => row.autoMergeEnabled),
+        [false, true],
+      );
+      lookupFails = true;
+      assert.deepStrictEqual(
+        (yield* read()).map((row) => row.autoMergeEnabled),
+        [false, true],
+      );
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("derives a plain login's picture and looks up the rest in one request", () =>
     Effect.gen(function* () {
       mockExecute.mockImplementation((input) =>

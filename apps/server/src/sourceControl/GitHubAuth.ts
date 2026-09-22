@@ -118,7 +118,10 @@ export const make = Effect.fn("makeGitHubAuth")(function* (options: GitHubAuthOp
       (chunk) =>
         Effect.gen(function* () {
           output = `${output}${chunk}`.slice(-AUTH_OUTPUT_LIMIT);
-          const userCode = /one-time code:\s*([A-Z0-9]{4}-[A-Z0-9]{4})\b/i.exec(output)?.[1];
+          // The CLI uses parentheses instead of a colon when clipboard copying is enabled.
+          const userCode = /one-time code(?:\s*:\s*|\s*\()([A-Z0-9]{4}-[A-Z0-9]{4})\b/i.exec(
+            output,
+          )?.[1];
           if (userCode) {
             yield* Ref.update(state, (current) =>
               current.status === "running"

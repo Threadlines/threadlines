@@ -21,6 +21,10 @@ import {
   updateSourceControlTool,
   useSourceControlSetup,
 } from "../../lib/sourceControlDiscoveryState";
+import {
+  sourceControlToolUpdateErrorCopy,
+  sourceControlToolUpdateResultCopy,
+} from "../../lib/sourceControlToolUpdateCopy";
 import { Button } from "../ui/button";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import { ScrollArea } from "../ui/scroll-area";
@@ -114,36 +118,23 @@ export function CompactVersionAdvisory({
       ...(updateAction.operation ? { operation: updateAction.operation } : {}),
     })
       .then((result) => {
-        toastManager.add({
-          type: result.status === "succeeded" ? "success" : "info",
-          title:
-            result.status === "succeeded"
-              ? result.operation === "install"
-                ? `${label} installed`
-                : `${label} updated`
-              : result.status === "started"
-                ? `${label} update started`
-                : `${label} is unchanged`,
-          description:
-            result.status === "succeeded"
-              ? result.operation === "install"
-                ? result.currentVersion
-                  ? `Installed ${result.currentVersion}`
-                  : "Installed successfully."
-                : `${result.previousVersion ?? "Previous version"} to ${result.currentVersion ?? "updated"}`
-              : result.status === "started"
-                ? "The official installer is running. Finish any Windows permission prompt, then check again."
-                : `${packageManagerLabel(copyAction?.label)} completed, but the detected version did not change.`,
-        });
+        toastManager.add(
+          sourceControlToolUpdateResultCopy({
+            label,
+            result,
+            managerLabel: packageManagerLabel(copyAction?.label),
+          }),
+        );
       })
       .catch((error: unknown) => {
-        const operation = updateAction.operation ?? "update";
         toastManager.add(
           stackedThreadToast({
             type: "error",
-            title: `Could not ${operation === "install" ? "install" : "update"} ${label}`,
-            description:
-              error instanceof Error ? error.message : "The verified update command failed.",
+            ...sourceControlToolUpdateErrorCopy({
+              label,
+              operation: updateAction.operation,
+              error,
+            }),
           }),
         );
       })

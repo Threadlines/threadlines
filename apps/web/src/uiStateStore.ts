@@ -32,6 +32,8 @@ export interface PersistedUiState {
   threadLastVisitedAtById?: Record<string, string>;
   inboxProjectScopeKey?: string | null;
   inboxEnvironmentScopeId?: string | null;
+  /** See `UiInboxState.threadWrapUpOnPullRequestSettledById`. */
+  threadWrapUpOnPullRequestSettledById?: Record<string, boolean>;
 }
 
 export interface UiProjectState {
@@ -78,6 +80,13 @@ export interface UiInboxState {
    * the thread's live state, so activity blockers always win.
    */
   doneThreadOverlays: Record<string, ThreadDoneOverlayWrite>;
+  /**
+   * Whether a thread files itself under Wrapped once its pull request merges
+   * or closes, for the threads the user said so about, by scoped thread key.
+   * Absent means follow the app setting. Kept on this device, like the
+   * setting it stands in for.
+   */
+  threadWrapUpOnPullRequestSettledById: Record<string, boolean>;
   /** Which project chip is selected; null is All. */
   inboxProjectScopeKey: string | null;
   /** Which machine the list is narrowed to; null is All machines. */
@@ -113,6 +122,7 @@ const initialState: UiState = {
   threadSeedVisitedAtById: {},
   threadChangedFilesExpandedById: {},
   doneThreadOverlays: {},
+  threadWrapUpOnPullRequestSettledById: {},
   inboxProjectScopeKey: null,
   inboxEnvironmentScopeId: null,
   defaultAdvertisedEndpointKey: null,
@@ -169,6 +179,9 @@ export function readPersistedState(): UiState {
         parsed.inboxEnvironmentScopeId.length > 0
           ? parsed.inboxEnvironmentScopeId
           : null,
+      threadWrapUpOnPullRequestSettledById: sanitizePersistedBooleanRecord(
+        parsed.threadWrapUpOnPullRequestSettledById,
+      ),
     };
   } catch {
     return initialState;
@@ -243,6 +256,21 @@ export function dropLegacyInboxState(threadKeys: readonly string[]): void {
   } catch {
     // Ignore quota/storage errors to avoid breaking chat UX.
   }
+}
+
+function sanitizePersistedBooleanRecord(
+  value: Record<string, boolean> | undefined,
+): Record<string, boolean> {
+  if (value === undefined || value === null || typeof value !== "object") {
+    return {};
+  }
+  const sanitized: Record<string, boolean> = {};
+  for (const [key, flag] of Object.entries(value)) {
+    if (typeof key === "string" && key.length > 0 && typeof flag === "boolean") {
+      sanitized[key] = flag;
+    }
+  }
+  return sanitized;
 }
 
 function sanitizePersistedVisitedAt(
@@ -368,6 +396,7 @@ export function persistState(state: UiState): void {
         threadChangedFilesExpandedById,
         inboxProjectScopeKey: state.inboxProjectScopeKey,
         inboxEnvironmentScopeId: state.inboxEnvironmentScopeId,
+        threadWrapUpOnPullRequestSettledById: state.threadWrapUpOnPullRequestSettledById,
       } satisfies PersistedUiState),
     );
     if (!legacyKeysCleanedUp) {
@@ -626,6 +655,11 @@ export function syncThreads(state: UiState, threads: readonly SyncThreadInput[])
       retainedThreadKeys.has(threadKey),
     ),
   );
+  const nextThreadWrapUpOnPullRequestSettledById = Object.fromEntries(
+    Object.entries(state.threadWrapUpOnPullRequestSettledById).filter(([threadKey]) =>
+      retainedThreadKeys.has(threadKey),
+    ),
+  );
   if (
     recordsEqual(state.threadSeedVisitedAtById, nextSeedVisitedAtById) &&
     recordsEqual(state.seenThreadOverlays, nextSeenThreadOverlays) &&
@@ -633,6 +667,10 @@ export function syncThreads(state: UiState, threads: readonly SyncThreadInput[])
     nestedBooleanRecordsEqual(
       state.threadChangedFilesExpandedById,
       nextThreadChangedFilesExpandedById,
+    ) &&
+    recordsEqual(
+      state.threadWrapUpOnPullRequestSettledById,
+      nextThreadWrapUpOnPullRequestSettledById,
     )
   ) {
     return state;
@@ -643,6 +681,7 @@ export function syncThreads(state: UiState, threads: readonly SyncThreadInput[])
     seenThreadOverlays: nextSeenThreadOverlays,
     doneThreadOverlays: nextDoneThreadOverlays,
     threadChangedFilesExpandedById: nextThreadChangedFilesExpandedById,
+    threadWrapUpOnPullRequestSettledById: nextThreadWrapUpOnPullRequestSettledById,
   };
 }
 
@@ -723,23 +762,56 @@ export function clearThreadUi(state: UiState, threadKey: string): UiState {
   const hasDoneOverlay = threadKey in state.doneThreadOverlays;
   const hasSeedState = threadKey in state.threadSeedVisitedAtById;
   const hasChangedFilesState = threadKey in state.threadChangedFilesExpandedById;
-  if (!hasSeenOverlay && !hasDoneOverlay && !hasSeedState && !hasChangedFilesState) {
+  const hasWrapUpState = threadKey in state.threadWrapUpOnPullRequestSettledById;
+  if (
+    !hasSeenOverlay &&
+    !hasDoneOverlay &&
+    !hasSeedState &&
+    !hasChangedFilesState &&
+    !hasWrapUpState
+  ) {
     return state;
   }
   const nextSeenThreadOverlays = { ...state.seenThreadOverlays };
   const nextDoneThreadOverlays = { ...state.doneThreadOverlays };
   const nextSeedVisitedAtById = { ...state.threadSeedVisitedAtById };
   const nextThreadChangedFilesExpandedById = { ...state.threadChangedFilesExpandedById };
+  const nextThreadWrapUpOnPullRequestSettledById = {
+    ...state.threadWrapUpOnPullRequestSettledById,
+  };
   delete nextSeenThreadOverlays[threadKey];
   delete nextDoneThreadOverlays[threadKey];
   delete nextSeedVisitedAtById[threadKey];
   delete nextThreadChangedFilesExpandedById[threadKey];
+  delete nextThreadWrapUpOnPullRequestSettledById[threadKey];
   return {
     ...state,
     seenThreadOverlays: nextSeenThreadOverlays,
     doneThreadOverlays: nextDoneThreadOverlays,
     threadSeedVisitedAtById: nextSeedVisitedAtById,
     threadChangedFilesExpandedById: nextThreadChangedFilesExpandedById,
+    threadWrapUpOnPullRequestSettledById: nextThreadWrapUpOnPullRequestSettledById,
+  };
+}
+
+/**
+ * The user's word for one thread on wrapping up once its pull request
+ * settles. From here on the thread stops following the app setting.
+ */
+export function setThreadWrapUpOnPullRequestSettled(
+  state: UiState,
+  threadKey: string,
+  wrapUp: boolean,
+): UiState {
+  if (state.threadWrapUpOnPullRequestSettledById[threadKey] === wrapUp) {
+    return state;
+  }
+  return {
+    ...state,
+    threadWrapUpOnPullRequestSettledById: {
+      ...state.threadWrapUpOnPullRequestSettledById,
+      [threadKey]: wrapUp,
+    },
   };
 }
 
@@ -881,6 +953,7 @@ interface UiStateStore extends UiState {
   setInboxProjectScope: (projectKey: string | null) => void;
   setInboxEnvironmentScope: (environmentId: string | null) => void;
   clearThreadUi: (threadKey: string) => void;
+  setThreadWrapUpOnPullRequestSettled: (threadKey: string, wrapUp: boolean) => void;
   setThreadChangedFilesExpanded: (
     threadId: string,
     turnId: string,
@@ -919,6 +992,8 @@ export const useUiStateStore = create<UiStateStore>((set) => ({
         : { ...state, inboxEnvironmentScopeId: environmentId },
     ),
   clearThreadUi: (threadKey) => set((state) => clearThreadUi(state, threadKey)),
+  setThreadWrapUpOnPullRequestSettled: (threadKey, wrapUp) =>
+    set((state) => setThreadWrapUpOnPullRequestSettled(state, threadKey, wrapUp)),
   setThreadChangedFilesExpanded: (threadId, turnId, expanded, defaultExpanded) =>
     set((state) =>
       setThreadChangedFilesExpanded(state, threadId, turnId, expanded, defaultExpanded),

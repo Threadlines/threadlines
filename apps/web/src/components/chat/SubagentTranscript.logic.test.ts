@@ -338,6 +338,26 @@ describe("splitSubagentTranscriptLead", () => {
     expect(splitSubagentTranscriptLead(view, false).lead).toBeNull();
     expect(splitSubagentTranscriptLead(view, false).steps).toHaveLength(2);
   });
+
+  it("takes the separately read first record as the lead of a mid-transcript page", () => {
+    const view = buildSubagentTranscriptView([step], 40);
+    const spawnPrompt = entry({
+      role: "user",
+      text: "Survey the repo.",
+      at: "2026-08-11T10:00:00.000Z",
+    });
+
+    const { lead, steps } = splitSubagentTranscriptLead(view, false, spawnPrompt);
+    expect(lead).toMatchObject({
+      role: "user",
+      text: "Survey the repo.",
+      at: "2026-08-11T10:00:00.000Z",
+    });
+    expect(steps).toHaveLength(1);
+
+    // A forked child's first record is its own work, which is no instruction.
+    expect(splitSubagentTranscriptLead(view, false, step).lead).toBeNull();
+  });
 });
 
 describe("resolveSubagentTranscriptInstruction", () => {
@@ -351,16 +371,16 @@ describe("resolveSubagentTranscriptInstruction", () => {
     ).lead;
 
   it("prefers the transcript's own leading message", () => {
-    expect(resolveSubagentTranscriptInstruction(lead("user"), "Spawn objective", true)).toEqual({
+    expect(resolveSubagentTranscriptInstruction(lead("user"), "Spawn objective")).toEqual({
       text: "Survey the repo.",
       at: "2026-08-11T10:00:00.000Z",
       label: "Instruction",
     });
-    expect(resolveSubagentTranscriptInstruction(lead("system"), null, true)?.label).toBe("System");
+    expect(resolveSubagentTranscriptInstruction(lead("system"), null)?.label).toBe("System");
   });
 
   it("stands in the objective when the transcript has no leading message", () => {
-    expect(resolveSubagentTranscriptInstruction(null, "  Survey the repo.  ", true)).toEqual({
+    expect(resolveSubagentTranscriptInstruction(null, "  Survey the repo.  ")).toEqual({
       text: "Survey the repo.",
       at: null,
       label: "Instruction",
@@ -368,11 +388,7 @@ describe("resolveSubagentTranscriptInstruction", () => {
   });
 
   it("shows nothing without a leading message or an objective", () => {
-    expect(resolveSubagentTranscriptInstruction(null, null, true)).toBeNull();
-    expect(resolveSubagentTranscriptInstruction(null, "   ", true)).toBeNull();
-  });
-
-  it("claims no beginning on a page that starts mid-transcript", () => {
-    expect(resolveSubagentTranscriptInstruction(null, "Survey the repo.", false)).toBeNull();
+    expect(resolveSubagentTranscriptInstruction(null, null)).toBeNull();
+    expect(resolveSubagentTranscriptInstruction(null, "   ")).toBeNull();
   });
 });

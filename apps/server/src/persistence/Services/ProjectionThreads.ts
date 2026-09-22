@@ -56,6 +56,12 @@ export const ProjectionThread = Schema.Struct({
   archivedAt: Schema.NullOr(IsoDateTime),
   pinnedAt: Schema.NullOr(IsoDateTime),
   /**
+   * Whether the server watches this thread's pull request. Optional so rows
+   * written before migration 052 decode; absent reads as 0 (off), which is
+   * what the migration's column default gives every existing row.
+   */
+  pullRequestAutoFix: Schema.optional(NonNegativeInt),
+  /**
    * The user's explicit inbox filing and its stamp. Optional so rows written
    * before migration 042 decode; absent reads as "never filed". Kept as two
    * columns rather than a struct so the pair matches the projection table.

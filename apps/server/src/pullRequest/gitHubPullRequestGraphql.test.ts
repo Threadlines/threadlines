@@ -316,6 +316,28 @@ describe("decodeGitHubAuthoredPullRequestsJson", () => {
     ...overrides,
   });
 
+  it("keeps authored pull requests armed while queued without an auto-merge request", () => {
+    const rows = decoded(
+      decodeGitHubAuthoredPullRequestsJson(
+        JSON.stringify({
+          data: {
+            search: {
+              nodes: [
+                node({ autoMergeRequest: null, isInMergeQueue: true }),
+                node({ autoMergeRequest: null, isInMergeQueue: false }),
+              ],
+            },
+          },
+        }),
+      ),
+      "authored search",
+    );
+    assert.deepStrictEqual(
+      rows.map((row) => row.autoMergeEnabled),
+      [true, false],
+    );
+  });
+
   it("reads a search node as a list row that names its own repository", () => {
     const rows = decoded(
       decodeGitHubAuthoredPullRequestsJson(

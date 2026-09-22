@@ -14,8 +14,8 @@ function asBoolean(value: unknown): boolean | null {
 
 type ContextWindowCategories = NonNullable<ThreadTokenUsageSnapshot["contextCategories"]>;
 
-/** Keeps the provider's order (legend colors are assigned by index) and drops
- *  entries the provider sent malformed rather than failing the whole snapshot. */
+/** Keeps the provider's order and drops entries the provider sent malformed
+ *  rather than failing the whole snapshot. */
 function asContextCategories(value: unknown): ContextWindowCategories | null {
   if (!Array.isArray(value)) {
     return null;

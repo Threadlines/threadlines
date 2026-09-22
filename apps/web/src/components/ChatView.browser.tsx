@@ -30,6 +30,7 @@ import {
 import { scopedThreadKey, scopeThreadRef } from "@threadlines/client-runtime";
 import { createModelCapabilities, createModelSelection } from "@threadlines/shared/model";
 import { RouterProvider, createMemoryHistory } from "@tanstack/react-router";
+import { StrictMode } from "react";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { HttpResponse, http, ws } from "msw";
@@ -268,6 +269,15 @@ function createMockEnvironmentApi(input: {
     git: {} as EnvironmentApi["git"],
     pullRequests: {} as EnvironmentApi["pullRequests"],
     realtime: {} as EnvironmentApi["realtime"],
+    dictation: {
+      // The composer subscribes on mount, so this one has to be callable.
+      subscribeStatus: () => () => undefined,
+      downloadModel: async () => undefined,
+      cancelDownload: async () => undefined,
+      removeModel: async () => undefined,
+      warmUp: async () => undefined,
+      transcribe: async () => ({ text: "" }),
+    },
     orchestration: {
       dispatchCommand: input.dispatchCommand,
       getTurnDiff: (() => {
@@ -356,6 +366,7 @@ function createSnapshotForTargetUser(options: {
   targetText: string;
   targetAttachmentCount?: number;
   threadPinnedAt?: string | null;
+  threadPullRequestAutoFix?: boolean;
   sessionActiveTurnId?: TurnId | null;
   sessionStatus?: OrchestrationSessionStatus;
 }): OrchestrationReadModel {
@@ -432,6 +443,7 @@ function createSnapshotForTargetUser(options: {
         updatedAt: NOW_ISO,
         archivedAt: null,
         pinnedAt: options.threadPinnedAt ?? null,
+        pullRequestAutoFix: options.threadPullRequestAutoFix ?? false,
         doneOverride: null,
         lastSeenAt: null,
         deletedAt: null,
@@ -477,6 +489,149 @@ function buildFixture(snapshot: OrchestrationReadModel): TestFixture {
   };
 }
 
+const PULL_REQUEST_NUMBER = 234;
+const PULL_REQUEST_REPOSITORY = "Threadlines/threadlines";
+// The fixture thread is checked out on `main`, which is what links it to the
+// listing row the way the sidebar badge and the Pull request tab do.
+const PULL_REQUEST_HEAD_BRANCH = "main";
+const PULL_REQUEST_URL = `https://github.com/${PULL_REQUEST_REPOSITORY}/pull/${PULL_REQUEST_NUMBER}`;
+
+/**
+ * A workspace whose project sits on GitHub, whose server can list pull
+ * requests, and whose version skew raises a notice, so the dock has both kinds
+ * of row to hold at once.
+ */
+function withPullRequestFixture(nextFixture: TestFixture): void {
+  const capabilities = { repositoryIdentity: true, pullRequests: true } as const;
+  nextFixture.serverConfig = {
+    ...nextFixture.serverConfig,
+    environment: {
+      ...nextFixture.serverConfig.environment,
+      serverVersion: "9.9.9",
+      capabilities,
+    },
+  };
+  nextFixture.welcome = {
+    ...nextFixture.welcome,
+    environment: { ...nextFixture.welcome.environment, capabilities },
+  };
+  nextFixture.snapshot = {
+    ...nextFixture.snapshot,
+    projects: nextFixture.snapshot.projects.map((project) => ({
+      ...project,
+      repositoryIdentity: {
+        canonicalKey: `github.com/${PULL_REQUEST_REPOSITORY}`.toLowerCase(),
+        locator: {
+          source: "git-remote" as const,
+          remoteName: "origin",
+          remoteUrl: `https://github.com/${PULL_REQUEST_REPOSITORY}.git`,
+        },
+        displayName: PULL_REQUEST_REPOSITORY,
+        provider: "github",
+        owner: "Threadlines",
+        name: "threadlines",
+      },
+    })),
+  };
+}
+
+/** The listing row and the detail behind the composer's docked pull request. */
+function resolvePullRequestRpc(body: NormalizedWsRpcRequestBody): unknown | undefined {
+  if (body._tag === WS_METHODS.pullRequestsList) {
+    const state = (body as { state?: string }).state;
+    return {
+      viewer: "badcuban",
+      errors: [],
+      entries:
+        state === "open"
+          ? [
+              {
+                provider: "github",
+                projectId: PROJECT_ID,
+                projectTitle: "threadlines",
+                repository: PULL_REQUEST_REPOSITORY,
+                number: PULL_REQUEST_NUMBER,
+                title: "fix(server): migration 050 no longer stalls startup",
+                url: PULL_REQUEST_URL,
+                author: { login: "badcuban", isBot: false, avatarUrl: null },
+                headBranch: PULL_REQUEST_HEAD_BRANCH,
+                baseBranch: "main",
+                state: "open",
+                isDraft: false,
+                additions: 26,
+                deletions: 25,
+                createdAt: NOW_ISO,
+                updatedAt: NOW_ISO,
+                viewerIsAuthor: true,
+                viewerReviewRequested: false,
+                labels: [],
+                origin: "workspace",
+              },
+            ]
+          : [],
+    };
+  }
+  if (body._tag === WS_METHODS.pullRequestsDetail) {
+    return {
+      provider: "github",
+      projectId: PROJECT_ID,
+      projectTitle: "threadlines",
+      workspaceRoot: "/repo/project",
+      repository: PULL_REQUEST_REPOSITORY,
+      number: PULL_REQUEST_NUMBER,
+      title: "fix(server): migration 050 no longer stalls startup",
+      body: "",
+      url: PULL_REQUEST_URL,
+      author: { login: "badcuban", isBot: false, avatarUrl: null },
+      state: "open",
+      isDraft: false,
+      mergeability: "mergeable",
+      additions: 26,
+      deletions: 25,
+      changedFiles: 2,
+      headBranch: PULL_REQUEST_HEAD_BRANCH,
+      baseBranch: "main",
+      createdAt: NOW_ISO,
+      updatedAt: NOW_ISO,
+      mergedAt: null,
+      closedAt: null,
+      viewerIsAuthor: true,
+      reviewers: [],
+      labels: [],
+      checks: [
+        { name: "build", status: "pending", description: null, url: null },
+        { name: "test", status: "pending", description: null, url: null },
+        { name: "lint", status: "success", description: null, url: null },
+      ],
+      checksState: "pending",
+      viewer: { canWrite: true, canReview: false, canManage: true },
+      mergeMethods: ["squash"],
+      capabilities: {
+        diff: true,
+        comment: true,
+        actions: ["merge", "close", "enable-auto-merge", "disable-auto-merge"],
+        mergeMethods: ["squash"],
+        updateMethods: ["merge"],
+        reactions: true,
+        review: {
+          inlineComment: true,
+          reply: true,
+          resolve: true,
+          verdicts: ["approve", "comment"],
+        },
+        reviewers: { request: true, listCandidates: true },
+        edit: { pullRequest: true, comment: true },
+      },
+      baseComparison: "up-to-date",
+      behindBy: 0,
+      autoMergeEnabled: false,
+      isStacked: false,
+      defaultBranch: "main",
+    };
+  }
+  return undefined;
+}
+
 function addThreadToSnapshot(
   snapshot: OrchestrationReadModel,
   threadId: ThreadId,
@@ -505,6 +660,7 @@ function addThreadToSnapshot(
         updatedAt: NOW_ISO,
         archivedAt: null,
         pinnedAt: null,
+        pullRequestAutoFix: false,
         doneOverride: null,
         lastSeenAt: null,
         deletedAt: null,
@@ -1070,6 +1226,7 @@ function createSnapshotWithSecondaryProject(options?: {
           updatedAt: isoAt(31),
           deletedAt: null,
           pinnedAt: null,
+          pullRequestAutoFix: false,
           doneOverride: null,
           lastSeenAt: null,
           messages: [],
@@ -1110,6 +1267,7 @@ function createSnapshotWithSecondaryProject(options?: {
           updatedAt: isoAt(25),
           deletedAt: null,
           pinnedAt: null,
+          pullRequestAutoFix: false,
           doneOverride: null,
           lastSeenAt: null,
           messages: [],
@@ -1319,6 +1477,70 @@ function createSnapshotWithPlanFollowUpPrompt(options?: {
               updatedAt: isoAt(1_010),
             },
             updatedAt: isoAt(1_010),
+          })
+        : thread,
+    ),
+  };
+}
+
+const CLAUDE_TEST_PROVIDER: ServerConfig["providers"][number] = {
+  driver: ProviderDriverKind.make("claudeAgent"),
+  instanceId: ProviderInstanceId.make("claudeAgent"),
+  enabled: true,
+  installed: true,
+  version: "2.1.117",
+  status: "ready",
+  auth: { status: "authenticated" },
+  checkedAt: NOW_ISO,
+  models: [],
+  slashCommands: [],
+  skills: [],
+};
+
+/** A Claude thread whose last turn completed and left a prompt suggestion behind. */
+function createSnapshotWithPromptSuggestion(suggestion: string): OrchestrationReadModel {
+  const snapshot = createSnapshotForTargetUser({
+    targetMessageId: "msg-user-prompt-suggestion-target" as MessageId,
+    targetText: "prompt suggestion thread",
+  });
+  const modelSelection = {
+    instanceId: ProviderInstanceId.make("claudeAgent"),
+    model: "claude-opus-4-7",
+  };
+  const turnId = "turn-prompt-suggestion" as TurnId;
+
+  return {
+    ...snapshot,
+    threads: snapshot.threads.map((thread) =>
+      thread.id === THREAD_ID
+        ? Object.assign({}, thread, {
+            modelSelection,
+            latestTurn: {
+              turnId,
+              state: "completed",
+              requestedAt: isoAt(1_000),
+              startedAt: isoAt(1_001),
+              completedAt: isoAt(1_010),
+              assistantMessageId: null,
+            },
+            activities: [
+              {
+                id: EventId.make("activity-prompt-suggestion"),
+                tone: "info" as const,
+                kind: "prompt-suggestion.updated",
+                summary: "Prompt suggestion updated",
+                payload: { suggestion },
+                turnId,
+                createdAt: isoAt(1_011),
+              },
+            ],
+            session: {
+              ...thread.session,
+              providerName: "claudeAgent",
+              status: "ready",
+              updatedAt: isoAt(1_010),
+            },
+            updatedAt: isoAt(1_011),
           })
         : thread,
     ),
@@ -2155,6 +2377,8 @@ async function mountChatView(options: {
   resolveRpc?: (body: NormalizedWsRpcRequestBody) => unknown | undefined;
   initialPath?: string;
   waitForBootstrap?: boolean;
+  /** Mount under StrictMode, as main.tsx does, so mount-time effect cleanups run. */
+  strictMode?: boolean;
 }): Promise<MountedChatView> {
   fixture = buildFixture(options.snapshot);
   options.configureFixture?.(fixture);
@@ -2180,14 +2404,14 @@ async function mountChatView(options: {
     }),
   );
 
-  const screen = await render(
+  const app = (
     <AppAtomRegistryProvider>
       <RouterProvider router={router} />
-    </AppAtomRegistryProvider>,
-    {
-      container: host,
-    },
+    </AppAtomRegistryProvider>
   );
+  const screen = await render(options.strictMode ? <StrictMode>{app}</StrictMode> : app, {
+    container: host,
+  });
 
   await waitForWsClient();
   if (options.waitForBootstrap !== false) {
@@ -2770,6 +2994,109 @@ describe("ChatView timeline estimator parity (full app)", () => {
         },
         { timeout: 8_000, interval: 16 },
       );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("docks the thread's pull request above the notices in one frame", async () => {
+    const built = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-pull-request-dock" as MessageId,
+      targetText: "pull request dock",
+    });
+    // The transcript opens at its end, so the address that becomes a chip goes
+    // in the last message, where it is on screen.
+    const snapshot: OrchestrationReadModel = {
+      ...built,
+      threads: built.threads.map((thread, threadIndex) =>
+        threadIndex === 0
+          ? {
+              ...thread,
+              messages: thread.messages.map((message, index, all) =>
+                index === all.length - 1
+                  ? { ...message, text: `Opened ${PULL_REQUEST_URL} for review.` }
+                  : message,
+              ),
+            }
+          : thread,
+      ),
+    };
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot,
+      configureFixture: withPullRequestFixture,
+      resolveRpc: resolvePullRequestRpc,
+    });
+
+    try {
+      // The branch, the project and the size only exist on the detail, so
+      // waiting for the branch is waiting for the shared read to reach the row.
+      const row = await waitForElement(() => {
+        const candidate = document.querySelector<HTMLElement>(
+          '[data-composer-pull-request-row="true"]',
+        );
+        return candidate?.textContent?.includes(PULL_REQUEST_HEAD_BRANCH) ? candidate : null;
+      }, "Unable to find the composer pull request row with its branch.");
+      expect(row.textContent).toContain(`#${PULL_REQUEST_NUMBER}`);
+      expect(row.textContent).toContain("+26");
+      // Two checks are still running, which is what the chip's word covers and
+      // its dot colours.
+      expect(row.textContent).toContain("CI");
+
+      // The state glyph is the open one the sidebar badge and the pull
+      // requests page use, in the same tone.
+      const stateIcon = row.querySelector("svg");
+      expect(stateIcon?.getAttribute("class")).toContain("text-emerald-600");
+
+      // One frame, not two: the notice the version skew raises sits inside the
+      // same dock, under the pull request row, and the dock's bottom edge is
+      // the composer's top edge.
+      const dock = document.querySelector<HTMLElement>('[data-composer-notice-dock="true"]');
+      expect(dock).toBeTruthy();
+      expect(dock!.contains(row)).toBe(true);
+      const notice = dock!.querySelector("[data-composer-notice-severity]");
+      expect(notice).toBeTruthy();
+      expect(row.getBoundingClientRect().bottom).toBeLessThanOrEqual(
+        notice!.getBoundingClientRect().top + 1,
+      );
+
+      const composerSurface = document.querySelector<HTMLElement>(
+        "[data-chat-composer-mobile-collapsed]",
+      );
+      expect(composerSurface).toBeTruthy();
+      expect(
+        Math.abs(
+          dock!.getBoundingClientRect().bottom - composerSurface!.getBoundingClientRect().top,
+        ),
+      ).toBeLessThan(2);
+
+      // The address in the message is a chip, and the chip shares the row's
+      // hover card: the trigger has to reach the anchor through the link
+      // component, which is the part that silently broke once.
+      const chip = await waitForElement(
+        () => document.querySelector<HTMLAnchorElement>("a.chat-markdown-pull-request-chip"),
+        "Unable to find the pull request chip in the transcript.",
+      );
+      expect(chip.textContent).toBe(`#${PULL_REQUEST_NUMBER}`);
+      await page.elementLocator(chip).hover();
+      const card = await waitForElement(
+        () => document.querySelector<HTMLElement>('[data-testid="pull-request-hover-card"]'),
+        "Hovering the transcript chip did not open the pull request card.",
+      );
+      expect(card.textContent).toContain(`${PULL_REQUEST_REPOSITORY} #${PULL_REQUEST_NUMBER}`);
+      // Move off so the card does not sit over the row's close control.
+      await page.elementLocator(composerSurface!).hover();
+
+      // Closing the row takes it off the composer; the notice stays docked.
+      row.querySelector<HTMLButtonElement>('button[aria-label^="Hide pull request"]')!.click();
+      await waitForElement(
+        () =>
+          document.querySelector('[data-composer-pull-request-row="true"]') === null
+            ? document.querySelector<HTMLElement>('[data-composer-notice-dock="true"]')
+            : null,
+        "The pull request row did not leave the composer.",
+      );
+      expect(document.querySelector("[data-composer-notice-severity]")).toBeTruthy();
     } finally {
       await mounted.cleanup();
     }
@@ -7511,6 +7838,31 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
+  it("stays open under StrictMode", async () => {
+    // The app mounts under StrictMode, which runs every new effect's cleanup
+    // once right after mount. An unmount reset on the open dialog turned that
+    // into a palette that closed the instant it opened, in dev only.
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-command-palette-strict-mode" as MessageId,
+        targetText: "command palette strict mode",
+      }),
+      strictMode: true,
+    });
+
+    try {
+      await openCommandPaletteFromTrigger();
+      await waitForLayout();
+      await waitForLayout();
+
+      expect(useCommandPaletteStore.getState().open).toBe(true);
+      await expect.element(page.getByTestId("command-palette")).toBeInTheDocument();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("filters command palette results as the user types", async () => {
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
@@ -9949,6 +10301,99 @@ describe("ChatView timeline estimator parity (full app)", () => {
         },
         { timeout: 8_000, interval: 16 },
       );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  // Mount a Claude thread that ended with a prompt suggestion, wait for the
+  // chip to show it, then hover to open its tooltip.
+  const mountPromptSuggestionChip = async (suggestion: string) => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotWithPromptSuggestion(suggestion),
+      configureFixture: (nextFixture) => {
+        nextFixture.serverConfig = {
+          ...nextFixture.serverConfig,
+          providers: [...nextFixture.serverConfig.providers, CLAUDE_TEST_PROVIDER],
+        };
+      },
+    });
+    const chip = await waitForElement(
+      () => document.querySelector<HTMLElement>('[data-prompt-suggestion="true"]'),
+      "Unable to find the prompt suggestion chip.",
+    );
+    const text = await waitForElement(
+      () => {
+        const found = chip.querySelector<HTMLElement>('[data-prompt-suggestion-text="true"]');
+        return found?.textContent === suggestion ? found : null;
+      },
+      () =>
+        `Prompt suggestion chip never showed "${suggestion}"; it shows "${
+          chip.querySelector('[data-prompt-suggestion-text="true"]')?.textContent ?? ""
+        }".`,
+    );
+    await page.getByRole("button", { name: /^Use Claude suggested prompt:/ }).hover();
+    const tooltip = await waitForElement(
+      () => document.querySelector<HTMLElement>('[data-prompt-suggestion-tooltip="true"]'),
+      "Hovering the prompt suggestion chip never opened its tooltip.",
+    );
+    return { mounted, chip, text, tooltip };
+  };
+
+  it("shows the full prompt suggestion in the tooltip when the chip clips it", async () => {
+    const suggestion =
+      "Run the full browser suite against the composer changes, then update the changelog entry for the suggestion chip";
+    const { mounted, chip, text, tooltip } = await mountPromptSuggestionChip(suggestion);
+    try {
+      expect(text.scrollWidth).toBeGreaterThan(text.clientWidth + 1);
+      expect(tooltip.textContent).toContain(suggestion);
+      expect(tooltip.textContent).toContain("Claude suggested this prompt");
+      // The full text wraps inside a capped-width tooltip instead of running
+      // off as one long line.
+      const tooltipRect = tooltip.getBoundingClientRect();
+      expect(tooltipRect.width).toBeLessThanOrEqual(400);
+      expect(tooltipRect.height).toBeGreaterThan(chip.getBoundingClientRect().height);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("keeps the short tooltip label when the prompt suggestion fits the chip", async () => {
+    const suggestion = "Run the tests";
+    const { mounted, text, tooltip } = await mountPromptSuggestionChip(suggestion);
+    try {
+      expect(text.scrollWidth).toBeLessThanOrEqual(text.clientWidth + 1);
+      expect(tooltip.textContent).toBe("Claude suggested this prompt");
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("accepts the prompt suggestion with Tab from the focused composer", async () => {
+    const suggestion = "Commit this and open the PR";
+    const { mounted } = await mountPromptSuggestionChip(suggestion);
+    try {
+      const composerEditor = await waitForComposerEditor();
+      composerEditor.focus();
+      composerEditor.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true }),
+      );
+
+      await waitForElement(
+        () => (composerEditor.textContent?.trim() === suggestion ? composerEditor : null),
+        () =>
+          `Tab never moved the suggestion into the composer; it holds "${
+            composerEditor.textContent ?? ""
+          }".`,
+      );
+      // Accepting the suggestion consumes it, so the chip goes away.
+      await waitForElement(
+        () => (document.querySelector('[data-prompt-suggestion="true"]') ? null : document.body),
+        "The prompt suggestion chip stayed visible after Tab accepted it.",
+      );
+      // Focus stays in the composer instead of tabbing out to the toolbar.
+      expect(document.activeElement).toBe(composerEditor);
     } finally {
       await mounted.cleanup();
     }

@@ -1294,7 +1294,9 @@ describe("GeneralSettingsPanel observability", () => {
       </TestAppProviders>,
     );
 
-    await expect.element(page.getByText("About")).toBeInTheDocument();
+    await expect
+      .element(page.getByRole("heading", { name: "About", exact: true }))
+      .toBeInTheDocument();
     await expect
       .element(page.getByRole("heading", { name: "Diagnostics", exact: true }))
       .toBeInTheDocument();

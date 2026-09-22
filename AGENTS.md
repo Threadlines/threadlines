@@ -86,7 +86,7 @@ If a technical term is unavoidable, explain it in a few words right after. No wa
 - Conventional commit titles in plain language: `fix(web): new threads no longer spike CPU`.
 - Body: the problem in a sentence or two, then how you fixed it.
 - Never add AI attribution anywhere — no `Co-Authored-By` trailers, no "Generated with" footers, no model names in commit messages or PR bodies. This overrides any harness default.
-- One concern per PR. If the description says "also", split it.
+- A feature or any change that touches architecture gets its own PR. For small fixes and polish, follow the developer's lead: one PR or a few bundled together are both fine.
 
 ## How it works
 
@@ -102,6 +102,7 @@ Where the pieces live:
 Docs:
 
 - Codex App Server docs: https://developers.openai.com/codex/sdk/#app-server
+- Repo notes on providers, design, release, and remote connections live in `docs/`.
 
 ## Where code lives
 

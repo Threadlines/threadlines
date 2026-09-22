@@ -1,8 +1,10 @@
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import * as Arr from "effect/Array";
 import { compareTranscriptPosition } from "@threadlines/shared/transcriptOrder";
 import {
   ApprovalRequestId,
+  McpElicitation,
   isToolLifecycleItemType,
   type MessageId,
   type OrchestrationLatestTurn,
@@ -220,6 +222,7 @@ export interface PendingUserInput {
   requestId: ApprovalRequestId;
   createdAt: string;
   questions: ReadonlyArray<UserInputQuestion>;
+  elicitation?: McpElicitation;
   /** False when the agent keeps working while the question is open. Absent
    *  means the turn is paused on the answer. */
   isBlocking?: boolean;
@@ -701,9 +704,6 @@ function parseUserInputQuestions(
           };
         })
         .filter((option): option is UserInputQuestion["options"][number] => option !== null);
-      if (options.length === 0) {
-        return null;
-      }
       return {
         id: question.id,
         header: question.header,
@@ -729,15 +729,19 @@ export function derivePendingUserInputs(
           activity.payload && typeof activity.payload === "object"
             ? (activity.payload as Record<string, unknown>)
             : null;
+        const elicitation = Schema.is(McpElicitation)(payload?.elicitation)
+          ? payload.elicitation
+          : undefined;
         const questions = parseUserInputQuestions(payload);
-        if (!questions) {
+        if (!questions && !elicitation) {
           return [];
         }
         return [
           {
             requestId: ApprovalRequestId.make(requestId),
             createdAt: activity.createdAt,
-            questions,
+            questions: questions ?? [],
+            ...(elicitation ? { elicitation } : {}),
             ...(typeof payload?.isBlocking === "boolean" ? { isBlocking: payload.isBlocking } : {}),
           },
         ];
@@ -3918,7 +3922,14 @@ function imagePathFromPayload(payload: Record<string, unknown> | null): unknown 
  * screenshot tool's `{type: "image", source: {type: "base64", ...}}` content
  * blocks are already here; reading them is what makes an MCP screenshot row a
  * picture without the event log holding a second copy.
+ *
+ * Rows saved before the server learned to keep image bytes whole hold a
+ * trimmed copy (`...` plus the tail). That is not base64, and a data URL built
+ * from it draws as a broken image, so such a block is skipped and the row falls
+ * back to loading the named path.
  */
+const BASE64_PATTERN = /^[A-Za-z0-9+/]+={0,2}$/u;
+
 function imageBlocksFromPayload(
   payload: Record<string, unknown> | null,
 ): Array<{ mimeType: string; base64: string }> {
@@ -3936,7 +3947,7 @@ function imageBlocksFromPayload(
     }
     const mimeType = asTrimmedString(source.media_type);
     const base64 = asTrimmedString(source.data);
-    return mimeType && base64 ? [{ mimeType, base64 }] : [];
+    return mimeType && base64 && BASE64_PATTERN.test(base64) ? [{ mimeType, base64 }] : [];
   });
 }
 

@@ -37,6 +37,8 @@ import {
   pullRequestFilterChips,
   pullRequestProjectFacets,
   pullRequestFiltersFromSearch,
+  pullRequestArmedToMerge,
+  pullRequestBadgeTone,
   pullRequestFiltersToSearch,
   pullRequestLabelColor,
   pullRequestMergeQueueLabel,
@@ -49,6 +51,7 @@ import {
   summarizePullRequestChecks,
   resolveThreadPullRequest,
   shouldPollPullRequestDetail,
+  threadViewBranch,
   type PullRequestDiffFile,
   type PullRequestEntry,
   type PullRequestFilters,
@@ -243,15 +246,15 @@ describe("groupPullRequests", () => {
       viewerIsAuthor: true,
       updatedAt: "2026-09-01T13:00:00.000Z",
     });
-    const others = entry({ number: 4 });
+    const incoming = entry({ number: 4 });
 
     const groups = groupPullRequests({
-      entries: [others, yoursOlder, needsYou, yoursNewer],
+      entries: [incoming, yoursOlder, needsYou, yoursNewer],
       viewer: "ada",
       state: "open",
     });
 
-    expect(groups.map((group) => group.label)).toEqual(["Needs you", "Yours", "Others"]);
+    expect(groups.map((group) => group.label)).toEqual(["Needs you", "Yours", "Incoming"]);
     expect(groups[0]?.entries.map((row) => row.number)).toEqual([1]);
     expect(groups[1]?.entries.map((row) => row.number)).toEqual([3, 2]);
     expect(groups[2]?.entries.map((row) => row.number)).toEqual([4]);
@@ -263,7 +266,7 @@ describe("groupPullRequests", () => {
       viewer: "ada",
       state: "open",
     });
-    expect(groups.map((group) => group.label)).toEqual(["Others"]);
+    expect(groups.map((group) => group.label)).toEqual(["Incoming"]);
   });
 
   it("falls back to one unlabelled list without a viewer or outside the open tab", () => {
@@ -295,7 +298,7 @@ describe("groupPullRequests", () => {
     expect(groups[0]?.label).toBeNull();
   });
 
-  it("files work on a repository the viewer cannot push to under Yours", () => {
+  it("ranks what the viewer can land above what is out of their hands", () => {
     const upstream = entry({
       number: 1,
       viewerIsAuthor: true,
@@ -303,15 +306,26 @@ describe("groupPullRequests", () => {
       reviewDecision: "approved",
     });
     const asked = entry({ number: 2, viewerCanWrite: false, viewerReviewRequested: true });
+    const followed = entry({ number: 3, viewerCanWrite: false });
+    const onMine = entry({ number: 4, viewerCanWrite: true });
+    // A host that never said is taken as if the viewer may push.
+    const unsaid = entry({ number: 5, viewerIsAuthor: true });
 
-    const groups = groupPullRequests({ entries: [upstream, asked], viewer: "ada", state: "open" });
+    const groups = groupPullRequests({
+      entries: [followed, upstream, onMine, asked, unsaid],
+      viewer: "ada",
+      state: "open",
+    });
 
     expect(groups.map((group) => [group.label, group.entries.map((row) => row.number)])).toEqual([
       ["Needs you", [2]],
-      ["Yours", [1]],
+      ["Yours", [5]],
+      ["Incoming", [4]],
+      ["Contributions", [1]],
+      ["Elsewhere", [3]],
     ]);
     // The sidebar count reads the same rows the page groups.
-    expect(countNeedsYou([upstream, asked])).toBe(1);
+    expect(countNeedsYou([upstream, asked, followed, onMine, unsaid])).toBe(1);
   });
 
   it("counts only the rows that need the viewer", () => {
@@ -502,7 +516,31 @@ describe("resolveThreadPullRequest", () => {
       url: "https://github.com/threadlines/threadlines/pull/7",
       repository: "threadlines/threadlines",
       settledAt: null,
+      autoMergeEnabled: false,
+      headBranch: "feature/pull-requests",
+      diffStat: null,
     });
+  });
+
+  it("carries the standing merge instruction from whichever source it reads", () => {
+    const openStatusPr = { ...MERGED_STATUS_PR, state: "open", autoMergeEnabled: true } as const;
+    expect(
+      resolveThreadPullRequest({
+        thread: thread(),
+        gitStatus: gitStatus({ pr: openStatusPr }),
+        openEntries: [],
+        projects: PROJECTS,
+      }),
+    ).toMatchObject({ number: 7, autoMergeEnabled: true });
+
+    expect(
+      resolveThreadPullRequest({
+        thread: thread(),
+        gitStatus: null,
+        openEntries: [entry({ number: 412, autoMergeEnabled: true })],
+        projects: PROJECTS,
+      }),
+    ).toMatchObject({ number: 412, autoMergeEnabled: true });
   });
 
   it("falls back to the open listing when the checkout stands on another branch", () => {
@@ -556,6 +594,28 @@ describe("resolveThreadPullRequest", () => {
         }),
       ).toBeNull();
     }
+  });
+});
+
+describe("pullRequestBadgeTone", () => {
+  it("wears the armed glyph only while open and not a draft", () => {
+    expect(pullRequestBadgeTone("open", false, true).label).toBe("Auto-merge");
+    expect(pullRequestBadgeTone("open", false, false).label).toBe("Open");
+    // A draft cannot be armed, and a settled row has nothing left to land.
+    expect(pullRequestBadgeTone("open", true, true).label).toBe("Draft");
+    expect(pullRequestBadgeTone("merged", false, true).label).toBe("Merged");
+  });
+});
+
+describe("pullRequestArmedToMerge", () => {
+  it("counts a queue position as armed even once the instruction is gone", () => {
+    expect(pullRequestArmedToMerge({ autoMergeEnabled: null, mergeQueue: { position: 2 } })).toBe(
+      true,
+    );
+    expect(
+      pullRequestArmedToMerge({ autoMergeEnabled: true, mergeQueue: { position: null } }),
+    ).toBe(true);
+    expect(pullRequestArmedToMerge({ autoMergeEnabled: false })).toBe(false);
   });
 });
 
@@ -649,6 +709,8 @@ describe("narrowPullRequests", () => {
       entry({ number: 1, viewerReviewRequested: true }),
       entry({ number: 2, viewerIsAuthor: true }),
       entry({ number: 3, projectId: OTHER_PROJECT_ID }),
+      entry({ number: 4, viewerIsAuthor: true, viewerCanWrite: false }),
+      entry({ number: 5, viewerCanWrite: false }),
     ];
     const involved = (filters: Partial<PullRequestFilters>) =>
       narrowPullRequests(grouped, { ...EMPTY_PULL_REQUEST_FILTERS, ...filters }).map(
@@ -657,7 +719,9 @@ describe("narrowPullRequests", () => {
 
     expect(involved({ involvement: "needs-you" })).toEqual([1]);
     expect(involved({ involvement: "yours" })).toEqual([2]);
-    expect(involved({ involvement: "others" })).toEqual([3]);
+    expect(involved({ involvement: "incoming" })).toEqual([3]);
+    expect(involved({ involvement: "contributions" })).toEqual([4]);
+    expect(involved({ involvement: "elsewhere" })).toEqual([5]);
     expect(involved({ project: `${ENVIRONMENT_ID}:${OTHER_PROJECT_ID}` })).toEqual([3]);
   });
 
@@ -1080,6 +1144,7 @@ describe("shouldPollPullRequestDetail", () => {
     state: "open" as const,
     mergeability: "mergeable" as const,
     updatedAt: "2026-09-04T11:00:00.000Z",
+    autoMergeEnabled: null,
   };
 
   it("polls while a check runs, and for a while after a push before any check exists", () => {
@@ -1111,9 +1176,20 @@ describe("shouldPollPullRequestDetail", () => {
     expect(shouldPollPullRequestDetail({ ...inQueue, mergeQueue: { position: 2 } }, now)).toBe(
       true,
     );
-    // Merely armed under a queue is a settled state: nothing moves until the
-    // requirements pass, which the checks already say.
     expect(shouldPollPullRequestDetail({ ...inQueue, mergeQueue: { position: null } }, now)).toBe(
+      false,
+    );
+  });
+
+  it("keeps watching an armed pull request with nothing in its way", () => {
+    // The host can take or merge it at any moment, and the composer's chip and
+    // the sidebar badge are what say it happened.
+    const armed = { ...settled, checks: [check("success")], autoMergeEnabled: true };
+    expect(shouldPollPullRequestDetail({ ...armed, mergeGate: "clear" as const }, now)).toBe(true);
+    expect(shouldPollPullRequestDetail(armed, now)).toBe(true);
+    // Armed but blocked is a settled state: a review still owed does not
+    // clear itself, and reading every twenty seconds would only find that out.
+    expect(shouldPollPullRequestDetail({ ...armed, mergeGate: "blocked" as const }, now)).toBe(
       false,
     );
   });
@@ -1423,5 +1499,53 @@ describe("resolveDefaultMergeMethod", () => {
     expect(resolveDefaultMergeMethod(["squash", "rebase"], "merge")).toBe("squash");
     expect(resolveDefaultMergeMethod(["squash", "rebase"])).toBe("squash");
     expect(resolveDefaultMergeMethod([], "squash")).toBe("merge");
+  });
+});
+
+describe("threadViewBranch", () => {
+  const status = (refName: string | null) => ({ isRepo: true, refName });
+
+  it("follows the live checkout for a thread on a shared checkout", () => {
+    expect(threadViewBranch({ branch: "main", worktreePath: null }, status("feat/opus-5-5"))).toBe(
+      "feat/opus-5-5",
+    );
+  });
+
+  it("keeps the recorded branch for a thread that owns a worktree", () => {
+    expect(threadViewBranch({ branch: "feat/a", worktreePath: "/wt/a" }, status("feat/b"))).toBe(
+      "feat/a",
+    );
+  });
+
+  // One session that opened two pull requests on two branches, from a shared
+  // checkout still recorded on `main`: the view follows whichever branch the
+  // checkout stands on, so it shows that branch's pull request.
+  it("finds each pull request as a shared-checkout session moves between branches", () => {
+    const sessionThread = thread({ branch: "main", worktreePath: null });
+    const openEntries = [
+      entry({ number: 280, headBranch: "feat/first" }),
+      entry({ number: 281, headBranch: "feat/second" }),
+    ];
+    const resolveOn = (refName: string) => {
+      const status = gitStatus({ refName, pr: null });
+      return resolveThreadPullRequest({
+        thread: { ...sessionThread, branch: threadViewBranch(sessionThread, status) },
+        gitStatus: status,
+        openEntries,
+        projects: PROJECTS,
+      })?.number;
+    };
+
+    expect(resolveOn("feat/first")).toBe(280);
+    expect(resolveOn("feat/second")).toBe(281);
+    expect(resolveOn("main")).toBeUndefined();
+  });
+
+  it("falls back to the recorded branch without a readable checkout ref", () => {
+    expect(threadViewBranch({ branch: "main", worktreePath: null }, null)).toBe("main");
+    expect(threadViewBranch({ branch: "main", worktreePath: null }, status(null))).toBe("main");
+    expect(
+      threadViewBranch({ branch: "main", worktreePath: null }, { isRepo: false, refName: "x" }),
+    ).toBe("main");
   });
 });

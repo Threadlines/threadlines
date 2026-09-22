@@ -19,6 +19,8 @@ const clientSettings: ClientSettings = {
   confirmThreadDelete: false,
   wrapUpThreadsOnPullRequestSettled: true,
   dismissedProviderUpdateNotificationKeys: [],
+  dictationHoldToRecord: true,
+  dictationMicrophoneDeviceId: null,
   diffChangesOnly: false,
   diffIgnoreWhitespace: true,
   diffRenderMode: "stacked",

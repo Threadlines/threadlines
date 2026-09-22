@@ -102,10 +102,12 @@ import {
   formatPullRequestBehindLabel,
   formatPullRequestChecksHeadline,
   pullRequestBadgeTone,
+  pullRequestArmedToMerge,
   pullRequestMergeQueueLabel,
   pullRequestUpdateMethodLabel,
   resolveDefaultMergeMethod,
   resolveMergeWhenReadyBlock,
+  resolvePullRequestAutoMergeBlock,
   resolvePullRequestMergeBlock,
   summarizePullRequestChecks,
   type PullRequestChecksSummary,
@@ -603,7 +605,7 @@ function PullRequestDetailHeader({
   readonly onOpenThread: () => void;
   readonly handoffs: PullRequestHandoffActions | null;
 }) {
-  const tone = pullRequestBadgeTone(detail.state, detail.isDraft);
+  const tone = pullRequestBadgeTone(detail.state, detail.isDraft, pullRequestArmedToMerge(detail));
   const actions = usePullRequestActions({ environmentId, reference, detail, handoffs });
   // A branch that no longer merges, said where the branches are named rather
   // than on a line of its own.
@@ -1180,7 +1182,8 @@ function usePullRequestActions({
     !isQueued;
   const showMergeWhenReady = queue !== null && showEnableAutoMerge;
   // Outside a queue the arming lives in the menu; under one it is the button.
-  const showEnableAutoMergeInMenu = queue === null && showEnableAutoMerge;
+  const showEnableAutoMergeInMenu =
+    queue === null && showEnableAutoMerge && resolvePullRequestAutoMergeBlock(detail) === null;
 
   const updateMethods = detail.capabilities.updateMethods;
   const mergeBlock = resolvePullRequestMergeBlock(detail);

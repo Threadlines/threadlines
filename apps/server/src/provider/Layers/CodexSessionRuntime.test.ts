@@ -39,6 +39,99 @@ import {
 const isCodexAppServerRequestError = Schema.is(CodexErrors.CodexAppServerRequestError);
 
 describe("Codex user input lifecycle", () => {
+  for (const action of ["accept", "decline", "cancel", "interrupt"] as const) {
+    it(`answers MCP forms with ${action} and keeps invalid answers pending`, async () => {
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+          const runtime = yield* makeCodexSessionRuntime({
+            threadId: ThreadId.make("local-form-thread"),
+            serverPort: 0,
+            binaryPath: process.execPath,
+            cwd: process.cwd(),
+            runtimeMode: "full-access",
+          }).pipe(
+            Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, {
+              ...spawner,
+              spawn: () =>
+                spawner.spawn(
+                  ChildProcess.make(
+                    process.execPath,
+                    [
+                      fileURLToPath(
+                        new URL(
+                          "../../../../../packages/effect-codex-app-server/test/fixtures/codex-app-server-mock-peer.ts",
+                          import.meta.url,
+                        ),
+                      ),
+                    ],
+                    { env: { ...process.env, CODEX_APP_SERVER_TEST_ELICITATION: "form" } },
+                  ),
+                ),
+            }),
+          );
+          const requested = yield* Deferred.make<ProviderEvent>();
+          const reply = yield* Deferred.make<ProviderEvent>();
+          yield* runtime.events.pipe(
+            Stream.runForEach((event) => {
+              if (event.method === "mcpServer/elicitation/request")
+                return Deferred.succeed(requested, event);
+              if (
+                event.method === "item/agentMessage/delta" &&
+                (event.payload as { itemId?: string }).itemId === "elicitation-reply"
+              )
+                return Deferred.succeed(reply, event);
+              return Effect.void;
+            }),
+            Effect.forkScoped,
+          );
+          yield* runtime.start();
+          yield* runtime.sendTurn({ input: "Export" });
+          const request = yield* Deferred.await(requested);
+          assert.ok(request.requestId);
+          const invalid = yield* runtime
+            .respondToUserInput(request.requestId, {
+              action: "accept",
+              content: { count: 8, enabled: true },
+            })
+            .pipe(Effect.result);
+          assert.equal(invalid._tag, "Failure");
+          const content = {
+            count: 2,
+            enabled: false,
+            tags: ["code"],
+            email: "export+daily@example.test",
+          };
+          if (action === "accept") {
+            for (const email of [
+              "@example.test",
+              "export@example",
+              "export@.test",
+              "export@example.",
+              "export@example.test@other.test",
+              "export @example.test",
+              `!@!.${"!.".repeat(100_000)} `,
+            ]) {
+              yield* runtime
+                .respondToUserInput(request.requestId, { action, content: { ...content, email } })
+                .pipe(
+                  Effect.result,
+                  Effect.map((result) => assert.equal(result._tag, "Failure")),
+                );
+            }
+          }
+          if (action === "interrupt") yield* runtime.interruptTurn(TurnId.make("turn-1"));
+          else yield* runtime.respondToUserInput(request.requestId, { action, content });
+          const response = yield* Deferred.await(reply);
+          const wire = JSON.parse((response.payload as { delta: string }).delta);
+          assert.deepEqual(wire.result, {
+            action: action === "interrupt" ? "cancel" : action,
+            content: action === "accept" ? content : null,
+          });
+        }).pipe(Effect.scoped, Effect.provide(NodeServices.layer), Effect.timeout("10 seconds")),
+      );
+    });
+  }
   for (const [input, reason] of [
     ["resolve", "resolved"],
     ["complete", "turn-completed"],
@@ -710,6 +803,18 @@ describe("buildPermissionsApprovalResponse", () => {
 });
 
 describe("isRecoverableThreadResumeError", () => {
+  it("never replaces a conversation owned by another writer", () => {
+    assert.equal(
+      isRecoverableThreadResumeError(new Error("thread abc already has an active writer")),
+      false,
+    );
+    assert.equal(
+      isRecoverableThreadResumeError(
+        new Error("thread abc already has an active writer; local handle not found"),
+      ),
+      false,
+    );
+  });
   it("matches missing thread errors", () => {
     assert.equal(
       isRecoverableThreadResumeError(

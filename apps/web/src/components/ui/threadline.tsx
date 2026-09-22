@@ -123,25 +123,29 @@ function SpineRow({
 }) {
   return (
     <div className={cn("flex gap-2", className)} style={style}>
-      <div className="relative flex w-4 shrink-0 justify-center self-stretch">
+      {/* Whole-pixel geometry: the 1px line sits at x=7 (no transform, so the
+          browser cannot snap it to a neighbouring column) and the node is
+          centred in a 15px box, i.e. on x=7.5, the line's own centre. Odd node
+          sizes then land every edge on a whole pixel. */}
+      <div className="relative w-4 shrink-0 self-stretch">
         {connectTop ? (
           <span
             aria-hidden="true"
-            className="absolute top-0 left-1/2 w-px -translate-x-1/2"
+            className="absolute top-0 left-[7px] w-px"
             style={{ ...SPINE_TOP_STYLE, height: nodeOffset }}
           />
         ) : null}
         {connectBottom ? (
           <span
             aria-hidden="true"
-            className="absolute bottom-0 left-1/2 w-px -translate-x-1/2"
+            className="absolute bottom-0 left-[7px] w-px"
             style={{ ...SPINE_BOTTOM_STYLE, top: nodeOffset }}
           />
         ) : null}
         {/* Centring the node in a box of twice the offset puts its centre on the
             offset without taking the row out of flow. */}
         <span
-          className="relative z-10 flex items-center justify-center"
+          className="relative z-10 flex w-[15px] items-center justify-center"
           style={{ height: nodeOffset * 2 }}
         >
           {node}
@@ -155,15 +159,16 @@ function SpineRow({
 type SpineNodeKind = "done" | "running" | "warning" | "error" | "group" | "pending";
 
 const TONE_SPINE_DOT_CLASS_NAME = {
-  warning: "size-[6px] rounded-full bg-warning",
-  error: "size-[6px] rounded-full bg-destructive",
+  warning: "size-[5px] rounded-full bg-warning",
+  error: "size-[5px] rounded-full bg-destructive",
 } as const satisfies Record<"warning" | "error", string>;
 
 /** The glyph that sits on a spine for one row. The accent halo is reserved for
  *  the surface's single live node; a still-running step gets a small accent
- *  tick, settled steps are quiet solid dots, warnings/errors are compact tone
- *  dots, a collapsed group of steps is a hollow ring (same family, reads as
- *  "openable"), and a step not yet started is a fainter hollow ring. */
+ *  tick, settled steps are solid muted dots (filled in, unlike the hollow ring
+ *  of a step not yet started), warnings/errors are compact tone dots, and a
+ *  collapsed group of steps is a hollow ring (same family, reads as
+ *  "openable"). Sizes stay odd so nodes centre on the spine's half-pixel. */
 function SpineNode({ kind }: { kind: SpineNodeKind }) {
   if (kind === "running") {
     return (
@@ -190,24 +195,37 @@ function SpineNode({ kind }: { kind: SpineNodeKind }) {
   return (
     <span
       aria-hidden="true"
-      className="relative z-10 size-[5px] rounded-full bg-[color-mix(in_oklab,var(--muted-foreground)_42%,var(--background))]"
+      className="relative z-10 size-[5px] rounded-full bg-muted-foreground"
     />
   );
 }
 
 /**
- * Accent fade for the connectors approaching a live terminus: the spine warms
- * toward accent as it nears the row where work is happening now, and settles
- * to the hairline colour a row and a half away.
+ * Accent fade for the connectors approaching a live node: the spine warms
+ * toward accent as it comes down to the row where work is happening now, and
+ * settles to the hairline colour a row and a half above it. The line past the
+ * live node stays hairline, so colour only ever covers ground already walked.
  *
- * @param distanceFromLive Rows between this row and the live terminus.
+ * @param rowsBeforeLive Rows between this row and the live one; 0 is the live
+ *   row itself, negative rows come after it.
  */
-function spineAccentRowStyle(distanceFromLive: number): React.CSSProperties {
+function spineAccentRowStyle(rowsBeforeLive: number): React.CSSProperties {
+  if (rowsBeforeLive < 0) {
+    return SPINE_HAIRLINE_ROW_STYLE;
+  }
   return {
-    ["--spine-top"]: spineAccentSegment(distanceFromLive + 0.5, distanceFromLive),
-    ["--spine-bottom"]: spineAccentSegment(distanceFromLive, Math.max(0, distanceFromLive - 0.5)),
+    ["--spine-top"]: spineAccentSegment(rowsBeforeLive + 0.5, rowsBeforeLive),
+    ["--spine-bottom"]:
+      rowsBeforeLive === 0
+        ? "var(--spine, var(--border))"
+        : spineAccentSegment(rowsBeforeLive, rowsBeforeLive - 0.5),
   } as React.CSSProperties;
 }
+
+const SPINE_HAIRLINE_ROW_STYLE = {
+  ["--spine-top"]: "var(--spine, var(--border))",
+  ["--spine-bottom"]: "var(--spine, var(--border))",
+} as React.CSSProperties;
 
 function spineAccentColor(distanceFromLive: number): string {
   if (distanceFromLive >= 1.5) {

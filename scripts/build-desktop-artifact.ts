@@ -864,10 +864,16 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   }
 
   if (platform === "mac") {
+    // Dictation records from the microphone, and macOS refuses the capture
+    // outright unless the bundle says why it is asking.
+    const macExtendInfo: Record<string, string> = {
+      NSMicrophoneUsageDescription: "Threadlines uses the microphone for dictation.",
+    };
     const macConfig: Record<string, unknown> = {
       target: target === "dmg" ? [target, "zip"] : [target],
       icon: "icon.icns",
       category: "public.app-category.developer-tools",
+      extendInfo: macExtendInfo,
     };
     // Ship the adaptive icon when staging produced one: Assets.car must live in
     // Contents/Resources (outside the asar) and CFBundleIconName points macOS
@@ -883,9 +889,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
           to: MAC_ADAPTIVE_ICON_ASSETS_CAR_FILE_NAME,
         },
       ];
-      macConfig.extendInfo = {
-        CFBundleIconName: MAC_ADAPTIVE_ICON_NAME,
-      };
+      macExtendInfo.CFBundleIconName = MAC_ADAPTIVE_ICON_NAME;
     }
     if (signed) {
       macConfig.hardenedRuntime = true;

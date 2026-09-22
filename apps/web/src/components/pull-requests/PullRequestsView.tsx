@@ -342,6 +342,7 @@ export function PullRequestsView({
         number: entry.number,
         state: entry.state,
         isDraft: entry.isDraft,
+        autoMergeEnabled: entry.autoMergeEnabled === true,
       });
       setPressedKey(formatPullRequestSelection(entry));
       showPullRequest(entry);
@@ -425,7 +426,11 @@ export function PullRequestsView({
   const tabStatuses = useMemo(() => {
     const byId = new Map<string, PullRequestTabStatus>();
     for (const entry of [...loadedEntries, ...snapshot.entries]) {
-      byId.set(pullRequestTabId(entry), { state: entry.state, isDraft: entry.isDraft });
+      byId.set(pullRequestTabId(entry), {
+        state: entry.state,
+        isDraft: entry.isDraft,
+        autoMergeEnabled: entry.autoMergeEnabled === true,
+      });
     }
     return byId;
   }, [loadedEntries, snapshot.entries]);
@@ -920,13 +925,14 @@ function PullRequestRow({
     Icon: GlyphIcon,
     className: glyphClassName,
     label: glyphLabel,
-  } = pullRequestBadgeTone(entry.state, entry.isDraft);
+  } = pullRequestBadgeTone(entry.state, entry.isDraft, entry.autoMergeEnabled === true);
   // A branch that no longer merges is the one thing about an open row worth
   // more than its state, so it takes the glyph's place.
   const conflictLabel = pullRequestConflictLabel(entry);
   // Everything the row states in a glyph belongs in the name of the button that
   // opens it, since a glyph in a sibling is not part of that name: the state
-  // word, then the conflict, then how the checks went.
+  // word (which already says when it is armed to land on its own), then the
+  // conflict, then how the checks went.
   const checksLabel = pullRequestChecksTone(entry.checksState)?.label ?? null;
   // Armed to land on its own is worth a word on an open row: it is the one that
   // needs nobody to come back for it.
@@ -934,7 +940,6 @@ function PullRequestRow({
   const rowLabel = `${[
     `${glyphLabel} pull request #${entry.number}`,
     ...(conflictLabel ? [lowerFirst(conflictLabel)] : []),
-    ...(autoMergeLabel ? [lowerFirst(autoMergeLabel)] : []),
     ...(checksLabel ? [lowerFirst(checksLabel)] : []),
   ].join(", ")}: ${entry.title}`;
   const reviewTone = pullRequestReviewTone({

@@ -98,10 +98,13 @@ describe("buildPrContentPrompt", () => {
     expect(result.prompt).toContain("3 files changed");
     expect(result.prompt).toContain("Diff patch:");
     expect(result.prompt).toContain("export function login()");
-    expect(result.prompt).toContain("include headings '## Summary' and '## Testing'");
+    expect(result.prompt).toContain(
+      "do not add section headings unless the repository's own pull requests use them",
+    );
+    expect(result.prompt).not.toContain("## Summary");
   });
 
-  it("swaps the default body headings for the repository template when one is supplied", () => {
+  it("swaps the default body rules for the repository template when one is supplied", () => {
     const result = buildPrContentPrompt({
       baseBranch: "main",
       headBranch: "feature/auth",
@@ -111,14 +114,14 @@ describe("buildPrContentPrompt", () => {
       prTemplate: "## What changed\n<!-- describe -->\n\n## Risk",
     });
 
-    expect(result.prompt).not.toContain("include headings '## Summary' and '## Testing'");
+    expect(result.prompt).not.toContain("do not add section headings");
     expect(result.prompt).toContain("follow the repository pull request template structure");
     expect(result.prompt).toContain("drop HTML comments from the template in the generated body");
     expect(result.prompt).toContain("Repository pull request template:");
     expect(result.prompt).toContain("## What changed");
   });
 
-  it("keeps the default body headings when the template is blank", () => {
+  it("keeps the default body rules when the template is blank", () => {
     const result = buildPrContentPrompt({
       baseBranch: "main",
       headBranch: "feature/auth",
@@ -128,7 +131,7 @@ describe("buildPrContentPrompt", () => {
       prTemplate: "   \n  ",
     });
 
-    expect(result.prompt).toContain("include headings '## Summary' and '## Testing'");
+    expect(result.prompt).toContain("do not add section headings");
     expect(result.prompt).not.toContain("Repository pull request template:");
   });
 });

@@ -22,6 +22,7 @@ import { decodeJsonResult, formatSchemaError } from "@threadlines/shared/schemaJ
  * paying for on the open listing, where the page renders a checks state.
  */
 export const GITHUB_PULL_REQUEST_LIST_FIELDS = [
+  "id",
   "number",
   "title",
   "url",
@@ -47,6 +48,7 @@ export const GITHUB_PULL_REQUEST_LIST_CHECKS_FIELD = "statusCheckRollup";
 
 /** One decoded `gh pr list` row. Project and viewer context is added by the caller. */
 export interface GitHubPullRequestListRow {
+  readonly id?: string;
   readonly number: number;
   readonly title: string;
   readonly url: string;
@@ -73,7 +75,7 @@ export interface GitHubPullRequestListRow {
   readonly checksState?: PullRequestChecksState;
   /** Absent where the host said nothing about whether the branch still merges. */
   readonly mergeability?: PullRequestMergeability;
-  /** Absent on a CLI too old to report an auto-merge instruction at all. */
+  /** Auto-merge or queue membership; absent where neither was reported. */
   readonly autoMergeEnabled?: boolean;
   readonly labels: ReadonlyArray<{ readonly name: string; readonly color: string | null }>;
 }
@@ -115,6 +117,7 @@ export const GitHubStatusCheckSchema = Schema.Struct({
 });
 
 export const GitHubPullRequestListRowSchema = Schema.Struct({
+  id: Schema.optional(Schema.NullOr(Schema.String)),
   number: PositiveInt,
   title: TrimmedNonEmptyString,
   url: TrimmedNonEmptyString,
@@ -136,6 +139,7 @@ export const GitHubPullRequestListRowSchema = Schema.Struct({
   statusCheckRollup: Schema.optional(Schema.NullOr(Schema.Array(GitHubStatusCheckSchema))),
   /** An object while auto-merge is armed, null once it is not, absent on an older CLI. */
   autoMergeRequest: Schema.optional(Schema.NullOr(Schema.Struct({}))),
+  isInMergeQueue: Schema.optional(Schema.NullOr(Schema.Boolean)),
 });
 
 const FAILING_CHECK_CONCLUSIONS = new Set([
@@ -295,6 +299,7 @@ export function normalizeGitHubPullRequestListRow(
   const mergeability = normalizeMergeability(raw.mergeable);
 
   return {
+    ...(raw.id ? { id: raw.id } : {}),
     number: raw.number,
     title: raw.title,
     url: raw.url,
@@ -322,9 +327,11 @@ export function normalizeGitHubPullRequestListRow(
     ...(mergeability === undefined ? {} : { mergeability }),
     // A CLI too old for the field leaves it absent, which is "the host did not
     // say" rather than "auto-merge is off".
-    ...(raw.autoMergeRequest === undefined
-      ? {}
-      : { autoMergeEnabled: raw.autoMergeRequest !== null }),
+    ...(raw.isInMergeQueue === true
+      ? { autoMergeEnabled: true }
+      : raw.autoMergeRequest === undefined
+        ? {}
+        : { autoMergeEnabled: raw.autoMergeRequest !== null }),
     labels: (raw.labels ?? []).flatMap((label) => {
       const name = nonEmptyText(label.name);
       return name === null ? [] : [{ name, color: nonEmptyText(label.color) }];

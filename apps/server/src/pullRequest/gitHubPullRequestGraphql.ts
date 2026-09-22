@@ -162,6 +162,7 @@ export const AUTHORED_PULL_REQUESTS_GRAPHQL_QUERY = `query($q: String!, $first: 
         mergeable
         reviewDecision
         autoMergeRequest { enabledAt }
+        isInMergeQueue
         author { login avatarUrl }
         repository { nameWithOwner viewerPermission }
         labels(first: ${AUTHORED_CONNECTION_PAGE_SIZE}) { nodes { name color } }
@@ -684,6 +685,7 @@ const RawAuthoredNodeSchema = Schema.Struct({
   mergeable: Schema.optional(Schema.NullOr(Schema.String)),
   reviewDecision: Schema.optional(Schema.NullOr(Schema.String)),
   autoMergeRequest: Schema.optional(Schema.NullOr(Schema.Struct({}))),
+  isInMergeQueue: Schema.optional(Schema.NullOr(Schema.Boolean)),
   author: Schema.optional(Schema.NullOr(GitHubAuthorSchema)),
   repository: Schema.optional(
     Schema.NullOr(
@@ -813,6 +815,7 @@ function toGitHubListRowShape(node: RawAuthoredNode): unknown {
     mergeable: node.mergeable,
     reviewDecision: node.reviewDecision,
     autoMergeRequest: node.autoMergeRequest,
+    isInMergeQueue: node.isInMergeQueue,
     reviewRequests: (node.reviewRequests?.nodes ?? []).map((request) => ({
       login: request?.requestedReviewer?.login ?? null,
     })),

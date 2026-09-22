@@ -6,6 +6,7 @@ import {
 import { resolveSelectableModel } from "@threadlines/shared/model";
 import {
   Fragment,
+  type ReactNode,
   memo,
   useMemo,
   useState,
@@ -187,6 +188,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
   modelOptionsByInstance: ReadonlyMap<ProviderInstanceId, ReadonlyArray<ModelEsque>>;
   terminalOpen: boolean;
   onRequestClose?: () => void;
+  notice?: ReactNode;
   onInstanceModelChange: (instanceId: ProviderInstanceId, model: string) => void;
 }) {
   const {
@@ -704,6 +706,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
           while an overlay keyboard is up) shrinks the cap so the lifted
           popup's top edge stays on screen. */}
       <div className="relative flex max-h-[calc(var(--available-height)-var(--keyboard-inset,0px))] w-screen max-w-[26rem] flex-col overflow-hidden rounded-lg border bg-popover not-dark:bg-clip-padding text-popover-foreground shadow-lg/5 before:pointer-events-none before:absolute before:inset-0 before:rounded-[calc(var(--radius-lg)-1px)] before:shadow-[0_1px_--theme(--color-black/4%)] dark:before:shadow-[0_-1px_--theme(--color-white/6%)]">
+        {props.notice}
         <Combobox
           inline
           items={orderedModelKeys}

@@ -45,6 +45,7 @@ import { cn } from "../../lib/utils";
 import {
   deriveProviderAccountUsagePresentationForProvider,
   type ProviderAccountUsagePresentation,
+  usageMeterColor,
 } from "../../lib/providerUsage";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { normalizeProviderAccentColor } from "../../providerInstances";
@@ -80,6 +81,7 @@ import {
 } from "./providerStatus";
 import { deriveProviderInstallView } from "./providerInstall";
 import { ProviderInstallAction } from "./ProviderInstallAction";
+import { ProviderExternalResetsButton } from "../ProviderRateLimitResetCredit";
 
 const PROVIDER_ACCENT_SWATCHES = ["#00347D", "#16a34a", "#ea580c", "#dc2626", "#7c3aed"] as const;
 const PROVIDER_UPDATE_OUTPUT_PREVIEW_CHARS = 700;
@@ -897,6 +899,7 @@ function ProviderUsageSummaryBar(props: {
   readonly usedPercent: number;
   readonly warning: boolean;
 }) {
+  const meterColor = usageMeterColor(props.usedPercent, props.warning);
   return (
     <div className="space-y-1.5">
       <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5 text-xs">
@@ -912,11 +915,8 @@ function ProviderUsageSummaryBar(props: {
         className="h-1.5 overflow-hidden rounded-full bg-muted/70"
       >
         <div
-          className={cn(
-            "h-full rounded-full transition-[width]",
-            props.warning ? "bg-warning" : "bg-primary",
-          )}
-          style={{ width: `${props.usedPercent}%` }}
+          className={cn("h-full rounded-full transition-[width]", !meterColor && "bg-primary")}
+          style={{ width: `${props.usedPercent}%`, backgroundColor: meterColor }}
         />
       </div>
     </div>
@@ -945,6 +945,15 @@ function ProviderUsageSummary(props: {
         <span className="font-medium text-foreground">{props.usage.label}</span>
       </div>
       <div className="space-y-1.5 pl-5">
+        {props.usage.externalResets && !props.usage.resetCredits ? (
+          <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs text-muted-foreground">
+            <span className="min-w-10 font-medium text-foreground">Resets</span>
+            <ProviderExternalResetsButton
+              link={props.usage.externalResets}
+              className="h-5 rounded px-1.5 text-[10px] leading-none"
+            />
+          </div>
+        ) : null}
         {props.usage.resetCredits ? (
           <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs text-muted-foreground">
             <span className="min-w-10 font-medium text-foreground">Resets</span>

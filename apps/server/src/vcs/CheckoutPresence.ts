@@ -19,6 +19,7 @@
  */
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
 
 /**
  * - `present`: the path exists and is a directory.
@@ -159,6 +160,43 @@ export const isLinkedWorktreeCheckout = (
       Effect.map((info) => info.type === "File"),
       Effect.orElseSucceed(() => false),
     );
+  });
+
+/**
+ * Where a thread's workspace should follow a provider session that reports a
+ * working directory other than the one it was started in.
+ *
+ * Only a move into a git worktree counts: the observed directory resolves to
+ * the nearest checkout containing it, and that checkout is followed when it is
+ * a linked worktree. A shell `cd` into a subfolder, a dependency folder, or
+ * some other primary clone leaves the workspace on the configured checkout.
+ * Without a configured checkout there is nothing to fall back to, so the
+ * observed directory is kept.
+ */
+export const resolveFollowedSessionCwd = (input: {
+  readonly observedCwd: string;
+  readonly configuredCwd: string | undefined;
+}): Effect.Effect<string, never, FileSystem.FileSystem | Path.Path> =>
+  Effect.gen(function* () {
+    if (input.configuredCwd === undefined) {
+      return input.observedCwd;
+    }
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    let candidate = path.resolve(input.observedCwd);
+    while (true) {
+      const dotGit = yield* fs
+        .stat(path.join(candidate, ".git"))
+        .pipe(Effect.orElseSucceed(() => null));
+      if (dotGit !== null) {
+        return dotGit.type === "File" ? candidate : input.configuredCwd;
+      }
+      const parent = path.dirname(candidate);
+      if (parent === candidate) {
+        return input.configuredCwd;
+      }
+      candidate = parent;
+    }
   });
 
 /** User-facing explanation for a spawn that failed because its folder is gone. */

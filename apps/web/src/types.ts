@@ -132,6 +132,8 @@ export interface Thread {
   createdAt: string;
   archivedAt: string | null;
   pinnedAt: string | null;
+  /** See ThreadShell.pullRequestAutoFix. */
+  pullRequestAutoFix?: boolean;
   /** See ThreadShell.doneOverride. */
   doneOverride: OrchestrationThreadDoneOverride | null;
   /** See ThreadShell.lastSeenAt. */
@@ -177,6 +179,11 @@ export interface ThreadShell {
   createdAt: string;
   archivedAt: string | null;
   pinnedAt: string | null;
+  /**
+   * While on, the server watches this thread's pull request and starts a turn
+   * when a check fails or a review comment arrives. Absent means off.
+   */
+  pullRequestAutoFix?: boolean;
   /**
    * The user's last explicit Mark done / Reopen, held on the server so every
    * device agrees on the inbox's Active/Wrapped split. Null when never filed.

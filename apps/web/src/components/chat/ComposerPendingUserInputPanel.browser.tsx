@@ -5,6 +5,7 @@ import { render } from "vitest-browser-react";
 import "../../index.css";
 
 import { ComposerPendingUserInputPanel } from "./ComposerPendingUserInputPanel";
+import { ComposerMcpElicitation } from "./ComposerMcpElicitation";
 import type { PendingUserInput } from "../../session-logic";
 
 function makePendingUserInput(): PendingUserInput {
@@ -27,6 +28,106 @@ function makePendingUserInput(): PendingUserInput {
 }
 
 describe("ComposerPendingUserInputPanel", () => {
+  it("waits for explicit confirmation of a tool link and disables replies while unavailable", async () => {
+    const onRespond = vi.fn();
+    const prompt = {
+      mode: "url" as const,
+      serverName: "Exports",
+      message: "Complete the browser step, then return here.",
+      url: "https://example.com/confirm",
+    };
+    const screen = await render(
+      <ComposerMcpElicitation prompt={prompt} disabled onRespond={onRespond} />,
+    );
+    await expect.element(page.getByRole("button", { name: "Done", exact: true })).toBeDisabled();
+    expect(onRespond).not.toHaveBeenCalled();
+    screen.rerender(
+      <ComposerMcpElicitation prompt={prompt} disabled={false} onRespond={onRespond} />,
+    );
+    await expect.element(page.getByText("example.com", { exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Done", exact: true }).click();
+    expect(onRespond).toHaveBeenCalledExactlyOnceWith({ action: "accept", content: null });
+  });
+  it("validates tool fields and sends typed values only on submit", async () => {
+    const onRespond = vi.fn();
+    await render(
+      <ComposerPendingUserInputPanel
+        pendingUserInputs={[
+          {
+            ...makePendingUserInput(),
+            questions: [],
+            elicitation: {
+              mode: "form",
+              serverName: "Exports",
+              message: "Choose an export size.",
+              fields: [
+                {
+                  name: "count",
+                  title: "Count",
+                  type: "integer",
+                  required: true,
+                  minimum: 1,
+                  maximum: 5,
+                },
+                { name: "enabled", title: "Enabled", type: "boolean", required: true },
+              ],
+            },
+          },
+        ]}
+        respondingRequestIds={[]}
+        answers={{}}
+        questionIndex={0}
+        isAgentRunning
+        onToggleOption={vi.fn()}
+        onPrevious={vi.fn()}
+        onCustomAnswerChange={vi.fn()}
+        onAdvance={vi.fn()}
+        onRespond={onRespond}
+      />,
+    );
+    await page.getByRole("button", { name: "Submit", exact: true }).click();
+    await expect.element(page.getByRole("alert")).toHaveTextContent("Count is required.");
+    expect(onRespond).not.toHaveBeenCalled();
+    await page.getByRole("spinbutton", { name: "Count" }).fill("2");
+    await page.getByRole("button", { name: "No", exact: true }).click();
+    expect(onRespond).not.toHaveBeenCalled();
+    await page.getByRole("button", { name: "Submit", exact: true }).click();
+    expect(onRespond).toHaveBeenCalledWith("request-1", {
+      action: "accept",
+      content: { count: 2, enabled: false },
+    });
+  });
+
+  it("can decline an incomplete tool form", async () => {
+    const onRespond = vi.fn();
+    await render(
+      <ComposerPendingUserInputPanel
+        pendingUserInputs={[
+          {
+            ...makePendingUserInput(),
+            questions: [],
+            elicitation: {
+              mode: "form",
+              serverName: "Exports",
+              message: "Choose an export size.",
+              fields: [{ name: "count", title: "Count", type: "integer", required: true }],
+            },
+          },
+        ]}
+        respondingRequestIds={[]}
+        answers={{}}
+        questionIndex={0}
+        isAgentRunning
+        onToggleOption={vi.fn()}
+        onPrevious={vi.fn()}
+        onCustomAnswerChange={vi.fn()}
+        onAdvance={vi.fn()}
+        onRespond={onRespond}
+      />,
+    );
+    await page.getByRole("button", { name: "Decline", exact: true }).click();
+    expect(onRespond).toHaveBeenCalledWith("request-1", { action: "decline" });
+  });
   afterEach(() => {
     document.body.innerHTML = "";
   });

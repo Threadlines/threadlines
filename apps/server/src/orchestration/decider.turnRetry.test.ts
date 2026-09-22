@@ -60,6 +60,7 @@ function makeThread(overrides: Partial<OrchestrationThread> = {}): Orchestration
     updatedAt: now,
     archivedAt: null,
     pinnedAt: null,
+    pullRequestAutoFix: false,
     doneOverride: null,
     lastSeenAt: null,
     deletedAt: null,

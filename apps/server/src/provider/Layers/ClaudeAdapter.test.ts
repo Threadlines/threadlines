@@ -62,14 +62,17 @@ const missingClaudeConfigEnvironment = (): NodeJS.ProcessEnv => ({
 });
 
 /** Create a temp Claude config dir holding a resumable transcript for `sessionId`. */
-function seedClaudeTranscript(sessionId: string): {
+function seedClaudeTranscript(
+  sessionId: string,
+  contents = "",
+): {
   readonly environment: NodeJS.ProcessEnv;
   readonly cleanup: () => void;
 } {
   const configDir = mkdtempSync(path.join(os.tmpdir(), "claude-adapter-transcripts-"));
   const projectDir = path.join(configDir, "projects", claudeProjectDirectoryName(process.cwd()));
   mkdirSync(projectDir, { recursive: true });
-  writeFileSync(path.join(projectDir, `${sessionId}.jsonl`), "");
+  writeFileSync(path.join(projectDir, `${sessionId}.jsonl`), contents);
   return {
     environment: { ...process.env, CLAUDE_CONFIG_DIR: configDir },
     cleanup: () => rmSync(configDir, { recursive: true, force: true }),
@@ -253,7 +256,7 @@ function makeContextUsageResponse(input: {
     // A category-less response is treated as a partially started process and
     // ignored by the adapter, so a usable fixture needs at least one category.
     categories: input.categories ?? [
-      { name: "Messages", tokens: input.totalTokens, color: "#000000" },
+      { name: "Messages", tokens: input.totalTokens, color: "#000000", kind: "used" },
     ],
     totalTokens: input.totalTokens,
     maxTokens: input.maxTokens,
@@ -463,6 +466,15 @@ describe("mapClaudeSubagentTranscript", () => {
     });
     const capped = mapClaudeSubagentTranscript(longLine);
     assert.equal(capped.entries[0]?.text.length, 4_000);
+
+    // A spawn prompt is read whole, so text sent to the agent keeps far more
+    // than the agent's own output does.
+    const longPrompt = transcriptLine({
+      type: "user",
+      message: { content: "p".repeat(40_000) },
+    });
+    const cappedPrompt = mapClaudeSubagentTranscript(longPrompt);
+    assert.equal(cappedPrompt.entries[0]?.text.length, 32_000);
 
     const many = Array.from({ length: 5 }, () =>
       transcriptLine({
@@ -5934,11 +5946,11 @@ describe("ClaudeAdapterLive", () => {
       // Both snapshots carry an equal-but-not-identical category array: the
       // dedupe has to compare the entries, not the array reference.
       const categories = [
-        { name: "System prompt", tokens: 3000, color: "#111111" },
-        { name: "MCP tools", tokens: 700, color: "#444444", isDeferred: true },
-        { name: "System tools (deferred)", tokens: 5000, color: "#555555" },
-        { name: "Messages", tokens: 19000, color: "#222222" },
-        { name: "Free space", tokens: 178000, color: "#333333" },
+        { name: "System prompt", tokens: 3000, color: "#111111", kind: "used" },
+        { name: "MCP tools", tokens: 700, color: "#444444", isDeferred: true, kind: "deferred" },
+        { name: "System tools (deferred)", tokens: 5000, color: "#555555", kind: "deferred" },
+        { name: "Messages", tokens: 19000, color: "#222222", kind: "used" },
+        { name: "Free space", tokens: 178000, color: "#333333", kind: "free" },
       ] satisfies SDKControlGetContextUsageResponse["categories"];
       harness.query.setContextUsageResponses([
         makeContextUsageResponse({
@@ -7355,6 +7367,45 @@ describe("ClaudeAdapterLive", () => {
       Effect.provide(harness.layer),
       Effect.ensuring(Effect.sync(seeded.cleanup)),
     );
+  });
+
+  // A plain resume re-enters the worktree the transcript last recorded; the
+  // user moved this thread back to its checkout, so the resume must fork.
+  it.effect("forks the resume when the transcript's worktree is not the requested cwd", () => {
+    const sessionId = "550e8400-e29b-41d4-a716-446655440000";
+    const recordedWorktree = path.join(process.cwd(), ".claude", "worktrees", "left-behind");
+    const runResume = (cwd: string) => {
+      const seeded = seedClaudeTranscript(
+        sessionId,
+        `${JSON.stringify({ type: "worktree-state", worktreeSession: { worktreePath: recordedWorktree }, sessionId })}\n`,
+      );
+      const harness = makeHarness({ environment: seeded.environment });
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        yield* adapter.startSession({
+          threadId: RESUME_THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          cwd,
+          resumeCursor: { threadId: "resume-thread-1", resume: sessionId },
+          runtimeMode: "full-access",
+        });
+        return harness.getLastCreateQueryInput()?.options;
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+        Effect.ensuring(Effect.sync(seeded.cleanup)),
+      );
+    };
+    return Effect.gen(function* () {
+      const movedOut = yield* runResume(process.cwd());
+      assert.equal(movedOut?.resume, sessionId);
+      assert.equal(movedOut?.forkSession, true);
+
+      // Resuming inside the recorded worktree is a plain resume.
+      const stayed = yield* runResume(recordedWorktree);
+      assert.equal(stayed?.resume, sessionId);
+      assert.equal(stayed?.forkSession, undefined);
+    });
   });
 
   it.effect("falls back to a fresh session when the resume transcript is missing", () => {

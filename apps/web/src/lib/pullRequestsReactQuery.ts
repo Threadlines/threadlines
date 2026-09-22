@@ -12,11 +12,13 @@ import type {
   PullRequestReviewerKind,
   PullRequestUpdateMethod,
 } from "@threadlines/contracts";
+import type { PullRequestDetail } from "@threadlines/contracts";
 import {
   keepPreviousData,
   mutationOptions,
   queryOptions,
   useQueries,
+  useQuery,
   type QueryClient,
 } from "@tanstack/react-query";
 import { useMemo } from "react";
@@ -29,7 +31,7 @@ import {
   type PullRequestProjectFailure,
 } from "~/components/pull-requests/pullRequests.logic";
 import { ensureEnvironmentApi } from "~/environmentApi";
-import { readPrimaryEnvironmentDescriptor, usePrimaryEnvironmentId } from "~/environments/primary";
+import { usePrimaryEnvironmentDescriptor, usePrimaryEnvironmentId } from "~/environments/primary";
 import {
   useSavedEnvironmentRegistryStore,
   useSavedEnvironmentRuntimeStore,
@@ -110,6 +112,34 @@ export function pullRequestDetailQueryOptions(input: PullRequestReadInput) {
     refetchIntervalInBackground: false,
   });
 }
+
+/**
+ * A pull request that may not exist yet, read on the same key the Pull request
+ * tab reads: one poll serves the tab, the composer's row and anything else on
+ * screen. Idle until there is something to address, which is why the key it
+ * would rest on names nothing real.
+ */
+export function usePullRequestDetail(input: {
+  readonly environmentId: EnvironmentId | null;
+  readonly reference: PullRequestRef | null;
+}): PullRequestDetail | undefined {
+  const enabled = input.environmentId !== null && input.reference !== null;
+  return useQuery({
+    ...pullRequestDetailQueryOptions({
+      environmentId: input.environmentId ?? IDLE_ENVIRONMENT_ID,
+      reference: input.reference ?? IDLE_PULL_REQUEST_REF,
+    }),
+    enabled,
+  }).data;
+}
+
+/** The key an idle read rests on. Never fetched, and names no real project. */
+const IDLE_ENVIRONMENT_ID = "" as EnvironmentId;
+const IDLE_PULL_REQUEST_REF = {
+  projectId: "",
+  repository: "",
+  number: 0,
+} as unknown as PullRequestRef;
 
 export function pullRequestActivityQueryOptions(input: PullRequestReadInput) {
   return queryOptions({
@@ -448,7 +478,7 @@ export async function refreshPullRequestList(
  */
 export function usePullRequestEnvironments(): readonly PullRequestEnvironment[] {
   const primaryEnvironmentId = usePrimaryEnvironmentId();
-  const primaryDescriptor = readPrimaryEnvironmentDescriptor();
+  const primaryDescriptor = usePrimaryEnvironmentDescriptor();
   const primarySupported = primaryDescriptor?.capabilities.pullRequests === true;
   const primaryLabel = primaryDescriptor?.label ?? null;
   const savedEnvironmentsById = useSavedEnvironmentRegistryStore((state) => state.byId);

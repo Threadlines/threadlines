@@ -34,6 +34,50 @@ export function describeMicrophoneError(error: unknown): string {
     : "The microphone could not be started.";
 }
 
+export interface RealtimeMicCaptureOptions {
+  /** Frames per second the worklet resamples to. Defaults to realtime voice's 24 kHz. */
+  readonly targetSampleRate?: number;
+  /** A specific input device, or null for the browser's default microphone. */
+  readonly deviceId?: string | null;
+}
+
+const AUDIO_CONSTRAINTS = {
+  echoCancellation: true,
+  noiseSuppression: true,
+  autoGainControl: true,
+} as const;
+
+/**
+ * Opens the requested microphone, falling back to the default one when that
+ * device has gone away since it was chosen (unplugged headset, Bluetooth
+ * dropped). A stale saved device must not make dictation unusable.
+ */
+async function openMicrophoneStream(deviceId: string | null): Promise<MediaStream> {
+  if (!deviceId) {
+    return navigator.mediaDevices.getUserMedia({ audio: AUDIO_CONSTRAINTS });
+  }
+  try {
+    return await navigator.mediaDevices.getUserMedia({
+      audio: { ...AUDIO_CONSTRAINTS, deviceId: { exact: deviceId } },
+    });
+  } catch (error) {
+    // OverconstrainedError is its own interface rather than a DOMException in
+    // Chrome, so match on the name instead of the constructor.
+    const name =
+      typeof error === "object" && error !== null && "name" in error
+        ? String((error as { readonly name: unknown }).name)
+        : "";
+    if (
+      name !== "OverconstrainedError" &&
+      name !== "NotFoundError" &&
+      name !== "DevicesNotFoundError"
+    ) {
+      throw error;
+    }
+    return navigator.mediaDevices.getUserMedia({ audio: AUDIO_CONSTRAINTS });
+  }
+}
+
 export class RealtimeMicCapture {
   readonly #stream: MediaStream;
   readonly #context: AudioContext;
@@ -55,7 +99,11 @@ export class RealtimeMicCapture {
     this.#worklet = worklet;
   }
 
-  static async start(onChunk: RealtimeMicChunkListener): Promise<RealtimeMicCapture> {
+  static async start(
+    onChunk: RealtimeMicChunkListener,
+    options?: RealtimeMicCaptureOptions,
+  ): Promise<RealtimeMicCapture> {
+    const targetSampleRate = options?.targetSampleRate ?? REALTIME_AUDIO_SAMPLE_RATE;
     if (!navigator.mediaDevices?.getUserMedia) {
       // `mediaDevices` is secure-context only and there is no fallback, so a
       // phone paired over plain http://<lan-ip> lands here. Say why.
@@ -66,13 +114,7 @@ export class RealtimeMicCapture {
       );
     }
 
-    const stream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true,
-      },
-    });
+    const stream = await openMicrophoneStream(options?.deviceId ?? null);
     const AudioContextConstructor = getAudioContextConstructor();
     const context = new AudioContextConstructor();
     try {
@@ -84,8 +126,8 @@ export class RealtimeMicCapture {
         channelCount: 1,
         channelCountMode: "explicit",
         processorOptions: {
-          targetSampleRate: REALTIME_AUDIO_SAMPLE_RATE,
-          chunkFrames: pcmChunkFrameCount(),
+          targetSampleRate,
+          chunkFrames: pcmChunkFrameCount(targetSampleRate),
         },
       });
       const capture = new RealtimeMicCapture(stream, context, source, worklet);

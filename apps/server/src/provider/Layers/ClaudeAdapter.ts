@@ -72,12 +72,14 @@ import {
   classifySpawnFailure,
   isLinkedWorktreeCheckout,
   missingWorkingDirectoryDetail,
+  resolveFollowedSessionCwd,
 } from "../../vcs/CheckoutPresence.ts";
 import { CLAUDE_PREVIEW_PANEL_INSTRUCTIONS } from "../previewPanelInstructions.ts";
 import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Deferred from "effect/Deferred";
+import { isFilesystemPathWithin } from "@threadlines/shared/path";
 import { randomUUIDv4 } from "@threadlines/shared/uuid";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -97,7 +99,10 @@ import { ServerConfig } from "../../config.ts";
 import { BROWSER_MCP_SERVER_NAME, mcpEndpointUrl } from "../../mcp/McpHttpServer.ts";
 import { mcpSessionRegistry } from "../../mcp/McpSessionRegistry.ts";
 import { makeClaudeEnvironment } from "../Drivers/ClaudeHome.ts";
-import { ensureClaudeSessionTranscript } from "../Drivers/ClaudeSessionTranscripts.ts";
+import {
+  ensureClaudeSessionTranscript,
+  readClaudeTranscriptWorktreePath,
+} from "../Drivers/ClaudeSessionTranscripts.ts";
 import {
   locateClaudeSubagentMeta,
   locateClaudeSubagentTranscript,
@@ -803,8 +808,8 @@ function isClaudeDeferredCategory(
   return category.isDeferred === true || category.name.trim().toLowerCase().endsWith("(deferred)");
 }
 
-/** Keeps the SDK's category order: legend colors are assigned by index, so
- *  reordering would make them flicker between updates. */
+/** Keeps the SDK's category order so snapshot equality stays a cheap
+ *  element-wise compare; the client sorts for display and colors by name. */
 function normalizeClaudeContextCategories(
   value: SDKControlGetContextUsageResponse["categories"] | undefined,
 ): ThreadTokenUsageSnapshot["contextCategories"] {
@@ -2104,7 +2109,13 @@ function extractContentBlockText(block: unknown): string {
 const SUBAGENT_LIVE_TEXT_MAX_CHARS = 4_000;
 
 const SUBAGENT_TRANSCRIPT_DEFAULT_LIMIT = 200;
+/** Cap on the agent's own words per record; long output truncates rather than
+ *  growing transcript pages unboundedly. */
 const SUBAGENT_TRANSCRIPT_TEXT_MAX_CHARS = 4_000;
+/** Cap on text sent *to* the agent: its spawn prompt and any follow-up
+ *  message. A spawn prompt routinely runs past 10k characters and is the one
+ *  record a reader opens the transcript to read whole, so it keeps far more. */
+const SUBAGENT_TRANSCRIPT_INPUT_TEXT_MAX_CHARS = 32_000;
 const SUBAGENT_TRANSCRIPT_OUTPUT_PREVIEW_MAX_CHARS = 2_000;
 /** Agent ids come from the client and end up in a filesystem path; anything
  *  outside this shape is rejected before it can traverse. */
@@ -2336,9 +2347,13 @@ export function mapClaudeSubagentTranscriptLines(
       options?.onModel?.(recordModel);
     }
     const content = (message as { content?: unknown } | undefined)?.content;
+    const textMaxChars =
+      type === "user"
+        ? SUBAGENT_TRANSCRIPT_INPUT_TEXT_MAX_CHARS
+        : SUBAGENT_TRANSCRIPT_TEXT_MAX_CHARS;
 
     if (typeof content === "string") {
-      const text = capTranscriptText(content, SUBAGENT_TRANSCRIPT_TEXT_MAX_CHARS);
+      const text = capTranscriptText(content, textMaxChars);
       if (text.length > 0) {
         push({ role: type, text, ...(at ? { at } : {}), toolUses: [] });
       }
@@ -2405,7 +2420,7 @@ export function mapClaudeSubagentTranscriptLines(
       }
     }
 
-    const text = capTranscriptText(texts.join("\n"), SUBAGENT_TRANSCRIPT_TEXT_MAX_CHARS);
+    const text = capTranscriptText(texts.join("\n"), textMaxChars);
     const outputPreview = capTranscriptText(
       resultPreviews.join("\n"),
       SUBAGENT_TRANSCRIPT_OUTPUT_PREVIEW_MAX_CHARS,
@@ -5049,13 +5064,22 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         // Init reports where the session actually runs. Resumed sessions
         // keep a mid-session worktree switch (EnterWorktree) across turns,
         // so this diverges from the thread's configured checkout; ingestion
-        // compares and records the divergence on the thread.
+        // compares and records the divergence on the thread. Init also
+        // reports wherever the Bash tool last `cd`'d, so only a move into a
+        // worktree is followed; a subfolder stays on the configured checkout.
         const initCwd = (message as { cwd?: unknown }).cwd;
         if (typeof initCwd === "string" && initCwd.trim().length > 0) {
+          const followedCwd = yield* resolveFollowedSessionCwd({
+            observedCwd: initCwd,
+            configuredCwd: context.session.cwd,
+          }).pipe(
+            Effect.provideService(FileSystem.FileSystem, fileSystem),
+            Effect.provideService(Path.Path, path),
+          );
           yield* offerRuntimeEvent({
             ...base,
             type: "session.cwd.changed",
-            payload: { cwd: initCwd, reason: "session-init" },
+            payload: { cwd: followedCwd, reason: "session-init" },
           });
         }
         return;
@@ -6038,6 +6062,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       // transcript still exists. Relocate the transcript when it lives under
       // another project directory; start fresh when it is gone entirely.
       let resumeState = requestedResumeState;
+      let resumeTranscriptPath: string | undefined;
       if (requestedResumeState?.resume !== undefined) {
         const transcriptResolution = yield* ensureClaudeSessionTranscript({
           environment: claudeEnvironment,
@@ -6056,6 +6081,12 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             }).pipe(Effect.as(undefined)),
           ),
         );
+        if (
+          transcriptResolution?.outcome === "present" ||
+          transcriptResolution?.outcome === "relocated"
+        ) {
+          resumeTranscriptPath = transcriptResolution.transcriptPath;
+        }
         if (transcriptResolution?.outcome === "relocated") {
           yield* Effect.logInfo("claude.resume.transcript-relocated", {
             threadId,
@@ -6093,6 +6124,31 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       const existingResumeSessionId = resumeState?.resume;
       const newSessionId = existingResumeSessionId === undefined ? yield* randomUUIDv4 : undefined;
       const sessionId = existingResumeSessionId ?? newSessionId;
+
+      // A plain resume re-enters the last worktree the transcript records,
+      // whatever cwd it is launched from, so a thread the user moved out of
+      // that worktree snaps straight back into it. A forked resume keeps the
+      // conversation but not the worktree: fork whenever the recorded
+      // worktree is not the checkout this session is being started in. The
+      // fork's new session id is adopted like any other reported id.
+      const resumeWorktreePath =
+        resumeTranscriptPath !== undefined && input.cwd !== undefined
+          ? yield* readClaudeTranscriptWorktreePath(resumeTranscriptPath).pipe(
+              Effect.provideService(FileSystem.FileSystem, fileSystem),
+            )
+          : undefined;
+      const forkResumeOutOfWorktree =
+        typeof resumeWorktreePath === "string" &&
+        input.cwd !== undefined &&
+        !isFilesystemPathWithin(input.cwd, resumeWorktreePath);
+      if (forkResumeOutOfWorktree) {
+        yield* Effect.logInfo("claude.resume.forked-out-of-worktree", {
+          threadId,
+          sessionId: existingResumeSessionId,
+          recordedWorktree: resumeWorktreePath,
+          cwd: input.cwd,
+        });
+      }
 
       const runtimeContext = yield* Effect.context<never>();
       const runFork = Effect.runForkWith(runtimeContext);
@@ -6553,6 +6609,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         ...(fallbackModel ? { fallbackModel } : {}),
         ...(Object.keys(settings).length > 0 ? { settings } : {}),
         ...(existingResumeSessionId ? { resume: existingResumeSessionId } : {}),
+        ...(existingResumeSessionId && forkResumeOutOfWorktree ? { forkSession: true } : {}),
         ...(newSessionId ? { sessionId: newSessionId } : {}),
         includePartialMessages: true,
         enableFileCheckpointing: true,

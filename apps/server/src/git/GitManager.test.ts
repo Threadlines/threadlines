@@ -45,6 +45,8 @@ import {
 
 interface FakeGhScenario {
   prListSequence?: Array<string | GitHubCliError>;
+  /** JSON for the repository-wide merged PR sample; defaults to no samples. */
+  mergedPrSamples?: string;
   prListByHeadSelector?: Record<string, string>;
   prListSequenceByHeadSelector?: Record<string, string[]>;
   createdPrUrl?: string;
@@ -411,6 +413,9 @@ function createGitHubCliWithFakeGh(scenario: FakeGhScenario = {}): {
 
     if (args[0] === "pr" && args[1] === "list") {
       const headSelectorIndex = args.findIndex((value) => value === "--head");
+      if (headSelectorIndex < 0 && args[args.indexOf("--state") + 1] === "merged") {
+        return Effect.succeed(fakeGhOutput((scenario.mergedPrSamples ?? "[]") + "\n"));
+      }
       const headSelector =
         headSelectorIndex >= 0 && headSelectorIndex < args.length - 1
           ? args[headSelectorIndex + 1]
@@ -554,7 +559,7 @@ function createGitHubCliWithFakeGh(scenario: FakeGhScenario = {}): {
             "--limit",
             String(input.limit ?? 1),
             "--json",
-            "number,title,url,baseRefName,headRefName,state,mergedAt,isCrossRepository,headRepository,headRepositoryOwner",
+            "id,number,title,url,baseRefName,headRefName,state,mergedAt,autoMergeRequest,isCrossRepository,headRepository,headRepositoryOwner",
           ],
         }).pipe(
           Effect.map((result) => JSON.parse(result.stdout) as unknown[]),
@@ -598,7 +603,7 @@ function createGitHubCliWithFakeGh(scenario: FakeGhScenario = {}): {
             "view",
             input.reference,
             "--json",
-            "number,title,url,baseRefName,headRefName,state,mergedAt,isCrossRepository,headRepository,headRepositoryOwner",
+            "id,number,title,url,baseRefName,headRefName,state,mergedAt,autoMergeRequest,isCrossRepository,headRepository,headRepositoryOwner",
           ],
         }).pipe(Effect.map((result) => JSON.parse(result.stdout) as GitHubPullRequestSummary)),
       getRepositoryCloneUrls: (input) =>
@@ -1163,7 +1168,7 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
           state: "open",
         });
         expect(ghCalls).toContain(
-          "pr list --head jasonLaster:statemachine --state all --limit 20 --json number,title,url,baseRefName,headRefName,state,mergedAt,updatedAt,isCrossRepository,headRepository,headRepositoryOwner",
+          "pr list --head jasonLaster:statemachine --state all --limit 20 --json id,number,title,url,baseRefName,headRefName,state,mergedAt,updatedAt,autoMergeRequest,isCrossRepository,headRepository,headRepositoryOwner",
         );
       }),
     20_000,
@@ -1570,6 +1575,53 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
       expect(policy?.commitInstructions).toContain("Recent commit subjects from this repository:");
       expect(policy?.commitInstructions).toContain("chore(deps): bump the linter");
       expect(policy?.changeRequestInstructions).toContain("chore(deps): bump the linter");
+    }),
+  );
+
+  it.effect("samples merged pull requests into the repository conventions PR policy", () =>
+    Effect.gen(function* () {
+      const repoDir = yield* makeTempDir("threadlines-git-manager-");
+      yield* initRepo(repoDir);
+      yield* runGit(repoDir, ["checkout", "-b", "feature/sampled-pr"]);
+      const remoteDir = yield* createBareRemote();
+      yield* runGit(repoDir, ["remote", "add", "origin", remoteDir]);
+      yield* runGit(repoDir, ["push", "-u", "origin", "feature/sampled-pr"]);
+      fs.writeFileSync(path.join(repoDir, "sampled.txt"), "sampled\n");
+
+      let policy: TextGenerationPolicy | undefined;
+      const { manager } = yield* makeManager({
+        ghScenario: {
+          // @effect-diagnostics-next-line preferSchemaOverJson:off
+          mergedPrSamples: JSON.stringify([
+            {
+              title: "Point report list at moved reports",
+              body: "Reports moved, so the list linked to nothing.",
+              author: { login: "badcuban", is_bot: false },
+            },
+          ]),
+        },
+        textGeneration: {
+          generatePrContent: (input) =>
+            Effect.sync(() => {
+              policy = input.policy;
+              return { title: "Add sampled file", body: "Adds the sampled file." };
+            }),
+        },
+      });
+
+      const result = yield* runStackedAction(manager, { cwd: repoDir, action: "commit_push_pr" });
+
+      expect(result.pr.status).toBe("created");
+      expect(policy?.kind).toBe("repo_conventions");
+      expect(policy?.changeRequestInstructions).toContain(
+        "Recent merged pull requests from this repository:",
+      );
+      expect(policy?.changeRequestInstructions).toContain(
+        "Title: Point report list at moved reports",
+      );
+      expect(policy?.changeRequestInstructions).toContain(
+        "Reports moved, so the list linked to nothing.",
+      );
     }),
   );
 
@@ -2578,7 +2630,8 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
       expect(result.branch.status).toBe("skipped_not_requested");
       expect(result.pr.status).toBe("created");
       expect(result.pr.number).toBe(88);
-      expect(ghCalls.filter((call) => call.startsWith("pr list "))).toHaveLength(2);
+      // Two open-PR lookups plus the repository-wide merged sample for PR style.
+      expect(ghCalls.filter((call) => call.startsWith("pr list "))).toHaveLength(3);
       expect(
         ghCalls.some((call) => call.includes("pr create --base main --head feature-create-pr")),
       ).toBe(true);

@@ -29,6 +29,7 @@ import { PullRequestActorAvatar } from "./pullRequestPresentation";
 import {
   hasPullRequestLabel,
   PULL_REQUEST_INVOLVEMENT_WORDS,
+  PULL_REQUEST_INVOLVEMENTS,
   PULL_REQUEST_SORT_LABELS,
   pullRequestAuthorFacets,
   pullRequestFilterChips,
@@ -52,9 +53,10 @@ interface FilterOption<Value extends string> {
   readonly label: string;
 }
 
-const INVOLVEMENT_OPTIONS: readonly FilterOption<PullRequestInvolvementFilter>[] = (
-  ["all", "needs-you", "yours", "others"] as const
-).map((value) => ({ value, label: PULL_REQUEST_INVOLVEMENT_WORDS[value] }));
+const INVOLVEMENT_OPTIONS: readonly FilterOption<PullRequestInvolvementFilter>[] = [
+  "all" as const,
+  ...PULL_REQUEST_INVOLVEMENTS,
+].map((value) => ({ value, label: PULL_REQUEST_INVOLVEMENT_WORDS[value] }));
 
 const DRAFT_OPTIONS: readonly FilterOption<PullRequestDraftFilter>[] = [
   { value: "any", label: "Any" },

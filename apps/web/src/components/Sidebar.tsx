@@ -450,6 +450,9 @@ export default function Sidebar() {
   const seenThreadOverlays = useUiStateStore((store) => store.seenThreadOverlays);
   const threadSeedVisitedAtById = useUiStateStore((store) => store.threadSeedVisitedAtById);
   const doneThreadOverlays = useUiStateStore((store) => store.doneThreadOverlays);
+  const threadWrapUpOnPullRequestSettledById = useUiStateStore(
+    (store) => store.threadWrapUpOnPullRequestSettledById,
+  );
   const inboxProjectScopeKey = useUiStateStore((store) => store.inboxProjectScopeKey);
   const setInboxProjectScope = useUiStateStore((store) => store.setInboxProjectScope);
   const inboxEnvironmentScopeId = useUiStateStore((store) => store.inboxEnvironmentScopeId);
@@ -676,10 +679,12 @@ export default function Sidebar() {
         const isDone = isThreadDone({ ...thread, lastVisitedAt }, override, {
           now: nowIso,
           autoDoneAfterDays: INBOX_AUTO_DONE_AFTER_DAYS,
-          // A landing the host did not date is taken as now, which files the
-          // thread the way it always did.
+          // The thread's own word wins over the app setting. A landing the
+          // host did not date is taken as now, which files the thread the way
+          // it always did.
           pullRequestSettledAt:
-            wrapUpOnPullRequestSettled && pullRequestSettled
+            (threadWrapUpOnPullRequestSettledById[threadKey] ?? wrapUpOnPullRequestSettled) &&
+            pullRequestSettled
               ? (pullRequest.settledAt ?? nowIso)
               : null,
         });
@@ -709,6 +714,7 @@ export default function Sidebar() {
       sidebarProjectByKey,
       wrapUpOnPullRequestSettled,
       threadSeedVisitedAtById,
+      threadWrapUpOnPullRequestSettledById,
     ],
   );
 

@@ -51,3 +51,9 @@ dist-electron/
 # streaming benchmark recordings
 apps/web/bench/output/
 apps/web/bench/dist/
+
+# Local captures, rendered previews, verification output, and release packages.
+/output/
+
+# Python cache for the marketing export scripts.
+/docs/marketing/**/__pycache__/

@@ -1,0 +1,27 @@
+{
+  "transitionSeconds": 0.4,
+  "loopSeconds": 1.2,
+  "shots": [
+    {
+      "scene": "inbox",
+      "start": 0.4,
+      "sourceSeconds": 7.4,
+      "holdSeconds": 2.6,
+      "crop": [0, 0, 1600]
+    },
+    {
+      "scene": "pull-requests",
+      "start": 0,
+      "sourceSeconds": 9,
+      "holdSeconds": 1,
+      "crop": [0, 0, 1600]
+    },
+    {
+      "scene": "source-control",
+      "start": 0.4,
+      "sourceSeconds": 7.4,
+      "holdSeconds": 2.6,
+      "crop": [0, 0, 1600]
+    }
+  ]
+}

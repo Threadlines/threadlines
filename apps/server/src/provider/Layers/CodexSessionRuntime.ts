@@ -20,6 +20,7 @@ import {
   type ProviderStartReviewResult,
   type ProviderTurnStartResult,
   type ProviderUserInputAnswers,
+  type McpElicitation,
   type SubagentMetadataUpdatedPayload,
   RuntimeMode,
   ThreadId,
@@ -53,6 +54,7 @@ import * as CodexRpc from "effect-codex-app-server/rpc";
 import * as EffectCodexSchema from "effect-codex-app-server/schema";
 
 import { buildCodexInitializeParams } from "./CodexProvider.ts";
+import { codexMcpElicitation, codexMcpElicitationResponse } from "../CodexMcpElicitation.ts";
 import { expandHomePath } from "../../pathExpansion.ts";
 import {
   CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS,
@@ -393,6 +395,7 @@ interface PendingUserInput {
   readonly turnId: TurnId | undefined;
   readonly itemId: ProviderItemId | undefined;
   readonly answers: Deferred.Deferred<ProviderUserInputAnswers>;
+  readonly elicitation?: McpElicitation;
 }
 
 export interface CollabChildThreadMetadata {
@@ -750,7 +753,7 @@ export function isNativeThreadForkUnsupportedError(error: unknown): boolean {
 
 export function isRecoverableThreadResumeError(error: unknown): boolean {
   const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
-  if (!message.includes("thread")) {
+  if (!message.includes("thread") || message.includes("already has an active writer")) {
     return false;
   }
   return RECOVERABLE_THREAD_RESUME_ERROR_SNIPPETS.some((snippet) => message.includes(snippet));
@@ -1990,6 +1993,52 @@ export const makeCodexSessionRuntime = (
       }),
     );
 
+    yield* client.handleServerRequest("mcpServer/elicitation/request", (payload, metadata) =>
+      Effect.gen(function* () {
+        const elicitation = codexMcpElicitation(payload);
+        if (!elicitation) {
+          yield* emitEvent({
+            kind: "error",
+            threadId: options.threadId,
+            method: "mcpServer/elicitation/request",
+            message: `${payload.serverName} requested a confirmation that this client cannot display (${payload.mode}).`,
+          });
+          return { action: "cancel" as const, content: null };
+        }
+        const requestId = ApprovalRequestId.make(yield* randomUUIDv4);
+        const answers = yield* Deferred.make<ProviderUserInputAnswers>();
+        const turnId = payload.turnId ? TurnId.make(payload.turnId) : undefined;
+        yield* Ref.update(pendingUserInputsRef, (current) =>
+          new Map(current).set(requestId, {
+            requestId,
+            jsonRpcId: String(metadata.id),
+            turnId,
+            itemId: undefined,
+            answers,
+            elicitation,
+          }),
+        );
+        yield* emitEvent({
+          kind: "request",
+          threadId: options.threadId,
+          method: "mcpServer/elicitation/request",
+          requestId,
+          ...(turnId ? { turnId } : {}),
+          payload: { questions: [], isBlocking: true, elicitation },
+        });
+        const resolved = yield* Deferred.await(answers).pipe(
+          Effect.ensuring(
+            Ref.update(pendingUserInputsRef, (current) => {
+              const next = new Map(current);
+              next.delete(requestId);
+              return next;
+            }),
+          ),
+        );
+        return codexMcpElicitationResponse(elicitation, resolved);
+      }),
+    );
+
     yield* client.handleServerRequest("item/tool/requestUserInput", (payload, metadata) =>
       Effect.gen(function* () {
         const requestId = ApprovalRequestId.make(yield* randomUUIDv4);
@@ -2639,7 +2688,20 @@ export const makeCodexSessionRuntime = (
         }),
       respondToUserInput: (requestId, answers) =>
         Effect.gen(function* () {
-          const codexAnswers = yield* toCodexUserInputAnswers(answers);
+          const waiting = (yield* Ref.get(pendingUserInputsRef)).get(requestId);
+          const elicitation = waiting?.elicitation;
+          if (elicitation) {
+            yield* Effect.try({
+              try: () => codexMcpElicitationResponse(elicitation, answers),
+              catch: (cause) =>
+                CodexErrors.CodexAppServerRequestError.invalidParams(
+                  cause instanceof Error ? cause.message : "Invalid form response",
+                ),
+            });
+          }
+          const codexAnswers = waiting?.elicitation
+            ? undefined
+            : yield* toCodexUserInputAnswers(answers);
           const pending = yield* Ref.modify(pendingUserInputsRef, (current) => {
             const next = new Map(current);
             next.delete(requestId);
@@ -2654,12 +2716,14 @@ export const makeCodexSessionRuntime = (
           yield* emitEvent({
             kind: "notification",
             threadId: options.threadId,
-            method: "item/tool/requestUserInput/answered",
+            method: pending.elicitation
+              ? "mcpServer/elicitation/answered"
+              : "item/tool/requestUserInput/answered",
             requestId: pending.requestId,
             ...(pending.turnId ? { turnId: pending.turnId } : {}),
             ...(pending.itemId ? { itemId: pending.itemId } : {}),
             payload: {
-              answers: codexAnswers,
+              answers: codexAnswers ?? answers,
             },
           });
         }),

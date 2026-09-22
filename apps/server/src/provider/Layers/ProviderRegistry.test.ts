@@ -3059,7 +3059,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
           );
           const fable51 = status.models.find((model) => model.slug === "claude-fable-5-1");
           if (!fable51?.capabilities) {
-            assert.fail("Expected Claude Fable 5.1 capabilities for Claude Code v2.1.257.");
+            assert.fail("Expected Claude Fable 5.1 capabilities for Claude Code v2.1.280.");
           }
           assert.strictEqual(fable51.name, "Claude Fable 5.1");
           const effortDescriptor = fable51.capabilities.optionDescriptors?.find(
@@ -3087,7 +3087,101 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
           Effect.provide(
             mockSpawnerLayer((args) => {
               const joined = args.join(" ");
-              if (joined === "--version") return { stdout: "2.1.257\n", stderr: "", code: 0 };
+              if (joined === "--version") return { stdout: "2.1.280\n", stderr: "", code: 0 };
+              if (joined === "auth status")
+                return { stdout: '{"loggedIn":true}\n', stderr: "", code: 0 };
+              throw new Error(`Unexpected args: ${joined}`);
+            }),
+          ),
+        ),
+      );
+
+      it.effect("includes Claude Opus 5.5 with launch capabilities on supported versions", () =>
+        Effect.gen(function* () {
+          const status = yield* checkClaudeProviderStatus(
+            defaultClaudeSettings,
+            claudeCapabilities(),
+          );
+          const opus55 = status.models.find((model) => model.slug === "claude-opus-5-5");
+          if (!opus55?.capabilities) {
+            assert.fail("Expected Claude Opus 5.5 capabilities for Claude Code v2.1.280.");
+          }
+          assert.strictEqual(opus55.name, "Claude Opus 5.5");
+          const effortDescriptor = opus55.capabilities.optionDescriptors?.find(
+            (descriptor) => descriptor.type === "select" && descriptor.id === "effort",
+          );
+          assert.deepStrictEqual(
+            effortDescriptor?.type === "select" ? effortDescriptor.options : undefined,
+            [
+              { id: "low", label: "Low" },
+              { id: "medium", label: "Medium" },
+              { id: "high", label: "High", isDefault: true },
+              { id: "xhigh", label: "Extra High" },
+              { id: "max", label: "Max" },
+            ],
+          );
+          assert.strictEqual(
+            opus55.capabilities.optionDescriptors?.some(
+              (descriptor) => descriptor.type === "boolean" && descriptor.id === "fastMode",
+            ),
+            true,
+          );
+          assert.strictEqual(
+            opus55.capabilities.optionDescriptors?.some(
+              (descriptor) => descriptor.id === "contextWindow",
+            ),
+            false,
+          );
+          assert.strictEqual(status.message, undefined);
+        }).pipe(
+          Effect.provide(
+            mockSpawnerLayer((args) => {
+              const joined = args.join(" ");
+              if (joined === "--version") return { stdout: "2.1.280\n", stderr: "", code: 0 };
+              if (joined === "auth status")
+                return { stdout: '{"loggedIn":true}\n', stderr: "", code: 0 };
+              throw new Error(`Unexpected args: ${joined}`);
+            }),
+          ),
+        ),
+      );
+
+      // Claude Code 2.1.280 lists Opus 5.5 only as `claude-opus-5-5[1m]`, and
+      // its `default` row carries the alias label rather than the model name.
+      it.effect("names the live default model from its slug, not the CLI's default label", () =>
+        Effect.gen(function* () {
+          const liveModel: Omit<ClaudeModelInfo, "value" | "displayName"> = {
+            resolvedModel: "claude-opus-7[1m]",
+            description: "Opus 7 with 1M context",
+            supportsEffort: true,
+            supportedEffortLevels: ["low", "medium", "high", "xhigh", "max"],
+            supportsAdaptiveThinking: true,
+            supportsFastMode: true,
+            supportsAutoMode: true,
+          };
+          const status = yield* checkClaudeProviderStatus(
+            defaultClaudeSettings,
+            claudeCapabilities({
+              models: [
+                { ...liveModel, value: "default", displayName: "Default (recommended)" },
+                { ...liveModel, value: "opus[1m]", displayName: "Opus (1M context)" },
+              ],
+            }),
+          );
+
+          const opus7Rows = status.models.filter((model) => model.slug === "claude-opus-7[1m]");
+          assert.strictEqual(opus7Rows.length, 1);
+          assert.strictEqual(opus7Rows[0]?.name, "Claude Opus 7 (1M)");
+          assert.strictEqual(opus7Rows[0]?.isDefault, true);
+          assert.strictEqual(
+            status.models.some((model) => model.name === "Default (recommended)"),
+            false,
+          );
+        }).pipe(
+          Effect.provide(
+            mockSpawnerLayer((args) => {
+              const joined = args.join(" ");
+              if (joined === "--version") return { stdout: "2.1.280\n", stderr: "", code: 0 };
               if (joined === "auth status")
                 return { stdout: '{"loggedIn":true}\n', stderr: "", code: 0 };
               throw new Error(`Unexpected args: ${joined}`);
@@ -3553,6 +3647,37 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
                   stderr: "",
                   code: 0,
                 };
+              throw new Error(`Unexpected args: ${joined}`);
+            }),
+          ),
+        ),
+      );
+
+      it.effect("hides Claude Opus 5.5 before the Claude Code version that exposes it", () =>
+        Effect.gen(function* () {
+          const status = yield* checkClaudeProviderStatus(
+            defaultClaudeSettings,
+            claudeCapabilities(),
+          );
+          assert.strictEqual(
+            status.models.some((model) => model.slug === "claude-opus-5-5"),
+            false,
+          );
+          assert.strictEqual(
+            status.models.some((model) => model.slug === "claude-opus-5"),
+            true,
+          );
+          assert.strictEqual(
+            status.message,
+            "Claude Code v2.1.279 is too old for Claude Opus 5.5. Upgrade to v2.1.280 or newer to access it.",
+          );
+        }).pipe(
+          Effect.provide(
+            mockSpawnerLayer((args) => {
+              const joined = args.join(" ");
+              if (joined === "--version") return { stdout: "2.1.279\n", stderr: "", code: 0 };
+              if (joined === "auth status")
+                return { stdout: '{"loggedIn":true}\n', stderr: "", code: 0 };
               throw new Error(`Unexpected args: ${joined}`);
             }),
           ),

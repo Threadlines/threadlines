@@ -50,6 +50,12 @@ export function sourceControlRefFromInput(input: {
   return input.source ?? parseSourceControlOwnerRef(input.headSelector);
 }
 
+/** A merged change request's title and body, used as a writing sample. */
+export interface ChangeRequestSample {
+  readonly title: string;
+  readonly body: string;
+}
+
 export interface SourceControlProviderShape {
   readonly kind: SourceControlProviderKind;
   readonly listChangeRequests: (input: {
@@ -60,6 +66,16 @@ export interface SourceControlProviderShape {
     readonly state: ChangeRequestState | "all";
     readonly limit?: number;
   }) => Effect.Effect<ReadonlyArray<ChangeRequest>, SourceControlProviderError>;
+  /**
+   * Recent merged change requests written by people, newest first, so generated
+   * titles and bodies can mirror the repository's own style. Hosts that do not
+   * sample return an empty list; callers treat the result as optional context.
+   */
+  readonly listRecentMergedChangeRequests: (input: {
+    readonly cwd: string;
+    readonly context?: SourceControlProviderContext;
+    readonly limit: number;
+  }) => Effect.Effect<ReadonlyArray<ChangeRequestSample>, SourceControlProviderError>;
   readonly getChangeRequest: (input: {
     readonly cwd: string;
     readonly context?: SourceControlProviderContext;

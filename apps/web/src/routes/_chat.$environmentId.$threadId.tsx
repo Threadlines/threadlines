@@ -24,17 +24,30 @@ import { useAgentsPanelSource } from "../agentsPanelStore";
 import { preloadDiffPanel, schedulePreloadDiffPanel } from "../diffPanelPreload";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { useSettings } from "../hooks/useSettings";
+import { useUiStateStore } from "../uiStateStore";
 import {
   gitWorkingTreeDiffQueryOptions,
   invalidateGitWorkingTreeDiffQueries,
 } from "../lib/gitReactQuery";
 import { useGitStatus } from "../lib/gitStatusState";
+import { setThreadPullRequestAutoFix } from "../lib/threadPullRequestCommands";
 import {
   PULL_REQUEST_COUNT_REFETCH_INTERVAL_MS,
+  usePullRequestDetail,
   usePullRequestLists,
 } from "../lib/pullRequestsReactQuery";
 import { LazyPullRequestDetailPanel } from "../components/pull-requests/LazyPullRequestDetailPanel";
-import { resolveThreadPullRequest } from "../components/pull-requests/pullRequests.logic";
+import { PullRequestHoverCardProvider } from "../components/pull-requests/PullRequestHoverCard";
+import type { ComposerPullRequest } from "../components/chat/ComposerPullRequestRow";
+import {
+  composerPullRequestDismissalKey as composerPullRequestDismissalKeyFor,
+  dismissComposerPullRequest,
+  useIsComposerPullRequestDismissed,
+} from "../components/chat/composerPullRequestDismissals";
+import {
+  resolveThreadPullRequest,
+  threadViewBranch,
+} from "../components/pull-requests/pullRequests.logic";
 import { Button } from "~/components/ui/button";
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader } from "~/components/ui/empty";
 import {
@@ -313,7 +326,10 @@ function ChatThreadRouteView() {
     () =>
       serverThread
         ? resolveThreadPullRequest({
-            thread: serverThread,
+            thread: {
+              ...serverThread,
+              branch: threadViewBranch(serverThread, pullRequestGitStatus.data),
+            },
             gitStatus: pullRequestGitStatus.data,
             openEntries: openPullRequests.entries,
             projects: pullRequestProjects,
@@ -483,6 +499,78 @@ function ChatThreadRouteView() {
         ? { url: threadPullRequest.url, open: () => selectTab("pullRequest") }
         : null,
     [selectTab, threadPullRequest, threadPullRequestReference],
+  );
+  // The composer's docked row reads the same detail the Pull request tab does,
+  // on the same key: one poll while checks run, whichever of them is on screen.
+  const threadPullRequestDetail = usePullRequestDetail({
+    environmentId: threadPullRequestReference ? (threadRef?.environmentId ?? null) : null,
+    reference: threadPullRequestReference,
+  });
+  // Closing the row is per pull request: a thread that moves on to another one
+  // gets the row back for it.
+  const composerPullRequestDismissalKey =
+    threadPullRequestReference && currentThreadKey !== null
+      ? composerPullRequestDismissalKeyFor({
+          threadKey: currentThreadKey,
+          repository: threadPullRequestReference.repository,
+          number: threadPullRequestReference.number,
+        })
+      : null;
+  const composerPullRequestDismissed = useIsComposerPullRequestDismissed(
+    composerPullRequestDismissalKey,
+  );
+  const activeProjectTitle = activeProject?.name ?? null;
+  // The app setting is the default; a thread that has said otherwise wins.
+  const wrapUpOnSettledDefault = useSettings(
+    (settings) => settings.wrapUpThreadsOnPullRequestSettled,
+  );
+  const threadWrapUpOnSettled = useUiStateStore((store) =>
+    currentThreadKey === null
+      ? undefined
+      : store.threadWrapUpOnPullRequestSettledById[currentThreadKey],
+  );
+  const composerPullRequest = useMemo<ComposerPullRequest | null>(
+    () =>
+      threadRef &&
+      currentThreadKey !== null &&
+      threadPullRequest &&
+      threadPullRequestReference &&
+      composerPullRequestDismissalKey !== null &&
+      !composerPullRequestDismissed
+        ? {
+            environmentId: threadRef.environmentId,
+            reference: threadPullRequestReference,
+            pullRequest: threadPullRequest,
+            projectTitle: activeProjectTitle,
+            detail: threadPullRequestDetail,
+            onOpen: () => selectTab("pullRequest"),
+            onDismiss: () => dismissComposerPullRequest(composerPullRequestDismissalKey),
+            autoFix: serverThread?.pullRequestAutoFix ?? false,
+            onAutoFixChange: (next: boolean) => {
+              void setThreadPullRequestAutoFix(threadRef, next);
+            },
+            wrapUpOnSettled: threadWrapUpOnSettled ?? wrapUpOnSettledDefault,
+            onWrapUpOnSettledChange: (next: boolean) => {
+              useUiStateStore
+                .getState()
+                .setThreadWrapUpOnPullRequestSettled(currentThreadKey, next);
+            },
+          }
+        : null,
+    [
+      activeProjectTitle,
+      composerPullRequestDismissalKey,
+      composerPullRequestDismissed,
+      currentThreadKey,
+      selectTab,
+      serverThread?.pullRequestAutoFix,
+      threadPullRequest,
+      threadPullRequestDetail,
+      threadPullRequestReference,
+      threadRef,
+      threadWrapUpOnSettled,
+      wrapUpOnSettledDefault,
+    ],
   );
   const closeTab = useCallback(
     (tab: RightPanelTab) => {
@@ -655,14 +743,17 @@ function ChatThreadRouteView() {
       <>
         <SidebarInset className="h-svh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground md:h-dvh">
           <ThreadPullRequestLinkContext.Provider value={threadPullRequestLink}>
-            <ChatView
-              environmentId={threadRef.environmentId}
-              threadId={threadRef.threadId}
-              onDiffPanelOpen={markDiffOpened}
-              reserveTitleBarControlInset={!sidebarVisible}
-              composerFocusRequest={composerFocusRequest}
-              routeKind="server"
-            />
+            <PullRequestHoverCardProvider threadPullRequest={threadPullRequest}>
+              <ChatView
+                environmentId={threadRef.environmentId}
+                threadId={threadRef.threadId}
+                onDiffPanelOpen={markDiffOpened}
+                reserveTitleBarControlInset={!sidebarVisible}
+                composerFocusRequest={composerFocusRequest}
+                composerPullRequest={composerPullRequest}
+                routeKind="server"
+              />
+            </PullRequestHoverCardProvider>
           </ThreadPullRequestLinkContext.Provider>
         </SidebarInset>
         <ChatRightPanelInlineSidebar
@@ -681,13 +772,16 @@ function ChatThreadRouteView() {
     <>
       <SidebarInset className="h-svh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground md:h-dvh">
         <ThreadPullRequestLinkContext.Provider value={threadPullRequestLink}>
-          <ChatView
-            environmentId={threadRef.environmentId}
-            threadId={threadRef.threadId}
-            onDiffPanelOpen={markDiffOpened}
-            composerFocusRequest={composerFocusRequest}
-            routeKind="server"
-          />
+          <PullRequestHoverCardProvider threadPullRequest={threadPullRequest}>
+            <ChatView
+              environmentId={threadRef.environmentId}
+              threadId={threadRef.threadId}
+              onDiffPanelOpen={markDiffOpened}
+              composerFocusRequest={composerFocusRequest}
+              composerPullRequest={composerPullRequest}
+              routeKind="server"
+            />
+          </PullRequestHoverCardProvider>
         </ThreadPullRequestLinkContext.Provider>
       </SidebarInset>
       <RightPanelSheet

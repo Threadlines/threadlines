@@ -235,7 +235,14 @@ export const make = Effect.fn("makeSourceControlToolMaintenance")(function* (
             target,
             operation,
             status: "running",
-            message: `${operation === "install" ? "Installing." : "Updating."}${platform === "win32" ? " Check for a Windows permission prompt." : ""}`,
+            // The package manager downloads before requesting elevation. A
+            // background permission prompt may need opening from the taskbar.
+            message:
+              platform === "win32"
+                ? "Downloading and installing. Windows may ask for permission after the download finishes. You can stay on this page. If the prompt stays behind the app, click the flashing shield in the taskbar."
+                : operation === "install"
+                  ? "Installing."
+                  : "Updating.",
           });
           let updaterStarted = false;
           for (const step of recipe.steps) {
@@ -293,7 +300,7 @@ export const make = Effect.fn("makeSourceControlToolMaintenance")(function* (
             operation,
             status: updaterStarted ? "started" : "succeeded",
             message: updaterStarted
-              ? "Finish the Windows installer, then rescan."
+              ? "Finish the Windows installer, then rescan. If it isn't showing, click the flashing shield in the taskbar."
               : operation === "install"
                 ? "Installed."
                 : "Update finished.",

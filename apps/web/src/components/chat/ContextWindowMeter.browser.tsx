@@ -134,6 +134,12 @@ describe("ContextWindowMeter", () => {
 
       await expect.element(page.getByText(/1.2m of 1.3m input tokens/)).toBeVisible();
       expect(contextSegmentNames()).toEqual(["Messages", "System tools"]);
+      // Colors follow the category name, not its position in the provider's list.
+      expect(
+        document
+          .querySelector('[data-context-segment="Messages"]')
+          ?.classList.contains("bg-primary"),
+      ).toBe(true);
 
       const breakdownToggle = page.getByRole("button", { name: "Show context breakdown" });
       await expect.element(page.getByText("System tools")).not.toBeInTheDocument();

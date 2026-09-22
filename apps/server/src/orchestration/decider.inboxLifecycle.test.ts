@@ -39,6 +39,7 @@ function makeReadModel(): OrchestrationReadModel {
         updatedAt: now,
         archivedAt: null,
         pinnedAt: null,
+        pullRequestAutoFix: false,
         doneOverride: null,
         lastSeenAt: null,
         deletedAt: null,
@@ -100,6 +101,48 @@ describe("decider inbox lifecycle", () => {
       payload: { threadId, at: "1999-01-01T00:00:00.000Z" },
     });
     expect(event?.payload).not.toHaveProperty("updatedAt");
+  });
+
+  it("records the pull request auto-fix switch, and refuses it on an archived thread", async () => {
+    const decided = await Effect.runPromise(
+      decideOrchestrationCommand({
+        command: {
+          type: "thread.pull-request-automation.set",
+          commandId: CommandId.make("cmd-auto-fix-on"),
+          threadId,
+          autoFix: true,
+        },
+        readModel: makeReadModel(),
+      }),
+    );
+    const event = Array.isArray(decided) ? decided[0] : decided;
+
+    expect(event).toMatchObject({
+      type: "thread.pull-request-automation-changed",
+      aggregateKind: "thread",
+      aggregateId: threadId,
+      payload: { threadId, autoFix: true },
+    });
+    // Unlike filing, arming the watcher is work on the thread, so it stamps.
+    expect(event?.payload).toHaveProperty("updatedAt");
+
+    const archived = makeReadModel();
+    await expect(
+      Effect.runPromise(
+        decideOrchestrationCommand({
+          command: {
+            type: "thread.pull-request-automation.set",
+            commandId: CommandId.make("cmd-auto-fix-archived"),
+            threadId,
+            autoFix: true,
+          },
+          readModel: {
+            ...archived,
+            threads: archived.threads.map((thread) => ({ ...thread, archivedAt: now })),
+          },
+        }),
+      ),
+    ).rejects.toThrow("already archived");
   });
 
   it("rejects filing a thread that does not exist", async () => {

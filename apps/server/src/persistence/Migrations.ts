@@ -70,6 +70,7 @@ import Migration0048 from "./Migrations/048_BackfillThreadSubagents.ts";
 import Migration0049 from "./Migrations/049_ProjectionThreadSubagentsBackgrounded.ts";
 import Migration0050 from "./Migrations/050_ProjectionTranscriptEventSequence.ts";
 import Migration0051 from "./Migrations/051_ProjectionThreadsBlockingUserInput.ts";
+import Migration0052 from "./Migrations/052_ProjectionThreadsPullRequestAutoFix.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -133,6 +134,7 @@ export const migrationEntries = [
   [49, "ProjectionThreadSubagentsBackgrounded", Migration0049],
   [50, "ProjectionTranscriptEventSequence", Migration0050],
   [51, "ProjectionThreadsBlockingUserInput", Migration0051],
+  [52, "ProjectionThreadsPullRequestAutoFix", Migration0052],
 ] as const;
 
 /** Highest id in the full registry, so the "n of total" count is the real total. */

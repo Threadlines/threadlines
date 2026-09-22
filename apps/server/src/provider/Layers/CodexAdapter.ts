@@ -13,6 +13,7 @@ import {
   type CanonicalRequestType,
   type CodexSettings,
   EventId,
+  UserInputRequestedPayload,
   ProviderDriverKind,
   type ProviderEvent,
   type ProviderExternalThreadCandidate,
@@ -1443,6 +1444,12 @@ export function mapToRuntimeEvents(
   }
 
   if (event.kind === "request") {
+    if (event.method === "mcpServer/elicitation/request") {
+      const payload = readPayload(UserInputRequestedPayload, event.payload);
+      return payload
+        ? [{ ...runtimeEventBase(event, canonicalThreadId), type: "user-input.requested", payload }]
+        : [];
+    }
     if (event.method === "item/tool/requestUserInput") {
       const payload =
         readPayload(EffectCodexSchema.ServerRequest__ToolRequestUserInputParams, event.payload) ??
@@ -2340,6 +2347,16 @@ export function mapToRuntimeEvents(
         payload: {
           answers: toCanonicalUserInputAnswers(payload.answers),
         },
+      },
+    ];
+  }
+
+  if (event.method === "mcpServer/elicitation/answered") {
+    return [
+      {
+        ...runtimeEventBase(event, canonicalThreadId),
+        type: "user-input.resolved",
+        payload: { answers: recordValue(recordValue(event.payload)?.answers) ?? {} },
       },
     ];
   }

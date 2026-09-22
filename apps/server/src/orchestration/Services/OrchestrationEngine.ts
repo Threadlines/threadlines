@@ -10,14 +10,19 @@
  *
  * @module OrchestrationEngineService
  */
-import type { OrchestrationCommand, OrchestrationEvent } from "@threadlines/contracts";
+import type { CommandId, OrchestrationCommand, OrchestrationEvent } from "@threadlines/contracts";
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
+import type * as Option from "effect/Option";
 import type * as Scope from "effect/Scope";
 import type * as Stream from "effect/Stream";
 
 import type { OrchestrationDispatchError } from "../Errors.ts";
-import type { OrchestrationEventStoreError } from "../../persistence/Errors.ts";
+import type {
+  OrchestrationCommandReceiptRepositoryError,
+  OrchestrationEventStoreError,
+} from "../../persistence/Errors.ts";
+import type { OrchestrationCommandReceipt } from "../../persistence/Services/OrchestrationCommandReceipts.ts";
 
 /**
  * OrchestrationEngineShape - Service API for orchestration command and event flow.
@@ -45,6 +50,21 @@ export interface OrchestrationEngineShape {
   readonly dispatch: (
     command: OrchestrationCommand,
   ) => Effect.Effect<{ sequence: number }, OrchestrationDispatchError, never>;
+
+  /**
+   * Read the receipt an earlier dispatch left for `commandId`, if any.
+   *
+   * Lets a caller that runs several dispatches under one client command
+   * (a bootstrap turn start) answer a client retry the way `dispatch` would:
+   * with the accepted sequence, or the original rejection.
+   */
+  readonly getCommandReceipt: (
+    commandId: CommandId,
+  ) => Effect.Effect<
+    Option.Option<OrchestrationCommandReceipt>,
+    OrchestrationCommandReceiptRepositoryError,
+    never
+  >;
 
   /**
    * Stream persisted domain events in dispatch order.

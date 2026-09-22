@@ -16,9 +16,12 @@ const COMMIT_MESSAGE_SUMMARY_PROMPT_MAX_CHARS = 4_000;
 const COMMIT_MESSAGE_PATCH_PROMPT_MAX_CHARS = 8_000;
 const PR_CONTEXT_PROMPT_MAX_CHARS = 40_000;
 
-function policyInstruction(instruction: string | undefined): ReadonlyArray<string> {
+function policyInstruction(
+  instruction: string | undefined,
+  maxChars = 4_000,
+): ReadonlyArray<string> {
   const trimmed = instruction?.trim();
-  return trimmed ? ["", "Additional instructions:", limitSection(trimmed, 4_000)] : [];
+  return trimmed ? ["", "Additional instructions:", limitSection(trimmed, maxChars)] : [];
 }
 
 // ---------------------------------------------------------------------------
@@ -100,11 +103,19 @@ export interface PrContentPromptInput {
   prTemplate?: string | undefined;
 }
 
+// Neutral by design: the body follows common pull request practice rather than
+// a Threadlines house format, so the button reads naturally in any repository.
 const PR_DEFAULT_BODY_RULES: ReadonlyArray<string> = [
-  "- body must be markdown and include headings '## Summary' and '## Testing'",
-  "- under Summary, provide short bullet points",
-  "- under Testing, include bullet points with concrete checks or 'Not run' where appropriate",
+  "- body must be markdown",
+  "- open with one or two sentences on what changed and why it was needed",
+  "- add short bullet points only when the change has several distinct parts worth calling out",
+  "- mention verification only when the commits or diff show concrete evidence such as tests added or changed; never write 'Not run' or invent checks",
+  "- do not add section headings unless the repository's own pull requests use them",
 ];
+
+// Repository conventions attach merged pull request samples, which need more
+// room than a commit policy's few lines of guidance.
+const PR_POLICY_INSTRUCTION_MAX_CHARS = 8_000;
 
 const PR_TEMPLATE_BODY_RULES: ReadonlyArray<string> = [
   "- body must be markdown and follow the repository pull request template structure",
@@ -123,7 +134,7 @@ export function buildPrContentPrompt(input: PrContentPromptInput) {
     "Rules:",
     "- title should be concise and specific",
     ...(hasPrTemplate ? PR_TEMPLATE_BODY_RULES : PR_DEFAULT_BODY_RULES),
-    ...policyInstruction(input.policy?.changeRequestInstructions),
+    ...policyInstruction(input.policy?.changeRequestInstructions, PR_POLICY_INSTRUCTION_MAX_CHARS),
     "",
     `Base branch: ${input.baseBranch}`,
     `Head branch: ${input.headBranch}`,

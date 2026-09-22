@@ -1,6 +1,7 @@
 import { ChevronDownIcon } from "lucide-react";
 import { useCallback, useLayoutEffect, useRef, useState } from "react";
 
+import { openExternalUrl } from "~/lib/externalLinks";
 import { cn } from "~/lib/utils";
 import {
   type ContextWindowSnapshot,
@@ -9,8 +10,9 @@ import {
   formatContextWindowTokens,
 } from "~/lib/contextWindow";
 import {
-  isProviderUsageNearLimit,
   type ProviderAccountUsagePresentation,
+  providerUsageNearLimitColor,
+  usageMeterColor,
 } from "~/lib/providerUsage";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -29,6 +31,7 @@ function AccountUsageBar(props: {
   usedPercent: number;
   warning: boolean;
 }) {
+  const meterColor = usageMeterColor(props.usedPercent, props.warning);
   return (
     <div className="space-y-1">
       <div className="flex min-w-0 items-baseline justify-between gap-3 text-xs">
@@ -44,29 +47,35 @@ function AccountUsageBar(props: {
         className="h-1 overflow-hidden rounded-full bg-muted"
       >
         <div
-          className={cn(
-            "h-full rounded-full transition-[width]",
-            props.warning ? "bg-warning" : "bg-primary",
-          )}
-          style={{ width: `${props.usedPercent}%` }}
+          className={cn("h-full rounded-full transition-[width]", !meterColor && "bg-primary")}
+          style={{ width: `${props.usedPercent}%`, backgroundColor: meterColor }}
         />
       </div>
     </div>
   );
 }
 
-/** Categorical swatches assigned by index (cycled), so a category keeps its
- *  color as long as the provider keeps its order. */
-const CONTEXT_CATEGORY_COLOR_CLASS_NAMES = [
-  "bg-context-cat-1",
-  "bg-context-cat-2",
-  "bg-context-cat-3",
-  "bg-context-cat-4",
-  "bg-context-cat-5",
-  "bg-context-cat-6",
-  "bg-context-cat-7",
-  "bg-context-cat-8",
-] as const;
+/** Swatches keyed by the provider's category name so a category looks the same
+ *  in every thread: conversation content is the primary color, the things the
+ *  session was given (prompt, tools, memory, skills) each get a fixed hue, and
+ *  reserved-but-empty space is gray. Unknown names share one fallback. */
+const CONTEXT_CATEGORY_COLOR_CLASS_NAMES: Readonly<Record<string, string>> = {
+  messages: "bg-primary",
+  "system prompt": "bg-context-system-prompt",
+  "system tools": "bg-context-system-tools",
+  "mcp tools": "bg-context-mcp-tools",
+  "memory files": "bg-context-memory-files",
+  skills: "bg-context-skills",
+  "autocompact buffer": "bg-muted-foreground/45",
+};
+const CONTEXT_CATEGORY_FALLBACK_COLOR_CLASS_NAME = "bg-context-other";
+
+function contextCategoryColorClassName(name: string): string {
+  return (
+    CONTEXT_CATEGORY_COLOR_CLASS_NAMES[name.trim().toLowerCase()] ??
+    CONTEXT_CATEGORY_FALLBACK_COLOR_CLASS_NAME
+  );
+}
 
 type ContextBreakdownSegment = {
   readonly key: string;
@@ -89,17 +98,15 @@ function buildContextBreakdownSegments(
   const toPercentage = (tokens: number) => Math.max(0, Math.min(100, (tokens / maxTokens) * 100));
   const categories = usage.contextCategories ?? null;
   if (categories && categories.length > 0) {
-    // Colors are keyed to the provider's order (stable across updates), then
-    // the bar and legend display largest-first.
+    // The bar and legend display largest-first; colors come from the name, so
+    // the sort never reshuffles them.
     return categories
       .map((category, index) => ({
         key: `${index}-${category.name}`,
         name: category.name,
         tokens: category.tokens,
         percentage: toPercentage(category.tokens),
-        colorClassName:
-          CONTEXT_CATEGORY_COLOR_CLASS_NAMES[index % CONTEXT_CATEGORY_COLOR_CLASS_NAMES.length] ??
-          CONTEXT_CATEGORY_COLOR_CLASS_NAMES[0],
+        colorClassName: contextCategoryColorClassName(category.name),
       }))
       .sort((left, right) => right.tokens - left.tokens);
   }
@@ -169,7 +176,8 @@ export function ContextWindowMeter(props: {
         cachedInputRate.cachedTokens,
       )} of ${formatContextWindowTokens(cachedInputRate.inputTokens)} input tokens`
     : null;
-  const usageNearLimit = isProviderUsageNearLimit(accountUsage);
+  const usageNearLimitColor = providerUsageNearLimitColor(accountUsage);
+  const usageNearLimit = usageNearLimitColor !== undefined;
   const usedPercentage = formatContextWindowPercentage(usage?.usedPercentage ?? null);
   const normalizedPercentage = Math.max(0, Math.min(100, usage?.usedPercentage ?? 0));
   const radius = 9.75;
@@ -319,7 +327,8 @@ export function ContextWindowMeter(props: {
               ) : null}
               {usageNearLimit ? (
                 <span
-                  className="absolute -right-px -top-px h-1.5 w-1.5 rounded-full bg-warning ring-2 ring-background"
+                  className="absolute -right-px -top-px h-1.5 w-1.5 rounded-full ring-2 ring-background"
+                  style={{ backgroundColor: usageNearLimitColor }}
                   aria-hidden="true"
                 />
               ) : null}
@@ -500,6 +509,17 @@ export function ContextWindowMeter(props: {
                       ) : null}
                     </button>
                   ) : null}
+                </div>
+              ) : accountUsage.externalResets ? (
+                <div className="flex min-w-0 items-center gap-2 text-xs">
+                  <span className="shrink-0 font-medium text-foreground">Resets</span>
+                  <button
+                    type="button"
+                    onClick={() => openExternalUrl(accountUsage.externalResets!.url)}
+                    className={contextWindowActionButtonClassName}
+                  >
+                    {accountUsage.externalResets.label}
+                  </button>
                 </div>
               ) : null}
               {accountUsage.spendControl ? (

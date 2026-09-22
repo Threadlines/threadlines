@@ -251,7 +251,10 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       assert.equal(macConfig.gatekeeperAssess, false);
       assert.equal(macConfig.notarize, undefined);
       assert.equal(macConfig.extraResources, undefined);
-      assert.equal(macConfig.extendInfo, undefined);
+      // Dictation records from the microphone, so every Mac build declares why.
+      assert.deepStrictEqual(macConfig.extendInfo, {
+        NSMicrophoneUsageDescription: "Threadlines uses the microphone for dictation.",
+      });
     }),
   );
 
@@ -282,7 +285,10 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         `${stageResourcesDir.replaceAll("\\", "/")}/Assets.car`,
       );
       assert.equal(extraResources[0]?.to, "Assets.car");
-      assert.deepStrictEqual(macConfig.extendInfo, { CFBundleIconName: "AppIcon" });
+      assert.deepStrictEqual(macConfig.extendInfo, {
+        CFBundleIconName: "AppIcon",
+        NSMicrophoneUsageDescription: "Threadlines uses the microphone for dictation.",
+      });
     }).pipe(Effect.scoped),
   );
 

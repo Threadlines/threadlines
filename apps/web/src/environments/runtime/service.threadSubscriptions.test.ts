@@ -129,6 +129,7 @@ function makeThreadShellSnapshot(params: {
         updatedAt: "2026-04-13T00:00:00.000Z",
         archivedAt: null,
         pinnedAt: null,
+        pullRequestAutoFix: false,
         doneOverride: null,
         lastSeenAt: null,
         session: params.sessionStatus

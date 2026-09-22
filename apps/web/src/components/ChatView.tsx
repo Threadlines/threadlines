@@ -129,8 +129,6 @@ import {
 import { useTheme } from "../hooks/useTheme";
 import { useTurnDiffSummaries } from "../hooks/useTurnDiffSummaries";
 import { useMediaQuery } from "../hooks/useMediaQuery";
-import { useRealtimeVoiceMode } from "../hooks/useRealtimeVoiceMode";
-import { useWsConnectionStatus } from "../rpc/wsConnectionState";
 import { useCommandPaletteStore } from "../commandPaletteStore";
 import {
   RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY,
@@ -207,6 +205,7 @@ import {
   useTerminalStateStore,
 } from "../terminalStateStore";
 import { ChatComposer, type ChatComposerHandle } from "./chat/ChatComposer";
+import type { ComposerPullRequest } from "./chat/ComposerPullRequestRow";
 import { type ComposerGoalSetInput } from "./chat/ComposerGoalBar";
 import { getComposerProviderState } from "./chat/composerProviderState";
 import { ExpandedImageDialog } from "./chat/ExpandedImageDialog";
@@ -333,6 +332,7 @@ import {
   isProviderUsageLimitErrorMessage,
   useProviderRateLimitResetCredit,
 } from "./ProviderRateLimitResetCredit";
+import { providerExternalResetsLink } from "~/lib/providerUsage";
 import {
   buildVersionMismatchDismissalKey,
   dismissVersionMismatch,
@@ -793,6 +793,11 @@ type ChatViewProps =
       onDiffPanelOpen?: () => void;
       reserveTitleBarControlInset?: boolean;
       composerFocusRequest?: number;
+      /**
+       * The thread's pull request, resolved by the route that owns the Pull
+       * request tab. The composer docks a row for it; a draft has none.
+       */
+      composerPullRequest?: ComposerPullRequest | null;
       routeKind: "server";
       draftId?: never;
     }
@@ -1088,6 +1093,7 @@ export default function ChatView(props: ChatViewProps) {
     reserveTitleBarControlInset = true,
     composerFocusRequest = 0,
   } = props;
+  const composerPullRequest = routeKind === "server" ? (props.composerPullRequest ?? null) : null;
   const draftId = routeKind === "draft" ? props.draftId : null;
   const routeThreadRef = useMemo(
     () => scopeThreadRef(environmentId, threadId),
@@ -1264,8 +1270,9 @@ export default function ChatView(props: ChatViewProps) {
   );
   const openTerminalThreadKeys = useTerminalStateStore(
     useShallow((state) =>
-      Object.entries(state.terminalStateByThreadKey).flatMap(([nextThreadKey, nextTerminalState]) =>
-        nextTerminalState.terminalOpen ? [nextThreadKey] : [],
+      Object.entries(state.terminalStateByThreadKey).flatMap(
+        ([nextThreadKey, nextTerminalState]) =>
+          nextTerminalState.terminalOpen ? [nextThreadKey] : [],
       ),
     ),
   );
@@ -1483,7 +1490,6 @@ export default function ChatView(props: ChatViewProps) {
   // drive the environment picker in BranchToolbar.
   const allProjects = useStore(useShallow(selectProjectsAcrossEnvironments));
   const primaryEnvironmentId = usePrimaryEnvironmentId();
-  const primaryWsConnectionStatus = useWsConnectionStatus();
   const savedEnvironmentRegistry = useSavedEnvironmentRegistryStore((s) => s.byId);
   const savedEnvironmentRuntimeById = useSavedEnvironmentRuntimeStore((s) => s.byId);
   const activeSavedEnvironmentRecord =
@@ -2507,36 +2513,6 @@ export default function ChatView(props: ChatViewProps) {
   }, [activeProviderInstanceId, providerStatuses, selectedProvider]);
   const activeProviderDriver =
     activeProviderStatus?.driver ?? activeThread?.session?.provider ?? selectedProvider;
-  // Realtime voice remains dormant until Threadlines can support its separate
-  // API-key billing model as a complete product experience. Keeping this gate
-  // here also lets the hook clean up any projected session left by an older build.
-  const voiceSupported = false;
-  const voiceConnectionAvailable = activeThread
-    ? activeThread.environmentId === primaryEnvironmentId || primaryEnvironmentId === null
-      ? primaryWsConnectionStatus.phase === "connected"
-      : activeSavedEnvironmentConnectionState === "connected"
-    : false;
-  const activeSessionCanStartVoice =
-    activeThread?.session !== null &&
-    activeThread?.session !== undefined &&
-    activeThread.session.orchestrationStatus !== "starting" &&
-    activeThread.session.orchestrationStatus !== "stopped" &&
-    activeThread.session.orchestrationStatus !== "error";
-  const voiceMode = useRealtimeVoiceMode({
-    threadId: activeThread?.id ?? null,
-    environmentId,
-    supported: voiceSupported,
-    canStart: isServerThread && activeSessionCanStartVoice,
-    connectionAvailable: voiceConnectionAvailable,
-    projectedActive: activeThread?.voiceActive ?? false,
-  });
-  const voiceStartDisabledReason = !isServerThread
-    ? "Send a message to create this thread before starting voice mode"
-    : !activeSessionCanStartVoice
-      ? "Start the Codex session before starting voice mode"
-      : !voiceConnectionAvailable
-        ? "Reconnect before starting voice mode"
-        : null;
   const activeProviderLabel =
     activeProviderStatus?.displayName?.trim() ||
     formatProviderDriverKindLabel(activeProviderDriver);
@@ -2557,9 +2533,11 @@ export default function ChatView(props: ChatViewProps) {
     }
     requestThreadErrorRateLimitResetCredit({
       instanceId: activeProviderStatus.instanceId,
+      providerLabel: activeProviderLabel,
       resetCredits: activeProviderResetCredits,
     });
   }, [
+    activeProviderLabel,
     activeProviderResetCredits,
     activeProviderStatus,
     canResetActiveProviderUsage,
@@ -2585,6 +2563,13 @@ export default function ChatView(props: ChatViewProps) {
     isConsumingThreadErrorRateLimitResetCredit,
     requestActiveProviderUsageReset,
   ]);
+  const threadErrorUsageResetLink = useMemo(
+    () =>
+      isProviderUsageLimitErrorMessage(activeThread?.error)
+        ? (providerExternalResetsLink(activeProviderStatus?.accountUsage) ?? null)
+        : null,
+    [activeProviderStatus?.accountUsage, activeThread?.error],
+  );
   const activeProviderSupportsManualContextCompaction = providerSupportsManualContextCompaction(
     activeProviderStatus,
     activeProviderDriver,
@@ -4795,25 +4780,24 @@ export default function ChatView(props: ChatViewProps) {
         dataUrl: await readFileAsDataUrl(attachment.file),
       })),
     ).then((attachments) => [...attachments, ...drawingAttachments]);
-    const optimisticAttachments = composerAttachmentsSnapshot.map(
-      (attachment): ChatAttachment =>
-        attachment.type === "image"
-          ? {
-              type: "image",
-              id: attachment.id,
-              name: attachment.name,
-              mimeType: attachment.mimeType,
-              sizeBytes: attachment.sizeBytes,
-              previewUrl: attachment.previewUrl,
-            }
-          : {
-              type: "file",
-              kind: attachment.kind,
-              id: attachment.id,
-              name: attachment.name,
-              mimeType: attachment.mimeType,
-              sizeBytes: attachment.sizeBytes,
-            },
+    const optimisticAttachments = composerAttachmentsSnapshot.map((attachment): ChatAttachment =>
+      attachment.type === "image"
+        ? {
+            type: "image",
+            id: attachment.id,
+            name: attachment.name,
+            mimeType: attachment.mimeType,
+            sizeBytes: attachment.sizeBytes,
+            previewUrl: attachment.previewUrl,
+          }
+        : {
+            type: "file",
+            kind: attachment.kind,
+            id: attachment.id,
+            name: attachment.name,
+            mimeType: attachment.mimeType,
+            sizeBytes: attachment.sizeBytes,
+          },
     );
     const threadRefForSend = scopeThreadRef(environmentId, threadIdForSend);
     const optimisticMessage: ChatMessage = {
@@ -5532,6 +5516,7 @@ export default function ChatView(props: ChatViewProps) {
             : null,
         authReconnect: providerAuthReconnectPrompt,
         usageReset: threadErrorUsageResetAction,
+        usageResetLink: threadErrorUsageResetLink,
         retry: threadErrorRetryAction,
         providerLabel: activeProviderLabel,
         planUpgradeUrl: activeProviderStatus?.planUpgradeUrl ?? null,
@@ -5550,6 +5535,7 @@ export default function ChatView(props: ChatViewProps) {
       threadErrorNoticeVisible,
       threadErrorRetryAction,
       threadErrorUsageResetAction,
+      threadErrorUsageResetLink,
     ],
   );
   const sendPreflightNotice = useMemo(
@@ -5714,7 +5700,7 @@ export default function ChatView(props: ChatViewProps) {
   );
 
   const onAdvanceActivePendingUserInput = useCallback(() => {
-    if (!activePendingUserInput || !activePendingProgress) {
+    if (!activePendingUserInput || activePendingUserInput.elicitation || !activePendingProgress) {
       return;
     }
     if (activePendingProgress.isLastQuestion) {
@@ -6858,6 +6844,7 @@ export default function ChatView(props: ChatViewProps) {
                   }
                   activeThreadActivities={activeThread?.activities}
                   notices={composerNotices}
+                  pullRequest={composerPullRequest}
                   resolvedTheme={resolvedTheme}
                   settings={settings}
                   keybindings={keybindings}
@@ -6875,20 +6862,6 @@ export default function ChatView(props: ChatViewProps) {
                   scheduleStickToBottom={scheduleTimelineStickToBottom}
                   onSend={onSend}
                   onInterrupt={onInterrupt}
-                  voiceControl={{
-                    supported: voiceSupported,
-                    canStart:
-                      voiceStartDisabledReason === null &&
-                      voiceMode.state.status !== "starting" &&
-                      voiceMode.state.status !== "active",
-                    disabledReason: voiceStartDisabledReason,
-                    projectedActive: voiceMode.projectedActive,
-                    state: voiceMode.state,
-                    onStart: voiceMode.start,
-                    onToggleMute: voiceMode.toggleMute,
-                    onStop: voiceMode.stop,
-                    onModalityChange: voiceMode.setModality,
-                  }}
                   onCompactContext={contextCompactControlVisible ? onCompactContext : undefined}
                   goalDispatching={
                     activeThread !== undefined && goalDispatchingThreadId === activeThread.id
@@ -6913,6 +6886,7 @@ export default function ChatView(props: ChatViewProps) {
                   onRespondToApproval={onRespondToApproval}
                   onSelectActivePendingUserInputOption={onSelectActivePendingUserInputOption}
                   onAdvanceActivePendingUserInput={onAdvanceActivePendingUserInput}
+                  onRespondToUserInput={onRespondToUserInput}
                   onPreviousActivePendingUserInputQuestion={
                     onPreviousActivePendingUserInputQuestion
                   }

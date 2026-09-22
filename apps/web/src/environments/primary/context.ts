@@ -68,6 +68,16 @@ export function readPrimaryEnvironmentDescriptor(): ExecutionEnvironmentDescript
   return usePrimaryEnvironmentBootstrapStore.getState().descriptor;
 }
 
+/**
+ * The primary environment as this render sees it. Reactive, unlike
+ * {@link readPrimaryEnvironmentDescriptor}: a surface that renders before
+ * bootstrap finishes has to redraw when the descriptor lands, and one that
+ * only reads it once is stuck with whatever it saw first.
+ */
+export function usePrimaryEnvironmentDescriptor(): ExecutionEnvironmentDescriptor | null {
+  return usePrimaryEnvironmentBootstrapStore((state) => state.descriptor);
+}
+
 export function usePrimaryEnvironmentId(): EnvironmentId | null {
   return usePrimaryEnvironmentBootstrapStore((state) => state.descriptor?.environmentId ?? null);
 }

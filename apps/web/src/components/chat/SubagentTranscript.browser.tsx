@@ -267,6 +267,35 @@ describe("SubagentTranscript drill-in", () => {
     expect(instructionBlockText()).toBeNull();
   });
 
+  it("reads the spawn prompt separately when the newest page starts past it", async () => {
+    // A working agent's transcript runs to hundreds of records, so the page the
+    // panel opens on is nowhere near the prompt.
+    const [spawnPrompt, ...laterEntries] = ENTRIES;
+    transcriptRpcMock.mockImplementation(
+      async (input: { readonly offset?: number; readonly limit?: number }) =>
+        input.offset === 0 && input.limit === 1
+          ? { entries: [spawnPrompt], truncated: true, offset: 0, totalEntries: 300 }
+          : { entries: laterEntries, truncated: true, offset: 296, totalEntries: 300 },
+    );
+    renderTranscript({ objective: "Spawned to count the files." });
+    await expect
+      .element(page.getByText("Count the direct TypeScript files."), { timeout: 5_000 })
+      .toBeVisible();
+
+    expect(instructionBlockText()).toContain("Count the direct TypeScript files.");
+    expect(instructionBlockText()).not.toContain("Spawned to count the files.");
+    // The prompt is the block above the thread and nothing else: it is not
+    // also a step, and it sits above the paging control rather than under it.
+    expect(document.querySelectorAll("[data-subagent-transcript-entry='user']")).toHaveLength(1);
+    const instructionBlock = document.querySelector(
+      "[data-subagent-transcript-instruction='true']",
+    );
+    const loadEarlier = page.getByRole("button", { name: "Load earlier" }).element();
+    expect(
+      instructionBlock!.compareDocumentPosition(loadEarlier) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).not.toBe(0);
+  });
+
   it("wraps a long first line under the timestamp instead of into it", async () => {
     renderTranscript();
     await expect.element(page.getByText(LONG_PROSE)).toBeVisible();

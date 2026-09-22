@@ -9,8 +9,9 @@
  * - Command receipts older than the idempotency window.
  * - Events of deleted threads (their projections are already gone).
  * - `thread.activity-appended` events beyond the per-thread projection cap
- *   (`MAX_THREAD_ACTIVITIES`) — projections never surface more than the cap,
- *   so older activity events cannot influence a rebuild.
+ *   (`MAX_THREAD_ACTIVITIES`) — projections surface at most the cap plus a
+ *   few pinned rows (see `retainThreadActivities`), so older activity events
+ *   cannot influence a rebuild beyond those.
  *
  * Event pruning never crosses the minimum projector checkpoint, so a
  * lagging or newly added projector can still replay everything it has not

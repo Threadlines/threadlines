@@ -572,9 +572,11 @@ describe("ChatMarkdown", () => {
     window.addEventListener("click", observeClick);
 
     try {
+      // Both links are chips now, so their text is the number the chip prints
+      // followed by the words the author wrote.
       const click = (name: string) => {
-        const anchor = Array.from(document.querySelectorAll("a")).find(
-          (candidate) => candidate.textContent === name,
+        const anchor = Array.from(document.querySelectorAll("a")).find((candidate) =>
+          candidate.textContent?.includes(name),
         );
         if (!anchor) {
           throw new Error(`No link named ${name}`);
@@ -591,6 +593,42 @@ describe("ChatMarkdown", () => {
       expect(open).toHaveBeenCalledTimes(1);
     } finally {
       window.removeEventListener("click", observeClick);
+      await screen.unmount();
+    }
+  });
+
+  it("renders a pull request address as a numbered chip that opens its tab", async () => {
+    const { url: pullRequestUrl, open } = THREAD_PULL_REQUEST_LINK;
+    open.mockClear();
+    const screen = await render(
+      <ThreadPullRequestLinkContext.Provider value={THREAD_PULL_REQUEST_LINK}>
+        <ChatMarkdown
+          text={`Opened ${pullRequestUrl}, see [PR 223](${pullRequestUrl}) for [the migration fix](${pullRequestUrl}).`}
+          cwd="/repo/project"
+          environmentId={CHAT_MARKDOWN_ENVIRONMENT_ID}
+          threadId={CHAT_MARKDOWN_THREAD_ID}
+        />
+      </ThreadPullRequestLinkContext.Provider>,
+    );
+
+    try {
+      const chips = Array.from(document.querySelectorAll("a")).filter((anchor) =>
+        anchor.getAttribute("href")?.startsWith(pullRequestUrl),
+      );
+      expect(chips).toHaveLength(3);
+      // The bare address and text that only restates the number both give way
+      // to the chip; anything the author actually wrote is kept beside it.
+      expect(chips.map((chip) => chip.textContent)).toEqual([
+        "#223",
+        "#223",
+        "#223the migration fix",
+      ]);
+      // A chip, not a URL: the state glyph plus the number.
+      expect(chips[0]?.querySelector("svg")).toBeTruthy();
+
+      chips[0]?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+      expect(open).toHaveBeenCalledTimes(1);
+    } finally {
       await screen.unmount();
     }
   });

@@ -451,6 +451,8 @@ const VcsStatusChangeRequest = Schema.Struct({
   baseRef: TrimmedNonEmptyStringSchema,
   headRef: TrimmedNonEmptyStringSchema,
   state: VcsStatusChangeRequestState,
+  /** Auto-merge is enabled or the PR is in the merge queue; absent where the host does not say. */
+  autoMergeEnabled: Schema.optional(Schema.Boolean),
 });
 
 const VcsStatusLocalShape = {

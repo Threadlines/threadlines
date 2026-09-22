@@ -24,12 +24,15 @@ import {
   changeRequestRepositoryName,
   toChangeRequestProviderKind,
 } from "@threadlines/shared/sourceControl";
+import { quotePullRequestBody } from "@threadlines/shared/pullRequestAutoFix";
 import {
   GitMergeIcon,
   GitPullRequestClosedIcon,
   GitPullRequestDraftIcon,
   GitPullRequestIcon,
 } from "lucide-react";
+import { MergeQueueIcon } from "../Icons";
+import type { ElementType } from "react";
 
 import type { Project, SidebarThreadSummary } from "../../types";
 
@@ -56,7 +59,34 @@ export type PullRequestNeedsYouReason =
   | "Checks failing"
   | "Approved";
 
-export type PullRequestGroupId = "needs-you" | "yours" | "others" | "all";
+export type PullRequestGroupId = PullRequestInvolvement | "all";
+
+/**
+ * Where an open row stands with the viewer, from what they can act on down to
+ * what they can only watch. `yours` and `incoming` are on repositories the
+ * viewer can merge; `contributions` and `elsewhere` are the same two split on
+ * repositories they cannot.
+ */
+export type PullRequestInvolvement =
+  | "needs-you"
+  | "yours"
+  | "incoming"
+  | "contributions"
+  | "elsewhere";
+
+export const PULL_REQUEST_INVOLVEMENTS: readonly PullRequestInvolvement[] = [
+  "needs-you",
+  "yours",
+  "incoming",
+  "contributions",
+  "elsewhere",
+];
+
+function isPullRequestInvolvement(value: unknown): value is PullRequestInvolvement {
+  return (
+    typeof value === "string" && (PULL_REQUEST_INVOLVEMENTS as readonly string[]).includes(value)
+  );
+}
 
 export interface PullRequestGroup {
   readonly id: PullRequestGroupId;
@@ -83,8 +113,8 @@ export type PullRequestDraftFilter = "any" | "only" | "hide";
 /** `none` is a row no reviewer has answered on yet, which the host omits. */
 export type PullRequestReviewFilter = "any" | "none" | PullRequestReviewDecision;
 export type PullRequestChecksFilter = "any" | "passing" | "failing" | "running";
-/** The same three groups the open list heads, as a narrowing of its own. */
-export type PullRequestInvolvementFilter = "all" | "needs-you" | "yours" | "others";
+/** The same groups the open list heads, as a narrowing of its own. */
+export type PullRequestInvolvementFilter = "all" | PullRequestInvolvement;
 export type PullRequestSort =
   | "readiness"
   | "updated"
@@ -160,9 +190,7 @@ export function parsePullRequestsSearch(search: Record<string, unknown>): PullRe
     ...searchText(search["author"], "author"),
     ...searchText(search["labels"], "labels"),
     ...searchText(search["project"], "project"),
-    ...(involvement === "needs-you" || involvement === "yours" || involvement === "others"
-      ? { involvement }
-      : {}),
+    ...(isPullRequestInvolvement(involvement) ? { involvement } : {}),
     ...(draft === "only" || draft === "hide" ? { draft } : {}),
     ...(review === "approved" ||
     review === "changes-requested" ||
@@ -492,7 +520,8 @@ export function linkThreadsToPullRequests(
 
 /** How one pull request state reads: its glyph, its colour, and its word. */
 export interface PullRequestBadgeTone {
-  readonly Icon: typeof GitPullRequestIcon;
+  /** Takes the class and `aria-hidden` every surface hands it; a Lucide glyph or one of ours. */
+  readonly Icon: ElementType<{ className?: string; "aria-hidden"?: boolean }>;
   readonly className: string;
   readonly label: string;
 }
@@ -505,6 +534,11 @@ export interface PullRequestBadgeTone {
 export function pullRequestBadgeTone(
   state: PullRequestState,
   isDraft: boolean,
+  /**
+   * Armed to land on its own, or already in the base's merge queue. Only an
+   * open, non-draft row can be, so the settled and draft glyphs win over it.
+   */
+  autoMergeEnabled = false,
 ): PullRequestBadgeTone {
   if (state === "merged") {
     return {
@@ -522,6 +556,14 @@ export function pullRequestBadgeTone(
   }
   if (isDraft) {
     return { Icon: GitPullRequestDraftIcon, className: "text-muted-foreground/60", label: "Draft" };
+  }
+  if (autoMergeEnabled) {
+    // The amber of a check still running: the host is on its way to landing it.
+    return {
+      Icon: MergeQueueIcon,
+      className: "text-amber-600/90 dark:text-amber-400/80",
+      label: "Auto-merge",
+    };
   }
   return {
     Icon: GitPullRequestIcon,
@@ -542,6 +584,12 @@ export interface ThreadPullRequest {
   readonly repository: string | null;
   /** When it merged or closed; null while open, or where the source did not say. */
   readonly settledAt: string | null;
+  /** Armed to merge on its own once its requirements pass; false where the source did not say. */
+  readonly autoMergeEnabled: boolean;
+  /** The branch it merges from; null where the source did not say. */
+  readonly headBranch: string | null;
+  /** Lines added and removed; null where the source does not count them. */
+  readonly diffStat: { readonly additions: number; readonly deletions: number } | null;
 }
 
 /**
@@ -590,6 +638,23 @@ export interface ThreadPullRequestSubject {
 }
 
 /**
+ * The branch a thread's own view means by "this branch" (the composer footer,
+ * the Pull request tab, the composer pull request row). A thread that owns a
+ * worktree records its checkout's branch as it moves, so the record is it. A
+ * thread on a shared checkout keeps the branch it began on, because other
+ * threads share that checkout; its own view still shows what the checkout is
+ * on now, so a branch the agent switched to from the shell finds its PR.
+ * Sidebar rows and wrap-up stay on the recorded branch.
+ */
+export function threadViewBranch(
+  thread: { readonly branch: string | null; readonly worktreePath: string | null },
+  gitStatus: Pick<VcsStatusResult, "isRepo" | "refName"> | null,
+): string | null {
+  if (thread.worktreePath !== null) return thread.branch;
+  return gitStatus?.isRepo && gitStatus.refName ? gitStatus.refName : thread.branch;
+}
+
+/**
  * What the checkout itself reports, when it is standing on the thread's own
  * branch. This is the only source that knows a pull request was merged or
  * closed: the open listing stops carrying it the moment it settles.
@@ -613,6 +678,10 @@ export function pullRequestFromGitStatus(
     repository,
     // The status read carries no dates.
     settledAt: null,
+    autoMergeEnabled: gitStatus.pr.autoMergeEnabled === true,
+    headBranch: gitStatus.pr.headRef,
+    // The status read does not count lines.
+    diffStat: null,
   };
 }
 
@@ -669,6 +738,9 @@ export function resolveThreadPullRequest(input: {
     // A host that does not date the landing gets the row's last update, which
     // is at or after it.
     settledAt: entry.settledAt ?? (entry.state === "open" ? null : entry.updatedAt),
+    autoMergeEnabled: entry.autoMergeEnabled === true,
+    headBranch: entry.headBranch,
+    diffStat: { additions: entry.additions, deletions: entry.deletions },
   };
 }
 
@@ -736,21 +808,29 @@ export function countNeedsYou(entries: readonly PullRequestEntry[]): number {
   return count;
 }
 
-/** Which of the open list's three groups a row belongs to. */
-export function pullRequestInvolvement(
-  entry: PullRequestEntry,
-): Exclude<PullRequestInvolvementFilter, "all"> {
+/**
+ * Which of the open list's groups a row belongs to. A host that does not say
+ * whether the viewer may push is taken as if they may, so a row is never
+ * demoted on a silence: it stays under Yours or Incoming as it always did.
+ */
+export function pullRequestInvolvement(entry: PullRequestEntry): PullRequestInvolvement {
   if (resolveNeedsYouReason(entry) !== null) {
     return "needs-you";
   }
-  return entry.viewerIsAuthor ? "yours" : "others";
+  const canMerge = entry.viewerCanWrite !== false;
+  if (entry.viewerIsAuthor) {
+    return canMerge ? "yours" : "contributions";
+  }
+  return canMerge ? "incoming" : "elsewhere";
 }
 
 /**
- * The open list answers "what needs me" first, then the user's own work, then
- * everything else; a row belongs to exactly one group. Without a signed-in
- * viewer none of that is knowable, so the list stays flat, as it does for the
- * merged and closed tabs where the question does not apply.
+ * The open list answers "what needs me" first, then what the user can land
+ * (their own work, then other people's work on their repositories), then what
+ * is out of their hands (their contributions elsewhere, then everything they
+ * only follow); a row belongs to exactly one group. Without a signed-in viewer
+ * none of that is knowable, so the list stays flat, as it does for the merged
+ * and closed tabs where the question does not apply.
  */
 export function groupPullRequests(input: {
   readonly entries: readonly PullRequestEntry[];
@@ -773,21 +853,18 @@ export function groupPullRequests(input: {
     return sorted.length === 0 ? [] : [{ id: "all", label: null, entries: sorted }];
   }
 
-  const needsYou: PullRequestEntry[] = [];
-  const yours: PullRequestEntry[] = [];
-  const others: PullRequestEntry[] = [];
-  const byInvolvement = { "needs-you": needsYou, yours, others } as const;
+  const byInvolvement = new Map<PullRequestInvolvement, PullRequestEntry[]>(
+    PULL_REQUEST_INVOLVEMENTS.map((involvement) => [involvement, []]),
+  );
   for (const entry of sorted) {
-    byInvolvement[pullRequestInvolvement(entry)].push(entry);
+    byInvolvement.get(pullRequestInvolvement(entry))?.push(entry);
   }
 
-  return (
-    [
-      { id: "needs-you", label: "Needs you", entries: needsYou },
-      { id: "yours", label: "Yours", entries: yours },
-      { id: "others", label: "Others", entries: others },
-    ] as const
-  ).filter((group) => group.entries.length > 0);
+  return PULL_REQUEST_INVOLVEMENTS.map((id) => ({
+    id,
+    label: PULL_REQUEST_INVOLVEMENT_WORDS[id],
+    entries: byInvolvement.get(id) ?? [],
+  })).filter((group) => group.entries.length > 0);
 }
 
 /**
@@ -977,7 +1054,9 @@ export const PULL_REQUEST_INVOLVEMENT_WORDS: Readonly<
   all: "All",
   "needs-you": "Needs you",
   yours: "Yours",
-  others: "Others",
+  incoming: "Incoming",
+  contributions: "Contributions",
+  elsewhere: "Elsewhere",
 };
 
 /**
@@ -1469,6 +1548,22 @@ export function resolveMergeWhenReadyBlock(
   return null;
 }
 
+/** GitHub's auto-merge command merges immediately when its gate is clear. */
+export function resolvePullRequestAutoMergeBlock(detail: PullRequestDetail): string | null {
+  const block = resolveMergeWhenReadyBlock(detail);
+  if (block !== null) {
+    return block;
+  }
+  if (
+    detail.provider === "github" &&
+    detail.mergeQueue === undefined &&
+    detail.mergeGate === "clear"
+  ) {
+    return "This pull request can merge right now. Use Merge instead.";
+  }
+  return null;
+}
+
 /** `1` reads as first and needs no ordinal; the rest are 2nd, 3rd, 4th… */
 function englishOrdinal(value: number): string {
   const remainderOfTen = value % 10;
@@ -1512,6 +1607,18 @@ export function pullRequestMergeQueueLabel(
     : null;
 }
 
+/**
+ * Whether the host is landing this pull request on its own: armed by the
+ * standing instruction, or already taken into the base's merge queue. A queued
+ * pull request need not carry the instruction any more, so the queue's own
+ * position counts as much as the instruction does.
+ */
+export function pullRequestArmedToMerge(
+  detail: Pick<PullRequestDetail, "autoMergeEnabled" | "mergeQueue">,
+): boolean {
+  return detail.autoMergeEnabled === true || (detail.mergeQueue?.position ?? null) !== null;
+}
+
 /** How long after a push the header waits for the host to register the new commit's checks. */
 export const PULL_REQUEST_FRESH_PUSH_WATCH_MS = 120_000;
 
@@ -1521,11 +1628,23 @@ export const PULL_REQUEST_FRESH_PUSH_WATCH_MS = 120_000;
  * from the base, a new commit) when the host has the commit but has not queued
  * its checks or decided whether it merges: a read then shows no checks at all,
  * and would otherwise sit on that answer until the user hit Refresh. A pull
- * request sitting in a merge queue is the third: its place in the queue moves
- * on its own, and the host lands it without anyone here asking.
+ * request the host is landing on its own is the third: in a merge queue, or
+ * armed with nothing the host says is in the way, it can be queued or merged
+ * without anyone here asking, and the surfaces showing it should see that
+ * happen. Armed but blocked (a review still owed, a failed check) is a settled
+ * state: nothing moves until someone acts, and that act is re-read on its own.
  */
 export function shouldPollPullRequestDetail(
-  detail: Pick<PullRequestDetail, "state" | "checks" | "mergeability" | "updatedAt" | "mergeQueue">,
+  detail: Pick<
+    PullRequestDetail,
+    | "state"
+    | "checks"
+    | "mergeability"
+    | "updatedAt"
+    | "mergeQueue"
+    | "autoMergeEnabled"
+    | "mergeGate"
+  >,
   now: number,
 ): boolean {
   if (detail.checks.some((check) => check.status === "pending")) {
@@ -1534,7 +1653,7 @@ export function shouldPollPullRequestDetail(
   if (detail.state !== "open") {
     return false;
   }
-  if (detail.mergeQueue !== undefined && detail.mergeQueue.position !== null) {
+  if (pullRequestArmedToMerge(detail) && detail.mergeGate !== "blocked") {
     return true;
   }
   const unsettled = detail.checks.length === 0 || detail.mergeability === "unknown";
@@ -1555,13 +1674,7 @@ export function buildReviewCommentHandoff(input: {
   readonly body: string;
 }): string {
   const by = input.author === null ? "" : ` by ${input.author}`;
-  const quoted = input.body
-    .replace(/\r\n/gu, "\n")
-    .trimEnd()
-    .split("\n")
-    .map((line) => (line.length === 0 ? ">" : `> ${line}`))
-    .join("\n");
-  return `Address this review comment on pull request #${input.number}${by}:\n\n${quoted}`;
+  return `Address this review comment on pull request #${input.number}${by}:\n\n${quotePullRequestBody(input.body)}`;
 }
 
 /**

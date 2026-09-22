@@ -22,6 +22,35 @@ import { projectSubagentActivity } from "../../orchestration/subagentProjection.
 import { readCollabChildTurnStatus, type CodexServerNotification } from "./CodexSessionRuntime.ts";
 
 describe("CodexAdapter item mapping", () => {
+  it("projects tool confirmations into durable pending inputs", () => {
+    const elicitation = {
+      mode: "url",
+      serverName: "calendar",
+      message: "Connect calendar",
+      url: "https://example.com/connect",
+    };
+    const events = mapToRuntimeEvents(
+      {
+        id: EventId.make("tool-confirmation"),
+        kind: "request",
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: "2026-09-18T00:00:00Z",
+        method: "mcpServer/elicitation/request",
+        threadId: ThreadId.make("thread-1"),
+        payload: { questions: [], isBlocking: true, elicitation },
+      },
+      ThreadId.make("thread-1"),
+    );
+    assert.equal(events[0]?.type, "user-input.requested");
+    assert.deepEqual(
+      events.flatMap((event) => projectRuntimeEventToActivities(event))[0]?.payload,
+      {
+        questions: [],
+        isBlocking: true,
+        elicitation,
+      },
+    );
+  });
   it("maps structured automatic approval review outcomes", () => {
     const cases = [
       { reviewStatus: "approved", taskStatus: "completed", summary: "Auto-approved command" },

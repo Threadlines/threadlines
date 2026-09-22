@@ -100,6 +100,9 @@ export const make = Effect.fn("makeAzureDevOpsSourceControlProvider")(function* 
           Effect.mapError((error) => providerError("listChangeRequests", error)),
         );
     },
+    // Pull request samples are not collected for Azure DevOps yet; generated
+    // text falls back to the repository's commit subjects.
+    listRecentMergedChangeRequests: () => Effect.succeed([]),
     getChangeRequest: (input) =>
       azure.getPullRequest(input).pipe(
         Effect.map(toChangeRequest),

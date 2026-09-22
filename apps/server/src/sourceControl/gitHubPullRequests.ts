@@ -8,6 +8,7 @@ import { PositiveInt, TrimmedNonEmptyString } from "@threadlines/contracts";
 import { decodeJsonResult, formatSchemaError } from "@threadlines/shared/schemaJson";
 
 export interface NormalizedGitHubPullRequestRecord {
+  readonly id?: string;
   readonly number: number;
   readonly title: string;
   readonly url: string;
@@ -15,12 +16,15 @@ export interface NormalizedGitHubPullRequestRecord {
   readonly headRefName: string;
   readonly state: "open" | "closed" | "merged";
   readonly updatedAt: Option.Option<DateTime.Utc>;
+  /** Auto-merge or queue membership; absent where neither was reported. */
+  readonly autoMergeEnabled?: boolean;
   readonly isCrossRepository?: boolean;
   readonly headRepositoryNameWithOwner?: string | null;
   readonly headRepositoryOwnerLogin?: string | null;
 }
 
 const GitHubPullRequestSchema = Schema.Struct({
+  id: Schema.optional(Schema.NullOr(Schema.String)),
   number: PositiveInt,
   title: TrimmedNonEmptyString,
   url: TrimmedNonEmptyString,
@@ -29,6 +33,8 @@ const GitHubPullRequestSchema = Schema.Struct({
   state: Schema.optional(Schema.NullOr(Schema.String)),
   mergedAt: Schema.optional(Schema.NullOr(Schema.String)),
   updatedAt: Schema.optional(Schema.OptionFromNullOr(Schema.DateTimeUtcFromString)),
+  /** Null while nothing is armed; an object (its fields unread here) while auto-merge is on. */
+  autoMergeRequest: Schema.optional(Schema.NullOr(Schema.Struct({}))),
   isCrossRepository: Schema.optional(Schema.Boolean),
   headRepository: Schema.optional(
     Schema.NullOr(
@@ -79,6 +85,7 @@ function normalizeGitHubPullRequestRecord(
       : null);
 
   return {
+    ...(raw.id ? { id: raw.id } : {}),
     number: raw.number,
     title: raw.title,
     url: raw.url,
@@ -86,6 +93,9 @@ function normalizeGitHubPullRequestRecord(
     headRefName: raw.headRefName,
     state: normalizeGitHubPullRequestState(raw),
     updatedAt: raw.updatedAt ?? Option.none(),
+    ...(raw.autoMergeRequest !== undefined
+      ? { autoMergeEnabled: raw.autoMergeRequest !== null }
+      : {}),
     ...(typeof raw.isCrossRepository === "boolean"
       ? { isCrossRepository: raw.isCrossRepository }
       : {}),

@@ -120,7 +120,7 @@ function PullRequestTabStripItem({
   /** True when the keyboard ran the close, which then has to hand focus on. */
   readonly onClose: (fromKeyboard: boolean) => void;
 }) {
-  const tone = pullRequestBadgeTone(tab.state, tab.isDraft);
+  const tone = pullRequestBadgeTone(tab.state, tab.isDraft, tab.autoMergeEnabled);
   return (
     <TooltipWrapper side="bottom" tooltip={`${tab.repository} #${tab.number}`}>
       <div

@@ -6,7 +6,7 @@
 import { isProviderPlanGateMessage } from "@threadlines/shared/providerPlan";
 import { ExternalLinkIcon, RefreshCwIcon, RotateCcwIcon } from "lucide-react";
 
-import { ensureLocalApi } from "../../localApi";
+import { openExternalUrl } from "../../lib/externalLinks";
 import type { ProviderAuthReconnectAction } from "../../session-logic";
 import { formatProviderRateLimitResetCreditTooltip } from "../ProviderRateLimitResetCredit";
 import { Button } from "../ui/button";
@@ -20,6 +20,12 @@ interface UsageResetAction {
   readonly onReset: () => void;
 }
 
+/** A provider-owned page where the user can spend a limit reset themselves. */
+interface UsageResetLink {
+  readonly label: string;
+  readonly url: string;
+}
+
 interface TurnRetryAction {
   readonly isRetrying: boolean;
   readonly onRetry: () => void;
@@ -29,6 +35,7 @@ export function buildThreadErrorNotice({
   error,
   authReconnect,
   usageReset,
+  usageResetLink,
   retry,
   providerLabel,
   planUpgradeUrl,
@@ -38,6 +45,7 @@ export function buildThreadErrorNotice({
   error: string | null;
   authReconnect?: ProviderAuthReconnectAction | null;
   usageReset?: UsageResetAction | null;
+  usageResetLink?: UsageResetLink | null;
   retry?: TurnRetryAction | null;
   providerLabel?: string;
   /** The active provider's subscription page, for plan-gate failures. */
@@ -62,11 +70,7 @@ export function buildThreadErrorNotice({
         <Button
           size="xs"
           aria-label={`Open the ${providerLabel?.trim() || "provider"} upgrade page`}
-          onClick={() => {
-            void ensureLocalApi()
-              .shell.openExternal(planUpgradeUrl)
-              .catch(() => {});
-          }}
+          onClick={() => openExternalUrl(planUpgradeUrl)}
         >
           <ExternalLinkIcon className="size-3" />
           Upgrade plan
@@ -87,11 +91,14 @@ export function buildThreadErrorNotice({
     });
   }
 
+  const isOpenElsewhere = error.includes("already has an active writer");
   return {
     id: "thread-error",
-    severity: "error",
-    lead: "Turn failed.",
-    detail: error,
+    severity: isOpenElsewhere ? "warning" : "error",
+    lead: isOpenElsewhere ? "Conversation open elsewhere." : "Turn failed.",
+    detail: isOpenElsewhere
+      ? "Close this conversation in the other Codex window, then retry. Your saved messages are still here."
+      : error,
     actions: (
       <>
         {retry ? (
@@ -110,12 +117,26 @@ export function buildThreadErrorNotice({
             size="xs"
             disabled={usageReset.isResetting === true}
             onClick={usageReset.onReset}
-            aria-label="Reset Codex usage"
-            tooltip={formatProviderRateLimitResetCreditTooltip(usageReset.availableCount)}
+            aria-label={`Reset ${providerLabel ?? "provider"} usage`}
+            tooltip={formatProviderRateLimitResetCreditTooltip(
+              usageReset.availableCount,
+              providerLabel ?? "provider",
+            )}
             tooltipSide="top"
           >
             <RotateCcwIcon className="size-3" />
             {usageReset.isResetting ? "Resetting" : "Reset usage"}
+          </Button>
+        ) : usageResetLink ? (
+          <Button
+            size="xs"
+            variant="outline"
+            onClick={() => openExternalUrl(usageResetLink.url)}
+            tooltip="Limit resets are spent on claude.ai and refill Claude here too."
+            tooltipSide="top"
+          >
+            <ExternalLinkIcon className="size-3" />
+            {usageResetLink.label}
           </Button>
         ) : null}
       </>

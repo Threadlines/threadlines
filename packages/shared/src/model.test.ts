@@ -9,6 +9,7 @@ import {
 import {
   buildProviderOptionSelectionsFromDescriptors,
   createModelCapabilities,
+  codexModelRetirementNotice,
   createModelSelection,
   getModelSelectionBooleanOptionValue,
   getModelSelectionStringOptionValue,
@@ -66,6 +67,23 @@ const claudeCaps: ModelCapabilities = createModelCapabilities({
   ],
 });
 
+describe("codexModelRetirementNotice", () => {
+  it("warns ChatGPT users at the retirement date without changing API models", () => {
+    expect(
+      codexModelRetirementNotice("gpt-5.5", "chatgpt", Date.parse("2026-09-18")),
+    ).toMatchObject({ retired: false, replacement: "gpt-5.6-sol" });
+    expect(
+      codexModelRetirementNotice("gpt-5.5", "chatgpt", Date.parse("2026-10-14")),
+    ).toMatchObject({ retired: true });
+    expect(
+      codexModelRetirementNotice("gpt-5.3-codex-spark", "chatgpt", Date.parse("2026-09-18")),
+    ).toMatchObject({ retired: true });
+    expect(codexModelRetirementNotice("gpt-5.5", "apiKey")).toBeUndefined();
+    expect(codexModelRetirementNotice("gpt-5.5", undefined)).toBeUndefined();
+    expect(codexModelRetirementNotice("gpt-5.6-sol", "chatgpt")).toBeUndefined();
+  });
+});
+
 describe("normalizeModelSlug", () => {
   it("maps known aliases to canonical slugs", () => {
     const claude = ProviderDriverKind.make("claudeAgent");
@@ -84,9 +102,11 @@ describe("normalizeModelSlug", () => {
     expect(normalizeModelSlug("sonnet", claude)).toBe("claude-sonnet-5");
     expect(normalizeModelSlug("sonnet-5", claude)).toBe("claude-sonnet-5");
     expect(normalizeModelSlug("sonnet-4.6", claude)).toBe("claude-sonnet-4-6");
-    expect(normalizeModelSlug("opus", claude)).toBe("claude-opus-5");
+    expect(normalizeModelSlug("opus", claude)).toBe("claude-opus-5-5");
+    expect(normalizeModelSlug("opus-5.5", claude)).toBe("claude-opus-5-5");
+    expect(normalizeModelSlug("opus[1m]", claude)).toBe("claude-opus-5-5");
+    expect(normalizeModelSlug("claude-opus-5-5[1m]", claude)).toBe("claude-opus-5-5");
     expect(normalizeModelSlug("opus-5", claude)).toBe("claude-opus-5");
-    expect(normalizeModelSlug("opus[1m]", claude)).toBe("claude-opus-5");
     expect(normalizeModelSlug("claude-opus-5[1m]", claude)).toBe("claude-opus-5");
     expect(normalizeModelSlug("opus-4.8", claude)).toBe("claude-opus-4-8");
     expect(normalizeModelSlug("opus-4.7", claude)).toBe("claude-opus-4-7");

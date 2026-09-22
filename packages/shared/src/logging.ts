@@ -7,8 +7,6 @@ export interface RotatingFileSinkOptions {
   readonly maxBytes: number;
   readonly maxFiles: number;
   readonly throwOnError?: boolean;
-  /** Keep one append handle open between writes, closing it for rotation or shutdown. */
-  readonly keepFileOpen?: boolean;
 }
 
 export class RotatingFileSink {
@@ -16,9 +14,7 @@ export class RotatingFileSink {
   private readonly maxBytes: number;
   private readonly maxFiles: number;
   private readonly throwOnError: boolean;
-  private readonly keepFileOpen: boolean;
   private currentSize = 0;
-  private fileDescriptor: number | undefined;
 
   constructor(options: RotatingFileSinkOptions) {
     if (options.maxBytes < 1) {
@@ -32,7 +28,6 @@ export class RotatingFileSink {
     this.maxBytes = options.maxBytes;
     this.maxFiles = options.maxFiles;
     this.throwOnError = options.throwOnError ?? false;
-    this.keepFileOpen = options.keepFileOpen ?? false;
 
     fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
     this.pruneOverflowBackups();
@@ -48,14 +43,13 @@ export class RotatingFileSink {
         this.rotate();
       }
 
-      fs.appendFileSync(this.appendTarget(), buffer);
+      fs.appendFileSync(this.filePath, buffer);
       this.currentSize += buffer.length;
 
       if (this.currentSize > this.maxBytes) {
         this.rotate();
       }
     } catch {
-      this.closeOpenFile(false);
       this.currentSize = this.readCurrentSize();
       if (this.throwOnError) {
         throw new Error(`Failed to write log chunk to ${this.filePath}`);
@@ -63,13 +57,8 @@ export class RotatingFileSink {
     }
   }
 
-  close(): void {
-    this.closeOpenFile(this.throwOnError);
-  }
-
   private rotate(): void {
     try {
-      this.closeOpenFile(this.throwOnError);
       const oldest = this.withSuffix(this.maxFiles);
       if (fs.existsSync(oldest)) {
         fs.rmSync(oldest, { force: true });
@@ -89,33 +78,9 @@ export class RotatingFileSink {
 
       this.currentSize = 0;
     } catch {
-      this.closeOpenFile(false);
       this.currentSize = this.readCurrentSize();
       if (this.throwOnError) {
         throw new Error(`Failed to rotate log file ${this.filePath}`);
-      }
-    }
-  }
-
-  private appendTarget(): string | number {
-    if (!this.keepFileOpen) {
-      return this.filePath;
-    }
-    this.fileDescriptor ??= fs.openSync(this.filePath, "a");
-    return this.fileDescriptor;
-  }
-
-  private closeOpenFile(throwOnError: boolean): void {
-    const descriptor = this.fileDescriptor;
-    if (descriptor === undefined) {
-      return;
-    }
-    this.fileDescriptor = undefined;
-    try {
-      fs.closeSync(descriptor);
-    } catch {
-      if (throwOnError) {
-        throw new Error(`Failed to close log file ${this.filePath}`);
       }
     }
   }

@@ -42,6 +42,13 @@ export function areFilesystemPathsEqual(left: string, right: string): boolean {
   return normalizeFilesystemPathForComparison(left) === normalizeFilesystemPathForComparison(right);
 }
 
+/** Whether `path` is `root` or sits inside it, however the separators are spelled. */
+export function isFilesystemPathWithin(path: string, root: string): boolean {
+  const inner = normalizeFilesystemPathForComparison(path);
+  const outer = normalizeFilesystemPathForComparison(root);
+  return inner === outer || inner.startsWith(`${outer}\\`) || inner.startsWith(`${outer}/`);
+}
+
 /**
  * Normalizes a workspace path for equality comparisons across separators,
  * trailing slashes, and case-insensitive filesystems.

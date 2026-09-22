@@ -1,10 +1,9 @@
 /**
- * The notice row docked to the top of the composer.
+ * The notice rows inside the composer's dock.
  *
- * It shares the composer's left and right edges and squares off its top
- * corners, so it reads as a statement about sending rather than as another
- * piece of chat content. Only the worst active notice is on screen; the rest
- * sit behind a count that expands them in place.
+ * Only the worst active notice is on screen; the rest sit behind a count that
+ * expands them in place. The frame around them belongs to {@link ComposerDock},
+ * which the pull request row shares.
  *
  * @module ComposerNoticeDock
  */
@@ -55,15 +54,7 @@ export function ComposerNoticeDock({ notices }: { notices: ReadonlyArray<Compose
   const stackedNotices = isExpanded ? notices.slice(1) : [];
 
   return (
-    // The dock is always exactly as wide as the composer it docks to, so its
-    // inline size is contained: without that, the row's fixed chrome raises
-    // the composer's minimum width and can hold its footer out of the compact
-    // layout that narrow widths depend on.
-    <div
-      ref={dockRef}
-      data-composer-notice-dock="true"
-      className="rounded-t-xl border border-b-0 border-border bg-card [contain:inline-size]"
-    >
+    <div ref={dockRef}>
       {stackedNotices.map((notice) => (
         <ComposerNoticeRow key={notice.id} notice={notice} divided />
       ))}

@@ -138,14 +138,11 @@ export function derivePlanTaskBadge(input: {
     const total = activePlan.steps.length;
     const activeStepIndex = activePlan.steps.findIndex((step) => step.status === "inProgress");
     const completedCount = activePlan.steps.filter((step) => step.status === "completed").length;
-    // Before anything starts, "0/N" reads like stalled progress — show the
-    // queued step count instead and switch to n/m once work begins.
-    const label =
-      activeStepIndex >= 0
-        ? `${activeStepIndex + 1}/${total}`
-        : completedCount > 0
-          ? `${completedCount}/${total}`
-          : `${total}`;
+    // The count is finished work over total, so it matches the filled-in dots
+    // in the popover; the pulse says a step is running. Before anything
+    // starts, "0/N" reads like stalled progress, so show the queued count.
+    const started = activeStepIndex >= 0 || completedCount > 0;
+    const label = started ? `${completedCount}/${total}` : `${total}`;
     const tone =
       completedCount === total
         ? "complete"
@@ -159,11 +156,11 @@ export function derivePlanTaskBadge(input: {
       label,
       ariaLabel:
         activeStepIndex >= 0
-          ? `Tasks, working on step ${activeStepIndex + 1} of ${total}`
+          ? `Tasks, ${completedCount} of ${total} done, working on step ${activeStepIndex + 1}`
           : completedCount === total
             ? `Tasks complete, ${completedCount} of ${total}`
             : completedCount > 0
-              ? `Tasks, ${completedCount} of ${total} complete`
+              ? `Tasks, ${completedCount} of ${total} done`
               : `Tasks, ${total} steps queued`,
       tone,
       pulse: activeStepIndex >= 0,

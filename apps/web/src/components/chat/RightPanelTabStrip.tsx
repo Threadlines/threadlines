@@ -682,6 +682,7 @@ export const RightPanelTabStrip = memo(function RightPanelTabStrip({
   onCloseTab,
   onReorderTab,
   trailing,
+  overlay = false,
 }: {
   openTabs: ReadonlyArray<RightPanelTab>;
   availableTabs: ReadonlyArray<RightPanelTab>;
@@ -697,6 +698,9 @@ export const RightPanelTabStrip = memo(function RightPanelTabStrip({
   onReorderTab?: ((tab: RightPanelTab, toIndex: number) => void) | undefined;
   /** Sheet-mode dismissal, parked at the end of the row. */
   trailing?: React.ReactNode;
+  /** Sheet mode: the panel starts below the chat header, so the strip neither
+   *  shares its row with the window controls nor acts as a window drag handle. */
+  overlay?: boolean;
 }) {
   const stripRef = useRef<HTMLDivElement | null>(null);
   const { mode, rowRef, measureRef, actionsRef, trailingRef } = useTabStripMode(openTabs.join(","));
@@ -732,7 +736,7 @@ export const RightPanelTabStrip = memo(function RightPanelTabStrip({
   return (
     <div
       ref={stripRef}
-      className="drag-region shrink-0 border-b border-border"
+      className={cn("shrink-0 border-b border-border", !overlay && "drag-region")}
       data-right-panel-strip="true"
       data-right-panel-strip-mode={mode}
     >
@@ -745,10 +749,19 @@ export const RightPanelTabStrip = memo(function RightPanelTabStrip({
           titlebar rows add 1em. They end in text or labelled controls that would
           read as crowded against the buttons; this row ends in the `+`, whose own
           padding is the breathing room, so the extra 12px only pushed it away
-          from the controls it sits beside. */}
+          from the controls it sits beside.
+
+          None of that applies in sheet mode: the sheet starts below the chat
+          header, so the row is not under the controls and must not pad clear of
+          them (the ✕ would land mid-row), and a drag region floating over the
+          conversation only got in the way of its own dismiss button. */}
       <div
         ref={rowRef}
-        className="relative flex h-9 items-stretch px-1.5 pt-1.5 wco:min-h-[env(titlebar-area-height)] wco:pr-[calc(100vw-env(titlebar-area-width)-env(titlebar-area-x)+0.25rem)]"
+        className={cn(
+          "relative flex h-9 items-stretch px-1.5 pt-1.5",
+          !overlay &&
+            "wco:min-h-[env(titlebar-area-height)] wco:pr-[calc(100vw-env(titlebar-area-width)-env(titlebar-area-x)+0.25rem)]",
+        )}
         data-right-panel-tabs-row="true"
       >
         {/* The labelled row the mode decision is measured against. Out of the

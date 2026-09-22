@@ -1,0 +1,24 @@
+[
+  {
+    "file": "next-stable-pr-preview-landscape.mp4",
+    "seconds": 28.77,
+    "dimensions": [1600, 934],
+    "fps": 30.0,
+    "frames": 863,
+    "bytes": 753667,
+    "fullDecode": true,
+    "posterExact": true,
+    "audio": false
+  },
+  {
+    "file": "next-stable-pr-preview-square.mp4",
+    "seconds": 28.77,
+    "dimensions": [1080, 1080],
+    "fps": 30.0,
+    "frames": 863,
+    "bytes": 488998,
+    "fullDecode": true,
+    "posterExact": true,
+    "audio": false
+  }
+]

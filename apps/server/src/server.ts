@@ -26,6 +26,8 @@ import { ProviderEventLoggersLive } from "./provider/Layers/ProviderEventLoggers
 import { ProviderServiceLive } from "./provider/Layers/ProviderService.ts";
 import { ProviderSessionReaperLive } from "./provider/Layers/ProviderSessionReaper.ts";
 import { ThreadAutoArchiveSweeperLive } from "./orchestration/Layers/ThreadAutoArchiveSweeper.ts";
+import { PullRequestAutoFixWatcherLive } from "./orchestration/Layers/PullRequestAutoFixWatcher.ts";
+import { BootstrapTurnStartRunsLive } from "./orchestration/Layers/BootstrapTurnStartRuns.ts";
 import { CheckpointDiffQueryLive } from "./checkpointing/Layers/CheckpointDiffQuery.ts";
 import { CheckpointRevertLive } from "./checkpointing/Layers/CheckpointRevert.ts";
 import { CheckpointStoreLive } from "./checkpointing/Layers/CheckpointStore.ts";
@@ -51,6 +53,7 @@ import { ThreadDiffStatBaselineReactorLive } from "./orchestration/Layers/Thread
 import { SleepInhibitorLive } from "./power/Layers/SleepInhibitor.ts";
 import { StorageMaintenanceDaemonLive } from "./persistence/Layers/StorageMaintenance.ts";
 import * as McpHttpServer from "./mcp/McpHttpServer.ts";
+import { DictationLive } from "./dictation/DictationService.ts";
 import * as PreviewAutomationBroker from "./preview/PreviewAutomationBroker.ts";
 import { ProviderAuthSessionsLive } from "./provider/auth/ProviderAuthSessions.ts";
 import { ProviderRegistryLive } from "./provider/Layers/ProviderRegistry.ts";
@@ -194,6 +197,7 @@ const ReactorLayerLive = Layer.empty.pipe(
   Layer.provideMerge(StorageMaintenanceDaemonLive),
   Layer.provideMerge(RuntimeReceiptBusLive),
   Layer.provideMerge(AutomaticGitFetchSupervisorLive),
+  Layer.provideMerge(PullRequestAutoFixWatcherLive),
 );
 
 const ProviderSessionDirectoryLayerLive = ProviderSessionDirectoryLive.pipe(
@@ -344,7 +348,10 @@ const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
   // The browser side of the agent's tools. Holds no resources of its own --
   // it is a rendezvous between a provider turn and whichever client is showing
   // the thread -- so it merges in flat, with nothing beneath it.
-  Layer.provideMerge(PreviewAutomationBroker.layer),
+  // `DictationLive` sits alongside the broker: local speech-to-text, owning a
+  // worker child process and the model downloads, reading the selected model
+  // from the settings layer below.
+  Layer.provideMerge(Layer.mergeAll(PreviewAutomationBroker.layer, DictationLive)),
   Layer.provideMerge(PersistenceLayerLive),
   Layer.provideMerge(KeybindingsLive),
   Layer.provideMerge(ProviderRegistryLive),
@@ -415,6 +422,9 @@ export const makeRoutesLayer = Layer.mergeAll(
   Layer.provide(SourceControlToolMaintenance.layer.pipe(Layer.provide(VcsProcess.layer))),
   Layer.provide(GitHubAuth.layer),
   Layer.provide(ProviderMaintenanceRunner.layer),
+  // One registry for the whole server: a retried bootstrap turn start must
+  // find the run in flight even when it arrives on a different socket.
+  Layer.provide(BootstrapTurnStartRunsLive),
 );
 
 export const makeServerLayer = Layer.unwrap(

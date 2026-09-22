@@ -64,6 +64,7 @@ function thread(
     updatedAt: daysAgo(45),
     archivedAt: null,
     pinnedAt: null,
+    pullRequestAutoFix: false,
     doneOverride: null,
     lastSeenAt: null,
     session: null,
@@ -150,6 +151,7 @@ describe("ThreadAutoArchiveSweeper", () => {
       });
     const orchestrationEngine: OrchestrationEngineShape = {
       readEvents: () => Stream.empty,
+      getCommandReceipt: () => Effect.succeed(Option.none()),
       dispatch: (command) => {
         if (command.type !== "thread.archive") {
           return Effect.die(`Unexpected command: ${command.type}`);

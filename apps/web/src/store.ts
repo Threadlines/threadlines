@@ -24,7 +24,7 @@ import { isProviderDriverKind, ProviderDriverKind } from "@threadlines/contracts
 import type { ThreadId, TurnId } from "@threadlines/contracts";
 import * as Schema from "effect/Schema";
 import { resolveModelSlugForProvider } from "@threadlines/shared/model";
-import { retainRecentActivitiesAndOpenRequests } from "@threadlines/shared/pendingRequests";
+import { retainThreadActivities } from "@threadlines/shared/threadActivityRetention";
 import {
   MAX_THREAD_ACTIVITIES,
   MAX_THREAD_CHECKPOINTS,
@@ -190,28 +190,27 @@ function resolveSessionProviderFromModelSelection(input: {
 }
 
 function mapMessage(environmentId: EnvironmentId, message: OrchestrationMessage): ChatMessage {
-  const attachments = message.attachments?.map(
-    (attachment): ChatAttachment =>
-      attachment.type === "image"
-        ? {
-            type: "image",
-            id: attachment.id,
-            name: attachment.name,
-            mimeType: attachment.mimeType,
-            sizeBytes: attachment.sizeBytes,
-            previewUrl: resolveEnvironmentHttpUrl({
-              environmentId,
-              pathname: attachmentPreviewRoutePath(attachment.id),
-            }),
-          }
-        : {
-            type: "file",
-            kind: attachment.kind,
-            id: attachment.id,
-            name: attachment.name,
-            mimeType: attachment.mimeType,
-            sizeBytes: attachment.sizeBytes,
-          },
+  const attachments = message.attachments?.map((attachment): ChatAttachment =>
+    attachment.type === "image"
+      ? {
+          type: "image",
+          id: attachment.id,
+          name: attachment.name,
+          mimeType: attachment.mimeType,
+          sizeBytes: attachment.sizeBytes,
+          previewUrl: resolveEnvironmentHttpUrl({
+            environmentId,
+            pathname: attachmentPreviewRoutePath(attachment.id),
+          }),
+        }
+      : {
+          type: "file",
+          kind: attachment.kind,
+          id: attachment.id,
+          name: attachment.name,
+          mimeType: attachment.mimeType,
+          sizeBytes: attachment.sizeBytes,
+        },
   );
 
   return {
@@ -296,6 +295,7 @@ function mapThread(thread: OrchestrationThread, environmentId: EnvironmentId): T
     createdAt: thread.createdAt,
     archivedAt: thread.archivedAt,
     pinnedAt: thread.pinnedAt,
+    pullRequestAutoFix: thread.pullRequestAutoFix ?? false,
     doneOverride: thread.doneOverride,
     lastSeenAt: thread.lastSeenAt,
     updatedAt: thread.updatedAt,
@@ -335,6 +335,7 @@ function mapThreadShell(
     createdAt: thread.createdAt,
     archivedAt: thread.archivedAt,
     pinnedAt: thread.pinnedAt,
+    pullRequestAutoFix: thread.pullRequestAutoFix ?? false,
     doneOverride: thread.doneOverride,
     lastSeenAt: thread.lastSeenAt,
     updatedAt: thread.updatedAt,
@@ -396,6 +397,7 @@ function toThreadShell(thread: Thread): ThreadShell {
     createdAt: thread.createdAt,
     archivedAt: thread.archivedAt,
     pinnedAt: thread.pinnedAt,
+    pullRequestAutoFix: thread.pullRequestAutoFix ?? false,
     doneOverride: thread.doneOverride,
     lastSeenAt: thread.lastSeenAt,
     updatedAt: thread.updatedAt,
@@ -589,6 +591,7 @@ function threadShellsEqual(left: ThreadShell | undefined, right: ThreadShell): b
     left.createdAt === right.createdAt &&
     left.archivedAt === right.archivedAt &&
     left.pinnedAt === right.pinnedAt &&
+    left.pullRequestAutoFix === right.pullRequestAutoFix &&
     doneOverridesEqual(left.doneOverride, right.doneOverride) &&
     left.lastSeenAt === right.lastSeenAt &&
     left.updatedAt === right.updatedAt &&
@@ -1147,10 +1150,7 @@ function upsertThreadActivity(
     (activities.length === 0 ||
       compareActivities(activities[activities.length - 1]!, activity) <= 0)
   ) {
-    return retainRecentActivitiesAndOpenRequests(
-      [...activities, nextActivity],
-      MAX_THREAD_ACTIVITIES,
-    );
+    return retainThreadActivities([...activities, nextActivity], MAX_THREAD_ACTIVITIES);
   }
 
   const nextActivities =
@@ -1161,10 +1161,7 @@ function upsertThreadActivity(
           nextActivity,
           ...activities.slice(existingIndex + 1),
         ];
-  return retainRecentActivitiesAndOpenRequests(
-    nextActivities.toSorted(compareActivities),
-    MAX_THREAD_ACTIVITIES,
-  );
+  return retainThreadActivities(nextActivities.toSorted(compareActivities), MAX_THREAD_ACTIVITIES);
 }
 
 function buildLatestTurn(params: {
@@ -1571,6 +1568,7 @@ function applyEnvironmentOrchestrationEvent(
           updatedAt: event.payload.updatedAt,
           archivedAt: null,
           pinnedAt: null,
+          pullRequestAutoFix: false,
           doneOverride: null,
           lastSeenAt: null,
           deletedAt: null,
@@ -1614,6 +1612,13 @@ function applyEnvironmentOrchestrationEvent(
       return updateThreadState(state, event.payload.threadId, (thread) => ({
         ...thread,
         pinnedAt: null,
+        updatedAt: event.payload.updatedAt,
+      }));
+
+    case "thread.pull-request-automation-changed":
+      return updateThreadState(state, event.payload.threadId, (thread) => ({
+        ...thread,
+        pullRequestAutoFix: event.payload.autoFix,
         updatedAt: event.payload.updatedAt,
       }));
 

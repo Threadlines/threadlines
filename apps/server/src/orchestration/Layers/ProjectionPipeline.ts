@@ -592,6 +592,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             updatedAt: event.payload.updatedAt,
             archivedAt: null,
             pinnedAt: null,
+            pullRequestAutoFix: 0,
             doneOverride: null,
             doneOverrideAt: null,
             lastSeenAt: null,
@@ -659,6 +660,21 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           yield* projectionThreadRepository.upsert({
             ...existingRow.value,
             pinnedAt: null,
+            updatedAt: event.payload.updatedAt,
+          });
+          return;
+        }
+
+        case "thread.pull-request-automation-changed": {
+          const existingRow = yield* projectionThreadRepository.getById({
+            threadId: event.payload.threadId,
+          });
+          if (Option.isNone(existingRow)) {
+            return;
+          }
+          yield* projectionThreadRepository.upsert({
+            ...existingRow.value,
+            pullRequestAutoFix: event.payload.autoFix ? 1 : 0,
             updatedAt: event.payload.updatedAt,
           });
           return;

@@ -406,27 +406,38 @@ export function buildSubagentTranscriptActivityRun(
   };
 }
 
+export type SubagentTranscriptLead = Extract<SubagentTranscriptViewItem, { kind: "message" }>;
+
 /** The prompt an agent was spawned with is context, not a step it took, so it
  *  is lifted out of the thread and shown above it. Only the very first entry of
  *  the transcript qualifies: a later instruction is a mid-run message to the
  *  agent and belongs on the thread with everything else.
  *
  *  @param atTranscriptStart False when the page starts mid-transcript, where
- *   the first visible item is not the spawn prompt. */
+ *   the first visible item is not the spawn prompt.
+ *  @param firstEntry The transcript's first record, read separately when the
+ *   page starts mid-transcript. The panel opens on the newest page, and a
+ *   working agent's transcript is far longer than one page, so without this
+ *   the prompt would only ever surface after paging all the way back. */
 export function splitSubagentTranscriptLead(
   items: ReadonlyArray<SubagentTranscriptViewItem>,
   atTranscriptStart: boolean,
+  firstEntry?: SubagentTranscriptEntryLike | null,
 ): {
-  readonly lead: Extract<SubagentTranscriptViewItem, { kind: "message" }> | null;
+  readonly lead: SubagentTranscriptLead | null;
   readonly steps: ReadonlyArray<SubagentTranscriptViewItem>;
 } {
+  if (!atTranscriptStart) {
+    const lead = firstEntry
+      ? splitSubagentTranscriptLead(buildSubagentTranscriptView([firstEntry], 0), true).lead
+      : null;
+    return { lead, steps: items };
+  }
   const [first] = items;
-  if (!atTranscriptStart || first === undefined || first.kind !== "message") {
+  if (first === undefined || first.kind !== "message" || first.role === "assistant") {
     return { lead: null, steps: items };
   }
-  return first.role === "assistant"
-    ? { lead: null, steps: items }
-    : { lead: first, steps: items.slice(1) };
+  return { lead: first, steps: items.slice(1) };
 }
 
 export interface SubagentTranscriptInstruction {
@@ -444,13 +455,12 @@ export interface SubagentTranscriptInstruction {
  * leading message at all: the objective the agent was spawned with stands in,
  * being the same information from the only place that still holds it.
  *
- * @param atTranscriptStart False when the page starts mid-transcript, where an
- *  instruction of any kind would be claiming a beginning that is not on screen.
+ * The block sits above the thread as the setup for whatever page is showing,
+ * so which page is showing does not decide whether it appears.
  */
 export function resolveSubagentTranscriptInstruction(
-  lead: Extract<SubagentTranscriptViewItem, { kind: "message" }> | null,
+  lead: SubagentTranscriptLead | null,
   objective: string | null | undefined,
-  atTranscriptStart: boolean,
 ): SubagentTranscriptInstruction | null {
   if (lead) {
     return {
@@ -460,10 +470,7 @@ export function resolveSubagentTranscriptInstruction(
     };
   }
   const trimmedObjective = objective?.trim();
-  if (!atTranscriptStart || !trimmedObjective) {
-    return null;
-  }
-  return { text: trimmedObjective, at: null, label: "Instruction" };
+  return trimmedObjective ? { text: trimmedObjective, at: null, label: "Instruction" } : null;
 }
 
 /** The provider only writes a transcript record once a message completes, so a
