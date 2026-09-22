@@ -10,6 +10,7 @@ import {
   checkoutPresence,
   classifySpawnFailure,
   isLinkedWorktreeCheckout,
+  resolveFollowedSessionCwd,
   systemErrorCode,
 } from "./CheckoutPresence.ts";
 
@@ -159,6 +160,66 @@ describe("isLinkedWorktreeCheckout", () => {
         const dir = yield* makeTempDir;
         yield* Effect.promise(() => NodeFS.mkdir(NodePath.join(dir, ".git")));
         assert.isFalse(yield* isLinkedWorktreeCheckout(dir));
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+  );
+});
+
+describe("resolveFollowedSessionCwd", () => {
+  // Layout: <dir>/repo is a primary clone, <dir>/repo/.claude/worktrees/feature
+  // is a linked worktree inside it, and <dir>/repo/node_modules/pkg is a plain
+  // folder an agent might `cd` into.
+  const makeCheckouts = Effect.gen(function* () {
+    const dir = yield* makeTempDir;
+    const repo = NodePath.join(dir, "repo");
+    const worktree = NodePath.join(repo, ".claude", "worktrees", "feature");
+    yield* Effect.promise(async () => {
+      await NodeFS.mkdir(NodePath.join(repo, ".git"), { recursive: true });
+      await NodeFS.mkdir(NodePath.join(repo, "node_modules", "pkg"), { recursive: true });
+      await NodeFS.mkdir(NodePath.join(worktree, "src"), { recursive: true });
+      await NodeFS.writeFile(
+        NodePath.join(worktree, ".git"),
+        "gitdir: ../../../.git/worktrees/feature\n",
+      );
+    });
+    return { dir, repo, worktree };
+  });
+
+  it.effect("keeps the configured checkout when the shell only moved into a subfolder", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { repo } = yield* makeCheckouts;
+        const followed = yield* resolveFollowedSessionCwd({
+          observedCwd: NodePath.join(repo, "node_modules", "pkg"),
+          configuredCwd: repo,
+        });
+        assert.strictEqual(followed, repo);
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("follows a move into a linked worktree, at the worktree root", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { repo, worktree } = yield* makeCheckouts;
+        const followed = yield* resolveFollowedSessionCwd({
+          observedCwd: NodePath.join(worktree, "src"),
+          configuredCwd: repo,
+        });
+        assert.strictEqual(followed, worktree);
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("ignores directories outside any checkout", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { dir, repo } = yield* makeCheckouts;
+        const followed = yield* resolveFollowedSessionCwd({
+          observedCwd: dir,
+          configuredCwd: repo,
+        });
+        assert.strictEqual(followed, repo);
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
   );
