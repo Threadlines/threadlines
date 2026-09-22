@@ -18,7 +18,7 @@ import {
   providerAuthReconnectCommand,
 } from "@threadlines/shared/providerAuth";
 import { isTemporaryWorktreeBranch } from "@threadlines/shared/git";
-import { normalizeFilesystemPathForComparison } from "@threadlines/shared/path";
+import { isFilesystemPathWithin } from "@threadlines/shared/path";
 import { normalizeTerminalActivityCommand } from "@threadlines/shared/terminalCommandTracker";
 import type { DesktopCapturedScreenshot } from "@threadlines/contracts";
 import { getModelPickerProviderAvailability } from "./chat/modelPickerEmptyState";
@@ -2166,16 +2166,9 @@ export function resolveThreadBranchToRecord(input: {
   if (!thread || thread.worktreePath === null || cwd === null || checkoutRef === null) {
     return null;
   }
-  if (!isPathWithin(cwd, thread.worktreePath)) return null;
+  if (!isFilesystemPathWithin(cwd, thread.worktreePath)) return null;
   if (checkoutRef === thread.branch) return null;
   if (isTemporaryWorktreeBranch(checkoutRef)) return null;
   if (thread.branch !== null && isTemporaryWorktreeBranch(thread.branch)) return null;
   return checkoutRef;
-}
-
-/** Whether `cwd` is `root` or sits inside it, however the separators are spelled. */
-function isPathWithin(cwd: string, root: string): boolean {
-  const inner = normalizeFilesystemPathForComparison(cwd);
-  const outer = normalizeFilesystemPathForComparison(root);
-  return inner === outer || inner.startsWith(`${outer}\\`) || inner.startsWith(`${outer}/`);
 }

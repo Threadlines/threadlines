@@ -101,3 +101,39 @@ export const ensureClaudeSessionTranscript = Effect.fn("ensureClaudeSessionTrans
     return { outcome: "missing" };
   },
 );
+
+const WORKTREE_STATE_MARKER = '"type":"worktree-state"';
+
+/**
+ * The worktree a Claude session was last inside, as its transcript records it.
+ *
+ * Claude Code appends a `worktree-state` line when EnterWorktree moves the
+ * session and a cleared one when it leaves, and a plain `--resume` re-enters
+ * the last recorded worktree regardless of the cwd it is launched from. A
+ * forked resume skips that restore. Returns the worktree path, `null` when the
+ * session is not in one, or `undefined` when the transcript cannot be read.
+ */
+export const readClaudeTranscriptWorktreePath = Effect.fn("readClaudeTranscriptWorktreePath")(
+  function* (
+    transcriptPath: string,
+  ): Effect.fn.Return<string | null | undefined, never, FileSystem.FileSystem> {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const contents = yield* fileSystem
+      .readFileString(transcriptPath)
+      .pipe(Effect.orElseSucceed(() => undefined));
+    if (contents === undefined) return undefined;
+    const markerIndex = contents.lastIndexOf(WORKTREE_STATE_MARKER);
+    if (markerIndex < 0) return null;
+    const lineStart = contents.lastIndexOf("\n", markerIndex) + 1;
+    const lineEnd = contents.indexOf("\n", markerIndex);
+    try {
+      const record = JSON.parse(
+        contents.slice(lineStart, lineEnd < 0 ? contents.length : lineEnd),
+      ) as { readonly worktreeSession?: { readonly worktreePath?: unknown } | null };
+      const worktreePath = record.worktreeSession?.worktreePath;
+      return typeof worktreePath === "string" && worktreePath.length > 0 ? worktreePath : null;
+    } catch {
+      return undefined;
+    }
+  },
+);

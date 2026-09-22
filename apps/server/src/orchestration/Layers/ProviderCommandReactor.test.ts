@@ -2619,6 +2619,74 @@ describe("ProviderCommandReactor", () => {
     });
   });
 
+  // Claude entered a worktree on its own (EnterWorktree), so the session runs
+  // there while its launch cwd is still the project root. Moving the thread
+  // back to the root matches the launch cwd, yet the session must still cycle
+  // or its next turn reports the worktree and the picker snaps back.
+  it("restarts an idle session the user moved away from, even when launch cwds match", async () => {
+    const harness = await createHarness();
+    const threadId = ThreadId.make("thread-1");
+    const now = "2026-01-01T00:00:00.000Z";
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-moved-away-1"),
+        threadId,
+        message: {
+          messageId: asMessageId("user-message-moved-away-1"),
+          role: "user",
+          text: "first in project root",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    const snapshot = await harness.readModel();
+    const session = snapshot.threads.find((thread) => thread.id === threadId)?.session;
+    if (!session) throw new Error("expected a projected session for thread-1");
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-moved-away-idle"),
+        threadId,
+        session: { ...session, status: "ready", activeTurnId: null, updatedAt: now },
+        createdAt: now,
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.effective-cwd.set",
+        commandId: CommandId.make("cmd-moved-away-entered-worktree"),
+        threadId,
+        effectiveCwd: PROJECT_WORKTREE_ROOT,
+        createdAt: now,
+      }),
+    );
+    expect(harness.startSession.mock.calls.length).toBe(1);
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.checkout.select",
+        commandId: CommandId.make("cmd-moved-away-select-root"),
+        threadId,
+        branch: "main",
+        worktreePath: null,
+      }),
+    );
+
+    await waitFor(() => harness.startSession.mock.calls.length === 2);
+    expect(harness.startSession.mock.calls[1]?.[1]).toMatchObject({
+      threadId,
+      cwd: PROJECT_ROOT,
+      resumeCursor: { opaque: "resume-1" },
+    });
+    expect(harness.sendTurn.mock.calls.length).toBe(1);
+  });
+
   it("applies a checkout switch immediately when the session is idle", async () => {
     const harness = await createHarness({ projectStartingDuringRestart: true });
     const threadId = ThreadId.make("thread-1");

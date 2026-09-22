@@ -638,6 +638,23 @@ export interface ThreadPullRequestSubject {
 }
 
 /**
+ * The branch a thread's own view means by "this branch" (the composer footer,
+ * the Pull request tab, the composer pull request row). A thread that owns a
+ * worktree records its checkout's branch as it moves, so the record is it. A
+ * thread on a shared checkout keeps the branch it began on, because other
+ * threads share that checkout; its own view still shows what the checkout is
+ * on now, so a branch the agent switched to from the shell finds its PR.
+ * Sidebar rows and wrap-up stay on the recorded branch.
+ */
+export function threadViewBranch(
+  thread: { readonly branch: string | null; readonly worktreePath: string | null },
+  gitStatus: Pick<VcsStatusResult, "isRepo" | "refName"> | null,
+): string | null {
+  if (thread.worktreePath !== null) return thread.branch;
+  return gitStatus?.isRepo && gitStatus.refName ? gitStatus.refName : thread.branch;
+}
+
+/**
  * What the checkout itself reports, when it is standing on the thread's own
  * branch. This is the only source that knows a pull request was merged or
  * closed: the open listing stops carrying it the moment it settles.

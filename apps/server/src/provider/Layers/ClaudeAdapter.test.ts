@@ -62,14 +62,17 @@ const missingClaudeConfigEnvironment = (): NodeJS.ProcessEnv => ({
 });
 
 /** Create a temp Claude config dir holding a resumable transcript for `sessionId`. */
-function seedClaudeTranscript(sessionId: string): {
+function seedClaudeTranscript(
+  sessionId: string,
+  contents = "",
+): {
   readonly environment: NodeJS.ProcessEnv;
   readonly cleanup: () => void;
 } {
   const configDir = mkdtempSync(path.join(os.tmpdir(), "claude-adapter-transcripts-"));
   const projectDir = path.join(configDir, "projects", claudeProjectDirectoryName(process.cwd()));
   mkdirSync(projectDir, { recursive: true });
-  writeFileSync(path.join(projectDir, `${sessionId}.jsonl`), "");
+  writeFileSync(path.join(projectDir, `${sessionId}.jsonl`), contents);
   return {
     environment: { ...process.env, CLAUDE_CONFIG_DIR: configDir },
     cleanup: () => rmSync(configDir, { recursive: true, force: true }),
@@ -7291,6 +7294,45 @@ describe("ClaudeAdapterLive", () => {
       Effect.provide(harness.layer),
       Effect.ensuring(Effect.sync(seeded.cleanup)),
     );
+  });
+
+  // A plain resume re-enters the worktree the transcript last recorded; the
+  // user moved this thread back to its checkout, so the resume must fork.
+  it.effect("forks the resume when the transcript's worktree is not the requested cwd", () => {
+    const sessionId = "550e8400-e29b-41d4-a716-446655440000";
+    const recordedWorktree = path.join(process.cwd(), ".claude", "worktrees", "left-behind");
+    const runResume = (cwd: string) => {
+      const seeded = seedClaudeTranscript(
+        sessionId,
+        `${JSON.stringify({ type: "worktree-state", worktreeSession: { worktreePath: recordedWorktree }, sessionId })}\n`,
+      );
+      const harness = makeHarness({ environment: seeded.environment });
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        yield* adapter.startSession({
+          threadId: RESUME_THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          cwd,
+          resumeCursor: { threadId: "resume-thread-1", resume: sessionId },
+          runtimeMode: "full-access",
+        });
+        return harness.getLastCreateQueryInput()?.options;
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+        Effect.ensuring(Effect.sync(seeded.cleanup)),
+      );
+    };
+    return Effect.gen(function* () {
+      const movedOut = yield* runResume(process.cwd());
+      assert.equal(movedOut?.resume, sessionId);
+      assert.equal(movedOut?.forkSession, true);
+
+      // Resuming inside the recorded worktree is a plain resume.
+      const stayed = yield* runResume(recordedWorktree);
+      assert.equal(stayed?.resume, sessionId);
+      assert.equal(stayed?.forkSession, undefined);
+    });
   });
 
   it.effect("falls back to a fresh session when the resume transcript is missing", () => {

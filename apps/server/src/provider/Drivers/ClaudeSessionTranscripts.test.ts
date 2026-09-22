@@ -11,6 +11,7 @@ import * as Path from "effect/Path";
 import {
   claudeProjectDirectoryName,
   ensureClaudeSessionTranscript,
+  readClaudeTranscriptWorktreePath,
   resolveClaudeConfigDir,
 } from "./ClaudeSessionTranscripts.ts";
 
@@ -151,5 +152,56 @@ it.layer(NodeServices.layer)("ClaudeSessionTranscripts", (it) => {
         assert.deepEqual(resolution, { outcome: "missing" });
       }),
     );
+  });
+
+  describe("readClaudeTranscriptWorktreePath", () => {
+    const worktreeState = (worktreePath: string | null) =>
+      JSON.stringify({
+        type: "worktree-state",
+        worktreeSession: worktreePath === null ? null : { worktreePath, originalCwd: "/repo" },
+        sessionId: SESSION_ID,
+      });
+    const writeTranscript = (lines: ReadonlyArray<string>) => {
+      const { configDir, cleanup } = makeConfigDir();
+      const transcriptPath = path.join(configDir, `${SESSION_ID}.jsonl`);
+      writeFileSync(transcriptPath, `${lines.join("\n")}\n`);
+      return { transcriptPath, cleanup };
+    };
+    const message = JSON.stringify({ type: "user", message: { role: "user", content: "hi" } });
+
+    it.effect("returns the worktree the last worktree-state record names", () => {
+      const { transcriptPath, cleanup } = writeTranscript([
+        message,
+        worktreeState("/repo/.claude/worktrees/old"),
+        message,
+        worktreeState("/repo/.claude/worktrees/current"),
+        message,
+      ]);
+      return Effect.gen(function* () {
+        assert.strictEqual(
+          yield* readClaudeTranscriptWorktreePath(transcriptPath),
+          "/repo/.claude/worktrees/current",
+        );
+      }).pipe(Effect.ensuring(Effect.sync(cleanup)));
+    });
+
+    it.effect("returns null once the session left its worktree, or never entered one", () => {
+      const left = writeTranscript([
+        worktreeState("/repo/.claude/worktrees/old"),
+        worktreeState(null),
+      ]);
+      const never = writeTranscript([message]);
+      return Effect.gen(function* () {
+        assert.strictEqual(yield* readClaudeTranscriptWorktreePath(left.transcriptPath), null);
+        assert.strictEqual(yield* readClaudeTranscriptWorktreePath(never.transcriptPath), null);
+      }).pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            left.cleanup();
+            never.cleanup();
+          }),
+        ),
+      );
+    });
   });
 });

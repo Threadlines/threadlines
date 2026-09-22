@@ -44,7 +44,10 @@ import {
   dismissComposerPullRequest,
   useIsComposerPullRequestDismissed,
 } from "../components/chat/composerPullRequestDismissals";
-import { resolveThreadPullRequest } from "../components/pull-requests/pullRequests.logic";
+import {
+  resolveThreadPullRequest,
+  threadViewBranch,
+} from "../components/pull-requests/pullRequests.logic";
 import { Button } from "~/components/ui/button";
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader } from "~/components/ui/empty";
 import {
@@ -323,7 +326,10 @@ function ChatThreadRouteView() {
     () =>
       serverThread
         ? resolveThreadPullRequest({
-            thread: serverThread,
+            thread: {
+              ...serverThread,
+              branch: threadViewBranch(serverThread, pullRequestGitStatus.data),
+            },
             gitStatus: pullRequestGitStatus.data,
             openEntries: openPullRequests.entries,
             projects: pullRequestProjects,

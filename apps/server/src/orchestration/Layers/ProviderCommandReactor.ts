@@ -108,7 +108,8 @@ type ProviderIntentEvent = Extract<
       | "thread.session-stop-requested"
       | "thread.session-set"
       | "thread.goal-set-requested"
-      | "thread.goal-clear-requested";
+      | "thread.goal-clear-requested"
+      | "thread.effective-cwd-set";
   }
 >;
 
@@ -370,6 +371,16 @@ const make = Effect.gen(function* () {
    * on the leading edge of a streak.
    */
   const deferredCheckoutSwitchThreads = new Set<ThreadId>();
+
+  /**
+   * Threads the user moved to another checkout while their provider session
+   * was working somewhere else (a worktree the agent entered on its own). The
+   * session is launched where Threadlines put it, so comparing launch cwds
+   * cannot see that move; the next session ensure restarts it regardless.
+   * Cleared once the session is (re)started. In memory only: after a server
+   * restart there is no live session left to move.
+   */
+  const threadsMovedAwayFromSession = new Set<ThreadId>();
 
   /**
    * Checkout path most recently reported missing per thread, so the same dead
@@ -1019,7 +1030,9 @@ const make = Effect.gen(function* () {
       thread.session && thread.session.status !== "stopped" && activeSession ? thread.id : null;
     if (existingSessionThreadId) {
       const runtimeModeChanged = thread.runtimeMode !== thread.session?.runtimeMode;
-      const cwdChanged = !isSameWorkspaceCwd(effectiveCwd, activeSession?.cwd);
+      const cwdChanged =
+        !isSameWorkspaceCwd(effectiveCwd, activeSession?.cwd) ||
+        threadsMovedAwayFromSession.has(threadId);
       const sessionModelSwitch = (yield* providerService.getCapabilities(desiredInstanceId))
         .sessionModelSwitch;
       const modelChanged =
@@ -1062,6 +1075,7 @@ const make = Effect.gen(function* () {
         return { sessionThreadId: existingSessionThreadId, nativeForkApplied: false };
       }
       deferredCheckoutSwitchThreads.delete(threadId);
+      threadsMovedAwayFromSession.delete(threadId);
 
       const restartReason = runtimeModeChanged
         ? "runtime_mode"
@@ -1123,6 +1137,7 @@ const make = Effect.gen(function* () {
     // failure degrades (visibly, never silently) to a plain start so the
     // caller can fall back to context-seed seeding.
     deferredCheckoutSwitchThreads.delete(threadId);
+    threadsMovedAwayFromSession.delete(threadId);
     const forkFrom = options?.forkFrom;
     if (forkFrom !== undefined) {
       const forkedSession = yield* startProviderSession({ forkFrom }).pipe(
@@ -2360,13 +2375,20 @@ const make = Effect.gen(function* () {
       return;
     }
     const targetCwd = resolveThreadWorkspaceCwd({ thread, projects: [project] });
-    if (!targetCwd || isSameWorkspaceCwd(targetCwd, sessionCheckoutCwd)) {
+    const movedAwayFromSession = threadsMovedAwayFromSession.has(threadId);
+    if (
+      !targetCwd ||
+      (!movedAwayFromSession && isSameWorkspaceCwd(targetCwd, sessionCheckoutCwd))
+    ) {
       return;
     }
     const activeSession = (yield* providerService.listSessions()).find(
       (candidate) => candidate.threadId === threadId,
     );
-    if (!activeSession || isSameWorkspaceCwd(targetCwd, activeSession.cwd)) {
+    if (
+      !activeSession ||
+      (!movedAwayFromSession && isSameWorkspaceCwd(targetCwd, activeSession.cwd))
+    ) {
       return;
     }
     yield* Effect.logInfo("provider command reactor applying queued checkout switch on idle", {
@@ -2515,6 +2537,21 @@ const make = Effect.gen(function* () {
         if (event.payload.worktreePath === undefined) {
           return;
         }
+        yield* maybeApplyQueuedCheckoutSwitch(event.payload.threadId, event.occurredAt);
+        return;
+      }
+      case "thread.effective-cwd-set": {
+        // The decider clears the observed cwd under the user's authority when
+        // a checkout selection lands while the session was elsewhere. Only
+        // that clear means the session must move; session reports and plain
+        // clears do not.
+        if (
+          event.payload.effectiveCwd !== null ||
+          event.payload.effectiveCwdSource !== "selection"
+        ) {
+          return;
+        }
+        threadsMovedAwayFromSession.add(event.payload.threadId);
         yield* maybeApplyQueuedCheckoutSwitch(event.payload.threadId, event.occurredAt);
         return;
       }
@@ -2696,7 +2733,8 @@ const make = Effect.gen(function* () {
         event.type === "thread.session-stop-requested" ||
         event.type === "thread.session-set" ||
         event.type === "thread.goal-set-requested" ||
-        event.type === "thread.goal-clear-requested"
+        event.type === "thread.goal-clear-requested" ||
+        event.type === "thread.effective-cwd-set"
       ) {
         return yield* worker.enqueue(String(event.aggregateId), event);
       }
