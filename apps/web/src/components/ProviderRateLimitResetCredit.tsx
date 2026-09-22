@@ -1,9 +1,8 @@
 "use client";
 
 import { useCallback, type ReactNode, useState } from "react";
-import { ClockIcon, TimerResetIcon } from "lucide-react";
+import { ClockIcon, ExternalLinkIcon, TimerResetIcon } from "lucide-react";
 import {
-  ProviderDriverKind,
   type ProviderInstanceId,
   type ServerProvider,
   type ServerProviderRateLimitResetCredit,
@@ -12,7 +11,11 @@ import {
 } from "@threadlines/contracts";
 
 import { ensureLocalApi } from "../localApi";
-import { providerRateLimitResetCreditExpirationUrgency } from "../lib/providerUsage";
+import { openExternalUrl } from "../lib/externalLinks";
+import {
+  providerRateLimitResetCreditExpirationUrgency,
+  type ProviderExternalResetsLink,
+} from "../lib/providerUsage";
 import { cn, randomUUID } from "../lib/utils";
 import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
@@ -27,10 +30,10 @@ import {
 import { Spinner } from "./ui/spinner";
 import { toastManager } from "./ui/toast";
 
-export const RATE_LIMIT_RESET_CREDIT_PROVIDER_DRIVER = ProviderDriverKind.make("codex");
-
 export type ProviderRateLimitResetCreditRequest = {
   readonly instanceId: ProviderInstanceId;
+  /** Provider name for the dialog and toasts, e.g. "Codex" or "Claude". */
+  readonly providerLabel: string;
   readonly resetCredits: ServerProviderRateLimitResetCredits;
 };
 
@@ -48,21 +51,30 @@ function unknownErrorMessage(error: unknown, fallback: string): string {
   return error instanceof Error && error.message ? error.message : fallback;
 }
 
+/**
+ * Reset credits are provider-managed: the server only reports them for
+ * instances whose driver can also spend them, so any provider with credits
+ * left can offer the action.
+ */
 export function canRequestProviderRateLimitResetCredit(
   provider: Pick<ServerProvider, "driver"> | null | undefined,
   availableCount: number | null | undefined,
 ): boolean {
   return (
-    provider?.driver === RATE_LIMIT_RESET_CREDIT_PROVIDER_DRIVER &&
+    provider !== null &&
+    provider !== undefined &&
     Number.isInteger(availableCount) &&
     (availableCount ?? 0) > 0
   );
 }
 
-export function formatProviderRateLimitResetCreditTooltip(availableCount: number): string {
+export function formatProviderRateLimitResetCreditTooltip(
+  availableCount: number,
+  providerLabel: string,
+): string {
   const creditLabel =
     availableCount === 1 ? "your reset credit" : `1 of your ${availableCount} reset credits`;
-  return `Use ${creditLabel} to refresh the current Codex 5h and weekly usage windows.`;
+  return `Use ${creditLabel} to refresh the current ${providerLabel} 5h and weekly usage windows.`;
 }
 
 function normalizeResetCreditTimestampMs(timestamp: number): number {
@@ -167,19 +179,20 @@ export function isProviderUsageLimitErrorMessage(message: string | null | undefi
 
 export function toastForProviderRateLimitResetCreditOutcome(
   outcome: ServerProviderRateLimitResetCreditOutcome,
+  providerLabel: string,
 ): ProviderRateLimitResetCreditToast {
   switch (outcome) {
     case "reset":
       return {
         type: "success",
-        title: "Codex usage reset",
-        description: "Your Codex rate-limit windows were refreshed.",
+        title: `${providerLabel} usage reset`,
+        description: `Your ${providerLabel} rate-limit windows were refreshed.`,
       };
     case "nothingToReset":
       return {
         type: "info",
         title: "Nothing to reset",
-        description: "Codex did not find an active usage limit to reset.",
+        description: `${providerLabel} did not find an active usage limit to reset.`,
       };
     case "noCredit":
       return {
@@ -194,6 +207,28 @@ export function toastForProviderRateLimitResetCreditOutcome(
   }
 }
 
+/**
+ * Opens the provider's own page for spending a limit reset, for providers
+ * that do not let third-party tools claim resets (Claude).
+ */
+export function ProviderExternalResetsButton(props: {
+  readonly link: ProviderExternalResetsLink;
+  readonly className?: string;
+}) {
+  return (
+    <Button
+      type="button"
+      size="xs"
+      variant="outline"
+      className={cn("gap-1 [&_svg]:size-2.5", props.className)}
+      onClick={() => openExternalUrl(props.link.url)}
+    >
+      <ExternalLinkIcon />
+      {props.link.label}
+    </Button>
+  );
+}
+
 export function ProviderRateLimitResetCreditDialog(props: {
   readonly pendingReset: PendingProviderRateLimitResetCreditRequest | null;
   readonly isResetting: boolean;
@@ -202,6 +237,7 @@ export function ProviderRateLimitResetCreditDialog(props: {
   readonly onUseCredit: (creditId?: string) => void;
 }) {
   const resetCredits = props.pendingReset?.resetCredits;
+  const providerLabel = props.pendingReset?.providerLabel ?? "Provider";
   const detailedCredits = sortProviderRateLimitResetCreditsByExpiration(
     resetCredits?.credits ?? [],
   );
@@ -221,11 +257,11 @@ export function ProviderRateLimitResetCreditDialog(props: {
         showCloseButton={!props.isResetting}
       >
         <DialogHeader>
-          <DialogTitle>Codex usage resets</DialogTitle>
+          <DialogTitle>{providerLabel} usage resets</DialogTitle>
           <DialogDescription>
             {resetCredits?.availableCount === 1
-              ? "1 reset is available. Choose it to refresh your current Codex usage windows."
-              : `${resetCredits?.availableCount ?? 0} resets are available. Choose one to refresh your current Codex usage windows.`}
+              ? `1 reset is available. Choose it to refresh your current ${providerLabel} usage windows.`
+              : `${resetCredits?.availableCount ?? 0} resets are available. Choose one to refresh your current ${providerLabel} usage windows.`}
           </DialogDescription>
         </DialogHeader>
 
@@ -266,8 +302,11 @@ export function ProviderRateLimitResetCreditDialog(props: {
                   </div>
                   <div className="min-w-0 flex-1">
                     <div className="flex min-w-0 items-center gap-2">
-                      <h3 className="truncate font-medium text-sm">
-                        {credit.title ?? "Full Codex usage reset"}
+                      <h3
+                        className="truncate font-medium text-sm"
+                        title={credit.title ?? `Full ${providerLabel} usage reset`}
+                      >
+                        {credit.title ?? `Full ${providerLabel} usage reset`}
                       </h3>
                       {credit.expiresAt === undefined ? null : (
                         <Badge
@@ -404,13 +443,18 @@ export function useProviderRateLimitResetCredit(): {
           idempotencyKey: randomUUID(),
           ...(creditId ? { creditId } : {}),
         });
-        toastManager.add(toastForProviderRateLimitResetCreditOutcome(result.outcome));
+        toastManager.add(
+          toastForProviderRateLimitResetCreditOutcome(result.outcome, pendingReset.providerLabel),
+        );
         setPendingRateLimitResetCredit(null);
       } catch (error: unknown) {
         toastManager.add({
           type: "error",
           title: "Usage reset failed",
-          description: unknownErrorMessage(error, "Codex could not reset usage right now."),
+          description: unknownErrorMessage(
+            error,
+            `${pendingReset.providerLabel} could not reset usage right now.`,
+          ),
         });
       } finally {
         setIsConsumingRateLimitResetCredit(false);

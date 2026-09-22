@@ -332,6 +332,7 @@ import {
   isProviderUsageLimitErrorMessage,
   useProviderRateLimitResetCredit,
 } from "./ProviderRateLimitResetCredit";
+import { providerExternalResetsLink } from "~/lib/providerUsage";
 import {
   buildVersionMismatchDismissalKey,
   dismissVersionMismatch,
@@ -2532,9 +2533,11 @@ export default function ChatView(props: ChatViewProps) {
     }
     requestThreadErrorRateLimitResetCredit({
       instanceId: activeProviderStatus.instanceId,
+      providerLabel: activeProviderLabel,
       resetCredits: activeProviderResetCredits,
     });
   }, [
+    activeProviderLabel,
     activeProviderResetCredits,
     activeProviderStatus,
     canResetActiveProviderUsage,
@@ -2560,6 +2563,13 @@ export default function ChatView(props: ChatViewProps) {
     isConsumingThreadErrorRateLimitResetCredit,
     requestActiveProviderUsageReset,
   ]);
+  const threadErrorUsageResetLink = useMemo(
+    () =>
+      isProviderUsageLimitErrorMessage(activeThread?.error)
+        ? (providerExternalResetsLink(activeProviderStatus?.accountUsage) ?? null)
+        : null,
+    [activeProviderStatus?.accountUsage, activeThread?.error],
+  );
   const activeProviderSupportsManualContextCompaction = providerSupportsManualContextCompaction(
     activeProviderStatus,
     activeProviderDriver,
@@ -5506,6 +5516,7 @@ export default function ChatView(props: ChatViewProps) {
             : null,
         authReconnect: providerAuthReconnectPrompt,
         usageReset: threadErrorUsageResetAction,
+        usageResetLink: threadErrorUsageResetLink,
         retry: threadErrorRetryAction,
         providerLabel: activeProviderLabel,
         signIn: composerSignInView,
@@ -5522,6 +5533,7 @@ export default function ChatView(props: ChatViewProps) {
       threadErrorNoticeVisible,
       threadErrorRetryAction,
       threadErrorUsageResetAction,
+      threadErrorUsageResetLink,
     ],
   );
   const sendPreflightNotice = useMemo(

@@ -120,10 +120,32 @@ export interface ProviderAccountTokenUsagePresentation {
   readonly buckets: ReadonlyArray<ProviderAccountTokenUsageBucketPresentation>;
 }
 
+/**
+ * A provider whose limit resets can only be spent in the provider's own app.
+ * Anthropic's resets are "not available via API or third-party tools", so
+ * Threadlines links to claude.ai instead of claiming them itself.
+ */
+export interface ProviderExternalResetsLink {
+  readonly label: string;
+  readonly url: string;
+}
+
+const CLAUDE_EXTERNAL_RESETS_LINK: ProviderExternalResetsLink = {
+  label: "Use on claude.ai",
+  url: "https://claude.ai/settings/usage",
+};
+
+export function providerExternalResetsLink(
+  usage: Pick<ServerProviderAccountUsage, "source"> | null | undefined,
+): ProviderExternalResetsLink | undefined {
+  return usage?.source === "claude-oauth-usage" ? CLAUDE_EXTERNAL_RESETS_LINK : undefined;
+}
+
 export interface ProviderAccountUsagePresentation {
   readonly label: string;
   readonly spendControl?: ProviderAccountUsageSpendControlPresentation;
   readonly resetCredits?: ProviderAccountUsageResetCreditsPresentation;
+  readonly externalResets?: ProviderExternalResetsLink;
   readonly tokenUsage?: ProviderAccountTokenUsagePresentation;
   readonly windows: ReadonlyArray<ProviderAccountUsageWindowPresentation>;
   readonly reachedLimit: boolean;
@@ -178,7 +200,22 @@ function selectProviderUsageLimit(
   );
 }
 
-const USAGE_WARNING_THRESHOLD_PERCENT = 90;
+/** Usage at or above this is "near limit": bars turn amber and the composer dot appears. */
+export const USAGE_WARNING_THRESHOLD_PERCENT = 75;
+
+/**
+ * Fill color for a usage meter. Below the warning threshold the caller keeps
+ * its neutral fill (`undefined`). From the threshold up, the color blends from
+ * the warning amber into the destructive red, fully red at 100%. A warning
+ * raised below the threshold (provider-reported severity) stays amber.
+ */
+export function usageMeterColor(usedPercent: number, warning: boolean): string | undefined {
+  if (!warning) return undefined;
+  const span = 100 - USAGE_WARNING_THRESHOLD_PERCENT;
+  const progress = Math.max(0, Math.min(1, (usedPercent - USAGE_WARNING_THRESHOLD_PERCENT) / span));
+  const redPercent = Math.round(progress * 100);
+  return `color-mix(in oklab, var(--color-destructive) ${redPercent}%, var(--color-warning))`;
+}
 
 function hasReachedUsageWindow(window: ServerProviderUsageWindow): boolean {
   return window.usedPercent >= 100 || window.remainingPercent <= 0;
@@ -531,11 +568,13 @@ export function deriveProviderAccountUsagePresentation(
       )
     : undefined;
   if (windows.length === 0 && !spendControl && !resetCredits && !tokenUsage) return null;
+  const externalResets = providerExternalResetsLink(usage);
 
   return {
     label: limit.limitName ?? PROVIDER_USAGE_SOURCE_LABELS[usage.source],
     ...(spendControl ? { spendControl } : {}),
     ...(resetCredits ? { resetCredits } : {}),
+    ...(externalResets ? { externalResets } : {}),
     ...(tokenUsage ? { tokenUsage } : {}),
     windows,
     reachedLimit:
@@ -616,4 +655,23 @@ export function isProviderUsageNearLimit(
   if (presentation.reachedLimit) return true;
   if (presentation.spendControl?.warning) return true;
   return presentation.windows.some((window) => window.warning);
+}
+
+/**
+ * Color for the ambient near-limit indicator: the hottest meter in the
+ * presentation, fully red once any limit is reached. `undefined` when the
+ * indicator should not show.
+ */
+export function providerUsageNearLimitColor(
+  presentation: ProviderAccountUsagePresentation | null,
+): string | undefined {
+  if (!presentation || !isProviderUsageNearLimit(presentation)) return undefined;
+  if (presentation.reachedLimit) return usageMeterColor(100, true);
+  const hottestPercent = [
+    ...(presentation.spendControl ? [presentation.spendControl] : []),
+    ...presentation.windows,
+  ]
+    .filter((meter) => meter.warning)
+    .reduce((max, meter) => Math.max(max, meter.usedPercent), 0);
+  return usageMeterColor(hottestPercent, true);
 }

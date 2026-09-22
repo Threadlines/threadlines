@@ -13,7 +13,7 @@ import {
 } from "./ProviderRateLimitResetCredit";
 
 describe("ProviderRateLimitResetCredit", () => {
-  it("only enables reset credit actions for Codex providers with available credits", () => {
+  it("enables reset credit actions for any provider with available credits", () => {
     expect(
       canRequestProviderRateLimitResetCredit({ driver: ProviderDriverKind.make("codex") }, 1),
     ).toBe(true);
@@ -22,7 +22,8 @@ describe("ProviderRateLimitResetCredit", () => {
     ).toBe(false);
     expect(
       canRequestProviderRateLimitResetCredit({ driver: ProviderDriverKind.make("claudeAgent") }, 1),
-    ).toBe(false);
+    ).toBe(true);
+    expect(canRequestProviderRateLimitResetCredit(null, 1)).toBe(false);
   });
 
   it("formats reset grant and expiration timestamps as readable dates", () => {
@@ -70,11 +71,13 @@ describe("ProviderRateLimitResetCredit", () => {
     expect(sorted.map((entry) => entry.id)).toEqual(["soon", "late", "no-expiry"]);
   });
 
-  it("uses reset tooltip copy that names both Codex usage windows", () => {
-    expect(formatProviderRateLimitResetCreditTooltip(1)).toBe(
+  it("uses reset tooltip copy that names the provider and both usage windows", () => {
+    expect(formatProviderRateLimitResetCreditTooltip(1, "Codex")).toBe(
       "Use your reset credit to refresh the current Codex 5h and weekly usage windows.",
     );
-    expect(formatProviderRateLimitResetCreditTooltip(3)).toContain("1 of your 3 reset credits");
+    expect(formatProviderRateLimitResetCreditTooltip(3, "Claude")).toContain(
+      "1 of your 3 reset credits to refresh the current Claude",
+    );
   });
 
   it("recognizes provider usage-limit failures", () => {
@@ -88,11 +91,11 @@ describe("ProviderRateLimitResetCredit", () => {
   });
 
   it("maps reset outcomes to compact toast messages", () => {
-    expect(toastForProviderRateLimitResetCreditOutcome("reset")).toMatchObject({
+    expect(toastForProviderRateLimitResetCreditOutcome("reset", "Claude")).toMatchObject({
       type: "success",
-      title: "Codex usage reset",
+      title: "Claude usage reset",
     });
-    expect(toastForProviderRateLimitResetCreditOutcome("noCredit")).toMatchObject({
+    expect(toastForProviderRateLimitResetCreditOutcome("noCredit", "Codex")).toMatchObject({
       type: "warning",
       title: "No reset credit available",
     });

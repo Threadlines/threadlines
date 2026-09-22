@@ -72,6 +72,7 @@ import {
   classifySpawnFailure,
   isLinkedWorktreeCheckout,
   missingWorkingDirectoryDetail,
+  resolveFollowedSessionCwd,
 } from "../../vcs/CheckoutPresence.ts";
 import { CLAUDE_PREVIEW_PANEL_INSTRUCTIONS } from "../previewPanelInstructions.ts";
 import * as Cause from "effect/Cause";
@@ -5059,13 +5060,22 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         // Init reports where the session actually runs. Resumed sessions
         // keep a mid-session worktree switch (EnterWorktree) across turns,
         // so this diverges from the thread's configured checkout; ingestion
-        // compares and records the divergence on the thread.
+        // compares and records the divergence on the thread. Init also
+        // reports wherever the Bash tool last `cd`'d, so only a move into a
+        // worktree is followed; a subfolder stays on the configured checkout.
         const initCwd = (message as { cwd?: unknown }).cwd;
         if (typeof initCwd === "string" && initCwd.trim().length > 0) {
+          const followedCwd = yield* resolveFollowedSessionCwd({
+            observedCwd: initCwd,
+            configuredCwd: context.session.cwd,
+          }).pipe(
+            Effect.provideService(FileSystem.FileSystem, fileSystem),
+            Effect.provideService(Path.Path, path),
+          );
           yield* offerRuntimeEvent({
             ...base,
             type: "session.cwd.changed",
-            payload: { cwd: initCwd, reason: "session-init" },
+            payload: { cwd: followedCwd, reason: "session-init" },
           });
         }
         return;

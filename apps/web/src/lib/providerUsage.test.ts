@@ -12,6 +12,8 @@ import {
   isProviderUsageNearLimit,
   providerRateLimitResetCreditsExpirationUrgency,
   providerRateLimitResetCreditExpirationUrgency,
+  providerUsageNearLimitColor,
+  usageMeterColor,
 } from "./providerUsage";
 
 describe("deriveProviderAccountUsagePresentation", () => {
@@ -395,6 +397,7 @@ describe("deriveProviderAccountUsagePresentation", () => {
 
     expect(deriveProviderAccountUsagePresentation(usage, 1_800_000_000_000)).toEqual({
       label: "Claude usage",
+      externalResets: { label: "Use on claude.ai", url: "https://claude.ai/settings/usage" },
       reachedLimit: false,
       windows: [
         {
@@ -564,6 +567,7 @@ describe("deriveProviderAccountUsagePresentation", () => {
 
     expect(deriveProviderAccountUsagePresentation(usage, 1_781_104_200_000)).toEqual({
       label: "Claude usage",
+      externalResets: { label: "Use on claude.ai", url: "https://claude.ai/settings/usage" },
       reachedLimit: true,
       windows: [
         {
@@ -872,14 +876,54 @@ const makeUsage = (usedPercent: number): ServerProviderAccountUsage => ({
 describe("isProviderUsageNearLimit", () => {
   it("is false for null presentations and usage below the threshold", () => {
     expect(isProviderUsageNearLimit(null)).toBe(false);
-    expect(isProviderUsageNearLimit(deriveProviderAccountUsagePresentation(makeUsage(89)))).toBe(
+    expect(isProviderUsageNearLimit(deriveProviderAccountUsagePresentation(makeUsage(74)))).toBe(
       false,
     );
   });
 
   it("is true once any window crosses the threshold", () => {
-    expect(isProviderUsageNearLimit(deriveProviderAccountUsagePresentation(makeUsage(90)))).toBe(
+    expect(isProviderUsageNearLimit(deriveProviderAccountUsagePresentation(makeUsage(75)))).toBe(
       true,
+    );
+  });
+
+  it("blends the meter color from amber at the threshold to red at 100%", () => {
+    expect(usageMeterColor(60, false)).toBeUndefined();
+    expect(usageMeterColor(75, true)).toBe(
+      "color-mix(in oklab, var(--color-destructive) 0%, var(--color-warning))",
+    );
+    expect(usageMeterColor(87.5, true)).toBe(
+      "color-mix(in oklab, var(--color-destructive) 50%, var(--color-warning))",
+    );
+    expect(usageMeterColor(100, true)).toBe(
+      "color-mix(in oklab, var(--color-destructive) 100%, var(--color-warning))",
+    );
+    // Provider-reported severity below the threshold stays amber.
+    expect(usageMeterColor(40, true)).toBe(
+      "color-mix(in oklab, var(--color-destructive) 0%, var(--color-warning))",
+    );
+  });
+
+  it("colors the near-limit dot by the hottest meter and fully red when a limit is reached", () => {
+    expect(providerUsageNearLimitColor(deriveProviderAccountUsagePresentation(makeUsage(50)))).toBe(
+      undefined,
+    );
+    expect(providerUsageNearLimitColor(deriveProviderAccountUsagePresentation(makeUsage(80)))).toBe(
+      "color-mix(in oklab, var(--color-destructive) 20%, var(--color-warning))",
+    );
+    const reached: ServerProviderAccountUsage = {
+      source: "codex-rate-limits",
+      checkedAt: "2026-04-10T00:00:00.000Z",
+      limits: [
+        {
+          limitId: "codex",
+          rateLimitReachedType: "rate_limit_reached",
+          primary: { usedPercent: 12, remainingPercent: 88 },
+        },
+      ],
+    };
+    expect(providerUsageNearLimitColor(deriveProviderAccountUsagePresentation(reached))).toBe(
+      "color-mix(in oklab, var(--color-destructive) 100%, var(--color-warning))",
     );
   });
 

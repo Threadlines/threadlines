@@ -289,14 +289,33 @@ Fable has content-based fallback for some cybersecurity, biology, chemistry, and
 requests. If a request is flagged, Claude Code may switch that session to Opus and show a transcript
 notice. This can happen from repository context alone in security-heavy or biology-heavy workspaces.
 
-## Claude Opus 5 And Live Model Discovery
+## Claude Opus 5 And 5.5, And Live Model Discovery
 
-Threadlines shows Claude Opus 5 when the configured Claude Code binary is `2.1.219` or newer. The
-canonical model id is `claude-opus-5`; the `opus` shorthand resolves to that id. Opus 5 uses a native
-1M context window, supports `low` through `max` effort, and exposes Claude Code fast mode.
+Threadlines shows Claude Opus 5.5 when the configured Claude Code binary is `2.1.280` or newer, and
+Claude Opus 5 from `2.1.219`. The canonical model ids are `claude-opus-5-5` and `claude-opus-5`.
+Claude Code `2.1.280` makes Opus 5.5 the model its bare `opus` alias resolves to, and Threadlines
+normalizes the alias the same way; `opus-5` still means Claude Opus 5. Both use a native 1M context
+window, support `low` through `max` effort, and expose Claude Code fast mode.
+
+Claude Code lists native-1M models only as `<model>[1m]` and labels its `default` row
+"Default (recommended)". Threadlines strips the suffix for known native-1M models and always names
+a live model from its id, so the picker shows the model name rather than the alias label.
 
 Threadlines also reads the model catalog returned by Claude Agent SDK initialization. Models reported
 by the active Claude account appear before Threadlines' curated historical catalog, and the model
 behind Claude's `default` row becomes that provider instance's default in Threadlines. Curated entries
 still supply richer Threadlines-specific metadata and remain available as an offline fallback when
 Claude initialization cannot return a live catalog.
+
+## Claude Usage Resets
+
+Anthropic occasionally gives subscription plans a limit reset, for example one saved reset with the
+Opus 5.5 launch. A reset refills the 5h or weekly limit right away without moving the weekly reset
+day. Anthropic documents resets as spent from claude.ai or the Claude desktop app under
+`Settings -> Usage`, and as
+[not available via API or third-party tools](https://support.claude.com/en/articles/17007452-what-is-a-limit-reset).
+
+Threadlines therefore never claims a Claude reset. Where Codex shows a `Reset` button, a Claude
+provider shows `Use on claude.ai`, which opens `https://claude.ai/settings/usage`: on the provider
+card, in the composer usage popover, and on a usage-limit error. Limits are shared across the
+account, so a reset spent on claude.ai also refills Claude inside Threadlines.
