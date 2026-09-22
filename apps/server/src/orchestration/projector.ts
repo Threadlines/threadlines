@@ -303,6 +303,7 @@ export function projectEvent(
             archivedAt: null,
             pinnedAt: null,
             pullRequestAutoFix: false,
+            pullRequestAutoMerge: null,
             doneOverride: null,
             lastSeenAt: null,
             deletedAt: null,
@@ -389,7 +390,8 @@ export function projectEvent(
         Effect.map((payload) => ({
           ...nextBase,
           threads: updateThread(nextBase.threads, payload.threadId, {
-            pullRequestAutoFix: payload.autoFix,
+            ...(payload.autoFix === undefined ? {} : { pullRequestAutoFix: payload.autoFix }),
+            ...(payload.autoMerge === undefined ? {} : { pullRequestAutoMerge: payload.autoMerge }),
             updatedAt: payload.updatedAt,
           }),
         })),

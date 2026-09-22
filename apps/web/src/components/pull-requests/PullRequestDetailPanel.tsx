@@ -12,7 +12,6 @@ import type {
   ScopedThreadRef,
   SourceControlProviderKind,
 } from "@threadlines/contracts";
-import { PullRequestMergeMethod as PullRequestMergeMethodSchema } from "@threadlines/contracts";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import * as Schema from "effect/Schema";
@@ -36,6 +35,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { useComposerDraftStore } from "../../composerDraftStore";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { useLocalStorage } from "../../hooks/useLocalStorage";
+import { useRememberedMergeMethod } from "./useRememberedMergeMethod";
 import { openExternalUrl } from "../../lib/externalLinks";
 import {
   pullRequestActionMutationOptions,
@@ -1074,11 +1074,6 @@ type PullRequestConfirmation =
 /** Remembered per computer: whoever deletes merged branches always does. */
 const DELETE_BRANCH_STORAGE_PREFIX = "threadlines:pull-requests:delete-branch:v1";
 
-/** Remembered per repository: the merge method last run on it becomes the
- *  Merge button's own, as the host's site does. */
-const MERGE_METHOD_STORAGE_PREFIX = "threadlines:pull-requests:merge-method:v1";
-const REMEMBERED_MERGE_METHOD_SCHEMA = Schema.NullOr(PullRequestMergeMethodSchema);
-
 /** The three pieces the header hangs in three different places. */
 interface PullRequestActionsView {
   /** The buttons, for the right of the header's first row. */
@@ -1122,10 +1117,9 @@ function usePullRequestActions({
     false,
     Schema.Boolean,
   );
-  const [rememberedMergeMethod, setRememberedMergeMethod] = useLocalStorage(
-    `${MERGE_METHOD_STORAGE_PREFIX}:${detail.provider}:${detail.repository}`,
-    null,
-    REMEMBERED_MERGE_METHOD_SCHEMA,
+  const [rememberedMergeMethod, setRememberedMergeMethod] = useRememberedMergeMethod(
+    detail.provider,
+    detail.repository,
   );
 
   const isRunning = mutation.isPending;

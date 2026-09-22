@@ -6,9 +6,11 @@ import {
   type OrchestrationCommand,
   type OrchestrationProjectShell,
   type OrchestrationThreadShell,
+  type PullRequestActionInput,
   type PullRequestActivity,
   type PullRequestCheck,
   type PullRequestDetail,
+  PullRequestServiceError,
   type VcsStatusRemoteResult,
 } from "@threadlines/contracts";
 import * as Effect from "effect/Effect";
@@ -31,8 +33,8 @@ import {
   ProjectionSnapshotQuery,
   type ProjectionSnapshotQueryShape,
 } from "../Services/ProjectionSnapshotQuery.ts";
-import { PullRequestAutoFixWatcher } from "../Services/PullRequestAutoFixWatcher.ts";
-import { makePullRequestAutoFixWatcherLive } from "./PullRequestAutoFixWatcher.ts";
+import { PullRequestAutomationWatcher } from "../Services/PullRequestAutomationWatcher.ts";
+import { makePullRequestAutomationWatcherLive } from "./PullRequestAutomationWatcher.ts";
 
 const NOW_ISO = "2026-05-04T10:00:00.000Z";
 const PROJECT_ID = ProjectId.make("project-auto-fix");
@@ -84,6 +86,7 @@ function thread(overrides: Partial<OrchestrationThreadShell> = {}): Orchestratio
     archivedAt: null,
     pinnedAt: null,
     pullRequestAutoFix: true,
+    pullRequestAutoMerge: null,
     doneOverride: null,
     lastSeenAt: null,
     session: null,
@@ -168,6 +171,22 @@ const PASSING_CHECK: PullRequestCheck = {
   url: "https://github.com/acme/widgets/runs/1",
 };
 const FAILING_CHECK: PullRequestCheck = { ...PASSING_CHECK, status: "failure" };
+const PENDING_CHECK: PullRequestCheck = { ...PASSING_CHECK, status: "pending" };
+
+/** A pull request GitHub would merge right now, once its checks allow. */
+function mergeable(checks: readonly PullRequestCheck[]): PullRequestDetail {
+  const base = detail(checks);
+  return {
+    ...base,
+    checksState: checks.some((check) => check.status === "pending")
+      ? "pending"
+      : checks.some((check) => check.status === "failure")
+        ? "failure"
+        : "success",
+    mergeGate: "clear",
+    capabilities: { ...base.capabilities, actions: ["merge"] },
+  };
+}
 
 function activity(
   comments: PullRequestActivity["comments"] = [],
@@ -195,6 +214,8 @@ interface HostScript {
   readonly remote: VcsStatusRemoteResult | null;
   readonly detail: PullRequestDetail;
   readonly activity: PullRequestActivity;
+  /** What `merge` does; a merge the test did not expect fails it. */
+  readonly merge?: () => Effect.Effect<{ state: "merged" | "open" }, PullRequestServiceError>;
 }
 
 function makeSnapshotQuery(input: {
@@ -227,8 +248,8 @@ function makeSnapshotQuery(input: {
   };
 }
 
-describe("PullRequestAutoFixWatcher", () => {
-  let runtime: ManagedRuntime.ManagedRuntime<PullRequestAutoFixWatcher, unknown> | null = null;
+describe("PullRequestAutomationWatcher", () => {
+  let runtime: ManagedRuntime.ManagedRuntime<PullRequestAutomationWatcher, unknown> | null = null;
 
   afterEach(async () => {
     if (runtime) {
@@ -245,11 +266,23 @@ describe("PullRequestAutoFixWatcher", () => {
     let script = input.script;
     let threads = input.threads;
     const dispatched: Array<Extract<OrchestrationCommand, { type: "thread.turn.start" }>> = [];
+    // Everything else the watcher dispatches: switches turned off, timeline notes.
+    const commands: OrchestrationCommand[] = [];
+    const actions: PullRequestActionInput[] = [];
 
     const orchestrationEngine: OrchestrationEngineShape = {
       readEvents: () => Stream.empty,
       getCommandReceipt: () => Effect.succeed(Option.none()),
       dispatch: (command) => {
+        if (
+          command.type === "thread.pull-request-automation.set" ||
+          command.type === "thread.activity.append"
+        ) {
+          return Effect.sync(() => {
+            commands.push(command);
+            return { sequence: commands.length };
+          });
+        }
         if (command.type !== "thread.turn.start") {
           return Effect.die(`Unexpected command: ${command.type}`);
         }
@@ -281,7 +314,13 @@ describe("PullRequestAutoFixWatcher", () => {
       activity: () => Effect.sync(() => script.activity),
       diff: () => Effect.die("unused"),
       comment: () => Effect.die("unused"),
-      runAction: () => Effect.die("unused"),
+      runAction: (action) =>
+        Effect.suspend(() => {
+          actions.push(action);
+          return script.merge
+            ? script.merge().pipe(Effect.map((result) => ({ ...result, isDraft: false })))
+            : Effect.die("unexpected merge");
+        }),
       submitReview: () => Effect.die("unused"),
       replyToThread: () => Effect.die("unused"),
       setThreadResolution: () => Effect.die("unused"),
@@ -292,7 +331,7 @@ describe("PullRequestAutoFixWatcher", () => {
       requestReviewers: () => Effect.die("unused"),
     };
 
-    const layer = makePullRequestAutoFixWatcherLive({ sweepIntervalMs: 60_000 }).pipe(
+    const layer = makePullRequestAutomationWatcherLive({ sweepIntervalMs: 60_000 }).pipe(
       Layer.provideMerge(
         Layer.succeed(
           ProjectionSnapshotQuery,
@@ -307,7 +346,7 @@ describe("PullRequestAutoFixWatcher", () => {
       Layer.provideMerge(Layer.succeed(PullRequestService, pullRequestService)),
     );
     runtime = ManagedRuntime.make(layer);
-    const watcher = await runtime.runPromise(Effect.service(PullRequestAutoFixWatcher));
+    const watcher = await runtime.runPromise(Effect.service(PullRequestAutomationWatcher));
     const sweep = () => runtime!.runPromise(watcher.sweepNow());
     const setScript = (next: HostScript) => {
       script = next;
@@ -315,7 +354,7 @@ describe("PullRequestAutoFixWatcher", () => {
     const setThreads = (next: readonly OrchestrationThreadShell[]) => {
       threads = next;
     };
-    return { dispatched, setScript, setThreads, sweep };
+    return { actions, commands, dispatched, setScript, setThreads, sweep };
   }
 
   it("records a baseline on first sight and starts nothing", async () => {
@@ -473,5 +512,131 @@ describe("PullRequestAutoFixWatcher", () => {
     }
 
     expect(dispatched).toHaveLength(3);
+  });
+
+  describe("merge when checks pass", () => {
+    const armed = thread({ pullRequestAutoFix: false, pullRequestAutoMerge: "rebase" });
+
+    it("waits for checks and pushes, then merges once and turns itself off", async () => {
+      const { actions, commands, setScript, sweep } = await createHarness({
+        threads: [armed],
+        script: {
+          remote: OPEN_PULL_REQUEST,
+          detail: mergeable([PENDING_CHECK]),
+          activity: activity(),
+        },
+      });
+
+      await sweep();
+      // Passing, but the thread still has a commit the host has not seen.
+      setScript({
+        remote: { ...OPEN_PULL_REQUEST, aheadCount: 1 },
+        detail: mergeable([PASSING_CHECK]),
+        activity: activity(),
+      });
+      await sweep();
+      expect(actions).toEqual([]);
+
+      setScript({
+        remote: OPEN_PULL_REQUEST,
+        detail: mergeable([PASSING_CHECK]),
+        activity: activity(),
+        merge: () => Effect.succeed({ state: "merged" }),
+      });
+      await sweep();
+
+      // The repository no longer allows the chosen method, so its own first choice runs.
+      expect(actions).toEqual([
+        {
+          projectId: PROJECT_ID,
+          repository: REPOSITORY,
+          number: PR_NUMBER,
+          action: "merge",
+          mergeMethod: "squash",
+        },
+      ]);
+      expect(commands.map((command) => command.type)).toEqual([
+        "thread.pull-request-automation.set",
+        "thread.activity.append",
+      ]);
+      expect(commands[0]).toMatchObject({ threadId: THREAD_ID, autoMerge: null });
+      expect(commands[1]).toMatchObject({
+        activity: { tone: "info", kind: "pull-request.auto-merge.merged" },
+      });
+    });
+
+    it("gives up on a failing check unless the thread is fixing it", async () => {
+      const failing = mergeable([FAILING_CHECK]);
+      const fixing = await createHarness({
+        threads: [{ ...armed, pullRequestAutoFix: true }],
+        script: { remote: OPEN_PULL_REQUEST, detail: failing, activity: activity() },
+      });
+      await fixing.sweep();
+      expect(fixing.commands).toEqual([]);
+      await runtime?.dispose();
+
+      const { actions, commands, sweep } = await createHarness({
+        threads: [armed],
+        script: { remote: OPEN_PULL_REQUEST, detail: failing, activity: activity() },
+      });
+      await sweep();
+      expect(actions).toEqual([]);
+      expect(commands[0]).toMatchObject({ autoMerge: null });
+      expect(commands[1]).toMatchObject({
+        activity: {
+          tone: "warning",
+          kind: "pull-request.auto-merge.stopped",
+          payload: { detail: "A check failed" },
+        },
+      });
+    });
+
+    it("reports a merge the host refused, and does not retry it", async () => {
+      const { actions, commands, sweep } = await createHarness({
+        threads: [armed],
+        script: {
+          remote: OPEN_PULL_REQUEST,
+          detail: mergeable([PASSING_CHECK]),
+          activity: activity(),
+          merge: () =>
+            Effect.fail(
+              new PullRequestServiceError({
+                operation: "runAction",
+                detail: "Base branch was modified",
+              }),
+            ),
+        },
+      });
+
+      await sweep();
+      expect(actions).toHaveLength(1);
+      expect(commands[0]).toMatchObject({ autoMerge: null });
+      expect(commands[1]).toMatchObject({
+        activity: {
+          tone: "error",
+          kind: "pull-request.auto-merge.failed",
+          payload: { detail: "Base branch was modified" },
+        },
+      });
+    });
+
+    it("turns itself off quietly when the pull request closes some other way", async () => {
+      const { actions, commands, sweep } = await createHarness({
+        threads: [armed],
+        script: {
+          remote: { ...OPEN_PULL_REQUEST, pr: { ...OPEN_PULL_REQUEST.pr!, state: "merged" } },
+          detail: mergeable([PASSING_CHECK]),
+          activity: activity(),
+        },
+      });
+
+      await sweep();
+      expect(actions).toEqual([]);
+      expect(commands).toHaveLength(1);
+      expect(commands[0]).toMatchObject({
+        type: "thread.pull-request-automation.set",
+        autoMerge: null,
+      });
+    });
   });
 });

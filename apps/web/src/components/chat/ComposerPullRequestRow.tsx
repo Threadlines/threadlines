@@ -15,6 +15,7 @@ import type {
   EnvironmentId,
   PullRequestAction,
   PullRequestDetail,
+  PullRequestMergeMethod,
   PullRequestRef,
 } from "@threadlines/contracts";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
@@ -34,7 +35,12 @@ import {
   type PullRequestHoverCardPayload,
 } from "../pull-requests/PullRequestHoverCard";
 import { CHECK_TONES } from "../pull-requests/pullRequestPresentation";
-import { pullRequestBadgeTone, type ThreadPullRequest } from "../pull-requests/pullRequests.logic";
+import {
+  pullRequestBadgeTone,
+  resolveDefaultMergeMethod,
+  type ThreadPullRequest,
+} from "../pull-requests/pullRequests.logic";
+import { useRememberedMergeMethod } from "../pull-requests/useRememberedMergeMethod";
 import { Checkbox } from "../ui/checkbox";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -50,6 +56,9 @@ import {
 
 /** Said the same way on the marker and its tooltip, so they read as one thing. */
 const AUTO_FIX_MARKER_LABEL = "Fixes failing checks and review comments on its own";
+
+/** Under the server-held switch while it is off: who does the merge, and the catch. */
+const SERVER_AUTO_MERGE_HINT = "Threadlines merges it while the app is running";
 
 /** Everything the thread route hands the composer about its pull request. */
 export interface ComposerPullRequest {
@@ -68,6 +77,12 @@ export interface ComposerPullRequest {
   /** The thread's own switch: the server watches this pull request while it is on. */
   readonly autoFix: boolean;
   readonly onAutoFixChange: (next: boolean) => void;
+  /**
+   * How the server merges this pull request once its checks pass, for a host
+   * that cannot hold that itself; null while the thread has not asked.
+   */
+  readonly autoMerge: PullRequestMergeMethod | null;
+  readonly onAutoMergeChange: (next: PullRequestMergeMethod | null) => void;
   /**
    * Whether this thread files itself under Wrapped once the pull request
    * merges or closes: the thread's own word, or the app setting until it
@@ -102,6 +117,7 @@ export function ComposerPullRequestRow({
     pullRequest: pullRequest.pullRequest,
     projectTitle: pullRequest.projectTitle,
     detail: pullRequest.detail,
+    threadAutoMerge: pullRequest.autoMerge !== null,
   });
   const tone = pullRequestBadgeTone(row.state, row.isDraft, row.autoMergeEnabled);
   const hoverCardPayload: PullRequestHoverCardPayload = {
@@ -257,47 +273,8 @@ function ComposerPullRequestChecksPopover({
   readonly checksUrl: string;
   readonly onOpenExternal: () => void;
 }) {
-  const queryClient = useQueryClient();
   const detail = pullRequest.detail;
   const buckets = composerPullRequestCheckBuckets(detail?.checks ?? []);
-  const autoMergeControl = composerAutoMergeControl(detail);
-  const detailQueryKey = pullRequestQueryKeys.detail(
-    pullRequest.environmentId,
-    pullRequest.reference.projectId,
-    pullRequest.reference.number,
-  );
-  const actionOptions = pullRequestActionMutationOptions({
-    environmentId: pullRequest.environmentId,
-    reference: pullRequest.reference,
-    queryClient,
-  });
-  const action = useMutation({
-    ...actionOptions,
-    // The switch flips the moment it is clicked. The host takes seconds to arm
-    // the merge and seconds more to be re-read, and a switch that waits for
-    // both reads as one that did not take the click. If the host refuses, the
-    // detail it was read from comes back.
-    onMutate: async (variables) => {
-      await queryClient.cancelQueries({ queryKey: detailQueryKey });
-      const previous = queryClient.getQueryData<PullRequestDetail>(detailQueryKey);
-      if (
-        previous &&
-        previous.mergeQueue?.position == null &&
-        variables.action.endsWith("auto-merge")
-      ) {
-        queryClient.setQueryData<PullRequestDetail>(detailQueryKey, {
-          ...previous,
-          autoMergeEnabled: variables.action === "enable-auto-merge",
-        });
-      }
-      return { previous };
-    },
-    onError: (_error, _variables, context) => {
-      if (context?.previous) {
-        queryClient.setQueryData(detailQueryKey, context.previous);
-      }
-    },
-  });
 
   return (
     <div className="w-full py-2 text-xs">
@@ -347,64 +324,18 @@ function ComposerPullRequestChecksPopover({
         })
       )}
       <div className="my-1.5 border-border border-t" />
-      {autoMergeControl.kind === "toggle" ? (
-        <label className="flex cursor-pointer items-center gap-2 px-3 py-1 transition-colors hover:bg-accent">
-          <Checkbox
-            className="size-3.5"
-            checked={autoMergeControl.checked}
-            disabled={action.isPending}
-            onCheckedChange={(checked) => {
-              const next: PullRequestAction = checked ? "enable-auto-merge" : "disable-auto-merge";
-              action.mutate({ action: next });
-            }}
-          />
-          Merge when checks pass
-        </label>
-      ) : null}
-      {autoMergeControl.kind === "unavailable" ? (
-        <div className="px-3 py-1">
-          <p className="text-muted-foreground">{autoMergeControl.reason}</p>
-          <button
-            type="button"
-            className="mt-1 cursor-pointer rounded-sm text-primary-readable hover:text-foreground focus-ring"
-            onClick={() => {
-              onOpenExternal();
-              pullRequest.onOpen();
-            }}
-          >
-            Open merge controls
-          </button>
-        </div>
-      ) : null}
-      {autoMergeControl.kind === "queued" ? (
-        // The host has taken it: there is no instruction left to switch off,
-        // and the queue lands it on its own.
-        <p className="flex items-center gap-2 px-3 py-1 text-muted-foreground">
-          <ChipDot className={CHIP_TONE_CLASS.queued.dot + " " + CHIP_TONE_CLASS.queued.chip} />
-          In the merge queue
-          {detail?.viewer.canWrite && detail.capabilities.actions.includes("disable-auto-merge") ? (
-            <button
-              type="button"
-              disabled={action.isPending}
-              className="ml-auto cursor-pointer rounded-sm hover:text-foreground disabled:cursor-default disabled:opacity-60 focus-ring"
-              onClick={() => action.mutate({ action: "disable-auto-merge" })}
-            >
-              {action.isPending ? "Leaving…" : "Leave queue"}
-            </button>
-          ) : null}
-        </p>
-      ) : null}
-      {action.isError ? (
-        <p role="alert" className="break-words px-3 py-1 text-destructive">
-          {action.error instanceof Error && action.error.message.trim().length > 0
-            ? action.error.message
-            : "The host refused that action."}
-        </p>
+      {detail ? (
+        <ComposerPullRequestAutoMergeSection
+          pullRequest={pullRequest}
+          detail={detail}
+          onOpenExternal={onOpenExternal}
+        />
       ) : null}
       {composerAutoFixOffered(detail) ? (
-        <ComposerPullRequestAutoFixSwitch
-          autoFix={pullRequest.autoFix}
-          onAutoFixChange={pullRequest.onAutoFixChange}
+        <ComposerPullRequestThreadSwitch
+          checked={pullRequest.autoFix}
+          onCheckedChange={pullRequest.onAutoFixChange}
+          label="Fix failing checks and review comments"
         />
       ) : null}
       {/* This thread's own choice. The link goes to the app-wide default it
@@ -434,37 +365,178 @@ function ComposerPullRequestChecksPopover({
 }
 
 /**
- * The thread's own switch, held optimistically. The command is a round trip to
- * the server and back through the read model, and a switch that waits for both
- * reads as one that did not take the click; the read model wins again as soon
- * as it says something different from what was clicked.
+ * "Merge when checks pass", in whichever form this pull request allows: the
+ * host's own standing instruction, the same switch held by this thread's
+ * server where the host cannot hold it, the merge queue it already sits in, or
+ * the reason none of those is on offer.
  */
-function ComposerPullRequestAutoFixSwitch({
-  autoFix,
-  onAutoFixChange,
+function ComposerPullRequestAutoMergeSection({
+  pullRequest,
+  detail,
+  onOpenExternal,
 }: {
-  readonly autoFix: boolean;
-  readonly onAutoFixChange: (next: boolean) => void;
+  readonly pullRequest: ComposerPullRequest;
+  readonly detail: PullRequestDetail;
+  readonly onOpenExternal: () => void;
+}) {
+  const queryClient = useQueryClient();
+  const [rememberedMergeMethod] = useRememberedMergeMethod(detail.provider, detail.repository);
+  const mergeMethod = resolveDefaultMergeMethod(detail.mergeMethods, rememberedMergeMethod);
+  // Read once as the popover opens. Only the "waiting for checks" wording
+  // right after a push hangs on it, and the next opening reads it again.
+  const [openedAt] = useState(() => Date.now());
+  const autoMergeControl = composerAutoMergeControl({
+    detail,
+    threadAutoMerge: pullRequest.autoMerge,
+    autoFix: pullRequest.autoFix,
+    now: openedAt,
+  });
+  const detailQueryKey = pullRequestQueryKeys.detail(
+    pullRequest.environmentId,
+    pullRequest.reference.projectId,
+    pullRequest.reference.number,
+  );
+  const actionOptions = pullRequestActionMutationOptions({
+    environmentId: pullRequest.environmentId,
+    reference: pullRequest.reference,
+    queryClient,
+  });
+  const action = useMutation({
+    ...actionOptions,
+    // The switch flips the moment it is clicked. The host takes seconds to arm
+    // the merge and seconds more to be re-read, and a switch that waits for
+    // both reads as one that did not take the click. If the host refuses, the
+    // detail it was read from comes back.
+    onMutate: async (variables) => {
+      await queryClient.cancelQueries({ queryKey: detailQueryKey });
+      const previous = queryClient.getQueryData<PullRequestDetail>(detailQueryKey);
+      if (
+        previous &&
+        previous.mergeQueue?.position == null &&
+        variables.action.endsWith("auto-merge")
+      ) {
+        queryClient.setQueryData<PullRequestDetail>(detailQueryKey, {
+          ...previous,
+          autoMergeEnabled: variables.action === "enable-auto-merge",
+        });
+      }
+      return { previous };
+    },
+    onError: (_error, _variables, context) => {
+      if (context?.previous) {
+        queryClient.setQueryData(detailQueryKey, context.previous);
+      }
+    },
+  });
+
+  return (
+    <>
+      {autoMergeControl.kind === "toggle" ? (
+        <label className="flex cursor-pointer items-center gap-2 px-3 py-1 transition-colors hover:bg-accent">
+          <Checkbox
+            className="size-3.5"
+            checked={autoMergeControl.checked}
+            disabled={action.isPending}
+            onCheckedChange={(checked) => {
+              const next: PullRequestAction = checked ? "enable-auto-merge" : "disable-auto-merge";
+              action.mutate(checked ? { action: next, mergeMethod } : { action: next });
+            }}
+          />
+          Merge when checks pass
+        </label>
+      ) : null}
+      {autoMergeControl.kind === "server" ? (
+        <ComposerPullRequestThreadSwitch
+          checked={autoMergeControl.checked}
+          onCheckedChange={(next) => pullRequest.onAutoMergeChange(next ? mergeMethod : null)}
+          label="Merge when checks pass"
+          hint={autoMergeControl.status ?? SERVER_AUTO_MERGE_HINT}
+        />
+      ) : null}
+      {autoMergeControl.kind === "unavailable" ? (
+        <div className="px-3 py-1">
+          <p className="text-muted-foreground">{autoMergeControl.reason}</p>
+          <button
+            type="button"
+            className="mt-1 cursor-pointer rounded-sm text-primary-readable hover:text-foreground focus-ring"
+            onClick={() => {
+              onOpenExternal();
+              pullRequest.onOpen();
+            }}
+          >
+            Open merge controls
+          </button>
+        </div>
+      ) : null}
+      {autoMergeControl.kind === "queued" ? (
+        // The host has taken it: there is no instruction left to switch off,
+        // and the queue lands it on its own.
+        <p className="flex items-center gap-2 px-3 py-1 text-muted-foreground">
+          <ChipDot className={CHIP_TONE_CLASS.queued.dot + " " + CHIP_TONE_CLASS.queued.chip} />
+          In the merge queue
+          {detail.viewer.canWrite && detail.capabilities.actions.includes("disable-auto-merge") ? (
+            <button
+              type="button"
+              disabled={action.isPending}
+              className="ml-auto cursor-pointer rounded-sm hover:text-foreground disabled:cursor-default disabled:opacity-60 focus-ring"
+              onClick={() => action.mutate({ action: "disable-auto-merge" })}
+            >
+              {action.isPending ? "Leaving…" : "Leave queue"}
+            </button>
+          ) : null}
+        </p>
+      ) : null}
+      {action.isError ? (
+        <p role="alert" className="break-words px-3 py-1 text-destructive">
+          {action.error instanceof Error && action.error.message.trim().length > 0
+            ? action.error.message
+            : "The host refused that action."}
+        </p>
+      ) : null}
+    </>
+  );
+}
+
+/**
+ * One of the thread's own switches, held optimistically. The command is a
+ * round trip to the server and back through the read model, and a switch that
+ * waits for both reads as one that did not take the click; the read model wins
+ * again as soon as it says something different from what was clicked.
+ */
+function ComposerPullRequestThreadSwitch({
+  checked,
+  onCheckedChange,
+  label,
+  hint,
+}: {
+  readonly checked: boolean;
+  readonly onCheckedChange: (next: boolean) => void;
+  readonly label: string;
+  /** A muted line under the label: what the switch is doing while it is on. */
+  readonly hint?: string;
 }) {
   // `from` is what the read model said when the click happened. Once it says
   // anything else the round trip has landed, so the click stops standing in.
   const [pending, setPending] = useState<{ next: boolean; from: boolean } | null>(null);
-  if (pending !== null && pending.from !== autoFix) {
+  if (pending !== null && pending.from !== checked) {
     setPending(null);
   }
 
   return (
-    <label className="flex cursor-pointer items-center gap-2 px-3 py-1 transition-colors hover:bg-accent">
+    <label className="flex cursor-pointer items-start gap-2 px-3 py-1 transition-colors hover:bg-accent">
       <Checkbox
-        className="size-3.5"
-        checked={pending?.next ?? autoFix}
-        onCheckedChange={(checked) => {
-          const next = Boolean(checked);
-          setPending({ next, from: autoFix });
-          onAutoFixChange(next);
+        className="mt-px size-3.5"
+        checked={pending?.next ?? checked}
+        onCheckedChange={(value) => {
+          const next = Boolean(value);
+          setPending({ next, from: checked });
+          onCheckedChange(next);
         }}
       />
-      Fix failing checks and review comments
+      <span className="min-w-0">
+        {label}
+        {hint ? <span className="block text-muted-foreground">{hint}</span> : null}
+      </span>
     </label>
   );
 }
