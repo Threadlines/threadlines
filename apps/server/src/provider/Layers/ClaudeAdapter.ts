@@ -79,6 +79,7 @@ import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Deferred from "effect/Deferred";
+import { isFilesystemPathWithin } from "@threadlines/shared/path";
 import { randomUUIDv4 } from "@threadlines/shared/uuid";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -98,7 +99,10 @@ import { ServerConfig } from "../../config.ts";
 import { BROWSER_MCP_SERVER_NAME, mcpEndpointUrl } from "../../mcp/McpHttpServer.ts";
 import { mcpSessionRegistry } from "../../mcp/McpSessionRegistry.ts";
 import { makeClaudeEnvironment } from "../Drivers/ClaudeHome.ts";
-import { ensureClaudeSessionTranscript } from "../Drivers/ClaudeSessionTranscripts.ts";
+import {
+  ensureClaudeSessionTranscript,
+  readClaudeTranscriptWorktreePath,
+} from "../Drivers/ClaudeSessionTranscripts.ts";
 import {
   locateClaudeSubagentMeta,
   locateClaudeSubagentTranscript,
@@ -6058,6 +6062,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       // transcript still exists. Relocate the transcript when it lives under
       // another project directory; start fresh when it is gone entirely.
       let resumeState = requestedResumeState;
+      let resumeTranscriptPath: string | undefined;
       if (requestedResumeState?.resume !== undefined) {
         const transcriptResolution = yield* ensureClaudeSessionTranscript({
           environment: claudeEnvironment,
@@ -6076,6 +6081,12 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             }).pipe(Effect.as(undefined)),
           ),
         );
+        if (
+          transcriptResolution?.outcome === "present" ||
+          transcriptResolution?.outcome === "relocated"
+        ) {
+          resumeTranscriptPath = transcriptResolution.transcriptPath;
+        }
         if (transcriptResolution?.outcome === "relocated") {
           yield* Effect.logInfo("claude.resume.transcript-relocated", {
             threadId,
@@ -6113,6 +6124,31 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       const existingResumeSessionId = resumeState?.resume;
       const newSessionId = existingResumeSessionId === undefined ? yield* randomUUIDv4 : undefined;
       const sessionId = existingResumeSessionId ?? newSessionId;
+
+      // A plain resume re-enters the last worktree the transcript records,
+      // whatever cwd it is launched from, so a thread the user moved out of
+      // that worktree snaps straight back into it. A forked resume keeps the
+      // conversation but not the worktree: fork whenever the recorded
+      // worktree is not the checkout this session is being started in. The
+      // fork's new session id is adopted like any other reported id.
+      const resumeWorktreePath =
+        resumeTranscriptPath !== undefined && input.cwd !== undefined
+          ? yield* readClaudeTranscriptWorktreePath(resumeTranscriptPath).pipe(
+              Effect.provideService(FileSystem.FileSystem, fileSystem),
+            )
+          : undefined;
+      const forkResumeOutOfWorktree =
+        typeof resumeWorktreePath === "string" &&
+        input.cwd !== undefined &&
+        !isFilesystemPathWithin(input.cwd, resumeWorktreePath);
+      if (forkResumeOutOfWorktree) {
+        yield* Effect.logInfo("claude.resume.forked-out-of-worktree", {
+          threadId,
+          sessionId: existingResumeSessionId,
+          recordedWorktree: resumeWorktreePath,
+          cwd: input.cwd,
+        });
+      }
 
       const runtimeContext = yield* Effect.context<never>();
       const runFork = Effect.runForkWith(runtimeContext);
@@ -6573,6 +6609,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         ...(fallbackModel ? { fallbackModel } : {}),
         ...(Object.keys(settings).length > 0 ? { settings } : {}),
         ...(existingResumeSessionId ? { resume: existingResumeSessionId } : {}),
+        ...(existingResumeSessionId && forkResumeOutOfWorktree ? { forkSession: true } : {}),
         ...(newSessionId ? { sessionId: newSessionId } : {}),
         includePartialMessages: true,
         enableFileCheckpointing: true,
