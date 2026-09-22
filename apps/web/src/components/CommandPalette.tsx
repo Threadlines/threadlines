@@ -98,7 +98,7 @@ import {
   usePullRequestLists,
 } from "../lib/pullRequestsReactQuery";
 import { useGitStatus } from "../lib/gitStatusState";
-import { resolveThreadPullRequest } from "./pull-requests/pullRequests.logic";
+import { resolveThreadPullRequest, threadViewBranch } from "./pull-requests/pullRequests.logic";
 import { focusRightPanelTab, rightPanelTabSearchParams } from "../rightPanelTabs";
 import {
   cn,
@@ -557,7 +557,10 @@ function OpenCommandPaletteDialog() {
   });
   const activeThreadPullRequest = activeThread
     ? resolveThreadPullRequest({
-        thread: activeThread,
+        thread: {
+          ...activeThread,
+          branch: threadViewBranch(activeThread, activeThreadGitStatus.data),
+        },
         gitStatus: activeThreadGitStatus.data,
         openEntries: activeThreadOpenPullRequests.entries,
         projects,

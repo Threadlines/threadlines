@@ -51,6 +51,7 @@ import {
   summarizePullRequestChecks,
   resolveThreadPullRequest,
   shouldPollPullRequestDetail,
+  threadViewBranch,
   type PullRequestDiffFile,
   type PullRequestEntry,
   type PullRequestFilters,
@@ -1498,5 +1499,53 @@ describe("resolveDefaultMergeMethod", () => {
     expect(resolveDefaultMergeMethod(["squash", "rebase"], "merge")).toBe("squash");
     expect(resolveDefaultMergeMethod(["squash", "rebase"])).toBe("squash");
     expect(resolveDefaultMergeMethod([], "squash")).toBe("merge");
+  });
+});
+
+describe("threadViewBranch", () => {
+  const status = (refName: string | null) => ({ isRepo: true, refName });
+
+  it("follows the live checkout for a thread on a shared checkout", () => {
+    expect(threadViewBranch({ branch: "main", worktreePath: null }, status("feat/opus-5-5"))).toBe(
+      "feat/opus-5-5",
+    );
+  });
+
+  it("keeps the recorded branch for a thread that owns a worktree", () => {
+    expect(threadViewBranch({ branch: "feat/a", worktreePath: "/wt/a" }, status("feat/b"))).toBe(
+      "feat/a",
+    );
+  });
+
+  // One session that opened two pull requests on two branches, from a shared
+  // checkout still recorded on `main`: the view follows whichever branch the
+  // checkout stands on, so it shows that branch's pull request.
+  it("finds each pull request as a shared-checkout session moves between branches", () => {
+    const sessionThread = thread({ branch: "main", worktreePath: null });
+    const openEntries = [
+      entry({ number: 280, headBranch: "feat/first" }),
+      entry({ number: 281, headBranch: "feat/second" }),
+    ];
+    const resolveOn = (refName: string) => {
+      const status = gitStatus({ refName, pr: null });
+      return resolveThreadPullRequest({
+        thread: { ...sessionThread, branch: threadViewBranch(sessionThread, status) },
+        gitStatus: status,
+        openEntries,
+        projects: PROJECTS,
+      })?.number;
+    };
+
+    expect(resolveOn("feat/first")).toBe(280);
+    expect(resolveOn("feat/second")).toBe(281);
+    expect(resolveOn("main")).toBeUndefined();
+  });
+
+  it("falls back to the recorded branch without a readable checkout ref", () => {
+    expect(threadViewBranch({ branch: "main", worktreePath: null }, null)).toBe("main");
+    expect(threadViewBranch({ branch: "main", worktreePath: null }, status(null))).toBe("main");
+    expect(
+      threadViewBranch({ branch: "main", worktreePath: null }, { isRepo: false, refName: "x" }),
+    ).toBe("main");
   });
 });
