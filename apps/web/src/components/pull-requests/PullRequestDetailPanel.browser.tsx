@@ -237,6 +237,7 @@ describe("Composer pull request merge controls", () => {
         expect(rendered.runAction).toHaveBeenLastCalledWith({
           ...REFERENCE,
           action: "enable-auto-merge",
+          mergeMethod: "squash",
         });
         await checkbox.click();
         await expect.element(checkbox).not.toBeChecked();
@@ -270,7 +271,11 @@ describe("Composer pull request merge controls", () => {
   });
 
   it("opens the full merge controls for a ready PR without sending an auto-merge request", async () => {
-    const rendered = await renderComposerPullRequest({ mergeGate: "clear" });
+    const rendered = await renderComposerPullRequest({
+      mergeGate: "clear",
+      checks: [{ name: "build", status: "success", description: "Passed in 2m", url: null }],
+      checksState: "success",
+    });
     try {
       await expect
         .element(page.getByText("This pull request can merge right now. Use Merge instead."))
