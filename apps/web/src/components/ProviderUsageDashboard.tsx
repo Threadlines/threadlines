@@ -9,10 +9,12 @@ import {
   type ProviderAccountTokenUsagePresentation,
   type ProviderAccountUsagePresentation,
   type ProviderAccountUsageWindowPresentation,
+  usageMeterColor,
 } from "../lib/providerUsage";
 import { cn } from "../lib/utils";
 import { Button } from "./ui/button";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
+import { ProviderExternalResetsButton } from "./ProviderRateLimitResetCredit";
 
 type TokenActivityMode = "daily" | "weekly" | "cumulative";
 type TokenActivityRange = "13-weeks" | "1-year";
@@ -436,6 +438,7 @@ function UsageLimitBar(props: {
   readonly usageLabel: string;
   readonly window: ProviderAccountUsageWindowPresentation;
 }) {
+  const meterColor = usageMeterColor(props.window.usedPercent, props.window.warning);
   return (
     <div className="space-y-1.5">
       <div className="flex min-w-0 flex-wrap items-baseline justify-between gap-x-4 gap-y-1 text-xs">
@@ -451,11 +454,8 @@ function UsageLimitBar(props: {
         className="h-1.5 overflow-hidden rounded-full bg-muted"
       >
         <div
-          className={cn(
-            "h-full rounded-full transition-[width]",
-            props.window.warning ? "bg-warning" : "bg-primary",
-          )}
-          style={{ width: `${props.window.usedPercent}%` }}
+          className={cn("h-full rounded-full transition-[width]", !meterColor && "bg-primary")}
+          style={{ width: `${props.window.usedPercent}%`, backgroundColor: meterColor }}
         />
       </div>
     </div>
@@ -537,6 +537,11 @@ export function ProviderUsageDashboard(props: {
                   </Button>
                 ) : null}
               </div>
+            ) : props.usage.externalResets ? (
+              <ProviderExternalResetsButton
+                link={props.usage.externalResets}
+                className="h-6 px-2 text-[11px]"
+              />
             ) : null}
           </div>
           <div className="grid gap-3 sm:grid-cols-2">
@@ -559,9 +564,18 @@ export function ProviderUsageDashboard(props: {
                   <div
                     className={cn(
                       "h-full rounded-full transition-[width]",
-                      props.usage.spendControl.warning ? "bg-warning" : "bg-primary",
+                      !usageMeterColor(
+                        props.usage.spendControl.usedPercent,
+                        props.usage.spendControl.warning,
+                      ) && "bg-primary",
                     )}
-                    style={{ width: `${props.usage.spendControl.usedPercent}%` }}
+                    style={{
+                      width: `${props.usage.spendControl.usedPercent}%`,
+                      backgroundColor: usageMeterColor(
+                        props.usage.spendControl.usedPercent,
+                        props.usage.spendControl.warning,
+                      ),
+                    }}
                   />
                 </div>
               </div>

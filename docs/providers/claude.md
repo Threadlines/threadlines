@@ -306,3 +306,16 @@ by the active Claude account appear before Threadlines' curated historical catal
 behind Claude's `default` row becomes that provider instance's default in Threadlines. Curated entries
 still supply richer Threadlines-specific metadata and remain available as an offline fallback when
 Claude initialization cannot return a live catalog.
+
+## Claude Usage Resets
+
+Anthropic occasionally gives subscription plans a limit reset, for example one saved reset with the
+Opus 5.5 launch. A reset refills the 5h or weekly limit right away without moving the weekly reset
+day. Anthropic documents resets as spent from claude.ai or the Claude desktop app under
+`Settings -> Usage`, and as
+[not available via API or third-party tools](https://support.claude.com/en/articles/17007452-what-is-a-limit-reset).
+
+Threadlines therefore never claims a Claude reset. Where Codex shows a `Reset` button, a Claude
+provider shows `Use on claude.ai`, which opens `https://claude.ai/settings/usage`: on the provider
+card, in the composer usage popover, and on a usage-limit error. Limits are shared across the
+account, so a reset spent on claude.ai also refills Claude inside Threadlines.

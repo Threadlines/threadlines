@@ -1,6 +1,7 @@
 import { ChevronDownIcon } from "lucide-react";
 import { useCallback, useLayoutEffect, useRef, useState } from "react";
 
+import { openExternalUrl } from "~/lib/externalLinks";
 import { cn } from "~/lib/utils";
 import {
   type ContextWindowSnapshot,
@@ -9,8 +10,9 @@ import {
   formatContextWindowTokens,
 } from "~/lib/contextWindow";
 import {
-  isProviderUsageNearLimit,
   type ProviderAccountUsagePresentation,
+  providerUsageNearLimitColor,
+  usageMeterColor,
 } from "~/lib/providerUsage";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -29,6 +31,7 @@ function AccountUsageBar(props: {
   usedPercent: number;
   warning: boolean;
 }) {
+  const meterColor = usageMeterColor(props.usedPercent, props.warning);
   return (
     <div className="space-y-1">
       <div className="flex min-w-0 items-baseline justify-between gap-3 text-xs">
@@ -44,11 +47,8 @@ function AccountUsageBar(props: {
         className="h-1 overflow-hidden rounded-full bg-muted"
       >
         <div
-          className={cn(
-            "h-full rounded-full transition-[width]",
-            props.warning ? "bg-warning" : "bg-primary",
-          )}
-          style={{ width: `${props.usedPercent}%` }}
+          className={cn("h-full rounded-full transition-[width]", !meterColor && "bg-primary")}
+          style={{ width: `${props.usedPercent}%`, backgroundColor: meterColor }}
         />
       </div>
     </div>
@@ -176,7 +176,8 @@ export function ContextWindowMeter(props: {
         cachedInputRate.cachedTokens,
       )} of ${formatContextWindowTokens(cachedInputRate.inputTokens)} input tokens`
     : null;
-  const usageNearLimit = isProviderUsageNearLimit(accountUsage);
+  const usageNearLimitColor = providerUsageNearLimitColor(accountUsage);
+  const usageNearLimit = usageNearLimitColor !== undefined;
   const usedPercentage = formatContextWindowPercentage(usage?.usedPercentage ?? null);
   const normalizedPercentage = Math.max(0, Math.min(100, usage?.usedPercentage ?? 0));
   const radius = 9.75;
@@ -326,7 +327,8 @@ export function ContextWindowMeter(props: {
               ) : null}
               {usageNearLimit ? (
                 <span
-                  className="absolute -right-px -top-px h-1.5 w-1.5 rounded-full bg-warning ring-2 ring-background"
+                  className="absolute -right-px -top-px h-1.5 w-1.5 rounded-full ring-2 ring-background"
+                  style={{ backgroundColor: usageNearLimitColor }}
                   aria-hidden="true"
                 />
               ) : null}
@@ -507,6 +509,17 @@ export function ContextWindowMeter(props: {
                       ) : null}
                     </button>
                   ) : null}
+                </div>
+              ) : accountUsage.externalResets ? (
+                <div className="flex min-w-0 items-center gap-2 text-xs">
+                  <span className="shrink-0 font-medium text-foreground">Resets</span>
+                  <button
+                    type="button"
+                    onClick={() => openExternalUrl(accountUsage.externalResets!.url)}
+                    className={contextWindowActionButtonClassName}
+                  >
+                    {accountUsage.externalResets.label}
+                  </button>
                 </div>
               ) : null}
               {accountUsage.spendControl ? (

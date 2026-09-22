@@ -1010,12 +1010,14 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     if (!canResetSelectedProviderUsage || !selectedProviderResetCredits) return;
     requestRateLimitResetCredit({
       instanceId: selectedInstanceId,
+      providerLabel: selectedProviderDisplayName,
       resetCredits: selectedProviderResetCredits,
     });
   }, [
     canResetSelectedProviderUsage,
     requestRateLimitResetCredit,
     selectedInstanceId,
+    selectedProviderDisplayName,
     selectedProviderResetCredits,
   ]);
   const selectedProviderModels = useMemo<ReadonlyArray<ServerProvider["models"][number]>>(

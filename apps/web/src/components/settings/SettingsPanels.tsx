@@ -1594,6 +1594,7 @@ export function ProviderSettingsPanel({
                     ? () =>
                         requestRateLimitResetCredit({
                           instanceId: row.instanceId,
+                          providerLabel: liveProvider?.displayName?.trim() || resetLabel,
                           resetCredits: providerResetCredits,
                         })
                     : undefined
