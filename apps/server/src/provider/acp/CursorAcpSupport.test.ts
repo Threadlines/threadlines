@@ -702,9 +702,17 @@ describe("discoverAcpModelCapabilities (Cursor)", () => {
       "gpt-5.4",
       "claude-opus-4-6",
     ]);
+    const optionIds = (slug: string) =>
+      models
+        .find((model) => model.slug === slug)
+        ?.capabilities?.optionDescriptors?.map((descriptor) => descriptor.id);
+    expect(optionIds("gpt-5.4")).toContain("reasoning");
+    expect(optionIds("claude-opus-4-6")).toContain("reasoning");
 
+    // The catalog session probes the first lane itself; two more sessions
+    // take the other two models.
     const exitLog = await runNode(waitForFileContent(exitLogPath));
-    expect(exitLog.match(/SIGTERM/g)?.length ?? 0).toBe(4);
+    expect(exitLog.match(/SIGTERM/g)?.length ?? 0).toBe(3);
   });
 });
 

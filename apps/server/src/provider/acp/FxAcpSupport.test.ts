@@ -1,6 +1,77 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { buildFxAcpSpawnInput, buildFxCommand, parseFxStatusOutput } from "./FxAcpSupport.ts";
+import type * as EffectAcpSchema from "effect-acp/schema";
+
+import {
+  buildFxAcpSpawnInput,
+  buildFxCommand,
+  FX_MODEL_OPTION_MAPPING,
+  parseFxStatusOutput,
+} from "./FxAcpSupport.ts";
+
+const fxConfigOptions = (provider: string): ReadonlyArray<EffectAcpSchema.SessionConfigOption> => [
+  {
+    id: "provider",
+    name: "Provider",
+    category: "model",
+    type: "select",
+    currentValue: provider,
+    options: [
+      { value: "gateway", name: "Vercel AI Gateway" },
+      { value: "codex", name: "Codex subscription" },
+      { value: "grok", name: "Grok subscription" },
+    ],
+  },
+  {
+    id: "model",
+    name: "Model",
+    category: "model",
+    type: "select",
+    currentValue: "moonshotai/kimi-k3",
+    options: [{ value: "moonshotai/kimi-k3", name: "moonshotai/kimi-k3" }],
+  },
+  {
+    id: "effort",
+    name: "Reasoning Effort",
+    category: "thought_level",
+    type: "select",
+    currentValue: "auto",
+    options: [
+      { value: "auto", name: "Auto" },
+      { value: "high", name: "High" },
+    ],
+  },
+];
+
+describe("FX_MODEL_OPTION_MAPPING", () => {
+  it("keeps the catalog source out of the model picker and names the auto effort", () => {
+    const capabilities = FX_MODEL_OPTION_MAPPING.capabilitiesFromConfigOptions(
+      fxConfigOptions("gateway"),
+    );
+    expect(capabilities.optionDescriptors?.map((descriptor) => descriptor.id)).toEqual(["effort"]);
+    const effort = capabilities.optionDescriptors?.[0];
+    expect(effort?.type === "select" ? effort.options.map((choice) => choice.label) : []).toEqual([
+      "Model default",
+      "High",
+    ]);
+  });
+
+  it("pins sessions to Gateway and ignores a stale provider selection", () => {
+    const staleSelections = [
+      { id: "provider", value: "codex" },
+      { id: "effort", value: "high" },
+    ];
+    expect(
+      FX_MODEL_OPTION_MAPPING.configUpdatesFromSelections(fxConfigOptions("grok"), staleSelections),
+    ).toEqual([
+      { configId: "provider", value: "gateway" },
+      { configId: "effort", value: "high" },
+    ]);
+    expect(
+      FX_MODEL_OPTION_MAPPING.configUpdatesFromSelections(fxConfigOptions("gateway"), []),
+    ).toEqual([]);
+  });
+});
 
 describe("buildFxCommand", () => {
   it("runs the binary directly on Linux and macOS", () => {

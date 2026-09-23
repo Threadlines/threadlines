@@ -136,21 +136,29 @@ describe("applyAcpModelSelection", () => {
   });
 
   it("applies options the agent lists before the model (fx provider) ahead of it", async () => {
-    const { calls, runtime } = makeRecordingRuntime(fxConfigOptions);
+    // fx remembered the Codex catalog from its own terminal UI; the session is
+    // switched back to Gateway before the Gateway model is picked.
+    const { calls, runtime } = makeRecordingRuntime(
+      fxConfigOptions.map((option) =>
+        option.id === "provider" && option.type === "select"
+          ? { ...option, currentValue: "codex" }
+          : option,
+      ),
+    );
 
     await Effect.runPromise(
       applyAcpModelSelection({
         descriptor: FX_ACP_DESCRIPTOR,
         runtime,
-        model: "gpt-5.6-sol",
+        model: "moonshotai/kimi-k3",
         selections: [{ id: "provider", value: "codex" }],
         mapError,
       }),
     );
 
     expect(calls).toEqual([
-      { type: "config", configId: "provider", value: "codex" },
-      { type: "model", value: "gpt-5.6-sol" },
+      { type: "config", configId: "provider", value: "gateway" },
+      { type: "model", value: "moonshotai/kimi-k3" },
     ]);
   });
 

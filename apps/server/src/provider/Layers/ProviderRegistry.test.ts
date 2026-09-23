@@ -1529,6 +1529,58 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
         );
       });
 
+      it("drops models an ACP provider retired from its live list", () => {
+        const previousProvider = {
+          instanceId: ProviderInstanceId.make("fx"),
+          driver: ProviderDriverKind.make("fx"),
+          status: "ready",
+          enabled: true,
+          installed: true,
+          auth: { status: "authenticated" },
+          checkedAt: "2026-09-06T12:00:00.000Z",
+          version: "0.0.7",
+          modelCatalogSource: "live",
+          models: [
+            { slug: "moonshotai/kimi-k3", name: "kimi-k3", isCustom: false, capabilities: null },
+            {
+              slug: "minimax/minimax-m2.7-free",
+              name: "minimax-m2.7-free",
+              isCustom: false,
+              capabilities: null,
+            },
+            {
+              slug: "my/custom-model",
+              name: "my/custom-model",
+              isCustom: true,
+              capabilities: null,
+            },
+          ],
+          slashCommands: [],
+          skills: [],
+        } as const satisfies ServerProvider;
+        const refreshedProvider = {
+          ...previousProvider,
+          checkedAt: "2026-09-23T04:05:00.000Z",
+          version: "0.0.10",
+          models: [
+            { slug: "moonshotai/kimi-k3", name: "kimi-k3", isCustom: false, capabilities: null },
+            {
+              slug: "my/custom-model",
+              name: "my/custom-model",
+              isCustom: true,
+              capabilities: null,
+            },
+          ],
+        } satisfies ServerProvider;
+
+        assert.deepStrictEqual(
+          mergeProviderSnapshot(previousProvider, refreshedProvider).models.map(
+            (model) => model.slug,
+          ),
+          ["moonshotai/kimi-k3", "my/custom-model"],
+        );
+      });
+
       it.effect("does not run provider probes during layer construction", () =>
         Effect.gen(function* () {
           const codexDriver = ProviderDriverKind.make("codex");

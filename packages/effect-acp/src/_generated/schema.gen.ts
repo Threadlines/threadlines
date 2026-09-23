@@ -727,13 +727,18 @@ export const ToolKind = Schema.Literals([
     "Categories of tools that can be invoked.\n\nTool kinds help clients choose appropriate icons and optimize how they\ndisplay tool execution progress.\n\nSee protocol docs: [Creating](https://agentclientprotocol.com/protocol/tool-calls#creating)",
 });
 
+// HAND-PATCHED after generation: usage is unstable in the spec and agents
+// report only the counts they have (fx 0.0.10 omits `totalTokens` and names
+// its cache/reasoning counts differently). A missing count must not fail the
+// whole prompt response, so every field is optional. Keep this patch when
+// regenerating.
 export type Usage = {
   readonly cachedReadTokens?: number | null;
   readonly cachedWriteTokens?: number | null;
-  readonly inputTokens: number;
-  readonly outputTokens: number;
+  readonly inputTokens?: number;
+  readonly outputTokens?: number;
   readonly thoughtTokens?: number | null;
-  readonly totalTokens: number;
+  readonly totalTokens?: number;
 };
 export const Usage = Schema.Struct({
   cachedReadTokens: Schema.optionalKey(
@@ -752,18 +757,22 @@ export const Usage = Schema.Struct({
       Schema.Null,
     ]),
   ),
-  inputTokens: Schema.Number.annotate({
-    description: "Total input tokens across all turns.",
-    format: "uint64",
-  })
-    .check(Schema.isInt())
-    .check(Schema.isGreaterThanOrEqualTo(0)),
-  outputTokens: Schema.Number.annotate({
-    description: "Total output tokens across all turns.",
-    format: "uint64",
-  })
-    .check(Schema.isInt())
-    .check(Schema.isGreaterThanOrEqualTo(0)),
+  inputTokens: Schema.optionalKey(
+    Schema.Number.annotate({
+      description: "Total input tokens across all turns.",
+      format: "uint64",
+    })
+      .check(Schema.isInt())
+      .check(Schema.isGreaterThanOrEqualTo(0)),
+  ),
+  outputTokens: Schema.optionalKey(
+    Schema.Number.annotate({
+      description: "Total output tokens across all turns.",
+      format: "uint64",
+    })
+      .check(Schema.isInt())
+      .check(Schema.isGreaterThanOrEqualTo(0)),
+  ),
   thoughtTokens: Schema.optionalKey(
     Schema.Union([
       Schema.Number.annotate({ description: "Total thought/reasoning tokens", format: "uint64" })
@@ -772,12 +781,14 @@ export const Usage = Schema.Struct({
       Schema.Null,
     ]),
   ),
-  totalTokens: Schema.Number.annotate({
-    description: "Sum of all token types across session.",
-    format: "uint64",
-  })
-    .check(Schema.isInt())
-    .check(Schema.isGreaterThanOrEqualTo(0)),
+  totalTokens: Schema.optionalKey(
+    Schema.Number.annotate({
+      description: "Sum of all token types across session.",
+      format: "uint64",
+    })
+      .check(Schema.isInt())
+      .check(Schema.isGreaterThanOrEqualTo(0)),
+  ),
 }).annotate({
   description:
     "**UNSTABLE**\n\nThis capability is not part of the spec yet, and may be removed or changed at any point.\n\nToken usage information for a prompt turn.",

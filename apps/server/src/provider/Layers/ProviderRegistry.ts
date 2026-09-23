@@ -92,10 +92,17 @@ const AUTHORITATIVE_MODEL_LIST_DRIVERS: ReadonlySet<ProviderDriverKind> = new Se
   CLAUDE_DRIVER,
 ]);
 
+/**
+ * An authoritative list replaces the previous one, so models the provider
+ * retired disappear. A list the driver marked "live" (read from the provider
+ * itself, e.g. an ACP session's model option) always qualifies; Codex and
+ * Claude also qualify when not on a fallback catalog.
+ */
 const hasAuthoritativeModelList = (provider: ServerProvider): boolean =>
   provider.models.length > 0 &&
-  provider.modelCatalogSource !== "fallback" &&
-  AUTHORITATIVE_MODEL_LIST_DRIVERS.has(provider.driver);
+  (provider.modelCatalogSource === "live" ||
+    (provider.modelCatalogSource !== "fallback" &&
+      AUTHORITATIVE_MODEL_LIST_DRIVERS.has(provider.driver)));
 
 const hasModelCapabilities = (model: ServerProvider["models"][number]): boolean =>
   (model.capabilities?.optionDescriptors?.length ?? 0) > 0;

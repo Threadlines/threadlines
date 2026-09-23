@@ -73,7 +73,9 @@ export const ModelListRow = memo(function ModelListRow(props: {
             className="text-xs font-medium leading-snug flex items-center gap-1.5 min-w-0 group-data-selected:text-primary-readable"
             data-model-picker-model-name
           >
-            <span className="truncate">{modelLabel}</span>
+            <span className="truncate" title={getDisplayModelName(props.model)}>
+              {modelLabel}
+            </span>
             {props.model.promoLabel ? (
               <span className="shrink-0 rounded-sm border border-border/60 px-1 font-mono text-[9px] font-normal uppercase tracking-wider text-muted-foreground">
                 {props.model.promoLabel}

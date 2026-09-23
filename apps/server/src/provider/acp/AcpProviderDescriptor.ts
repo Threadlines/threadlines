@@ -167,10 +167,16 @@ export interface AcpProviderDescriptor<Settings extends AcpProviderSettings> {
   ) => Effect.Effect<ReadonlyArray<ServerProviderModel>, never, HttpClient.HttpClient>;
   /**
    * When true the option set changes with the selected model, so the driver
-   * probes each model's capabilities in the background (Cursor). When false
-   * the current session's options apply to every catalog entry (fx).
+   * probes each model's capabilities in the background (Cursor, fx). When
+   * false the current session's options apply to every catalog entry.
    */
   readonly modelCapabilitiesVaryByModel?: boolean;
+  /**
+   * Sessions the background capability probe splits the catalog across
+   * (default 4). Agents that start slowly but switch models in milliseconds
+   * (fx through WSL) are fastest with one.
+   */
+  readonly modelCapabilityProbeSessions?: number;
   /** Normalizes an app-side model slug into the agent's config value. */
   readonly resolveModelId?: (model: string | null | undefined) => string | undefined;
   readonly extensions?: AcpProviderExtensions;

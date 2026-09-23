@@ -31,6 +31,9 @@ function formatConfigOptionValue(value: string | boolean): string {
   return JSON.stringify(value);
 }
 
+/** Short option lists (effort, mode) are worth spelling out in a rejection. */
+const MAX_LISTED_CONFIG_OPTION_VALUES = 8;
+
 export interface AcpSpawnInput {
   readonly command: string;
   readonly args: ReadonlyArray<string>;
@@ -343,9 +346,15 @@ const makeAcpSessionRuntime = (
         if (allowedValues.includes(value)) {
           return;
         }
+        // This message reaches the chat as the turn error; a 150-model catalog
+        // spelled out there buries the one useful fact.
+        const expected =
+          allowedValues.length <= MAX_LISTED_CONFIG_OPTION_VALUES
+            ? `expected one of ${allowedValues.join(", ")}`
+            : `the agent doesn't offer it right now (${allowedValues.length} other choices available)`;
         return yield* new EffectAcpErrors.AcpRequestError({
           code: -32602,
-          errorMessage: `Invalid value ${formatConfigOptionValue(value)} for session config option "${configOption.id}": expected one of ${allowedValues.join(", ")}`,
+          errorMessage: `Invalid value ${formatConfigOptionValue(value)} for session config option "${configOption.id}": ${expected}`,
           data: {
             configId: configOption.id,
             allowedValues,

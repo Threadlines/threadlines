@@ -445,3 +445,16 @@ it.layer(NodeServices.layer)("effect-acp protocol", (it) => {
     }),
   );
 });
+
+it("decodes prompt responses with an agent's own stop reasons and partial usage", () => {
+  // fx 0.0.10's reply for a free Gateway model: its own stop reason vocabulary,
+  // and usage carrying only the counts it has, under its own names.
+  const decodePromptResponse = Schema.decodeUnknownSync(AcpSchema.PromptResponse);
+  const decoded = decodePromptResponse({
+    stopReason: "max_output_tokens",
+    usage: { inputTokens: 1204, outputTokens: 18, cacheReadTokens: 0, reasoningTokens: 7 },
+  });
+  assert.equal(decoded.stopReason, "max_output_tokens");
+  assert.equal(decoded.usage?.inputTokens, 1204);
+  assert.doesNotThrow(() => decodePromptResponse({ stopReason: "end_turn", usage: {} }));
+});

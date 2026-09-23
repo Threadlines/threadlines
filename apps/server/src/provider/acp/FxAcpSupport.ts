@@ -6,8 +6,8 @@
  * and advertises no auth methods, so the runtime skips `authenticate`. Its
  * `configOptions` carry a `provider` picker (Gateway / Codex / Grok
  * subscription), the model catalog of the active provider, and a session
- * mode; the generic option mapping exposes `provider` as a model option and
- * the mode is driven by the runtime mode.
+ * mode; `FX_MODEL_OPTION_MAPPING` pins the provider to Gateway and the mode
+ * is driven by the runtime mode.
  *
  * fx ships Linux/macOS binaries only. On Windows every fx invocation —
  * install, probe, login, update and the ACP session itself — runs inside
@@ -20,6 +20,7 @@ import { FxSettings, ProviderDriverKind, type ServerProviderAuth } from "@thread
 import { hideWindowsConsole } from "@threadlines/shared/childProcess";
 import { toWslPath, wslCommand, wslShellCommand } from "@threadlines/shared/wsl";
 import * as Effect from "effect/Effect";
+import type * as EffectAcpSchema from "effect-acp/schema";
 import type * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import type * as Path from "effect/Path";
@@ -37,7 +38,16 @@ import {
   spawnAndCollect,
   type CommandResult,
 } from "../providerSnapshot.ts";
-import type { AcpProviderDescriptor, AcpProviderProbeOutcome } from "./AcpProviderDescriptor.ts";
+import type {
+  AcpModelOptionMapping,
+  AcpProviderDescriptor,
+  AcpProviderProbeOutcome,
+} from "./AcpProviderDescriptor.ts";
+import {
+  flattenSessionConfigSelectOptions,
+  GENERIC_ACP_MODEL_OPTION_MAPPING,
+  selectConfigOptionCurrentValue,
+} from "./AcpProviderModels.ts";
 import type { AcpSpawnInput } from "./AcpSessionRuntime.ts";
 import { enrichFxModelsWithGatewayCatalog } from "./FxGatewayModels.ts";
 
@@ -60,6 +70,71 @@ const FX_WSL_INSTALL: ProviderMaintenanceCommandDefinition = {
   args: FX_WSL_INSTALL_COMMAND.args,
   lockKey: "fx",
   displayCommand: `wsl -- bash -lc '${FX_INSTALL_LINE}'`,
+};
+
+const FX_PROVIDER_CONFIG_ID = "provider";
+const FX_GATEWAY_PROVIDER = "gateway";
+const FX_EFFORT_CONFIG_ID = "effort";
+const FX_AUTO_EFFORT = "auto";
+
+/**
+ * fx names its `auto` effort "default", but it only means fx sends no
+ * reasoning setting and the model's maker applies its own level, which
+ * nothing in the chain reports. Say who decides instead.
+ */
+function relabelFxAutoEffort(
+  option: EffectAcpSchema.SessionConfigOption,
+): EffectAcpSchema.SessionConfigOption {
+  if (option.id !== FX_EFFORT_CONFIG_ID || option.type !== "select") {
+    return option;
+  }
+  const choices = option.options;
+  if (!isFlatSelectOptions(choices)) {
+    return option;
+  }
+  return {
+    ...option,
+    options: choices.map((choice) =>
+      choice.value === FX_AUTO_EFFORT ? { ...choice, name: "Model default" } : choice,
+    ),
+  };
+}
+
+const isFlatSelectOptions = (
+  choices: EffectAcpSchema.SessionConfigSelectOptions,
+): choices is ReadonlyArray<EffectAcpSchema.SessionConfigSelectOption> =>
+  choices.every((choice) => "value" in choice);
+
+/**
+ * fx's `provider` option swaps the whole catalog (Vercel AI Gateway, or a
+ * Codex / Grok subscription, each behind its own `fx login`), so it is not a
+ * per-model setting. Threadlines lists the Gateway catalog only: the option
+ * stays out of the model picker and every session is pinned to Gateway, even
+ * when fx remembers another provider from its own terminal UI.
+ */
+export const FX_MODEL_OPTION_MAPPING: AcpModelOptionMapping = {
+  capabilitiesFromConfigOptions: (configOptions) =>
+    GENERIC_ACP_MODEL_OPTION_MAPPING.capabilitiesFromConfigOptions(
+      configOptions
+        .filter((option) => option.id !== FX_PROVIDER_CONFIG_ID)
+        .map(relabelFxAutoEffort),
+    ),
+  configUpdatesFromSelections: (configOptions, selections) => {
+    const providerOption = configOptions.find((option) => option.id === FX_PROVIDER_CONFIG_ID);
+    const needsGatewayPin =
+      providerOption !== undefined &&
+      selectConfigOptionCurrentValue(providerOption) !== FX_GATEWAY_PROVIDER &&
+      flattenSessionConfigSelectOptions(providerOption).some(
+        (choice) => choice.value === FX_GATEWAY_PROVIDER,
+      );
+    return [
+      ...(needsGatewayPin ? [{ configId: FX_PROVIDER_CONFIG_ID, value: FX_GATEWAY_PROVIDER }] : []),
+      ...GENERIC_ACP_MODEL_OPTION_MAPPING.configUpdatesFromSelections(
+        configOptions.filter((option) => option.id !== FX_PROVIDER_CONFIG_ID),
+        selections,
+      ),
+    ];
+  },
 };
 
 export const runsFxThroughWsl = (platform: NodeJS.Platform = process.platform): boolean =>
@@ -283,5 +358,9 @@ export const FX_ACP_DESCRIPTOR: AcpProviderDescriptor<FxSettings> = {
   probe: probeFx,
   modelDiscoveryTimeoutMs: FX_MODEL_DISCOVERY_TIMEOUT_MS,
   enrichDiscoveredModels: (models) => enrichFxModelsWithGatewayCatalog(models),
-  modelCapabilitiesVaryByModel: false,
+  modelOptions: FX_MODEL_OPTION_MAPPING,
+  // fx offers reasoning effort only on models whose catalog entry lists it.
+  // Switching models takes ~10ms, so one session probes all ~150 in seconds.
+  modelCapabilitiesVaryByModel: true,
+  modelCapabilityProbeSessions: 1,
 };
