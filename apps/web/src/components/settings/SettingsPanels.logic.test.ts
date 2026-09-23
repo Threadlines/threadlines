@@ -9,6 +9,7 @@ import {
   buildArchivedThreadBulkDeleteConfirmationMessage,
   buildProviderInstanceUpdatePatch,
   deriveProviderSettingsRows,
+  filterArchivedThreads,
   formatArchivedThreadDeleteAgeLabel,
   formatDiagnosticsDescription,
   isArchivedThreadOlderThan,
@@ -104,6 +105,38 @@ describe("archived thread delete helpers", () => {
     expect(message).toContain("This cannot be undone.");
     expect(message).toContain("- Alpha: 2 threads");
     expect(message).toContain("- Beta: 1 thread");
+  });
+});
+
+describe("filterArchivedThreads", () => {
+  const alpha = { key: "env:alpha", name: "Alpha site" };
+  const beta = { key: "env:beta", name: "Beta" };
+  const threads = [
+    { title: "Fix login redirect", project: alpha },
+    { title: "Add dark mode toggle", project: beta },
+    { title: "Login page copy", project: beta },
+  ];
+
+  it("requires every search word in the title or project name, ignoring case", () => {
+    expect(
+      filterArchivedThreads(threads, { query: "LOGIN beta", projectKey: null }).map(
+        (thread) => thread.title,
+      ),
+    ).toEqual(["Login page copy"]);
+    expect(
+      filterArchivedThreads(threads, { query: "  alpha  ", projectKey: null }).map(
+        (thread) => thread.title,
+      ),
+    ).toEqual(["Fix login redirect"]);
+  });
+
+  it("combines the project filter with the search text", () => {
+    expect(
+      filterArchivedThreads(threads, { query: "", projectKey: beta.key }).map(
+        (thread) => thread.title,
+      ),
+    ).toEqual(["Add dark mode toggle", "Login page copy"]);
+    expect(filterArchivedThreads(threads, { query: "redirect", projectKey: beta.key })).toEqual([]);
   });
 });
 

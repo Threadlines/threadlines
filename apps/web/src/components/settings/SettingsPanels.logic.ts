@@ -253,6 +253,44 @@ export function isArchivedThreadOlderThan(input: {
   return archivedAtMs <= (input.nowMs ?? Date.now()) - input.olderThanDays * MS_PER_DAY;
 }
 
+export const ARCHIVED_THREADS_PAGE_SIZE = 50;
+
+/** Newest archive first; threads without an archive time fall back to creation time. */
+export function compareArchivedThreadsNewestFirst(
+  left: { readonly id: string; readonly archivedAt: string | null; readonly createdAt: string },
+  right: { readonly id: string; readonly archivedAt: string | null; readonly createdAt: string },
+): number {
+  const leftKey = left.archivedAt ?? left.createdAt;
+  const rightKey = right.archivedAt ?? right.createdAt;
+  return rightKey.localeCompare(leftKey) || right.id.localeCompare(left.id);
+}
+
+/**
+ * Narrows the archive list by project and search text. Every word in the query must
+ * appear in the thread title or its project name, case-insensitively.
+ */
+export function filterArchivedThreads<
+  T extends {
+    readonly title: string;
+    readonly project: { readonly key: string; readonly name: string };
+  },
+>(
+  threads: ReadonlyArray<T>,
+  filter: { readonly query: string; readonly projectKey: string | null },
+): ReadonlyArray<T> {
+  const terms = filter.query.toLowerCase().split(/\s+/).filter(Boolean);
+  if (terms.length === 0 && filter.projectKey === null) {
+    return threads;
+  }
+  return threads.filter((thread) => {
+    if (filter.projectKey !== null && thread.project.key !== filter.projectKey) {
+      return false;
+    }
+    const haystack = `${thread.title} ${thread.project.name}`.toLowerCase();
+    return terms.every((term) => haystack.includes(term));
+  });
+}
+
 export function buildArchivedThreadBulkDeleteConfirmationMessage(input: {
   readonly days: ArchivedThreadDeleteAgeDays;
   readonly groups: ReadonlyArray<{ readonly projectName: string | null; readonly count: number }>;

@@ -1,6 +1,5 @@
 import {
   ArchiveIcon,
-  ArchiveX,
   ChevronRightIcon,
   LoaderIcon,
   PlusIcon,
@@ -20,7 +19,6 @@ import {
   ProviderDriverKind,
   type ProviderInstanceConfig,
   type ProviderInstanceId,
-  type ScopedThreadRef,
   type UsageWindowDays,
 } from "@threadlines/contracts";
 import { scopeThreadRef } from "@threadlines/client-runtime";
@@ -53,6 +51,7 @@ import {
 import { ensureLocalApi, readLocalApi } from "../../localApi";
 import { useShallow } from "zustand/react/shallow";
 import {
+  selectBootstrapCompleteForActiveEnvironment,
   selectProjectsAcrossEnvironments,
   selectSidebarThreadsAcrossEnvironments,
   useStore,
@@ -61,7 +60,7 @@ import {
   refreshArchivedThreadsForEnvironment,
   useArchivedThreadSnapshots,
 } from "../../lib/archivedThreadsState";
-import { formatRelativeTime, formatRelativeTimeLabel } from "../../timestampFormat";
+import { formatRelativeTime } from "../../timestampFormat";
 import {
   groupAutoArchiveCandidatesByProject,
   resolveAutoArchivePreviewDays,
@@ -71,11 +70,15 @@ import {
 import { Button } from "../ui/button";
 import { DraftInput } from "../ui/draft-input";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
-import { Skeleton } from "../ui/skeleton";
 import { Switch } from "../ui/switch";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { AddProviderInstanceDialog } from "./AddProviderInstanceDialog";
+import {
+  type ArchivedThreadItem,
+  type ArchivedThreadProject,
+  ArchivedThreadsSection,
+} from "./ArchivedThreadsSection";
 import {
   canOneClickUpdateProviderCandidate,
   collectProviderUpdateCandidates,
@@ -90,6 +93,7 @@ import {
   type ArchivedThreadDeleteAgeDays,
   buildArchivedThreadBulkDeleteConfirmationMessage,
   buildProviderInstanceUpdatePatch,
+  compareArchivedThreadsNewestFirst,
   deriveProviderSettingsRows,
   formatArchivedThreadDeleteAgeLabel,
   formatAutoArchiveCandidateSummary,
@@ -113,7 +117,6 @@ import {
   TextGenerationModelControl,
   textGenerationInstanceEntries,
 } from "./TextGenerationModelControl";
-import { ProjectFavicon } from "../ProjectFavicon";
 import { useServerObservability, useServerProviders } from "../../rpc/serverState";
 import { newCommandId } from "../../lib/utils";
 
@@ -1687,37 +1690,7 @@ function AutoArchiveCandidatePreview({
   );
 }
 
-function ArchivedThreadsSkeleton() {
-  return (
-    <div
-      role="status"
-      aria-label="Loading archived threads"
-      data-testid="archived-threads-skeleton"
-    >
-      <div aria-hidden="true">
-        {["w-40", "w-52", "w-36"].map((titleWidth, index) => (
-          <SettingsRow
-            key={titleWidth}
-            title={
-              <span className="flex min-w-0 items-center gap-2">
-                <Skeleton className="size-3.5 shrink-0 rounded-sm" />
-                <Skeleton className={`h-3.5 max-w-full rounded-full ${titleWidth}`} />
-              </span>
-            }
-            description={
-              <Skeleton
-                className={`h-3 max-w-full rounded-full ${index === 1 ? "w-64" : "w-48"}`}
-              />
-            }
-            control={<Skeleton className="h-7 w-24 rounded-sm" />}
-          />
-        ))}
-      </div>
-    </div>
-  );
-}
-
-export function ArchivedThreadsPanel() {
+export function ArchivedThreadsPanel({ hostedStatic }: { readonly hostedStatic: boolean }) {
   const projects = useStore(useShallow(selectProjectsAcrossEnvironments));
   const sidebarThreads = useStore(useShallow(selectSidebarThreadsAcrossEnvironments));
   const settings = useSettings();
@@ -1737,6 +1710,10 @@ export function ArchivedThreadsPanel() {
     isLoading: isLoadingArchive,
     refresh: refreshArchivedThreads,
   } = useArchivedThreadSnapshots(environmentIds);
+  // Until the first workspace snapshot lands there are no projects to ask for archives,
+  // which would otherwise read as "No archived threads". Same rule as the chat index.
+  const bootstrapComplete = useStore(selectBootstrapCompleteForActiveEnvironment);
+  const isWorkspaceLoading = !hostedStatic && !bootstrapComplete;
   const autoArchivePreviewDays = resolveAutoArchivePreviewDays(
     settings.autoArchiveInactiveThreadsDays,
   );
@@ -1757,72 +1734,51 @@ export function ArchivedThreadsPanel() {
     [inactiveThreadCandidates, projects],
   );
 
-  const archivedGroups = useMemo(() => {
-    const projectsByEnvironmentAndId = new Map(
-      archivedSnapshots.flatMap(({ environmentId, snapshot }) =>
-        snapshot.projects.map(
-          (project) =>
-            [
-              `${environmentId}:${project.id}`,
-              {
-                id: project.id,
-                environmentId,
-                name: project.title,
-                cwd: project.workspaceRoot,
-              },
-            ] as const,
-        ),
-      ),
-    );
-    const threads = archivedSnapshots.flatMap(({ environmentId, snapshot }) =>
-      snapshot.threads.map((thread) => ({
-        ...thread,
-        environmentId,
-      })),
-    );
+  const archivedThreads = useMemo((): ReadonlyArray<ArchivedThreadItem> => {
+    const projectsByKey = new Map<string, ArchivedThreadProject>();
+    for (const { environmentId, snapshot } of archivedSnapshots) {
+      for (const project of snapshot.projects) {
+        const key = `${environmentId}:${project.id}`;
+        projectsByKey.set(key, {
+          key,
+          id: project.id,
+          environmentId,
+          name: project.title,
+          cwd: project.workspaceRoot,
+        });
+      }
+    }
 
-    return [...projectsByEnvironmentAndId.values()]
-      .map((project) => ({
-        project,
-        threads: threads
-          .filter(
-            (thread) =>
-              thread.projectId === project.id && thread.environmentId === project.environmentId,
-          )
-          .toSorted((left, right) => {
-            const leftKey = left.archivedAt ?? left.createdAt;
-            const rightKey = right.archivedAt ?? right.createdAt;
-            return rightKey.localeCompare(leftKey) || right.id.localeCompare(left.id);
-          }),
-      }))
-      .filter((group) => group.threads.length > 0);
+    return archivedSnapshots
+      .flatMap(({ environmentId, snapshot }) =>
+        snapshot.threads.flatMap((thread) => {
+          const project = projectsByKey.get(`${environmentId}:${thread.projectId}`);
+          return project ? [{ ...thread, environmentId, project }] : [];
+        }),
+      )
+      .toSorted(compareArchivedThreadsNewestFirst);
   }, [archivedSnapshots]);
 
   const archivedDeleteSelection = useMemo(() => {
     const nowMs = Date.now();
-    const groups = archivedGroups
-      .map(({ project, threads }) => {
-        const selectedThreads = threads.filter((thread) =>
-          isArchivedThreadOlderThan({
-            archivedAt: thread.archivedAt,
-            olderThanDays: archivedThreadDeleteAgeDays,
-            nowMs,
-          }),
-        );
+    const threads = archivedThreads.filter((thread) =>
+      isArchivedThreadOlderThan({
+        archivedAt: thread.archivedAt,
+        olderThanDays: archivedThreadDeleteAgeDays,
+        nowMs,
+      }),
+    );
+    const groupsByProjectKey = new Map<string, { projectName: string; count: number }>();
+    for (const thread of threads) {
+      const group = groupsByProjectKey.get(thread.project.key);
+      groupsByProjectKey.set(thread.project.key, {
+        projectName: thread.project.name,
+        count: (group?.count ?? 0) + 1,
+      });
+    }
 
-        return {
-          projectName: project.name,
-          count: selectedThreads.length,
-          threads: selectedThreads,
-        };
-      })
-      .filter((group) => group.count > 0);
-
-    return {
-      groups,
-      threads: groups.flatMap((group) => group.threads),
-    };
-  }, [archivedGroups, archivedThreadDeleteAgeDays]);
+    return { groups: [...groupsByProjectKey.values()], threads };
+  }, [archivedThreads, archivedThreadDeleteAgeDays]);
 
   const handleAutoArchiveDaysChange = useCallback(
     async (value: string) => {
@@ -2027,9 +1983,11 @@ export function ArchivedThreadsPanel() {
   ]);
 
   const deleteArchivedThread = useCallback(
-    async (threadRef: ScopedThreadRef, title: string) => {
+    async (thread: ArchivedThreadItem) => {
       try {
-        await confirmAndDeleteThread(threadRef, { title });
+        await confirmAndDeleteThread(scopeThreadRef(thread.environmentId, thread.id), {
+          title: thread.title,
+        });
         refreshArchivedThreads();
       } catch (error) {
         toastManager.add(
@@ -2044,8 +2002,26 @@ export function ArchivedThreadsPanel() {
     [confirmAndDeleteThread, refreshArchivedThreads],
   );
 
+  const unarchiveArchivedThread = useCallback(
+    async (thread: ArchivedThreadItem) => {
+      try {
+        await unarchiveThread(scopeThreadRef(thread.environmentId, thread.id));
+        refreshArchivedThreads();
+      } catch (error) {
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Failed to unarchive thread",
+            description: error instanceof Error ? error.message : "An error occurred.",
+          }),
+        );
+      }
+    },
+    [refreshArchivedThreads, unarchiveThread],
+  );
+
   const handleArchivedThreadContextMenu = useCallback(
-    async (threadRef: ScopedThreadRef, title: string, position: { x: number; y: number }) => {
+    async (thread: ArchivedThreadItem, position: { x: number; y: number }) => {
       const api = readLocalApi();
       if (!api) return;
       const clicked = await api.contextMenu.show(
@@ -2057,26 +2033,12 @@ export function ArchivedThreadsPanel() {
       );
 
       if (clicked === "unarchive") {
-        try {
-          await unarchiveThread(threadRef);
-          refreshArchivedThreads();
-        } catch (error) {
-          toastManager.add(
-            stackedThreadToast({
-              type: "error",
-              title: "Failed to unarchive thread",
-              description: error instanceof Error ? error.message : "An error occurred.",
-            }),
-          );
-        }
-        return;
-      }
-
-      if (clicked === "delete") {
-        await deleteArchivedThread(threadRef, title);
+        await unarchiveArchivedThread(thread);
+      } else if (clicked === "delete") {
+        await deleteArchivedThread(thread);
       }
     },
-    [deleteArchivedThread, refreshArchivedThreads, unarchiveThread],
+    [deleteArchivedThread, unarchiveArchivedThread],
   );
 
   return (
@@ -2215,111 +2177,14 @@ export function ArchivedThreadsPanel() {
           }
         />
       </SettingsSection>
-      {archivedGroups.length === 0 ? (
-        <SettingsSection title="Archived threads">
-          {isLoadingArchive ? (
-            <ArchivedThreadsSkeleton />
-          ) : (
-            <SettingsRow
-              title={
-                <span className="inline-flex items-center gap-2">
-                  <ArchiveIcon className="size-3.5 text-muted-foreground" />
-                  {archiveError ? "Could not load archived threads" : "No archived threads"}
-                </span>
-              }
-              description={archiveError ?? "Archived threads will appear here."}
-            />
-          )}
-        </SettingsSection>
-      ) : (
-        archivedGroups.map(({ project, threads: projectThreads }) => (
-          <SettingsSection
-            key={project.id}
-            title={project.name}
-            icon={
-              <ProjectFavicon
-                environmentId={project.environmentId}
-                cwd={project.cwd}
-                name={project.name}
-              />
-            }
-          >
-            {projectThreads.map((thread) => (
-              <SettingsRow
-                key={thread.id}
-                onContextMenu={(event) => {
-                  event.preventDefault();
-                  void handleArchivedThreadContextMenu(
-                    scopeThreadRef(thread.environmentId, thread.id),
-                    thread.title,
-                    {
-                      x: event.clientX,
-                      y: event.clientY,
-                    },
-                  );
-                }}
-                title={thread.title}
-                description={
-                  <>
-                    Archived {formatRelativeTimeLabel(thread.archivedAt ?? thread.createdAt)}
-                    {" \u00b7 Created "}
-                    {formatRelativeTimeLabel(thread.createdAt)}
-                  </>
-                }
-                control={
-                  <div className="ml-auto flex items-center gap-1.5">
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      className="h-7 shrink-0 cursor-pointer gap-1.5 px-2.5"
-                      onClick={() =>
-                        void unarchiveThread(scopeThreadRef(thread.environmentId, thread.id))
-                          .then(() => refreshArchivedThreads())
-                          .catch((error) => {
-                            toastManager.add(
-                              stackedThreadToast({
-                                type: "error",
-                                title: "Failed to unarchive thread",
-                                description:
-                                  error instanceof Error ? error.message : "An error occurred.",
-                              }),
-                            );
-                          })
-                      }
-                    >
-                      <ArchiveX className="size-3.5" />
-                      <span>Unarchive</span>
-                    </Button>
-                    <Tooltip>
-                      <TooltipTrigger
-                        render={
-                          <Button
-                            type="button"
-                            variant="destructive-outline"
-                            size="icon-xs"
-                            className="size-7 rounded-md text-destructive-foreground"
-                            aria-label={`Delete archived thread ${thread.title}`}
-                            onClick={() =>
-                              void deleteArchivedThread(
-                                scopeThreadRef(thread.environmentId, thread.id),
-                                thread.title,
-                              )
-                            }
-                          >
-                            <Trash2Icon className="size-3.5" />
-                          </Button>
-                        }
-                      />
-                      <TooltipPopup side="top">Delete thread</TooltipPopup>
-                    </Tooltip>
-                  </div>
-                }
-              />
-            ))}
-          </SettingsSection>
-        ))
-      )}
+      <ArchivedThreadsSection
+        threads={archivedThreads}
+        isLoading={isLoadingArchive || isWorkspaceLoading}
+        error={archiveError}
+        onUnarchive={(thread) => void unarchiveArchivedThread(thread)}
+        onDelete={(thread) => void deleteArchivedThread(thread)}
+        onContextMenu={(thread, position) => void handleArchivedThreadContextMenu(thread, position)}
+      />
     </SettingsPageContainer>
   );
 }
