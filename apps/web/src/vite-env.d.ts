@@ -1,6 +1,11 @@
 /// <reference types="vite/client" />
 
-import type { DesktopBridge, DesktopUpdateCheckResult, LocalApi } from "@threadlines/contracts";
+import type {
+  DesktopBridge,
+  DesktopUpdateActionResult,
+  DesktopUpdateCheckResult,
+  LocalApi,
+} from "@threadlines/contracts";
 
 interface ImportMetaEnv {
   readonly VITE_HTTP_URL: string;
@@ -20,5 +25,8 @@ declare global {
     nativeApi?: LocalApi;
     desktopBridge?: DesktopBridge;
     __threadlinesDesktopUpdatePreviewCheckForUpdate?: () => Promise<DesktopUpdateCheckResult | null>;
+    __threadlinesDesktopUpdatePreviewAction?: (
+      kind: "download" | "install",
+    ) => DesktopUpdateActionResult | null;
   }
 }

@@ -207,9 +207,9 @@ describe("SidebarVersionTag", () => {
     expect(Math.round(after.height)).toBe(Math.round(before.height));
   });
 
-  it("uses compact controls for download, downloading, and restart states", async () => {
+  it("holds the chip width and keeps the card status-only through an update", async () => {
     let updateStateListener: ((state: DesktopUpdateState) => void) | null = null;
-    const bridge = stubDesktopBridge({
+    stubDesktopBridge({
       getUpdateState: vi.fn().mockResolvedValue({
         ...idleUpdateState,
         status: "available",
@@ -229,14 +229,21 @@ describe("SidebarVersionTag", () => {
       }
       updateStateListener(state);
     };
+    const widthOf = (locator: ReturnType<typeof versionChip>) =>
+      Math.round(locator.element().getBoundingClientRect().width);
+    const heightOf = (locator: ReturnType<typeof versionCard>) =>
+      Math.round(locator.element().getBoundingClientRect().height);
 
-    await versionChip().click();
-    await expect.element(page.getByRole("button", { name: "Download update" })).toBeVisible();
-    await expect.element(page.getByText("Download")).toBeVisible();
+    // Hover, not click: with an update pending, clicking the chip runs it.
+    await versionChip().hover();
+    await expect.element(versionCard().getByText("v1.0.1 available")).toBeVisible();
+    // The chip owns the pending action; the card only reports status.
+    await expect.element(versionCard().getByRole("button")).not.toBeInTheDocument();
     // Let the popup's opening scale transition settle before taking the
     // reference footprint (same guard as the check-flow footprint tests).
     await new Promise((resolve) => setTimeout(resolve, 300));
-    const available = versionCard().element().getBoundingClientRect();
+    const chipWidth = widthOf(versionChip());
+    const cardHeight = heightOf(versionCard());
 
     emitUpdateState({
       ...idleUpdateState,
@@ -244,9 +251,10 @@ describe("SidebarVersionTag", () => {
       availableVersion: "1.0.1",
       downloadPercent: 42,
     });
+    await expect.element(versionChip()).toHaveTextContent("42%");
     await expect.element(page.getByText("Downloading v1.0.1 · 42%")).toBeVisible();
-    const downloading = versionCard().element().getBoundingClientRect();
-    expect(Math.abs(downloading.height - available.height)).toBeLessThanOrEqual(1);
+    expect(widthOf(versionChip())).toBe(chipWidth);
+    expect(Math.abs(heightOf(versionCard()) - cardHeight)).toBeLessThanOrEqual(1);
 
     emitUpdateState({
       ...idleUpdateState,
@@ -255,23 +263,67 @@ describe("SidebarVersionTag", () => {
       downloadedVersion: "1.0.1",
       downloadPercent: 100,
     });
-    await expect
-      .element(versionCard().getByRole("button", { name: "Restart to install" }))
-      .toBeVisible();
-    await expect.element(page.getByText("Restart")).toBeVisible();
-    const downloaded = versionCard().element().getBoundingClientRect();
-    expect(Math.abs(downloaded.height - available.height)).toBeLessThanOrEqual(1);
+    await expect.element(versionChip()).toHaveTextContent("Restart");
+    await expect.element(versionCard().getByText("v1.0.1 downloaded")).toBeVisible();
+    await expect.element(versionCard().getByRole("button")).not.toBeInTheDocument();
+    expect(widthOf(versionChip())).toBe(chipWidth);
+    expect(Math.abs(heightOf(versionCard()) - cardHeight)).toBeLessThanOrEqual(1);
+  });
 
-    // Restart goes through the in-app confirmation, which names the incoming
-    // version and the running-session situation before touching the bridge.
-    await versionCard().getByRole("button", { name: "Restart to install" }).click();
+  it("downloads in one click from the chip but confirms before restarting", async () => {
+    let updateStateListener: ((state: DesktopUpdateState) => void) | null = null;
+    const availableState: DesktopUpdateState = {
+      ...idleUpdateState,
+      status: "available",
+      availableVersion: "1.0.1",
+    };
+    const bridge = stubDesktopBridge({
+      getUpdateState: vi.fn().mockResolvedValue(availableState),
+      onUpdateState: vi.fn((listener: (state: DesktopUpdateState) => void) => {
+        updateStateListener = listener;
+        return () => {
+          updateStateListener = null;
+        };
+      }),
+      downloadUpdate: vi.fn().mockResolvedValue({
+        accepted: true,
+        completed: false,
+        state: { ...availableState, status: "downloading", downloadPercent: 0 },
+      }),
+    } as unknown as Partial<DesktopBridge>);
+    await mountTag();
+
+    await expect.element(versionChip()).toHaveTextContent("Update");
+    await versionChip().click();
+    await vi.waitFor(() => {
+      expect(bridge.downloadUpdate).toHaveBeenCalledTimes(1);
+    });
+    await expect.element(versionChip()).toHaveTextContent("0%");
+
+    const emitUpdateState = (state: DesktopUpdateState) => {
+      if (updateStateListener === null) {
+        throw new Error("Desktop update listener was not registered.");
+      }
+      updateStateListener(state);
+    };
+    emitUpdateState({
+      ...availableState,
+      status: "downloaded",
+      downloadedVersion: "1.0.1",
+      downloadPercent: 100,
+    });
+    await expect.element(versionChip()).toHaveTextContent("Restart");
+    await versionChip().click();
     const dialog = page.getByRole("alertdialog");
     await expect.element(dialog).toBeVisible();
+    // The confirmation names the incoming version and the running-session
+    // situation before touching the bridge.
     await expect.element(dialog.getByText("v1.0.1", { exact: true })).toBeVisible();
     await expect
       .element(dialog.getByText("No agent sessions are running.", { exact: false }))
       .toBeVisible();
     expect(bridge.installUpdate).not.toHaveBeenCalled();
+
     await dialog.getByRole("button", { name: "Restart", exact: true }).click();
     await vi.waitFor(() => {
       expect(bridge.installUpdate).toHaveBeenCalledTimes(1);
