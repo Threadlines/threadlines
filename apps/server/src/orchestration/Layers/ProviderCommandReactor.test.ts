@@ -1134,6 +1134,15 @@ describe("ProviderCommandReactor", () => {
       input: "adjust the running command",
     });
 
+    // The reactor accepts the follow-up message only after steerTurn resolves.
+    await waitFor(async () => {
+      const readModel = await harness.readModel();
+      const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+      return (
+        thread?.messages.some((entry) => entry.id === asMessageId("user-message-follow-up")) ??
+        false
+      );
+    });
     const readModel = await harness.readModel();
     const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
     expect(thread?.activities.some((entry) => entry.kind === "provider.follow-up.failed")).toBe(
