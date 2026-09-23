@@ -2,6 +2,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { unwatchFile, watch, watchFile } from "node:fs";
 import { join } from "node:path";
 
+import { devBundles } from "./dev-bundles.mjs";
 import { desktopDir, resolveElectronPath } from "./electron-launcher.mjs";
 import { copyPreviewVendor } from "./preview-vendor.mjs";
 import { waitForResources } from "./wait-for-resources.mjs";
@@ -17,15 +18,13 @@ if (!Number.isInteger(port) || port <= 0) {
   throw new Error(`VITE_DEV_SERVER_URL must include an explicit port: ${devServerUrl}`);
 }
 
-const requiredFiles = [
-  "dist-electron/main.cjs",
-  "dist-electron/preload.cjs",
-  "../server/dist/bin.mjs",
-];
-const watchedDirectories = [
-  { directory: "dist-electron", files: new Set(["main.cjs", "preload.cjs"]) },
-  { directory: "../server/dist", files: new Set(["bin.mjs"]) },
-];
+const requiredFiles = devBundles.flatMap(({ directory, files }) =>
+  files.map((file) => `${directory}/${file}`),
+);
+const watchedDirectories = devBundles.map(({ directory, files }) => ({
+  directory,
+  files: new Set(files),
+}));
 const forcedShutdownTimeoutMs = 1_500;
 const restartDebounceMs = 120;
 const childTreeGracePeriodMs = 1_200;
@@ -87,6 +86,10 @@ if (configuredRemoteDebuggingPort !== null && remoteDebuggingPort === null) {
       configuredRemoteDebuggingPort,
   );
 }
+
+// Kicked off now so it overlaps the bundle builds; run right before launch,
+// its Windows process query delayed Electron by half a second or more.
+const staleDevAppsCleanup = cleanupStaleDevApps();
 
 await waitForResources({
   baseDir: desktopDir,
@@ -163,19 +166,22 @@ function cleanupStaleDevApps() {
     // Match only Electron mains carrying our dev-root flag, then take each
     // tree down so their spawned servers go with them.
     const escapedNeedle = needle.replaceAll("'", "''");
-    spawnSync(
-      "powershell.exe",
-      [
-        "-NoProfile",
-        "-Command",
-        `Get-CimInstance Win32_Process -Filter "Name = 'electron.exe'" | Where-Object { $_.CommandLine -like '*${escapedNeedle}*' } | ForEach-Object { taskkill /PID $_.ProcessId /T /F } | Out-Null`,
-      ],
-      { stdio: "ignore" },
-    );
-    return;
+    return runToExit("powershell.exe", [
+      "-NoProfile",
+      "-Command",
+      `Get-CimInstance Win32_Process -Filter "Name = 'electron.exe'" | Where-Object { $_.CommandLine -like '*${escapedNeedle}*' } | ForEach-Object { taskkill /PID $_.ProcessId /T /F } | Out-Null`,
+    ]);
   }
 
-  spawnSync("pkill", ["-f", "--", needle], { stdio: "ignore" });
+  return runToExit("pkill", ["-f", "--", needle]);
+}
+
+function runToExit(command, args) {
+  return new Promise((resolve) => {
+    const child = spawn(command, args, { stdio: "ignore" });
+    child.once("error", resolve);
+    child.once("exit", resolve);
+  });
 }
 
 function startApp() {
@@ -376,8 +382,10 @@ async function shutdown(exitCode) {
   process.exit(exitCode);
 }
 
+// Before the watchers: a rebuild-triggered start while the cleanup still ran
+// would launch an Electron that the cleanup then kills.
+await staleDevAppsCleanup;
 startWatchers();
-cleanupStaleDevApps();
 startApp();
 
 process.once("SIGINT", () => {
