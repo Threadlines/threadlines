@@ -1382,6 +1382,9 @@ export function collectUserMessageBlobPreviewUrls(message: ChatMessage): string[
 export interface PullRequestDialogState {
   initialReference: string | null;
   key: number;
+  /** The thread the checkout lands in, named up front so a worktree's setup
+   *  script runs in the draft the user is taken to. */
+  threadId: ThreadId;
 }
 
 export function readFileAsDataUrl(file: File): Promise<string> {

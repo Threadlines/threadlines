@@ -4604,7 +4604,15 @@ describe("ChatView timeline estimator parity (full app)", () => {
             cwd: "/repo/project",
             reference: "1359",
             mode: "worktree",
-            threadId: THREAD_ID,
+          });
+          // The server starts the setup script under this id, so the draft the
+          // user lands in has to be that same thread, on the new worktree.
+          const setupThreadId = prepareRequest?.threadId;
+          expect(setupThreadId).toEqual(expect.any(String));
+          const drafts = Object.values(useComposerDraftStore.getState().draftThreadsByThreadKey);
+          expect(drafts.find((draft) => draft.threadId === setupThreadId)).toMatchObject({
+            worktreePath: "/repo/worktrees/pr-1359",
+            branch: "archive-settings-overhaul",
           });
         },
         { timeout: 8_000, interval: 16 },
