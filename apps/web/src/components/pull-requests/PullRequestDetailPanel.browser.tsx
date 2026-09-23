@@ -603,7 +603,7 @@ describe("PullRequestDetailPanel", () => {
 
     // The second hand-off takes the first one's place rather than stacking.
     await vi.waitFor(() => {
-      expect(prompt()).toContain("Explain this pull request.");
+      expect(prompt()).toContain("Explain PR #42");
       expect(prompt()).not.toContain("Fix the review finding");
     });
 

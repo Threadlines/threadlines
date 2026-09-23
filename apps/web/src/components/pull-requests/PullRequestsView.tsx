@@ -746,6 +746,8 @@ export function PullRequestsView({
                 branch,
                 worktreePath,
                 envMode: worktreePath ? "worktree" : "local",
+                // The id the dialog gave the server, which the setup script runs under.
+                threadId: dialogTarget.threadId,
                 ...(dialogTarget.initialPrompt
                   ? { initialPrompt: dialogTarget.initialPrompt }
                   : {}),
