@@ -11,7 +11,10 @@ export type SidebarDesktopUpdateTagTone =
 export interface SidebarDesktopUpdateTagPresentation {
   readonly action: DesktopUpdateButtonAction;
   readonly disabled: boolean;
-  readonly indicatorLabel: string | null;
+  /**
+   * Idle: the compact running version. Active: the one word naming what a
+   * click does, or the download progress while one runs.
+   */
   readonly label: string;
   readonly progressPercent: number;
   readonly tone: SidebarDesktopUpdateTagTone;
@@ -151,19 +154,6 @@ export function discriminatingVersionLabel(target: string, current: string): str
   return `${compactVersionLabel(target)}-nightly`;
 }
 
-/**
- * Chip variant of `discriminatingVersionLabel`. The sidebar chip is a fixed
- * 68px box that fits about eleven characters, so "v0.3.3-nightly" would
- * ellipsize into exactly the part that mattered. The feed only ever serves
- * the selected channel, so on the chip a cross-base target can drop the
- * channel suffix: on the nightly track "v0.3.3" can only mean a nightly, and
- * the popout row plus tooltip still spell it out.
- */
-export function discriminatingChipVersionLabel(target: string, current: string): string {
-  const label = discriminatingVersionLabel(target, current);
-  return label.endsWith("-nightly") ? compactVersionLabel(target) : label;
-}
-
 function getSidebarDesktopUpdateTagTooltip(input: {
   readonly action: DesktopUpdateButtonAction;
   readonly isDownloading: boolean;
@@ -180,12 +170,13 @@ function getSidebarDesktopUpdateTagTooltip(input: {
       : subject;
   }
   if (input.isError) {
-    return input.action === "install" ? "Install failed" : "Download failed";
+    const verb = input.action === "install" ? "installing" : "downloading";
+    return fullLabel ? `Retry ${verb} ${fullLabel}` : `Retry ${verb} update`;
   }
   if (input.action === "install") {
     return fullLabel ? `Restart to install ${fullLabel}` : "Restart to install";
   }
-  return fullLabel ? `${fullLabel} available` : "Update available";
+  return fullLabel ? `Download ${fullLabel}` : "Download update";
 }
 
 export function getSidebarDesktopUpdateTagPresentation(
@@ -195,7 +186,6 @@ export function getSidebarDesktopUpdateTagPresentation(
   const idlePresentation = {
     action: "none",
     disabled: true,
-    indicatorLabel: null,
     label: compactVersionLabel(appVersion),
     progressPercent: 0,
     tone: "idle",
@@ -210,12 +200,9 @@ export function getSidebarDesktopUpdateTagPresentation(
   const isDownloaded = action === "install" || state.status === "downloaded";
   const isDownloading = state.status === "downloading";
   const isError = shouldHighlightDesktopUpdateError(state);
-  // Active states label the chip with the version the action concerns, so
-  // "ready to restart" reads as the incoming release, not the running one.
+  // The target version lives in the tooltip and the hover card; the chip
+  // itself only names the action, so its width never depends on a version.
   const targetVersion = state.downloadedVersion ?? state.availableVersion;
-  const targetLabel = targetVersion
-    ? discriminatingChipVersionLabel(targetVersion, state.currentVersion ?? appVersion)
-    : null;
   const downloadPercent = typeof state.downloadPercent === "number" ? state.downloadPercent : null;
   const progressPercent = isDownloaded
     ? 100
@@ -226,9 +213,15 @@ export function getSidebarDesktopUpdateTagPresentation(
   return {
     action,
     disabled: isDesktopUpdateButtonDisabled(state),
-    indicatorLabel:
-      isDownloading && downloadPercent !== null ? `${Math.floor(progressPercent)}%` : null,
-    label: targetLabel ?? compactVersionLabel(appVersion),
+    label: isError
+      ? "Retry"
+      : isDownloaded
+        ? "Restart"
+        : isDownloading
+          ? downloadPercent !== null
+            ? `${Math.floor(progressPercent)}%`
+            : "Downloading"
+          : "Update",
     progressPercent,
     tone: isError
       ? "error"
@@ -304,7 +297,7 @@ export function getDesktopUpdateStatusLine(
         ? compactVersionLabel(targetVersion)
         : null;
   if (state.downloadedVersion || state.status === "downloaded") {
-    // "restart to install" lives on the action button right below.
+    // "Restart" lives on the sidebar chip the card opens from.
     return { text: `${targetLabel ?? "Update"} downloaded`, tone: "success" };
   }
   if (state.status === "downloading") {
@@ -340,14 +333,4 @@ export function getDesktopUpdateStatusLine(
  */
 export function shouldShowDesktopUpdaterControls(state: DesktopUpdateState | null): boolean {
   return state !== null && state.enabled && state.status !== "disabled";
-}
-
-/** Label for the version card's adaptive action button. */
-export function getDesktopUpdateCardActionLabel(state: DesktopUpdateState | null): string {
-  const kind = resolveDesktopUpdateActionKind(state);
-  if (kind === "download") return "Download update";
-  if (kind === "install") return "Restart to install";
-  if (state?.status === "checking") return "Checking…";
-  if (state?.status === "downloading") return "Downloading…";
-  return "Check for updates";
 }

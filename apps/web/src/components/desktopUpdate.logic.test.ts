@@ -3,12 +3,10 @@ import type { DesktopUpdateActionResult, DesktopUpdateState } from "@threadlines
 
 import {
   canCheckForUpdate,
-  discriminatingChipVersionLabel,
   discriminatingVersionLabel,
   getArm64IntelBuildWarningDescription,
   getDesktopUpdateActionError,
   getDesktopUpdateButtonTooltip,
-  getDesktopUpdateCardActionLabel,
   getDesktopUpdateInstallConfirmationMessage,
   getDesktopUpdateStatusLine,
   getSidebarDesktopUpdateTagPresentation,
@@ -266,17 +264,6 @@ describe("discriminatingVersionLabel", () => {
       "v0.3.2-nightly",
     );
   });
-
-  it("drops the channel suffix on the chip, where the feed already implies it", () => {
-    // "v0.3.3-nightly" is 14 characters and the chip fits about eleven; the
-    // popout row and tooltip keep the explicit channel.
-    expect(
-      discriminatingChipVersionLabel("0.3.3-nightly.20260808.230", "0.3.2-nightly.20260807.221"),
-    ).toBe("v0.3.3");
-    expect(
-      discriminatingChipVersionLabel("0.3.2-nightly.20260807.222", "0.3.2-nightly.20260807.221"),
-    ).toBe(".222");
-  });
 });
 
 describe("getSidebarDesktopUpdateTagPresentation", () => {
@@ -284,7 +271,6 @@ describe("getSidebarDesktopUpdateTagPresentation", () => {
     expect(getSidebarDesktopUpdateTagPresentation(baseState, "1.0.0")).toEqual({
       action: "none",
       disabled: true,
-      indicatorLabel: null,
       label: "v1.0.0",
       progressPercent: 0,
       tone: "idle",
@@ -292,7 +278,7 @@ describe("getSidebarDesktopUpdateTagPresentation", () => {
     });
   });
 
-  it("turns the version tag into an update prompt", () => {
+  it("names the download action when an update is available", () => {
     const state: DesktopUpdateState = {
       ...baseState,
       status: "available",
@@ -302,15 +288,14 @@ describe("getSidebarDesktopUpdateTagPresentation", () => {
     expect(getSidebarDesktopUpdateTagPresentation(state, "1.0.0")).toMatchObject({
       action: "download",
       disabled: false,
-      indicatorLabel: null,
-      label: "v1.1.0",
+      label: "Update",
       progressPercent: 0,
       tone: "available",
-      tooltip: "v1.1.0 available",
+      tooltip: "Download v1.1.0",
     });
   });
 
-  it("shows download failures as a retry prompt in the compact tag", () => {
+  it("shows download failures as a retry prompt", () => {
     const state: DesktopUpdateState = {
       ...baseState,
       status: "available",
@@ -323,15 +308,14 @@ describe("getSidebarDesktopUpdateTagPresentation", () => {
     expect(getSidebarDesktopUpdateTagPresentation(state, "1.0.0")).toMatchObject({
       action: "download",
       disabled: false,
-      indicatorLabel: null,
-      label: "v1.1.0",
+      label: "Retry",
       progressPercent: 0,
       tone: "error",
-      tooltip: "Download failed",
+      tooltip: "Retry downloading v1.1.0",
     });
   });
 
-  it("renders bounded download progress in the compact tag", () => {
+  it("renders bounded download progress as the label", () => {
     const state: DesktopUpdateState = {
       ...baseState,
       status: "downloading",
@@ -342,15 +326,14 @@ describe("getSidebarDesktopUpdateTagPresentation", () => {
     expect(getSidebarDesktopUpdateTagPresentation(state, "1.0.0")).toMatchObject({
       action: "none",
       disabled: true,
-      indicatorLabel: "100%",
-      label: "v1.1.0",
+      label: "100%",
       progressPercent: 100,
       tone: "downloading",
       tooltip: "Downloading v1.1.0 · 100%",
     });
   });
 
-  it("keeps unknown download progress unlabeled in the compact tag", () => {
+  it("does not invent a percentage for unknown download progress", () => {
     const state: DesktopUpdateState = {
       ...baseState,
       status: "downloading",
@@ -361,15 +344,14 @@ describe("getSidebarDesktopUpdateTagPresentation", () => {
     expect(getSidebarDesktopUpdateTagPresentation(state, "1.0.0")).toMatchObject({
       action: "none",
       disabled: true,
-      indicatorLabel: null,
-      label: "v1.1.0",
+      label: "Downloading",
       progressPercent: 0,
       tone: "downloading",
       tooltip: "Downloading v1.1.0",
     });
   });
 
-  it("shows install failures as a retry prompt in the compact tag", () => {
+  it("shows install failures as a retry prompt", () => {
     const state: DesktopUpdateState = {
       ...baseState,
       status: "downloaded",
@@ -383,11 +365,10 @@ describe("getSidebarDesktopUpdateTagPresentation", () => {
     expect(getSidebarDesktopUpdateTagPresentation(state, "1.0.0")).toMatchObject({
       action: "install",
       disabled: false,
-      indicatorLabel: null,
-      label: "v1.1.0",
+      label: "Retry",
       progressPercent: 100,
       tone: "error",
-      tooltip: "Install failed",
+      tooltip: "Retry installing v1.1.0",
     });
   });
 
@@ -403,32 +384,14 @@ describe("getSidebarDesktopUpdateTagPresentation", () => {
     expect(getSidebarDesktopUpdateTagPresentation(state, "1.0.0")).toMatchObject({
       action: "install",
       disabled: false,
-      indicatorLabel: null,
-      label: "v1.1.0",
+      label: "Restart",
       progressPercent: 100,
       tone: "downloaded",
       tooltip: "Restart to install v1.1.0",
     });
   });
 
-  it("compacts the chip label but keeps the full version in the tooltip", () => {
-    const state: DesktopUpdateState = {
-      ...baseState,
-      status: "downloaded",
-      availableVersion: "1.1.0-nightly.4",
-      downloadedVersion: "1.1.0-nightly.4",
-    };
-
-    // A short prerelease tail without the dated nightly shape compacts to the
-    // triple on the chip; the tooltip always carries the exact target so a
-    // nightly can never be mistaken for the stable of the same base.
-    expect(getSidebarDesktopUpdateTagPresentation(state, "1.0.0-nightly.2")).toMatchObject({
-      label: "v1.1.0",
-      tooltip: "Restart to install v1.1.0-nightly.4",
-    });
-  });
-
-  it("labels a same-day nightly by its run suffix", () => {
+  it("keeps the full target version in the tooltip", () => {
     const state: DesktopUpdateState = {
       ...baseState,
       currentVersion: "0.3.2-nightly.20260807.221",
@@ -436,11 +399,13 @@ describe("getSidebarDesktopUpdateTagPresentation", () => {
       availableVersion: "0.3.2-nightly.20260807.222",
     };
 
+    // The chip only names the action; the tooltip carries the exact target so
+    // a nightly can never be mistaken for the stable of the same base.
     expect(
       getSidebarDesktopUpdateTagPresentation(state, "0.3.2-nightly.20260807.221"),
     ).toMatchObject({
-      label: ".222",
-      tooltip: "v0.3.2-nightly.20260807.222 available",
+      label: "Update",
+      tooltip: "Download v0.3.2-nightly.20260807.222",
     });
   });
 });
@@ -649,33 +614,5 @@ describe("shouldShowDesktopUpdaterControls", () => {
     expect(shouldShowDesktopUpdaterControls({ ...baseState, status: "disabled" })).toBe(false);
     expect(shouldShowDesktopUpdaterControls(baseState)).toBe(true);
     expect(shouldShowDesktopUpdaterControls({ ...baseState, status: "downloading" })).toBe(true);
-  });
-});
-
-describe("getDesktopUpdateCardActionLabel", () => {
-  it("labels the adaptive action for each kind", () => {
-    expect(getDesktopUpdateCardActionLabel(null)).toBe("Check for updates");
-    expect(getDesktopUpdateCardActionLabel(baseState)).toBe("Check for updates");
-    expect(
-      getDesktopUpdateCardActionLabel({
-        ...baseState,
-        status: "available",
-        availableVersion: "1.1.0",
-      }),
-    ).toBe("Download update");
-    expect(
-      getDesktopUpdateCardActionLabel({
-        ...baseState,
-        status: "downloaded",
-        downloadedVersion: "1.1.0",
-      }),
-    ).toBe("Restart to install");
-  });
-
-  it("labels busy states while the action is unavailable", () => {
-    expect(getDesktopUpdateCardActionLabel({ ...baseState, status: "checking" })).toBe("Checking…");
-    expect(getDesktopUpdateCardActionLabel({ ...baseState, status: "downloading" })).toBe(
-      "Downloading…",
-    );
   });
 });
