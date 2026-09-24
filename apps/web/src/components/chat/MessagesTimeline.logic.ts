@@ -91,9 +91,9 @@ export type MessagesTimelineRow =
        *  steps, its agents' receipts. Rendered only while expanded. */
       rows: MessagesTimelineRow[];
       expanded: boolean;
-      /** From the user's message to the answer. */
-      startedAt: string;
-      endedAt: string;
+      /** Time spent working from the user's message to the answer, without
+       *  the wait before a Retry or a resumed turn. */
+      workedMs: number | null;
       /** The answer's checkpoint diff: the most reliable count of edited files. */
       turnDiffSummary?: TurnDiffSummary | undefined;
     }
@@ -295,15 +295,16 @@ export function deriveMessagesTimelineRows(input: {
   );
   // Turn-request markers are hidden once a turn settles, so read them from
   // the full entry list rather than the visible one.
+  const turnRequestedAts = input.timelineEntries
+    .flatMap((entry) =>
+      entry.kind === "work" && entry.entry.providerLifecyclePhase === "preparing"
+        ? [entry.createdAt]
+        : [],
+    )
+    .toSorted();
   const durationStartByMessageId = computeMessageDurationStart(
     visibleTimelineEntries.flatMap((entry) => (entry.kind === "message" ? [entry.message] : [])),
-    input.timelineEntries
-      .flatMap((entry) =>
-        entry.kind === "work" && entry.entry.providerLifecyclePhase === "preparing"
-          ? [entry.createdAt]
-          : [],
-      )
-      .toSorted(),
+    turnRequestedAts,
   );
   const terminalAssistantMessageIds = deriveTerminalAssistantMessageIds(visibleTimelineEntries);
   const modelFallbackByTurn = deriveModelFallbackByTurn(visibleTimelineEntries);
@@ -472,6 +473,7 @@ export function deriveMessagesTimelineRows(input: {
     isWorking: input.isWorking,
     expandedTurnFoldIds: input.expandedTurnFoldIds,
     revealMessageId: input.revealMessageId ?? null,
+    turnRequestedAts,
   });
   if (input.isWorking) {
     // The working row is the turn's one fixed anchor: it renders for the whole
@@ -524,6 +526,7 @@ function foldSettledTurns(
     readonly isWorking: boolean;
     readonly expandedTurnFoldIds: ReadonlySet<string> | undefined;
     readonly revealMessageId: MessageId | null;
+    readonly turnRequestedAts: ReadonlyArray<string>;
   },
 ): MessagesTimelineRow[] {
   const userIndices = rows.flatMap((row, index) =>
@@ -547,6 +550,7 @@ function foldTurnSegment(
   options: {
     readonly expandedTurnFoldIds: ReadonlySet<string> | undefined;
     readonly revealMessageId: MessageId | null;
+    readonly turnRequestedAts: ReadonlyArray<string>;
   },
 ): ReadonlyArray<MessagesTimelineRow> {
   const answerIndex = segment.findLastIndex(
@@ -574,14 +578,65 @@ function foldTurnSegment(
       createdAt: folded[0]!.createdAt ?? userRow.createdAt,
       rows: folded,
       expanded: revealed || (options.expandedTurnFoldIds?.has(id) ?? false),
-      startedAt: userRow.createdAt,
-      endedAt: answer.message.completedAt ?? answer.message.createdAt,
+      workedMs: workedDurationMs(userRow, before, answer, options.turnRequestedAts),
       turnDiffSummary: answer.assistantTurnDiffSummary,
     },
     ...before.filter(stays),
     { ...answer, hideMetaDuration: true },
     ...segment.slice(answerIndex + 1),
   ];
+}
+
+/**
+ * How long the agent worked from the user's message to the answer. A later
+ * turn request in between (a Retry, a turn resumed after a background task)
+ * starts the clock again: the wait before it, back to the last thing that
+ * happened, is not work.
+ */
+function workedDurationMs(
+  userRow: MessageRow,
+  rows: ReadonlyArray<MessagesTimelineRow>,
+  answer: MessageRow,
+  turnRequestedAts: ReadonlyArray<string>,
+): number | null {
+  const startedAt = Date.parse(userRow.createdAt);
+  const endedAt = Date.parse(answer.message.completedAt ?? answer.message.createdAt);
+  if (!Number.isFinite(startedAt) || !Number.isFinite(endedAt) || endedAt < startedAt) {
+    return null;
+  }
+  const activityTimes = rows.flatMap(rowActivityTimes);
+  let idleMs = 0;
+  let clockStartedAt = startedAt;
+  for (const requested of turnRequestedAts) {
+    const requestedAt = Date.parse(requested);
+    if (!(requestedAt > startedAt && requestedAt <= endedAt)) {
+      continue;
+    }
+    const lastActivityAt = activityTimes.reduce(
+      (latest, time) => (time > latest && time <= requestedAt ? time : latest),
+      clockStartedAt,
+    );
+    idleMs += requestedAt - lastActivityAt;
+    clockStartedAt = requestedAt;
+  }
+  return endedAt - startedAt - idleMs;
+}
+
+/** When a row's content started and finished, in epoch milliseconds. A turn
+ *  request marker is the clock restarting, not activity. */
+function rowActivityTimes(row: MessagesTimelineRow): number[] {
+  const times =
+    row.kind === "message"
+      ? [row.message.createdAt, row.message.completedAt]
+      : row.kind === "work"
+        ? row.groupedEntries.flatMap((entry) =>
+            entry.providerLifecyclePhase ? [] : [entry.createdAt, entry.completedAt],
+          )
+        : [row.createdAt];
+  return times.flatMap((time) => {
+    const parsed = time ? Date.parse(time) : Number.NaN;
+    return Number.isFinite(parsed) ? [parsed] : [];
+  });
 }
 
 export interface FoldedTurnSummary {
@@ -1030,8 +1085,7 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
       const bf = b as typeof a;
       return (
         a.expanded === bf.expanded &&
-        a.startedAt === bf.startedAt &&
-        a.endedAt === bf.endedAt &&
+        a.workedMs === bf.workedMs &&
         a.turnDiffSummary === bf.turnDiffSummary &&
         a.rows.length === bf.rows.length &&
         a.rows.every((row, index) => {

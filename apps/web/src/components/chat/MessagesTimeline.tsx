@@ -2785,7 +2785,7 @@ const TurnFoldRow = memo(function TurnFoldRow({
   const { onToggleTurnFold, onOpenAgentsPanel } = use(TimelineRowCtx);
   const summary = useMemo(() => summarizeFoldedTurn(row.rows), [row.rows]);
   const tracker = useTurnAgentTracker(summary.trackerTurnIds, summary.trackerAgentSpawnIds);
-  const duration = formatWorkingTimer(row.startedAt, row.endedAt);
+  const duration = row.workedMs !== null ? formatWorkingDuration(row.workedMs) : null;
   const editedFileCount = row.turnDiffSummary?.files.length ?? summary.editedFileCount;
   const separator = <span className="shrink-0 text-muted-foreground/35">·</span>;
 
@@ -3780,14 +3780,9 @@ function useStableRows(rows: MessagesTimelineRow[]): MessagesTimelineRow[] {
 // Pure helpers
 // ---------------------------------------------------------------------------
 
-function formatWorkingTimer(startIso: string, endIso: string): string | null {
-  const startedAtMs = Date.parse(startIso);
-  const endedAtMs = Date.parse(endIso);
-  if (!Number.isFinite(startedAtMs) || !Number.isFinite(endedAtMs)) {
-    return null;
-  }
-
-  const elapsedSeconds = Math.max(0, Math.floor((endedAtMs - startedAtMs) / 1000));
+/** "45s", "3m 35s", "1h 12m". */
+function formatWorkingDuration(elapsedMs: number): string {
+  const elapsedSeconds = Math.max(0, Math.floor(elapsedMs / 1000));
   if (elapsedSeconds < 60) {
     return `${elapsedSeconds}s`;
   }
@@ -3804,7 +3799,8 @@ function formatWorkingTimer(startIso: string, endIso: string): string | null {
 }
 
 function formatWorkingTimerNow(startIso: string): string {
-  return formatWorkingTimer(startIso, new Date().toISOString()) ?? "0s";
+  const startedAtMs = Date.parse(startIso);
+  return Number.isFinite(startedAtMs) ? formatWorkingDuration(Date.now() - startedAtMs) : "0s";
 }
 
 function formatMessageMeta(

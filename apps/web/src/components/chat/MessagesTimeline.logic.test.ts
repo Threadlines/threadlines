@@ -1130,16 +1130,32 @@ describe("turn folds and the live step", () => {
 
     expect(rows.map((row) => row.kind)).toEqual(["message", "turn-fold", "message"]);
     const fold = rows[1];
-    expect(fold).toMatchObject({
-      kind: "turn-fold",
-      expanded: false,
-      startedAt: "2026-01-01T00:00:00Z",
-      endedAt: "2026-01-01T00:01:15Z",
-    });
+    expect(fold).toMatchObject({ kind: "turn-fold", expanded: false, workedMs: 75_000 });
     expect(fold?.kind === "turn-fold" ? fold.rows.map((row) => row.id) : []).toEqual([
       "note-entry",
       "read",
     ]);
+  });
+
+  it("counts a retried turn's work, not the wait before the retry", () => {
+    // The first attempt failed after 6s and the user pressed Retry 18 minutes
+    // later. Retry sends no user message, only a turn request.
+    const turnRequest = (id: string, createdAt: string) =>
+      workEntry(id, createdAt, {
+        label: "Preparing provider turn",
+        tone: "info",
+        providerLifecyclePhase: "preparing",
+      });
+    const rows = derive([
+      userEntry("user-1", "2026-01-01T00:44:42Z"),
+      turnRequest("request-1", "2026-01-01T00:44:42Z"),
+      assistantEntry("failure", "2026-01-01T00:44:48Z", "2026-01-01T00:44:48Z"),
+      turnRequest("request-2", "2026-01-01T01:02:46Z"),
+      assistantEntry("answer", "2026-01-01T01:02:53Z", "2026-01-01T01:02:54Z"),
+    ]);
+
+    // 6s for the failed attempt and 8s for the retry.
+    expect(rows.find((row) => row.kind === "turn-fold")).toMatchObject({ workedMs: 14_000 });
   });
 
   it("opens a fold the reader opened, or the one holding a search result", () => {
