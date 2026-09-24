@@ -1,4 +1,5 @@
 import { Debouncer } from "@tanstack/react-pacer";
+import type { PersistStorage, StorageValue } from "zustand/middleware";
 
 export interface StateStorage<R = unknown> {
   getItem: (name: string) => string | null | Promise<string | null>;
@@ -6,7 +7,7 @@ export interface StateStorage<R = unknown> {
   removeItem: (name: string) => R;
 }
 
-export interface DebouncedStorage<R = unknown> extends StateStorage<R> {
+export interface DebouncedPersistStorage<S> extends PersistStorage<S> {
   flush: () => void;
 }
 
@@ -82,20 +83,36 @@ function readLegacyStorageValue<R>(
   return null;
 }
 
-export function createDebouncedStorage(
+function parseStorageValue<S>(raw: string | null): StorageValue<S> | null {
+  return raw === null ? null : (JSON.parse(raw) as StorageValue<S>);
+}
+
+/**
+ * A zustand persist storage that serializes and writes at most once per
+ * `debounceMs`. Use it in place of `createJSONStorage` for stores that change
+ * on every keystroke: that helper runs `JSON.stringify` on every state change
+ * before its storage sees the value, so debouncing only the write still pays
+ * for serializing the whole persisted state, pasted images included, per key.
+ */
+export function createDebouncedJSONStorage<S>(
   baseStorage: Partial<StateStorage> | null | undefined,
   debounceMs: number = 300,
-): DebouncedStorage {
+): DebouncedPersistStorage<S> {
   const resolvedStorage = resolveStorage(baseStorage);
   const debouncedSetItem = new Debouncer(
-    (name: string, value: string) => {
-      resolvedStorage.setItem(name, value);
+    (name: string, value: StorageValue<S>) => {
+      resolvedStorage.setItem(name, JSON.stringify(value));
     },
     { wait: debounceMs },
   );
 
   return {
-    getItem: (name) => resolvedStorage.getItem(name),
+    getItem: (name) => {
+      const raw = resolvedStorage.getItem(name);
+      return raw instanceof Promise
+        ? raw.then((value) => parseStorageValue<S>(value))
+        : parseStorageValue<S>(raw);
+    },
     setItem: (name, value) => {
       debouncedSetItem.maybeExecute(name, value);
     },
