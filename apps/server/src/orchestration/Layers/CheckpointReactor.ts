@@ -929,7 +929,20 @@ const make = Effect.gen(function* () {
       cwd: checkpointCwd,
       checkpointRef: preTurnCountCheckpointRef,
     });
-    if (!preTurnCountCheckpointExists) {
+    // A snapshot left by an earlier request that never became a turn (the
+    // provider failed to start) would stretch this turn's diff back to that
+    // attempt, claiming everything that changed in the checkout since. Each
+    // new request retakes it, unless a turn is running: a queued follow-up
+    // must not move that turn's baseline. A request that arrives with its own
+    // new user message was covered when the message landed; Retry reuses an
+    // old message, so it retakes on the request itself.
+    const turnInFlight = thread.latestTurn?.state === "running";
+    const retakesSnapshot =
+      !turnInFlight &&
+      (event.type === "thread.message-sent" ||
+        thread.messages.find((message) => message.id === event.payload.messageId)?.createdAt !==
+          event.payload.createdAt);
+    if (!preTurnCountCheckpointExists || retakesSnapshot) {
       yield* checkpointStore.captureCheckpoint({
         cwd: checkpointCwd,
         checkpointRef: preTurnCountCheckpointRef,
