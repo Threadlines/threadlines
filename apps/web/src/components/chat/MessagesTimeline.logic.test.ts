@@ -99,6 +99,32 @@ describe("computeMessageDurationStart", () => {
     );
   });
 
+  it("times a retried reply from the retry, not from the reply before it", () => {
+    // The first turn failed; the user pressed Retry 18 minutes later. Retry
+    // sends no new user message, only a turn request.
+    const result = computeMessageDurationStart(
+      [
+        { id: "u1", role: "user", createdAt: "2026-01-01T00:44:42Z" },
+        {
+          id: "a1",
+          role: "assistant",
+          createdAt: "2026-01-01T00:44:48Z",
+          completedAt: "2026-01-01T00:44:48Z",
+        },
+        {
+          id: "a2",
+          role: "assistant",
+          createdAt: "2026-01-01T01:02:53Z",
+          completedAt: "2026-01-01T01:02:54Z",
+        },
+      ],
+      ["2026-01-01T00:44:42Z", "2026-01-01T01:02:46Z"],
+    );
+
+    expect(result.get("a1")).toBe("2026-01-01T00:44:42Z");
+    expect(result.get("a2")).toBe("2026-01-01T01:02:46Z");
+  });
+
   it("uses the previous assistant completedAt for subsequent assistant responses", () => {
     const result = computeMessageDurationStart([
       { id: "u1", role: "user", createdAt: "2026-01-01T00:00:00Z" },
