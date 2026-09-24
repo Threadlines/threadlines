@@ -9,6 +9,7 @@ import {
 import type { ResolvedLanguage } from "@pierre/diffs/worker";
 
 import type { DiffThemeName } from "./diffRendering";
+import { toOneByteString } from "./oneByteString";
 
 /**
  * Client for the syntax-highlighting worker.
@@ -200,10 +201,11 @@ async function highlightOnMainThread(
       preferredHighlighter: "shiki-js",
     });
     const highlighter = await fallbackHighlighterPromise;
+    const oneByteCode = toOneByteString(code);
     try {
-      return highlighter.codeToHtml(code, { lang: language, theme });
+      return highlighter.codeToHtml(oneByteCode, { lang: language, theme });
     } catch {
-      return highlighter.codeToHtml(code, { lang: PLAIN_TEXT_LANGUAGE, theme });
+      return highlighter.codeToHtml(oneByteCode, { lang: PLAIN_TEXT_LANGUAGE, theme });
     }
   } catch (error) {
     console.warn(

@@ -1,3 +1,4 @@
+import type { Server as NodeHttpServerInstance } from "node:http";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import { FetchHttpClient, HttpRouter, HttpServer } from "effect/unstable/http";
@@ -144,6 +145,28 @@ const PtyAdapterLive = Layer.unwrap(
   }),
 );
 
+/**
+ * Answers 503 on a `node:http` server until the router attaches.
+ *
+ * {@link HttpServerLive} opens the port when it builds, but `HttpRouter.serve`
+ * attaches its `request` listener only after every runtime service has
+ * started. Node never answers a request that arrives with no listener (it
+ * waits out its 5-minute request timeout), and the desktop's readiness poll
+ * lands in that window on every launch, stalling for its full per-request
+ * timeout before retrying.
+ */
+export function answerRequestsWhileStarting(
+  server: NodeHttpServerInstance,
+): NodeHttpServerInstance {
+  server.on("request", (_request, response) => {
+    // The router's listener is attached and owns the response.
+    if (server.listenerCount("request") > 1) return;
+    response.writeHead(503, { "content-type": "text/plain", "retry-after": "1" });
+    response.end("Threadlines is starting.\n");
+  });
+  return server;
+}
+
 const HttpServerLive = Layer.unwrap(
   Effect.gen(function* () {
     const config = yield* ServerConfig;
@@ -163,7 +186,7 @@ const HttpServerLive = Layer.unwrap(
         Effect.promise(() => import("@effect/platform-node/NodeHttpServer")),
         Effect.promise(() => import("node:http")),
       ]);
-      return NodeHttpServer.layer(NodeHttp.createServer, {
+      return NodeHttpServer.layer(() => answerRequestsWhileStarting(NodeHttp.createServer()), {
         host: config.host,
         port: config.port,
         gracefulShutdownTimeout: HTTP_PREEMPTIVE_SHUTDOWN_GRACE_MS,

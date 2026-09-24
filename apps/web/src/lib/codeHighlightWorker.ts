@@ -15,6 +15,7 @@ import type {
   CodeHighlightWorkerRequest,
   StreamToken,
 } from "./codeHighlight";
+import { toOneByteString } from "./oneByteString";
 
 /**
  * Syntax highlighting for chat code blocks, off the main thread.
@@ -26,6 +27,10 @@ import type {
  * Grammars and themes are network-loaded modules that Pierre refuses to resolve
  * inside a worker, so {@link CodeHighlightRequest} carries the resolved data
  * from the client the first time a language or theme is needed.
+ *
+ * Code arrives two bytes per character whenever its reply had an em dash or a
+ * curly quote anywhere, so it is copied back to one byte before tokenizing
+ * (see {@link toOneByteString}).
  */
 
 let highlighterPromise: Promise<DiffsHighlighter> | null = null;
@@ -45,12 +50,13 @@ function highlightToHtml(
   highlighter: DiffsHighlighter,
   request: CodeHighlightRequest,
 ): string | null {
+  const code = toOneByteString(request.code);
   try {
-    return highlighter.codeToHtml(request.code, { lang: request.language, theme: request.theme });
+    return highlighter.codeToHtml(code, { lang: request.language, theme: request.theme });
   } catch {
     // The grammar is missing or broke on this input; plain text still reads.
     try {
-      return highlighter.codeToHtml(request.code, { lang: "text", theme: request.theme });
+      return highlighter.codeToHtml(code, { lang: "text", theme: request.theme });
     } catch {
       return null;
     }
@@ -135,7 +141,7 @@ function appendToStream(
     .then(async () => {
       const tokenizer = entry.tokenizer;
       if (!tokenizer) return;
-      const { recall, stable, unstable } = await tokenizer.enqueue(request.chunk);
+      const { recall, stable, unstable } = await tokenizer.enqueue(toOneByteString(request.chunk));
       postStreamTokens({
         kind: "stream-tokens",
         streamId: request.streamId,
