@@ -36,6 +36,26 @@ function renderTimeline(ui: ReactElement) {
   return render(ui, { wrapper: TimelineQueryProvider });
 }
 
+function dispatchTouch(
+  target: HTMLElement,
+  type: "touchstart" | "touchmove" | "touchend",
+  clientY: number,
+) {
+  const touch = new Touch({ identifier: 1, target, clientY, clientX: 0 });
+  target.dispatchEvent(
+    new TouchEvent(type, {
+      bubbles: true,
+      cancelable: true,
+      touches: type === "touchend" ? [] : [touch],
+      changedTouches: [touch],
+    }),
+  );
+}
+
+function nextFrame() {
+  return new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+}
+
 function buildProps() {
   return {
     isWorking: true,
@@ -177,6 +197,77 @@ describe("MessagesTimeline with the real virtual list", () => {
       expect(Math.abs(body.getBoundingClientRect().top - readingTop)).toBeLessThanOrEqual(1);
     } finally {
       cancelAnimationFrame(frame);
+      await screen.unmount();
+    }
+  });
+
+  // A phone scroll starts while the list follows the stream: a scroll to the
+  // end is still in flight, and the working row is the only row starting on
+  // screen under the tall response. New lines must not move the text under a
+  // finger, whether it rests or drags.
+  it("leaves a touch drag where the finger put it while the response streams", async () => {
+    const props = buildProps();
+    const sentence =
+      "This is a plain streamed sentence with enough words to wrap onto another line. ";
+    const message: ChatMessage = {
+      id: "streaming-response" as ChatMessage["id"],
+      role: "assistant",
+      turnId: ACTIVE_TURN_ID,
+      text: sentence.repeat(20),
+      streaming: true,
+      createdAt: props.activeTurnStartedAt,
+    };
+    const renderList = (text: string) => (
+      <div style={{ height: 400, width: 600 }}>
+        <MessagesTimeline
+          {...props}
+          timelineEntries={[
+            {
+              id: message.id,
+              kind: "message",
+              createdAt: message.createdAt,
+              message: { ...message, text },
+            },
+          ]}
+        />
+      </div>
+    );
+    let text = message.text;
+    const screen = await renderTimeline(renderList(text));
+    const streamChunk = async () => {
+      text += sentence;
+      await screen.rerender(renderList(text));
+      await nextFrame();
+      await nextFrame();
+    };
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      const body = document.querySelector<HTMLElement>('[data-assistant-message-body="true"]')!;
+      const list = document.querySelector<HTMLElement>('[data-chat-messages-list="true"]')!;
+      await streamChunk();
+      expect(list.scrollHeight - list.clientHeight - list.scrollTop).toBeLessThanOrEqual(1);
+
+      const drift: number[] = [];
+      dispatchTouch(list, "touchstart", 200);
+      const restingTop = body.getBoundingClientRect().top;
+      await streamChunk();
+      drift.push(Math.abs(body.getBoundingClientRect().top - restingTop));
+
+      dispatchTouch(list, "touchmove", 220);
+      list.scrollTop -= 20;
+      await nextFrame();
+      const heldTop = body.getBoundingClientRect().top;
+      for (let chunk = 0; chunk < 6; chunk++) {
+        await streamChunk();
+        drift.push(Math.abs(body.getBoundingClientRect().top - heldTop));
+      }
+      dispatchTouch(list, "touchend", 220);
+
+      expect(
+        Math.max(...drift),
+        `streamed lines must not move the text under the finger (${drift.join(", ")})`,
+      ).toBeLessThanOrEqual(1);
+    } finally {
       await screen.unmount();
     }
   });

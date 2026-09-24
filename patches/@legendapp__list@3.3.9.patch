@@ -1,8 +1,93 @@
 diff --git a/react-native.web.js b/react-native.web.js
-index 5b7b716e1edb046cbb6386b417490fab793f666b..f18e5e31563875eeec7e5a26cb52e16b35ff09b3 100644
+index 5b7b716e1edb046cbb6386b417490fab793f666b..f74949a9df38b2f1b757c5c881945de91c2a7ff7 100644
 --- a/react-native.web.js
 +++ b/react-native.web.js
-@@ -6560,8 +6560,11 @@ function ScrollAdjust() {
+@@ -1523,8 +1523,27 @@ function finishMaintainScrollAtEnd(ctx) {
+     requestAdjust(ctx, nextScroll - state.scroll);
+   }
+ }
++// A finger on a web list owns the scroll, as a native drag does. End any
++// programmatic scroll to the end, since MVCP keeps chasing its growing target
++// while one is in flight, and stop following the end until every finger lifts.
++function beginTouchOnList(ctx) {
++  const state = ctx.state;
++  state.isTouchingList = true;
++  const scrollingTo = state.scrollingTo;
++  const isScrollingToEnd = !!scrollingTo && !scrollingTo.animated && !scrollingTo.isInitialScroll && scrollingTo.index === state.props.data.length - 1 && scrollingTo.viewPosition === 1;
++  if (isScrollingToEnd || state.pendingScrollToEnd) {
++    cancelImperativeScroll(state);
++  }
++  if (state.maintainingScrollAtEnd || state.pendingMaintainScrollAtEnd) {
++    finishMaintainScrollAtEnd(ctx);
++  }
++}
+ function doMaintainScrollAtEnd(ctx) {
+   const state = ctx.state;
++  if (state.isTouchingList) {
++    finishMaintainScrollAtEnd(ctx);
++    return false;
++  }
+   const {
+     didContainersLayout,
+     didFinishInitialScroll,
+@@ -1747,6 +1766,18 @@ function prepareMVCP(ctx, dataChanged, adjustmentSource) {
+   const shouldMVCP = dataChanged ? mvcpData : mvcpScroll;
+   const indexByKey = state.indexByKey;
+   const prevScroll = state.scroll;
++  // Size changes honor shouldRestorePosition too, not only data changes. When no
++  // row that starts on screen qualifies (a short tail row under a tall one),
++  // fall back to the partially visible first row instead of the rejected row.
++  const canAnchor = (id) => {
++    const index = indexByKey.get(id);
++    if (index === void 0) return false;
++    if (!shouldRestorePosition) return true;
++    const item = state.props.data[index];
++    return item !== void 0 && shouldRestorePosition(item, index, state.props.data);
++  };
++  const partiallyVisibleId = state.startNoBuffer === void 0 || state.startNoBuffer === null || state.startNoBuffer < 0 ? void 0 : state.idCache[state.startNoBuffer];
++  const anchorCandidateIds = partiallyVisibleId === void 0 || partiallyVisibleId === null || idsInView.includes(partiallyVisibleId) ? idsInView : [...idsInView, partiallyVisibleId];
+   getContentSize(ctx);
+   if (shouldMVCP) {
+     if (anchorLock && scrollTarget === void 0) {
+@@ -1754,12 +1785,12 @@ function prepareMVCP(ctx, dataChanged, adjustmentSource) {
+       prevPosition = anchorLock.position;
+     } else if (scrollTarget !== void 0) {
+       targetId = getId(state, scrollTarget);
+-    } else if (idsInView.length > 0 && state.didContainersLayout && !dataChanged) {
+-      targetId = idsInView.find((id) => indexByKey.get(id) !== void 0);
++    } else if (anchorCandidateIds.length > 0 && state.didContainersLayout && !dataChanged) {
++      targetId = anchorCandidateIds.find(canAnchor);
+     }
+-    if (dataChanged && idsInView.length > 0 && state.didContainersLayout) {
+-      for (let i = 0; i < idsInView.length; i++) {
+-        const id = idsInView[i];
++    if (dataChanged && anchorCandidateIds.length > 0 && state.didContainersLayout) {
++      for (let i = 0; i < anchorCandidateIds.length; i++) {
++        const id = anchorCandidateIds[i];
+         const index = indexByKey.get(id);
+         if (index !== void 0) {
+           const position = positions[index];
+@@ -6338,7 +6369,19 @@ var ListComponentScrollView = React3.forwardRef(function ListComponentScrollView
+     if ("onscrollend" in target) {
+       target.addEventListener("scrollend", emitScrollEnd);
+     }
++    const onTouchStart = () => beginTouchOnList(ctx);
++    const onTouchEnd = (event) => {
++      if (!event.touches || event.touches.length === 0) {
++        ctx.state.isTouchingList = false;
++      }
++    };
++    target.addEventListener("touchstart", onTouchStart, { passive: true });
++    target.addEventListener("touchend", onTouchEnd, { passive: true });
++    target.addEventListener("touchcancel", onTouchEnd, { passive: true });
+     return () => {
++      target.removeEventListener("touchstart", onTouchStart);
++      target.removeEventListener("touchend", onTouchEnd);
++      target.removeEventListener("touchcancel", onTouchEnd);
+       target.removeEventListener("scroll", handleScroll);
+       if ("onscrollend" in target) {
+         target.removeEventListener("scrollend", emitScrollEnd);
+@@ -6560,8 +6603,11 @@ function ScrollAdjust() {
                window.getComputedStyle(contentNode)[axis.paddingEndProp]
              );
              const temporaryPaddingEnd = `${(currentPaddingEnd || 0) + pad}px`;
@@ -16,10 +101,95 @@ index 5b7b716e1edb046cbb6386b417490fab793f666b..f18e5e31563875eeec7e5a26cb52e16b
              scrollBy();
              if (resetPaddingRafRef.current !== void 0) {
 diff --git a/react-native.web.mjs b/react-native.web.mjs
-index f64169616ea5d761bf82a562084e04f2b98ce7c2..61e9b022a3bc345a244be903cb175953a5faf665 100644
+index f64169616ea5d761bf82a562084e04f2b98ce7c2..ffc959e9c44d736c6850b82b3ca09a12c1ee54d4 100644
 --- a/react-native.web.mjs
 +++ b/react-native.web.mjs
-@@ -6539,8 +6539,11 @@ function ScrollAdjust() {
+@@ -1502,8 +1502,27 @@ function finishMaintainScrollAtEnd(ctx) {
+     requestAdjust(ctx, nextScroll - state.scroll);
+   }
+ }
++// A finger on a web list owns the scroll, as a native drag does. End any
++// programmatic scroll to the end, since MVCP keeps chasing its growing target
++// while one is in flight, and stop following the end until every finger lifts.
++function beginTouchOnList(ctx) {
++  const state = ctx.state;
++  state.isTouchingList = true;
++  const scrollingTo = state.scrollingTo;
++  const isScrollingToEnd = !!scrollingTo && !scrollingTo.animated && !scrollingTo.isInitialScroll && scrollingTo.index === state.props.data.length - 1 && scrollingTo.viewPosition === 1;
++  if (isScrollingToEnd || state.pendingScrollToEnd) {
++    cancelImperativeScroll(state);
++  }
++  if (state.maintainingScrollAtEnd || state.pendingMaintainScrollAtEnd) {
++    finishMaintainScrollAtEnd(ctx);
++  }
++}
+ function doMaintainScrollAtEnd(ctx) {
+   const state = ctx.state;
++  if (state.isTouchingList) {
++    finishMaintainScrollAtEnd(ctx);
++    return false;
++  }
+   const {
+     didContainersLayout,
+     didFinishInitialScroll,
+@@ -1726,6 +1745,18 @@ function prepareMVCP(ctx, dataChanged, adjustmentSource) {
+   const shouldMVCP = dataChanged ? mvcpData : mvcpScroll;
+   const indexByKey = state.indexByKey;
+   const prevScroll = state.scroll;
++  // Size changes honor shouldRestorePosition too, not only data changes. When no
++  // row that starts on screen qualifies (a short tail row under a tall one),
++  // fall back to the partially visible first row instead of the rejected row.
++  const canAnchor = (id) => {
++    const index = indexByKey.get(id);
++    if (index === void 0) return false;
++    if (!shouldRestorePosition) return true;
++    const item = state.props.data[index];
++    return item !== void 0 && shouldRestorePosition(item, index, state.props.data);
++  };
++  const partiallyVisibleId = state.startNoBuffer === void 0 || state.startNoBuffer === null || state.startNoBuffer < 0 ? void 0 : state.idCache[state.startNoBuffer];
++  const anchorCandidateIds = partiallyVisibleId === void 0 || partiallyVisibleId === null || idsInView.includes(partiallyVisibleId) ? idsInView : [...idsInView, partiallyVisibleId];
+   getContentSize(ctx);
+   if (shouldMVCP) {
+     if (anchorLock && scrollTarget === void 0) {
+@@ -1733,12 +1764,12 @@ function prepareMVCP(ctx, dataChanged, adjustmentSource) {
+       prevPosition = anchorLock.position;
+     } else if (scrollTarget !== void 0) {
+       targetId = getId(state, scrollTarget);
+-    } else if (idsInView.length > 0 && state.didContainersLayout && !dataChanged) {
+-      targetId = idsInView.find((id) => indexByKey.get(id) !== void 0);
++    } else if (anchorCandidateIds.length > 0 && state.didContainersLayout && !dataChanged) {
++      targetId = anchorCandidateIds.find(canAnchor);
+     }
+-    if (dataChanged && idsInView.length > 0 && state.didContainersLayout) {
+-      for (let i = 0; i < idsInView.length; i++) {
+-        const id = idsInView[i];
++    if (dataChanged && anchorCandidateIds.length > 0 && state.didContainersLayout) {
++      for (let i = 0; i < anchorCandidateIds.length; i++) {
++        const id = anchorCandidateIds[i];
+         const index = indexByKey.get(id);
+         if (index !== void 0) {
+           const position = positions[index];
+@@ -6317,7 +6348,19 @@ var ListComponentScrollView = forwardRef(function ListComponentScrollView2({
+     if ("onscrollend" in target) {
+       target.addEventListener("scrollend", emitScrollEnd);
+     }
++    const onTouchStart = () => beginTouchOnList(ctx);
++    const onTouchEnd = (event) => {
++      if (!event.touches || event.touches.length === 0) {
++        ctx.state.isTouchingList = false;
++      }
++    };
++    target.addEventListener("touchstart", onTouchStart, { passive: true });
++    target.addEventListener("touchend", onTouchEnd, { passive: true });
++    target.addEventListener("touchcancel", onTouchEnd, { passive: true });
+     return () => {
++      target.removeEventListener("touchstart", onTouchStart);
++      target.removeEventListener("touchend", onTouchEnd);
++      target.removeEventListener("touchcancel", onTouchEnd);
+       target.removeEventListener("scroll", handleScroll);
+       if ("onscrollend" in target) {
+         target.removeEventListener("scrollend", emitScrollEnd);
+@@ -6539,8 +6582,11 @@ function ScrollAdjust() {
                window.getComputedStyle(contentNode)[axis.paddingEndProp]
              );
              const temporaryPaddingEnd = `${(currentPaddingEnd || 0) + pad}px`;
@@ -33,10 +203,95 @@ index f64169616ea5d761bf82a562084e04f2b98ce7c2..61e9b022a3bc345a244be903cb175953
              scrollBy();
              if (resetPaddingRafRef.current !== void 0) {
 diff --git a/react.js b/react.js
-index 5b7b716e1edb046cbb6386b417490fab793f666b..f18e5e31563875eeec7e5a26cb52e16b35ff09b3 100644
+index 5b7b716e1edb046cbb6386b417490fab793f666b..f74949a9df38b2f1b757c5c881945de91c2a7ff7 100644
 --- a/react.js
 +++ b/react.js
-@@ -6560,8 +6560,11 @@ function ScrollAdjust() {
+@@ -1523,8 +1523,27 @@ function finishMaintainScrollAtEnd(ctx) {
+     requestAdjust(ctx, nextScroll - state.scroll);
+   }
+ }
++// A finger on a web list owns the scroll, as a native drag does. End any
++// programmatic scroll to the end, since MVCP keeps chasing its growing target
++// while one is in flight, and stop following the end until every finger lifts.
++function beginTouchOnList(ctx) {
++  const state = ctx.state;
++  state.isTouchingList = true;
++  const scrollingTo = state.scrollingTo;
++  const isScrollingToEnd = !!scrollingTo && !scrollingTo.animated && !scrollingTo.isInitialScroll && scrollingTo.index === state.props.data.length - 1 && scrollingTo.viewPosition === 1;
++  if (isScrollingToEnd || state.pendingScrollToEnd) {
++    cancelImperativeScroll(state);
++  }
++  if (state.maintainingScrollAtEnd || state.pendingMaintainScrollAtEnd) {
++    finishMaintainScrollAtEnd(ctx);
++  }
++}
+ function doMaintainScrollAtEnd(ctx) {
+   const state = ctx.state;
++  if (state.isTouchingList) {
++    finishMaintainScrollAtEnd(ctx);
++    return false;
++  }
+   const {
+     didContainersLayout,
+     didFinishInitialScroll,
+@@ -1747,6 +1766,18 @@ function prepareMVCP(ctx, dataChanged, adjustmentSource) {
+   const shouldMVCP = dataChanged ? mvcpData : mvcpScroll;
+   const indexByKey = state.indexByKey;
+   const prevScroll = state.scroll;
++  // Size changes honor shouldRestorePosition too, not only data changes. When no
++  // row that starts on screen qualifies (a short tail row under a tall one),
++  // fall back to the partially visible first row instead of the rejected row.
++  const canAnchor = (id) => {
++    const index = indexByKey.get(id);
++    if (index === void 0) return false;
++    if (!shouldRestorePosition) return true;
++    const item = state.props.data[index];
++    return item !== void 0 && shouldRestorePosition(item, index, state.props.data);
++  };
++  const partiallyVisibleId = state.startNoBuffer === void 0 || state.startNoBuffer === null || state.startNoBuffer < 0 ? void 0 : state.idCache[state.startNoBuffer];
++  const anchorCandidateIds = partiallyVisibleId === void 0 || partiallyVisibleId === null || idsInView.includes(partiallyVisibleId) ? idsInView : [...idsInView, partiallyVisibleId];
+   getContentSize(ctx);
+   if (shouldMVCP) {
+     if (anchorLock && scrollTarget === void 0) {
+@@ -1754,12 +1785,12 @@ function prepareMVCP(ctx, dataChanged, adjustmentSource) {
+       prevPosition = anchorLock.position;
+     } else if (scrollTarget !== void 0) {
+       targetId = getId(state, scrollTarget);
+-    } else if (idsInView.length > 0 && state.didContainersLayout && !dataChanged) {
+-      targetId = idsInView.find((id) => indexByKey.get(id) !== void 0);
++    } else if (anchorCandidateIds.length > 0 && state.didContainersLayout && !dataChanged) {
++      targetId = anchorCandidateIds.find(canAnchor);
+     }
+-    if (dataChanged && idsInView.length > 0 && state.didContainersLayout) {
+-      for (let i = 0; i < idsInView.length; i++) {
+-        const id = idsInView[i];
++    if (dataChanged && anchorCandidateIds.length > 0 && state.didContainersLayout) {
++      for (let i = 0; i < anchorCandidateIds.length; i++) {
++        const id = anchorCandidateIds[i];
+         const index = indexByKey.get(id);
+         if (index !== void 0) {
+           const position = positions[index];
+@@ -6338,7 +6369,19 @@ var ListComponentScrollView = React3.forwardRef(function ListComponentScrollView
+     if ("onscrollend" in target) {
+       target.addEventListener("scrollend", emitScrollEnd);
+     }
++    const onTouchStart = () => beginTouchOnList(ctx);
++    const onTouchEnd = (event) => {
++      if (!event.touches || event.touches.length === 0) {
++        ctx.state.isTouchingList = false;
++      }
++    };
++    target.addEventListener("touchstart", onTouchStart, { passive: true });
++    target.addEventListener("touchend", onTouchEnd, { passive: true });
++    target.addEventListener("touchcancel", onTouchEnd, { passive: true });
+     return () => {
++      target.removeEventListener("touchstart", onTouchStart);
++      target.removeEventListener("touchend", onTouchEnd);
++      target.removeEventListener("touchcancel", onTouchEnd);
+       target.removeEventListener("scroll", handleScroll);
+       if ("onscrollend" in target) {
+         target.removeEventListener("scrollend", emitScrollEnd);
+@@ -6560,8 +6603,11 @@ function ScrollAdjust() {
                window.getComputedStyle(contentNode)[axis.paddingEndProp]
              );
              const temporaryPaddingEnd = `${(currentPaddingEnd || 0) + pad}px`;
@@ -50,10 +305,95 @@ index 5b7b716e1edb046cbb6386b417490fab793f666b..f18e5e31563875eeec7e5a26cb52e16b
              scrollBy();
              if (resetPaddingRafRef.current !== void 0) {
 diff --git a/react.mjs b/react.mjs
-index f64169616ea5d761bf82a562084e04f2b98ce7c2..61e9b022a3bc345a244be903cb175953a5faf665 100644
+index f64169616ea5d761bf82a562084e04f2b98ce7c2..ffc959e9c44d736c6850b82b3ca09a12c1ee54d4 100644
 --- a/react.mjs
 +++ b/react.mjs
-@@ -6539,8 +6539,11 @@ function ScrollAdjust() {
+@@ -1502,8 +1502,27 @@ function finishMaintainScrollAtEnd(ctx) {
+     requestAdjust(ctx, nextScroll - state.scroll);
+   }
+ }
++// A finger on a web list owns the scroll, as a native drag does. End any
++// programmatic scroll to the end, since MVCP keeps chasing its growing target
++// while one is in flight, and stop following the end until every finger lifts.
++function beginTouchOnList(ctx) {
++  const state = ctx.state;
++  state.isTouchingList = true;
++  const scrollingTo = state.scrollingTo;
++  const isScrollingToEnd = !!scrollingTo && !scrollingTo.animated && !scrollingTo.isInitialScroll && scrollingTo.index === state.props.data.length - 1 && scrollingTo.viewPosition === 1;
++  if (isScrollingToEnd || state.pendingScrollToEnd) {
++    cancelImperativeScroll(state);
++  }
++  if (state.maintainingScrollAtEnd || state.pendingMaintainScrollAtEnd) {
++    finishMaintainScrollAtEnd(ctx);
++  }
++}
+ function doMaintainScrollAtEnd(ctx) {
+   const state = ctx.state;
++  if (state.isTouchingList) {
++    finishMaintainScrollAtEnd(ctx);
++    return false;
++  }
+   const {
+     didContainersLayout,
+     didFinishInitialScroll,
+@@ -1726,6 +1745,18 @@ function prepareMVCP(ctx, dataChanged, adjustmentSource) {
+   const shouldMVCP = dataChanged ? mvcpData : mvcpScroll;
+   const indexByKey = state.indexByKey;
+   const prevScroll = state.scroll;
++  // Size changes honor shouldRestorePosition too, not only data changes. When no
++  // row that starts on screen qualifies (a short tail row under a tall one),
++  // fall back to the partially visible first row instead of the rejected row.
++  const canAnchor = (id) => {
++    const index = indexByKey.get(id);
++    if (index === void 0) return false;
++    if (!shouldRestorePosition) return true;
++    const item = state.props.data[index];
++    return item !== void 0 && shouldRestorePosition(item, index, state.props.data);
++  };
++  const partiallyVisibleId = state.startNoBuffer === void 0 || state.startNoBuffer === null || state.startNoBuffer < 0 ? void 0 : state.idCache[state.startNoBuffer];
++  const anchorCandidateIds = partiallyVisibleId === void 0 || partiallyVisibleId === null || idsInView.includes(partiallyVisibleId) ? idsInView : [...idsInView, partiallyVisibleId];
+   getContentSize(ctx);
+   if (shouldMVCP) {
+     if (anchorLock && scrollTarget === void 0) {
+@@ -1733,12 +1764,12 @@ function prepareMVCP(ctx, dataChanged, adjustmentSource) {
+       prevPosition = anchorLock.position;
+     } else if (scrollTarget !== void 0) {
+       targetId = getId(state, scrollTarget);
+-    } else if (idsInView.length > 0 && state.didContainersLayout && !dataChanged) {
+-      targetId = idsInView.find((id) => indexByKey.get(id) !== void 0);
++    } else if (anchorCandidateIds.length > 0 && state.didContainersLayout && !dataChanged) {
++      targetId = anchorCandidateIds.find(canAnchor);
+     }
+-    if (dataChanged && idsInView.length > 0 && state.didContainersLayout) {
+-      for (let i = 0; i < idsInView.length; i++) {
+-        const id = idsInView[i];
++    if (dataChanged && anchorCandidateIds.length > 0 && state.didContainersLayout) {
++      for (let i = 0; i < anchorCandidateIds.length; i++) {
++        const id = anchorCandidateIds[i];
+         const index = indexByKey.get(id);
+         if (index !== void 0) {
+           const position = positions[index];
+@@ -6317,7 +6348,19 @@ var ListComponentScrollView = forwardRef(function ListComponentScrollView2({
+     if ("onscrollend" in target) {
+       target.addEventListener("scrollend", emitScrollEnd);
+     }
++    const onTouchStart = () => beginTouchOnList(ctx);
++    const onTouchEnd = (event) => {
++      if (!event.touches || event.touches.length === 0) {
++        ctx.state.isTouchingList = false;
++      }
++    };
++    target.addEventListener("touchstart", onTouchStart, { passive: true });
++    target.addEventListener("touchend", onTouchEnd, { passive: true });
++    target.addEventListener("touchcancel", onTouchEnd, { passive: true });
+     return () => {
++      target.removeEventListener("touchstart", onTouchStart);
++      target.removeEventListener("touchend", onTouchEnd);
++      target.removeEventListener("touchcancel", onTouchEnd);
+       target.removeEventListener("scroll", handleScroll);
+       if ("onscrollend" in target) {
+         target.removeEventListener("scrollend", emitScrollEnd);
+@@ -6539,8 +6582,11 @@ function ScrollAdjust() {
                window.getComputedStyle(contentNode)[axis.paddingEndProp]
              );
              const temporaryPaddingEnd = `${(currentPaddingEnd || 0) + pad}px`;
