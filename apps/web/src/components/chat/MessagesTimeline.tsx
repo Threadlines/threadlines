@@ -9,6 +9,7 @@ import {
 } from "@threadlines/contracts";
 import {
   createContext,
+  Fragment,
   memo,
   use,
   useCallback,
@@ -29,7 +30,6 @@ import { useQueries } from "@tanstack/react-query";
 import { isProviderAuthErrorMessage } from "@threadlines/shared/providerAuth";
 import {
   deriveTimelineEntries,
-  formatElapsed,
   formatSubagentDisplayName,
   isActiveSubagentStatus,
   type McpAuthReconnectAction,
@@ -84,9 +84,8 @@ import {
   computeStableMessagesTimelineRows,
   deriveMessagesTimelineRows,
   resolveAssistantMessageCopyState,
-  summarizeFoldedTurn,
-  turnFoldIdForUserRow,
   type StableMessagesTimelineRowsState,
+  type TurnSummary,
   type MessagesTimelineRow,
 } from "./MessagesTimeline.logic";
 import { TerminalContextInlineChip } from "./TerminalContextInlineChip";
@@ -181,8 +180,6 @@ interface TimelineRowSharedState {
   proposedPlanState: TimelineProposedPlanState | null;
   turnAgents: TimelineTurnAgentsState | null;
   onOpenAgentsPanel: ((agentThreadId: string | null) => void) | null;
-  /** Opens or closes a settled turn's "Worked for" fold. */
-  onToggleTurnFold: (foldId: string) => void;
   /** True while the working anchor at the tail is mounted. The per-agent live
    *  status rows render there and only there; a receipt keeps its compact
    *  tracker chip but must not repeat those rows above the exchange. */
@@ -222,10 +219,6 @@ interface TimelineRowActivityState {
 
 const TimelineRowCtx = createContext<TimelineRowSharedState>(null!);
 const TimelineRowActivityCtx = createContext<TimelineRowActivityState>(null!);
-/** True for rows drawn inside an opened "Worked for" fold, whose line already
- *  carries the turn's agents. */
-const TurnFoldCtx = createContext(false);
-const EMPTY_TURN_FOLD_IDS: ReadonlySet<string> = new Set();
 const TIMELINE_LIST_HEADER = <div className="h-3 sm:h-4" />;
 const TIMELINE_LIST_FOOTER = <div className="h-3 sm:h-4" />;
 const EMPTY_TIMELINE_SKILLS: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">> = [];
@@ -688,19 +681,6 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       (turnAgents?.subagents ?? []).filter((item) => isActiveSubagentStatus(item.status)).length,
     [turnAgents?.subagents],
   );
-  const [expandedTurnFoldIds, setExpandedTurnFoldIds] =
-    useState<ReadonlySet<string>>(EMPTY_TURN_FOLD_IDS);
-  const toggleTurnFold = useCallback((foldId: string) => {
-    setExpandedTurnFoldIds((current) => {
-      const next = new Set(current);
-      if (next.has(foldId)) {
-        next.delete(foldId);
-      } else {
-        next.add(foldId);
-      }
-      return next;
-    });
-  }, []);
   const rawRows = useMemo(
     () =>
       deriveMessagesTimelineRows({
@@ -714,8 +694,6 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         activeTurnStartedAt,
         turnDiffSummaryByAssistantMessageId,
         revertTurnCountByUserMessageId,
-        expandedTurnFoldIds,
-        revealMessageId: searchTarget?.messageId ?? null,
       }),
     [
       timelineEntries,
@@ -728,8 +706,6 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       activeTurnStartedAt,
       turnDiffSummaryByAssistantMessageId,
       revertTurnCountByUserMessageId,
-      expandedTurnFoldIds,
-      searchTarget?.messageId,
     ],
   );
   const rows = useStableRows(rawRows);
@@ -747,25 +723,16 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   }, [turnDiffSummaryByAssistantMessageId]);
   const searchTargetRowIndex = useMemo(
     () =>
-      searchTarget ? rows.findIndex((row) => rowShowsMessage(row, searchTarget.messageId)) : -1,
+      searchTarget
+        ? rows.findIndex(
+            (row) => row.kind === "message" && row.message.id === searchTarget.messageId,
+          )
+        : -1,
     [rows, searchTarget],
   );
   const initialAutoStickToBottom = searchTargetRowIndex < 0;
   const [autoStickToBottom, setAutoStickToBottom] = useState(initialAutoStickToBottom);
   const autoStickToBottomRef = useRef(initialAutoStickToBottom);
-  // A turn that settles while the reader is scrolled up into it stays open:
-  // folding it would pull the text they are reading out from under them.
-  const [foldWatchIsWorking, setFoldWatchIsWorking] = useState(isWorking);
-  if (foldWatchIsWorking !== isWorking) {
-    setFoldWatchIsWorking(isWorking);
-    const lastUserEntry = timelineEntries.findLast(
-      (entry) => entry.kind === "message" && entry.message.role === "user",
-    );
-    if (foldWatchIsWorking && !autoStickToBottom && lastUserEntry) {
-      const foldId = turnFoldIdForUserRow(lastUserEntry.id);
-      setExpandedTurnFoldIds((current) => new Set(current).add(foldId));
-    }
-  }
   const [legendListReady, setLegendListReady] = useState(false);
   const [activeSearchTargetMessageId, setActiveSearchTargetMessageId] = useState<MessageId | null>(
     null,
@@ -1344,7 +1311,6 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       proposedPlanState,
       turnAgents,
       onOpenAgentsPanel,
-      onToggleTurnFold: toggleTurnFold,
       anchorOwnsLiveAgents,
     }),
     [
@@ -1375,7 +1341,6 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       proposedPlanState,
       turnAgents,
       onOpenAgentsPanel,
-      toggleTurnFold,
       anchorOwnsLiveAgents,
     ],
   );
@@ -1781,22 +1746,9 @@ function isResolvedProviderAuthRecoverySignal(row: MessagesTimelineRow): boolean
   return Boolean(text && !isProviderAuthErrorMessage(text));
 }
 
-/** Whether a row is, or while opened holds, the given message. */
-function rowShowsMessage(row: MessagesTimelineRow, messageId: MessageId): boolean {
-  if (row.kind === "message") {
-    return row.message.id === messageId;
-  }
-  return (
-    row.kind === "turn-fold" &&
-    row.expanded &&
-    row.rows.some((inner) => rowShowsMessage(inner, messageId))
-  );
-}
-
 function deriveResolvedProviderAuthReconnectIds(
-  foldedRows: ReadonlyArray<MessagesTimelineRow>,
+  rows: ReadonlyArray<MessagesTimelineRow>,
 ): ReadonlySet<string> {
-  const rows = foldedRows.flatMap((row) => (row.kind === "turn-fold" ? row.rows : [row]));
   const resolvedIds = new Set<string>();
   let hasLaterAssistantSuccess = false;
 
@@ -1854,11 +1806,10 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
   const ctx = use(TimelineRowCtx);
   const isActiveSearchTarget =
     row.kind === "message" && row.message.id === ctx.activeSearchTargetMessageId;
-  // A progress note sits right on top of its steps; the gap belongs below them.
+  // A note sits right on top of its steps; the gap belongs below a turn's
+  // answer and its footer.
   const isProgressNote =
-    row.kind === "message" &&
-    row.message.role === "assistant" &&
-    (row.assistantTurnInProgress || !row.showAssistantCopyButton);
+    row.kind === "message" && row.message.role === "assistant" && row.turnSummary === null;
   return (
     <div
       // A row whose section renders nothing (e.g. an all-anchor work group
@@ -1882,7 +1833,6 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
       {row.kind === "fork-context" ? <ForkContextTimelineRow row={row} /> : null}
       {row.kind === "proposed-plan" ? <ProposedPlanTimelineRow row={row} /> : null}
       {row.kind === "subagent-result" ? <SubagentReceiptTimelineRow row={row} /> : null}
-      {row.kind === "turn-fold" ? <TurnFoldRow row={row} /> : null}
       {row.kind === "working" ? <WorkingTimelineRow row={row} /> : null}
     </div>
   );
@@ -2347,10 +2297,10 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
     ctx.providerAuthReconnect && isProviderAuthErrorMessage(messageText)
       ? ctx.providerAuthReconnect
       : null;
-  // Progress notes carry the story while the agent works; only the turn's
-  // final answer gets the time line, the copy button and the fork button.
-  // A note's time stays one hover away.
-  const isFinalAnswer = row.showAssistantCopyButton && !row.assistantTurnInProgress;
+  // Notes carry the story while the agent works. A finished turn's last
+  // message is its answer: it keeps full strength and carries the turn's
+  // footer, while the notes before it fade. A note's time stays one hover away.
+  const summary = row.turnSummary;
 
   return (
     <>
@@ -2359,11 +2309,13 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
           skip it — the class re-animates on virtualization remounts. */}
       <div className={cn("min-w-0 px-1 py-0.5", row.assistantTurnInProgress && "work-row-enter")}>
         <div
-          className="group/assistant-message block w-full max-w-full align-top"
+          className={cn(
+            "group/assistant-message block w-full max-w-full align-top transition-opacity duration-300",
+            row.settledNote && "opacity-70",
+          )}
           data-assistant-message-section="true"
-          title={
-            isFinalAnswer ? undefined : formatTimestamp(row.message.createdAt, ctx.timestampFormat)
-          }
+          data-settled-note={row.settledNote ? "true" : undefined}
+          title={summary ? undefined : formatTimestamp(row.message.createdAt, ctx.timestampFormat)}
         >
           {authReconnect ? (
             <ProviderAuthReconnectCard
@@ -2399,6 +2351,9 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
               </div>
             </FallbackAssistantResponseContainer>
           )}
+          {/* The footer comes first so the turn's changes, which land a beat
+              later, open below it instead of pushing it down. */}
+          {summary ? <AssistantTurnFooter row={row} summary={summary} /> : null}
           <AssistantChangedFilesSection
             turnSummary={row.assistantTurnDiffSummary}
             isTurnInProgress={row.assistantTurnInProgress}
@@ -2406,29 +2361,99 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
             resolvedTheme={ctx.resolvedTheme}
             onOpenTurnDiff={ctx.onOpenTurnDiff}
           />
-          {isFinalAnswer ? (
-            <div className="mt-1.5 flex items-center gap-2">
-              <p className="text-[10px] tracking-tight tabular-nums text-muted-foreground/30">
-                {formatMessageMeta(
-                  row.message.createdAt,
-                  row.hideMetaDuration
-                    ? null
-                    : formatElapsed(row.durationStart, row.message.completedAt),
-                  ctx.timestampFormat,
-                )}
-              </p>
-              {row.message.text.trim().length > 0 ? (
-                <ContinueInNewThreadButton
-                  messageId={row.message.id}
-                  className="pointer-events-none border-border/50 bg-background/35 text-muted-foreground/45 opacity-0 shadow-none transition-opacity duration-200 hover:border-border/70 hover:bg-background/55 hover:text-muted-foreground/70 group-hover/assistant-message:pointer-events-auto group-hover/assistant-message:opacity-100 group-focus-within/assistant-message:pointer-events-auto group-focus-within/assistant-message:opacity-100"
-                />
-              ) : null}
-              <AssistantCopyButton row={row} />
-            </div>
-          ) : null}
         </div>
       </div>
     </>
+  );
+}
+
+/**
+ * A finished turn's footer under its answer: how long the agent worked, what
+ * it changed, how its checks ended, the agents it ran, and when it answered.
+ * It takes the working row's place at the tail, so a turn ending moves
+ * nothing above it.
+ */
+function AssistantTurnFooter({
+  row,
+  summary,
+}: {
+  row: Extract<TimelineRow, { kind: "message" }>;
+  summary: TurnSummary;
+}) {
+  const { onOpenAgentsPanel, timestampFormat } = use(TimelineRowCtx);
+  const tracker = useTurnAgentTracker(summary.trackerTurnIds, summary.trackerAgentSpawnIds);
+  const parts: Array<{ key: string; node: ReactNode }> = [];
+  if (summary.workedMs !== null && summary.workedMs >= 1_000) {
+    parts.push({
+      key: "worked",
+      node: <span className="shrink-0">Worked for {formatWorkingDuration(summary.workedMs)}</span>,
+    });
+  }
+  if (summary.editedFileCount > 0) {
+    parts.push({
+      key: "edited",
+      node: <span className="shrink-0">edited {pluralize(summary.editedFileCount, "file")}</span>,
+    });
+  }
+  if (summary.checks) {
+    const failed = summary.checks.failed > 0;
+    parts.push({
+      key: "checks",
+      node: (
+        <span
+          className={cn(
+            "shrink-0",
+            failed ? "text-destructive-foreground/85" : "text-success-foreground/75",
+          )}
+          data-turn-footer-checks={failed ? "failed" : "passed"}
+        >
+          {failed ? `${pluralize(summary.checks.failed, "check")} failed` : "checks passed"}
+        </span>
+      ),
+    });
+  }
+  if (tracker.summary && onOpenAgentsPanel) {
+    parts.push({
+      key: "agents",
+      node: (
+        <TurnAgentTrackerButton summary={tracker.summary} onOpen={() => onOpenAgentsPanel(null)} />
+      ),
+    });
+  }
+  parts.push({
+    key: "time",
+    node: (
+      <span className="shrink-0 text-muted-foreground/40">
+        {formatTimestamp(row.message.createdAt, timestampFormat)}
+      </span>
+    ),
+  });
+
+  return (
+    <div
+      className="mt-1.5 flex min-w-0 items-center gap-1.5 text-xs leading-5 text-muted-foreground/60 tabular-nums"
+      data-turn-footer="true"
+    >
+      {parts.map((part, index) => (
+        <Fragment key={part.key}>
+          {index > 0 ? (
+            <span aria-hidden="true" className="shrink-0 text-muted-foreground/35">
+              ·
+            </span>
+          ) : null}
+          {part.node}
+        </Fragment>
+      ))}
+      <span className="ml-1 flex shrink-0 items-center gap-2">
+        {row.message.text.trim().length > 0 ? (
+          <ContinueInNewThreadButton
+            messageId={row.message.id}
+            className="pointer-events-none border-border/50 bg-background/35 text-muted-foreground/45 opacity-0 shadow-none transition-opacity duration-200 hover:border-border/70 hover:bg-background/55 hover:text-muted-foreground/70 group-hover/assistant-message:pointer-events-auto group-hover/assistant-message:opacity-100 group-focus-within/assistant-message:pointer-events-auto group-focus-within/assistant-message:opacity-100"
+          />
+        ) : null}
+        <AssistantCopyButton row={row} />
+      </span>
+    </div>
   );
 }
 
@@ -2697,8 +2722,9 @@ function WorkingTimer({ createdAt }: { createdAt: string }) {
 /**
  * One stretch of the agent's steps between two things it said: the looking
  * around folded into one grey line, the steps worth noticing on lines of their
- * own. Steps still running are left to the working row's live line. The first
- * group of a settled turn also carries the turn's agents, when it ran any.
+ * own. Steps still running are left to the working row's live line. A turn's
+ * agents ride on its answer's footer; a turn that ended without an answer shows
+ * them on its first group instead.
  */
 const WorkGroupSection = memo(function WorkGroupSection({
   row,
@@ -2708,7 +2734,6 @@ const WorkGroupSection = memo(function WorkGroupSection({
   const { workspaceRoot, turnDiffSummaryByTurnId, onOpenAgentsPanel, anchorOwnsLiveAgents } =
     use(TimelineRowCtx);
   const { isWorking } = use(TimelineRowActivityCtx);
-  const inTurnFold = use(TurnFoldCtx);
   const groupedEntries = useMemo(
     () => coalesceFileChangeWorkEntries(row.groupedEntries, turnDiffSummaryByTurnId, workspaceRoot),
     [row.groupedEntries, turnDiffSummaryByTurnId, workspaceRoot],
@@ -2742,7 +2767,6 @@ const WorkGroupSection = memo(function WorkGroupSection({
   const showTracker =
     turnAgentTracker.summary !== null &&
     onOpenAgentsPanel !== null &&
-    !inTurnFold &&
     !(isWorking && row.inActiveExchange);
   const hasSettledSteps = steps.some((step) => !step.running);
 
@@ -2768,93 +2792,6 @@ const WorkGroupSection = memo(function WorkGroupSection({
         <LiveAgentRoster roster={turnAgentTracker.liveRoster} />
       ) : null}
       {hasSettledSteps ? <ActivityGroup steps={steps} renderExtras={renderExtras} /> : null}
-    </div>
-  );
-});
-
-/**
- * A settled turn's work before its answer, folded to one line: how long it
- * took, what it changed, how its checks ended, and the agents it ran. Opening
- * it shows the notes and steps in place, on a hairline rail.
- */
-const TurnFoldRow = memo(function TurnFoldRow({
-  row,
-}: {
-  row: Extract<TimelineRow, { kind: "turn-fold" }>;
-}) {
-  const { onToggleTurnFold, onOpenAgentsPanel } = use(TimelineRowCtx);
-  const summary = useMemo(() => summarizeFoldedTurn(row.rows), [row.rows]);
-  const tracker = useTurnAgentTracker(summary.trackerTurnIds, summary.trackerAgentSpawnIds);
-  const duration = row.workedMs !== null ? formatWorkingDuration(row.workedMs) : null;
-  const editedFileCount = row.turnDiffSummary?.files.length ?? summary.editedFileCount;
-  const separator = <span className="shrink-0 text-muted-foreground/35">·</span>;
-
-  return (
-    <div
-      className="min-w-0 px-1"
-      data-turn-fold="true"
-      data-turn-fold-expanded={row.expanded ? "true" : "false"}
-    >
-      <div className="flex min-w-0 items-center gap-1.5 text-xs leading-5 text-muted-foreground/60">
-        <button
-          type="button"
-          className="flex min-w-0 items-center gap-1.5 text-left transition-colors duration-150 hover:text-muted-foreground/85"
-          aria-expanded={row.expanded}
-          data-turn-fold-toggle="true"
-          onClick={() => onToggleTurnFold(row.id)}
-        >
-          <ChevronRightIcon
-            className={cn(
-              "size-3 shrink-0 text-muted-foreground/45 transition-transform duration-150",
-              row.expanded && "rotate-90",
-            )}
-            aria-hidden="true"
-          />
-          <span className="truncate">{duration ? `Worked for ${duration}` : "Worked on this"}</span>
-          {editedFileCount > 0 ? (
-            <>
-              {separator}
-              <span className="shrink-0">edited {pluralize(editedFileCount, "file")}</span>
-            </>
-          ) : null}
-          {summary.checks ? (
-            <>
-              {separator}
-              <span
-                className={cn(
-                  "shrink-0",
-                  summary.checks.failed > 0
-                    ? "text-destructive-foreground/85"
-                    : "text-success-foreground/75",
-                )}
-                data-turn-fold-checks={summary.checks.failed > 0 ? "failed" : "passed"}
-              >
-                {summary.checks.failed > 0
-                  ? `${pluralize(summary.checks.failed, "check")} failed`
-                  : "checks passed"}
-              </span>
-            </>
-          ) : null}
-        </button>
-        {tracker.summary && onOpenAgentsPanel ? (
-          <>
-            {separator}
-            <TurnAgentTrackerButton
-              summary={tracker.summary}
-              onOpen={() => onOpenAgentsPanel(null)}
-            />
-          </>
-        ) : null}
-      </div>
-      {row.expanded ? (
-        <TurnFoldCtx value={true}>
-          <div className="mt-2 ml-1.5 border-l border-border pl-3" data-turn-fold-story="true">
-            {row.rows.map((inner) => (
-              <TimelineRowContent key={inner.id} row={inner} />
-            ))}
-          </div>
-        </TurnFoldCtx>
-      ) : null}
     </div>
   );
 });
@@ -3801,15 +3738,6 @@ function formatWorkingDuration(elapsedMs: number): string {
 function formatWorkingTimerNow(startIso: string): string {
   const startedAtMs = Date.parse(startIso);
   return Number.isFinite(startedAtMs) ? formatWorkingDuration(Date.now() - startedAtMs) : "0s";
-}
-
-function formatMessageMeta(
-  createdAt: string,
-  duration: string | null,
-  timestampFormat: TimestampFormat,
-): string {
-  if (!duration) return formatTimestamp(createdAt, timestampFormat);
-  return `${formatTimestamp(createdAt, timestampFormat)} • ${duration}`;
 }
 
 function normalizeDiffMatchPath(filePath: string): string {

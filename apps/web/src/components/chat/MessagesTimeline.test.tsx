@@ -1477,10 +1477,9 @@ describe("MessagesTimeline", () => {
       />,
     );
 
-    // The steps stay where they happened, and the turn does not fold while
-    // it works; the working anchor holds the bottom with its dots.
+    // The steps stay where they happened; the working anchor holds the bottom
+    // with its dots.
     expect(markup).toContain('data-work-group="true"');
-    expect(markup).not.toContain('data-turn-fold="true"');
     expect(markup).toContain('data-turn-working-anchor="true"');
     expect(markup).toContain('class="working-dots');
     expect(markup).toContain("The resource probe returned");
@@ -1518,7 +1517,7 @@ describe("MessagesTimeline", () => {
     expect(markup).not.toContain("Get-Content -Path");
   });
 
-  it("folds a finished turn's notes and steps into one line above the answer", async () => {
+  it("keeps a finished turn's notes in place and puts its summary under the answer", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
     const turnId = TurnId.make("turn-1");
     const message = (
@@ -1573,16 +1572,21 @@ describe("MessagesTimeline", () => {
       />,
     );
 
-    expect(markup).toContain('data-turn-fold="true"');
+    // The note and its step stay where they were; the note fades.
+    expect(markup).toContain('data-settled-note="true"');
+    expect(markup).toContain("Typecheck passed");
+    // The footer sits under the answer, where the working row was.
+    const noteAt = markup.indexOf("Checking the two PRs first.");
+    const answerAt = markup.indexOf("Fixed both.");
+    const footerAt = markup.indexOf('data-turn-footer="true"');
+    expect(noteAt).toBeGreaterThan(-1);
+    expect(answerAt).toBeGreaterThan(noteAt);
+    expect(footerAt).toBeGreaterThan(answerAt);
     expect(markup).toContain("Worked for 1m 15s");
-    expect(markup).toContain('data-turn-fold-checks="passed"');
-    // Folded until opened: the note and its steps are not drawn.
-    expect(markup).not.toContain("Checking the two PRs first.");
-    expect(markup).not.toContain("Typecheck passed");
-    expect(markup).toContain("Fixed both.");
+    expect(markup).toContain('data-turn-footer-checks="passed"');
   });
 
-  it("keeps the time line off progress notes while the agent works", async () => {
+  it("keeps the footer and the fade off notes while the agent works", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
     const turnId = TurnId.make("turn-1");
     const markup = renderTimeline(
@@ -1612,7 +1616,8 @@ describe("MessagesTimeline", () => {
     );
 
     expect(markup).toContain("Checking the two PRs first.");
-    expect(markup).not.toContain("tabular-nums text-muted-foreground/30");
+    expect(markup).not.toContain('data-turn-footer="true"');
+    expect(markup).not.toContain('data-settled-note="true"');
   });
 
   it("renders assistant turn changes as a collapsed tree by default", async () => {

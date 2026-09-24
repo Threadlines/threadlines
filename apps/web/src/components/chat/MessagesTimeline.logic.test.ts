@@ -3,170 +3,9 @@ import { EventId, type OrchestrationThreadActivity } from "@threadlines/contract
 import { deriveWorkLogEntries, type WorkLogEntry } from "../../session-logic";
 import {
   computeStableMessagesTimelineRows,
-  computeMessageDurationStart,
   deriveMessagesTimelineRows,
   resolveAssistantMessageCopyState,
-  summarizeFoldedTurn,
 } from "./MessagesTimeline.logic";
-
-describe("computeMessageDurationStart", () => {
-  it("returns message createdAt when there is no preceding user message", () => {
-    const result = computeMessageDurationStart([
-      {
-        id: "a1",
-        role: "assistant",
-        createdAt: "2026-01-01T00:00:05Z",
-        completedAt: "2026-01-01T00:00:10Z",
-      },
-    ]);
-    expect(result).toEqual(new Map([["a1", "2026-01-01T00:00:05Z"]]));
-  });
-
-  it("uses the user message createdAt for the first assistant response", () => {
-    const result = computeMessageDurationStart([
-      { id: "u1", role: "user", createdAt: "2026-01-01T00:00:00Z" },
-      {
-        id: "a1",
-        role: "assistant",
-        createdAt: "2026-01-01T00:00:30Z",
-        completedAt: "2026-01-01T00:00:30Z",
-      },
-    ]);
-
-    expect(result).toEqual(
-      new Map([
-        ["u1", "2026-01-01T00:00:00Z"],
-        ["a1", "2026-01-01T00:00:00Z"],
-      ]),
-    );
-  });
-
-  it("times a retried reply from the retry, not from the reply before it", () => {
-    // The first turn failed; the user pressed Retry 18 minutes later. Retry
-    // sends no new user message, only a turn request.
-    const result = computeMessageDurationStart(
-      [
-        { id: "u1", role: "user", createdAt: "2026-01-01T00:44:42Z" },
-        {
-          id: "a1",
-          role: "assistant",
-          createdAt: "2026-01-01T00:44:48Z",
-          completedAt: "2026-01-01T00:44:48Z",
-        },
-        {
-          id: "a2",
-          role: "assistant",
-          createdAt: "2026-01-01T01:02:53Z",
-          completedAt: "2026-01-01T01:02:54Z",
-        },
-      ],
-      ["2026-01-01T00:44:42Z", "2026-01-01T01:02:46Z"],
-    );
-
-    expect(result.get("a1")).toBe("2026-01-01T00:44:42Z");
-    expect(result.get("a2")).toBe("2026-01-01T01:02:46Z");
-  });
-
-  it("uses the previous assistant completedAt for subsequent assistant responses", () => {
-    const result = computeMessageDurationStart([
-      { id: "u1", role: "user", createdAt: "2026-01-01T00:00:00Z" },
-      {
-        id: "a1",
-        role: "assistant",
-        createdAt: "2026-01-01T00:00:30Z",
-        completedAt: "2026-01-01T00:00:30Z",
-      },
-      {
-        id: "a2",
-        role: "assistant",
-        createdAt: "2026-01-01T00:00:55Z",
-        completedAt: "2026-01-01T00:00:55Z",
-      },
-    ]);
-
-    expect(result).toEqual(
-      new Map([
-        ["u1", "2026-01-01T00:00:00Z"],
-        ["a1", "2026-01-01T00:00:00Z"],
-        ["a2", "2026-01-01T00:00:30Z"],
-      ]),
-    );
-  });
-
-  it("does not advance the boundary for a streaming message without completedAt", () => {
-    const result = computeMessageDurationStart([
-      { id: "u1", role: "user", createdAt: "2026-01-01T00:00:00Z" },
-      { id: "a1", role: "assistant", createdAt: "2026-01-01T00:00:30Z" },
-      {
-        id: "a2",
-        role: "assistant",
-        createdAt: "2026-01-01T00:00:55Z",
-        completedAt: "2026-01-01T00:00:55Z",
-      },
-    ]);
-
-    expect(result).toEqual(
-      new Map([
-        ["u1", "2026-01-01T00:00:00Z"],
-        ["a1", "2026-01-01T00:00:00Z"],
-        ["a2", "2026-01-01T00:00:00Z"],
-      ]),
-    );
-  });
-
-  it("resets the boundary on a new user message", () => {
-    const result = computeMessageDurationStart([
-      { id: "u1", role: "user", createdAt: "2026-01-01T00:00:00Z" },
-      {
-        id: "a1",
-        role: "assistant",
-        createdAt: "2026-01-01T00:00:30Z",
-        completedAt: "2026-01-01T00:00:30Z",
-      },
-      { id: "u2", role: "user", createdAt: "2026-01-01T00:01:00Z" },
-      {
-        id: "a2",
-        role: "assistant",
-        createdAt: "2026-01-01T00:01:20Z",
-        completedAt: "2026-01-01T00:01:20Z",
-      },
-    ]);
-
-    expect(result).toEqual(
-      new Map([
-        ["u1", "2026-01-01T00:00:00Z"],
-        ["a1", "2026-01-01T00:00:00Z"],
-        ["u2", "2026-01-01T00:01:00Z"],
-        ["a2", "2026-01-01T00:01:00Z"],
-      ]),
-    );
-  });
-
-  it("handles system messages without affecting the boundary", () => {
-    const result = computeMessageDurationStart([
-      { id: "u1", role: "user", createdAt: "2026-01-01T00:00:00Z" },
-      { id: "s1", role: "system", createdAt: "2026-01-01T00:00:01Z" },
-      {
-        id: "a1",
-        role: "assistant",
-        createdAt: "2026-01-01T00:00:30Z",
-        completedAt: "2026-01-01T00:00:30Z",
-      },
-    ]);
-
-    expect(result).toEqual(
-      new Map([
-        ["u1", "2026-01-01T00:00:00Z"],
-        ["s1", "2026-01-01T00:00:00Z"],
-        ["a1", "2026-01-01T00:00:00Z"],
-      ]),
-    );
-  });
-
-  it("returns empty map for empty input", () => {
-    expect(computeMessageDurationStart([])).toEqual(new Map());
-  });
-});
 
 describe("resolveAssistantMessageCopyState", () => {
   it("returns enabled copy state for completed assistant messages", () => {
@@ -482,14 +321,10 @@ describe("deriveMessagesTimelineRows", () => {
       revertTurnCountByUserMessageId: new Map(),
     });
 
-    expect(rows.map((row) => row.kind)).toEqual(["message", "turn-fold", "message"]);
-    const [, fold, answer] = rows;
-    const note = fold?.kind === "turn-fold" ? fold.rows[0] : undefined;
+    expect(rows.map((row) => row.kind)).toEqual(["message", "message", "message"]);
+    const [, note, answer] = rows;
     expect(note?.kind === "message" && note.showAssistantCopyButton).toBe(false);
     expect(answer?.kind === "message" && answer.showAssistantCopyButton).toBe(true);
-    // The fold line says how long the turn took, so the answer's own line
-    // keeps only its time.
-    expect(answer?.kind === "message" && answer.hideMetaDuration).toBe(true);
   });
 
   it("moves settled-turn work that trails the response above the assistant message", () => {
@@ -1062,7 +897,7 @@ describe("deriveMessagesTimelineRows", () => {
   });
 });
 
-describe("turn folds and the live step", () => {
+describe("finished turns and the live step", () => {
   const userEntry = (id: string, createdAt: string) => ({
     id: `${id}-entry`,
     kind: "message" as const,
@@ -1076,7 +911,12 @@ describe("turn folds and the live step", () => {
       streaming: false,
     },
   });
-  const assistantEntry = (id: string, createdAt: string, completedAt?: string) => ({
+  const assistantEntry = (
+    id: string,
+    createdAt: string,
+    completedAt?: string,
+    turnId = "turn-1",
+  ) => ({
     id: `${id}-entry`,
     kind: "message" as const,
     createdAt,
@@ -1084,7 +924,7 @@ describe("turn folds and the live step", () => {
       id: id as never,
       role: "assistant" as const,
       text: id,
-      turnId: "turn-1" as never,
+      turnId: turnId as never,
       createdAt,
       ...(completedAt ? { completedAt } : {}),
       streaming: false,
@@ -1124,17 +964,26 @@ describe("turn folds and the live step", () => {
       revertTurnCountByUserMessageId: new Map(),
       ...overrides,
     });
+  const messageRow = (rows: ReturnType<typeof derive>, id: string) => {
+    const row = rows.find((candidate) => candidate.id === `${id}-entry`);
+    return row?.kind === "message" ? row : undefined;
+  };
 
-  it("folds a settled turn's notes and steps into one line above the answer", () => {
+  it("keeps a finished turn's story in place and puts the footer on its answer", () => {
     const rows = derive(settledTurn);
 
-    expect(rows.map((row) => row.kind)).toEqual(["message", "turn-fold", "message"]);
-    const fold = rows[1];
-    expect(fold).toMatchObject({ kind: "turn-fold", expanded: false, workedMs: 75_000 });
-    expect(fold?.kind === "turn-fold" ? fold.rows.map((row) => row.id) : []).toEqual([
+    // Nothing folds: the note and the step stay where they were.
+    expect(rows.map((row) => row.id)).toEqual([
+      "user-1-entry",
       "note-entry",
       "read",
+      "answer-entry",
     ]);
+    expect(messageRow(rows, "note")).toMatchObject({ settledNote: true, turnSummary: null });
+    expect(messageRow(rows, "answer")).toMatchObject({
+      settledNote: false,
+      turnSummary: { workedMs: 75_000 },
+    });
   });
 
   it("counts a retried turn's work, not the wait before the retry", () => {
@@ -1155,30 +1004,52 @@ describe("turn folds and the live step", () => {
     ]);
 
     // 6s for the failed attempt and 8s for the retry.
-    expect(rows.find((row) => row.kind === "turn-fold")).toMatchObject({ workedMs: 14_000 });
+    expect(messageRow(rows, "answer")?.turnSummary).toMatchObject({ workedMs: 14_000 });
   });
 
-  it("opens a fold the reader opened, or the one holding a search result", () => {
-    const opened = derive(settledTurn, {
-      expandedTurnFoldIds: new Set(["turn-fold:user-1-entry"]),
-    });
-    const searched = derive(settledTurn, { revealMessageId: "note" as never });
-
-    expect(opened[1]).toMatchObject({ kind: "turn-fold", expanded: true });
-    expect(searched[1]).toMatchObject({ kind: "turn-fold", expanded: true });
-  });
-
-  it("leaves the turn in flight and a turn without an answer open", () => {
-    const inFlight = derive(settledTurn.slice(0, 3), {
+  it("keeps an earlier turn's footer while a later turn runs, and times each turn on its own", () => {
+    // A background task woke the thread 20 minutes after the first answer,
+    // without a new user message.
+    const entries = [
+      userEntry("user-1", "2026-01-01T00:00:00Z"),
+      assistantEntry("answer-1", "2026-01-01T00:00:30Z", "2026-01-01T00:00:40Z", "turn-1"),
+      workEntry("read-2", "2026-01-01T00:20:40Z", { turnId: "turn-2" as never }),
+      assistantEntry("answer-2", "2026-01-01T00:21:00Z", "2026-01-01T00:21:10Z", "turn-2"),
+    ];
+    const running = derive(entries.slice(0, 3), {
       isWorking: true,
+      activeTurnInProgress: true,
+      activeTurnId: "turn-2" as never,
+      activeTurnStartedAt: "2026-01-01T00:20:40Z",
+    });
+    const settled = derive(entries);
+
+    expect(messageRow(running, "answer-1")?.turnSummary).toMatchObject({ workedMs: 40_000 });
+    expect(messageRow(settled, "answer-1")?.turnSummary).toMatchObject({ workedMs: 40_000 });
+    // From the wake-up's first step, not from the first answer.
+    expect(messageRow(settled, "answer-2")?.turnSummary).toMatchObject({ workedMs: 30_000 });
+  });
+
+  it("leaves the turn in flight alone, and a turn with no answer keeps its tracker", () => {
+    const inFlight = derive(settledTurn, {
+      isWorking: true,
+      activeTurnInProgress: true,
       activeTurnId: "turn-1" as never,
       activeTurnStartedAt: "2026-01-01T00:00:00Z",
     });
-    // Stopped before the agent said anything: there is no answer to fold above.
+    const settled = derive(settledTurn);
+    // Stopped before the agent said anything: there is no answer for a footer.
     const stopped = derive([settledTurn[0]!, settledTurn[2]!]);
+    const trackerOf = (rows: ReturnType<typeof derive>) =>
+      rows.find((row) => row.kind === "work")?.trackerTurnIds;
 
-    expect(inFlight.map((row) => row.kind)).toEqual(["message", "message", "work", "working"]);
-    expect(stopped.map((row) => row.kind)).toEqual(["message", "work"]);
+    expect(messageRow(inFlight, "note")).toMatchObject({ settledNote: false, turnSummary: null });
+    expect(messageRow(inFlight, "answer")).toMatchObject({ turnSummary: null });
+    expect(inFlight.at(-1)?.kind).toBe("working");
+    // Once the turn ends, its agents ride on the answer's footer instead.
+    expect(trackerOf(settled)).toEqual([]);
+    expect(messageRow(settled, "answer")?.turnSummary?.trackerTurnIds).toEqual(["turn-1"]);
+    expect(trackerOf(stopped)).toEqual(["turn-1"]);
   });
 
   it("names the step running right now on the working row", () => {
@@ -1203,7 +1074,7 @@ describe("turn folds and the live step", () => {
     expect(thinking.at(-1)).toMatchObject({ kind: "working", label: "Waiting for approval" });
   });
 
-  it("sums up a folded turn's edits and the latest result of each check", () => {
+  it("sums up a finished turn's edits and the latest result of each check", () => {
     const command = (id: string, executionState: "completed" | "failed") =>
       workEntry(id, "2026-01-01T00:00:10Z", {
         label: "Ran command",
@@ -1221,9 +1092,8 @@ describe("turn folds and the live step", () => {
       command("typecheck-2", "completed"),
       assistantEntry("answer", "2026-01-01T00:01:00Z"),
     ]);
-    const fold = rows.find((row) => row.kind === "turn-fold");
 
-    expect(fold?.kind === "turn-fold" ? summarizeFoldedTurn(fold.rows) : null).toMatchObject({
+    expect(messageRow(rows, "answer")?.turnSummary).toMatchObject({
       editedFileCount: 2,
       checks: { passed: 1, failed: 0 },
     });
