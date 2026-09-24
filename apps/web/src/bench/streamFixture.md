@@ -1,6 +1,6 @@
 # Streaming renderer benchmark reply
 
-This is a **long assistant reply** used to measure how the chat renders text while it streams. It mixes paragraphs, inline `code`, lists, tables, and fenced code blocks so every renderer path gets exercised. The exact words do not matter; the shape of the document does.
+This is a **long assistant reply** used to measure how the chat renders text while it streams. It mixes paragraphs, inline `code`, lists, tables, and fenced code blocks so every renderer path gets exercised. The exact words do not matter; the shape of the document does. Real replies are full of em dashes — like this one — and “curly quotes”, which make the browser store the whole reply two bytes per character, so this one has them too.
 
 ## What the change does
 

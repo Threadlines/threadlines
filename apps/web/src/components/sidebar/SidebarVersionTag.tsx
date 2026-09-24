@@ -1,5 +1,4 @@
 import { useCallback, useRef } from "react";
-import { CheckIcon, DownloadIcon, RotateCwIcon } from "lucide-react";
 import type { DesktopUpdateState } from "@threadlines/contracts";
 
 import { APP_BUILD_CHANNEL_LABEL, APP_VERSION } from "../../branding";
@@ -16,47 +15,40 @@ import {
 import { Button } from "../ui/button";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import {
-  UPDATE_STATUS_SURFACE_STYLES,
+  UPDATE_STATUS_DOT_STYLES,
   UPDATE_STATUS_TEXT_STYLES,
   UpdateProgressRail,
+  type UpdateStatusTone,
 } from "./updateStatusVisuals";
 import { cn } from "~/lib/utils";
 
-const VERSION_TAG_TONE_STYLES: Record<SidebarDesktopUpdateTagTone, string> = {
-  idle: "border-transparent bg-transparent text-muted-foreground/40 hover:text-muted-foreground/70",
-  available: cn(UPDATE_STATUS_SURFACE_STYLES.progress, UPDATE_STATUS_TEXT_STYLES.progress),
-  downloading: cn(UPDATE_STATUS_SURFACE_STYLES.progress, UPDATE_STATUS_TEXT_STYLES.progress),
-  downloaded: cn(UPDATE_STATUS_SURFACE_STYLES.success, UPDATE_STATUS_TEXT_STYLES.success),
-  error: cn(UPDATE_STATUS_SURFACE_STYLES.error, UPDATE_STATUS_TEXT_STYLES.error),
+const VERSION_TAG_STATUS_TONES: Record<
+  Exclude<SidebarDesktopUpdateTagTone, "idle">,
+  UpdateStatusTone
+> = {
+  available: "progress",
+  downloading: "progress",
+  downloaded: "success",
+  error: "error",
 };
 
-function getUpdateIcon(tone: SidebarDesktopUpdateTagTone) {
-  if (tone === "downloaded") return CheckIcon;
-  if (tone === "error") return RotateCwIcon;
-  if (tone === "available" || tone === "downloading") return DownloadIcon;
-  return null;
-}
-
-function getCardActionLabel(state: DesktopUpdateState | null, actionKind: DesktopUpdateActionKind) {
-  if (actionKind === "install") return "Restart";
-  if (actionKind === "download") return state?.status === "error" ? "Retry" : "Download";
-  return "Check";
-}
-
-function getCardActionAriaLabel(actionKind: DesktopUpdateActionKind) {
-  if (actionKind === "check") return "Check now";
-  if (actionKind === "download") return "Download update";
-  if (actionKind === "install") return "Restart to install";
-  return undefined;
-}
+// Flat text, no chip surface: tone lives in the text color and the dot.
+// Progress text stays neutral while downloading; the dot keeps the blue.
+const VERSION_TAG_TONE_STYLES: Record<SidebarDesktopUpdateTagTone, string> = {
+  idle: "font-mono font-normal text-muted-foreground/40 hover:text-muted-foreground/70",
+  available: UPDATE_STATUS_TEXT_STYLES.progress,
+  downloading: "tabular-nums text-muted-foreground",
+  downloaded: UPDATE_STATUS_TEXT_STYLES.success,
+  error: UPDATE_STATUS_TEXT_STYLES.error,
+};
 
 /**
  * Build/updater details behind the sidebar version chip. The header states
  * the installed build channel over the full version; the footer strip
- * carries updater status text beside the single adaptive action — the only
- * button-shaped element on the card, so the affordance is unambiguous. A
- * browser session shows just the header; a fixed footer height keeps the
- * card footprint stable across updater states.
+ * carries the updater status line. Pending download/install/retry actions
+ * live on the chip itself, so the card's only button is Check — the one
+ * action the chip can't run. A browser session shows just the header; a
+ * fixed footer height keeps the card footprint stable across updater states.
  */
 function SidebarVersionCard({
   state,
@@ -83,21 +75,7 @@ function SidebarVersionCard({
   const statusText = statusLine?.text ?? (showUpdaterControls ? checkedLabel : null);
   // While a check is in flight the action kind resolves to "none"; keep the
   // (disabled) Check button mounted so the footer never reflows.
-  const showAction = showUpdaterControls && (actionKind !== "none" || isCheckingForUpdate);
-  // Pending-update actions (download/install/retry) get the primary button;
-  // a routine check stays as the quiet outline. Beside a primary button the
-  // progress-blue status text is redundant (same hue, same message) and
-  // drops to neutral; success green and error red stay — they carry state
-  // the button color doesn't, and keep the card in tune with the chip.
-  const actionIsPrimary = actionKind === "download" || actionKind === "install";
-  const statusToneClass =
-    statusLine && (!actionIsPrimary || statusLine.tone !== "progress")
-      ? UPDATE_STATUS_TEXT_STYLES[statusLine.tone]
-      : "text-muted-foreground/70";
-  const downloadPercent =
-    state?.status === "downloading" && typeof state.downloadPercent === "number"
-      ? state.downloadPercent
-      : null;
+  const showCheck = showUpdaterControls && (actionKind === "check" || isCheckingForUpdate);
 
   return (
     // The version header alone sets the card width: the footer's inner row is
@@ -119,35 +97,31 @@ function SidebarVersionCard({
           v{APP_VERSION}
         </code>
       </div>
-      {statusText !== null || showAction ? (
+      {statusText !== null || showCheck ? (
         <div className="-mx-2 -mb-1 rounded-b-[calc(var(--radius-md)-1px)] border-t border-border/60 bg-muted/30">
           <div className="flex h-7 w-0 min-w-full items-center gap-2 px-3">
-            {/* Action sits bottom-left: the popup opens above the chip, so the
+            {/* Check sits bottom-left: the popup opens above the chip, so the
                 cursor only travels straight up from the hover target. */}
-            {showAction ? (
+            {showCheck ? (
               <Button
-                aria-label={getCardActionAriaLabel(actionKind)}
+                aria-label="Check now"
                 className="h-5 min-w-14 shrink-0 rounded-sm px-2 text-[10px] leading-none sm:h-5 sm:text-[10px]"
                 disabled={actionDisabled || isCheckingForUpdate}
                 onClick={onAction}
                 size="xs"
-                variant={actionIsPrimary ? "default" : "outline"}
+                variant="outline"
               >
-                {getCardActionLabel(state, actionKind)}
+                Check
               </Button>
-            ) : isDownloadingUpdate ? (
-              <UpdateProgressRail
-                className="w-12 shrink-0"
-                indeterminate={downloadPercent === null}
-                percent={downloadPercent ?? 0}
-                tone="progress"
-              />
             ) : null}
             <p
               aria-live={isCheckingForUpdate || isDownloadingUpdate ? "polite" : undefined}
               className={cn(
-                "min-w-0 flex-1 truncate text-right text-[10px] leading-4",
-                statusToneClass,
+                "min-w-0 flex-1 truncate text-[10px] leading-4",
+                showCheck ? "text-right" : "text-left",
+                statusLine
+                  ? UPDATE_STATUS_TEXT_STYLES[statusLine.tone]
+                  : "text-muted-foreground/70",
               )}
               role={isCheckingForUpdate || isDownloadingUpdate ? "status" : undefined}
               title={statusText ?? undefined}
@@ -162,10 +136,13 @@ function SidebarVersionCard({
 }
 
 /**
- * Faded compact version chip for sidebar footers. During app updates it shows
- * the incoming version with the pending action (download / progress /
- * restart) using the shared updater tones. Hovering reveals a build-details
- * card; clicking pins the card open so its update action can be used.
+ * Sidebar footer version slot. Idle it shows the faded running version;
+ * when the updater has work it becomes a dot plus one word ("Update",
+ * "Restart", "Retry") and clicking runs that action directly — download is
+ * one click, restart still goes through the install confirmation. While a
+ * download runs the word is the percent, over a progress rail. Hovering
+ * reveals the build-details card; with no action pending, clicking pins the
+ * card so its "Check" button is usable.
  */
 export function SidebarVersionTag() {
   // No isElectron gate here: the update-state cache is only ever populated
@@ -195,78 +172,59 @@ export function SidebarVersionTag() {
     [],
   );
   const presentation = getSidebarDesktopUpdateTagPresentation(state, APP_VERSION);
-  const hasKnownDownloadProgress =
-    presentation.tone === "downloading" && presentation.indicatorLabel !== null;
-  const showDownloadProgressRail = presentation.tone === "downloading";
-  const Icon = hasKnownDownloadProgress ? null : getUpdateIcon(presentation.tone);
-
-  const tagClassName = cn(
-    // h-7 matches the size="sm" footer buttons so both texts center within
-    // the same box height instead of drifting apart.
-    "relative inline-flex h-7 w-[4.25rem] shrink-0 cursor-pointer items-center justify-center overflow-hidden rounded-md border px-1.5 text-[9px] font-medium leading-none tracking-tight tabular-nums transition-[background-color,border-color,color,box-shadow,opacity] duration-300 hover:bg-current/10",
-    hasKnownDownloadProgress && "w-[4.75rem]",
-    VERSION_TAG_TONE_STYLES[presentation.tone],
-  );
-
-  const contents = (
-    <>
-      {showDownloadProgressRail ? (
-        <UpdateProgressRail
-          className="absolute inset-x-1 bottom-1 w-auto"
-          indeterminate={!hasKnownDownloadProgress}
-          percent={presentation.progressPercent}
-          tone="progress"
-        />
-      ) : null}
-      <span
-        className={cn(
-          "relative z-10 inline-flex min-w-0 items-center justify-center gap-1",
-          presentation.tone === "downloading" &&
-            !hasKnownDownloadProgress &&
-            "motion-safe:animate-status-pulse",
-        )}
-      >
-        <span className="min-w-0 truncate">{presentation.label}</span>
-        {Icon ? (
-          <Icon
-            className={cn(
-              "shrink-0 -translate-y-px",
-              presentation.tone === "error" ? "size-2.5" : "size-3",
-              (presentation.tone === "available" ||
-                (presentation.tone === "downloading" && !hasKnownDownloadProgress)) &&
-                "motion-safe:animate-status-pulse",
-            )}
-          />
-        ) : null}
-        {presentation.indicatorLabel ? (
-          <span className="shrink-0 translate-y-[-0.5px] text-[8px] font-semibold">
-            {presentation.indicatorLabel}
-          </span>
-        ) : null}
-      </span>
-    </>
-  );
-  const ariaLabel =
-    presentation.tone === "idle"
-      ? `${APP_BUILD_CHANNEL_LABEL} · Version ${APP_VERSION}`
-      : presentation.tooltip;
+  const runsActionOnClick = presentation.action !== "none" && !presentation.disabled;
+  const isIdle = presentation.tone === "idle";
+  const ariaLabel = isIdle
+    ? `${APP_BUILD_CHANNEL_LABEL} · Version ${APP_VERSION}`
+    : presentation.tooltip;
 
   return (
     <Popover onOpenChange={handleOpenChange}>
       <PopoverTrigger
         closeDelay={100}
         delay={250}
+        onClick={(event) => {
+          if (!runsActionOnClick) return;
+          // Skip the popover's click toggle: the click is the action itself.
+          event.preventBaseUIHandler();
+          run();
+        }}
         openOnHover
         render={
           <button
             aria-label={ariaLabel}
-            className={tagClassName}
+            className={cn(
+              // h-7 matches the size="sm" footer buttons so both texts center
+              // within the same box height.
+              "relative inline-flex h-7 shrink-0 cursor-pointer items-center justify-center gap-1.5 rounded-md px-2 text-[11px] leading-none font-medium whitespace-nowrap transition-colors hover:bg-accent",
+              // One shared width across Update → progress → Restart so the
+              // slot reads as one control changing its word, not resizing.
+              !isIdle && "min-w-[4.5rem]",
+              VERSION_TAG_TONE_STYLES[presentation.tone],
+            )}
             data-testid="sidebar-version-chip"
             type="button"
           />
         }
       >
-        {contents}
+        {presentation.tone === "idle" ? null : (
+          <span
+            aria-hidden="true"
+            className={cn(
+              "size-1.5 shrink-0 rounded-full",
+              UPDATE_STATUS_DOT_STYLES[VERSION_TAG_STATUS_TONES[presentation.tone]],
+            )}
+          />
+        )}
+        {presentation.label}
+        {presentation.tone === "downloading" ? (
+          <UpdateProgressRail
+            className="absolute inset-x-2 bottom-1 w-auto"
+            indeterminate={typeof state?.downloadPercent !== "number"}
+            percent={presentation.progressPercent}
+            tone="progress"
+          />
+        ) : null}
       </PopoverTrigger>
       <PopoverPopup align="end" side="top" tooltipStyle>
         <SidebarVersionCard

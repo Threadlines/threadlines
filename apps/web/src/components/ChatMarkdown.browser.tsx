@@ -85,12 +85,19 @@ function renderWithQueryClient(ui: ReactElement) {
   });
 }
 
-function installReadFileEnvironment(readFile: EnvironmentApi["projects"]["readFile"]) {
+function installReadFileEnvironment(
+  readFile: EnvironmentApi["projects"]["readFile"],
+  searchEntries?: EnvironmentApi["projects"]["searchEntries"],
+) {
   __setEnvironmentApiOverrideForTests(CHAT_MARKDOWN_ENVIRONMENT_ID, {
     filesystem: { browse: filesystemBrowseMock },
-    projects: { readFile },
+    projects: { readFile, searchEntries },
   } as unknown as EnvironmentApi);
 }
+
+/** A 1x1 PNG, for reads that should come back as a picture. */
+const PIXEL_PNG_BASE64 =
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=";
 
 function installFilesystemBrowseEnvironment() {
   __setEnvironmentApiOverrideForTests(CHAT_MARKDOWN_ENVIRONMENT_ID, {
@@ -753,13 +760,11 @@ describe("ChatMarkdown", () => {
   });
 
   it("shows a picture for an image path an agent wrote in prose", async () => {
-    const pixelBase64 =
-      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=";
     const readFile = vi.fn(async (_input: { cwd: string; relativePath: string }) => ({
       kind: "image" as const,
       relativePath: "../Temp/shot.png",
       mimeType: "image/png",
-      base64: pixelBase64,
+      base64: PIXEL_PNG_BASE64,
       size: 70,
     }));
     installReadFileEnvironment(readFile as unknown as EnvironmentApi["projects"]["readFile"]);
@@ -777,7 +782,7 @@ describe("ChatMarkdown", () => {
       await expect.element(thumbnail).toBeInTheDocument();
       await expect
         .element(thumbnail)
-        .toHaveAttribute("src", `data:image/png;base64,${pixelBase64}`);
+        .toHaveAttribute("src", `data:image/png;base64,${PIXEL_PNG_BASE64}`);
       // The chip stays under the picture and still opens the file.
       await expect.element(page.getByRole("link", { name: "shot.png" })).toBeInTheDocument();
       expect(readFile.mock.calls[0]?.[0]).toEqual({
@@ -805,13 +810,138 @@ describe("ChatMarkdown", () => {
     );
 
     try {
-      await expect.element(page.getByRole("link", { name: "before" })).toBeInTheDocument();
-      await vi.waitFor(() => {
-        expect(readFile).toHaveBeenCalled();
-      });
-      // Only the chip's file-type glyph; no thumbnail and no error box.
+      const chip = page.getByRole("link", { name: "before" });
+      await expect.element(chip).toBeInTheDocument();
+      // The chip says the file is gone; no thumbnail and no error box.
+      await expect.element(chip, { timeout: 5_000 }).toHaveAttribute("data-missing");
+      expect(readFile).toHaveBeenCalled();
       expect(document.querySelector('img[alt="before"]')).toBeNull();
       expect(document.querySelector('button[aria-label="Preview before"]')).toBeNull();
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("keeps a sentence whole and dims its chips when the images it names are nowhere", async () => {
+    // The agent named its screenshots but not the folder outside the project
+    // it saved them to: the search turns up only a lookalike, the root nothing.
+    const searchEntries = vi.fn(async () => ({
+      entries: [{ path: "apps/web/public/left-arrow.png", kind: "file" as const }],
+      truncated: false,
+    }));
+    const readFile = vi.fn(async (input: { cwd: string; relativePath: string }) => ({
+      kind: "missing" as const,
+      relativePath: input.relativePath,
+    }));
+    installReadFileEnvironment(
+      readFile as unknown as EnvironmentApi["projects"]["readFile"],
+      searchEntries as unknown as EnvironmentApi["projects"]["searchEntries"],
+    );
+
+    const screen = await renderWithQueryClient(
+      <div style={{ width: 900 }}>
+        <ChatMarkdown
+          text="Cut into `1-left.png`, `2-right.png`, then `3-bottom.png`, in that order."
+          cwd="/repo/project"
+          environmentId={CHAT_MARKDOWN_ENVIRONMENT_ID}
+        />
+      </div>,
+    );
+
+    try {
+      await vi.waitFor(
+        () => {
+          expect(document.querySelectorAll("a.chat-markdown-file-link[data-missing]")).toHaveLength(
+            3,
+          );
+        },
+        { timeout: 5_000 },
+      );
+      expect(readFile.mock.calls.map(([input]) => input.relativePath).toSorted()).toEqual([
+        "1-left.png",
+        "2-right.png",
+        "3-bottom.png",
+      ]);
+      // With no pictures to show, the chips stay on the sentence's one line.
+      const chipTops = [...document.querySelectorAll("a.chat-markdown-file-link")].map(
+        (chip) => chip.getBoundingClientRect().top,
+      );
+      expect(new Set(chipTops).size).toBe(1);
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("finds an image cited by bare name wherever the project keeps it", async () => {
+    const cwd = "/repo/project";
+    setActiveFileViewerContext({
+      environmentId: CHAT_MARKDOWN_ENVIRONMENT_ID,
+      cwd,
+      threadRef: CHAT_MARKDOWN_THREAD_REF,
+    });
+    // Search order puts a fuzzy lookalike first; only the exact name counts.
+    const searchEntries = vi.fn(async () => ({
+      entries: [
+        { path: "docs/home-old.png", kind: "file" as const },
+        { path: "docs/shots/home.png", kind: "file" as const },
+      ],
+      truncated: false,
+    }));
+    const readFile = vi.fn(async (input: { cwd: string; relativePath: string }) => ({
+      kind: "image" as const,
+      relativePath: input.relativePath,
+      mimeType: "image/png",
+      base64: PIXEL_PNG_BASE64,
+      size: 70,
+    }));
+    installReadFileEnvironment(
+      readFile as unknown as EnvironmentApi["projects"]["readFile"],
+      searchEntries as unknown as EnvironmentApi["projects"]["searchEntries"],
+    );
+
+    const screen = await renderWithQueryClient(
+      <ChatMarkdown
+        text="The new layout is in `home.png`."
+        cwd={cwd}
+        environmentId={CHAT_MARKDOWN_ENVIRONMENT_ID}
+      />,
+    );
+
+    try {
+      await expect
+        .element(page.getByRole("img", { name: "home.png" }), { timeout: 5_000 })
+        .toBeInTheDocument();
+      expect(readFile.mock.calls.map(([input]) => input.relativePath)).toEqual([
+        "docs/shots/home.png",
+      ]);
+
+      // Placed, the chip opens that file itself instead of searching again.
+      await page.getByRole("link", { name: "home.png" }).click();
+      await vi.waitFor(() => {
+        expect(useFileViewerStore.getState().activePath).toBe("docs/shots/home.png");
+      });
+      expect(searchEntries).toHaveBeenCalledTimes(1);
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("turns an absolute path in inline code into a chip that opens like a link", async () => {
+    const cwd = "C:/Users/wilfr/OneDrive/Desktop/GitHubCode/badcode";
+    const filePath = String.raw`C:\Users\wilfr\OneDrive\Desktop\Threadlines X posts\split-app\README.txt`;
+    const screen = await render(<ChatMarkdown text={`Notes are in \`${filePath}\`.`} cwd={cwd} />);
+
+    try {
+      const chip = page.getByRole("link", { name: "README.txt" });
+      await expect.element(chip).toHaveAttribute("href", toMarkdownFileUrlHref(filePath));
+      await expect.element(chip).toHaveAttribute("data-workspace-scope", "external");
+
+      // Outside the project and not a picture, so it goes to the editor, the
+      // same as a markdown link to it would.
+      await chip.click();
+      await vi.waitFor(() => {
+        expect(openInPreferredEditorMock.mock.calls[0]?.[1]).toBe(filePath);
+      });
     } finally {
       await screen.unmount();
     }

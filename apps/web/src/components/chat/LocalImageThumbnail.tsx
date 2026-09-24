@@ -1,8 +1,6 @@
-import type { EnvironmentId } from "@threadlines/contracts";
 import { memo } from "react";
 
 import { openFileInActiveViewer } from "../../fileViewerStore";
-import { useLocalImagePreview } from "../../hooks/useLocalImagePreview";
 import { cn } from "../../lib/utils";
 import { openExpandedImagePreview } from "./ExpandedImagePreview";
 
@@ -11,8 +9,8 @@ const THUMBNAIL_BUTTON_CLASS_NAME =
   "block max-w-[420px] cursor-zoom-in overflow-hidden rounded-lg border border-border/80 bg-background/70";
 
 interface LocalImageThumbnailProps {
-  readonly environmentId: EnvironmentId | undefined;
-  readonly cwd: string | undefined;
+  /** The image's bytes, as loaded by `useLocalImagePreview`. */
+  readonly dataUrl: string;
   /** Absolute or workspace-relative path to the image on the agent's machine. */
   readonly filePath: string;
   /** Alt text and the caption in the expanded viewer. */
@@ -21,26 +19,16 @@ interface LocalImageThumbnailProps {
 }
 
 /**
- * A picture for a path an agent referred to, or nothing at all.
- *
- * Renders nothing while the bytes are in flight and nothing when they never
- * arrive, so a reference whose file is gone reads exactly as it did before the
- * preview existed rather than growing an error box. Whatever the caller renders
- * alongside (a file chip) stays the visible thing in both cases.
+ * A picture for a path an agent referred to, once its bytes are here. Clicking
+ * it opens the full-screen preview. The caller owns the loading, so it can lay
+ * the reference out differently while there is no picture to show.
  */
 export const LocalImageThumbnail = memo(function LocalImageThumbnail({
-  environmentId,
-  cwd,
+  dataUrl,
   filePath,
   name,
   className,
 }: LocalImageThumbnailProps) {
-  const preview = useLocalImagePreview({ environmentId, cwd, path: filePath });
-  const dataUrl = preview.status === "ready" ? preview.dataUrl : undefined;
-  if (!dataUrl) {
-    return null;
-  }
-
   return (
     <button
       type="button"

@@ -9,7 +9,7 @@
  */
 import { create } from "zustand";
 
-import type { EnvironmentId, ScopedThreadRef } from "@threadlines/contracts";
+import type { EnvironmentId, ProjectEntry, ScopedThreadRef } from "@threadlines/contracts";
 import { isWindowsAbsolutePath } from "@threadlines/shared/path";
 
 import { isImageFilePath } from "./lib/imageFilePaths";
@@ -630,21 +630,37 @@ export async function openChatFileReference(text: string): Promise<boolean> {
     const result = await api.projects.searchEntries({
       cwd: context.cwd,
       query: parsed.path,
-      limit: 8,
+      limit: FILE_NAME_SEARCH_LIMIT,
     });
-    const basename = parsed.path.toLowerCase();
-    const fileMatches = result.entries.filter((entry) => entry.kind === "file");
-    const bestMatch =
-      fileMatches.find((entry) => entry.path.toLowerCase().endsWith(`/${basename}`)) ??
-      fileMatches.find((entry) => entry.path.toLowerCase() === basename) ??
-      fileMatches[0];
-    if (!bestMatch) {
+    const match = findFileNamed(result.entries, parsed.path);
+    if (!match) {
       return false;
     }
-    return openFileInActiveViewer({ path: bestMatch.path, line: parsed.line });
+    return openFileInActiveViewer({ path: match.path, line: parsed.line });
   } catch {
     return false;
   }
+}
+
+/** Exact name matches rank ahead of fuzzy ones, so a few hits hold one if any exists. */
+export const FILE_NAME_SEARCH_LIMIT = 8;
+
+/**
+ * The workspace search hit that is the named file itself, in whatever folder.
+ * The search is fuzzy, so its best hit for `README.txt` can be some other file
+ * entirely when the project has none; a bare name only ever resolves to a file
+ * with exactly that name.
+ */
+export function findFileNamed(
+  entries: ReadonlyArray<ProjectEntry>,
+  name: string,
+): ProjectEntry | undefined {
+  const wanted = name.toLowerCase();
+  return entries.find((entry) => {
+    if (entry.kind !== "file") return false;
+    const path = entry.path.toLowerCase();
+    return path === wanted || path.endsWith(`/${wanted}`);
+  });
 }
 
 export interface OpenFileInViewerInput {

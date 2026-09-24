@@ -9,7 +9,7 @@ describe("buildDefaultComposerPlaceholder", () => {
         canReferenceFiles: true,
         canInvokeSkills: true,
       }),
-    ).toBe("Ask anything — @ reference files, $ invoke skills, / commands");
+    ).toBe("Ask anything · @ reference files, $ invoke skills, / commands");
   });
 
   it("omits unavailable project capabilities", () => {
@@ -18,7 +18,7 @@ describe("buildDefaultComposerPlaceholder", () => {
         canReferenceFiles: false,
         canInvokeSkills: false,
       }),
-    ).toBe("Ask anything — / commands");
+    ).toBe("Ask anything · / commands");
   });
 
   it("keeps provider skills available without project file references", () => {
@@ -27,6 +27,6 @@ describe("buildDefaultComposerPlaceholder", () => {
         canReferenceFiles: false,
         canInvokeSkills: true,
       }),
-    ).toBe("Ask anything — $ invoke skills, / commands");
+    ).toBe("Ask anything · $ invoke skills, / commands");
   });
 });

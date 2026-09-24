@@ -3,6 +3,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   findBareImagePaths,
   findBareLocalhostUrls,
+  isAbsoluteInlineFilePath,
   localhostUrlFromText,
   resolveMarkdownFileLinkMeta,
   resolveMarkdownFileLinkTarget,
@@ -248,5 +249,28 @@ describe("findBareImagePaths", () => {
     expect(findBareImagePaths("open screenshot.png now")).toEqual([]);
     expect(findBareImagePaths("edit ./src/main.ts now")).toEqual([]);
     expect(findBareImagePaths("https://example.com/logo.png")).toEqual([]);
+  });
+});
+
+describe("isAbsoluteInlineFilePath", () => {
+  it("accepts whole absolute file paths, spaces and positions included", () => {
+    expect(
+      isAbsoluteInlineFilePath(
+        String.raw`C:\Users\me\OneDrive\Desktop\Threadlines X posts\split-app\1-left.png`,
+      ),
+    ).toBe(true);
+    expect(isAbsoluteInlineFilePath("C:/repo/src/main.rs:12:5")).toBe(true);
+    expect(isAbsoluteInlineFilePath("/Users/me/My Shots/home.png")).toBe(true);
+    expect(isAbsoluteInlineFilePath("/tmp/report.html:3")).toBe(true);
+    expect(isAbsoluteInlineFilePath("~/Desktop/home.png")).toBe(true);
+  });
+
+  it("leaves routes, folders, and project-style references to other readers", () => {
+    expect(isAbsoluteInlineFilePath("/api/users.json")).toBe(false);
+    expect(isAbsoluteInlineFilePath("/favicon.ico")).toBe(false);
+    expect(isAbsoluteInlineFilePath(String.raw`C:\Users\me\Desktop`)).toBe(false);
+    expect(isAbsoluteInlineFilePath("src/app.ts:12")).toBe(false);
+    expect(isAbsoluteInlineFilePath("home.png")).toBe(false);
+    expect(isAbsoluteInlineFilePath("https://example.com/home.png")).toBe(false);
   });
 });

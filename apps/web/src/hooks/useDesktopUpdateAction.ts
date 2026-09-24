@@ -37,6 +37,19 @@ async function checkForDesktopUpdate(bridge: DesktopBridge): Promise<DesktopUpda
   return bridge.checkForUpdate();
 }
 
+// Dev update previews (updatePreviewDevTools) simulate the pending action
+// instead of reaching the real updater, which a dev build never has.
+async function runPendingDesktopUpdateAction(
+  bridge: DesktopBridge,
+  kind: "download" | "install",
+): Promise<DesktopUpdateActionResult> {
+  const previewResult = import.meta.env.DEV
+    ? window.__threadlinesDesktopUpdatePreviewAction?.(kind)
+    : null;
+  if (previewResult) return previewResult;
+  return kind === "download" ? bridge.downloadUpdate() : bridge.installUpdate();
+}
+
 export interface DesktopUpdateAction {
   /** Latest updater state; null until the desktop bridge reports one. */
   readonly state: DesktopUpdateState | null;
@@ -62,8 +75,7 @@ export function useDesktopUpdateAction(): DesktopUpdateAction {
     const kind = resolveDesktopUpdateActionKind(state);
 
     if (kind === "download") {
-      void bridge
-        .downloadUpdate()
+      void runPendingDesktopUpdateAction(bridge, "download")
         .then((result) => {
           setDesktopUpdateStateQueryData(queryClient, result.state);
           toastAcceptedActionFailure(result, "Could not download update");
@@ -83,7 +95,7 @@ export function useDesktopUpdateAction(): DesktopUpdateAction {
       void confirmDesktopUpdateInstall(state)
         .then((confirmed) => {
           if (!confirmed) return;
-          return bridge.installUpdate().then((result) => {
+          return runPendingDesktopUpdateAction(bridge, "install").then((result) => {
             setDesktopUpdateStateQueryData(queryClient, result.state);
             toastAcceptedActionFailure(result, "Could not install update");
           });

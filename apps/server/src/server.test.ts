@@ -65,7 +65,7 @@ import {
   type ProviderAuthSessionsShape,
 } from "./provider/auth/ProviderAuthSessions.ts";
 import { DictationLive } from "./dictation/DictationService.ts";
-import { makeRoutesLayer } from "./server.ts";
+import { answerRequestsWhileStarting, makeRoutesLayer } from "./server.ts";
 import { resolveAttachmentRelativePath } from "./attachmentPaths.ts";
 import {
   CheckpointDiffQuery,
@@ -1197,6 +1197,44 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
               port: 0,
               websocket: { perMessageDeflate: true },
             });
+          }),
+        ),
+      ),
+    ),
+  );
+
+  it.effect("answers 503 before the router attaches instead of leaving requests hanging", () =>
+    Effect.gen(function* () {
+      const server = yield* HttpServer.HttpServer;
+      const address = server.address as HttpServer.TcpAddress;
+      const url = `http://127.0.0.1:${address.port}/.well-known/threadlines/environment`;
+      const get = () => Effect.promise(() => fetch(url, { signal: AbortSignal.timeout(5_000) }));
+
+      const starting = yield* get();
+      assert.strictEqual(starting.status, 503);
+      assert.strictEqual(starting.headers.get("retry-after"), "1");
+
+      yield* HttpRouter.add(
+        "GET",
+        "/.well-known/threadlines/environment",
+        HttpServerResponse.text("ready"),
+      ).pipe(HttpRouter.serve, Layer.build);
+
+      const ready = yield* get();
+      assert.strictEqual(ready.status, 200);
+      assert.strictEqual(yield* Effect.promise(() => ready.text()), "ready");
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        Layer.unwrap(
+          Effect.promise(async () => {
+            const NodeHttp = await import("node:http");
+            return NodeHttpServer.layer(
+              () => answerRequestsWhileStarting(NodeHttp.createServer()),
+              {
+                port: 0,
+              },
+            );
           }),
         ),
       ),

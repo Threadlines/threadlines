@@ -25,6 +25,7 @@ afterEach(async () => {
   window.localStorage.removeItem(DESKTOP_UPDATE_PREVIEW_STORAGE_KEY);
   delete window.threadlinesUpdatePreview;
   delete window.__threadlinesDesktopUpdatePreviewCheckForUpdate;
+  delete window.__threadlinesDesktopUpdatePreviewAction;
   Reflect.deleteProperty(window, "desktopBridge");
   document.body.innerHTML = "";
 });
@@ -173,13 +174,32 @@ it("uses the preview check from the sidebar instead of the disabled dev desktop 
     .not.toBeInTheDocument();
 });
 
+it("simulates the download from the chip instead of calling the real updater", async () => {
+  const realDownloadUpdate = vi.fn();
+  window.desktopBridge = {
+    getUpdateState: vi.fn().mockResolvedValue(null),
+    onUpdateState: vi.fn(() => () => {}),
+    downloadUpdate: realDownloadUpdate,
+  } as unknown as DesktopBridge;
+  window.localStorage.setItem(DESKTOP_UPDATE_PREVIEW_STORAGE_KEY, "available");
+  await installAndMount();
+
+  const chip = page.getByTestId("sidebar-version-chip");
+  await expect.element(chip).toHaveTextContent("Update");
+  await chip.click();
+
+  await expect.element(chip).toHaveTextContent(/\d+%/);
+  expect(realDownloadUpdate).not.toHaveBeenCalled();
+  window.threadlinesUpdatePreview?.clearDesktopUpdate();
+});
+
 it("boots into the mode picked via localStorage", async () => {
   window.localStorage.setItem(DESKTOP_UPDATE_PREVIEW_STORAGE_KEY, "downloaded");
   await installAndMount();
 
   const card = page.getByTestId("sidebar-version-card");
   await expect.element(card.getByText(/downloaded/)).toBeVisible();
-  await expect.element(card.getByRole("button", { name: "Restart to install" })).toBeVisible();
+  await expect.element(page.getByTestId("sidebar-version-chip")).toHaveTextContent("Restart");
 });
 
 it("skips the boot preview when set to off", async () => {

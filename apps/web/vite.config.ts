@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import tailwindcss from "@tailwindcss/vite";
 import react, { reactCompilerPreset } from "@vitejs/plugin-react";
 import babel from "@rolldown/plugin-babel";
@@ -88,9 +89,17 @@ export function createWebPlugins(options?: {
       // We need to be explicit about the parser options after moving to @vitejs/plugin-react v6.0.0
       // This is because the babel plugin only automatically parses typescript and jsx based on relative paths (e.g. "**/*.ts")
       // whereas the previous version of the plugin parsed all files with a .ts extension.
-      // This is causing our packages/ directory to fail to parse, as they are not relative to the CWD.
+      // This caused our packages/ directory to fail to parse, as they are not relative to the CWD.
       parserOpts: { plugins: ["typescript", "jsx"] },
       presets: [reactCompilerPreset()],
+      exclude: [
+        // The plugin's default, which an explicit exclude replaces.
+        /[/\\]node_modules[/\\]|^\0rolldown\/runtime\.js$/,
+        // The React Compiler only rewrites components and hooks, and the
+        // workspace packages the app imports have none. Babel over their
+        // large schema files was about a third of dev-server transform time.
+        `${fileURLToPath(new URL("../../packages/", import.meta.url)).replaceAll("\\", "/")}**`,
+      ],
     }),
     tailwindcss(),
   ];
@@ -163,6 +172,14 @@ export default defineConfig({
       // connection logs — enable "Verbose" in DevTools to see them.
       protocol: "ws",
       host,
+    },
+    // Transform the app's import graph as soon as the dev server starts,
+    // rather than one import level at a time as the first page load finds
+    // it. The desktop window opens seconds after Vite is ready, so that gap
+    // goes to transforms instead of idling. Vitest disables pre-transforms,
+    // so tests warm only this one file.
+    warmup: {
+      clientFiles: ["./src/main.tsx"],
     },
   },
   build: {

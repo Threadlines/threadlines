@@ -60,10 +60,10 @@ import {
   type PickedElementContextDraft,
 } from "./lib/pickedElementContext";
 import { create } from "zustand";
-import { createJSONStorage, persist } from "zustand/middleware";
+import { persist } from "zustand/middleware";
 import { useShallow } from "zustand/react/shallow";
 import {
-  createDebouncedStorage,
+  createDebouncedJSONStorage,
   createMemoryStorage,
   withLegacyFallbackStorage,
 } from "./lib/storage";
@@ -83,7 +83,8 @@ export type DraftId = typeof DraftId.Type;
 
 const COMPOSER_PERSIST_DEBOUNCE_MS = 300;
 
-const composerDebouncedStorage = createDebouncedStorage(
+// Every keystroke is a store update, so serializing waits for the debounce too.
+const composerDebouncedStorage = createDebouncedJSONStorage<PersistedComposerDraftStoreState>(
   withLegacyFallbackStorage(
     typeof localStorage !== "undefined" ? localStorage : createMemoryStorage(),
     COMPOSER_DRAFT_STORAGE_KEY,
@@ -3812,7 +3813,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
     {
       name: COMPOSER_DRAFT_STORAGE_KEY,
       version: COMPOSER_DRAFT_STORAGE_VERSION,
-      storage: createJSONStorage(() => composerDebouncedStorage),
+      storage: composerDebouncedStorage,
       migrate: migratePersistedComposerDraftStoreState,
       partialize: partializeComposerDraftStoreState,
       merge: (persistedState, currentState) => {

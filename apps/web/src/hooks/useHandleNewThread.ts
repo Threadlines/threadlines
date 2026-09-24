@@ -1,5 +1,9 @@
 import { scopedProjectKey, scopeProjectRef } from "@threadlines/client-runtime";
-import { DEFAULT_NEW_THREAD_RUNTIME_MODE, type ScopedProjectRef } from "@threadlines/contracts";
+import {
+  DEFAULT_NEW_THREAD_RUNTIME_MODE,
+  type ScopedProjectRef,
+  type ThreadId,
+} from "@threadlines/contracts";
 import { useParams, useRouter } from "@tanstack/react-router";
 import { useCallback, useMemo } from "react";
 import { useShallow } from "zustand/react/shallow";
@@ -51,6 +55,10 @@ function useNewThreadState() {
         /** Words the draft opens with, for surfaces that hand work over. Only
          *  ever written into a draft with nothing of the user's in it. */
         initialPrompt?: string;
+        /** The thread the draft must become, for a caller that already named it
+         *  to the server (the checkout dialog starts the worktree's setup script
+         *  under it). Always mints a fresh draft, since a reused one has its own. */
+        threadId?: ThreadId;
       },
     ): Promise<void> => {
       const {
@@ -86,9 +94,11 @@ function useNewThreadState() {
       const hasBranchOption = options?.branch !== undefined;
       const hasWorktreePathOption = options?.worktreePath !== undefined;
       const hasEnvModeOption = options?.envMode !== undefined;
-      const storedDraftThread =
-        getDraftSessionByLogicalProjectKey(logicalProjectKey) ??
-        adoptDraftSessionForLogicalProjectKey(projectRef, logicalProjectKey);
+      const requiredThreadId = options?.threadId ?? null;
+      const storedDraftThread = requiredThreadId
+        ? null
+        : (getDraftSessionByLogicalProjectKey(logicalProjectKey) ??
+          adoptDraftSessionForLogicalProjectKey(projectRef, logicalProjectKey));
       // New-thread surfaces (button, hotkeys, "/" landing, palette) only ever
       // reuse a draft the user has NOT invested in. A draft with typed text or
       // attachments is work in progress: it stays alive where it is (reachable
@@ -143,6 +153,7 @@ function useNewThreadState() {
       }
 
       if (
+        !requiredThreadId &&
         latestActiveDraftThread &&
         currentRouteTarget?.kind === "draft" &&
         latestActiveDraftThread.logicalProjectKey === logicalProjectKey &&
@@ -173,7 +184,7 @@ function useNewThreadState() {
       }
 
       const draftId = newDraftId();
-      const threadId = newThreadId();
+      const threadId = requiredThreadId ?? newThreadId();
       const createdAt = new Date().toISOString();
       return (async () => {
         setLogicalProjectDraftThreadId(logicalProjectKey, projectRef, draftId, {

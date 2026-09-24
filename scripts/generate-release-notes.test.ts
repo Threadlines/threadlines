@@ -230,7 +230,7 @@ alsoImproved:
   assert.match(notes, /^## Highlights\n\nGoals are easier/);
   assert.match(
     notes,
-    /- \*\*Codex Goals\*\* — Set an objective and optional token budget from the composer\./,
+    /- \*\*Codex Goals\.\*\* Set an objective and optional token budget from the composer\./,
   );
   assert.match(notes, /<summary>Complete technical changes<\/summary>/);
   assert.match(notes, /## What's Changed/);
