@@ -212,6 +212,33 @@ function displayPath(path: string, workspaceRoot: string | undefined): string {
   return formatWorkspaceRelativePath(path, workspaceRoot);
 }
 
+/** Names which check a command ran, equal across reruns of the same check. */
+function checkKeyFor(analysis: ReturnType<typeof analyzeShellCommand>, command: string): string {
+  return `${analysis.checks.join("+")}:${(analysis.checkStatement ?? command).replace(/\s+/gu, " ").trim()}`;
+}
+
+const CHECK_KEY_CACHE_LIMIT = 5_000;
+const checkKeyByCommand = new Map<string, string | null>();
+
+/**
+ * Which check a shell command runs, or null when it runs none. Remembered by
+ * the command's text: the conversation rebuilds its steps on every activity,
+ * but a command's text never changes, so a long thread reads each one once.
+ */
+export function commandCheckKey(command: string): string | null {
+  const cached = checkKeyByCommand.get(command);
+  if (cached !== undefined) {
+    return cached;
+  }
+  const analysis = analyzeShellCommand(command);
+  const key = analysis.checks.length > 0 ? checkKeyFor(analysis, command) : null;
+  if (checkKeyByCommand.size >= CHECK_KEY_CACHE_LIMIT) {
+    checkKeyByCommand.clear();
+  }
+  checkKeyByCommand.set(command, key);
+  return key;
+}
+
 /** A shell command step: classified by what it did, worded by the agent's own
  *  label when it wrote one. */
 export function commandStepDraft(input: {
@@ -243,7 +270,7 @@ export function commandStepDraft(input: {
       liveLabel: described?.live ?? analysis.phrase.live,
       note: input.failed ? firstFailureLine(input.output) : null,
       detail,
-      checkKey: `${analysis.checks.join("+")}:${(analysis.checkStatement ?? input.command).replace(/\s+/gu, " ").trim()}`,
+      checkKey: checkKeyFor(analysis, input.command),
     };
   }
   const wording = described ?? analysis.phrase;

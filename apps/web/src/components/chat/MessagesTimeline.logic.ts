@@ -9,13 +9,19 @@ import {
 import { type ChatMessage, type ProposedPlan, type TurnDiffSummary } from "../../types";
 import { type MessageId, type TurnId } from "@threadlines/contracts";
 import { stripCodexInlineVisualizationDirectives } from "../../lib/codexInlineVisualization";
-import { activityStepFromWorkLogEntry, liveActivityLabel } from "./activitySteps";
+import { activityStepFromWorkLogEntry, commandCheckKey, liveActivityLabel } from "./activitySteps";
 
-export interface TimelineDurationMessage {
-  id: string;
-  role: "user" | "assistant" | "system";
-  createdAt: string;
-  completedAt?: string | undefined;
+/** What a finished turn's footer says under its last message. */
+export interface TurnSummary {
+  /** Time spent working, without the wait before a Retry or a resumed turn. */
+  readonly workedMs: number | null;
+  readonly editedFileCount: number;
+  /** Latest result of each check the turn ran; a rerun replaces a failure. */
+  readonly checks: { readonly passed: number; readonly failed: number } | null;
+  /** The turn's agents. The working row carried them while the turn ran, and
+   *  the footer takes its place, so they stay at the tail. */
+  readonly trackerTurnIds: ReadonlyArray<TurnId>;
+  readonly trackerAgentSpawnIds: ReadonlyArray<string>;
 }
 
 export type MessagesTimelineRow =
@@ -54,10 +60,11 @@ export type MessagesTimelineRow =
       id: string;
       createdAt: string;
       message: ChatMessage;
-      durationStart: string;
-      /** The answer sits under its turn's "Worked for" line, which already says
-       *  how long the turn took. */
-      hideMetaDuration: boolean;
+      /** A note from a finished turn that is not its last message: it fades so
+       *  the turn's answer reads first. */
+      settledNote: boolean;
+      /** Set on a finished turn's last message, which carries the turn's footer. */
+      turnSummary: TurnSummary | null;
       showAssistantCopyButton: boolean;
       assistantCopyStreaming: boolean;
       assistantTurnInProgress: boolean;
@@ -83,62 +90,11 @@ export type MessagesTimelineRow =
       createdAt: string;
       forkContext: ForkContextEntry;
     }
-  | {
-      kind: "turn-fold";
-      id: string;
-      createdAt: string;
-      /** Everything the settled turn did before its answer: its notes, its
-       *  steps, its agents' receipts. Rendered only while expanded. */
-      rows: MessagesTimelineRow[];
-      expanded: boolean;
-      /** Time spent working from the user's message to the answer, without
-       *  the wait before a Retry or a resumed turn. */
-      workedMs: number | null;
-      /** The answer's checkpoint diff: the most reliable count of edited files. */
-      turnDiffSummary?: TurnDiffSummary | undefined;
-    }
   | { kind: "working"; id: string; createdAt: string | null; label: string };
 
 export interface StableMessagesTimelineRowsState {
   byId: Map<string, MessagesTimelineRow>;
   result: MessagesTimelineRow[];
-}
-
-/**
- * When each message's elapsed time starts: the latest user message, turn
- * request, or completed assistant reply before it. `turnRequestedAts` (sorted
- * ISO times) covers turns that start without a user message of their own,
- * such as Retry; without them a retried reply would be timed from the end of
- * the reply before it.
- */
-export function computeMessageDurationStart(
-  messages: ReadonlyArray<TimelineDurationMessage>,
-  turnRequestedAts: ReadonlyArray<string> = [],
-): Map<string, string> {
-  const result = new Map<string, string>();
-  let lastBoundary: string | null = null;
-  let nextTurnRequest = 0;
-
-  for (const message of messages) {
-    for (
-      let requestedAt = turnRequestedAts[nextTurnRequest];
-      requestedAt !== undefined && requestedAt <= message.createdAt;
-      requestedAt = turnRequestedAts[++nextTurnRequest]
-    ) {
-      if (lastBoundary === null || requestedAt > lastBoundary) {
-        lastBoundary = requestedAt;
-      }
-    }
-    if (message.role === "user") {
-      lastBoundary = message.createdAt;
-    }
-    result.set(message.id, lastBoundary ?? message.createdAt);
-    if (message.role === "assistant" && message.completedAt) {
-      lastBoundary = message.completedAt;
-    }
-  }
-
-  return result;
 }
 
 export function resolveAssistantMessageCopyState({
@@ -283,10 +239,6 @@ export function deriveMessagesTimelineRows(input: {
   activeTurnStartedAt: string | null;
   turnDiffSummaryByAssistantMessageId: ReadonlyMap<MessageId, TurnDiffSummary>;
   revertTurnCountByUserMessageId: ReadonlyMap<MessageId, number>;
-  /** Settled turns the reader opened; every other settled turn folds. */
-  expandedTurnFoldIds?: ReadonlySet<string> | undefined;
-  /** A message the reader is being taken to; the turn holding it opens. */
-  revealMessageId?: MessageId | null | undefined;
 }): MessagesTimelineRow[] {
   const nextRows: MessagesTimelineRow[] = [];
   const visibleTimelineEntries = hoistTrailingTurnWorkAboveResponse(
@@ -302,10 +254,6 @@ export function deriveMessagesTimelineRows(input: {
         : [],
     )
     .toSorted();
-  const durationStartByMessageId = computeMessageDurationStart(
-    visibleTimelineEntries.flatMap((entry) => (entry.kind === "message" ? [entry.message] : [])),
-    turnRequestedAts,
-  );
   const terminalAssistantMessageIds = deriveTerminalAssistantMessageIds(visibleTimelineEntries);
   const modelFallbackByTurn = deriveModelFallbackByTurn(visibleTimelineEntries);
   const supersededRunningCommandEntryIds =
@@ -442,9 +390,8 @@ export function deriveMessagesTimelineRows(input: {
       id: timelineEntry.id,
       createdAt: timelineEntry.createdAt,
       message: timelineEntry.message,
-      durationStart:
-        durationStartByMessageId.get(timelineEntry.message.id) ?? timelineEntry.message.createdAt,
-      hideMetaDuration: false,
+      settledNote: false,
+      turnSummary: null,
       showAssistantCopyButton:
         timelineEntry.message.role === "assistant" &&
         terminalAssistantMessageIds.has(timelineEntry.message.id),
@@ -469,10 +416,9 @@ export function deriveMessagesTimelineRows(input: {
   if (input.isWorking) {
     markLatestLiveWorkRow(nextRows, input.activeTurnId ?? null, input.activeTurnStartedAt);
   }
-  const rows = foldSettledTurns(nextRows, {
+  const rows = settleFinishedTurns(nextRows, {
     isWorking: input.isWorking,
-    expandedTurnFoldIds: input.expandedTurnFoldIds,
-    revealMessageId: input.revealMessageId ?? null,
+    activeTurnId: input.activeTurnId ?? null,
     turnRequestedAts,
   });
   if (input.isWorking) {
@@ -508,147 +454,204 @@ export function deriveMessagesTimelineRows(input: {
   return rows;
 }
 
-/** The fold id of the turn a user message starts. */
-export function turnFoldIdForUserRow(userRowId: string): string {
-  return `turn-fold:${userRowId}`;
-}
+type MessageRow = Extract<MessagesTimelineRow, { kind: "message" }>;
 
 /**
- * A settled turn reads as the user's message, one "Worked for" line, and the
- * answer: every note and step before the answer folds into that line until the
- * reader opens it. The turn in flight never folds; a turn with no answer
- * (stopped, failed) stays open so its last steps show; proposed plans stay out
- * of the fold because they are the turn's deliverable.
+ * A finished turn keeps its story where it is: nothing folds, so nothing above
+ * the answer moves when the turn ends. The turn's last message becomes its
+ * answer and carries the turn's footer, which takes the working row's place at
+ * the tail, and the notes before it fade. Settling goes turn by turn, so a turn
+ * resumed after a background task leaves the earlier turn's footer in place.
+ * A turn that ended without a message has no footer, and its first group keeps
+ * the agent tracker.
  */
-function foldSettledTurns(
+function settleFinishedTurns(
   rows: ReadonlyArray<MessagesTimelineRow>,
   options: {
     readonly isWorking: boolean;
-    readonly expandedTurnFoldIds: ReadonlySet<string> | undefined;
-    readonly revealMessageId: MessageId | null;
+    readonly activeTurnId: TurnId | null;
     readonly turnRequestedAts: ReadonlyArray<string>;
   },
 ): MessagesTimelineRow[] {
-  const userIndices = rows.flatMap((row, index) =>
-    row.kind === "message" && row.message.role === "user" ? [index] : [],
+  const result = [...rows];
+  const requestTimes = options.turnRequestedAts
+    .map((requestedAt) => Date.parse(requestedAt))
+    .filter(Number.isFinite);
+  const lastUserIndex = result.findLastIndex(
+    (row) => row.kind === "message" && row.message.role === "user",
   );
-  const result: MessagesTimelineRow[] = rows.slice(0, userIndices[0] ?? rows.length);
-  userIndices.forEach((userIndex, position) => {
-    const userRow = rows[userIndex] as MessageRow;
-    const segment = rows.slice(userIndex + 1, userIndices[position + 1] ?? rows.length);
-    const inFlight = options.isWorking && position === userIndices.length - 1;
-    result.push(userRow, ...(inFlight ? segment : foldTurnSegment(userRow, segment, options)));
-  });
+  let spanStart = 0;
+  let userMessageAt: string | null = null;
+  let previousAnswerEndMs = Number.NEGATIVE_INFINITY;
+  for (let index = 0; index < result.length; index += 1) {
+    const row = result[index]!;
+    if (row.kind !== "message") {
+      continue;
+    }
+    if (row.message.role === "user") {
+      spanStart = index + 1;
+      userMessageAt = row.message.createdAt;
+      previousAnswerEndMs = Number.NEGATIVE_INFINITY;
+      continue;
+    }
+    // The same signal that keeps the working row up, so the row and the footer
+    // swap in one render. A reply the provider did not tie to a turn stays
+    // live until the exchange it belongs to ends.
+    const running =
+      row.message.streaming ||
+      (options.isWorking &&
+        index > lastUserIndex &&
+        (!row.message.turnId || row.message.turnId === options.activeTurnId));
+    if (row.message.role !== "assistant" || !row.showAssistantCopyButton || running) {
+      continue;
+    }
+
+    const span = result.slice(spanStart, index);
+    const work = summarizeTurnWork(span);
+    span.forEach((spanRow, offset) => {
+      if (spanRow.kind === "message" && spanRow.message.role === "assistant") {
+        result[spanStart + offset] = { ...spanRow, settledNote: true };
+      } else if (
+        spanRow.kind === "work" &&
+        (spanRow.trackerTurnIds.length > 0 || spanRow.trackerAgentSpawnIds.length > 0)
+      ) {
+        result[spanStart + offset] = { ...spanRow, trackerTurnIds: [], trackerAgentSpawnIds: [] };
+      }
+    });
+    const startedAtMs =
+      userMessageAt !== null
+        ? Date.parse(userMessageAt)
+        : resumedTurnStartMs(span, row, requestTimes, previousAnswerEndMs);
+    result[index] = {
+      ...row,
+      turnSummary: {
+        workedMs: workedDurationMs(startedAtMs, span, row, requestTimes),
+        // The checkpoint diff lands a beat after the turn; until then the
+        // turn's own edits are the count.
+        editedFileCount: row.assistantTurnDiffSummary?.files.length ?? work.editedFileCount,
+        checks: work.checks,
+        trackerTurnIds: work.trackerTurnIds,
+        trackerAgentSpawnIds: work.trackerAgentSpawnIds,
+      },
+    };
+    spanStart = index + 1;
+    userMessageAt = null;
+    previousAnswerEndMs = Date.parse(row.message.completedAt ?? row.message.createdAt);
+  }
   return result;
 }
 
-type MessageRow = Extract<MessagesTimelineRow, { kind: "message" }>;
-
-function foldTurnSegment(
-  userRow: MessageRow,
-  segment: ReadonlyArray<MessagesTimelineRow>,
-  options: {
-    readonly expandedTurnFoldIds: ReadonlySet<string> | undefined;
-    readonly revealMessageId: MessageId | null;
-    readonly turnRequestedAts: ReadonlyArray<string>;
-  },
-): ReadonlyArray<MessagesTimelineRow> {
-  const answerIndex = segment.findLastIndex(
-    (row) => row.kind === "message" && row.message.role === "assistant",
-  );
-  const answer = segment[answerIndex];
-  if (answerIndex <= 0 || answer?.kind !== "message") {
-    return segment;
+/**
+ * When a turn with no message of its own started (a Retry, a turn resumed
+ * after a background task): at its first request or first activity, whichever
+ * came first, so the wait before it is not work.
+ */
+function resumedTurnStartMs(
+  span: ReadonlyArray<MessagesTimelineRow>,
+  answer: MessageRow,
+  requestTimes: ReadonlyArray<number>,
+  previousAnswerEndMs: number,
+): number {
+  let startedAt = Date.parse(answer.message.createdAt);
+  const firstRequest = requestTimes[firstIndexAfter(requestTimes, previousAnswerEndMs)];
+  if (firstRequest !== undefined && firstRequest < startedAt) {
+    startedAt = firstRequest;
   }
-  const before = segment.slice(0, answerIndex);
-  const stays = (row: MessagesTimelineRow) =>
-    row.kind === "proposed-plan" || row.kind === "fork-context";
-  const folded = before.filter((row) => !stays(row));
-  if (folded.length === 0) {
-    return segment;
-  }
-  const id = turnFoldIdForUserRow(userRow.id);
-  const revealed =
-    options.revealMessageId !== null &&
-    folded.some((row) => row.kind === "message" && row.message.id === options.revealMessageId);
-  return [
-    {
-      kind: "turn-fold",
-      id,
-      createdAt: folded[0]!.createdAt ?? userRow.createdAt,
-      rows: folded,
-      expanded: revealed || (options.expandedTurnFoldIds?.has(id) ?? false),
-      workedMs: workedDurationMs(userRow, before, answer, options.turnRequestedAts),
-      turnDiffSummary: answer.assistantTurnDiffSummary,
-    },
-    ...before.filter(stays),
-    { ...answer, hideMetaDuration: true },
-    ...segment.slice(answerIndex + 1),
-  ];
+  // Rows run in time order, so the turn's first activity opens its first row.
+  const firstRowAt = span[0]?.createdAt ? Date.parse(span[0].createdAt) : Number.NaN;
+  return firstRowAt < startedAt ? firstRowAt : startedAt;
 }
 
 /**
- * How long the agent worked from the user's message to the answer. A later
- * turn request in between (a Retry, a turn resumed after a background task)
- * starts the clock again: the wait before it, back to the last thing that
- * happened, is not work.
+ * How long the agent worked from the turn's start to its answer. A later turn
+ * request in between (a Retry, a turn resumed after a background task) starts
+ * the clock again: the wait before it, back to the last thing that happened,
+ * is not work.
  */
 function workedDurationMs(
-  userRow: MessageRow,
+  startedAt: number,
   rows: ReadonlyArray<MessagesTimelineRow>,
   answer: MessageRow,
-  turnRequestedAts: ReadonlyArray<string>,
+  requestTimes: ReadonlyArray<number>,
 ): number | null {
-  const startedAt = Date.parse(userRow.createdAt);
   const endedAt = Date.parse(answer.message.completedAt ?? answer.message.createdAt);
   if (!Number.isFinite(startedAt) || !Number.isFinite(endedAt) || endedAt < startedAt) {
     return null;
   }
-  const activityTimes = rows.flatMap(rowActivityTimes);
   let idleMs = 0;
   let clockStartedAt = startedAt;
-  for (const requested of turnRequestedAts) {
-    const requestedAt = Date.parse(requested);
-    if (!(requestedAt > startedAt && requestedAt <= endedAt)) {
-      continue;
-    }
-    const lastActivityAt = activityTimes.reduce(
-      (latest, time) => (time > latest && time <= requestedAt ? time : latest),
-      clockStartedAt,
-    );
-    idleMs += requestedAt - lastActivityAt;
+  for (
+    let requestIndex = firstIndexAfter(requestTimes, startedAt);
+    requestIndex < requestTimes.length && requestTimes[requestIndex]! <= endedAt;
+    requestIndex += 1
+  ) {
+    const requestedAt = requestTimes[requestIndex]!;
+    idleMs += requestedAt - lastActivityAtOrBefore(rows, requestedAt, clockStartedAt);
     clockStartedAt = requestedAt;
   }
   return endedAt - startedAt - idleMs;
 }
 
-/** When a row's content started and finished, in epoch milliseconds. A turn
- *  request marker is the clock restarting, not activity. */
-function rowActivityTimes(row: MessagesTimelineRow): number[] {
-  const times =
-    row.kind === "message"
-      ? [row.message.createdAt, row.message.completedAt]
-      : row.kind === "work"
-        ? row.groupedEntries.flatMap((entry) =>
-            entry.providerLifecyclePhase ? [] : [entry.createdAt, entry.completedAt],
-          )
-        : [row.createdAt];
-  return times.flatMap((time) => {
+/** The latest thing that happened in `rows` at or before `at`, and no earlier
+ *  than `floor`. Rows and their steps run in time order, so the scan stops at
+ *  the first one that starts after `at`. A turn request marker is the clock
+ *  restarting, not activity. */
+function lastActivityAtOrBefore(
+  rows: ReadonlyArray<MessagesTimelineRow>,
+  at: number,
+  floor: number,
+): number {
+  let latest = floor;
+  const consider = (time: string | null | undefined): number => {
     const parsed = time ? Date.parse(time) : Number.NaN;
-    return Number.isFinite(parsed) ? [parsed] : [];
-  });
+    if (parsed > latest && parsed <= at) {
+      latest = parsed;
+    }
+    return parsed;
+  };
+  for (const row of rows) {
+    if (row.kind === "work") {
+      for (const entry of row.groupedEntries) {
+        if (entry.providerLifecyclePhase) {
+          continue;
+        }
+        if (consider(entry.createdAt) > at) {
+          return latest;
+        }
+        consider(entry.completedAt);
+      }
+      continue;
+    }
+    if (consider(row.kind === "message" ? row.message.createdAt : row.createdAt) > at) {
+      return latest;
+    }
+    if (row.kind === "message") {
+      consider(row.message.completedAt);
+    }
+  }
+  return latest;
 }
 
-export interface FoldedTurnSummary {
-  readonly editedFileCount: number;
-  /** Latest result of each check the turn ran; a rerun replaces a failure. */
-  readonly checks: { readonly passed: number; readonly failed: number } | null;
-  readonly trackerTurnIds: ReadonlyArray<TurnId>;
-  readonly trackerAgentSpawnIds: ReadonlyArray<string>;
+/** The index of the first time after `after` in ascending `times`. */
+function firstIndexAfter(times: ReadonlyArray<number>, after: number): number {
+  let low = 0;
+  let high = times.length;
+  while (low < high) {
+    const middle = (low + high) >> 1;
+    if (times[middle]! > after) {
+      high = middle;
+    } else {
+      low = middle + 1;
+    }
+  }
+  return low;
 }
 
-/** What a folded turn's line says about the steps it hides. */
-export function summarizeFoldedTurn(rows: ReadonlyArray<MessagesTimelineRow>): FoldedTurnSummary {
+/** What a turn's steps add up to: the files it edited, how its checks ended,
+ *  and the agents its groups track. */
+function summarizeTurnWork(
+  rows: ReadonlyArray<MessagesTimelineRow>,
+): Omit<TurnSummary, "workedMs"> {
   const editedFiles = new Set<string>();
   const checkResults = new Map<string, boolean>();
   const trackerTurnIds = new Set<TurnId>();
@@ -665,11 +668,11 @@ export function summarizeFoldedTurn(rows: ReadonlyArray<MessagesTimelineRow>): F
           editedFiles.add(path.replaceAll("\\", "/").toLowerCase());
         }
       }
-      if (entry.command) {
-        const step = activityStepFromWorkLogEntry(entry);
-        if (step?.checkKey && !step.running) {
-          checkResults.set(step.checkKey, step.tone === "pass");
-        }
+      // A rerun of the same check replaces the earlier result.
+      const checkKey =
+        entry.command && entry.executionState !== "running" ? commandCheckKey(entry.command) : null;
+      if (checkKey) {
+        checkResults.set(checkKey, entry.executionState !== "failed");
       }
     }
   }
@@ -1081,26 +1084,12 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
       );
     }
 
-    case "turn-fold": {
-      const bf = b as typeof a;
-      return (
-        a.expanded === bf.expanded &&
-        a.workedMs === bf.workedMs &&
-        a.turnDiffSummary === bf.turnDiffSummary &&
-        a.rows.length === bf.rows.length &&
-        a.rows.every((row, index) => {
-          const other = bf.rows[index];
-          return other !== undefined && isRowUnchanged(row, other);
-        })
-      );
-    }
-
     case "message": {
       const bm = b as typeof a;
       return (
         a.message === bm.message &&
-        a.durationStart === bm.durationStart &&
-        a.hideMetaDuration === bm.hideMetaDuration &&
+        a.settledNote === bm.settledNote &&
+        isTurnSummaryUnchanged(a.turnSummary, bm.turnSummary) &&
         a.showAssistantCopyButton === bm.showAssistantCopyButton &&
         a.assistantCopyStreaming === bm.assistantCopyStreaming &&
         a.assistantTurnInProgress === bm.assistantTurnInProgress &&
@@ -1110,4 +1099,20 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
       );
     }
   }
+}
+
+function isTurnSummaryUnchanged(a: TurnSummary | null, b: TurnSummary | null): boolean {
+  if (a === null || b === null) {
+    return a === b;
+  }
+  return (
+    a.workedMs === b.workedMs &&
+    a.editedFileCount === b.editedFileCount &&
+    a.checks?.passed === b.checks?.passed &&
+    a.checks?.failed === b.checks?.failed &&
+    a.trackerTurnIds.length === b.trackerTurnIds.length &&
+    a.trackerTurnIds.every((turnId, index) => turnId === b.trackerTurnIds[index]) &&
+    a.trackerAgentSpawnIds.length === b.trackerAgentSpawnIds.length &&
+    a.trackerAgentSpawnIds.every((spawnId, index) => spawnId === b.trackerAgentSpawnIds[index])
+  );
 }

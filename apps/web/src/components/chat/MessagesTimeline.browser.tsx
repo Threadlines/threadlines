@@ -981,6 +981,92 @@ describe("MessagesTimeline", () => {
     }
   });
 
+  it("moves nothing above the answer when a turn ends", async () => {
+    const turnId = TurnId.make("turn-settle");
+    const assistant = (id: string, text: string, createdAt: string, completedAt: string) => ({
+      id: `entry-${id}`,
+      kind: "message" as const,
+      createdAt,
+      message: {
+        id: id as never,
+        role: "assistant" as const,
+        text,
+        turnId,
+        createdAt,
+        completedAt,
+        streaming: false,
+      },
+    });
+    const timelineEntries = [
+      buildUserTimelineEntry("Fix the pull request row"),
+      assistant(
+        "note",
+        "Checking where the row gets its status.",
+        "2026-04-13T12:00:05.000Z",
+        "2026-04-13T12:00:06.000Z",
+      ),
+      {
+        id: "entry-typecheck",
+        kind: "work" as const,
+        createdAt: "2026-04-13T12:00:10.000Z",
+        entry: {
+          id: "typecheck",
+          createdAt: "2026-04-13T12:00:10.000Z",
+          completedAt: "2026-04-13T12:00:40.000Z",
+          label: "Ran command",
+          tone: "tool" as const,
+          itemType: "command_execution" as const,
+          command: "pnpm exec vp run typecheck",
+          executionState: "completed" as const,
+          turnId,
+        },
+      },
+      assistant(
+        "answer",
+        "Fixed. The row now refreshes after a merge.",
+        "2026-04-13T12:01:00.000Z",
+        "2026-04-13T12:01:15.000Z",
+      ),
+    ];
+    const props = buildProps();
+    const screen = await renderTimeline(
+      <MessagesTimeline
+        {...props}
+        isWorking
+        activeTurnInProgress
+        activeTurnId={turnId}
+        activeTurnStartedAt={MESSAGE_CREATED_AT}
+        timelineEntries={timelineEntries}
+      />,
+    );
+
+    try {
+      const note = page.getByText("Checking where the row gets its status.");
+      const answer = page.getByText("Fixed. The row now refreshes after a merge.");
+      await expect.element(answer, { timeout: 5_000 }).toBeVisible();
+      // Live rows slide in 3px as they mount; measure where they rest.
+      await Promise.all(
+        document
+          .getAnimations()
+          .filter((animation) => (animation as CSSAnimation).animationName === "work-row-enter")
+          .map((animation) => animation.finished),
+      );
+      const noteTop = note.element().getBoundingClientRect().top;
+      const answerTop = answer.element().getBoundingClientRect().top;
+
+      await screen.rerender(<MessagesTimeline {...props} timelineEntries={timelineEntries} />);
+      await expect.element(page.getByText("Worked for 1m 15s"), { timeout: 5_000 }).toBeVisible();
+
+      // The working row turned into the footer under the answer; the note only
+      // faded.
+      expect(note.element().getBoundingClientRect().top).toBe(noteTop);
+      expect(answer.element().getBoundingClientRect().top).toBe(answerTop);
+      expect(note.element().closest("[data-settled-note='true']")).not.toBeNull();
+    } finally {
+      await screen.unmount();
+    }
+  });
+
   it("starts long user messages collapsed by default", async () => {
     const screen = await renderTimeline(
       <MessagesTimeline
