@@ -25,8 +25,8 @@ import {
   CURSOR_ACP_DESCRIPTOR,
   CURSOR_MODEL_OPTION_MAPPING,
   getCursorParameterizedModelPickerUnsupportedMessage,
+  parseCursorAboutLatestVersion,
   parseCursorAboutOutput,
-  parseCursorCliConfigChannel,
   parseCursorVersionDate,
   resolveCursorAcpBaseModelId,
   resolveCursorAcpConfigUpdates,
@@ -783,25 +783,30 @@ describe("parseCursorAboutOutput", () => {
   });
 });
 
-describe("Cursor parameterized model picker preview gating", () => {
+describe("parseCursorAboutLatestVersion", () => {
+  it("reads the newest release Cursor's own update check reports", () => {
+    const about = JSON.stringify({
+      cliVersion: "2026.08.25-3e8eec8",
+      latestStatus: "update_available",
+      latestVersion: "2026.09.18-9a7762b",
+      subscriptionTier: "Free",
+    });
+    expect(parseCursorAboutLatestVersion(about)).toBe("2026.09.18-9a7762b");
+    expect(parseCursorAboutLatestVersion("CLI Version  2026.08.25-3e8eec8")).toBeUndefined();
+  });
+});
+
+describe("Cursor parameterized model picker version gating", () => {
   it("parses Cursor CLI version dates from build versions", () => {
     expect(parseCursorVersionDate("2026.04.08-c4e73a3")).toBe(20260408);
     expect(parseCursorVersionDate("2026.04.09")).toBe(20260409);
     expect(parseCursorVersionDate("not-a-version")).toBeUndefined();
   });
 
-  it("parses the Cursor CLI channel from cli-config.json", () => {
-    expect(parseCursorCliConfigChannel('{ "channel": "lab" }')).toBe("lab");
-    expect(parseCursorCliConfigChannel('{ "channel": "stable" }')).toBe("stable");
-    expect(parseCursorCliConfigChannel('{ "version": 1 }')).toBeUndefined();
-    expect(parseCursorCliConfigChannel("not-json")).toBeUndefined();
-  });
-
   it("returns no warning when the preview requirements are met", () => {
     expect(
       getCursorParameterizedModelPickerUnsupportedMessage({
         version: "2026.04.08-c4e73a3",
-        channel: "lab",
       }),
     ).toBeUndefined();
   });
@@ -810,18 +815,8 @@ describe("Cursor parameterized model picker preview gating", () => {
     expect(
       getCursorParameterizedModelPickerUnsupportedMessage({
         version: "2026.04.07-c4e73a3",
-        channel: "lab",
       }),
     ).toContain("too old");
-  });
-
-  it("explains when the Cursor Agent channel is not lab", () => {
-    expect(
-      getCursorParameterizedModelPickerUnsupportedMessage({
-        version: "2026.04.08-c4e73a3",
-        channel: "stable",
-      }),
-    ).toContain("lab channel");
   });
 });
 

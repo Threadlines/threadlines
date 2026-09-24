@@ -307,6 +307,7 @@ export function buildAcpProviderSnapshot<Settings extends AcpProviderSettings>(i
     .join(" ");
   const discovered = input.discoveredModels ?? [];
   return buildServerProvider({
+    driver: input.descriptor.driverKind,
     presentation: input.descriptor.presentation,
     enabled: input.settings.enabled,
     checkedAt: input.checkedAt,
@@ -326,6 +327,7 @@ export function buildAcpProviderSnapshot<Settings extends AcpProviderSettings>(i
       auth: input.probe.auth,
       ...(input.probe.accountUsage ? { accountUsage: input.probe.accountUsage } : {}),
       ...(message ? { message } : {}),
+      ...(input.probe.latestVersion ? { latestVersion: input.probe.latestVersion } : {}),
     },
   });
 }

@@ -685,7 +685,12 @@ export const enrichProviderSnapshotWithVersionAdvisory = Effect.fn(
     };
   }
 
-  const latestVersion = yield* resolveLatestProviderVersion(capabilities);
+  // npm first; CLIs outside npm report their newest release from their own
+  // probe, which the snapshot's advisory already carries.
+  const latestVersion =
+    (yield* resolveLatestProviderVersion(capabilities)) ??
+    snapshot.versionAdvisory?.latestVersion ??
+    null;
   return {
     ...snapshot,
     versionAdvisory: createProviderVersionAdvisory({

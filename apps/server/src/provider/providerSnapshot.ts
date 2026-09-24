@@ -44,6 +44,12 @@ export interface ProviderProbeResult {
   readonly auth: ServerProviderAuth;
   readonly accountUsage?: ServerProviderAccountUsage;
   readonly message?: string;
+  /**
+   * Newest release the provider itself reports, for CLIs not published to
+   * npm (Cursor's `agent about`, fx's GitHub releases). Lets the version
+   * advisory offer an update without an npm lookup.
+   */
+  readonly latestVersion?: string | null;
 }
 
 export interface ServerProviderPresentation {
@@ -212,6 +218,7 @@ export function buildServerProvider(input: {
     ? createProviderVersionAdvisory({
         driver: input.driver,
         currentVersion: input.probe.version,
+        ...(input.probe.latestVersion ? { latestVersion: input.probe.latestVersion } : {}),
         checkedAt: input.checkedAt,
       })
     : undefined;

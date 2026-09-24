@@ -149,7 +149,10 @@ export interface AcpProviderDescriptor<Settings extends AcpProviderSettings> {
   ) => Effect.Effect<
     AcpProviderProbeOutcome,
     never,
-    ChildProcessSpawner.ChildProcessSpawner | FileSystem.FileSystem | Path.Path
+    | ChildProcessSpawner.ChildProcessSpawner
+    | FileSystem.FileSystem
+    | Path.Path
+    | HttpClient.HttpClient
   >;
   /**
    * How long one ACP model-discovery session may take. Defaults to 15s;

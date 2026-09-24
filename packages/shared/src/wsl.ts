@@ -35,6 +35,23 @@ export function wslCommand(
   return wslShellCommand([executable, ...args].map(bashWord).join(" "));
 }
 
+const WSL_LAUNCH_FAILURE =
+  /Error code: Wsl\/|WSL_E_[A-Z_]+|no installed distributions|Subsystem for Linux (?:is not|has not been) (?:installed|enabled)/iu;
+
+/**
+ * wsl.exe reports its own failures (WSL not installed, no Linux distro) in
+ * UTF-16 text ending with an `Error code: Wsl/...` line, and the requested
+ * command never runs. Returns wsl.exe's first line for those, so callers can
+ * say "WSL isn't ready" instead of misreading the output as the command's.
+ */
+export function describeWslLaunchFailure(output: string): string | undefined {
+  const text = output.replaceAll("\u0000", "").trim();
+  if (!WSL_LAUNCH_FAILURE.test(text)) {
+    return undefined;
+  }
+  return text.split(/\r?\n/u)[0]?.trim() || "WSL could not start";
+}
+
 /**
  * Windows path → WSL mount path (`C:\Users\me` → `/mnt/c/Users/me`).
  * Paths that are not drive-rooted are returned unchanged.

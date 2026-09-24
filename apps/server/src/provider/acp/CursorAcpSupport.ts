@@ -3,7 +3,7 @@
  * generic ACP driver.
  *
  * Cursor-specific pieces: the `agent about` health probe with its
- * lab-channel / version gate for the parameterized model picker, the
+ * minimum-version gate for the parameterized model picker, the
  * per-model option mapping (reasoning / context / fast / thinking), bracket
  * traits on model ids, and the `cursor/*` extension methods.
  *
@@ -11,8 +11,6 @@
  *
  * @module provider/acp/CursorAcpSupport
  */
-import * as NodeOs from "node:os";
-
 import {
   CursorSettings,
   type ModelCapabilities,
@@ -27,9 +25,7 @@ import {
   getProviderOptionStringSelectionValue,
 } from "@threadlines/shared/model";
 import * as Effect from "effect/Effect";
-import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
-import * as Path from "effect/Path";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
@@ -432,8 +428,15 @@ export interface CursorAboutResult {
 
 interface CursorAboutJsonPayload {
   readonly cliVersion?: unknown;
+  readonly latestVersion?: unknown;
   readonly subscriptionTier?: unknown;
   readonly userEmail?: unknown;
+}
+
+/** Newest CLI release `agent about --format json` reports (its own update check). */
+export function parseCursorAboutLatestVersion(stdout: string): string | undefined {
+  const latest = parseCursorAboutJsonPayload(stdout)?.latestVersion;
+  return typeof latest === "string" && latest.trim().length > 0 ? latest.trim() : undefined;
 }
 
 export function parseCursorVersionDate(version: string | null | undefined): number | undefined {
@@ -443,24 +446,6 @@ export function parseCursorVersionDate(version: string | null | undefined): numb
   }
   const [, year, month, day] = match;
   return Number(`${year}${month}${day}`);
-}
-
-export function parseCursorCliConfigChannel(raw: string): string | undefined {
-  try {
-    const parsed = JSON.parse(raw) as unknown;
-    if (
-      typeof parsed === "object" &&
-      parsed !== null &&
-      "channel" in parsed &&
-      typeof parsed.channel === "string"
-    ) {
-      const channel = parsed.channel.trim().toLowerCase();
-      return channel.length > 0 ? channel : undefined;
-    }
-  } catch {
-    return undefined;
-  }
-  return undefined;
 }
 
 function toTitleCaseWords(value: string): string {
@@ -645,46 +630,23 @@ export function parseCursorAboutOutput(result: CommandResult): CursorAboutResult
   return { version, status: "ready", auth: { status: "authenticated", email: userEmail } };
 }
 
+/**
+ * Threadlines asks Cursor for its parameterized model picker (base model ids
+ * plus per-model option lists). Builds older than 2026.04.08 lack it; newer
+ * ones ship it on every release channel.
+ */
 export function getCursorParameterizedModelPickerUnsupportedMessage(input: {
   readonly version: string | null | undefined;
-  readonly channel: string | null | undefined;
 }): string | undefined {
-  const reasons: Array<string> = [];
   const versionDate = parseCursorVersionDate(input.version);
   if (
-    versionDate !== undefined &&
-    versionDate < CURSOR_PARAMETERIZED_MODEL_PICKER_MIN_VERSION_DATE
+    versionDate === undefined ||
+    versionDate >= CURSOR_PARAMETERIZED_MODEL_PICKER_MIN_VERSION_DATE
   ) {
-    reasons.push(
-      `Cursor Agent CLI version ${input.version} is too old for Cursor ACP parameterized model picker`,
-    );
-  }
-
-  const normalizedChannel = input.channel?.trim().toLowerCase();
-  if (
-    normalizedChannel !== undefined &&
-    normalizedChannel.length > 0 &&
-    normalizedChannel !== "lab"
-  ) {
-    reasons.push(
-      `Cursor Agent CLI channel is ${JSON.stringify(input.channel)}, but parameterized model picker is only available on the lab channel`,
-    );
-  }
-
-  if (reasons.length === 0) {
     return undefined;
   }
-
-  return `${reasons.join(". ")}. Run \`agent set-channel lab && agent update\` and use Cursor Agent CLI 2026.04.08 or newer.`;
+  return `Cursor Agent CLI ${input.version} is too old for Threadlines. Run \`agent update\` to get 2026.04.08 or newer.`;
 }
-
-const readCursorCliConfigChannel = Effect.fn("readCursorCliConfigChannel")(function* () {
-  const fileSystem = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
-  const configPath = path.join(NodeOs.homedir(), ".cursor", "cli-config.json");
-  const raw = yield* fileSystem.readFileString(configPath).pipe(Effect.orElseSucceed(() => ""));
-  return parseCursorCliConfigChannel(raw);
-});
 
 const runCursorCommand = (
   cursorSettings: CursorSettings,
@@ -713,15 +675,11 @@ const runCursorAboutCommand = (cursorSettings: CursorSettings, environment: Node
     return yield* runCursorCommand(cursorSettings, ["about"], environment);
   });
 
-/** Single `agent about` probe: version + auth, then the lab-channel gate. */
+/** Single `agent about` probe: version + auth, then the minimum-version gate. */
 export const probeCursor = Effect.fn("probeCursor")(function* (
   cursorSettings: CursorSettings,
   environment: NodeJS.ProcessEnv,
-): Effect.fn.Return<
-  AcpProviderProbeOutcome,
-  never,
-  ChildProcessSpawner.ChildProcessSpawner | FileSystem.FileSystem | Path.Path
-> {
+): Effect.fn.Return<AcpProviderProbeOutcome, never, ChildProcessSpawner.ChildProcessSpawner> {
   const aboutProbe = yield* runCursorAboutCommand(cursorSettings, environment).pipe(
     Effect.timeoutOption(ABOUT_TIMEOUT_MS),
     Effect.result,
@@ -751,10 +709,9 @@ export const probeCursor = Effect.fn("probeCursor")(function* (
   }
 
   const parsed = parseCursorAboutOutput(aboutProbe.success.value);
-  const channel = yield* readCursorCliConfigChannel();
+  const latestVersion = parseCursorAboutLatestVersion(aboutProbe.success.value.stdout);
   const unsupportedMessage = getCursorParameterizedModelPickerUnsupportedMessage({
     version: parsed.version,
-    channel,
   });
   if (unsupportedMessage) {
     return {
@@ -767,6 +724,7 @@ export const probeCursor = Effect.fn("probeCursor")(function* (
           ? `${unsupportedMessage} ${parsed.message}`
           : unsupportedMessage,
       skipModelDiscovery: true,
+      ...(latestVersion ? { latestVersion } : {}),
     };
   }
 
@@ -776,6 +734,7 @@ export const probeCursor = Effect.fn("probeCursor")(function* (
     status: parsed.status,
     auth: parsed.auth,
     ...(parsed.message ? { message: parsed.message } : {}),
+    ...(latestVersion ? { latestVersion } : {}),
   };
 });
 

@@ -18,7 +18,13 @@
  */
 import { FxSettings, ProviderDriverKind, type ServerProviderAuth } from "@threadlines/contracts";
 import { hideWindowsConsole } from "@threadlines/shared/childProcess";
-import { toWslPath, wslCommand, wslShellCommand } from "@threadlines/shared/wsl";
+import {
+  describeWslLaunchFailure,
+  toWslPath,
+  wslCommand,
+  wslShellCommand,
+} from "@threadlines/shared/wsl";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import type * as EffectAcpSchema from "effect-acp/schema";
 import type * as FileSystem from "effect/FileSystem";
@@ -26,6 +32,7 @@ import * as Option from "effect/Option";
 import type * as Path from "effect/Path";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
+import { HttpClient, HttpClientRequest } from "effect/unstable/http";
 import { ChildProcess, type ChildProcessSpawner } from "effect/unstable/process";
 
 import {
@@ -254,7 +261,10 @@ export const probeFx = Effect.fn("probeFx")(function* (
 ): Effect.fn.Return<
   AcpProviderProbeOutcome,
   never,
-  ChildProcessSpawner.ChildProcessSpawner | FileSystem.FileSystem | Path.Path
+  | ChildProcessSpawner.ChildProcessSpawner
+  | FileSystem.FileSystem
+  | Path.Path
+  | HttpClient.HttpClient
 > {
   const notInstalled = (message: string): AcpProviderProbeOutcome => ({
     installed: false,
@@ -292,6 +302,14 @@ export const probeFx = Effect.fn("probeFx")(function* (
     };
   }
   const versionResult = versionProbe.success.value;
+  const wslFailure = runsFxThroughWsl()
+    ? describeWslLaunchFailure(`${versionResult.stdout}\n${versionResult.stderr}`)
+    : undefined;
+  if (wslFailure) {
+    return notInstalled(
+      `fx runs inside WSL on Windows, and WSL isn't ready: ${wslFailure} Run \`wsl --install\` in an administrator terminal, restart Windows, then install fx here.`,
+    );
+  }
   if (isMissingInsideWsl(versionResult)) {
     return notInstalled(fxNotInstalledMessage());
   }
@@ -315,13 +333,63 @@ export const probeFx = Effect.fn("probeFx")(function* (
     };
   }
 
+  const latestVersion = yield* resolveFxLatestRelease();
   return {
     installed: true,
     version,
     status: parsedStatus.auth.status === "unauthenticated" ? "error" : "ready",
     auth: parsedStatus.auth,
     ...(parsedStatus.message ? { message: parsedStatus.message } : {}),
+    ...(latestVersion ? { latestVersion } : {}),
   };
+});
+
+const FX_LATEST_RELEASE_URL = "https://api.github.com/repos/vercel-labs/fx/releases/latest";
+const FX_LATEST_RELEASE_TTL_MS = 60 * 60 * 1_000;
+const FX_LATEST_RELEASE_TIMEOUT_MS = 5_000;
+
+const GitHubRelease = Schema.Struct({ tag_name: Schema.String });
+
+let fxLatestReleaseCache: { readonly expiresAt: number; readonly version: string | null } | null =
+  null;
+
+export function clearFxLatestReleaseCacheForTests(): void {
+  fxLatestReleaseCache = null;
+}
+
+/**
+ * fx ships through GitHub releases, not npm, so the version advisory reads
+ * the latest release tag (`v0.0.10` → `0.0.10`). Cached for an hour (the
+ * unauthenticated API allows 60 requests an hour); any failure means "unknown",
+ * never a blocked probe.
+ */
+const resolveFxLatestRelease = Effect.fn("resolveFxLatestRelease")(function* () {
+  const now = DateTime.toEpochMillis(yield* DateTime.now);
+  if (fxLatestReleaseCache && fxLatestReleaseCache.expiresAt > now) {
+    return fxLatestReleaseCache.version;
+  }
+  const version = yield* fetchFxLatestRelease().pipe(Effect.catch(() => Effect.succeed(null)));
+  fxLatestReleaseCache = { expiresAt: now + FX_LATEST_RELEASE_TTL_MS, version };
+  return version;
+});
+
+const fetchFxLatestRelease = Effect.fn("fetchFxLatestRelease")(function* () {
+  const client = yield* HttpClient.HttpClient;
+  const response = yield* client
+    .execute(
+      HttpClientRequest.get(FX_LATEST_RELEASE_URL).pipe(
+        HttpClientRequest.setHeader("accept", "application/vnd.github+json"),
+        HttpClientRequest.setHeader("user-agent", "threadlines"),
+      ),
+    )
+    .pipe(Effect.timeout(FX_LATEST_RELEASE_TIMEOUT_MS));
+  if (response.status < 200 || response.status >= 300) {
+    return null;
+  }
+  const release = yield* response.json.pipe(
+    Effect.flatMap(Schema.decodeUnknownEffect(GitHubRelease)),
+  );
+  return release.tag_name.trim().replace(/^v/u, "") || null;
 });
 
 const fxUpdate = buildFxCommand(null, ["upgrade"]);

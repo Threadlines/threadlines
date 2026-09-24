@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { toWslPath, wslCommand, wslShellCommand } from "./wsl.ts";
+import { describeWslLaunchFailure, toWslPath, wslCommand, wslShellCommand } from "./wsl.ts";
 
 describe("wsl", () => {
   it("maps drive-rooted Windows paths to /mnt mounts and leaves others alone", () => {
@@ -21,5 +21,26 @@ describe("wsl", () => {
       "-lc",
       "curl -fsSL https://fx.sh/setup.sh | bash",
     ]);
+  });
+
+  it("recognizes wsl.exe's own launch failures in its UTF-16 output", () => {
+    // Captured from `wsl.exe -d NoSuchDistro -- bash -lc "fx --version"`,
+    // read as UTF-8 the way a child process collector sees it.
+    const utf16 = (text: string) => [...text].map((char) => `${char}\0`).join("");
+    expect(
+      describeWslLaunchFailure(
+        utf16(
+          "There is no distribution with the supplied name.\r\nError code: Wsl/Service/WSL_E_DISTRO_NOT_FOUND\r\n",
+        ),
+      ),
+    ).toBe("There is no distribution with the supplied name.");
+    expect(
+      describeWslLaunchFailure(
+        utf16("Windows Subsystem for Linux has no installed distributions."),
+      ),
+    ).toBe("Windows Subsystem for Linux has no installed distributions.");
+    // Output from the Linux side is the command's own business.
+    expect(describeWslLaunchFailure("bash: fx: command not found")).toBeUndefined();
+    expect(describeWslLaunchFailure("0.0.10")).toBeUndefined();
   });
 });

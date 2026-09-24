@@ -1,3 +1,8 @@
+// @effect-diagnostics nodeBuiltinImport:off
+import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
 import { describe, expect, it } from "vite-plus/test";
 
 import { makeAcpProviderMaintenanceResolver, resolveAcpBinaryPath } from "./AcpProviderDriver.ts";
@@ -56,6 +61,21 @@ describe("makeAcpProviderMaintenanceResolver", () => {
         env: { PATH: "" },
       }).install,
     ).toMatchObject({ executable: "powershell.exe" });
+  });
+
+  it("runs the update with the agent CLI a session would find", () => {
+    const binDir = mkdtempSync(path.join(os.tmpdir(), "acp-update-bin-"));
+    const agentFile = path.join(binDir, process.platform === "win32" ? "agent.cmd" : "agent");
+    writeFileSync(agentFile, process.platform === "win32" ? "@echo off\r\n" : "#!/bin/sh\n");
+    chmodSync(agentFile, 0o755);
+
+    const update = makeAcpProviderMaintenanceResolver(CURSOR_ACP_DESCRIPTOR).resolve({
+      binaryPath: "agent",
+      platform: process.platform,
+      env: { PATH: binDir },
+    }).update;
+    expect(update?.executable.toLowerCase()).toBe(agentFile.toLowerCase());
+    expect(update?.args).toEqual(["update"]);
   });
 
   it("never offers an install for an explicit binary path", () => {

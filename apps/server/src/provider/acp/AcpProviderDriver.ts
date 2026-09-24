@@ -74,11 +74,28 @@ export function makeAcpProviderMaintenanceResolver<Settings extends AcpProviderS
             platform,
             ...(options?.env ? { env: options.env } : {}),
           }));
+      // The updater is the agent's own CLI (`agent update`); find it where a
+      // session would, including installer dirs a stale server PATH misses.
+      const update = descriptor.maintenance.update;
+      const maintenance = update
+        ? {
+            ...descriptor.maintenance,
+            update: {
+              ...update,
+              executable: resolveAcpBinaryPath(
+                descriptor,
+                update.executable,
+                options?.env ?? process.env,
+                platform,
+              ),
+            },
+          }
+        : descriptor.maintenance;
       if (!install || !isBareName || resolves) {
-        return descriptor.maintenance;
+        return maintenance;
       }
       return {
-        ...descriptor.maintenance,
+        ...maintenance,
         install: {
           command: install.displayCommand ?? [install.executable, ...install.args].join(" "),
           executable: install.executable,
