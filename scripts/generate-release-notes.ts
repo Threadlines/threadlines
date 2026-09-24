@@ -435,8 +435,10 @@ function containsHumanReviewPlaceholder(value: unknown): boolean {
 
 function formatCuratedReleaseContent(content: CuratedReleaseContent): string {
   const lines = ["## Highlights", "", content.summary, ""];
+  // A bold lead-in ending in a period, not an em dash: this body is public release copy.
   for (const highlight of content.highlights) {
-    lines.push(`- **${highlight.title}** — ${highlight.description}`);
+    const lead = /[.!?]$/.test(highlight.title) ? highlight.title : `${highlight.title}.`;
+    lines.push(`- **${lead}** ${highlight.description}`);
   }
   if (content.alsoImproved.length > 0) {
     lines.push("", "### Also improved", "");
