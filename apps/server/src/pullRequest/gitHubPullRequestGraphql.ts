@@ -5,6 +5,7 @@ import * as Schema from "effect/Schema";
 import type {
   PullRequestActor,
   PullRequestListState,
+  PullRequestMergeQueueRemoval,
   PullRequestReaction,
   PullRequestReactionContent,
   PullRequestReviewCommentDraft,
@@ -21,7 +22,9 @@ import {
   decodeGitHubPullRequestListRow,
   nonEmptyText,
   normalizeActor,
+  normalizeChecks,
   GitHubAuthorSchema,
+  GitHubStatusCheckSchema,
   type GitHubPullRequestListRow,
 } from "./gitHubPullRequestList.ts";
 
@@ -89,6 +92,11 @@ export const PULL_REQUEST_CONVERSATION_GRAPHQL_QUERY = `query($owner: String!, $
  *
  * `headRef` is qualified `owner:branch` because a branch on a fork has no name
  * of its own in the base repository.
+ *
+ * The last queue event says whether the queue gave the pull request back, and
+ * why. A removal's `beforeCommit` is the commit the queue tested, the pull
+ * request merged with the base, so its rollup is the queue's run and not the
+ * pull request's own.
  */
 export const DETAIL_BASE_STATE_GRAPHQL_QUERY = `query($owner: String!, $name: String!, $number: Int!, $headRef: String!) {
   repository(owner: $owner, name: $name) {
@@ -97,6 +105,26 @@ export const DETAIL_BASE_STATE_GRAPHQL_QUERY = `query($owner: String!, $name: St
       isMergeQueueEnabled
       isInMergeQueue
       mergeQueueEntry { position }
+      timelineItems(last: 1, itemTypes: [ADDED_TO_MERGE_QUEUE_EVENT, REMOVED_FROM_MERGE_QUEUE_EVENT]) {
+        nodes {
+          __typename
+          ... on RemovedFromMergeQueueEvent {
+            id
+            createdAt
+            reason
+            beforeCommit {
+              statusCheckRollup {
+                contexts(first: ${GRAPHQL_PAGE_SIZE}) {
+                  nodes {
+                    ... on CheckRun { name status conclusion detailsUrl }
+                    ... on StatusContext { context state description targetUrl }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
     }
   }
 }`;
@@ -521,6 +549,35 @@ export function decodeGitHubPullRequestConversationJson(
   });
 }
 
+/** One merge queue event. Joining is told by its type alone; only a removal says more. */
+const RawMergeQueueEventSchema = Schema.Struct({
+  __typename: Schema.optional(Schema.NullOr(Schema.String)),
+  id: Schema.optional(Schema.NullOr(Schema.String)),
+  createdAt: Schema.optional(Schema.NullOr(Schema.String)),
+  reason: Schema.optional(Schema.NullOr(Schema.String)),
+  beforeCommit: Schema.optional(
+    Schema.NullOr(
+      Schema.Struct({
+        statusCheckRollup: Schema.optional(
+          Schema.NullOr(
+            Schema.Struct({
+              contexts: Schema.optional(
+                Schema.NullOr(
+                  Schema.Struct({
+                    nodes: Schema.optional(
+                      Schema.NullOr(Schema.Array(Schema.NullOr(GitHubStatusCheckSchema))),
+                    ),
+                  }),
+                ),
+              ),
+            }),
+          ),
+        ),
+      }),
+    ),
+  ),
+});
+
 const RawDetailBaseStateSchema = Schema.Struct({
   data: Schema.Struct({
     repository: Schema.NullOr(
@@ -547,6 +604,14 @@ const RawDetailBaseStateSchema = Schema.Struct({
                 Schema.Struct({ position: Schema.optional(Schema.NullOr(Schema.Number)) }),
               ),
             ),
+            /** The last time the pull request joined or left the queue; empty if it never has. */
+            timelineItems: Schema.optional(
+              Schema.NullOr(
+                Schema.Struct({
+                  nodes: Schema.optional(Schema.NullOr(Schema.Array(RawMergeQueueEventSchema))),
+                }),
+              ),
+            ),
           }),
         ),
       }),
@@ -561,13 +626,46 @@ export interface GitHubDetailBaseState {
   /** How many commits the base has that the head does not; null when unanswerable. */
   readonly behindBy: number | null;
   /** Present only where the base requires a merge queue. */
-  readonly mergeQueue?: { readonly position: number | null };
+  readonly mergeQueue?: {
+    readonly position: number | null;
+    readonly removal?: PullRequestMergeQueueRemoval;
+  };
+}
+
+/**
+ * The queue giving the pull request back after its checks failed there, from
+ * the last queue event, or null where that event is anything else. GitHub
+ * also closes every merge with a removal, whose reason is `merged`.
+ */
+function failedChecksRemoval(
+  event: Schema.Schema.Type<typeof RawMergeQueueEventSchema> | null | undefined,
+): PullRequestMergeQueueRemoval | null {
+  if (
+    event?.__typename !== "RemovedFromMergeQueueEvent" ||
+    event.reason?.trim().toLowerCase() !== "failed_checks"
+  ) {
+    return null;
+  }
+  const id = nonEmptyText(event.id);
+  const removedAt = nonEmptyText(event.createdAt);
+  if (id === null || removedAt === null) {
+    return null;
+  }
+  const contexts = event.beforeCommit?.statusCheckRollup?.contexts?.nodes ?? [];
+  return {
+    id,
+    removedAt,
+    failedChecks: normalizeChecks(contexts.filter((context) => context !== null)).filter(
+      (check) => check.status === "failure",
+    ),
+  };
 }
 
 /**
  * Decodes the one GraphQL read a detail makes about its base. The queue is
- * reported only where the base requires one, and its position only once this
- * pull request has actually joined it.
+ * reported only where the base requires one, its position only once this pull
+ * request has actually joined it, and a removal only while it is the last
+ * word: joining the queue again is a later event, and takes its place.
  */
 export function decodeGitHubDetailBaseStateJson(
   raw: string,
@@ -588,7 +686,12 @@ export function decodeGitHubDetailBaseStateJson(
     pullRequest.isInMergeQueue === true && typeof positionRaw === "number" && positionRaw > 0
       ? Math.trunc(positionRaw)
       : null;
-  return Result.succeed({ behindBy, mergeQueue: { position } });
+  const removal =
+    position === null ? failedChecksRemoval(pullRequest.timelineItems?.nodes?.at(-1)) : null;
+  return Result.succeed({
+    behindBy,
+    mergeQueue: removal === null ? { position } : { position, removal },
+  });
 }
 
 /**

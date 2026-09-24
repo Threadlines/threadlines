@@ -186,6 +186,69 @@ describe("decodeGitHubDetailBaseStateJson", () => {
   it("says nothing about a queue where the host named no queue fields at all", () => {
     assert.deepStrictEqual(baseState({ baseRef: { compare: { behindBy: 1 } } }), { behindBy: 1 });
   });
+
+  const outOfQueue = { isMergeQueueEnabled: true, isInMergeQueue: false, mergeQueueEntry: null };
+  const removed = (reason: string) => ({
+    __typename: "RemovedFromMergeQueueEvent",
+    id: "RFMQE_1",
+    createdAt: "2026-09-22T23:16:04Z",
+    reason,
+    beforeCommit: {
+      statusCheckRollup: {
+        contexts: {
+          nodes: [
+            { name: "Browser Test", status: "COMPLETED", conclusion: "SUCCESS" },
+            {
+              name: "Format, Lint, Typecheck, Test, Build",
+              status: "COMPLETED",
+              conclusion: "FAILURE",
+              detailsUrl: "https://github.com/acme/widgets/actions/runs/1/job/2",
+            },
+            { context: "Vercel", state: "SUCCESS", targetUrl: "https://vercel.com/acme" },
+          ],
+        },
+      },
+    },
+  });
+
+  it("names what failed in the queue's own run when the queue gave the pull request back", () => {
+    assert.deepStrictEqual(
+      baseState({ ...outOfQueue, timelineItems: { nodes: [removed("failed_checks")] } }),
+      {
+        behindBy: null,
+        mergeQueue: {
+          position: null,
+          removal: {
+            id: "RFMQE_1",
+            removedAt: "2026-09-22T23:16:04Z",
+            failedChecks: [
+              {
+                name: "Format, Lint, Typecheck, Test, Build",
+                status: "failure",
+                description: null,
+                url: "https://github.com/acme/widgets/actions/runs/1/job/2",
+              },
+            ],
+          },
+        },
+      },
+    );
+  });
+
+  it("reports no removal once it merged, or joined the queue again", () => {
+    // Every merge ends with a removal of its own, whose reason is `merged`.
+    assert.deepStrictEqual(
+      baseState({ ...outOfQueue, timelineItems: { nodes: [removed("merged")] } }),
+      { behindBy: null, mergeQueue: { position: null } },
+    );
+    assert.deepStrictEqual(
+      baseState({
+        ...outOfQueue,
+        timelineItems: { nodes: [{ __typename: "AddedToMergeQueueEvent" }] },
+      }),
+      { behindBy: null, mergeQueue: { position: null } },
+    );
+  });
 });
 
 describe("decodeGitHubImmediatelyMergeableJson", () => {

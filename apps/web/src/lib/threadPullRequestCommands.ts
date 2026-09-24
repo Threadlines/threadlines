@@ -7,9 +7,12 @@ import { newCommandId } from "./utils";
  * Arm or disarm the server's watch on this thread's pull request.
  *
  * While it is on, the server starts a turn in this thread whenever a check
- * fails or a reviewer comments. It watches only while the server runs, so a
- * closed desktop app watches nothing. The caller holds its own optimistic
- * value until the read model catches up.
+ * fails, a reviewer comments, or the merge queue gives the pull request back,
+ * and turning it on with a failure already there starts one right away. After
+ * a merge queue failure it puts the pull request back in the queue once the
+ * agent's turn is over. It watches only while the server runs, so a closed
+ * desktop app watches nothing. The caller holds its own optimistic value until
+ * the read model catches up.
  */
 export async function setThreadPullRequestAutoFix(
   threadRef: ScopedThreadRef,

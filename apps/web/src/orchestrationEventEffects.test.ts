@@ -136,7 +136,7 @@ describe("deriveOrchestrationBatchEffects", () => {
     expect(effects.removeTerminalStateThreadIds).toEqual([]);
   });
 
-  it("re-reads pull requests only when a thread's server-held merge switch turns off", () => {
+  it("re-reads pull requests when a thread's server-held merge switch turns off, not on", () => {
     const threadId = ThreadId.make("thread-1");
     const automation = (
       payload: Omit<
@@ -156,6 +156,27 @@ describe("deriveOrchestrationBatchEffects", () => {
     expect(automation({ autoMerge: null })).toBe(true);
     expect(automation({ autoMerge: "squash" })).toBe(false);
     expect(automation({ autoFix: false })).toBe(false);
+  });
+
+  it("re-reads pull requests when the server notes merge work that moved no switch", () => {
+    const noted = (kind: string) =>
+      deriveOrchestrationBatchEffects([
+        makeEvent("thread.activity-appended", {
+          threadId: ThreadId.make("thread-1"),
+          activity: {
+            id: EventId.make("activity-1"),
+            tone: "info",
+            kind,
+            summary: "Put #278 back in the merge queue",
+            payload: { number: 278 },
+            turnId: null,
+            createdAt: "2026-02-27T00:00:01.000Z",
+          },
+        }),
+      ]).needsPullRequestInvalidation;
+
+    expect(noted("pull-request.auto-merge.requeued")).toBe(true);
+    expect(noted("tool.completed")).toBe(false);
   });
 });
 

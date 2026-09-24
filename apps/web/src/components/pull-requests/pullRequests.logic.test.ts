@@ -1303,6 +1303,29 @@ describe("pullRequestMergeQueueLabel", () => {
     ).toBe("Merge when ready");
     expect(pullRequestMergeQueueLabel({ ...base, mergeQueue: { position: null } })).toBeNull();
   });
+
+  it("says the queue gave it back after its own run failed, naming what failed", () => {
+    const removal = {
+      id: "RFMQE_1",
+      removedAt: "2026-09-22T23:16:04Z",
+      failedChecks: [{ name: "Browser Test", status: "failure", description: null, url: null }],
+    } as const;
+    expect(
+      pullRequestMergeQueueLabel({ ...base, mergeQueue: { position: null, removal } }),
+    ).toEqual({
+      label: "Queue failed",
+      tooltip: "The merge queue took it out after Browser Test failed",
+      failed: true,
+    });
+    // Armed again, it is on its way back, and that is what the header says.
+    expect(
+      pullRequestMergeQueueLabel({
+        ...base,
+        autoMergeEnabled: true,
+        mergeQueue: { position: null, removal },
+      })?.label,
+    ).toBe("Merge when ready");
+  });
 });
 
 describe("shouldPollPullRequestDetail", () => {

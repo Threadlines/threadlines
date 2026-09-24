@@ -30,10 +30,11 @@ import {
 
 /**
  * How the check chip reads. `pending`, `success` and `failure` are the host's
- * own rollup; `queued` is a merge queue, which moves on its own and outranks
- * whatever the checks say; `none` is a pull request with no checks at all, and
- * `unknown` is the moment before the detail arrives. `merged` and `closed`
- * state a fact about the pull request rather than its checks.
+ * own rollup, and `failure` is also the merge queue's own run failing;
+ * `queued` is a merge queue, which moves on its own and outranks whatever the
+ * checks say; `none` is a pull request with no checks at all, and `unknown` is
+ * the moment before the detail arrives. `merged` and `closed` state a fact
+ * about the pull request rather than its checks.
  */
 export type ComposerPullRequestChipTone =
   | "unknown"
@@ -99,13 +100,17 @@ export function composerPullRequestCheckBuckets(
 /**
  * The chip's word and colour. A settled pull request says so and stops there;
  * a queued one leads with the queue, since that is the part that moves without
- * anyone here asking. Otherwise it is the check rollup, which reads as "CI"
- * whichever way it is going -- the dot carries that -- and as "No checks" only
- * where the host reported none at all.
+ * anyone here asking. One the queue gave back after its own run failed says
+ * so until something is set to queue it again: its own checks can all be
+ * green while it goes nowhere. Otherwise it is the check rollup, which reads
+ * as "CI" whichever way it is going -- the dot carries that -- and as "No
+ * checks" only where the host reported none at all.
  */
 export function composerPullRequestChip(input: {
   readonly state: PullRequestState;
   readonly detail: PullRequestDetail | undefined;
+  /** It lands on its own: armed on the host or by this thread, or already queued. */
+  readonly armed: boolean;
 }): ComposerPullRequestChip {
   if (input.state === "merged") {
     return { label: "Merged", tone: "merged", interactive: false };
@@ -119,6 +124,9 @@ export function composerPullRequestChip(input: {
   }
   if (isInMergeQueue(detail)) {
     return { label: "Queued", tone: "queued", interactive: true };
+  }
+  if (detail.mergeQueue?.removal !== undefined && !input.armed) {
+    return { label: "Queue failed", tone: "failure", interactive: true };
   }
   if (detail.checksState === undefined && detail.checks.length === 0) {
     return { label: "No checks", tone: "none", interactive: true };
@@ -148,13 +156,14 @@ export function composerPullRequestRow(input: {
   // The detail is the fresher read of the two: it is re-read while checks run,
   // while the listing behind the thread's resolution polls far more slowly.
   const state = detail?.state ?? pullRequest.state;
+  const autoMergeEnabled =
+    input.threadAutoMerge ||
+    (detail ? pullRequestArmedToMerge(detail) : pullRequest.autoMergeEnabled);
   return {
     number: pullRequest.number,
     state,
     isDraft: detail?.isDraft ?? pullRequest.isDraft,
-    autoMergeEnabled:
-      input.threadAutoMerge ||
-      (detail ? pullRequestArmedToMerge(detail) : pullRequest.autoMergeEnabled),
+    autoMergeEnabled,
     title: detail?.title ?? pullRequest.title,
     url: detail?.url ?? pullRequest.url,
     projectTitle: input.projectTitle ?? detail?.projectTitle ?? null,
@@ -162,7 +171,7 @@ export function composerPullRequestRow(input: {
     diffStat: detail
       ? { additions: detail.additions, deletions: detail.deletions }
       : pullRequest.diffStat,
-    chip: composerPullRequestChip({ state, detail }),
+    chip: composerPullRequestChip({ state, detail, armed: autoMergeEnabled }),
   };
 }
 

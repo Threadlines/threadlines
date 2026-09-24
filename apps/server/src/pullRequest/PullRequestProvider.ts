@@ -19,6 +19,7 @@ import {
   type PullRequestMergeability,
   type PullRequestMergeGate,
   type PullRequestMergeMethod,
+  type PullRequestMergeQueueRemoval,
   type PullRequestReactionContent,
   type PullRequestReviewCommentDraft,
   type PullRequestReviewDecision,
@@ -126,9 +127,13 @@ export interface ProviderChangeRequestDetail extends ProviderChangeRequest {
   /**
    * The merge queue guarding the base, where the host runs one. Absent where
    * the base has no queue, or the host does not say. `position` is null until
-   * this change request has actually joined the queue.
+   * this change request has actually joined the queue; `removal` is the queue
+   * giving it back after failed checks, until something queues it again.
    */
-  readonly mergeQueue?: { readonly position: number | null };
+  readonly mergeQueue?: {
+    readonly position: number | null;
+    readonly removal?: PullRequestMergeQueueRemoval;
+  };
   readonly baseComparison: PullRequestBaseComparison;
   /** Null where the host could not compare the branch with its base. */
   readonly behindBy: number | null;

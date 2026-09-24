@@ -144,7 +144,11 @@ describe("composerPullRequestRow", () => {
 describe("composerPullRequestChip", () => {
   it("reads the check rollup while the pull request is open", () => {
     expect(
-      composerPullRequestChip({ state: "open", detail: detail({ checksState: "failure" }) }),
+      composerPullRequestChip({
+        state: "open",
+        detail: detail({ checksState: "failure" }),
+        armed: false,
+      }),
     ).toEqual({ label: "CI", tone: "failure", interactive: true });
   });
 
@@ -153,12 +157,38 @@ describe("composerPullRequestChip", () => {
       composerPullRequestChip({
         state: "open",
         detail: detail({ checksState: "success", mergeQueue: { position: 2 } }),
+        armed: true,
       }),
     ).toEqual({ label: "Queued", tone: "queued", interactive: true });
   });
 
+  it("says the merge queue gave it back, until something is set to queue it again", () => {
+    const givenBack = detail({
+      checksState: "success",
+      mergeQueue: {
+        position: null,
+        removal: {
+          id: "RFMQE_1",
+          removedAt: "2026-09-22T23:16:04Z",
+          failedChecks: [check("failure", "Browser Test")],
+        },
+      },
+    });
+    // Its own checks are green, which is exactly why the chip must not say only that.
+    expect(composerPullRequestChip({ state: "open", detail: givenBack, armed: false })).toEqual({
+      label: "Queue failed",
+      tone: "failure",
+      interactive: true,
+    });
+    expect(composerPullRequestChip({ state: "open", detail: givenBack, armed: true })).toEqual({
+      label: "CI",
+      tone: "success",
+      interactive: true,
+    });
+  });
+
   it("says so when the host reported no checks at all", () => {
-    expect(composerPullRequestChip({ state: "open", detail: detail() })).toEqual({
+    expect(composerPullRequestChip({ state: "open", detail: detail(), armed: false })).toEqual({
       label: "No checks",
       tone: "none",
       interactive: true,
@@ -167,7 +197,11 @@ describe("composerPullRequestChip", () => {
 
   it("states the outcome for a settled pull request and stops being a control", () => {
     expect(
-      composerPullRequestChip({ state: "closed", detail: detail({ state: "closed" }) }),
+      composerPullRequestChip({
+        state: "closed",
+        detail: detail({ state: "closed" }),
+        armed: false,
+      }),
     ).toEqual({ label: "Closed", tone: "closed", interactive: false });
   });
 });

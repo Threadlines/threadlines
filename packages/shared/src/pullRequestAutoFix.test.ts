@@ -38,6 +38,31 @@ describe("buildPullRequestAutoFixPrompt", () => {
     );
   });
 
+  it("leads with the merge queue giving it back, and says a flaky test needs no change", () => {
+    expect(
+      buildPullRequestAutoFixPrompt({
+        number: 278,
+        repository: "acme/widgets",
+        failingChecks: [],
+        comments: [],
+        mergeQueueFailure: {
+          baseBranch: "main",
+          failedChecks: [{ name: "Browser Test", url: "https://example.test/runs/2" }],
+        },
+      }),
+    ).toBe(
+      [
+        "Pull request #278 on acme/widgets needs attention.",
+        "",
+        "The merge queue took it out because these checks failed when it was merged with the latest main:",
+        "- Browser Test (https://example.test/runs/2)",
+        "A failure there can come from newer changes on main or from a flaky test. If nothing needs changing, say so and leave the branch alone. It goes back in the queue on its own once its checks pass.",
+        "",
+        "Fix what needs fixing, run the project's checks, commit on this branch, and push so the pull request updates.",
+      ].join("\n"),
+    );
+  });
+
   it("quotes each comment under its author, keeping blank lines apart", () => {
     const prompt = buildPullRequestAutoFixPrompt({
       number: 7,
