@@ -10,5 +10,5 @@ export function buildDefaultComposerPlaceholder(input: {
     capabilities.push("$ invoke skills");
   }
   capabilities.push("/ commands");
-  return `Ask anything — ${capabilities.join(", ")}`;
+  return `Ask anything · ${capabilities.join(", ")}`;
 }
