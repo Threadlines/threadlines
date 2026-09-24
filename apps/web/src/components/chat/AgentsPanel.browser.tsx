@@ -736,21 +736,25 @@ describe("AgentsPanel", () => {
     }
   });
 
-  it("folds a long tool run in the drilled-in transcript into one receipt that opens in place", async () => {
-    const toolUse = (name: string) => ({ name, summary: `${name}: src/thing.ts` });
+  it("folds a tool run in the drilled-in transcript into the chat's plain lines", async () => {
     transcriptRpcMock.mockResolvedValue({
       entries: [
         { role: "assistant", text: "Looking for the handler.", toolUses: [] },
         {
           role: "assistant",
           text: "",
-          toolUses: [toolUse("Read"), toolUse("Read"), toolUse("Read"), toolUse("Edit")],
+          toolUses: [
+            { name: "Read", summary: "src/router.ts" },
+            { name: "Read", summary: "src/preview.ts" },
+            { name: "Read", summary: "src/app.ts" },
+            { name: "Edit", summary: "src/router.ts" },
+          ],
           at: "2026-08-11T10:00:00.000Z",
         },
         {
           role: "assistant",
           text: "",
-          toolUses: [toolUse("Bash")],
+          toolUses: [{ name: "Bash", summary: "pnpm test", description: "Run the router tests" }],
           at: "2026-08-11T10:01:10.000Z",
         },
         { role: "assistant", text: "Fixed it.", toolUses: [] },
@@ -773,26 +777,23 @@ describe("AgentsPanel", () => {
       await expect.element(page.getByText("Looking for the handler.")).toBeVisible();
       await expect.element(page.getByText("Fixed it.")).toBeVisible();
 
-      const receipt = await vi.waitUntil(() =>
-        document.querySelector<HTMLElement>("[data-subagent-transcript-tool-run-toggle='true']"),
-      );
-      expect(receipt.textContent).toContain("5 actions");
-      expect(receipt.textContent).toContain("Read ×3");
-      expect(receipt.getAttribute("aria-expanded")).toBe("false");
-      expect(document.querySelector("[data-subagent-transcript-entry='tool']")).toBeNull();
+      // The looking around folds; the edit and the test run get lines of their own.
+      const summary = page.getByRole("button", { name: "Read 3 files" });
+      await expect.element(summary).toHaveAttribute("aria-expanded", "false");
+      await expect.element(page.getByText("Edited router.ts")).toBeVisible();
+      await expect.element(page.getByText("Tests passed")).toBeVisible();
+      expect(document.querySelector("[data-activity-steps='true']")).toBeNull();
 
-      receipt.click();
+      await summary.click();
 
-      await vi.waitFor(() => {
-        expect(receipt.getAttribute("aria-expanded")).toBe("true");
-        expect(document.querySelector("[data-subagent-transcript-entry='tool']")).not.toBeNull();
-      });
+      await expect.element(summary).toHaveAttribute("aria-expanded", "true");
+      await expect.element(page.getByText("Read preview.ts")).toBeVisible();
     } finally {
       await mounted.unmount();
     }
   });
 
-  it("fronts even a short tool run with a receipt, so the drill-in is prose and receipts", async () => {
+  it("folds even a short tool run into one line that opens on request", async () => {
     transcriptRpcMock.mockResolvedValue({
       entries: [
         { role: "assistant", text: "Checking two things.", toolUses: [] },
@@ -800,8 +801,8 @@ describe("AgentsPanel", () => {
           role: "assistant",
           text: "",
           toolUses: [
-            { name: "Read", summary: "Read: a.ts" },
-            { name: "Grep", summary: "Grep: handler" },
+            { name: "Read", summary: "a.ts" },
+            { name: "Grep", summary: "handler in src" },
           ],
         },
       ],
@@ -820,23 +821,19 @@ describe("AgentsPanel", () => {
       await page.getByRole("button", { name: "Open Router sweep transcript" }).click();
       await expect.element(page.getByText("Checking two things.")).toBeVisible();
 
-      // The run is folded, not inlined, and the rows only arrive on request.
-      await vi.waitFor(() => {
-        expect(
-          document.querySelector("[data-subagent-transcript-tool-run-toggle='true']"),
-        ).not.toBeNull();
-      });
-      await expect.element(page.getByText("2 actions")).toBeVisible();
-      expect(document.querySelector("[data-subagent-transcript-entry='tool']")).toBeNull();
+      // The run is folded, not inlined, and its steps only arrive on request.
+      const summary = page.getByRole("button", { name: "Read a.ts and searched once" });
+      await expect.element(summary).toBeVisible();
+      expect(document.querySelector("[data-activity-steps='true']")).toBeNull();
 
-      await page.getByRole("button", { name: /2 actions/u }).click();
-      await expect.element(page.getByText("handler")).toBeVisible();
+      await summary.click();
+      await expect.element(page.getByText("Searched for handler")).toBeVisible();
     } finally {
       await mounted.unmount();
     }
   });
 
-  it("bridges child activity into one expandable receipt when the provider transcript omits tools", async () => {
+  it("bridges child activity the provider transcript omits into one plain group", async () => {
     transcriptRpcMock.mockResolvedValue({
       entries: [{ role: "assistant", text: "I am checking the route.", toolUses: [] }],
       truncated: false,
@@ -849,6 +846,7 @@ describe("AgentsPanel", () => {
         createdAt: "2026-08-13T20:30:00.000Z",
         completedAt: "2026-08-13T20:30:02.000Z",
         label: "Ran command",
+        command: "rg -n handler apps/web",
         rawCommand: "rg -n handler apps/web",
         outputPreview: "apps/web/router.ts:42",
         tone: "tool",
@@ -861,6 +859,7 @@ describe("AgentsPanel", () => {
         id: "command-2",
         createdAt: "2026-08-13T20:30:05.000Z",
         label: "Ran command",
+        command: "vp run typecheck",
         rawCommand: "vp run typecheck",
         tone: "tool",
         itemType: "command_execution",
@@ -881,9 +880,7 @@ describe("AgentsPanel", () => {
     try {
       await page.getByRole("button", { name: "Open Router sweep transcript" }).click();
       await expect.element(page.getByText("I am checking the route.")).toBeVisible();
-      expect(
-        document.querySelector("[data-subagent-transcript-activity-toggle='true']"),
-      ).toBeNull();
+      expect(document.querySelector("[data-subagent-transcript-activity='true']")).toBeNull();
 
       publishAgentsPanelActivitySource({
         environmentId: ENVIRONMENT_ID,
@@ -891,33 +888,23 @@ describe("AgentsPanel", () => {
         workEntries: workEntries.slice(0, 1),
       });
 
-      const receipt = await vi.waitUntil(() =>
-        document.querySelector<HTMLElement>("[data-subagent-transcript-activity-toggle='true']"),
-      );
-      expect(receipt.textContent).toContain("Activity");
-      expect(receipt.textContent).toContain("1 action");
+      const summary = page.getByRole("button", { name: "Searched for handler" });
+      await expect.element(summary).toBeVisible();
 
       publishAgentsPanelActivitySource({
         environmentId: ENVIRONMENT_ID,
         threadId: THREAD_ID,
         workEntries,
       });
-      await vi.waitFor(() => {
-        expect(receipt.textContent).toContain("2 actions");
-      });
-      expect(receipt.textContent).toContain("2 actions");
-      expect(receipt.textContent).toContain("Running command");
-      expect(receipt.textContent).toContain("vp run typecheck");
-      expect(receipt.getAttribute("aria-expanded")).toBe("false");
-      expect(document.querySelector("[data-subagent-transcript-entry='tool']")).toBeNull();
+      // The running typecheck is left to the live line; only settled steps fold.
+      await expect
+        .element(page.getByRole("button", { name: "Searched for handler" }))
+        .toBeVisible();
+      expect(document.body.textContent).not.toContain("Typecheck passed");
+      expect(document.querySelector("[data-subagent-transcript-live-step='true']")).not.toBeNull();
 
-      receipt.click();
-      await vi.waitFor(() => {
-        expect(receipt.getAttribute("aria-expanded")).toBe("true");
-        expect(document.querySelectorAll("[data-subagent-transcript-entry='tool']")).toHaveLength(
-          2,
-        );
-      });
+      await summary.click();
+      await expect.element(page.getByText("apps/web/router.ts:42")).toBeVisible();
     } finally {
       await mounted.unmount();
     }

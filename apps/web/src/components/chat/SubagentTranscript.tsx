@@ -6,7 +6,6 @@ import {
   type TimestampFormat,
 } from "@threadlines/contracts";
 import {
-  type CSSProperties,
   memo,
   type ReactNode,
   useCallback,
@@ -17,36 +16,28 @@ import {
   useState,
 } from "react";
 
-import { ChevronRightIcon } from "lucide-react";
-
 import { useSettings } from "../../hooks/useSettings";
 import type { WorkLogEntry } from "../../session-logic";
 import { formatShortTimestamp } from "../../timestampFormat";
 import { cn } from "~/lib/utils";
 import ChatMarkdown from "../ChatMarkdown";
 import { Button } from "../ui/button";
-import { LiveNode, SectionLabel, SpineRow, spineAccentRowStyle } from "../ui/threadline";
+import { SectionLabel } from "../ui/threadline";
+import { ActivityGroup } from "./ActivityGroup";
+import { WorkingAnchorDots, workingDotsStateForLabel } from "./WorkingAnchorDots";
 import { readSubagentTranscriptPage } from "./subagentTranscriptClient";
 import {
   buildSubagentTranscriptView,
   buildSubagentTranscriptActivityRun,
-  formatSubagentToolLabel,
-  formatSubagentToolPreview,
-  formatSubagentToolRunActions,
   groupSubagentTranscriptSteps,
   isSameSubagentTranscriptItem,
   resolveSubagentTranscriptInstruction,
   shouldShowSubagentLiveTail,
   splitSubagentTranscriptLead,
-  subagentStepNodeOffsetPx,
   type SubagentTranscriptInstruction,
-  type SubagentTranscriptActivityRun,
   type SubagentTranscriptProseItem,
-  type SubagentTranscriptStep,
-  type SubagentTranscriptToolRun,
   type SubagentTranscriptViewItem,
 } from "./SubagentTranscript.logic";
-import { formatSubagentDuration } from "./subagentMeta";
 
 const TRANSCRIPT_PAGE_SIZE = 60;
 const LIVE_REFRESH_INTERVAL_MS = 1_000;
@@ -84,6 +75,8 @@ interface SubagentTranscriptProps {
   /** Shown when the provider has no transcript yet, so a just-spawned agent
    *  still says something useful. */
   fallbackBody?: string | null;
+  /** What a live agent is doing right now, for the line under its steps. */
+  liveStep?: string | null | undefined;
   /** A neutral lifecycle receipt shown after the provider transcript. */
   terminalNotice?: {
     readonly label: string;
@@ -230,6 +223,7 @@ export function SubagentTranscript({
   cwd,
   objective,
   fallbackBody = null,
+  liveStep = null,
   terminalNotice = null,
   activityEntries = EMPTY_WORK_ENTRIES,
   onAgentResolved,
@@ -401,7 +395,7 @@ export function SubagentTranscript({
         agentId: section.agentId,
         result: section.result,
         items,
-        steps,
+        groupedSteps: groupSubagentTranscriptSteps(steps),
         activityRun,
         // Only the first section can stand in the objective: the prop describes
         // one agent, and repeating it under each of several sections would
@@ -601,8 +595,7 @@ export function SubagentTranscript({
             />
           ) : (
             sectionViews.map((section, sectionIndex) => {
-              const { activityRun, instruction, items, steps } = section;
-              const groupedSteps = groupSubagentTranscriptSteps(steps);
+              const { activityRun, instruction, items, groupedSteps } = section;
               const showLiveTail =
                 follow &&
                 sectionIndex === sectionViews.length - 1 &&
@@ -646,109 +639,49 @@ export function SubagentTranscript({
                   {earlierLoadError ? (
                     <p className="text-[10px] text-destructive/80">{earlierLoadError}</p>
                   ) : null}
-                  <div style={TRANSCRIPT_SPINE_STYLE}>
-                    {groupedSteps.map((step, stepIndex) => {
-                      const lastTranscriptItem = stepIndex === groupedSteps.length - 1;
-                      const lastItem = lastTranscriptItem && activityRun === null;
-                      // One live terminus per surface: the newest row, and only
-                      // while the agent is still working.
-                      const live = follow && lastItem && !showLiveTail;
-                      return (
-                        <SpineRow
-                          key={`${section.agentId}:${step.id}`}
-                          node={<TranscriptSpineNode step={step} live={live} />}
-                          // The dot belongs to what the step says, so it lands on
-                          // the step's first line of text.
-                          nodeOffset={subagentStepNodeOffsetPx(step)}
-                          connectTop={stepIndex > 0}
-                          connectBottom={!lastItem || showLiveTail || showTerminalNotice}
-                          style={
-                            follow
-                              ? spineAccentRowStyle(
-                                  groupedSteps.length - 1 - stepIndex + (showLiveTail ? 1 : 0),
-                                )
-                              : undefined
-                          }
-                        >
-                          {/* Padding lives on the content, not the row: the
-                              spine gutter stretches to the row's content box,
-                              so row padding would break the line. */}
-                          <div className="py-1">
-                            {step.kind === "tool-run" ? (
-                              <ToolRunReceipt
-                                run={step}
-                                // The run the agent is still adding to stays
-                                // open: collapsing it would hide the very thing
-                                // "following live" is for.
-                                openByDefault={follow && lastItem}
-                                timestampFormat={timestampFormat}
-                              />
-                            ) : (
-                              <TranscriptItem
-                                item={step.item}
-                                environmentId={environmentId}
-                                threadId={threadId}
-                                cwd={cwd}
-                                timestampFormat={timestampFormat}
-                              />
-                            )}
-                          </div>
-                        </SpineRow>
-                      );
-                    })}
-                    {activityRun ? (
-                      <SpineRow
-                        node={
-                          <ActivitySpineNode
-                            live={follow && activityRun.running && !showLiveTail}
-                          />
-                        }
-                        nodeOffset={14}
-                        connectTop={groupedSteps.length > 0}
-                        connectBottom={showLiveTail || showTerminalNotice}
-                        style={follow ? spineAccentRowStyle(showLiveTail ? 1 : 0) : undefined}
-                      >
-                        <div className="py-1">
-                          <ActivityRunReceipt run={activityRun} timestampFormat={timestampFormat} />
+                  <div data-subagent-transcript-steps="true">
+                    {groupedSteps.map((step) =>
+                      step.kind === "tool-run" ? (
+                        <div key={`${section.agentId}:${step.id}`} className="pt-0.5 pb-2.5">
+                          <ActivityGroup steps={step.steps} />
                         </div>
-                      </SpineRow>
+                      ) : (
+                        <div key={`${section.agentId}:${step.id}`} className="pb-1.5">
+                          <TranscriptItem
+                            item={step.item}
+                            environmentId={environmentId}
+                            threadId={threadId}
+                            cwd={cwd}
+                            timestampFormat={timestampFormat}
+                          />
+                        </div>
+                      ),
+                    )}
+                    {activityRun ? (
+                      <div className="pt-0.5 pb-2.5" data-subagent-transcript-activity="true">
+                        <ActivityGroup steps={activityRun.steps} />
+                      </div>
                     ) : null}
                     {showLiveTail && fallbackBody ? (
-                      <SpineRow
-                        node={<LiveNode className="size-1.5 [--thread-halo-delay:0.2s]" />}
-                        connectTop={groupedSteps.length > 0 || activityRun !== null}
-                        connectBottom={false}
-                        style={spineAccentRowStyle(0)}
-                      >
-                        <div className="py-1">
-                          <LiveTail body={fallbackBody} />
-                        </div>
-                      </SpineRow>
+                      <div className="pb-1.5">
+                        <LiveTail body={fallbackBody} />
+                      </div>
                     ) : null}
                     {showTerminalNotice ? (
-                      <SpineRow
-                        node={
-                          <span
-                            aria-hidden="true"
-                            className="block size-1.5 rounded-full bg-muted-foreground/35"
-                          />
-                        }
-                        nodeOffset={14}
-                        connectTop={groupedSteps.length > 0 || activityRun !== null}
-                        connectBottom={false}
+                      <div
+                        className="py-1 text-[11px] leading-5 text-muted-foreground/60"
+                        data-subagent-transcript-terminal="true"
                       >
-                        <div
-                          className="py-1 text-[11px] leading-5 text-muted-foreground/60"
-                          data-subagent-transcript-terminal="true"
-                        >
-                          <TranscriptTimestamp
-                            at={terminalNotice?.createdAt ?? null}
-                            timestampFormat={timestampFormat}
-                            float
-                          />
-                          {terminalNotice?.label}
-                        </div>
-                      </SpineRow>
+                        <TranscriptTimestamp
+                          at={terminalNotice?.createdAt ?? null}
+                          timestampFormat={timestampFormat}
+                          float
+                        />
+                        {terminalNotice?.label}
+                      </div>
+                    ) : null}
+                    {follow && sectionIndex === sectionViews.length - 1 ? (
+                      <TranscriptLiveLine label={liveStep?.trim() || "Working"} />
                     ) : null}
                   </div>
                   {section.result.truncated &&
@@ -842,209 +775,6 @@ function DetailRail({ children }: { children: ReactNode }) {
   return (
     <div className="mt-1 ml-1 border-l border-border/45 pl-3 text-muted-foreground/70">
       {children}
-    </div>
-  );
-}
-
-const ToolGroup = memo(function ToolGroup({
-  item,
-  timestampFormat,
-}: {
-  item: Extract<SubagentTranscriptViewItem, { kind: "tools" }>;
-  timestampFormat: TimestampFormat;
-}) {
-  const [expanded, setExpanded] = useState(false);
-  const outputLines = item.output ? item.output.split("\n").length : 0;
-
-  return (
-    <div className="min-w-0" data-subagent-transcript-entry="tool">
-      {item.tools.map((toolUse, toolIndex) => {
-        const preview = formatSubagentToolPreview(toolUse);
-        const first = toolIndex === 0;
-        return (
-          <div
-            key={toolUse.id}
-            className="flex min-w-0 items-center gap-1.5 leading-5"
-            title={formatSubagentToolLabel(toolUse)}
-          >
-            <span className="shrink-0 text-[11px] leading-5 text-foreground/80">
-              {toolUse.name}
-            </span>
-            {preview ? (
-              <>
-                <span className="shrink-0 text-muted-foreground/40">-</span>
-                <span className="min-w-0 flex-1 truncate font-mono text-[11px] leading-5 text-muted-foreground/55">
-                  {preview}
-                </span>
-              </>
-            ) : (
-              <span className="flex-1" />
-            )}
-            {first ? <TranscriptTimestamp at={item.at} timestampFormat={timestampFormat} /> : null}
-            {first && item.output ? (
-              <DisclosureButton
-                expanded={expanded}
-                label={outputLines > 1 ? `${outputLines} lines` : "Output"}
-                onToggle={() => setExpanded((value) => !value)}
-              />
-            ) : null}
-          </div>
-        );
-      })}
-      {item.output && (expanded || item.tools.length === 0) ? (
-        <DetailRail>
-          <pre className="max-h-64 overflow-y-auto font-mono text-[10px] leading-4 whitespace-pre-wrap wrap-break-word text-muted-foreground/65">
-            {item.output}
-          </pre>
-        </DetailRail>
-      ) : null}
-    </div>
-  );
-});
-
-/**
- * A run of tool calls as one line, in the same language as the conversation's
- * activity receipt: what happened, how much of it, how long it took, and a way
- * to open it. Expanding renders the same rows that would have been there.
- */
-function ToolRunReceipt({
-  run,
-  openByDefault,
-  timestampFormat,
-}: {
-  run: SubagentTranscriptToolRun;
-  openByDefault: boolean;
-  timestampFormat: TimestampFormat;
-}) {
-  // Null means "no opinion yet", so a run that opens itself because it is live
-  // still collapses when the agent moves on, while a run the reader opened by
-  // hand stays open.
-  const [overrideExpanded, setOverrideExpanded] = useState<boolean | null>(null);
-  const expanded = overrideExpanded ?? openByDefault;
-  const duration = run.durationMs === null ? null : formatSubagentDuration(run.durationMs);
-
-  return (
-    <div className="min-w-0" data-subagent-transcript-entry="tool-run">
-      <div className="flex min-w-0 items-center gap-1.5 leading-5">
-        <button
-          type="button"
-          className="flex min-w-0 flex-1 items-center gap-1.5 text-left transition-colors duration-150 hover:text-foreground/75"
-          aria-expanded={expanded}
-          data-subagent-transcript-tool-run-toggle="true"
-          onClick={() => setOverrideExpanded(!expanded)}
-        >
-          <ChevronRightIcon
-            aria-hidden="true"
-            className={cn(
-              "size-3 shrink-0 text-muted-foreground/45 transition-transform duration-150",
-              expanded && "rotate-90",
-            )}
-          />
-          <span className="shrink-0 text-[11px] leading-5 text-foreground/80">
-            {formatSubagentToolRunActions(run)}
-          </span>
-          {run.toolSummary ? (
-            <>
-              <span aria-hidden="true" className="shrink-0 text-muted-foreground/30">
-                ·
-              </span>
-              <span className="min-w-0 flex-1 truncate font-mono text-[11px] leading-5 text-muted-foreground/55">
-                {run.toolSummary}
-              </span>
-            </>
-          ) : (
-            <span className="flex-1" />
-          )}
-          {duration ? (
-            <span className="shrink-0 font-mono text-[10px] leading-5 text-muted-foreground/45 tabular-nums">
-              {duration}
-            </span>
-          ) : null}
-        </button>
-      </div>
-      {expanded ? (
-        <div className="mt-0.5 space-y-0.5">
-          {run.items.map((item) => (
-            <ToolGroup key={item.id} item={item} timestampFormat={timestampFormat} />
-          ))}
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-/** The parent activity stream's durable view of work the provider transcript
- * omitted. It stays one row as calls arrive and only exposes the machinery when
- * the reader asks for it. */
-function ActivityRunReceipt({
-  run,
-  timestampFormat,
-}: {
-  run: SubagentTranscriptActivityRun;
-  timestampFormat: TimestampFormat;
-}) {
-  const [expanded, setExpanded] = useState(false);
-  const duration = run.durationMs === null ? null : formatSubagentDuration(run.durationMs);
-
-  return (
-    <div className="min-w-0" data-subagent-transcript-entry="activity-run">
-      <button
-        type="button"
-        className="flex min-w-0 w-full items-center gap-1.5 text-left transition-colors duration-150 hover:text-foreground/75"
-        aria-expanded={expanded}
-        data-subagent-transcript-activity-toggle="true"
-        onClick={() => setExpanded((value) => !value)}
-      >
-        <ChevronRightIcon
-          aria-hidden="true"
-          className={cn(
-            "size-3 shrink-0 text-muted-foreground/45 transition-transform duration-150",
-            expanded && "rotate-90",
-          )}
-        />
-        <span className="shrink-0 text-[11px] leading-5 font-medium text-foreground/80">
-          Activity
-        </span>
-        <span aria-hidden="true" className="shrink-0 text-muted-foreground/30">
-          ·
-        </span>
-        <span className="shrink-0 text-[11px] leading-5 text-muted-foreground/65">
-          {formatSubagentToolRunActions(run)}
-        </span>
-        <span aria-hidden="true" className="shrink-0 text-muted-foreground/30">
-          ·
-        </span>
-        <span
-          className={cn(
-            "shrink-0 text-[11px] leading-5",
-            run.running ? "text-primary-readable/75" : "text-muted-foreground/60",
-          )}
-        >
-          {run.latestLabel}
-        </span>
-        {run.latestPreview ? (
-          <span
-            className="min-w-0 flex-1 truncate font-mono text-[11px] leading-5 text-muted-foreground/50"
-            title={run.latestPreview}
-          >
-            {run.latestPreview}
-          </span>
-        ) : (
-          <span className="flex-1" />
-        )}
-        {duration ? (
-          <span className="shrink-0 font-mono text-[10px] leading-5 text-muted-foreground/45 tabular-nums">
-            {duration}
-          </span>
-        ) : null}
-      </button>
-      {expanded ? (
-        <div className="mt-0.5 space-y-0.5" data-subagent-transcript-activity-entries="true">
-          {run.items.map((item) => (
-            <ToolGroup key={item.id} item={item} timestampFormat={timestampFormat} />
-          ))}
-        </div>
-      ) : null}
     </div>
   );
 }
@@ -1274,55 +1004,20 @@ const TranscriptInstruction = memo(function TranscriptInstruction({
   );
 });
 
-/** The spine reads as one unbroken thread, so its own colour stays neutral and
- *  only the rows near the live terminus warm toward accent. */
-const TRANSCRIPT_SPINE_STYLE = { ["--spine"]: "var(--border)" } as CSSProperties;
-
-function ActivitySpineNode({ live }: { live: boolean }) {
-  return live ? (
-    <LiveNode
-      className="size-1.5 [--thread-halo-delay:0.2s]"
-      data-subagent-transcript-node="true"
-    />
-  ) : (
-    <span
-      aria-hidden="true"
-      data-subagent-transcript-node="true"
-      className="size-[7px] rounded-full border border-muted-foreground/45 bg-background"
-    />
-  );
-}
-
-/** Settled steps are quiet dots, foldable rows are hollow rings (same family,
- *  reads as openable), and the one live row carries the halo. */
-function TranscriptSpineNode({ step, live }: { step: SubagentTranscriptStep; live: boolean }) {
-  if (live) {
-    return (
-      <LiveNode
-        className="size-1.5 [--thread-halo-delay:0.2s]"
-        data-subagent-transcript-node="true"
-      />
-    );
-  }
-  const openable =
-    step.kind === "tool-run" ||
-    step.item.kind === "thinking" ||
-    (step.item.kind === "message" && step.item.role !== "assistant");
-  if (openable) {
-    return (
-      <span
-        aria-hidden="true"
-        data-subagent-transcript-node="true"
-        className="size-[7px] rounded-full border border-muted-foreground/45 bg-background"
-      />
-    );
-  }
+/** What a live agent is doing right now, worded like the conversation's own
+ *  working line. */
+function TranscriptLiveLine({ label }: { label: string }) {
   return (
-    <span
-      aria-hidden="true"
-      data-subagent-transcript-node="true"
-      className="size-[5px] rounded-full bg-[color-mix(in_oklab,var(--muted-foreground)_42%,var(--background))]"
-    />
+    <div
+      className="flex min-w-0 items-center gap-1.5 pt-1 text-[11px] leading-4 text-muted-foreground/70"
+      data-subagent-transcript-live-step="true"
+    >
+      <WorkingAnchorDots
+        state={workingDotsStateForLabel(label)}
+        className="relative -top-px -mr-0.5"
+      />
+      <span className="working-shimmer min-w-0 truncate">{label}</span>
+    </div>
   );
 }
 

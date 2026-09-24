@@ -459,6 +459,34 @@ describe("mapClaudeSubagentTranscript", () => {
     });
   });
 
+  it("keeps the agent's label for a shell call and marks a failed result", () => {
+    const jsonl = [
+      transcriptLine({
+        type: "assistant",
+        message: {
+          content: [
+            {
+              type: "tool_use",
+              name: "Bash",
+              input: { command: "pnpm test", description: "Run the van tests" },
+            },
+          ],
+        },
+      }),
+      transcriptLine({
+        type: "user",
+        message: {
+          content: [{ type: "tool_result", is_error: true, content: "1 test failed" }],
+        },
+      }),
+    ].join("\n");
+
+    const result = mapClaudeSubagentTranscript(jsonl);
+    assert.equal(result.entries[0]?.toolUses[0]?.description, "Run the van tests");
+    assert.equal(result.entries[1]?.outputIsError, true);
+    assert.equal(result.entries[1]?.outputPreview, "1 test failed");
+  });
+
   it("caps entry counts and long content", () => {
     const longLine = transcriptLine({
       type: "assistant",

@@ -1,14 +1,13 @@
 import { describe, expect, it } from "vite-plus/test";
 import type { WorkLogEntry } from "../../session-logic";
+import { partitionActivitySteps, summarizeRoutineSteps } from "./activitySteps";
 import {
   buildSubagentTranscriptActivityRun,
   buildSubagentTranscriptView,
-  formatSubagentToolRunActions,
   groupSubagentTranscriptSteps,
   resolveSubagentTranscriptInstruction,
   shouldShowSubagentLiveTail,
   splitSubagentTranscriptLead,
-  subagentStepNodeOffsetPx,
   type SubagentTranscriptEntryLike,
 } from "./SubagentTranscript.logic";
 
@@ -45,6 +44,7 @@ describe("buildSubagentTranscriptView", () => {
         id: "1:tools",
         tools: [{ id: "1:Bash\u0000rg -n centerOf:0", name: "Bash", summary: "rg -n centerOf" }],
         output: "src/preview.ts:42",
+        outputFailed: false,
         at: "2026-07-27T03:37:37.216Z",
       },
     ]);
@@ -79,7 +79,14 @@ describe("buildSubagentTranscriptView", () => {
     );
 
     expect(view).toEqual([
-      { kind: "tools", id: "12:output", tools: [], output: "orphaned output", at: null },
+      {
+        kind: "tools",
+        id: "12:output",
+        tools: [],
+        output: "orphaned output",
+        outputFailed: false,
+        at: null,
+      },
     ]);
   });
 
@@ -124,77 +131,68 @@ describe("buildSubagentTranscriptView", () => {
 });
 
 describe("groupSubagentTranscriptSteps", () => {
-  const toolUse = (name: string) => ({ name, summary: `${name}: src/thing.ts` });
-
-  it("folds a long run of tool calls into one receipt and leaves the prose alone", () => {
+  it("folds a run of tool calls into one group of plain steps and leaves the prose alone", () => {
     const view = buildSubagentTranscriptView([
+      entry({ role: "assistant", text: "Looking for the handler." }),
       entry({
         role: "assistant",
-        text: "Looking for the handler.",
-        at: "2026-08-11T10:00:00.000Z",
+        toolUses: [
+          { name: "Read", summary: "src/router.ts" },
+          { name: "Grep", summary: "centerOf in src" },
+          { name: "Read", summary: "src/preview.ts" },
+        ],
       }),
       entry({
         role: "assistant",
-        toolUses: [toolUse("Read"), toolUse("Read"), toolUse("Read")],
-        at: "2026-08-11T10:00:05.000Z",
+        toolUses: [{ name: "Edit", summary: "src/router.ts" }],
       }),
-      entry({
-        role: "assistant",
-        toolUses: [toolUse("Edit"), toolUse("Bash")],
-        at: "2026-08-11T10:01:15.000Z",
-      }),
-      entry({ role: "assistant", text: "Fixed it.", at: "2026-08-11T10:02:00.000Z" }),
-    ]);
-
-    const grouped = groupSubagentTranscriptSteps(view);
-
-    expect(grouped.map((step) => step.kind)).toEqual(["item", "tool-run", "item"]);
-    const run = grouped[1];
-    expect(run?.kind === "tool-run" ? run.actionCount : null).toBe(5);
-    expect(run?.kind === "tool-run" ? run.toolSummary : null).toBe("Read ×3, Edit ×1, Bash ×1");
-    expect(run?.kind === "tool-run" ? run.durationMs : null).toBe(70_000);
-    // The rows are folded, not dropped.
-    expect(run?.kind === "tool-run" ? run.items.length : null).toBe(2);
-  });
-
-  it("gives a single call a receipt of its own, so the thread is prose and receipts", () => {
-    const view = buildSubagentTranscriptView([
-      entry({ role: "assistant", text: "Checking." }),
-      entry({ role: "assistant", toolUses: [toolUse("Read")] }),
-      entry({ role: "assistant", text: "Done." }),
+      entry({ role: "assistant", text: "Fixed it." }),
     ]);
 
     const grouped = groupSubagentTranscriptSteps(view);
     expect(grouped.map((step) => step.kind)).toEqual(["item", "tool-run", "item"]);
     const run = grouped[1];
-    expect(run?.kind === "tool-run" ? formatSubagentToolRunActions(run) : null).toBe("1 action");
-    expect(run?.kind === "tool-run" ? run.toolSummary : null).toBe("Read ×1");
+    const { routine, notable } = partitionActivitySteps(run?.kind === "tool-run" ? run.steps : []);
+    expect(summarizeRoutineSteps(routine)).toBe("Read 2 files and searched once");
+    expect(notable.map((step) => step.label)).toEqual(["Edited router.ts"]);
   });
 
-  it("reads a result whose call is on an earlier page as tool output, not zero actions", () => {
+  it("words a shell call with the agent's own label and marks a failed check", () => {
+    const view = buildSubagentTranscriptView([
+      entry({
+        role: "assistant",
+        toolUses: [{ name: "Bash", summary: "pnpm test", description: "Run the van tests" }],
+      }),
+      entry({
+        role: "user",
+        outputPreview: "Tests  1 failed | 11 passed (12)",
+        outputIsError: true,
+      }),
+    ]);
+
+    const [run] = groupSubagentTranscriptSteps(view);
+    expect(run?.kind === "tool-run" ? run.steps[0] : null).toMatchObject({
+      tone: "fail",
+      label: "1 of 12 tests failed",
+      liveLabel: "Running the van tests",
+    });
+  });
+
+  it("keeps a result whose call is on an earlier page reachable", () => {
     const view = buildSubagentTranscriptView([entry({ role: "user", outputPreview: "42 files" })]);
 
     const [run] = groupSubagentTranscriptSteps(view);
-    expect(run?.kind === "tool-run" ? formatSubagentToolRunActions(run) : null).toBe("Tool output");
-  });
-
-  it("puts the node on the prose's own first line, and on the meta line elsewhere", () => {
-    const view = buildSubagentTranscriptView([
-      entry({ role: "assistant", text: "Walked the route files." }),
-      entry({ role: "assistant", toolUses: [toolUse("Read")] }),
-      entry({ role: "thinking", text: "Considering the gutter." }),
-    ]);
-
-    // Prose leads with an 18px line, everything else with a 20px meta line, on
-    // 4px of row padding. The panel geometry test measures the rendered result.
-    expect(groupSubagentTranscriptSteps(view).map(subagentStepNodeOffsetPx)).toEqual([13, 14, 14]);
+    expect(run?.kind === "tool-run" ? run.steps[0] : null).toMatchObject({
+      label: "Output from an earlier step",
+      detail: { output: "42 files" },
+    });
   });
 
   it("breaks a run at the prose between two batches", () => {
     const view = buildSubagentTranscriptView([
-      entry({ role: "assistant", toolUses: [toolUse("Read"), toolUse("Read"), toolUse("Read")] }),
+      entry({ role: "assistant", toolUses: [{ name: "Read", summary: "a.ts" }] }),
       entry({ role: "assistant", text: "Halfway." }),
-      entry({ role: "assistant", toolUses: [toolUse("Edit"), toolUse("Edit"), toolUse("Edit")] }),
+      entry({ role: "assistant", toolUses: [{ name: "Edit", summary: "a.ts" }] }),
     ]);
 
     expect(groupSubagentTranscriptSteps(view).map((step) => step.kind)).toEqual([
@@ -202,29 +200,6 @@ describe("groupSubagentTranscriptSteps", () => {
       "item",
       "tool-run",
     ]);
-  });
-
-  it("names only the three busiest kinds and counts the rest", () => {
-    const view = buildSubagentTranscriptView([
-      entry({
-        role: "assistant",
-        toolUses: [
-          toolUse("Edit"),
-          toolUse("Edit"),
-          toolUse("Edit"),
-          toolUse("Read"),
-          toolUse("Read"),
-          toolUse("Bash"),
-          toolUse("Grep"),
-          toolUse("Glob"),
-        ],
-      }),
-    ]);
-
-    const [run] = groupSubagentTranscriptSteps(view);
-    expect(run?.kind === "tool-run" ? run.toolSummary : null).toBe(
-      "Edit ×3, Read ×2, Bash ×1, +2 more",
-    );
   });
 });
 
@@ -234,6 +209,7 @@ describe("buildSubagentTranscriptActivityRun", () => {
     createdAt: "2026-08-13T20:30:00.000Z",
     completedAt: "2026-08-13T20:30:02.000Z",
     label: "Ran command",
+    command: "rg -n handler apps/web",
     rawCommand: "rg -n handler apps/web",
     outputPreview: "apps/web/router.ts:42",
     tone: "tool",
@@ -244,7 +220,7 @@ describe("buildSubagentTranscriptActivityRun", () => {
     ...overrides,
   });
 
-  it("builds one dynamic receipt from child work missing in the provider transcript", () => {
+  it("builds one group of plain steps from child work missing in the provider transcript", () => {
     const run = buildSubagentTranscriptActivityRun(
       [
         command(),
@@ -252,6 +228,7 @@ describe("buildSubagentTranscriptActivityRun", () => {
           id: "command-2",
           toolCallId: "call-2",
           createdAt: "2026-08-13T20:30:05.000Z",
+          command: "vp run typecheck",
           rawCommand: "vp run typecheck",
           executionState: "running",
         }),
@@ -261,18 +238,12 @@ describe("buildSubagentTranscriptActivityRun", () => {
       ]),
     );
 
-    expect(run).toMatchObject({
-      kind: "activity-run",
-      actionCount: 2,
-      toolSummary: "shell_command ×2",
-      latestLabel: "Running command",
-      latestPreview: "vp run typecheck",
-      running: true,
+    expect(run).toMatchObject({ kind: "activity-run", running: true });
+    expect(run?.steps[0]).toMatchObject({
+      label: "Searched for handler",
+      detail: { command: "rg -n handler apps/web", output: "apps/web/router.ts:42" },
     });
-    expect(run?.items[0]).toMatchObject({
-      output: "apps/web/router.ts:42",
-      tools: [{ name: "shell_command", summary: "rg -n handler apps/web" }],
-    });
+    expect(run?.steps[1]).toMatchObject({ running: true, liveLabel: "Typechecking" });
   });
 
   it("does not repeat a call the provider transcript already contains", () => {

@@ -10,7 +10,6 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   deriveActiveModelFallbackState,
-  deriveCompletionDividerBeforeEntryId,
   deriveActiveStatusLabel,
   deriveActiveWorkStartedAt,
   deriveActivePlanState,
@@ -28,7 +27,6 @@ import {
   findLatestProposedPlan,
   findSidebarProposedPlan,
   hasActionableProposedPlan,
-  hasToolActivityForTurn,
   isLatestTurnSettled,
 } from "./session-logic";
 
@@ -2113,6 +2111,78 @@ describe("deriveWorkLogEntries", () => {
       "rm: cannot remove 'does-not-exist.ts': No such file or directory",
     );
     expect(entries[0]?.exitCode).toBe(1);
+  });
+
+  it("keeps Claude's own label and full command for a shell call", () => {
+    const fullCommand =
+      "cd /c/repo && gh pr view 292 --json number,headRefName,state,mergeStateStatus,autoMergeRequest";
+    const entries = deriveWorkLogEntries([
+      makeActivity({
+        id: "bash-done",
+        kind: "tool.completed",
+        summary: "Command run",
+        payload: {
+          itemType: "command_execution",
+          toolCallId: "toolu_1",
+          title: "Command run",
+          detail: "cd /c/repo && gh pr view 292 --json number,head...",
+          data: {
+            toolName: "Bash",
+            input: { command: fullCommand, description: "Check both PRs' branches on GitHub" },
+          },
+        },
+      }),
+    ]);
+
+    expect(entries).toHaveLength(1);
+    expect(entries[0]?.command).toBe(fullCommand);
+    expect(entries[0]?.description).toBe("Check both PRs' branches on GitHub");
+  });
+
+  it("folds a command's background task completion into the command", () => {
+    const entries = deriveWorkLogEntries([
+      makeActivity({
+        id: "bash-done",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "tool.completed",
+        summary: "Command run",
+        payload: {
+          itemType: "command_execution",
+          toolCallId: "toolu_1",
+          title: "Command run",
+          detail: "pnpm test",
+          data: { toolName: "Bash", input: { command: "pnpm test", description: "Run tests" } },
+        },
+      }),
+      makeActivity({
+        id: "task-started",
+        createdAt: "2026-02-23T00:00:01.500Z",
+        kind: "task.started",
+        summary: "local_bash task started",
+        tone: "info",
+        payload: {
+          taskId: "b1",
+          taskType: "local_bash",
+          detail: "Run tests",
+          toolUseId: "toolu_1",
+        },
+      }),
+      makeActivity({
+        id: "task-done",
+        createdAt: "2026-02-23T00:00:40.000Z",
+        kind: "task.completed",
+        summary: "Task failed",
+        tone: "error",
+        payload: { taskId: "b1", status: "failed", detail: "Run tests", toolUseId: "toolu_1" },
+      }),
+    ]);
+
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      command: "pnpm test",
+      executionState: "failed",
+      completedAt: "2026-02-23T00:00:40.000Z",
+    });
   });
 
   it("lifts the leading exit-code line out of Claude bash failure output", () => {
@@ -4230,37 +4300,6 @@ describe("deriveTimelineEntries", () => {
       "subagent-result:turn-1:agent-1",
     ]);
   });
-
-  it("anchors the completion divider to latestTurn.assistantMessageId before timestamp fallback", () => {
-    const entries = deriveTimelineEntries(
-      [
-        {
-          id: MessageId.make("assistant-earlier"),
-          role: "assistant",
-          text: "progress update",
-          createdAt: "2026-02-23T00:00:01.000Z",
-          streaming: false,
-        },
-        {
-          id: MessageId.make("assistant-final"),
-          role: "assistant",
-          text: "final answer",
-          createdAt: "2026-02-23T00:00:01.000Z",
-          streaming: false,
-        },
-      ],
-      [],
-      [],
-    );
-
-    expect(
-      deriveCompletionDividerBeforeEntryId(entries, {
-        assistantMessageId: MessageId.make("assistant-final"),
-        startedAt: "2026-02-23T00:00:00.000Z",
-        completedAt: "2026-02-23T00:00:02.000Z",
-      }),
-    ).toBe("assistant-final");
-  });
 });
 
 describe("deriveWorkLogEntries context window handling", () => {
@@ -4351,27 +4390,6 @@ describe("deriveWorkLogEntries context window handling", () => {
     expect(entries).toHaveLength(1);
     expect(entries[0]?.id).toBe("provider-context-compaction");
     expect(entries[0]?.label).toBe("Context compacted");
-  });
-});
-
-describe("hasToolActivityForTurn", () => {
-  it("returns false when turn id is missing", () => {
-    const activities: OrchestrationThreadActivity[] = [
-      makeActivity({ id: "tool-1", turnId: "turn-1", kind: "tool.completed", tone: "tool" }),
-    ];
-
-    expect(hasToolActivityForTurn(activities, undefined)).toBe(false);
-    expect(hasToolActivityForTurn(activities, null)).toBe(false);
-  });
-
-  it("returns true only for matching tool activity in the target turn", () => {
-    const activities: OrchestrationThreadActivity[] = [
-      makeActivity({ id: "tool-1", turnId: "turn-1", kind: "tool.completed", tone: "tool" }),
-      makeActivity({ id: "info-1", turnId: "turn-2", kind: "turn.completed", tone: "info" }),
-    ];
-
-    expect(hasToolActivityForTurn(activities, TurnId.make("turn-1"))).toBe(true);
-    expect(hasToolActivityForTurn(activities, TurnId.make("turn-2"))).toBe(false);
   });
 });
 

@@ -364,9 +364,15 @@ export const ProviderSubagentTranscriptEntry = Schema.Struct({
     Schema.Struct({
       name: Schema.String,
       summary: Schema.String,
+      /** The agent's own one-line label for the call, when it wrote one
+       *  (Claude's shell tools take a `description`). */
+      description: Schema.optional(Schema.String),
     }),
   ),
   outputPreview: Schema.optional(Schema.String),
+  /** The provider marked this record's tool results as errors (a failed
+   *  command, a test run that exited non-zero). */
+  outputIsError: Schema.optional(Schema.Boolean),
 });
 export type ProviderSubagentTranscriptEntry = typeof ProviderSubagentTranscriptEntry.Type;
 

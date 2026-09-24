@@ -16,6 +16,7 @@ import { formatContextWindowTokensCompact } from "../../lib/contextWindow";
 import { pluralize } from "../../lib/utils";
 import { formatElapsedDurationLabel, formatRelativeTimeLabel } from "../../timestampFormat";
 import { formatSubagentMetaParts, formatSubagentDuration } from "./subagentMeta";
+import { plainAgentStep } from "./activitySteps";
 import {
   deriveSubagentDisplayDetails,
   normalizeSubagentInlineText,
@@ -174,7 +175,7 @@ function subagentBranch(
     // The step the provider reports is the freshest signal; the agent's own
     // streamed prose is the fallback when there is no task stream.
     output: live
-      ? (item.telemetry?.step ??
+      ? (formatLiveAgentStep(item) ??
         (item.liveBody ? normalizeSubagentInlineText(item.liveBody) : null))
       : null,
     tag: null,
@@ -419,9 +420,16 @@ export function formatLiveAgentStatusRows(
   };
 }
 
+/** The step a live agent reports, worded the way the conversation words
+ *  steps ("Editing workVan.ts" rather than the full path). */
+export function formatLiveAgentStep(item: SubagentProgressItem): string | null {
+  const step = item.telemetry?.step?.trim();
+  return step ? plainAgentStep(step) : null;
+}
+
 /** The provider's reported step, else the agent's own newest prose. */
 function liveAgentStep(item: SubagentProgressItem): string | null {
-  const step = item.telemetry?.step?.trim();
+  const step = formatLiveAgentStep(item);
   if (step) {
     return step;
   }

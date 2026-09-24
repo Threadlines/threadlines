@@ -8,13 +8,24 @@
  */
 
 import type { WorkLogEntry } from "../../session-logic";
+import {
+  activityStepForOrphanOutput,
+  activityStepFromTranscriptTool,
+  activityStepFromWorkLogEntry,
+  type ActivityStep,
+} from "./activitySteps";
 
 export interface SubagentTranscriptEntryLike {
   readonly id?: string | undefined;
   readonly role: "user" | "assistant" | "system" | "thinking";
   readonly text: string;
-  readonly toolUses: ReadonlyArray<{ readonly name: string; readonly summary: string }>;
+  readonly toolUses: ReadonlyArray<{
+    readonly name: string;
+    readonly summary: string;
+    readonly description?: string | undefined;
+  }>;
   readonly outputPreview?: string | undefined;
+  readonly outputIsError?: boolean | undefined;
   /** ISO timestamp, when the provider records one per entry. */
   readonly at?: string | undefined;
 }
@@ -25,6 +36,7 @@ export interface SubagentTranscriptToolUse {
   readonly id: string;
   readonly name: string;
   readonly summary: string;
+  readonly description?: string | undefined;
 }
 
 export type SubagentTranscriptViewItem =
@@ -46,6 +58,8 @@ export type SubagentTranscriptViewItem =
       readonly id: string;
       readonly tools: ReadonlyArray<SubagentTranscriptToolUse>;
       readonly output: string | null;
+      /** The provider marked the calls' results as errors. */
+      readonly outputFailed: boolean;
       readonly at: string | null;
     };
 
@@ -54,6 +68,7 @@ interface MutableToolsItem {
   id: string;
   tools: ReadonlyArray<SubagentTranscriptToolUse>;
   output: string | null;
+  outputFailed: boolean;
   at: string | null;
 }
 
@@ -69,17 +84,30 @@ export function buildSubagentTranscriptView(
   const items: Array<SubagentTranscriptViewItem> = [];
   let openToolsItem: MutableToolsItem | null = null;
 
-  const attachOutput = (output: string, at: string | null, entryKey: string): void => {
+  const attachOutput = (
+    output: string,
+    failed: boolean,
+    at: string | null,
+    entryKey: string,
+  ): void => {
     if (openToolsItem) {
       openToolsItem.output =
         openToolsItem.output === null ? output : `${openToolsItem.output}\n${output}`;
+      openToolsItem.outputFailed ||= failed;
       openToolsItem = null;
       return;
     }
     // A result with no call in this page (the call scrolled off the top, or the
     // provider emitted an unpaired record). Show it on its own rather than
     // dropping transcript content.
-    items.push({ kind: "tools", id: `${entryKey}:output`, tools: [], output, at });
+    items.push({
+      kind: "tools",
+      id: `${entryKey}:output`,
+      tools: [],
+      output,
+      outputFailed: failed,
+      at,
+    });
   };
 
   entries.forEach((entry, index) => {
@@ -114,6 +142,7 @@ export function buildSubagentTranscriptView(
         id: `${entryKey}:tools`,
         tools: keyToolUses(entryKey, entry.toolUses),
         output: null,
+        outputFailed: false,
         at,
       };
       items.push(toolsItem);
@@ -121,7 +150,7 @@ export function buildSubagentTranscriptView(
     }
 
     if (output !== null) {
-      attachOutput(output, at, entryKey);
+      attachOutput(output, entry.outputIsError === true, at, entryKey);
     }
   });
 
@@ -130,7 +159,7 @@ export function buildSubagentTranscriptView(
 
 function keyToolUses(
   entryKey: string,
-  toolUses: ReadonlyArray<{ readonly name: string; readonly summary: string }>,
+  toolUses: SubagentTranscriptEntryLike["toolUses"],
 ): ReadonlyArray<SubagentTranscriptToolUse> {
   const occurrences = new Map<string, number>();
   return toolUses.map((toolUse) => {
@@ -141,6 +170,7 @@ function keyToolUses(
       id: `${entryKey}:${contentKey}:${occurrence}`,
       name: toolUse.name,
       summary: toolUse.summary,
+      ...(toolUse.description ? { description: toolUse.description } : {}),
     };
   });
 }
@@ -148,30 +178,24 @@ function keyToolUses(
 export type SubagentTranscriptToolsItem = Extract<SubagentTranscriptViewItem, { kind: "tools" }>;
 
 /**
- * A stretch of back-to-back tool calls, folded into one receipt. The agent's own
- * prose is what a reader is following; twenty Read rows between two paragraphs
- * are the machinery under it, and they push the prose off the screen.
+ * A stretch of back-to-back tool calls between two things the agent said. It
+ * renders like the conversation's own activity: the looking around folded into
+ * one line, the steps worth noticing on lines of their own.
  */
 export interface SubagentTranscriptToolRun {
   readonly kind: "tool-run";
   readonly id: string;
-  readonly items: ReadonlyArray<SubagentTranscriptToolsItem>;
-  /** Total tool calls across the run, which is what the receipt counts. */
-  readonly actionCount: number;
-  /** `Read ×5, Edit ×8, Bash ×1`, busiest first, capped at three kinds. */
-  readonly toolSummary: string;
-  /** First call to last call, when the provider timestamped both. */
-  readonly durationMs: number | null;
+  readonly steps: ReadonlyArray<ActivityStep>;
 }
 
 /** Child-owned activity that the parent event stream saw but the provider's
  * stored transcript did not. Codex code-mode `exec` calls currently have this
  * shape: they are durable work-log entries, while `thread/read` returns only
  * the child's prose. */
-export interface SubagentTranscriptActivityRun extends Omit<SubagentTranscriptToolRun, "kind"> {
+export interface SubagentTranscriptActivityRun {
   readonly kind: "activity-run";
-  readonly latestLabel: string;
-  readonly latestPreview: string;
+  readonly id: string;
+  readonly steps: ReadonlyArray<ActivityStep>;
   readonly running: boolean;
 }
 
@@ -183,13 +207,10 @@ export type SubagentTranscriptStep =
   | { readonly kind: "item"; readonly id: string; readonly item: SubagentTranscriptProseItem }
   | SubagentTranscriptToolRun;
 
-const MAX_SUMMARIZED_TOOL_KINDS = 3;
-
 /**
- * Folds each run of consecutive tool rows into one receipt, leaving prose and
- * reasoning rows exactly where they are. Every run gets a receipt, down to a
- * single call: the transcript then reads as prose with receipts between it, and
- * a lone tool row can no longer sit on the thread in a shape of its own.
+ * Folds each run of consecutive tool rows into one activity group, leaving prose
+ * and reasoning rows exactly where they are, so the transcript reads as the
+ * agent's words with its steps summed up between them.
  */
 export function groupSubagentTranscriptSteps(
   steps: ReadonlyArray<SubagentTranscriptViewItem>,
@@ -219,80 +240,34 @@ export function groupSubagentTranscriptSteps(
       index += 1;
     }
 
-    const actionCount = run.reduce((total, item) => total + item.tools.length, 0);
     grouped.push({
       kind: "tool-run",
       id: `${run[0]?.id ?? String(index)}:run`,
-      items: run,
-      actionCount,
-      toolSummary: summarizeToolRunNames(run),
-      durationMs: toolRunDurationMs(run),
+      steps: run.flatMap(toolsItemSteps),
     });
   }
 
   return grouped;
 }
 
-/** The receipt's leading count, in the conversation's wording: `1 action`,
- *  `14 actions`. A run can carry no calls at all -- a result whose call sits on
- *  an earlier page -- and "0 actions" would read as if nothing happened. */
-export function formatSubagentToolRunActions(run: { readonly actionCount: number }): string {
-  if (run.actionCount === 0) {
-    return "Tool output";
+/** One provider record's calls as steps. A record's output belongs to its calls
+ *  as a batch, so only a lone call can claim it (and its error flag). */
+function toolsItemSteps(item: SubagentTranscriptToolsItem): ReadonlyArray<ActivityStep> {
+  if (item.tools.length === 0) {
+    // A result whose call is on an earlier page: keep its output reachable.
+    return item.output ? [activityStepForOrphanOutput(item.id, item.output)] : [];
   }
-  return `${run.actionCount.toLocaleString()} ${run.actionCount === 1 ? "action" : "actions"}`;
-}
-
-/**
- * Where the spine's node belongs on a step: the row's own top padding plus half
- * its first text line, so the dot reads as belonging to the words rather than to
- * the line above them. Agent prose renders at 12px/18px; every other row leads
- * with a 20px meta line (a receipt, reasoning, a folded message header).
- *
- * Mirrors the row padding and line heights in `SubagentTranscript.tsx`, which
- * the transcript's geometry test measures against the rendered panel.
- */
-const TRANSCRIPT_ROW_PADDING_TOP_PX = 4;
-const TRANSCRIPT_PROSE_LINE_PX = 18;
-const TRANSCRIPT_META_LINE_PX = 20;
-
-export function subagentStepNodeOffsetPx(step: SubagentTranscriptStep): number {
-  const firstLinePx =
-    step.kind === "item" && step.item.kind === "message" && step.item.role === "assistant"
-      ? TRANSCRIPT_PROSE_LINE_PX
-      : TRANSCRIPT_META_LINE_PX;
-  return TRANSCRIPT_ROW_PADDING_TOP_PX + firstLinePx / 2;
-}
-
-function summarizeToolRunNames(run: ReadonlyArray<SubagentTranscriptToolsItem>): string {
-  const counts = new Map<string, number>();
-  for (const item of run) {
-    for (const tool of item.tools) {
-      counts.set(tool.name, (counts.get(tool.name) ?? 0) + 1);
-    }
-  }
-  // Busiest kinds lead; insertion order breaks ties so the line is stable
-  // across refreshes rather than reshuffling equal counts.
-  const ordered = [...counts.entries()].toSorted((left, right) => right[1] - left[1]);
-  const shown = ordered.slice(0, MAX_SUMMARIZED_TOOL_KINDS);
-  const hiddenKinds = ordered.length - shown.length;
-  const parts = shown.map(([name, count]) => `${name} ×${count}`);
-  if (hiddenKinds > 0) {
-    parts.push(`+${hiddenKinds} more`);
-  }
-  return parts.join(", ");
-}
-
-function toolRunDurationMs(run: ReadonlyArray<SubagentTranscriptToolsItem>): number | null {
-  const timestamps = run
-    .map((item) => (item.at === null ? null : Date.parse(item.at)))
-    .filter((value): value is number => value !== null && !Number.isNaN(value));
-  const first = timestamps[0];
-  const last = timestamps.at(-1);
-  if (first === undefined || last === undefined || last <= first) {
-    return null;
-  }
-  return last - first;
+  const lone = item.tools.length === 1;
+  return item.tools.map((tool) =>
+    activityStepFromTranscriptTool({
+      id: tool.id,
+      name: tool.name,
+      summary: tool.summary,
+      description: tool.description,
+      output: lone ? (item.output ?? undefined) : undefined,
+      failed: lone && item.outputFailed,
+    }),
+  );
 }
 
 function normalizedToolSignature(name: string, summary: string): string {
@@ -324,22 +299,6 @@ function activityToolSummary(entry: WorkLogEntry): string {
   );
 }
 
-function activityLatestLabel(entry: WorkLogEntry): string {
-  if (entry.executionState !== "running") {
-    return entry.label.trim() || "Used tool";
-  }
-  switch (entry.itemType) {
-    case "command_execution":
-      return "Running command";
-    case "file_change":
-      return "Editing files";
-    case "web_search":
-      return "Searching the web";
-    default:
-      return entry.label.trim() || "Using tool";
-  }
-}
-
 /**
  * Builds the one expandable activity receipt the inspector owns for child work
  * that is absent from the provider transcript. Existing transcript tools win;
@@ -363,46 +322,28 @@ export function buildSubagentTranscriptActivityRun(
       entry.tone !== "thinking" &&
       entry.itemType !== undefined,
   );
-  const items: SubagentTranscriptToolsItem[] = [];
-  const retainedEntries: WorkLogEntry[] = [];
-
+  const steps: ActivityStep[] = [];
   for (const entry of actions) {
     const name = activityToolName(entry);
     const summary = activityToolSummary(entry);
     if (transcriptToolSignatures.has(normalizedToolSignature(name, summary))) {
       continue;
     }
-    retainedEntries.push(entry);
-    items.push({
-      kind: "tools",
-      id: `activity:${entry.toolCallId ?? entry.id}`,
-      tools: [
-        {
-          id: `activity:${entry.toolCallId ?? entry.id}:tool`,
-          name,
-          summary,
-        },
-      ],
-      output: entry.outputPreview?.trim() || null,
-      at: entry.createdAt.trim() || null,
-    });
+    const step = activityStepFromWorkLogEntry(entry);
+    if (step) {
+      steps.push(step);
+    }
   }
 
-  const latestEntry = retainedEntries.at(-1);
-  if (!latestEntry || items.length === 0) {
+  const firstStep = steps[0];
+  if (!firstStep) {
     return null;
   }
-
   return {
     kind: "activity-run",
-    id: `activity-run:${items[0]?.id ?? latestEntry.id}`,
-    items,
-    actionCount: items.length,
-    toolSummary: summarizeToolRunNames(items),
-    durationMs: toolRunDurationMs(items),
-    latestLabel: activityLatestLabel(latestEntry),
-    latestPreview: activityToolSummary(latestEntry),
-    running: retainedEntries.some((entry) => entry.executionState === "running"),
+    id: `activity-run:${firstStep.id}`,
+    steps,
+    running: steps.some((step) => step.running),
   };
 }
 
@@ -512,23 +453,8 @@ export function isSameSubagentTranscriptItem(
   const other = right as typeof left;
   return (
     left.output === other.output &&
+    left.outputFailed === other.outputFailed &&
     left.tools.length === other.tools.length &&
     left.tools.every((tool, index) => tool.id === other.tools[index]?.id)
   );
-}
-
-/** The provider falls back to `<tool>: <args>` for tools it has no preview
- *  for; the row already shows the name, so drop the repeat. */
-export function formatSubagentToolPreview(toolUse: SubagentTranscriptToolUse): string {
-  const summary = toolUse.summary.trim();
-  const prefix = `${toolUse.name}:`;
-  return summary.toLowerCase().startsWith(prefix.toLowerCase())
-    ? summary.slice(prefix.length).trim()
-    : summary;
-}
-
-/** Single-line label for tooltips and titles. */
-export function formatSubagentToolLabel(toolUse: SubagentTranscriptToolUse): string {
-  const preview = formatSubagentToolPreview(toolUse);
-  return preview.length > 0 ? `${toolUse.name} - ${preview}` : toolUse.name;
 }

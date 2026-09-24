@@ -574,6 +574,30 @@ describe("formatLiveAgentStatusRows", () => {
     });
   });
 
+  it("words a reported step the way the conversation words steps", () => {
+    const withStep = (step: string) =>
+      buildSubagent({
+        telemetry: {
+          step,
+          lastToolName: null,
+          totalTokens: null,
+          toolUses: null,
+          durationMs: null,
+          additions: null,
+          deletions: null,
+        },
+      });
+    const roster = formatLiveAgentStatusRows([
+      withStep("Editing src\\game\\hq\\paint\\workVan.ts"),
+      withStep("Running Check the van tests"),
+    ]);
+
+    expect(roster.rows.map((row) => row.step)).toEqual([
+      "Editing workVan.ts",
+      "Checking the van tests",
+    ]);
+  });
+
   it("falls back to the agent's own newest prose when there is no reported step", () => {
     const roster = formatLiveAgentStatusRows([
       buildSubagent({ status: "running", liveBody: "  Walking the\n  route files  " }),
