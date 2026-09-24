@@ -43,8 +43,6 @@ function buildProps() {
     activeTurnId: ACTIVE_TURN_ID,
     activeTurnStartedAt: "2026-04-13T12:00:05.000Z",
     listRef: createRef<LegendListRef | null>(),
-    completionDividerBeforeEntryId: null,
-    completionSummary: null,
     turnDiffSummaryByAssistantMessageId: new Map(),
     routeThreadKey: "environment-local:thread-1",
     onOpenTurnDiff: vi.fn(),

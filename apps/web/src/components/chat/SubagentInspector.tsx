@@ -24,6 +24,7 @@ import {
   SubagentModelMeta,
 } from "./subagentMeta";
 import { SubagentTranscript } from "./SubagentTranscript";
+import { formatLiveAgentStep } from "./agentsPanel.logic";
 import { sendSubagentInput } from "./subagentTranscriptClient";
 
 interface SubagentInspectorProps {
@@ -217,6 +218,7 @@ export function SubagentInspector({
         cwd={cwd}
         objective={goal}
         fallbackBody={item.liveBody}
+        liveStep={active ? formatLiveAgentStep(item) : null}
         terminalNotice={
           item.status === "interrupted"
             ? { label: "Stopped before completion", createdAt: item.updatedAt }

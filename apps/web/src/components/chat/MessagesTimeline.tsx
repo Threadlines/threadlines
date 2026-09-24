@@ -54,34 +54,23 @@ import ChatMarkdown from "../ChatMarkdown";
 import {
   BotIcon,
   CheckIcon,
-  ChevronDownIcon,
   ChevronRightIcon,
   CircleAlertIcon,
   CopyIcon,
-  CornerDownRightIcon,
-  EyeIcon,
   FileTextIcon,
-  GlobeIcon,
-  HammerIcon,
   KeyRoundIcon,
   LoaderIcon,
   LogInIcon,
   RefreshCwIcon,
-  SearchIcon,
   PencilIcon,
-  ShieldCheckIcon,
   SplitIcon,
   SquarePenIcon,
   TerminalIcon,
-  type LucideIcon,
   Undo2Icon,
-  WrenchIcon,
-  ZapIcon,
 } from "lucide-react";
 import { Button } from "../ui/button";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import { Textarea } from "../ui/textarea";
-import { SpineNode, SpineRow, spineAccentRowStyle, type SpineNodeKind } from "../ui/threadline";
 import { buildExpandedImagePreview, ExpandedImagePreview } from "./ExpandedImagePreview";
 import type { FilePreviewRequest } from "./FilePreviewDialog";
 import { loadChatAttachmentBlob } from "../../lib/attachmentPreviewQuery";
@@ -89,13 +78,14 @@ import { ProposedPlanCard, type ProposedPlanCardStatus } from "./ProposedPlanCar
 import { ChangedFilesTree } from "./ChangedFilesTree";
 import { DiffStatLabel, hasNonZeroStat } from "./DiffStatLabel";
 import { MessageCopyButton } from "./MessageCopyButton";
+import { ActivityGroup } from "./ActivityGroup";
+import { activityStepFromWorkLogEntry, type ActivityStep } from "./activitySteps";
 import {
   computeStableMessagesTimelineRows,
-  MAX_VISIBLE_WORK_LOG_ENTRIES,
   deriveMessagesTimelineRows,
-  deriveSubagentLaneLabels,
-  normalizeCompactToolLabel,
   resolveAssistantMessageCopyState,
+  summarizeFoldedTurn,
+  turnFoldIdForUserRow,
   type StableMessagesTimelineRowsState,
   type MessagesTimelineRow,
 } from "./MessagesTimeline.logic";
@@ -124,7 +114,7 @@ import {
   formatParsedDrawingDescriptor,
   type ParsedDrawingContextEntry,
 } from "~/lib/drawingContext";
-import { cn } from "~/lib/utils";
+import { cn, pluralize } from "~/lib/utils";
 import { useUiStateStore } from "~/uiStateStore";
 import { type TimestampFormat } from "@threadlines/contracts/settings";
 import { formatTimestamp } from "../../timestampFormat";
@@ -138,7 +128,6 @@ import {
   textContainsInlineTerminalContextLabels,
 } from "./userMessageTerminalContexts";
 import { SkillInlineText } from "./SkillInlineText";
-import { SubagentTranscript } from "./SubagentTranscript";
 import {
   WorkingAnchorDots,
   isWaitingOnUserState,
@@ -192,6 +181,8 @@ interface TimelineRowSharedState {
   proposedPlanState: TimelineProposedPlanState | null;
   turnAgents: TimelineTurnAgentsState | null;
   onOpenAgentsPanel: ((agentThreadId: string | null) => void) | null;
+  /** Opens or closes a settled turn's "Worked for" fold. */
+  onToggleTurnFold: (foldId: string) => void;
   /** True while the working anchor at the tail is mounted. The per-agent live
    *  status rows render there and only there; a receipt keeps its compact
    *  tracker chip but must not repeat those rows above the exchange. */
@@ -231,12 +222,15 @@ interface TimelineRowActivityState {
 
 const TimelineRowCtx = createContext<TimelineRowSharedState>(null!);
 const TimelineRowActivityCtx = createContext<TimelineRowActivityState>(null!);
+/** True for rows drawn inside an opened "Worked for" fold, whose line already
+ *  carries the turn's agents. */
+const TurnFoldCtx = createContext(false);
+const EMPTY_TURN_FOLD_IDS: ReadonlySet<string> = new Set();
 const TIMELINE_LIST_HEADER = <div className="h-3 sm:h-4" />;
 const TIMELINE_LIST_FOOTER = <div className="h-3 sm:h-4" />;
 const EMPTY_TIMELINE_SKILLS: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">> = [];
 type McpAuthReconnectStatus = "running" | "completed";
 const EMPTY_MCP_AUTH_RECONNECT_STATUS: ReadonlyMap<string, McpAuthReconnectStatus> = new Map();
-const LIVE_WORK_LOG_ENTRY_COUNT = 3;
 const INITIAL_STICK_TO_BOTTOM_FRAME_COUNT = 3;
 // The on-screen keyboard resizes the layout over an animation, so the observer
 // can fire while the container is still growing. Keep re-sticking a little
@@ -293,6 +287,15 @@ export function getTranscriptSelectionAfterTimelineScroll(
 
 const TOUCH_SCROLL_INTENT_THRESHOLD_PX = 4;
 const MAINTAIN_SCROLL_AT_END = { animated: false } as const;
+// While the reader is above the tail, the working row never anchors: holding it
+// still would push the text they are reading up as the response grows. After a
+// short scroll LegendList can still count the row as on screen, because it only
+// re-measures what is in view once the scroll crosses a row boundary.
+const HOLD_READING_POSITION = {
+  data: true,
+  size: true,
+  shouldRestorePosition: (row: MessagesTimelineRow) => row.kind !== "working",
+};
 type TimelineScrollEvent = {
   readonly nativeEvent?: {
     readonly contentOffset?: {
@@ -584,8 +587,6 @@ interface MessagesTimelineProps {
   listRef: React.RefObject<LegendListRef | null>;
   stickToBottomRequestKey?: number;
   timelineEntries: ReturnType<typeof deriveTimelineEntries>;
-  completionDividerBeforeEntryId: string | null;
-  completionSummary: string | null;
   turnDiffSummaryByAssistantMessageId: Map<MessageId, TurnDiffSummary>;
   routeThreadKey: string;
   onOpenTurnDiff: (turnId: TurnId, filePath?: string) => void;
@@ -652,8 +653,6 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   listRef,
   stickToBottomRequestKey = 0,
   timelineEntries,
-  completionDividerBeforeEntryId,
-  completionSummary,
   turnDiffSummaryByAssistantMessageId,
   routeThreadKey,
   onOpenTurnDiff,
@@ -689,12 +688,23 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       (turnAgents?.subagents ?? []).filter((item) => isActiveSubagentStatus(item.status)).length,
     [turnAgents?.subagents],
   );
+  const [expandedTurnFoldIds, setExpandedTurnFoldIds] =
+    useState<ReadonlySet<string>>(EMPTY_TURN_FOLD_IDS);
+  const toggleTurnFold = useCallback((foldId: string) => {
+    setExpandedTurnFoldIds((current) => {
+      const next = new Set(current);
+      if (next.has(foldId)) {
+        next.delete(foldId);
+      } else {
+        next.add(foldId);
+      }
+      return next;
+    });
+  }, []);
   const rawRows = useMemo(
     () =>
       deriveMessagesTimelineRows({
         timelineEntries,
-        completionDividerBeforeEntryId,
-        completionSummary,
         isWorking,
         liveAgentCount,
         isWaitingOnBackgroundTasks,
@@ -704,11 +714,11 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         activeTurnStartedAt,
         turnDiffSummaryByAssistantMessageId,
         revertTurnCountByUserMessageId,
+        expandedTurnFoldIds,
+        revealMessageId: searchTarget?.messageId ?? null,
       }),
     [
       timelineEntries,
-      completionDividerBeforeEntryId,
-      completionSummary,
       isWorking,
       liveAgentCount,
       isWaitingOnBackgroundTasks,
@@ -718,6 +728,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       activeTurnStartedAt,
       turnDiffSummaryByAssistantMessageId,
       revertTurnCountByUserMessageId,
+      expandedTurnFoldIds,
+      searchTarget?.messageId,
     ],
   );
   const rows = useStableRows(rawRows);
@@ -735,16 +747,25 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   }, [turnDiffSummaryByAssistantMessageId]);
   const searchTargetRowIndex = useMemo(
     () =>
-      searchTarget
-        ? rows.findIndex(
-            (row) => row.kind === "message" && row.message.id === searchTarget.messageId,
-          )
-        : -1,
+      searchTarget ? rows.findIndex((row) => rowShowsMessage(row, searchTarget.messageId)) : -1,
     [rows, searchTarget],
   );
   const initialAutoStickToBottom = searchTargetRowIndex < 0;
   const [autoStickToBottom, setAutoStickToBottom] = useState(initialAutoStickToBottom);
   const autoStickToBottomRef = useRef(initialAutoStickToBottom);
+  // A turn that settles while the reader is scrolled up into it stays open:
+  // folding it would pull the text they are reading out from under them.
+  const [foldWatchIsWorking, setFoldWatchIsWorking] = useState(isWorking);
+  if (foldWatchIsWorking !== isWorking) {
+    setFoldWatchIsWorking(isWorking);
+    const lastUserEntry = timelineEntries.findLast(
+      (entry) => entry.kind === "message" && entry.message.role === "user",
+    );
+    if (foldWatchIsWorking && !autoStickToBottom && lastUserEntry) {
+      const foldId = turnFoldIdForUserRow(lastUserEntry.id);
+      setExpandedTurnFoldIds((current) => new Set(current).add(foldId));
+    }
+  }
   const [legendListReady, setLegendListReady] = useState(false);
   const [activeSearchTargetMessageId, setActiveSearchTargetMessageId] = useState<MessageId | null>(
     null,
@@ -1323,6 +1344,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       proposedPlanState,
       turnAgents,
       onOpenAgentsPanel,
+      onToggleTurnFold: toggleTurnFold,
       anchorOwnsLiveAgents,
     }),
     [
@@ -1353,6 +1375,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       proposedPlanState,
       turnAgents,
       onOpenAgentsPanel,
+      toggleTurnFold,
       anchorOwnsLiveAgents,
     ],
   );
@@ -1422,7 +1445,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
             maintainScrollAtEndThreshold={TIMELINE_MAINTAIN_END_THRESHOLD_RATIO}
             // Anchoring and bottom-following both adjust for streamed line wraps.
             // Use anchoring only while reading above the tail to avoid overshoot.
-            maintainVisibleContentPosition={!autoStickToBottom && !stickToBottomRequestPending}
+            maintainVisibleContentPosition={
+              !autoStickToBottom && !stickToBottomRequestPending ? HOLD_READING_POSITION : false
+            }
             onScroll={handleScroll}
             onWheelCapture={handleWheelCapture}
             onPointerDownCapture={handlePointerDownCapture}
@@ -1756,9 +1781,22 @@ function isResolvedProviderAuthRecoverySignal(row: MessagesTimelineRow): boolean
   return Boolean(text && !isProviderAuthErrorMessage(text));
 }
 
+/** Whether a row is, or while opened holds, the given message. */
+function rowShowsMessage(row: MessagesTimelineRow, messageId: MessageId): boolean {
+  if (row.kind === "message") {
+    return row.message.id === messageId;
+  }
+  return (
+    row.kind === "turn-fold" &&
+    row.expanded &&
+    row.rows.some((inner) => rowShowsMessage(inner, messageId))
+  );
+}
+
 function deriveResolvedProviderAuthReconnectIds(
-  rows: ReadonlyArray<MessagesTimelineRow>,
+  foldedRows: ReadonlyArray<MessagesTimelineRow>,
 ): ReadonlySet<string> {
+  const rows = foldedRows.flatMap((row) => (row.kind === "turn-fold" ? row.rows : [row]));
   const resolvedIds = new Set<string>();
   let hasLaterAssistantSuccess = false;
 
@@ -1816,12 +1854,18 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
   const ctx = use(TimelineRowCtx);
   const isActiveSearchTarget =
     row.kind === "message" && row.message.id === ctx.activeSearchTargetMessageId;
+  // A progress note sits right on top of its steps; the gap belongs below them.
+  const isProgressNote =
+    row.kind === "message" &&
+    row.message.role === "assistant" &&
+    (row.assistantTurnInProgress || !row.showAssistantCopyButton);
   return (
     <div
       // A row whose section renders nothing (e.g. an all-anchor work group
       // with no resolvable tracker) must not leave a phantom padded gap.
       className={cn(
-        "pb-4 [&:not(:has(*))]:pb-0",
+        isProgressNote ? "pb-1" : "pb-4",
+        "[&:not(:has(*))]:pb-0",
         isActiveSearchTarget && "thread-search-target-pulse",
       )}
       data-timeline-row-id={row.id}
@@ -1838,6 +1882,7 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
       {row.kind === "fork-context" ? <ForkContextTimelineRow row={row} /> : null}
       {row.kind === "proposed-plan" ? <ProposedPlanTimelineRow row={row} /> : null}
       {row.kind === "subagent-result" ? <SubagentReceiptTimelineRow row={row} /> : null}
+      {row.kind === "turn-fold" ? <TurnFoldRow row={row} /> : null}
       {row.kind === "working" ? <WorkingTimelineRow row={row} /> : null}
     </div>
   );
@@ -2302,12 +2347,13 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
     ctx.providerAuthReconnect && isProviderAuthErrorMessage(messageText)
       ? ctx.providerAuthReconnect
       : null;
+  // Progress notes carry the story while the agent works; only the turn's
+  // final answer gets the time line, the copy button and the fork button.
+  // A note's time stays one hover away.
+  const isFinalAnswer = row.showAssistantCopyButton && !row.assistantTurnInProgress;
 
   return (
     <>
-      {row.showCompletionDivider && (
-        <AssistantCompletionDivider completionSummary={row.completionSummary} />
-      )}
       {/* Mid-turn responses settle in with the same fade the activity rows use,
           so a non-streamed message doesn't pop in fully formed. Settled rows
           skip it — the class re-animates on virtualization remounts. */}
@@ -2315,6 +2361,9 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
         <div
           className="group/assistant-message block w-full max-w-full align-top"
           data-assistant-message-section="true"
+          title={
+            isFinalAnswer ? undefined : formatTimestamp(row.message.createdAt, ctx.timestampFormat)
+          }
         >
           {authReconnect ? (
             <ProviderAuthReconnectCard
@@ -2357,48 +2406,29 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
             resolvedTheme={ctx.resolvedTheme}
             onOpenTurnDiff={ctx.onOpenTurnDiff}
           />
-          <div className="mt-1.5 flex items-center gap-2">
-            <p className="text-[10px] tracking-tight tabular-nums text-muted-foreground/30">
-              {row.message.streaming ? (
-                <LiveMessageMeta
-                  createdAt={row.message.createdAt}
-                  durationStart={row.durationStart}
-                  timestampFormat={ctx.timestampFormat}
-                />
-              ) : (
-                formatMessageMeta(
+          {isFinalAnswer ? (
+            <div className="mt-1.5 flex items-center gap-2">
+              <p className="text-[10px] tracking-tight tabular-nums text-muted-foreground/30">
+                {formatMessageMeta(
                   row.message.createdAt,
-                  formatElapsed(row.durationStart, row.message.completedAt),
+                  row.hideMetaDuration
+                    ? null
+                    : formatElapsed(row.durationStart, row.message.completedAt),
                   ctx.timestampFormat,
-                )
-              )}
-            </p>
-            {!row.message.streaming && row.message.text.trim().length > 0 ? (
-              <ContinueInNewThreadButton
-                messageId={row.message.id}
-                className="pointer-events-none border-border/50 bg-background/35 text-muted-foreground/45 opacity-0 shadow-none transition-opacity duration-200 hover:border-border/70 hover:bg-background/55 hover:text-muted-foreground/70 group-hover/assistant-message:pointer-events-auto group-hover/assistant-message:opacity-100 group-focus-within/assistant-message:pointer-events-auto group-focus-within/assistant-message:opacity-100"
-              />
-            ) : null}
-            <AssistantCopyButton row={row} />
-          </div>
+                )}
+              </p>
+              {row.message.text.trim().length > 0 ? (
+                <ContinueInNewThreadButton
+                  messageId={row.message.id}
+                  className="pointer-events-none border-border/50 bg-background/35 text-muted-foreground/45 opacity-0 shadow-none transition-opacity duration-200 hover:border-border/70 hover:bg-background/55 hover:text-muted-foreground/70 group-hover/assistant-message:pointer-events-auto group-hover/assistant-message:opacity-100 group-focus-within/assistant-message:pointer-events-auto group-focus-within/assistant-message:opacity-100"
+                />
+              ) : null}
+              <AssistantCopyButton row={row} />
+            </div>
+          ) : null}
         </div>
       </div>
     </>
-  );
-}
-
-function AssistantCompletionDivider({ completionSummary }: { completionSummary: string | null }) {
-  // The summary is only known once the turn's checkpoint settles, so this
-  // mounts a beat after the response finishes; the fade keeps that late
-  // arrival from reading as a pop.
-  return (
-    <div className="work-meta-enter my-3 flex items-center gap-3">
-      <span className="h-px flex-1 bg-border" />
-      <span className="rounded-full border border-border bg-background px-2.5 py-1 text-[10px] uppercase tracking-[0.14em] text-muted-foreground/80">
-        {completionSummary ? `Response • ${completionSummary}` : "Response"}
-      </span>
-      <span className="h-px flex-1 bg-border" />
-    </div>
   );
 }
 
@@ -2575,7 +2605,8 @@ function SubagentReceiptTimelineRow({
 /** The turn's fixed anchor at the timeline tail: the surface's one live node,
  *  the turn timer, and the agent tracker live here from the first token to the
  *  last, whatever the rows above are doing — so nothing about "now" teleports
- *  mid-turn. Aligned on the same gutter as the activity spines above it. */
+ *  mid-turn. Its word is the step running right now ("Reading service.ts"), or
+ *  the state the turn is in ("Thinking", "Waiting for approval"). */
 function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "working" }> }) {
   const { turnAgents, onOpenAgentsPanel } = use(TimelineRowCtx);
   const liveSubagents = turnAgents?.subagents ?? [];
@@ -2586,31 +2617,36 @@ function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "workin
   const waitingOnUser = isWaitingOnUserState(dotsState);
 
   return (
-    // The three dots are the anchor's whole "alive" signal; accent dots stay
-    // reserved for the activity rows above. The pl-6 keeps the text on the
-    // same column as the spine rows' text. Amber means the agent stopped and
-    // needs the user.
+    // The three dots are the anchor's whole "alive" signal. They sit in the
+    // activity lines' icon column, so the word lines up with the steps above.
+    // Amber means the agent stopped and needs the user.
     <div className="py-0.5" data-turn-working-anchor="true">
-      <div className="min-w-0 pl-6">
-        <p className="flex min-w-0 items-center gap-1.5 pt-0.5 text-[11px] leading-4 text-muted-foreground/70">
-          <span className="flex shrink-0 items-center gap-1 tabular-nums">
+      <div className="min-w-0 pl-1">
+        <p className="flex min-w-0 items-center gap-1.5 pt-0.5 text-xs leading-4 text-muted-foreground/70">
+          <span className="flex min-w-0 items-center gap-1 tabular-nums">
             <span
               className={cn(
-                "flex items-center gap-1.5",
+                "flex min-w-0 items-center gap-1.5",
                 waitingOnUser && "text-warning-foreground",
               )}
             >
               {/* -top-px: the 12px box centers half a pixel low against the
-                  11px type's caps, and dots read best a hair above middle. */}
-              <WorkingAnchorDots state={dotsState} className="relative -top-px -mr-0.5" />
-              <span className="working-shimmer" data-tone={waitingOnUser ? "warning" : undefined}>
+                  type's caps, and dots read best a hair above middle. */}
+              <WorkingAnchorDots state={dotsState} className="relative -top-px -mr-0.5 shrink-0" />
+              <span
+                className="working-shimmer min-w-0 truncate"
+                data-tone={waitingOnUser ? "warning" : undefined}
+                data-turn-working-label="true"
+              >
                 {row.createdAt ? row.label : `${row.label}...`}
               </span>
             </span>
             {row.createdAt ? (
               <>
-                <span className="text-muted-foreground/40">·</span>
-                <WorkingTimer createdAt={row.createdAt} />
+                <span className="shrink-0 text-muted-foreground/40">·</span>
+                <span className="shrink-0">
+                  <WorkingTimer createdAt={row.createdAt} />
+                </span>
               </>
             ) : null}
           </span>
@@ -2658,327 +2694,209 @@ function WorkingTimer({ createdAt }: { createdAt: string }) {
   return <span ref={textRef}>{initialText}</span>;
 }
 
-function RunningCommandTimer({ createdAt }: { createdAt: string }) {
-  const textRef = useRef<HTMLSpanElement>(null);
-  const initialText = formatWorkingTimerNow(createdAt);
-
-  useEffect(() => {
-    const updateText = () => {
-      if (textRef.current) {
-        textRef.current.textContent = formatWorkingTimerNow(createdAt);
-      }
-    };
-    updateText();
-    const id = setInterval(updateText, 1000);
-    return () => clearInterval(id);
-  }, [createdAt]);
-
-  return <span ref={textRef}>{initialText}</span>;
-}
-
-/** Live timestamp + elapsed duration for a streaming assistant message. */
-function LiveMessageMeta({
-  createdAt,
-  durationStart,
-  timestampFormat,
-}: {
-  createdAt: string;
-  durationStart: string | null | undefined;
-  timestampFormat: TimestampFormat;
-}) {
-  const textRef = useRef<HTMLSpanElement>(null);
-  const initialText = formatLiveMessageMetaNow(createdAt, durationStart, timestampFormat);
-
-  useEffect(() => {
-    const updateText = () => {
-      if (textRef.current) {
-        textRef.current.textContent = formatLiveMessageMetaNow(
-          createdAt,
-          durationStart,
-          timestampFormat,
-        );
-      }
-    };
-    updateText();
-    if (!durationStart) {
-      return;
-    }
-    const id = setInterval(updateText, 1000);
-    return () => clearInterval(id);
-  }, [createdAt, durationStart, timestampFormat]);
-
-  return <span ref={textRef}>{initialText}</span>;
-}
-
-// ---------------------------------------------------------------------------
-// Extracted row sections — own their state / store subscriptions so changes
-// re-render only the affected row, not the entire list.
-// ---------------------------------------------------------------------------
-
-function workEntryNodeKind(entry: TimelineWorkEntry): SpineNodeKind {
-  if (entry.tone === "error") {
-    return "error";
-  }
-  if (entry.tone === "warning") {
-    return "warning";
-  }
-  if (entry.executionState === "running") {
-    return "running";
-  }
-  return "done";
-}
-
-// Completed steps fade as they recede above the live terminus; the floor keeps
-// the oldest step legible. Index 0 is the row nearest the live node.
-const LIVE_SPINE_DIM = ["opacity-100", "opacity-80", "opacity-65"] as const;
-function liveSpineDimClass(indexFromBottom: number): string {
-  return LIVE_SPINE_DIM[indexFromBottom] ?? "opacity-50";
-}
-
-function liveSpineRowStyle(index: number, lastIndex: number): CSSProperties {
-  return spineAccentRowStyle(lastIndex - index);
-}
-
-function spineStyle(): CSSProperties {
-  return {
-    ["--spine"]: "var(--border)",
-  } as CSSProperties;
-}
-
-/** Owns its own expand/collapse state so toggling re-renders only this row.
- *  State resets on unmount which is fine — work groups start collapsed. */
+/**
+ * One stretch of the agent's steps between two things it said: the looking
+ * around folded into one grey line, the steps worth noticing on lines of their
+ * own. Steps still running are left to the working row's live line. The first
+ * group of a settled turn also carries the turn's agents, when it ran any.
+ */
 const WorkGroupSection = memo(function WorkGroupSection({
   row,
 }: {
   row: Extract<MessagesTimelineRow, { kind: "work" }>;
 }) {
-  const { workspaceRoot, turnDiffSummaryByTurnId, onOpenAgentsPanel } = use(TimelineRowCtx);
+  const { workspaceRoot, turnDiffSummaryByTurnId, onOpenAgentsPanel, anchorOwnsLiveAgents } =
+    use(TimelineRowCtx);
   const { isWorking } = use(TimelineRowActivityCtx);
-  const [isExpanded, setIsExpanded] = useState(false);
-  const previousIsWorkingRef = useRef(isWorking);
+  const inTurnFold = use(TurnFoldCtx);
   const groupedEntries = useMemo(
     () => coalesceFileChangeWorkEntries(row.groupedEntries, turnDiffSummaryByTurnId, workspaceRoot),
     [row.groupedEntries, turnDiffSummaryByTurnId, workspaceRoot],
   );
-  // The tracker and the duration belong to everything the turn did, including the
-  // agent lifecycle rows the group parked out of sight.
-  const trackedEntries = useMemo(
-    () => [...row.groupedEntries, ...row.agentAnchorEntries],
-    [row.agentAnchorEntries, row.groupedEntries],
+  const steps = useMemo(
+    () =>
+      groupedEntries.flatMap((entry) => {
+        const step = activityStepFromWorkLogEntry(entry, {
+          workspaceRoot,
+          ...(isFileChangeWorkEntry(entry)
+            ? { diff: summarizeWorkEntryDiffStat(entry, turnDiffSummaryByTurnId) }
+            : {}),
+        });
+        return step ? [step] : [];
+      }),
+    [groupedEntries, turnDiffSummaryByTurnId, workspaceRoot],
+  );
+  const entriesById = useMemo(
+    () => new Map(groupedEntries.map((entry) => [entry.id, entry] as const)),
+    [groupedEntries],
+  );
+  const renderExtras = useCallback(
+    (step: ActivityStep) => {
+      const entry = entriesById.get(step.id);
+      return entry && hasWorkEntryExtras(entry) ? <WorkEntryExtras entry={entry} /> : null;
+    },
+    [entriesById],
   );
   const turnAgentTracker = useTurnAgentTracker(row.trackerTurnIds, row.trackerAgentSpawnIds);
-  const isLiveActivity = isWorking && row.isLive;
-  // A group that settles from its live shape into a receipt while mounted gets
-  // one enter fade to soften the turn-end reflow. Receipts that mount already
-  // settled (history, scroll-back) stay quiet. Tracked with render-time refs:
-  // the class must be present on the very first settled render, not a commit
-  // later, or the receipt would flash at full strength before fading.
-  const isActiveShape = isWorking && row.inActiveExchange;
-  const previousActiveShapeRef = useRef(isActiveShape);
-  const settledFromLiveRef = useRef(false);
-  if (previousActiveShapeRef.current && !isActiveShape) {
-    settledFromLiveRef.current = true;
+  // While the turn is live, the working row at the tail carries its agents.
+  const showTracker =
+    turnAgentTracker.summary !== null &&
+    onOpenAgentsPanel !== null &&
+    !inTurnFold &&
+    !(isWorking && row.inActiveExchange);
+  const hasSettledSteps = steps.some((step) => !step.running);
+
+  if (!hasSettledSteps && !showTracker) {
+    return null;
   }
-  previousActiveShapeRef.current = isActiveShape;
-  const settleEnterClass = settledFromLiveRef.current ? "work-row-enter" : undefined;
 
-  useEffect(() => {
-    const wasWorking = previousIsWorkingRef.current;
-    previousIsWorkingRef.current = isWorking;
-
-    if (!wasWorking && isWorking) {
-      setIsExpanded(false);
-    }
-  }, [isWorking]);
-
-  // A turn that only delegated has nothing to narrate and nothing to expand, but
-  // its tracker is the one inline signal that agents are running at all, so the
-  // row survives as the tracker alone. With no tracker to show there is no row.
-  if (groupedEntries.length === 0) {
-    // While the turn is live the working row at the bottom already carries the
-    // tracker; the receipt takes over once the turn settles.
-    if (isWorking && row.inActiveExchange) {
-      return null;
-    }
-    // The tracker is the row's whole reason to exist here, and it is only useful
-    // when it can open the panel it summarizes.
-    if (turnAgentTracker.summary === null || !onOpenAgentsPanel) {
-      return null;
-    }
-    return (
-      <div
-        className={settleEnterClass}
-        data-work-activity-receipt="true"
-        data-work-activity-anchor="true"
-        style={spineStyle()}
-      >
-        <SpineRow node={<SpineNode kind="group" />} connectTop={false} connectBottom={false}>
-          <ActivityReceipt
-            entries={groupedEntries}
-            durationEntries={trackedEntries}
-            tracker={turnAgentTracker}
-            isExpanded={false}
-            onToggle={null}
+  return (
+    <div className="min-w-0 px-1 pt-0.5" data-work-group="true">
+      {showTracker && turnAgentTracker.summary ? (
+        <div
+          className="flex min-w-0 items-center gap-[7px] text-xs leading-5 text-muted-foreground/60"
+          data-turn-agents-line="true"
+        >
+          <BotIcon className="size-3 shrink-0 text-muted-foreground/45" aria-hidden="true" />
+          <TurnAgentTrackerButton
+            summary={turnAgentTracker.summary}
+            onOpen={() => onOpenAgentsPanel?.(null)}
           />
-        </SpineRow>
-      </div>
-    );
-  }
+        </div>
+      ) : null}
+      {showTracker && !anchorOwnsLiveAgents ? (
+        <LiveAgentRoster roster={turnAgentTracker.liveRoster} />
+      ) : null}
+      {hasSettledSteps ? <ActivityGroup steps={steps} renderExtras={renderExtras} /> : null}
+    </div>
+  );
+});
 
-  if (isLiveActivity) {
-    // The working row below the timeline tail carries the turn's live node,
-    // timer, and agent tracker; the spine only narrates the recent steps.
-    return <LiveActivitySpine entries={groupedEntries} workspaceRoot={workspaceRoot} />;
-  }
+/**
+ * A settled turn's work before its answer, folded to one line: how long it
+ * took, what it changed, how its checks ended, and the agents it ran. Opening
+ * it shows the notes and steps in place, on a hairline rail.
+ */
+const TurnFoldRow = memo(function TurnFoldRow({
+  row,
+}: {
+  row: Extract<TimelineRow, { kind: "turn-fold" }>;
+}) {
+  const { onToggleTurnFold, onOpenAgentsPanel } = use(TimelineRowCtx);
+  const summary = useMemo(() => summarizeFoldedTurn(row.rows), [row.rows]);
+  const tracker = useTurnAgentTracker(summary.trackerTurnIds, summary.trackerAgentSpawnIds);
+  const duration = formatWorkingTimer(row.startedAt, row.endedAt);
+  const editedFileCount = row.turnDiffSummary?.files.length ?? summary.editedFileCount;
+  const separator = <span className="shrink-0 text-muted-foreground/35">·</span>;
 
-  // A group the turn has moved past but not finished with: it keeps its
-  // live-spine shape, frozen — same rows, same heights, accent cooled — so
-  // the conversation doesn't collapse into a receipt right where the user is
-  // reading. Receipts happen once, when the turn settles.
-  if (isWorking && row.inActiveExchange) {
-    return <LiveActivitySpine entries={groupedEntries} workspaceRoot={workspaceRoot} frozen />;
-  }
-
-  const summarizedEntries = summarizeSemanticActivityEntries(groupedEntries);
-  const hasCompactedEntries = summarizedEntries.length < groupedEntries.length;
-  const hasOverflow = summarizedEntries.length > MAX_VISIBLE_WORK_LOG_ENTRIES;
-  const shouldRenderReceipt = hasCompactedEntries || hasOverflow;
-  const transcriptEntries = isExpanded
-    ? groupedEntries
-    : hasOverflow
-      ? summarizedEntries.slice(-MAX_VISIBLE_WORK_LOG_ENTRIES)
-      : summarizedEntries;
-
-  const transcriptLaneLabels = deriveSubagentLaneLabels(transcriptEntries);
-
-  if (!shouldRenderReceipt) {
-    return (
-      <div className={settleEnterClass} data-work-activity-inline="true" style={spineStyle()}>
-        {transcriptEntries.map((workEntry, index) => (
-          <SpineRow
-            key={`work-row:${workEntry.id}`}
-            node={<SpineNode kind={workEntryNodeKind(workEntry)} />}
-            connectTop={index > 0}
-            connectBottom={index < transcriptEntries.length - 1}
-          >
-            <SimpleWorkEntryRow
-              isLiveActivity={false}
-              workEntry={workEntry}
-              workspaceRoot={workspaceRoot}
-              inSpine
-              subagentLaneLabel={transcriptLaneLabels[index] ?? null}
-            />
-          </SpineRow>
-        ))}
-      </div>
-    );
-  }
-
-  const hiddenCount = isExpanded
-    ? 0
-    : Math.max(0, groupedEntries.length - transcriptEntries.length);
   return (
     <div
-      className={settleEnterClass}
-      data-work-activity-receipt="true"
-      data-work-activity-expanded={isExpanded ? "true" : "false"}
-      style={spineStyle()}
+      className="min-w-0 px-1"
+      data-turn-fold="true"
+      data-turn-fold-expanded={row.expanded ? "true" : "false"}
     >
-      <SpineRow node={<SpineNode kind="group" />} connectTop={false} connectBottom={isExpanded}>
-        <ActivityReceipt
-          entries={groupedEntries}
-          durationEntries={trackedEntries}
-          tracker={turnAgentTracker}
-          isExpanded={isExpanded}
-          onToggle={() => setIsExpanded((value) => !value)}
-        />
-      </SpineRow>
-      {isExpanded ? (
-        <div data-activity-transcript="true">
-          {transcriptEntries.map((workEntry, index) => (
-            <SpineRow
-              key={`work-row:${workEntry.id}`}
-              node={<SpineNode kind={workEntryNodeKind(workEntry)} />}
-              connectBottom={index < transcriptEntries.length - 1}
-            >
-              <SimpleWorkEntryRow
-                isLiveActivity={false}
-                workEntry={workEntry}
-                workspaceRoot={workspaceRoot}
-                inSpine
-                subagentLaneLabel={transcriptLaneLabels[index] ?? null}
-              />
-            </SpineRow>
-          ))}
-        </div>
-      ) : hiddenCount > 0 && !hasCompactedEntries ? (
-        <p className="mt-0.5 truncate pl-6 text-[10px] leading-4 text-muted-foreground/45">
-          {summarizeHiddenWorkEntries(groupedEntries.slice(0, hiddenCount))}
-        </p>
+      <div className="flex min-w-0 items-center gap-1.5 text-xs leading-5 text-muted-foreground/60">
+        <button
+          type="button"
+          className="flex min-w-0 items-center gap-1.5 text-left transition-colors duration-150 hover:text-muted-foreground/85"
+          aria-expanded={row.expanded}
+          data-turn-fold-toggle="true"
+          onClick={() => onToggleTurnFold(row.id)}
+        >
+          <ChevronRightIcon
+            className={cn(
+              "size-3 shrink-0 text-muted-foreground/45 transition-transform duration-150",
+              row.expanded && "rotate-90",
+            )}
+            aria-hidden="true"
+          />
+          <span className="truncate">{duration ? `Worked for ${duration}` : "Worked on this"}</span>
+          {editedFileCount > 0 ? (
+            <>
+              {separator}
+              <span className="shrink-0">edited {pluralize(editedFileCount, "file")}</span>
+            </>
+          ) : null}
+          {summary.checks ? (
+            <>
+              {separator}
+              <span
+                className={cn(
+                  "shrink-0",
+                  summary.checks.failed > 0
+                    ? "text-destructive-foreground/85"
+                    : "text-success-foreground/75",
+                )}
+                data-turn-fold-checks={summary.checks.failed > 0 ? "failed" : "passed"}
+              >
+                {summary.checks.failed > 0
+                  ? `${pluralize(summary.checks.failed, "check")} failed`
+                  : "checks passed"}
+              </span>
+            </>
+          ) : null}
+        </button>
+        {tracker.summary && onOpenAgentsPanel ? (
+          <>
+            {separator}
+            <TurnAgentTrackerButton
+              summary={tracker.summary}
+              onOpen={() => onOpenAgentsPanel(null)}
+            />
+          </>
+        ) : null}
+      </div>
+      {row.expanded ? (
+        <TurnFoldCtx value={true}>
+          <div className="mt-2 ml-1.5 border-l border-border pl-3" data-turn-fold-story="true">
+            {row.rows.map((inner) => (
+              <TimelineRowContent key={inner.id} row={inner} />
+            ))}
+          </div>
+        </TurnFoldCtx>
       ) : null}
     </div>
   );
 });
 
-/** The live turn's recent steps as an accent spine, dimming as they recede.
- *  The turn's single live node lives on the working row below the timeline
- *  tail, so the spine itself stays quiet: running steps get a small accent
- *  tick, settled steps solid dots. `frozen` renders the same shape with the
- *  accent cooled for a group the turn has moved past but not finished with —
- *  identical rows and heights, so the freeze itself never shifts layout. */
-function LiveActivitySpine({
-  entries,
-  workspaceRoot,
-  frozen = false,
-}: {
-  entries: ReadonlyArray<TimelineWorkEntry>;
-  workspaceRoot: string | undefined;
-  frozen?: boolean;
-}) {
-  const liveEntries = deriveLiveActivityEntries(entries);
-  const hiddenSummary = summarizeLiveHiddenWorkEntries(entries, liveEntries);
-  const liveLaneLabels = deriveSubagentLaneLabels(liveEntries);
-  const lastIndex = liveEntries.length - 1;
+function hasWorkEntryExtras(entry: TimelineWorkEntry): boolean {
+  return Boolean(entry.authReconnect || entry.mcpAuthReconnect || (entry.images?.length ?? 0) > 0);
+}
 
+/** What a step shows beyond its line: a sign-in card to act on, or the
+ *  images it produced. */
+function WorkEntryExtras({ entry }: { entry: TimelineWorkEntry }) {
+  const {
+    onRunProviderAuthReconnect,
+    resolvedProviderAuthReconnectIds,
+    mcpAuthReconnectStatusByServerName,
+    onRunMcpAuthReconnect,
+  } = use(TimelineRowCtx);
+  const images = entry.images ?? [];
   return (
-    <div
-      data-live-activity-strip="true"
-      data-live-activity-frozen={frozen ? "true" : undefined}
-      style={spineStyle()}
-    >
-      {/* The slot stays reserved even while nothing is hidden: coalescing can
-          swing the hidden count across zero mid-turn, and the strip must not
-          gain and lose a line every time it does. */}
-      <p className="min-h-4 truncate pb-0.5 pl-6 text-[10px] leading-4 text-muted-foreground/45">
-        {hiddenSummary}
-      </p>
-      {liveEntries.map((workEntry, index) => {
-        const isCurrent = index === lastIndex;
-        return (
-          <SpineRow
-            key={`work-row:${workEntry.id}`}
-            node={<SpineNode kind={workEntryNodeKind(workEntry)} />}
-            connectTop={index > 0}
-            connectBottom={!isCurrent}
-            className={cn(
-              "work-row-enter",
-              isCurrent && !frozen
-                ? undefined
-                : cn(liveSpineDimClass(lastIndex - index), "transition-opacity duration-300"),
-            )}
-            style={frozen ? undefined : liveSpineRowStyle(index, lastIndex)}
-          >
-            <SimpleWorkEntryRow
-              isLiveActivity
-              workEntry={workEntry}
-              workspaceRoot={workspaceRoot}
-              inSpine
-              subagentLaneLabel={liveLaneLabels[index] ?? null}
-            />
-          </SpineRow>
-        );
-      })}
-    </div>
+    <>
+      {entry.authReconnect ? (
+        <ProviderAuthReconnectCard
+          action={entry.authReconnect}
+          resolved={resolvedProviderAuthReconnectIds.has(entry.id)}
+          {...(onRunProviderAuthReconnect ? { onRun: onRunProviderAuthReconnect } : {})}
+        />
+      ) : null}
+      {entry.mcpAuthReconnect ? (
+        <McpAuthReconnectCard
+          action={entry.mcpAuthReconnect}
+          status={mcpAuthReconnectStatusByServerName.get(entry.mcpAuthReconnect.serverName)}
+          {...(onRunMcpAuthReconnect ? { onRun: onRunMcpAuthReconnect } : {})}
+        />
+      ) : null}
+      {images.length > 0 ? (
+        <TimelineImagePreviewGrid
+          images={images}
+          className="max-w-[420px]"
+          imageClassName="max-h-[260px] object-contain"
+        />
+      ) : null}
+    </>
   );
 }
 
@@ -3112,118 +3030,6 @@ function TurnAgentTrackerButton({
       <span className="truncate">{summary.text}</span>
     </button>
   );
-}
-
-function ActivityReceipt({
-  entries,
-  durationEntries,
-  tracker,
-  isExpanded,
-  onToggle,
-}: {
-  entries: ReadonlyArray<TimelineWorkEntry>;
-  /** Everything the turn did, including the agent lifecycle rows the group hides.
-   *  Only the duration reads this; the count and the summary read `entries`. */
-  durationEntries: ReadonlyArray<TimelineWorkEntry>;
-  tracker: TurnAgentTracker;
-  isExpanded: boolean;
-  /** Null when the group has nothing to expand, which drops the toggle. */
-  onToggle: (() => void) | null;
-}) {
-  const { onOpenAgentsPanel, anchorOwnsLiveAgents } = use(TimelineRowCtx);
-  const summary = summarizeActivityReceipt(entries);
-  const actionCount = entries.length;
-  const duration = formatActivityDuration(durationEntries);
-  const { summary: agentSummary, liveRoster: liveAgentRoster } = tracker;
-  // A group whose visible work is all delegation reads as the agents' receipt,
-  // not the main model's: "Activity · 0 actions" would claim the model did the
-  // work the rail attributes to its agents.
-  const liveAgentCount =
-    agentSummary?.segments.filter(
-      (segment) => segment.status === "running" || segment.status === "waiting",
-    ).length ?? 0;
-  const heading =
-    actionCount > 0 || !agentSummary
-      ? "Activity"
-      : liveAgentCount > 0
-        ? liveAgentCount > 1
-          ? "Agents working"
-          : "Agent working"
-        : "Agent activity";
-
-  return (
-    <div className="flex min-w-0 items-start justify-between gap-3 py-1">
-      <div className="min-w-0">
-        <p className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs leading-5 text-muted-foreground/80">
-          <span className="font-medium text-foreground/75">{heading}</span>
-          {/* A turn that only delegated took no actions of its own, and "0
-              actions" would read as if nothing happened. */}
-          {actionCount > 0 ? (
-            <>
-              <span className="text-muted-foreground/35">·</span>
-              <span>{formatActivityCount(actionCount, "action", "actions")}</span>
-            </>
-          ) : null}
-          {duration ? (
-            <>
-              <span className="text-muted-foreground/35">·</span>
-              <span>{duration}</span>
-            </>
-          ) : null}
-          {agentSummary && onOpenAgentsPanel ? (
-            <>
-              <span className="text-muted-foreground/35">·</span>
-              <TurnAgentTrackerButton
-                summary={agentSummary}
-                onOpen={() => onOpenAgentsPanel(null)}
-              />
-            </>
-          ) : null}
-        </p>
-        {anchorOwnsLiveAgents ? null : <LiveAgentRoster roster={liveAgentRoster} />}
-        {summary ? (
-          <p className="truncate text-[10px] leading-4 text-muted-foreground/45">{summary}</p>
-        ) : null}
-      </div>
-      {onToggle ? (
-        <button
-          type="button"
-          className="shrink-0 text-[10px] font-medium text-muted-foreground/55 transition-colors duration-150 hover:text-foreground/75"
-          aria-expanded={isExpanded}
-          aria-label={isExpanded ? "Hide activity" : "Show activity"}
-          data-activity-transcript-toggle="true"
-          onClick={onToggle}
-        >
-          {isExpanded ? "Hide activity" : "Show activity"}
-        </button>
-      ) : null}
-    </div>
-  );
-}
-
-function summarizeActivityReceipt(entries: ReadonlyArray<TimelineWorkEntry>): string | null {
-  const summarizedEntries = summarizeSemanticActivityEntries(entries);
-  const parts = summarizedEntries
-    .map((entry) => [entry.label, entry.detail].filter(Boolean).join(" · "))
-    .filter(Boolean);
-  if (parts.length === 0) {
-    return null;
-  }
-  const visibleParts = parts.slice(0, 2);
-  const hiddenCount = parts.length - visibleParts.length;
-  return hiddenCount > 0
-    ? `${visibleParts.join(" · ")} · +${hiddenCount.toLocaleString()}`
-    : visibleParts.join(" · ");
-}
-
-function formatActivityDuration(entries: ReadonlyArray<TimelineWorkEntry>): string | null {
-  const firstEntry = entries[0];
-  const lastEntry = entries.at(-1);
-  if (!firstEntry || !lastEntry || firstEntry.id === lastEntry.id) {
-    return null;
-  }
-  const duration = formatWorkingTimer(firstEntry.createdAt, lastEntry.createdAt);
-  return duration === "0s" ? null : duration;
 }
 
 function coalesceFileChangeWorkEntries(
@@ -3404,603 +3210,6 @@ function dedupeChangedFilePaths(
     deduped.push(trimmedPath);
   }
   return deduped;
-}
-
-function deriveLiveActivityEntries(entries: ReadonlyArray<TimelineWorkEntry>): TimelineWorkEntry[] {
-  const dedupedEntries = dedupeLiveActivityEntries(entries);
-  const selected: TimelineWorkEntry[] = [];
-
-  for (let index = dedupedEntries.length - 1; index >= 0; index -= 1) {
-    const entry = dedupedEntries[index];
-    if (!entry || !isLivePrimaryWorkEntry(entry)) {
-      continue;
-    }
-    selected.push(entry);
-    if (selected.length >= LIVE_WORK_LOG_ENTRY_COUNT) {
-      break;
-    }
-  }
-
-  if (selected.length < LIVE_WORK_LOG_ENTRY_COUNT) {
-    for (let index = dedupedEntries.length - 1; index >= 0; index -= 1) {
-      const entry = dedupedEntries[index];
-      if (!entry || selected.includes(entry) || !isLiveFallbackWorkEntry(entry)) {
-        continue;
-      }
-      selected.push(entry);
-      if (selected.length >= LIVE_WORK_LOG_ENTRY_COUNT) {
-        break;
-      }
-    }
-  }
-
-  // Rows keep the deduped list's slot order, not raw timestamps: a re-run of
-  // an already-shown subject stays in its slot instead of jumping to the tail.
-  const slotByEntry = new Map(dedupedEntries.map((entry, index) => [entry, index] as const));
-  return selected.toSorted(
-    (left, right) => (slotByEntry.get(left) ?? 0) - (slotByEntry.get(right) ?? 0),
-  );
-}
-
-/** Latest state at the first-seen slot: when the agent repeats a subject, the
- *  row already on screen updates in place rather than being removed from the
- *  middle of the window and re-added at the bottom. */
-function dedupeLiveActivityEntries(entries: ReadonlyArray<TimelineWorkEntry>): TimelineWorkEntry[] {
-  const latestByKey = new Map<string, TimelineWorkEntry>();
-  for (const entry of entries) {
-    const key = liveActivityDedupeKey(entry);
-    if (key) {
-      latestByKey.set(key, entry);
-    }
-  }
-
-  const emitted = new Set<string>();
-  const deduped: TimelineWorkEntry[] = [];
-  for (const entry of entries) {
-    const key = liveActivityDedupeKey(entry);
-    if (!key) {
-      deduped.push(entry);
-      continue;
-    }
-    if (emitted.has(key)) {
-      continue;
-    }
-    emitted.add(key);
-    deduped.push(latestByKey.get(key) ?? entry);
-  }
-
-  return deduped;
-}
-
-function liveActivityDedupeKey(entry: TimelineWorkEntry): string | null {
-  const subject =
-    entry.command ??
-    entry.detail ??
-    entry.changedFiles?.join("\u001e") ??
-    entry.toolTitle ??
-    entry.label;
-  const normalizedSubject = subject.trim().replace(/\s+/gu, " ").toLowerCase();
-  if (!normalizedSubject) {
-    return null;
-  }
-  return [entry.turnId ?? "", entry.itemType ?? "", normalizeCompactToolLabel(normalizedSubject)]
-    .join("\u001f")
-    .toLowerCase();
-}
-
-function isLivePrimaryWorkEntry(entry: TimelineWorkEntry): boolean {
-  return (
-    entry.executionState === "running" ||
-    entry.executionState === "failed" ||
-    entry.itemType === "collab_agent_tool_call"
-  );
-}
-
-function isLiveFallbackWorkEntry(entry: TimelineWorkEntry): boolean {
-  if (entry.tone === "thinking" || entry.tone === "warning" || entry.tone === "error") {
-    return true;
-  }
-  return entry.tone === "tool" || entry.tone === "info";
-}
-
-function summarizeLiveHiddenWorkEntries(
-  allEntries: ReadonlyArray<TimelineWorkEntry>,
-  visibleEntries: ReadonlyArray<TimelineWorkEntry>,
-): string | null {
-  const visibleIds = new Set(visibleEntries.map((entry) => entry.id));
-  const hiddenEntries = allEntries.filter((entry) => !visibleIds.has(entry.id));
-  const hiddenCount = hiddenEntries.length;
-  if (hiddenCount <= 0) {
-    return null;
-  }
-  const runningCount = hiddenEntries.filter((entry) => entry.executionState === "running").length;
-  const delegatedCount = hiddenEntries.filter(isSubagentDelegationEntry).length;
-  const parts = [
-    runningCount > 0 ? formatActivityCount(runningCount, "active item", "active items") : null,
-    delegatedCount > 0
-      ? formatActivityCount(delegatedCount, "delegated task", "delegated tasks")
-      : null,
-    `${hiddenCount.toLocaleString()} earlier ${hiddenCount === 1 ? "event" : "events"}`,
-  ].filter((part): part is string => part !== null);
-  return parts.join(", ");
-}
-
-type SemanticActivityKind = "explore" | "verify" | "command" | "tool" | "agent";
-type SemanticActivitySignal =
-  | "search"
-  | "read"
-  | "list"
-  | "git"
-  | "environment"
-  | "verify"
-  | "command"
-  | "agent"
-  | "tool";
-
-interface SemanticActivitySummary {
-  kind: SemanticActivityKind;
-  signal: SemanticActivitySignal;
-  commandName: string | null;
-}
-
-interface SemanticActivityBuffer {
-  kind: SemanticActivityKind;
-  entries: TimelineWorkEntry[];
-  signals: Map<SemanticActivitySignal, number>;
-  commandNames: string[];
-}
-
-function summarizeSemanticActivityEntries(
-  entries: ReadonlyArray<TimelineWorkEntry>,
-): TimelineWorkEntry[] {
-  const summarizedEntries: TimelineWorkEntry[] = [];
-  let buffer: SemanticActivityBuffer | null = null;
-
-  const flushBuffer = () => {
-    if (!buffer) {
-      return;
-    }
-
-    const summaryEntry = buildSemanticActivitySummaryEntry(buffer);
-    if (summaryEntry) {
-      summarizedEntries.push(summaryEntry);
-    } else {
-      summarizedEntries.push(...buffer.entries);
-    }
-    buffer = null;
-  };
-
-  for (const entry of entries) {
-    const summary = classifySummarizableActivityEntry(entry);
-    if (!summary) {
-      flushBuffer();
-      summarizedEntries.push(entry);
-      continue;
-    }
-
-    if (!buffer || buffer.kind !== summary.kind) {
-      flushBuffer();
-      buffer = {
-        kind: summary.kind,
-        entries: [],
-        signals: new Map(),
-        commandNames: [],
-      };
-    }
-
-    buffer.entries.push(entry);
-    buffer.signals.set(summary.signal, (buffer.signals.get(summary.signal) ?? 0) + 1);
-    if (summary.commandName) {
-      addUniqueString(buffer.commandNames, summary.commandName);
-    }
-  }
-
-  flushBuffer();
-  return summarizedEntries;
-}
-
-function classifySummarizableActivityEntry(
-  entry: TimelineWorkEntry,
-): SemanticActivitySummary | null {
-  if (
-    entry.executionState === "running" ||
-    entry.executionState === "failed" ||
-    entry.outputPreview ||
-    (entry.changedFiles?.length ?? 0) > 0 ||
-    (entry.images?.length ?? 0) > 0
-  ) {
-    return null;
-  }
-
-  // A warning is a message to the user, never routine activity. The keyword
-  // heuristics below would happily fold "This thread's folder no longer
-  // exists" into "Explored project" because it mentions a folder.
-  if (entry.tone === "warning" || entry.tone === "error") {
-    return null;
-  }
-
-  if (isCommandWorkEntry(entry) && entry.command) {
-    const summary = classifyCommandActivity(entry.command);
-    // Consequential commands (anything that isn't routine exploration or
-    // verification) keep their verbatim rows; "Ran 2 commands - rm" hides
-    // exactly the arguments a developer needs to trust the feed.
-    if (summary.kind === "command") {
-      return null;
-    }
-    return summary;
-  }
-
-  if (entry.itemType === "collab_agent_tool_call") {
-    if (!isSubagentDelegationEntry(entry)) {
-      return {
-        kind: "tool",
-        signal: "tool",
-        commandName: normalizedToolName(entry),
-      };
-    }
-    return {
-      kind: "agent",
-      signal: "agent",
-      commandName: normalizedToolName(entry),
-    };
-  }
-
-  const toolText = `${entry.toolTitle ?? ""} ${entry.label} ${entry.detail ?? ""}`.toLowerCase();
-  if (entry.requestKind === "file-read" || /^read file$/i.test(entry.toolTitle ?? entry.label)) {
-    return { kind: "explore", signal: "read", commandName: null };
-  }
-  if (entry.itemType === "web_search" || /search|grep|find/.test(toolText)) {
-    return { kind: "explore", signal: "search", commandName: null };
-  }
-  if (/list files|directory|folder/.test(toolText)) {
-    return { kind: "explore", signal: "list", commandName: null };
-  }
-  if (entry.tone === "tool") {
-    return {
-      kind: "tool",
-      signal: "tool",
-      commandName: normalizedToolName(entry),
-    };
-  }
-  return null;
-}
-
-function classifyCommandActivity(command: string): SemanticActivitySummary {
-  const name = commandDisplayName(command);
-  const normalizedName = name?.toLowerCase() ?? "";
-  const normalizedCommand = command.toLowerCase();
-
-  if (isSearchCommandName(normalizedName)) {
-    return { kind: "explore", signal: "search", commandName: name };
-  }
-  if (isReadCommandName(normalizedName)) {
-    return { kind: "explore", signal: "read", commandName: name };
-  }
-  if (isListCommandName(normalizedName)) {
-    return { kind: "explore", signal: "list", commandName: name };
-  }
-  if (isGitInspectionCommand(normalizedName, normalizedCommand)) {
-    return { kind: "explore", signal: "git", commandName: name };
-  }
-  if (isEnvironmentInspectionCommandName(normalizedName)) {
-    return { kind: "explore", signal: "environment", commandName: name };
-  }
-  if (isVerificationCommand(normalizedName, normalizedCommand)) {
-    return {
-      kind: "verify",
-      signal: "verify",
-      commandName: verificationCommandLabel(command, name),
-    };
-  }
-  return { kind: "command", signal: "command", commandName: name };
-}
-
-function isSearchCommandName(name: string): boolean {
-  return ["rg", "grep", "findstr", "select-string"].includes(name);
-}
-
-function isReadCommandName(name: string): boolean {
-  return ["cat", "gc", "get-content", "head", "less", "more", "sed", "tail", "type"].includes(name);
-}
-
-function isListCommandName(name: string): boolean {
-  return ["dir", "gci", "get-childitem", "ls", "tree"].includes(name);
-}
-
-function isGitInspectionCommand(name: string, command: string): boolean {
-  if (name !== "git") {
-    return false;
-  }
-  return /\bgit\s+(?:branch|diff|log|ls-files|rev-parse|show|status)\b/u.test(command);
-}
-
-function isEnvironmentInspectionCommandName(name: string): boolean {
-  return [
-    "get-nettcpconnection",
-    "get-process",
-    "invoke-webrequest",
-    "resolve-path",
-    "test-netconnection",
-    "test-path",
-  ].includes(name);
-}
-
-function isVerificationCommand(name: string, command: string): boolean {
-  if (
-    [
-      "eslint",
-      "jest",
-      "oxfmt",
-      "oxlint",
-      "playwright",
-      "prettier",
-      "pytest",
-      "tsc",
-      "vitest",
-    ].includes(name)
-  ) {
-    return true;
-  }
-  if (
-    /\b(?:bun|npm|pnpm|yarn|cargo|dotnet|go|uv)\s+(?:run\s+)?(?:build|check|fmt|format|lint|test|typecheck)\b/u.test(
-      command,
-    )
-  ) {
-    return true;
-  }
-  if (
-    /\b(?:build|check|fmt|format|lint|test|typecheck)\b/u.test(command) &&
-    /\b(?:bun|npm|pnpm|yarn|turbo|vitest|tsc)\b/u.test(command)
-  ) {
-    return true;
-  }
-  return false;
-}
-
-function buildSemanticActivitySummaryEntry(
-  buffer: SemanticActivityBuffer,
-): TimelineWorkEntry | null {
-  // A lone entry reads better as itself than as "Used 1 tool".
-  if (
-    (buffer.kind === "command" || buffer.kind === "agent" || buffer.kind === "tool") &&
-    buffer.entries.length < 2
-  ) {
-    return null;
-  }
-
-  const entries = buffer.entries;
-  const firstEntry = entries[0];
-  const lastEntry = entries.at(-1);
-  if (!firstEntry || !lastEntry) {
-    return null;
-  }
-
-  const count = entries.length;
-  const detail = formatSemanticActivitySummaryDetail(buffer);
-  return {
-    id: `activity-summary:${buffer.kind}:${firstEntry.id}:${lastEntry.id}:${count}`,
-    createdAt: firstEntry.createdAt,
-    label: semanticActivityLabel(buffer),
-    ...(detail ? { detail } : {}),
-    tone: "tool",
-    ...(buffer.kind === "command" || buffer.kind === "verify"
-      ? { requestKind: "command" as const }
-      : {}),
-    executionState: "completed",
-    turnId: firstEntry.turnId ?? lastEntry.turnId ?? null,
-  };
-}
-
-function semanticActivityLabel(buffer: SemanticActivityBuffer): string {
-  const count = buffer.entries.length;
-  if (buffer.kind === "explore") {
-    return "Explored project";
-  }
-  if (buffer.kind === "verify") {
-    return "Verified changes";
-  }
-  if (buffer.kind === "tool") {
-    return `Used ${count.toLocaleString()} ${count === 1 ? "tool" : "tools"}`;
-  }
-  if (buffer.kind === "agent") {
-    return "Delegated work";
-  }
-  return `Ran ${count.toLocaleString()} ${count === 1 ? "command" : "commands"}`;
-}
-
-function formatSemanticActivitySummaryDetail(buffer: SemanticActivityBuffer): string | null {
-  if (buffer.kind === "explore") {
-    const parts = [
-      formatActivityCount(buffer.signals.get("search") ?? 0, "search", "searches"),
-      formatActivityCount(buffer.signals.get("read") ?? 0, "file read", "file reads"),
-      formatActivityCount(buffer.signals.get("list") ?? 0, "directory list", "directory lists"),
-      formatActivityCount(buffer.signals.get("git") ?? 0, "git check", "git checks"),
-      formatActivityCount(
-        buffer.signals.get("environment") ?? 0,
-        "environment check",
-        "environment checks",
-      ),
-    ].filter((part): part is string => part !== null);
-    return parts.join(", ") || null;
-  }
-
-  if (buffer.kind === "verify" || buffer.kind === "command") {
-    return formatCommandNameList(buffer.commandNames);
-  }
-
-  if (buffer.kind === "tool") {
-    return formatCommandNameList(buffer.commandNames);
-  }
-
-  if (buffer.kind === "agent") {
-    const count = buffer.signals.get("agent") ?? buffer.entries.length;
-    const countLabel = formatActivityCount(count, "subagent task", "subagent tasks");
-    const names = formatCommandNameList(buffer.commandNames);
-    return [countLabel, names].filter((part): part is string => part !== null).join(", ") || null;
-  }
-
-  return null;
-}
-
-function formatActivityCount(count: number, singular: string, plural: string): string | null {
-  if (count <= 0) {
-    return null;
-  }
-  return `${count.toLocaleString()} ${count === 1 ? singular : plural}`;
-}
-
-function formatCommandNameList(names: ReadonlyArray<string>): string | null {
-  if (names.length === 0) {
-    return null;
-  }
-
-  const visibleNames = names.slice(0, 3);
-  const hiddenCount = names.length - visibleNames.length;
-  return hiddenCount > 0
-    ? `${visibleNames.join(", ")} +${hiddenCount.toLocaleString()}`
-    : visibleNames.join(", ");
-}
-
-function addUniqueString(values: string[], value: string) {
-  const key = value.toLowerCase();
-  if (values.some((existing) => existing.toLowerCase() === key)) {
-    return;
-  }
-  values.push(value);
-}
-
-function normalizedToolName(entry: TimelineWorkEntry): string | null {
-  const label = normalizeCompactToolLabel(entry.toolTitle ?? entry.label);
-  return label || null;
-}
-
-function verificationCommandLabel(command: string, fallbackName: string | null): string | null {
-  const normalizedCommand = command.trim().replace(/\s+/gu, " ");
-  const scriptMatch =
-    /\b(?:bun|npm|pnpm|yarn)\s+(?:run\s+)?([A-Za-z0-9:_./-]+)/u.exec(normalizedCommand) ??
-    /\bturbo\s+run\s+([A-Za-z0-9:_./-]+)/u.exec(normalizedCommand);
-  const scriptName = scriptMatch?.[1];
-  if (scriptName) {
-    return fallbackName ? `${fallbackName} ${scriptName}` : scriptName;
-  }
-  return fallbackName;
-}
-
-function commandDisplayName(command: string | undefined): string | null {
-  const trimmedCommand = firstShellPipelineSegment(command);
-  if (!trimmedCommand) {
-    return null;
-  }
-
-  const match = /^(?:&\s*)?(?:"([^"]+)"|'([^']+)'|([^\s|;]+))/u.exec(trimmedCommand);
-  const token = match?.[1] ?? match?.[2] ?? match?.[3];
-  if (!token) {
-    return null;
-  }
-
-  const normalizedToken = token.replaceAll("\\", "/");
-  const name = normalizedToken
-    .split("/")
-    .at(-1)
-    ?.replace(/\.(?:exe|cmd|ps1)$/iu, "");
-  return name?.trim() || null;
-}
-
-function firstShellPipelineSegment(command: string | undefined): string | null {
-  const trimmedCommand = command?.trim();
-  if (!trimmedCommand) {
-    return null;
-  }
-  return trimmedCommand.split("|")[0]?.trim() || trimmedCommand;
-}
-
-function tokenizeShellSegment(command: string | undefined): string[] {
-  const segment = firstShellPipelineSegment(command);
-  if (!segment) {
-    return [];
-  }
-
-  const tokens: string[] = [];
-  const tokenPattern = /"([^"]*)"|'([^']*)'|([^\s]+)/gu;
-  for (const match of segment.matchAll(tokenPattern)) {
-    const token = match[1] ?? match[2] ?? match[3];
-    if (token) {
-      tokens.push(token);
-    }
-  }
-  return tokens;
-}
-
-function summarizeHiddenWorkEntries(entries: ReadonlyArray<TimelineWorkEntry>): string | null {
-  if (entries.length === 0) {
-    return null;
-  }
-
-  let commandCount = 0;
-  let readCount = 0;
-  let searchCount = 0;
-  let imageCount = 0;
-  let otherToolCount = 0;
-  const editedFiles = new Set<string>();
-  let editFallbackCount = 0;
-
-  for (const entry of entries) {
-    if (isCommandWorkEntry(entry)) {
-      commandCount += 1;
-      continue;
-    }
-    if (entry.itemType === "file_change" || (entry.changedFiles?.length ?? 0) > 0) {
-      if ((entry.changedFiles?.length ?? 0) === 0) {
-        editFallbackCount += 1;
-      }
-      for (const filePath of entry.changedFiles ?? []) {
-        editedFiles.add(filePath);
-      }
-      continue;
-    }
-    if (entry.requestKind === "file-read" || /^read file$/i.test(entry.toolTitle ?? entry.label)) {
-      readCount += 1;
-      continue;
-    }
-    if (
-      entry.itemType === "web_search" ||
-      /search|grep|find/i.test(entry.toolTitle ?? entry.label)
-    ) {
-      searchCount += 1;
-      continue;
-    }
-    if (entry.itemType === "image_view" || (entry.images?.length ?? 0) > 0) {
-      imageCount += Math.max(1, entry.images?.length ?? 0);
-      continue;
-    }
-    if (entry.tone === "tool") {
-      otherToolCount += 1;
-    }
-  }
-
-  const editCount = editedFiles.size + editFallbackCount;
-  const parts = [
-    formatHiddenSummaryPart(commandCount, "Ran", "command"),
-    formatHiddenSummaryPart(readCount, "Read", "file"),
-    formatHiddenSummaryPart(editCount, "Edited", "file"),
-    formatHiddenSummaryPart(searchCount, "Searched", "time", "times"),
-    formatHiddenSummaryPart(imageCount, "Viewed", "image"),
-    formatHiddenSummaryPart(otherToolCount, "Used", "tool"),
-  ].filter((part): part is string => part !== null);
-
-  return parts.length > 0 ? parts.join(" · ") : null;
-}
-
-function formatHiddenSummaryPart(
-  count: number,
-  verb: string,
-  singular: string,
-  plural = `${singular}s`,
-): string | null {
-  if (count <= 0) {
-    return null;
-  }
-  return `${verb} ${count.toLocaleString()} ${count === 1 ? singular : plural}`;
 }
 
 /** Subscribes directly to the UI state store for expand/collapse state,
@@ -4598,15 +3807,6 @@ function formatWorkingTimerNow(startIso: string): string {
   return formatWorkingTimer(startIso, new Date().toISOString()) ?? "0s";
 }
 
-function formatLiveMessageMetaNow(
-  createdAt: string,
-  durationStart: string | null | undefined,
-  timestampFormat: TimestampFormat,
-): string {
-  const elapsed = durationStart ? formatElapsed(durationStart, new Date().toISOString()) : null;
-  return formatMessageMeta(createdAt, elapsed, timestampFormat);
-}
-
 function formatMessageMeta(
   createdAt: string,
   duration: string | null,
@@ -4614,81 +3814,6 @@ function formatMessageMeta(
 ): string {
   if (!duration) return formatTimestamp(createdAt, timestampFormat);
   return `${formatTimestamp(createdAt, timestampFormat)} • ${duration}`;
-}
-
-function completedWorkEntryDuration(
-  workEntry: Pick<TimelineWorkEntry, "completedAt" | "createdAt" | "executionState">,
-): string | null {
-  if (workEntry.executionState === "running" || !workEntry.completedAt) {
-    return null;
-  }
-  const startedAtMs = Date.parse(workEntry.createdAt);
-  const completedAtMs = Date.parse(workEntry.completedAt);
-  if (
-    !Number.isFinite(startedAtMs) ||
-    !Number.isFinite(completedAtMs) ||
-    completedAtMs <= startedAtMs
-  ) {
-    return null;
-  }
-  return formatElapsed(workEntry.createdAt, workEntry.completedAt);
-}
-
-function workToneIcon(tone: TimelineWorkEntry["tone"]): {
-  icon: LucideIcon;
-  className: string;
-} {
-  if (tone === "error") {
-    return {
-      icon: CircleAlertIcon,
-      className: "text-foreground/92",
-    };
-  }
-  if (tone === "thinking") {
-    return {
-      icon: BotIcon,
-      className: "text-foreground/92",
-    };
-  }
-  if (tone === "warning") {
-    return {
-      icon: CircleAlertIcon,
-      className: "text-amber-400/80",
-    };
-  }
-  if (tone === "info") {
-    return {
-      icon: CheckIcon,
-      className: "text-foreground/92",
-    };
-  }
-  return {
-    icon: ZapIcon,
-    className: "text-foreground/92",
-  };
-}
-
-function workToneClass(tone: "thinking" | "tool" | "info" | "warning" | "error"): string {
-  if (tone === "error") return "text-rose-300/50 dark:text-rose-300/50";
-  if (tone === "warning") return "text-amber-300/60 dark:text-amber-300/60";
-  if (tone === "tool") return "text-muted-foreground/70";
-  if (tone === "thinking") return "text-muted-foreground/70";
-  return "text-muted-foreground/40";
-}
-
-function workEntryPreview(
-  workEntry: Pick<TimelineWorkEntry, "detail" | "command" | "changedFiles">,
-  workspaceRoot: string | undefined,
-) {
-  if (workEntry.command) return workEntry.command;
-  if (workEntry.detail) return workEntry.detail;
-  if ((workEntry.changedFiles?.length ?? 0) === 0) return null;
-  const [firstPath] = workEntry.changedFiles ?? [];
-  if (!firstPath) return null;
-  const displayPath = formatWorkspaceRelativePath(firstPath, workspaceRoot);
-  return workEntry.changedFiles!.length === 1
-    ? displayPath
-    : `${displayPath} +${workEntry.changedFiles!.length - 1} more`;
 }
 
 function normalizeDiffMatchPath(filePath: string): string {
@@ -4769,656 +3894,6 @@ function resolveWorkEntryTurnDiffSummary(
   }
   return null;
 }
-
-function workEntryRawCommand(
-  workEntry: Pick<TimelineWorkEntry, "command" | "rawCommand">,
-): string | null {
-  const rawCommand = workEntry.rawCommand?.trim();
-  if (!rawCommand || !workEntry.command) {
-    return null;
-  }
-  return rawCommand === workEntry.command.trim() ? null : rawCommand;
-}
-
-/** First meaningful output line of a failed command, surfaced inline so
- *  "why did it fail" needs zero clicks. */
-function commandFailureLine(workEntry: TimelineWorkEntry): string | null {
-  if (workEntry.executionState !== "failed" || !isCommandWorkEntry(workEntry)) {
-    return null;
-  }
-  const firstLine = workEntry.outputPreview
-    ?.split(/\r?\n/u)
-    .map((line) => line.trim())
-    .find((line) => line.length > 0 && line !== "...");
-  if (!firstLine) {
-    return workEntry.exitCode !== undefined ? `Exit code ${workEntry.exitCode}` : null;
-  }
-  return firstLine.length > 160 ? `${firstLine.slice(0, 159).trimEnd()}…` : firstLine;
-}
-
-/** Last lines of the retained output, terminal-style. The projection
- *  upstream already keeps only the tail (~1.2 KB) of long streams. */
-function commandOutputTail(output: string, maxLines = 20): string {
-  const lines = output.replace(/\r\n/gu, "\n").split("\n");
-  return lines.slice(-maxLines).join("\n").trimEnd();
-}
-
-function workEntryIcon(workEntry: TimelineWorkEntry): LucideIcon {
-  if (isSubagentWorkEntry(workEntry)) return BotIcon;
-  if (workEntry.requestKind === "command") return TerminalIcon;
-  if (workEntry.requestKind === "file-read") return EyeIcon;
-  if (workEntry.requestKind === "file-change") return SquarePenIcon;
-  if (workEntry.requestKind === "permissions") return ShieldCheckIcon;
-
-  if (workEntry.itemType === "command_execution" || workEntry.command) {
-    return TerminalIcon;
-  }
-  if (workEntry.itemType === "file_change" || (workEntry.changedFiles?.length ?? 0) > 0) {
-    return SquarePenIcon;
-  }
-  if (workEntry.itemType === "web_search") return GlobeIcon;
-  if (workEntry.itemType === "image_view") return EyeIcon;
-
-  const normalizedTitle = normalizeCompactToolLabel(workEntry.toolTitle ?? workEntry.label);
-  if (/^read file$/i.test(normalizedTitle)) return EyeIcon;
-  if (/^(?:search|tool search)$/i.test(normalizedTitle)) return SearchIcon;
-  if (/^web fetch$/i.test(normalizedTitle)) return GlobeIcon;
-
-  switch (workEntry.itemType) {
-    case "mcp_tool_call":
-      return WrenchIcon;
-    case "dynamic_tool_call":
-      return HammerIcon;
-  }
-
-  return workToneIcon(workEntry.tone).icon;
-}
-
-function isCommandWorkEntry(workEntry: TimelineWorkEntry): boolean {
-  return (
-    workEntry.requestKind === "command" ||
-    workEntry.itemType === "command_execution" ||
-    !!workEntry.command
-  );
-}
-
-function isRunningToolWorkEntry(workEntry: TimelineWorkEntry): boolean {
-  return workEntry.executionState === "running";
-}
-
-function isSubagentWorkEntry(workEntry: TimelineWorkEntry): boolean {
-  return (
-    workEntry.itemType === "collab_agent_tool_call" ||
-    /sub-?agent|delegat/i.test(`${workEntry.toolTitle ?? ""} ${workEntry.label}`)
-  );
-}
-
-function isSubagentDelegationEntry(workEntry: TimelineWorkEntry): boolean {
-  if (workEntry.itemType !== "collab_agent_tool_call") {
-    return false;
-  }
-  // Older persisted rows predate this discriminator and represented actual
-  // spawn calls, so retain their existing presentation. Newly projected wait,
-  // send, resume, and close calls are explicitly marked as coordination.
-  return workEntry.subagentOperation !== "coordination";
-}
-
-function capitalizePhrase(value: string): string {
-  const trimmed = value.trim();
-  if (trimmed.length === 0) {
-    return value;
-  }
-  return `${trimmed.charAt(0).toUpperCase()}${trimmed.slice(1)}`;
-}
-
-function toolWorkEntryHeading(
-  workEntry: TimelineWorkEntry,
-  workspaceRoot: string | undefined,
-): string {
-  const actionHeading = workEntryActionHeading(workEntry, workspaceRoot);
-  if (actionHeading) {
-    return actionHeading;
-  }
-
-  const rawHeading = workEntry.toolTitle ?? workEntry.label;
-  const normalizedHeading = normalizeCompactToolLabel(rawHeading);
-  if (
-    workEntry.executionState === "failed" &&
-    isCommandWorkEntry(workEntry) &&
-    /^(ran command|command)$/i.test(normalizedHeading)
-  ) {
-    return "Command failed";
-  }
-  return capitalizePhrase(normalizedHeading);
-}
-
-function workEntryActionHeading(
-  workEntry: TimelineWorkEntry,
-  workspaceRoot: string | undefined,
-): string | null {
-  if (workEntry.executionState === "failed" && isCommandWorkEntry(workEntry)) {
-    return "Command failed";
-  }
-
-  if (isCommandWorkEntry(workEntry) && workEntry.command) {
-    return commandActionHeading(workEntry.command, workEntry.executionState, workspaceRoot);
-  }
-
-  if (workEntry.itemType === "command_execution") {
-    return formatActionHeading(workEntry.executionState, "Running", "Ran", "command");
-  }
-
-  if (isSubagentWorkEntry(workEntry)) {
-    if (isSubagentDelegationEntry(workEntry)) {
-      return formatActionHeading(workEntry.executionState, "Spawning", "Spawned", "subagent");
-    }
-    return formatActionHeading(
-      workEntry.executionState,
-      "Running",
-      "Finished",
-      subagentSubjectLabel(workEntry),
-    );
-  }
-
-  if (
-    workEntry.requestKind === "file-read" ||
-    /^read file$/i.test(workEntry.toolTitle ?? workEntry.label)
-  ) {
-    return formatActionHeading(
-      workEntry.executionState,
-      "Reading",
-      "Read",
-      workEntrySubjectFromDetail(workEntry, workspaceRoot) ?? "file",
-    );
-  }
-  if (workEntry.itemType === "web_search") {
-    return formatActionHeading(workEntry.executionState, "Searching", "Searched", "web");
-  }
-  if (workEntry.itemType === "file_change" || (workEntry.changedFiles?.length ?? 0) > 0) {
-    return formatActionHeading(
-      workEntry.executionState,
-      "Editing",
-      "Edited",
-      workEntrySubjectFromChangedFiles(workEntry, workspaceRoot) ?? "files",
-    );
-  }
-  if (workEntry.itemType === "image_view" || (workEntry.images?.length ?? 0) > 0) {
-    return formatActionHeading(workEntry.executionState, "Viewing", "Viewed", "image");
-  }
-
-  const normalizedTitle = normalizeCompactToolLabel(workEntry.toolTitle ?? workEntry.label);
-  if (/^search$/i.test(normalizedTitle)) {
-    return formatActionHeading(workEntry.executionState, "Searching", "Searched", "code");
-  }
-  if (/^web fetch$/i.test(normalizedTitle)) {
-    return formatActionHeading(
-      workEntry.executionState,
-      "Fetching",
-      "Fetched",
-      urlHostFromDetail(workEntry.detail) ?? "page",
-    );
-  }
-
-  return null;
-}
-
-function urlHostFromDetail(detail: string | undefined): string | null {
-  if (!detail) {
-    return null;
-  }
-  try {
-    return new URL(detail.trim()).host || null;
-  } catch {
-    return null;
-  }
-}
-
-function subagentSubjectLabel(workEntry: TimelineWorkEntry): string {
-  const title = normalizeCompactToolLabel(workEntry.toolTitle ?? workEntry.label);
-  if (/^delegated work$/iu.test(title)) {
-    return "delegated work";
-  }
-  if (title && !/^subagent task$/iu.test(title)) {
-    return title.toLowerCase().includes("subagent") ? title : `${title} subagent`;
-  }
-
-  const role = subagentRoleLabel(workEntry);
-  if (role) {
-    return `${role} subagent`;
-  }
-
-  return "subagent task";
-}
-
-function subagentRoleLabel(workEntry: TimelineWorkEntry): string | null {
-  const detailParts = splitSubagentDetail(workEntry.detail);
-  if (detailParts?.role) {
-    return detailParts.role;
-  }
-  return null;
-}
-
-function subagentObjectiveText(workEntry: TimelineWorkEntry): string | null {
-  const detailParts = splitSubagentDetail(workEntry.detail);
-  if (detailParts?.objective) {
-    return detailParts.objective;
-  }
-
-  const detail = workEntry.detail?.trim();
-  if (detail) {
-    return detail;
-  }
-
-  return null;
-}
-
-function splitSubagentDetail(
-  detail: string | undefined,
-): { role: string; objective: string } | null {
-  const [prefix, ...restParts] = detail?.split(":") ?? [];
-  const rawRole = prefix?.trim();
-  const objective = restParts.join(":").trim();
-  if (!rawRole || !objective || !/^[A-Za-z][A-Za-z0-9_-]{1,32}$/u.test(rawRole)) {
-    return null;
-  }
-
-  return {
-    role: rawRole.replace(/[_-]+/gu, " ").toLowerCase(),
-    objective,
-  };
-}
-
-function commandActionHeading(
-  command: string,
-  executionState: TimelineWorkEntry["executionState"],
-  workspaceRoot: string | undefined,
-): string {
-  const summary = classifyCommandActivity(command);
-  if (summary.kind === "explore") {
-    if (summary.signal === "search") {
-      return formatActionHeading(
-        executionState,
-        "Searching",
-        "Searched",
-        commandSubjectLabel(command, "search", workspaceRoot) ?? "project",
-      );
-    }
-    if (summary.signal === "read") {
-      return formatActionHeading(
-        executionState,
-        "Reading",
-        "Read",
-        commandSubjectLabel(command, "read", workspaceRoot) ?? "file",
-      );
-    }
-    if (summary.signal === "list") {
-      return formatActionHeading(
-        executionState,
-        "Listing",
-        "Listed",
-        commandSubjectLabel(command, "list", workspaceRoot) ?? "directory",
-      );
-    }
-    if (summary.signal === "git") {
-      return formatActionHeading(executionState, "Checking", "Checked", "git state");
-    }
-    if (summary.signal === "environment") {
-      return formatActionHeading(executionState, "Checking", "Checked", "environment");
-    }
-  }
-
-  if (summary.kind === "verify") {
-    return formatActionHeading(
-      executionState,
-      "Verifying",
-      "Verified",
-      summary.commandName ?? "changes",
-    );
-  }
-
-  return formatActionHeading(executionState, "Running", "Ran", "command");
-}
-
-function formatActionHeading(
-  executionState: TimelineWorkEntry["executionState"],
-  activeVerb: string,
-  completedVerb: string,
-  subject: string,
-): string {
-  const verb = executionState === "running" ? activeVerb : completedVerb;
-  return `${verb} ${subject}`;
-}
-
-function commandSubjectLabel(
-  command: string,
-  signal: "search" | "read" | "list",
-  workspaceRoot: string | undefined,
-): string | null {
-  const target = extractCommandPathTarget(command);
-  if (!target) {
-    return null;
-  }
-
-  const formattedTarget = formatWorkspaceRelativePath(target, workspaceRoot);
-  if (signal === "read") {
-    return lastPathSegment(formattedTarget) ?? formattedTarget;
-  }
-  return formattedTarget;
-}
-
-function extractCommandPathTarget(command: string): string | null {
-  const tokens = tokenizeShellSegment(command);
-  for (let index = 0; index < tokens.length - 1; index += 1) {
-    if (/^-(?:literalpath|path)$/iu.test(tokens[index]!)) {
-      return cleanCommandPathToken(tokens[index + 1]);
-    }
-  }
-
-  for (let index = tokens.length - 1; index >= 1; index -= 1) {
-    const token = cleanCommandPathToken(tokens[index]);
-    if (token && isPathLikeCommandToken(token)) {
-      return token;
-    }
-  }
-  return null;
-}
-
-function cleanCommandPathToken(token: string | undefined): string | null {
-  const cleaned = token
-    ?.trim()
-    .replace(/^["']|["']$/gu, "")
-    .replace(/[),;]+$/gu, "");
-  return cleaned || null;
-}
-
-function isPathLikeCommandToken(token: string): boolean {
-  if (token.startsWith("-")) {
-    return false;
-  }
-  return (
-    /[\\/]/u.test(token) ||
-    /^[A-Za-z]:/u.test(token) ||
-    /^\.\.?$/u.test(token) ||
-    /^\.\.?[\\/]/u.test(token) ||
-    /\.[A-Za-z0-9]{1,8}$/u.test(token)
-  );
-}
-
-function workEntrySubjectFromDetail(
-  workEntry: Pick<TimelineWorkEntry, "detail" | "changedFiles">,
-  workspaceRoot: string | undefined,
-): string | null {
-  if ((workEntry.changedFiles?.length ?? 0) > 0) {
-    return workEntrySubjectFromChangedFiles(workEntry, workspaceRoot);
-  }
-  if (!workEntry.detail) {
-    return null;
-  }
-  const detail = workEntry.detail.trim();
-  return isPathLikeCommandToken(detail)
-    ? (lastPathSegment(formatWorkspaceRelativePath(detail, workspaceRoot)) ?? detail)
-    : null;
-}
-
-function workEntrySubjectFromChangedFiles(
-  workEntry: Pick<TimelineWorkEntry, "changedFiles">,
-  workspaceRoot: string | undefined,
-): string | null {
-  const [firstPath] = workEntry.changedFiles ?? [];
-  if (!firstPath) {
-    return null;
-  }
-  const displayPath = formatWorkspaceRelativePath(firstPath, workspaceRoot);
-  return workEntry.changedFiles!.length === 1
-    ? (lastPathSegment(displayPath) ?? displayPath)
-    : `${lastPathSegment(displayPath) ?? displayPath} +${workEntry.changedFiles!.length - 1}`;
-}
-
-function lastPathSegment(pathValue: string): string | null {
-  const parts = pathValue.replaceAll("\\", "/").split("/");
-  for (let index = parts.length - 1; index >= 0; index -= 1) {
-    const part = parts[index]?.trim();
-    if (part) {
-      return part;
-    }
-  }
-  return null;
-}
-
-function RunningToolIndicator({ className }: { className?: string }) {
-  // A single accent tick; the halo stays reserved for the working row.
-  return (
-    <span className={cn("inline-flex items-center", className)} aria-label="Tool still running">
-      <span className="size-1 animate-status-pulse rounded-full bg-primary-graph/80" />
-    </span>
-  );
-}
-
-function InlineDiffStatLabel({ stat }: { stat: { additions: number; deletions: number } }) {
-  return (
-    <span className="work-meta-enter ml-1.5 font-mono text-[10px]">
-      <DiffStatLabel additions={stat.additions} deletions={stat.deletions} />
-    </span>
-  );
-}
-
-function WorkEntryPreviewText({ preview }: { preview: string }) {
-  return (
-    <>
-      <span className="shrink-0 px-1 text-muted-foreground/40">-</span>
-      <span className="min-w-0 truncate">{preview}</span>
-    </>
-  );
-}
-
-function WorkEntrySummaryLine({
-  completedDuration,
-  heading,
-  isRunningTool,
-  preview,
-  rawCommand,
-  runningStartedAt,
-  tone,
-  visibleDiffStat,
-  className,
-  inSpine = false,
-}: {
-  completedDuration?: string | null;
-  heading: string;
-  isRunningTool: boolean;
-  preview: string | null;
-  rawCommand: string | null;
-  runningStartedAt?: string | null;
-  tone: TimelineWorkEntry["tone"];
-  visibleDiffStat: { additions: number; deletions: number } | null;
-  className?: string;
-  inSpine?: boolean;
-}) {
-  const previewClassName =
-    "work-meta-enter flex min-w-0 flex-1 items-center self-center overflow-hidden leading-5 text-muted-foreground/55 transition-colors hover:text-muted-foreground/75 focus-visible:text-muted-foreground/75";
-
-  return (
-    <p
-      className={cn(
-        "flex min-w-0 items-center overflow-hidden leading-5",
-        workToneClass(tone),
-        preview ? "text-muted-foreground/70" : "",
-        className,
-      )}
-    >
-      {isRunningTool && !inSpine ? <RunningToolIndicator className="mr-1.5 shrink-0" /> : null}
-      <span
-        className={cn(
-          "min-w-0 shrink-0 truncate leading-5 text-foreground/80",
-          workToneClass(tone),
-        )}
-        data-work-entry-heading="true"
-      >
-        {heading}
-        {visibleDiffStat ? <InlineDiffStatLabel stat={visibleDiffStat} /> : null}
-      </span>
-      {runningStartedAt ? (
-        <span className="ml-1.5 shrink-0 font-mono text-[10px] leading-5 text-muted-foreground/45 tabular-nums">
-          <span aria-hidden>· </span>
-          <RunningCommandTimer createdAt={runningStartedAt} />
-        </span>
-      ) : completedDuration ? (
-        <span
-          className="work-meta-enter ml-1.5 shrink-0 font-mono text-[10px] leading-5 text-muted-foreground/45"
-          aria-label={`Completed in ${completedDuration}`}
-        >
-          <span aria-hidden>· </span>
-          {completedDuration}
-        </span>
-      ) : null}
-      {preview ? (
-        rawCommand ? (
-          <Tooltip>
-            <TooltipTrigger
-              closeDelay={0}
-              delay={75}
-              render={
-                <span className={previewClassName} data-work-entry-preview="true">
-                  <WorkEntryPreviewText preview={preview} />
-                </span>
-              }
-            />
-            <TooltipPopup
-              align="start"
-              className="max-w-[min(56rem,calc(100vw-2rem))] px-0 py-0"
-              side="top"
-            >
-              <div className="max-w-[min(56rem,calc(100vw-2rem))] overflow-x-auto px-1.5 py-1 font-mono text-[11px] leading-4 whitespace-nowrap">
-                {rawCommand}
-              </div>
-            </TooltipPopup>
-          </Tooltip>
-        ) : (
-          <span className={previewClassName} data-work-entry-preview="true">
-            <WorkEntryPreviewText preview={preview} />
-          </span>
-        )
-      ) : null}
-    </p>
-  );
-}
-
-const SubagentWorkEntryRow = memo(function SubagentWorkEntryRow(props: {
-  workEntry: TimelineWorkEntry;
-  workspaceRoot: string | undefined;
-  compact: boolean;
-  inSpine?: boolean;
-}) {
-  const { workEntry, workspaceRoot, compact, inSpine = false } = props;
-  const ctx = use(TimelineRowCtx);
-  const [isExpanded, setIsExpanded] = useState(false);
-  const isRunningTool = isRunningToolWorkEntry(workEntry);
-  const heading = toolWorkEntryHeading(workEntry, workspaceRoot);
-  const objective = subagentObjectiveText(workEntry);
-  const rawCommand = workEntryRawCommand(workEntry);
-  const command = workEntry.command?.trim();
-  const detail = workEntry.detail?.trim();
-  const transcriptAgentIds = ctx.activeThreadId !== null ? (workEntry.spawnedAgentIds ?? []) : [];
-  const hasDetailBody =
-    !compact &&
-    Boolean(
-      detail ||
-      command ||
-      rawCommand ||
-      (workEntry.changedFiles?.length ?? 0) > 0 ||
-      transcriptAgentIds.length > 0,
-    );
-  const displayText = objective ? `${heading} - ${objective}` : heading;
-
-  useEffect(() => {
-    if (compact && isExpanded) {
-      setIsExpanded(false);
-    }
-  }, [compact, isExpanded]);
-
-  return (
-    <div className="rounded-lg px-1 py-1" data-subagent-activity-row="true">
-      <div className="flex items-start gap-2 transition-[opacity,translate] duration-200">
-        <span className="flex size-5 shrink-0 items-center justify-center text-foreground/85">
-          <BotIcon className="size-3" />
-        </span>
-        <div className="min-w-0 flex-1 overflow-hidden">
-          <div className="flex min-w-0 items-center gap-1.5">
-            <p
-              className={cn(
-                "min-w-0 truncate text-[11px] leading-5 text-muted-foreground/70",
-                compact ? "text-xs" : "",
-              )}
-              title={displayText}
-            >
-              <span className="inline-flex items-center text-foreground/80">
-                {isRunningTool && !inSpine ? <RunningToolIndicator className="mr-1.5" /> : null}
-                {heading}
-              </span>
-              {objective ? <span className="text-muted-foreground/55"> - {objective}</span> : null}
-            </p>
-            {!compact ? (
-              <span className="shrink-0 rounded border border-border/55 bg-background/55 px-1 py-px text-[9px] uppercase tracking-[0.12em] text-muted-foreground/55">
-                Subagent
-              </span>
-            ) : null}
-          </div>
-        </div>
-        {hasDetailBody ? (
-          <button
-            type="button"
-            className="mt-0.5 shrink-0 text-[9px] uppercase tracking-[0.12em] text-muted-foreground/50 transition-colors duration-150 hover:text-foreground/75"
-            aria-expanded={isExpanded}
-            onClick={() => setIsExpanded((value) => !value)}
-          >
-            {isExpanded ? "Hide" : "Details"}
-          </button>
-        ) : null}
-      </div>
-      {hasDetailBody && isExpanded ? (
-        <div
-          className="mt-1.5 ml-7 space-y-1.5 border-l border-border/45 pl-3 text-[11px] leading-5 text-muted-foreground/70"
-          data-subagent-activity-details="true"
-        >
-          {detail ? <p className="whitespace-pre-wrap wrap-break-word">{detail}</p> : null}
-          {command ? (
-            <p className="overflow-x-auto font-mono whitespace-nowrap text-muted-foreground/65">
-              {command}
-            </p>
-          ) : null}
-          {rawCommand ? (
-            <p className="overflow-x-auto font-mono whitespace-nowrap text-muted-foreground/55">
-              {rawCommand}
-            </p>
-          ) : null}
-          {(workEntry.changedFiles?.length ?? 0) > 0 ? (
-            <div className="flex flex-wrap gap-1">
-              {workEntry.changedFiles?.slice(0, 4).map((filePath) => {
-                const displayPath = formatWorkspaceRelativePath(filePath, workspaceRoot);
-                return (
-                  <span
-                    key={`${workEntry.id}:subagent-file:${filePath}`}
-                    className="rounded-md border border-border/55 bg-background/75 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground/75"
-                    title={displayPath}
-                  >
-                    {displayPath}
-                  </span>
-                );
-              })}
-            </div>
-          ) : null}
-          {ctx.activeThreadId !== null && transcriptAgentIds.length > 0 ? (
-            <SubagentTranscript
-              environmentId={ctx.activeThreadEnvironmentId}
-              threadId={ctx.activeThreadId}
-              agentIds={transcriptAgentIds}
-            />
-          ) : null}
-        </div>
-      ) : null}
-    </div>
-  );
-});
 
 function providerAuthReconnectProviderLabel(provider: ProviderDriverKind): string {
   return PROVIDER_DISPLAY_NAMES[provider] ?? formatProviderDriverKindLabel(provider);
@@ -5585,323 +4060,3 @@ const McpAuthReconnectCard = memo(function McpAuthReconnectCard({
     </div>
   );
 });
-
-const CommandOutputCopyButton = memo(function CommandOutputCopyButton({ text }: { text: string }) {
-  const { copyToClipboard, isCopied } = useCopyToClipboard<void>({ timeout: 1000 });
-
-  return (
-    <Button
-      type="button"
-      size="icon-xs"
-      variant="ghost"
-      aria-label="Copy command output"
-      tooltip={isCopied ? "Copied" : "Copy command output"}
-      className="absolute top-1.5 right-3 size-5 rounded-md border border-border/45 bg-background/85 text-muted-foreground/70 opacity-80 shadow-sm hover:bg-accent/75 hover:text-foreground hover:opacity-100 focus-visible:opacity-100 group-hover/command-output:opacity-100"
-      disabled={isCopied || text.length === 0}
-      onClick={(event) => {
-        event.stopPropagation();
-        copyToClipboard(text);
-      }}
-    >
-      {isCopied ? <CheckIcon className="size-3 text-success" /> : <CopyIcon className="size-3" />}
-    </Button>
-  );
-});
-
-const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
-  isLiveActivity: boolean;
-  workEntry: TimelineWorkEntry;
-  workspaceRoot: string | undefined;
-  inSpine?: boolean;
-  /** Agent label shown when this subagent row starts a new lane after a
-   *  main-model row or a different agent's row (interleaved activity). */
-  subagentLaneLabel?: string | null;
-}) {
-  const {
-    turnDiffSummaryByTurnId,
-    onRunProviderAuthReconnect,
-    resolvedProviderAuthReconnectIds,
-    mcpAuthReconnectStatusByServerName,
-    onRunMcpAuthReconnect,
-  } = use(TimelineRowCtx);
-  const [isOutputExpanded, setIsOutputExpanded] = useState(false);
-  const { isLiveActivity, workspaceRoot, inSpine = false, subagentLaneLabel = null } = props;
-  const workEntry = resolveDisplayedWorkEntry(props.workEntry, isLiveActivity);
-
-  if (isSubagentWorkEntry(workEntry)) {
-    return (
-      <SubagentWorkEntryRow
-        workEntry={workEntry}
-        workspaceRoot={workspaceRoot}
-        compact={isLiveActivity}
-        inSpine={inSpine}
-      />
-    );
-  }
-
-  const iconConfig = workToneIcon(workEntry.tone);
-  const EntryIcon = workEntryIcon(workEntry);
-  const isRunningTool = isLiveActivity && isRunningToolWorkEntry(workEntry);
-  const completedDuration = completedWorkEntryDuration(workEntry);
-  const heading = toolWorkEntryHeading(workEntry, workspaceRoot);
-  const rawPreview =
-    workEntry.authReconnect || workEntry.mcpAuthReconnect
-      ? null
-      : workEntryPreview(workEntry, workspaceRoot);
-  const preview =
-    rawPreview &&
-    normalizeCompactToolLabel(rawPreview).toLowerCase() ===
-      normalizeCompactToolLabel(heading).toLowerCase()
-      ? null
-      : rawPreview;
-  const rawCommand = workEntryRawCommand(workEntry);
-  const diffStat = summarizeWorkEntryDiffStat(workEntry, turnDiffSummaryByTurnId);
-  const visibleDiffStat = diffStat && hasNonZeroStat(diffStat) ? diffStat : null;
-  const diffStatText = visibleDiffStat
-    ? ` +${visibleDiffStat.additions} / -${visibleDiffStat.deletions}`
-    : "";
-  const displayText = preview
-    ? `${heading}${diffStatText} - ${preview}`
-    : `${heading}${diffStatText}`;
-  const subagentTask = workEntry.subagentTask;
-  const tooltipText = subagentTask
-    ? `Subagent${subagentTask.subagentType ? ` (${subagentTask.subagentType})` : ""}: ${displayText}`
-    : displayText;
-  const hasChangedFiles = (workEntry.changedFiles?.length ?? 0) > 0;
-  // A single-file edit whose detail is already that file's path needs no
-  // chip row repeating it.
-  const detailMatchesSoleChangedFile =
-    hasChangedFiles &&
-    workEntry.changedFiles?.length === 1 &&
-    !workEntry.command &&
-    !!workEntry.detail &&
-    diffPathsMatch(workEntry.detail, workEntry.changedFiles[0] ?? "");
-  const previewIsChangedFiles =
-    hasChangedFiles && !workEntry.command && (!workEntry.detail || detailMatchesSoleChangedFile);
-  const imagePreviews = workEntry.images ?? [];
-  // "View into the terminal": command rows with retained output expand in
-  // place on click; failures additionally surface their first error line.
-  const outputPreview = isCommandWorkEntry(workEntry) ? workEntry.outputPreview : undefined;
-  const hasExpandableOutput = Boolean(outputPreview) && !isLiveActivity;
-  const commandOutputText = hasExpandableOutput ? commandOutputTail(outputPreview ?? "") : "";
-  const failureLine = isOutputExpanded ? null : commandFailureLine(workEntry);
-  const showExpandedDetails = !isLiveActivity;
-  // On the spine the gutter owns the leading node, so the row drops its own
-  // tone icon and the sub-rows align flush under the heading text.
-  const detailIndent = inSpine ? "" : "pl-7";
-  const cardIndent = inSpine ? "" : "ml-7";
-  const chipIndent = inSpine ? "" : "pl-6";
-  const isStandaloneImagePreview =
-    showExpandedDetails &&
-    imagePreviews.length > 0 &&
-    workEntry.itemType === "image_view" &&
-    !preview &&
-    !rawCommand &&
-    !hasChangedFiles;
-
-  if (isStandaloneImagePreview) {
-    return (
-      <div className="rounded-lg px-1 py-1">
-        <TimelineImagePreviewGrid
-          images={imagePreviews}
-          className={cn("max-w-[420px]", detailIndent)}
-          imageClassName="max-h-[260px] object-contain"
-        />
-      </div>
-    );
-  }
-
-  const summaryContent = (
-    <>
-      {inSpine ? (
-        // The spine gutter owns the leading node; subagent rows still get the
-        // corner glyph so the child relationship reads inside the group.
-        subagentTask ? (
-          <CornerDownRightIcon className="size-3 shrink-0 text-muted-foreground/50" />
-        ) : null
-      ) : (
-        <span
-          className={cn(
-            "flex size-5 shrink-0 items-center justify-center",
-            subagentTask ? "text-muted-foreground/50" : iconConfig.className,
-          )}
-        >
-          {subagentTask ? (
-            <CornerDownRightIcon className="size-3" />
-          ) : (
-            <EntryIcon className="size-3" />
-          )}
-        </span>
-      )}
-      {subagentTask && subagentLaneLabel ? (
-        <span
-          className="max-w-28 shrink-0 truncate rounded border border-border/50 bg-background/60 px-1 py-px text-[9px] leading-none font-medium tracking-[0.08em] text-muted-foreground/70 uppercase"
-          data-subagent-lane-label="true"
-        >
-          {subagentLaneLabel}
-        </span>
-      ) : null}
-      <div className={cn("min-w-0 flex-1 overflow-hidden", subagentTask && "opacity-80")}>
-        {rawCommand || hasExpandableOutput ? (
-          <div className="max-w-full">
-            <WorkEntrySummaryLine
-              completedDuration={completedDuration}
-              className={rawCommand ? "text-xs" : "text-[11px]"}
-              heading={heading}
-              isRunningTool={isRunningTool}
-              inSpine={inSpine}
-              preview={preview}
-              rawCommand={rawCommand}
-              runningStartedAt={isRunningTool ? workEntry.createdAt : null}
-              tone={workEntry.tone}
-              visibleDiffStat={visibleDiffStat}
-            />
-          </div>
-        ) : (
-          <Tooltip>
-            <TooltipTrigger
-              className="block min-w-0 w-full cursor-default text-left"
-              aria-label={tooltipText}
-            >
-              <WorkEntrySummaryLine
-                completedDuration={completedDuration}
-                className="text-[11px]"
-                heading={heading}
-                isRunningTool={isRunningTool}
-                inSpine={inSpine}
-                preview={preview}
-                rawCommand={null}
-                runningStartedAt={isRunningTool ? workEntry.createdAt : null}
-                tone={workEntry.tone}
-                visibleDiffStat={visibleDiffStat}
-              />
-            </TooltipTrigger>
-            <TooltipPopup className="max-w-[min(720px,calc(100vw-2rem))]">
-              <p className="whitespace-pre-wrap wrap-break-word text-xs leading-5">{tooltipText}</p>
-            </TooltipPopup>
-          </Tooltip>
-        )}
-      </div>
-      {hasExpandableOutput ? (
-        <ChevronDownIcon
-          className={cn(
-            "size-3 shrink-0 text-muted-foreground/45 transition-transform duration-150",
-            !isOutputExpanded && "-rotate-90",
-          )}
-        />
-      ) : null}
-    </>
-  );
-
-  return (
-    <div
-      className={cn("rounded-lg px-1 py-1", subagentTask && "pl-4")}
-      {...(subagentTask ? { "data-subagent-work-row": "true" } : {})}
-    >
-      {hasExpandableOutput ? (
-        <button
-          type="button"
-          className="flex w-full cursor-pointer items-center gap-2 rounded-md text-left transition-[opacity,translate] duration-200 outline-none focus-ring"
-          aria-expanded={isOutputExpanded}
-          aria-label={isOutputExpanded ? "Hide command output" : "Show command output"}
-          onClick={() => setIsOutputExpanded((value) => !value)}
-        >
-          {summaryContent}
-        </button>
-      ) : (
-        <div className="flex items-center gap-2 transition-[opacity,translate] duration-200">
-          {summaryContent}
-        </div>
-      )}
-      {failureLine ? (
-        <p
-          className={cn(
-            "mt-0.5 truncate font-mono text-[11px] leading-4 text-destructive/85",
-            detailIndent,
-          )}
-          data-command-failure="true"
-          title={failureLine}
-        >
-          {failureLine}
-        </p>
-      ) : null}
-      {workEntry.authReconnect ? (
-        <ProviderAuthReconnectCard
-          action={workEntry.authReconnect}
-          className={cn("mt-1.5", cardIndent)}
-          resolved={resolvedProviderAuthReconnectIds.has(workEntry.id)}
-          {...(onRunProviderAuthReconnect ? { onRun: onRunProviderAuthReconnect } : {})}
-        />
-      ) : null}
-      {workEntry.mcpAuthReconnect ? (
-        <McpAuthReconnectCard
-          action={workEntry.mcpAuthReconnect}
-          className={cn("mt-1.5", cardIndent)}
-          status={mcpAuthReconnectStatusByServerName.get(workEntry.mcpAuthReconnect.serverName)}
-          {...(onRunMcpAuthReconnect ? { onRun: onRunMcpAuthReconnect } : {})}
-        />
-      ) : null}
-      {hasExpandableOutput && isOutputExpanded ? (
-        <div className={cn("mt-1", detailIndent)} data-command-output="true">
-          <div className="group/command-output relative">
-            <pre className="max-h-52 overflow-y-auto rounded-md border border-border/45 bg-background/70 px-2 py-1.5 pr-10 font-mono text-[11px] leading-4 whitespace-pre-wrap wrap-break-word text-muted-foreground/80">
-              {commandOutputText}
-            </pre>
-            <CommandOutputCopyButton text={commandOutputText} />
-          </div>
-          {workEntry.exitCode !== undefined ? (
-            <p className="mt-0.5 text-[10px] tracking-wide text-muted-foreground/55">
-              exit {workEntry.exitCode}
-            </p>
-          ) : null}
-        </div>
-      ) : null}
-      {hasChangedFiles && !previewIsChangedFiles && showExpandedDetails && (
-        <div className={cn("mt-1 flex flex-wrap gap-1", chipIndent)}>
-          {workEntry.changedFiles?.slice(0, 4).map((filePath) => {
-            const displayPath = formatWorkspaceRelativePath(filePath, workspaceRoot);
-            const fileStat = workEntry.changedFileStats?.find((stat) =>
-              diffPathsMatch(stat.path, filePath),
-            );
-            return (
-              <span
-                key={`${workEntry.id}:${filePath}`}
-                className="inline-flex items-center gap-1 rounded-md border border-border/55 bg-background/75 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground/75"
-                title={displayPath}
-              >
-                {displayPath}
-                {fileStat && hasNonZeroStat(fileStat) ? (
-                  <span className="shrink-0">
-                    <DiffStatLabel additions={fileStat.additions} deletions={fileStat.deletions} />
-                  </span>
-                ) : null}
-              </span>
-            );
-          })}
-          {(workEntry.changedFiles?.length ?? 0) > 4 && (
-            <span className="px-1 text-[10px] text-muted-foreground/55">
-              +{(workEntry.changedFiles?.length ?? 0) - 4}
-            </span>
-          )}
-        </div>
-      )}
-      {imagePreviews.length > 0 && showExpandedDetails && (
-        <TimelineImagePreviewGrid
-          images={imagePreviews}
-          className={cn("mt-2 max-w-[420px]", detailIndent)}
-          imageClassName="max-h-[260px] object-contain"
-        />
-      )}
-    </div>
-  );
-});
-
-function resolveDisplayedWorkEntry(
-  workEntry: TimelineWorkEntry,
-  isLiveActivity: boolean,
-): TimelineWorkEntry {
-  if (isLiveActivity || workEntry.executionState !== "running") {
-    return workEntry;
-  }
-  return { ...workEntry, executionState: "completed" };
-}

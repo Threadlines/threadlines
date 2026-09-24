@@ -117,6 +117,10 @@ export interface WorkLogEntry {
   detail?: string;
   command?: string;
   rawCommand?: string;
+  /** The plain label the agent wrote for a shell command ("Check both PRs'
+   *  branches on GitHub"). Claude writes one for nearly every command; Codex
+   *  writes none, and the timeline reads its wording off the command. */
+  description?: string;
   /** Tail of the streamed command output, retained for inline failure
    *  context and the expandable output view on command rows. */
   outputPreview?: string;
@@ -187,6 +191,10 @@ interface DerivedWorkLogEntry extends WorkLogEntry {
   activityKind: OrchestrationThreadActivity["kind"];
   collapseKey?: string;
   browserReceipt?: BrowserReceipt;
+  /** The shell command a finished background task belongs to (Claude reports
+   *  long and backgrounded commands as tasks as well as tool calls). */
+  taskToolUseId?: string;
+  taskStatus?: string;
 }
 
 interface BrowserReceipt {
@@ -2467,9 +2475,19 @@ export function deriveWorkLogEntries(
   // derivation-internal collapse key comes off.
   return enrichGenericThinkingEntries(
     collapseBrowserReceipts(
-      collapseDerivedWorkLogEntries(entries).filter(shouldKeepDerivedWorkLogEntry),
+      foldCommandTaskCompletions(
+        collapseDerivedWorkLogEntries(entries).filter(shouldKeepDerivedWorkLogEntry),
+      ),
     ),
-  ).map(({ collapseKey: _collapseKey, browserReceipt: _browserReceipt, ...entry }) => entry);
+  ).map(
+    ({
+      collapseKey: _collapseKey,
+      browserReceipt: _browserReceipt,
+      taskToolUseId: _taskToolUseId,
+      taskStatus: _taskStatus,
+      ...entry
+    }) => entry,
+  );
 }
 
 /** Codex emits a human-readable guardian warning immediately before the
@@ -2684,6 +2702,10 @@ function toDerivedWorkLogEntry(
   if (commandPreview.rawCommand) {
     entry.rawCommand = commandPreview.rawCommand;
   }
+  const commandDescription = extractCommandDescription(payload, itemType);
+  if (commandDescription) {
+    entry.description = commandDescription;
+  }
   if (
     activity.kind === "tool.output.updated" &&
     asTrimmedString(payload?.streamKind) === "command_output"
@@ -2739,6 +2761,16 @@ function toDerivedWorkLogEntry(
   }
   if (activity.kind === "thinking.progress") {
     entry.redactedThinking = isRedactedThinkingActivity;
+  }
+  if (activity.kind === "task.completed") {
+    const taskToolUseId = asTrimmedString(payload?.toolUseId);
+    const taskStatus = asTrimmedString(payload?.status);
+    if (taskToolUseId) {
+      entry.taskToolUseId = taskToolUseId;
+    }
+    if (taskStatus) {
+      entry.taskStatus = taskStatus;
+    }
   }
   if (activity.kind === "task.progress" || activity.kind === "task.completed") {
     const subagentType = asTrimmedString(payload?.subagentType);
@@ -2808,6 +2840,40 @@ function deriveTransientWarningCollapseKey(
     return undefined;
   }
   return ["warning", warningKind, activity.turnId ?? "thread"].join("\u001f");
+}
+
+/**
+ * Claude reports a long or backgrounded shell command twice: as the tool call,
+ * and as a task that completes when the command really finishes. The task
+ * carries the command's tool call id, so it folds into that command instead of
+ * narrating the same step a second time. A backgrounded command settles when
+ * its task does, and a failed task fails the command.
+ */
+function foldCommandTaskCompletions(
+  entries: ReadonlyArray<DerivedWorkLogEntry>,
+): DerivedWorkLogEntry[] {
+  const commandIndexByToolCallId = new Map<string, number>();
+  const folded: DerivedWorkLogEntry[] = [];
+  for (const entry of entries) {
+    const owner =
+      entry.activityKind === "task.completed" && entry.taskToolUseId
+        ? commandIndexByToolCallId.get(entry.taskToolUseId)
+        : undefined;
+    const command = owner === undefined ? undefined : folded[owner];
+    if (owner !== undefined && command) {
+      folded[owner] = {
+        ...command,
+        completedAt: entry.createdAt,
+        ...(entry.taskStatus === "failed" ? { executionState: "failed" as const } : {}),
+      };
+      continue;
+    }
+    if (entry.itemType === "command_execution" && entry.toolCallId) {
+      commandIndexByToolCallId.set(entry.toolCallId, folded.length);
+    }
+    folded.push(entry);
+  }
+  return folded;
 }
 
 function collapseDerivedWorkLogEntries(
@@ -3152,6 +3218,7 @@ function mergeDerivedWorkLogEntries(
   const detail = next.detail ?? previous.detail;
   const command = next.command ?? previous.command;
   const rawCommand = next.rawCommand ?? previous.rawCommand;
+  const description = next.description ?? previous.description;
   const outputPreview = next.outputPreview ?? previous.outputPreview;
   const exitCode = next.exitCode ?? previous.exitCode;
   const images = mergeWorkLogImages(previous.images, next.images);
@@ -3178,6 +3245,7 @@ function mergeDerivedWorkLogEntries(
     ...(detail ? { detail } : {}),
     ...(command ? { command } : {}),
     ...(rawCommand ? { rawCommand } : {}),
+    ...(description ? { description } : {}),
     ...(outputPreview ? { outputPreview } : {}),
     ...(exitCode !== undefined ? { exitCode } : {}),
     ...(changedFiles.length > 0 ? { changedFiles } : {}),
@@ -3837,6 +3905,20 @@ function toRawToolCommand(value: unknown, normalizedCommand: string | null): str
   return formatted === normalizedCommand ? null : formatted;
 }
 
+/** Claude's Bash and PowerShell tools take a `description` alongside the
+ *  command: the agent's own one-line label for it. */
+function extractCommandDescription(
+  payload: Record<string, unknown> | null,
+  itemType: ToolLifecycleItemType | undefined,
+): string | null {
+  if (itemType !== "command_execution") {
+    return null;
+  }
+  const input = asRecord(asRecord(payload?.data)?.input);
+  const description = asTrimmedString(input?.description);
+  return description ? description.slice(0, 200) : null;
+}
+
 function extractToolCommand(
   payload: Record<string, unknown> | null,
   options?: {
@@ -3858,6 +3940,9 @@ function extractToolCommand(
     itemInput?.command,
     itemResult?.command,
     data?.command,
+    // Claude's shell tools keep the full command in their input; the detail
+    // line is a shortened preview of it.
+    itemType === "command_execution" ? asRecord(data?.input)?.command : null,
     detailMayBeCommand && itemType === "command_execution" && detail
       ? stripTrailingExitCode(detail).output
       : null,
@@ -4937,14 +5022,6 @@ function compareActivityLifecycleRank(kind: string): number {
   return 1;
 }
 
-export function hasToolActivityForTurn(
-  activities: ReadonlyArray<OrchestrationThreadActivity>,
-  turnId: TurnId | null | undefined,
-): boolean {
-  if (!turnId) return false;
-  return activities.some((activity) => activity.turnId === turnId && activity.tone === "tool");
-}
-
 export function deriveTimelineEntries(
   messages: ChatMessage[],
   proposedPlans: ProposedPlan[],
@@ -5053,53 +5130,6 @@ function findSubagentResultEchoMessageIds(
 function normalizeExactSubagentEchoText(value: string): string | null {
   const normalized = value.trim();
   return normalized.length > 0 ? normalized : null;
-}
-
-export function deriveCompletionDividerBeforeEntryId(
-  timelineEntries: ReadonlyArray<TimelineEntry>,
-  latestTurn: Pick<
-    OrchestrationLatestTurn,
-    "assistantMessageId" | "startedAt" | "completedAt"
-  > | null,
-): string | null {
-  if (!latestTurn?.startedAt || !latestTurn.completedAt) {
-    return null;
-  }
-
-  if (latestTurn.assistantMessageId) {
-    const exactMatch = timelineEntries.find(
-      (timelineEntry) =>
-        timelineEntry.kind === "message" &&
-        timelineEntry.message.role === "assistant" &&
-        timelineEntry.message.id === latestTurn.assistantMessageId,
-    );
-    if (exactMatch) {
-      return exactMatch.id;
-    }
-  }
-
-  const turnStartedAt = Date.parse(latestTurn.startedAt);
-  const turnCompletedAt = Date.parse(latestTurn.completedAt);
-  if (Number.isNaN(turnStartedAt) || Number.isNaN(turnCompletedAt)) {
-    return null;
-  }
-
-  let inRangeMatch: string | null = null;
-  let fallbackMatch: string | null = null;
-  for (const timelineEntry of timelineEntries) {
-    if (timelineEntry.kind !== "message" || timelineEntry.message.role !== "assistant") {
-      continue;
-    }
-    const messageAt = Date.parse(timelineEntry.message.createdAt);
-    if (Number.isNaN(messageAt) || messageAt < turnStartedAt) {
-      continue;
-    }
-    fallbackMatch = timelineEntry.id;
-    if (messageAt <= turnCompletedAt) {
-      inRangeMatch = timelineEntry.id;
-    }
-  }
-  return inRangeMatch ?? fallbackMatch;
 }
 
 export function inferCheckpointTurnCountByTurnId(

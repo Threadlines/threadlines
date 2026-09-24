@@ -2365,8 +2365,9 @@ export function mapClaudeSubagentTranscriptLines(
     }
 
     const texts: string[] = [];
-    const toolUses: Array<{ name: string; summary: string }> = [];
+    const toolUses: Array<{ name: string; summary: string; description?: string }> = [];
     const resultPreviews: string[] = [];
+    let resultIsError = false;
     for (const block of content) {
       if (!block || typeof block !== "object") {
         continue;
@@ -2378,6 +2379,7 @@ export function mapClaudeSubagentTranscriptLines(
         name?: unknown;
         input?: unknown;
         content?: unknown;
+        is_error?: unknown;
       };
       if (blockRecord.type === "thinking" && typeof blockRecord.thinking === "string") {
         const thinkingText = capTranscriptText(
@@ -2398,6 +2400,9 @@ export function mapClaudeSubagentTranscriptLines(
           blockRecord.input && typeof blockRecord.input === "object"
             ? (blockRecord.input as Record<string, unknown>)
             : {};
+        // The agent's own label for a shell call, which the timeline shows in
+        // place of the raw command.
+        const description = nonEmptyString(input.description);
         toolUses.push({
           name: blockRecord.name,
           // The same preview the main timeline shows for a tool call, so a
@@ -2407,10 +2412,14 @@ export function mapClaudeSubagentTranscriptLines(
             input,
             options?.cwd ? { cwd: options.cwd } : undefined,
           ),
+          ...(description ? { description: description.slice(0, 200) } : {}),
         });
         continue;
       }
       if (blockRecord.type === "tool_result") {
+        if (blockRecord.is_error === true) {
+          resultIsError = true;
+        }
         const preview = capTranscriptText(
           extractTextContent(blockRecord.content),
           SUBAGENT_TRANSCRIPT_OUTPUT_PREVIEW_MAX_CHARS,
@@ -2433,6 +2442,7 @@ export function mapClaudeSubagentTranscriptLines(
         ...(at ? { at } : {}),
         toolUses,
         ...(outputPreview.length > 0 ? { outputPreview } : {}),
+        ...(resultIsError ? { outputIsError: true } : {}),
       });
     }
   }

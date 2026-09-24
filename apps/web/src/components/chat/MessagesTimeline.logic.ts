@@ -9,41 +9,7 @@ import {
 import { type ChatMessage, type ProposedPlan, type TurnDiffSummary } from "../../types";
 import { type MessageId, type TurnId } from "@threadlines/contracts";
 import { stripCodexInlineVisualizationDirectives } from "../../lib/codexInlineVisualization";
-
-export const MAX_VISIBLE_WORK_LOG_ENTRIES = 6;
-
-/**
- * Lane-entry labels for subagent work rows. Subagent activity can interleave
- * with main-model rows (and with other agents' rows) mid-turn, so a row only
- * gets its agent label when the previous rendered row belongs to a different
- * lane — a main-model row, another agent, a group boundary. Contiguous
- * same-agent runs and rows directly under their own spawn row stay bare.
- */
-export function deriveSubagentLaneLabels(
-  entries: ReadonlyArray<WorkLogEntry>,
-): ReadonlyArray<string | null> {
-  const laneKeyOf = (entry: WorkLogEntry): string | null => {
-    if (entry.subagentTask) {
-      return entry.subagentTask.toolUseId ?? entry.subagentTask.subagentType ?? "subagent";
-    }
-    // A collab spawn/update row anchors the same lane as the rows it spawned.
-    if (entry.itemType === "collab_agent_tool_call" && entry.toolCallId) {
-      return entry.toolCallId;
-    }
-    return null;
-  };
-
-  return entries.map((entry, index) => {
-    if (!entry.subagentTask) {
-      return null;
-    }
-    const previous = index > 0 ? entries[index - 1] : undefined;
-    if (previous && laneKeyOf(previous) === laneKeyOf(entry)) {
-      return null;
-    }
-    return entry.subagentTask.subagentType ?? "subagent";
-  });
-}
+import { activityStepFromWorkLogEntry, liveActivityLabel } from "./activitySteps";
 
 export interface TimelineDurationMessage {
   id: string;
@@ -89,8 +55,9 @@ export type MessagesTimelineRow =
       createdAt: string;
       message: ChatMessage;
       durationStart: string;
-      showCompletionDivider: boolean;
-      completionSummary: string | null;
+      /** The answer sits under its turn's "Worked for" line, which already says
+       *  how long the turn took. */
+      hideMetaDuration: boolean;
       showAssistantCopyButton: boolean;
       assistantCopyStreaming: boolean;
       assistantTurnInProgress: boolean;
@@ -115,6 +82,20 @@ export type MessagesTimelineRow =
       id: string;
       createdAt: string;
       forkContext: ForkContextEntry;
+    }
+  | {
+      kind: "turn-fold";
+      id: string;
+      createdAt: string;
+      /** Everything the settled turn did before its answer: its notes, its
+       *  steps, its agents' receipts. Rendered only while expanded. */
+      rows: MessagesTimelineRow[];
+      expanded: boolean;
+      /** From the user's message to the answer. */
+      startedAt: string;
+      endedAt: string;
+      /** The answer's checkpoint diff: the most reliable count of edited files. */
+      turnDiffSummary?: TurnDiffSummary | undefined;
     }
   | { kind: "working"; id: string; createdAt: string | null; label: string };
 
@@ -158,10 +139,6 @@ export function computeMessageDurationStart(
   }
 
   return result;
-}
-
-export function normalizeCompactToolLabel(value: string): string {
-  return value.replace(/\s+(?:complete|completed)\s*$/i, "").trim();
 }
 
 export function resolveAssistantMessageCopyState({
@@ -293,8 +270,6 @@ function deriveModelFallbackByTurn(
 
 export function deriveMessagesTimelineRows(input: {
   timelineEntries: ReadonlyArray<TimelineEntry>;
-  completionDividerBeforeEntryId: string | null;
-  completionSummary?: string | null;
   isWorking: boolean;
   /** Agents still running or waiting, whichever turn spawned them. The working
    *  anchor stays up for them after the turn settles, so a background agent's
@@ -308,6 +283,10 @@ export function deriveMessagesTimelineRows(input: {
   activeTurnStartedAt: string | null;
   turnDiffSummaryByAssistantMessageId: ReadonlyMap<MessageId, TurnDiffSummary>;
   revertTurnCountByUserMessageId: ReadonlyMap<MessageId, number>;
+  /** Settled turns the reader opened; every other settled turn folds. */
+  expandedTurnFoldIds?: ReadonlySet<string> | undefined;
+  /** A message the reader is being taken to; the turn holding it opens. */
+  revealMessageId?: MessageId | null | undefined;
 }): MessagesTimelineRow[] {
   const nextRows: MessagesTimelineRow[] = [];
   const visibleTimelineEntries = hoistTrailingTurnWorkAboveResponse(
@@ -452,9 +431,6 @@ export function deriveMessagesTimelineRows(input: {
       timelineEntry.message.role === "assistant" &&
       (timelineEntry.message.streaming || assistantTurnStillInProgress);
 
-    const showCompletionDivider =
-      timelineEntry.message.role === "assistant" &&
-      input.completionDividerBeforeEntryId === timelineEntry.id;
     const assistantTurnDiffSummary =
       timelineEntry.message.role === "assistant"
         ? input.turnDiffSummaryByAssistantMessageId.get(timelineEntry.message.id)
@@ -467,8 +443,7 @@ export function deriveMessagesTimelineRows(input: {
       message: timelineEntry.message,
       durationStart:
         durationStartByMessageId.get(timelineEntry.message.id) ?? timelineEntry.message.createdAt,
-      showCompletionDivider,
-      completionSummary: showCompletionDivider ? (input.completionSummary ?? null) : null,
+      hideMetaDuration: false,
       showAssistantCopyButton:
         timelineEntry.message.role === "assistant" &&
         terminalAssistantMessageIds.has(timelineEntry.message.id),
@@ -491,21 +466,27 @@ export function deriveMessagesTimelineRows(input: {
 
   const liveAgentCount = input.liveAgentCount ?? 0;
   if (input.isWorking) {
+    markLatestLiveWorkRow(nextRows, input.activeTurnId ?? null, input.activeTurnStartedAt);
+  }
+  const rows = foldSettledTurns(nextRows, {
+    isWorking: input.isWorking,
+    expandedTurnFoldIds: input.expandedTurnFoldIds,
+    revealMessageId: input.revealMessageId ?? null,
+  });
+  if (input.isWorking) {
     // The working row is the turn's one fixed anchor: it renders for the whole
     // turn, whatever the tail is, so the live node, the timer, and the agent
-    // tracker never teleport between homes. The tail work group still gets
-    // marked live so the spine above it keeps its accent styling.
-    markLatestLiveWorkRow(nextRows, input.activeTurnId ?? null, input.activeTurnStartedAt);
-    nextRows.push({
+    // tracker never teleport between homes. Its word is the step running now.
+    rows.push({
       kind: "working",
       id: "working-indicator-row",
       createdAt: input.activeTurnStartedAt,
-      label: resolveWorkingAnchorLabel(visibleTimelineEntries, input.activeStatusLabel),
+      label: resolveLiveAnchorLabel(nextRows, visibleTimelineEntries, input.activeStatusLabel),
     });
   } else if (liveAgentCount > 0) {
     // The turn settled but agents it delegated to are still going: the anchor
     // stays as their tracker, without a turn timer, until the last one lands.
-    nextRows.push({
+    rows.push({
       kind: "working",
       id: "working-indicator-row",
       createdAt: null,
@@ -514,7 +495,7 @@ export function deriveMessagesTimelineRows(input: {
   } else if (input.isWaitingOnBackgroundTasks) {
     // The turn settled but a background task (a command, a cron) will wake
     // it: the anchor stays up as a plain wait, without a turn timer.
-    nextRows.push({
+    rows.push({
       kind: "working",
       id: "working-indicator-row",
       createdAt: null,
@@ -522,7 +503,134 @@ export function deriveMessagesTimelineRows(input: {
     });
   }
 
-  return nextRows;
+  return rows;
+}
+
+/** The fold id of the turn a user message starts. */
+export function turnFoldIdForUserRow(userRowId: string): string {
+  return `turn-fold:${userRowId}`;
+}
+
+/**
+ * A settled turn reads as the user's message, one "Worked for" line, and the
+ * answer: every note and step before the answer folds into that line until the
+ * reader opens it. The turn in flight never folds; a turn with no answer
+ * (stopped, failed) stays open so its last steps show; proposed plans stay out
+ * of the fold because they are the turn's deliverable.
+ */
+function foldSettledTurns(
+  rows: ReadonlyArray<MessagesTimelineRow>,
+  options: {
+    readonly isWorking: boolean;
+    readonly expandedTurnFoldIds: ReadonlySet<string> | undefined;
+    readonly revealMessageId: MessageId | null;
+  },
+): MessagesTimelineRow[] {
+  const userIndices = rows.flatMap((row, index) =>
+    row.kind === "message" && row.message.role === "user" ? [index] : [],
+  );
+  const result: MessagesTimelineRow[] = rows.slice(0, userIndices[0] ?? rows.length);
+  userIndices.forEach((userIndex, position) => {
+    const userRow = rows[userIndex] as MessageRow;
+    const segment = rows.slice(userIndex + 1, userIndices[position + 1] ?? rows.length);
+    const inFlight = options.isWorking && position === userIndices.length - 1;
+    result.push(userRow, ...(inFlight ? segment : foldTurnSegment(userRow, segment, options)));
+  });
+  return result;
+}
+
+type MessageRow = Extract<MessagesTimelineRow, { kind: "message" }>;
+
+function foldTurnSegment(
+  userRow: MessageRow,
+  segment: ReadonlyArray<MessagesTimelineRow>,
+  options: {
+    readonly expandedTurnFoldIds: ReadonlySet<string> | undefined;
+    readonly revealMessageId: MessageId | null;
+  },
+): ReadonlyArray<MessagesTimelineRow> {
+  const answerIndex = segment.findLastIndex(
+    (row) => row.kind === "message" && row.message.role === "assistant",
+  );
+  const answer = segment[answerIndex];
+  if (answerIndex <= 0 || answer?.kind !== "message") {
+    return segment;
+  }
+  const before = segment.slice(0, answerIndex);
+  const stays = (row: MessagesTimelineRow) =>
+    row.kind === "proposed-plan" || row.kind === "fork-context";
+  const folded = before.filter((row) => !stays(row));
+  if (folded.length === 0) {
+    return segment;
+  }
+  const id = turnFoldIdForUserRow(userRow.id);
+  const revealed =
+    options.revealMessageId !== null &&
+    folded.some((row) => row.kind === "message" && row.message.id === options.revealMessageId);
+  return [
+    {
+      kind: "turn-fold",
+      id,
+      createdAt: folded[0]!.createdAt ?? userRow.createdAt,
+      rows: folded,
+      expanded: revealed || (options.expandedTurnFoldIds?.has(id) ?? false),
+      startedAt: userRow.createdAt,
+      endedAt: answer.message.completedAt ?? answer.message.createdAt,
+      turnDiffSummary: answer.assistantTurnDiffSummary,
+    },
+    ...before.filter(stays),
+    { ...answer, hideMetaDuration: true },
+    ...segment.slice(answerIndex + 1),
+  ];
+}
+
+export interface FoldedTurnSummary {
+  readonly editedFileCount: number;
+  /** Latest result of each check the turn ran; a rerun replaces a failure. */
+  readonly checks: { readonly passed: number; readonly failed: number } | null;
+  readonly trackerTurnIds: ReadonlyArray<TurnId>;
+  readonly trackerAgentSpawnIds: ReadonlyArray<string>;
+}
+
+/** What a folded turn's line says about the steps it hides. */
+export function summarizeFoldedTurn(rows: ReadonlyArray<MessagesTimelineRow>): FoldedTurnSummary {
+  const editedFiles = new Set<string>();
+  const checkResults = new Map<string, boolean>();
+  const trackerTurnIds = new Set<TurnId>();
+  const trackerAgentSpawnIds = new Set<string>();
+  for (const row of rows) {
+    if (row.kind !== "work") {
+      continue;
+    }
+    row.trackerTurnIds.forEach((turnId) => trackerTurnIds.add(turnId));
+    row.trackerAgentSpawnIds.forEach((spawnId) => trackerAgentSpawnIds.add(spawnId));
+    for (const entry of row.groupedEntries) {
+      if (entry.executionState !== "failed") {
+        for (const path of entry.changedFiles ?? []) {
+          editedFiles.add(path.replaceAll("\\", "/").toLowerCase());
+        }
+      }
+      if (entry.command) {
+        const step = activityStepFromWorkLogEntry(entry);
+        if (step?.checkKey && !step.running) {
+          checkResults.set(step.checkKey, step.tone === "pass");
+        }
+      }
+    }
+  }
+  const results = [...checkResults.values()];
+  return {
+    editedFileCount: editedFiles.size,
+    checks:
+      results.length > 0
+        ? {
+            passed: results.filter((passed) => passed).length,
+            failed: results.filter((passed) => !passed).length,
+          }
+        : null,
+    trackerTurnIds: [...trackerTurnIds],
+    trackerAgentSpawnIds: [...trackerAgentSpawnIds],
+  };
 }
 
 /** Labels the lifecycle status may replace on the working anchor. Anything
@@ -565,6 +673,35 @@ function resolveWorkingAnchorLabel(
     }
   }
   return fallback;
+}
+
+/**
+ * What the working row says: a specific state when there is one ("Waiting for
+ * approval", "Thinking"), else the step running right now in the active
+ * exchange ("Reading service.ts"), else "Working".
+ */
+function resolveLiveAnchorLabel(
+  rows: ReadonlyArray<MessagesTimelineRow>,
+  visibleTimelineEntries: ReadonlyArray<TimelineEntry>,
+  activeStatusLabel: string | undefined,
+): string {
+  const label = resolveWorkingAnchorLabel(visibleTimelineEntries, activeStatusLabel);
+  if (label !== "Working") {
+    return label;
+  }
+  const lastUserIndex = rows.findLastIndex(
+    (row) => row.kind === "message" && row.message.role === "user",
+  );
+  const runningSteps = rows.slice(lastUserIndex + 1).flatMap((row) =>
+    row.kind === "work"
+      ? row.groupedEntries.flatMap((entry) => {
+          if (entry.executionState !== "running") return [];
+          const step = activityStepFromWorkLogEntry(entry);
+          return step ? [step] : [];
+        })
+      : [],
+  );
+  return liveActivityLabel(runningSteps) ?? label;
 }
 
 /**
@@ -889,13 +1026,27 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
       );
     }
 
+    case "turn-fold": {
+      const bf = b as typeof a;
+      return (
+        a.expanded === bf.expanded &&
+        a.startedAt === bf.startedAt &&
+        a.endedAt === bf.endedAt &&
+        a.turnDiffSummary === bf.turnDiffSummary &&
+        a.rows.length === bf.rows.length &&
+        a.rows.every((row, index) => {
+          const other = bf.rows[index];
+          return other !== undefined && isRowUnchanged(row, other);
+        })
+      );
+    }
+
     case "message": {
       const bm = b as typeof a;
       return (
         a.message === bm.message &&
         a.durationStart === bm.durationStart &&
-        a.showCompletionDivider === bm.showCompletionDivider &&
-        a.completionSummary === bm.completionSummary &&
+        a.hideMetaDuration === bm.hideMetaDuration &&
         a.showAssistantCopyButton === bm.showAssistantCopyButton &&
         a.assistantCopyStreaming === bm.assistantCopyStreaming &&
         a.assistantTurnInProgress === bm.assistantTurnInProgress &&
