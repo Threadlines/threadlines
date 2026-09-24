@@ -9,7 +9,12 @@ import {
 import { type ChatMessage, type ProposedPlan, type TurnDiffSummary } from "../../types";
 import { type MessageId, type TurnId } from "@threadlines/contracts";
 import { stripCodexInlineVisualizationDirectives } from "../../lib/codexInlineVisualization";
-import { activityStepFromWorkLogEntry, commandCheckKey, liveActivityLabel } from "./activitySteps";
+import {
+  activityStepFromWorkLogEntry,
+  commandCheckKey,
+  liveActivityLabel,
+  liveThoughtText,
+} from "./activitySteps";
 
 /** What a finished turn's footer says under its last message. */
 export interface TurnSummary {
@@ -90,7 +95,14 @@ export type MessagesTimelineRow =
       createdAt: string;
       forkContext: ForkContextEntry;
     }
-  | { kind: "working"; id: string; createdAt: string | null; label: string };
+  | {
+      kind: "working";
+      id: string;
+      createdAt: string | null;
+      label: string;
+      /** What the agent is thinking right now, in its own summary's words. */
+      thought: string | null;
+    };
 
 export interface StableMessagesTimelineRowsState {
   byId: Map<string, MessagesTimelineRow>;
@@ -430,6 +442,7 @@ export function deriveMessagesTimelineRows(input: {
       id: "working-indicator-row",
       createdAt: input.activeTurnStartedAt,
       label: resolveLiveAnchorLabel(nextRows, visibleTimelineEntries, input.activeStatusLabel),
+      thought: resolveLiveThought(visibleTimelineEntries),
     });
   } else if (liveAgentCount > 0) {
     // The turn settled but agents it delegated to are still going: the anchor
@@ -439,6 +452,7 @@ export function deriveMessagesTimelineRows(input: {
       id: "working-indicator-row",
       createdAt: null,
       label: liveAgentCount === 1 ? "Agent working" : "Agents working",
+      thought: null,
     });
   } else if (input.isWaitingOnBackgroundTasks) {
     // The turn settled but a background task (a command, a cron) will wake
@@ -448,6 +462,7 @@ export function deriveMessagesTimelineRows(input: {
       id: "working-indicator-row",
       createdAt: null,
       label: "Waiting",
+      thought: null,
     });
   }
 
@@ -762,6 +777,15 @@ function resolveLiveAnchorLabel(
   return liveActivityLabel(runningSteps) ?? label;
 }
 
+/** The newest words of the thought running right now, when the newest step in
+ *  view is one. A step or reply after it means the thought is over. */
+function resolveLiveThought(visibleTimelineEntries: ReadonlyArray<TimelineEntry>): string | null {
+  const newest = visibleTimelineEntries.findLast(
+    (timelineEntry) => timelineEntry.kind !== "work" || !timelineEntry.entry.providerLifecyclePhase,
+  );
+  return newest?.kind === "work" ? liveThoughtText(newest.entry) : null;
+}
+
 /**
  * A spawned agent's own tool calls are not the conversation's activity, so they
  * never reach the chat: not as expanded rows, and not in the receipt's counts.
@@ -1056,7 +1080,11 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
 
   switch (a.kind) {
     case "working":
-      return a.createdAt === (b as typeof a).createdAt && a.label === (b as typeof a).label;
+      return (
+        a.createdAt === (b as typeof a).createdAt &&
+        a.label === (b as typeof a).label &&
+        a.thought === (b as typeof a).thought
+      );
 
     case "proposed-plan":
       return a.proposedPlan === (b as typeof a).proposedPlan;

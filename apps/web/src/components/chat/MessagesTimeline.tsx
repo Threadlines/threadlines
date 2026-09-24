@@ -2636,7 +2636,8 @@ function SubagentReceiptTimelineRow({
  *  the turn timer, and the agent tracker live here from the first token to the
  *  last, whatever the rows above are doing — so nothing about "now" teleports
  *  mid-turn. Its word is the step running right now ("Reading service.ts"), or
- *  the state the turn is in ("Thinking", "Waiting for approval"). */
+ *  the state the turn is in ("Thinking", "Waiting for approval"). While the
+ *  agent thinks out loud, its newest thought sits under the word. */
 function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "working" }> }) {
   const { turnAgents, onOpenAgentsPanel } = use(TimelineRowCtx);
   const liveSubagents = turnAgents?.subagents ?? [];
@@ -2690,6 +2691,17 @@ function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "workin
             </>
           ) : null}
         </p>
+        {/* What the agent is thinking, in its own summary's words, under the
+            word it explains. Indented to the word, past the dots. */}
+        {row.thought ? (
+          <p
+            className="work-meta-enter line-clamp-2 pl-[19px] text-[11px] leading-4 text-muted-foreground/55"
+            title={row.thought}
+            data-turn-working-thought="true"
+          >
+            {row.thought}
+          </p>
+        ) : null}
         {/* Each live agent keeps its own row, so concurrent updates change the
             action text in place instead of replacing another agent's status. */}
         <div className={agentSummary ? "min-h-4" : undefined}>

@@ -1442,7 +1442,6 @@ describe("MessagesTimeline", () => {
       nickname: id === "agent-tests" ? "Agent panel tests" : "Router sweep",
       telemetry: {
         step,
-        lastToolName: null,
         totalTokens: null,
         toolUses: null,
         durationMs: null,

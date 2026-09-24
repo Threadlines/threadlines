@@ -5019,7 +5019,6 @@ describe("deriveSubagentProgressState", () => {
       transcriptAgentId: "a720e480",
       telemetry: {
         step: "Running Show recent commits",
-        lastToolName: "Bash",
         totalTokens: 18_204,
         toolUses: 8,
         durationMs: 30_120,

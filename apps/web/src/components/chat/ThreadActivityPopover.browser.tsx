@@ -93,13 +93,16 @@ describe("ThreadActivityPopover", () => {
   });
 
   it("does not render task summary disclosure when the summary fits", async () => {
-    const fittingSummary = "Review iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii";
-    const mounted = await renderOpenPopover(fittingSummary);
+    const fittingTask = "Review iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii";
+    const mounted = await renderOpenPopover(fittingTask);
 
     try {
       await vi.waitFor(() => {
         const summaryText = document.querySelector<HTMLElement>("[data-task-summary-text='true']");
-        expect(summaryText?.textContent).toBe(fittingSummary);
+        // The task in hand reads as happening now; the next one keeps its name.
+        expect(summaryText?.textContent).toBe(
+          "Reviewing iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+        );
         expect(summaryText?.scrollWidth ?? 0).toBeLessThanOrEqual(
           (summaryText?.clientWidth ?? 0) + 1,
         );
@@ -107,15 +110,18 @@ describe("ThreadActivityPopover", () => {
       });
 
       expect(document.querySelector("[data-task-summary-toggle='true']")).toBeNull();
+      // The row also carries its status for screen readers ("Next: …").
+      await expect.element(page.getByText("Run validation"), { timeout: 5_000 }).toBeVisible();
     } finally {
       await mounted.unmount();
     }
   });
 
   it("renders task summary disclosure when the summary is clipped", async () => {
-    const clippedSummary =
+    const clippedTask =
       "Add symlink-specific status and reason through server contracts, UI state, persistence, reconnection flows, and focused regression coverage.";
-    const mounted = await renderOpenPopover(clippedSummary);
+    const clippedSummary = `Adding ${clippedTask.slice("Add ".length)}`;
+    const mounted = await renderOpenPopover(clippedTask);
 
     try {
       await vi.waitFor(() => {

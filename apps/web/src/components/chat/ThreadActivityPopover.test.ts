@@ -171,7 +171,8 @@ describe("deriveThreadActivityTriggerState", () => {
       "tasks:1/2",
       "background:2",
     ]);
-    expect(state?.summary).toContain("Wire the Activity popover");
+    // The task in hand reads as happening now.
+    expect(state?.summary).toContain("Wiring the Activity popover");
     expect(state?.summary).toContain("2 background runs");
   });
 });

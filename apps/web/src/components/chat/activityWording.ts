@@ -490,6 +490,13 @@ export function failedPhrase(wording: Phrase, agentLabel: string | null): string
   return base ? `Couldn't ${base}${match![2]}` : `${wording.past} (failed)`;
 }
 
+/** A task's label as it reads while the task runs: "Fix the login bug" turns
+ *  to "Fixing the login bug". A lead verb that cannot be turned safely stays
+ *  as written, and nothing is cut short. */
+export function presentTense(label: string): string {
+  return conjugateLeadVerb(label, "live") ?? label;
+}
+
 /** An agent-written step label, turned to past and present where that is
  *  safe, else kept as written. */
 export function describeAgentLabel(label: string): Phrase {

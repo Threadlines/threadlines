@@ -1190,9 +1190,37 @@ export function liveActivityLabel(steps: ReadonlyArray<ActivityStep>): string | 
 }
 
 /**
+ * The newest words of a thought still running, for the line under the working
+ * row: its last paragraph, without markdown emphasis. Null for anything else,
+ * including a thought whose words the provider keeps private.
+ */
+export function liveThoughtText(entry: WorkLogEntry): string | null {
+  if (
+    entry.tone !== "thinking" ||
+    entry.executionState !== "running" ||
+    entry.redactedThinking !== false
+  ) {
+    return null;
+  }
+  const paragraphs = (entry.detail ?? entry.label)
+    .split(/\n\s*\n/u)
+    .map((paragraph) =>
+      paragraph
+        .replace(/\*\*|__|`/gu, "")
+        .replace(/\s+/gu, " ")
+        // The row keeps the newest text and marks a cut start with an ellipsis.
+        .replace(/^(?:\.\.\.|…)/u, "")
+        .trim(),
+    )
+    .filter((paragraph) => paragraph.length > 0);
+  return paragraphs.at(-1) ?? null;
+}
+
+/**
  * A running agent's step as its provider reported it (Claude's task progress:
- * "Editing src\\game\\paint\\workVan.ts", "Running Recheck the timings"), in
- * the same words the conversation uses.
+ * "Editing src\\game\\paint\\workVan.ts", "Running Recheck the timings", or
+ * the task's own label, "Check the mobile header"), in the same words the
+ * conversation uses for a step still running.
  */
 export function plainAgentStep(step: string): string {
   const text = step.replace(/\s+/gu, " ").trim();
@@ -1208,5 +1236,9 @@ export function plainAgentStep(step: string): string {
   if (running) {
     return describeAgentLabel(running[1]!).live;
   }
-  return truncate(text, 120);
+  // A task label is an imperative, which reads in the present while it runs.
+  // When its past tense reads the same ("Read the config"), the label may
+  // already be past, so it stays as written.
+  const wording = describeAgentLabel(text);
+  return wording.past === truncate(text, 120) ? wording.past : wording.live;
 }
