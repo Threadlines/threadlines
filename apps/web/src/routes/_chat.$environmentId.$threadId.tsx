@@ -30,6 +30,7 @@ import {
   invalidateGitWorkingTreeDiffQueries,
 } from "../lib/gitReactQuery";
 import { useGitStatus } from "../lib/gitStatusState";
+import { getThreadInFlightStatus } from "../lib/threadSort";
 import {
   setThreadPullRequestAutoFix,
   setThreadPullRequestAutoMerge,
@@ -532,6 +533,13 @@ function ChatThreadRouteView() {
       ? undefined
       : store.threadWrapUpOnPullRequestSettledById[currentThreadKey],
   );
+  // What the server weighs before it merges, besides the pull request: it
+  // passes over a thread whose agent is mid-turn, since the agent may be about
+  // to push, and waits for local commits to reach the host.
+  const threadAgentWorking = serverThread
+    ? getThreadInFlightStatus(serverThread) !== null || serverThread.latestTurn?.state === "running"
+    : false;
+  const threadUnpushedCommits = pullRequestGitStatus.data?.aheadCount ?? 0;
   const composerPullRequest = useMemo<ComposerPullRequest | null>(
     () =>
       threadRef &&
@@ -556,6 +564,8 @@ function ChatThreadRouteView() {
             onAutoMergeChange: (next) => {
               void setThreadPullRequestAutoMerge(threadRef, next);
             },
+            agentWorking: threadAgentWorking,
+            unpushedCommits: threadUnpushedCommits,
             wrapUpOnSettled: threadWrapUpOnSettled ?? wrapUpOnSettledDefault,
             onWrapUpOnSettledChange: (next: boolean) => {
               useUiStateStore
@@ -572,10 +582,12 @@ function ChatThreadRouteView() {
       selectTab,
       serverThread?.pullRequestAutoFix,
       serverThread?.pullRequestAutoMerge,
+      threadAgentWorking,
       threadPullRequest,
       threadPullRequestDetail,
       threadPullRequestReference,
       threadRef,
+      threadUnpushedCommits,
       threadWrapUpOnSettled,
       wrapUpOnSettledDefault,
     ],

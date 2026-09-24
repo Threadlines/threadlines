@@ -15,7 +15,10 @@ import type {
   PullRequestMergeMethod,
   PullRequestState,
 } from "@threadlines/contracts";
-import { resolvePullRequestAutoMergeStep } from "@threadlines/shared/pullRequestAutoMerge";
+import {
+  resolvePullRequestAutoMergeStep,
+  type PullRequestAutoMergeStep,
+} from "@threadlines/shared/pullRequestAutoMerge";
 
 import {
   summarizePullRequestChecks,
@@ -172,8 +175,9 @@ function isInMergeQueue(detail: Pick<PullRequestDetail, "mergeQueue">): boolean 
  *
  * `toggle` is the ordinary case: the switch arms or disarms the host's standing
  * instruction. `server` is the same switch held by this thread instead, for a
- * GitHub repository that cannot hold it (auto-merge off, or no required checks
- * so GitHub would merge at once); `status` says what the server is waiting on.
+ * GitHub repository that cannot hold it (auto-merge off, no required checks so
+ * GitHub would merge at once, or checks that have already passed); `status`
+ * says what the server is waiting on, or that it has nothing to wait for.
  * `queued` is a pull request the host has already taken into its merge queue:
  * GitHub drops the instruction at that point, so a switch would read as off
  * while the merge is in motion. Unavailable actions explain why and lead to
@@ -186,14 +190,24 @@ export type ComposerAutoMergeControl =
   | { readonly kind: "toggle"; readonly checked: boolean }
   | { readonly kind: "server"; readonly checked: boolean; readonly status: string | null };
 
-export function composerAutoMergeControl(input: {
-  readonly detail: PullRequestDetail | undefined;
-  /** The thread's own request that the server merge it, or null. */
-  readonly threadAutoMerge: PullRequestMergeMethod | null;
+/** What the server weighs, besides the pull request itself, before it merges. */
+interface ServerAutoMergeContext {
   /** The thread's auto-fix watch, which turns a failing check into one to wait out. */
   readonly autoFix: boolean;
+  /** The agent is mid-turn, and may be about to push. */
+  readonly agentWorking: boolean;
+  /** Commits on the thread's branch that the host has not seen yet. */
+  readonly unpushedCommits: number;
   readonly now: number;
-}): ComposerAutoMergeControl {
+}
+
+export function composerAutoMergeControl(
+  input: ServerAutoMergeContext & {
+    readonly detail: PullRequestDetail | undefined;
+    /** The thread's own request that the server merge it, or null. */
+    readonly threadAutoMerge: PullRequestMergeMethod | null;
+  },
+): ComposerAutoMergeControl {
   const { detail } = input;
   if (detail === undefined || detail.state !== "open") {
     return { kind: "hidden" };
@@ -204,13 +218,7 @@ export function composerAutoMergeControl(input: {
   // Whatever the host now says, a request the thread already made stays in
   // view, so it can always be taken back.
   if (input.threadAutoMerge !== null) {
-    const step = resolvePullRequestAutoMergeStep({
-      detail,
-      autoFix: input.autoFix,
-      // The client cannot see the thread's unpushed commits; the server can.
-      unpushedCommits: 0,
-      now: input.now,
-    });
+    const step = serverAutoMergeStep(detail, input);
     return {
       kind: "server",
       checked: true,
@@ -233,7 +241,7 @@ export function composerAutoMergeControl(input: {
     return { kind: "toggle", checked: false };
   }
   if (detail.provider === "github" && detail.capabilities.actions.includes("merge")) {
-    return serverAutoMergeOffer(detail, input.autoFix);
+    return serverAutoMergeOffer(detail, input);
   }
   if (hostBlock !== null) {
     return { kind: "unavailable", reason: hostBlock };
@@ -245,38 +253,57 @@ export function composerAutoMergeControl(input: {
 }
 
 /**
- * Whether the server can usefully wait on this pull request: only while there
- * is something to wait for. A pull request with nothing running and nothing in
- * the way is one to merge now, and a failing check with nobody fixing it would
- * only end the wait at once.
+ * Whether the server can take the merge on. Anything it would not give up on
+ * at once can be handed over: a pull request with nothing left to wait for is
+ * merged as soon as the server looks, which is as soon as the switch comes on,
+ * and the switch says so before it is clicked. A draft or a conflict needs
+ * someone to act first, and a failing check with nobody fixing it would only
+ * end the wait at once.
  */
 function serverAutoMergeOffer(
   detail: PullRequestDetail,
-  autoFix: boolean,
+  context: ServerAutoMergeContext,
 ): ComposerAutoMergeControl {
   const block = resolveMergeWhenReadyBlock(detail);
   if (block !== null) {
     return { kind: "unavailable", reason: block };
   }
-  const summary = summarizePullRequestChecks(detail.checks);
-  if (detail.checksState === undefined && detail.checks.length === 0) {
-    return { kind: "unavailable", reason: "No checks to wait for. Use Merge instead." };
-  }
-  const failing = detail.checksState === "failure" || summary.failing > 0;
-  if (failing && !autoFix) {
+  const failing =
+    detail.checksState === "failure" || summarizePullRequestChecks(detail.checks).failing > 0;
+  if (failing && !context.autoFix) {
     return {
       kind: "unavailable",
       reason: "A check failed. Turn on fixing below to wait for a fix.",
     };
   }
-  const pending = detail.checksState === "pending" || summary.pending > 0;
-  if (!failing && !pending && detail.mergeGate === "clear") {
-    return {
-      kind: "unavailable",
-      reason: "This pull request can merge right now. Use Merge instead.",
-    };
-  }
-  return { kind: "server", checked: false, status: null };
+  return {
+    kind: "server",
+    checked: false,
+    status:
+      serverAutoMergeStep(detail, context).kind === "merge"
+        ? "Nothing left to wait for, so it merges right away"
+        : null,
+  };
+}
+
+/**
+ * The server's next step, in its own words: the shared rule, and before it the
+ * watcher's own hold on a thread whose agent is mid-turn, which it passes over
+ * until the turn ends.
+ */
+function serverAutoMergeStep(
+  detail: PullRequestDetail,
+  context: ServerAutoMergeContext,
+): PullRequestAutoMergeStep {
+  const step = resolvePullRequestAutoMergeStep({
+    detail,
+    autoFix: context.autoFix,
+    unpushedCommits: context.unpushedCommits,
+    now: context.now,
+  });
+  return step.kind !== "stop" && context.agentWorking
+    ? { kind: "wait", reason: "Waiting for the agent to finish" }
+    : step;
 }
 
 /**

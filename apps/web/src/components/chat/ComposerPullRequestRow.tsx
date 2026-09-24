@@ -83,6 +83,10 @@ export interface ComposerPullRequest {
    */
   readonly autoMerge: PullRequestMergeMethod | null;
   readonly onAutoMergeChange: (next: PullRequestMergeMethod | null) => void;
+  /** The agent is mid-turn. The server holds a merge until it finishes, since it may push. */
+  readonly agentWorking: boolean;
+  /** Commits on the thread's branch the host has not seen; the server waits for them too. */
+  readonly unpushedCommits: number;
   /**
    * Whether this thread files itself under Wrapped once the pull request
    * merges or closes: the thread's own word, or the app setting until it
@@ -389,6 +393,8 @@ function ComposerPullRequestAutoMergeSection({
     detail,
     threadAutoMerge: pullRequest.autoMerge,
     autoFix: pullRequest.autoFix,
+    agentWorking: pullRequest.agentWorking,
+    unpushedCommits: pullRequest.unpushedCommits,
     now: openedAt,
   });
   const detailQueryKey = pullRequestQueryKeys.detail(

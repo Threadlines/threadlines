@@ -1,9 +1,12 @@
 import {
+  CommandId,
+  EventId,
   ProjectId,
   ProviderInstanceId,
   ThreadId,
   TurnId,
   type OrchestrationCommand,
+  type OrchestrationEvent,
   type OrchestrationProjectShell,
   type OrchestrationThreadShell,
   type PullRequestActionInput,
@@ -14,11 +17,14 @@ import {
   type VcsStatusRemoteResult,
 } from "@threadlines/contracts";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Option from "effect/Option";
+import * as Queue from "effect/Queue";
+import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
-import { afterEach, describe, expect, it } from "vite-plus/test";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { GitManager, type GitManagerShape } from "../../git/GitManager.ts";
 import {
@@ -216,6 +222,25 @@ interface HostScript {
   readonly activity: PullRequestActivity;
   /** What `merge` does; a merge the test did not expect fails it. */
   readonly merge?: () => Effect.Effect<{ state: "merged" | "open" }, PullRequestServiceError>;
+  /** What the host reports once `merge` has run, where that differs from `detail`. */
+  readonly detailAfterMerge?: PullRequestDetail;
+}
+
+/** The engine's word that a thread's "Merge when checks pass" came on. */
+function autoMergeArmed(): OrchestrationEvent {
+  return {
+    sequence: 1,
+    eventId: EventId.make("event-auto-merge-armed"),
+    aggregateKind: "thread",
+    aggregateId: THREAD_ID,
+    occurredAt: NOW_ISO,
+    commandId: CommandId.make("command-auto-merge-armed"),
+    causationEventId: null,
+    correlationId: null,
+    metadata: {},
+    type: "thread.pull-request-automation-changed",
+    payload: { threadId: THREAD_ID, autoMerge: "rebase", updatedAt: NOW_ISO },
+  };
 }
 
 function makeSnapshotQuery(input: {
@@ -243,7 +268,10 @@ function makeSnapshotQuery(input: {
     getFullThreadDiffContext: () => Effect.succeed(Option.none()),
     listThreadDiffStatBaselines: () => Effect.succeed([]),
     listThreadTurnOverlapsSince: () => Effect.succeed([]),
-    getThreadShellById: () => Effect.succeed(Option.none()),
+    getThreadShellById: (threadId) =>
+      Effect.sync(() =>
+        Option.fromUndefinedOr(input.readThreads().find((thread) => thread.id === threadId)),
+      ),
     getThreadDetailById: () => Effect.succeed(Option.none()),
   };
 }
@@ -265,6 +293,8 @@ describe("PullRequestAutomationWatcher", () => {
   }) {
     let script = input.script;
     let threads = input.threads;
+    let snapshotReads = 0;
+    const domainEvents = Effect.runSync(Queue.unbounded<OrchestrationEvent>());
     const dispatched: Array<Extract<OrchestrationCommand, { type: "thread.turn.start" }>> = [];
     // Everything else the watcher dispatches: switches turned off, timeline notes.
     const commands: OrchestrationCommand[] = [];
@@ -291,7 +321,7 @@ describe("PullRequestAutomationWatcher", () => {
           return { sequence: dispatched.length };
         });
       },
-      streamDomainEvents: Stream.empty,
+      streamDomainEvents: Stream.fromQueue(domainEvents),
       subscribeDomainEvents: Effect.succeed(Stream.empty),
     };
 
@@ -317,9 +347,14 @@ describe("PullRequestAutomationWatcher", () => {
       runAction: (action) =>
         Effect.suspend(() => {
           actions.push(action);
-          return script.merge
-            ? script.merge().pipe(Effect.map((result) => ({ ...result, isDraft: false })))
-            : Effect.die("unexpected merge");
+          if (!script.merge) {
+            return Effect.die("unexpected merge");
+          }
+          const merged = script.merge();
+          if (script.detailAfterMerge) {
+            script = { ...script, detail: script.detailAfterMerge };
+          }
+          return merged.pipe(Effect.map((result) => ({ ...result, isDraft: false })));
         }),
       submitReview: () => Effect.die("unused"),
       replyToThread: () => Effect.die("unused"),
@@ -336,7 +371,10 @@ describe("PullRequestAutomationWatcher", () => {
         Layer.succeed(
           ProjectionSnapshotQuery,
           makeSnapshotQuery({
-            readThreads: () => threads,
+            readThreads: () => {
+              snapshotReads += 1;
+              return threads;
+            },
             projects: input.projects ?? [project()],
           }),
         ),
@@ -354,7 +392,24 @@ describe("PullRequestAutomationWatcher", () => {
     const setThreads = (next: readonly OrchestrationThreadShell[]) => {
       threads = next;
     };
-    return { actions, commands, dispatched, setScript, setThreads, sweep };
+    /** Starts the watcher's own loops, as the server does, and answers how to stop them. */
+    const start = async () => {
+      const scope = await runtime!.runPromise(Scope.make("sequential"));
+      await runtime!.runPromise(watcher.start().pipe(Scope.provide(scope)));
+      return () => runtime!.runPromise(Scope.close(scope, Exit.void));
+    };
+    const emit = (event: OrchestrationEvent) => Effect.runSync(Queue.offer(domainEvents, event));
+    return {
+      actions,
+      commands,
+      dispatched,
+      emit,
+      setScript,
+      setThreads,
+      snapshotReads: () => snapshotReads,
+      start,
+      sweep,
+    };
   }
 
   it("records a baseline on first sight and starts nothing", async () => {
@@ -637,6 +692,72 @@ describe("PullRequestAutomationWatcher", () => {
         type: "thread.pull-request-automation.set",
         autoMerge: null,
       });
+    });
+
+    it("does not merge once the switch went off while the host was being read", async () => {
+      let untick = () => {};
+      const { actions, commands, setThreads, sweep } = await createHarness({
+        threads: [armed],
+        script: {
+          remote: OPEN_PULL_REQUEST,
+          // The user takes the switch back while the watcher reads the host.
+          get detail() {
+            untick();
+            return mergeable([PASSING_CHECK]);
+          },
+          activity: activity(),
+          merge: () => Effect.succeed({ state: "merged" }),
+        },
+      });
+      untick = () => setThreads([{ ...armed, pullRequestAutoMerge: null }]);
+
+      await sweep();
+      expect(actions).toEqual([]);
+      expect(commands).toEqual([]);
+    });
+
+    it("counts a place in the merge queue as handed over, not as a failed merge", async () => {
+      // A base with a merge queue answers the merge by queueing the pull request.
+      const waiting = { ...mergeable([PASSING_CHECK]), mergeQueue: { position: null } };
+      const { actions, commands, sweep } = await createHarness({
+        threads: [armed],
+        script: {
+          remote: OPEN_PULL_REQUEST,
+          detail: waiting,
+          detailAfterMerge: { ...waiting, mergeQueue: { position: 1 } },
+          activity: activity(),
+          merge: () => Effect.succeed({ state: "open" }),
+        },
+      });
+
+      await sweep();
+      expect(actions).toHaveLength(1);
+      expect(commands[0]).toMatchObject({ autoMerge: null });
+      expect(commands[1]).toMatchObject({
+        activity: { tone: "info", kind: "pull-request.auto-merge.queued" },
+      });
+    });
+
+    it("merges as soon as the switch comes on, not at the next interval", async () => {
+      const { actions, emit, setThreads, snapshotReads, start } = await createHarness({
+        threads: [{ ...armed, pullRequestAutoMerge: null }],
+        script: {
+          remote: OPEN_PULL_REQUEST,
+          detail: mergeable([PASSING_CHECK]),
+          activity: activity(),
+          merge: () => Effect.succeed({ state: "merged" }),
+        },
+      });
+      const stop = await start();
+      try {
+        // Starting sweeps once and finds nothing armed; the next sweep is a minute away.
+        await vi.waitFor(() => expect(snapshotReads()).toBe(1));
+        setThreads([armed]);
+        emit(autoMergeArmed());
+        await vi.waitFor(() => expect(actions).toHaveLength(1));
+      } finally {
+        await stop();
+      }
     });
   });
 });

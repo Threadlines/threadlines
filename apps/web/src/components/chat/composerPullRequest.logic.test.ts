@@ -198,12 +198,16 @@ function control(
   thread: {
     readonly threadAutoMerge?: PullRequestMergeMethod | null;
     readonly autoFix?: boolean;
+    readonly agentWorking?: boolean;
+    readonly unpushedCommits?: number;
   } = {},
 ) {
   return composerAutoMergeControl({
     detail: value,
     threadAutoMerge: thread.threadAutoMerge ?? null,
     autoFix: thread.autoFix ?? false,
+    agentWorking: thread.agentWorking ?? false,
+    unpushedCommits: thread.unpushedCommits ?? 0,
     now: NOW,
   });
 }
@@ -247,11 +251,13 @@ describe("composerAutoMergeControl", () => {
     });
   });
 
-  it("directs a ready GitHub PR to Merge, but still lets it join a queue", () => {
+  it("hands a ready GitHub PR to the server to merge at once, but still lets it join a queue", () => {
     const passed = [check("success", "build")];
+    // GitHub's own switch would merge on the spot instead of arming.
     expect(control(detail({ mergeGate: "clear", checks: passed }))).toEqual({
-      kind: "unavailable",
-      reason: "This pull request can merge right now. Use Merge instead.",
+      kind: "server",
+      checked: false,
+      status: "Nothing left to wait for, so it merges right away",
     });
     expect(control(detail({ mergeGate: "clear", mergeQueue: { position: null } }))).toEqual({
       kind: "toggle",
@@ -260,6 +266,26 @@ describe("composerAutoMergeControl", () => {
     expect(control(detail({ mergeGate: "blocked" }))).toEqual({
       kind: "toggle",
       checked: false,
+    });
+  });
+
+  it("does not promise a merge the server would hold back for the thread", () => {
+    const ready = detail({ mergeGate: "clear", checks: [check("success", "build")] });
+    // The agent may be about to push, so the server waits for its turn to end.
+    expect(control(ready, { agentWorking: true })).toEqual({
+      kind: "server",
+      checked: false,
+      status: null,
+    });
+    expect(control(ready, { agentWorking: true, threadAutoMerge: "squash" })).toEqual({
+      kind: "server",
+      checked: true,
+      status: "Waiting for the agent to finish",
+    });
+    expect(control(ready, { unpushedCommits: 1, threadAutoMerge: "squash" })).toEqual({
+      kind: "server",
+      checked: true,
+      status: "Waiting for local commits to be pushed",
     });
   });
 
@@ -280,11 +306,13 @@ describe("composerAutoMergeControl", () => {
     });
   });
 
-  it("offers the server's wait only while there is something to wait for", () => {
+  it("hands the server anything but a failing check nobody is fixing", () => {
     const noAutoMerge = { ...detail().capabilities, actions: ["merge", "close"] as const };
-    expect(control(detail({ capabilities: noAutoMerge }))).toEqual({
-      kind: "unavailable",
-      reason: "No checks to wait for. Use Merge instead.",
+    // No checks at all is nothing to wait for, once GitHub says it would merge.
+    expect(control(detail({ capabilities: noAutoMerge, mergeGate: "clear" }))).toEqual({
+      kind: "server",
+      checked: false,
+      status: "Nothing left to wait for, so it merges right away",
     });
     const failed = detail({ capabilities: noAutoMerge, checks: [check("failure", "build")] });
     expect(control(failed)).toEqual({
