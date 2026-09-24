@@ -1293,7 +1293,12 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   }, [legendListReady, stickToBottomNow]);
 
   useEffect(() => {
-    if (!hasRows || (!autoStickToBottomRef.current && !stickToBottomRequestPending)) {
+    // Following never moves the list under a finger resting on it: the scroll
+    // would fight the drag. The first change after the finger lifts catches up.
+    const shouldFollow = () =>
+      stickToBottomRequestPending ||
+      (autoStickToBottomRef.current && touchStartYRef.current === null);
+    if (!hasRows || !shouldFollow()) {
       return;
     }
 
@@ -1302,7 +1307,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     // markdown). LegendList settles those measurements across a few frames, so
     // keep the pinned tail aligned throughout that window.
     return scheduleStickToBottomFrames(INITIAL_STICK_TO_BOTTOM_FRAME_COUNT, () => {
-      if (!autoStickToBottomRef.current && !stickToBottomRequestPending) {
+      if (!shouldFollow()) {
         return;
       }
       void listRef.current?.scrollToEnd?.({ animated: false });
