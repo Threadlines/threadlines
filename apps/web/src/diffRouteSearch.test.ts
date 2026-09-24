@@ -99,6 +99,25 @@ describe("parseDiffRouteSearch", () => {
     expect(parseDiffRouteSearch({ pullRequest: "0" })).toEqual({ pullRequest: "0" });
   });
 
+  it("reads which pull request the open tab shows, and nothing else as one", () => {
+    expect(parseDiffRouteSearch({ pullRequest: "1", pullRequestNumber: 294 })).toEqual({
+      pullRequest: "1",
+      pullRequestNumber: 294,
+    });
+    expect(parseDiffRouteSearch({ pullRequest: "1", pullRequestNumber: "294" })).toEqual({
+      pullRequest: "1",
+      pullRequestNumber: 294,
+    });
+    for (const pullRequestNumber of ["abc", 0, -3, 1.5, ""]) {
+      expect(parseDiffRouteSearch({ pullRequest: "1", pullRequestNumber })).toEqual({
+        pullRequest: "1",
+      });
+    }
+    expect(parseDiffRouteSearch({ pullRequest: "0", pullRequestNumber: 294 })).toEqual({
+      pullRequest: "0",
+    });
+  });
+
   it("lets the diff panel win when source control is also present", () => {
     expect(
       parseDiffRouteSearch({

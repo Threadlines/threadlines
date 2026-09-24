@@ -5,12 +5,15 @@ import { MessageId, TurnId } from "@threadlines/contracts";
  * `sourceControl=1` is the Source tab, `diff=1` the Diff tab, `pullRequest=1`
  * the Pull request tab, `agents=1` the Agents tab. At most one reads as open,
  * and that one is the active tab; an explicit `0` means the sidebar is closed.
+ * `pullRequestNumber` names which of the thread's pull requests the Pull
+ * request tab shows, the way the diff params name what the Diff tab shows.
  */
 export interface DiffRouteSearch {
   diff?: "1" | undefined;
   diffMode?: "workingTree" | undefined;
   sourceControl?: "1" | "0" | undefined;
   pullRequest?: "1" | "0" | undefined;
+  pullRequestNumber?: number | undefined;
   agents?: "1" | "0" | undefined;
   diffTurnId?: TurnId | undefined;
   diffFilePath?: string | undefined;
@@ -33,6 +36,12 @@ function normalizeSearchString(value: unknown): string | undefined {
   }
   const normalized = value.trim();
   return normalized.length > 0 ? normalized : undefined;
+}
+
+function normalizeSearchPositiveInteger(value: unknown): number | undefined {
+  const parsed =
+    typeof value === "number" ? value : typeof value === "string" ? Number(value.trim()) : NaN;
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : undefined;
 }
 
 export function stripDiffSearchParams<T extends Record<string, unknown>>(
@@ -69,6 +78,7 @@ type RightPanelSearchKey =
   | "diffMode"
   | "sourceControl"
   | "pullRequest"
+  | "pullRequestNumber"
   | "agents"
   | "diffTurnId"
   | "diffFilePath";
@@ -78,6 +88,7 @@ interface ClearedRightPanelSearchParams {
   diffMode?: undefined;
   sourceControl?: undefined;
   pullRequest?: undefined;
+  pullRequestNumber?: undefined;
   agents?: undefined;
   diffTurnId?: undefined;
   diffFilePath?: undefined;
@@ -95,6 +106,7 @@ export function stripRightPanelSearchParams<T extends Record<string, unknown>>(
     diffMode: _diffMode,
     sourceControl: _sourceControl,
     pullRequest: _pullRequest,
+    pullRequestNumber: _pullRequestNumber,
     agents: _agents,
     diffTurnId: _diffTurnId,
     diffFilePath: _diffFilePath,
@@ -106,6 +118,7 @@ export function stripRightPanelSearchParams<T extends Record<string, unknown>>(
     diffMode: undefined,
     sourceControl: undefined,
     pullRequest: undefined,
+    pullRequestNumber: undefined,
     agents: undefined,
     diffTurnId: undefined,
     diffFilePath: undefined,
@@ -158,6 +171,8 @@ export function parseDiffRouteSearch(search: Record<string, unknown>): DiffRoute
       : !diff && isExplicitClosedValue(search.pullRequest)
         ? "0"
         : undefined;
+  const pullRequestNumber =
+    pullRequest === "1" ? normalizeSearchPositiveInteger(search.pullRequestNumber) : undefined;
   const agents =
     !diff && isDiffOpenValue(search.agents)
       ? "1"
@@ -180,6 +195,7 @@ export function parseDiffRouteSearch(search: Record<string, unknown>): DiffRoute
     ...(diffMode ? { diffMode } : {}),
     ...(sourceControl ? { sourceControl } : {}),
     ...(pullRequest ? { pullRequest } : {}),
+    ...(pullRequestNumber ? { pullRequestNumber } : {}),
     ...(agents ? { agents } : {}),
     ...(diffTurnId ? { diffTurnId } : {}),
     ...(diffFilePath ? { diffFilePath } : {}),

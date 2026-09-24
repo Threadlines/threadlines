@@ -28,7 +28,9 @@ import { formatRelativeTimeLabel, formatWorkingDurationLabel } from "../../times
 import { PROVIDER_ICON_BY_PROVIDER } from "../chat/providerIconUtils";
 import { prStatusIndicator, terminalStatusFromRunningIds } from "../ThreadStatusIndicators";
 import {
+  leadThreadPullRequest,
   pullRequestFromGitStatus,
+  withListedLanding,
   type ThreadPullRequest,
 } from "../pull-requests/pullRequests.logic";
 import { inboxStatusWord, type ThreadStatusPill } from "../Sidebar.logic";
@@ -79,31 +81,50 @@ const ROW_ACTIONS_CLASS_NAME =
   "flex shrink-0 items-center gap-0.5 sm:pointer-events-none sm:absolute sm:top-1/2 sm:right-full sm:-translate-y-1/2 sm:pl-4 sm:pr-1 sm:opacity-0 sm:transition-opacity sm:duration-150 sm:[mask-image:linear-gradient(to_right,transparent,black_16px)] sm:group-hover/thread-row:pointer-events-auto sm:group-hover/thread-row:opacity-100 sm:group-focus-within/thread-row:pointer-events-auto sm:group-focus-within/thread-row:opacity-100";
 
 /**
- * The thread's pull request as a badge: its state's glyph and colour, then the
- * number. Live and wrapped rows share it, so a merged branch reads the same
- * violet wherever the thread ends up. Renders nothing without a pull request.
+ * Every pull request a thread has, its own first, each once: a linked one can
+ * be the thread's own after the thread moves onto its branch.
+ */
+function threadPullRequestList(
+  own: ThreadPullRequest | null,
+  linked: readonly ThreadPullRequest[],
+): readonly ThreadPullRequest[] {
+  return own === null ? linked : [own, ...linked.filter((pr) => pr.number !== own.number)];
+}
+
+/**
+ * The thread's pull requests as one badge: the glyph, colour and number of the
+ * one that speaks for them all (see `leadThreadPullRequest`), then how many
+ * more there are. The tooltip names every one. Live and wrapped rows share it,
+ * so a merged branch reads the same violet wherever the thread ends up.
+ * Renders nothing without a pull request.
  */
 function ThreadPullRequestBadge({
-  pullRequest,
+  pullRequests,
   provider,
   threadRef,
   openPrLink,
 }: {
-  readonly pullRequest: ThreadPullRequest | null;
+  readonly pullRequests: readonly ThreadPullRequest[];
   readonly provider: VcsStatusResult["sourceControlProvider"] | null | undefined;
   readonly threadRef: ScopedThreadRef;
   readonly openPrLink: (
     event: React.MouseEvent<HTMLElement>,
-    pullRequestUrl: string,
+    pullRequest: Pick<ThreadPullRequest, "number" | "url">,
     threadRef: ScopedThreadRef,
   ) => void;
 }) {
-  const prStatus = prStatusIndicator(pullRequest, provider);
+  const lead = leadThreadPullRequest(pullRequests);
+  const prStatus = prStatusIndicator(lead, provider);
   const cardHandle = useThreadHoverCardHandle();
   if (!prStatus) {
     return null;
   }
-  const url = prStatus.url;
+  const target = { number: prStatus.number, url: prStatus.url };
+  const others = pullRequests.filter((pullRequest) => pullRequest !== lead);
+  const tooltipLines = [
+    prStatus.tooltip,
+    ...others.flatMap((pullRequest) => prStatusIndicator(pullRequest, provider)?.tooltip ?? []),
+  ];
 
   return (
     <Tooltip>
@@ -113,7 +134,7 @@ function ThreadPullRequestBadge({
             type="button"
             data-thread-selection-safe
             data-testid="inbox-thread-pr-badge"
-            aria-label={prStatus.tooltip}
+            aria-label={tooltipLines.join("; ")}
             className={cn(
               // 10px type is a small thing to hit with a thumb, so a coarse
               // pointer gets padding around it and the same glyph inside.
@@ -130,20 +151,27 @@ function ThreadPullRequestBadge({
             onPointerMove={(event) => event.stopPropagation()}
             onMouseMove={(event) => event.stopPropagation()}
             onPointerDown={(event) => event.stopPropagation()}
-            onClick={(event) => openPrLink(event, url, threadRef)}
+            onClick={(event) => openPrLink(event, target, threadRef)}
             // Middle click never reaches onClick, and it is the other half of
             // the browser's "open it over there" gesture openPrLink answers.
             onAuxClick={(event) => {
-              if (event.button === 1) openPrLink(event, url, threadRef);
+              if (event.button === 1) openPrLink(event, target, threadRef);
             }}
           >
             <prStatus.Icon className="size-3" />
             {/* The mono digits sit a hair high beside the glyph at this size. */}
             <span className="translate-y-px">#{prStatus.number}</span>
+            {others.length > 0 ? (
+              <span className="translate-y-px text-muted-foreground">+{others.length}</span>
+            ) : null}
           </button>
         }
       />
-      <TooltipPopup side="top">{prStatus.tooltip}</TooltipPopup>
+      <TooltipPopup side="top">
+        {tooltipLines.map((line) => (
+          <div key={line}>{line}</div>
+        ))}
+      </TooltipPopup>
     </Tooltip>
   );
 }
@@ -304,9 +332,11 @@ export interface InboxThreadRowProps {
    * other branch, where its own status has nothing to say.
    */
   listPullRequest: ThreadPullRequest | null;
+  /** The pull requests the thread's agent opened on other branches, as the listings see them. */
+  linkedPullRequests: readonly ThreadPullRequest[];
   openPrLink: (
     event: React.MouseEvent<HTMLElement>,
-    pullRequestUrl: string,
+    pullRequest: Pick<ThreadPullRequest, "number" | "url">,
     threadRef: ScopedThreadRef,
   ) => void;
 }
@@ -343,6 +373,7 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
     cancelRename,
     markThreadDone,
     listPullRequest,
+    linkedPullRequests,
     openPrLink,
   } = props;
   const threadRef = scopeThreadRef(thread.environmentId, thread.id);
@@ -378,8 +409,12 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
   // its say.
   // The checkout's own status wins on this branch, because it is the only one
   // that knows a merge or a close; the listing covers a thread whose checkout
-  // has moved on.
-  const pr = pullRequestFromGitStatus(thread.branch, gitStatus.data) ?? listPullRequest;
+  // has moved on, and dates a landing the status cannot.
+  const statusPullRequest = pullRequestFromGitStatus(thread.branch, gitStatus.data);
+  const pullRequests = threadPullRequestList(
+    statusPullRequest ? withListedLanding(statusPullRequest, listPullRequest) : listPullRequest,
+    linkedPullRequests,
+  );
   const terminalStatus = terminalStatusFromRunningIds(runningTerminalIds);
   const isPinned = thread.pinnedAt !== null;
   const isRenaming = renamingThreadKey === threadKey;
@@ -663,7 +698,7 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
               ) : null}
               <ThreadEnvironmentBadge thread={thread} />
               <ThreadPullRequestBadge
-                pullRequest={pr}
+                pullRequests={pullRequests}
                 provider={gitStatus.data?.sourceControlProvider}
                 threadRef={threadRef}
                 openPrLink={openPrLink}
@@ -707,9 +742,11 @@ export interface InboxDoneRowProps {
    * it and keeps the reason visible.
    */
   listPullRequest: ThreadPullRequest | null;
+  /** See InboxThreadRowProps.linkedPullRequests. */
+  linkedPullRequests: readonly ThreadPullRequest[];
   openPrLink: (
     event: React.MouseEvent<HTMLElement>,
-    pullRequestUrl: string,
+    pullRequest: Pick<ThreadPullRequest, "number" | "url">,
     threadRef: ScopedThreadRef,
   ) => void;
 }
@@ -734,6 +771,7 @@ export const InboxDoneRow = memo(function InboxDoneRow(props: InboxDoneRowProps)
     reopenThread,
     attemptArchiveThread,
     listPullRequest,
+    linkedPullRequests,
     openPrLink,
   } = props;
   const threadRef = scopeThreadRef(thread.environmentId, thread.id);
@@ -891,7 +929,7 @@ export const InboxDoneRow = memo(function InboxDoneRow(props: InboxDoneRowProps)
                 answers from the listings rather than from a git status this
                 row never subscribes to. */}
             <ThreadPullRequestBadge
-              pullRequest={listPullRequest}
+              pullRequests={threadPullRequestList(listPullRequest, linkedPullRequests)}
               provider={null}
               threadRef={threadRef}
               openPrLink={openPrLink}
