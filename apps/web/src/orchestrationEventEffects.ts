@@ -5,6 +5,13 @@ export interface OrchestrationBatchEffects {
   clearDeletedThreadIds: ThreadId[];
   removeTerminalStateThreadIds: ThreadId[];
   needsProviderInvalidation: boolean;
+  /**
+   * A thread's server-held "Merge when checks pass" turned off. The server
+   * merged its pull request, handed it to a merge queue, or gave up, and that
+   * switch is the only word of it the client gets, so every pull request read
+   * is taken again.
+   */
+  needsPullRequestInvalidation: boolean;
 }
 
 export function deriveOrchestrationBatchEffects(
@@ -19,12 +26,20 @@ export function deriveOrchestrationBatchEffects(
     }
   >();
   let needsProviderInvalidation = false;
+  let needsPullRequestInvalidation = false;
 
   for (const event of events) {
     switch (event.type) {
       case "thread.turn-diff-completed":
       case "thread.reverted": {
         needsProviderInvalidation = true;
+        break;
+      }
+
+      case "thread.pull-request-automation-changed": {
+        if (event.payload.autoMerge === null) {
+          needsPullRequestInvalidation = true;
+        }
         break;
       }
 
@@ -90,5 +105,6 @@ export function deriveOrchestrationBatchEffects(
     clearDeletedThreadIds,
     removeTerminalStateThreadIds,
     needsProviderInvalidation,
+    needsPullRequestInvalidation,
   };
 }

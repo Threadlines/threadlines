@@ -132,4 +132,26 @@ describe("deriveOrchestrationBatchEffects", () => {
     expect(effects.clearDeletedThreadIds).toEqual([]);
     expect(effects.removeTerminalStateThreadIds).toEqual([]);
   });
+
+  it("re-reads pull requests only when a thread's server-held merge switch turns off", () => {
+    const threadId = ThreadId.make("thread-1");
+    const automation = (
+      payload: Omit<
+        Extract<OrchestrationEvent, { type: "thread.pull-request-automation-changed" }>["payload"],
+        "threadId" | "updatedAt"
+      >,
+    ) =>
+      deriveOrchestrationBatchEffects([
+        makeEvent("thread.pull-request-automation-changed", {
+          threadId,
+          updatedAt: "2026-02-27T00:00:01.000Z",
+          ...payload,
+        }),
+      ]).needsPullRequestInvalidation;
+
+    // The server turns it off once it has merged, queued, or given up.
+    expect(automation({ autoMerge: null })).toBe(true);
+    expect(automation({ autoMerge: "squash" })).toBe(false);
+    expect(automation({ autoFix: false })).toBe(false);
+  });
 });

@@ -7,7 +7,8 @@ import type * as Scope from "effect/Scope";
  * checks and review comments" on, it starts a turn when a check has just failed
  * or a reviewer has just said something. With "Merge when checks pass" held by
  * the server (a host that cannot arm the merge itself), it merges once the
- * checks pass and the host's rules allow it.
+ * checks pass and the host's rules allow it, and looks as soon as that switch
+ * comes on, so a pull request that is already green merges straight away.
  *
  * It runs only while the server does: the auto-fix baseline lives in memory, so
  * a restart re-observes rather than replaying what it missed. The merge switch

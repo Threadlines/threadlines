@@ -28,9 +28,11 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Schedule from "effect/Schedule";
 import * as Semaphore from "effect/Semaphore";
+import * as Stream from "effect/Stream";
 
 import { GitManager } from "../../git/GitManager.ts";
 import { PullRequestService } from "../../pullRequest/PullRequestService.ts";
@@ -132,6 +134,28 @@ function failingCheckNames(detail: PullRequestDetail): ReadonlySet<string> {
   return new Set(
     detail.checks.filter((check) => check.status === "failure").map((check) => check.name),
   );
+}
+
+/**
+ * Where a pull request stands after a merge that did not come back merged,
+ * read again rather than taken as a failure. Another environment may have
+ * landed it first, which is the outcome that was asked for, whoever ran the
+ * merge. A base with a merge queue answers a merge with a place in the queue,
+ * or with the host's own instruction to join once its checks pass: either way
+ * the host lands it from here, and the pull request is still open.
+ */
+function landingAfterMerge(detail: PullRequestDetail | null): "merged" | "queued" | null {
+  if (detail?.state === "merged") {
+    return "merged";
+  }
+  if (
+    detail?.state === "open" &&
+    detail.mergeQueue !== undefined &&
+    (detail.mergeQueue.position !== null || detail.autoMergeEnabled === true)
+  ) {
+    return "queued";
+  }
+  return null;
 }
 
 export interface PullRequestAutomationWatcherLiveOptions {
@@ -313,6 +337,24 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
           return false;
         }
 
+        // The reads above take seconds, and in that time the switch may have
+        // gone off or a turn started (the agent may be about to push). Either
+        // one means "not now", so the thread is read again just before a merge
+        // that cannot be taken back.
+        const latest = yield* attempt(
+          "thread-read",
+          thread.id,
+          projectionSnapshotQuery.getThreadShellById(thread.id),
+        );
+        if (
+          latest === null ||
+          Option.isNone(latest) ||
+          latest.value.pullRequestAutoMerge === null ||
+          hasWorkInProgress(latest.value)
+        ) {
+          return false;
+        }
+
         // The method the user chose, unless the repository has since stopped
         // allowing it; then the host's own first choice.
         const mergeMethod = detail.mergeMethods.includes(input.mergeMethod)
@@ -327,17 +369,18 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
             ...(mergeMethod === undefined ? {} : { mergeMethod }),
           }),
         );
-        // Another environment may have landed it first: a merged pull request
-        // is the outcome that was asked for, whoever ran the merge.
-        const merged = Exit.isSuccess(outcome)
-          ? outcome.value.state === "merged"
-          : (yield* attempt(
-              "detail-read",
-              thread.id,
-              pullRequestService.detail({ ...input.reference, force: true }),
-            ))?.state === "merged";
+        const landing =
+          Exit.isSuccess(outcome) && outcome.value.state === "merged"
+            ? "merged"
+            : landingAfterMerge(
+                yield* attempt(
+                  "detail-read",
+                  thread.id,
+                  pullRequestService.detail({ ...input.reference, force: true }),
+                ),
+              );
         yield* disarmAutoMerge(thread.id);
-        if (merged) {
+        if (landing === "merged") {
           yield* Effect.logInfo("pull-request.auto-merge.merged", { threadId: thread.id, number });
           yield* appendAutoMergeActivity({
             threadId: thread.id,
@@ -348,6 +391,18 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
             number,
           });
           return true;
+        }
+        if (landing === "queued") {
+          yield* Effect.logInfo("pull-request.auto-merge.queued", { threadId: thread.id, number });
+          yield* appendAutoMergeActivity({
+            threadId: thread.id,
+            tone: "info",
+            kind: "pull-request.auto-merge.queued",
+            summary: `Handed #${number} to the merge queue`,
+            detail: null,
+            number,
+          });
+          return false;
         }
         const failure = Exit.isFailure(outcome) ? Cause.squash(outcome.cause) : null;
         const reason =
@@ -612,6 +667,17 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
       Effect.gen(function* () {
         yield* Effect.forkScoped(
           sweep.pipe(Effect.repeat(Schedule.spaced(Duration.millis(sweepIntervalMs)))),
+        );
+        // Turning "Merge when checks pass" on is answered at once rather than
+        // at the next interval: a pull request with nothing left to wait for
+        // merges when the box is ticked, not up to two minutes later.
+        yield* Effect.forkScoped(
+          Stream.runForEach(orchestrationEngine.streamDomainEvents, (event) =>
+            event.type === "thread.pull-request-automation-changed" &&
+            event.payload.autoMerge != null
+              ? sweep.pipe(Effect.asVoid)
+              : Effect.void,
+          ),
         );
         yield* Effect.logInfo("pull-request.auto-fix.started", { sweepIntervalMs });
       });

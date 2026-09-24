@@ -155,6 +155,7 @@ async function renderComposerPullRequest(
     ...overrides,
   };
   const onOpen = vi.fn();
+  const onAutoMergeChange = vi.fn();
   const runAction = vi.fn(async (input: { action: string }) => {
     await beforeWrite();
     detail = {
@@ -188,7 +189,9 @@ async function renderComposerPullRequest(
           autoFix: false,
           onAutoFixChange: vi.fn(),
           autoMerge: null,
-          onAutoMergeChange: vi.fn(),
+          onAutoMergeChange,
+          agentWorking: false,
+          unpushedCommits: 0,
           wrapUpOnSettled: false,
           onWrapUpOnSettledChange: vi.fn(),
         }}
@@ -205,6 +208,7 @@ async function renderComposerPullRequest(
   return {
     runAction,
     onOpen,
+    onAutoMergeChange,
     async cleanup() {
       await screen.unmount();
       queryClient.clear();
@@ -270,7 +274,7 @@ describe("Composer pull request merge controls", () => {
     }
   });
 
-  it("opens the full merge controls for a ready PR without sending an auto-merge request", async () => {
+  it("hands a ready PR to the thread's own merge switch, not GitHub's", async () => {
     const rendered = await renderComposerPullRequest({
       mergeGate: "clear",
       checks: [{ name: "build", status: "success", description: "Passed in 2m", url: null }],
@@ -278,10 +282,13 @@ describe("Composer pull request merge controls", () => {
     });
     try {
       await expect
-        .element(page.getByText("This pull request can merge right now. Use Merge instead."))
+        .element(page.getByText("Nothing left to wait for, so it merges right away"), {
+          timeout: 5_000,
+        })
         .toBeVisible();
-      await page.getByRole("button", { name: "Open merge controls" }).click();
-      expect(rendered.onOpen).toHaveBeenCalledOnce();
+      await page.getByRole("checkbox", { name: "Merge when checks pass" }).click();
+      expect(rendered.onAutoMergeChange).toHaveBeenCalledWith("squash");
+      // GitHub's own switch would merge on the spot rather than arm.
       expect(rendered.runAction).not.toHaveBeenCalled();
     } finally {
       await rendered.cleanup();
