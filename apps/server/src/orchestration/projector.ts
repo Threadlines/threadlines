@@ -36,6 +36,7 @@ import {
   ThreadUnarchivedPayload,
   ThreadUnpinnedPayload,
   ThreadPullRequestAutomationChangedPayload,
+  ThreadPullRequestLinkedPayload,
   ThreadRevertedPayload,
   ThreadSessionSetPayload,
   ThreadRealtimeStateSetPayload,
@@ -304,6 +305,7 @@ export function projectEvent(
             pinnedAt: null,
             pullRequestAutoFix: false,
             pullRequestAutoMerge: null,
+            linkedPullRequests: [],
             doneOverride: null,
             lastSeenAt: null,
             deletedAt: null,
@@ -387,14 +389,62 @@ export function projectEvent(
         event.type,
         "payload",
       ).pipe(
-        Effect.map((payload) => ({
-          ...nextBase,
-          threads: updateThread(nextBase.threads, payload.threadId, {
-            ...(payload.autoFix === undefined ? {} : { pullRequestAutoFix: payload.autoFix }),
-            ...(payload.autoMerge === undefined ? {} : { pullRequestAutoMerge: payload.autoMerge }),
-            updatedAt: payload.updatedAt,
-          }),
-        })),
+        Effect.map((payload) => {
+          const { autoMerge, pullRequestNumber } = payload;
+          // A numbered change is the switch of one linked pull request.
+          if (pullRequestNumber !== undefined) {
+            const thread = nextBase.threads.find((entry) => entry.id === payload.threadId);
+            if (thread === undefined || autoMerge === undefined) {
+              return nextBase;
+            }
+            return {
+              ...nextBase,
+              threads: updateThread(nextBase.threads, payload.threadId, {
+                linkedPullRequests: thread.linkedPullRequests.map((linked) =>
+                  linked.number === pullRequestNumber ? { ...linked, autoMerge } : linked,
+                ),
+                updatedAt: payload.updatedAt,
+              }),
+            };
+          }
+          return {
+            ...nextBase,
+            threads: updateThread(nextBase.threads, payload.threadId, {
+              ...(payload.autoFix === undefined ? {} : { pullRequestAutoFix: payload.autoFix }),
+              ...(autoMerge === undefined ? {} : { pullRequestAutoMerge: autoMerge }),
+              updatedAt: payload.updatedAt,
+            }),
+          };
+        }),
+      );
+
+    // Found in the conversation, not done to the thread, so it leaves
+    // `updatedAt` where the agent's message put it.
+    case "thread.pull-request-linked":
+      return decodeForEvent(
+        ThreadPullRequestLinkedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => {
+          const thread = nextBase.threads.find((entry) => entry.id === payload.threadId);
+          if (
+            thread === undefined ||
+            thread.linkedPullRequests.some((linked) => linked.number === payload.number)
+          ) {
+            return nextBase;
+          }
+          return {
+            ...nextBase,
+            threads: updateThread(nextBase.threads, payload.threadId, {
+              linkedPullRequests: [
+                ...thread.linkedPullRequests,
+                { number: payload.number, url: payload.url, autoMerge: null },
+              ],
+            }),
+          };
+        }),
       );
 
     // Neither lifecycle event touches `updatedAt`: filing or reading a thread

@@ -28,6 +28,7 @@ import { readLocalApi } from "../../localApi";
 import {
   pullRequestActionMutationOptions,
   pullRequestQueryKeys,
+  usePullRequestDetail,
 } from "../../lib/pullRequestsReactQuery";
 import { cn } from "../../lib/utils";
 import {
@@ -60,23 +61,30 @@ const AUTO_FIX_MARKER_LABEL = "Fixes failing checks and review comments on its o
 /** Under the server-held switch while it is off: who does the merge, and the catch. */
 const SERVER_AUTO_MERGE_HINT = "Threadlines merges it while the app is running";
 
-/** Everything the thread route hands the composer about its pull request. */
+/**
+ * Everything the thread route hands the composer about one of its pull
+ * requests: the one on its own branch, or one its agent opened elsewhere.
+ */
 export interface ComposerPullRequest {
   readonly environmentId: EnvironmentId;
   readonly reference: PullRequestRef;
-  /** What the sidebar badge and the tab already resolved. */
+  /** What the sidebar badge and the tab already resolved, until the row's own read lands. */
   readonly pullRequest: ThreadPullRequest;
   /** The thread's project, which is the pull request's too. */
   readonly projectTitle: string | null;
-  /** The shared read behind the Pull request tab; absent until it lands. */
-  readonly detail: PullRequestDetail | undefined;
-  /** Opens the Pull request tab, the same place the sidebar badge goes. */
+  /** Opens this pull request in the Pull request tab. */
   readonly onOpen: () => void;
   /** Closes the row for this pull request in this thread. */
   readonly onDismiss: () => void;
-  /** The thread's own switch: the server watches this pull request while it is on. */
-  readonly autoFix: boolean;
-  readonly onAutoFixChange: (next: boolean) => void;
+  /**
+   * The thread's auto-fix watch, which only the pull request on the thread's
+   * own branch has: the thread's checkout cannot push to another branch. Null
+   * for a linked one.
+   */
+  readonly autoFix: {
+    readonly checked: boolean;
+    readonly onChange: (next: boolean) => void;
+  } | null;
   /**
    * How the server merges this pull request once its checks pass, for a host
    * that cannot hold that itself; null while the thread has not asked.
@@ -96,6 +104,9 @@ export interface ComposerPullRequest {
   readonly onWrapUpOnSettledChange: (next: boolean) => void;
 }
 
+/** One empty list for every surface with no rows, so it never reads as a change. */
+export const NO_COMPOSER_PULL_REQUESTS: ReadonlyArray<ComposerPullRequest> = [];
+
 const CHIP_TONE_CLASS: Readonly<
   Record<ComposerPullRequestChipTone, { readonly chip: string; readonly dot: string }>
 > = {
@@ -114,13 +125,19 @@ export function ComposerPullRequestRow({
   divided,
 }: {
   readonly pullRequest: ComposerPullRequest;
-  /** A notice sits under this row, so the two are ruled apart. */
+  /** Another row or a notice sits under this one, so the two are ruled apart. */
   readonly divided: boolean;
 }) {
+  // The same read the Pull request tab makes, on the same key, so one poll
+  // serves both while checks run.
+  const detail = usePullRequestDetail({
+    environmentId: pullRequest.environmentId,
+    reference: pullRequest.reference,
+  });
   const row = composerPullRequestRow({
     pullRequest: pullRequest.pullRequest,
     projectTitle: pullRequest.projectTitle,
-    detail: pullRequest.detail,
+    detail,
     threadAutoMerge: pullRequest.autoMerge !== null,
   });
   const tone = pullRequestBadgeTone(row.state, row.isDraft, row.autoMergeEnabled);
@@ -170,7 +187,7 @@ export function ComposerPullRequestRow({
           />
         </span>
       ) : null}
-      {pullRequest.autoFix ? (
+      {pullRequest.autoFix?.checked ? (
         <Tooltip>
           <TooltipTrigger
             render={
@@ -190,6 +207,7 @@ export function ComposerPullRequestRow({
       ) : null}
       <ComposerPullRequestChecksChip
         pullRequest={pullRequest}
+        detail={detail}
         chip={row.chip}
         checksUrl={pullRequestChecksUrl(row.url)}
       />
@@ -212,10 +230,12 @@ function ChipDot({ className }: { readonly className: string }) {
 
 function ComposerPullRequestChecksChip({
   pullRequest,
+  detail,
   chip,
   checksUrl,
 }: {
   readonly pullRequest: ComposerPullRequest;
+  readonly detail: PullRequestDetail | undefined;
   readonly chip: ReturnType<typeof composerPullRequestRow>["chip"];
   readonly checksUrl: string;
 }) {
@@ -260,6 +280,7 @@ function ComposerPullRequestChecksChip({
       >
         <ComposerPullRequestChecksPopover
           pullRequest={pullRequest}
+          detail={detail}
           checksUrl={checksUrl}
           onOpenExternal={() => setOpen(false)}
         />
@@ -270,14 +291,16 @@ function ComposerPullRequestChecksChip({
 
 function ComposerPullRequestChecksPopover({
   pullRequest,
+  detail,
   checksUrl,
   onOpenExternal,
 }: {
   readonly pullRequest: ComposerPullRequest;
+  /** The row's read of this pull request; absent until it lands. */
+  readonly detail: PullRequestDetail | undefined;
   readonly checksUrl: string;
   readonly onOpenExternal: () => void;
 }) {
-  const detail = pullRequest.detail;
   const buckets = composerPullRequestCheckBuckets(detail?.checks ?? []);
 
   return (
@@ -335,10 +358,10 @@ function ComposerPullRequestChecksPopover({
           onOpenExternal={onOpenExternal}
         />
       ) : null}
-      {composerAutoFixOffered(detail) ? (
+      {pullRequest.autoFix !== null && composerAutoFixOffered(detail) ? (
         <ComposerPullRequestThreadSwitch
-          checked={pullRequest.autoFix}
-          onCheckedChange={pullRequest.onAutoFixChange}
+          checked={pullRequest.autoFix.checked}
+          onCheckedChange={pullRequest.autoFix.onChange}
           label="Fix failing checks and review comments"
         />
       ) : null}
@@ -392,7 +415,7 @@ function ComposerPullRequestAutoMergeSection({
   const autoMergeControl = composerAutoMergeControl({
     detail,
     threadAutoMerge: pullRequest.autoMerge,
-    autoFix: pullRequest.autoFix,
+    autoFix: pullRequest.autoFix?.checked ?? false,
     agentWorking: pullRequest.agentWorking,
     unpushedCommits: pullRequest.unpushedCommits,
     now: openedAt,

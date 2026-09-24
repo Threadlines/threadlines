@@ -1,4 +1,5 @@
 import { scopeProjectRef } from "@threadlines/client-runtime";
+import type { PullRequestRef } from "@threadlines/contracts";
 import { resolveThreadWorkingCwd } from "@threadlines/shared/threadCwd";
 import { useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, retainSearchParams, useNavigate } from "@tanstack/react-router";
@@ -18,7 +19,10 @@ import { finalizePromotedDraftThreadByRef, useComposerDraftStore } from "../comp
 import { useSavedEnvironmentRegistryStore } from "../environments/runtime";
 import { type DiffRouteSearch, parseDiffRouteSearch } from "../diffRouteSearch";
 import { AgentsPanel } from "../components/chat/AgentsPanel";
-import { ThreadPullRequestLinkContext } from "../components/chat/ThreadPullRequestLinkContext";
+import {
+  ThreadPullRequestLinkContext,
+  type ThreadPullRequestLinks,
+} from "../components/chat/ThreadPullRequestLinkContext";
 import { ChatRightPanel } from "../components/ChatRightPanel";
 import { useAgentsPanelSource } from "../agentsPanelStore";
 import { preloadDiffPanel, schedulePreloadDiffPanel } from "../diffPanelPreload";
@@ -37,21 +41,26 @@ import {
 } from "../lib/threadPullRequestCommands";
 import {
   PULL_REQUEST_COUNT_REFETCH_INTERVAL_MS,
-  usePullRequestDetail,
   usePullRequestLists,
 } from "../lib/pullRequestsReactQuery";
 import { LazyPullRequestDetailPanel } from "../components/pull-requests/LazyPullRequestDetailPanel";
 import { PullRequestHoverCardProvider } from "../components/pull-requests/PullRequestHoverCard";
-import type { ComposerPullRequest } from "../components/chat/ComposerPullRequestRow";
+import {
+  NO_COMPOSER_PULL_REQUESTS,
+  type ComposerPullRequest,
+} from "../components/chat/ComposerPullRequestRow";
 import {
   composerPullRequestDismissalKey as composerPullRequestDismissalKeyFor,
   dismissComposerPullRequest,
-  useIsComposerPullRequestDismissed,
+  useDismissedComposerPullRequests,
 } from "../components/chat/composerPullRequestDismissals";
 import {
+  resolveLinkedThreadPullRequests,
   resolveThreadPullRequest,
   threadViewBranch,
+  type ThreadPullRequest,
 } from "../components/pull-requests/pullRequests.logic";
+import { ThreadPullRequestSwitcher } from "../components/pull-requests/ThreadPullRequestSwitcher";
 import { Button } from "~/components/ui/button";
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader } from "~/components/ui/empty";
 import {
@@ -98,6 +107,16 @@ import {
 const EMPTY_SUBAGENTS = [] as const;
 const EMPTY_SUBAGENT_HISTORY = [] as const;
 const noopStopRun = () => {};
+
+/**
+ * One pull request the thread can show: where it lives, and whether it is the
+ * one on the thread's own branch rather than one its agent opened elsewhere.
+ */
+interface ThreadPullRequestTarget {
+  readonly pullRequest: ThreadPullRequest;
+  readonly reference: PullRequestRef;
+  readonly own: boolean;
+}
 
 const DiffPanel = lazy(() => import("../components/DiffPanel"));
 const FileViewerOverlay = lazy(() => import("../components/file-viewer/FileViewerOverlay"));
@@ -320,7 +339,9 @@ function ChatThreadRouteView() {
   const openPullRequests = usePullRequestLists({
     state: "open",
     refetchIntervalMs: PULL_REQUEST_COUNT_REFETCH_INTERVAL_MS,
-    enabled: pullRequestTabAvailable && threadBranch !== null,
+    enabled:
+      pullRequestTabAvailable &&
+      (threadBranch !== null || (serverThread?.linkedPullRequests?.length ?? 0) > 0),
   });
   const pullRequestProjects = useMemo(
     () => (activeProject ? [activeProject] : []),
@@ -353,6 +374,56 @@ function ChatThreadRouteView() {
       number: threadPullRequest.number,
     };
   }, [serverThread, threadPullRequest]);
+  // Every pull request the thread can show: the one on its own branch, then
+  // the ones its agent opened elsewhere. The composer rows, the Pull request
+  // tab and transcript links all read this one list.
+  const threadEnvironmentId = serverThread?.environmentId ?? null;
+  const threadProjectId = serverThread?.projectId ?? null;
+  const threadLinkedPullRequests = serverThread?.linkedPullRequests;
+  const threadPullRequests = useMemo<ReadonlyArray<ThreadPullRequestTarget>>(() => {
+    if (threadEnvironmentId === null || threadProjectId === null) {
+      return [];
+    }
+    const own: ThreadPullRequestTarget[] =
+      threadPullRequest && threadPullRequestReference
+        ? [{ pullRequest: threadPullRequest, reference: threadPullRequestReference, own: true }]
+        : [];
+    const linked = resolveLinkedThreadPullRequests({
+      thread: {
+        environmentId: threadEnvironmentId,
+        projectId: threadProjectId,
+        ...(threadLinkedPullRequests ? { linkedPullRequests: threadLinkedPullRequests } : {}),
+      },
+      ownNumber: threadPullRequest?.number ?? null,
+      projects: pullRequestProjects,
+      openEntries: openPullRequests.entries,
+    }).flatMap((pullRequest): ThreadPullRequestTarget[] =>
+      // The panel addresses a pull request by repository, so one on a
+      // project with no remote it can read has nothing to open.
+      pullRequest.repository === null
+        ? []
+        : [
+            {
+              pullRequest,
+              reference: {
+                projectId: threadProjectId,
+                repository: pullRequest.repository,
+                number: pullRequest.number,
+              },
+              own: false,
+            },
+          ],
+    );
+    return [...own, ...linked];
+  }, [
+    openPullRequests.entries,
+    pullRequestProjects,
+    threadEnvironmentId,
+    threadLinkedPullRequests,
+    threadProjectId,
+    threadPullRequest,
+    threadPullRequestReference,
+  ]);
   const defaultVisible = useRightPanelDefaultVisible();
   const urlActiveTab = activeRightPanelTabFromSearch(search);
   const urlClosed = isRightPanelClosedInSearch(search);
@@ -468,7 +539,7 @@ function ChatThreadRouteView() {
     // tree with committed turn diffs behind it never reads as nothing to review.
     turnDiffSummaries: serverThread?.turnDiffSummaries ?? null,
     agents: agentsSource,
-    pullRequest: threadPullRequest,
+    pullRequest: threadPullRequests[0]?.pullRequest ?? null,
   });
   // Opening the Diff tab with nothing remembered means this thread's working
   // tree, which is also the freshest thing to look at, so it gets re-read.
@@ -495,34 +566,50 @@ function ChatThreadRouteView() {
     },
     [activateDiffTab, currentThreadKey, diffTarget, navigateToTab],
   );
-  // What a transcript link to this pull request opens. Only offered once the
-  // tab can actually show it, so a link never lands on the tab's fallback.
-  const threadPullRequestLink = useMemo(
+  // Which one the Pull request tab shows: the one last opened from a row or a
+  // link while the thread still has it, else the first (its own, when it has one).
+  const [pullRequestTabChoice, setPullRequestTabChoice] = useState<{
+    readonly threadKey: string | null;
+    readonly number: number;
+  } | null>(null);
+  const pullRequestTabTarget =
+    threadPullRequests.find(
+      (target) =>
+        pullRequestTabChoice !== null &&
+        pullRequestTabChoice.threadKey === currentThreadKey &&
+        target.reference.number === pullRequestTabChoice.number,
+    ) ??
+    threadPullRequests[0] ??
+    null;
+  const showPullRequestInTab = useCallback(
+    (number: number) => setPullRequestTabChoice({ threadKey: currentThreadKey, number }),
+    [currentThreadKey],
+  );
+  const openPullRequestTab = useCallback(
+    (number: number) => {
+      showPullRequestInTab(number);
+      selectTab("pullRequest");
+    },
+    [selectTab, showPullRequestInTab],
+  );
+  // What a transcript link to one of these opens. Only the ones the tab can
+  // show are offered, so a link never lands on the tab's fallback.
+  const threadPullRequestLinks = useMemo<ThreadPullRequestLinks | null>(
     () =>
-      threadPullRequest && threadPullRequestReference
-        ? { url: threadPullRequest.url, open: () => selectTab("pullRequest") }
-        : null,
-    [selectTab, threadPullRequest, threadPullRequestReference],
+      threadPullRequests.length === 0
+        ? null
+        : {
+            pullRequests: threadPullRequests.map(({ pullRequest }) => ({
+              number: pullRequest.number,
+              url: pullRequest.url,
+            })),
+            open: openPullRequestTab,
+          },
+    [openPullRequestTab, threadPullRequests],
   );
-  // The composer's docked row reads the same detail the Pull request tab does,
-  // on the same key: one poll while checks run, whichever of them is on screen.
-  const threadPullRequestDetail = usePullRequestDetail({
-    environmentId: threadPullRequestReference ? (threadRef?.environmentId ?? null) : null,
-    reference: threadPullRequestReference,
-  });
-  // Closing the row is per pull request: a thread that moves on to another one
-  // gets the row back for it.
-  const composerPullRequestDismissalKey =
-    threadPullRequestReference && currentThreadKey !== null
-      ? composerPullRequestDismissalKeyFor({
-          threadKey: currentThreadKey,
-          repository: threadPullRequestReference.repository,
-          number: threadPullRequestReference.number,
-        })
-      : null;
-  const composerPullRequestDismissed = useIsComposerPullRequestDismissed(
-    composerPullRequestDismissalKey,
-  );
+  // Closing a row is per pull request: a thread that moves on to another one
+  // gets a row back for it.
+  const dismissedComposerPullRequests = useDismissedComposerPullRequests();
   const activeProjectTitle = activeProject?.name ?? null;
   // The app setting is the default; a thread that has said otherwise wins.
   const wrapUpOnSettledDefault = useSettings(
@@ -540,58 +627,78 @@ function ChatThreadRouteView() {
     ? getThreadInFlightStatus(serverThread) !== null || serverThread.latestTurn?.state === "running"
     : false;
   const threadUnpushedCommits = pullRequestGitStatus.data?.aheadCount ?? 0;
-  const composerPullRequest = useMemo<ComposerPullRequest | null>(
-    () =>
-      threadRef &&
-      currentThreadKey !== null &&
-      threadPullRequest &&
-      threadPullRequestReference &&
-      composerPullRequestDismissalKey !== null &&
-      !composerPullRequestDismissed
-        ? {
-            environmentId: threadRef.environmentId,
-            reference: threadPullRequestReference,
-            pullRequest: threadPullRequest,
-            projectTitle: activeProjectTitle,
-            detail: threadPullRequestDetail,
-            onOpen: () => selectTab("pullRequest"),
-            onDismiss: () => dismissComposerPullRequest(composerPullRequestDismissalKey),
-            autoFix: serverThread?.pullRequestAutoFix ?? false,
-            onAutoFixChange: (next: boolean) => {
-              void setThreadPullRequestAutoFix(threadRef, next);
-            },
-            autoMerge: serverThread?.pullRequestAutoMerge ?? null,
-            onAutoMergeChange: (next) => {
-              void setThreadPullRequestAutoMerge(threadRef, next);
-            },
-            agentWorking: threadAgentWorking,
-            unpushedCommits: threadUnpushedCommits,
-            wrapUpOnSettled: threadWrapUpOnSettled ?? wrapUpOnSettledDefault,
-            onWrapUpOnSettledChange: (next: boolean) => {
-              useUiStateStore
-                .getState()
-                .setThreadWrapUpOnPullRequestSettled(currentThreadKey, next);
-            },
+  const threadPullRequestAutoFix = serverThread?.pullRequestAutoFix ?? false;
+  const threadPullRequestAutoMerge = serverThread?.pullRequestAutoMerge ?? null;
+  const composerPullRequests = useMemo<ReadonlyArray<ComposerPullRequest>>(() => {
+    if (!threadRef || currentThreadKey === null) {
+      return NO_COMPOSER_PULL_REQUESTS;
+    }
+    const rows = threadPullRequests.flatMap(({ pullRequest, reference, own }) => {
+      const dismissalKey = composerPullRequestDismissalKeyFor({
+        threadKey: currentThreadKey,
+        repository: reference.repository,
+        number: reference.number,
+      });
+      if (dismissedComposerPullRequests.has(dismissalKey)) {
+        return [];
+      }
+      // A pull request linked from another branch keeps its own switch after
+      // the thread moves onto that branch and it becomes the thread's own, so
+      // the row reads either switch and turning it off turns off both.
+      const linkedAutoMerge =
+        threadLinkedPullRequests?.find((linked) => linked.number === reference.number)?.autoMerge ??
+        null;
+      const row: ComposerPullRequest = {
+        environmentId: threadRef.environmentId,
+        reference,
+        pullRequest,
+        projectTitle: activeProjectTitle,
+        onOpen: () => openPullRequestTab(reference.number),
+        onDismiss: () => dismissComposerPullRequest(dismissalKey),
+        autoFix: own
+          ? {
+              checked: threadPullRequestAutoFix,
+              onChange: (next: boolean) => {
+                void setThreadPullRequestAutoFix(threadRef, next);
+              },
+            }
+          : null,
+        autoMerge: own ? (threadPullRequestAutoMerge ?? linkedAutoMerge) : linkedAutoMerge,
+        onAutoMergeChange: (next) => {
+          if (own) {
+            void setThreadPullRequestAutoMerge(threadRef, next);
           }
-        : null,
-    [
-      activeProjectTitle,
-      composerPullRequestDismissalKey,
-      composerPullRequestDismissed,
-      currentThreadKey,
-      selectTab,
-      serverThread?.pullRequestAutoFix,
-      serverThread?.pullRequestAutoMerge,
-      threadAgentWorking,
-      threadPullRequest,
-      threadPullRequestDetail,
-      threadPullRequestReference,
-      threadRef,
-      threadUnpushedCommits,
-      threadWrapUpOnSettled,
-      wrapUpOnSettledDefault,
-    ],
-  );
+          if (!own || (next === null && linkedAutoMerge !== null)) {
+            void setThreadPullRequestAutoMerge(threadRef, next, reference.number);
+          }
+        },
+        agentWorking: threadAgentWorking,
+        // The thread's checkout is on its own branch, so only that pull
+        // request can have commits there waiting to be pushed.
+        unpushedCommits: own ? threadUnpushedCommits : 0,
+        wrapUpOnSettled: threadWrapUpOnSettled ?? wrapUpOnSettledDefault,
+        onWrapUpOnSettledChange: (next: boolean) => {
+          useUiStateStore.getState().setThreadWrapUpOnPullRequestSettled(currentThreadKey, next);
+        },
+      };
+      return [row];
+    });
+    return rows.length === 0 ? NO_COMPOSER_PULL_REQUESTS : rows;
+  }, [
+    activeProjectTitle,
+    currentThreadKey,
+    dismissedComposerPullRequests,
+    openPullRequestTab,
+    threadAgentWorking,
+    threadLinkedPullRequests,
+    threadPullRequestAutoFix,
+    threadPullRequestAutoMerge,
+    threadPullRequests,
+    threadRef,
+    threadUnpushedCommits,
+    threadWrapUpOnSettled,
+    wrapUpOnSettledDefault,
+  ]);
   const closeTab = useCallback(
     (tab: RightPanelTab) => {
       const nextTab = closeRightPanelTab(currentThreadKey, tab);
@@ -709,14 +816,25 @@ function ChatThreadRouteView() {
       ) : null}
       {openTabs.includes("pullRequest") ? (
         <div className={cn("h-full w-full min-w-0 flex-col", pullRequestOpen ? "flex" : "hidden")}>
-          {threadPullRequestReference ? (
-            <LazyPullRequestDetailPanel
-              environmentId={threadRef.environmentId}
-              reference={threadPullRequestReference}
-              context="thread"
-              composerTarget={threadRef}
-              onComposerHandoff={() => setComposerFocusRequest((request) => request + 1)}
-            />
+          {pullRequestTabTarget ? (
+            <>
+              <ThreadPullRequestSwitcher
+                numbers={threadPullRequests.map(({ reference }) => reference.number)}
+                selected={pullRequestTabTarget.reference.number}
+                onSelect={showPullRequestInTab}
+              />
+              <div className="flex min-h-0 flex-1 flex-col">
+                <LazyPullRequestDetailPanel
+                  // One panel per pull request, so nothing it holds carries across.
+                  key={`${pullRequestTabTarget.reference.repository}#${pullRequestTabTarget.reference.number}`}
+                  environmentId={threadRef.environmentId}
+                  reference={pullRequestTabTarget.reference}
+                  context="thread"
+                  composerTarget={threadRef}
+                  onComposerHandoff={() => setComposerFocusRequest((request) => request + 1)}
+                />
+              </div>
+            </>
           ) : (
             <Empty>
               <EmptyHeader>
@@ -762,7 +880,7 @@ function ChatThreadRouteView() {
     return (
       <>
         <SidebarInset className="h-svh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground md:h-dvh">
-          <ThreadPullRequestLinkContext.Provider value={threadPullRequestLink}>
+          <ThreadPullRequestLinkContext.Provider value={threadPullRequestLinks}>
             <PullRequestHoverCardProvider threadPullRequest={threadPullRequest}>
               <ChatView
                 environmentId={threadRef.environmentId}
@@ -770,7 +888,7 @@ function ChatThreadRouteView() {
                 onDiffPanelOpen={markDiffOpened}
                 reserveTitleBarControlInset={!sidebarVisible}
                 composerFocusRequest={composerFocusRequest}
-                composerPullRequest={composerPullRequest}
+                composerPullRequests={composerPullRequests}
                 routeKind="server"
               />
             </PullRequestHoverCardProvider>
@@ -791,14 +909,14 @@ function ChatThreadRouteView() {
   return (
     <>
       <SidebarInset className="h-svh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground md:h-dvh">
-        <ThreadPullRequestLinkContext.Provider value={threadPullRequestLink}>
+        <ThreadPullRequestLinkContext.Provider value={threadPullRequestLinks}>
           <PullRequestHoverCardProvider threadPullRequest={threadPullRequest}>
             <ChatView
               environmentId={threadRef.environmentId}
               threadId={threadRef.threadId}
               onDiffPanelOpen={markDiffOpened}
               composerFocusRequest={composerFocusRequest}
-              composerPullRequest={composerPullRequest}
+              composerPullRequests={composerPullRequests}
               routeKind="server"
             />
           </PullRequestHoverCardProvider>

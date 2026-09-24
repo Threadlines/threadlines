@@ -203,7 +203,7 @@ import {
   useTerminalStateStore,
 } from "../terminalStateStore";
 import { ChatComposer, type ChatComposerHandle } from "./chat/ChatComposer";
-import type { ComposerPullRequest } from "./chat/ComposerPullRequestRow";
+import { NO_COMPOSER_PULL_REQUESTS, type ComposerPullRequest } from "./chat/ComposerPullRequestRow";
 import { type ComposerGoalSetInput } from "./chat/ComposerGoalBar";
 import { getComposerProviderState } from "./chat/composerProviderState";
 import { ExpandedImageDialog } from "./chat/ExpandedImageDialog";
@@ -792,10 +792,10 @@ type ChatViewProps =
       reserveTitleBarControlInset?: boolean;
       composerFocusRequest?: number;
       /**
-       * The thread's pull request, resolved by the route that owns the Pull
-       * request tab. The composer docks a row for it; a draft has none.
+       * The thread's pull requests, resolved by the route that owns the Pull
+       * request tab. The composer docks a row for each; a draft has none.
        */
-      composerPullRequest?: ComposerPullRequest | null;
+      composerPullRequests?: ReadonlyArray<ComposerPullRequest>;
       routeKind: "server";
       draftId?: never;
     }
@@ -1091,7 +1091,10 @@ export default function ChatView(props: ChatViewProps) {
     reserveTitleBarControlInset = true,
     composerFocusRequest = 0,
   } = props;
-  const composerPullRequest = routeKind === "server" ? (props.composerPullRequest ?? null) : null;
+  const composerPullRequests =
+    routeKind === "server"
+      ? (props.composerPullRequests ?? NO_COMPOSER_PULL_REQUESTS)
+      : NO_COMPOSER_PULL_REQUESTS;
   const draftId = routeKind === "draft" ? props.draftId : null;
   const routeThreadRef = useMemo(
     () => scopeThreadRef(environmentId, threadId),
@@ -6760,7 +6763,7 @@ export default function ChatView(props: ChatViewProps) {
                   }
                   activeThreadActivities={activeThread?.activities}
                   notices={composerNotices}
-                  pullRequest={composerPullRequest}
+                  pullRequests={composerPullRequests}
                   resolvedTheme={resolvedTheme}
                   settings={settings}
                   keybindings={keybindings}

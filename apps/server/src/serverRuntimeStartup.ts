@@ -31,6 +31,7 @@ import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnap
 import { OrchestrationReactor } from "./orchestration/Services/OrchestrationReactor.ts";
 import { ThreadAutoArchiveSweeper } from "./orchestration/Services/ThreadAutoArchiveSweeper.ts";
 import { PullRequestAutomationWatcher } from "./orchestration/Services/PullRequestAutomationWatcher.ts";
+import { ThreadPullRequestLinker } from "./orchestration/Services/ThreadPullRequestLinker.ts";
 import { AutomaticGitFetchSupervisor } from "./vcs/AutomaticGitFetchSupervisor.ts";
 import { pauseActiveThreadGoalForStop } from "./orchestration/threadGoalLifecycle.ts";
 import { ServerLifecycleEvents } from "./serverLifecycleEvents.ts";
@@ -331,6 +332,7 @@ export const makeServerRuntimeStartup = Effect.gen(function* () {
   const providerSessionReaper = yield* ProviderSessionReaper;
   const threadAutoArchiveSweeper = yield* ThreadAutoArchiveSweeper;
   const pullRequestAutomationWatcher = yield* PullRequestAutomationWatcher;
+  const threadPullRequestLinker = yield* ThreadPullRequestLinker;
   const automaticGitFetchSupervisor = yield* AutomaticGitFetchSupervisor;
   const sleepInhibitor = yield* SleepInhibitor;
   const lifecycleEvents = yield* ServerLifecycleEvents;
@@ -391,6 +393,7 @@ export const makeServerRuntimeStartup = Effect.gen(function* () {
         yield* providerSessionReaper.start().pipe(Scope.provide(reactorScope));
         yield* threadAutoArchiveSweeper.start().pipe(Scope.provide(reactorScope));
         yield* pullRequestAutomationWatcher.start().pipe(Scope.provide(reactorScope));
+        yield* threadPullRequestLinker.start().pipe(Scope.provide(reactorScope));
         yield* automaticGitFetchSupervisor.start().pipe(Scope.provide(reactorScope));
         yield* sleepInhibitor.start().pipe(Scope.provide(reactorScope));
       }),

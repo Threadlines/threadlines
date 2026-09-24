@@ -62,6 +62,7 @@ function makeThread(overrides: Partial<OrchestrationThread> = {}): Orchestration
     pinnedAt: null,
     pullRequestAutoFix: false,
     pullRequestAutoMerge: null,
+    linkedPullRequests: [],
     doneOverride: null,
     lastSeenAt: null,
     deletedAt: null,

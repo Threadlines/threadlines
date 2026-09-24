@@ -2,7 +2,9 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   detectSourceControlProviderFromRemoteUrl,
+  findPullRequestUrls,
   getChangeRequestTerminologyForKind,
+  parsePullRequestUrl,
   resolveChangeRequestPresentation,
 } from "./sourceControl.ts";
 
@@ -74,5 +76,46 @@ describe("detectSourceControlProviderFromRemoteUrl", () => {
       name: "self-hosted.example.test:8443",
       baseUrl: "https://self-hosted.example.test:8443",
     });
+  });
+});
+
+describe("parsePullRequestUrl", () => {
+  it("names the repository and number a GitHub address points at", () => {
+    expect(parsePullRequestUrl("https://github.com/Threadlines/threadlines/pull/234")).toEqual({
+      repository: "Threadlines/threadlines",
+      number: 234,
+    });
+  });
+
+  it("resolves a link into one part of the same pull request", () => {
+    expect(
+      parsePullRequestUrl("https://github.com/Threadlines/threadlines/pull/234/files"),
+    ).toEqual({ repository: "Threadlines/threadlines", number: 234 });
+  });
+
+  it("names nothing for the hosts whose rows nothing here lists by repository", () => {
+    expect(parsePullRequestUrl("https://gitlab.com/group/project/-/merge_requests/42")).toBeNull();
+    expect(
+      parsePullRequestUrl("https://dev.azure.com/acme/project/_git/t3code/pullrequest/42"),
+    ).toBeNull();
+  });
+
+  it("names nothing for a GitHub address that is not a pull request", () => {
+    expect(parsePullRequestUrl("https://github.com/Threadlines/threadlines/issues/234")).toBeNull();
+  });
+});
+
+describe("findPullRequestUrls", () => {
+  it("finds each pull request a message links to once, bare or as a markdown link", () => {
+    const text = [
+      "Done. The new PR is [#294](https://github.com/Threadlines/threadlines/pull/294).",
+      "It builds on https://github.com/threadlines/Threadlines/pull/292/files, and",
+      "(https://github.com/Threadlines/threadlines/pull/294) again, not issue",
+      "https://github.com/Threadlines/threadlines/issues/12.",
+    ].join("\n");
+    expect(findPullRequestUrls(text)).toEqual([
+      { repository: "Threadlines/threadlines", number: 294 },
+      { repository: "threadlines/Threadlines", number: 292 },
+    ]);
   });
 });

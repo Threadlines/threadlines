@@ -519,11 +519,28 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     // is the record of the user's word, and the projector writes the same
     // value either way. There is no "no change" outcome in this decider.
     case "thread.pull-request-automation.set": {
-      yield* requireThreadNotArchived({
+      const thread = yield* requireThreadNotArchived({
         readModel,
         command,
         threadId: command.threadId,
       });
+      // A linked pull request holds only a merge switch: the auto-fix watch
+      // needs a checkout on that branch, and the thread has one only for its own.
+      const pullRequestNumber = command.pullRequestNumber;
+      if (pullRequestNumber !== undefined) {
+        if (command.autoFix !== undefined) {
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: "A linked pull request has no auto-fix switch.",
+          });
+        }
+        if (!thread.linkedPullRequests.some((linked) => linked.number === pullRequestNumber)) {
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: `Pull request #${pullRequestNumber} is not linked to thread '${command.threadId}'.`,
+          });
+        }
+      }
       const occurredAt = yield* nowIso;
       return {
         ...withEventBase({
@@ -535,9 +552,39 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         type: "thread.pull-request-automation-changed",
         payload: {
           threadId: command.threadId,
+          ...(pullRequestNumber === undefined ? {} : { pullRequestNumber }),
           ...(command.autoFix === undefined ? {} : { autoFix: command.autoFix }),
           ...(command.autoMerge === undefined ? {} : { autoMerge: command.autoMerge }),
           updatedAt: occurredAt,
+        },
+      };
+    }
+
+    case "thread.pull-request.link": {
+      const thread = yield* requireThreadNotArchived({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      if (thread.linkedPullRequests.some((linked) => linked.number === command.number)) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Pull request #${command.number} is already linked to thread '${command.threadId}'.`,
+        });
+      }
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.pull-request-linked",
+        payload: {
+          threadId: command.threadId,
+          number: command.number,
+          url: command.url,
+          linkedAt: command.createdAt,
         },
       };
     }

@@ -49,11 +49,14 @@ import {
   resolvePullRequestReviewPosition,
   sortPullRequests,
   summarizePullRequestChecks,
+  resolveLinkedThreadPullRequests,
   resolveThreadPullRequest,
+  resolveThreadPullRequestsSettledAt,
   shouldPollPullRequestDetail,
   threadViewBranch,
   type PullRequestDiffFile,
   type PullRequestEntry,
+  type ThreadPullRequest,
   type PullRequestFilters,
   type PullRequestSort,
 } from "./pullRequests.logic";
@@ -594,6 +597,99 @@ describe("resolveThreadPullRequest", () => {
         }),
       ).toBeNull();
     }
+  });
+});
+
+describe("resolveLinkedThreadPullRequests", () => {
+  const linked = [
+    { number: 7, url: "https://github.com/threadlines/threadlines/pull/7" },
+    { number: 294, url: "https://github.com/threadlines/threadlines/pull/294" },
+    { number: 295, url: "https://github.com/threadlines/threadlines/pull/295" },
+  ];
+
+  it("draws each from the open listing, or as the thread recorded it, and never the thread's own", () => {
+    const resolved = resolveLinkedThreadPullRequests({
+      thread: thread({ linkedPullRequests: linked.map((pr) => ({ ...pr, autoMerge: null })) }),
+      ownNumber: 7,
+      projects: PROJECTS,
+      openEntries: [
+        entry({ number: 294, headBranch: "docs/lighter-pr-rules", url: linked[1]!.url }),
+        // The same number on a repository this project does not point at.
+        entry({ number: 295, repository: "other/repo", headBranch: "elsewhere" }),
+      ],
+    });
+
+    expect(resolved).toEqual([
+      expect.objectContaining({ number: 294, state: "open", headBranch: "docs/lighter-pr-rules" }),
+      {
+        number: 295,
+        state: "open",
+        isDraft: false,
+        title: "#295",
+        url: linked[2]!.url,
+        repository: "threadlines/threadlines",
+        settledAt: null,
+        autoMergeEnabled: false,
+        headBranch: null,
+        diffStat: null,
+      },
+    ]);
+  });
+});
+
+describe("resolveThreadPullRequestsSettledAt", () => {
+  const now = "2026-09-24T12:00:00.000Z";
+  const own: ThreadPullRequest = {
+    number: 7,
+    state: "merged",
+    isDraft: false,
+    title: "Own",
+    url: "https://github.com/threadlines/threadlines/pull/7",
+    repository: "threadlines/threadlines",
+    settledAt: "2026-09-24T09:00:00.000Z",
+    autoMergeEnabled: false,
+    headBranch: "feature/pull-requests",
+    diffStat: null,
+  };
+  const linkedThread = thread({
+    linkedPullRequests: [
+      { number: 294, url: "https://github.com/threadlines/threadlines/pull/294", autoMerge: null },
+    ],
+  });
+  const settledAt = (input: {
+    readonly own?: ThreadPullRequest;
+    readonly settledEntries?: readonly PullRequestEntry[];
+  }) =>
+    resolveThreadPullRequestsSettledAt({
+      thread: linkedThread,
+      own: input.own,
+      projects: PROJECTS,
+      settledEntries: input.settledEntries ?? [],
+      now,
+    });
+
+  it("waits for every pull request the thread has, then takes the last landing", () => {
+    // The linked one has not landed.
+    expect(settledAt({ own })).toBeNull();
+    // Both landed: the later of the two.
+    expect(
+      settledAt({
+        own,
+        settledEntries: [
+          entry({ number: 294, state: "merged", settledAt: "2026-09-24T10:30:00.000Z" }),
+        ],
+      }),
+    ).toBe("2026-09-24T10:30:00.000Z");
+    // A thread whose only pull request was opened elsewhere wraps up on its own.
+    expect(
+      settledAt({
+        settledEntries: [
+          entry({ number: 294, state: "closed", settledAt: "2026-09-24T10:30:00.000Z" }),
+        ],
+      }),
+    ).toBe("2026-09-24T10:30:00.000Z");
+    // Nothing settled yet is nothing to wrap up.
+    expect(settledAt({ own: { ...own, state: "open", settledAt: null } })).toBeNull();
   });
 });
 

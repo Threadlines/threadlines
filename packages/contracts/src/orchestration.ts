@@ -606,6 +606,22 @@ export const OrchestrationThreadDoneOverride = Schema.Struct({
 });
 export type OrchestrationThreadDoneOverride = typeof OrchestrationThreadDoneOverride.Type;
 
+/**
+ * A pull request this thread's agent opened on a branch other than the
+ * thread's own, in the project's repository: made from another checkout, then
+ * linked in the conversation. The pull request on the thread's own branch is
+ * never one of these; it is found from the branch.
+ */
+export const OrchestrationThreadLinkedPullRequest = Schema.Struct({
+  number: PositiveInt,
+  url: TrimmedNonEmptyString,
+  /** The same switch as `OrchestrationThreadShell.pullRequestAutoMerge`, held for this pull request. */
+  autoMerge: Schema.NullOr(PullRequestMergeMethod).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
+});
+export type OrchestrationThreadLinkedPullRequest = typeof OrchestrationThreadLinkedPullRequest.Type;
+
 export const OrchestrationCheckpointFile = Schema.Struct({
   path: TrimmedNonEmptyString,
   kind: TrimmedNonEmptyString,
@@ -781,6 +797,10 @@ export const OrchestrationThread = Schema.Struct({
   pullRequestAutoMerge: Schema.NullOr(PullRequestMergeMethod).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
   ),
+  /** See OrchestrationThreadShell.linkedPullRequests. */
+  linkedPullRequests: Schema.Array(OrchestrationThreadLinkedPullRequest).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
   /** See OrchestrationThreadShell.doneOverride. */
   doneOverride: Schema.NullOr(OrchestrationThreadDoneOverride).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
@@ -866,6 +886,15 @@ export const OrchestrationThreadShell = Schema.Struct({
    */
   pullRequestAutoMerge: Schema.NullOr(PullRequestMergeMethod).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
+  /**
+   * Pull requests the agent opened on other branches and linked in this
+   * thread, in the order they were found. Each can hold its own "Merge when
+   * checks pass"; the auto-fix watch stays with the thread's own pull request,
+   * the one its checkout can push to.
+   */
+  linkedPullRequests: Schema.Array(OrchestrationThreadLinkedPullRequest).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
   ),
   /**
    * The user's last explicit Mark done / Reopen for this thread, or null if
@@ -1106,11 +1135,16 @@ const ThreadUnpinCommand = Schema.Struct({
  * Arm or disarm the server's watches on this thread's pull request. See
  * `OrchestrationThreadShell.pullRequestAutoFix` and `pullRequestAutoMerge`.
  * A switch left out keeps the value it had.
+ *
+ * With `pullRequestNumber`, `autoMerge` is the switch of that linked pull
+ * request instead (see `linkedPullRequests`); the auto-fix watch has no such
+ * form, so `autoFix` is refused alongside it.
  */
 const ThreadPullRequestAutomationSetCommand = Schema.Struct({
   type: Schema.Literal("thread.pull-request-automation.set"),
   commandId: CommandId,
   threadId: ThreadId,
+  pullRequestNumber: Schema.optional(PositiveInt),
   autoFix: Schema.optional(Schema.Boolean),
   autoMerge: Schema.optional(Schema.NullOr(PullRequestMergeMethod)),
 });
@@ -1615,6 +1649,20 @@ const ThreadRevertCompleteCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+/**
+ * Add a pull request to the thread's `linkedPullRequests`. Dispatched by the
+ * server once it finds the agent linking a pull request it opened on another
+ * branch; refused for one the thread already has.
+ */
+const ThreadPullRequestLinkCommand = Schema.Struct({
+  type: Schema.Literal("thread.pull-request.link"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  number: PositiveInt,
+  url: TrimmedNonEmptyString,
+  createdAt: IsoDateTime,
+});
+
 const InternalOrchestrationCommand = Schema.Union([
   ThreadSessionSetCommand,
   ThreadRealtimeStateSetCommand,
@@ -1632,6 +1680,7 @@ const InternalOrchestrationCommand = Schema.Union([
   ThreadActivityAppendCommand,
   ThreadFollowUpAcceptCommand,
   ThreadRevertCompleteCommand,
+  ThreadPullRequestLinkCommand,
 ]);
 export type InternalOrchestrationCommand = typeof InternalOrchestrationCommand.Type;
 
@@ -1652,6 +1701,7 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.pinned",
   "thread.unpinned",
   "thread.pull-request-automation-changed",
+  "thread.pull-request-linked",
   "thread.done-override-set",
   "thread.seen-set",
   "thread.meta-updated",
@@ -1760,9 +1810,18 @@ export const ThreadUnpinnedPayload = Schema.Struct({
 /** A switch left out kept its value; events from before auto-merge carry only `autoFix`. */
 export const ThreadPullRequestAutomationChangedPayload = Schema.Struct({
   threadId: ThreadId,
+  /** Present when `autoMerge` belongs to this linked pull request. */
+  pullRequestNumber: Schema.optional(PositiveInt),
   autoFix: Schema.optional(Schema.Boolean),
   autoMerge: Schema.optional(Schema.NullOr(PullRequestMergeMethod)),
   updatedAt: IsoDateTime,
+});
+
+export const ThreadPullRequestLinkedPayload = Schema.Struct({
+  threadId: ThreadId,
+  number: PositiveInt,
+  url: TrimmedNonEmptyString,
+  linkedAt: IsoDateTime,
 });
 
 /** No `updatedAt`: filing a thread is not work on it. */
@@ -2044,6 +2103,11 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.pull-request-automation-changed"),
     payload: ThreadPullRequestAutomationChangedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.pull-request-linked"),
+    payload: ThreadPullRequestLinkedPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,

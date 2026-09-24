@@ -1,4 +1,39 @@
-import type { OrchestrationEvent, ThreadId } from "@threadlines/contracts";
+import type {
+  OrchestrationEvent,
+  OrchestrationThreadLinkedPullRequest,
+  PullRequestMergeMethod,
+  ThreadId,
+} from "@threadlines/contracts";
+
+/** A thread's server-held merge switches: its own, and each linked pull request's. */
+interface ThreadMergeSwitches {
+  readonly pullRequestAutoMerge?: PullRequestMergeMethod | null;
+  readonly linkedPullRequests?: readonly OrchestrationThreadLinkedPullRequest[];
+}
+
+/**
+ * Whether a server-held "Merge when checks pass" that was on is now off, for
+ * the thread's own pull request or a linked one. The shell stream reports a
+ * thread's new state rather than the event behind it, so the two states are
+ * compared; see `needsPullRequestInvalidation` for why it matters.
+ */
+export function serverMergeSwitchTurnedOff(
+  previous: ThreadMergeSwitches | undefined,
+  next: ThreadMergeSwitches,
+): boolean {
+  if (previous === undefined) {
+    return false;
+  }
+  if (previous.pullRequestAutoMerge != null && next.pullRequestAutoMerge == null) {
+    return true;
+  }
+  return (previous.linkedPullRequests ?? []).some(
+    (linked) =>
+      linked.autoMerge !== null &&
+      (next.linkedPullRequests ?? []).find((other) => other.number === linked.number)?.autoMerge ==
+        null,
+  );
+}
 
 export interface OrchestrationBatchEffects {
   promoteDraftThreadIds: ThreadId[];

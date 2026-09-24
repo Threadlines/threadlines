@@ -29,11 +29,13 @@ export async function setThreadPullRequestAutoFix(
  * Ask the server to merge this thread's pull request, by `mergeMethod`, once
  * its checks pass; null takes the request back. This is for a host that cannot
  * hold the instruction itself, and like the auto-fix watch it only runs while
- * the server does.
+ * the server does. With `pullRequestNumber` it is the switch of that linked
+ * pull request instead of the one on the thread's own branch.
  */
 export async function setThreadPullRequestAutoMerge(
   threadRef: ScopedThreadRef,
   mergeMethod: PullRequestMergeMethod | null,
+  pullRequestNumber: number | null = null,
 ): Promise<void> {
   const api = readEnvironmentApi(threadRef.environmentId);
   if (!api) return;
@@ -41,6 +43,7 @@ export async function setThreadPullRequestAutoMerge(
     type: "thread.pull-request-automation.set",
     commandId: newCommandId(),
     threadId: threadRef.threadId,
+    ...(pullRequestNumber === null ? {} : { pullRequestNumber }),
     autoMerge: mergeMethod,
   });
 }

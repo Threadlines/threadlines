@@ -136,6 +136,36 @@ function failingCheckNames(detail: PullRequestDetail): ReadonlySet<string> {
   );
 }
 
+/** A thread the watcher has something to do for, and where its pull requests live. */
+interface SweepCandidate {
+  readonly thread: OrchestrationThreadShell;
+  readonly project: OrchestrationProjectShell;
+  readonly repository: string;
+}
+
+/** Where the thread's agent works, which is where its unpushed commits are. */
+function threadWorkingCwd({ thread, project }: SweepCandidate): string {
+  return resolveThreadWorkingCwd({
+    projectCwd: project.workspaceRoot,
+    worktreePath: thread.worktreePath,
+    effectiveCwd: thread.effectiveCwd,
+  });
+}
+
+/**
+ * The merge switch one watch acts on: the thread's own, for the pull request
+ * on its branch, or a linked pull request's, by number.
+ */
+function autoMergeSwitchOf(
+  thread: Pick<OrchestrationThreadShell, "pullRequestAutoMerge" | "linkedPullRequests">,
+  pullRequestNumber: number | null,
+): PullRequestMergeMethod | null {
+  return pullRequestNumber === null
+    ? thread.pullRequestAutoMerge
+    : (thread.linkedPullRequests.find((linked) => linked.number === pullRequestNumber)?.autoMerge ??
+        null);
+}
+
 /**
  * Where a pull request stands after a merge that did not come back merged,
  * read again rather than taken as a failure. Another environment may have
@@ -236,13 +266,17 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
         return started;
       });
 
-    /** Turns "Merge when checks pass" off, the same way the thread's own switch does. */
-    const disarmAutoMerge = (threadId: ThreadId) =>
+    /**
+     * Turns "Merge when checks pass" off, the same way the composer's switch
+     * does: the thread's own (`pullRequestNumber` null) or a linked pull request's.
+     */
+    const disarmAutoMerge = (threadId: ThreadId, pullRequestNumber: number | null) =>
       orchestrationEngine
         .dispatch({
           type: "thread.pull-request-automation.set",
           commandId: CommandId.make(`pull-request-auto-merge:${threadId}:${randomUUID()}`),
           threadId,
+          ...(pullRequestNumber === null ? {} : { pullRequestNumber }),
           autoMerge: null,
         })
         .pipe(
@@ -308,6 +342,8 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
         readonly unpushedCommits: number;
         /** The auto-fix watch is on and still has turns left to fix a failure. */
         readonly autoFix: boolean;
+        /** Whose switch this is: null for the thread's own branch, else a linked pull request's. */
+        readonly pullRequestNumber: number | null;
       }) {
         const { thread, detail } = input;
         const number = input.reference.number;
@@ -322,7 +358,7 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
           return false;
         }
         if (step.kind === "stop") {
-          yield* disarmAutoMerge(thread.id);
+          yield* disarmAutoMerge(thread.id, input.pullRequestNumber);
           // A pull request merged or closed by someone else is not news.
           if (detail.state === "open") {
             yield* appendAutoMergeActivity({
@@ -349,7 +385,7 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
         if (
           latest === null ||
           Option.isNone(latest) ||
-          latest.value.pullRequestAutoMerge === null ||
+          autoMergeSwitchOf(latest.value, input.pullRequestNumber) === null ||
           hasWorkInProgress(latest.value)
         ) {
           return false;
@@ -379,7 +415,7 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
                   pullRequestService.detail({ ...input.reference, force: true }),
                 ),
               );
-        yield* disarmAutoMerge(thread.id);
+        yield* disarmAutoMerge(thread.id, input.pullRequestNumber);
         if (landing === "merged") {
           yield* Effect.logInfo("pull-request.auto-merge.merged", { threadId: thread.id, number });
           yield* appendAutoMergeActivity({
@@ -429,167 +465,240 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
     );
 
     /**
-     * One candidate thread. Answers whether it started a turn, and leaves the
-     * baseline holding what its pull request looks like now.
+     * The pull request on the thread's own branch. Answers whether it started a
+     * turn, and leaves the baseline holding what the pull request looks like now.
      */
-    const sweepThread = Effect.fn("PullRequestAutomationWatcher.sweepThread")(function* (input: {
-      readonly thread: OrchestrationThreadShell;
-      readonly project: OrchestrationProjectShell;
-      readonly repository: string;
-    }) {
-      const { thread, project, repository } = input;
-      const cwd = resolveThreadWorkingCwd({
-        projectCwd: project.workspaceRoot,
-        worktreePath: thread.worktreePath,
-        effectiveCwd: thread.effectiveCwd,
-      });
+    const sweepOwnPullRequest = Effect.fn("PullRequestAutomationWatcher.sweepOwnPullRequest")(
+      function* (input: SweepCandidate) {
+        const { thread, project, repository } = input;
+        const cwd = threadWorkingCwd(input);
 
-      const remote = yield* attempt("status-read", thread.id, gitManager.remoteStatus({ cwd }));
-      if (remote === null || remote.pr === null) {
-        return false;
-      }
-      const pullRequest = remote.pr;
-      const autoMerge = thread.pullRequestAutoMerge;
-      if (pullRequest.state !== "open") {
-        // Merged or closed some other way: the instruction has nothing left
-        // to act on, and must not carry over to the next pull request.
-        if (autoMerge !== null) {
-          yield* disarmAutoMerge(thread.id);
+        const remote = yield* attempt("status-read", thread.id, gitManager.remoteStatus({ cwd }));
+        if (remote === null || remote.pr === null) {
+          return false;
         }
-        return false;
-      }
+        const pullRequest = remote.pr;
+        const autoMerge = thread.pullRequestAutoMerge;
+        if (pullRequest.state !== "open") {
+          // Merged or closed some other way: the instruction has nothing left
+          // to act on, and must not carry over to the next pull request.
+          if (autoMerge !== null) {
+            yield* disarmAutoMerge(thread.id, null);
+          }
+          return false;
+        }
 
-      const key = pairKey(thread.id, pullRequest.number);
-      const turnCount = yield* Ref.get(turnCountsRef).pipe(
-        Effect.map((counts) => counts.get(key) ?? 0),
-      );
-      const autoFixCapped =
-        thread.pullRequestAutoFix && turnCount >= MAX_AUTO_TURNS_PER_PULL_REQUEST;
-      if (autoFixCapped) {
-        const alreadyLogged = yield* Ref.modify(cappedLoggedRef, (logged) => {
-          const seen = logged.has(key);
-          logged.add(key);
-          return [seen, logged];
-        });
-        if (!alreadyLogged) {
-          yield* Effect.logWarning("pull-request.auto-fix.cap-reached", {
-            threadId: thread.id,
-            number: pullRequest.number,
-            cap: MAX_AUTO_TURNS_PER_PULL_REQUEST,
+        const key = pairKey(thread.id, pullRequest.number);
+        const turnCount = yield* Ref.get(turnCountsRef).pipe(
+          Effect.map((counts) => counts.get(key) ?? 0),
+        );
+        const autoFixCapped =
+          thread.pullRequestAutoFix && turnCount >= MAX_AUTO_TURNS_PER_PULL_REQUEST;
+        if (autoFixCapped) {
+          const alreadyLogged = yield* Ref.modify(cappedLoggedRef, (logged) => {
+            const seen = logged.has(key);
+            logged.add(key);
+            return [seen, logged];
           });
+          if (!alreadyLogged) {
+            yield* Effect.logWarning("pull-request.auto-fix.cap-reached", {
+              threadId: thread.id,
+              number: pullRequest.number,
+              cap: MAX_AUTO_TURNS_PER_PULL_REQUEST,
+            });
+          }
         }
-      }
-      const autoFixActive = thread.pullRequestAutoFix && !autoFixCapped;
-      if (!autoFixActive && autoMerge === null) {
-        return false;
-      }
+        const autoFixActive = thread.pullRequestAutoFix && !autoFixCapped;
+        if (!autoFixActive && autoMerge === null) {
+          return false;
+        }
 
-      const reference = {
-        projectId: project.id,
-        repository,
-        number: pullRequest.number,
-        force: true,
-      } as const;
-      const detail = yield* attempt("detail-read", thread.id, pullRequestService.detail(reference));
-      if (detail === null) {
-        return false;
-      }
+        const reference = {
+          projectId: project.id,
+          repository,
+          number: pullRequest.number,
+          force: true,
+        } as const;
+        const detail = yield* attempt(
+          "detail-read",
+          thread.id,
+          pullRequestService.detail(reference),
+        );
+        if (detail === null) {
+          return false;
+        }
 
-      if (autoMerge !== null) {
-        const merged = yield* sweepAutoMerge({
+        if (autoMerge !== null) {
+          const merged = yield* sweepAutoMerge({
+            thread,
+            reference,
+            detail,
+            mergeMethod: autoMerge,
+            unpushedCommits: remote.aheadCount,
+            autoFix: autoFixActive,
+            pullRequestNumber: null,
+          });
+          if (merged) {
+            return false;
+          }
+        }
+        if (!autoFixActive) {
+          return false;
+        }
+
+        const activity = yield* attempt(
+          "activity-read",
+          thread.id,
+          pullRequestService.activity(reference),
+        );
+        if (activity === null) {
+          return false;
+        }
+
+        const currentFailing = failingCheckNames(detail);
+        const comments = listActivityComments(activity);
+        const commentIds = new Set(comments.map((comment) => comment.id));
+        const baseline = yield* Ref.get(baselinesRef).pipe(Effect.map((map) => map.get(key)));
+
+        // First sight of this pull request, whether because the server just
+        // started or because the switch just came on. Record it and act on what
+        // happens next, not on what was already there.
+        if (baseline === undefined) {
+          yield* Ref.update(baselinesRef, (map) =>
+            map.set(key, { failingCheckNames: currentFailing, commentIds }),
+          );
+          return false;
+        }
+
+        // A check that has stopped failing leaves the baseline, so the same check
+        // failing again after a push is news again.
+        const carriedFailing = new Set(
+          [...baseline.failingCheckNames].filter((name) => currentFailing.has(name)),
+        );
+        // A rollup still running is not a verdict: wait for it rather than send
+        // the agent after a check that may pass on its own.
+        const newlyFailing: PullRequestAutoFixCheck[] =
+          detail.checksState === "pending"
+            ? []
+            : detail.checks
+                .filter((check) => check.status === "failure" && !carriedFailing.has(check.name))
+                .map((check) => ({ name: check.name, url: check.url }));
+        const newComments: PullRequestAutoFixComment[] = comments
+          .filter((comment) => !comment.viewerIsAuthor && !baseline.commentIds.has(comment.id))
+          .map((comment) => ({ author: comment.author, body: comment.body }));
+
+        const text = buildPullRequestAutoFixPrompt({
+          number: pullRequest.number,
+          repository,
+          failingChecks: newlyFailing,
+          comments: newComments,
+        });
+        if (text === null) {
+          // Nothing new. Keep the checks that are still failing, and remember
+          // every remark, the viewer's own included, so none of them fires later.
+          yield* Ref.update(baselinesRef, (map) =>
+            map.set(key, { failingCheckNames: carriedFailing, commentIds }),
+          );
+          return false;
+        }
+
+        const started = yield* startTurn({
+          thread,
+          number: pullRequest.number,
+          text,
+          trigger:
+            newlyFailing.length > 0 && newComments.length > 0
+              ? "checks-and-comments"
+              : newlyFailing.length > 0
+                ? "checks"
+                : "comments",
+        });
+        // The baseline advances either way: a dispatch the engine refused is not
+        // one to retry every two minutes.
+        yield* Ref.update(baselinesRef, (map) =>
+          map.set(key, {
+            failingCheckNames: newlyFailing.length > 0 ? currentFailing : carriedFailing,
+            commentIds,
+          }),
+        );
+        if (started) {
+          yield* Ref.update(turnCountsRef, (counts) => counts.set(key, turnCount + 1));
+        }
+        return started;
+      },
+    );
+
+    /**
+     * "Merge when checks pass" for the pull requests the agent opened on other
+     * branches. The thread's checkout is not on those branches, so there are no
+     * unpushed commits to count and no auto-fix to run; otherwise it is the
+     * same rule as for the thread's own pull request.
+     */
+    const sweepLinkedPullRequests = Effect.fn(
+      "PullRequestAutomationWatcher.sweepLinkedPullRequests",
+    )(function* (candidate: SweepCandidate) {
+      const { thread, project, repository } = candidate;
+      for (const linked of thread.linkedPullRequests) {
+        if (linked.autoMerge === null) {
+          continue;
+        }
+        const reference = {
+          projectId: project.id,
+          repository,
+          number: linked.number,
+          force: true,
+        } as const;
+        const detail = yield* attempt(
+          "detail-read",
+          thread.id,
+          pullRequestService.detail(reference),
+        );
+        if (detail === null) {
+          continue;
+        }
+        if (detail.state !== "open") {
+          // Merged or closed some other way: nothing is left to act on.
+          yield* disarmAutoMerge(thread.id, linked.number);
+          continue;
+        }
+        // One linked from another branch becomes the thread's own when the
+        // thread moves onto that branch. Its checkout can then hold commits for
+        // it that are not pushed yet, and a checkout that cannot be read is no
+        // answer, so the merge waits.
+        const unpushedCommits =
+          thread.branch !== null && detail.headBranch === thread.branch
+            ? ((yield* attempt(
+                "status-read",
+                thread.id,
+                gitManager.remoteStatus({ cwd: threadWorkingCwd(candidate) }),
+              ))?.aheadCount ?? null)
+            : 0;
+        if (unpushedCommits === null) {
+          continue;
+        }
+        yield* sweepAutoMerge({
           thread,
           reference,
           detail,
-          mergeMethod: autoMerge,
-          unpushedCommits: remote.aheadCount,
-          autoFix: autoFixActive,
+          mergeMethod: linked.autoMerge,
+          unpushedCommits,
+          autoFix: false,
+          pullRequestNumber: linked.number,
         });
-        if (merged) {
-          return false;
-        }
       }
-      if (!autoFixActive) {
-        return false;
-      }
+    });
 
-      const activity = yield* attempt(
-        "activity-read",
-        thread.id,
-        pullRequestService.activity(reference),
-      );
-      if (activity === null) {
-        return false;
-      }
-
-      const currentFailing = failingCheckNames(detail);
-      const comments = listActivityComments(activity);
-      const commentIds = new Set(comments.map((comment) => comment.id));
-      const baseline = yield* Ref.get(baselinesRef).pipe(Effect.map((map) => map.get(key)));
-
-      // First sight of this pull request, whether because the server just
-      // started or because the switch just came on. Record it and act on what
-      // happens next, not on what was already there.
-      if (baseline === undefined) {
-        yield* Ref.update(baselinesRef, (map) =>
-          map.set(key, { failingCheckNames: currentFailing, commentIds }),
-        );
-        return false;
-      }
-
-      // A check that has stopped failing leaves the baseline, so the same check
-      // failing again after a push is news again.
-      const carriedFailing = new Set(
-        [...baseline.failingCheckNames].filter((name) => currentFailing.has(name)),
-      );
-      // A rollup still running is not a verdict: wait for it rather than send
-      // the agent after a check that may pass on its own.
-      const newlyFailing: PullRequestAutoFixCheck[] =
-        detail.checksState === "pending"
-          ? []
-          : detail.checks
-              .filter((check) => check.status === "failure" && !carriedFailing.has(check.name))
-              .map((check) => ({ name: check.name, url: check.url }));
-      const newComments: PullRequestAutoFixComment[] = comments
-        .filter((comment) => !comment.viewerIsAuthor && !baseline.commentIds.has(comment.id))
-        .map((comment) => ({ author: comment.author, body: comment.body }));
-
-      const text = buildPullRequestAutoFixPrompt({
-        number: pullRequest.number,
-        repository,
-        failingChecks: newlyFailing,
-        comments: newComments,
-      });
-      if (text === null) {
-        // Nothing new. Keep the checks that are still failing, and remember
-        // every remark, the viewer's own included, so none of them fires later.
-        yield* Ref.update(baselinesRef, (map) =>
-          map.set(key, { failingCheckNames: carriedFailing, commentIds }),
-        );
-        return false;
-      }
-
-      const started = yield* startTurn({
-        thread,
-        number: pullRequest.number,
-        text,
-        trigger:
-          newlyFailing.length > 0 && newComments.length > 0
-            ? "checks-and-comments"
-            : newlyFailing.length > 0
-              ? "checks"
-              : "comments",
-      });
-      // The baseline advances either way: a dispatch the engine refused is not
-      // one to retry every two minutes.
-      yield* Ref.update(baselinesRef, (map) =>
-        map.set(key, {
-          failingCheckNames: newlyFailing.length > 0 ? currentFailing : carriedFailing,
-          commentIds,
-        }),
-      );
-      if (started) {
-        yield* Ref.update(turnCountsRef, (counts) => counts.set(key, turnCount + 1));
-      }
+    /** One candidate thread. Answers whether it started an auto-fix turn. */
+    const sweepThread = Effect.fn("PullRequestAutomationWatcher.sweepThread")(function* (
+      candidate: SweepCandidate,
+    ) {
+      const { thread } = candidate;
+      // The thread's own pull request is the one on its branch, so a thread
+      // with no branch has only linked ones.
+      const ownArmed = thread.pullRequestAutoFix || thread.pullRequestAutoMerge !== null;
+      const started =
+        thread.branch !== null && ownArmed ? yield* sweepOwnPullRequest(candidate) : false;
+      yield* sweepLinkedPullRequests(candidate);
       return started;
     });
 
@@ -627,11 +736,14 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
         return map;
       });
 
-      // Deleted threads never reach the shell snapshot, so archived, unbranched
-      // and busy are the only ones left to rule out here.
-      const candidates = snapshot.threads.flatMap((thread) => {
-        const armed = thread.pullRequestAutoFix || thread.pullRequestAutoMerge !== null;
-        if (!armed || thread.archivedAt !== null || thread.branch === null) {
+      // Deleted threads never reach the shell snapshot, so archived and busy
+      // are the only ones left to rule out here.
+      const candidates = snapshot.threads.flatMap((thread): SweepCandidate[] => {
+        const armed =
+          thread.pullRequestAutoFix ||
+          thread.pullRequestAutoMerge !== null ||
+          thread.linkedPullRequests.some((linked) => linked.autoMerge !== null);
+        if (!armed || thread.archivedAt !== null) {
           return [];
         }
         // Busy is also "not yet" for a merge: the agent may be about to push.
