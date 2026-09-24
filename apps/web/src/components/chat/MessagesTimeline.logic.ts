@@ -123,13 +123,31 @@ export interface StableMessagesTimelineRowsState {
   result: MessagesTimelineRow[];
 }
 
+/**
+ * When each message's elapsed time starts: the latest user message, turn
+ * request, or completed assistant reply before it. `turnRequestedAts` (sorted
+ * ISO times) covers turns that start without a user message of their own,
+ * such as Retry; without them a retried reply would be timed from the end of
+ * the reply before it.
+ */
 export function computeMessageDurationStart(
   messages: ReadonlyArray<TimelineDurationMessage>,
+  turnRequestedAts: ReadonlyArray<string> = [],
 ): Map<string, string> {
   const result = new Map<string, string>();
   let lastBoundary: string | null = null;
+  let nextTurnRequest = 0;
 
   for (const message of messages) {
+    for (
+      let requestedAt = turnRequestedAts[nextTurnRequest];
+      requestedAt !== undefined && requestedAt <= message.createdAt;
+      requestedAt = turnRequestedAts[++nextTurnRequest]
+    ) {
+      if (lastBoundary === null || requestedAt > lastBoundary) {
+        lastBoundary = requestedAt;
+      }
+    }
     if (message.role === "user") {
       lastBoundary = message.createdAt;
     }
@@ -296,8 +314,17 @@ export function deriveMessagesTimelineRows(input: {
     deriveVisibleTimelineEntries(input),
     input.isWorking ? (input.activeTurnId ?? null) : null,
   );
+  // Turn-request markers are hidden once a turn settles, so read them from
+  // the full entry list rather than the visible one.
   const durationStartByMessageId = computeMessageDurationStart(
     visibleTimelineEntries.flatMap((entry) => (entry.kind === "message" ? [entry.message] : [])),
+    input.timelineEntries
+      .flatMap((entry) =>
+        entry.kind === "work" && entry.entry.providerLifecyclePhase === "preparing"
+          ? [entry.createdAt]
+          : [],
+      )
+      .toSorted(),
   );
   const terminalAssistantMessageIds = deriveTerminalAssistantMessageIds(visibleTimelineEntries);
   const modelFallbackByTurn = deriveModelFallbackByTurn(visibleTimelineEntries);
