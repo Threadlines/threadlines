@@ -772,10 +772,11 @@ function findNumberedListEntry(
 
 /**
  * The pull requests a thread's agent opened on other branches (its
- * `linkedPullRequests`), as the composer rows and the Pull request tab draw
- * them: what the open listing knows about each, or until it knows anything,
- * the number and address the thread recorded, read as open. The thread's own
- * pull request is left out however it came to be linked; it has its row.
+ * `linkedPullRequests`), as the composer rows, the Pull request tab and the
+ * sidebar tag draw them: what the listings know about each, or until they know
+ * anything, the number and address the thread recorded, read as open. The
+ * thread's own pull request is left out however it came to be linked; it is
+ * found from the branch.
  */
 export function resolveLinkedThreadPullRequests(input: {
   readonly thread: Pick<ThreadPullRequestSubject, "environmentId" | "projectId"> & {
@@ -786,6 +787,8 @@ export function resolveLinkedThreadPullRequests(input: {
   readonly ownNumber: number | null;
   readonly projects: readonly Project[];
   readonly openEntries: readonly PullRequestEntry[];
+  /** Merged and closed rows, consulted only when the open ones say nothing. */
+  readonly settledEntries?: readonly PullRequestEntry[];
 }): ThreadPullRequest[] {
   const linked = (input.thread.linkedPullRequests ?? []).filter(
     (candidate) => candidate.number !== input.ownNumber,
@@ -800,7 +803,8 @@ export function resolveLinkedThreadPullRequests(input: {
     const entry =
       scope === null
         ? undefined
-        : findNumberedListEntry(scope, candidate.number, input.openEntries);
+        : (findNumberedListEntry(scope, candidate.number, input.openEntries) ??
+          findNumberedListEntry(scope, candidate.number, input.settledEntries ?? []));
     return entry
       ? threadPullRequestFromEntry(entry)
       : {
@@ -816,6 +820,50 @@ export function resolveLinkedThreadPullRequests(input: {
           diffStat: null,
         };
   });
+}
+
+/**
+ * A thread's pull request as its checkout's status reads it, with the landing
+ * date a listing row for the same pull request has. The status is first to see
+ * a merge but carries no dates, and `leadThreadPullRequest` ranks by landing.
+ */
+export function withListedLanding(
+  pullRequest: ThreadPullRequest,
+  listed: ThreadPullRequest | null,
+): ThreadPullRequest {
+  return pullRequest.state !== "open" &&
+    pullRequest.settledAt === null &&
+    listed?.number === pullRequest.number &&
+    listed.settledAt !== null
+    ? { ...pullRequest, settledAt: listed.settledAt }
+    : pullRequest;
+}
+
+/**
+ * The one of a thread's pull requests that speaks for all of them, where there
+ * is room for one: the sidebar's tag, and the Pull request tab until something
+ * else is chosen. One still open comes first, since it is the one that still
+ * needs something; among those, the order given (the thread's own, then the
+ * ones its agent opened elsewhere). Once all have landed, the one that landed
+ * last, which is the latest news. An undated landing (read from the checkout's
+ * status before any listing caught up with it, see `withListedLanding`) counts
+ * as just now, as it does for the thread's wrap-up, and a tie keeps the order
+ * given.
+ */
+export function leadThreadPullRequest<T extends Pick<ThreadPullRequest, "state" | "settledAt">>(
+  pullRequests: readonly T[],
+): T | null {
+  const open = pullRequests.find((pullRequest) => pullRequest.state === "open");
+  if (open !== undefined) {
+    return open;
+  }
+  const landedMs = (pullRequest: T) =>
+    pullRequest.settledAt === null ? Number.POSITIVE_INFINITY : updatedAtMs(pullRequest.settledAt);
+  return pullRequests.reduce<T | null>(
+    (latest, pullRequest) =>
+      latest === null || landedMs(pullRequest) > landedMs(latest) ? pullRequest : latest,
+    null,
+  );
 }
 
 /**

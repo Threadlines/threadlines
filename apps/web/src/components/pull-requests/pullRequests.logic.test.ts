@@ -49,11 +49,13 @@ import {
   resolvePullRequestReviewPosition,
   sortPullRequests,
   summarizePullRequestChecks,
+  leadThreadPullRequest,
   resolveLinkedThreadPullRequests,
   resolveThreadPullRequest,
   resolveThreadPullRequestsSettledAt,
   shouldPollPullRequestDetail,
   threadViewBranch,
+  withListedLanding,
   type PullRequestDiffFile,
   type PullRequestEntry,
   type ThreadPullRequest,
@@ -634,6 +636,81 @@ describe("resolveLinkedThreadPullRequests", () => {
         diffStat: null,
       },
     ]);
+  });
+
+  it("reads one that has landed from the merged or closed listing", () => {
+    const resolved = resolveLinkedThreadPullRequests({
+      thread: thread({ linkedPullRequests: linked.map((pr) => ({ ...pr, autoMerge: null })) }),
+      ownNumber: 7,
+      projects: PROJECTS,
+      openEntries: [entry({ number: 294, url: linked[1]!.url })],
+      settledEntries: [
+        entry({ number: 295, state: "merged", settledAt: "2026-09-24T10:30:00.000Z" }),
+      ],
+    });
+
+    expect(resolved.map(({ number, state, settledAt }) => ({ number, state, settledAt }))).toEqual([
+      { number: 294, state: "open", settledAt: null },
+      { number: 295, state: "merged", settledAt: "2026-09-24T10:30:00.000Z" },
+    ]);
+  });
+});
+
+describe("leadThreadPullRequest", () => {
+  const pr = (
+    number: number,
+    state: ThreadPullRequest["state"],
+    settledAt: string | null = null,
+  ) => ({
+    number,
+    state,
+    settledAt,
+  });
+
+  it("names the first one still open, and otherwise the last to land", () => {
+    const ownMerged = pr(7, "merged", "2026-09-24T09:00:00.000Z");
+    expect(leadThreadPullRequest([ownMerged, pr(294, "open"), pr(295, "open")])?.number).toBe(294);
+    expect(
+      leadThreadPullRequest([ownMerged, pr(294, "closed", "2026-09-24T10:30:00.000Z")])?.number,
+    ).toBe(294);
+    // The checkout's own status dates nothing, so its landing counts as just now.
+    expect(
+      leadThreadPullRequest([pr(7, "merged"), pr(294, "merged", "2026-09-24T10:30:00.000Z")])
+        ?.number,
+    ).toBe(7);
+    expect(leadThreadPullRequest([])).toBeNull();
+  });
+});
+
+describe("withListedLanding", () => {
+  const fromStatus: ThreadPullRequest = {
+    number: 7,
+    state: "merged",
+    isDraft: false,
+    title: "Own",
+    url: "https://github.com/threadlines/threadlines/pull/7",
+    repository: "threadlines/threadlines",
+    settledAt: null,
+    autoMergeEnabled: false,
+    headBranch: "feature/pull-requests",
+    diffStat: null,
+  };
+  const listed: ThreadPullRequest = { ...fromStatus, settledAt: "2026-09-17T09:00:00.000Z" };
+
+  it("dates the checkout's read of a landing from the listing's row for it", () => {
+    const dated = withListedLanding(fromStatus, listed);
+    expect(dated.settledAt).toBe("2026-09-17T09:00:00.000Z");
+    // Landed a week before a linked one, so the linked one is the latest news.
+    expect(
+      leadThreadPullRequest([
+        dated,
+        { number: 294, state: "merged", settledAt: "2026-09-24T10:30:00.000Z" },
+      ])?.number,
+    ).toBe(294);
+    // Another pull request's row, or one the status still reads as open, dates nothing.
+    expect(withListedLanding(fromStatus, { ...listed, number: 8 }).settledAt).toBeNull();
+    expect(withListedLanding({ ...fromStatus, state: "open" }, listed).settledAt).toBeNull();
+    expect(withListedLanding(fromStatus, null)).toBe(fromStatus);
   });
 });
 

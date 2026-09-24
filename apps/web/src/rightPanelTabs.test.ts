@@ -13,6 +13,7 @@ import {
   hideRightPanelState,
   isRightPanelClosedInSearch,
   moveRightPanelTabState,
+  pullRequestTabSearchParams,
   reconcileRightPanelTabsState,
   retargetRightPanelDiffState,
   rightPanelTabSearchParams,
@@ -111,6 +112,15 @@ describe("rightPanelTabSearchParams", () => {
     expect(rightPanelTabSearchParams({}, "diff", { diffMode: "workingTree" })).toMatchObject({
       diff: "1",
       diffMode: "workingTree",
+    });
+  });
+
+  it("carries the pull request tab's target until another tab is picked", () => {
+    const onPullRequest = pullRequestTabSearchParams({ keep: "yes" }, 294);
+    expect(onPullRequest).toMatchObject({ keep: "yes", pullRequest: "1", pullRequestNumber: 294 });
+    expect(rightPanelTabSearchParams(onPullRequest, "agents")).toMatchObject({
+      pullRequest: "0",
+      pullRequestNumber: undefined,
     });
   });
 

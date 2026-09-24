@@ -128,6 +128,7 @@ import {
   usePullRequestLists,
 } from "../lib/pullRequestsReactQuery";
 import {
+  resolveLinkedThreadPullRequests,
   resolveThreadPullRequest,
   resolveThreadPullRequestsSettledAt,
   type ThreadPullRequest,
@@ -152,6 +153,8 @@ import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
 import { CommandDialogTrigger } from "./ui/command";
 
 const EMPTY_THREAD_JUMP_LABELS = new Map<string, string>();
+/** One empty list for every row with no linked pull requests, so it never reads as a change. */
+const NO_PULL_REQUESTS: readonly ThreadPullRequest[] = [];
 /** How many quiet live rows rest unfolded; rows needing you are never folded. */
 const LIVE_PREVIEW_COUNT = 6;
 /** Each click on the reveal row uncovers this many more. */
@@ -652,6 +655,34 @@ export default function Sidebar() {
     }
     return byThreadKey;
   }, [inboxThreads, openPullRequests.entries, projects, settledPullRequestEntries]);
+  // The pull requests each thread's agent opened on other branches, from the
+  // same listings. A row's tag shows one pull request and counts the rest.
+  const linkedPullRequestsByThreadKey = useMemo(() => {
+    const byThreadKey = new Map<string, readonly ThreadPullRequest[]>();
+    for (const thread of inboxThreads) {
+      if ((thread.linkedPullRequests?.length ?? 0) === 0) {
+        continue;
+      }
+      const threadKey = scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
+      const linked = resolveLinkedThreadPullRequests({
+        thread,
+        ownNumber: pullRequestByThreadKey.get(threadKey)?.number ?? null,
+        projects,
+        openEntries: openPullRequests.entries,
+        settledEntries: settledPullRequestEntries,
+      });
+      if (linked.length > 0) {
+        byThreadKey.set(threadKey, linked);
+      }
+    }
+    return byThreadKey;
+  }, [
+    inboxThreads,
+    openPullRequests.entries,
+    projects,
+    pullRequestByThreadKey,
+    settledPullRequestEntries,
+  ]);
 
   const entries = useMemo<InboxEntry[]>(
     () =>
@@ -1027,7 +1058,11 @@ export default function Sidebar() {
    * that somewhere else.
    */
   const openPrLink = useCallback(
-    (event: React.MouseEvent<HTMLElement>, prUrl: string, threadRef: ScopedThreadRef) => {
+    (
+      event: React.MouseEvent<HTMLElement>,
+      pullRequest: Pick<ThreadPullRequest, "number" | "url">,
+      threadRef: ScopedThreadRef,
+    ) => {
       event.preventDefault();
       event.stopPropagation();
 
@@ -1038,7 +1073,7 @@ export default function Sidebar() {
         void navigate({
           to: "/$environmentId/$threadId",
           params: buildThreadRouteParams(threadRef),
-          search: { pullRequest: "1" },
+          search: { pullRequest: "1", pullRequestNumber: pullRequest.number },
         });
         return;
       }
@@ -1049,7 +1084,7 @@ export default function Sidebar() {
         return;
       }
 
-      void api.shell.openExternal(prUrl).catch((error) => {
+      void api.shell.openExternal(pullRequest.url).catch((error) => {
         toastManager.add(
           stackedThreadToast({
             type: "error",
@@ -1768,6 +1803,9 @@ export default function Sidebar() {
                           cancelRename={cancelRename}
                           markThreadDone={markThreadDone}
                           listPullRequest={pullRequestByThreadKey.get(entry.threadKey) ?? null}
+                          linkedPullRequests={
+                            linkedPullRequestsByThreadKey.get(entry.threadKey) ?? NO_PULL_REQUESTS
+                          }
                           openPrLink={openPrLink}
                         />
                       ))}
@@ -1857,6 +1895,9 @@ export default function Sidebar() {
                             reopenThread={reopenThread}
                             attemptArchiveThread={attemptArchiveThread}
                             listPullRequest={pullRequestByThreadKey.get(entry.threadKey) ?? null}
+                            linkedPullRequests={
+                              linkedPullRequestsByThreadKey.get(entry.threadKey) ?? NO_PULL_REQUESTS
+                            }
                             openPrLink={openPrLink}
                           />
                         ))}

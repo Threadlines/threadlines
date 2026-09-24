@@ -41,6 +41,7 @@ import {
 } from "../lib/threadPullRequestCommands";
 import {
   PULL_REQUEST_COUNT_REFETCH_INTERVAL_MS,
+  PULL_REQUEST_SETTLED_REFETCH_INTERVAL_MS,
   usePullRequestLists,
 } from "../lib/pullRequestsReactQuery";
 import { LazyPullRequestDetailPanel } from "../components/pull-requests/LazyPullRequestDetailPanel";
@@ -55,9 +56,11 @@ import {
   useDismissedComposerPullRequests,
 } from "../components/chat/composerPullRequestDismissals";
 import {
+  leadThreadPullRequest,
   resolveLinkedThreadPullRequests,
   resolveThreadPullRequest,
   threadViewBranch,
+  withListedLanding,
   type ThreadPullRequest,
 } from "../components/pull-requests/pullRequests.logic";
 import { ThreadPullRequestSwitcher } from "../components/pull-requests/ThreadPullRequestSwitcher";
@@ -80,6 +83,7 @@ import {
   isRightPanelClosedInSearch,
   useReconciledRightPanelTabs,
   moveRightPanelTab,
+  pullRequestTabSearchParams,
   retargetRightPanelDiff,
   rightPanelDiffTargetFromSearch,
   rightPanelTabSearchParams,
@@ -336,32 +340,67 @@ function ChatThreadRouteView() {
       pullRequestTabAvailable && threadBranch ? (threadRef?.environmentId ?? null) : null,
     cwd: pullRequestTabAvailable && threadBranch ? (sourceControlTarget?.cwd ?? null) : null,
   });
+  const threadHasLinkedPullRequests = (serverThread?.linkedPullRequests?.length ?? 0) > 0;
   const openPullRequests = usePullRequestLists({
     state: "open",
     refetchIntervalMs: PULL_REQUEST_COUNT_REFETCH_INTERVAL_MS,
-    enabled:
-      pullRequestTabAvailable &&
-      (threadBranch !== null || (serverThread?.linkedPullRequests?.length ?? 0) > 0),
+    enabled: pullRequestTabAvailable && (threadBranch !== null || threadHasLinkedPullRequests),
   });
+  // Where a linked pull request has landed. These are the sidebar's own keys,
+  // so the reads are shared with it rather than made twice.
+  const mergedPullRequests = usePullRequestLists({
+    state: "merged",
+    refetchIntervalMs: PULL_REQUEST_SETTLED_REFETCH_INTERVAL_MS,
+    enabled: pullRequestTabAvailable && threadHasLinkedPullRequests,
+  });
+  const closedPullRequests = usePullRequestLists({
+    state: "closed",
+    refetchIntervalMs: PULL_REQUEST_SETTLED_REFETCH_INTERVAL_MS,
+    enabled: pullRequestTabAvailable && threadHasLinkedPullRequests,
+  });
+  const settledPullRequestEntries = useMemo(
+    () => [...mergedPullRequests.entries, ...closedPullRequests.entries],
+    [closedPullRequests.entries, mergedPullRequests.entries],
+  );
   const pullRequestProjects = useMemo(
     () => (activeProject ? [activeProject] : []),
     [activeProject],
   );
-  const threadPullRequest = useMemo(
-    () =>
-      serverThread
-        ? resolveThreadPullRequest({
-            thread: {
-              ...serverThread,
-              branch: threadViewBranch(serverThread, pullRequestGitStatus.data),
-            },
-            gitStatus: pullRequestGitStatus.data,
-            openEntries: openPullRequests.entries,
+  const threadPullRequest = useMemo(() => {
+    if (!serverThread) {
+      return null;
+    }
+    const thread = {
+      ...serverThread,
+      branch: threadViewBranch(serverThread, pullRequestGitStatus.data),
+    };
+    const resolved = resolveThreadPullRequest({
+      thread,
+      gitStatus: pullRequestGitStatus.data,
+      openEntries: openPullRequests.entries,
+      projects: pullRequestProjects,
+    });
+    // Dated from the settled listings, which are only read beside linked pull
+    // requests: that is when the lead is ranked by landing, so when it matters.
+    return resolved === null
+      ? null
+      : withListedLanding(
+          resolved,
+          resolveThreadPullRequest({
+            thread,
+            gitStatus: null,
+            openEntries: [],
+            settledEntries: settledPullRequestEntries,
             projects: pullRequestProjects,
-          })
-        : null,
-    [openPullRequests.entries, pullRequestGitStatus.data, pullRequestProjects, serverThread],
-  );
+          }),
+        );
+  }, [
+    openPullRequests.entries,
+    pullRequestGitStatus.data,
+    pullRequestProjects,
+    serverThread,
+    settledPullRequestEntries,
+  ]);
   // The panel addresses one pull request by project and repository, so a
   // thread whose project has no resolved GitHub remote has nothing to open.
   const threadPullRequestReference = useMemo(() => {
@@ -397,6 +436,7 @@ function ChatThreadRouteView() {
       ownNumber: threadPullRequest?.number ?? null,
       projects: pullRequestProjects,
       openEntries: openPullRequests.entries,
+      settledEntries: settledPullRequestEntries,
     }).flatMap((pullRequest): ThreadPullRequestTarget[] =>
       // The panel addresses a pull request by repository, so one on a
       // project with no remote it can read has nothing to open.
@@ -418,12 +458,19 @@ function ChatThreadRouteView() {
   }, [
     openPullRequests.entries,
     pullRequestProjects,
+    settledPullRequestEntries,
     threadEnvironmentId,
     threadLinkedPullRequests,
     threadProjectId,
     threadPullRequest,
     threadPullRequestReference,
   ]);
+  // The one the sidebar's tag names, so the tag, the launcher and the tab
+  // (until another is chosen) all start on the same pull request.
+  const leadPullRequestTarget = useMemo(() => {
+    const lead = leadThreadPullRequest(threadPullRequests.map((target) => target.pullRequest));
+    return threadPullRequests.find((target) => target.pullRequest === lead) ?? null;
+  }, [threadPullRequests]);
   const defaultVisible = useRightPanelDefaultVisible();
   const urlActiveTab = activeRightPanelTabFromSearch(search);
   const urlClosed = isRightPanelClosedInSearch(search);
@@ -539,7 +586,7 @@ function ChatThreadRouteView() {
     // tree with committed turn diffs behind it never reads as nothing to review.
     turnDiffSummaries: serverThread?.turnDiffSummaries ?? null,
     agents: agentsSource,
-    pullRequest: threadPullRequests[0]?.pullRequest ?? null,
+    pullRequest: leadPullRequestTarget?.pullRequest ?? null,
   });
   // Opening the Diff tab with nothing remembered means this thread's working
   // tree, which is also the freshest thing to look at, so it gets re-read.
@@ -566,31 +613,28 @@ function ChatThreadRouteView() {
     },
     [activateDiffTab, currentThreadKey, diffTarget, navigateToTab],
   );
-  // Which one the Pull request tab shows: the one last opened from a row or a
-  // link while the thread still has it, else the first (its own, when it has one).
-  const [pullRequestTabChoice, setPullRequestTabChoice] = useState<{
-    readonly threadKey: string | null;
-    readonly number: number;
-  } | null>(null);
+  // Which one the Pull request tab shows: the one the URL names while the
+  // thread still has it (the sidebar's tag, the palette, a composer row, a
+  // transcript link or the tab's own switcher put it there), else the lead.
+  const urlPullRequestNumber = search.pullRequestNumber ?? null;
   const pullRequestTabTarget =
-    threadPullRequests.find(
-      (target) =>
-        pullRequestTabChoice !== null &&
-        pullRequestTabChoice.threadKey === currentThreadKey &&
-        target.reference.number === pullRequestTabChoice.number,
-    ) ??
-    threadPullRequests[0] ??
+    threadPullRequests.find((target) => target.reference.number === urlPullRequestNumber) ??
+    leadPullRequestTarget ??
     null;
-  const showPullRequestInTab = useCallback(
-    (number: number) => setPullRequestTabChoice({ threadKey: currentThreadKey, number }),
-    [currentThreadKey],
-  );
   const openPullRequestTab = useCallback(
     (number: number) => {
-      showPullRequestInTab(number);
-      selectTab("pullRequest");
+      if (!threadRef) {
+        return;
+      }
+      focusRightPanelTab(currentThreadKey, "pullRequest");
+      void navigate({
+        replace: true,
+        to: "/$environmentId/$threadId",
+        params: buildThreadRouteParams(threadRef),
+        search: (previous) => pullRequestTabSearchParams(previous, number),
+      });
     },
-    [selectTab, showPullRequestInTab],
+    [currentThreadKey, navigate, threadRef],
   );
   // What a transcript link to one of these opens. Only the ones the tab can
   // show are offered, so a link never lands on the tab's fallback.
@@ -821,7 +865,7 @@ function ChatThreadRouteView() {
               <ThreadPullRequestSwitcher
                 numbers={threadPullRequests.map(({ reference }) => reference.number)}
                 selected={pullRequestTabTarget.reference.number}
-                onSelect={showPullRequestInTab}
+                onSelect={openPullRequestTab}
               />
               <div className="flex min-h-0 flex-1 flex-col">
                 <LazyPullRequestDetailPanel
