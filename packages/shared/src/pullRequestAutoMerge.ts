@@ -18,6 +18,14 @@ import type { PullRequestDetail } from "@threadlines/contracts";
  */
 export const PULL_REQUEST_AUTO_MERGE_SETTLE_MS = 60_000;
 
+/**
+ * How every timeline line about the server's own merge work begins: merging,
+ * handing over to a merge queue, putting a pull request back in one, or giving
+ * up. A client that sees one reads its pull requests again, since some of that
+ * work moves no switch it could have watched instead.
+ */
+export const PULL_REQUEST_AUTO_MERGE_ACTIVITY_KIND_PREFIX = "pull-request.auto-merge.";
+
 export type PullRequestAutoMergeStep =
   | { readonly kind: "merge" }
   /** Nothing is wrong yet; `reason` is what it is waiting on. */

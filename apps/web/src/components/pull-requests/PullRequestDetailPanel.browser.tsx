@@ -339,6 +339,53 @@ describe("Composer pull request merge controls", () => {
       await rendered.cleanup();
     }
   });
+
+  it("says what failed in the merge queue, and queues it again from the same popover", async () => {
+    const rendered = await renderComposerPullRequest({
+      mergeGate: "clear",
+      checks: [{ name: "build", status: "success", description: null, url: null }],
+      checksState: "success",
+      mergeQueue: {
+        position: null,
+        removal: {
+          id: "RFMQE_1",
+          removedAt: "2026-09-22T23:16:04Z",
+          failedChecks: [
+            {
+              name: "Browser Test",
+              status: "failure",
+              description: null,
+              url: "https://github.com/acme/widgets/actions/runs/1/job/2",
+            },
+          ],
+        },
+      },
+    });
+    try {
+      const chip = page.getByRole("button", { name: "Checks", exact: true });
+      // The pull request's own checks are green; the chip says what they cannot.
+      await expect.element(chip, { timeout: 5_000 }).toHaveTextContent("Queue failed");
+      await expect
+        .element(page.getByText("Failed in the merge queue"), { timeout: 5_000 })
+        .toBeVisible();
+      await expect
+        .element(page.getByRole("link", { name: "Open Browser Test in browser" }), {
+          timeout: 5_000,
+        })
+        .toHaveAttribute("href", "https://github.com/acme/widgets/actions/runs/1/job/2");
+
+      await page.getByRole("checkbox", { name: "Merge when checks pass" }).click();
+      expect(rendered.runAction).toHaveBeenLastCalledWith({
+        ...REFERENCE,
+        action: "enable-auto-merge",
+        mergeMethod: "squash",
+      });
+      // Armed again, it is on its way back, and the chip goes back to the checks.
+      await expect.element(chip, { timeout: 5_000 }).toHaveTextContent("CI");
+    } finally {
+      await rendered.cleanup();
+    }
+  });
 });
 
 function makeComment(id: string, createdAt: string, body = `body ${id}`): PullRequestComment {

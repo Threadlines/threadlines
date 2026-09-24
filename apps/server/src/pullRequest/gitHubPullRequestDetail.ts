@@ -20,10 +20,9 @@ import {
   GITHUB_PULL_REQUEST_LIST_FIELDS,
   GitHubAuthorSchema,
   GitHubPullRequestListRowSchema,
-  GitHubStatusCheckSchema,
   nonEmptyText,
   normalizeActor,
-  normalizeCheckStatus,
+  normalizeChecks,
   normalizeGitHubPullRequestListRow,
   normalizeMergeability,
   type GitHubPullRequestListRow,
@@ -230,7 +229,6 @@ function normalizeReviewers(input: {
   return [...requested.values(), ...reviewed.values()];
 }
 
-/** One row per check. A repeated name is a re-run, so the last one wins. */
 /**
  * GitHub's `mergeStateStatus` as the gate the client renders. `BLOCKED` and
  * `BEHIND` are the two `gh pr merge` refuses on without `--admin`; `DIRTY` is a
@@ -250,25 +248,6 @@ function normalizeMergeGate(value: string | null | undefined): PullRequestMergeG
     default:
       return undefined;
   }
-}
-
-function normalizeChecks(
-  checks: ReadonlyArray<Schema.Schema.Type<typeof GitHubStatusCheckSchema>> | null | undefined,
-): ReadonlyArray<PullRequestCheck> {
-  const byName = new Map<string, PullRequestCheck>();
-  for (const check of checks ?? []) {
-    const name = nonEmptyText(check.name) ?? nonEmptyText(check.context);
-    if (name === null) {
-      continue;
-    }
-    byName.set(name, {
-      name,
-      status: normalizeCheckStatus(check),
-      description: nonEmptyText(check.description),
-      url: nonEmptyText(check.detailsUrl) ?? nonEmptyText(check.targetUrl),
-    });
-  }
-  return [...byName.values()];
 }
 
 function toComment(input: {

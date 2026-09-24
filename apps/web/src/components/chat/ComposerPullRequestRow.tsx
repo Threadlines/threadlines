@@ -16,6 +16,7 @@ import type {
   PullRequestAction,
   PullRequestDetail,
   PullRequestMergeMethod,
+  PullRequestMergeQueueRemoval,
   PullRequestRef,
 } from "@threadlines/contracts";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
@@ -228,6 +229,84 @@ function ChipDot({ className }: { readonly className: string }) {
   return <span aria-hidden className={cn("size-[7px] shrink-0 rounded-full", className)} />;
 }
 
+/**
+ * An address on the host, opened in the browser from the end of a popover
+ * row. Outside Electron there is no shell to hand the address to, so the same
+ * affordance is an ordinary link the browser opens itself.
+ */
+function OpenInBrowserButton({
+  url,
+  label,
+  onOpen,
+}: {
+  readonly url: string;
+  readonly label: string;
+  /** Called as the shell takes the address, so the popover can close. */
+  readonly onOpen: () => void;
+}) {
+  const className =
+    "ml-auto inline-flex size-5 items-center justify-center rounded-md transition-colors hover:text-foreground focus-ring";
+  return isElectron ? (
+    <button
+      type="button"
+      aria-label={label}
+      className={cn(className, "cursor-pointer")}
+      onClick={() => {
+        onOpen();
+        void readLocalApi()?.shell.openExternal(url);
+      }}
+    >
+      <ExternalLinkIcon aria-hidden className="size-3.5" />
+    </button>
+  ) : (
+    <a
+      href={url}
+      target="_blank"
+      rel="noopener noreferrer"
+      aria-label={label}
+      className={className}
+    >
+      <ExternalLinkIcon aria-hidden className="size-3.5" />
+    </a>
+  );
+}
+
+/**
+ * What failed when the merge queue last tested this pull request, while the
+ * queue has given it back. Those runs are the queue's, not the pull request's
+ * own, so the counts above leave them out.
+ */
+function ComposerPullRequestQueueFailure({
+  removal,
+  onOpenExternal,
+}: {
+  readonly removal: PullRequestMergeQueueRemoval;
+  readonly onOpenExternal: () => void;
+}) {
+  const failed = CHECK_TONES.failure;
+  return (
+    <>
+      <p className="flex items-center gap-2 px-3 py-1 text-muted-foreground">
+        <ChipDot className={CHIP_TONE_CLASS.failure.dot} />
+        Failed in the merge queue
+      </p>
+      {removal.failedChecks.map((check) => (
+        <div key={check.name} className="flex items-center gap-2 px-3 py-1">
+          <failed.Icon aria-hidden className={cn("size-3.5 shrink-0", failed.className)} />
+          <span className="min-w-0 truncate">{check.name}</span>
+          {check.url ? (
+            <OpenInBrowserButton
+              url={check.url}
+              label={`Open ${check.name} in browser`}
+              onOpen={onOpenExternal}
+            />
+          ) : null}
+        </div>
+      ))}
+    </>
+  );
+}
+
 function ComposerPullRequestChecksChip({
   pullRequest,
   detail,
@@ -307,31 +386,11 @@ function ComposerPullRequestChecksPopover({
     <div className="w-full py-2 text-xs">
       <div className="flex items-center gap-2 px-3 pb-1 text-muted-foreground">
         <span>Checks</span>
-        {/* Outside Electron there is no shell to hand the address to, so the
-            same affordance is an ordinary link the browser opens itself. */}
-        {isElectron ? (
-          <button
-            type="button"
-            aria-label="Open checks in browser"
-            className="ml-auto inline-flex size-5 cursor-pointer items-center justify-center rounded-md transition-colors hover:text-foreground focus-ring"
-            onClick={() => {
-              onOpenExternal();
-              void readLocalApi()?.shell.openExternal(checksUrl);
-            }}
-          >
-            <ExternalLinkIcon aria-hidden className="size-3.5" />
-          </button>
-        ) : (
-          <a
-            href={checksUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            aria-label="Open checks in browser"
-            className="ml-auto inline-flex size-5 items-center justify-center rounded-md transition-colors hover:text-foreground focus-ring"
-          >
-            <ExternalLinkIcon aria-hidden className="size-3.5" />
-          </a>
-        )}
+        <OpenInBrowserButton
+          url={checksUrl}
+          label="Open checks in browser"
+          onOpen={onOpenExternal}
+        />
       </div>
       {buckets.length === 0 ? (
         <p className="px-3 py-1 text-muted-foreground">No checks on this pull request</p>
@@ -395,7 +454,8 @@ function ComposerPullRequestChecksPopover({
  * "Merge when checks pass", in whichever form this pull request allows: the
  * host's own standing instruction, the same switch held by this thread's
  * server where the host cannot hold it, the merge queue it already sits in, or
- * the reason none of those is on offer.
+ * the reason none of those is on offer. Above it, what failed when the queue
+ * last gave the pull request back, until something queues it again.
  */
 function ComposerPullRequestAutoMergeSection({
   pullRequest,
@@ -460,6 +520,12 @@ function ComposerPullRequestAutoMergeSection({
 
   return (
     <>
+      {detail.mergeQueue?.removal ? (
+        <ComposerPullRequestQueueFailure
+          removal={detail.mergeQueue.removal}
+          onOpenExternal={onOpenExternal}
+        />
+      ) : null}
       {autoMergeControl.kind === "toggle" ? (
         <label className="flex cursor-pointer items-center gap-2 px-3 py-1 transition-colors hover:bg-accent">
           <Checkbox

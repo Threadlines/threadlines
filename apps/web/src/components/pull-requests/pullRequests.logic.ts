@@ -1753,12 +1753,14 @@ function englishOrdinal(value: number): string {
 /**
  * The header's word for a pull request whose base runs a merge queue, or null
  * where there is nothing to say. Queued leads with where it stands, since that
- * is the only part that moves; armed says what it is waiting to do. Outside a
- * queue this says nothing and the plain auto-merge word stands.
+ * is the only part that moves; armed says what it is waiting to do. One the
+ * queue gave back after its own run failed says so, as a failure, until
+ * something is set to queue it again. Outside a queue this says nothing and
+ * the plain auto-merge word stands.
  */
 export function pullRequestMergeQueueLabel(
   detail: Pick<PullRequestDetail, "mergeQueue" | "autoMergeEnabled" | "baseBranch">,
-): { readonly label: string; readonly tooltip: string } | null {
+): { readonly label: string; readonly tooltip: string; readonly failed: boolean } | null {
   if (detail.mergeQueue === undefined) {
     return null;
   }
@@ -1767,14 +1769,29 @@ export function pullRequestMergeQueueLabel(
     return {
       label: position <= 1 ? "Queued" : `Queued, ${englishOrdinal(position)}`,
       tooltip: `In the merge queue for ${detail.baseBranch}`,
+      failed: false,
     };
   }
-  return detail.autoMergeEnabled === true
-    ? {
-        label: "Merge when ready",
-        tooltip: "Joins the merge queue once every requirement passes",
-      }
-    : null;
+  if (detail.autoMergeEnabled === true) {
+    return {
+      label: "Merge when ready",
+      tooltip: "Joins the merge queue once every requirement passes",
+      failed: false,
+    };
+  }
+  const removal = detail.mergeQueue.removal;
+  if (removal === undefined) {
+    return null;
+  }
+  const failedNames = removal.failedChecks.map((check) => check.name);
+  return {
+    label: "Queue failed",
+    tooltip:
+      failedNames.length === 0
+        ? "The merge queue took it out after a check failed"
+        : `The merge queue took it out after ${failedNames.join(", ")} failed`,
+    failed: true,
+  };
 }
 
 /**

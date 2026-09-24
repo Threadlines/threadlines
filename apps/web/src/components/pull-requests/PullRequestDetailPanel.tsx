@@ -650,7 +650,9 @@ function PullRequestDetailHeader({
               the queue, not the standing instruction, is what lands it now. */}
           {queueLabel !== null ? (
             <TooltipWrapper tooltip={queueLabel.tooltip}>
-              <span className="shrink-0">{queueLabel.label}</span>
+              <span className={cn("shrink-0", queueLabel.failed && "text-destructive")}>
+                {queueLabel.label}
+              </span>
             </TooltipWrapper>
           ) : detail.mergeQueue === undefined && detail.autoMergeEnabled === true ? (
             <span className="shrink-0">Auto-merge on</span>

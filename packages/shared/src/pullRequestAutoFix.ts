@@ -1,6 +1,7 @@
 /**
  * The message the server sends a thread when its pull request needs work: a
- * check has just failed, or a reviewer has just said something.
+ * check has just failed, a reviewer has just said something, or the merge
+ * queue has just given it back.
  *
  * Pure so the watcher's behaviour is testable without a host, and shared so
  * the client's own review-comment hand-off quotes a remark the same way.
@@ -20,12 +21,31 @@ export interface PullRequestAutoFixComment {
   readonly body: string;
 }
 
+/**
+ * The merge queue taking the pull request out: its own run of the checks, on
+ * the pull request merged with the latest base, failed.
+ */
+export interface PullRequestAutoFixMergeQueueFailure {
+  /** The branch the queue merged it with, as the host names it. */
+  readonly baseBranch: string;
+  /** What failed in that run; empty where a re-run has passed since. */
+  readonly failedChecks: readonly PullRequestAutoFixCheck[];
+}
+
 export interface PullRequestAutoFixPromptInput {
   readonly number: number;
   /** `owner/name`, as the host spells it. */
   readonly repository: string;
   readonly failingChecks: readonly PullRequestAutoFixCheck[];
   readonly comments: readonly PullRequestAutoFixComment[];
+  readonly mergeQueueFailure?: PullRequestAutoFixMergeQueueFailure | null;
+}
+
+function checkLines(checks: readonly PullRequestAutoFixCheck[]): string[] {
+  return checks.map((check) => {
+    const url = check.url?.trim() ?? "";
+    return url.length === 0 ? `- ${check.name}` : `- ${check.name} (${url})`;
+  });
 }
 
 /**
@@ -42,12 +62,14 @@ export function quotePullRequestBody(body: string): string {
 }
 
 /**
- * The whole message for one sweep: every check that has just started failing
- * and every remark that has just arrived, then what to do about them. Returns
- * null when there is nothing new to say, so a caller cannot start an empty turn.
+ * The whole message for one sweep: the merge queue giving the pull request
+ * back, every check that has just started failing, and every remark that has
+ * just arrived, then what to do about them. Returns null when there is nothing
+ * new to say, so a caller cannot start an empty turn.
  */
 export function buildPullRequestAutoFixPrompt(input: PullRequestAutoFixPromptInput): string | null {
-  if (input.failingChecks.length === 0 && input.comments.length === 0) {
+  const queueFailure = input.mergeQueueFailure ?? null;
+  if (queueFailure === null && input.failingChecks.length === 0 && input.comments.length === 0) {
     return null;
   }
 
@@ -55,12 +77,21 @@ export function buildPullRequestAutoFixPrompt(input: PullRequestAutoFixPromptInp
     `Pull request #${input.number} on ${input.repository} needs attention.`,
   ];
 
+  if (queueFailure !== null) {
+    const merged = `merged with the latest ${queueFailure.baseBranch}`;
+    sections.push(
+      [
+        queueFailure.failedChecks.length === 0
+          ? `The merge queue took it out because a check failed when it was ${merged}.`
+          : `The merge queue took it out because these checks failed when it was ${merged}:`,
+        ...checkLines(queueFailure.failedChecks),
+        `A failure there can come from newer changes on ${queueFailure.baseBranch} or from a flaky test. If nothing needs changing, say so and leave the branch alone. It goes back in the queue on its own once its checks pass.`,
+      ].join("\n"),
+    );
+  }
+
   if (input.failingChecks.length > 0) {
-    const lines = input.failingChecks.map((check) => {
-      const url = check.url?.trim() ?? "";
-      return url.length === 0 ? `- ${check.name}` : `- ${check.name} (${url})`;
-    });
-    sections.push(["These checks failed:", ...lines].join("\n"));
+    sections.push(["These checks failed:", ...checkLines(input.failingChecks)].join("\n"));
   }
 
   if (input.comments.length > 0) {

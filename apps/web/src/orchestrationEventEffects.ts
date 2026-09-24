@@ -4,6 +4,7 @@ import type {
   PullRequestMergeMethod,
   ThreadId,
 } from "@threadlines/contracts";
+import { PULL_REQUEST_AUTO_MERGE_ACTIVITY_KIND_PREFIX } from "@threadlines/shared/pullRequestAutoMerge";
 
 /** A thread's server-held merge switches: its own, and each linked pull request's. */
 interface ThreadMergeSwitches {
@@ -41,10 +42,11 @@ export interface OrchestrationBatchEffects {
   removeTerminalStateThreadIds: ThreadId[];
   needsProviderInvalidation: boolean;
   /**
-   * A thread's server-held "Merge when checks pass" turned off. The server
-   * merged its pull request, handed it to a merge queue, or gave up, and that
-   * switch is the only word of it the client gets, so every pull request read
-   * is taken again.
+   * The server did merge work of its own on a thread's pull request: its
+   * server-held "Merge when checks pass" turned off once it merged, handed the
+   * pull request to a merge queue, or gave up, or it put one the queue gave
+   * back into the queue again. Those are the only word of it the client gets,
+   * so every pull request read is taken again.
    */
   needsPullRequestInvalidation: boolean;
 }
@@ -73,6 +75,15 @@ export function deriveOrchestrationBatchEffects(
 
       case "thread.pull-request-automation-changed": {
         if (event.payload.autoMerge === null) {
+          needsPullRequestInvalidation = true;
+        }
+        break;
+      }
+
+      // Putting a pull request back in the merge queue moves no switch, so the
+      // line the server leaves in the timeline is the only sign of it.
+      case "thread.activity-appended": {
+        if (event.payload.activity.kind.startsWith(PULL_REQUEST_AUTO_MERGE_ACTIVITY_KIND_PREFIX)) {
           needsPullRequestInvalidation = true;
         }
         break;
