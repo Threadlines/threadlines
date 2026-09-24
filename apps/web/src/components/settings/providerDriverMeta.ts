@@ -58,7 +58,7 @@ export const PROVIDER_CLIENT_DEFINITIONS: readonly ProviderClientDefinition[] = 
     label: "Cursor",
     icon: CursorIcon,
     settingsSchema: CursorSettings,
-    badgeLabel: "Early Access",
+    badgeLabel: "Experimental",
   },
 ];
 
