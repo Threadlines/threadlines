@@ -165,7 +165,6 @@ describe("buildAgentBranches", () => {
           id: "running",
           telemetry: {
             step: "Running the test suite",
-            lastToolName: "Bash",
             totalTokens: 1_200,
             toolUses: 4,
             durationMs: null,
@@ -180,7 +179,6 @@ describe("buildAgentBranches", () => {
           liveBody: "Wrapped up",
           telemetry: {
             step: "Summarizing",
-            lastToolName: null,
             totalTokens: 900,
             toolUses: 2,
             durationMs: 42_000,
@@ -234,7 +232,6 @@ describe("buildAgentsPanelView", () => {
             reasoningEffort: "high",
             telemetry: {
               step: null,
-              lastToolName: null,
               totalTokens: 24_000,
               toolUses: null,
               durationMs: null,
@@ -391,7 +388,6 @@ describe("buildAgentsPanelView", () => {
   it("closes the meta line with what the agent wrote, live and in history", () => {
     const telemetry = {
       step: null,
-      lastToolName: null,
       totalTokens: 24_000,
       toolUses: null,
       durationMs: null,
@@ -524,7 +520,6 @@ describe("formatLiveAgentStatusRows", () => {
         status: "running",
         telemetry: {
           step: "Reading the router",
-          lastToolName: null,
           totalTokens: null,
           toolUses: null,
           durationMs: null,
@@ -541,7 +536,6 @@ describe("formatLiveAgentStatusRows", () => {
         status: "running",
         telemetry: {
           step: "reading AgentsPanel.browser.tsx",
-          lastToolName: null,
           totalTokens: null,
           toolUses: null,
           durationMs: null,
@@ -572,6 +566,29 @@ describe("formatLiveAgentStatusRows", () => {
       ],
       hiddenCount: 0,
     });
+  });
+
+  it("words a reported step the way the conversation words steps", () => {
+    const withStep = (step: string) =>
+      buildSubagent({
+        telemetry: {
+          step,
+          totalTokens: null,
+          toolUses: null,
+          durationMs: null,
+          additions: null,
+          deletions: null,
+        },
+      });
+    const roster = formatLiveAgentStatusRows([
+      withStep("Editing src\\game\\hq\\paint\\workVan.ts"),
+      withStep("Running Check the van tests"),
+    ]);
+
+    expect(roster.rows.map((row) => row.step)).toEqual([
+      "Editing workVan.ts",
+      "Checking the van tests",
+    ]);
   });
 
   it("falls back to the agent's own newest prose when there is no reported step", () => {
@@ -605,7 +622,6 @@ describe("formatLiveAgentStatusRows", () => {
           status: "completed",
           telemetry: {
             step: "Reading the router",
-            lastToolName: null,
             totalTokens: null,
             toolUses: null,
             durationMs: null,
@@ -798,7 +814,6 @@ describe("formatAgentsHeaderMeta", () => {
           createdAt: "2026-08-11T10:04:00.000Z",
           telemetry: {
             step: null,
-            lastToolName: null,
             totalTokens: 2_000,
             toolUses: null,
             durationMs: null,
@@ -811,7 +826,6 @@ describe("formatAgentsHeaderMeta", () => {
           createdAt: "2026-08-11T10:01:30.000Z",
           telemetry: {
             step: null,
-            lastToolName: null,
             totalTokens: 4_500,
             toolUses: null,
             durationMs: null,

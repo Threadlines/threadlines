@@ -291,3 +291,62 @@ export function detectSourceControlProviderFromRemoteUrl(
     baseUrl: toBaseUrl(host),
   };
 }
+
+/** A GitHub pull request's address: `owner/name`, then the number, then anything deeper. */
+const GITHUB_PULL_REQUEST_URL_PATTERN =
+  /^https:\/\/github\.com\/(?<repository>[^/\s]+\/[^/\s]+)\/pull\/(?<number>\d+)(?:[/?#].*)?$/i;
+
+/**
+ * The same address inside a run of text, bare or as a markdown link's target.
+ * The repository stops at whatever prose or markdown puts around a link.
+ */
+const GITHUB_PULL_REQUEST_URL_IN_TEXT_PATTERN =
+  /https:\/\/github\.com\/([^/\s()[\]<>"'`]+\/[^/\s()[\]<>"'`]+)\/pull\/(\d+)/gi;
+
+/** A GitHub pull request the app can address by itself: its repository and number. */
+export interface PullRequestUrlReference {
+  /** `owner/name`, in the spelling the link used. */
+  readonly repository: string;
+  readonly number: number;
+}
+
+function toPullRequestUrlReference(
+  repository: string | undefined,
+  rawNumber: string | undefined,
+): PullRequestUrlReference | null {
+  const number = Number(rawNumber ?? Number.NaN);
+  if (repository === undefined || !Number.isSafeInteger(number) || number <= 0) {
+    return null;
+  }
+  return { repository, number };
+}
+
+/**
+ * The pull request a web address points at, or null when it points at
+ * something else. GitHub only for now: nothing here lists GitLab or Azure
+ * DevOps rows by repository yet.
+ *
+ * A deeper link into the same pull request (its files, one comment) still
+ * names it, so it resolves the same way.
+ */
+export function parsePullRequestUrl(href: string): PullRequestUrlReference | null {
+  const match = GITHUB_PULL_REQUEST_URL_PATTERN.exec(href.trim());
+  return toPullRequestUrlReference(match?.groups?.["repository"], match?.groups?.["number"]);
+}
+
+/**
+ * Every GitHub pull request a piece of text links to, each once, in the order
+ * it is first mentioned. Casing is the host's to ignore, so the same pull
+ * request spelled two ways is still one.
+ */
+export function findPullRequestUrls(text: string): ReadonlyArray<PullRequestUrlReference> {
+  const found = new Map<string, PullRequestUrlReference>();
+  for (const match of text.matchAll(GITHUB_PULL_REQUEST_URL_IN_TEXT_PATTERN)) {
+    const reference = toPullRequestUrlReference(match[1], match[2]);
+    const key = reference ? `${reference.repository.toLowerCase()}#${reference.number}` : null;
+    if (reference && key !== null && !found.has(key)) {
+      found.set(key, reference);
+    }
+  }
+  return [...found.values()];
+}

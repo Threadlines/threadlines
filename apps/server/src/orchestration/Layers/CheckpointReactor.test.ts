@@ -1532,6 +1532,71 @@ describe("CheckpointReactor", () => {
     ).toBe("v1\n");
   });
 
+  it("retakes the pre-turn snapshot when a failed turn start is retried", async () => {
+    const harness = await createHarness({
+      hasSession: false,
+      seedFilesystemCheckpoints: false,
+      threadWorktreePath: null,
+    });
+    const threadId = ThreadId.make("thread-1");
+    const preTurnRef = checkpointPreTurnRefForThreadTurnCount(threadId, 1);
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-before-failure"),
+        threadId,
+        message: {
+          messageId: MessageId.make("message-user-1"),
+          role: "user",
+          text: "start turn",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      }),
+    );
+    await waitForGitRefExists(harness.cwd, preTurnRef);
+    expect(gitShowFileAtRef(harness.cwd, preTurnRef, "README.md")).toBe("v1\n");
+
+    // The provider never started that turn. Meanwhile the checkout moves on
+    // (another session, a pull), and then the user presses Retry.
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-set-start-failed"),
+        threadId,
+        session: {
+          threadId,
+          status: "error",
+          providerName: "fx",
+          runtimeMode: "approval-required",
+          activeTurnId: null,
+          lastError: "Provider turn start failed",
+          updatedAt: "2026-01-01T00:00:01.000Z",
+        },
+        createdAt: "2026-01-01T00:00:01.000Z",
+      }),
+    );
+    fs.writeFileSync(path.join(harness.cwd, "README.md"), "v2 from main\n", "utf8");
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.retry",
+        commandId: CommandId.make("cmd-turn-retry"),
+        threadId,
+        createdAt: "2026-01-01T00:18:00.000Z",
+      }),
+    );
+
+    // The retried turn's diff starts from the retry, not from the failed
+    // attempt 18 minutes earlier.
+    await vi.waitFor(
+      () => expect(gitShowFileAtRef(harness.cwd, preTurnRef, "README.md")).toBe("v2 from main\n"),
+      { timeout: 15_000 },
+    );
+  });
+
   it("captures turn completion checkpoint from project workspace root when provider session cwd is unavailable", async () => {
     const harness = await createHarness({
       hasSession: false,

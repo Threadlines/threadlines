@@ -97,6 +97,7 @@ function makeThread(overrides: Partial<Thread> = {}): Thread {
     pinnedAt: null,
     pullRequestAutoFix: false,
     pullRequestAutoMerge: null,
+    linkedPullRequests: [],
     doneOverride: null,
     lastSeenAt: null,
     latestTurn: null,
@@ -611,6 +612,39 @@ describe("incremental orchestration updates", () => {
     ).toBe("/tmp/project/.worktrees/feature");
   });
 
+  it("records a linked pull request and its own merge switch, apart from the thread's", () => {
+    const threadId = ThreadId.make("thread-1");
+    const url = "https://github.com/acme/widgets/pull/294";
+    const linked = applyOrchestrationEvent(
+      makeState(makeThread()),
+      makeEvent("thread.pull-request-linked", {
+        threadId,
+        number: 294,
+        url,
+        linkedAt: "2026-02-27T00:00:01.000Z",
+      }),
+      localEnvironmentId,
+    );
+    const armed = applyOrchestrationEvent(
+      linked,
+      makeEvent("thread.pull-request-automation-changed", {
+        threadId,
+        pullRequestNumber: 294,
+        autoMerge: "squash",
+        updatedAt: "2026-02-27T00:00:02.000Z",
+      }),
+      localEnvironmentId,
+    );
+
+    const expected = [{ number: 294, url, autoMerge: "squash" }];
+    expect(threadsOf(armed)[0]?.linkedPullRequests).toEqual(expected);
+    expect(threadsOf(armed)[0]?.pullRequestAutoMerge).toBeNull();
+    // The sidebar files a thread away only once these land too, so its summary carries them.
+    expect(
+      localEnvironmentStateOf(armed).sidebarThreadSummaryById[threadId]?.linkedPullRequests,
+    ).toEqual(expected);
+  });
+
   it("keeps an async question answerable after its activity leaves the recent log", () => {
     const threadId = ThreadId.make("thread-1");
     const requested = applyOrchestrationEvent(
@@ -722,6 +756,7 @@ describe("incremental orchestration updates", () => {
           pinnedAt: null,
           pullRequestAutoFix: false,
           pullRequestAutoMerge: null,
+          linkedPullRequests: [],
           doneOverride: null,
           lastSeenAt: null,
           session: null,

@@ -144,7 +144,11 @@ describe("composerPullRequestRow", () => {
 describe("composerPullRequestChip", () => {
   it("reads the check rollup while the pull request is open", () => {
     expect(
-      composerPullRequestChip({ state: "open", detail: detail({ checksState: "failure" }) }),
+      composerPullRequestChip({
+        state: "open",
+        detail: detail({ checksState: "failure" }),
+        armed: false,
+      }),
     ).toEqual({ label: "CI", tone: "failure", interactive: true });
   });
 
@@ -153,12 +157,38 @@ describe("composerPullRequestChip", () => {
       composerPullRequestChip({
         state: "open",
         detail: detail({ checksState: "success", mergeQueue: { position: 2 } }),
+        armed: true,
       }),
     ).toEqual({ label: "Queued", tone: "queued", interactive: true });
   });
 
+  it("says the merge queue gave it back, until something is set to queue it again", () => {
+    const givenBack = detail({
+      checksState: "success",
+      mergeQueue: {
+        position: null,
+        removal: {
+          id: "RFMQE_1",
+          removedAt: "2026-09-22T23:16:04Z",
+          failedChecks: [check("failure", "Browser Test")],
+        },
+      },
+    });
+    // Its own checks are green, which is exactly why the chip must not say only that.
+    expect(composerPullRequestChip({ state: "open", detail: givenBack, armed: false })).toEqual({
+      label: "Queue failed",
+      tone: "failure",
+      interactive: true,
+    });
+    expect(composerPullRequestChip({ state: "open", detail: givenBack, armed: true })).toEqual({
+      label: "CI",
+      tone: "success",
+      interactive: true,
+    });
+  });
+
   it("says so when the host reported no checks at all", () => {
-    expect(composerPullRequestChip({ state: "open", detail: detail() })).toEqual({
+    expect(composerPullRequestChip({ state: "open", detail: detail(), armed: false })).toEqual({
       label: "No checks",
       tone: "none",
       interactive: true,
@@ -167,7 +197,11 @@ describe("composerPullRequestChip", () => {
 
   it("states the outcome for a settled pull request and stops being a control", () => {
     expect(
-      composerPullRequestChip({ state: "closed", detail: detail({ state: "closed" }) }),
+      composerPullRequestChip({
+        state: "closed",
+        detail: detail({ state: "closed" }),
+        armed: false,
+      }),
     ).toEqual({ label: "Closed", tone: "closed", interactive: false });
   });
 });
@@ -198,12 +232,16 @@ function control(
   thread: {
     readonly threadAutoMerge?: PullRequestMergeMethod | null;
     readonly autoFix?: boolean;
+    readonly agentWorking?: boolean;
+    readonly unpushedCommits?: number;
   } = {},
 ) {
   return composerAutoMergeControl({
     detail: value,
     threadAutoMerge: thread.threadAutoMerge ?? null,
     autoFix: thread.autoFix ?? false,
+    agentWorking: thread.agentWorking ?? false,
+    unpushedCommits: thread.unpushedCommits ?? 0,
     now: NOW,
   });
 }
@@ -247,11 +285,13 @@ describe("composerAutoMergeControl", () => {
     });
   });
 
-  it("directs a ready GitHub PR to Merge, but still lets it join a queue", () => {
+  it("hands a ready GitHub PR to the server to merge at once, but still lets it join a queue", () => {
     const passed = [check("success", "build")];
+    // GitHub's own switch would merge on the spot instead of arming.
     expect(control(detail({ mergeGate: "clear", checks: passed }))).toEqual({
-      kind: "unavailable",
-      reason: "This pull request can merge right now. Use Merge instead.",
+      kind: "server",
+      checked: false,
+      status: "Nothing left to wait for, so it merges right away",
     });
     expect(control(detail({ mergeGate: "clear", mergeQueue: { position: null } }))).toEqual({
       kind: "toggle",
@@ -260,6 +300,26 @@ describe("composerAutoMergeControl", () => {
     expect(control(detail({ mergeGate: "blocked" }))).toEqual({
       kind: "toggle",
       checked: false,
+    });
+  });
+
+  it("does not promise a merge the server would hold back for the thread", () => {
+    const ready = detail({ mergeGate: "clear", checks: [check("success", "build")] });
+    // The agent may be about to push, so the server waits for its turn to end.
+    expect(control(ready, { agentWorking: true })).toEqual({
+      kind: "server",
+      checked: false,
+      status: null,
+    });
+    expect(control(ready, { agentWorking: true, threadAutoMerge: "squash" })).toEqual({
+      kind: "server",
+      checked: true,
+      status: "Waiting for the agent to finish",
+    });
+    expect(control(ready, { unpushedCommits: 1, threadAutoMerge: "squash" })).toEqual({
+      kind: "server",
+      checked: true,
+      status: "Waiting for local commits to be pushed",
     });
   });
 
@@ -280,11 +340,13 @@ describe("composerAutoMergeControl", () => {
     });
   });
 
-  it("offers the server's wait only while there is something to wait for", () => {
+  it("hands the server anything but a failing check nobody is fixing", () => {
     const noAutoMerge = { ...detail().capabilities, actions: ["merge", "close"] as const };
-    expect(control(detail({ capabilities: noAutoMerge }))).toEqual({
-      kind: "unavailable",
-      reason: "No checks to wait for. Use Merge instead.",
+    // No checks at all is nothing to wait for, once GitHub says it would merge.
+    expect(control(detail({ capabilities: noAutoMerge, mergeGate: "clear" }))).toEqual({
+      kind: "server",
+      checked: false,
+      status: "Nothing left to wait for, so it merges right away",
     });
     const failed = detail({ capabilities: noAutoMerge, checks: [check("failure", "build")] });
     expect(control(failed)).toEqual({

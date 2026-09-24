@@ -13,7 +13,7 @@ import { isPlainPrimaryClick, openUrlInBrowserPanel } from "../browser/openInBro
 import { isLinkToPullRequest } from "../pull-requests/pullRequests.logic";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { copyTextWithToast } from "./copyTextWithToast";
-import { useThreadPullRequestLink } from "./ThreadPullRequestLinkContext";
+import { useThreadPullRequestLinks } from "./ThreadPullRequestLinkContext";
 
 /**
  * The anchor's own props ride along, `ref` included, so a hover-card trigger
@@ -38,8 +38,9 @@ export interface ChatWebLinkProps extends Omit<
  *
  * The plain click stays in the app, because a link an agent wrote is about the
  * work in front of you and leaving to read it costs you the place you were. A
- * link to the thread's own pull request opens the Pull request tab, the same
- * place the sidebar badge goes; any other page goes to the thread's browser.
+ * link to one of the thread's pull requests opens it in the Pull request tab,
+ * the same place the sidebar badge goes; any other page goes to the thread's
+ * browser.
  * Everything else -- modifiers, middle click, and any thread without a panel --
  * falls through to the anchor's own behaviour, so the link is never less
  * capable than an ordinary one.
@@ -54,9 +55,12 @@ export const ChatWebLink = memo(function ChatWebLink({
   onContextMenu,
   ...anchorProps
 }: ChatWebLinkProps) {
-  const pullRequestLink = useThreadPullRequestLink();
-  const opensPullRequestTab =
-    pullRequestLink !== null && isLinkToPullRequest(href, pullRequestLink.url);
+  const pullRequestLinks = useThreadPullRequestLinks();
+  const tabPullRequest =
+    pullRequestLinks?.pullRequests.find((pullRequest) =>
+      isLinkToPullRequest(href, pullRequest.url),
+    ) ?? null;
+  const opensPullRequestTab = tabPullRequest !== null;
 
   const handleClick = useCallback(
     (event: ReactMouseEvent<HTMLAnchorElement>) => {
@@ -64,10 +68,10 @@ export const ChatWebLink = memo(function ChatWebLink({
       if (event.defaultPrevented || !isPlainPrimaryClick(event)) {
         return;
       }
-      if (opensPullRequestTab) {
+      if (tabPullRequest !== null) {
         event.preventDefault();
         event.stopPropagation();
-        pullRequestLink?.open();
+        pullRequestLinks?.open(tabPullRequest.number);
         return;
       }
       if (!isElectron || threadRef === null) {
@@ -79,7 +83,7 @@ export const ChatWebLink = memo(function ChatWebLink({
       event.preventDefault();
       event.stopPropagation();
     },
-    [href, onClick, opensPullRequestTab, pullRequestLink, threadRef],
+    [href, onClick, pullRequestLinks, tabPullRequest, threadRef],
   );
 
   const handleContextMenu = useCallback(

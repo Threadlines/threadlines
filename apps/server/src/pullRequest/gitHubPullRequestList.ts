@@ -7,6 +7,7 @@ import {
   PositiveInt,
   TrimmedNonEmptyString,
   type PullRequestActor,
+  type PullRequestCheck,
   type PullRequestCheckStatus,
   type PullRequestChecksState,
   type PullRequestMergeability,
@@ -263,6 +264,26 @@ export function normalizeCheckStatus(
   }
 
   return NOT_RUN_CHECK_CONCLUSIONS.has(conclusion) ? "skipped" : "success";
+}
+
+/** One row per check. A repeated name is a re-run, so the last one wins. */
+export function normalizeChecks(
+  checks: ReadonlyArray<Schema.Schema.Type<typeof GitHubStatusCheckSchema>> | null | undefined,
+): ReadonlyArray<PullRequestCheck> {
+  const byName = new Map<string, PullRequestCheck>();
+  for (const check of checks ?? []) {
+    const name = nonEmptyText(check.name) ?? nonEmptyText(check.context);
+    if (name === null) {
+      continue;
+    }
+    byName.set(name, {
+      name,
+      status: normalizeCheckStatus(check),
+      description: nonEmptyText(check.description),
+      url: nonEmptyText(check.detailsUrl) ?? nonEmptyText(check.targetUrl),
+    });
+  }
+  return [...byName.values()];
 }
 
 /**

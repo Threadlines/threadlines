@@ -72,9 +72,8 @@ function instructionBlockText(): string | null {
   );
 }
 
-/** The rect of an element's first rendered line, which is what the spine's node
- *  has to line up with -- not the element's box, whose top is the top of a
- *  possibly multi-line paragraph. */
+/** The rect of an element's first rendered line -- not the element's box,
+ *  whose top is the top of a possibly multi-line paragraph. */
 function firstLineRect(element: Element): DOMRect {
   const range = document.createRange();
   range.selectNodeContents(element);
@@ -107,57 +106,16 @@ describe("SubagentTranscript drill-in", () => {
     });
   });
 
-  it("puts every spine dot on the first line of the step's text", async () => {
+  it("reads a one-call run as that call, and opens it into its output", async () => {
     renderTranscript();
-    await expect.element(page.getByText("Walked the route files.")).toBeVisible();
+    // The provider's "Read: <path>" fallback reads as a plain step.
+    const line = page.getByRole("button", { name: "Read router.tsx" });
+    await expect.element(line).toHaveAttribute("aria-expanded", "false");
+    expect(document.querySelector("[data-activity-detail='true']")).toBeNull();
 
-    const nodes = [
-      ...document.querySelectorAll("[data-subagent-transcript-node='true']"),
-    ] as HTMLElement[];
-    // Prose, the folded receipt for the run between the two, then prose again.
-    expect(nodes).toHaveLength(3);
+    await line.click();
 
-    // The spawn prompt sits above the thread and has no node, so only the
-    // agent's own entries are matched here.
-    const proseEntries = [
-      ...document.querySelectorAll("[data-subagent-transcript-entry='assistant'] .chat-markdown p"),
-    ];
-    const [firstProse, secondProse] = proseEntries as [Element, Element];
-    const receiptLabel = document.querySelector(
-      "[data-subagent-transcript-tool-run-toggle='true'] span",
-    )!;
-
-    const targets = [
-      firstLineRect(firstProse),
-      receiptLabel.getBoundingClientRect(),
-      firstLineRect(secondProse),
-    ];
-    const offsets = nodes.map((node, index) =>
-      Math.abs(centerY(node.getBoundingClientRect()) - centerY(targets[index]!)),
-    );
-    expect(offsets.map((offset) => offset <= 2)).toEqual([true, true, true]);
-  });
-
-  it("reads a one-call run as a receipt and opens it in place", async () => {
-    renderTranscript();
-    await expect.element(page.getByText("1 action")).toBeVisible();
-    await expect.element(page.getByText("Read ×1")).toBeVisible();
-
-    // Collapsed: the receipt is the only thing the run puts on the thread.
-    expect(document.querySelector("[data-subagent-transcript-entry='tool']")).toBeNull();
-    const toggle = document.querySelector(
-      "[data-subagent-transcript-tool-run-toggle='true']",
-    ) as HTMLElement;
-    expect(toggle.getAttribute("aria-expanded")).toBe("false");
-
-    // Expanding shows the call it folded, in place, with its result behind the
-    // same disclosure the rest of the panel uses.
-    await page.getByRole("button", { name: /1 action/u }).click();
-    await expect.element(page.getByText("src/router.tsx")).toBeVisible();
-    expect(document.querySelector("[data-subagent-transcript-entry='tool']")).not.toBeNull();
-    expect(toggle.getAttribute("aria-expanded")).toBe("true");
-
-    await page.getByRole("button", { name: "Output" }).click();
+    await expect.element(line).toHaveAttribute("aria-expanded", "true");
     await expect.element(page.getByText("export const routes = []")).toBeVisible();
   });
 

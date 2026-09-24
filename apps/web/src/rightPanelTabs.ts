@@ -367,6 +367,17 @@ export function rightPanelTabSearchParams<T extends Record<string, unknown>>(
   };
 }
 
+/**
+ * The search params that open the Pull request tab on one of the thread's pull
+ * requests, rather than on the one it starts on.
+ */
+export function pullRequestTabSearchParams<T extends Record<string, unknown>>(
+  params: T,
+  pullRequestNumber: number,
+) {
+  return { ...rightPanelTabSearchParams(params, "pullRequest"), pullRequestNumber };
+}
+
 export function rightPanelDiffTargetFromSearch(search: DiffRouteSearch): RightPanelDiffTarget {
   return {
     ...(search.diffMode ? { diffMode: search.diffMode } : {}),

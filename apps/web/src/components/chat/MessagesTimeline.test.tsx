@@ -89,8 +89,6 @@ function buildProps() {
     activeTurnId: null,
     activeTurnStartedAt: null,
     listRef: createRef<LegendListRef | null>(),
-    completionDividerBeforeEntryId: null,
-    completionSummary: null,
     turnDiffSummaryByAssistantMessageId: new Map(),
     routeThreadKey: "environment-local:thread-1",
     onOpenTurnDiff: () => {},
@@ -275,10 +273,10 @@ describe("MessagesTimeline", () => {
     );
 
     expect(markup).toContain("Context compacted");
-    expect(markup).toContain('data-work-activity-inline="true"');
+    expect(markup).toContain('data-activity-line="true"');
   });
 
-  it("summarizes command-heavy activity groups by default", async () => {
+  it("folds looking-around commands into one plain sentence", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
     const markup = renderTimeline(
       <MessagesTimeline
@@ -305,19 +303,15 @@ describe("MessagesTimeline", () => {
       />,
     );
 
-    expect(markup).toContain('data-work-activity-receipt="true"');
-    expect(markup).toContain("Activity");
-    expect(markup).toContain("4 actions");
-    expect(markup).toContain("Explored project");
-    expect(markup).toContain("1 search");
-    expect(markup).toContain("1 file read");
-    expect(markup).toContain("2 git checks");
-    expect(markup).toContain("Show activity");
+    expect(markup).toContain('data-activity-summary="true"');
+    expect(markup).toContain("Read session-logic.ts, searched once, and checked git");
+    expect(markup).not.toContain('data-activity-line="true"');
+    // The exact commands stay one click away, not on screen.
     expect(markup).not.toContain("git status --short");
     expect(markup).not.toContain("apps/web/src/session-logic.ts");
   });
 
-  it("keeps consequential commands verbatim instead of compacting them", async () => {
+  it("gives each command that changes something a line of its own", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
     const markup = renderTimeline(
       <MessagesTimeline
@@ -342,10 +336,10 @@ describe("MessagesTimeline", () => {
       />,
     );
 
-    expect(markup).not.toContain("Ran 2 commands");
-    expect(markup).toContain("Remove-Item");
-    expect(markup).toContain("activity-feed-scratch.md");
-    expect(markup).toContain("rm -rf .tmp-scratch");
+    expect(markup).not.toContain('data-activity-summary="true"');
+    expect(markup.match(/data-activity-line="true"/gu)).toHaveLength(2);
+    expect(markup).toContain("Deleted activity-feed-scratch.md");
+    expect(markup).toContain("Deleted .tmp-scratch");
   });
 
   it("surfaces the first error line and output toggle on failed commands", async () => {
@@ -375,11 +369,14 @@ describe("MessagesTimeline", () => {
       />,
     );
 
-    expect(markup).toContain("Command failed");
-    expect(markup).toContain('data-command-failure="true"');
+    // Static markup escapes the apostrophe.
+    expect(markup).toContain("Couldn&#x27;t delete activity-feed-scratch.md");
+    expect(markup).toContain('data-activity-tone="fail"');
+    expect(markup).toContain('data-activity-note="true"');
     expect(markup).toContain("Cannot find path");
-    expect(markup).toContain('aria-label="Show command output"');
-    expect(markup).not.toContain('data-command-output="true"');
+    // The command and its output open on click.
+    expect(markup).toContain('aria-expanded="false"');
+    expect(markup).not.toContain('data-activity-detail="true"');
   });
 
   it("renders provider authentication errors with terminal sign-in guidance", async () => {
@@ -654,7 +651,7 @@ describe("MessagesTimeline", () => {
     expect(markup).not.toContain('data-agent-response-body="true"');
   });
 
-  it("keeps live activity compact and height-stable while a turn is working", async () => {
+  it("names the running step on the working line while settled steps sum up above it", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
     const markup = renderTimeline(
       <MessagesTimeline
@@ -699,38 +696,23 @@ describe("MessagesTimeline", () => {
       />,
     );
 
-    // The live turn renders as an accent spine: the most recent steps stay
-    // visible (dimming as they recede toward the live node) while the oldest
-    // fold into a single count, and the running command keeps its pulse.
-    expect(markup).not.toContain("Current activity");
-    expect(markup).toContain("2 earlier events");
-    expect(markup).not.toContain("Show previous");
-    expect(markup).toContain('data-live-activity-strip="true"');
-    expect(markup).toContain("--spine:var(--border)");
-    expect(markup).toContain(
-      "--spine-top:linear-gradient(to bottom, var(--border), color-mix(in oklab, var(--primary-graph) 34%, var(--border)));--spine-bottom:linear-gradient(to bottom, color-mix(in oklab, var(--primary-graph) 34%, var(--border)), color-mix(in oklab, var(--primary-graph) 58%, var(--border)))",
-    );
-    expect(markup).toMatch(
-      /--spine-top:linear-gradient\(to bottom, color-mix\(in oklab, var\(--primary-graph\) 58%, var\(--border\)\), color-mix\(in oklab, var\(--primary-graph\) 82%, var\(--border\)\)\)/u,
-    );
-    expect(markup).not.toContain("min-h-[3.25rem]");
+    expect(markup).toContain("Read session-logic.ts, searched once, and checked git");
     expect(markup).not.toContain("git status --short");
     expect(markup).not.toContain("rg -n");
-    expect(markup).toContain("Read session-logic.ts");
-    expect(markup).toContain("Checked git state");
-    expect(markup).toContain("Verifying bun typecheck");
-    expect(markup).toContain("bun typecheck");
+    // The running typecheck lives on the working line, not in the group, so it
+    // never reads as passed before it finishes.
+    expect(markup).not.toContain("Typecheck passed");
     expect(markup).toContain('data-turn-working-anchor="true"');
     // The anchor's three dots and the shimmering word are the "alive" signal,
     // so no halo pulses anywhere in the timeline.
-    expect(markup).toContain('class="working-dots relative -top-px -mr-0.5" data-state="working"');
-    expect(markup).toContain('<span class="working-shimmer">Working</span>');
+    expect(markup).toContain(
+      'class="working-dots relative -top-px -mr-0.5 shrink-0" data-state="working"',
+    );
+    expect(markup).toContain(
+      '<span class="working-shimmer min-w-0 truncate" data-turn-working-label="true">Typechecking</span>',
+    );
     expect(markup).not.toContain("text-warning-foreground");
     expect((markup.match(/class="thread-halo /gu) ?? []).length).toBe(0);
-    expect(markup).toContain("animate-status-pulse rounded-full bg-primary-graph/80");
-    expect(markup).not.toContain("Tool still running");
-    expect(markup).not.toContain("Explored project");
-    expect(markup).not.toContain("Show activity");
   });
 
   it("gives the working anchor the label's dot motion and turns amber when waiting on the user", async () => {
@@ -751,11 +733,11 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain('data-state="approval"');
     expect(markup).toContain("text-warning-foreground");
     expect(markup).toContain(
-      '<span class="working-shimmer" data-tone="warning">Waiting for approval</span>',
+      '<span class="working-shimmer min-w-0 truncate" data-tone="warning" data-turn-working-label="true">Waiting for approval</span>',
     );
   });
 
-  it("renders warning and error work activity with solid threadline spine dots", async () => {
+  it("puts warnings and errors on tinted lines of their own", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
     const markup = renderTimeline(
       <MessagesTimeline
@@ -791,14 +773,13 @@ describe("MessagesTimeline", () => {
 
     expect(markup).toContain("Claude API connection issue");
     expect(markup).toContain("Runtime error");
-    expect(markup).toContain("size-[5px] rounded-full bg-warning");
-    expect(markup).toContain("size-[5px] rounded-full bg-destructive");
-    expect(markup).not.toContain("border-warning/65");
-    expect(markup).not.toContain("border-destructive/70");
-    expect(markup).not.toContain("lucide-circle-alert");
+    expect(markup).toContain('data-activity-tone="warning"');
+    expect(markup).toContain('data-activity-tone="fail"');
+    // An error's detail shows without a click.
+    expect(markup).toContain("[ede_diagnostic] result_type=user");
   });
 
-  it("connects an untracked reasoning step to the single live terminus", async () => {
+  it("keeps a reasoning step with nothing to say off the chat", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
     const turnId = TurnId.make("turn-1");
     const markup = renderTimeline(
@@ -826,16 +807,10 @@ describe("MessagesTimeline", () => {
       />,
     );
 
-    // Reasoning entries carry no turn id, but the step still joins the accent
-    // spine (not a settled group) so it connects down to the working anchor.
-    expect(markup).toContain('data-live-activity-strip="true"');
-    expect(markup).not.toContain('data-work-activity-inline="true"');
-    expect(markup).toContain("Working through the next step");
-    // The working anchor terminates the thread with its dots — no halo pulses
-    // in the timeline.
+    expect(markup).not.toContain('data-activity-group="true"');
+    expect(markup).not.toContain("Working through the next step");
     expect(markup).toContain('data-turn-working-anchor="true"');
     expect(markup).toContain('class="working-dots');
-    expect((markup.match(/class="thread-halo /gu) ?? []).length).toBe(0);
   });
 
   it("renders unpaired output-only command activity as inactive progress", async () => {
@@ -862,13 +837,12 @@ describe("MessagesTimeline", () => {
       />,
     );
 
-    expect(markup).toContain("Ran command");
-    expect(markup).toContain("2 output lines");
-    expect(markup).not.toContain("Running command");
+    expect(markup).toContain("Ran a command");
+    expect(markup).not.toContain("Running a command");
     expect(markup).not.toContain("Command output");
   });
 
-  it("renders verification commands as a semantic activity summary", async () => {
+  it("reports verification commands by their result", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
     const markup = renderTimeline(
       <MessagesTimeline
@@ -894,9 +868,10 @@ describe("MessagesTimeline", () => {
       />,
     );
 
-    expect(markup).toContain("Verified changes");
-    expect(markup).toContain("bun test, bun lint, bun typecheck");
-    expect(markup).toContain("Show activity");
+    expect(markup).toContain("Tests passed");
+    expect(markup).toContain("Lint passed");
+    expect(markup).toContain("Typecheck passed");
+    expect(markup.match(/data-activity-tone="pass"/gu)).toHaveLength(3);
     expect(markup).not.toContain("MessagesTimeline.test.tsx");
   });
 
@@ -972,10 +947,9 @@ describe("MessagesTimeline", () => {
     expect(markup).not.toContain("subagent tasks");
     expect(markup).not.toContain("Inspect timeline rendering");
     expect(markup).not.toContain("Reading the timeline");
-    // The summary line and the action count are recomputed from what is left.
+    // The summary is recomputed from what is left.
     expect(markup).toContain("Used 3 tools");
-    expect(markup).toContain("3 actions");
-    expect(markup).not.toContain("7 actions");
+    expect(markup).not.toContain("Used Used");
   });
 
   it("renders a finished subagent as a compact receipt and drops live commentary", async () => {
@@ -1128,7 +1102,7 @@ describe("MessagesTimeline", () => {
       />,
     );
 
-    expect(markup).toContain("t3code/apps/web/src/session-logic.ts");
+    expect(markup).toContain("Edited session-logic.ts");
     expect(markup).not.toContain("C:/Users/mike/dev-stuff/t3code/apps/web/src/session-logic.ts");
   });
 
@@ -1328,9 +1302,7 @@ describe("MessagesTimeline", () => {
       />,
     );
 
-    const headingMatches =
-      markup.match(/data-work-entry-heading="true">Edited session-logic\.ts/g) ?? [];
-    expect(headingMatches).toHaveLength(1);
+    expect(markup.match(/Edited session-logic\.ts/gu)).toHaveLength(1);
     expect(markup).toContain("+7");
     expect(markup).toContain("-2");
   });
@@ -1410,8 +1382,9 @@ describe("MessagesTimeline", () => {
       />,
     );
 
-    expect(markup).toContain("Verifying bun test");
-    expect(markup).toContain("bun run test src/session-logic.test.ts");
+    expect(markup).toContain('data-turn-working-label="true">Running tests');
+    expect(markup).not.toContain("Tests passed");
+    expect(markup).not.toContain("bun run test src/session-logic.test.ts");
   });
 
   it("does not keep a live command label running after same-turn assistant output starts", async () => {
@@ -1456,8 +1429,8 @@ describe("MessagesTimeline", () => {
       />,
     );
 
-    expect(markup).toContain("Ran command");
-    expect(markup).not.toContain("Running command");
+    expect(markup).toContain("Ran a command");
+    expect(markup).not.toContain("Running a command");
   });
 
   it("anchors the live node at the bottom once the assistant responds after work", async () => {
@@ -1504,13 +1477,11 @@ describe("MessagesTimeline", () => {
       />,
     );
 
-    // The work group is no longer the tail, so it freezes in place (no accent,
-    // no receipt collapse mid-turn) while the working anchor holds the bottom
+    // The steps stay where they happened; the working anchor holds the bottom
     // with its dots.
-    expect(markup).toContain('data-live-activity-frozen="true"');
+    expect(markup).toContain('data-work-group="true"');
     expect(markup).toContain('data-turn-working-anchor="true"');
     expect(markup).toContain('class="working-dots');
-    expect(markup).not.toContain("data-work-activity-receipt");
     expect(markup).toContain("The resource probe returned");
     expect((markup.match(/class="thread-halo /gu) ?? []).length).toBe(0);
   });
@@ -1542,8 +1513,111 @@ describe("MessagesTimeline", () => {
       />,
     );
 
-    expect(markup).toContain("Reading session-logic.ts");
-    expect(markup).toContain("Get-Content -Path");
+    expect(markup).toContain('data-turn-working-label="true">Reading session-logic.ts');
+    expect(markup).not.toContain("Get-Content -Path");
+  });
+
+  it("keeps a finished turn's notes in place and puts its summary under the answer", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const turnId = TurnId.make("turn-1");
+    const message = (
+      id: string,
+      role: "user" | "assistant",
+      text: string,
+      at: string,
+      done?: string,
+    ) => ({
+      id: `${id}-entry`,
+      kind: "message" as const,
+      createdAt: at,
+      message: {
+        id: MessageId.make(id),
+        role,
+        text,
+        turnId: role === "assistant" ? turnId : null,
+        createdAt: at,
+        ...(done ? { completedAt: done } : {}),
+        streaming: false,
+      },
+    });
+    const markup = renderTimeline(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          message("user-1", "user", "Fix the PR row", "2026-03-17T19:12:00.000Z"),
+          message("note", "assistant", "Checking the two PRs first.", "2026-03-17T19:12:05.000Z"),
+          {
+            id: "work-entry",
+            kind: "work" as const,
+            createdAt: "2026-03-17T19:12:10.000Z",
+            entry: {
+              id: "work-1",
+              createdAt: "2026-03-17T19:12:10.000Z",
+              label: "Ran command",
+              tone: "tool" as const,
+              itemType: "command_execution" as const,
+              command: "pnpm exec vp run typecheck",
+              executionState: "completed" as const,
+              turnId,
+            },
+          },
+          message(
+            "answer",
+            "assistant",
+            "Fixed both.",
+            "2026-03-17T19:13:00.000Z",
+            "2026-03-17T19:13:15.000Z",
+          ),
+        ]}
+      />,
+    );
+
+    // The note and its step stay where they were; the note fades.
+    expect(markup).toContain('data-settled-note="true"');
+    expect(markup).toContain("Typecheck passed");
+    // The footer sits under the answer, where the working row was.
+    const noteAt = markup.indexOf("Checking the two PRs first.");
+    const answerAt = markup.indexOf("Fixed both.");
+    const footerAt = markup.indexOf('data-turn-footer="true"');
+    expect(noteAt).toBeGreaterThan(-1);
+    expect(answerAt).toBeGreaterThan(noteAt);
+    expect(footerAt).toBeGreaterThan(answerAt);
+    expect(markup).toContain("Worked for 1m 15s");
+    expect(markup).toContain('data-turn-footer-checks="passed"');
+  });
+
+  it("keeps the footer and the fade off notes while the agent works", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const turnId = TurnId.make("turn-1");
+    const markup = renderTimeline(
+      <MessagesTimeline
+        {...buildProps()}
+        isWorking
+        activeTurnInProgress
+        activeTurnId={turnId}
+        activeTurnStartedAt="2026-03-17T19:12:00.000Z"
+        timelineEntries={[
+          {
+            id: "note-entry",
+            kind: "message",
+            createdAt: "2026-03-17T19:12:05.000Z",
+            message: {
+              id: MessageId.make("note"),
+              role: "assistant",
+              text: "Checking the two PRs first.",
+              turnId,
+              createdAt: "2026-03-17T19:12:05.000Z",
+              completedAt: "2026-03-17T19:12:06.000Z",
+              streaming: false,
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain("Checking the two PRs first.");
+    expect(markup).not.toContain('data-turn-footer="true"');
+    expect(markup).not.toContain('data-settled-note="true"');
   });
 
   it("renders assistant turn changes as a collapsed tree by default", async () => {

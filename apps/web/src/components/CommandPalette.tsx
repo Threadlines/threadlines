@@ -99,7 +99,7 @@ import {
 } from "../lib/pullRequestsReactQuery";
 import { useGitStatus } from "../lib/gitStatusState";
 import { resolveThreadPullRequest, threadViewBranch } from "./pull-requests/pullRequests.logic";
-import { focusRightPanelTab, rightPanelTabSearchParams } from "../rightPanelTabs";
+import { focusRightPanelTab, pullRequestTabSearchParams } from "../rightPanelTabs";
 import {
   cn,
   isMacPlatform,
@@ -1679,6 +1679,7 @@ function OpenCommandPaletteDialog() {
   // no pull request" is a dead end the palette should not offer.
   if (activeThreadPullRequest && activeThread) {
     const threadRef = scopeThreadRef(activeThread.environmentId, activeThread.id);
+    const pullRequestNumber = activeThreadPullRequest.number;
     actionItems.push({
       kind: "action",
       value: "action:thread-pull-request",
@@ -1690,7 +1691,7 @@ function OpenCommandPaletteDialog() {
         await navigate({
           to: "/$environmentId/$threadId",
           params: buildThreadRouteParams(threadRef),
-          search: (previous) => rightPanelTabSearchParams(previous, "pullRequest"),
+          search: (previous) => pullRequestTabSearchParams(previous, pullRequestNumber),
         });
       },
     });

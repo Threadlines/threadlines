@@ -67,7 +67,6 @@ import {
   parseStandaloneComposerSlashCommand,
 } from "../composer-logic";
 import {
-  deriveCompletionDividerBeforeEntryId,
   derivePendingApprovals,
   derivePendingUserInputs,
   isBlockingUserInput,
@@ -82,10 +81,8 @@ import {
   findLatestProposedPlan,
   deriveWorkLogEntries,
   hasActionableProposedPlan,
-  hasToolActivityForTurn,
   isLatestTurnSettled,
   isWaitingOnBackgroundTasks,
-  formatElapsed,
   type McpAuthReconnectAction,
   type ProviderAuthReconnectAction,
   type SubagentProgressItem,
@@ -203,7 +200,7 @@ import {
   useTerminalStateStore,
 } from "../terminalStateStore";
 import { ChatComposer, type ChatComposerHandle } from "./chat/ChatComposer";
-import type { ComposerPullRequest } from "./chat/ComposerPullRequestRow";
+import { NO_COMPOSER_PULL_REQUESTS, type ComposerPullRequest } from "./chat/ComposerPullRequestRow";
 import { type ComposerGoalSetInput } from "./chat/ComposerGoalBar";
 import { getComposerProviderState } from "./chat/composerProviderState";
 import { ExpandedImageDialog } from "./chat/ExpandedImageDialog";
@@ -792,10 +789,10 @@ type ChatViewProps =
       reserveTitleBarControlInset?: boolean;
       composerFocusRequest?: number;
       /**
-       * The thread's pull request, resolved by the route that owns the Pull
-       * request tab. The composer docks a row for it; a draft has none.
+       * The thread's pull requests, resolved by the route that owns the Pull
+       * request tab. The composer docks a row for each; a draft has none.
        */
-      composerPullRequest?: ComposerPullRequest | null;
+      composerPullRequests?: ReadonlyArray<ComposerPullRequest>;
       routeKind: "server";
       draftId?: never;
     }
@@ -1091,7 +1088,10 @@ export default function ChatView(props: ChatViewProps) {
     reserveTitleBarControlInset = true,
     composerFocusRequest = 0,
   } = props;
-  const composerPullRequest = routeKind === "server" ? (props.composerPullRequest ?? null) : null;
+  const composerPullRequests =
+    routeKind === "server"
+      ? (props.composerPullRequests ?? NO_COMPOSER_PULL_REQUESTS)
+      : NO_COMPOSER_PULL_REQUESTS;
   const draftId = routeKind === "draft" ? props.draftId : null;
   const routeThreadRef = useMemo(
     () => scopeThreadRef(environmentId, threadId),
@@ -1848,10 +1848,6 @@ export default function ChatView(props: ChatViewProps) {
       sourceThreadTitle: payload.sourceThreadTitle,
     };
   }, [forkContextEntries]);
-  const latestTurnHasToolActivity = useMemo(
-    () => hasToolActivityForTurn(threadActivities, activeLatestTurn?.turnId),
-    [activeLatestTurn?.turnId, threadActivities],
-  );
   const pendingApprovals = useMemo(
     () => derivePendingApprovals(threadActivities),
     [threadActivities],
@@ -2350,25 +2346,6 @@ export default function ChatView(props: ChatViewProps) {
     return byUserMessageId;
   }, [inferredCheckpointTurnCountByTurnId, timelineEntries, turnDiffSummaryByAssistantMessageId]);
 
-  const completionSummary = useMemo(() => {
-    if (!latestTurnSettled) return null;
-    if (!activeLatestTurn?.startedAt) return null;
-    if (!activeLatestTurn.completedAt) return null;
-    if (!latestTurnHasToolActivity) return null;
-
-    const elapsed = formatElapsed(activeLatestTurn.startedAt, activeLatestTurn.completedAt);
-    return elapsed ? `Worked for ${elapsed}` : null;
-  }, [
-    activeLatestTurn?.completedAt,
-    activeLatestTurn?.startedAt,
-    latestTurnHasToolActivity,
-    latestTurnSettled,
-  ]);
-  const completionDividerBeforeEntryId = useMemo(() => {
-    if (!latestTurnSettled) return null;
-    if (!completionSummary) return null;
-    return deriveCompletionDividerBeforeEntryId(timelineEntries, activeLatestTurn);
-  }, [activeLatestTurn, completionSummary, latestTurnSettled, timelineEntries]);
   const gitCwd = activeProject
     ? resolveThreadWorkingCwd({
         projectCwd: activeProject.cwd,
@@ -6656,8 +6633,6 @@ export default function ChatView(props: ChatViewProps) {
               listRef={legendListRef}
               stickToBottomRequestKey={stickToBottomRequestKey}
               timelineEntries={timelineEntries}
-              completionDividerBeforeEntryId={completionDividerBeforeEntryId}
-              completionSummary={completionSummary}
               turnDiffSummaryByAssistantMessageId={turnDiffSummaryByAssistantMessageId}
               activeThreadEnvironmentId={activeThread.environmentId}
               activeThreadId={activeThread.id}
@@ -6762,7 +6737,7 @@ export default function ChatView(props: ChatViewProps) {
                   }
                   activeThreadActivities={activeThread?.activities}
                   notices={composerNotices}
-                  pullRequest={composerPullRequest}
+                  pullRequests={composerPullRequests}
                   resolvedTheme={resolvedTheme}
                   settings={settings}
                   keybindings={keybindings}

@@ -68,7 +68,10 @@ const OPEN_PULL_REQUEST: ThreadPullRequest = {
   repository: "threadlines/threadlines",
 };
 
-function renderRow(listPullRequest: ThreadPullRequest | null) {
+function renderRow(
+  listPullRequest: ThreadPullRequest | null,
+  linkedPullRequests: readonly ThreadPullRequest[] = [],
+) {
   const openPrLink = vi.fn();
   render(
     <ThreadHoverCardProvider>
@@ -95,6 +98,7 @@ function renderRow(listPullRequest: ThreadPullRequest | null) {
           cancelRename={() => undefined}
           markThreadDone={() => undefined}
           listPullRequest={listPullRequest}
+          linkedPullRequests={linkedPullRequests}
           openPrLink={openPrLink}
         />
       </ul>
@@ -115,6 +119,36 @@ describe("InboxThreadRow pull request badge", () => {
 
     await userEvent.click(badge);
     expect(openPrLink).toHaveBeenCalledTimes(1);
+  });
+
+  it("names the one still open when the thread has more, and counts the rest", async () => {
+    const { openPrLink } = renderRow(
+      { ...OPEN_PULL_REQUEST, state: "merged", settledAt: "2026-09-24T09:00:00.000Z" },
+      [
+        {
+          ...OPEN_PULL_REQUEST,
+          number: 294,
+          title: "Lighter PR rules",
+          url: "https://github.com/threadlines/threadlines/pull/294",
+        },
+      ],
+    );
+
+    const badge = page.getByTestId("inbox-thread-pr-badge");
+    await expect.element(badge).toHaveTextContent("#294+1");
+    await expect
+      .element(badge)
+      .toHaveAttribute(
+        "aria-label",
+        "#294 PR open: Lighter PR rules; #123 PR merged: Add the pull requests page",
+      );
+
+    await userEvent.click(badge);
+    expect(openPrLink).toHaveBeenCalledWith(
+      expect.anything(),
+      { number: 294, url: "https://github.com/threadlines/threadlines/pull/294" },
+      expect.anything(),
+    );
   });
 
   it("keeps the thread hover card away while the pointer is on the badge", async () => {

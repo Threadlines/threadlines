@@ -297,6 +297,7 @@ function mapThread(thread: OrchestrationThread, environmentId: EnvironmentId): T
     pinnedAt: thread.pinnedAt,
     pullRequestAutoFix: thread.pullRequestAutoFix ?? false,
     pullRequestAutoMerge: thread.pullRequestAutoMerge ?? null,
+    linkedPullRequests: thread.linkedPullRequests ?? [],
     doneOverride: thread.doneOverride,
     lastSeenAt: thread.lastSeenAt,
     updatedAt: thread.updatedAt,
@@ -338,6 +339,7 @@ function mapThreadShell(
     pinnedAt: thread.pinnedAt,
     pullRequestAutoFix: thread.pullRequestAutoFix ?? false,
     pullRequestAutoMerge: thread.pullRequestAutoMerge ?? null,
+    linkedPullRequests: thread.linkedPullRequests ?? [],
     doneOverride: thread.doneOverride,
     lastSeenAt: thread.lastSeenAt,
     updatedAt: thread.updatedAt,
@@ -376,6 +378,7 @@ function mapThreadShell(
     hasBlockingUserInput: thread.hasBlockingUserInput ?? thread.hasPendingUserInput,
     hasActionableProposedPlan: thread.hasActionableProposedPlan,
     cumulativeDiffStat: thread.cumulativeDiffStat,
+    linkedPullRequests: thread.linkedPullRequests ?? [],
   };
   return {
     shell,
@@ -401,6 +404,7 @@ function toThreadShell(thread: Thread): ThreadShell {
     pinnedAt: thread.pinnedAt,
     pullRequestAutoFix: thread.pullRequestAutoFix ?? false,
     pullRequestAutoMerge: thread.pullRequestAutoMerge ?? null,
+    linkedPullRequests: thread.linkedPullRequests ?? [],
     doneOverride: thread.doneOverride,
     lastSeenAt: thread.lastSeenAt,
     updatedAt: thread.updatedAt,
@@ -485,6 +489,7 @@ function toSidebarThreadSummary(
     cumulativeDiffStat: hasTurnDiffEvidence
       ? sumTurnDiffStats(thread.turnDiffSummaries, thread.diffStatBaselineTurnCount ?? 0)
       : (previous?.cumulativeDiffStat ?? null),
+    linkedPullRequests: thread.linkedPullRequests ?? [],
   };
 }
 
@@ -549,6 +554,26 @@ function threadDiffStatsEqual(
   return left.additions === right.additions && left.deletions === right.deletions;
 }
 
+function linkedPullRequestsEqual(
+  left: SidebarThreadSummary["linkedPullRequests"],
+  right: SidebarThreadSummary["linkedPullRequests"],
+): boolean {
+  const leftList = left ?? [];
+  const rightList = right ?? [];
+  return (
+    leftList.length === rightList.length &&
+    leftList.every((linked, index) => {
+      const other = rightList[index];
+      return (
+        other !== undefined &&
+        linked.number === other.number &&
+        linked.url === other.url &&
+        linked.autoMerge === other.autoMerge
+      );
+    })
+  );
+}
+
 function sidebarThreadSummariesEqual(
   left: SidebarThreadSummary | undefined,
   right: SidebarThreadSummary,
@@ -575,7 +600,8 @@ function sidebarThreadSummariesEqual(
     left.hasPendingUserInput === right.hasPendingUserInput &&
     left.hasBlockingUserInput === right.hasBlockingUserInput &&
     left.hasActionableProposedPlan === right.hasActionableProposedPlan &&
-    threadDiffStatsEqual(left.cumulativeDiffStat, right.cumulativeDiffStat)
+    threadDiffStatsEqual(left.cumulativeDiffStat, right.cumulativeDiffStat) &&
+    linkedPullRequestsEqual(left.linkedPullRequests, right.linkedPullRequests)
   );
 }
 
@@ -596,6 +622,7 @@ function threadShellsEqual(left: ThreadShell | undefined, right: ThreadShell): b
     left.pinnedAt === right.pinnedAt &&
     left.pullRequestAutoFix === right.pullRequestAutoFix &&
     left.pullRequestAutoMerge === right.pullRequestAutoMerge &&
+    linkedPullRequestsEqual(left.linkedPullRequests, right.linkedPullRequests) &&
     doneOverridesEqual(left.doneOverride, right.doneOverride) &&
     left.lastSeenAt === right.lastSeenAt &&
     left.updatedAt === right.updatedAt &&
@@ -1574,6 +1601,7 @@ function applyEnvironmentOrchestrationEvent(
           pinnedAt: null,
           pullRequestAutoFix: false,
           pullRequestAutoMerge: null,
+          linkedPullRequests: [],
           doneOverride: null,
           lastSeenAt: null,
           deletedAt: null,
@@ -1620,17 +1648,45 @@ function applyEnvironmentOrchestrationEvent(
         updatedAt: event.payload.updatedAt,
       }));
 
-    case "thread.pull-request-automation-changed":
+    case "thread.pull-request-automation-changed": {
+      const { autoMerge, pullRequestNumber } = event.payload;
+      // A numbered change is the switch of one linked pull request.
+      if (pullRequestNumber !== undefined) {
+        return updateThreadState(state, event.payload.threadId, (thread) =>
+          autoMerge === undefined
+            ? thread
+            : {
+                ...thread,
+                linkedPullRequests: (thread.linkedPullRequests ?? []).map((linked) =>
+                  linked.number === pullRequestNumber ? { ...linked, autoMerge } : linked,
+                ),
+                updatedAt: event.payload.updatedAt,
+              },
+        );
+      }
       return updateThreadState(state, event.payload.threadId, (thread) => ({
         ...thread,
         ...(event.payload.autoFix === undefined
           ? {}
           : { pullRequestAutoFix: event.payload.autoFix }),
-        ...(event.payload.autoMerge === undefined
-          ? {}
-          : { pullRequestAutoMerge: event.payload.autoMerge }),
+        ...(autoMerge === undefined ? {} : { pullRequestAutoMerge: autoMerge }),
         updatedAt: event.payload.updatedAt,
       }));
+    }
+
+    // Found in the conversation, not done to the thread: `updatedAt` stays.
+    case "thread.pull-request-linked":
+      return updateThreadState(state, event.payload.threadId, (thread) =>
+        (thread.linkedPullRequests ?? []).some((linked) => linked.number === event.payload.number)
+          ? thread
+          : {
+              ...thread,
+              linkedPullRequests: [
+                ...(thread.linkedPullRequests ?? []),
+                { number: event.payload.number, url: event.payload.url, autoMerge: null },
+              ],
+            },
+      );
 
     // Neither event moves `updatedAt`: filing or reading a thread is not work
     // on it, and the inbox weighs both stamps against real activity.

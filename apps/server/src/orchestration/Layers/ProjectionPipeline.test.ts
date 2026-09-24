@@ -2519,6 +2519,77 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
     }),
   );
 
+  it.effect("keeps a linked pull request and its own merge switch on the thread row", () =>
+    Effect.gen(function* () {
+      const engine = yield* OrchestrationEngineService;
+      const sql = yield* SqlClient.SqlClient;
+      const createdAt = "2026-01-01T00:00:00.000Z";
+      const threadId = ThreadId.make("thread-linked-pull-request");
+      const url = "https://github.com/acme/widgets/pull/294";
+
+      yield* engine.dispatch({
+        type: "project.create",
+        commandId: CommandId.make("cmd-linked-project"),
+        projectId: ProjectId.make("project-linked"),
+        title: "Linked Project",
+        workspaceRoot: "/tmp/project-linked",
+        defaultModelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5-codex",
+        },
+        createdAt,
+      });
+      yield* engine.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("cmd-linked-thread"),
+        threadId,
+        projectId: ProjectId.make("project-linked"),
+        title: "Linked Thread",
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5-codex",
+        },
+        interactionMode: "default",
+        runtimeMode: "approval-required",
+        branch: null,
+        worktreePath: null,
+        createdAt,
+      });
+      yield* engine.dispatch({
+        type: "thread.pull-request.link",
+        commandId: CommandId.make("cmd-linked-link"),
+        threadId,
+        number: 294,
+        url,
+        createdAt,
+      });
+      yield* engine.dispatch({
+        type: "thread.pull-request-automation.set",
+        commandId: CommandId.make("cmd-linked-merge"),
+        threadId,
+        pullRequestNumber: 294,
+        autoMerge: "squash",
+      });
+
+      const threadRows = yield* sql<{
+        readonly linkedPullRequests: string;
+        readonly pullRequestAutoMerge: string | null;
+      }>`
+        SELECT
+          linked_pull_requests AS "linkedPullRequests",
+          pull_request_auto_merge AS "pullRequestAutoMerge"
+        FROM projection_threads
+        WHERE thread_id = ${threadId}
+      `;
+      assert.deepEqual(threadRows, [
+        {
+          linkedPullRequests: JSON.stringify([{ number: 294, url, autoMerge: "squash" }]),
+          pullRequestAutoMerge: null,
+        },
+      ]);
+    }),
+  );
+
   it.effect("keeps a provider diff placeholder from completing the active turn projection", () =>
     Effect.gen(function* () {
       const engine = yield* OrchestrationEngineService;

@@ -189,6 +189,20 @@ export const PullRequestCheck = Schema.Struct({
 });
 export type PullRequestCheck = typeof PullRequestCheck.Type;
 
+/**
+ * A merge queue giving a pull request back: its own run of the checks, on the
+ * pull request merged with the latest base, failed. That run is not the pull
+ * request's own, so none of it shows in `checks`.
+ */
+export const PullRequestMergeQueueRemoval = Schema.Struct({
+  /** The host's id for this removal, so the next one can be told apart from it. */
+  id: TrimmedNonEmptyString,
+  removedAt: IsoDateTime,
+  /** What failed in the queue's run; empty where a re-run has passed since. */
+  failedChecks: Schema.Array(PullRequestCheck),
+});
+export type PullRequestMergeQueueRemoval = typeof PullRequestMergeQueueRemoval.Type;
+
 export const PullRequestReviewState = Schema.Literals([
   "approved",
   "changes-requested",
@@ -432,6 +446,8 @@ export const PullRequestDetail = Schema.Struct({
     Schema.Struct({
       /** Where this pull request stands in the queue, first is 1; null while it is not queued. */
       position: Schema.NullOr(PositiveInt),
+      /** The queue's last word, while it is a removal after failed checks and nothing has queued it since. */
+      removal: Schema.optionalKey(PullRequestMergeQueueRemoval),
     }),
   ),
   viewer: PullRequestViewerPermissions,

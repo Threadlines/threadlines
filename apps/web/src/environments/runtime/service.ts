@@ -33,9 +33,13 @@ import {
 import { ensureLocalApi } from "~/localApi";
 import { collectActiveTerminalThreadIds } from "~/lib/terminalStateCleanup";
 import { migrateLegacyInboxStateForEnvironment } from "~/lib/threadInboxSync";
-import { deriveOrchestrationBatchEffects } from "~/orchestrationEventEffects";
+import {
+  deriveOrchestrationBatchEffects,
+  serverMergeSwitchTurnedOff,
+} from "~/orchestrationEventEffects";
 import { projectQueryKeys } from "~/lib/projectReactQuery";
 import { providerQueryKeys } from "~/lib/providerReactQuery";
+import { pullRequestQueryKeys } from "~/lib/pullRequestsReactQuery";
 import { getPrimaryKnownEnvironment } from "../primary";
 import {
   bootstrapRemoteBearerSession,
@@ -139,6 +143,7 @@ const lastAppliedProjectionVersionByEnvironment = new Map<
 
 let activeService: EnvironmentServiceState | null = null;
 let needsProviderInvalidation = false;
+let needsPullRequestInvalidation = false;
 let lastBrowserHiddenAt: number | null = null;
 let lastBrowserResumeReconnectAt = Number.NEGATIVE_INFINITY;
 
@@ -1098,6 +1103,10 @@ function applyRecoveredEventBatch(
     needsProviderInvalidation = true;
     void activeService?.queryInvalidationThrottler.maybeExecute();
   }
+  if (batchEffects.needsPullRequestInvalidation) {
+    needsPullRequestInvalidation = true;
+    void activeService?.queryInvalidationThrottler.maybeExecute();
+  }
 
   useStore.getState().applyOrchestrationEvents(uiEvents, environmentId);
   if (needsProjectUiSync) {
@@ -1190,6 +1199,12 @@ function applyShellEvent(event: OrchestrationShellStreamEvent, environmentId: En
       }
       if (previousThread?.archivedAt === null && event.thread.archivedAt !== null && threadRef) {
         useTerminalStateStore.getState().removeTerminalState(threadRef);
+      }
+      // The shell carries every thread, including ones with no detail stream
+      // open, so a server-held merge that ends off screen is seen here too.
+      if (serverMergeSwitchTurnedOff(previousThread, event.thread)) {
+        needsPullRequestInvalidation = true;
+        void activeService?.queryInvalidationThrottler.maybeExecute();
       }
       reconcileThreadDetailSubscriptionEvictionForThread(environmentId, event.thread.id);
       evictIdleThreadDetailSubscriptionsToCapacity();
@@ -2055,14 +2070,18 @@ export function startEnvironmentConnectionService(queryClient: QueryClient): () 
 
   stopActiveService();
   needsProviderInvalidation = false;
+  needsPullRequestInvalidation = false;
   const queryInvalidationThrottler = new Throttler(
     () => {
-      if (!needsProviderInvalidation) {
-        return;
+      if (needsProviderInvalidation) {
+        needsProviderInvalidation = false;
+        void queryClient.invalidateQueries({ queryKey: providerQueryKeys.all });
+        void queryClient.invalidateQueries({ queryKey: projectQueryKeys.all });
       }
-      needsProviderInvalidation = false;
-      void queryClient.invalidateQueries({ queryKey: providerQueryKeys.all });
-      void queryClient.invalidateQueries({ queryKey: projectQueryKeys.all });
+      if (needsPullRequestInvalidation) {
+        needsPullRequestInvalidation = false;
+        void queryClient.invalidateQueries({ queryKey: pullRequestQueryKeys.all });
+      }
     },
     {
       wait: 100,

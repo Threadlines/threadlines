@@ -49,6 +49,7 @@ function makeThreadShell(
     pinnedAt: null,
     pullRequestAutoFix: false,
     pullRequestAutoMerge: null,
+    linkedPullRequests: [],
     doneOverride: null,
     lastSeenAt: null,
     session: null,

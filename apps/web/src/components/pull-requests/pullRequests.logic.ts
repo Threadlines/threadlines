@@ -5,6 +5,7 @@ import type {
   PullRequestCheck,
   PullRequestDetail,
   PullRequestDiffSide,
+  OrchestrationThreadLinkedPullRequest,
   PullRequestListEntry,
   PullRequestListProjectError,
   PullRequestListResult,
@@ -704,11 +705,8 @@ export function resolveThreadPullRequest(input: {
   if (thread.branch === null || thread.archivedAt !== null) {
     return null;
   }
-  const project = input.projects.find(
-    (candidate) =>
-      candidate.environmentId === thread.environmentId && candidate.id === thread.projectId,
-  );
-  if (!project || project.kind === "general-chat") {
+  const project = findThreadProject(thread, input.projects);
+  if (!project) {
     return null;
   }
   const repository = projectRepository(project);
@@ -725,9 +723,23 @@ export function resolveThreadPullRequest(input: {
   const entry =
     findThreadListEntry(thread, scope, input.openEntries) ??
     findThreadListEntry(thread, scope, input.settledEntries ?? []);
-  if (!entry) {
-    return null;
-  }
+  return entry ? threadPullRequestFromEntry(entry) : null;
+}
+
+/** The project a thread belongs to, unless it is one with no pull requests (a general chat). */
+function findThreadProject(
+  thread: Pick<ThreadPullRequestSubject, "environmentId" | "projectId">,
+  projects: readonly Project[],
+): Project | undefined {
+  const project = projects.find(
+    (candidate) =>
+      candidate.environmentId === thread.environmentId && candidate.id === thread.projectId,
+  );
+  return project?.kind === "general-chat" ? undefined : project;
+}
+
+/** A listing row as a thread's badge, row and tab read it. */
+function threadPullRequestFromEntry(entry: PullRequestEntry): ThreadPullRequest {
   return {
     number: entry.number,
     state: entry.state,
@@ -742,6 +754,164 @@ export function resolveThreadPullRequest(input: {
     headBranch: entry.headBranch,
     diffStat: { additions: entry.additions, deletions: entry.deletions },
   };
+}
+
+/** The listing row for one pull request number on a project's own repository. */
+function findNumberedListEntry(
+  scope: string,
+  number: number,
+  entries: readonly PullRequestEntry[],
+): PullRequestEntry | undefined {
+  return entries.find(
+    (candidate) =>
+      candidate.origin !== "authored" &&
+      candidate.number === number &&
+      repositoryScopeKey(candidate.provider, candidate.repository) === scope,
+  );
+}
+
+/**
+ * The pull requests a thread's agent opened on other branches (its
+ * `linkedPullRequests`), as the composer rows, the Pull request tab and the
+ * sidebar tag draw them: what the listings know about each, or until they know
+ * anything, the number and address the thread recorded, read as open. The
+ * thread's own pull request is left out however it came to be linked; it is
+ * found from the branch.
+ */
+export function resolveLinkedThreadPullRequests(input: {
+  readonly thread: Pick<ThreadPullRequestSubject, "environmentId" | "projectId"> & {
+    readonly linkedPullRequests?: ReadonlyArray<
+      Pick<OrchestrationThreadLinkedPullRequest, "number" | "url">
+    >;
+  };
+  readonly ownNumber: number | null;
+  readonly projects: readonly Project[];
+  readonly openEntries: readonly PullRequestEntry[];
+  /** Merged and closed rows, consulted only when the open ones say nothing. */
+  readonly settledEntries?: readonly PullRequestEntry[];
+}): ThreadPullRequest[] {
+  const linked = (input.thread.linkedPullRequests ?? []).filter(
+    (candidate) => candidate.number !== input.ownNumber,
+  );
+  const project = linked.length === 0 ? undefined : findThreadProject(input.thread, input.projects);
+  if (!project) {
+    return [];
+  }
+  const repository = projectRepository(project);
+  const scope = projectRepositoryScope(project);
+  return linked.map((candidate) => {
+    const entry =
+      scope === null
+        ? undefined
+        : (findNumberedListEntry(scope, candidate.number, input.openEntries) ??
+          findNumberedListEntry(scope, candidate.number, input.settledEntries ?? []));
+    return entry
+      ? threadPullRequestFromEntry(entry)
+      : {
+          number: candidate.number,
+          state: "open",
+          isDraft: false,
+          title: `#${candidate.number}`,
+          url: candidate.url,
+          repository,
+          settledAt: null,
+          autoMergeEnabled: false,
+          headBranch: null,
+          diffStat: null,
+        };
+  });
+}
+
+/**
+ * A thread's pull request as its checkout's status reads it, with the landing
+ * date a listing row for the same pull request has. The status is first to see
+ * a merge but carries no dates, and `leadThreadPullRequest` ranks by landing.
+ */
+export function withListedLanding(
+  pullRequest: ThreadPullRequest,
+  listed: ThreadPullRequest | null,
+): ThreadPullRequest {
+  return pullRequest.state !== "open" &&
+    pullRequest.settledAt === null &&
+    listed?.number === pullRequest.number &&
+    listed.settledAt !== null
+    ? { ...pullRequest, settledAt: listed.settledAt }
+    : pullRequest;
+}
+
+/**
+ * The one of a thread's pull requests that speaks for all of them, where there
+ * is room for one: the sidebar's tag, and the Pull request tab until something
+ * else is chosen. One still open comes first, since it is the one that still
+ * needs something; among those, the order given (the thread's own, then the
+ * ones its agent opened elsewhere). Once all have landed, the one that landed
+ * last, which is the latest news. An undated landing (read from the checkout's
+ * status before any listing caught up with it, see `withListedLanding`) counts
+ * as just now, as it does for the thread's wrap-up, and a tie keeps the order
+ * given.
+ */
+export function leadThreadPullRequest<T extends Pick<ThreadPullRequest, "state" | "settledAt">>(
+  pullRequests: readonly T[],
+): T | null {
+  const open = pullRequests.find((pullRequest) => pullRequest.state === "open");
+  if (open !== undefined) {
+    return open;
+  }
+  const landedMs = (pullRequest: T) =>
+    pullRequest.settledAt === null ? Number.POSITIVE_INFINITY : updatedAtMs(pullRequest.settledAt);
+  return pullRequests.reduce<T | null>(
+    (latest, pullRequest) =>
+      latest === null || landedMs(pullRequest) > landedMs(latest) ? pullRequest : latest,
+    null,
+  );
+}
+
+/**
+ * When every pull request a thread has is merged or closed, the moment the
+ * last one settled; null while any is still open, or while it has none. The
+ * thread's own pull request counts the way it always has. A linked one is
+ * settled once a merged or closed listing carries it; until then it holds the
+ * thread open, whether the open listing carries it or has simply not caught
+ * up with one that was opened a moment ago.
+ */
+export function resolveThreadPullRequestsSettledAt(input: {
+  readonly thread: Pick<ThreadPullRequestSubject, "environmentId" | "projectId"> & {
+    readonly linkedPullRequests?: ReadonlyArray<
+      Pick<OrchestrationThreadLinkedPullRequest, "number">
+    >;
+  };
+  readonly own: ThreadPullRequest | undefined;
+  readonly projects: readonly Project[];
+  readonly settledEntries: readonly PullRequestEntry[];
+  /** Stands in for a landing the host did not date. */
+  readonly now: string;
+}): string | null {
+  const settledAt: string[] = [];
+  if (input.own !== undefined) {
+    if (input.own.state === "open") {
+      return null;
+    }
+    settledAt.push(input.own.settledAt ?? input.now);
+  }
+  const linked = (input.thread.linkedPullRequests ?? []).filter(
+    (candidate) => candidate.number !== input.own?.number,
+  );
+  const project = linked.length === 0 ? undefined : findThreadProject(input.thread, input.projects);
+  const scope = project ? projectRepositoryScope(project) : null;
+  for (const candidate of linked) {
+    const settled =
+      scope === null
+        ? undefined
+        : findNumberedListEntry(scope, candidate.number, input.settledEntries);
+    if (!settled) {
+      return null;
+    }
+    settledAt.push(settled.settledAt ?? settled.updatedAt);
+  }
+  return settledAt.reduce<string | null>(
+    (latest, at) => (latest === null || updatedAtMs(at) > updatedAtMs(latest) ? at : latest),
+    null,
+  );
 }
 
 /**
@@ -1583,12 +1753,14 @@ function englishOrdinal(value: number): string {
 /**
  * The header's word for a pull request whose base runs a merge queue, or null
  * where there is nothing to say. Queued leads with where it stands, since that
- * is the only part that moves; armed says what it is waiting to do. Outside a
- * queue this says nothing and the plain auto-merge word stands.
+ * is the only part that moves; armed says what it is waiting to do. One the
+ * queue gave back after its own run failed says so, as a failure, until
+ * something is set to queue it again. Outside a queue this says nothing and
+ * the plain auto-merge word stands.
  */
 export function pullRequestMergeQueueLabel(
   detail: Pick<PullRequestDetail, "mergeQueue" | "autoMergeEnabled" | "baseBranch">,
-): { readonly label: string; readonly tooltip: string } | null {
+): { readonly label: string; readonly tooltip: string; readonly failed: boolean } | null {
   if (detail.mergeQueue === undefined) {
     return null;
   }
@@ -1597,14 +1769,29 @@ export function pullRequestMergeQueueLabel(
     return {
       label: position <= 1 ? "Queued" : `Queued, ${englishOrdinal(position)}`,
       tooltip: `In the merge queue for ${detail.baseBranch}`,
+      failed: false,
     };
   }
-  return detail.autoMergeEnabled === true
-    ? {
-        label: "Merge when ready",
-        tooltip: "Joins the merge queue once every requirement passes",
-      }
-    : null;
+  if (detail.autoMergeEnabled === true) {
+    return {
+      label: "Merge when ready",
+      tooltip: "Joins the merge queue once every requirement passes",
+      failed: false,
+    };
+  }
+  const removal = detail.mergeQueue.removal;
+  if (removal === undefined) {
+    return null;
+  }
+  const failedNames = removal.failedChecks.map((check) => check.name);
+  return {
+    label: "Queue failed",
+    tooltip:
+      failedNames.length === 0
+        ? "The merge queue took it out after a check failed"
+        : `The merge queue took it out after ${failedNames.join(", ")} failed`,
+    failed: true,
+  };
 }
 
 /**

@@ -459,6 +459,34 @@ describe("mapClaudeSubagentTranscript", () => {
     });
   });
 
+  it("keeps the agent's label for a shell call and marks a failed result", () => {
+    const jsonl = [
+      transcriptLine({
+        type: "assistant",
+        message: {
+          content: [
+            {
+              type: "tool_use",
+              name: "Bash",
+              input: { command: "pnpm test", description: "Run the van tests" },
+            },
+          ],
+        },
+      }),
+      transcriptLine({
+        type: "user",
+        message: {
+          content: [{ type: "tool_result", is_error: true, content: "1 test failed" }],
+        },
+      }),
+    ].join("\n");
+
+    const result = mapClaudeSubagentTranscript(jsonl);
+    assert.equal(result.entries[0]?.toolUses[0]?.description, "Run the van tests");
+    assert.equal(result.entries[1]?.outputIsError, true);
+    assert.equal(result.entries[1]?.outputPreview, "1 test failed");
+  });
+
   it("caps entry counts and long content", () => {
     const longLine = transcriptLine({
       type: "assistant",
@@ -1960,7 +1988,7 @@ describe("ClaudeAdapterLive", () => {
     return Effect.gen(function* () {
       const adapter = yield* ClaudeAdapter;
 
-      const runtimeEventsFiber = yield* Stream.take(adapter.streamEvents, 11).pipe(
+      const runtimeEventsFiber = yield* Stream.take(adapter.streamEvents, 13).pipe(
         Stream.runCollect,
         Effect.forkChild,
       );
@@ -1980,6 +2008,18 @@ describe("ClaudeAdapterLive", () => {
       harness.query.emit({
         type: "stream_event",
         session_id: "sdk-session-tool-streams",
+        uuid: "stream-thinking-start",
+        parent_tool_use_id: null,
+        event: {
+          type: "content_block_start",
+          index: 0,
+          content_block: { type: "thinking", thinking: "", signature: "" },
+        },
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "stream_event",
+        session_id: "sdk-session-tool-streams",
         uuid: "stream-thinking",
         parent_tool_use_id: null,
         event: {
@@ -1990,6 +2030,14 @@ describe("ClaudeAdapterLive", () => {
             thinking: "Let",
           },
         },
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "stream_event",
+        session_id: "sdk-session-tool-streams",
+        uuid: "stream-thinking-stop",
+        parent_tool_use_id: null,
+        event: { type: "content_block_stop", index: 0 },
       } as unknown as SDKMessage);
 
       harness.query.emit({
@@ -2070,7 +2118,9 @@ describe("ClaudeAdapterLive", () => {
           "session.state.changed",
           "turn.started",
           "thread.started",
+          "item.started",
           "content.delta",
+          "item.completed",
           "item.started",
           "item.updated",
           "item.updated",
@@ -2079,16 +2129,33 @@ describe("ClaudeAdapterLive", () => {
         ],
       );
 
+      // The thinking block is a reasoning item from start to stop, so the
+      // working row says "Thinking" for its whole length, and its text is the
+      // readable summary.
+      const reasoningStarted = runtimeEvents.find(
+        (event) => event.type === "item.started" && event.payload.itemType === "reasoning",
+      );
       const reasoningDelta = runtimeEvents.find(
-        (event) => event.type === "content.delta" && event.payload.streamKind === "reasoning_text",
+        (event) =>
+          event.type === "content.delta" && event.payload.streamKind === "reasoning_summary_text",
+      );
+      const reasoningCompleted = runtimeEvents.find(
+        (event) => event.type === "item.completed" && event.payload.itemType === "reasoning",
       );
       assert.equal(reasoningDelta?.type, "content.delta");
       if (reasoningDelta?.type === "content.delta") {
         assert.equal(reasoningDelta.payload.delta, "Let");
         assert.equal(String(reasoningDelta.turnId), String(turn.turnId));
+        assert.equal(reasoningDelta.itemId, reasoningStarted?.itemId);
+      }
+      assert.equal(reasoningCompleted?.itemId, reasoningStarted?.itemId);
+      if (reasoningCompleted?.type === "item.completed") {
+        assert.deepEqual(reasoningCompleted.payload.data, { summary: "Let" });
       }
 
-      const toolStarted = runtimeEvents.find((event) => event.type === "item.started");
+      const toolStarted = runtimeEvents.find(
+        (event) => event.type === "item.started" && event.payload.itemType !== "reasoning",
+      );
       assert.equal(toolStarted?.type, "item.started");
       if (toolStarted?.type === "item.started") {
         assert.equal(toolStarted.payload.itemType, "dynamic_tool_call");

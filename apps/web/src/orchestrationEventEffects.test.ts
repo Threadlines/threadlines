@@ -10,7 +10,10 @@ import {
 } from "@threadlines/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { deriveOrchestrationBatchEffects } from "./orchestrationEventEffects";
+import {
+  deriveOrchestrationBatchEffects,
+  serverMergeSwitchTurnedOff,
+} from "./orchestrationEventEffects";
 
 function makeEvent<T extends OrchestrationEvent["type"]>(
   type: T,
@@ -131,5 +134,75 @@ describe("deriveOrchestrationBatchEffects", () => {
     expect(effects.promoteDraftThreadIds).toEqual([]);
     expect(effects.clearDeletedThreadIds).toEqual([]);
     expect(effects.removeTerminalStateThreadIds).toEqual([]);
+  });
+
+  it("re-reads pull requests when a thread's server-held merge switch turns off, not on", () => {
+    const threadId = ThreadId.make("thread-1");
+    const automation = (
+      payload: Omit<
+        Extract<OrchestrationEvent, { type: "thread.pull-request-automation-changed" }>["payload"],
+        "threadId" | "updatedAt"
+      >,
+    ) =>
+      deriveOrchestrationBatchEffects([
+        makeEvent("thread.pull-request-automation-changed", {
+          threadId,
+          updatedAt: "2026-02-27T00:00:01.000Z",
+          ...payload,
+        }),
+      ]).needsPullRequestInvalidation;
+
+    // The server turns it off once it has merged, queued, or given up.
+    expect(automation({ autoMerge: null })).toBe(true);
+    expect(automation({ autoMerge: "squash" })).toBe(false);
+    expect(automation({ autoFix: false })).toBe(false);
+  });
+
+  it("re-reads pull requests when the server notes merge work that moved no switch", () => {
+    const noted = (kind: string) =>
+      deriveOrchestrationBatchEffects([
+        makeEvent("thread.activity-appended", {
+          threadId: ThreadId.make("thread-1"),
+          activity: {
+            id: EventId.make("activity-1"),
+            tone: "info",
+            kind,
+            summary: "Put #278 back in the merge queue",
+            payload: { number: 278 },
+            turnId: null,
+            createdAt: "2026-02-27T00:00:01.000Z",
+          },
+        }),
+      ]).needsPullRequestInvalidation;
+
+    expect(noted("pull-request.auto-merge.requeued")).toBe(true);
+    expect(noted("tool.completed")).toBe(false);
+  });
+});
+
+describe("serverMergeSwitchTurnedOff", () => {
+  const url = "https://github.com/acme/widgets/pull/294";
+
+  it("sees the thread's own switch or a linked pull request's going off, not coming on", () => {
+    expect(
+      serverMergeSwitchTurnedOff(
+        { pullRequestAutoMerge: "squash" },
+        { pullRequestAutoMerge: null },
+      ),
+    ).toBe(true);
+    expect(
+      serverMergeSwitchTurnedOff(
+        { linkedPullRequests: [{ number: 294, url, autoMerge: "squash" }] },
+        { linkedPullRequests: [{ number: 294, url, autoMerge: null }] },
+      ),
+    ).toBe(true);
+    expect(
+      serverMergeSwitchTurnedOff(
+        { linkedPullRequests: [{ number: 294, url, autoMerge: null }] },
+        { linkedPullRequests: [{ number: 294, url, autoMerge: "squash" }] },
+      ),
+    ).toBe(false);
+    // A thread the client is seeing for the first time has nothing to compare.
+    expect(serverMergeSwitchTurnedOff(undefined, { pullRequestAutoMerge: null })).toBe(false);
   });
 });

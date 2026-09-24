@@ -50,9 +50,8 @@ Explain exactly why the change should exist.
 
 Do not mix unrelated fixes together.
 
-If the PR makes anything resembling a UI change, include clear before/after images.
-
-If the change depends on motion, timing, transitions, or interaction details, include a short video.
+For a visual change, before/after screenshots or a short clip help review.
+They're welcome, not required.
 
 Clear context helps us review and respond quickly.
 

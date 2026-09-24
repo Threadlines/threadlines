@@ -13,7 +13,7 @@ import {
   type PullRequestReviewThread,
   type ScopedThreadRef,
 } from "@threadlines/contracts";
-import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
   RouterProvider,
   createMemoryHistory,
@@ -32,7 +32,7 @@ import {
   __setEnvironmentApiOverrideForTests,
 } from "../../environmentApi";
 import { PullRequestDetailPanel } from "./PullRequestDetailPanel";
-import { ComposerPullRequestRow } from "../chat/ComposerPullRequestRow";
+import { ComposerPullRequestRow, type ComposerPullRequest } from "../chat/ComposerPullRequestRow";
 import { pullRequestQueryKeys } from "../../lib/pullRequestsReactQuery";
 import { pullRequestReviewKey, usePullRequestReviewStore } from "./pullRequestReviewStore";
 
@@ -147,6 +147,8 @@ const THREAD: PullRequestReviewThread = {
 async function renderComposerPullRequest(
   overrides: Partial<PullRequestDetail> = {},
   beforeWrite: () => Promise<void> = async () => {},
+  /** What the route would say differently about this row, such as for a linked pull request. */
+  row: Partial<ComposerPullRequest> = {},
 ) {
   let detail: PullRequestDetail = {
     ...DETAIL,
@@ -155,6 +157,7 @@ async function renderComposerPullRequest(
     ...overrides,
   };
   const onOpen = vi.fn();
+  const onAutoMergeChange = vi.fn();
   const runAction = vi.fn(async (input: { action: string }) => {
     await beforeWrite();
     detail = {
@@ -164,8 +167,10 @@ async function renderComposerPullRequest(
     };
     return { state: detail.state, isDraft: detail.isDraft };
   });
+  // The row reads the pull request itself, through the same API the app uses,
+  // so a write's re-read sees what the write changed.
   __setEnvironmentApiOverrideForTests(ENVIRONMENT_ID, {
-    pullRequests: { runAction },
+    pullRequests: { runAction, detail: async () => detail },
   } as unknown as EnvironmentApi);
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
@@ -173,7 +178,6 @@ async function renderComposerPullRequest(
   const queryKey = pullRequestQueryKeys.detail(ENVIRONMENT_ID, PROJECT_ID, REFERENCE.number);
   queryClient.setQueryData(queryKey, detail);
   function Composer() {
-    const query = useQuery({ queryKey, queryFn: async () => detail, staleTime: Infinity });
     return (
       <ComposerPullRequestRow
         divided={false}
@@ -181,16 +185,17 @@ async function renderComposerPullRequest(
           environmentId: ENVIRONMENT_ID,
           reference: REFERENCE,
           pullRequest: { ...DETAIL, autoMergeEnabled: false, settledAt: null, diffStat: null },
-          detail: query.data,
           projectTitle: DETAIL.projectTitle,
           onOpen,
           onDismiss: vi.fn(),
-          autoFix: false,
-          onAutoFixChange: vi.fn(),
+          autoFix: { checked: false, onChange: vi.fn() },
           autoMerge: null,
-          onAutoMergeChange: vi.fn(),
+          onAutoMergeChange,
+          agentWorking: false,
+          unpushedCommits: 0,
           wrapUpOnSettled: false,
           onWrapUpOnSettledChange: vi.fn(),
+          ...row,
         }}
       />
     );
@@ -205,6 +210,7 @@ async function renderComposerPullRequest(
   return {
     runAction,
     onOpen,
+    onAutoMergeChange,
     async cleanup() {
       await screen.unmount();
       queryClient.clear();
@@ -270,7 +276,7 @@ describe("Composer pull request merge controls", () => {
     }
   });
 
-  it("opens the full merge controls for a ready PR without sending an auto-merge request", async () => {
+  it("hands a ready PR to the thread's own merge switch, not GitHub's", async () => {
     const rendered = await renderComposerPullRequest({
       mergeGate: "clear",
       checks: [{ name: "build", status: "success", description: "Passed in 2m", url: null }],
@@ -278,11 +284,38 @@ describe("Composer pull request merge controls", () => {
     });
     try {
       await expect
-        .element(page.getByText("This pull request can merge right now. Use Merge instead."))
+        .element(page.getByText("Nothing left to wait for, so it merges right away"), {
+          timeout: 5_000,
+        })
         .toBeVisible();
-      await page.getByRole("button", { name: "Open merge controls" }).click();
-      expect(rendered.onOpen).toHaveBeenCalledOnce();
+      await page.getByRole("checkbox", { name: "Merge when checks pass" }).click();
+      expect(rendered.onAutoMergeChange).toHaveBeenCalledWith("squash");
+      // GitHub's own switch would merge on the spot rather than arm.
       expect(rendered.runAction).not.toHaveBeenCalled();
+    } finally {
+      await rendered.cleanup();
+    }
+  });
+
+  it("gives a linked pull request its own merge switch but no auto-fix", async () => {
+    // The thread's checkout is on its own branch, so it cannot push fixes to this one.
+    const rendered = await renderComposerPullRequest(
+      {
+        mergeGate: "clear",
+        checks: [{ name: "build", status: "success", description: "Passed in 2m", url: null }],
+        checksState: "success",
+      },
+      undefined,
+      { autoFix: null },
+    );
+    try {
+      await page.getByRole("checkbox", { name: "Merge when checks pass" }).click();
+      expect(rendered.onAutoMergeChange).toHaveBeenCalledWith("squash");
+      await expect
+        .element(page.getByRole("checkbox", { name: "Fix failing checks and review comments" }), {
+          timeout: 5_000,
+        })
+        .not.toBeInTheDocument();
     } finally {
       await rendered.cleanup();
     }
@@ -302,6 +335,53 @@ describe("Composer pull request merge controls", () => {
         ...REFERENCE,
         action: "disable-auto-merge",
       });
+    } finally {
+      await rendered.cleanup();
+    }
+  });
+
+  it("says what failed in the merge queue, and queues it again from the same popover", async () => {
+    const rendered = await renderComposerPullRequest({
+      mergeGate: "clear",
+      checks: [{ name: "build", status: "success", description: null, url: null }],
+      checksState: "success",
+      mergeQueue: {
+        position: null,
+        removal: {
+          id: "RFMQE_1",
+          removedAt: "2026-09-22T23:16:04Z",
+          failedChecks: [
+            {
+              name: "Browser Test",
+              status: "failure",
+              description: null,
+              url: "https://github.com/acme/widgets/actions/runs/1/job/2",
+            },
+          ],
+        },
+      },
+    });
+    try {
+      const chip = page.getByRole("button", { name: "Checks", exact: true });
+      // The pull request's own checks are green; the chip says what they cannot.
+      await expect.element(chip, { timeout: 5_000 }).toHaveTextContent("Queue failed");
+      await expect
+        .element(page.getByText("Failed in the merge queue"), { timeout: 5_000 })
+        .toBeVisible();
+      await expect
+        .element(page.getByRole("link", { name: "Open Browser Test in browser" }), {
+          timeout: 5_000,
+        })
+        .toHaveAttribute("href", "https://github.com/acme/widgets/actions/runs/1/job/2");
+
+      await page.getByRole("checkbox", { name: "Merge when checks pass" }).click();
+      expect(rendered.runAction).toHaveBeenLastCalledWith({
+        ...REFERENCE,
+        action: "enable-auto-merge",
+        mergeMethod: "squash",
+      });
+      // Armed again, it is on its way back, and the chip goes back to the checks.
+      await expect.element(chip, { timeout: 5_000 }).toHaveTextContent("CI");
     } finally {
       await rendered.cleanup();
     }

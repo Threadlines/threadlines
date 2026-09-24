@@ -113,8 +113,6 @@ function buildProps() {
     activeTurnId: null,
     activeTurnStartedAt: null,
     listRef: createRef<LegendListRef | null>(),
-    completionDividerBeforeEntryId: null,
-    completionSummary: null,
     turnDiffSummaryByAssistantMessageId: new Map(),
     routeThreadKey: "environment-local:thread-1",
     onOpenTurnDiff: vi.fn(),
@@ -400,78 +398,14 @@ describe("MessagesTimeline", () => {
         .element(page.getByText("Send a message to start the conversation."))
         .not.toBeInTheDocument();
       await expect
-        .element(page.getByRole("button", { name: "Thinking - Inspecting repository state" }))
+        .element(page.getByRole("button", { name: "Inspecting repository state" }))
         .toBeVisible();
     } finally {
       await screen.unmount();
     }
   });
 
-  it("indents subagent task rows with the corner glyph while main rows stay flush", async () => {
-    const screen = await renderTimeline(
-      <MessagesTimeline
-        {...buildProps()}
-        timelineEntries={[
-          {
-            id: "entry-main",
-            kind: "work",
-            createdAt: "2026-04-13T12:00:00.000Z",
-            entry: {
-              id: "work-main",
-              createdAt: "2026-04-13T12:00:00.000Z",
-              label: "Running main model step",
-              tone: "thinking",
-            },
-          },
-          {
-            id: "entry-subagent",
-            kind: "work",
-            createdAt: "2026-04-13T12:00:01.000Z",
-            entry: {
-              id: "work-subagent",
-              createdAt: "2026-04-13T12:00:01.000Z",
-              label: "Running List source structure of server and web apps",
-              tone: "thinking",
-              subagentTask: { subagentType: "general-purpose", toolUseId: "toolu_spawn_1" },
-            },
-          },
-          {
-            id: "entry-subagent-2",
-            kind: "work",
-            createdAt: "2026-04-13T12:00:02.000Z",
-            entry: {
-              id: "work-subagent-2",
-              createdAt: "2026-04-13T12:00:02.000Z",
-              label: "Running Inspect key app package.json deps",
-              tone: "thinking",
-              subagentTask: { subagentType: "general-purpose", toolUseId: "toolu_spawn_1" },
-            },
-          },
-        ]}
-      />,
-    );
-
-    try {
-      const subagentRows = document.querySelectorAll("[data-subagent-work-row='true']");
-      expect(subagentRows).toHaveLength(2);
-      expect(subagentRows[0]?.textContent).toContain("List source structure");
-      expect(subagentRows[0]?.querySelector("svg.lucide-corner-down-right")).not.toBeNull();
-      expect(subagentRows[0]?.textContent).not.toContain("Running main model step");
-      // The lane entering after a main-model row is labeled; the contiguous
-      // same-agent row after it stays bare.
-      const laneLabels = document.querySelectorAll("[data-subagent-lane-label='true']");
-      expect(laneLabels).toHaveLength(1);
-      expect(laneLabels[0]?.textContent).toBe("general-purpose");
-      expect(subagentRows[0]?.contains(laneLabels[0] ?? null)).toBe(true);
-      await expect
-        .element(page.getByLabelText(/Subagent \(general-purpose\): Running List source/))
-        .toBeInTheDocument();
-    } finally {
-      await screen.unmount();
-    }
-  });
-
-  it("keeps live command preview aligned with its activity heading", async () => {
+  it("keeps the working line's dots level with the running step it names", async () => {
     const screen = await renderTimeline(
       <MessagesTimeline
         {...buildProps()}
@@ -497,30 +431,28 @@ describe("MessagesTimeline", () => {
     );
 
     try {
-      await expect.element(page.getByText("Verifying bun test")).toBeVisible();
+      await expect.element(page.getByText("Running tests")).toBeVisible();
 
-      const heading = document.querySelector(
-        "[data-work-entry-heading='true']",
-      ) as HTMLElement | null;
-      const preview = document.querySelector(
-        "[data-work-entry-preview='true']",
-      ) as HTMLElement | null;
+      const label = document.querySelector<HTMLElement>("[data-turn-working-label='true']");
+      const dots = document.querySelector<HTMLElement>(".working-dots");
+      expect(label).not.toBeNull();
+      expect(dots).not.toBeNull();
 
-      expect(heading).not.toBeNull();
-      expect(preview).not.toBeNull();
+      const labelRect = label!.getBoundingClientRect();
+      const dotsRect = dots!.getBoundingClientRect();
+      const labelCenterY = labelRect.top + labelRect.height / 2;
+      const dotsCenterY = dotsRect.top + dotsRect.height / 2;
 
-      const headingRect = heading!.getBoundingClientRect();
-      const previewRect = preview!.getBoundingClientRect();
-      const headingCenterY = headingRect.top + headingRect.height / 2;
-      const previewCenterY = previewRect.top + previewRect.height / 2;
-
-      expect(Math.abs(headingCenterY - previewCenterY)).toBeLessThanOrEqual(1);
+      // The dots sit a hair above the text's middle on purpose (-top-px).
+      expect(Math.abs(labelCenterY - dotsCenterY)).toBeLessThanOrEqual(2);
+      // Nothing about the running command is drawn as settled.
+      expect(document.querySelector("[data-activity-group='true']")).toBeNull();
     } finally {
       await screen.unmount();
     }
   });
 
-  it("shows the provider-stamped duration for a completed command", async () => {
+  it("shows how long a long check took, from the provider's stamps", async () => {
     const screen = await renderTimeline(
       <MessagesTimeline
         {...buildProps()}
@@ -532,7 +464,7 @@ describe("MessagesTimeline", () => {
             entry: {
               id: "work-command",
               createdAt: "2026-04-13T12:00:00.000Z",
-              completedAt: "2026-04-13T12:00:03.000Z",
+              completedAt: "2026-04-13T12:00:52.000Z",
               label: "Ran command",
               tone: "tool",
               itemType: "command_execution",
@@ -545,13 +477,15 @@ describe("MessagesTimeline", () => {
     );
 
     try {
-      await expect.element(page.getByLabelText("Completed in 3.0s")).toBeVisible();
+      await expect
+        .element(page.getByRole("button", { name: "Typecheck passed 52s" }))
+        .toBeVisible();
     } finally {
       await screen.unmount();
     }
   });
 
-  it("copies expanded command output without making the output panel collapse the row", async () => {
+  it("opens a step into its exact command and output, and copies the output", async () => {
     const outputLines = Array.from({ length: 24 }, (_, index) => `line ${index + 1}`);
     const expectedCopiedOutput = outputLines.slice(-20).join("\n");
     const writeText = vi.fn(async () => undefined);
@@ -585,38 +519,26 @@ describe("MessagesTimeline", () => {
     );
 
     try {
-      await page.getByRole("button", { name: "Show command output" }).click();
+      const line = page.getByRole("button", { name: "Checked the environment" });
+      await line.click();
 
-      await expect.element(page.getByRole("button", { name: "Hide command output" })).toBeVisible();
+      await expect.element(line).toHaveAttribute("aria-expanded", "true");
       await expect.element(page.getByText("line 24")).toBeVisible();
+      const detail = document.querySelector<HTMLElement>('[data-activity-detail="true"]');
+      expect(detail?.textContent).toContain("Get-Process");
+      // The oldest lines fall outside the retained tail.
+      expect(detail?.textContent).not.toContain("line 4\n");
 
-      const outputPanel = document.querySelector<HTMLElement>('[data-command-output="true"]');
-      expect(outputPanel).not.toBeNull();
-      const outputPre = outputPanel!.querySelector<HTMLElement>("pre");
-      const copyButton = document.querySelector<HTMLElement>(
-        'button[aria-label="Copy command output"]',
-      );
-      expect(outputPre).not.toBeNull();
-      expect(copyButton).not.toBeNull();
+      // Clicking inside the opened detail leaves it open.
+      detail!.click();
+      await expect.element(line).toHaveAttribute("aria-expanded", "true");
 
-      const outputPreRect = outputPre!.getBoundingClientRect();
-      const copyButtonRect = copyButton!.getBoundingClientRect();
-      expect(outputPreRect.right - copyButtonRect.right).toBeGreaterThanOrEqual(10);
-
-      outputPanel!.click();
-
-      await expect.element(page.getByRole("button", { name: "Hide command output" })).toBeVisible();
-      await expect.element(page.getByText("line 24")).toBeVisible();
-
-      await page.getByRole("button", { name: "Copy command output" }).click();
-
+      await page.getByRole("button", { name: "Copy output" }).click();
       await vi.waitFor(() => {
         expect(writeText).toHaveBeenCalledWith(expectedCopiedOutput);
       });
 
-      await page.getByRole("button", { name: "Hide command output" }).click();
-
-      await expect.element(page.getByRole("button", { name: "Show command output" })).toBeVisible();
+      await line.click();
       await expect.element(page.getByText("line 24")).not.toBeInTheDocument();
     } finally {
       await screen.unmount();
@@ -661,7 +583,7 @@ describe("MessagesTimeline", () => {
       );
 
       await expect
-        .element(page.getByRole("button", { name: "Thinking - Inspecting repository state" }))
+        .element(page.getByRole("button", { name: "Inspecting repository state" }))
         .toBeVisible();
       expect(props.onIsAtEndChange).toHaveBeenCalledWith(true);
       expect(scrollToEndSpy).toHaveBeenCalledWith({ animated: false });
@@ -703,7 +625,7 @@ describe("MessagesTimeline", () => {
 
     try {
       await expect
-        .element(page.getByRole("button", { name: "Thinking - Inspecting repository state" }))
+        .element(page.getByRole("button", { name: "Inspecting repository state" }))
         .toBeVisible();
       expect(props.onIsAtEndChange).toHaveBeenCalledWith(true);
       expect(scrollToEndSpy).toHaveBeenCalledWith({ animated: false });
@@ -1059,6 +981,92 @@ describe("MessagesTimeline", () => {
     }
   });
 
+  it("moves nothing above the answer when a turn ends", async () => {
+    const turnId = TurnId.make("turn-settle");
+    const assistant = (id: string, text: string, createdAt: string, completedAt: string) => ({
+      id: `entry-${id}`,
+      kind: "message" as const,
+      createdAt,
+      message: {
+        id: id as never,
+        role: "assistant" as const,
+        text,
+        turnId,
+        createdAt,
+        completedAt,
+        streaming: false,
+      },
+    });
+    const timelineEntries = [
+      buildUserTimelineEntry("Fix the pull request row"),
+      assistant(
+        "note",
+        "Checking where the row gets its status.",
+        "2026-04-13T12:00:05.000Z",
+        "2026-04-13T12:00:06.000Z",
+      ),
+      {
+        id: "entry-typecheck",
+        kind: "work" as const,
+        createdAt: "2026-04-13T12:00:10.000Z",
+        entry: {
+          id: "typecheck",
+          createdAt: "2026-04-13T12:00:10.000Z",
+          completedAt: "2026-04-13T12:00:40.000Z",
+          label: "Ran command",
+          tone: "tool" as const,
+          itemType: "command_execution" as const,
+          command: "pnpm exec vp run typecheck",
+          executionState: "completed" as const,
+          turnId,
+        },
+      },
+      assistant(
+        "answer",
+        "Fixed. The row now refreshes after a merge.",
+        "2026-04-13T12:01:00.000Z",
+        "2026-04-13T12:01:15.000Z",
+      ),
+    ];
+    const props = buildProps();
+    const screen = await renderTimeline(
+      <MessagesTimeline
+        {...props}
+        isWorking
+        activeTurnInProgress
+        activeTurnId={turnId}
+        activeTurnStartedAt={MESSAGE_CREATED_AT}
+        timelineEntries={timelineEntries}
+      />,
+    );
+
+    try {
+      const note = page.getByText("Checking where the row gets its status.");
+      const answer = page.getByText("Fixed. The row now refreshes after a merge.");
+      await expect.element(answer, { timeout: 5_000 }).toBeVisible();
+      // Live rows slide in 3px as they mount; measure where they rest.
+      await Promise.all(
+        document
+          .getAnimations()
+          .filter((animation) => (animation as CSSAnimation).animationName === "work-row-enter")
+          .map((animation) => animation.finished),
+      );
+      const noteTop = note.element().getBoundingClientRect().top;
+      const answerTop = answer.element().getBoundingClientRect().top;
+
+      await screen.rerender(<MessagesTimeline {...props} timelineEntries={timelineEntries} />);
+      await expect.element(page.getByText("Worked for 1m 15s"), { timeout: 5_000 }).toBeVisible();
+
+      // The working row turned into the footer under the answer; the note only
+      // faded.
+      expect(note.element().getBoundingClientRect().top).toBe(noteTop);
+      expect(answer.element().getBoundingClientRect().top).toBe(answerTop);
+      expect(note.element().closest("[data-settled-note='true']")).not.toBeNull();
+    } finally {
+      await screen.unmount();
+    }
+  });
+
   it("starts long user messages collapsed by default", async () => {
     const screen = await renderTimeline(
       <MessagesTimeline
@@ -1266,7 +1274,9 @@ describe("MessagesTimeline", () => {
       expect(anchor?.querySelector("[data-turn-agents-summary='true']")).not.toBeNull();
       // The word stays the turn's own status; the dots say agents are running.
       expect(anchor?.querySelector<HTMLElement>(".working-dots")?.dataset.state).toBe("agents");
-      expect(document.querySelector("[data-live-activity-strip='true']")).not.toBeNull();
+      // The settled steps above stay, without a second tracker of their own.
+      expect(document.querySelector("[data-work-group='true']")).not.toBeNull();
+      expect(document.querySelectorAll("[data-turn-agents-summary='true']")).toHaveLength(1);
     } finally {
       await screen.unmount();
     }
@@ -1324,14 +1334,10 @@ describe("MessagesTimeline", () => {
       await summary.click();
       expect(onOpenAgentsPanel).toHaveBeenCalledWith(null);
 
-      const receipt = document.querySelector("[data-work-activity-receipt='true']");
-      expect(receipt).not.toBeNull();
-      expect(receipt?.getAttribute("data-work-activity-anchor")).toBe("true");
-      // No misleading count, and no lifecycle row anywhere in the chat.
-      expect(receipt?.textContent).not.toContain("actions");
+      expect(document.querySelector("[data-turn-agents-line='true']")).not.toBeNull();
+      // No lifecycle step anywhere in the chat, and nothing to open.
       expect(document.body.textContent).not.toContain("Subagent task");
-      // Nothing was hidden, so there is nothing to unhide.
-      expect(document.querySelector("[data-activity-transcript-toggle='true']")).toBeNull();
+      expect(document.querySelector("[data-activity-group='true']")).toBeNull();
     } finally {
       await screen.unmount();
     }
@@ -1385,13 +1391,13 @@ describe("MessagesTimeline", () => {
     );
 
     try {
-      const receipts = [...document.querySelectorAll("[data-work-activity-receipt='true']")];
-      expect(receipts.length).toBe(2);
+      const groups = [...document.querySelectorAll("[data-work-group='true']")];
+      expect(groups.length).toBe(2);
 
       const trackers = [...document.querySelectorAll("[data-turn-agents-summary='true']")];
       expect(trackers.length).toBe(1);
       // On the group the turn started in, not a later one.
-      expect(receipts[0]?.contains(trackers[0] ?? null)).toBe(true);
+      expect(groups[0]?.contains(trackers[0] ?? null)).toBe(true);
       expect(trackers[0]?.getAttribute("aria-label")).toBe(
         "2 subagents · 2 done. Open the agents panel.",
       );
@@ -1436,7 +1442,6 @@ describe("MessagesTimeline", () => {
       nickname: id === "agent-tests" ? "Agent panel tests" : "Router sweep",
       telemetry: {
         step,
-        lastToolName: null,
         totalTokens: null,
         toolUses: null,
         durationMs: null,

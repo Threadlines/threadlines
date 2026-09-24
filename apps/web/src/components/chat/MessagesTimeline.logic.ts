@@ -9,47 +9,24 @@ import {
 import { type ChatMessage, type ProposedPlan, type TurnDiffSummary } from "../../types";
 import { type MessageId, type TurnId } from "@threadlines/contracts";
 import { stripCodexInlineVisualizationDirectives } from "../../lib/codexInlineVisualization";
+import {
+  activityStepFromWorkLogEntry,
+  commandCheckKey,
+  liveActivityLabel,
+  liveThoughtText,
+} from "./activitySteps";
 
-export const MAX_VISIBLE_WORK_LOG_ENTRIES = 6;
-
-/**
- * Lane-entry labels for subagent work rows. Subagent activity can interleave
- * with main-model rows (and with other agents' rows) mid-turn, so a row only
- * gets its agent label when the previous rendered row belongs to a different
- * lane — a main-model row, another agent, a group boundary. Contiguous
- * same-agent runs and rows directly under their own spawn row stay bare.
- */
-export function deriveSubagentLaneLabels(
-  entries: ReadonlyArray<WorkLogEntry>,
-): ReadonlyArray<string | null> {
-  const laneKeyOf = (entry: WorkLogEntry): string | null => {
-    if (entry.subagentTask) {
-      return entry.subagentTask.toolUseId ?? entry.subagentTask.subagentType ?? "subagent";
-    }
-    // A collab spawn/update row anchors the same lane as the rows it spawned.
-    if (entry.itemType === "collab_agent_tool_call" && entry.toolCallId) {
-      return entry.toolCallId;
-    }
-    return null;
-  };
-
-  return entries.map((entry, index) => {
-    if (!entry.subagentTask) {
-      return null;
-    }
-    const previous = index > 0 ? entries[index - 1] : undefined;
-    if (previous && laneKeyOf(previous) === laneKeyOf(entry)) {
-      return null;
-    }
-    return entry.subagentTask.subagentType ?? "subagent";
-  });
-}
-
-export interface TimelineDurationMessage {
-  id: string;
-  role: "user" | "assistant" | "system";
-  createdAt: string;
-  completedAt?: string | undefined;
+/** What a finished turn's footer says under its last message. */
+export interface TurnSummary {
+  /** Time spent working, without the wait before a Retry or a resumed turn. */
+  readonly workedMs: number | null;
+  readonly editedFileCount: number;
+  /** Latest result of each check the turn ran; a rerun replaces a failure. */
+  readonly checks: { readonly passed: number; readonly failed: number } | null;
+  /** The turn's agents. The working row carried them while the turn ran, and
+   *  the footer takes its place, so they stay at the tail. */
+  readonly trackerTurnIds: ReadonlyArray<TurnId>;
+  readonly trackerAgentSpawnIds: ReadonlyArray<string>;
 }
 
 export type MessagesTimelineRow =
@@ -88,9 +65,11 @@ export type MessagesTimelineRow =
       id: string;
       createdAt: string;
       message: ChatMessage;
-      durationStart: string;
-      showCompletionDivider: boolean;
-      completionSummary: string | null;
+      /** A note from a finished turn that is not its last message: it fades so
+       *  the turn's answer reads first. */
+      settledNote: boolean;
+      /** Set on a finished turn's last message, which carries the turn's footer. */
+      turnSummary: TurnSummary | null;
       showAssistantCopyButton: boolean;
       assistantCopyStreaming: boolean;
       assistantTurnInProgress: boolean;
@@ -116,34 +95,18 @@ export type MessagesTimelineRow =
       createdAt: string;
       forkContext: ForkContextEntry;
     }
-  | { kind: "working"; id: string; createdAt: string | null; label: string };
+  | {
+      kind: "working";
+      id: string;
+      createdAt: string | null;
+      label: string;
+      /** What the agent is thinking right now, in its own summary's words. */
+      thought: string | null;
+    };
 
 export interface StableMessagesTimelineRowsState {
   byId: Map<string, MessagesTimelineRow>;
   result: MessagesTimelineRow[];
-}
-
-export function computeMessageDurationStart(
-  messages: ReadonlyArray<TimelineDurationMessage>,
-): Map<string, string> {
-  const result = new Map<string, string>();
-  let lastBoundary: string | null = null;
-
-  for (const message of messages) {
-    if (message.role === "user") {
-      lastBoundary = message.createdAt;
-    }
-    result.set(message.id, lastBoundary ?? message.createdAt);
-    if (message.role === "assistant" && message.completedAt) {
-      lastBoundary = message.completedAt;
-    }
-  }
-
-  return result;
-}
-
-export function normalizeCompactToolLabel(value: string): string {
-  return value.replace(/\s+(?:complete|completed)\s*$/i, "").trim();
 }
 
 export function resolveAssistantMessageCopyState({
@@ -275,8 +238,6 @@ function deriveModelFallbackByTurn(
 
 export function deriveMessagesTimelineRows(input: {
   timelineEntries: ReadonlyArray<TimelineEntry>;
-  completionDividerBeforeEntryId: string | null;
-  completionSummary?: string | null;
   isWorking: boolean;
   /** Agents still running or waiting, whichever turn spawned them. The working
    *  anchor stays up for them after the turn settles, so a background agent's
@@ -296,9 +257,15 @@ export function deriveMessagesTimelineRows(input: {
     deriveVisibleTimelineEntries(input),
     input.isWorking ? (input.activeTurnId ?? null) : null,
   );
-  const durationStartByMessageId = computeMessageDurationStart(
-    visibleTimelineEntries.flatMap((entry) => (entry.kind === "message" ? [entry.message] : [])),
-  );
+  // Turn-request markers are hidden once a turn settles, so read them from
+  // the full entry list rather than the visible one.
+  const turnRequestedAts = input.timelineEntries
+    .flatMap((entry) =>
+      entry.kind === "work" && entry.entry.providerLifecyclePhase === "preparing"
+        ? [entry.createdAt]
+        : [],
+    )
+    .toSorted();
   const terminalAssistantMessageIds = deriveTerminalAssistantMessageIds(visibleTimelineEntries);
   const modelFallbackByTurn = deriveModelFallbackByTurn(visibleTimelineEntries);
   const supersededRunningCommandEntryIds =
@@ -425,9 +392,6 @@ export function deriveMessagesTimelineRows(input: {
       timelineEntry.message.role === "assistant" &&
       (timelineEntry.message.streaming || assistantTurnStillInProgress);
 
-    const showCompletionDivider =
-      timelineEntry.message.role === "assistant" &&
-      input.completionDividerBeforeEntryId === timelineEntry.id;
     const assistantTurnDiffSummary =
       timelineEntry.message.role === "assistant"
         ? input.turnDiffSummaryByAssistantMessageId.get(timelineEntry.message.id)
@@ -438,10 +402,8 @@ export function deriveMessagesTimelineRows(input: {
       id: timelineEntry.id,
       createdAt: timelineEntry.createdAt,
       message: timelineEntry.message,
-      durationStart:
-        durationStartByMessageId.get(timelineEntry.message.id) ?? timelineEntry.message.createdAt,
-      showCompletionDivider,
-      completionSummary: showCompletionDivider ? (input.completionSummary ?? null) : null,
+      settledNote: false,
+      turnSummary: null,
       showAssistantCopyButton:
         timelineEntry.message.role === "assistant" &&
         terminalAssistantMessageIds.has(timelineEntry.message.id),
@@ -464,38 +426,284 @@ export function deriveMessagesTimelineRows(input: {
 
   const liveAgentCount = input.liveAgentCount ?? 0;
   if (input.isWorking) {
+    markLatestLiveWorkRow(nextRows, input.activeTurnId ?? null, input.activeTurnStartedAt);
+  }
+  const rows = settleFinishedTurns(nextRows, {
+    isWorking: input.isWorking,
+    activeTurnId: input.activeTurnId ?? null,
+    turnRequestedAts,
+  });
+  if (input.isWorking) {
     // The working row is the turn's one fixed anchor: it renders for the whole
     // turn, whatever the tail is, so the live node, the timer, and the agent
-    // tracker never teleport between homes. The tail work group still gets
-    // marked live so the spine above it keeps its accent styling.
-    markLatestLiveWorkRow(nextRows, input.activeTurnId ?? null, input.activeTurnStartedAt);
-    nextRows.push({
+    // tracker never teleport between homes. Its word is the step running now.
+    rows.push({
       kind: "working",
       id: "working-indicator-row",
       createdAt: input.activeTurnStartedAt,
-      label: resolveWorkingAnchorLabel(visibleTimelineEntries, input.activeStatusLabel),
+      label: resolveLiveAnchorLabel(nextRows, visibleTimelineEntries, input.activeStatusLabel),
+      thought: resolveLiveThought(visibleTimelineEntries),
     });
   } else if (liveAgentCount > 0) {
     // The turn settled but agents it delegated to are still going: the anchor
     // stays as their tracker, without a turn timer, until the last one lands.
-    nextRows.push({
+    rows.push({
       kind: "working",
       id: "working-indicator-row",
       createdAt: null,
       label: liveAgentCount === 1 ? "Agent working" : "Agents working",
+      thought: null,
     });
   } else if (input.isWaitingOnBackgroundTasks) {
     // The turn settled but a background task (a command, a cron) will wake
     // it: the anchor stays up as a plain wait, without a turn timer.
-    nextRows.push({
+    rows.push({
       kind: "working",
       id: "working-indicator-row",
       createdAt: null,
       label: "Waiting",
+      thought: null,
     });
   }
 
-  return nextRows;
+  return rows;
+}
+
+type MessageRow = Extract<MessagesTimelineRow, { kind: "message" }>;
+
+/**
+ * A finished turn keeps its story where it is: nothing folds, so nothing above
+ * the answer moves when the turn ends. The turn's last message becomes its
+ * answer and carries the turn's footer, which takes the working row's place at
+ * the tail, and the notes before it fade. Settling goes turn by turn, so a turn
+ * resumed after a background task leaves the earlier turn's footer in place.
+ * A turn that ended without a message has no footer, and its first group keeps
+ * the agent tracker.
+ */
+function settleFinishedTurns(
+  rows: ReadonlyArray<MessagesTimelineRow>,
+  options: {
+    readonly isWorking: boolean;
+    readonly activeTurnId: TurnId | null;
+    readonly turnRequestedAts: ReadonlyArray<string>;
+  },
+): MessagesTimelineRow[] {
+  const result = [...rows];
+  const requestTimes = options.turnRequestedAts
+    .map((requestedAt) => Date.parse(requestedAt))
+    .filter(Number.isFinite);
+  const lastUserIndex = result.findLastIndex(
+    (row) => row.kind === "message" && row.message.role === "user",
+  );
+  let spanStart = 0;
+  let userMessageAt: string | null = null;
+  let previousAnswerEndMs = Number.NEGATIVE_INFINITY;
+  for (let index = 0; index < result.length; index += 1) {
+    const row = result[index]!;
+    if (row.kind !== "message") {
+      continue;
+    }
+    if (row.message.role === "user") {
+      spanStart = index + 1;
+      userMessageAt = row.message.createdAt;
+      previousAnswerEndMs = Number.NEGATIVE_INFINITY;
+      continue;
+    }
+    // The same signal that keeps the working row up, so the row and the footer
+    // swap in one render. A reply the provider did not tie to a turn stays
+    // live until the exchange it belongs to ends.
+    const running =
+      row.message.streaming ||
+      (options.isWorking &&
+        index > lastUserIndex &&
+        (!row.message.turnId || row.message.turnId === options.activeTurnId));
+    if (row.message.role !== "assistant" || !row.showAssistantCopyButton || running) {
+      continue;
+    }
+
+    const span = result.slice(spanStart, index);
+    const work = summarizeTurnWork(span);
+    span.forEach((spanRow, offset) => {
+      if (spanRow.kind === "message" && spanRow.message.role === "assistant") {
+        result[spanStart + offset] = { ...spanRow, settledNote: true };
+      } else if (
+        spanRow.kind === "work" &&
+        (spanRow.trackerTurnIds.length > 0 || spanRow.trackerAgentSpawnIds.length > 0)
+      ) {
+        result[spanStart + offset] = { ...spanRow, trackerTurnIds: [], trackerAgentSpawnIds: [] };
+      }
+    });
+    const startedAtMs =
+      userMessageAt !== null
+        ? Date.parse(userMessageAt)
+        : resumedTurnStartMs(span, row, requestTimes, previousAnswerEndMs);
+    result[index] = {
+      ...row,
+      turnSummary: {
+        workedMs: workedDurationMs(startedAtMs, span, row, requestTimes),
+        // The checkpoint diff lands a beat after the turn; until then the
+        // turn's own edits are the count.
+        editedFileCount: row.assistantTurnDiffSummary?.files.length ?? work.editedFileCount,
+        checks: work.checks,
+        trackerTurnIds: work.trackerTurnIds,
+        trackerAgentSpawnIds: work.trackerAgentSpawnIds,
+      },
+    };
+    spanStart = index + 1;
+    userMessageAt = null;
+    previousAnswerEndMs = Date.parse(row.message.completedAt ?? row.message.createdAt);
+  }
+  return result;
+}
+
+/**
+ * When a turn with no message of its own started (a Retry, a turn resumed
+ * after a background task): at its first request or first activity, whichever
+ * came first, so the wait before it is not work.
+ */
+function resumedTurnStartMs(
+  span: ReadonlyArray<MessagesTimelineRow>,
+  answer: MessageRow,
+  requestTimes: ReadonlyArray<number>,
+  previousAnswerEndMs: number,
+): number {
+  let startedAt = Date.parse(answer.message.createdAt);
+  const firstRequest = requestTimes[firstIndexAfter(requestTimes, previousAnswerEndMs)];
+  if (firstRequest !== undefined && firstRequest < startedAt) {
+    startedAt = firstRequest;
+  }
+  // Rows run in time order, so the turn's first activity opens its first row.
+  const firstRowAt = span[0]?.createdAt ? Date.parse(span[0].createdAt) : Number.NaN;
+  return firstRowAt < startedAt ? firstRowAt : startedAt;
+}
+
+/**
+ * How long the agent worked from the turn's start to its answer. A later turn
+ * request in between (a Retry, a turn resumed after a background task) starts
+ * the clock again: the wait before it, back to the last thing that happened,
+ * is not work.
+ */
+function workedDurationMs(
+  startedAt: number,
+  rows: ReadonlyArray<MessagesTimelineRow>,
+  answer: MessageRow,
+  requestTimes: ReadonlyArray<number>,
+): number | null {
+  const endedAt = Date.parse(answer.message.completedAt ?? answer.message.createdAt);
+  if (!Number.isFinite(startedAt) || !Number.isFinite(endedAt) || endedAt < startedAt) {
+    return null;
+  }
+  let idleMs = 0;
+  let clockStartedAt = startedAt;
+  for (
+    let requestIndex = firstIndexAfter(requestTimes, startedAt);
+    requestIndex < requestTimes.length && requestTimes[requestIndex]! <= endedAt;
+    requestIndex += 1
+  ) {
+    const requestedAt = requestTimes[requestIndex]!;
+    idleMs += requestedAt - lastActivityAtOrBefore(rows, requestedAt, clockStartedAt);
+    clockStartedAt = requestedAt;
+  }
+  return endedAt - startedAt - idleMs;
+}
+
+/** The latest thing that happened in `rows` at or before `at`, and no earlier
+ *  than `floor`. Rows and their steps run in time order, so the scan stops at
+ *  the first one that starts after `at`. A turn request marker is the clock
+ *  restarting, not activity. */
+function lastActivityAtOrBefore(
+  rows: ReadonlyArray<MessagesTimelineRow>,
+  at: number,
+  floor: number,
+): number {
+  let latest = floor;
+  const consider = (time: string | null | undefined): number => {
+    const parsed = time ? Date.parse(time) : Number.NaN;
+    if (parsed > latest && parsed <= at) {
+      latest = parsed;
+    }
+    return parsed;
+  };
+  for (const row of rows) {
+    if (row.kind === "work") {
+      for (const entry of row.groupedEntries) {
+        if (entry.providerLifecyclePhase) {
+          continue;
+        }
+        if (consider(entry.createdAt) > at) {
+          return latest;
+        }
+        consider(entry.completedAt);
+      }
+      continue;
+    }
+    if (consider(row.kind === "message" ? row.message.createdAt : row.createdAt) > at) {
+      return latest;
+    }
+    if (row.kind === "message") {
+      consider(row.message.completedAt);
+    }
+  }
+  return latest;
+}
+
+/** The index of the first time after `after` in ascending `times`. */
+function firstIndexAfter(times: ReadonlyArray<number>, after: number): number {
+  let low = 0;
+  let high = times.length;
+  while (low < high) {
+    const middle = (low + high) >> 1;
+    if (times[middle]! > after) {
+      high = middle;
+    } else {
+      low = middle + 1;
+    }
+  }
+  return low;
+}
+
+/** What a turn's steps add up to: the files it edited, how its checks ended,
+ *  and the agents its groups track. */
+function summarizeTurnWork(
+  rows: ReadonlyArray<MessagesTimelineRow>,
+): Omit<TurnSummary, "workedMs"> {
+  const editedFiles = new Set<string>();
+  const checkResults = new Map<string, boolean>();
+  const trackerTurnIds = new Set<TurnId>();
+  const trackerAgentSpawnIds = new Set<string>();
+  for (const row of rows) {
+    if (row.kind !== "work") {
+      continue;
+    }
+    row.trackerTurnIds.forEach((turnId) => trackerTurnIds.add(turnId));
+    row.trackerAgentSpawnIds.forEach((spawnId) => trackerAgentSpawnIds.add(spawnId));
+    for (const entry of row.groupedEntries) {
+      if (entry.executionState !== "failed") {
+        for (const path of entry.changedFiles ?? []) {
+          editedFiles.add(path.replaceAll("\\", "/").toLowerCase());
+        }
+      }
+      // A rerun of the same check replaces the earlier result.
+      const checkKey =
+        entry.command && entry.executionState !== "running" ? commandCheckKey(entry.command) : null;
+      if (checkKey) {
+        checkResults.set(checkKey, entry.executionState !== "failed");
+      }
+    }
+  }
+  const results = [...checkResults.values()];
+  return {
+    editedFileCount: editedFiles.size,
+    checks:
+      results.length > 0
+        ? {
+            passed: results.filter((passed) => passed).length,
+            failed: results.filter((passed) => !passed).length,
+          }
+        : null,
+    trackerTurnIds: [...trackerTurnIds],
+    trackerAgentSpawnIds: [...trackerAgentSpawnIds],
+  };
 }
 
 /** Labels the lifecycle status may replace on the working anchor. Anything
@@ -540,6 +748,44 @@ function resolveWorkingAnchorLabel(
     }
   }
   return fallback;
+}
+
+/**
+ * What the working row says: a specific state when there is one ("Waiting for
+ * approval", "Thinking"), else the step running right now in the active
+ * exchange ("Reading service.ts"), else "Working".
+ */
+function resolveLiveAnchorLabel(
+  rows: ReadonlyArray<MessagesTimelineRow>,
+  visibleTimelineEntries: ReadonlyArray<TimelineEntry>,
+  activeStatusLabel: string | undefined,
+): string {
+  const label = resolveWorkingAnchorLabel(visibleTimelineEntries, activeStatusLabel);
+  if (label !== "Working") {
+    return label;
+  }
+  const lastUserIndex = rows.findLastIndex(
+    (row) => row.kind === "message" && row.message.role === "user",
+  );
+  const runningSteps = rows.slice(lastUserIndex + 1).flatMap((row) =>
+    row.kind === "work"
+      ? row.groupedEntries.flatMap((entry) => {
+          if (entry.executionState !== "running") return [];
+          const step = activityStepFromWorkLogEntry(entry);
+          return step ? [step] : [];
+        })
+      : [],
+  );
+  return liveActivityLabel(runningSteps) ?? label;
+}
+
+/** The newest words of the thought running right now, when the newest step in
+ *  view is one. A step or reply after it means the thought is over. */
+function resolveLiveThought(visibleTimelineEntries: ReadonlyArray<TimelineEntry>): string | null {
+  const newest = visibleTimelineEntries.findLast(
+    (timelineEntry) => timelineEntry.kind !== "work" || !timelineEntry.entry.providerLifecyclePhase,
+  );
+  return newest?.kind === "work" ? liveThoughtText(newest.entry) : null;
 }
 
 /**
@@ -836,7 +1082,11 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
 
   switch (a.kind) {
     case "working":
-      return a.createdAt === (b as typeof a).createdAt && a.label === (b as typeof a).label;
+      return (
+        a.createdAt === (b as typeof a).createdAt &&
+        a.label === (b as typeof a).label &&
+        a.thought === (b as typeof a).thought
+      );
 
     case "proposed-plan":
       return a.proposedPlan === (b as typeof a).proposedPlan;
@@ -868,9 +1118,8 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
       const bm = b as typeof a;
       return (
         a.message === bm.message &&
-        a.durationStart === bm.durationStart &&
-        a.showCompletionDivider === bm.showCompletionDivider &&
-        a.completionSummary === bm.completionSummary &&
+        a.settledNote === bm.settledNote &&
+        isTurnSummaryUnchanged(a.turnSummary, bm.turnSummary) &&
         a.showAssistantCopyButton === bm.showAssistantCopyButton &&
         a.assistantCopyStreaming === bm.assistantCopyStreaming &&
         a.assistantTurnInProgress === bm.assistantTurnInProgress &&
@@ -880,4 +1129,20 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
       );
     }
   }
+}
+
+function isTurnSummaryUnchanged(a: TurnSummary | null, b: TurnSummary | null): boolean {
+  if (a === null || b === null) {
+    return a === b;
+  }
+  return (
+    a.workedMs === b.workedMs &&
+    a.editedFileCount === b.editedFileCount &&
+    a.checks?.passed === b.checks?.passed &&
+    a.checks?.failed === b.checks?.failed &&
+    a.trackerTurnIds.length === b.trackerTurnIds.length &&
+    a.trackerTurnIds.every((turnId, index) => turnId === b.trackerTurnIds[index]) &&
+    a.trackerAgentSpawnIds.length === b.trackerAgentSpawnIds.length &&
+    a.trackerAgentSpawnIds.every((spawnId, index) => spawnId === b.trackerAgentSpawnIds[index])
+  );
 }

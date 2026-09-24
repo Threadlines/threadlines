@@ -445,6 +445,7 @@ function createSnapshotForTargetUser(options: {
         pinnedAt: options.threadPinnedAt ?? null,
         pullRequestAutoFix: options.threadPullRequestAutoFix ?? false,
         pullRequestAutoMerge: null,
+        linkedPullRequests: [],
         doneOverride: null,
         lastSeenAt: null,
         deletedAt: null,
@@ -663,6 +664,7 @@ function addThreadToSnapshot(
         pinnedAt: null,
         pullRequestAutoFix: false,
         pullRequestAutoMerge: null,
+        linkedPullRequests: [],
         doneOverride: null,
         lastSeenAt: null,
         deletedAt: null,
@@ -1230,6 +1232,7 @@ function createSnapshotWithSecondaryProject(options?: {
           pinnedAt: null,
           pullRequestAutoFix: false,
           pullRequestAutoMerge: null,
+          linkedPullRequests: [],
           doneOverride: null,
           lastSeenAt: null,
           messages: [],
@@ -1272,6 +1275,7 @@ function createSnapshotWithSecondaryProject(options?: {
           pinnedAt: null,
           pullRequestAutoFix: false,
           pullRequestAutoMerge: null,
+          linkedPullRequests: [],
           doneOverride: null,
           lastSeenAt: null,
           messages: [],
@@ -3101,6 +3105,73 @@ describe("ChatView timeline estimator parity (full app)", () => {
         "The pull request row did not leave the composer.",
       );
       expect(document.querySelector("[data-composer-notice-severity]")).toBeTruthy();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("opens the Pull request tab on the pull request its link names", async () => {
+    const linkedNumber = 294;
+    const linkedUrl = `https://github.com/${PULL_REQUEST_REPOSITORY}/pull/${linkedNumber}`;
+    const built = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-pull-request-tab" as MessageId,
+      targetText: "pull request tab",
+    });
+    // Besides its own #234, the thread's agent opened #294 from another branch.
+    const snapshot: OrchestrationReadModel = {
+      ...built,
+      threads: built.threads.map((thread, threadIndex) =>
+        threadIndex === 0
+          ? {
+              ...thread,
+              linkedPullRequests: [{ number: linkedNumber, url: linkedUrl, autoMerge: null }],
+            }
+          : thread,
+      ),
+    };
+    const mounted = await mountChatView({
+      viewport: WIDE_FOOTER_VIEWPORT,
+      snapshot,
+      // What the sidebar's tag links to when #294 is the one it shows.
+      initialPath: `/${LOCAL_ENVIRONMENT_ID}/${THREAD_ID}?pullRequest=1&pullRequestNumber=${linkedNumber}`,
+      configureFixture: withPullRequestFixture,
+      resolveRpc: (body) => {
+        const response = resolvePullRequestRpc(body);
+        return body._tag === WS_METHODS.pullRequestsDetail &&
+          (body as { number?: number }).number === linkedNumber
+          ? { ...(response as object), number: linkedNumber, url: linkedUrl }
+          : response;
+      },
+    });
+
+    try {
+      const tabs = () => [
+        ...document.querySelectorAll<HTMLButtonElement>(
+          '[aria-label="Pull requests in this thread"] [role="tab"]',
+        ),
+      ];
+      const selectedTab = (number: number) =>
+        tabs().find(
+          (tab) => tab.textContent === `#${number}` && tab.getAttribute("aria-selected") === "true",
+        ) ?? null;
+      // The thread's own pull request would lead, but the link named #294.
+      await waitForElement(
+        () => selectedTab(linkedNumber),
+        "The Pull request tab did not open on the pull request its link named.",
+      );
+
+      // Picking the other one carries the choice in the link too.
+      tabs()
+        .find((tab) => tab.textContent === `#${PULL_REQUEST_NUMBER}`)!
+        .click();
+      await waitForElement(
+        () => selectedTab(PULL_REQUEST_NUMBER),
+        "Picking the thread's own pull request did not switch the tab.",
+      );
+      expect(mounted.router.state.location.search).toMatchObject({
+        pullRequest: "1",
+        pullRequestNumber: PULL_REQUEST_NUMBER,
+      });
     } finally {
       await mounted.cleanup();
     }

@@ -34,6 +34,7 @@ import {
   type SpineNodeKind,
 } from "../ui/threadline";
 import { Tooltip, TooltipPopup, TooltipTrigger, TooltipWrapper } from "../ui/tooltip";
+import { presentTense } from "./activityWording";
 import {
   backgroundRunCommandText,
   backgroundRunMetaItems,
@@ -306,7 +307,7 @@ function taskSummary(activePlan: ActivePlanState | null, activeProposedPlan: boo
   const activeStep = activePlan.steps.find((step) => step.status === "inProgress");
 
   if (activeStep) {
-    return activeStep.step;
+    return presentTense(activeStep.step);
   }
 
   if (completedCount === total) {
@@ -547,7 +548,8 @@ function TaskSection({
                   )}
                 >
                   <span className="sr-only">{taskStatusLabel(step.status)}: </span>
-                  {step.step}
+                  {/* The task in hand reads as happening now. */}
+                  {step.status === "inProgress" ? presentTense(step.step) : step.step}
                 </div>
               </SpineRow>
             ))}

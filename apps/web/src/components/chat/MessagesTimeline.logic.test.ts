@@ -3,212 +3,9 @@ import { EventId, type OrchestrationThreadActivity } from "@threadlines/contract
 import { deriveWorkLogEntries, type WorkLogEntry } from "../../session-logic";
 import {
   computeStableMessagesTimelineRows,
-  computeMessageDurationStart,
   deriveMessagesTimelineRows,
-  deriveSubagentLaneLabels,
-  normalizeCompactToolLabel,
   resolveAssistantMessageCopyState,
 } from "./MessagesTimeline.logic";
-
-describe("deriveSubagentLaneLabels", () => {
-  const mainRow = (id: string): WorkLogEntry => ({
-    id,
-    createdAt: "2026-02-23T00:00:00.000Z",
-    label: "Main model step",
-    tone: "thinking",
-  });
-  const spawnRow = (id: string, toolUseId: string): WorkLogEntry => ({
-    id,
-    createdAt: "2026-02-23T00:00:00.000Z",
-    label: "Subagent task",
-    tone: "tool",
-    itemType: "collab_agent_tool_call",
-    toolCallId: toolUseId,
-  });
-  const agentRow = (id: string, toolUseId: string, subagentType = "general-purpose") =>
-    ({
-      id,
-      createdAt: "2026-02-23T00:00:00.000Z",
-      label: "Running agent step",
-      tone: "thinking",
-      subagentTask: { subagentType, toolUseId },
-    }) satisfies WorkLogEntry;
-
-  it("keeps contiguous same-agent runs bare, including under their own spawn row", () => {
-    const labels = deriveSubagentLaneLabels([
-      spawnRow("spawn", "toolu_a"),
-      agentRow("a1", "toolu_a"),
-      agentRow("a2", "toolu_a"),
-    ]);
-    expect(labels).toEqual([null, null, null]);
-  });
-
-  it("labels lane entries after main-model rows and at group boundaries", () => {
-    const labels = deriveSubagentLaneLabels([
-      agentRow("a1", "toolu_a"),
-      mainRow("m1"),
-      agentRow("a2", "toolu_a"),
-      agentRow("a3", "toolu_a"),
-    ]);
-    expect(labels).toEqual(["general-purpose", null, "general-purpose", null]);
-  });
-
-  it("labels every lane switch when parallel agents interleave", () => {
-    const labels = deriveSubagentLaneLabels([
-      agentRow("a1", "toolu_a", "code-reviewer"),
-      agentRow("b1", "toolu_b", "Explore"),
-      agentRow("a2", "toolu_a", "code-reviewer"),
-    ]);
-    expect(labels).toEqual(["code-reviewer", "Explore", "code-reviewer"]);
-  });
-
-  it("never labels main-model rows", () => {
-    expect(deriveSubagentLaneLabels([mainRow("m1"), mainRow("m2")])).toEqual([null, null]);
-  });
-});
-
-describe("computeMessageDurationStart", () => {
-  it("returns message createdAt when there is no preceding user message", () => {
-    const result = computeMessageDurationStart([
-      {
-        id: "a1",
-        role: "assistant",
-        createdAt: "2026-01-01T00:00:05Z",
-        completedAt: "2026-01-01T00:00:10Z",
-      },
-    ]);
-    expect(result).toEqual(new Map([["a1", "2026-01-01T00:00:05Z"]]));
-  });
-
-  it("uses the user message createdAt for the first assistant response", () => {
-    const result = computeMessageDurationStart([
-      { id: "u1", role: "user", createdAt: "2026-01-01T00:00:00Z" },
-      {
-        id: "a1",
-        role: "assistant",
-        createdAt: "2026-01-01T00:00:30Z",
-        completedAt: "2026-01-01T00:00:30Z",
-      },
-    ]);
-
-    expect(result).toEqual(
-      new Map([
-        ["u1", "2026-01-01T00:00:00Z"],
-        ["a1", "2026-01-01T00:00:00Z"],
-      ]),
-    );
-  });
-
-  it("uses the previous assistant completedAt for subsequent assistant responses", () => {
-    const result = computeMessageDurationStart([
-      { id: "u1", role: "user", createdAt: "2026-01-01T00:00:00Z" },
-      {
-        id: "a1",
-        role: "assistant",
-        createdAt: "2026-01-01T00:00:30Z",
-        completedAt: "2026-01-01T00:00:30Z",
-      },
-      {
-        id: "a2",
-        role: "assistant",
-        createdAt: "2026-01-01T00:00:55Z",
-        completedAt: "2026-01-01T00:00:55Z",
-      },
-    ]);
-
-    expect(result).toEqual(
-      new Map([
-        ["u1", "2026-01-01T00:00:00Z"],
-        ["a1", "2026-01-01T00:00:00Z"],
-        ["a2", "2026-01-01T00:00:30Z"],
-      ]),
-    );
-  });
-
-  it("does not advance the boundary for a streaming message without completedAt", () => {
-    const result = computeMessageDurationStart([
-      { id: "u1", role: "user", createdAt: "2026-01-01T00:00:00Z" },
-      { id: "a1", role: "assistant", createdAt: "2026-01-01T00:00:30Z" },
-      {
-        id: "a2",
-        role: "assistant",
-        createdAt: "2026-01-01T00:00:55Z",
-        completedAt: "2026-01-01T00:00:55Z",
-      },
-    ]);
-
-    expect(result).toEqual(
-      new Map([
-        ["u1", "2026-01-01T00:00:00Z"],
-        ["a1", "2026-01-01T00:00:00Z"],
-        ["a2", "2026-01-01T00:00:00Z"],
-      ]),
-    );
-  });
-
-  it("resets the boundary on a new user message", () => {
-    const result = computeMessageDurationStart([
-      { id: "u1", role: "user", createdAt: "2026-01-01T00:00:00Z" },
-      {
-        id: "a1",
-        role: "assistant",
-        createdAt: "2026-01-01T00:00:30Z",
-        completedAt: "2026-01-01T00:00:30Z",
-      },
-      { id: "u2", role: "user", createdAt: "2026-01-01T00:01:00Z" },
-      {
-        id: "a2",
-        role: "assistant",
-        createdAt: "2026-01-01T00:01:20Z",
-        completedAt: "2026-01-01T00:01:20Z",
-      },
-    ]);
-
-    expect(result).toEqual(
-      new Map([
-        ["u1", "2026-01-01T00:00:00Z"],
-        ["a1", "2026-01-01T00:00:00Z"],
-        ["u2", "2026-01-01T00:01:00Z"],
-        ["a2", "2026-01-01T00:01:00Z"],
-      ]),
-    );
-  });
-
-  it("handles system messages without affecting the boundary", () => {
-    const result = computeMessageDurationStart([
-      { id: "u1", role: "user", createdAt: "2026-01-01T00:00:00Z" },
-      { id: "s1", role: "system", createdAt: "2026-01-01T00:00:01Z" },
-      {
-        id: "a1",
-        role: "assistant",
-        createdAt: "2026-01-01T00:00:30Z",
-        completedAt: "2026-01-01T00:00:30Z",
-      },
-    ]);
-
-    expect(result).toEqual(
-      new Map([
-        ["u1", "2026-01-01T00:00:00Z"],
-        ["s1", "2026-01-01T00:00:00Z"],
-        ["a1", "2026-01-01T00:00:00Z"],
-      ]),
-    );
-  });
-
-  it("returns empty map for empty input", () => {
-    expect(computeMessageDurationStart([])).toEqual(new Map());
-  });
-});
-
-describe("normalizeCompactToolLabel", () => {
-  it("removes trailing completion wording from command labels", () => {
-    expect(normalizeCompactToolLabel("Ran command complete")).toBe("Ran command");
-  });
-
-  it("removes trailing completion wording from other labels", () => {
-    expect(normalizeCompactToolLabel("Read file completed")).toBe("Read file");
-  });
-});
 
 describe("resolveAssistantMessageCopyState", () => {
   it("returns enabled copy state for completed assistant messages", () => {
@@ -300,7 +97,6 @@ describe("deriveMessagesTimelineRows", () => {
         workEntry("child-edit", { sourceAgentThreadId: "agent-1" }),
         workEntry("main-edit"),
       ],
-      completionDividerBeforeEntryId: null,
       isWorking: false,
       activeTurnStartedAt: null,
       turnDiffSummaryByAssistantMessageId: new Map(),
@@ -341,7 +137,6 @@ describe("deriveMessagesTimelineRows", () => {
           executionState: "running",
         }),
       ],
-      completionDividerBeforeEntryId: null,
       isWorking: true,
       activeTurnId: "turn-1" as never,
       activeTurnStartedAt: "2026-01-01T00:00:00Z",
@@ -396,7 +191,6 @@ describe("deriveMessagesTimelineRows", () => {
         liveEntry,
         workEntry("main-edit", "2026-01-01T00:00:10Z"),
       ],
-      completionDividerBeforeEntryId: null,
       isWorking: true,
       activeTurnId: "turn-1" as never,
       activeTurnStartedAt: "2026-01-01T00:00:00Z",
@@ -418,7 +212,6 @@ describe("deriveMessagesTimelineRows", () => {
   it("uses the active status label for the live activity row", () => {
     const rows = deriveMessagesTimelineRows({
       timelineEntries: [],
-      completionDividerBeforeEntryId: null,
       isWorking: true,
       activeStatusLabel: "Connecting",
       activeTurnStartedAt: "2026-01-01T00:00:00Z",
@@ -432,6 +225,7 @@ describe("deriveMessagesTimelineRows", () => {
         id: "working-indicator-row",
         createdAt: "2026-01-01T00:00:00Z",
         label: "Connecting",
+        thought: null,
       },
     ]);
   });
@@ -439,7 +233,6 @@ describe("deriveMessagesTimelineRows", () => {
   it("keeps the working anchor up for live agents after the turn settles", () => {
     const rows = deriveMessagesTimelineRows({
       timelineEntries: [],
-      completionDividerBeforeEntryId: null,
       isWorking: false,
       liveAgentCount: 1,
       activeTurnStartedAt: null,
@@ -453,6 +246,7 @@ describe("deriveMessagesTimelineRows", () => {
         id: "working-indicator-row",
         createdAt: null,
         label: "Agent working",
+        thought: null,
       },
     ]);
   });
@@ -460,7 +254,6 @@ describe("deriveMessagesTimelineRows", () => {
   it("keeps the working anchor up as a wait while background tasks will wake the settled turn", () => {
     const rows = deriveMessagesTimelineRows({
       timelineEntries: [],
-      completionDividerBeforeEntryId: null,
       isWorking: false,
       liveAgentCount: 0,
       isWaitingOnBackgroundTasks: true,
@@ -475,6 +268,7 @@ describe("deriveMessagesTimelineRows", () => {
         id: "working-indicator-row",
         createdAt: null,
         label: "Waiting",
+        thought: null,
       },
     ]);
   });
@@ -524,22 +318,16 @@ describe("deriveMessagesTimelineRows", () => {
           },
         },
       ],
-      completionDividerBeforeEntryId: "assistant-final-entry",
       isWorking: false,
       activeTurnStartedAt: null,
       turnDiffSummaryByAssistantMessageId: new Map(),
       revertTurnCountByUserMessageId: new Map(),
     });
 
-    const assistantRows = rows.filter(
-      (row): row is Extract<(typeof rows)[number], { kind: "message" }> =>
-        row.kind === "message" && row.message.role === "assistant",
-    );
-
-    expect(assistantRows).toHaveLength(2);
-    expect(assistantRows[0]?.showAssistantCopyButton).toBe(false);
-    expect(assistantRows[1]?.showAssistantCopyButton).toBe(true);
-    expect(assistantRows[1]?.showCompletionDivider).toBe(true);
+    expect(rows.map((row) => row.kind)).toEqual(["message", "message", "message"]);
+    const [, note, answer] = rows;
+    expect(note?.kind === "message" && note.showAssistantCopyButton).toBe(false);
+    expect(answer?.kind === "message" && answer.showAssistantCopyButton).toBe(true);
   });
 
   it("moves settled-turn work that trails the response above the assistant message", () => {
@@ -577,7 +365,6 @@ describe("deriveMessagesTimelineRows", () => {
         // recorded after the response completes.
         workEntry("checkpoint-files", "2026-01-01T00:00:21Z"),
       ],
-      completionDividerBeforeEntryId: null,
       isWorking: false,
       activeTurnStartedAt: null,
       turnDiffSummaryByAssistantMessageId: new Map(),
@@ -622,7 +409,6 @@ describe("deriveMessagesTimelineRows", () => {
           },
         },
       ],
-      completionDividerBeforeEntryId: null,
       isWorking: true,
       activeTurnId: "turn-1" as never,
       activeTurnStartedAt: "2026-01-01T00:00:00Z",
@@ -667,8 +453,6 @@ describe("deriveMessagesTimelineRows", () => {
           },
         },
       ],
-      completionDividerBeforeEntryId: "assistant-two-entry",
-      completionSummary: "done",
       isWorking: false,
       activeTurnInProgress: true,
       activeTurnId: "turn-2" as never,
@@ -684,10 +468,8 @@ describe("deriveMessagesTimelineRows", () => {
 
     expect(assistantRows[0]?.assistantCopyStreaming).toBe(false);
     expect(assistantRows[0]?.assistantTurnInProgress).toBe(false);
-    expect(assistantRows[0]?.completionSummary).toBeNull();
     expect(assistantRows[1]?.assistantCopyStreaming).toBe(true);
     expect(assistantRows[1]?.assistantTurnInProgress).toBe(true);
-    expect(assistantRows[1]?.completionSummary).toBe("done");
   });
 
   it("projects assistant diff summaries and user revert counts onto the affected rows", () => {
@@ -729,7 +511,6 @@ describe("deriveMessagesTimelineRows", () => {
           },
         },
       ],
-      completionDividerBeforeEntryId: null,
       isWorking: false,
       activeTurnStartedAt: null,
       turnDiffSummaryByAssistantMessageId: new Map([
@@ -769,7 +550,6 @@ describe("deriveMessagesTimelineRows", () => {
           },
         },
       ],
-      completionDividerBeforeEntryId: null,
       isWorking: false,
       activeTurnStartedAt: null,
       turnDiffSummaryByAssistantMessageId: new Map([
@@ -834,7 +614,6 @@ describe("deriveMessagesTimelineRows", () => {
           },
         },
       ],
-      completionDividerBeforeEntryId: null,
       isWorking: false,
       activeTurnStartedAt: null,
       turnDiffSummaryByAssistantMessageId: new Map(),
@@ -901,7 +680,6 @@ describe("deriveMessagesTimelineRows", () => {
           },
         },
       ],
-      completionDividerBeforeEntryId: null,
       isWorking: true,
       activeTurnId: "turn-1" as never,
       activeTurnStartedAt: "2026-01-01T00:00:00Z",
@@ -949,7 +727,6 @@ describe("deriveMessagesTimelineRows", () => {
           },
         },
       ],
-      completionDividerBeforeEntryId: null,
       isWorking: true,
       activeTurnId: "turn-1" as never,
       activeTurnStartedAt: "2026-01-01T00:00:00Z",
@@ -1011,7 +788,6 @@ describe("deriveMessagesTimelineRows", () => {
           },
         },
       ],
-      completionDividerBeforeEntryId: null,
       isWorking: true,
       activeTurnId: "turn-1" as never,
       activeTurnStartedAt: "2026-01-01T00:00:00Z",
@@ -1063,7 +839,6 @@ describe("deriveMessagesTimelineRows", () => {
           },
         },
       ],
-      completionDividerBeforeEntryId: null,
       isWorking: true,
       activeTurnId: "turn-1" as never,
       activeTurnStartedAt: "2026-01-01T00:00:00Z",
@@ -1110,7 +885,6 @@ describe("deriveMessagesTimelineRows", () => {
           },
         },
       ],
-      completionDividerBeforeEntryId: null,
       isWorking: true,
       activeTurnId: "turn-1" as never,
       activeTurnStartedAt: "2026-01-01T00:00:00Z",
@@ -1123,6 +897,245 @@ describe("deriveMessagesTimelineRows", () => {
     );
 
     expect(workRow?.groupedEntries[0]?.executionState).toBe("completed");
+  });
+});
+
+describe("finished turns and the live step", () => {
+  const userEntry = (id: string, createdAt: string) => ({
+    id: `${id}-entry`,
+    kind: "message" as const,
+    createdAt,
+    message: {
+      id: id as never,
+      role: "user" as const,
+      text: "Fix the PR row",
+      turnId: null,
+      createdAt,
+      streaming: false,
+    },
+  });
+  const assistantEntry = (
+    id: string,
+    createdAt: string,
+    completedAt?: string,
+    turnId = "turn-1",
+  ) => ({
+    id: `${id}-entry`,
+    kind: "message" as const,
+    createdAt,
+    message: {
+      id: id as never,
+      role: "assistant" as const,
+      text: id,
+      turnId: turnId as never,
+      createdAt,
+      ...(completedAt ? { completedAt } : {}),
+      streaming: false,
+    },
+  });
+  const workEntry = (id: string, createdAt: string, entry: Partial<WorkLogEntry> = {}) => ({
+    id,
+    kind: "work" as const,
+    createdAt,
+    entry: {
+      id,
+      createdAt,
+      label: "Read file",
+      tone: "tool" as const,
+      itemType: "dynamic_tool_call" as const,
+      toolTitle: "Read file",
+      detail: "apps/web/src/service.ts",
+      turnId: "turn-1" as never,
+      ...entry,
+    },
+  });
+  const settledTurn = [
+    userEntry("user-1", "2026-01-01T00:00:00Z"),
+    assistantEntry("note", "2026-01-01T00:00:05Z", "2026-01-01T00:00:06Z"),
+    workEntry("read", "2026-01-01T00:00:07Z"),
+    assistantEntry("answer", "2026-01-01T00:01:00Z", "2026-01-01T00:01:15Z"),
+  ];
+  const derive = (
+    timelineEntries: Parameters<typeof deriveMessagesTimelineRows>[0]["timelineEntries"],
+    overrides: Partial<Parameters<typeof deriveMessagesTimelineRows>[0]> = {},
+  ) =>
+    deriveMessagesTimelineRows({
+      timelineEntries,
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+      ...overrides,
+    });
+  const messageRow = (rows: ReturnType<typeof derive>, id: string) => {
+    const row = rows.find((candidate) => candidate.id === `${id}-entry`);
+    return row?.kind === "message" ? row : undefined;
+  };
+
+  it("keeps a finished turn's story in place and puts the footer on its answer", () => {
+    const rows = derive(settledTurn);
+
+    // Nothing folds: the note and the step stay where they were.
+    expect(rows.map((row) => row.id)).toEqual([
+      "user-1-entry",
+      "note-entry",
+      "read",
+      "answer-entry",
+    ]);
+    expect(messageRow(rows, "note")).toMatchObject({ settledNote: true, turnSummary: null });
+    expect(messageRow(rows, "answer")).toMatchObject({
+      settledNote: false,
+      turnSummary: { workedMs: 75_000 },
+    });
+  });
+
+  it("counts a retried turn's work, not the wait before the retry", () => {
+    // The first attempt failed after 6s and the user pressed Retry 18 minutes
+    // later. Retry sends no user message, only a turn request.
+    const turnRequest = (id: string, createdAt: string) =>
+      workEntry(id, createdAt, {
+        label: "Preparing provider turn",
+        tone: "info",
+        providerLifecyclePhase: "preparing",
+      });
+    const rows = derive([
+      userEntry("user-1", "2026-01-01T00:44:42Z"),
+      turnRequest("request-1", "2026-01-01T00:44:42Z"),
+      assistantEntry("failure", "2026-01-01T00:44:48Z", "2026-01-01T00:44:48Z"),
+      turnRequest("request-2", "2026-01-01T01:02:46Z"),
+      assistantEntry("answer", "2026-01-01T01:02:53Z", "2026-01-01T01:02:54Z"),
+    ]);
+
+    // 6s for the failed attempt and 8s for the retry.
+    expect(messageRow(rows, "answer")?.turnSummary).toMatchObject({ workedMs: 14_000 });
+  });
+
+  it("keeps an earlier turn's footer while a later turn runs, and times each turn on its own", () => {
+    // A background task woke the thread 20 minutes after the first answer,
+    // without a new user message.
+    const entries = [
+      userEntry("user-1", "2026-01-01T00:00:00Z"),
+      assistantEntry("answer-1", "2026-01-01T00:00:30Z", "2026-01-01T00:00:40Z", "turn-1"),
+      workEntry("read-2", "2026-01-01T00:20:40Z", { turnId: "turn-2" as never }),
+      assistantEntry("answer-2", "2026-01-01T00:21:00Z", "2026-01-01T00:21:10Z", "turn-2"),
+    ];
+    const running = derive(entries.slice(0, 3), {
+      isWorking: true,
+      activeTurnInProgress: true,
+      activeTurnId: "turn-2" as never,
+      activeTurnStartedAt: "2026-01-01T00:20:40Z",
+    });
+    const settled = derive(entries);
+
+    expect(messageRow(running, "answer-1")?.turnSummary).toMatchObject({ workedMs: 40_000 });
+    expect(messageRow(settled, "answer-1")?.turnSummary).toMatchObject({ workedMs: 40_000 });
+    // From the wake-up's first step, not from the first answer.
+    expect(messageRow(settled, "answer-2")?.turnSummary).toMatchObject({ workedMs: 30_000 });
+  });
+
+  it("leaves the turn in flight alone, and a turn with no answer keeps its tracker", () => {
+    const inFlight = derive(settledTurn, {
+      isWorking: true,
+      activeTurnInProgress: true,
+      activeTurnId: "turn-1" as never,
+      activeTurnStartedAt: "2026-01-01T00:00:00Z",
+    });
+    const settled = derive(settledTurn);
+    // Stopped before the agent said anything: there is no answer for a footer.
+    const stopped = derive([settledTurn[0]!, settledTurn[2]!]);
+    const trackerOf = (rows: ReturnType<typeof derive>) =>
+      rows.find((row) => row.kind === "work")?.trackerTurnIds;
+
+    expect(messageRow(inFlight, "note")).toMatchObject({ settledNote: false, turnSummary: null });
+    expect(messageRow(inFlight, "answer")).toMatchObject({ turnSummary: null });
+    expect(inFlight.at(-1)?.kind).toBe("working");
+    // Once the turn ends, its agents ride on the answer's footer instead.
+    expect(trackerOf(settled)).toEqual([]);
+    expect(messageRow(settled, "answer")?.turnSummary?.trackerTurnIds).toEqual(["turn-1"]);
+    expect(trackerOf(stopped)).toEqual(["turn-1"]);
+  });
+
+  it("names the step running right now on the working row", () => {
+    const rows = derive(
+      [
+        userEntry("user-1", "2026-01-01T00:00:00Z"),
+        workEntry("read", "2026-01-01T00:00:07Z", { executionState: "running" }),
+      ],
+      {
+        isWorking: true,
+        activeTurnId: "turn-1" as never,
+        activeTurnStartedAt: "2026-01-01T00:00:00Z",
+      },
+    );
+    const thinking = derive(settledTurn.slice(0, 1), {
+      isWorking: true,
+      activeStatusLabel: "Waiting for approval",
+      activeTurnStartedAt: "2026-01-01T00:00:00Z",
+    });
+
+    expect(rows.at(-1)).toMatchObject({ kind: "working", label: "Reading service.ts" });
+    expect(thinking.at(-1)).toMatchObject({ kind: "working", label: "Waiting for approval" });
+  });
+
+  it("shows a running thought's newest paragraph under the working row", () => {
+    const thought = (executionState: "running" | "completed") => ({
+      id: "thought",
+      kind: "work" as const,
+      createdAt: "2026-01-01T00:00:07Z",
+      entry: {
+        id: "thought",
+        createdAt: "2026-01-01T00:00:07Z",
+        label: "Checking the equation first.",
+        tone: "thinking" as const,
+        activityKind: "thinking.progress" as const,
+        redactedThinking: false,
+        executionState,
+        detail: "Checking the equation first.\n\n**Solutions** come from the Lucas numbers.",
+        turnId: "turn-1" as never,
+      },
+    });
+    const live = {
+      isWorking: true,
+      activeTurnId: "turn-1" as never,
+      activeTurnStartedAt: "2026-01-01T00:00:00Z",
+    };
+    const thinking = derive(
+      [userEntry("user-1", "2026-01-01T00:00:00Z"), thought("running")],
+      live,
+    );
+    const done = derive([userEntry("user-1", "2026-01-01T00:00:00Z"), thought("completed")], live);
+
+    expect(thinking.at(-1)).toMatchObject({
+      kind: "working",
+      label: "Thinking",
+      thought: "Solutions come from the Lucas numbers.",
+    });
+    expect(done.at(-1)).toMatchObject({ kind: "working", thought: null });
+  });
+
+  it("sums up a finished turn's edits and the latest result of each check", () => {
+    const command = (id: string, executionState: "completed" | "failed") =>
+      workEntry(id, "2026-01-01T00:00:10Z", {
+        label: "Ran command",
+        itemType: "command_execution",
+        command: "pnpm exec vp run typecheck",
+        executionState,
+      });
+    const rows = derive([
+      userEntry("user-1", "2026-01-01T00:00:00Z"),
+      workEntry("edit", "2026-01-01T00:00:08Z", {
+        itemType: "file_change",
+        changedFiles: ["C:\\repo\\src\\a.ts", "c:/repo/src/a.ts", "src/b.ts"],
+      }),
+      command("typecheck-1", "failed"),
+      command("typecheck-2", "completed"),
+      assistantEntry("answer", "2026-01-01T00:01:00Z"),
+    ]);
+
+    expect(messageRow(rows, "answer")?.turnSummary).toMatchObject({
+      editedFileCount: 2,
+      checks: { passed: 1, failed: 0 },
+    });
   });
 });
 
@@ -1160,7 +1173,6 @@ describe("computeStableMessagesTimelineRows", () => {
           message: secondUserMessage,
         },
       ],
-      completionDividerBeforeEntryId: null,
       isWorking: false,
       activeTurnStartedAt: null,
       turnDiffSummaryByAssistantMessageId: new Map(),
@@ -1210,7 +1222,6 @@ describe("computeStableMessagesTimelineRows", () => {
             entry: secondWorkEntry,
           },
         ],
-        completionDividerBeforeEntryId: null,
         isWorking: false,
         activeTurnStartedAt: null,
         turnDiffSummaryByAssistantMessageId: new Map(),
@@ -1265,7 +1276,6 @@ describe("computeStableMessagesTimelineRows", () => {
           message: secondUserMessage,
         },
       ],
-      completionDividerBeforeEntryId: null,
       isWorking: false,
       activeTurnStartedAt: null,
       turnDiffSummaryByAssistantMessageId: new Map(),
@@ -1392,7 +1402,6 @@ describe("agent lifecycle parking through the real work-log derivation", () => {
         createdAt: entry.createdAt,
         entry,
       })),
-      completionDividerBeforeEntryId: null,
       isWorking: false,
       activeTurnStartedAt: null,
       turnDiffSummaryByAssistantMessageId: new Map(),
@@ -1444,7 +1453,6 @@ describe("tracker spawn-id fallback for turnless groups", () => {
         createdAt: entry.createdAt,
         entry,
       })),
-      completionDividerBeforeEntryId: null,
       isWorking: false,
       activeTurnStartedAt: null,
       turnDiffSummaryByAssistantMessageId: new Map(),
@@ -1471,7 +1479,6 @@ describe("tracker spawn-id fallback for turnless groups", () => {
         createdAt: entry.createdAt,
         entry,
       })),
-      completionDividerBeforeEntryId: null,
       isWorking: false,
       activeTurnStartedAt: null,
       turnDiffSummaryByAssistantMessageId: new Map(),

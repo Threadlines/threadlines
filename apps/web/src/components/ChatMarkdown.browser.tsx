@@ -67,8 +67,9 @@ const CHAT_MARKDOWN_THREAD_REF = scopeThreadRef(
 );
 // The pull request the thread route would hand a transcript, with its opener
 // mocked so a click can be observed.
+const THREAD_PULL_REQUEST_URL = "https://github.com/Threadlines/threadlines/pull/223";
 const THREAD_PULL_REQUEST_LINK = {
-  url: "https://github.com/Threadlines/threadlines/pull/223",
+  pullRequests: [{ number: 223, url: THREAD_PULL_REQUEST_URL }],
   open: vi.fn(),
 };
 
@@ -555,7 +556,8 @@ describe("ChatMarkdown", () => {
   });
 
   it("opens the thread's own pull request in its tab and leaves deeper links alone", async () => {
-    const { url: pullRequestUrl, open } = THREAD_PULL_REQUEST_LINK;
+    const { open } = THREAD_PULL_REQUEST_LINK;
+    const pullRequestUrl = THREAD_PULL_REQUEST_URL;
     open.mockClear();
     const screen = await render(
       <ThreadPullRequestLinkContext.Provider value={THREAD_PULL_REQUEST_LINK}>
@@ -594,6 +596,7 @@ describe("ChatMarkdown", () => {
 
       expect(click("the PR")).toBe(false);
       expect(open).toHaveBeenCalledTimes(1);
+      expect(open).toHaveBeenLastCalledWith(223);
 
       click("its files");
       expect(leftAlone).toBe(true);
@@ -605,7 +608,8 @@ describe("ChatMarkdown", () => {
   });
 
   it("renders a pull request address as a numbered chip that opens its tab", async () => {
-    const { url: pullRequestUrl, open } = THREAD_PULL_REQUEST_LINK;
+    const { open } = THREAD_PULL_REQUEST_LINK;
+    const pullRequestUrl = THREAD_PULL_REQUEST_URL;
     open.mockClear();
     const screen = await render(
       <ThreadPullRequestLinkContext.Provider value={THREAD_PULL_REQUEST_LINK}>

@@ -1,5 +1,4 @@
-<!-- Keep it small and focused. Open an issue first for non-trivial changes.
-     See CONTRIBUTING.md. -->
+<!-- Keep it small and focused. See CONTRIBUTING.md. -->
 
 ## Problem
 
@@ -7,7 +6,5 @@
 
 ## Fix
 
-<!-- What changed and why this approach. -->
-
-<!-- If this touches the UI, add before/after screenshots here.
-     If it changes motion or interaction, add a short video. -->
+<!-- What changed and why this approach. A screenshot or short clip helps
+     when the change is visual, but it's optional. -->
