@@ -13,6 +13,7 @@ import type {
   OrchestrationSubagent,
   OrchestrationThreadDiffStat,
   OrchestrationThreadDoneOverride,
+  OrchestrationThreadLinkedPullRequest,
   OrchestrationThreadGoal,
   ProjectKind,
   ProjectScript as ContractProjectScript,
@@ -137,6 +138,8 @@ export interface Thread {
   pullRequestAutoFix?: boolean;
   /** See ThreadShell.pullRequestAutoMerge. */
   pullRequestAutoMerge?: PullRequestMergeMethod | null;
+  /** See ThreadShell.linkedPullRequests. */
+  linkedPullRequests?: readonly OrchestrationThreadLinkedPullRequest[];
   /** See ThreadShell.doneOverride. */
   doneOverride: OrchestrationThreadDoneOverride | null;
   /** See ThreadShell.lastSeenAt. */
@@ -193,6 +196,11 @@ export interface ThreadShell {
    */
   pullRequestAutoMerge?: PullRequestMergeMethod | null;
   /**
+   * Pull requests the agent opened on other branches and linked in this
+   * thread, each with its own merge switch. Absent means none.
+   */
+  linkedPullRequests?: readonly OrchestrationThreadLinkedPullRequest[];
+  /**
    * The user's last explicit Mark done / Reopen, held on the server so every
    * device agrees on the inbox's Active/Wrapped split. Null when never filed.
    */
@@ -248,6 +256,8 @@ export interface SidebarThreadSummary {
    * each get their own number.
    */
   cumulativeDiffStat: OrchestrationThreadDiffStat | null;
+  /** See ThreadShell.linkedPullRequests; wrap-up waits on these too. */
+  linkedPullRequests?: readonly OrchestrationThreadLinkedPullRequest[];
 }
 
 export interface ThreadSession {

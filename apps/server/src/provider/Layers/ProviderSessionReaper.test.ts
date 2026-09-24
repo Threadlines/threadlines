@@ -112,6 +112,7 @@ function makeReadModel(
       pinnedAt: null,
       pullRequestAutoFix: false,
       pullRequestAutoMerge: null,
+      linkedPullRequests: [],
       doneOverride: null,
       lastSeenAt: null,
       latestUserMessageAt: null,

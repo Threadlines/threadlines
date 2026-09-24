@@ -11,6 +11,7 @@ import {
   ModelSelection,
   NonNegativeInt,
   OrchestrationThreadGoal,
+  OrchestrationThreadLinkedPullRequest,
   ProjectId,
   ProviderInteractionMode,
   PullRequestMergeMethod,
@@ -68,6 +69,12 @@ export const ProjectionThread = Schema.Struct({
    * migration 053 decode; absent reads as null.
    */
   pullRequestAutoMerge: Schema.optional(Schema.NullOr(PullRequestMergeMethod)),
+  /**
+   * Pull requests the agent opened on other branches and linked in the thread;
+   * see `OrchestrationThreadShell.linkedPullRequests`. Optional so rows written
+   * before migration 054 decode; absent reads as none.
+   */
+  linkedPullRequests: Schema.optional(Schema.Array(OrchestrationThreadLinkedPullRequest)),
   /**
    * The user's explicit inbox filing and its stamp. Optional so rows written
    * before migration 042 decode; absent reads as "never filed". Kept as two

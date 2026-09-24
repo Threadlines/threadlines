@@ -129,6 +129,7 @@ import {
 } from "../lib/pullRequestsReactQuery";
 import {
   resolveThreadPullRequest,
+  resolveThreadPullRequestsSettledAt,
   type ThreadPullRequest,
 } from "./pull-requests/pullRequests.logic";
 import { SidebarUpdatePill } from "./sidebar/SidebarUpdatePill";
@@ -672,20 +673,22 @@ export default function Sidebar() {
           doneThreadOverlays[threadKey],
           thread.doneOverride,
         );
-        const pullRequest = pullRequestByThreadKey.get(threadKey);
-        const pullRequestSettled =
-          pullRequest !== undefined &&
-          (pullRequest.state === "merged" || pullRequest.state === "closed");
         const isDone = isThreadDone({ ...thread, lastVisitedAt }, override, {
           now: nowIso,
           autoDoneAfterDays: INBOX_AUTO_DONE_AFTER_DAYS,
-          // The thread's own word wins over the app setting. A landing the
-          // host did not date is taken as now, which files the thread the way
-          // it always did.
+          // The thread's own word wins over the app setting. It waits for every
+          // pull request the thread has, its own and the ones its agent opened
+          // elsewhere. A landing the host did not date is taken as now, which
+          // files the thread the way it always did.
           pullRequestSettledAt:
-            (threadWrapUpOnPullRequestSettledById[threadKey] ?? wrapUpOnPullRequestSettled) &&
-            pullRequestSettled
-              ? (pullRequest.settledAt ?? nowIso)
+            (threadWrapUpOnPullRequestSettledById[threadKey] ?? wrapUpOnPullRequestSettled)
+              ? resolveThreadPullRequestsSettledAt({
+                  thread,
+                  own: pullRequestByThreadKey.get(threadKey),
+                  projects,
+                  settledEntries: settledPullRequestEntries,
+                  now: nowIso,
+                })
               : null,
         });
         return {
@@ -708,8 +711,10 @@ export default function Sidebar() {
       doneThreadOverlays,
       inboxThreads,
       nowIso,
+      projects,
       pullRequestByThreadKey,
       resolveThreadProjectKey,
+      settledPullRequestEntries,
       seenThreadOverlays,
       sidebarProjectByKey,
       wrapUpOnPullRequestSettled,

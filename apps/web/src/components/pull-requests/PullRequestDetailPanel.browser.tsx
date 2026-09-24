@@ -13,7 +13,7 @@ import {
   type PullRequestReviewThread,
   type ScopedThreadRef,
 } from "@threadlines/contracts";
-import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
   RouterProvider,
   createMemoryHistory,
@@ -32,7 +32,7 @@ import {
   __setEnvironmentApiOverrideForTests,
 } from "../../environmentApi";
 import { PullRequestDetailPanel } from "./PullRequestDetailPanel";
-import { ComposerPullRequestRow } from "../chat/ComposerPullRequestRow";
+import { ComposerPullRequestRow, type ComposerPullRequest } from "../chat/ComposerPullRequestRow";
 import { pullRequestQueryKeys } from "../../lib/pullRequestsReactQuery";
 import { pullRequestReviewKey, usePullRequestReviewStore } from "./pullRequestReviewStore";
 
@@ -147,6 +147,8 @@ const THREAD: PullRequestReviewThread = {
 async function renderComposerPullRequest(
   overrides: Partial<PullRequestDetail> = {},
   beforeWrite: () => Promise<void> = async () => {},
+  /** What the route would say differently about this row, such as for a linked pull request. */
+  row: Partial<ComposerPullRequest> = {},
 ) {
   let detail: PullRequestDetail = {
     ...DETAIL,
@@ -165,8 +167,10 @@ async function renderComposerPullRequest(
     };
     return { state: detail.state, isDraft: detail.isDraft };
   });
+  // The row reads the pull request itself, through the same API the app uses,
+  // so a write's re-read sees what the write changed.
   __setEnvironmentApiOverrideForTests(ENVIRONMENT_ID, {
-    pullRequests: { runAction },
+    pullRequests: { runAction, detail: async () => detail },
   } as unknown as EnvironmentApi);
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
@@ -174,7 +178,6 @@ async function renderComposerPullRequest(
   const queryKey = pullRequestQueryKeys.detail(ENVIRONMENT_ID, PROJECT_ID, REFERENCE.number);
   queryClient.setQueryData(queryKey, detail);
   function Composer() {
-    const query = useQuery({ queryKey, queryFn: async () => detail, staleTime: Infinity });
     return (
       <ComposerPullRequestRow
         divided={false}
@@ -182,18 +185,17 @@ async function renderComposerPullRequest(
           environmentId: ENVIRONMENT_ID,
           reference: REFERENCE,
           pullRequest: { ...DETAIL, autoMergeEnabled: false, settledAt: null, diffStat: null },
-          detail: query.data,
           projectTitle: DETAIL.projectTitle,
           onOpen,
           onDismiss: vi.fn(),
-          autoFix: false,
-          onAutoFixChange: vi.fn(),
+          autoFix: { checked: false, onChange: vi.fn() },
           autoMerge: null,
           onAutoMergeChange,
           agentWorking: false,
           unpushedCommits: 0,
           wrapUpOnSettled: false,
           onWrapUpOnSettledChange: vi.fn(),
+          ...row,
         }}
       />
     );
@@ -290,6 +292,30 @@ describe("Composer pull request merge controls", () => {
       expect(rendered.onAutoMergeChange).toHaveBeenCalledWith("squash");
       // GitHub's own switch would merge on the spot rather than arm.
       expect(rendered.runAction).not.toHaveBeenCalled();
+    } finally {
+      await rendered.cleanup();
+    }
+  });
+
+  it("gives a linked pull request its own merge switch but no auto-fix", async () => {
+    // The thread's checkout is on its own branch, so it cannot push fixes to this one.
+    const rendered = await renderComposerPullRequest(
+      {
+        mergeGate: "clear",
+        checks: [{ name: "build", status: "success", description: "Passed in 2m", url: null }],
+        checksState: "success",
+      },
+      undefined,
+      { autoFix: null },
+    );
+    try {
+      await page.getByRole("checkbox", { name: "Merge when checks pass" }).click();
+      expect(rendered.onAutoMergeChange).toHaveBeenCalledWith("squash");
+      await expect
+        .element(page.getByRole("checkbox", { name: "Fix failing checks and review comments" }), {
+          timeout: 5_000,
+        })
+        .not.toBeInTheDocument();
     } finally {
       await rendered.cleanup();
     }

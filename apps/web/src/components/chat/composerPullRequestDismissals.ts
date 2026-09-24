@@ -30,8 +30,9 @@ export function composerPullRequestDismissalKey(input: {
   return `${input.threadKey}|${input.repository.toLowerCase()}#${input.number}`;
 }
 
-export function useIsComposerPullRequestDismissed(key: string | null): boolean {
-  return useComposerPullRequestDismissalStore((store) => key !== null && store.dismissed.has(key));
+/** Every row closed so far, for a thread that has more than one to filter. */
+export function useDismissedComposerPullRequests(): ReadonlySet<string> {
+  return useComposerPullRequestDismissalStore((store) => store.dismissed);
 }
 
 export function dismissComposerPullRequest(key: string): void {

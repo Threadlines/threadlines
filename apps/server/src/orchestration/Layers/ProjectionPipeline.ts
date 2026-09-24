@@ -594,6 +594,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             pinnedAt: null,
             pullRequestAutoFix: 0,
             pullRequestAutoMerge: null,
+            linkedPullRequests: [],
             doneOverride: null,
             doneOverrideAt: null,
             lastSeenAt: null,
@@ -673,15 +674,51 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           if (Option.isNone(existingRow)) {
             return;
           }
+          const { autoMerge, pullRequestNumber } = event.payload;
+          // A numbered change is the switch of one linked pull request.
+          if (pullRequestNumber !== undefined) {
+            if (autoMerge === undefined) {
+              return;
+            }
+            yield* projectionThreadRepository.upsert({
+              ...existingRow.value,
+              linkedPullRequests: (existingRow.value.linkedPullRequests ?? []).map((linked) =>
+                linked.number === pullRequestNumber ? { ...linked, autoMerge } : linked,
+              ),
+              updatedAt: event.payload.updatedAt,
+            });
+            return;
+          }
           yield* projectionThreadRepository.upsert({
             ...existingRow.value,
             ...(event.payload.autoFix === undefined
               ? {}
               : { pullRequestAutoFix: event.payload.autoFix ? 1 : 0 }),
-            ...(event.payload.autoMerge === undefined
-              ? {}
-              : { pullRequestAutoMerge: event.payload.autoMerge }),
+            ...(autoMerge === undefined ? {} : { pullRequestAutoMerge: autoMerge }),
             updatedAt: event.payload.updatedAt,
+          });
+          return;
+        }
+
+        // Found in the conversation rather than done to the thread, so it
+        // leaves `updatedAt` where the agent's message put it.
+        case "thread.pull-request-linked": {
+          const existingRow = yield* projectionThreadRepository.getById({
+            threadId: event.payload.threadId,
+          });
+          if (Option.isNone(existingRow)) {
+            return;
+          }
+          const linkedPullRequests = existingRow.value.linkedPullRequests ?? [];
+          if (linkedPullRequests.some((linked) => linked.number === event.payload.number)) {
+            return;
+          }
+          yield* projectionThreadRepository.upsert({
+            ...existingRow.value,
+            linkedPullRequests: [
+              ...linkedPullRequests,
+              { number: event.payload.number, url: event.payload.url, autoMerge: null },
+            ],
           });
           return;
         }

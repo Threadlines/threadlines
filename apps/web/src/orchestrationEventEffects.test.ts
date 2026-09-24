@@ -10,7 +10,10 @@ import {
 } from "@threadlines/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { deriveOrchestrationBatchEffects } from "./orchestrationEventEffects";
+import {
+  deriveOrchestrationBatchEffects,
+  serverMergeSwitchTurnedOff,
+} from "./orchestrationEventEffects";
 
 function makeEvent<T extends OrchestrationEvent["type"]>(
   type: T,
@@ -153,5 +156,32 @@ describe("deriveOrchestrationBatchEffects", () => {
     expect(automation({ autoMerge: null })).toBe(true);
     expect(automation({ autoMerge: "squash" })).toBe(false);
     expect(automation({ autoFix: false })).toBe(false);
+  });
+});
+
+describe("serverMergeSwitchTurnedOff", () => {
+  const url = "https://github.com/acme/widgets/pull/294";
+
+  it("sees the thread's own switch or a linked pull request's going off, not coming on", () => {
+    expect(
+      serverMergeSwitchTurnedOff(
+        { pullRequestAutoMerge: "squash" },
+        { pullRequestAutoMerge: null },
+      ),
+    ).toBe(true);
+    expect(
+      serverMergeSwitchTurnedOff(
+        { linkedPullRequests: [{ number: 294, url, autoMerge: "squash" }] },
+        { linkedPullRequests: [{ number: 294, url, autoMerge: null }] },
+      ),
+    ).toBe(true);
+    expect(
+      serverMergeSwitchTurnedOff(
+        { linkedPullRequests: [{ number: 294, url, autoMerge: null }] },
+        { linkedPullRequests: [{ number: 294, url, autoMerge: "squash" }] },
+      ),
+    ).toBe(false);
+    // A thread the client is seeing for the first time has nothing to compare.
+    expect(serverMergeSwitchTurnedOff(undefined, { pullRequestAutoMerge: null })).toBe(false);
   });
 });

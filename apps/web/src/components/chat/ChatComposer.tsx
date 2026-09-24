@@ -117,7 +117,7 @@ import { ComposerGoalBar, type ComposerGoalSetInput } from "./ComposerGoalBar";
 import { ComposerPlanFollowUpBanner } from "./ComposerPlanFollowUpBanner";
 import { type ComposerNotice, selectComposerNotices } from "./composerNotices";
 import { ComposerDock, hasComposerDockContent } from "./ComposerDock";
-import type { ComposerPullRequest } from "./ComposerPullRequestRow";
+import { NO_COMPOSER_PULL_REQUESTS, type ComposerPullRequest } from "./ComposerPullRequestRow";
 import { ComposerPendingDrawingContexts } from "./ComposerPendingDrawingContexts";
 import { ComposerPendingPickedElementContexts } from "./ComposerPendingPickedElementContexts";
 import { ComposerPendingTranscriptHighlightContexts } from "./ComposerPendingTranscriptHighlightContexts";
@@ -562,11 +562,12 @@ export interface ChatComposerProps {
   notices: ReadonlyArray<ComposerNotice>;
 
   /**
-   * The pull request the thread is working on, docked above the notices. Null
-   * where the thread has none, or where the surface has no route to resolve
-   * one (a draft, a general chat).
+   * The thread's pull requests, docked above the notices: the one on its own
+   * branch first, then the ones its agent opened elsewhere. Empty where the
+   * thread has none, or where the surface has no route to resolve them (a
+   * draft, a general chat).
    */
-  pullRequest: ComposerPullRequest | null;
+  pullRequests: ReadonlyArray<ComposerPullRequest>;
 
   // Misc
   resolvedTheme: "light" | "dark";
@@ -665,7 +666,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     activeThreadModelSelection,
     activeThreadActivities,
     notices,
-    pullRequest,
+    pullRequests,
     resolvedTheme,
     settings,
     keybindings,
@@ -3186,7 +3187,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         {/* A collapsed composer drops the standing context, never a notice
             about sending: those stay in front of the send button. */}
         <ComposerDock
-          pullRequest={isComposerCollapsedMobile ? null : pullRequest}
+          pullRequests={isComposerCollapsedMobile ? NO_COMPOSER_PULL_REQUESTS : pullRequests}
           notices={dockedNotices}
         />
         <div
@@ -3195,7 +3196,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           className={cn(
             "rounded-xl border bg-card elevate-raised transition-colors duration-200 has-focus-visible:border-focus-ring/45",
             !isComposerCollapsedMobile &&
-              hasComposerDockContent({ pullRequest, notices: dockedNotices }) &&
+              hasComposerDockContent({ pullRequests, notices: dockedNotices }) &&
               "rounded-t-none",
             isDragOverComposer ? "border-primary/70 bg-accent/30" : "border-border",
             environmentUnavailable ? "opacity-75" : null,

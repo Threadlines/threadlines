@@ -131,6 +131,7 @@ function makeThreadShellSnapshot(params: {
         pinnedAt: null,
         pullRequestAutoFix: false,
         pullRequestAutoMerge: null,
+        linkedPullRequests: [],
         doneOverride: null,
         lastSeenAt: null,
         session: params.sessionStatus

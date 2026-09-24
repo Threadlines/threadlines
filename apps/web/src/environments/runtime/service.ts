@@ -33,7 +33,10 @@ import {
 import { ensureLocalApi } from "~/localApi";
 import { collectActiveTerminalThreadIds } from "~/lib/terminalStateCleanup";
 import { migrateLegacyInboxStateForEnvironment } from "~/lib/threadInboxSync";
-import { deriveOrchestrationBatchEffects } from "~/orchestrationEventEffects";
+import {
+  deriveOrchestrationBatchEffects,
+  serverMergeSwitchTurnedOff,
+} from "~/orchestrationEventEffects";
 import { projectQueryKeys } from "~/lib/projectReactQuery";
 import { providerQueryKeys } from "~/lib/providerReactQuery";
 import { pullRequestQueryKeys } from "~/lib/pullRequestsReactQuery";
@@ -1199,10 +1202,7 @@ function applyShellEvent(event: OrchestrationShellStreamEvent, environmentId: En
       }
       // The shell carries every thread, including ones with no detail stream
       // open, so a server-held merge that ends off screen is seen here too.
-      if (
-        previousThread?.pullRequestAutoMerge != null &&
-        event.thread.pullRequestAutoMerge == null
-      ) {
+      if (serverMergeSwitchTurnedOff(previousThread, event.thread)) {
         needsPullRequestInvalidation = true;
         void activeService?.queryInvalidationThrottler.maybeExecute();
       }

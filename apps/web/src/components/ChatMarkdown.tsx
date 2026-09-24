@@ -71,7 +71,7 @@ import { GitPullRequestIcon } from "lucide-react";
 import { ChatWebLink } from "./chat/ChatWebLink";
 import { PullRequestHoverCard, usePullRequestChip } from "./pull-requests/PullRequestHoverCard";
 import { pullRequestBadgeTone } from "./pull-requests/pullRequests.logic";
-import { parsePullRequestUrl } from "../pullRequestReference";
+import { parsePullRequestUrl } from "@threadlines/shared/sourceControl";
 import { copyTextWithToast } from "./chat/copyTextWithToast";
 import { isBrowserPanelHref } from "./browser/openInBrowserPanel";
 import {

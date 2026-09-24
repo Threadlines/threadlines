@@ -41,6 +41,7 @@ function makeReadModel(): OrchestrationReadModel {
         pinnedAt: null,
         pullRequestAutoFix: false,
         pullRequestAutoMerge: null,
+        linkedPullRequests: [],
         doneOverride: null,
         lastSeenAt: null,
         deletedAt: null,
@@ -144,6 +145,93 @@ describe("decider inbox lifecycle", () => {
         }),
       ),
     ).rejects.toThrow("already archived");
+  });
+
+  it("links a pull request once, and holds a merge switch for it but no auto-fix", async () => {
+    const decide = (
+      command: Parameters<typeof decideOrchestrationCommand>[0]["command"],
+      readModel = makeReadModel(),
+    ) =>
+      Effect.runPromise(decideOrchestrationCommand({ command, readModel })).then((decided) =>
+        Array.isArray(decided) ? decided[0] : decided,
+      );
+    const url = "https://github.com/acme/widgets/pull/294";
+
+    expect(
+      await decide({
+        type: "thread.pull-request.link",
+        commandId: CommandId.make("cmd-link"),
+        threadId,
+        number: 294,
+        url,
+        createdAt: now,
+      }),
+    ).toMatchObject({
+      type: "thread.pull-request-linked",
+      payload: { threadId, number: 294, url, linkedAt: now },
+    });
+
+    const linked = makeReadModel();
+    const withLinked: OrchestrationReadModel = {
+      ...linked,
+      threads: linked.threads.map((thread) => ({
+        ...thread,
+        linkedPullRequests: [{ number: 294, url, autoMerge: null }],
+      })),
+    };
+    await expect(
+      decide(
+        {
+          type: "thread.pull-request.link",
+          commandId: CommandId.make("cmd-link-again"),
+          threadId,
+          number: 294,
+          url,
+          createdAt: now,
+        },
+        withLinked,
+      ),
+    ).rejects.toThrow("already linked");
+
+    expect(
+      await decide(
+        {
+          type: "thread.pull-request-automation.set",
+          commandId: CommandId.make("cmd-linked-merge"),
+          threadId,
+          pullRequestNumber: 294,
+          autoMerge: "squash",
+        },
+        withLinked,
+      ),
+    ).toMatchObject({
+      type: "thread.pull-request-automation-changed",
+      payload: { threadId, pullRequestNumber: 294, autoMerge: "squash" },
+    });
+    await expect(
+      decide(
+        {
+          type: "thread.pull-request-automation.set",
+          commandId: CommandId.make("cmd-linked-fix"),
+          threadId,
+          pullRequestNumber: 294,
+          autoFix: true,
+        },
+        withLinked,
+      ),
+    ).rejects.toThrow("no auto-fix switch");
+    await expect(
+      decide(
+        {
+          type: "thread.pull-request-automation.set",
+          commandId: CommandId.make("cmd-unlinked-merge"),
+          threadId,
+          pullRequestNumber: 295,
+          autoMerge: "squash",
+        },
+        withLinked,
+      ),
+    ).rejects.toThrow("is not linked");
   });
 
   it("rejects filing a thread that does not exist", async () => {

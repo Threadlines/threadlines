@@ -93,6 +93,7 @@ function thread(overrides: Partial<OrchestrationThreadShell> = {}): Orchestratio
     pinnedAt: null,
     pullRequestAutoFix: true,
     pullRequestAutoMerge: null,
+    linkedPullRequests: [],
     doneOverride: null,
     lastSeenAt: null,
     session: null,
@@ -714,6 +715,62 @@ describe("PullRequestAutomationWatcher", () => {
       await sweep();
       expect(actions).toEqual([]);
       expect(commands).toEqual([]);
+    });
+
+    it("merges a linked pull request by its own switch, and turns only that one off", async () => {
+      const { actions, commands, setScript, sweep } = await createHarness({
+        // Nothing armed for the thread's own branch; one linked pull request is.
+        threads: [
+          thread({
+            pullRequestAutoFix: false,
+            linkedPullRequests: [
+              {
+                number: 294,
+                url: `https://github.com/${REPOSITORY}/pull/294`,
+                autoMerge: "squash",
+              },
+            ],
+          }),
+        ],
+        // The thread has since moved onto the linked pull request's branch,
+        // and its checkout holds a commit the host has not seen.
+        script: {
+          remote: { ...OPEN_PULL_REQUEST, aheadCount: 1 },
+          detail: mergeable([PASSING_CHECK]),
+          activity: activity(),
+        },
+      });
+
+      await sweep();
+      expect(actions).toEqual([]);
+
+      setScript({
+        remote: OPEN_PULL_REQUEST,
+        detail: mergeable([PASSING_CHECK]),
+        activity: activity(),
+        merge: () => Effect.succeed({ state: "merged" }),
+      });
+      await sweep();
+      expect(actions).toEqual([
+        {
+          projectId: PROJECT_ID,
+          repository: REPOSITORY,
+          number: 294,
+          action: "merge",
+          mergeMethod: "squash",
+        },
+      ]);
+      expect(commands[0]).toMatchObject({
+        type: "thread.pull-request-automation.set",
+        pullRequestNumber: 294,
+        autoMerge: null,
+      });
+      expect(commands[1]).toMatchObject({
+        activity: {
+          kind: "pull-request.auto-merge.merged",
+          summary: "Merged #294 after its checks passed",
+        },
+      });
     });
 
     it("counts a place in the merge queue as handed over, not as a failed merge", async () => {

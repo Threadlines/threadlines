@@ -379,6 +379,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           pinnedAt: null,
           pullRequestAutoFix: false,
           pullRequestAutoMerge: null,
+          linkedPullRequests: [],
           doneOverride: null,
           lastSeenAt: null,
           deletedAt: null,
@@ -505,6 +506,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           pinnedAt: null,
           pullRequestAutoFix: false,
           pullRequestAutoMerge: null,
+          linkedPullRequests: [],
           doneOverride: null,
           lastSeenAt: null,
           session: {

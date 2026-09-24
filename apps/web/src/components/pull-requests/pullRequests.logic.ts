@@ -5,6 +5,7 @@ import type {
   PullRequestCheck,
   PullRequestDetail,
   PullRequestDiffSide,
+  OrchestrationThreadLinkedPullRequest,
   PullRequestListEntry,
   PullRequestListProjectError,
   PullRequestListResult,
@@ -704,11 +705,8 @@ export function resolveThreadPullRequest(input: {
   if (thread.branch === null || thread.archivedAt !== null) {
     return null;
   }
-  const project = input.projects.find(
-    (candidate) =>
-      candidate.environmentId === thread.environmentId && candidate.id === thread.projectId,
-  );
-  if (!project || project.kind === "general-chat") {
+  const project = findThreadProject(thread, input.projects);
+  if (!project) {
     return null;
   }
   const repository = projectRepository(project);
@@ -725,9 +723,23 @@ export function resolveThreadPullRequest(input: {
   const entry =
     findThreadListEntry(thread, scope, input.openEntries) ??
     findThreadListEntry(thread, scope, input.settledEntries ?? []);
-  if (!entry) {
-    return null;
-  }
+  return entry ? threadPullRequestFromEntry(entry) : null;
+}
+
+/** The project a thread belongs to, unless it is one with no pull requests (a general chat). */
+function findThreadProject(
+  thread: Pick<ThreadPullRequestSubject, "environmentId" | "projectId">,
+  projects: readonly Project[],
+): Project | undefined {
+  const project = projects.find(
+    (candidate) =>
+      candidate.environmentId === thread.environmentId && candidate.id === thread.projectId,
+  );
+  return project?.kind === "general-chat" ? undefined : project;
+}
+
+/** A listing row as a thread's badge, row and tab read it. */
+function threadPullRequestFromEntry(entry: PullRequestEntry): ThreadPullRequest {
   return {
     number: entry.number,
     state: entry.state,
@@ -742,6 +754,116 @@ export function resolveThreadPullRequest(input: {
     headBranch: entry.headBranch,
     diffStat: { additions: entry.additions, deletions: entry.deletions },
   };
+}
+
+/** The listing row for one pull request number on a project's own repository. */
+function findNumberedListEntry(
+  scope: string,
+  number: number,
+  entries: readonly PullRequestEntry[],
+): PullRequestEntry | undefined {
+  return entries.find(
+    (candidate) =>
+      candidate.origin !== "authored" &&
+      candidate.number === number &&
+      repositoryScopeKey(candidate.provider, candidate.repository) === scope,
+  );
+}
+
+/**
+ * The pull requests a thread's agent opened on other branches (its
+ * `linkedPullRequests`), as the composer rows and the Pull request tab draw
+ * them: what the open listing knows about each, or until it knows anything,
+ * the number and address the thread recorded, read as open. The thread's own
+ * pull request is left out however it came to be linked; it has its row.
+ */
+export function resolveLinkedThreadPullRequests(input: {
+  readonly thread: Pick<ThreadPullRequestSubject, "environmentId" | "projectId"> & {
+    readonly linkedPullRequests?: ReadonlyArray<
+      Pick<OrchestrationThreadLinkedPullRequest, "number" | "url">
+    >;
+  };
+  readonly ownNumber: number | null;
+  readonly projects: readonly Project[];
+  readonly openEntries: readonly PullRequestEntry[];
+}): ThreadPullRequest[] {
+  const linked = (input.thread.linkedPullRequests ?? []).filter(
+    (candidate) => candidate.number !== input.ownNumber,
+  );
+  const project = linked.length === 0 ? undefined : findThreadProject(input.thread, input.projects);
+  if (!project) {
+    return [];
+  }
+  const repository = projectRepository(project);
+  const scope = projectRepositoryScope(project);
+  return linked.map((candidate) => {
+    const entry =
+      scope === null
+        ? undefined
+        : findNumberedListEntry(scope, candidate.number, input.openEntries);
+    return entry
+      ? threadPullRequestFromEntry(entry)
+      : {
+          number: candidate.number,
+          state: "open",
+          isDraft: false,
+          title: `#${candidate.number}`,
+          url: candidate.url,
+          repository,
+          settledAt: null,
+          autoMergeEnabled: false,
+          headBranch: null,
+          diffStat: null,
+        };
+  });
+}
+
+/**
+ * When every pull request a thread has is merged or closed, the moment the
+ * last one settled; null while any is still open, or while it has none. The
+ * thread's own pull request counts the way it always has. A linked one is
+ * settled once a merged or closed listing carries it; until then it holds the
+ * thread open, whether the open listing carries it or has simply not caught
+ * up with one that was opened a moment ago.
+ */
+export function resolveThreadPullRequestsSettledAt(input: {
+  readonly thread: Pick<ThreadPullRequestSubject, "environmentId" | "projectId"> & {
+    readonly linkedPullRequests?: ReadonlyArray<
+      Pick<OrchestrationThreadLinkedPullRequest, "number">
+    >;
+  };
+  readonly own: ThreadPullRequest | undefined;
+  readonly projects: readonly Project[];
+  readonly settledEntries: readonly PullRequestEntry[];
+  /** Stands in for a landing the host did not date. */
+  readonly now: string;
+}): string | null {
+  const settledAt: string[] = [];
+  if (input.own !== undefined) {
+    if (input.own.state === "open") {
+      return null;
+    }
+    settledAt.push(input.own.settledAt ?? input.now);
+  }
+  const linked = (input.thread.linkedPullRequests ?? []).filter(
+    (candidate) => candidate.number !== input.own?.number,
+  );
+  const project = linked.length === 0 ? undefined : findThreadProject(input.thread, input.projects);
+  const scope = project ? projectRepositoryScope(project) : null;
+  for (const candidate of linked) {
+    const settled =
+      scope === null
+        ? undefined
+        : findNumberedListEntry(scope, candidate.number, input.settledEntries);
+    if (!settled) {
+      return null;
+    }
+    settledAt.push(settled.settledAt ?? settled.updatedAt);
+  }
+  return settledAt.reduce<string | null>(
+    (latest, at) => (latest === null || updatedAtMs(at) > updatedAtMs(latest) ? at : latest),
+    null,
+  );
 }
 
 /**
