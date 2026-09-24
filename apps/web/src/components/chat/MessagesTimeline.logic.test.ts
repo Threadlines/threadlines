@@ -225,6 +225,7 @@ describe("deriveMessagesTimelineRows", () => {
         id: "working-indicator-row",
         createdAt: "2026-01-01T00:00:00Z",
         label: "Connecting",
+        thought: null,
       },
     ]);
   });
@@ -245,6 +246,7 @@ describe("deriveMessagesTimelineRows", () => {
         id: "working-indicator-row",
         createdAt: null,
         label: "Agent working",
+        thought: null,
       },
     ]);
   });
@@ -266,6 +268,7 @@ describe("deriveMessagesTimelineRows", () => {
         id: "working-indicator-row",
         createdAt: null,
         label: "Waiting",
+        thought: null,
       },
     ]);
   });
@@ -1072,6 +1075,42 @@ describe("finished turns and the live step", () => {
 
     expect(rows.at(-1)).toMatchObject({ kind: "working", label: "Reading service.ts" });
     expect(thinking.at(-1)).toMatchObject({ kind: "working", label: "Waiting for approval" });
+  });
+
+  it("shows a running thought's newest paragraph under the working row", () => {
+    const thought = (executionState: "running" | "completed") => ({
+      id: "thought",
+      kind: "work" as const,
+      createdAt: "2026-01-01T00:00:07Z",
+      entry: {
+        id: "thought",
+        createdAt: "2026-01-01T00:00:07Z",
+        label: "Checking the equation first.",
+        tone: "thinking" as const,
+        activityKind: "thinking.progress" as const,
+        redactedThinking: false,
+        executionState,
+        detail: "Checking the equation first.\n\n**Solutions** come from the Lucas numbers.",
+        turnId: "turn-1" as never,
+      },
+    });
+    const live = {
+      isWorking: true,
+      activeTurnId: "turn-1" as never,
+      activeTurnStartedAt: "2026-01-01T00:00:00Z",
+    };
+    const thinking = derive(
+      [userEntry("user-1", "2026-01-01T00:00:00Z"), thought("running")],
+      live,
+    );
+    const done = derive([userEntry("user-1", "2026-01-01T00:00:00Z"), thought("completed")], live);
+
+    expect(thinking.at(-1)).toMatchObject({
+      kind: "working",
+      label: "Thinking",
+      thought: "Solutions come from the Lucas numbers.",
+    });
+    expect(done.at(-1)).toMatchObject({ kind: "working", thought: null });
   });
 
   it("sums up a finished turn's edits and the latest result of each check", () => {

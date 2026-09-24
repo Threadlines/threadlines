@@ -397,5 +397,12 @@ describe("agent transcripts", () => {
       "Recheck and re-time after switching to rectangles",
     );
     expect(plainAgentStep("Running Check the van tests")).toBe("Checking the van tests");
+    // A task's own label reads in the present while it runs. A verb whose past
+    // looks the same, or one we do not know, stays as written.
+    expect(plainAgentStep("Run the timing script once with debug output")).toBe(
+      "Running the timing script once with debug output",
+    );
+    expect(plainAgentStep("Read the config")).toBe("Read the config");
+    expect(plainAgentStep("Repaint building exterior art")).toBe("Repaint building exterior art");
   });
 });

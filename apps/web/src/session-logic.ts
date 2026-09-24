@@ -267,7 +267,6 @@ export type SubagentProgressStatus =
 export interface SubagentTelemetry {
   /** What the agent is doing right now, e.g. "Running the test suite". */
   step: string | null;
-  lastToolName: string | null;
   totalTokens: number | null;
   toolUses: number | null;
   durationMs: number | null;
@@ -1714,13 +1713,12 @@ function collectSubagentActivityTelemetry(
               ? "Searching the web"
               : null
         : null;
-    // The step and last tool describe the moment, so the newest entry wins;
-    // the line counts describe the whole run, so they accumulate.
+    // The step describes the moment, so the newest entry wins; the line
+    // counts describe the whole run, so they accumulate.
     const previous = byAgentId.get(agentId);
     const edited = sumChangedFileStats(entry.changedFileStats);
     byAgentId.set(agentId, {
       step: (runningStep ?? entry.label.trim()) || null,
-      lastToolName: entry.toolTitle?.trim() || null,
       totalTokens: null,
       toolUses: null,
       durationMs: null,
@@ -1764,10 +1762,8 @@ function mergeSubagentTelemetry(
 ): SubagentTelemetry | null {
   const usage = asRecord(payload.usage);
   const step = settled ? null : asTrimmedString(payload.detail);
-  const lastToolName = settled ? null : asTrimmedString(payload.lastToolName);
   const next: SubagentTelemetry = {
     step: step ?? (settled ? null : (previous?.step ?? null)),
-    lastToolName: lastToolName ?? (settled ? null : (previous?.lastToolName ?? null)),
     totalTokens: asPositiveNumber(usage?.total_tokens) ?? previous?.totalTokens ?? null,
     toolUses: asPositiveNumber(usage?.tool_uses) ?? previous?.toolUses ?? null,
     durationMs: asPositiveNumber(usage?.duration_ms) ?? previous?.durationMs ?? null,
@@ -1775,7 +1771,6 @@ function mergeSubagentTelemetry(
     deletions: previous?.deletions ?? null,
   };
   return next.step === null &&
-    next.lastToolName === null &&
     next.totalTokens === null &&
     next.toolUses === null &&
     next.durationMs === null &&
@@ -1798,7 +1793,6 @@ function combineSubagentTelemetry(
   }
   return {
     step: taskStream.step ?? activityDerived?.step ?? null,
-    lastToolName: taskStream.lastToolName ?? activityDerived?.lastToolName ?? null,
     totalTokens: taskStream.totalTokens,
     toolUses: taskStream.toolUses,
     durationMs: taskStream.durationMs,
@@ -1834,9 +1828,7 @@ function applySubagentTaskCompletion(
     // The task settled; live progress text no longer describes the agent.
     liveBody: null,
     liveBodyUpdatedAt: null,
-    telemetry: record.telemetry
-      ? { ...record.telemetry, step: null, lastToolName: null }
-      : record.telemetry,
+    telemetry: record.telemetry ? { ...record.telemetry, step: null } : record.telemetry,
     updatedAt: activity.createdAt,
   });
 }

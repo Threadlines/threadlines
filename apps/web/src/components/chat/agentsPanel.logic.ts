@@ -166,7 +166,6 @@ function subagentBranch(
       ...formatSubagentMetaParts(item, {
         context: details.context,
         elapsed: live ? formatElapsedDurationLabel(item.createdAt, nowMs) : null,
-        includeCurrentTool: false,
       }),
       ...agentDiffMetaParts(item),
     ],

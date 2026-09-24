@@ -415,43 +415,54 @@ function mcpStatusSummary(value: unknown): string {
   }
 }
 
-function extractReasoningSummaryFromUnknown(value: unknown): string | undefined {
+/** A reasoning summary's whole text: a string, the parts of an array as
+ *  paragraphs, or the text field of a summary object. */
+function reasoningSummaryText(value: unknown): string | undefined {
+  if (Array.isArray(value)) {
+    const text = value
+      .map(reasoningSummaryText)
+      .filter((part): part is string => part !== undefined)
+      .join("\n\n");
+    return text.length > 0 ? text : undefined;
+  }
   if (typeof value === "string") {
     const trimmed = value.trim();
-    return trimmed.length > 0 ? truncateDetail(trimmed) : undefined;
+    return trimmed.length > 0 ? trimmed : undefined;
+  }
+  return compactUnknownDetail(value);
+}
+
+/** Where providers put a reasoning item's readable summary: on the event
+ *  data, or on the item it carries. Untruncated; callers size it. */
+function extractReasoningSummaryFromUnknown(value: unknown): string | undefined {
+  if (typeof value === "string") {
+    return reasoningSummaryText(value);
   }
   if (!value || typeof value !== "object") {
     return undefined;
   }
 
   const record = value as Record<string, unknown>;
-  const direct = compactUnknownDetail(record.summary) ?? compactUnknownDetail(record.content);
+  // `content` can hold raw reasoning as an array of parts; only a plain
+  // summary string stands in for it.
+  const direct = reasoningSummaryText(record.summary) ?? compactUnknownDetail(record.content);
   if (direct) {
     return direct;
   }
 
   const item = record.item;
-  if (item && typeof item === "object") {
-    const itemRecord = item as Record<string, unknown>;
-    const summary = compactUnknownDetail(itemRecord.summary);
-    if (summary) {
-      return summary;
-    }
+  return item && typeof item === "object"
+    ? reasoningSummaryText((item as Record<string, unknown>).summary)
+    : undefined;
+}
 
-    const summaryItems = itemRecord.summary;
-    if (Array.isArray(summaryItems)) {
-      const text = summaryItems
-        .map((summaryItem) => compactUnknownDetail(summaryItem))
-        .filter((part): part is string => part !== undefined)
-        .join(" ")
-        .trim();
-      if (text.length > 0) {
-        return truncateDetail(text);
-      }
-    }
-  }
-
-  return undefined;
+/** One activity per reasoning item. Its start, its streamed summary, and its
+ *  completion update the same row in place, so a thought is one entry from
+ *  first word to last and costs one row of the thread's activity window. */
+function reasoningActivityId(event: ProviderRuntimeEvent): EventId {
+  return event.itemId
+    ? EventId.make(`activity:reasoning:${event.threadId}:${event.itemId}`)
+    : event.eventId;
 }
 
 function projectReasoningLifecycleActivity(
@@ -469,9 +480,14 @@ function projectReasoningLifecycleActivity(
           ? "failed"
           : "inProgress";
   const summary = extractReasoningSummaryFromUnknown(event.payload.data);
+  // A mid-item update with nothing to say (Codex opening its next summary
+  // part) would only wipe the words already streamed onto the item's row.
+  if (event.type === "item.updated" && status === "inProgress" && !summary) {
+    return [];
+  }
   return [
     baseActivity(event, {
-      id: event.eventId,
+      id: reasoningActivityId(event),
       tone: status === "failed" ? "warning" : "thinking",
       kind: "thinking.progress",
       summary: "Thinking",
@@ -479,7 +495,9 @@ function projectReasoningLifecycleActivity(
         status,
         sourceItemType: event.payload.itemType,
         ...(event.itemId ? { reasoningItemId: event.itemId } : {}),
-        ...(summary ? { detail: summary, summary } : { detail: "Working through the next step" }),
+        ...(summary
+          ? { detail: truncateBlock(summary), summary: truncateDetail(summary) }
+          : { detail: "Working through the next step" }),
         redacted: !summary,
       },
     }),
@@ -498,13 +516,20 @@ function projectContentDeltaActivity(
     const detail = stream.text.trim();
     return [
       baseActivity(event, {
-        id: stream.activityId,
+        // A summary that names its item lands on the item's own row, which
+        // is still running while words arrive.
+        id: event.itemId ? reasoningActivityId(event) : stream.activityId,
         tone: "thinking",
         kind: "thinking.progress",
         summary: "Thinking",
         payload: {
           streamKind: stream.streamKind,
-          ...(detail.length > 0 ? { detail: truncateDetail(detail) } : {}),
+          ...(event.itemId
+            ? { status: "inProgress", sourceItemType: "reasoning", reasoningItemId: event.itemId }
+            : {}),
+          // The head titles the thought; the detail keeps the newest text,
+          // which is what the working row shows while the thought runs.
+          ...(detail.length > 0 ? { detail: truncateBlock(detail) } : {}),
           ...(detail.length > 0 ? { summary: truncateDetail(detail) } : {}),
           byteCount: stream.byteCount,
           lineCount: stream.lineCount,

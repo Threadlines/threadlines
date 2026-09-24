@@ -6075,18 +6075,26 @@ describe("ProviderRuntimeIngestion", () => {
     expect(thinkingActivities[0]?.tone).toBe("thinking");
   });
 
-  it("projects reasoning lifecycle events as visible thinking activity", async () => {
+  it("keeps a reasoning item's start, streamed summary, and end on one thinking row", async () => {
     const harness = await createHarness();
-    const now = "2026-01-01T00:00:00.000Z";
-
-    harness.emit({
-      type: "item.started",
-      eventId: asEventId("evt-reasoning-started"),
+    const base = {
       provider: ProviderDriverKind.make("codex"),
-      createdAt: now,
+      createdAt: "2026-01-01T00:00:00.000Z",
       threadId: asThreadId("thread-1"),
       turnId: asTurnId("turn-reasoning-lifecycle"),
       itemId: asItemId("reasoning-item-1"),
+    };
+    const thinkingRows = (thread: { activities: ReadonlyArray<ProviderRuntimeTestActivity> }) =>
+      thread.activities.filter((activity) => activity.kind === "thinking.progress");
+    const payloadOf = (activity: ProviderRuntimeTestActivity | undefined) =>
+      activity?.payload && typeof activity.payload === "object"
+        ? (activity.payload as Record<string, unknown>)
+        : undefined;
+
+    harness.emit({
+      ...base,
+      type: "item.started",
+      eventId: asEventId("evt-reasoning-started"),
       payload: {
         itemType: "reasoning",
         status: "inProgress",
@@ -6101,26 +6109,48 @@ describe("ProviderRuntimeIngestion", () => {
         },
       },
     });
-
-    const thread = await waitForThread(harness.readModel, (entry) =>
-      entry.activities.some(
-        (activity: ProviderRuntimeTestActivity) =>
-          activity.kind === "thinking.progress" &&
-          JSON.stringify(activity.payload).includes("inProgress"),
-      ),
+    const started = await waitForThread(harness.readModel, (entry) =>
+      thinkingRows(entry).some((activity) => payloadOf(activity)?.status === "inProgress"),
     );
+    expect(thinkingRows(started)[0]?.tone).toBe("thinking");
+    expect(thinkingRows(started)[0]?.summary).toBe("Thinking");
+    expect(payloadOf(thinkingRows(started)[0])?.redacted).toBe(true);
 
-    const activity = thread.activities.find(
-      (entry: ProviderRuntimeTestActivity) => entry.kind === "thinking.progress",
+    harness.emit({
+      ...base,
+      type: "content.delta",
+      eventId: asEventId("evt-reasoning-delta"),
+      payload: {
+        streamKind: "reasoning_summary_text",
+        delta: "Checking the reconnect path. ".repeat(6),
+        summaryIndex: 0,
+      },
+    });
+    const streaming = await waitForThread(harness.readModel, (entry) =>
+      thinkingRows(entry).some((activity) => payloadOf(activity)?.redacted === false),
     );
-    const payload =
-      activity?.payload && typeof activity.payload === "object"
-        ? (activity.payload as Record<string, unknown>)
-        : undefined;
-    expect(activity?.tone).toBe("thinking");
-    expect(activity?.summary).toBe("Thinking");
-    expect(payload?.status).toBe("inProgress");
-    expect(payload?.redacted).toBe(true);
+    expect(thinkingRows(streaming)).toHaveLength(1);
+    expect(payloadOf(thinkingRows(streaming)[0])?.status).toBe("inProgress");
+
+    harness.emit({
+      ...base,
+      type: "item.completed",
+      eventId: asEventId("evt-reasoning-completed"),
+      payload: {
+        itemType: "reasoning",
+        status: "completed",
+        title: "Reasoning",
+        data: { summary: "Checking the reconnect path. Then the retry." },
+      },
+    });
+    const done = await waitForThread(harness.readModel, (entry) =>
+      thinkingRows(entry).some((activity) => payloadOf(activity)?.status === "completed"),
+    );
+    expect(thinkingRows(done)).toHaveLength(1);
+    expect(payloadOf(thinkingRows(done)[0])).toMatchObject({
+      redacted: false,
+      summary: "Checking the reconnect path. Then the retry.",
+    });
   });
 
   it("projects command output deltas as tool output activity", async () => {

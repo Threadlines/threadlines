@@ -510,7 +510,6 @@ describe("AgentsPanel", () => {
               liveBody: "Reading the strip's measurements.",
               telemetry: {
                 step: null,
-                lastToolName: null,
                 durationMs: 92_000,
                 additions: 401,
                 deletions: 1,

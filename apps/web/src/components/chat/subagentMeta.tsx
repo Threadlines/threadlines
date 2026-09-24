@@ -109,9 +109,6 @@ export function formatSubagentMetaParts(
     readonly context?: string | null;
     /** Wall-clock fallback used when the provider reports no duration. */
     readonly elapsed?: string | null;
-    /** The current step reads as prose, so the popover row keeps it out of the
-     *  meta line and renders it on its own. */
-    readonly includeCurrentTool?: boolean;
   },
 ): ReadonlyArray<string> {
   const telemetry = item.telemetry;
@@ -132,9 +129,6 @@ export function formatSubagentMetaParts(
     parts.push(
       `${telemetry.toolUses.toLocaleString()} ${telemetry.toolUses === 1 ? "tool" : "tools"}`,
     );
-  }
-  if (options?.includeCurrentTool !== false && telemetry?.lastToolName) {
-    parts.push(telemetry.lastToolName);
   }
 
   return parts;
