@@ -17,6 +17,7 @@ import {
   CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS,
   CODEX_PREVIEW_PANEL_DEVELOPER_INSTRUCTIONS,
 } from "../CodexDeveloperInstructions.ts";
+import { FILE_LINK_INSTRUCTIONS } from "../fileLinkInstructions.ts";
 import {
   buildPermissionsApprovalResponse,
   buildTurnStartParams,
@@ -251,7 +252,7 @@ describe("buildTurnStartParams", () => {
         settings: {
           model: "gpt-5.3-codex",
           reasoning_effort: "medium",
-          developer_instructions: `${CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS}\n\n${CODEX_PREVIEW_PANEL_DEVELOPER_INSTRUCTIONS}`,
+          developer_instructions: `${CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS}\n\n${CODEX_PREVIEW_PANEL_DEVELOPER_INSTRUCTIONS}\n\n${FILE_LINK_INSTRUCTIONS}`,
         },
       },
     });
@@ -295,7 +296,7 @@ describe("buildTurnStartParams", () => {
         mode: "default",
         settings: {
           model: "gpt-5.3-codex",
-          developer_instructions: `${CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS}\n\n${CODEX_PREVIEW_PANEL_DEVELOPER_INSTRUCTIONS}`,
+          developer_instructions: `${CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS}\n\n${CODEX_PREVIEW_PANEL_DEVELOPER_INSTRUCTIONS}\n\n${FILE_LINK_INSTRUCTIONS}`,
         },
       },
     });

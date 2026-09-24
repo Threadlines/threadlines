@@ -2,6 +2,7 @@ import { EnvironmentId } from "@threadlines/contracts";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 
 import {
+  findFileNamed,
   isPathWithinCwd,
   openDirectoryInViewer,
   openFileInViewer,
@@ -59,6 +60,22 @@ describe("fileViewerStore", () => {
       path: "fixtures/workflow.step",
       line: 4,
     });
+  });
+
+  it("resolves a bare file name only to a file with exactly that name", () => {
+    // Search order: the fuzzy hits a project without the file still returns.
+    const fuzzyHits = [
+      { path: "docs/read-me-notes.txt", kind: "file" as const },
+      { path: "README.md", kind: "file" as const },
+    ];
+    expect(findFileNamed(fuzzyHits, "README.txt")).toBeUndefined();
+
+    const withExactMatch = [
+      ...fuzzyHits,
+      { path: "packaging/readme.txt", kind: "directory" as const },
+      { path: "packaging/win/README.txt", kind: "file" as const },
+    ];
+    expect(findFileNamed(withExactMatch, "README.txt")?.path).toBe("packaging/win/README.txt");
   });
 
   it("opens Git Bash Windows absolute paths with line suffixes in the viewer", () => {
