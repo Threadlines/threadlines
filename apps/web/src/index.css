@@ -784,6 +784,25 @@ label:has(> select#reasoning-effort) select {
   line-height: 1.1;
 }
 
+/* A file that was looked for and is not there. It still names what the agent
+   meant, but as an outline, so it does not read as something that will open.
+   Hover still shifts it to the normal chip colors. */
+.chat-markdown-file-link[data-missing] {
+  border-style: dashed;
+}
+
+.chat-markdown-file-link[data-missing]:not(:hover) {
+  background: transparent;
+}
+
+.chat-markdown-file-link[data-missing]:not(:hover) .chat-markdown-file-link-label {
+  color: var(--muted-foreground);
+}
+
+.chat-markdown-file-link[data-missing]:not(:hover) .chat-markdown-file-link-icon {
+  opacity: 0.45;
+}
+
 .chat-markdown pre {
   max-width: 100%;
   min-width: 0;

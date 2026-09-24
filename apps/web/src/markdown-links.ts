@@ -177,6 +177,30 @@ export function findBareImagePaths(text: string): BareImagePathMatch[] {
   return matches;
 }
 
+/**
+ * A Windows drive path, a home path, or a POSIX absolute path, ending in a file
+ * name with a letter-led extension and an optional `:line[:column]`. Spaces are
+ * allowed: this only ever sees the whole of an inline code span, whose
+ * backticks already mark where the path starts and ends.
+ */
+const INLINE_ABSOLUTE_FILE_PATH_PATTERN =
+  /^(?:[A-Za-z]:[\\/]|~?\/)[^"*<>?|#`\t]*\.[A-Za-z][A-Za-z0-9]{0,7}(?::\d+){0,2}$/;
+
+/**
+ * Whether inline code is, in its entirety, the absolute path of a file
+ * (`C:\Users\me\Desktop\Threadlines X posts\home.png`). Such a path already
+ * says where the file is, so it needs no workspace search to open. A POSIX path
+ * must start at a root files live under, so a route like `/api/users.json`
+ * stays code.
+ */
+export function isAbsoluteInlineFilePath(text: string): boolean {
+  const trimmed = text.trim();
+  if (!INLINE_ABSOLUTE_FILE_PATH_PATTERN.test(trimmed)) return false;
+  return (
+    !trimmed.startsWith("/") || POSIX_FILE_ROOT_PREFIXES.some((root) => trimmed.startsWith(root))
+  );
+}
+
 export interface MarkdownFileLinkMeta {
   filePath: string;
   targetPath: string;

@@ -57,12 +57,14 @@ import {
 import { LRUCache } from "../lib/lruCache";
 import { useTheme } from "../hooks/useTheme";
 import {
+  isAbsoluteInlineFilePath,
   localhostUrlFromText,
   type MarkdownFileLinkMeta,
   normalizeMarkdownLinkDestination,
   resolveMarkdownFileLinkMeta,
   rewriteMarkdownFileUriHref,
 } from "../markdown-links";
+import { resolvePathLinkTarget } from "../terminal-links";
 import { readLocalApi } from "../localApi";
 import { GitPullRequestIcon } from "lucide-react";
 
@@ -78,6 +80,8 @@ import {
 } from "../hooks/useMarkdownFileLinkKinds";
 import { cn } from "../lib/utils";
 import { isImageFilePath } from "../lib/imageFilePaths";
+import { useFileNamedInProject } from "../hooks/useFileNamedInProject";
+import { useLocalImagePreview } from "../hooks/useLocalImagePreview";
 import { LocalImageThumbnail } from "./chat/LocalImageThumbnail";
 import { parseCodexInlineVisualizations } from "../lib/codexInlineVisualization";
 import { CodexInlineVisualization } from "./chat/CodexInlineVisualization";
@@ -474,32 +478,90 @@ function MarkdownListItem({ node: _node, children, ...props }: MarkdownRendererP
 }
 
 /**
- * A referenced image, shown as a picture with its file chip underneath.
+ * The chip a resolved file reference wears. Links, inline code, and image paths
+ * all start here so the same file reads the same wherever it is cited; callers
+ * adjust only what their syntax says differently.
+ */
+function fileLinkChip(
+  meta: MarkdownFileLinkMeta,
+  documentContext: MarkdownDocumentContextValue,
+): MarkdownFileLinkProps {
+  const { cwd } = documentContext;
+  return {
+    href: meta.href,
+    targetPath: meta.targetPath,
+    displayPath: meta.displayPath,
+    filePath: meta.filePath,
+    kind: documentContext.fileLinkKindByPath.get(meta.filePath) ?? "file",
+    isInWorkspace: Boolean(cwd && isPathWithinCwd(meta.filePath, cwd)),
+    line: meta.line,
+    label: buildFileLinkLabel(meta, documentContext.fileLinkParentSuffixByPath.get(meta.filePath)),
+    theme: documentContext.resolvedTheme,
+  };
+}
+
+/** Lays a referenced image out as a figure: the picture, then its chip. */
+const IMAGE_FIGURE_CLASS_NAME = "my-1 flex w-fit max-w-full flex-col items-start gap-1";
+
+/**
+ * A referenced image: the picture on a line of its own with the file chip
+ * underneath, once the bytes are here.
  *
  * The chip is the constant: it is what an image reference has always looked
- * like, it still opens the file viewer, and it is all that is left while the
- * bytes are in flight or when the file is gone. The picture is the addition.
+ * like and it still opens the file viewer. While the bytes are in flight, and
+ * for good when they never arrive, the chip is all there is and it stays
+ * inline, so a sentence naming three screenshots still reads as one sentence.
+ * A file the server reports gone dims its chip.
  */
-function MarkdownImageFigure({
-  filePath,
-  name,
-  children,
-}: {
-  filePath: string;
-  name: string;
-  children: ReactNode;
-}) {
+function MarkdownImageFigure({ name, chip }: { name: string; chip: MarkdownFileLinkProps }) {
   const { cwd, environmentId } = useContext(MarkdownDocumentContext);
+  const preview = useLocalImagePreview({ environmentId, cwd, path: chip.filePath });
+  const dataUrl = preview.status === "ready" ? preview.dataUrl : undefined;
+  // The same span either way, so the chip keeps its place in the tree and is
+  // not remounted when the picture arrives.
   return (
-    <span className="my-1 flex w-fit max-w-full flex-col items-start gap-1">
-      <LocalImageThumbnail
-        environmentId={environmentId}
-        cwd={cwd}
-        filePath={filePath}
-        name={name}
-      />
-      {children}
+    <span className={dataUrl ? IMAGE_FIGURE_CLASS_NAME : undefined}>
+      {dataUrl ? (
+        <LocalImageThumbnail dataUrl={dataUrl} filePath={chip.filePath} name={name} />
+      ) : null}
+      <MarkdownFileLink {...chip} isMissing={preview.status === "missing"} />
     </span>
+  );
+}
+
+/**
+ * An image cited by bare name in inline code (`home.png`). The name says
+ * nothing about the folder, so the picture is the file a click on the chip
+ * would open: the project's file with exactly that name. With no such file,
+ * the project root is the one place left to look, which is where the chip
+ * already points.
+ */
+function MarkdownNamedImage({ name, chip }: { name: string; chip: MarkdownFileLinkProps }) {
+  const { cwd, environmentId } = useContext(MarkdownDocumentContext);
+  const match = useFileNamedInProject({ environmentId, cwd, name });
+  if (match.status === "loading") {
+    return <MarkdownFileLink {...chip} />;
+  }
+  const found =
+    match.status === "found" && cwd
+      ? resolveMarkdownFileLinkMeta(resolvePathLinkTarget(match.relativePath, cwd), cwd)
+      : null;
+  if (!found) {
+    return <MarkdownImageFigure name={name} chip={chip} />;
+  }
+  // Placed now, so it opens directly and offers the path actions a link does.
+  const { chatReference: _placedBySearch, ...placedChip } = chip;
+  return (
+    <MarkdownImageFigure
+      name={name}
+      chip={{
+        ...placedChip,
+        href: found.href,
+        targetPath: found.targetPath,
+        displayPath: found.displayPath,
+        filePath: found.filePath,
+      }}
+    />
   );
 }
 
@@ -509,8 +571,8 @@ function MarkdownImageFigure({
  * refuse; http(s) and data sources still render as ordinary images.
  */
 function MarkdownImage({ node: _node, src, alt, ...props }: MarkdownRendererProps<"img">) {
-  const { cwd, resolvedTheme, searchHighlightQuery, fileLinkKindByPath } =
-    useContext(MarkdownDocumentContext);
+  const documentContext = useContext(MarkdownDocumentContext);
+  const { cwd, searchHighlightQuery } = documentContext;
   const source = typeof src === "string" ? src : undefined;
   const fileLinkMeta =
     source && !searchHighlightQuery?.trim() ? resolveMarkdownFileLinkMeta(source, cwd) : null;
@@ -519,18 +581,10 @@ function MarkdownImage({ node: _node, src, alt, ...props }: MarkdownRendererProp
   }
   const name = alt && alt.length > 0 ? alt : fileLinkMeta.basename;
   return (
-    <MarkdownImageFigure filePath={fileLinkMeta.filePath} name={name}>
-      <MarkdownFileLink
-        href={fileLinkMeta.href}
-        targetPath={fileLinkMeta.targetPath}
-        displayPath={fileLinkMeta.displayPath}
-        filePath={fileLinkMeta.filePath}
-        kind={fileLinkKindByPath.get(fileLinkMeta.filePath) ?? "file"}
-        isInWorkspace={Boolean(cwd && isPathWithinCwd(fileLinkMeta.filePath, cwd))}
-        label={name}
-        theme={resolvedTheme}
-      />
-    </MarkdownImageFigure>
+    <MarkdownImageFigure
+      name={name}
+      chip={{ ...fileLinkChip(fileLinkMeta, documentContext), label: name }}
+    />
   );
 }
 
@@ -539,28 +593,16 @@ function MarkdownImage({ node: _node, src, alt, ...props }: MarkdownRendererProp
  * Only reached for settled, unhighlighted text; see {@link findBareImagePaths}.
  */
 function MarkdownBareImagePath({ rawPath }: { rawPath: string }) {
-  const { cwd, resolvedTheme, fileLinkKindByPath, fileLinkParentSuffixByPath } =
-    useContext(MarkdownDocumentContext);
-  const fileLinkMeta = resolveMarkdownFileLinkMeta(rawPath, cwd);
+  const documentContext = useContext(MarkdownDocumentContext);
+  const fileLinkMeta = resolveMarkdownFileLinkMeta(rawPath, documentContext.cwd);
   if (!fileLinkMeta) {
     return <>{rawPath}</>;
   }
   return (
-    <MarkdownImageFigure filePath={fileLinkMeta.filePath} name={fileLinkMeta.basename}>
-      <MarkdownFileLink
-        href={fileLinkMeta.href}
-        targetPath={fileLinkMeta.targetPath}
-        displayPath={fileLinkMeta.displayPath}
-        filePath={fileLinkMeta.filePath}
-        kind={fileLinkKindByPath.get(fileLinkMeta.filePath) ?? "file"}
-        isInWorkspace={Boolean(cwd && isPathWithinCwd(fileLinkMeta.filePath, cwd))}
-        label={buildFileLinkLabel(
-          fileLinkMeta,
-          fileLinkParentSuffixByPath.get(fileLinkMeta.filePath),
-        )}
-        theme={resolvedTheme}
-      />
-    </MarkdownImageFigure>
+    <MarkdownImageFigure
+      name={fileLinkMeta.basename}
+      chip={fileLinkChip(fileLinkMeta, documentContext)}
+    />
   );
 }
 
@@ -636,15 +678,8 @@ function MarkdownPullRequestChip({
 }
 
 function MarkdownAnchor({ node: _node, href, children, ...props }: MarkdownRendererProps<"a">) {
-  const {
-    cwd,
-    threadRef,
-    resolvedTheme,
-    searchHighlightQuery,
-    markdownFileLinkMetaByHref,
-    fileLinkKindByPath,
-    fileLinkParentSuffixByPath,
-  } = useContext(MarkdownDocumentContext);
+  const documentContext = useContext(MarkdownDocumentContext);
+  const { cwd, threadRef, searchHighlightQuery, markdownFileLinkMetaByHref } = documentContext;
   const normalizedHref = href ? normalizeMarkdownLinkHrefKey(href) : "";
   const fileLinkMeta = normalizedHref
     ? (markdownFileLinkMetaByHref.get(normalizedHref) ??
@@ -685,37 +720,17 @@ function MarkdownAnchor({ node: _node, href, children, ...props }: MarkdownRende
     );
   }
 
-  const chip = (
-    <MarkdownFileLink
-      href={fileLinkMeta.href}
-      targetPath={fileLinkMeta.targetPath}
-      displayPath={fileLinkMeta.displayPath}
-      filePath={fileLinkMeta.filePath}
-      kind={fileLinkKindByPath.get(fileLinkMeta.filePath) ?? "file"}
-      isInWorkspace={Boolean(cwd && isPathWithinCwd(fileLinkMeta.filePath, cwd))}
-      line={fileLinkMeta.line}
-      label={buildFileLinkLabel(
-        fileLinkMeta,
-        fileLinkParentSuffixByPath.get(fileLinkMeta.filePath),
-      )}
-      theme={resolvedTheme}
-      className={props.className}
-    />
-  );
+  const chip = { ...fileLinkChip(fileLinkMeta, documentContext), className: props.className };
   if (!isImageFilePath(fileLinkMeta.filePath) || searchHighlightQuery?.trim()) {
-    return chip;
+    return <MarkdownFileLink {...chip} />;
   }
-  return (
-    <MarkdownImageFigure filePath={fileLinkMeta.filePath} name={fileLinkMeta.basename}>
-      {chip}
-    </MarkdownImageFigure>
-  );
+  return <MarkdownImageFigure name={fileLinkMeta.basename} chip={chip} />;
 }
 
 /**
- * Inline code that reads as a file reference (`ChatComposer.tsx:1010`) opens the
- * internal file viewer; bare names resolve via workspace search. Fenced blocks
- * carry a language class and are skipped.
+ * Inline code that reads as a file reference (`ChatComposer.tsx:1010`, or an
+ * absolute path) opens the internal file viewer; bare names resolve via
+ * workspace search. Fenced blocks carry a language class and are skipped.
  */
 function MarkdownCode({
   node: _node,
@@ -723,15 +738,8 @@ function MarkdownCode({
   children,
   ...props
 }: MarkdownRendererProps<"code">) {
-  const {
-    cwd,
-    threadRef,
-    resolvedTheme,
-    searchHighlightQuery,
-    inlineCodeFileLinkMetaBySpan,
-    fileLinkKindByPath,
-    fileLinkParentSuffixByPath,
-  } = useContext(MarkdownDocumentContext);
+  const documentContext = useContext(MarkdownDocumentContext);
+  const { threadRef, searchHighlightQuery, inlineCodeFileLinkMetaBySpan } = documentContext;
   const text = typeof children === "string" ? children : null;
   const renderedChildren = text ? (
     <SearchHighlightedInlineText text={text} query={searchHighlightQuery} />
@@ -763,33 +771,25 @@ function MarkdownCode({
     ? inlineCodeFileLinkMetaBySpan.get(inlineFileReference)
     : undefined;
   if (inlineFileReference && inlineFileLinkMeta) {
-    const chip = (
-      <MarkdownFileLink
-        href={inlineFileLinkMeta.href}
-        targetPath={inlineFileLinkMeta.targetPath}
-        displayPath={inlineFileLinkMeta.displayPath}
-        filePath={inlineFileLinkMeta.filePath}
-        kind={fileLinkKindByPath.get(inlineFileLinkMeta.filePath) ?? "file"}
-        isInWorkspace={Boolean(cwd && isPathWithinCwd(inlineFileLinkMeta.filePath, cwd))}
-        line={inlineFileLinkMeta.line}
-        label={buildFileLinkLabel(
-          inlineFileLinkMeta,
-          fileLinkParentSuffixByPath.get(inlineFileLinkMeta.filePath),
-        )}
-        theme={resolvedTheme}
-        chatReference={inlineFileReference}
-      />
-    );
+    // An absolute path already says where the file is, so it opens like a
+    // link. Anything else opens through the workspace search, and a bare
+    // name's hover shows the name as written: until something looks, its
+    // folder is only a guess.
+    const isAbsolute = isAbsoluteInlineFilePath(inlineFileReference);
+    const searchReference = isAbsolute ? null : parseChatFileReference(inlineFileReference);
+    const isBareName = searchReference !== null && !searchReference.path.includes("/");
+    const chip: MarkdownFileLinkProps = {
+      ...fileLinkChip(inlineFileLinkMeta, documentContext),
+      ...(isBareName ? { displayPath: inlineFileReference } : {}),
+      ...(isAbsolute ? {} : { chatReference: inlineFileReference }),
+    };
     if (!isImageFilePath(inlineFileLinkMeta.filePath)) {
-      return chip;
+      return <MarkdownFileLink {...chip} />;
     }
-    return (
-      <MarkdownImageFigure
-        filePath={inlineFileLinkMeta.filePath}
-        name={inlineFileLinkMeta.basename}
-      >
-        {chip}
-      </MarkdownImageFigure>
+    return isBareName ? (
+      <MarkdownNamedImage name={inlineFileLinkMeta.basename} chip={chip} />
+    ) : (
+      <MarkdownImageFigure name={inlineFileLinkMeta.basename} chip={chip} />
     );
   }
   if (className || !text || !parseChatFileReference(text)) {
@@ -802,11 +802,7 @@ function MarkdownCode({
   const openReference = () => {
     void openChatFileReference(text).then((opened) => {
       if (!opened) {
-        toastManager.add({
-          type: "error",
-          title: "File not found in workspace",
-          description: text,
-        });
+        toastFileReferenceNotFound(text);
       }
     });
   };
@@ -898,6 +894,11 @@ interface MarkdownFileLinkProps {
    * settled path (copy path, reveal, open in editor) stay off.
    */
   chatReference?: string | undefined;
+  /**
+   * The file was looked for and is not there. The chip still names what the
+   * agent meant, but dims so it does not read as something that will open.
+   */
+  isMissing?: boolean | undefined;
 }
 
 const MARKDOWN_LINK_HREF_PATTERN = /\[[^\]]*]\(\s*(<[^>]+>|[^)\s]+)(?:\s+["'][^"']*["'])?\s*\)/g;
@@ -1057,7 +1058,8 @@ function extractInlineCodeSpans(text: string): string[] {
 
 /**
  * Resolved metadata for every inline-code file reference in a document, keyed by
- * the span as written (which is also what {@link openChatFileReference} takes).
+ * the span as written: a project-style reference (which is also what
+ * {@link openChatFileReference} takes) or an absolute path.
  */
 function buildInlineCodeFileLinkMeta(
   text: string,
@@ -1069,7 +1071,7 @@ function buildInlineCodeFileLinkMeta(
     // A dev-server address reads as a file reference too (`127.0.0.1:8080`); it
     // is handled as an address by the renderer and must not become a chip.
     if (localhostUrlFromText(span)) continue;
-    if (!parseChatFileReference(span)) continue;
+    if (!parseChatFileReference(span) && !isAbsoluteInlineFilePath(span)) continue;
     const meta = resolveMarkdownFileLinkMeta(span, cwd);
     if (meta) metaBySpan.set(span, meta);
   }
@@ -1088,6 +1090,7 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
   theme,
   className,
   chatReference,
+  isMissing,
 }: MarkdownFileLinkProps) {
   const entryLabel = kind === "directory" ? "folder" : "file";
 
@@ -1099,11 +1102,7 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
     }
     void openChatFileReference(chatReference).then((opened) => {
       if (!opened) {
-        toastManager.add({
-          type: "error",
-          title: "File not found in workspace",
-          description: chatReference,
-        });
+        toastFileReferenceNotFound(chatReference);
       }
     });
     return true;
@@ -1263,6 +1262,7 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
             data-entry-kind={kind}
             data-workspace-scope={isInWorkspace ? "internal" : "external"}
             data-chat-file-reference={chatReference}
+            data-missing={isMissing ? "" : undefined}
             onClick={(event) => {
               event.preventDefault();
               event.stopPropagation();
@@ -1297,7 +1297,9 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
         <div className="markdown-file-link-tooltip-scroll overflow-x-auto whitespace-nowrap">
           {displayPath}
         </div>
-        {!isInWorkspace ? (
+        {isMissing ? (
+          <div className="mt-1 font-sans text-muted-foreground">Not found</div>
+        ) : !isInWorkspace ? (
           <div className="mt-1 font-sans text-muted-foreground">Outside active project</div>
         ) : null}
       </TooltipPopup>
@@ -1320,8 +1322,22 @@ function areMarkdownFileLinkPropsEqual(
     previous.label === next.label &&
     previous.theme === next.theme &&
     previous.className === next.className &&
-    previous.chatReference === next.chatReference
+    previous.chatReference === next.chatReference &&
+    previous.isMissing === next.isMissing
   );
+}
+
+/**
+ * A bare name the workspace search could not place: says where the app looked,
+ * and the one thing that would place it.
+ */
+function toastFileReferenceNotFound(reference: string): void {
+  const name = parseChatFileReference(reference)?.path ?? reference;
+  toastManager.add({
+    type: "error",
+    title: `Couldn't find ${name} in this project`,
+    description: "If it's saved somewhere else, ask the agent for its full path.",
+  });
 }
 
 /** ATX headings and thematic breaks, recognized only at the left margin: one

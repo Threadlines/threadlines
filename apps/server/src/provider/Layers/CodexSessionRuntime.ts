@@ -61,6 +61,7 @@ import {
   CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS,
   CODEX_PREVIEW_PANEL_DEVELOPER_INSTRUCTIONS,
 } from "../CodexDeveloperInstructions.ts";
+import { FILE_LINK_INSTRUCTIONS } from "../fileLinkInstructions.ts";
 import { CODEX_BROWSER_TOKEN_ENV_VAR, codexAppServerArgs } from "../codexAppServerArgs.ts";
 const decodeV2TurnStartResponse = Schema.decodeUnknownEffect(EffectCodexSchema.V2TurnStartResponse);
 const decodeV2ReviewStartResponse = Schema.decodeUnknownEffect(
@@ -554,12 +555,14 @@ function buildCodexCollaborationMode(input: {
       model,
       ...(input.effort ? { reasoning_effort: input.effort } : {}),
       // Appended rather than replacing the mode block: which browser the user
-      // means is orthogonal to how the model is collaborating.
+      // means, and how to cite a file, are orthogonal to how the model is
+      // collaborating.
       developer_instructions: [
         input.interactionMode === "plan"
           ? CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS
           : CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS,
         CODEX_PREVIEW_PANEL_DEVELOPER_INSTRUCTIONS,
+        FILE_LINK_INSTRUCTIONS,
         ...(input.managedWorktree ? [MANAGED_WORKTREE_INSTRUCTION] : []),
       ].join("\n\n"),
     },

@@ -75,6 +75,7 @@ import {
   resolveFollowedSessionCwd,
 } from "../../vcs/CheckoutPresence.ts";
 import { CLAUDE_PREVIEW_PANEL_INSTRUCTIONS } from "../previewPanelInstructions.ts";
+import { FILE_LINK_INSTRUCTIONS } from "../fileLinkInstructions.ts";
 import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
@@ -6589,6 +6590,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           preset: "claude_code",
           append: [
             CLAUDE_PREVIEW_PANEL_INSTRUCTIONS,
+            FILE_LINK_INSTRUCTIONS,
             ...(runsInManagedWorktree ? [MANAGED_WORKTREE_INSTRUCTION] : []),
           ].join("\n\n"),
         },
