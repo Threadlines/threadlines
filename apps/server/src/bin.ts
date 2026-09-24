@@ -27,11 +27,20 @@ export const cli = Command.make("threadlines", { ...sharedServerCommandFlags }).
   ]),
 );
 
-if (import.meta.main) {
+/**
+ * Runs the `threadlines` command. The published build enters through
+ * `launcher.ts`, which checks the Node version first; `node src/bin.ts` in dev
+ * runs it directly.
+ */
+export function runCli(): void {
   assertSingleEffectRuntime();
   Command.run(cli, { version: packageJson.version }).pipe(
     Effect.scoped,
     Effect.provide(CliRuntimeLayer),
     NodeRuntime.runMain,
   );
+}
+
+if (import.meta.main) {
+  runCli();
 }

@@ -44,7 +44,8 @@ export default mergeConfig(
         __THREADLINES_BUNDLED_POSTHOG_KEY__: JSON.stringify(bundledTelemetryConfig.posthogKey),
         __THREADLINES_BUNDLED_POSTHOG_HOST__: JSON.stringify(bundledTelemetryConfig.posthogHost),
       },
-      entry: ["src/bin.ts"],
+      // Built as dist/bin.mjs: the launcher checks the Node version, then loads src/bin.ts.
+      entry: { bin: "src/launcher.ts" },
       outDir: "dist",
       sourcemap: true,
       clean: true,
