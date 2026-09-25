@@ -1391,7 +1391,8 @@ export function ProviderSettingsPanel({
     });
   };
 
-  const resetDefaultInstance = (driverKind: ProviderDriverKind) => {
+  /** Restores a default slot's settings, leaving its on/off switch as it is. */
+  const resetDefaultInstance = (driverKind: ProviderDriverKind, enabled: boolean) => {
     type LegacyProviderSettings = (typeof settings.providers)[keyof typeof settings.providers];
     const defaultLegacyProviders = DEFAULT_UNIFIED_SETTINGS.providers as Record<
       string,
@@ -1403,7 +1404,7 @@ export function ProviderSettingsPanel({
     updateSettings({
       providers: {
         ...settings.providers,
-        [driverKind]: defaultLegacyProvider,
+        [driverKind]: { ...defaultLegacyProvider, enabled },
       } as typeof settings.providers,
       providerInstances: withoutProviderInstanceKey(settings.providerInstances, defaultInstanceId),
       providerModelPreferences: withoutProviderInstanceKey(
@@ -1510,7 +1511,7 @@ export function ProviderSettingsPanel({
               row.isDefault && row.isDirty ? (
                 <SettingResetButton
                   label={`${resetLabel} provider settings`}
-                  onClick={() => resetDefaultInstance(row.driver)}
+                  onClick={() => resetDefaultInstance(row.driver, row.instance.enabled ?? true)}
                 />
               ) : null;
             return (

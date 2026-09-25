@@ -86,7 +86,11 @@ export function providerInstallStatusText(input: {
   readonly isStarting: boolean;
 }): string | null {
   if (input.view.status === "running" || input.isStarting) {
-    return input.view.lastOutputLine ? `Installing… ${input.view.lastOutputLine}` : "Installing…";
+    // Some installers stay silent while they download (Cursor's takes about a
+    // minute); without output, say so rather than look stuck.
+    return input.view.lastOutputLine
+      ? `Installing… ${input.view.lastOutputLine}`
+      : "Installing… this can take a minute";
   }
   if (input.view.status === "failed") {
     const reason = input.view.lastOutputLine ?? input.view.message;

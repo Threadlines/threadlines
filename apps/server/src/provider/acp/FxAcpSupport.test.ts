@@ -102,13 +102,17 @@ describe("parseFxStatusOutput", () => {
   const missingAuthLine =
     '{"kind":"status","model":"moonshotai/kimi-k3","update_channel":"stable","build_channel":"stable","build_revision":"cef08aa0f178","auth":"missing","auth_refreshable":false,"auth_help":"fx needs access to Vercel AI Gateway. Run fx login to sign in, fx setup to use an API key, or set AI_GATEWAY_API_KEY.","permission_mode":"auto","workspace":"/tmp","history_turns":0}';
 
-  it("reports missing credentials as unauthenticated with fx's own guidance", () => {
-    expect(parseFxStatusOutput({ stdout: missingAuthLine, stderr: "", code: 0 })).toEqual({
+  it("reports missing credentials as unauthenticated, pointing at sign-in", () => {
+    expect(parseFxStatusOutput({ stdout: missingAuthLine, stderr: "", code: 0 }, "linux")).toEqual({
       auth: { status: "unauthenticated" },
       defaultModel: "moonshotai/kimi-k3",
       message:
-        "fx needs access to Vercel AI Gateway. Run fx login to sign in, fx setup to use an API key, or set AI_GATEWAY_API_KEY.",
+        "fx isn't signed in to Vercel AI Gateway. Use Sign in, or run `fx login` in a terminal.",
     });
+    // On Windows fx lives in WSL, so a bare `fx login` would not be found.
+    expect(
+      parseFxStatusOutput({ stdout: missingAuthLine, stderr: "", code: 0 }, "win32")?.message,
+    ).toContain("`wsl fx login`");
   });
 
   it("treats any active credential source as authenticated", () => {
@@ -122,10 +126,21 @@ describe("parseFxStatusOutput", () => {
       auth: {
         status: "authenticated",
         type: "chatgpt_subscription",
-        label: "fx · chatgpt_subscription",
+        label: "Codex subscription",
       },
       defaultModel: "gpt-5.6-sol",
       message: undefined,
+    });
+  });
+
+  it("labels a Gateway login with the Vercel team it bills", () => {
+    // From `fx status --json` (fx 0.0.11) after signing in.
+    const signedIn =
+      '{"kind":"status","model":"openai/gpt-5.2","auth":"fx login","auth_refreshable":true,"team":"badcubans-projects"}';
+    expect(parseFxStatusOutput({ stdout: signedIn, stderr: "", code: 0 })?.auth).toEqual({
+      status: "authenticated",
+      type: "fx login",
+      label: "Vercel AI Gateway · badcubans-projects",
     });
   });
 

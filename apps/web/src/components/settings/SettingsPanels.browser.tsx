@@ -1921,7 +1921,7 @@ describe("GeneralSettingsPanel observability", () => {
     );
 
     await page.getByLabelText("Toggle Claude details").click();
-    await page.getByRole("button", { name: "Reconnect" }).click();
+    await page.getByRole("button", { name: "Sign in", exact: true }).click();
 
     await vi.waitFor(() => {
       expect(providerAuthHarness.startCalls).toEqual([
@@ -1966,6 +1966,36 @@ describe("GeneralSettingsPanel observability", () => {
     });
 
     await expect.element(page.getByText("Signed in", { exact: true })).toBeVisible();
+  });
+
+  it("signs a signed-out provider in from its row without opening the card first", async () => {
+    setServerConfigSnapshot({
+      ...createBaseServerConfig(),
+      providers: [
+        {
+          ...createClaudeProvider(),
+          auth: { status: "unauthenticated" },
+        },
+      ],
+    });
+
+    mounted = await renderWithTestRouter(
+      <TestAppProviders>
+        <ProviderSettingsPanel />
+      </TestAppProviders>,
+    );
+
+    await page.getByRole("button", { name: "Sign in to Claude" }).click();
+
+    await vi.waitFor(() => {
+      expect(providerAuthHarness.startCalls).toEqual([
+        { instanceId: "claudeAgent", flow: "login" },
+      ]);
+    });
+    // The card opens on its Account section so the sign-in progress is in view.
+    await expect
+      .element(page.getByRole("button", { name: "Sign in", exact: true }), { timeout: 5_000 })
+      .toBeVisible();
   });
 
   it("opens the shared reset-credit picker from provider settings", async () => {

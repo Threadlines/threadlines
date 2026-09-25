@@ -27,6 +27,8 @@ const GENERIC_AUTH_STATUS_PATTERNS = [
   /^(?:error:\s*)?not logged in[.!]?(?:\s*(?:[•·-]\s*)?(?:please\s+)?run\s+(?:\/login|`[^`]+`)(?: in a terminal)?(?:, then retry| and try again)?\.?)?$/u,
   /^(?:error:\s*)?(?:(?:codex|claude|cursor agent|openai|provider|model provider)\s+)?requires authentication[.!]?$/u,
   /^(?:error:\s*)?unauthenticated[.!]?$/u,
+  // The ACP providers' own status line (fx, Cursor Agent).
+  /^(?:error:\s*)?(?:cursor agent|fx) isn't signed in(?: to [a-z .]+?)?\. use sign in, or run `[^`]+` in a terminal\.$/u,
 ] as const;
 
 export function providerAuthReconnectCommand(provider: ProviderDriverKind): string | undefined {

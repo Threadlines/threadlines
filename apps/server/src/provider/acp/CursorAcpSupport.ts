@@ -519,7 +519,7 @@ function isCursorAboutJsonFormatUnsupported(result: CommandResult): boolean {
 }
 
 const CURSOR_UNAUTHENTICATED_MESSAGE =
-  "Cursor Agent is not authenticated. Run `agent login` and try again.";
+  "Cursor Agent isn't signed in. Use Sign in, or run `agent login` in a terminal.";
 
 function isLoggedOutEmail(userEmail: string): boolean {
   const lowerEmail = userEmail.toLowerCase();

@@ -95,6 +95,31 @@ function readDefaultLegacyProviderConfig(
   return defaultLegacyProviders[driver];
 }
 
+/**
+ * The reset-to-defaults control is for real changes: binary path, custom
+ * models, name, color, environment. The on/off switch shows its own state, so
+ * turning an opt-in provider (fx, Cursor) on or off alone is not a change.
+ */
+function withoutEnabled(config: unknown): unknown {
+  if (typeof config !== "object" || config === null) {
+    return config;
+  }
+  const { enabled: _enabled, ...rest } = config as Record<string, unknown>;
+  return rest;
+}
+
+function isDefaultEquivalentInstance(
+  instance: ProviderInstanceConfig,
+  defaultConfig: LegacyProviderSettings | undefined,
+): boolean {
+  const { driver: _driver, enabled: _enabled, config, ...extras } = instance;
+  return (
+    Object.values(extras).every((value) => value === undefined) &&
+    defaultConfig !== undefined &&
+    Equal.equals(withoutEnabled(config ?? {}), withoutEnabled(defaultConfig))
+  );
+}
+
 export function deriveProviderSettingsRows(input: {
   readonly settings: ProviderSettingsState;
   readonly maintainedDriverKinds: ReadonlyArray<ProviderDriverKind>;
@@ -133,10 +158,11 @@ export function deriveProviderSettingsRows(input: {
       continue;
     }
     const isDirty =
-      explicitInstance !== undefined ||
-      (legacyConfig !== undefined &&
-        defaultLegacyConfig !== undefined &&
-        !Equal.equals(legacyConfig, defaultLegacyConfig));
+      explicitInstance !== undefined
+        ? !isDefaultEquivalentInstance(explicitInstance, defaultLegacyConfig)
+        : legacyConfig !== undefined &&
+          defaultLegacyConfig !== undefined &&
+          !Equal.equals(withoutEnabled(legacyConfig), withoutEnabled(defaultLegacyConfig));
 
     rows.push({
       instanceId: defaultInstanceId,

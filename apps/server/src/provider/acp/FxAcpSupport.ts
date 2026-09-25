@@ -185,7 +185,20 @@ const FxStatusJson = Schema.Struct({
   model: Schema.optional(Schema.NullOr(Schema.String)),
   auth: Schema.optional(Schema.NullOr(Schema.String)),
   auth_help: Schema.optional(Schema.NullOr(Schema.String)),
+  team: Schema.optional(Schema.NullOr(Schema.String)),
 });
+
+/**
+ * `fx status` names its credential source in fx's own terms ("fx login").
+ * Say what it signs in to, and for Gateway, which Vercel team it bills.
+ */
+function fxAuthLabel(source: string, team: string | undefined): string {
+  if (/chatgpt|codex/iu.test(source)) return "Codex subscription";
+  if (/grok|xai/iu.test(source)) return "Grok subscription";
+  if (/key|env/iu.test(source)) return "Vercel AI Gateway API key";
+  if (/login/iu.test(source)) return team ? `Vercel AI Gateway · ${team}` : "Vercel AI Gateway";
+  return source;
+}
 const decodeFxStatusJson = Schema.decodeUnknownExit(Schema.fromJsonString(FxStatusJson));
 
 export interface FxStatusResult {
@@ -199,7 +212,10 @@ export interface FxStatusResult {
  * usable, otherwise the label of the active credential source (Gateway
  * login, API key, Codex or Grok subscription).
  */
-export function parseFxStatusOutput(result: CommandResult): FxStatusResult | undefined {
+export function parseFxStatusOutput(
+  result: CommandResult,
+  platform: NodeJS.Platform = process.platform,
+): FxStatusResult | undefined {
   const line = result.stdout
     .split("\n")
     .map((entry) => entry.trim())
@@ -215,16 +231,22 @@ export function parseFxStatusOutput(result: CommandResult): FxStatusResult | und
   const authSource = status.auth?.trim() ?? "";
   const defaultModel = status.model?.trim() || undefined;
   if (!authSource || authSource === "missing") {
+    // fx's own `auth_help` names terminal commands and an env var that, on
+    // Windows, only work inside WSL. Point at Threadlines' sign-in instead.
     return {
       auth: { status: "unauthenticated" },
       defaultModel,
-      message:
-        status.auth_help?.trim() ||
-        "fx is not signed in. Run `fx login`, `fx setup`, or set AI_GATEWAY_API_KEY.",
+      message: `fx isn't signed in to Vercel AI Gateway. Use Sign in, or run \`${
+        runsFxThroughWsl(platform) ? "wsl fx login" : "fx login"
+      }\` in a terminal.`,
     };
   }
   return {
-    auth: { status: "authenticated", type: authSource, label: `fx · ${authSource}` },
+    auth: {
+      status: "authenticated",
+      type: authSource,
+      label: fxAuthLabel(authSource, status.team?.trim() || undefined),
+    },
     defaultModel,
     message: undefined,
   };
