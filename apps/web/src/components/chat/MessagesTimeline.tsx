@@ -2048,7 +2048,7 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
                     <MessageCopyButton text={displayedUserMessage.copyText} />
                   )}
                   {displayedUserMessage.copyText && (
-                    <ContinueInNewThreadButton messageId={row.message.id} action="edit" />
+                    <ContinueInNewThreadButton messageId={row.message.id} />
                   )}
                   {canRevertAgentWork && <RevertUserMessageButton messageId={row.message.id} />}
                 </div>
@@ -2193,11 +2193,9 @@ function RetryUserMessageButton() {
 function ContinueInNewThreadButton({
   messageId,
   className,
-  action = "continue",
 }: {
   messageId: MessageId;
   className?: string;
-  action?: "edit" | "continue";
 }) {
   const ctx = use(TimelineRowCtx);
   const activity = use(TimelineRowActivityCtx);
@@ -2211,15 +2209,11 @@ function ContinueInNewThreadButton({
       size="xs"
       variant="outline"
       onClick={() => ctx.onContinueInNewThread?.(messageId)}
-      aria-label={action === "edit" ? "Edit and branch" : "Continue in new thread"}
-      tooltip={action === "edit" ? "Edit and branch" : "Continue in new thread"}
+      aria-label="Branch from here"
+      tooltip="Branch from here"
       className={cn("enabled:cursor-pointer", className)}
     >
-      {action === "edit" ? (
-        <SquarePenIcon className="size-3" />
-      ) : (
-        <SplitIcon className="size-3 rotate-90" />
-      )}
+      <SplitIcon className="size-3 rotate-90" />
     </Button>
   );
 }

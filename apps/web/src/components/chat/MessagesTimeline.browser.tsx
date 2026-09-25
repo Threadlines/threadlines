@@ -870,7 +870,7 @@ describe("MessagesTimeline", () => {
     }
   });
 
-  it("exposes an edit-and-branch action on user messages", async () => {
+  it("exposes a branch action on user messages", async () => {
     const onContinueInNewThread = vi.fn();
     const screen = await renderTimeline(
       <MessagesTimeline
@@ -882,13 +882,13 @@ describe("MessagesTimeline", () => {
 
     try {
       const continueButton = document.querySelector<HTMLButtonElement>(
-        'button[aria-label="Edit and branch"]',
+        'button[aria-label="Branch from here"]',
       );
       expect(continueButton).toBeTruthy();
       expect(getComputedStyle(continueButton!).cursor).toBe("pointer");
       expect(continueButton?.getAttribute("title")).toBeNull();
 
-      await page.getByRole("button", { name: "Edit and branch" }).click();
+      await page.getByRole("button", { name: "Branch from here" }).click();
 
       expect(onContinueInNewThread).toHaveBeenCalledWith("message-1");
     } finally {
@@ -928,7 +928,7 @@ describe("MessagesTimeline", () => {
     }
   });
 
-  it("exposes a continue-in-new-thread action on completed assistant messages", async () => {
+  it("exposes a branch action on completed assistant messages", async () => {
     const onContinueInNewThread = vi.fn();
     await resetBrowserHoverState();
     const screen = await renderTimeline(
@@ -941,7 +941,7 @@ describe("MessagesTimeline", () => {
 
     try {
       const continueButton = document.querySelector<HTMLButtonElement>(
-        'button[aria-label="Continue in new thread"]',
+        'button[aria-label="Branch from here"]',
       );
       expect(continueButton).toBeTruthy();
       expect(getComputedStyle(continueButton!).cursor).toBe("pointer");
@@ -954,7 +954,7 @@ describe("MessagesTimeline", () => {
         expect(Number(getComputedStyle(continueButton!).opacity)).toBeGreaterThan(0.5);
         expect(getComputedStyle(continueButton!).pointerEvents).toBe("auto");
       });
-      await page.getByRole("button", { name: "Continue in new thread" }).click();
+      await page.getByRole("button", { name: "Branch from here" }).click();
 
       expect(onContinueInNewThread).toHaveBeenCalledWith("assistant-message-1");
     } finally {
@@ -962,7 +962,7 @@ describe("MessagesTimeline", () => {
     }
   });
 
-  it("does not show assistant continue-in-new-thread actions while a turn is working", async () => {
+  it("does not show assistant branch actions while a turn is working", async () => {
     const screen = await renderTimeline(
       <MessagesTimeline
         {...buildProps()}
@@ -974,7 +974,7 @@ describe("MessagesTimeline", () => {
 
     try {
       expect(
-        document.querySelector<HTMLButtonElement>('button[aria-label="Continue in new thread"]'),
+        document.querySelector<HTMLButtonElement>('button[aria-label="Branch from here"]'),
       ).toBeNull();
     } finally {
       await screen.unmount();
