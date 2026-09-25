@@ -1369,34 +1369,43 @@ describe("buildProjectScopeOptions", () => {
 
 describe("windowInboxThreads", () => {
   const rows = [
-    { id: "a", attention: false },
-    { id: "b", attention: false },
-    { id: "c", attention: false },
-    { id: "d", attention: true },
-    { id: "e", attention: false },
+    { id: "p", attention: false, pinned: true },
+    { id: "a", attention: false, pinned: false },
+    { id: "b", attention: false, pinned: false },
+    { id: "c", attention: false, pinned: false },
+    { id: "d", attention: true, pinned: false },
+    { id: "e", attention: false, pinned: false },
   ];
   const hasAttention = (row: { attention: boolean }) => row.attention;
+  const isPinned = (row: { pinned: boolean }) => row.pinned;
 
-  it("folds quiet rows past the limit but never one that needs you", () => {
-    // Hiding a pending approval behind "show more" defeats the approval.
+  it("folds quiet rows past the limit but never a pin or one that needs you", () => {
+    // Hiding a pending approval behind "show more" defeats the approval, and a
+    // pin takes no seat from the quiet rows beneath it.
     const { visible, hiddenCount } = windowInboxThreads({
       rows,
       hasAttention,
+      isPinned,
       limit: 2,
       expanded: false,
     });
 
-    expect(visible.map((row) => row.id)).toEqual(["a", "b", "d"]);
+    expect(visible.map((row) => row.id)).toEqual(["p", "a", "b", "d"]);
     expect(hiddenCount).toBe(2);
   });
 
   it("shows everything when expanded or when the list fits", () => {
-    expect(windowInboxThreads({ rows, hasAttention, limit: 2, expanded: true }).hiddenCount).toBe(
-      0,
-    );
     expect(
-      windowInboxThreads({ rows: rows.slice(0, 2), hasAttention, limit: 2, expanded: false })
-        .visible.length,
-    ).toBe(2);
+      windowInboxThreads({ rows, hasAttention, isPinned, limit: 2, expanded: true }).hiddenCount,
+    ).toBe(0);
+    expect(
+      windowInboxThreads({
+        rows: rows.slice(0, 3),
+        hasAttention,
+        isPinned,
+        limit: 2,
+        expanded: false,
+      }).visible.length,
+    ).toBe(3);
   });
 });
