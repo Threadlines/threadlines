@@ -624,6 +624,22 @@ function commandLikeTitle(entry: WorkLogEntry): boolean {
 }
 
 /**
+ * Entries the conversation keeps quiet about entirely: the working row
+ * already narrates them. Cheap enough to ask of every entry on every update,
+ * unlike building the step.
+ */
+export function isSilentWorkLogEntry(entry: WorkLogEntry): boolean {
+  return (
+    Boolean(entry.providerLifecyclePhase) ||
+    (entry.redactedThinking === true && entry.executionState !== "failed") ||
+    entry.activityKind === "user-input.requested" ||
+    entry.activityKind === "user-input.resolved" ||
+    entry.activityKind === "task.progress" ||
+    (entry.tone === "thinking" && isContentFreeThinking(entry))
+  );
+}
+
+/**
  * One work-log entry as a step, or null for entries the conversation keeps
  * quiet about entirely (the anchor already narrates them).
  */
@@ -631,20 +647,7 @@ export function activityStepFromWorkLogEntry(
   entry: WorkLogEntry,
   options: ActivityStepOptions = {},
 ): ActivityStep | null {
-  if (entry.providerLifecyclePhase) {
-    return null;
-  }
-  if (entry.redactedThinking && entry.executionState !== "failed") {
-    return null;
-  }
-  if (
-    entry.activityKind === "user-input.requested" ||
-    entry.activityKind === "user-input.resolved" ||
-    entry.activityKind === "task.progress"
-  ) {
-    return null;
-  }
-  if (entry.tone === "thinking" && isContentFreeThinking(entry)) {
+  if (isSilentWorkLogEntry(entry)) {
     return null;
   }
   const running = entry.executionState === "running";
@@ -1214,6 +1217,24 @@ export function liveThoughtText(entry: WorkLogEntry): string | null {
     )
     .filter((paragraph) => paragraph.length > 0);
   return paragraphs.at(-1) ?? null;
+}
+
+/** Shorter than this, a sentence has barely started; the line keeps the one
+ *  before it so it never drops to a word or two. */
+const MIN_LIVE_SENTENCE_CHARS = 24;
+
+/**
+ * The newest sentence of a live thought, for the single line under the
+ * working row's "Thinking". A thought paragraph can run several lines; one
+ * sentence keeps the row one line tall while the thought streams.
+ */
+export function newestThoughtSentence(thought: string): string {
+  const sentences = thought
+    .split(/(?<=[.!?…])\s+(?=["'([]?[A-Z0-9])/u)
+    .filter((sentence) => sentence.length > 0);
+  const newest = sentences.at(-1) ?? thought;
+  const previous = sentences.at(-2);
+  return previous && newest.length < MIN_LIVE_SENTENCE_CHARS ? `${previous} ${newest}` : newest;
 }
 
 /**

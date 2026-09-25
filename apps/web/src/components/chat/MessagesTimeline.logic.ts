@@ -12,6 +12,7 @@ import { stripCodexInlineVisualizationDirectives } from "../../lib/codexInlineVi
 import {
   activityStepFromWorkLogEntry,
   commandCheckKey,
+  isSilentWorkLogEntry,
   liveActivityLabel,
   liveThoughtText,
 } from "./activitySteps";
@@ -29,80 +30,100 @@ export interface TurnSummary {
   readonly trackerAgentSpawnIds: ReadonlyArray<string>;
 }
 
-export type MessagesTimelineRow =
-  | {
-      kind: "work";
-      id: string;
-      createdAt: string;
-      groupedEntries: WorkLogEntry[];
-      /** Agent lifecycle entries this group swallowed. Never rendered and never
-       *  counted, but kept so the group still exists on a turn that did nothing
-       *  but delegate: the turn's agent tracker and its duration hang off it. */
-      agentAnchorEntries: WorkLogEntry[];
-      /** The turns this group shows the agent tracker for. A tracker summarizes
-       *  a whole turn, so only the turn's first group carries it; a later group
-       *  in the same turn would repeat the same bars and count. Empty means this
-       *  group shows no tracker at all. */
-      trackerTurnIds: TurnId[];
-      /** Spawn call ids the tracker falls back to when the group has no turn to
-       *  key on. A background agent keeps streaming after its spawning turn
-       *  settles, and that activity arrives turnless — these ids let the tail
-       *  group name an agent no turn claims. The selector ignores ids whose
-       *  agent carries a turn attribution: that agent's tracker lives with the
-       *  spawning turn's group, and repeating it here would double the "Agent
-       *  working" row. Only populated when `trackerTurnIds` is empty. */
-      trackerAgentSpawnIds: string[];
-      isLive: boolean;
-      liveStartedAt: string | null;
-      /** True while the turn this group belongs to is still working. Groups in
-       *  the active exchange keep their live-spine shape (frozen, no accent)
-       *  instead of collapsing into a receipt mid-turn — the settle happens
-       *  once, when the turn ends. */
-      inActiveExchange: boolean;
-    }
-  | {
-      kind: "message";
-      id: string;
-      createdAt: string;
-      message: ChatMessage;
-      /** A note from a finished turn that is not its last message: it fades so
-       *  the turn's answer reads first. */
-      settledNote: boolean;
-      /** Set on a finished turn's last message, which carries the turn's footer. */
-      turnSummary: TurnSummary | null;
-      showAssistantCopyButton: boolean;
-      assistantCopyStreaming: boolean;
-      assistantTurnInProgress: boolean;
-      assistantModelFallback?: ModelFallbackState | undefined;
-      assistantTurnDiffSummary?: TurnDiffSummary | undefined;
-      revertTurnCount?: number | undefined;
-    }
-  | {
-      kind: "proposed-plan";
-      id: string;
-      createdAt: string;
-      proposedPlan: ProposedPlan;
-    }
-  | {
-      kind: "subagent-result";
-      id: string;
-      createdAt: string;
-      result: SubagentResultEntry;
-    }
-  | {
-      kind: "fork-context";
-      id: string;
-      createdAt: string;
-      forkContext: ForkContextEntry;
-    }
-  | {
-      kind: "working";
-      id: string;
-      createdAt: string | null;
-      label: string;
-      /** What the agent is thinking right now, in its own summary's words. */
-      thought: string | null;
-    };
+/**
+ * Where a row sits in its turn's work tray: the recessed surface behind the
+ * agent's notes and steps, so the answer below it lands on the page. A tray
+ * spans consecutive rows, rounded at its first and last visible row.
+ */
+export type TrayPlacement = "single" | "first" | "middle" | "last";
+
+export interface TimelineRowPlacement {
+  /** Null for rows on the page: your messages, answers, plans. */
+  readonly tray: TrayPlacement | null;
+  /** Room above the row, which is how an answer keeps page space above it once
+   *  it leaves the tray. Decided by what the row is and what sits above it,
+   *  never by the tray, so a turn ending moves nothing. */
+  readonly padTop: boolean;
+}
+
+const UNPLACED: TimelineRowPlacement = { tray: null, padTop: false };
+
+export type MessagesTimelineRow = TimelineRowPlacement &
+  (
+    | {
+        kind: "work";
+        id: string;
+        createdAt: string;
+        groupedEntries: WorkLogEntry[];
+        /** Agent lifecycle entries this group swallowed. Never rendered and never
+         *  counted, but kept so the group still exists on a turn that did nothing
+         *  but delegate: the turn's agent tracker and its duration hang off it. */
+        agentAnchorEntries: WorkLogEntry[];
+        /** The turns this group shows the agent tracker for. A tracker summarizes
+         *  a whole turn, so only the turn's first group carries it; a later group
+         *  in the same turn would repeat the same bars and count. Empty means this
+         *  group shows no tracker at all. */
+        trackerTurnIds: TurnId[];
+        /** Spawn call ids the tracker falls back to when the group has no turn to
+         *  key on. A background agent keeps streaming after its spawning turn
+         *  settles, and that activity arrives turnless — these ids let the tail
+         *  group name an agent no turn claims. The selector ignores ids whose
+         *  agent carries a turn attribution: that agent's tracker lives with the
+         *  spawning turn's group, and repeating it here would double the "Agent
+         *  working" row. Only populated when `trackerTurnIds` is empty. */
+        trackerAgentSpawnIds: string[];
+        isLive: boolean;
+        liveStartedAt: string | null;
+        /** True while the turn this group belongs to is still working. Groups in
+         *  the active exchange keep their live-spine shape (frozen, no accent)
+         *  instead of collapsing into a receipt mid-turn — the settle happens
+         *  once, when the turn ends. */
+        inActiveExchange: boolean;
+      }
+    | {
+        kind: "message";
+        id: string;
+        createdAt: string;
+        message: ChatMessage;
+        /** A note from a finished turn that is not its last message: it fades so
+         *  the turn's answer reads first. */
+        settledNote: boolean;
+        /** Set on a finished turn's last message, which carries the turn's footer. */
+        turnSummary: TurnSummary | null;
+        showAssistantCopyButton: boolean;
+        assistantCopyStreaming: boolean;
+        assistantTurnInProgress: boolean;
+        assistantModelFallback?: ModelFallbackState | undefined;
+        assistantTurnDiffSummary?: TurnDiffSummary | undefined;
+        revertTurnCount?: number | undefined;
+      }
+    | {
+        kind: "proposed-plan";
+        id: string;
+        createdAt: string;
+        proposedPlan: ProposedPlan;
+      }
+    | {
+        kind: "subagent-result";
+        id: string;
+        createdAt: string;
+        result: SubagentResultEntry;
+      }
+    | {
+        kind: "fork-context";
+        id: string;
+        createdAt: string;
+        forkContext: ForkContextEntry;
+      }
+    | {
+        kind: "working";
+        id: string;
+        createdAt: string | null;
+        label: string;
+        /** What the agent is thinking right now, in its own summary's words. */
+        thought: string | null;
+      }
+  );
 
 export interface StableMessagesTimelineRowsState {
   byId: Map<string, MessagesTimelineRow>;
@@ -330,6 +351,7 @@ export function deriveMessagesTimelineRows(input: {
           ? deriveTrackerAgentSpawnIds(groupedEntries, agentAnchorEntries)
           : [];
       nextRows.push({
+        ...UNPLACED,
         kind: "work",
         id: timelineEntry.id,
         createdAt: timelineEntry.createdAt,
@@ -347,6 +369,7 @@ export function deriveMessagesTimelineRows(input: {
 
     if (timelineEntry.kind === "proposed-plan") {
       nextRows.push({
+        ...UNPLACED,
         kind: "proposed-plan",
         id: timelineEntry.id,
         createdAt: timelineEntry.createdAt,
@@ -357,6 +380,7 @@ export function deriveMessagesTimelineRows(input: {
 
     if (timelineEntry.kind === "subagent-result") {
       nextRows.push({
+        ...UNPLACED,
         kind: "subagent-result",
         id: timelineEntry.id,
         createdAt: timelineEntry.createdAt,
@@ -375,6 +399,7 @@ export function deriveMessagesTimelineRows(input: {
 
     if (timelineEntry.kind === "fork-context") {
       nextRows.push({
+        ...UNPLACED,
         kind: "fork-context",
         id: timelineEntry.id,
         createdAt: timelineEntry.createdAt,
@@ -398,6 +423,7 @@ export function deriveMessagesTimelineRows(input: {
         : undefined;
 
     nextRows.push({
+      ...UNPLACED,
       kind: "message",
       id: timelineEntry.id,
       createdAt: timelineEntry.createdAt,
@@ -438,6 +464,7 @@ export function deriveMessagesTimelineRows(input: {
     // turn, whatever the tail is, so the live node, the timer, and the agent
     // tracker never teleport between homes. Its word is the step running now.
     rows.push({
+      ...UNPLACED,
       kind: "working",
       id: "working-indicator-row",
       createdAt: input.activeTurnStartedAt,
@@ -448,6 +475,7 @@ export function deriveMessagesTimelineRows(input: {
     // The turn settled but agents it delegated to are still going: the anchor
     // stays as their tracker, without a turn timer, until the last one lands.
     rows.push({
+      ...UNPLACED,
       kind: "working",
       id: "working-indicator-row",
       createdAt: null,
@@ -458,6 +486,7 @@ export function deriveMessagesTimelineRows(input: {
     // The turn settled but a background task (a command, a cron) will wake
     // it: the anchor stays up as a plain wait, without a turn timer.
     rows.push({
+      ...UNPLACED,
       kind: "working",
       id: "working-indicator-row",
       createdAt: null,
@@ -466,10 +495,111 @@ export function deriveMessagesTimelineRows(input: {
     });
   }
 
-  return rows;
+  return placeRows(rows, input.isWorking);
 }
 
 type MessageRow = Extract<MessagesTimelineRow, { kind: "message" }>;
+
+/** Rows the agent produced, as opposed to your messages and the page between
+ *  turns. */
+function isAgentRow(row: MessagesTimelineRow): boolean {
+  return (
+    row.kind === "work" ||
+    row.kind === "subagent-result" ||
+    row.kind === "working" ||
+    (row.kind === "message" && row.message.role === "assistant")
+  );
+}
+
+/** The agent's work in progress or on record: everything a turn does before
+ *  its answer. A finished turn's answer, your messages, and plans sit on the
+ *  page; the working row belongs to the tray only while the turn runs. */
+function belongsInTray(row: MessagesTimelineRow, isWorking: boolean): boolean {
+  switch (row.kind) {
+    case "work":
+    case "subagent-result":
+      return true;
+    case "working":
+      return isWorking;
+    case "message":
+      return row.message.role === "assistant" && row.turnSummary === null;
+    default:
+      return false;
+  }
+}
+
+/** A step group with nothing to draw (only running steps, which the working
+ *  row names, or agent plumbing whose tracker moved to the footer) takes no
+ *  room, so it cannot carry the tray's rounded edge. */
+function drawsNothing(row: MessagesTimelineRow, isWorking: boolean): boolean {
+  if (row.kind !== "work") {
+    return false;
+  }
+  const showsTracker =
+    (row.trackerTurnIds.length > 0 || row.trackerAgentSpawnIds.length > 0) &&
+    !(isWorking && row.inActiveExchange);
+  return (
+    !showsTracker &&
+    row.groupedEntries.every(
+      (entry) => entry.executionState === "running" || isSilentWorkLogEntry(entry),
+    )
+  );
+}
+
+/**
+ * Places each row: in a work tray or on the page, and with or without room
+ * above it. Messages always keep that room, so whichever message turns out to
+ * be the answer has page space above it when it leaves the tray. Other rows
+ * keep it where the agent's work meets the page: the first step after your
+ * message, or your next message after the agent's work.
+ */
+function placeRows(
+  rows: ReadonlyArray<MessagesTimelineRow>,
+  isWorking: boolean,
+): MessagesTimelineRow[] {
+  const inTray = rows.map((row) => belongsInTray(row, isWorking));
+  const visible = rows.map((row) => !drawsNothing(row, isWorking));
+  const tray: Array<TrayPlacement | null> = rows.map(() => null);
+  for (let start = 0; start < rows.length; start += 1) {
+    if (!inTray[start] || (start > 0 && inTray[start - 1])) {
+      continue;
+    }
+    let end = start;
+    while (end + 1 < rows.length && inTray[end + 1]) {
+      end += 1;
+    }
+    const first = visible.indexOf(true, start);
+    const last = visible.lastIndexOf(true, end);
+    if (first === -1 || first > end || last < start) {
+      continue;
+    }
+    // Rows past the visible ends take no room, so they stay off the edges.
+    for (let index = start; index <= end; index += 1) {
+      tray[index] =
+        first === last && index === first
+          ? "single"
+          : index === first
+            ? "first"
+            : index === last
+              ? "last"
+              : "middle";
+    }
+  }
+  return rows.map((row, index) => {
+    const previous = rows[index - 1];
+    const padTop =
+      row.kind === "message" && row.message.role === "assistant"
+        ? true
+        : isAgentRow(row)
+          ? previous === undefined ||
+            !isAgentRow(previous) ||
+            (previous.kind === "message" && previous.turnSummary !== null)
+          : previous !== undefined && isAgentRow(previous);
+    return row.tray === tray[index] && row.padTop === padTop
+      ? row
+      : { ...row, tray: tray[index] ?? null, padTop };
+  });
+}
 
 /**
  * A finished turn keeps its story where it is: nothing folds, so nothing above
@@ -1076,7 +1206,9 @@ export function computeStableMessagesTimelineRows(
 
 /** Shallow field comparison per row variant — avoids deep equality cost. */
 function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean {
-  if (a.kind !== b.kind || a.id !== b.id) return false;
+  if (a.kind !== b.kind || a.id !== b.id || a.tray !== b.tray || a.padTop !== b.padTop) {
+    return false;
+  }
 
   switch (a.kind) {
     case "working":
