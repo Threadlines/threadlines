@@ -530,7 +530,8 @@ function belongsInTray(row: MessagesTimelineRow, isWorking: boolean): boolean {
 
 /** A step group with nothing to draw (only running steps, which the working
  *  row names, or agent plumbing whose tracker moved to the footer) takes no
- *  room, so it cannot carry the tray's rounded edge. */
+ *  room, so it cannot carry the tray's rounded edge or set the room above the
+ *  row after it. */
 function drawsNothing(row: MessagesTimelineRow, isWorking: boolean): boolean {
   if (row.kind !== "work") {
     return false;
@@ -551,7 +552,9 @@ function drawsNothing(row: MessagesTimelineRow, isWorking: boolean): boolean {
  * above it. Messages always keep that room, so whichever message turns out to
  * be the answer has page space above it when it leaves the tray. Other rows
  * keep it where the agent's work meets the page: the first step after your
- * message, or your next message after the agent's work.
+ * message, or your next message after the agent's work. Rows that draw nothing
+ * are skipped, so right after you send, the working row keeps its room even
+ * with the turn request's empty group above it.
  */
 function placeRows(
   rows: ReadonlyArray<MessagesTimelineRow>,
@@ -585,16 +588,20 @@ function placeRows(
               : "middle";
     }
   }
+  // The nearest row above that draws something.
+  let above: MessagesTimelineRow | undefined;
   return rows.map((row, index) => {
-    const previous = rows[index - 1];
     const padTop =
       row.kind === "message" && row.message.role === "assistant"
         ? true
         : isAgentRow(row)
-          ? previous === undefined ||
-            !isAgentRow(previous) ||
-            (previous.kind === "message" && previous.turnSummary !== null)
-          : previous !== undefined && isAgentRow(previous);
+          ? above === undefined ||
+            !isAgentRow(above) ||
+            (above.kind === "message" && above.turnSummary !== null)
+          : above !== undefined && isAgentRow(above);
+    if (visible[index]) {
+      above = row;
+    }
     return row.tray === tray[index] && row.padTop === padTop
       ? row
       : { ...row, tray: tray[index] ?? null, padTop };
