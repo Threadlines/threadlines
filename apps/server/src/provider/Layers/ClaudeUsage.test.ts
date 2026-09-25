@@ -668,7 +668,7 @@ describe("applyClaudeRateLimitInfoToAccountUsage", () => {
     expect(
       applyClaudeRateLimitInfoToAccountUsage(
         undefined,
-        { rateLimitType: "five_hour", utilization: 42.4, resetsAt: 1_783_000_000 },
+        { rateLimitType: "five_hour", utilization: 0.424, resetsAt: 1_783_000_000 },
         checkedAt,
       ),
     ).toEqual({
@@ -692,7 +692,7 @@ describe("applyClaudeRateLimitInfoToAccountUsage", () => {
   it("patches the 5h window and preserves the weekly and scoped windows", () => {
     const next = applyClaudeRateLimitInfoToAccountUsage(
       baseUsage,
-      { rateLimitType: "five_hour", utilization: 55, resetsAt: 1_783_111_111 },
+      { rateLimitType: "five_hour", utilization: 0.55, resetsAt: 1_783_111_111 },
       checkedAt,
     );
     expect(next).toEqual({
@@ -714,24 +714,61 @@ describe("applyClaudeRateLimitInfoToAccountUsage", () => {
     expect(next?.limits[0]?.scoped).toEqual(baseUsage.limits[0]?.scoped);
   });
 
-  it("patches the weekly window from a seven_day event", () => {
+  it("reads the event's 0-1 utilization as a percent when patching the weekly window", () => {
     const next = applyClaudeRateLimitInfoToAccountUsage(
       baseUsage,
-      { rateLimitType: "seven_day", utilization: 71 },
+      { rateLimitType: "seven_day", utilization: 0.79 },
       checkedAt,
     );
     expect(next?.limits[0]?.secondary).toEqual({
-      usedPercent: 71,
-      remainingPercent: 29,
+      usedPercent: 79,
+      remainingPercent: 21,
       windowDurationMins: 10_080,
     });
     expect(next?.limits[0]?.primary).toEqual(baseUsage.limits[0]?.primary);
   });
 
+  it("patches every window in unifiedWindows, even below the warning threshold", () => {
+    const next = applyClaudeRateLimitInfoToAccountUsage(
+      baseUsage,
+      {
+        rateLimitType: "five_hour",
+        resetsAt: 1_783_111_111,
+        unifiedWindows: {
+          five_hour: { utilization: 0.13, resetsAt: 1_783_111_111 },
+          seven_day: { utilization: 0.72, resetsAt: 1_783_222_222 },
+          seven_day_overage_included: { utilization: 0.9, resetsAt: 1_783_222_222 },
+        },
+      },
+      checkedAt,
+    );
+    expect(next).toEqual({
+      ...baseUsage,
+      checkedAt,
+      limits: [
+        {
+          ...baseUsage.limits[0]!,
+          primary: {
+            usedPercent: 13,
+            remainingPercent: 87,
+            resetsAt: 1_783_111_111,
+            windowDurationMins: 300,
+          },
+          secondary: {
+            usedPercent: 72,
+            remainingPercent: 28,
+            resetsAt: 1_783_222_222,
+            windowDurationMins: 10_080,
+          },
+        },
+      ],
+    });
+  });
+
   it("patches a matching scoped window from a per-model event", () => {
     const next = applyClaudeRateLimitInfoToAccountUsage(
       baseUsage,
-      { rateLimitType: "seven_day_opus", utilization: 62, resetsAt: 1_783_222_222 },
+      { rateLimitType: "seven_day_opus", utilization: 0.62, resetsAt: 1_783_222_222 },
       checkedAt,
     );
     expect(next?.limits[0]?.scoped).toEqual([
@@ -750,14 +787,14 @@ describe("applyClaudeRateLimitInfoToAccountUsage", () => {
     expect(
       applyClaudeRateLimitInfoToAccountUsage(
         baseUsage,
-        { rateLimitType: "seven_day_sonnet", utilization: 62 },
+        { rateLimitType: "seven_day_sonnet", utilization: 0.62 },
         checkedAt,
       ),
     ).toBeUndefined();
     expect(
       applyClaudeRateLimitInfoToAccountUsage(
         undefined,
-        { rateLimitType: "seven_day_opus", utilization: 62 },
+        { rateLimitType: "seven_day_opus", utilization: 0.62 },
         checkedAt,
       ),
     ).toBeUndefined();
@@ -767,7 +804,7 @@ describe("applyClaudeRateLimitInfoToAccountUsage", () => {
     expect(
       applyClaudeRateLimitInfoToAccountUsage(
         baseUsage,
-        { rateLimitType: "overage", utilization: 10 },
+        { rateLimitType: "overage", utilization: 0.1 },
         checkedAt,
       ),
     ).toBeUndefined();
@@ -783,7 +820,7 @@ describe("applyClaudeRateLimitInfoToAccountUsage", () => {
         baseUsage,
         {
           rateLimitType: "five_hour",
-          utilization: 31,
+          utilization: 0.31,
           resetsAt: Date.parse("2026-07-09T02:32:00.000Z"),
         },
         checkedAt,

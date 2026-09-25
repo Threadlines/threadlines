@@ -246,15 +246,26 @@ export function normalizeClaudeAccountUsage(
   };
 }
 
-/**
- * One rate-limit window from the Agent SDK's `rate_limit_event` stream
- * message. Structural subset of the SDK's `SDKRateLimitInfo` so this module
- * stays decoupled from the SDK package.
- */
-export interface ClaudeRateLimitEventInfo {
-  readonly rateLimitType?: string | undefined;
+/** One window's reading in a `rate_limit_event`. */
+export interface ClaudeRateLimitEventWindow {
   readonly utilization?: number | undefined;
   readonly resetsAt?: number | undefined;
+}
+
+/**
+ * The Agent SDK's `rate_limit_event` stream message. Structural subset of
+ * the SDK's `SDKRateLimitInfo` so this module stays decoupled from the SDK
+ * package. Unlike the OAuth endpoint's 0–100 `utilization`, the event's is a
+ * 0–1 fraction (0.79 = 79%), with `resetsAt` in epoch seconds.
+ *
+ * The top-level window (`rateLimitType` + `utilization`) only carries a
+ * reading once it crosses a warning threshold. `unifiedWindows` carries
+ * every window the CLI tracked on each response; the CLI sends it at
+ * runtime but the SDK's typings omit it, so it is read defensively.
+ */
+export interface ClaudeRateLimitEventInfo extends ClaudeRateLimitEventWindow {
+  readonly rateLimitType?: string | undefined;
+  readonly unifiedWindows?: unknown;
 }
 
 const CLAUDE_RATE_LIMIT_EVENT_WINDOWS: Record<
@@ -305,27 +316,59 @@ function withClaudeUsageWindow(
 }
 
 /**
- * Merge one live rate-limit window (the Agent SDK's `rate_limit_event`) into
- * the usage snapshot fetched from the OAuth endpoint. The event carries a
- * single window at a time, so only the matching window is patched; the rest
- * of the snapshot is preserved. Returns `undefined` when there is nothing to
- * apply (unknown window type, missing utilization, or no change).
+ * Every window reading in one event, keyed by window type. `unifiedWindows`
+ * entries win over the top-level window; the two agree when both are sent.
+ */
+function readClaudeRateLimitEventWindows(
+  info: ClaudeRateLimitEventInfo,
+): Map<string, ClaudeRateLimitEventWindow> {
+  const windows = new Map<string, ClaudeRateLimitEventWindow>();
+  if (info.rateLimitType) {
+    windows.set(info.rateLimitType, { utilization: info.utilization, resetsAt: info.resetsAt });
+  }
+  if (info.unifiedWindows && typeof info.unifiedWindows === "object") {
+    for (const [rateLimitType, window] of Object.entries(
+      info.unifiedWindows as Record<string, unknown>,
+    )) {
+      if (window && typeof window === "object") windows.set(rateLimitType, window);
+    }
+  }
+  return windows;
+}
+
+/**
+ * Merge a live `rate_limit_event` into the usage snapshot fetched from the
+ * OAuth endpoint. Each window the event reports patches its matching window;
+ * the rest of the snapshot is preserved. Returns `undefined` when there is
+ * nothing to apply (unknown window types, missing utilization, or no change).
  */
 export function applyClaudeRateLimitInfoToAccountUsage(
   current: ServerProviderAccountUsage | undefined,
   info: ClaudeRateLimitEventInfo,
   checkedAt: string,
 ): ServerProviderAccountUsage | undefined {
-  if (typeof info.utilization !== "number" || !Number.isFinite(info.utilization)) {
+  let next = current;
+  for (const [rateLimitType, window] of readClaudeRateLimitEventWindows(info)) {
+    next = applyClaudeRateLimitWindow(next, rateLimitType, window, checkedAt) ?? next;
+  }
+  return next === current ? undefined : next;
+}
+
+function applyClaudeRateLimitWindow(
+  current: ServerProviderAccountUsage | undefined,
+  rateLimitType: string,
+  window: ClaudeRateLimitEventWindow,
+  checkedAt: string,
+): ServerProviderAccountUsage | undefined {
+  if (typeof window.utilization !== "number" || !Number.isFinite(window.utilization)) {
     return undefined;
   }
-  if (!info.rateLimitType) return undefined;
 
-  const usedPercent = normalizeUsagePercent(info.utilization);
+  const usedPercent = normalizeUsagePercent(window.utilization * 100);
   const remainingPercent = Math.max(0, 100 - usedPercent);
-  const resetsAt = normalizeClaudeUsageResetsAt(info.resetsAt);
+  const resetsAt = normalizeClaudeUsageResetsAt(window.resetsAt);
 
-  const windowTarget = CLAUDE_RATE_LIMIT_EVENT_WINDOWS[info.rateLimitType];
+  const windowTarget = CLAUDE_RATE_LIMIT_EVENT_WINDOWS[rateLimitType];
   if (windowTarget) {
     const nextWindow: ServerProviderUsageWindow = {
       usedPercent,
@@ -366,7 +409,7 @@ export function applyClaudeRateLimitInfoToAccountUsage(
     };
   }
 
-  const scopedKeyword = CLAUDE_RATE_LIMIT_EVENT_SCOPED_KEYWORDS[info.rateLimitType];
+  const scopedKeyword = CLAUDE_RATE_LIMIT_EVENT_SCOPED_KEYWORDS[rateLimitType];
   if (!scopedKeyword || !current) return undefined;
 
   const limitIndex = claudeUsageLimitIndex(current);
