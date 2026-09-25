@@ -85,6 +85,9 @@ export function toWslPath(windowsPath: string): string {
     return windowsPath;
   }
   const [, drive, rest] = match;
-  const normalized = rest!.replace(/\\/g, "/").replace(/\/+$/u, "");
-  return `/mnt/${drive!.toLowerCase()}/${normalized}`;
+  const slashed = rest!.replaceAll("\\", "/");
+  // A loop, not `/\/+$/`: that regex backtracks quadratically on long slash runs.
+  let end = slashed.length;
+  while (end > 0 && slashed[end - 1] === "/") end -= 1;
+  return `/mnt/${drive!.toLowerCase()}/${slashed.slice(0, end)}`;
 }
