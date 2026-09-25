@@ -87,7 +87,9 @@ import {
 import {
   computeStableMessagesTimelineRows,
   deriveMessagesTimelineRows,
+  estimateTimelineRowHeight,
   resolveAssistantMessageCopyState,
+  shouldCollapseUserMessage,
   type StableMessagesTimelineRowsState,
   type TrayPlacement,
   type TurnSummary,
@@ -290,6 +292,11 @@ export function getTranscriptSelectionAfterTimelineScroll(
 }
 
 const TOUCH_SCROLL_INTENT_THRESHOLD_PX = 4;
+// After a finger lifts, the browser can keep the list moving: momentum, or the
+// bounce at either end. The gesture owns the scroll until that motion has been
+// quiet this long, and never longer than the cap after the finger lifted.
+const TOUCH_SCROLL_SETTLE_MS = 150;
+const TOUCH_SCROLL_SETTLE_MAX_MS = 3_000;
 const MAINTAIN_SCROLL_AT_END = { animated: false } as const;
 // While the reader is above the tail, the working row never anchors: holding it
 // still would push the text they are reading up as the response grows. After a
@@ -779,7 +786,23 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   const previousActiveTurnInProgressRef = useRef(activeTurnInProgress);
   const userScrollLockTimerRef = useRef<number | null>(null);
   const touchStartYRef = useRef<number | null>(null);
+  // Set from touchstart until the list stops moving after the finger lifts.
+  // Following never scrolls while a touch owns the list: a programmatic scroll
+  // mid-glide fights the browser's own momentum and edge bounce, which iOS
+  // shows as the chat jumping near the bottom.
+  const touchScrollActiveRef = useRef(false);
+  const [touchScrollActive, setTouchScrollActive] = useState(false);
+  const touchReleasedAtRef = useRef<number | null>(null);
+  const touchSettleTimerRef = useRef<number | null>(null);
+  // Whether the gesture's latest scroll was at the bottom. Streamed content
+  // grows the list without scrolling it, so this still reads true for a glide
+  // that stopped at the bottom while new lines kept arriving below it.
+  const touchEndedAtBottomRef = useRef(false);
+  const touchLiftListenersRef = useRef<AbortController | null>(null);
   const timelineContainerRef = useRef<HTMLDivElement | null>(null);
+  // The timeline's width, for guessing how tall an undrawn row is. Read on
+  // first use, then kept current by the resize observer.
+  const timelineWidthRef = useRef(0);
   const [transcriptSelection, setTranscriptSelection] =
     useState<TranscriptSelectionPopoverState | null>(null);
   const transcriptNoteHighlightRangeRef = useRef<Range | null>(null);
@@ -793,6 +816,13 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     }
     autoStickToBottomRef.current = next;
     setAutoStickToBottom(next);
+  }, []);
+
+  const getEstimatedItemSize = useCallback((row: MessagesTimelineRow) => {
+    if (timelineWidthRef.current === 0) {
+      timelineWidthRef.current = timelineContainerRef.current?.clientWidth || window.innerWidth;
+    }
+    return estimateTimelineRowHeight(row, timelineWidthRef.current);
   }, []);
 
   const assignLegendListRef = useCallback(
@@ -974,11 +1004,15 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   }, [clearUserScrollLockTimer, listRef, onIsAtEndChange, setAutoStickToBottomState]);
 
   const enableAutoStickIfAtEnd = useCallback(() => {
-    // A finger still on the glass is mid-gesture even when it pauses, and a
-    // paused drag that has only just left the bottom is still inside the at-end
-    // tolerance. Re-arming here would yank the list back under the touch.
-    // `handleTouchEndCapture` re-checks once the gesture lifts.
-    if (touchStartYRef.current !== null || !isTimelineListAtEnd(listRef.current)) {
+    // A touch owns the list until it comes to rest: a finger that pauses is
+    // still mid-gesture, and a glide that passes the bottom is still moving.
+    // Re-arming then would yank the list under the touch; `settleTouchScroll`
+    // re-checks once the list is still.
+    if (
+      touchStartYRef.current !== null ||
+      touchScrollActiveRef.current ||
+      !isTimelineListAtEnd(listRef.current)
+    ) {
       return;
     }
     setAutoStickToBottomState(true);
@@ -992,6 +1026,44 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       enableAutoStickIfAtEnd();
     }, USER_SCROLL_STICK_LOCK_MS);
   }, [clearUserScrollLockTimer, enableAutoStickIfAtEnd]);
+
+  const clearTouchSettleTimer = useCallback(() => {
+    if (touchSettleTimerRef.current === null) {
+      return;
+    }
+    window.clearTimeout(touchSettleTimerRef.current);
+    touchSettleTimerRef.current = null;
+  }, []);
+
+  const settleTouchScroll = useCallback(() => {
+    clearTouchSettleTimer();
+    touchReleasedAtRef.current = null;
+    if (!touchScrollActiveRef.current) {
+      return;
+    }
+    touchScrollActiveRef.current = false;
+    setTouchScrollActive(false);
+    // A gesture that ends at the bottom follows again, and catches up with
+    // whatever streamed in while it held the list.
+    if (autoStickToBottomRef.current || touchEndedAtBottomRef.current) {
+      stickToBottomNow();
+    }
+  }, [clearTouchSettleTimer, stickToBottomNow]);
+
+  // Called when the finger lifts and on every scroll after it, so the gesture
+  // settles once the glide has been quiet for a moment.
+  const scheduleTouchScrollSettle = useCallback(() => {
+    const releasedAt = touchReleasedAtRef.current;
+    if (releasedAt === null) {
+      return;
+    }
+    clearTouchSettleTimer();
+    const untilCap = releasedAt + TOUCH_SCROLL_SETTLE_MAX_MS - performance.now();
+    touchSettleTimerRef.current = window.setTimeout(
+      settleTouchScroll,
+      Math.max(0, Math.min(TOUCH_SCROLL_SETTLE_MS, untilCap)),
+    );
+  }, [clearTouchSettleTimer, settleTouchScroll]);
 
   const markUserScrollIntent = useCallback(
     (options?: { notifyAwayFromEnd?: boolean }) => {
@@ -1020,9 +1092,13 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     (event: TimelineScrollEvent) => {
       setTranscriptSelection(getTranscriptSelectionAfterTimelineScroll);
       refreshTranscriptNoteHighlightRects();
+      scheduleTouchScrollSettle();
       const eventAtEnd = isTimelineScrollEventAtEnd(event);
       const nextIsAtEnd =
         eventAtEnd !== null ? eventAtEnd : Boolean(listRef.current?.getState?.().isAtEnd);
+      if (touchScrollActiveRef.current) {
+        touchEndedAtBottomRef.current = nextIsAtEnd;
+      }
       if (!nextIsAtEnd && (autoStickToBottomRef.current || stickToBottomRequestPending)) {
         onIsAtEndChange(true);
         return;
@@ -1033,8 +1109,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       // list back to the bottom under the moving finger, report at-end on the
       // next frame, and stick again — the list flickers instead of scrolling.
       // Pointer devices never hit this because one wheel notch clears the
-      // tolerance outright. The lock timer re-checks once scrolling settles.
-      if (nextIsAtEnd && userScrollLockTimerRef.current === null) {
+      // tolerance outright. The lock timer re-checks once scrolling settles,
+      // and a touch re-checks once its glide comes to rest.
+      if (nextIsAtEnd && userScrollLockTimerRef.current === null && !touchScrollActiveRef.current) {
         setAutoStickToBottomState(true);
       }
       onIsAtEndChange(nextIsAtEnd);
@@ -1043,6 +1120,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       listRef,
       onIsAtEndChange,
       refreshTranscriptNoteHighlightRects,
+      scheduleTouchScrollSettle,
       setAutoStickToBottomState,
       stickToBottomRequestPending,
     ],
@@ -1137,9 +1215,50 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     [markUserScrollIntent],
   );
 
-  const handleTouchStartCapture = useCallback((event: ReactTouchEvent) => {
-    touchStartYRef.current = event.touches[0]?.clientY ?? null;
-  }, []);
+  const releaseTouch = useCallback(
+    (remainingTouches: number) => {
+      if (remainingTouches > 0 || touchStartYRef.current === null) {
+        return;
+      }
+      touchStartYRef.current = null;
+      touchReleasedAtRef.current = performance.now();
+      scheduleTouchScrollSettle();
+      if (!autoStickToBottomRef.current) {
+        scheduleStickReArmCheck();
+      }
+    },
+    [scheduleStickReArmCheck, scheduleTouchScrollSettle],
+  );
+
+  const handleTouchStartCapture = useCallback(
+    (event: ReactTouchEvent) => {
+      touchStartYRef.current = event.touches[0]?.clientY ?? null;
+      touchReleasedAtRef.current = null;
+      touchEndedAtBottomRef.current = isTimelineListAtEnd(listRef.current);
+      clearTouchSettleTimer();
+      if (!touchScrollActiveRef.current) {
+        touchScrollActiveRef.current = true;
+        setTouchScrollActive(true);
+      }
+      // A touch keeps targeting the element it started on. If a streamed
+      // update replaces that element mid-gesture, its touchend no longer
+      // reaches the list, so also hear the lift on the target itself.
+      touchLiftListenersRef.current?.abort();
+      const target = event.nativeEvent.target;
+      if (target instanceof Node) {
+        const listeners = new AbortController();
+        touchLiftListenersRef.current = listeners;
+        const onLift = (lift: Event) => {
+          listeners.abort();
+          releaseTouch((lift as TouchEvent).touches.length);
+        };
+        const options = { passive: true, signal: listeners.signal };
+        target.addEventListener("touchend", onLift, options);
+        target.addEventListener("touchcancel", onLift, options);
+      }
+    },
+    [clearTouchSettleTimer, listRef, releaseTouch],
+  );
 
   const handleTouchMoveCapture = useCallback(
     (event: ReactTouchEvent) => {
@@ -1155,15 +1274,12 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     [markUserScrollIntent],
   );
 
-  const handleTouchEndCapture = useCallback(() => {
-    touchStartYRef.current = null;
-    if (autoStickToBottomRef.current) {
-      return;
-    }
-    // The gesture may have ended at the bottom, or momentum may still be
-    // running. Re-check after it settles rather than mid-flick.
-    scheduleStickReArmCheck();
-  }, [scheduleStickReArmCheck]);
+  const handleTouchEndCapture = useCallback(
+    (event: ReactTouchEvent) => {
+      releaseTouch(event.touches.length);
+    },
+    [releaseTouch],
+  );
 
   const handleKeyDownCapture = useCallback(
     (event: ReactKeyboardEvent) => {
@@ -1249,9 +1365,13 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     let cancelStickFrames: (() => void) | null = null;
     const restickIfArmed = () => {
       // Mobile browsers collapse and expand the URL bar as the user scrolls,
-      // which resizes the visual viewport mid-gesture. Never re-stick under a
-      // finger that is on the glass — the touch handlers own the scroll then.
-      if (!autoStickToBottomRef.current || touchStartYRef.current !== null) {
+      // which resizes the visual viewport mid-gesture. Never re-stick while a
+      // touch owns the list; `settleTouchScroll` catches up once it is still.
+      if (
+        !autoStickToBottomRef.current ||
+        touchStartYRef.current !== null ||
+        touchScrollActiveRef.current
+      ) {
         return;
       }
       cancelStickFrames?.();
@@ -1268,7 +1388,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       typeof ResizeObserver === "undefined"
         ? null
         : new ResizeObserver(() => {
-            const nextHeight = container.getBoundingClientRect().height;
+            const rect = container.getBoundingClientRect();
+            timelineWidthRef.current = rect.width;
+            const nextHeight = rect.height;
             if (Math.abs(nextHeight - lastHeight) < 1) {
               return;
             }
@@ -1297,11 +1419,14 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   }, [legendListReady, stickToBottomNow]);
 
   useEffect(() => {
-    // Following never moves the list under a finger resting on it: the scroll
-    // would fight the drag. The first change after the finger lifts catches up.
+    // Following never moves the list while a touch owns it (the finger, then
+    // its glide): the scroll would fight the gesture. `settleTouchScroll`
+    // catches up once the list is still.
     const shouldFollow = () =>
       stickToBottomRequestPending ||
-      (autoStickToBottomRef.current && touchStartYRef.current === null);
+      (autoStickToBottomRef.current &&
+        touchStartYRef.current === null &&
+        !touchScrollActiveRef.current);
     if (!hasRows || !shouldFollow()) {
       return;
     }
@@ -1321,8 +1446,10 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   useEffect(() => {
     return () => {
       clearUserScrollLockTimer();
+      clearTouchSettleTimer();
+      touchLiftListenersRef.current?.abort();
     };
-  }, [clearUserScrollLockTimer]);
+  }, [clearTouchSettleTimer, clearUserScrollLockTimer]);
 
   const sharedState = useMemo<TimelineRowSharedState>(
     () => ({
@@ -1456,12 +1583,14 @@ export const MessagesTimeline = memo(function MessagesTimeline({
             keyExtractor={keyExtractor}
             renderItem={renderItem}
             estimatedItemSize={90}
+            getEstimatedItemSize={getEstimatedItemSize}
             initialScrollAtEnd={searchTargetRowIndex < 0}
             {...(searchTargetRowIndex >= 0
               ? { initialScrollIndex: { index: searchTargetRowIndex, viewPosition: 0.35 } }
               : {})}
             maintainScrollAtEnd={
-              searchTargetRowIndex < 0 && (autoStickToBottom || stickToBottomRequestPending)
+              searchTargetRowIndex < 0 &&
+              ((autoStickToBottom && !touchScrollActive) || stickToBottomRequestPending)
                 ? MAINTAIN_SCROLL_AT_END
                 : false
             }
@@ -2621,18 +2750,6 @@ function ProposedPlanTimelineRow({
   );
 }
 
-/** Shared auto-collapse mechanics for long chat content: user messages and
- *  subagent results use the same threshold shape and bottom fade. */
-function shouldCollapseMessageText(
-  text: string,
-  limits: { maxLength: number; maxLines: number },
-): boolean {
-  if (text.trim().length === 0) {
-    return false;
-  }
-  return text.length > limits.maxLength || text.split("\n").length > limits.maxLines;
-}
-
 const COLLAPSED_MESSAGE_FADE_HEIGHT_REM = 1.75;
 const COLLAPSED_MESSAGE_FADE_MASK = `linear-gradient(to bottom, black calc(100% - ${COLLAPSED_MESSAGE_FADE_HEIGHT_REM}rem), transparent)`;
 const COLLAPSED_MESSAGE_FADE_STYLE: CSSProperties = {
@@ -3548,16 +3665,6 @@ const UserMessageDrawingInlineLabel = memo(function UserMessageDrawingInlineLabe
     </Popover>
   );
 });
-
-const MAX_COLLAPSED_USER_MESSAGE_LINES = 8;
-const MAX_COLLAPSED_USER_MESSAGE_LENGTH = 600;
-
-function shouldCollapseUserMessage(text: string): boolean {
-  return shouldCollapseMessageText(text, {
-    maxLength: MAX_COLLAPSED_USER_MESSAGE_LENGTH,
-    maxLines: MAX_COLLAPSED_USER_MESSAGE_LINES,
-  });
-}
 
 const CollapsibleUserMessageBody = memo(function CollapsibleUserMessageBody(props: {
   text: string;

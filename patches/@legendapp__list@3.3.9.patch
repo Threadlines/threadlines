@@ -1,8 +1,40 @@
+diff --git a/react-native.web.d.ts b/react-native.web.d.ts
+index c424d3ce576ea8205713d2e34bc5c0ad6de34db9..9f2abe8b8ec7fc4bbbefad87768591eb7dd9ddaa 100644
+--- a/react-native.web.d.ts
++++ b/react-native.web.d.ts
+@@ -224,6 +224,11 @@ interface LegendListSpecificProps<ItemT, TItemType extends string | undefined> {
+      * In case items always have a fixed size, you can provide a function to return it.
+      */
+     getFixedItemSize?: (item: ItemT, index: number, type: TItemType) => number | undefined;
++    /**
++     * Estimates the size of an item that has not been measured yet, in place of the running
++     * average of measured items. Return undefined to fall back to the average.
++     */
++    getEstimatedItemSize?: (item: ItemT, index: number, type: TItemType) => number | undefined;
+     /**
+      * Returns a stable item type used for pooling and size estimation.
+      */
 diff --git a/react-native.web.js b/react-native.web.js
-index 5b7b716e1edb046cbb6386b417490fab793f666b..f74949a9df38b2f1b757c5c881945de91c2a7ff7 100644
+index 5b7b716e1edb046cbb6386b417490fab793f666b..34b79d7de27f5ae9e4f4b6fc4a8879c5d705560f 100644
 --- a/react-native.web.js
 +++ b/react-native.web.js
-@@ -1523,8 +1523,27 @@ function finishMaintainScrollAtEnd(ctx) {
+@@ -1223,6 +1223,15 @@ function getItemSize(ctx, key, index, data, useAverageSize, preferCachedSize, no
+     return size;
+   }
+   const itemType = (_b = resolved == null ? void 0 : resolved.itemType) != null ? _b : getItemType ? (_a3 = getItemType(data, index)) != null ? _a3 : "" : "";
++  // A caller's estimate for an item that has not been measured beats the running
++  // average, which lets one tall kind of row inflate every guess for a short one.
++  const getEstimatedItemSize = state.props.getEstimatedItemSize;
++  const estimatedForItem = getEstimatedItemSize ? getEstimatedItemSize(data, index, itemType) : void 0;
++  if (typeof estimatedForItem === "number" && Number.isFinite(estimatedForItem)) {
++    size = roundSize(estimatedForItem) + ctx.scrollAxisGap;
++    setSize(ctx, key, size, notifyTotalSize);
++    return size;
++  }
+   if (useAverageSize && !scrollingTo) {
+     const averageSizeForType = (_c = averageSizes[itemType]) == null ? void 0 : _c.avg;
+     if (averageSizeForType !== void 0) {
+@@ -1523,8 +1532,27 @@ function finishMaintainScrollAtEnd(ctx) {
      requestAdjust(ctx, nextScroll - state.scroll);
    }
  }
@@ -30,7 +62,7 @@ index 5b7b716e1edb046cbb6386b417490fab793f666b..f74949a9df38b2f1b757c5c881945de9
    const {
      didContainersLayout,
      didFinishInitialScroll,
-@@ -1747,6 +1766,18 @@ function prepareMVCP(ctx, dataChanged, adjustmentSource) {
+@@ -1747,6 +1775,18 @@ function prepareMVCP(ctx, dataChanged, adjustmentSource) {
    const shouldMVCP = dataChanged ? mvcpData : mvcpScroll;
    const indexByKey = state.indexByKey;
    const prevScroll = state.scroll;
@@ -49,7 +81,7 @@ index 5b7b716e1edb046cbb6386b417490fab793f666b..f74949a9df38b2f1b757c5c881945de9
    getContentSize(ctx);
    if (shouldMVCP) {
      if (anchorLock && scrollTarget === void 0) {
-@@ -1754,12 +1785,12 @@ function prepareMVCP(ctx, dataChanged, adjustmentSource) {
+@@ -1754,12 +1794,12 @@ function prepareMVCP(ctx, dataChanged, adjustmentSource) {
        prevPosition = anchorLock.position;
      } else if (scrollTarget !== void 0) {
        targetId = getId(state, scrollTarget);
@@ -67,7 +99,7 @@ index 5b7b716e1edb046cbb6386b417490fab793f666b..f74949a9df38b2f1b757c5c881945de9
          const index = indexByKey.get(id);
          if (index !== void 0) {
            const position = positions[index];
-@@ -6338,7 +6369,19 @@ var ListComponentScrollView = React3.forwardRef(function ListComponentScrollView
+@@ -6338,7 +6378,19 @@ var ListComponentScrollView = React3.forwardRef(function ListComponentScrollView
      if ("onscrollend" in target) {
        target.addEventListener("scrollend", emitScrollEnd);
      }
@@ -87,7 +119,7 @@ index 5b7b716e1edb046cbb6386b417490fab793f666b..f74949a9df38b2f1b757c5c881945de9
        target.removeEventListener("scroll", handleScroll);
        if ("onscrollend" in target) {
          target.removeEventListener("scrollend", emitScrollEnd);
-@@ -6560,8 +6603,11 @@ function ScrollAdjust() {
+@@ -6560,8 +6612,11 @@ function ScrollAdjust() {
                window.getComputedStyle(contentNode)[axis.paddingEndProp]
              );
              const temporaryPaddingEnd = `${(currentPaddingEnd || 0) + pad}px`;
@@ -100,11 +132,43 @@ index 5b7b716e1edb046cbb6386b417490fab793f666b..f74949a9df38b2f1b757c5c881945de9
              void contentNode.offsetHeight;
              scrollBy();
              if (resetPaddingRafRef.current !== void 0) {
+@@ -7848,6 +7903,7 @@ var LegendListInner = typedForwardRef(function LegendListInner2(props, forwarded
+     estimatedListSize,
+     extraData,
+     getFixedItemSize,
++    getEstimatedItemSize,
+     getItemType,
+     horizontal,
+     rtl,
+@@ -8122,6 +8178,7 @@ var LegendListInner = typedForwardRef(function LegendListInner2(props, forwarded
+     drawDistance,
+     estimatedItemSize,
+     getFixedItemSize: useWrapIfItem(getFixedItemSize),
++    getEstimatedItemSize: useWrapIfItem(getEstimatedItemSize),
+     getItemType: useWrapIfItem(getItemType),
+     hideItemsUntilMeasured: experimental_hideItemsUntilMeasured,
+     horizontal: !!horizontal,
 diff --git a/react-native.web.mjs b/react-native.web.mjs
-index f64169616ea5d761bf82a562084e04f2b98ce7c2..ffc959e9c44d736c6850b82b3ca09a12c1ee54d4 100644
+index f64169616ea5d761bf82a562084e04f2b98ce7c2..cf1641c53490ae116a767ba63192887d9c6542e5 100644
 --- a/react-native.web.mjs
 +++ b/react-native.web.mjs
-@@ -1502,8 +1502,27 @@ function finishMaintainScrollAtEnd(ctx) {
+@@ -1202,6 +1202,15 @@ function getItemSize(ctx, key, index, data, useAverageSize, preferCachedSize, no
+     return size;
+   }
+   const itemType = (_b = resolved == null ? void 0 : resolved.itemType) != null ? _b : getItemType ? (_a3 = getItemType(data, index)) != null ? _a3 : "" : "";
++  // A caller's estimate for an item that has not been measured beats the running
++  // average, which lets one tall kind of row inflate every guess for a short one.
++  const getEstimatedItemSize = state.props.getEstimatedItemSize;
++  const estimatedForItem = getEstimatedItemSize ? getEstimatedItemSize(data, index, itemType) : void 0;
++  if (typeof estimatedForItem === "number" && Number.isFinite(estimatedForItem)) {
++    size = roundSize(estimatedForItem) + ctx.scrollAxisGap;
++    setSize(ctx, key, size, notifyTotalSize);
++    return size;
++  }
+   if (useAverageSize && !scrollingTo) {
+     const averageSizeForType = (_c = averageSizes[itemType]) == null ? void 0 : _c.avg;
+     if (averageSizeForType !== void 0) {
+@@ -1502,8 +1511,27 @@ function finishMaintainScrollAtEnd(ctx) {
      requestAdjust(ctx, nextScroll - state.scroll);
    }
  }
@@ -132,7 +196,7 @@ index f64169616ea5d761bf82a562084e04f2b98ce7c2..ffc959e9c44d736c6850b82b3ca09a12
    const {
      didContainersLayout,
      didFinishInitialScroll,
-@@ -1726,6 +1745,18 @@ function prepareMVCP(ctx, dataChanged, adjustmentSource) {
+@@ -1726,6 +1754,18 @@ function prepareMVCP(ctx, dataChanged, adjustmentSource) {
    const shouldMVCP = dataChanged ? mvcpData : mvcpScroll;
    const indexByKey = state.indexByKey;
    const prevScroll = state.scroll;
@@ -151,7 +215,7 @@ index f64169616ea5d761bf82a562084e04f2b98ce7c2..ffc959e9c44d736c6850b82b3ca09a12
    getContentSize(ctx);
    if (shouldMVCP) {
      if (anchorLock && scrollTarget === void 0) {
-@@ -1733,12 +1764,12 @@ function prepareMVCP(ctx, dataChanged, adjustmentSource) {
+@@ -1733,12 +1773,12 @@ function prepareMVCP(ctx, dataChanged, adjustmentSource) {
        prevPosition = anchorLock.position;
      } else if (scrollTarget !== void 0) {
        targetId = getId(state, scrollTarget);
@@ -169,7 +233,7 @@ index f64169616ea5d761bf82a562084e04f2b98ce7c2..ffc959e9c44d736c6850b82b3ca09a12
          const index = indexByKey.get(id);
          if (index !== void 0) {
            const position = positions[index];
-@@ -6317,7 +6348,19 @@ var ListComponentScrollView = forwardRef(function ListComponentScrollView2({
+@@ -6317,7 +6357,19 @@ var ListComponentScrollView = forwardRef(function ListComponentScrollView2({
      if ("onscrollend" in target) {
        target.addEventListener("scrollend", emitScrollEnd);
      }
@@ -189,7 +253,7 @@ index f64169616ea5d761bf82a562084e04f2b98ce7c2..ffc959e9c44d736c6850b82b3ca09a12
        target.removeEventListener("scroll", handleScroll);
        if ("onscrollend" in target) {
          target.removeEventListener("scrollend", emitScrollEnd);
-@@ -6539,8 +6582,11 @@ function ScrollAdjust() {
+@@ -6539,8 +6591,11 @@ function ScrollAdjust() {
                window.getComputedStyle(contentNode)[axis.paddingEndProp]
              );
              const temporaryPaddingEnd = `${(currentPaddingEnd || 0) + pad}px`;
@@ -202,11 +266,59 @@ index f64169616ea5d761bf82a562084e04f2b98ce7c2..ffc959e9c44d736c6850b82b3ca09a12
              void contentNode.offsetHeight;
              scrollBy();
              if (resetPaddingRafRef.current !== void 0) {
+@@ -7827,6 +7882,7 @@ var LegendListInner = typedForwardRef(function LegendListInner2(props, forwarded
+     estimatedListSize,
+     extraData,
+     getFixedItemSize,
++    getEstimatedItemSize,
+     getItemType,
+     horizontal,
+     rtl,
+@@ -8101,6 +8157,7 @@ var LegendListInner = typedForwardRef(function LegendListInner2(props, forwarded
+     drawDistance,
+     estimatedItemSize,
+     getFixedItemSize: useWrapIfItem(getFixedItemSize),
++    getEstimatedItemSize: useWrapIfItem(getEstimatedItemSize),
+     getItemType: useWrapIfItem(getItemType),
+     hideItemsUntilMeasured: experimental_hideItemsUntilMeasured,
+     horizontal: !!horizontal,
+diff --git a/react.d.ts b/react.d.ts
+index c424d3ce576ea8205713d2e34bc5c0ad6de34db9..9f2abe8b8ec7fc4bbbefad87768591eb7dd9ddaa 100644
+--- a/react.d.ts
++++ b/react.d.ts
+@@ -224,6 +224,11 @@ interface LegendListSpecificProps<ItemT, TItemType extends string | undefined> {
+      * In case items always have a fixed size, you can provide a function to return it.
+      */
+     getFixedItemSize?: (item: ItemT, index: number, type: TItemType) => number | undefined;
++    /**
++     * Estimates the size of an item that has not been measured yet, in place of the running
++     * average of measured items. Return undefined to fall back to the average.
++     */
++    getEstimatedItemSize?: (item: ItemT, index: number, type: TItemType) => number | undefined;
+     /**
+      * Returns a stable item type used for pooling and size estimation.
+      */
 diff --git a/react.js b/react.js
-index 5b7b716e1edb046cbb6386b417490fab793f666b..f74949a9df38b2f1b757c5c881945de91c2a7ff7 100644
+index 5b7b716e1edb046cbb6386b417490fab793f666b..34b79d7de27f5ae9e4f4b6fc4a8879c5d705560f 100644
 --- a/react.js
 +++ b/react.js
-@@ -1523,8 +1523,27 @@ function finishMaintainScrollAtEnd(ctx) {
+@@ -1223,6 +1223,15 @@ function getItemSize(ctx, key, index, data, useAverageSize, preferCachedSize, no
+     return size;
+   }
+   const itemType = (_b = resolved == null ? void 0 : resolved.itemType) != null ? _b : getItemType ? (_a3 = getItemType(data, index)) != null ? _a3 : "" : "";
++  // A caller's estimate for an item that has not been measured beats the running
++  // average, which lets one tall kind of row inflate every guess for a short one.
++  const getEstimatedItemSize = state.props.getEstimatedItemSize;
++  const estimatedForItem = getEstimatedItemSize ? getEstimatedItemSize(data, index, itemType) : void 0;
++  if (typeof estimatedForItem === "number" && Number.isFinite(estimatedForItem)) {
++    size = roundSize(estimatedForItem) + ctx.scrollAxisGap;
++    setSize(ctx, key, size, notifyTotalSize);
++    return size;
++  }
+   if (useAverageSize && !scrollingTo) {
+     const averageSizeForType = (_c = averageSizes[itemType]) == null ? void 0 : _c.avg;
+     if (averageSizeForType !== void 0) {
+@@ -1523,8 +1532,27 @@ function finishMaintainScrollAtEnd(ctx) {
      requestAdjust(ctx, nextScroll - state.scroll);
    }
  }
@@ -234,7 +346,7 @@ index 5b7b716e1edb046cbb6386b417490fab793f666b..f74949a9df38b2f1b757c5c881945de9
    const {
      didContainersLayout,
      didFinishInitialScroll,
-@@ -1747,6 +1766,18 @@ function prepareMVCP(ctx, dataChanged, adjustmentSource) {
+@@ -1747,6 +1775,18 @@ function prepareMVCP(ctx, dataChanged, adjustmentSource) {
    const shouldMVCP = dataChanged ? mvcpData : mvcpScroll;
    const indexByKey = state.indexByKey;
    const prevScroll = state.scroll;
@@ -253,7 +365,7 @@ index 5b7b716e1edb046cbb6386b417490fab793f666b..f74949a9df38b2f1b757c5c881945de9
    getContentSize(ctx);
    if (shouldMVCP) {
      if (anchorLock && scrollTarget === void 0) {
-@@ -1754,12 +1785,12 @@ function prepareMVCP(ctx, dataChanged, adjustmentSource) {
+@@ -1754,12 +1794,12 @@ function prepareMVCP(ctx, dataChanged, adjustmentSource) {
        prevPosition = anchorLock.position;
      } else if (scrollTarget !== void 0) {
        targetId = getId(state, scrollTarget);
@@ -271,7 +383,7 @@ index 5b7b716e1edb046cbb6386b417490fab793f666b..f74949a9df38b2f1b757c5c881945de9
          const index = indexByKey.get(id);
          if (index !== void 0) {
            const position = positions[index];
-@@ -6338,7 +6369,19 @@ var ListComponentScrollView = React3.forwardRef(function ListComponentScrollView
+@@ -6338,7 +6378,19 @@ var ListComponentScrollView = React3.forwardRef(function ListComponentScrollView
      if ("onscrollend" in target) {
        target.addEventListener("scrollend", emitScrollEnd);
      }
@@ -291,7 +403,7 @@ index 5b7b716e1edb046cbb6386b417490fab793f666b..f74949a9df38b2f1b757c5c881945de9
        target.removeEventListener("scroll", handleScroll);
        if ("onscrollend" in target) {
          target.removeEventListener("scrollend", emitScrollEnd);
-@@ -6560,8 +6603,11 @@ function ScrollAdjust() {
+@@ -6560,8 +6612,11 @@ function ScrollAdjust() {
                window.getComputedStyle(contentNode)[axis.paddingEndProp]
              );
              const temporaryPaddingEnd = `${(currentPaddingEnd || 0) + pad}px`;
@@ -304,11 +416,43 @@ index 5b7b716e1edb046cbb6386b417490fab793f666b..f74949a9df38b2f1b757c5c881945de9
              void contentNode.offsetHeight;
              scrollBy();
              if (resetPaddingRafRef.current !== void 0) {
+@@ -7848,6 +7903,7 @@ var LegendListInner = typedForwardRef(function LegendListInner2(props, forwarded
+     estimatedListSize,
+     extraData,
+     getFixedItemSize,
++    getEstimatedItemSize,
+     getItemType,
+     horizontal,
+     rtl,
+@@ -8122,6 +8178,7 @@ var LegendListInner = typedForwardRef(function LegendListInner2(props, forwarded
+     drawDistance,
+     estimatedItemSize,
+     getFixedItemSize: useWrapIfItem(getFixedItemSize),
++    getEstimatedItemSize: useWrapIfItem(getEstimatedItemSize),
+     getItemType: useWrapIfItem(getItemType),
+     hideItemsUntilMeasured: experimental_hideItemsUntilMeasured,
+     horizontal: !!horizontal,
 diff --git a/react.mjs b/react.mjs
-index f64169616ea5d761bf82a562084e04f2b98ce7c2..ffc959e9c44d736c6850b82b3ca09a12c1ee54d4 100644
+index f64169616ea5d761bf82a562084e04f2b98ce7c2..cf1641c53490ae116a767ba63192887d9c6542e5 100644
 --- a/react.mjs
 +++ b/react.mjs
-@@ -1502,8 +1502,27 @@ function finishMaintainScrollAtEnd(ctx) {
+@@ -1202,6 +1202,15 @@ function getItemSize(ctx, key, index, data, useAverageSize, preferCachedSize, no
+     return size;
+   }
+   const itemType = (_b = resolved == null ? void 0 : resolved.itemType) != null ? _b : getItemType ? (_a3 = getItemType(data, index)) != null ? _a3 : "" : "";
++  // A caller's estimate for an item that has not been measured beats the running
++  // average, which lets one tall kind of row inflate every guess for a short one.
++  const getEstimatedItemSize = state.props.getEstimatedItemSize;
++  const estimatedForItem = getEstimatedItemSize ? getEstimatedItemSize(data, index, itemType) : void 0;
++  if (typeof estimatedForItem === "number" && Number.isFinite(estimatedForItem)) {
++    size = roundSize(estimatedForItem) + ctx.scrollAxisGap;
++    setSize(ctx, key, size, notifyTotalSize);
++    return size;
++  }
+   if (useAverageSize && !scrollingTo) {
+     const averageSizeForType = (_c = averageSizes[itemType]) == null ? void 0 : _c.avg;
+     if (averageSizeForType !== void 0) {
+@@ -1502,8 +1511,27 @@ function finishMaintainScrollAtEnd(ctx) {
      requestAdjust(ctx, nextScroll - state.scroll);
    }
  }
@@ -336,7 +480,7 @@ index f64169616ea5d761bf82a562084e04f2b98ce7c2..ffc959e9c44d736c6850b82b3ca09a12
    const {
      didContainersLayout,
      didFinishInitialScroll,
-@@ -1726,6 +1745,18 @@ function prepareMVCP(ctx, dataChanged, adjustmentSource) {
+@@ -1726,6 +1754,18 @@ function prepareMVCP(ctx, dataChanged, adjustmentSource) {
    const shouldMVCP = dataChanged ? mvcpData : mvcpScroll;
    const indexByKey = state.indexByKey;
    const prevScroll = state.scroll;
@@ -355,7 +499,7 @@ index f64169616ea5d761bf82a562084e04f2b98ce7c2..ffc959e9c44d736c6850b82b3ca09a12
    getContentSize(ctx);
    if (shouldMVCP) {
      if (anchorLock && scrollTarget === void 0) {
-@@ -1733,12 +1764,12 @@ function prepareMVCP(ctx, dataChanged, adjustmentSource) {
+@@ -1733,12 +1773,12 @@ function prepareMVCP(ctx, dataChanged, adjustmentSource) {
        prevPosition = anchorLock.position;
      } else if (scrollTarget !== void 0) {
        targetId = getId(state, scrollTarget);
@@ -373,7 +517,7 @@ index f64169616ea5d761bf82a562084e04f2b98ce7c2..ffc959e9c44d736c6850b82b3ca09a12
          const index = indexByKey.get(id);
          if (index !== void 0) {
            const position = positions[index];
-@@ -6317,7 +6348,19 @@ var ListComponentScrollView = forwardRef(function ListComponentScrollView2({
+@@ -6317,7 +6357,19 @@ var ListComponentScrollView = forwardRef(function ListComponentScrollView2({
      if ("onscrollend" in target) {
        target.addEventListener("scrollend", emitScrollEnd);
      }
@@ -393,7 +537,7 @@ index f64169616ea5d761bf82a562084e04f2b98ce7c2..ffc959e9c44d736c6850b82b3ca09a12
        target.removeEventListener("scroll", handleScroll);
        if ("onscrollend" in target) {
          target.removeEventListener("scrollend", emitScrollEnd);
-@@ -6539,8 +6582,11 @@ function ScrollAdjust() {
+@@ -6539,8 +6591,11 @@ function ScrollAdjust() {
                window.getComputedStyle(contentNode)[axis.paddingEndProp]
              );
              const temporaryPaddingEnd = `${(currentPaddingEnd || 0) + pad}px`;
@@ -406,3 +550,19 @@ index f64169616ea5d761bf82a562084e04f2b98ce7c2..ffc959e9c44d736c6850b82b3ca09a12
              void contentNode.offsetHeight;
              scrollBy();
              if (resetPaddingRafRef.current !== void 0) {
+@@ -7827,6 +7882,7 @@ var LegendListInner = typedForwardRef(function LegendListInner2(props, forwarded
+     estimatedListSize,
+     extraData,
+     getFixedItemSize,
++    getEstimatedItemSize,
+     getItemType,
+     horizontal,
+     rtl,
+@@ -8101,6 +8157,7 @@ var LegendListInner = typedForwardRef(function LegendListInner2(props, forwarded
+     drawDistance,
+     estimatedItemSize,
+     getFixedItemSize: useWrapIfItem(getFixedItemSize),
++    getEstimatedItemSize: useWrapIfItem(getEstimatedItemSize),
+     getItemType: useWrapIfItem(getItemType),
+     hideItemsUntilMeasured: experimental_hideItemsUntilMeasured,
+     horizontal: !!horizontal,
