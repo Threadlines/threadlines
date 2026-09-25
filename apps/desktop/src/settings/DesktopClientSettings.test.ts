@@ -26,6 +26,7 @@ const clientSettings: ClientSettings = {
   diffRenderMode: "stacked",
   diffWordWrap: true,
   fileViewerWordWrap: false,
+  followUpDelivery: "steer",
   favorites: [],
   providerModelPreferences: {},
   suppressCrossProviderSwitchWarning: false,

@@ -861,17 +861,25 @@ export function buildProjectScopeOptions(input: {
  * a wall of two-line rows buries the ones that matter. Rows with a status are
  * exempt from the fold entirely: hiding a pending approval behind "show more"
  * defeats the approval, and hiding running work hides where its result will
- * land. Order is never changed, only membership.
+ * land. Pinned rows always show and take no seat from the limit: a pin says
+ * "keep this in view", not "hide something else". Order is never changed,
+ * only membership.
  */
 export function windowInboxThreads<T>(input: {
   readonly rows: readonly T[];
   readonly hasAttention: (row: T) => boolean;
+  readonly isPinned: (row: T) => boolean;
   readonly limit: number;
   readonly expanded: boolean;
 }): { readonly visible: T[]; readonly hiddenCount: number } {
-  if (input.expanded || input.rows.length <= input.limit) {
+  if (input.expanded) {
     return { visible: [...input.rows], hiddenCount: 0 };
   }
-  const visible = input.rows.filter((row, index) => index < input.limit || input.hasAttention(row));
+  let seatsTaken = 0;
+  const visible = input.rows.filter((row) => {
+    if (input.isPinned(row)) return true;
+    seatsTaken += 1;
+    return seatsTaken <= input.limit || input.hasAttention(row);
+  });
   return { visible, hiddenCount: input.rows.length - visible.length };
 }

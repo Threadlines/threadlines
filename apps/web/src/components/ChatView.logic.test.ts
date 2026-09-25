@@ -2443,6 +2443,7 @@ describe("reconcileSteeringHandoffStatuses", () => {
       },
       serverMessageIds: new Set([queuedMessage.id]),
       failedMessageIds: new Set(),
+      queuedMessageIds: new Set(),
     });
 
     expect(next[queuedMessage.id]?.status).toBe("read");
@@ -2461,6 +2462,7 @@ describe("reconcileSteeringHandoffStatuses", () => {
       },
       serverMessageIds: new Set(),
       failedMessageIds: new Set(),
+      queuedMessageIds: new Set(),
     });
 
     expect(next).toBe(messagesById);
@@ -2480,6 +2482,20 @@ describe("reconcileSteeringHandoffStatuses", () => {
       },
       serverMessageIds: new Set(),
       failedMessageIds: new Set([queuedMessage.id]),
+      queuedMessageIds: new Set(),
+    });
+
+    expect(next[queuedMessage.id]).toBeUndefined();
+  });
+
+  it("drops a steering handoff the server queued for the next turn", () => {
+    const next = reconcileSteeringHandoffStatuses({
+      messagesById: { [queuedMessage.id]: queuedMessage },
+      activeThreadKey: queuedMessage.threadKey,
+      latestTurn: { requestedAt: "2026-03-29T00:00:00.000Z" },
+      serverMessageIds: new Set(),
+      failedMessageIds: new Set(),
+      queuedMessageIds: new Set([queuedMessage.id]),
     });
 
     expect(next[queuedMessage.id]).toBeUndefined();

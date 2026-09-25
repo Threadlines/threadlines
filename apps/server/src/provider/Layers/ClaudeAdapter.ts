@@ -464,7 +464,10 @@ interface ClaudeSessionContext {
 }
 
 interface ClaudeQueryRuntime extends AsyncIterable<SDKMessage> {
-  readonly interrupt: () => Promise<void>;
+  /** `cancelQueued` is honored by the SDK at runtime but missing from its
+   *  typings; CLIs without the `interrupt_cancel_queued_v1` capability
+   *  ignore it. */
+  readonly interrupt: (options?: { readonly cancelQueued?: boolean }) => Promise<unknown>;
   readonly setModel: (model?: string) => Promise<void>;
   readonly setPermissionMode: (mode: PermissionMode) => Promise<void>;
   readonly setMaxThinkingTokens: (maxThinkingTokens: number | null) => Promise<void>;
@@ -697,7 +700,20 @@ function resultErrorsText(result: SDKResultMessage): string {
     : "";
 }
 
+/**
+ * Current CLIs mark a stopped turn with an aborted `terminal_reason` and
+ * report it as a failed `error_during_execution` whose only error is an
+ * `[ede_diagnostic]` line. Older CLIs have no `terminal_reason` and are
+ * recognized by their abort error text instead.
+ */
 function isInterruptedResult(result: SDKResultMessage): boolean {
+  if (
+    result.terminal_reason === "aborted_streaming" ||
+    result.terminal_reason === "aborted_tools"
+  ) {
+    return true;
+  }
+
   const errors = resultErrorsText(result);
   if (errors.includes("interrupt")) {
     return true;
@@ -710,6 +726,17 @@ function isInterruptedResult(result: SDKResultMessage): boolean {
       errors.includes("interrupted by user") ||
       errors.includes("aborted"))
   );
+}
+
+/**
+ * The first error worth showing a user. `[ede_diagnostic]` lines are CLI
+ * bookkeeping that Claude's own clients strip before display.
+ */
+function resultDisplayError(result: SDKResultMessage): string | undefined {
+  if (result.subtype === "success") {
+    return undefined;
+  }
+  return result.errors.find((error) => !error.startsWith("[ede_diagnostic]"));
 }
 
 function asRuntimeItemId(value: string): RuntimeItemId {
@@ -3831,6 +3858,57 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     });
   });
 
+  /**
+   * Opens a turn for model output that arrives while none is active. Claude
+   * starts turns of its own: a message sent while it was writing its final
+   * answer runs as a new turn once that answer ends, and a background agent
+   * finishing wakes it too. Opening the turn on the first streamed event,
+   * rather than on the first whole message, keeps the thread from reading as
+   * finished while Claude thinks, and lets that output stream live.
+   */
+  const ensureSyntheticTurn = Effect.fnUntraced(function* (context: ClaudeSessionContext) {
+    if (context.turnState) {
+      return;
+    }
+    const turnId = TurnId.make(yield* randomUUIDv4);
+    const startedAt = yield* nowIso;
+    context.turnState = {
+      turnId,
+      startedAt,
+      items: [],
+      assistantTextBlocks: new Map(),
+      assistantTextBlockOrder: [],
+      thinkingBlocks: new Map(),
+      capturedProposedPlanKeys: new Set(),
+      nextSyntheticAssistantBlockIndex: -1,
+    };
+    context.session = {
+      ...context.session,
+      status: "running",
+      activeTurnId: turnId,
+      updatedAt: startedAt,
+    };
+    const turnStartedStamp = yield* makeEventStamp();
+    yield* offerRuntimeEvent({
+      type: "turn.started",
+      eventId: turnStartedStamp.eventId,
+      provider: PROVIDER,
+      createdAt: turnStartedStamp.createdAt,
+      threadId: context.session.threadId,
+      turnId,
+      payload: {},
+      providerRefs: {
+        ...nativeProviderRefs(context),
+        providerTurnId: turnId,
+      },
+      raw: {
+        source: "claude.sdk.message",
+        method: "claude/synthetic-turn-start",
+        payload: {},
+      },
+    });
+  });
+
   const handleStreamEvent = Effect.fn("handleStreamEvent")(function* (
     context: ClaudeSessionContext,
     message: SDKMessage,
@@ -3838,6 +3916,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     if (message.type !== "stream_event") {
       return;
     }
+
+    yield* ensureSyntheticTurn(context);
 
     const { event } = message;
 
@@ -4964,47 +5044,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       yield* options.onChatAuthStateChanged("verified").pipe(Effect.ignoreCause({ log: true }));
     }
 
-    // Auto-start a synthetic turn for assistant messages that arrive without
-    // an active turn (e.g., background agent/subagent responses between user prompts).
-    if (!context.turnState) {
-      const turnId = TurnId.make(yield* randomUUIDv4);
-      const startedAt = yield* nowIso;
-      context.turnState = {
-        turnId,
-        startedAt,
-        items: [],
-        assistantTextBlocks: new Map(),
-        assistantTextBlockOrder: [],
-        thinkingBlocks: new Map(),
-        capturedProposedPlanKeys: new Set(),
-        nextSyntheticAssistantBlockIndex: -1,
-      };
-      context.session = {
-        ...context.session,
-        status: "running",
-        activeTurnId: turnId,
-        updatedAt: startedAt,
-      };
-      const turnStartedStamp = yield* makeEventStamp();
-      yield* offerRuntimeEvent({
-        type: "turn.started",
-        eventId: turnStartedStamp.eventId,
-        provider: PROVIDER,
-        createdAt: turnStartedStamp.createdAt,
-        threadId: context.session.threadId,
-        turnId,
-        payload: {},
-        providerRefs: {
-          ...nativeProviderRefs(context),
-          providerTurnId: turnId,
-        },
-        raw: {
-          source: "claude.sdk.message",
-          method: "claude/synthetic-turn-start",
-          payload: {},
-        },
-      });
-    }
+    yield* ensureSyntheticTurn(context);
 
     const content = message.message?.content;
     if (Array.isArray(content)) {
@@ -5076,7 +5116,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     }
 
     const status = turnStatusFromResult(message);
-    const errorMessage = message.subtype === "success" ? undefined : message.errors[0];
+    const errorMessage = resultDisplayError(message);
 
     if (status === "failed") {
       yield* emitRuntimeError(context, errorMessage ?? "Claude turn failed.");
@@ -7185,11 +7225,14 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     };
   });
 
+  // Stop means stop everything: follow-ups steered into the running turn wait
+  // in the CLI's queue, and a plain interrupt would start them as a new turn
+  // right after the stopped one.
   const interruptTurn: ClaudeAdapterShape["interruptTurn"] = Effect.fn("interruptTurn")(
     function* (threadId, _turnId) {
       const context = yield* requireSession(threadId);
       yield* Effect.tryPromise({
-        try: () => context.query.interrupt(),
+        try: () => context.query.interrupt({ cancelQueued: true }),
         catch: (cause) => toRequestError(threadId, "turn/interrupt", cause),
       });
     },

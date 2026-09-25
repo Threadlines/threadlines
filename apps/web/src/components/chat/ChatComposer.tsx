@@ -2,6 +2,7 @@ import type {
   ApprovalRequestId,
   ChatSkillReference,
   EnvironmentId,
+  FollowUpDelivery,
   ModelSelection,
   OrchestrationThreadGoal,
   ProjectEntry,
@@ -110,7 +111,12 @@ import { ComposerPendingApprovalActions } from "./ComposerPendingApprovalActions
 import { CompactComposerControlsMenu } from "./CompactComposerControlsMenu";
 import { ComposerAttachmentMenu } from "./ComposerAttachmentMenu";
 import { ComposerStashControl } from "./ComposerStashControl";
-import { ComposerPrimaryActions, ComposerStopButton } from "./ComposerPrimaryActions";
+import {
+  ComposerPrimaryActions,
+  ComposerStopButton,
+  FOLLOW_UP_DELIVERY_LABELS,
+} from "./ComposerPrimaryActions";
+import { useSettings, useUpdateSettings } from "../../hooks/useSettings";
 import { ComposerPendingApprovalPanel } from "./ComposerPendingApprovalPanel";
 import { ComposerPendingUserInputPanel } from "./ComposerPendingUserInputPanel";
 import { ComposerGoalBar, type ComposerGoalSetInput } from "./ComposerGoalBar";
@@ -396,6 +402,8 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
   runtimeMode: RuntimeMode;
   runtimeModeOptions: ReadonlyArray<RuntimeModeOption>;
   onRuntimeModeChange: (mode: RuntimeMode) => void;
+  followUpDelivery: FollowUpDelivery;
+  onFollowUpDeliveryChange: (delivery: FollowUpDelivery) => void;
   onInterrupt: () => void;
   onImplementPlanInNewThread: () => void;
   onResetAccountUsage?: (() => void) | undefined;
@@ -435,6 +443,8 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
         runtimeMode={props.runtimeMode}
         runtimeModeOptions={props.runtimeModeOptions}
         onRuntimeModeChange={props.onRuntimeModeChange}
+        followUpDelivery={props.followUpDelivery}
+        onFollowUpDeliveryChange={props.onFollowUpDeliveryChange}
         onInterrupt={props.onInterrupt}
         onImplementPlanInNewThread={props.onImplementPlanInNewThread}
       />
@@ -1508,8 +1518,14 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   });
   const collapsedComposerPrimaryActionDisabled =
     isSendBusy || isConnecting || !composerSendState.hasSendableContent;
+  const followUpDelivery = useSettings((settings) => settings.followUpDelivery);
+  const { updateSettings } = useUpdateSettings();
+  const handleFollowUpDeliveryChange = useCallback(
+    (delivery: FollowUpDelivery) => updateSettings({ followUpDelivery: delivery }),
+    [updateSettings],
+  );
   const collapsedComposerPrimaryActionLabel =
-    phase === "running" ? "Steer active turn" : "Send message";
+    phase === "running" ? FOLLOW_UP_DELIVERY_LABELS[followUpDelivery].action : "Send message";
   // Shared gate for every "Add" action (upload + screenshot). The in-flight
   // capture only blocks the screenshot item, not uploading images, so it is
   // handled inside the menu rather than here. Models without image input
@@ -3758,6 +3774,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                       runtimeMode={runtimeMode}
                       runtimeModeOptions={composerProviderControls.runtimeModeOptions}
                       onRuntimeModeChange={handleRuntimeModeChange}
+                      followUpDelivery={followUpDelivery}
+                      onFollowUpDeliveryChange={handleFollowUpDeliveryChange}
                       onInterrupt={handleInterruptPrimaryAction}
                       onImplementPlanInNewThread={handleImplementPlanInNewThreadPrimaryAction}
                       onResetAccountUsage={

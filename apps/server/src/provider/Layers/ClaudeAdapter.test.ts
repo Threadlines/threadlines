@@ -1486,6 +1486,68 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  // A message sent while Claude writes its final answer runs as Claude's own
+  // next turn once that answer ends. The thread must read as busy, and the
+  // reply stream live, from its first streamed event.
+  it.effect("opens a turn as soon as Claude streams output on its own", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const eventsFiber = yield* Stream.filter(
+        adapter.streamEvents,
+        (event) =>
+          event.type === "turn.started" ||
+          event.type === "turn.completed" ||
+          event.type === "content.delta",
+      ).pipe(Stream.take(4), Stream.runCollect, Effect.forkChild);
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      const turn = yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "write it up",
+        attachments: [],
+      });
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        errors: [],
+        session_id: "sdk-session-own-turn",
+        uuid: "result-own-turn",
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "stream_event",
+        session_id: "sdk-session-own-turn",
+        uuid: "stream-own-turn",
+        parent_tool_use_id: null,
+        event: {
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "text_delta", text: "And the follow-up:" },
+        },
+      } as unknown as SDKMessage);
+
+      const events = Array.from(yield* Fiber.join(eventsFiber));
+      assert.deepEqual(
+        events.map((event) => event.type),
+        ["turn.started", "turn.completed", "turn.started", "content.delta"],
+      );
+      const [, , ownTurnStarted, delta] = events;
+      assert.notEqual(ownTurnStarted?.turnId, turn.turnId);
+      assert.equal(delta?.turnId, ownTurnStarted?.turnId);
+      if (delta?.type === "content.delta") {
+        assert.equal(delta.payload.delta, "And the follow-up:");
+      }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("embeds image attachments in Claude user messages", () => {
     const baseDir = mkdtempSync(path.join(os.tmpdir(), "claude-attachments-"));
     const harness = makeHarness({
@@ -3736,6 +3798,60 @@ describe("ClaudeAdapterLive", () => {
       Effect.provide(harness.layer),
     );
   });
+
+  it.effect(
+    "treats an aborted terminal reason as interrupted without surfacing diagnostics",
+    () => {
+      const harness = makeHarness();
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+
+        const runtimeEventsFiber = yield* Stream.take(adapter.streamEvents, 6).pipe(
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+
+        const session = yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          runtimeMode: "full-access",
+        });
+
+        yield* adapter.sendTurn({
+          threadId: session.threadId,
+          input: "hello",
+          attachments: [],
+        });
+
+        // Shape a current CLI reports when Stop lands after a tool result.
+        harness.query.emit({
+          type: "result",
+          subtype: "error_during_execution",
+          is_error: true,
+          errors: ["[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=null"],
+          stop_reason: null,
+          terminal_reason: "aborted_streaming",
+          session_id: "sdk-session-abort",
+          uuid: "result-abort-terminal-reason",
+        } as unknown as SDKMessage);
+
+        const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+        assert.notInclude(
+          runtimeEvents.map((event) => event.type),
+          "runtime.error",
+        );
+        const turnCompleted = runtimeEvents[runtimeEvents.length - 1];
+        assert.equal(turnCompleted?.type, "turn.completed");
+        if (turnCompleted?.type === "turn.completed") {
+          assert.equal(turnCompleted.payload.state, "interrupted");
+          assert.equal(turnCompleted.payload.errorMessage, undefined);
+        }
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    },
+  );
 
   it.effect("closes the session when the Claude stream aborts after a turn starts", () => {
     const harness = makeHarness();

@@ -13,6 +13,7 @@ import type {
   OrchestrationSubagent,
   OrchestrationThreadDiffStat,
   OrchestrationThreadDoneOverride,
+  OrchestrationQueuedFollowUp,
   OrchestrationThreadLinkedPullRequest,
   OrchestrationThreadGoal,
   ProjectKind,
@@ -140,6 +141,8 @@ export interface Thread {
   pullRequestAutoMerge?: PullRequestMergeMethod | null;
   /** See ThreadShell.linkedPullRequests. */
   linkedPullRequests?: readonly OrchestrationThreadLinkedPullRequest[];
+  /** See ThreadShell.queuedFollowUps. */
+  queuedFollowUps?: readonly OrchestrationQueuedFollowUp[];
   /** See ThreadShell.doneOverride. */
   doneOverride: OrchestrationThreadDoneOverride | null;
   /** See ThreadShell.lastSeenAt. */
@@ -200,6 +203,11 @@ export interface ThreadShell {
    * thread, each with its own merge switch. Absent means none.
    */
   linkedPullRequests?: readonly OrchestrationThreadLinkedPullRequest[];
+  /**
+   * Messages waiting for the running turn to finish, oldest first. The
+   * server sends them one turn at a time. Absent means none.
+   */
+  queuedFollowUps?: readonly OrchestrationQueuedFollowUp[];
   /**
    * The user's last explicit Mark done / Reopen, held on the server so every
    * device agrees on the inbox's Active/Wrapped split. Null when never filed.

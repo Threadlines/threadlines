@@ -543,8 +543,10 @@ export interface PullRequestListSnapshot {
   readonly failures: readonly PullRequestProjectFailure[];
   readonly environmentFailures: readonly PullRequestEnvironmentFailure[];
   readonly viewer: string | null;
-  /** Nothing to show yet, not even a previous answer. */
+  /** Nothing to show yet, not even a previous answer, and a read still going. */
   readonly isPending: boolean;
+  /** Nothing to show, and every environment's read has failed. */
+  readonly isUnavailable: boolean;
   readonly isFetching: boolean;
 }
 
@@ -600,6 +602,10 @@ export function usePullRequestLists(input: {
             : [];
         }),
       });
+      // A failed read has no answer coming until it is asked again, so waiting
+      // on it would keep the loading rows up for good.
+      const hasNoAnswer = results.length > 0 && usableData.every((data) => data === undefined);
+      const allFailed = results.every((result) => result.error !== null);
 
       return {
         environments,
@@ -618,7 +624,8 @@ export function usePullRequestLists(input: {
             : [];
         }),
         viewer: merged.viewer,
-        isPending: results.length > 0 && usableData.every((data) => data === undefined),
+        isPending: hasNoAnswer && !allFailed,
+        isUnavailable: hasNoAnswer && allFailed,
         isFetching: results.some((result) => result.isFetching),
       };
     },

@@ -17,7 +17,7 @@ import {
   getWsConnectionUiState,
   resetWsConnectionStateForTests,
 } from "../rpc/wsConnectionState";
-import { TransportRequestRetriesExhaustedError } from "./transportError";
+import { TransportRequestLostError, TransportRequestRetriesExhaustedError } from "./transportError";
 import { WsTransport } from "./wsTransport";
 
 const encodeServerSettings = Schema.encodeSync(ServerSettings);
@@ -712,6 +712,56 @@ describe("WsTransport", () => {
 
     await transport.dispose();
   });
+
+  it("fails a unary request left on a socket whose heartbeat timed out", async () => {
+    // The protocol's heartbeat runs on timers; only their pace is faked. The
+    // short test timeout is on purpose: the bug is a request that never settles.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const transport = createTransport("ws://localhost:3020");
+    const input = { command: "terminal.toggle", key: "ctrl+k" } as const;
+    const result = { keybindings: [], issues: [] };
+
+    const strandedRequest = transport.request((client) =>
+      client[WS_METHODS.serverUpsertKeybinding](input),
+    );
+    await waitFor(() => {
+      expect(sockets).toHaveLength(1);
+    });
+    const firstSocket = getSocket();
+    firstSocket.open();
+    await waitFor(() => {
+      expect(firstSocket.sent).toHaveLength(1);
+    });
+
+    // No pong ever comes back, so the protocol gives up on the socket and
+    // opens another. The answer could only have arrived on the first one.
+    const strandedFailure =
+      expect(strandedRequest).rejects.toBeInstanceOf(TransportRequestLostError);
+    await vi.advanceTimersByTimeAsync(11_000);
+    await strandedFailure;
+
+    // A request made after the timeout waits for the replacement socket.
+    const nextRequest = transport.request((client) =>
+      client[WS_METHODS.serverUpsertKeybinding](input),
+    );
+    await waitFor(() => {
+      expect(sockets).toHaveLength(2);
+    });
+    const secondSocket = getSocket();
+    secondSocket.open();
+    await waitFor(() => {
+      expect(secondSocket.sent).toHaveLength(1);
+    });
+    const requestMessage = JSON.parse(secondSocket.sent[0] ?? "{}") as { id: string };
+    secondSocket.serverMessage(
+      JSON.stringify({
+        _tag: "Exit",
+        requestId: requestMessage.id,
+        exit: { _tag: "Success", value: result },
+      }),
+    );
+    await expect(nextRequest).resolves.toEqual(result);
+  }, 5_000);
 
   it("delivers stream chunks to subscribers", async () => {
     const transport = createTransport("ws://localhost:3020");

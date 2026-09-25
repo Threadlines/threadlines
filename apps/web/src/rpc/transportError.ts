@@ -60,6 +60,15 @@ export class TransportRequestTimeoutError extends Error {
   }
 }
 
+/** The socket a request went out on died before the server answered it. */
+export class TransportRequestLostError extends Error {
+  override readonly name = "TransportRequestLostError";
+
+  constructor() {
+    super("Lost the connection to the Threadlines server before it answered.");
+  }
+}
+
 /** Every retry attempt failed on transport-level errors within the budget. */
 export class TransportRequestRetriesExhaustedError extends Error {
   override readonly name = "TransportRequestRetriesExhaustedError";

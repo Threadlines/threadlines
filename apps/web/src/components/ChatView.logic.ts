@@ -1975,6 +1975,8 @@ export function reconcileSteeringHandoffStatuses<T extends SteeringHandoffState>
   readonly latestTurn: Pick<NonNullable<Thread["latestTurn"]>, "requestedAt"> | null | undefined;
   readonly serverMessageIds: ReadonlySet<string>;
   readonly failedMessageIds: ReadonlySet<string>;
+  /** Steers the server queued instead: the queue list shows them from here. */
+  readonly queuedMessageIds: ReadonlySet<string>;
 }): Record<string, T> {
   const { activeThreadKey } = input;
   if (!activeThreadKey) {
@@ -1987,7 +1989,7 @@ export function reconcileSteeringHandoffStatuses<T extends SteeringHandoffState>
     if (message.threadKey !== activeThreadKey || message.status !== "queued") {
       continue;
     }
-    if (input.failedMessageIds.has(message.id)) {
+    if (input.failedMessageIds.has(message.id) || input.queuedMessageIds.has(message.id)) {
       delete next[id];
       changed = true;
       continue;
@@ -2003,6 +2005,19 @@ export function reconcileSteeringHandoffStatuses<T extends SteeringHandoffState>
 
   return changed ? next : input.messagesById;
 }
+/**
+ * The composer text after queued messages come back into it: what was already
+ * typed first, then each message, a blank line apart.
+ */
+export function appendRestoredFollowUpText(
+  currentPrompt: string,
+  texts: ReadonlyArray<string>,
+): string {
+  return [currentPrompt.trimEnd(), ...texts.map((text) => text.trim())]
+    .filter((part) => part.length > 0)
+    .join("\n\n");
+}
+
 const MAX_REVERT_CONFIRM_LIST_ITEMS = 6;
 
 export interface RevertConfirmView {
