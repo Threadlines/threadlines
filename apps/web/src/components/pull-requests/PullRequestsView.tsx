@@ -503,6 +503,28 @@ export function PullRequestsView({
     if (snapshot.isPending) {
       return <PullRequestsLoadingSkeleton />;
     }
+    // Every computer failed, so the page itself says so and the notice above
+    // stays out of the way. One computer's reason is worth showing whole.
+    if (snapshot.isUnavailable) {
+      const [onlyFailure, ...otherFailures] = snapshot.environmentFailures;
+      return (
+        <Empty>
+          <EmptyHeader>
+            <EmptyTitle>Couldn't load pull requests</EmptyTitle>
+            <EmptyDescription>
+              {onlyFailure && otherFailures.length === 0
+                ? onlyFailure.message
+                : "None of your computers answered."}
+            </EmptyDescription>
+          </EmptyHeader>
+          <EmptyContent>
+            <Button variant="outline" size="sm" disabled={isRefreshing} onClick={handleRefresh}>
+              Try again
+            </Button>
+          </EmptyContent>
+        </Empty>
+      );
+    }
     if (showSignIn) {
       return (
         <Empty>
@@ -667,7 +689,7 @@ export function PullRequestsView({
             <PullRequestsNotice
               failures={snapshot.failures}
               environmentFailures={snapshot.environmentFailures}
-              hidden={showSignIn}
+              hidden={showSignIn || snapshot.isUnavailable}
               onRetry={handleRefresh}
             />
 

@@ -26,6 +26,7 @@ import {
 import {
   isRetryableRequestFailure,
   isTransportConnectionErrorMessage,
+  TransportRequestLostError,
   TransportRequestRetriesExhaustedError,
   TransportRequestTimeoutError,
 } from "./transportError";
@@ -108,6 +109,13 @@ interface TransportSession {
   readonly clientPromise: Promise<WsRpcProtocolClient>;
   readonly clientScope: Scope.Closeable;
   readonly runtime: ManagedRuntime.ManagedRuntime<RpcClient.Protocol, never>;
+  /**
+   * Aborts for the unary requests still waiting on an answer. A missed
+   * heartbeat counts as a transient error, so the protocol opens a new socket
+   * and keeps waiting on requests that went out on the dead one, whose answers
+   * can never arrive. The heartbeat timeout aborts them instead.
+   */
+  readonly pendingRequests: Set<() => void>;
 }
 
 interface StreamRequestStartInfo {
@@ -176,9 +184,19 @@ export class WsTransport {
     const client = await session.clientPromise;
     const timeoutMs = resolveRequestTimeoutMs(options);
     const effect = Effect.suspend(() => execute(client));
-    return await session.runtime.runPromise(
-      timeoutMs === null ? effect : withAttemptTimeout(effect, timeoutMs, "request"),
-    );
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    session.pendingRequests.add(abort);
+    try {
+      return await session.runtime.runPromise(
+        timeoutMs === null ? effect : withAttemptTimeout(effect, timeoutMs, "request"),
+        { signal: controller.signal },
+      );
+    } catch (error) {
+      throw controller.signal.aborted ? new TransportRequestLostError() : error;
+    } finally {
+      session.pendingRequests.delete(abort);
+    }
   }
 
   /**
@@ -512,6 +530,18 @@ export class WsTransport {
               this.lastHeartbeatPongAt = Date.now();
               this.lifecycleHandlers?.onHeartbeatPong?.();
             },
+            onHeartbeatTimeout: () => {
+              // Runs before the protocol drops the socket, so every request
+              // still pending here went out on it. A request made from now on
+              // waits for the replacement socket and is left alone.
+              if (session !== null) {
+                for (const abort of session.pendingRequests) {
+                  abort();
+                }
+                session.pendingRequests.clear();
+              }
+              this.lifecycleHandlers?.onHeartbeatTimeout?.();
+            },
             onRequestStart: (info) => {
               this.lifecycleHandlers?.onRequestStart?.(info);
               if (!info.stream) {
@@ -532,6 +562,7 @@ export class WsTransport {
       runtime,
       clientScope,
       clientPromise: runtime.runPromise(Scope.provide(clientScope)(makeWsRpcProtocolClient)),
+      pendingRequests: new Set(),
     };
     return session;
   }

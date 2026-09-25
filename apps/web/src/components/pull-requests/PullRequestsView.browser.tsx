@@ -153,10 +153,13 @@ function makeDetail(overrides: Partial<PullRequestDetail> = {}): PullRequestDeta
   };
 }
 
-function makeEnvironmentApi(result: PullRequestListResult): EnvironmentApi {
+function makeEnvironmentApi(
+  result: PullRequestListResult,
+  list?: () => Promise<PullRequestListResult>,
+): EnvironmentApi {
   return {
     pullRequests: {
-      list: vi.fn(async () => result),
+      list: list ?? vi.fn(async () => result),
       detail: vi.fn(async () => makeDetail()),
       activity: vi.fn(async () => ({
         comments: [],
@@ -269,8 +272,11 @@ function SelectablePullRequestsView() {
   );
 }
 
-async function renderPage(result: PullRequestListResult) {
-  __setEnvironmentApiOverrideForTests(ENVIRONMENT_ID, makeEnvironmentApi(result));
+async function renderPage(
+  result: PullRequestListResult,
+  options?: { readonly list?: () => Promise<PullRequestListResult> },
+) {
+  __setEnvironmentApiOverrideForTests(ENVIRONMENT_ID, makeEnvironmentApi(result, options?.list));
   useSavedEnvironmentRuntimeStore.getState().patch(ENVIRONMENT_ID, {
     connectionState: "connected",
     authState: "authenticated",
@@ -366,6 +372,33 @@ describe("PullRequestsView", () => {
     await expect
       .element(page.getByRole("button", { name: "Open Source Control settings" }))
       .toBeVisible();
+
+    await rendered.cleanup();
+  });
+
+  it("says the list could not load, then loads it on Try again", async () => {
+    const listed: PullRequestListResult = {
+      viewer: "ada",
+      entries: [makeEntry({ number: 7, title: "Loaded on the second try" })],
+      errors: [],
+    };
+    const list = vi
+      .fn<() => Promise<PullRequestListResult>>()
+      .mockRejectedValueOnce(
+        new Error("Lost the connection to the Threadlines server before it answered."),
+      )
+      .mockResolvedValue(listed);
+    const rendered = await renderPage(listed, { list });
+
+    await expect.element(page.getByText("Couldn't load pull requests")).toBeVisible();
+    await expect
+      .element(page.getByText("Lost the connection to the Threadlines server before it answered."))
+      .toBeVisible();
+    // The page says it once; the notice would only repeat it.
+    expect(document.querySelector('[data-testid="pull-requests-notice"]')).toBeNull();
+
+    await page.getByRole("button", { name: "Try again" }).click();
+    await expect.element(page.getByText("Loaded on the second try")).toBeVisible();
 
     await rendered.cleanup();
   });
