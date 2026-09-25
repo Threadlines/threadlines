@@ -174,7 +174,11 @@ export interface ProviderAdapterShape<TError> {
   ) => Effect.Effect<ProviderStartReviewResult, TError>;
 
   /**
-   * Interrupt an active turn.
+   * Interrupt an active turn. One call must stop everything: input steered
+   * into the turn that the provider has not consumed yet is discarded, not
+   * started as a new turn. The turn settles as `interrupted`, never as a
+   * failure or runtime error, even when the provider reports the stop in
+   * error form.
    */
   readonly interruptTurn: (threadId: ThreadId, turnId?: TurnId) => Effect.Effect<void, TError>;
 
