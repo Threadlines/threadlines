@@ -257,6 +257,7 @@ describe("DesktopShellEnvironment", () => {
             "C:\\Users\\testuser\\AppData\\Local\\Programs\\nodejs",
             "C:\\Users\\testuser\\AppData\\Local\\Programs\\OpenAI\\Codex\\bin",
             "C:\\Users\\testuser\\AppData\\Local\\Volta\\bin",
+            "C:\\Users\\testuser\\AppData\\Local\\cursor-agent",
             "C:\\Users\\testuser\\AppData\\Local\\pnpm",
             "C:\\Users\\testuser\\.local\\bin",
             "C:\\Users\\testuser\\.bun\\bin",
