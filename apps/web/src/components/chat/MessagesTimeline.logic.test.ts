@@ -219,8 +219,11 @@ describe("deriveMessagesTimelineRows", () => {
       revertTurnCountByUserMessageId: new Map(),
     });
 
+    // While the turn runs, the working row sits in the turn's tray.
     expect(rows).toEqual([
       {
+        tray: "single",
+        padTop: true,
         kind: "working",
         id: "working-indicator-row",
         createdAt: "2026-01-01T00:00:00Z",
@@ -242,6 +245,8 @@ describe("deriveMessagesTimelineRows", () => {
 
     expect(rows).toEqual([
       {
+        tray: null,
+        padTop: true,
         kind: "working",
         id: "working-indicator-row",
         createdAt: null,
@@ -264,6 +269,8 @@ describe("deriveMessagesTimelineRows", () => {
 
     expect(rows).toEqual([
       {
+        tray: null,
+        padTop: true,
         kind: "working",
         id: "working-indicator-row",
         createdAt: null,
@@ -987,6 +994,36 @@ describe("finished turns and the live step", () => {
       settledNote: false,
       turnSummary: { workedMs: 75_000 },
     });
+  });
+
+  it("puts a turn's work in a tray and its answer on the page, without moving a thing", () => {
+    const live = derive(settledTurn, {
+      isWorking: true,
+      activeTurnInProgress: true,
+      activeTurnId: "turn-1" as never,
+      activeTurnStartedAt: "2026-01-01T00:00:00Z",
+    });
+    const settled = derive(settledTurn);
+    const placement = (rows: ReturnType<typeof derive>) =>
+      rows.map((row) => [row.kind, row.tray, row.padTop]);
+
+    // While it works, everything after your message is in the tray, down to
+    // the working row.
+    expect(placement(live)).toEqual([
+      ["message", null, false],
+      ["message", "first", true],
+      ["work", "middle", false],
+      ["message", "middle", true],
+      ["working", "last", false],
+    ]);
+    // When it ends the answer leaves the tray; only the placement changes,
+    // never the room above a row.
+    expect(placement(settled)).toEqual([
+      ["message", null, false],
+      ["message", "first", true],
+      ["work", "last", false],
+      ["message", null, true],
+    ]);
   });
 
   it("counts a retried turn's work, not the wait before the retry", () => {

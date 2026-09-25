@@ -1584,6 +1584,11 @@ describe("MessagesTimeline", () => {
     expect(footerAt).toBeGreaterThan(answerAt);
     expect(markup).toContain("Worked for 1m 15s");
     expect(markup).toContain('data-turn-footer-checks="passed"');
+    // The note and its step sit in the turn's work tray; the answer is on the
+    // page below it.
+    expect(markup.match(/data-tray="(?:first|last)"/gu)).toHaveLength(2);
+    const answerRoot = markup.lastIndexOf('data-timeline-root="true"', answerAt);
+    expect(markup.slice(answerRoot, answerAt)).not.toContain("data-tray");
   });
 
   it("keeps the footer and the fade off notes while the agent works", async () => {

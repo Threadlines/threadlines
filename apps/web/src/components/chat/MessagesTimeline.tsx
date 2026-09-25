@@ -79,12 +79,17 @@ import { ChangedFilesTree } from "./ChangedFilesTree";
 import { DiffStatLabel, hasNonZeroStat } from "./DiffStatLabel";
 import { MessageCopyButton } from "./MessageCopyButton";
 import { ActivityGroup } from "./ActivityGroup";
-import { activityStepFromWorkLogEntry, type ActivityStep } from "./activitySteps";
+import {
+  activityStepFromWorkLogEntry,
+  newestThoughtSentence,
+  type ActivityStep,
+} from "./activitySteps";
 import {
   computeStableMessagesTimelineRows,
   deriveMessagesTimelineRows,
   resolveAssistantMessageCopyState,
   type StableMessagesTimelineRowsState,
+  type TrayPlacement,
   type TurnSummary,
   type MessagesTimelineRow,
 } from "./MessagesTimeline.logic";
@@ -1359,9 +1364,21 @@ export const MessagesTimeline = memo(function MessagesTimeline({
 
   // Stable renderItem — no closure deps. Row components read shared state
   // from TimelineRowCtx, which propagates through LegendList's memo.
+  // Each row paints its own piece of its turn's work tray, in the window
+  // frame's color, edge to edge of the column; the column keeps the rows'
+  // content in from those edges. The list clips every row to its own box, so
+  // the tray cannot be one element behind several rows.
   const renderItem = useCallback(
     ({ item }: { item: MessagesTimelineRow }) => (
-      <div className="mx-auto w-full min-w-0 max-w-4xl overflow-x-clip" data-timeline-root="true">
+      <div
+        className={cn(
+          "mx-auto w-full min-w-0 max-w-4xl overflow-x-clip px-2 transition-colors duration-300",
+          item.tray && "bg-[var(--app-chrome-background)]",
+          item.tray && TRAY_CORNERS[item.tray],
+        )}
+        data-timeline-root="true"
+        data-tray={item.tray ?? undefined}
+      >
         <TimelineRowContent row={item} />
       </div>
     ),
@@ -1807,21 +1824,47 @@ type TimelineImagePreviewItem = {
   path?: string;
 };
 
+/**
+ * Room below a row. A note sits right on top of its steps. The agent's work
+ * leaves half a gap inside its tray and the row after it adds the other half,
+ * so the tray's edge falls in the middle of the gap. Your messages and plans
+ * keep a full gap on the page.
+ */
+function rowBottomPadding(row: TimelineRow): string {
+  switch (row.kind) {
+    case "message":
+      if (row.message.role !== "assistant") {
+        return "pb-4";
+      }
+      return row.turnSummary === null ? "pb-1" : "pb-2";
+    case "work":
+    case "subagent-result":
+    case "working":
+      return "pb-2";
+    default:
+      return "pb-4";
+  }
+}
+
+const TRAY_CORNERS = {
+  single: "rounded-xl",
+  first: "rounded-t-xl",
+  middle: "",
+  last: "rounded-b-xl",
+} as const satisfies Record<TrayPlacement, string>;
+
 const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: TimelineRow }) {
   const ctx = use(TimelineRowCtx);
   const isActiveSearchTarget =
     row.kind === "message" && row.message.id === ctx.activeSearchTargetMessageId;
-  // A note sits right on top of its steps; the gap belongs below a turn's
-  // answer and its footer.
-  const isProgressNote =
-    row.kind === "message" && row.message.role === "assistant" && row.turnSummary === null;
   return (
     <div
       // A row whose section renders nothing (e.g. an all-anchor work group
       // with no resolvable tracker) must not leave a phantom padded gap.
       className={cn(
-        isProgressNote ? "pb-1" : "pb-4",
-        "[&:not(:has(*))]:pb-0",
+        rowBottomPadding(row),
+        row.padTop && "pt-2",
+        "[&:not(:has(*))]:p-0",
         isActiveSearchTarget && "thread-search-target-pulse",
       )}
       data-timeline-row-id={row.id}
@@ -2302,9 +2345,10 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
     ctx.providerAuthReconnect && isProviderAuthErrorMessage(messageText)
       ? ctx.providerAuthReconnect
       : null;
-  // Notes carry the story while the agent works. A finished turn's last
-  // message is its answer: it keeps full strength and carries the turn's
-  // footer, while the notes before it fade. A note's time stays one hover away.
+  // Notes carry the story while the agent works, in the turn's work tray. A
+  // finished turn's last message is its answer: it leaves the tray for the
+  // page at full strength and carries the turn's footer, while the notes
+  // before it fade to the steps' grey. A note's time stays one hover away.
   const summary = row.turnSummary;
 
   return (
@@ -2315,8 +2359,9 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
       <div className={cn("min-w-0 px-1 py-0.5", row.assistantTurnInProgress && "work-row-enter")}>
         <div
           className={cn(
-            "group/assistant-message block w-full max-w-full align-top transition-opacity duration-300",
-            row.settledNote && "opacity-70",
+            "group/assistant-message block w-full max-w-full align-top [&_.chat-markdown]:transition-colors [&_.chat-markdown]:duration-300",
+            row.settledNote && "[&_.chat-markdown]:text-muted-foreground/80",
+            summary && "[&_.chat-markdown]:text-foreground",
           )}
           data-assistant-message-section="true"
           data-settled-note={row.settledNote ? "true" : undefined}
@@ -2692,14 +2737,16 @@ function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "workin
           ) : null}
         </p>
         {/* What the agent is thinking, in its own summary's words, under the
-            word it explains. Indented to the word, past the dots. */}
+            word it explains. Indented to the word, past the dots. One line,
+            the newest sentence, so the row never grows while a thought streams;
+            the whole thought is a hover away. */}
         {row.thought ? (
           <p
-            className="work-meta-enter line-clamp-2 pl-[19px] text-[11px] leading-4 text-muted-foreground/55"
+            className="work-meta-enter truncate pl-[19px] text-[11px] leading-4 text-muted-foreground/55"
             title={row.thought}
             data-turn-working-thought="true"
           >
-            {row.thought}
+            {newestThoughtSentence(row.thought)}
           </p>
         ) : null}
         {/* Each live agent keeps its own row, so concurrent updates change the

@@ -5,6 +5,7 @@ import {
   activityStepFromTranscriptTool,
   activityStepFromWorkLogEntry,
   liveActivityLabel,
+  newestThoughtSentence,
   partitionActivitySteps,
   plainAgentStep,
   summarizeRoutineSteps,
@@ -326,6 +327,19 @@ describe("groups", () => {
     );
 
     expect(liveActivityLabel(steps.filter((step) => step !== null))).toBe("Reading 3 files");
+  });
+
+  it("keeps a live thought to its newest sentence, without dropping to a word or two", () => {
+    const thought =
+      "The logs only span about 21 minutes since they rotate quickly. Converting the UTC timestamp to local time shows the server restarted.";
+
+    expect(newestThoughtSentence(thought)).toBe(
+      "Converting the UTC timestamp to local time shows the server restarted.",
+    );
+    // A sentence that has barely started keeps the one before it.
+    expect(newestThoughtSentence("Reading service.ts closely. So the")).toBe(
+      "Reading service.ts closely. So the",
+    );
   });
 });
 
