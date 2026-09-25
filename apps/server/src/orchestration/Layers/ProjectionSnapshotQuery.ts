@@ -22,7 +22,7 @@ import {
   type OrchestrationSession,
   type OrchestrationSubagent,
   type OrchestrationThreadActivity,
-  type OrchestrationThreadDiffStat,
+  OrchestrationThreadDiffStat,
   type OrchestrationThreadDoneOverride,
   type OrchestrationThreadShell,
   type ThreadEffectiveCwdSource,
@@ -42,6 +42,7 @@ import * as Schema from "effect/Schema";
 import * as Struct from "effect/Struct";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as SqlSchema from "effect/unstable/sql/SqlSchema";
+import type * as Statement from "effect/unstable/sql/Statement";
 import { MAX_THREAD_ACTIVITIES, MAX_THREAD_MESSAGES } from "@threadlines/shared/threadLimits";
 import { retainThreadActivities } from "@threadlines/shared/threadActivityRetention";
 
@@ -124,8 +125,24 @@ const ProjectionThreadSessionDbRowSchema = ProjectionThreadSession;
 const ProjectionCheckpointDbRowSchema = ProjectionCheckpoint.mapFields(
   Struct.assign({
     files: Schema.fromJsonString(Schema.Array(OrchestrationCheckpointFile)),
+    threadDiffStat: Schema.NullOr(Schema.fromJsonString(OrchestrationThreadDiffStat)),
   }),
 );
+
+function mapCheckpointRow(
+  row: Schema.Schema.Type<typeof ProjectionCheckpointDbRowSchema>,
+): OrchestrationCheckpointSummary {
+  return {
+    turnId: row.turnId,
+    checkpointTurnCount: row.checkpointTurnCount,
+    checkpointRef: row.checkpointRef,
+    status: row.status,
+    files: row.files,
+    ...(row.threadDiffStat !== null ? { threadDiffStat: row.threadDiffStat } : {}),
+    assistantMessageId: row.assistantMessageId,
+    completedAt: row.completedAt,
+  };
+}
 
 function projectEffectiveCwdSource(input: {
   readonly effectiveCwd: string | null;
@@ -210,6 +227,7 @@ const ProjectionFullThreadDiffContextRowSchema = Schema.Struct({
   worktreePath: Schema.NullOr(Schema.String),
   latestCheckpointTurnCount: Schema.NullOr(NonNegativeInt),
   toCheckpointRef: Schema.NullOr(CheckpointRef),
+  attributedFilePaths: Schema.fromJsonString(Schema.Array(Schema.String)),
 });
 
 const REQUIRED_SNAPSHOT_PROJECTORS = [
@@ -909,6 +927,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           checkpoint_ref AS "checkpointRef",
           checkpoint_status AS "status",
           checkpoint_files_json AS "files",
+          checkpoint_thread_diff_stat_json AS "threadDiffStat",
           assistant_message_id AS "assistantMessageId",
           checkpoint_completed_at AS "completedAt"
         FROM projection_turns
@@ -917,10 +936,19 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       `,
   });
 
+  // The badge starts from the newest measurement among the counted turns (the
+  // thread's share of what was uncommitted when that turn finished) and adds
+  // the file summaries of every counted turn after it, which is how a running
+  // turn's live edits still move the number. A thread with no measurement yet
+  // sums every counted turn, as it did before measurements existed. The
+  // measurement is picked on its own, not through `json_each`, so a turn that
+  // measured zero with no files of its own still wins over older turns.
+  //
   // `json_each` expands each turn's stored file summary in place, so the sum
   // costs one pass over projection_turns instead of shipping every file list to
-  // the process. Threads with no summary yet produce no group row at all, which
-  // is how "no turn has reported files" stays distinguishable from "+0 -0".
+  // the process. Threads with neither a measurement nor a summary produce no
+  // row at all, which is how "nothing to report" stays distinguishable from
+  // "+0 -0".
   //
   // Deliberately unfiltered by checkpoint_status: a "missing" row is a
   // provider-reported diff captured when a git checkpoint was unavailable (a
@@ -932,49 +960,73 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
   //
   // The join to projection_threads is what makes the badge resettable: turns at
   // or below the thread's baseline were already committed (or discarded) out of
-  // the checkout, so they stop counting. A baseline of 0 -- every thread until
-  // its checkout is first observed clean -- counts every turn, since turn counts
-  // start at 1. A turn with files always carries a checkpoint_turn_count, so the
-  // NULL-excluding comparison drops nothing a `json_each` pass would have found.
-  const threadDiffStatSelection = sql`
+  // the checkout, so neither their summaries nor their measurements count. A
+  // baseline of 0 -- every thread until its checkout is first observed clean --
+  // counts every turn, since turn counts start at 1.
+  const threadDiffStatQuery = (turnFilter: Statement.Fragment) => sql`
+    WITH counted_turns AS (
+      SELECT
+        turns.thread_id,
+        turns.checkpoint_turn_count,
+        turns.checkpoint_files_json,
+        turns.checkpoint_thread_diff_stat_json
+      FROM projection_turns turns
+      JOIN projection_threads threads
+        ON threads.thread_id = turns.thread_id
+        AND turns.checkpoint_turn_count > COALESCE(threads.diff_stat_baseline_turn_count, 0)
+      ${turnFilter}
+    ),
+    latest_measurement AS (
+      SELECT thread_id, measured_turn_count, additions, deletions
+      FROM (
+        SELECT
+          thread_id,
+          checkpoint_turn_count AS measured_turn_count,
+          CAST(json_extract(checkpoint_thread_diff_stat_json, '$.additions') AS INTEGER) AS additions,
+          CAST(json_extract(checkpoint_thread_diff_stat_json, '$.deletions') AS INTEGER) AS deletions,
+          ROW_NUMBER() OVER (
+            PARTITION BY thread_id
+            ORDER BY checkpoint_turn_count DESC
+          ) AS recency
+        FROM counted_turns
+        WHERE checkpoint_thread_diff_stat_json IS NOT NULL
+      )
+      WHERE recency = 1
+    ),
+    later_files AS (
+      SELECT
+        counted_turns.thread_id,
+        SUM(CAST(json_extract(checkpoint_file.value, '$.additions') AS INTEGER)) AS additions,
+        SUM(CAST(json_extract(checkpoint_file.value, '$.deletions') AS INTEGER)) AS deletions
+      FROM counted_turns
+      LEFT JOIN latest_measurement
+        ON latest_measurement.thread_id = counted_turns.thread_id
+      CROSS JOIN json_each(counted_turns.checkpoint_files_json) AS checkpoint_file
+      WHERE counted_turns.checkpoint_turn_count > COALESCE(latest_measurement.measured_turn_count, 0)
+      GROUP BY counted_turns.thread_id
+    )
     SELECT
-      turns.thread_id AS "threadId",
-      COALESCE(
-        SUM(CAST(json_extract(checkpoint_file.value, '$.additions') AS INTEGER)),
-        0
-      ) AS "additions",
-      COALESCE(
-        SUM(CAST(json_extract(checkpoint_file.value, '$.deletions') AS INTEGER)),
-        0
-      ) AS "deletions"
-    FROM projection_turns turns
-    JOIN projection_threads threads
-      ON threads.thread_id = turns.thread_id
-      AND turns.checkpoint_turn_count > COALESCE(threads.diff_stat_baseline_turn_count, 0)
-    CROSS JOIN json_each(turns.checkpoint_files_json) AS checkpoint_file
+      thread_id AS "threadId",
+      COALESCE(SUM(additions), 0) AS "additions",
+      COALESCE(SUM(deletions), 0) AS "deletions"
+    FROM (
+      SELECT thread_id, additions, deletions FROM latest_measurement
+      UNION ALL
+      SELECT thread_id, additions, deletions FROM later_files
+    )
+    GROUP BY thread_id
   `;
 
   const listThreadDiffStatRows = SqlSchema.findAll({
     Request: Schema.Void,
     Result: ProjectionThreadDiffStatDbRowSchema,
-    execute: () =>
-      sql`
-        ${threadDiffStatSelection}
-        WHERE turns.checkpoint_files_json IS NOT NULL
-        GROUP BY turns.thread_id
-      `,
+    execute: () => threadDiffStatQuery(sql``),
   });
 
   const getThreadDiffStatRow = SqlSchema.findOneOption({
     Request: ThreadIdLookupInput,
     Result: ProjectionThreadDiffStatDbRowSchema,
-    execute: (request) =>
-      sql`
-        ${threadDiffStatSelection}
-        WHERE turns.thread_id = ${request.threadId}
-          AND turns.checkpoint_files_json IS NOT NULL
-        GROUP BY turns.thread_id
-      `,
+    execute: (request) => threadDiffStatQuery(sql`WHERE turns.thread_id = ${request.threadId}`),
   });
 
   // The clean-checkout observer's whole read: where each thread works, where
@@ -1471,6 +1523,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           checkpoint_ref AS "checkpointRef",
           checkpoint_status AS "status",
           checkpoint_files_json AS "files",
+          checkpoint_thread_diff_stat_json AS "threadDiffStat",
           assistant_message_id AS "assistantMessageId",
           checkpoint_completed_at AS "completedAt"
         FROM projection_turns
@@ -1502,7 +1555,15 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             WHERE turns.thread_id = threads.thread_id
               AND turns.checkpoint_turn_count = ${checkpointTurnCount}
             LIMIT 1
-          ) AS "toCheckpointRef"
+          ) AS "toCheckpointRef",
+          (
+            SELECT json_group_array(DISTINCT json_extract(checkpoint_file.value, '$.path'))
+            FROM projection_turns AS turns
+            CROSS JOIN json_each(turns.checkpoint_files_json) AS checkpoint_file
+            WHERE turns.thread_id = threads.thread_id
+              AND turns.checkpoint_turn_count IS NOT NULL
+              AND turns.checkpoint_turn_count <= ${checkpointTurnCount}
+          ) AS "attributedFilePaths"
         FROM projection_threads AS threads
         INNER JOIN projection_projects AS projects
           ON projects.project_id = threads.project_id
@@ -1734,15 +1795,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               for (const row of checkpointRows) {
                 updatedAt = maxIso(updatedAt, row.completedAt);
                 const threadCheckpoints = checkpointsByThread.get(row.threadId) ?? [];
-                threadCheckpoints.push({
-                  turnId: row.turnId,
-                  checkpointTurnCount: row.checkpointTurnCount,
-                  checkpointRef: row.checkpointRef,
-                  status: row.status,
-                  files: row.files,
-                  assistantMessageId: row.assistantMessageId,
-                  completedAt: row.completedAt,
-                });
+                threadCheckpoints.push(mapCheckpointRow(row));
                 checkpointsByThread.set(row.threadId, threadCheckpoints);
               }
 
@@ -2542,15 +2595,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         projectId: threadRow.value.projectId,
         workspaceRoot: threadRow.value.workspaceRoot,
         worktreePath: threadRow.value.worktreePath,
-        checkpoints: checkpointRows.map((row): OrchestrationCheckpointSummary => ({
-          turnId: row.turnId,
-          checkpointTurnCount: row.checkpointTurnCount,
-          checkpointRef: row.checkpointRef,
-          status: row.status,
-          files: row.files,
-          assistantMessageId: row.assistantMessageId,
-          completedAt: row.completedAt,
-        })),
+        checkpoints: checkpointRows.map(mapCheckpointRow),
       });
     });
 
@@ -2580,6 +2625,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         worktreePath: row.value.worktreePath,
         latestCheckpointTurnCount: row.value.latestCheckpointTurnCount ?? 0,
         toCheckpointRef: row.value.toCheckpointRef,
+        attributedFilePaths: row.value.attributedFilePaths,
       });
     });
 
@@ -2797,15 +2843,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           retainThreadActivities(activityRows.map(mapThreadActivityRow), MAX_THREAD_ACTIVITIES),
         ),
         subagents: subagentRows.map(mapThreadSubagentRow),
-        checkpoints: checkpointRows.map((row) => ({
-          turnId: row.turnId,
-          checkpointTurnCount: row.checkpointTurnCount,
-          checkpointRef: row.checkpointRef,
-          status: row.status,
-          files: row.files,
-          assistantMessageId: row.assistantMessageId,
-          completedAt: row.completedAt,
-        })),
+        checkpoints: checkpointRows.map(mapCheckpointRow),
         session: Option.isSome(sessionRow) ? mapSessionRow(sessionRow.value) : null,
         diffStatBaselineTurnCount: threadRow.value.diffStatBaselineTurnCount ?? 0,
       };

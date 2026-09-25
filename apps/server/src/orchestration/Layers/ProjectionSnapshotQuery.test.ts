@@ -2409,6 +2409,44 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         assert.equal(quietShell.value.cumulativeDiffStat, null);
       }
 
+      // Once a finished turn carries a measurement, the badge starts from it
+      // and adds only later turns' summaries: turn 2's measurement (+6 -1)
+      // replaces turns 1 and 2's sums, turn 3's summary (+4 -3) still adds.
+      const busyCumulativeDiffStat = Effect.gen(function* () {
+        const snapshot = yield* snapshotQuery.getShellSnapshot();
+        const shell = yield* snapshotQuery.getThreadShellById(ThreadId.make("thread-busy"));
+        const fromSnapshot = snapshot.threads.find(
+          (thread) => thread.id === ThreadId.make("thread-busy"),
+        )?.cumulativeDiffStat;
+        assert.deepEqual(
+          shell._tag === "Some" ? shell.value.cumulativeDiffStat : undefined,
+          fromSnapshot,
+        );
+        return fromSnapshot;
+      });
+      yield* sql`
+        UPDATE projection_turns
+        SET checkpoint_thread_diff_stat_json = '{"additions":6,"deletions":1}'
+        WHERE thread_id = 'thread-busy' AND turn_id = 'turn-2'
+      `;
+      assert.deepEqual(yield* busyCumulativeDiffStat, { additions: 10, deletions: 4 });
+
+      // A newer measurement wins even when its own turn touched no files.
+      yield* sql`
+        UPDATE projection_turns
+        SET checkpoint_thread_diff_stat_json = '{"additions":0,"deletions":0}'
+        WHERE thread_id = 'thread-busy' AND turn_id = 'turn-4'
+      `;
+      assert.deepEqual(yield* busyCumulativeDiffStat, { additions: 0, deletions: 0 });
+
+      // Turn 2's measurement stays for the baseline checks below, which show a
+      // measurement at or below the baseline stops counting too.
+      yield* sql`
+        UPDATE projection_turns
+        SET checkpoint_thread_diff_stat_json = NULL
+        WHERE thread_id = 'thread-busy' AND turn_id = 'turn-4'
+      `;
+
       // Committing everything in the checkout advances thread-busy's baseline
       // past its last completed turn. Its badge has to go quiet, and the turns
       // it already reported must stop counting -- in the snapshot and in the

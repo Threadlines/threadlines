@@ -109,6 +109,26 @@ export interface VcsRestoreCheckpointFileEditsInput {
   readonly dryRun?: boolean;
 }
 
+export interface VcsCheckpointRangeInput {
+  readonly cwd: string;
+  readonly fromCheckpointRef: CheckpointRef;
+  readonly toCheckpointRef: CheckpointRef;
+}
+
+export interface VcsCheckpointRefInput {
+  readonly cwd: string;
+  readonly checkpointRef: CheckpointRef;
+}
+
+/** Line counts for one repository-root-relative path. */
+export interface VcsCheckpointFileStat {
+  readonly path: string;
+  /** The path's name before a rename, when git detected one. */
+  readonly previousPath?: string;
+  readonly additions: number;
+  readonly deletions: number;
+}
+
 export interface VcsCheckpointOps {
   readonly captureCheckpoint: (input: VcsCaptureCheckpointInput) => Effect.Effect<void, VcsError>;
   readonly hasCheckpointRef: (
@@ -121,6 +141,12 @@ export interface VcsCheckpointOps {
     input: VcsResolveCheckpointCommitInput,
   ) => Effect.Effect<string | null, VcsError>;
   readonly diffCheckpoints: (input: VcsDiffCheckpointsInput) => Effect.Effect<string, VcsError>;
+  readonly listHeadMovementPaths: (
+    input: VcsCheckpointRangeInput,
+  ) => Effect.Effect<ReadonlyArray<string>, VcsError>;
+  readonly diffCheckpointAgainstHead: (
+    input: VcsCheckpointRefInput,
+  ) => Effect.Effect<ReadonlyArray<VcsCheckpointFileStat> | null, VcsError>;
   readonly diffCheckpointEntries: (
     input: VcsDiffCheckpointEntriesInput,
   ) => Effect.Effect<ReadonlyArray<VcsCheckpointEntry>, VcsError>;

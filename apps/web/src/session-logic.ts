@@ -5129,30 +5129,49 @@ export function inferCheckpointTurnCountByTurnId(
 }
 
 /**
- * What a thread has changed, summed across its own turns -- the client-side
- * twin of the shell's `cumulativeDiffStat`, for the detail stream, which
- * carries the per-turn summaries but not the rollup. Returns null when no
- * counted turn has reported a file, which is the same "nothing to say" the
- * shell means by null; a thread whose turns cancel out to zero still returns
- * zeroes.
+ * What a thread has changed -- the client-side twin of the shell's
+ * `cumulativeDiffStat`, for the detail stream, which carries the per-turn
+ * summaries but not the rollup. Starts from the newest counted turn that
+ * carries a measurement (the thread's share of what was uncommitted when that
+ * turn finished) and adds the file summaries of every counted turn after it,
+ * so a running turn's live edits still move the number. Without any
+ * measurement it sums every counted turn. Returns null when there is neither a
+ * measurement nor a counted file, the same "nothing to say" the shell means by
+ * null; a thread whose turns cancel out to zero still returns zeroes.
  *
  * `baselineTurnCount` mirrors the server rollup's baseline join: turns at or
  * below it were committed (or discarded) out of the checkout and no longer
- * count. Zero counts every turn, since turn counts start at 1. A summary
- * without a turn count predates the field and is always counted, which is the
- * behavior it had before the baseline existed.
+ * count, measurements included. Zero counts every turn, since turn counts
+ * start at 1. A summary without a turn count predates the field and is always
+ * counted, which is the behavior it had before the baseline existed.
  */
 export function sumTurnDiffStats(
   summaries: ReadonlyArray<TurnDiffSummary>,
   baselineTurnCount = 0,
 ): OrchestrationThreadDiffStat | null {
-  let additions = 0;
-  let deletions = 0;
-  let sawFile = false;
-  for (const summary of summaries) {
+  const counted = summaries.filter(
+    (summary) =>
+      summary.checkpointTurnCount === undefined || summary.checkpointTurnCount > baselineTurnCount,
+  );
+  let measurement: { turnCount: number; stat: OrchestrationThreadDiffStat } | null = null;
+  for (const summary of counted) {
     if (
+      summary.threadDiffStat !== undefined &&
       summary.checkpointTurnCount !== undefined &&
-      summary.checkpointTurnCount <= baselineTurnCount
+      (measurement === null || summary.checkpointTurnCount > measurement.turnCount)
+    ) {
+      measurement = { turnCount: summary.checkpointTurnCount, stat: summary.threadDiffStat };
+    }
+  }
+
+  let additions = measurement?.stat.additions ?? 0;
+  let deletions = measurement?.stat.deletions ?? 0;
+  let sawFile = false;
+  for (const summary of counted) {
+    if (
+      measurement !== null &&
+      (summary.checkpointTurnCount === undefined ||
+        summary.checkpointTurnCount <= measurement.turnCount)
     ) {
       continue;
     }
@@ -5162,7 +5181,7 @@ export function sumTurnDiffStats(
       deletions += file.deletions ?? 0;
     }
   }
-  return sawFile ? { additions, deletions } : null;
+  return measurement !== null || sawFile ? { additions, deletions } : null;
 }
 
 export function derivePhase(session: ThreadSession | null): SessionPhase {

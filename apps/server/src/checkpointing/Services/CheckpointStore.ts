@@ -37,6 +37,26 @@ export interface DiffCheckpointsInput {
   readonly filePaths?: ReadonlyArray<string>;
 }
 
+export interface CheckpointRangeInput {
+  readonly cwd: string;
+  readonly fromCheckpointRef: CheckpointRef;
+  readonly toCheckpointRef: CheckpointRef;
+}
+
+export interface CheckpointRefInput {
+  readonly cwd: string;
+  readonly checkpointRef: CheckpointRef;
+}
+
+/** Line counts for one repository-root-relative path. */
+export interface CheckpointFileStat {
+  readonly path: string;
+  /** The path's name before a rename, when git detected one. */
+  readonly previousPath?: string;
+  readonly additions: number;
+  readonly deletions: number;
+}
+
 export interface DeleteCheckpointRefsInput {
   readonly cwd: string;
   readonly checkpointRefs: ReadonlyArray<CheckpointRef>;
@@ -165,6 +185,26 @@ export interface CheckpointStoreShape {
   readonly diffCheckpoints: (
     input: DiffCheckpointsInput,
   ) => Effect.Effect<string, CheckpointStoreError>;
+
+  /**
+   * List paths whose whole change between two snapshots came from HEAD moving
+   * (a merge, pull, rebase, checkout, or reset) rather than from edits in the
+   * checkout. Paths touched by commits the checkout itself made in between
+   * are edits and are not listed. Empty when the snapshots do not record
+   * their head or HEAD did not move.
+   */
+  readonly listHeadMovementPaths: (
+    input: CheckpointRangeInput,
+  ) => Effect.Effect<ReadonlyArray<string>, CheckpointStoreError>;
+
+  /**
+   * Per-path line counts between a snapshot and the HEAD it was taken on: what
+   * was uncommitted at that moment, untracked files included. Null when the
+   * snapshot does not record its head.
+   */
+  readonly diffCheckpointAgainstHead: (
+    input: CheckpointRefInput,
+  ) => Effect.Effect<ReadonlyArray<CheckpointFileStat> | null, CheckpointStoreError>;
 
   /**
    * List per-path blob transitions between two checkpoint commits.

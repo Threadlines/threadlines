@@ -58,6 +58,7 @@ function writeTextFile(
 function git(
   cwd: string,
   args: ReadonlyArray<string>,
+  env?: NodeJS.ProcessEnv,
 ): Effect.Effect<string, VcsError, VcsProcess.VcsProcess> {
   return Effect.gen(function* () {
     const process = yield* VcsProcess.VcsProcess;
@@ -67,6 +68,7 @@ function git(
       cwd,
       args,
       timeoutMs: 10_000,
+      ...(env === undefined ? {} : { env }),
     });
     return result.stdout.trim();
   });
@@ -229,7 +231,114 @@ it.layer(TestLayer)("CheckpointStoreLive", (it) => {
 
         expect(diff).toContain("diff --git a/README.md b/README.md");
         expect(diff).not.toContain("foreign.txt");
+
+        // Scoped to a rename's new path, the diff still reads as a rename
+        // rather than a whole added file.
+        const renamedCheckpointRef = checkpointRefForThreadTurn(threadId, 2);
+        yield* writeTextFile(path.join(tmp, "notes.md"), buildLargeText(40));
+        yield* checkpointStore.captureCheckpoint({ cwd: tmp, checkpointRef: toCheckpointRef });
+        const fileSystem = yield* FileSystem.FileSystem;
+        yield* fileSystem.rename(path.join(tmp, "notes.md"), path.join(tmp, "guide.md"));
+        yield* checkpointStore.captureCheckpoint({
+          cwd: tmp,
+          checkpointRef: renamedCheckpointRef,
+        });
+        const renameDiff = yield* checkpointStore.diffCheckpoints({
+          cwd: tmp,
+          fromCheckpointRef: toCheckpointRef,
+          toCheckpointRef: renamedCheckpointRef,
+          ignoreWhitespace: true,
+          filePaths: ["guide.md"],
+        });
+        expect(renameDiff).toContain("rename from notes.md");
+        expect(renameDiff).toContain("rename to guide.md");
       }),
+    );
+  });
+
+  describe("head movement", () => {
+    it.effect(
+      "separates history that moved HEAD from edits and measures what stayed uncommitted",
+      () =>
+        Effect.gen(function* () {
+          const tmp = yield* makeTmpDir();
+          yield* initRepoWithCommit(tmp);
+          const checkpointStore = yield* CheckpointStore;
+          const threadId = ThreadId.make("thread-checkpoint-store-head-movement");
+          const fromCheckpointRef = checkpointRefForThreadTurn(threadId, 0);
+          const toCheckpointRef = checkpointRefForThreadTurn(threadId, 1);
+          const branch = yield* git(tmp, ["symbolic-ref", "--short", "HEAD"]);
+
+          // Before the turn: upstream work on another branch, a commit the turn
+          // will cherry-pick, and a local commit the turn will amend. Dated in
+          // the past so HEAD's reflog places them before the snapshot.
+          const earlier = {
+            GIT_AUTHOR_DATE: "2001-01-01T00:00:00Z",
+            GIT_COMMITTER_DATE: "2001-01-01T00:00:00Z",
+          };
+          yield* git(tmp, ["checkout", "-b", "upstream"], earlier);
+          yield* writeTextFile(path.join(tmp, "upstream.txt"), "from upstream\n");
+          yield* writeTextFile(path.join(tmp, "mixed.txt"), "from upstream\n");
+          yield* git(tmp, ["add", "."], earlier);
+          yield* git(tmp, ["commit", "-m", "upstream work"], earlier);
+          yield* git(tmp, ["checkout", "-b", "side", branch], earlier);
+          yield* writeTextFile(path.join(tmp, "picked.txt"), "picked\n");
+          yield* git(tmp, ["add", "picked.txt"], earlier);
+          yield* git(tmp, ["commit", "-m", "side work"], earlier);
+          yield* git(tmp, ["checkout", branch], earlier);
+          yield* writeTextFile(path.join(tmp, "amended.txt"), "draft\n");
+          yield* writeTextFile(path.join(tmp, "withdrawn.txt"), "second thoughts\n");
+          yield* git(tmp, ["add", "amended.txt", "withdrawn.txt"], earlier);
+          yield* git(tmp, ["commit", "-m", "draft"], earlier);
+
+          yield* checkpointStore.captureCheckpoint({ cwd: tmp, checkpointRef: fromCheckpointRef });
+
+          // The turn: amend the older commit (changing one file and taking
+          // another back out), merge upstream, cherry-pick, commit its own
+          // file, then leave edits uncommitted -- including on top of a merged
+          // file.
+          yield* writeTextFile(path.join(tmp, "amended.txt"), "final\n");
+          yield* git(tmp, ["rm", "--quiet", "withdrawn.txt"]);
+          yield* git(tmp, ["commit", "--amend", "--no-edit", "--all"]);
+          yield* git(tmp, ["merge", "--no-edit", "upstream"]);
+          yield* git(tmp, ["cherry-pick", "side"]);
+          yield* writeTextFile(path.join(tmp, "own.txt"), "agent commit\n");
+          yield* git(tmp, ["add", "own.txt"]);
+          yield* git(tmp, ["commit", "-m", "agent work"]);
+          yield* writeTextFile(path.join(tmp, "mixed.txt"), "from upstream\nagent line\n");
+          yield* writeTextFile(path.join(tmp, "edited.txt"), "one\ntwo\n");
+          yield* git(tmp, ["mv", "README.md", "GUIDE.md"]);
+
+          yield* checkpointStore.captureCheckpoint({ cwd: tmp, checkpointRef: toCheckpointRef });
+
+          const headMovementPaths = yield* checkpointStore.listHeadMovementPaths({
+            cwd: tmp,
+            fromCheckpointRef,
+            toCheckpointRef,
+          });
+          expect([...headMovementPaths].toSorted()).toEqual(["picked.txt", "upstream.txt"]);
+
+          const uncommitted = yield* checkpointStore.diffCheckpointAgainstHead({
+            cwd: tmp,
+            checkpointRef: toCheckpointRef,
+          });
+          expect(
+            [...(uncommitted ?? [])].toSorted((left, right) => left.path.localeCompare(right.path)),
+          ).toEqual([
+            { path: "edited.txt", additions: 2, deletions: 0 },
+            { path: "GUIDE.md", previousPath: "README.md", additions: 0, deletions: 0 },
+            { path: "mixed.txt", additions: 1, deletions: 0 },
+          ]);
+
+          // Without head movement there is nothing to leave out.
+          expect(
+            yield* checkpointStore.listHeadMovementPaths({
+              cwd: tmp,
+              fromCheckpointRef: toCheckpointRef,
+              toCheckpointRef,
+            }),
+          ).toEqual([]);
+        }),
     );
   });
 

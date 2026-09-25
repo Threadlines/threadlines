@@ -644,9 +644,11 @@ export const OrchestrationCheckpointFile = Schema.Struct({
 export type OrchestrationCheckpointFile = typeof OrchestrationCheckpointFile.Type;
 
 /**
- * A thread's own line count, summed across every turn file summary it has
- * produced. Distinct from a checkout's working-tree diffstat, which is shared
- * by every thread pointing at the same checkout.
+ * A thread's own line count: its newest measured share of the checkout's
+ * uncommitted change, plus the file summaries of any turn after that
+ * measurement (a running turn's live edits). Threads with no measurement yet
+ * sum every turn's summary. Distinct from a checkout's working-tree diffstat,
+ * which is shared by every thread pointing at the same checkout.
  */
 export const OrchestrationThreadDiffStat = Schema.Struct({
   additions: NonNegativeInt,
@@ -663,6 +665,12 @@ export const OrchestrationCheckpointSummary = Schema.Struct({
   checkpointRef: CheckpointRef,
   status: OrchestrationCheckpointStatus,
   files: Schema.Array(OrchestrationCheckpointFile),
+  /**
+   * The thread's share of what was uncommitted in its checkout when this turn
+   * finished (see the server's estimateThreadUncommittedDiffStat). Set only on
+   * a turn's final capture; the sidebar rollup starts from the newest one.
+   */
+  threadDiffStat: Schema.optional(OrchestrationThreadDiffStat),
   assistantMessageId: Schema.NullOr(MessageId),
   completedAt: IsoDateTime,
 });
@@ -1743,6 +1751,8 @@ const ThreadTurnDiffCompleteCommand = Schema.Struct({
   checkpointRef: CheckpointRef,
   status: OrchestrationCheckpointStatus,
   files: Schema.Array(OrchestrationCheckpointFile),
+  /** See OrchestrationCheckpointSummary.threadDiffStat. */
+  threadDiffStat: Schema.optional(OrchestrationThreadDiffStat),
   assistantMessageId: Schema.optional(MessageId),
   checkpointTurnCount: NonNegativeInt,
   /**
@@ -2230,6 +2240,8 @@ export const ThreadTurnDiffCompletedPayload = Schema.Struct({
   checkpointRef: CheckpointRef,
   status: OrchestrationCheckpointStatus,
   files: Schema.Array(OrchestrationCheckpointFile),
+  /** See OrchestrationCheckpointSummary.threadDiffStat. */
+  threadDiffStat: Schema.optional(OrchestrationThreadDiffStat),
   assistantMessageId: Schema.NullOr(MessageId),
   completedAt: IsoDateTime,
   completesTurn: Schema.optional(Schema.Boolean),

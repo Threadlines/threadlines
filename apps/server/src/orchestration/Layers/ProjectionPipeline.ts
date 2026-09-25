@@ -1530,6 +1530,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
               checkpointRef: null,
               checkpointStatus: null,
               checkpointFiles: [],
+              checkpointThreadDiffStat: null,
               checkpointCompletedAt: null,
             });
           }
@@ -1593,6 +1594,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             checkpointRef: null,
             checkpointStatus: null,
             checkpointFiles: [],
+            checkpointThreadDiffStat: null,
             checkpointCompletedAt: null,
           });
           return;
@@ -1631,6 +1633,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             checkpointRef: null,
             checkpointStatus: null,
             checkpointFiles: [],
+            checkpointThreadDiffStat: null,
             checkpointCompletedAt: null,
           });
           return;
@@ -1651,6 +1654,17 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
               : null,
             eventTurnId: event.payload.turnId,
           });
+          // Same guard as the in-memory projector and the web store: a late
+          // provider placeholder (status "missing") must not overwrite a real
+          // capture, or a reload would disagree with the live views.
+          if (
+            event.payload.status === "missing" &&
+            Option.isSome(existingTurn) &&
+            existingTurn.value.checkpointStatus !== null &&
+            existingTurn.value.checkpointStatus !== "missing"
+          ) {
+            return;
+          }
           const nextState = completesTurn
             ? event.payload.status === "error"
               ? "error"
@@ -1673,6 +1687,9 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
               checkpointRef: event.payload.checkpointRef,
               checkpointStatus: event.payload.status,
               checkpointFiles: event.payload.files,
+              // Belongs to this capture: a recapture without a measurement
+              // must not keep an older one alive.
+              checkpointThreadDiffStat: event.payload.threadDiffStat ?? null,
               checkpointCompletedAt: event.payload.completedAt,
               startedAt: existingTurn.value.startedAt ?? event.payload.completedAt,
               requestedAt: existingTurn.value.requestedAt ?? event.payload.completedAt,
@@ -1697,6 +1714,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             checkpointRef: event.payload.checkpointRef,
             checkpointStatus: event.payload.status,
             checkpointFiles: event.payload.files,
+            checkpointThreadDiffStat: event.payload.threadDiffStat ?? null,
             checkpointCompletedAt: event.payload.completedAt,
           });
           return;

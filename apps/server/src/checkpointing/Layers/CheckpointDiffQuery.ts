@@ -25,6 +25,14 @@ import {
 
 const isTurnDiffResult = Schema.is(OrchestrationGetTurnDiffResult);
 
+// Checkpoint refs capture the whole checkout. In a shared checkout that can
+// include writes from other concurrent threads, and anywhere it includes files
+// that only changed because HEAD moved (a merge of main, say). Turn summaries
+// keep just the paths attributed to the thread, so patches are scoped to them.
+function attributedDiffPaths(paths: Iterable<string>): string[] {
+  return [...new Set([...paths].map((path) => path.replaceAll("\\", "/")))];
+}
+
 function buildTurnDiffResult(
   input: {
     readonly threadId: ThreadId;
@@ -154,23 +162,15 @@ const make = Effect.gen(function* () {
           ? preTurnCheckpointRef
           : fromCheckpointRef;
 
-      // Checkpoint refs capture the whole checkout. In a shared checkout that
-      // can include writes from other concurrent threads, while checkpoint
-      // metadata retains the paths attributed to this thread. Scope the patch
-      // to that attribution so a turn diff cannot expose unrelated changes.
-      const attributedFilePaths = [
-        ...new Set(
-          threadContext.value.checkpoints
-            .filter(
-              (checkpoint) =>
-                checkpoint.checkpointTurnCount > input.fromTurnCount &&
-                checkpoint.checkpointTurnCount <= input.toTurnCount,
-            )
-            .flatMap((checkpoint) =>
-              checkpoint.files.map((file) => file.path.replaceAll("\\", "/")),
-            ),
-        ),
-      ];
+      const attributedFilePaths = attributedDiffPaths(
+        threadContext.value.checkpoints
+          .filter(
+            (checkpoint) =>
+              checkpoint.checkpointTurnCount > input.fromTurnCount &&
+              checkpoint.checkpointTurnCount <= input.toTurnCount,
+          )
+          .flatMap((checkpoint) => checkpoint.files.map((file) => file.path)),
+      );
 
       const diff =
         attributedFilePaths.length === 0
@@ -264,15 +264,20 @@ const make = Effect.gen(function* () {
       });
     }
 
-    const diff = yield* checkpointStore
-      .diffCheckpoints({
-        cwd: workspaceCwd,
-        fromCheckpointRef: checkpointRefForThreadTurn(input.threadId, 0),
-        toCheckpointRef: threadContext.value.toCheckpointRef as CheckpointRef,
-        fallbackFromToHead: false,
-        ignoreWhitespace,
-      })
-      .pipe(Effect.withSpan("checkpoint.fullThread.diffCheckpoints"));
+    const attributedFilePaths = attributedDiffPaths(threadContext.value.attributedFilePaths);
+    const diff =
+      attributedFilePaths.length === 0
+        ? ""
+        : yield* checkpointStore
+            .diffCheckpoints({
+              cwd: workspaceCwd,
+              fromCheckpointRef: checkpointRefForThreadTurn(input.threadId, 0),
+              toCheckpointRef: threadContext.value.toCheckpointRef as CheckpointRef,
+              fallbackFromToHead: false,
+              ignoreWhitespace,
+              filePaths: attributedFilePaths,
+            })
+            .pipe(Effect.withSpan("checkpoint.fullThread.diffCheckpoints"));
 
     const turnDiff = buildTurnDiffResult(
       {

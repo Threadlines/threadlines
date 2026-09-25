@@ -2062,6 +2062,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           checkpointRef: command.checkpointRef,
           status: command.status,
           files: command.files,
+          ...(command.threadDiffStat !== undefined
+            ? { threadDiffStat: command.threadDiffStat }
+            : {}),
           assistantMessageId: command.assistantMessageId ?? null,
           completedAt: command.completedAt,
           completesTurn: command.completesTurn,

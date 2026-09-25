@@ -2864,9 +2864,35 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
             deletions: 3,
           },
         ],
+        threadDiffStat: { additions: 14, deletions: 3 },
         assistantMessageId: MessageId.make("assistant-provider-diff-placeholder"),
         checkpointTurnCount: 1,
         completesTurn: true,
+        createdAt: completedAt,
+      });
+
+      // A provider placeholder that lands after the real capture is ignored,
+      // as the in-memory projector and the web store ignore it; otherwise a
+      // reload would bring back its stale files and drop the measurement.
+      yield* engine.dispatch({
+        type: "thread.turn.diff.complete",
+        commandId: CommandId.make("cmd-provider-diff-late-placeholder"),
+        threadId,
+        turnId,
+        completedAt,
+        checkpointRef: CheckpointRef.make("provider-diff:evt-provider-diff-late-placeholder"),
+        status: "missing",
+        files: [
+          {
+            path: "apps/web/src/components/usage/UsageView.tsx",
+            kind: "modified",
+            additions: 12,
+            deletions: 3,
+          },
+        ],
+        assistantMessageId: MessageId.make("assistant-provider-diff-placeholder"),
+        checkpointTurnCount: 1,
+        completesTurn: false,
         createdAt: completedAt,
       });
 
@@ -2874,17 +2900,24 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
         readonly state: string;
         readonly completedAt: string | null;
         readonly checkpointStatus: string | null;
+        readonly threadDiffStatJson: string | null;
       }>`
         SELECT
           state,
           completed_at AS "completedAt",
-          checkpoint_status AS "checkpointStatus"
+          checkpoint_status AS "checkpointStatus",
+          checkpoint_thread_diff_stat_json AS "threadDiffStatJson"
         FROM projection_turns
         WHERE thread_id = ${threadId}
           AND turn_id = ${turnId}
       `;
       assert.deepEqual(completedTurnRows, [
-        { state: "completed", completedAt, checkpointStatus: "ready" },
+        {
+          state: "completed",
+          completedAt,
+          checkpointStatus: "ready",
+          threadDiffStatJson: '{"additions":14,"deletions":3}',
+        },
       ]);
 
       const threadRows = yield* sql<{ readonly latestTurnId: string | null }>`

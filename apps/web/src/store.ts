@@ -255,6 +255,9 @@ function mapTurnDiffSummary(checkpoint: OrchestrationCheckpointSummary): TurnDif
     checkpointTurnCount: checkpoint.checkpointTurnCount,
     checkpointRef: checkpoint.checkpointRef,
     files: checkpoint.files.map((file) => ({ ...file })),
+    ...(checkpoint.threadDiffStat !== undefined
+      ? { threadDiffStat: { ...checkpoint.threadDiffStat } }
+      : {}),
   };
 }
 
@@ -2138,6 +2141,9 @@ function applyEnvironmentOrchestrationEvent(
           checkpointRef: event.payload.checkpointRef,
           status: event.payload.status,
           files: event.payload.files,
+          ...(event.payload.threadDiffStat !== undefined
+            ? { threadDiffStat: event.payload.threadDiffStat }
+            : {}),
           assistantMessageId: event.payload.assistantMessageId,
           completedAt: event.payload.completedAt,
         });

@@ -959,6 +959,9 @@ export function projectEvent(
             checkpointRef: payload.checkpointRef,
             status: payload.status,
             files: payload.files,
+            ...(payload.threadDiffStat !== undefined
+              ? { threadDiffStat: payload.threadDiffStat }
+              : {}),
             assistantMessageId: payload.assistantMessageId,
             completedAt: payload.completedAt,
           },
