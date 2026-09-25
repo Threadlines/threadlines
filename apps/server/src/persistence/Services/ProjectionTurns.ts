@@ -14,6 +14,7 @@ import {
   OrchestrationProposedPlanId,
   OrchestrationCheckpointFile,
   OrchestrationCheckpointStatus,
+  OrchestrationThreadDiffStat,
   ThreadId,
   TurnId,
 } from "@threadlines/contracts";
@@ -48,6 +49,8 @@ export const ProjectionTurn = Schema.Struct({
   checkpointRef: Schema.NullOr(CheckpointRef),
   checkpointStatus: Schema.NullOr(OrchestrationCheckpointStatus),
   checkpointFiles: Schema.Array(OrchestrationCheckpointFile),
+  /** See OrchestrationCheckpointSummary.threadDiffStat; null when unmeasured. */
+  checkpointThreadDiffStat: Schema.NullOr(OrchestrationThreadDiffStat),
   checkpointCompletedAt: Schema.NullOr(IsoDateTime),
 });
 export type ProjectionTurn = typeof ProjectionTurn.Type;
@@ -67,6 +70,8 @@ export const ProjectionTurnById = Schema.Struct({
   checkpointRef: Schema.NullOr(CheckpointRef),
   checkpointStatus: Schema.NullOr(OrchestrationCheckpointStatus),
   checkpointFiles: Schema.Array(OrchestrationCheckpointFile),
+  /** See OrchestrationCheckpointSummary.threadDiffStat; null when unmeasured. */
+  checkpointThreadDiffStat: Schema.NullOr(OrchestrationThreadDiffStat),
   checkpointCompletedAt: Schema.NullOr(IsoDateTime),
 });
 export type ProjectionTurnById = typeof ProjectionTurnById.Type;

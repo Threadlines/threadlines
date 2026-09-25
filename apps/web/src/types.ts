@@ -108,6 +108,8 @@ export interface TurnDiffSummary {
   checkpointRef?: CheckpointRef | undefined;
   assistantMessageId?: MessageId | undefined;
   checkpointTurnCount?: number | undefined;
+  /** See OrchestrationCheckpointSummary.threadDiffStat. */
+  threadDiffStat?: OrchestrationThreadDiffStat | undefined;
 }
 
 export interface Project {

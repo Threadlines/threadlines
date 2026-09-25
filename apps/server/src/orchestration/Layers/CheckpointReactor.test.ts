@@ -253,11 +253,12 @@ async function waitForEvent(
   return poll();
 }
 
-function runGit(cwd: string, args: ReadonlyArray<string>) {
+function runGit(cwd: string, args: ReadonlyArray<string>, env?: NodeJS.ProcessEnv) {
   return execFileSync("git", args, {
     cwd,
     stdio: ["ignore", "pipe", "pipe"],
     encoding: "utf8",
+    ...(env === undefined ? {} : { env: { ...process.env, ...env } }),
   });
 }
 
@@ -1133,6 +1134,57 @@ describe("CheckpointReactor", () => {
       checkpointRefForThreadTurn(threadId, 2),
     ]);
     expect(chainDiff).toContain("README.md");
+  });
+
+  it("leaves files a turn only merged in out of its summary and measures what stayed uncommitted", async () => {
+    const harness = await createHarness({ seedFilesystemCheckpoints: false });
+    const threadId = ThreadId.make("thread-1");
+    const turnId = asTurnId("turn-merges-upstream");
+    const createdAt = "2026-01-01T00:00:00.000Z";
+
+    // Upstream work that predates the turn; dated in the past so HEAD's
+    // reflog places it before the pre-turn snapshot.
+    const earlier = {
+      GIT_AUTHOR_DATE: "2001-01-01T00:00:00Z",
+      GIT_COMMITTER_DATE: "2001-01-01T00:00:00Z",
+    };
+    const branch = runGit(harness.cwd, ["symbolic-ref", "--short", "HEAD"]).trim();
+    runGit(harness.cwd, ["checkout", "-b", "upstream"], earlier);
+    fs.writeFileSync(path.join(harness.cwd, "upstream.txt"), "a\nb\nc\n", "utf8");
+    runGit(harness.cwd, ["add", "upstream.txt"], earlier);
+    runGit(harness.cwd, ["commit", "-m", "Upstream work"], earlier);
+    runGit(harness.cwd, ["checkout", branch], earlier);
+
+    harness.provider.emit({
+      type: "turn.started",
+      eventId: EventId.make("evt-turn-started-merges-upstream"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt,
+      threadId,
+      turnId,
+    });
+    await waitForGitRefExists(harness.cwd, checkpointPreTurnRefForThreadTurn(threadId, turnId));
+
+    runGit(harness.cwd, ["merge", "--ff-only", "upstream"]);
+    fs.writeFileSync(path.join(harness.cwd, "README.md"), "v2\n", "utf8");
+    harness.provider.emit({
+      type: "turn.completed",
+      eventId: EventId.make("evt-turn-completed-merges-upstream"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt,
+      threadId,
+      turnId,
+      payload: { state: "completed" },
+    });
+
+    await waitForThread(
+      harness.readModel,
+      (entry) => entry.latestTurn?.turnId === turnId && entry.checkpoints.length === 1,
+    );
+    const readModel = await harness.readModel();
+    const checkpoint = readModel.threads.find((entry) => entry.id === threadId)?.checkpoints[0];
+    expect(checkpoint?.files.map((file) => file.path)).toEqual(["README.md"]);
+    expect(checkpoint?.threadDiffStat).toEqual({ additions: 1, deletions: 1 });
   });
 
   it("refreshes an early diff checkpoint when the turn completes", async () => {

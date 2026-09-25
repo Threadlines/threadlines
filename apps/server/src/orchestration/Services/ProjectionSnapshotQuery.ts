@@ -49,6 +49,8 @@ export interface ProjectionFullThreadDiffContext {
   readonly worktreePath: string | null;
   readonly latestCheckpointTurnCount: number;
   readonly toCheckpointRef: CheckpointRef | null;
+  /** Every path the thread's turn summaries report through `toTurnCount`. */
+  readonly attributedFilePaths: ReadonlyArray<string>;
 }
 
 /**

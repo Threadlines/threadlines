@@ -1,9 +1,12 @@
 import {
+  type CheckpointRef,
   CommandId,
   EventId,
   MessageId,
   type OrchestrationCheckpointFile,
+  type OrchestrationCheckpointSummary,
   type OrchestrationLatestTurn,
+  type OrchestrationThreadDiffStat,
   type OrchestrationThreadActivity,
   type ProjectId,
   ThreadId,
@@ -27,7 +30,10 @@ import { makeDrainableWorker } from "@threadlines/shared/DrainableWorker";
 import { normalizeWorkspacePath } from "@threadlines/shared/path";
 import { compareTranscriptOrder } from "@threadlines/shared/transcriptOrder";
 
-import { parseTurnDiffFilesFromUnifiedDiff } from "../../checkpointing/Diffs.ts";
+import {
+  estimateThreadUncommittedDiffStat,
+  parseTurnDiffFilesFromUnifiedDiff,
+} from "../../checkpointing/Diffs.ts";
 import { normalizeCheckpointFilePath } from "../../checkpointing/SelectiveRevert.ts";
 import {
   checkpointPreTurnRefForThreadTurn,
@@ -452,6 +458,95 @@ const make = Effect.gen(function* () {
     return cwd;
   });
 
+  // A turn's snapshots also differ wherever HEAD moved during the turn: the
+  // agent merged main, pulled, rebased, or switched branches. Those files
+  // changed through history rather than edits, so they leave the summary, and
+  // with it the sidebar badge, the turn diff, and selective revert. Files the
+  // provider reported editing always stay.
+  const withoutHeadMovementFiles = Effect.fn("withoutHeadMovementFiles")(function* (input: {
+    readonly threadId: ThreadId;
+    readonly turnId: TurnId;
+    readonly cwd: string;
+    readonly fromCheckpointRef: CheckpointRef;
+    readonly toCheckpointRef: CheckpointRef;
+    readonly files: ReadonlyArray<OrchestrationCheckpointFile>;
+    readonly providerSummaryFiles: ReadonlyArray<OrchestrationCheckpointFile> | undefined;
+  }) {
+    if (input.files.length === 0) {
+      return input.files;
+    }
+    const headMovementPaths = yield* checkpointStore
+      .listHeadMovementPaths({
+        cwd: input.cwd,
+        fromCheckpointRef: input.fromCheckpointRef,
+        toCheckpointRef: input.toCheckpointRef,
+      })
+      .pipe(
+        Effect.catch((error) =>
+          Effect.logWarning("failed to detect head movement in checkpoint diff", {
+            threadId: input.threadId,
+            turnId: input.turnId,
+            detail: error.message,
+          }).pipe(Effect.as([] as ReadonlyArray<string>)),
+        ),
+      );
+    if (headMovementPaths.length === 0) {
+      return input.files;
+    }
+    const movedPaths = new Set(headMovementPaths.map(normalizeCheckpointFilePath));
+    const providerPaths = new Set(
+      (input.providerSummaryFiles ?? []).map((file) => normalizeCheckpointFilePath(file.path)),
+    );
+    return input.files.filter((file) => {
+      const path = normalizeCheckpointFilePath(file.path);
+      return providerPaths.has(path) || !movedPaths.has(path);
+    });
+  });
+
+  // The thread's share of what was uncommitted when a turn finished (see
+  // estimateThreadUncommittedDiffStat), over the turns the badge still counts.
+  // Undefined when there is nothing to measure against: no counted turn has
+  // files, or the snapshot predates recorded heads.
+  const measureThreadDiffStat = Effect.fn("measureThreadDiffStat")(function* (input: {
+    readonly threadId: ThreadId;
+    readonly turnId: TurnId;
+    readonly cwd: string;
+    readonly checkpointRef: CheckpointRef;
+    readonly turnCount: number;
+    readonly files: ReadonlyArray<OrchestrationCheckpointFile>;
+    readonly checkpoints: ReadonlyArray<OrchestrationCheckpointSummary>;
+    readonly diffStatBaselineTurnCount: number;
+  }): Effect.fn.Return<OrchestrationThreadDiffStat | undefined> {
+    const turnFiles = [
+      ...input.checkpoints
+        .filter(
+          (checkpoint) =>
+            checkpoint.checkpointTurnCount > input.diffStatBaselineTurnCount &&
+            checkpoint.checkpointTurnCount !== input.turnCount,
+        )
+        .map((checkpoint) => checkpoint.files),
+      input.files,
+    ];
+    if (turnFiles.every((files) => files.length === 0)) {
+      return undefined;
+    }
+    const uncommittedFiles = yield* checkpointStore
+      .diffCheckpointAgainstHead({ cwd: input.cwd, checkpointRef: input.checkpointRef })
+      .pipe(
+        Effect.catch((error) =>
+          Effect.logWarning("failed to measure uncommitted thread changes", {
+            threadId: input.threadId,
+            turnId: input.turnId,
+            detail: error.message,
+          }).pipe(Effect.as(null)),
+        ),
+      );
+    if (uncommittedFiles === null) {
+      return undefined;
+    }
+    return estimateThreadUncommittedDiffStat({ turnFiles, uncommittedFiles });
+  });
+
   // Shared tail for both capture paths: creates the git checkpoint ref, diffs
   // it against the previous turn, then dispatches the domain events to update
   // the orchestration read model.
@@ -464,6 +559,8 @@ const make = Effect.gen(function* () {
         readonly role: string;
         readonly turnId: TurnId | null;
       }>;
+      readonly checkpoints: ReadonlyArray<OrchestrationCheckpointSummary>;
+      readonly diffStatBaselineTurnCount: number;
     };
     readonly cwd: string;
     readonly turnCount: number;
@@ -542,6 +639,17 @@ const make = Effect.gen(function* () {
             deletions: file.deletions,
           })),
         ),
+        Effect.flatMap((diffFiles) =>
+          withoutHeadMovementFiles({
+            threadId: input.threadId,
+            turnId: input.turnId,
+            cwd: input.cwd,
+            fromCheckpointRef: summaryFromCheckpointRef,
+            toCheckpointRef: targetCheckpointRef,
+            files: diffFiles,
+            providerSummaryFiles: input.providerSummaryFiles,
+          }),
+        ),
         Effect.flatMap((derivedFiles) => {
           if (!hasConcurrentSession) {
             return Effect.succeed(derivedFiles);
@@ -610,6 +718,22 @@ const make = Effect.gen(function* () {
         }),
       );
 
+    // Only a turn's final capture measures: the rollup adds later turns' live
+    // summaries on top of the newest measurement, so a mid-turn one would
+    // freeze the badge while that same turn keeps editing.
+    const threadDiffStat = input.completesTurn
+      ? yield* measureThreadDiffStat({
+          threadId: input.threadId,
+          turnId: input.turnId,
+          cwd: input.cwd,
+          checkpointRef: targetCheckpointRef,
+          turnCount: input.turnCount,
+          files,
+          checkpoints: input.thread.checkpoints,
+          diffStatBaselineTurnCount: input.thread.diffStatBaselineTurnCount,
+        })
+      : undefined;
+
     const assistantMessageId =
       input.assistantMessageId ??
       input.thread.messages
@@ -626,6 +750,7 @@ const make = Effect.gen(function* () {
       checkpointRef: targetCheckpointRef,
       status: input.status,
       files,
+      ...(threadDiffStat !== undefined ? { threadDiffStat } : {}),
       assistantMessageId,
       checkpointTurnCount: input.turnCount,
       completesTurn: input.completesTurn,

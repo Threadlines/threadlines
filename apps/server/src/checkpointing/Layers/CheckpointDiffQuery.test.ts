@@ -61,7 +61,7 @@ function makeThreadCheckpointContext(input: {
 }
 
 describe("CheckpointDiffQueryLive", () => {
-  it("uses the narrow full-thread context lookup for all-turns diffs", async () => {
+  it("scopes all-turns diffs to the thread's attributed paths via the narrow context lookup", async () => {
     const projectId = ProjectId.make("project-full-thread");
     const threadId = ThreadId.make("thread-full-thread");
     const toCheckpointRef = checkpointRefForThreadTurn(threadId, 4);
@@ -72,16 +72,18 @@ describe("CheckpointDiffQueryLive", () => {
       readonly toCheckpointRef: CheckpointRef;
       readonly cwd: string;
       readonly ignoreWhitespace: boolean;
+      readonly filePaths: ReadonlyArray<string> | undefined;
     }> = [];
 
     const checkpointStore = makeCheckpointStoreStub({
-      diffCheckpoints: ({ fromCheckpointRef, toCheckpointRef, cwd, ignoreWhitespace }) =>
+      diffCheckpoints: ({ fromCheckpointRef, toCheckpointRef, cwd, ignoreWhitespace, filePaths }) =>
         Effect.sync(() => {
           diffCheckpointsCalls.push({
             fromCheckpointRef,
             toCheckpointRef,
             cwd,
             ignoreWhitespace,
+            filePaths,
           });
           return "full thread diff patch";
         }),
@@ -120,6 +122,7 @@ describe("CheckpointDiffQueryLive", () => {
                 worktreePath: "/tmp/worktree",
                 latestCheckpointTurnCount: 4,
                 toCheckpointRef,
+                attributedFilePaths: ["src/app.ts", "src\\win.ts", "src/win.ts"],
               });
             }),
           listThreadDiffStatBaselines: () => Effect.die("unused"),
@@ -149,6 +152,7 @@ describe("CheckpointDiffQueryLive", () => {
         fromCheckpointRef: checkpointRefForThreadTurn(threadId, 0),
         toCheckpointRef,
         ignoreWhitespace: true,
+        filePaths: ["src/app.ts", "src/win.ts"],
       },
     ]);
     expect(result).toEqual({

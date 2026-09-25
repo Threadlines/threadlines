@@ -76,6 +76,26 @@ const makeCheckpointStore = Effect.gen(function* () {
     },
   );
 
+  const listHeadMovementPaths: CheckpointStoreShape["listHeadMovementPaths"] = Effect.fn(
+    "listHeadMovementPaths",
+  )(function* (input) {
+    const checkpoints = yield* resolveCheckpoints(
+      "CheckpointStore.listHeadMovementPaths",
+      input.cwd,
+    );
+    return yield* checkpoints.listHeadMovementPaths(input);
+  });
+
+  const diffCheckpointAgainstHead: CheckpointStoreShape["diffCheckpointAgainstHead"] = Effect.fn(
+    "diffCheckpointAgainstHead",
+  )(function* (input) {
+    const checkpoints = yield* resolveCheckpoints(
+      "CheckpointStore.diffCheckpointAgainstHead",
+      input.cwd,
+    );
+    return yield* checkpoints.diffCheckpointAgainstHead(input);
+  });
+
   const diffCheckpointEntries: CheckpointStoreShape["diffCheckpointEntries"] = Effect.fn(
     "diffCheckpointEntries",
   )(function* (input) {
@@ -130,6 +150,8 @@ const makeCheckpointStore = Effect.gen(function* () {
     restoreCheckpoint,
     resolveCheckpointCommit,
     diffCheckpoints,
+    listHeadMovementPaths,
+    diffCheckpointAgainstHead,
     diffCheckpointEntries,
     hashWorktreePaths,
     restoreCheckpointPaths,

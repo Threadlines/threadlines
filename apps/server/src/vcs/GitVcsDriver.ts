@@ -364,6 +364,10 @@ const WORKSPACE_FILES_MAX_OUTPUT_BYTES = 16 * 1024 * 1024;
 const GIT_CHECK_IGNORE_MAX_STDIN_BYTES = 256 * 1024;
 const GIT_PATH_ARGS_MAX_BYTES = 256 * 1024;
 const CHECKPOINT_DIFF_MAX_OUTPUT_BYTES = 10_000_000;
+// Enough HEAD moves to cover any one turn; a window with more is not trusted.
+const CHECKPOINT_REFLOG_MAX_ENTRIES = 1_000;
+// Windows caps a whole command line at 32,767 characters.
+const CHECKPOINT_DIFF_PATHSPEC_MAX_BYTES = 16 * 1024;
 const CHECKPOINT_ENTRIES_MAX_OUTPUT_BYTES = 16_000_000;
 const CHECKPOINT_MIGRATION_MAX_OUTPUT_BYTES = 16_000_000;
 const WORKSPACE_GIT_HARDENED_CONFIG_ARGS = [
@@ -423,6 +427,30 @@ function chunkPathsByByteBudget(
     chunks.push(chunk);
   }
 
+  return chunks;
+}
+
+// Like chunkPathsByByteBudget, but never splits a group across chunks.
+function chunkPathGroupsByByteBudget(
+  groups: ReadonlyArray<ReadonlyArray<string>>,
+  maxChunkBytes: number,
+): string[][] {
+  const chunks: string[][] = [];
+  let chunk: string[] = [];
+  let chunkBytes = 0;
+  for (const group of groups) {
+    const groupBytes = group.reduce((total, path) => total + Buffer.byteLength(path) + 1, 0);
+    if (chunk.length > 0 && chunkBytes + groupBytes > maxChunkBytes) {
+      chunks.push(chunk);
+      chunk = [];
+      chunkBytes = 0;
+    }
+    chunk.push(...group);
+    chunkBytes += groupBytes;
+  }
+  if (chunk.length > 0) {
+    chunks.push(chunk);
+  }
   return chunks;
 }
 
@@ -500,6 +528,70 @@ function parseDiffTreeEntries(stdout: string): RawCheckpointEntry[] {
     });
   }
 
+  return entries;
+}
+
+// Snapshot commits are parentless, so the commit HEAD pointed at when the
+// snapshot was taken rides along as a trailer. Diffs use it to tell edits made
+// in the checkout apart from history that moved HEAD (a merge, a checkout).
+const CHECKPOINT_HEAD_TRAILER = "threadlines-head";
+
+function checkpointCommitMessage(checkpointRef: string, headCommit: string | null): string {
+  const subject = `threadlines checkpoint ref=${checkpointRef}`;
+  return headCommit === null ? subject : `${subject}\n\n${CHECKPOINT_HEAD_TRAILER}: ${headCommit}`;
+}
+
+interface CheckpointCommitMetadata {
+  /** HEAD when the snapshot was taken; null on an unborn branch or for older snapshots. */
+  readonly head: string | null;
+  /** Committer time of the snapshot commit, in epoch seconds. */
+  readonly capturedAtSeconds: number | null;
+}
+
+// Parses `git cat-file commit` output for a snapshot commit.
+function parseCheckpointCommitMetadata(raw: string): CheckpointCommitMetadata {
+  const separator = raw.indexOf("\n\n");
+  const headers = separator === -1 ? raw : raw.slice(0, separator);
+  const body = separator === -1 ? "" : raw.slice(separator + 2);
+  const committer = /^committer .* (\d+) [+-]\d{4}$/mu.exec(headers);
+  const trailer = new RegExp(`^${CHECKPOINT_HEAD_TRAILER}: ([0-9a-f]{40,64})$`, "mu").exec(body);
+  return {
+    head: trailer?.[1] ?? null,
+    capturedAtSeconds: committer?.[1] === undefined ? null : Number(committer[1]),
+  };
+}
+
+// Parses `git diff --numstat -z`: "<add>\t<del>\t<path>\0", or for a rename
+// "<add>\t<del>\t\0<old>\0<new>\0". Binary files report "-" and count as zero.
+// A rename is keyed by its new path, as the patch parser names it, and keeps
+// its old one in `previousPath`.
+function parseNumstatEntries(stdout: string): VcsDriver.VcsCheckpointFileStat[] {
+  const tokens = stdout.split("\0");
+  const entries: VcsDriver.VcsCheckpointFileStat[] = [];
+  let index = 0;
+  while (index < tokens.length) {
+    const match = /^(-|\d+)\t(-|\d+)\t(.*)$/su.exec(tokens[index] ?? "");
+    index += 1;
+    if (!match) {
+      continue;
+    }
+    let entryPath = match[3] ?? "";
+    let previousPath: string | undefined;
+    if (entryPath.length === 0) {
+      previousPath = tokens[index];
+      entryPath = tokens[index + 1] ?? "";
+      index += 2;
+    }
+    if (entryPath.length === 0) {
+      continue;
+    }
+    entries.push({
+      path: entryPath,
+      ...(previousPath ? { previousPath } : {}),
+      additions: match[1] === "-" ? 0 : Number(match[1]),
+      deletions: match[2] === "-" ? 0 : Number(match[2]),
+    });
+  }
   return entries;
 }
 
@@ -787,6 +879,174 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
       }),
     );
 
+  const readCheckpointMetadata = (cwd: string, checkpointRef: string) =>
+    execute({
+      operation: "GitVcsDriver.checkpoints.readCheckpointMetadata",
+      cwd,
+      args: ["cat-file", "commit", `${checkpointRef}^{commit}`],
+      allowNonZeroExit: true,
+      maxOutputBytes: 64 * 1024,
+    }).pipe(
+      Effect.map((result) =>
+        result.exitCode === 0 ? parseCheckpointCommitMetadata(result.stdout) : null,
+      ),
+    );
+
+  // Paths whose content differs between two tree-ish revisions, renames split
+  // into their two sides.
+  const listChangedPaths = (cwd: string, fromRevision: string, toRevision: string) =>
+    execute({
+      operation: "GitVcsDriver.checkpoints.listChangedPaths",
+      cwd,
+      args: ["diff-tree", "-r", "-z", "--no-renames", "--name-only", fromRevision, toRevision],
+      maxOutputBytes: CHECKPOINT_ENTRIES_MAX_OUTPUT_BYTES,
+    }).pipe(
+      Effect.map((result) =>
+        result.stdoutTruncated ? null : new Set(splitNullSeparatedPaths(result.stdout, false)),
+      ),
+    );
+
+  // Pairs each path with its rename partner between two revisions (as plain
+  // `git diff` detects renames), so a diff scoped to the path still sees the
+  // rename instead of an added file.
+  const groupPathsWithRenamePartners = Effect.fn(
+    "GitVcsDriver.checkpoints.groupPathsWithRenamePartners",
+  )(function* (
+    cwd: string,
+    fromRevision: string,
+    toRevision: string,
+    paths: ReadonlyArray<string>,
+  ) {
+    const result = yield* execute({
+      operation: "GitVcsDriver.checkpoints.groupPathsWithRenamePartners",
+      cwd,
+      args: ["diff", "--name-status", "-z", "--no-ext-diff", fromRevision, toRevision],
+      maxOutputBytes: CHECKPOINT_ENTRIES_MAX_OUTPUT_BYTES,
+    });
+    const partners = new Map<string, string>();
+    if (!result.stdoutTruncated) {
+      const tokens = result.stdout.split("\0");
+      let index = 0;
+      while (index < tokens.length) {
+        const status = tokens[index] ?? "";
+        if (status.startsWith("R") || status.startsWith("C")) {
+          const source = tokens[index + 1] ?? "";
+          const target = tokens[index + 2] ?? "";
+          if (status.startsWith("R") && source.length > 0 && target.length > 0) {
+            partners.set(source, target);
+            partners.set(target, source);
+          }
+          index += 3;
+        } else {
+          index += 2;
+        }
+      }
+    }
+    const grouped = new Set<string>();
+    const groups: string[][] = [];
+    for (const path of paths) {
+      if (grouped.has(path)) {
+        continue;
+      }
+      const partner = partners.get(path);
+      const group = partner === undefined || grouped.has(partner) ? [path] : [path, partner];
+      for (const member of group) {
+        grouped.add(member);
+      }
+      groups.push(group);
+    }
+    return groups;
+  });
+
+  // Paths touched by commits made in this checkout since `sinceSeconds`, read
+  // from HEAD's reflog, which only this checkout writes. `commit` entries
+  // (amend and a hand-finished merge included) and `revert` create new work
+  // here; merges, pulls, rebases, cherry-picks, checkouts and resets only move
+  // HEAD through history that already existed. Merge commits contribute just
+  // the paths their resolution changed (`--cc`). Null when the reflog cannot
+  // vouch for the window -- logging disabled, no entry since the snapshot even
+  // though HEAD moved, or more entries than we read -- or the answer is too
+  // large to trust.
+  const listPathsCommittedSince = Effect.fn("GitVcsDriver.checkpoints.listPathsCommittedSince")(
+    function* (cwd: string, sinceSeconds: number) {
+      const operation = "GitVcsDriver.checkpoints.listPathsCommittedSince";
+      const reflogResult = yield* execute({
+        operation,
+        cwd,
+        args: [
+          "log",
+          "--walk-reflogs",
+          "--format=%H%x09%gd%x09%gs",
+          "--date=unix",
+          `--max-count=${CHECKPOINT_REFLOG_MAX_ENTRIES}`,
+          "HEAD",
+        ],
+        allowNonZeroExit: true,
+        maxOutputBytes: CHECKPOINT_ENTRIES_MAX_OUTPUT_BYTES,
+      });
+      if (reflogResult.exitCode !== 0 || reflogResult.stdoutTruncated) {
+        return null;
+      }
+
+      // Newest first. Each entry's older neighbor is the HEAD it replaced.
+      const entries = reflogResult.stdout.split("\n").flatMap((line) => {
+        const [commit = "", selector = "", ...subjectParts] = line.split("\t");
+        const movedAt = Number(/@\{(\d+)\}$/u.exec(selector)?.[1]);
+        return commit.length > 0 && Number.isFinite(movedAt)
+          ? [{ commit, movedAt, subject: subjectParts.join("\t") }]
+          : [];
+      });
+      const windowEnd = entries.findIndex((entry) => entry.movedAt < sinceSeconds);
+      const inWindow = windowEnd === -1 ? entries : entries.slice(0, windowEnd);
+      if (
+        inWindow.length === 0 ||
+        (windowEnd === -1 && entries.length >= CHECKPOINT_REFLOG_MAX_ENTRIES)
+      ) {
+        return null;
+      }
+
+      // One `diff-tree --stdin` line per commit made here. An amend is
+      // compared with the commit it replaced rather than its parent, so an
+      // amend that takes a change back out still counts that file.
+      const diffLines: string[] = [];
+      inWindow.forEach((entry, index) => {
+        if (!/^(?:commit(?: \([a-z]+\))?|revert): /u.test(entry.subject)) {
+          return;
+        }
+        const replaced = entries[index + 1]?.commit;
+        diffLines.push(
+          entry.subject.startsWith("commit (amend): ") && replaced !== undefined
+            ? `${entry.commit} ${replaced}`
+            : entry.commit,
+        );
+      });
+      if (diffLines.length === 0) {
+        return new Set<string>();
+      }
+
+      const pathsResult = yield* execute({
+        operation,
+        cwd,
+        args: [
+          "diff-tree",
+          "--stdin",
+          "-r",
+          "-z",
+          "--no-renames",
+          "--name-only",
+          "--no-commit-id",
+          "--cc",
+          "--root",
+        ],
+        stdin: `${diffLines.join("\n")}\n`,
+        maxOutputBytes: CHECKPOINT_ENTRIES_MAX_OUTPUT_BYTES,
+      });
+      return pathsResult.stdoutTruncated
+        ? null
+        : new Set(splitNullSeparatedPaths(pathsResult.stdout, false));
+    },
+  );
+
   const resolveGitCommonDir = (cwd: string) =>
     Effect.gen(function* () {
       const result = yield* execute({
@@ -916,12 +1176,14 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
         .pipe(Effect.ignore);
 
       yield* Effect.gen(function* () {
-        const headExists = yield* hasHeadCommit(input.cwd);
-        if (headExists) {
+        // Read by oid so the recorded head is exactly the commit the snapshot
+        // was layered on, even if HEAD moves while the capture runs.
+        const headCommit = yield* resolveHeadCommit(input.cwd);
+        if (headCommit !== null) {
           yield* execute({
             operation,
             cwd: input.cwd,
-            args: ["read-tree", "HEAD"],
+            args: ["read-tree", headCommit],
             env: commitEnv,
           });
         }
@@ -950,7 +1212,7 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
           });
         }
 
-        const message = `threadlines checkpoint ref=${input.checkpointRef}`;
+        const message = checkpointCommitMessage(input.checkpointRef, headCommit);
         const commitTreeResult = yield* execute({
           operation,
           cwd: input.cwd,
@@ -1382,36 +1644,134 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
         }
       }
 
-      const result = yield* execute({
-        operation,
-        cwd: input.cwd,
-        args: [
-          "diff",
-          "--patch",
-          "--no-color",
-          "--no-ext-diff",
-          "--no-textconv",
-          ...(input.ignoreWhitespace ? ["--ignore-all-space"] : []),
-          `${fromRevision}^{commit}`,
-          `${input.toCheckpointRef}^{commit}`,
-          ...(input.filePaths === undefined ? [] : ["--", ...input.filePaths.map(literalPathspec)]),
-        ],
-        allowNonZeroExit: true,
-        maxOutputBytes: CHECKPOINT_DIFF_MAX_OUTPUT_BYTES,
-      });
-
-      if (result.exitCode !== 0) {
-        return yield* new VcsProcessExitError({
+      // Patches are per file, so a long path list can run as several diffs
+      // whose output concatenates cleanly; that keeps each command line under
+      // Windows' limit. A rename only reads as one when both of its paths are
+      // in the same diff, so each requested path travels with its partner.
+      const pathspecChunks =
+        input.filePaths === undefined
+          ? [undefined]
+          : chunkPathGroupsByByteBudget(
+              yield* groupPathsWithRenamePartners(
+                input.cwd,
+                `${fromRevision}^{commit}`,
+                `${input.toCheckpointRef}^{commit}`,
+                input.filePaths,
+              ),
+              CHECKPOINT_DIFF_PATHSPEC_MAX_BYTES,
+            ).map((chunk) => chunk.map(literalPathspec));
+      const patches: string[] = [];
+      for (const pathspecs of pathspecChunks) {
+        const result = yield* execute({
           operation,
-          command: "git diff",
           cwd: input.cwd,
-          exitCode: result.exitCode,
-          detail: result.stderr.trim() || "Checkpoint ref is unavailable for diff operation.",
+          args: [
+            "diff",
+            "--patch",
+            "--no-color",
+            "--no-ext-diff",
+            "--no-textconv",
+            ...(input.ignoreWhitespace ? ["--ignore-all-space"] : []),
+            `${fromRevision}^{commit}`,
+            `${input.toCheckpointRef}^{commit}`,
+            ...(pathspecs === undefined ? [] : ["--", ...pathspecs]),
+          ],
+          allowNonZeroExit: true,
+          maxOutputBytes: CHECKPOINT_DIFF_MAX_OUTPUT_BYTES,
         });
+
+        if (result.exitCode !== 0) {
+          return yield* new VcsProcessExitError({
+            operation,
+            command: "git diff",
+            cwd: input.cwd,
+            exitCode: result.exitCode,
+            detail: result.stderr.trim() || "Checkpoint ref is unavailable for diff operation.",
+          });
+        }
+        patches.push(result.stdout);
       }
 
-      return result.stdout;
+      return patches.join("");
     }),
+
+    // A path counts as head movement when HEAD changed it between the two
+    // snapshots and the checkout matched HEAD for it on both sides, so the
+    // whole change is history (a merge, pull, rebase, cherry-pick, checkout,
+    // or reset), not an edit. Paths touched by commits made in the checkout in
+    // between stay edits. Any uncertainty (older snapshots without a recorded
+    // head, an unusable reflog, oversized output) answers with no paths, which
+    // keeps the plain snapshot diff.
+    listHeadMovementPaths: Effect.fn("GitVcsDriver.checkpoints.listHeadMovementPaths")(
+      function* (input) {
+        yield* ensureLegacyCheckpointRefsMigrated(input.cwd);
+        const from = yield* readCheckpointMetadata(input.cwd, input.fromCheckpointRef);
+        const to = yield* readCheckpointMetadata(input.cwd, input.toCheckpointRef);
+        if (!from?.head || !to?.head || from.head === to.head || from.capturedAtSeconds === null) {
+          return [];
+        }
+
+        const moved = yield* listChangedPaths(input.cwd, from.head, to.head);
+        if (moved === null || moved.size === 0) {
+          return [];
+        }
+        const editedBefore = yield* listChangedPaths(
+          input.cwd,
+          from.head,
+          `${input.fromCheckpointRef}^{commit}`,
+        );
+        const editedAfter = yield* listChangedPaths(
+          input.cwd,
+          to.head,
+          `${input.toCheckpointRef}^{commit}`,
+        );
+        if (editedBefore === null || editedAfter === null) {
+          return [];
+        }
+        const candidates = [...moved].filter(
+          (candidate) => !editedBefore.has(candidate) && !editedAfter.has(candidate),
+        );
+        if (candidates.length === 0) {
+          return [];
+        }
+
+        const committedHere = yield* listPathsCommittedSince(input.cwd, from.capturedAtSeconds);
+        if (committedHere === null) {
+          return [];
+        }
+        return candidates.filter((candidate) => !committedHere.has(candidate));
+      },
+    ),
+
+    // Per-path line counts between a snapshot and the HEAD it was layered on:
+    // what was uncommitted in the checkout at that moment, untracked files
+    // included. Null for snapshots without a recorded head.
+    diffCheckpointAgainstHead: Effect.fn("GitVcsDriver.checkpoints.diffCheckpointAgainstHead")(
+      function* (input) {
+        const operation = "GitVcsDriver.checkpoints.diffCheckpointAgainstHead";
+        yield* ensureLegacyCheckpointRefsMigrated(input.cwd);
+        const metadata = yield* readCheckpointMetadata(input.cwd, input.checkpointRef);
+        if (!metadata?.head) {
+          return null;
+        }
+        const result = yield* execute({
+          operation,
+          cwd: input.cwd,
+          args: [
+            "diff",
+            "--numstat",
+            "-z",
+            "--no-color",
+            "--no-ext-diff",
+            "--no-textconv",
+            metadata.head,
+            `${input.checkpointRef}^{commit}`,
+          ],
+          maxOutputBytes: CHECKPOINT_ENTRIES_MAX_OUTPUT_BYTES,
+        });
+        return result.stdoutTruncated ? null : parseNumstatEntries(result.stdout);
+      },
+    ),
 
     deleteCheckpointRefs: Effect.fn("GitVcsDriver.checkpoints.deleteCheckpointRefs")(
       function* (input) {

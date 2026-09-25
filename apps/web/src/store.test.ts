@@ -879,6 +879,66 @@ describe("incremental orchestration updates", () => {
     ).toEqual({ additions: 5, deletions: 3 });
   });
 
+  it("starts the badge from the newest measured turn and adds later turns' live edits", () => {
+    const state = makeState(
+      makeThread({
+        turnDiffSummaries: [
+          {
+            turnId: TurnId.make("turn-1"),
+            completedAt: "2026-02-27T00:00:00.000Z",
+            status: "ready",
+            checkpointRef: CheckpointRef.make("checkpoint-1"),
+            checkpointTurnCount: 1,
+            files: [{ path: "a.ts", kind: "modified", additions: 10, deletions: 2 }],
+          },
+        ],
+      }),
+    );
+
+    // Turn 2 finished with a measurement: what the thread still has
+    // uncommitted, which replaces the summed summaries up to that turn.
+    const measured = applyOrchestrationEvent(
+      state,
+      makeEvent("thread.turn-diff-completed", {
+        threadId: ThreadId.make("thread-1"),
+        turnId: TurnId.make("turn-2"),
+        checkpointTurnCount: 2,
+        checkpointRef: CheckpointRef.make("checkpoint-2"),
+        status: "ready",
+        files: [{ path: "b.ts", kind: "added", additions: 5, deletions: 3 }],
+        threadDiffStat: { additions: 4, deletions: 0 },
+        assistantMessageId: null,
+        completedAt: "2026-02-27T00:00:01.000Z",
+      }),
+      localEnvironmentId,
+    );
+    expect(
+      localEnvironmentStateOf(measured).sidebarThreadSummaryById[ThreadId.make("thread-1")]
+        ?.cumulativeDiffStat,
+    ).toEqual({ additions: 4, deletions: 0 });
+
+    // A running turn's live summary adds on top until it is measured itself.
+    const running = applyOrchestrationEvent(
+      measured,
+      makeEvent("thread.turn-diff-completed", {
+        threadId: ThreadId.make("thread-1"),
+        turnId: TurnId.make("turn-3"),
+        checkpointTurnCount: 3,
+        checkpointRef: CheckpointRef.make("checkpoint-3"),
+        status: "ready",
+        files: [{ path: "c.ts", kind: "modified", additions: 2, deletions: 1 }],
+        assistantMessageId: null,
+        completedAt: "2026-02-27T00:00:02.000Z",
+        completesTurn: false,
+      }),
+      localEnvironmentId,
+    );
+    expect(
+      localEnvironmentStateOf(running).sidebarThreadSummaryById[ThreadId.make("thread-1")]
+        ?.cumulativeDiffStat,
+    ).toEqual({ additions: 6, deletions: 1 });
+  });
+
   it("clears the open thread's badge when a rebase event lands", () => {
     const state = makeState(
       makeThread({
