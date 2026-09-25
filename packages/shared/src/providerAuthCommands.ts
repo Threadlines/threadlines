@@ -13,8 +13,12 @@
  */
 import type { ProviderInstanceEnvironmentVariable } from "@threadlines/contracts";
 
+import { bashWord, wslCommand } from "./wsl.ts";
+
 export const CODEX_DRIVER_KIND = "codex";
 export const CLAUDE_DRIVER_KIND = "claudeAgent";
+export const CURSOR_DRIVER_KIND = "cursor";
+export const FX_DRIVER_KIND = "fx";
 
 export const CLAUDE_LONG_LIVED_OAUTH_TOKEN_ENV = "CLAUDE_CODE_OAUTH_TOKEN";
 
@@ -43,6 +47,8 @@ export interface ProviderAuthCommandInput {
   readonly binaryPath: string;
   readonly homePath: string;
   readonly shadowHomePath?: string;
+  /** Host platform; fx has no Windows build and signs in through WSL there. */
+  readonly platform?: string;
 }
 
 export interface ProviderAuthCommand {
@@ -104,6 +110,16 @@ export function buildCodexLoginCommand(input: {
   return authHomePath ? `CODEX_HOME=${shellWord(authHomePath)} ${command}` : command;
 }
 
+/** `agent login` — Cursor's browser sign-in. */
+export function buildCursorLoginCommand(input: { readonly binaryPath: string }): string {
+  return `${shellWord(input.binaryPath.trim() || "agent")} login`;
+}
+
+/** `fx login` — Vercel AI Gateway sign-in (device/browser flow). */
+export function buildFxLoginCommand(input: { readonly binaryPath: string }): string {
+  return `${shellWord(input.binaryPath.trim() || "fx")} login`;
+}
+
 /**
  * Resolve the executable, argv, and env overrides for one auth flow.
  * Returns `null` when the driver/flow pair has no supported command
@@ -138,6 +154,28 @@ export function buildProviderAuthCommand(
       args,
       env,
       display: renderDisplayCommand({ file, args, env }),
+    };
+  }
+
+  // ACP providers sign in with their own CLI and keep credentials in the
+  // user's home; nothing to override in the environment.
+  if (input.driver === CURSOR_DRIVER_KIND || input.driver === FX_DRIVER_KIND) {
+    if (input.flow !== "login") return null;
+    const binary = binaryPath || (input.driver === CURSOR_DRIVER_KIND ? "agent" : "fx");
+    if (input.driver === FX_DRIVER_KIND && input.platform === "win32") {
+      const command = wslCommand(binary, ["login"]);
+      return {
+        file: command.file,
+        args: command.args,
+        env: {},
+        display: `wsl -- ${bashWord(binary)} login`,
+      };
+    }
+    return {
+      file: binary,
+      args: ["login"],
+      env: {},
+      display: renderDisplayCommand({ file: binary, args: ["login"], env: {} }),
     };
   }
 

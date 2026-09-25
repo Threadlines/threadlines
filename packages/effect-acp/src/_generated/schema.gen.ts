@@ -727,13 +727,18 @@ export const ToolKind = Schema.Literals([
     "Categories of tools that can be invoked.\n\nTool kinds help clients choose appropriate icons and optimize how they\ndisplay tool execution progress.\n\nSee protocol docs: [Creating](https://agentclientprotocol.com/protocol/tool-calls#creating)",
 });
 
+// HAND-PATCHED after generation: usage is unstable in the spec and agents
+// report only the counts they have (fx 0.0.10 omits `totalTokens` and names
+// its cache/reasoning counts differently). A missing count must not fail the
+// whole prompt response, so every field is optional. Keep this patch when
+// regenerating.
 export type Usage = {
   readonly cachedReadTokens?: number | null;
   readonly cachedWriteTokens?: number | null;
-  readonly inputTokens: number;
-  readonly outputTokens: number;
+  readonly inputTokens?: number;
+  readonly outputTokens?: number;
   readonly thoughtTokens?: number | null;
-  readonly totalTokens: number;
+  readonly totalTokens?: number;
 };
 export const Usage = Schema.Struct({
   cachedReadTokens: Schema.optionalKey(
@@ -752,18 +757,22 @@ export const Usage = Schema.Struct({
       Schema.Null,
     ]),
   ),
-  inputTokens: Schema.Number.annotate({
-    description: "Total input tokens across all turns.",
-    format: "uint64",
-  })
-    .check(Schema.isInt())
-    .check(Schema.isGreaterThanOrEqualTo(0)),
-  outputTokens: Schema.Number.annotate({
-    description: "Total output tokens across all turns.",
-    format: "uint64",
-  })
-    .check(Schema.isInt())
-    .check(Schema.isGreaterThanOrEqualTo(0)),
+  inputTokens: Schema.optionalKey(
+    Schema.Number.annotate({
+      description: "Total input tokens across all turns.",
+      format: "uint64",
+    })
+      .check(Schema.isInt())
+      .check(Schema.isGreaterThanOrEqualTo(0)),
+  ),
+  outputTokens: Schema.optionalKey(
+    Schema.Number.annotate({
+      description: "Total output tokens across all turns.",
+      format: "uint64",
+    })
+      .check(Schema.isInt())
+      .check(Schema.isGreaterThanOrEqualTo(0)),
+  ),
   thoughtTokens: Schema.optionalKey(
     Schema.Union([
       Schema.Number.annotate({ description: "Total thought/reasoning tokens", format: "uint64" })
@@ -772,12 +781,14 @@ export const Usage = Schema.Struct({
       Schema.Null,
     ]),
   ),
-  totalTokens: Schema.Number.annotate({
-    description: "Sum of all token types across session.",
-    format: "uint64",
-  })
-    .check(Schema.isInt())
-    .check(Schema.isGreaterThanOrEqualTo(0)),
+  totalTokens: Schema.optionalKey(
+    Schema.Number.annotate({
+      description: "Sum of all token types across session.",
+      format: "uint64",
+    })
+      .check(Schema.isInt())
+      .check(Schema.isGreaterThanOrEqualTo(0)),
+  ),
 }).annotate({
   description:
     "**UNSTABLE**\n\nThis capability is not part of the spec yet, and may be removed or changed at any point.\n\nToken usage information for a prompt turn.",
@@ -3554,12 +3565,14 @@ export type AgentResponse =
           }
         | {
             readonly _meta?: { readonly [x: string]: unknown } | null;
+            // HAND-PATCHED: dialect stop reasons pass through.
             readonly stopReason:
               | "end_turn"
               | "max_tokens"
               | "max_turn_requests"
               | "refusal"
-              | "cancelled";
+              | "cancelled"
+              | (string & {});
             readonly usage?: Usage | null;
             readonly userMessageId?: string | null;
           }
@@ -4020,13 +4033,8 @@ export const AgentResponse = Schema.Union([
             Schema.Null,
           ]),
         ),
-        stopReason: Schema.Literals([
-          "end_turn",
-          "max_tokens",
-          "max_turn_requests",
-          "refusal",
-          "cancelled",
-        ]).annotate({
+        // HAND-PATCHED: dialect stop reasons pass through (see StopReason below).
+        stopReason: Schema.String.annotate({
           description:
             "Reasons why an agent stops processing a prompt turn.\n\nSee protocol docs: [Stop Reasons](https://agentclientprotocol.com/protocol/prompt-turn#stop-reasons)",
         }),
@@ -7484,7 +7492,14 @@ export const PromptRequest = Schema.Struct({
 
 export type PromptResponse = {
   readonly _meta?: { readonly [x: string]: unknown } | null;
-  readonly stopReason: "end_turn" | "max_tokens" | "max_turn_requests" | "refusal" | "cancelled";
+  // HAND-PATCHED: dialect stop reasons pass through (see StopReason below).
+  readonly stopReason:
+    | "end_turn"
+    | "max_tokens"
+    | "max_turn_requests"
+    | "refusal"
+    | "cancelled"
+    | (string & {});
   readonly usage?: Usage | null;
   readonly userMessageId?: string | null;
 };
@@ -7498,16 +7513,11 @@ export const PromptResponse = Schema.Struct({
       Schema.Null,
     ]),
   ),
-  stopReason: Schema.Literals([
-    "end_turn",
-    "max_tokens",
-    "max_turn_requests",
-    "refusal",
-    "cancelled",
-  ]).annotate({
+  // HAND-PATCHED: dialect stop reasons pass through (see StopReason below).
+  stopReason: Schema.String.annotate({
     description:
       "Reasons why an agent stops processing a prompt turn.\n\nSee protocol docs: [Stop Reasons](https://agentclientprotocol.com/protocol/prompt-turn#stop-reasons)",
-  }),
+  }) as unknown as Schema.Codec<PromptResponse["stopReason"], PromptResponse["stopReason"]>,
   usage: Schema.optionalKey(
     Schema.Union([Usage, Schema.Null]).annotate({
       description:
@@ -9868,17 +9878,22 @@ export const SetSessionModeResponse = Schema.Struct({
   ),
 }).annotate({ description: "Response to `session/set_mode` method." });
 
-export type StopReason = "end_turn" | "max_tokens" | "max_turn_requests" | "refusal" | "cancelled";
-export const StopReason = Schema.Literals([
-  "end_turn",
-  "max_tokens",
-  "max_turn_requests",
-  "refusal",
-  "cancelled",
-]).annotate({
+// HAND-PATCHED after generation: agents ship dialect values beyond the spec
+// enum (fx 0.0.7 says `max_output_tokens` / `max_model_turns` / `refused`),
+// and a closed union fails the whole prompt response over a label. Consumers
+// only branch on the known values, so unknown strings pass through. Keep this
+// patch when regenerating.
+export type StopReason =
+  | "end_turn"
+  | "max_tokens"
+  | "max_turn_requests"
+  | "refusal"
+  | "cancelled"
+  | (string & {});
+export const StopReason: Schema.Codec<StopReason, StopReason> = Schema.String.annotate({
   description:
     "Reasons why an agent stops processing a prompt turn.\n\nSee protocol docs: [Stop Reasons](https://agentclientprotocol.com/protocol/prompt-turn#stop-reasons)",
-});
+}) as unknown as Schema.Codec<StopReason, StopReason>;
 
 export type StringPropertySchema = {
   readonly default?: string | null;

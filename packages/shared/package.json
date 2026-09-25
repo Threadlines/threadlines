@@ -15,6 +15,14 @@
       "types": "./src/model.ts",
       "import": "./src/model.ts"
     },
+    "./wsl": {
+      "types": "./src/wsl.ts",
+      "import": "./src/wsl.ts"
+    },
+    "./providerPlan": {
+      "types": "./src/providerPlan.ts",
+      "import": "./src/providerPlan.ts"
+    },
     "./preview": {
       "types": "./src/preview.ts",
       "import": "./src/preview.ts"

@@ -73,9 +73,24 @@ export const ModelListRow = memo(function ModelListRow(props: {
             className="text-xs font-medium leading-snug flex items-center gap-1.5 min-w-0 group-data-selected:text-primary-readable"
             data-model-picker-model-name
           >
-            <span className="truncate">{modelLabel}</span>
+            <span className="truncate" title={getDisplayModelName(props.model)}>
+              {modelLabel}
+            </span>
+            {props.model.promoLabel ? (
+              <span className="shrink-0 rounded-sm border border-border/60 px-1 font-mono text-[9px] font-normal uppercase tracking-wider text-muted-foreground">
+                {props.model.promoLabel}
+              </span>
+            ) : null}
           </div>
-          <span className="flex shrink-0 items-center gap-1.5">
+          <span className="flex min-w-0 shrink items-center gap-1.5">
+            {props.model.metaLabel ? (
+              <span
+                className="min-w-0 truncate font-mono text-[10px] font-normal text-muted-foreground/60"
+                title={props.model.metaLabel}
+              >
+                {props.model.metaLabel}
+              </span>
+            ) : null}
             {/* Favorited rows keep the filled star visible in provider tabs;
                 non-favorites reveal the action on hover/focus. */}
             <Tooltip>

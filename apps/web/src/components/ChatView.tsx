@@ -5642,11 +5642,13 @@ export default function ChatView(props: ChatViewProps) {
         usageResetLink: threadErrorUsageResetLink,
         retry: threadErrorRetryAction,
         providerLabel: activeProviderLabel,
+        planUpgradeUrl: activeProviderStatus?.planUpgradeUrl ?? null,
         signIn: composerSignInView,
         onDismiss: () => setThreadError(activeThread?.id ?? null, null),
       }),
     [
       activeProviderLabel,
+      activeProviderStatus?.planUpgradeUrl,
       activeThread?.error,
       activeThread?.id,
       checkoutRecovery,

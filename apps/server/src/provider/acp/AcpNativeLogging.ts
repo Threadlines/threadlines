@@ -35,11 +35,33 @@ function writeNativeAcpLog(input: {
   });
 }
 
+const BEARER_TOKEN = /Bearer\s+[^\s"\\]+/gu;
+
+/**
+ * session/new and session/load carry the browser MCP server with a bearer
+ * credential for the thread. Provider logs keep the header, never the token:
+ * whoever holds it can drive that thread's browser.
+ */
+export function redactAcpLogCredentials(value: unknown): unknown {
+  if (typeof value === "string") {
+    return value.replace(BEARER_TOKEN, "Bearer [redacted]");
+  }
+  if (Array.isArray(value)) {
+    return value.map(redactAcpLogCredentials);
+  }
+  if (typeof value === "object" && value !== null) {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, entry]) => [key, redactAcpLogCredentials(entry)]),
+    );
+  }
+  return value;
+}
+
 function formatRequestLogPayload(event: AcpSessionRequestLogEvent) {
   return {
     method: event.method,
     status: event.status,
-    request: event.payload,
+    request: redactAcpLogCredentials(event.payload),
     ...(event.result !== undefined ? { result: event.result } : {}),
     ...(event.cause !== undefined ? { cause: Cause.pretty(event.cause) } : {}),
   };
@@ -70,7 +92,11 @@ export function makeAcpNativeLoggers(input: {
                 provider: input.provider,
                 threadId: input.threadId,
                 kind: "protocol",
-                payload: event,
+                // Only what Threadlines sends can carry its credential.
+                payload:
+                  event.direction === "outgoing"
+                    ? { ...event, payload: redactAcpLogCredentials(event.payload) }
+                    : event,
               }),
           } satisfies NonNullable<AcpSessionRuntimeOptions["protocolLogging"]>,
         }

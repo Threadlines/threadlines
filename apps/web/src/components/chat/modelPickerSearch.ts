@@ -13,6 +13,9 @@ type ModelPickerSearchableModel = {
   description?: string;
   shortName?: string;
   subProvider?: string;
+  /** Catalog chips ("Free") and meta ("256K ctx · $2/M in") — searchable so "free" filters. */
+  promoLabel?: string;
+  metaLabel?: string;
   isFavorite?: boolean;
 };
 
@@ -24,6 +27,7 @@ function getModelPickerSearchFields(model: ModelPickerSearchableModel): string[]
     ...(model.description ? [normalizeSearchQuery(model.description)] : []),
     ...(model.shortName ? [normalizeSearchQuery(model.shortName)] : []),
     ...(model.subProvider ? [normalizeSearchQuery(model.subProvider)] : []),
+    ...(model.promoLabel ? [normalizeSearchQuery(model.promoLabel)] : []),
     normalizeSearchQuery(model.driverKind),
     normalizeSearchQuery(model.providerDisplayName),
     buildModelPickerSearchText(model),
@@ -53,6 +57,8 @@ export function buildModelPickerSearchText(model: ModelPickerSearchableModel): s
       model.description,
       model.shortName,
       model.subProvider,
+      model.promoLabel,
+      model.metaLabel,
       model.driverKind,
       model.providerDisplayName,
     ]

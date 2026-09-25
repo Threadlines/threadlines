@@ -4,12 +4,14 @@ import { chmodSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import os from "node:os";
 import path from "node:path";
-import { ProviderDriverKind } from "@threadlines/contracts";
+import { ProviderDriverKind, ProviderInstanceId } from "@threadlines/contracts";
 import { randomUUIDv4 } from "@threadlines/shared/uuid";
 import * as Effect from "effect/Effect";
+import { FetchHttpClient } from "effect/unstable/http";
 import {
   clearLatestProviderVersionCacheForTests,
   createProviderVersionAdvisory,
+  enrichProviderSnapshotWithVersionAdvisory,
   makePackageManagedProviderMaintenanceResolver,
   makeProviderMaintenanceCapabilities,
   makeStaticProviderMaintenanceResolver,
@@ -17,6 +19,7 @@ import {
   normalizeCommandPath,
   resolveProviderMaintenanceCapabilitiesEffect,
 } from "./providerMaintenance.ts";
+import { buildServerProvider } from "./providerSnapshot.ts";
 
 const driver = (value: string) => ProviderDriverKind.make(value);
 const noInstallOrManualUpdate = {
@@ -249,6 +252,43 @@ describe("providerMaintenance", () => {
       message: "Install the update now or review provider settings.",
     });
   });
+
+  it.effect("offers an update from the provider's own latest release when it is not on npm", () =>
+    Effect.gen(function* () {
+      // fx and Cursor ship outside npm; their status check reports the newest
+      // release (GitHub, `agent about`) and that alone must light up Update.
+      const draft = buildServerProvider({
+        driver: driver("staticTool"),
+        presentation: { displayName: "Static Tool" },
+        enabled: true,
+        checkedAt: "2026-09-24T00:00:00.000Z",
+        models: [],
+        probe: {
+          installed: true,
+          version: "0.0.7",
+          latestVersion: "0.0.10",
+          status: "ready",
+          auth: { status: "authenticated" },
+        },
+      });
+      const enriched = yield* enrichProviderSnapshotWithVersionAdvisory(
+        {
+          ...draft,
+          instanceId: ProviderInstanceId.make("staticTool"),
+          driver: driver("staticTool"),
+        },
+        staticToolUpdate.resolve(),
+      ).pipe(Effect.provide(FetchHttpClient.layer));
+
+      expect(enriched.versionAdvisory).toMatchObject({
+        status: "behind_latest",
+        currentVersion: "0.0.7",
+        latestVersion: "0.0.10",
+        updateCommand: "static-tool update",
+        canUpdate: true,
+      });
+    }),
+  );
 
   it("keeps update commands owned by provider maintenance capabilities", () => {
     expect(staticToolUpdate.resolve()).toEqual({

@@ -13,7 +13,7 @@ describe("deriveProviderInstanceConfigMap", () => {
   it("hydrates only maintained built-in providers from default legacy settings", () => {
     const configMap = deriveProviderInstanceConfigMap(DEFAULT_SERVER_SETTINGS);
 
-    expect(Object.keys(configMap).toSorted()).toEqual(["claudeAgent", "codex"]);
+    expect(Object.keys(configMap).toSorted()).toEqual(["claudeAgent", "codex", "cursor", "fx"]);
   });
 
   it("preserves non-default legacy Cursor and OpenCode settings as deprecated instances", () => {

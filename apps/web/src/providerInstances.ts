@@ -24,9 +24,16 @@ import {
 
 import { formatProviderDriverKindLabel } from "./providerModels";
 
+/**
+ * Drivers the client renders in pickers and settings rows. Must match the
+ * client definitions in `components/settings/providerDriverMeta.ts`
+ * (`DRIVER_OPTIONS`) — a test keeps the two lists in sync.
+ */
 export const MAINTAINED_PROVIDER_DRIVER_KINDS = [
   ProviderDriverKind.make("codex"),
   ProviderDriverKind.make("claudeAgent"),
+  ProviderDriverKind.make("fx"),
+  ProviderDriverKind.make("cursor"),
 ] as const;
 
 const MAINTAINED_PROVIDER_DRIVER_KIND_SET = new Set<string>(

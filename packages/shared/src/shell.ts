@@ -493,6 +493,8 @@ export function resolveKnownWindowsCliDirs(env: NodeJS.ProcessEnv): ReadonlyArra
           `${localAppData}\\Programs\\nodejs`,
           `${localAppData}\\Programs\\OpenAI\\Codex\\bin`,
           `${localAppData}\\Volta\\bin`,
+          // Cursor Agent CLI installer (`irm https://cursor.com/install?win32=true | iex`).
+          `${localAppData}\\cursor-agent`,
         ]
       : []),
     ...(localAppData ? [`${localAppData}\\pnpm`] : []),

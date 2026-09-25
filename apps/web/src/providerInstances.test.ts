@@ -4,9 +4,11 @@ import {
   type ServerProvider,
 } from "@threadlines/contracts";
 import { describe, expect, it } from "vite-plus/test";
+import { DRIVER_OPTIONS } from "./components/settings/providerDriverMeta";
 import {
   deriveProviderInstanceEntries,
   filterMaintainedProviderInstanceEntries,
+  MAINTAINED_PROVIDER_DRIVER_KINDS,
   resolveSelectableProviderInstance,
   resolveProviderDriverKindForInstanceSelection,
 } from "./providerInstances";
@@ -50,16 +52,29 @@ describe("deriveProviderInstanceEntries", () => {
 });
 
 describe("filterMaintainedProviderInstanceEntries", () => {
-  it("keeps Codex and Claude entries while dropping non-maintained provider snapshots", () => {
+  it("keeps maintained entries (including the ACP providers) and drops the rest", () => {
     const entries = deriveProviderInstanceEntries([
       provider({ provider: ProviderDriverKind.make("codex"), instanceId: "codex" }),
       provider({ provider: ProviderDriverKind.make("claudeAgent"), instanceId: "claudeAgent" }),
+      provider({ provider: ProviderDriverKind.make("fx"), instanceId: "fx" }),
+      provider({ provider: ProviderDriverKind.make("cursor"), instanceId: "cursor" }),
       provider({ provider: ProviderDriverKind.make("opencode"), instanceId: "opencode" }),
     ]);
 
     expect(
       filterMaintainedProviderInstanceEntries(entries).map((entry) => entry.instanceId),
-    ).toEqual([ProviderInstanceId.make("codex"), ProviderInstanceId.make("claudeAgent")]);
+    ).toEqual([
+      ProviderInstanceId.make("codex"),
+      ProviderInstanceId.make("claudeAgent"),
+      ProviderInstanceId.make("fx"),
+      ProviderInstanceId.make("cursor"),
+    ]);
+  });
+
+  it("agrees with the settings client definitions about which drivers are maintained", () => {
+    expect([...MAINTAINED_PROVIDER_DRIVER_KINDS]).toEqual(
+      DRIVER_OPTIONS.map((definition) => definition.value),
+    );
   });
 });
 

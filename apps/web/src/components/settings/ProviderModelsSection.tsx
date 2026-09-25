@@ -18,6 +18,7 @@ import {
 import { normalizeModelSlug } from "@threadlines/shared/model";
 
 import { cn } from "../../lib/utils";
+import { Badge } from "../ui/badge";
 import { sortModelsForProviderInstance } from "../../modelOrdering";
 import { MAX_CUSTOM_MODEL_LENGTH } from "../../modelSelection";
 import { Button } from "../ui/button";
@@ -351,6 +352,7 @@ export function ProviderModelsSection({
             capLabels.length > 0 ||
             model.description !== undefined ||
             model.availabilityMessage !== undefined ||
+            model.metaLabel !== undefined ||
             model.name !== model.slug;
           const upgradeCopy = model.upgradeInfo?.upgradeCopy ?? model.upgrade;
 
@@ -371,10 +373,25 @@ export function ProviderModelsSection({
                 >
                   {model.name}
                 </span>
+                {model.promoLabel ? (
+                  <Badge variant="secondary" size="sm">
+                    {model.promoLabel}
+                  </Badge>
+                ) : null}
+                {model.metaLabel ? (
+                  <span className="hidden shrink-0 font-mono text-[10px] text-muted-foreground/70 sm:inline">
+                    {model.metaLabel}
+                  </span>
+                ) : null}
                 {hasDetails ? (
                   <InfoPopover label={`Details for ${model.name}`} side="top">
                     <div className="space-y-1">
                       <code className="block text-[11px] text-foreground">{model.slug}</code>
+                      {model.metaLabel ? (
+                        <p className="font-mono text-[10px] text-muted-foreground">
+                          {model.metaLabel}
+                        </p>
+                      ) : null}
                       {model.description ? (
                         <p className="text-[11px] leading-snug text-muted-foreground">
                           {model.description}

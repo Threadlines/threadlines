@@ -11,6 +11,7 @@ import {
 } from "@threadlines/contracts";
 import { hideWindowsConsole } from "@threadlines/shared/childProcess";
 import { refreshWindowsPath } from "@threadlines/shared/shell";
+import { describeWslLaunchFailure, WSL_SETUP_HINT } from "@threadlines/shared/wsl";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Data from "effect/Data";
@@ -329,6 +330,8 @@ function providerDisplayName(provider: ProviderDriverKind): string {
       return "Codex";
     case "cursor":
       return "Cursor";
+    case "fx":
+      return "fx";
     case "opencode":
       return "OpenCode";
     default:
@@ -453,6 +456,12 @@ function failureMessage(
   }
   if (isWindowsExecutableReplaceFailure(result)) {
     return windowsClaudeProcessLockMessage(provider, 0);
+  }
+  // Commands run through WSL (fx on Windows) fail before reaching Linux when
+  // WSL isn't set up; its own reason beats a bare exit code of 4294967295.
+  const wslFailure = describeWslLaunchFailure(`${result.stdout}\n${result.stderr}`);
+  if (wslFailure) {
+    return `WSL isn't ready: ${wslFailure} ${WSL_SETUP_HINT}`;
   }
   if (result.exitCode !== null && result.exitCode !== 0) {
     return copy.exitCode(result.exitCode);

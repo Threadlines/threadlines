@@ -14,6 +14,8 @@ describe("ProviderSettingsForm helpers", () => {
     expect(DRIVER_OPTIONS.map((option) => option.value)).toEqual([
       ProviderDriverKind.make("codex"),
       ProviderDriverKind.make("claudeAgent"),
+      ProviderDriverKind.make("fx"),
+      ProviderDriverKind.make("cursor"),
     ]);
   });
 

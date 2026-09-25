@@ -23,7 +23,7 @@ Use this language when communicating:
 - **we, us, and maintainers** mean Will and the other people building Threadlines. These are who you are talking to now.
 - **user** means a person using Threadlines to direct coding agents.
 - **agent** means the coding agent a user runs inside Threadlines. Depending on context, that may also include you.
-- **provider** means the agent runtime Threadlines talks to: Codex or Claude. Cursor and OpenCode drivers exist but are not supported.
+- **provider** means the agent runtime Threadlines talks to: Codex and Claude (native drivers), plus fx and Cursor (experimental, both ACP descriptors on the shared `apps/server/src/provider/acp/` core). An OpenCode driver exists but is not supported.
 - **driver / adapter** means the server code wrapping one provider (`apps/server/src/provider/Drivers/`).
 - **client** means the web or desktop UI.
 - **environment** means one running Threadlines server and the machine, filesystem, provider credentials, and state it owns.
@@ -44,7 +44,7 @@ The most common defect is a change that works on the path you tested and is miss
 
 - **Entry points.** A behavior reachable from the chat view is usually also reachable from Settings, the command palette, and a keybinding. Fixing one is not fixing the feature.
 - **Clients.** Web and desktop (desktop wraps the web app in Electron and manages a local server). Reusable client logic belongs in `packages/client-runtime`.
-- **Providers.** Codex and Claude each have a driver; provider-shaped features need a decision per driver, even if the decision is "not supported here". Keep the Cursor and OpenCode drivers compiling, but don't extend them unless explicitly asked.
+- **Providers.** Codex and Claude each have a native driver; fx and Cursor share the generic ACP driver (`acp/AcpProviderDriver.ts`) and differ only by descriptor (`acp/FxAcpSupport.ts`, `acp/CursorAcpSupport.ts`). Provider-shaped features need a decision per driver, even if the decision is "not supported here"; for ACP providers, prefer implementing once in the generic core over per-descriptor special cases. Keep the OpenCode driver compiling, but don't extend it unless explicitly asked.
 - **Contracts.** Anything crossing the wire is typed in `packages/contracts`. Change the schema and the server and clients follow.
 - **Reverse states.** If you added a way in, add the way out and the way to see it. A one-way door is a bug.
 

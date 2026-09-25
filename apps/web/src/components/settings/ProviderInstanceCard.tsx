@@ -31,6 +31,8 @@ import {
   buildClaudeAuthLoginCommand,
   buildClaudeSetupTokenCommand,
   buildCodexLoginCommand,
+  buildCursorLoginCommand,
+  buildFxLoginCommand,
   CLAUDE_CREDENTIAL_OVERRIDE_ENV_NAMES,
   CLAUDE_LONG_LIVED_OAUTH_TOKEN_ENV,
   deriveClaudeLongLivedOAuthTokenState,
@@ -79,6 +81,7 @@ import {
 } from "./providerStatus";
 import { deriveProviderInstallView } from "./providerInstall";
 import { ProviderInstallAction } from "./ProviderInstallAction";
+import { ProviderSignInAction } from "./ProviderSignInAction";
 import { ProviderExternalResetsButton } from "../ProviderRateLimitResetCredit";
 
 const PROVIDER_ACCENT_SWATCHES = ["#00347D", "#16a34a", "#ea580c", "#dc2626", "#7c3aed"] as const;
@@ -87,6 +90,8 @@ const PROVIDER_UPDATE_OUTPUT_PREVIEW_CHARS = 700;
 const ENVIRONMENT_VARIABLE_NAME_PATTERN = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
 const CODEX_DRIVER_KIND = ProviderDriverKind.make("codex");
 const CLAUDE_DRIVER_KIND = ProviderDriverKind.make("claudeAgent");
+const CURSOR_DRIVER_KIND = ProviderDriverKind.make("cursor");
+const FX_DRIVER_KIND = ProviderDriverKind.make("fx");
 const RUNTIME_PROVIDER_CONFIG_FIELD_KEYS = new Set([
   "binaryPath",
   "launchArgs",
@@ -767,33 +772,40 @@ function ProviderAccountSignInSection(props: {
       description="Shows whether this provider is ready and signs it back in without leaving settings."
     >
       <div className="grid gap-4">
-        <ProviderConnectFlow
-          instanceId={props.instanceId}
-          flow="login"
-          displayName={props.displayName}
-          actionLabel={needsSignIn ? "Reconnect" : "Sign in again"}
-          command={props.terminalLoginCommand}
-          autoShowTerminal={props.signInHandoffActive ?? false}
-          buttonVariant={needsSignIn ? "default" : "ghost"}
-          description={isClaude ? "Signing in covers both chat and usage." : undefined}
-          statusRow={
-            <>
-              <Badge variant={authBadge.variant} size="sm">
-                {authBadge.label}
-              </Badge>
-              {claudeCapabilityBadges.map(({ kind, capability, presentation }) => (
-                <Badge
-                  key={kind}
-                  variant={presentation.variant}
-                  size="sm"
-                  title={capability.detail}
-                >
-                  {presentation.label}
+        {props.liveProvider?.installed === false ? (
+          // Nothing to sign in to yet: the row's Install comes first.
+          <p className="text-xs text-muted-foreground">
+            Install {props.displayName} first, then sign in here.
+          </p>
+        ) : (
+          <ProviderConnectFlow
+            instanceId={props.instanceId}
+            flow="login"
+            displayName={props.displayName}
+            actionLabel={needsSignIn ? "Sign in" : "Sign in again"}
+            command={props.terminalLoginCommand}
+            autoShowTerminal={props.signInHandoffActive ?? false}
+            buttonVariant={needsSignIn ? "default" : "ghost"}
+            description={isClaude ? "Signing in covers both chat and usage." : undefined}
+            statusRow={
+              <>
+                <Badge variant={authBadge.variant} size="sm">
+                  {authBadge.label}
                 </Badge>
-              ))}
-            </>
-          }
-        />
+                {claudeCapabilityBadges.map(({ kind, capability, presentation }) => (
+                  <Badge
+                    key={kind}
+                    variant={presentation.variant}
+                    size="sm"
+                    title={capability.detail}
+                  >
+                    {presentation.label}
+                  </Badge>
+                ))}
+              </>
+            }
+          />
+        )}
 
         {hasClaudeCredentialOverride ? (
           <div className="rounded-md border border-warning/35 bg-warning/8 px-3 py-2 text-xs leading-5 text-warning">
@@ -1332,8 +1344,24 @@ export function ProviderInstanceCard({
         homePath: readProviderConfigString(instance.config, "homePath"),
       });
     }
+    if (driverKind === CURSOR_DRIVER_KIND) {
+      return buildCursorLoginCommand({
+        binaryPath: readProviderConfigString(instance.config, "binaryPath"),
+      });
+    }
+    if (driverKind === FX_DRIVER_KIND) {
+      return buildFxLoginCommand({
+        binaryPath: readProviderConfigString(instance.config, "binaryPath"),
+      });
+    }
     return null;
   }, [driverKind, instance.config]);
+  // Installed but signed out: the next step belongs on the row, like Install.
+  const showRowSignIn =
+    enabled &&
+    liveProvider?.installed === true &&
+    liveProvider.auth.status === "unauthenticated" &&
+    terminalLoginCommand !== null;
   const reservedEnvironmentNames = useMemo(
     () =>
       driverKind === CLAUDE_DRIVER_KIND
@@ -1696,6 +1724,15 @@ export function ProviderInstanceCard({
                 displayName={displayName}
                 view={providerInstallView}
                 statusClassName="max-w-64"
+              />
+            ) : showRowSignIn ? (
+              <ProviderSignInAction
+                instanceId={instanceId}
+                displayName={displayName}
+                onStarted={() => {
+                  setDetailsSection("account");
+                  onExpandedChange(true);
+                }}
               />
             ) : null}
             <Button

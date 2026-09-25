@@ -1,10 +1,12 @@
 import { ProviderDriverKind } from "@threadlines/contracts";
-import { ClaudeAI, Icon, OpenAI } from "../Icons";
+import { ClaudeAI, CursorIcon, FxIcon, Icon, OpenAI } from "../Icons";
 import { PROVIDER_OPTIONS } from "../../session-logic";
 
 export const PROVIDER_ICON_BY_PROVIDER: Partial<Record<ProviderDriverKind, Icon>> = {
   [ProviderDriverKind.make("codex")]: OpenAI,
   [ProviderDriverKind.make("claudeAgent")]: ClaudeAI,
+  [ProviderDriverKind.make("fx")]: FxIcon,
+  [ProviderDriverKind.make("cursor")]: CursorIcon,
 };
 
 /**
@@ -37,6 +39,10 @@ export type ModelEsque = {
   description?: string | undefined;
   shortName?: string | undefined;
   subProvider?: string | undefined;
+  /** Compact catalog metadata, e.g. "256K ctx · $0.25/M in · $2/M out". */
+  metaLabel?: string | undefined;
+  /** Promotional pricing chip from the provider's catalog, e.g. "Free". */
+  promoLabel?: string | undefined;
   isDefault?: boolean | undefined;
 };
 

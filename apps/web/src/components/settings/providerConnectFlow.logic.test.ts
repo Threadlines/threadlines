@@ -33,6 +33,38 @@ function replay(events: ReadonlyArray<ProviderAuthEvent>): ProviderConnectFlowSt
 }
 
 describe("provider connect flow state", () => {
+  it("keeps the first sign-in URL the command prints and drops it on the next attempt", () => {
+    const state = replay([
+      event({ type: "status", status: "starting", exitCode: null, detail: null }),
+      event({ type: "status", status: "running", exitCode: null, detail: null }),
+      event({
+        type: "output",
+        data: "Open https://vercel.com/oauth/device?user_code=QJQL-JLJT\r\nCode: QJQL-JLJT\r\n",
+      }),
+      event({ type: "output", data: "See https://example.com/other.\r\n" }),
+    ]);
+    expect(state.signInUrl).toBe("https://vercel.com/oauth/device?user_code=QJQL-JLJT");
+
+    const restarted = applyProviderAuthEvent(
+      state,
+      event({ type: "status", status: "starting", exitCode: null, detail: null }),
+    );
+    expect(restarted.signInUrl).toBeNull();
+  });
+
+  it("waits for a URL split across output chunks to finish before taking it", () => {
+    const state = replay([
+      event({ type: "status", status: "starting", exitCode: null, detail: null }),
+      event({ type: "output", data: "Open htt" }),
+      event({ type: "output", data: "ps://vercel.com/oauth/device?user_code=QJ" }),
+    ]);
+    // Mid-code: taking it now would open a truncated device code.
+    expect(state.signInUrl).toBeNull();
+
+    const finished = applyProviderAuthEvent(state, event({ type: "output", data: "QL-JLJT\r\n" }));
+    expect(finished.signInUrl).toBe("https://vercel.com/oauth/device?user_code=QJQL-JLJT");
+  });
+
   it("tracks a run from start to success and keeps the resolved command", () => {
     const state = replay([
       event({ type: "command", flow: "login", command: "codex login" }),

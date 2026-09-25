@@ -12,8 +12,8 @@ import * as Stream from "effect/Stream";
 
 import type { ClaudeAdapterShape } from "../Services/ClaudeAdapter.ts";
 import type { CodexAdapterShape } from "../Services/CodexAdapter.ts";
-import type { CursorAdapterShape } from "../Services/CursorAdapter.ts";
 import type { OpenCodeAdapterShape } from "../Services/OpenCodeAdapter.ts";
+import type { AcpAdapterShape } from "../acp/AcpAdapter.ts";
 import { ProviderAdapterRegistry } from "../Services/ProviderAdapterRegistry.ts";
 import { ProviderInstanceRegistry } from "../Services/ProviderInstanceRegistry.ts";
 import type { ProviderInstance } from "../ProviderDriver.ts";
@@ -78,7 +78,7 @@ const fakeOpenCodeAdapter: OpenCodeAdapterShape = {
   streamEvents: Stream.empty,
 };
 
-const fakeCursorAdapter: CursorAdapterShape = {
+const fakeCursorAdapter: AcpAdapterShape = {
   provider: CURSOR_DRIVER,
   capabilities: { sessionModelSwitch: "in-session" },
   startSession: vi.fn(),

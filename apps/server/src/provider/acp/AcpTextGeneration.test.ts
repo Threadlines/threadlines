@@ -16,13 +16,14 @@ import { expect } from "vite-plus/test";
 
 import { CursorSettings, ProviderInstanceId } from "@threadlines/contracts";
 
-import { ServerConfig } from "../config.ts";
-import { type TextGenerationShape } from "./TextGeneration.ts";
-import { makeCursorTextGeneration } from "./CursorTextGeneration.ts";
+import { ServerConfig } from "../../config.ts";
+import { type TextGenerationShape } from "../../textGeneration/TextGeneration.ts";
+import { makeAcpTextGeneration } from "./AcpTextGeneration.ts";
+import { CURSOR_ACP_DESCRIPTOR } from "./CursorAcpSupport.ts";
 const decodeCursorSettings = Schema.decodeSync(CursorSettings);
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const mockAgentPath = path.join(__dirname, "../../scripts/acp-mock-agent.ts");
+const mockAgentPath = path.join(__dirname, "../../../scripts/acp-mock-agent.ts");
 
 function shellSingleQuote(value: string): string {
   return `'${value.replaceAll("'", `'"'"'`)}'`;
@@ -121,7 +122,7 @@ function withFakeAcpAgent<A, E, R>(
     );
     const agentPath = makeAcpAgentWrapper(tempDir, env);
     const config = decodeCursorSettings({ binaryPath: agentPath });
-    const textGeneration = yield* makeCursorTextGeneration(config);
+    const textGeneration = yield* makeAcpTextGeneration(CURSOR_ACP_DESCRIPTOR, config);
     return yield* effectFn(textGeneration);
   }).pipe(Effect.scoped);
 }

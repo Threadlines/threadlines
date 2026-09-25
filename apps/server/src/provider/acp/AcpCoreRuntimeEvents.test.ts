@@ -68,6 +68,38 @@ describe("AcpCoreRuntimeEvents", () => {
     });
   });
 
+  it("gives MCP tool permission requests a type the approval panel shows", () => {
+    const title = "threadlines_browser-browser_open_tab: browser_open_tab";
+    const args = { sessionId: "session-1", toolCall: { kind: "other", title } };
+
+    expect(
+      makeAcpRequestOpenedEvent({
+        stamp: { eventId: "event-1" as never, createdAt: "2026-09-25T00:00:00.000Z" },
+        provider: ProviderDriverKind.make("cursor"),
+        threadId: "thread-1" as never,
+        turnId: TurnId.make("turn-1"),
+        requestId: RuntimeRequestId.make("request-1"),
+        permissionRequest: {
+          kind: "other",
+          detail: title,
+          toolCall: { toolCallId: "tool-1", kind: "other", status: "pending", title, data: {} },
+        },
+        detail: title,
+        args,
+        source: "acp.jsonrpc",
+        method: "session/request_permission",
+        rawPayload: args,
+      }),
+    ).toMatchObject({
+      type: "request.opened",
+      payload: {
+        requestType: "dynamic_tool_call",
+        detail: title,
+        args: { ...args, toolName: "threadlines_browser-browser_open_tab" },
+      },
+    });
+  });
+
   it("maps ACP core plan, tool-call, and content updates", () => {
     const stamp = { eventId: "event-1" as never, createdAt: "2026-03-27T00:00:00.000Z" };
     const turnId = TurnId.make("turn-1");

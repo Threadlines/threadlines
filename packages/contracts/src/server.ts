@@ -230,6 +230,10 @@ export const ServerProviderModel = Schema.Struct({
   isCustom: Schema.Boolean,
   isDefault: Schema.optional(Schema.Boolean),
   isHidden: Schema.optional(Schema.Boolean),
+  /** Compact catalog metadata line, e.g. "500K ctx · $2.00/M in · $6.00/M out". */
+  metaLabel: Schema.optional(TrimmedNonEmptyString),
+  /** Promotional pricing chip from the provider's catalog, e.g. "Free". */
+  promoLabel: Schema.optional(TrimmedNonEmptyString),
   availabilityMessage: Schema.optional(TrimmedNonEmptyString),
   upgrade: Schema.optional(TrimmedNonEmptyString),
   upgradeInfo: Schema.optional(ModelUpgradeInfo),
@@ -346,6 +350,8 @@ export const ServerProvider = Schema.Struct({
   displayName: Schema.optional(TrimmedNonEmptyString),
   accentColor: Schema.optional(TrimmedNonEmptyString),
   badgeLabel: Schema.optional(TrimmedNonEmptyString),
+  /** Where the user manages this provider's subscription, for plan-gate CTAs. */
+  planUpgradeUrl: Schema.optional(TrimmedNonEmptyString),
   continuation: Schema.optional(ServerProviderContinuation),
   showInteractionModeToggle: Schema.optional(Schema.Boolean),
   // Runtime modes this driver can honor natively. Absent means the legacy

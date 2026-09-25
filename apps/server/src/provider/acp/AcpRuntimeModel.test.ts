@@ -59,6 +59,85 @@ describe("AcpRuntimeModel", () => {
     expect(modelConfigId).toBe("model");
   });
 
+  it("surfaces fx's model recovery status from session_info_update metadata", () => {
+    const parsed = parseSessionUpdateEvent({
+      sessionId: "session-1",
+      update: {
+        sessionUpdate: "session_info_update",
+        _meta: {
+          fx: {
+            modelResponseRecovery: {
+              state: "active",
+              cause: "rate_limited",
+              attempt: 2,
+              message: "⚠ Rate limited · retrying (attempt 2/10)",
+            },
+          },
+        },
+      },
+    } as unknown as EffectAcpSchema.SessionNotification);
+
+    expect(parsed.events).toEqual([
+      { _tag: "SessionStatus", message: "⚠ Rate limited · retrying (attempt 2/10)" },
+    ]);
+  });
+
+  it("reads agent_thought_chunk as reasoning text", () => {
+    const parsed = parseSessionUpdateEvent({
+      sessionId: "session-1",
+      update: {
+        sessionUpdate: "agent_thought_chunk",
+        content: { type: "text", text: "Checking the workspace." },
+      },
+    } satisfies EffectAcpSchema.SessionNotification);
+    expect(parsed.events).toMatchObject([
+      { _tag: "ReasoningDelta", text: "Checking the workspace." },
+    ]);
+  });
+
+  it("reads context window fill from usage_update", () => {
+    const parsed = parseSessionUpdateEvent({
+      sessionId: "session-1",
+      update: { sessionUpdate: "usage_update", used: 48_210, size: 262_144 },
+    } satisfies EffectAcpSchema.SessionNotification);
+    expect(parsed.events).toEqual([
+      { _tag: "ContextUsage", usedTokens: 48_210, maxTokens: 262_144 },
+    ]);
+
+    // An agent that does not know its window size still reports the fill.
+    const unsized = parseSessionUpdateEvent({
+      sessionId: "session-1",
+      update: { sessionUpdate: "usage_update", used: 900, size: 0 },
+    } satisfies EffectAcpSchema.SessionNotification);
+    expect(unsized.events).toEqual([{ _tag: "ContextUsage", usedTokens: 900 }]);
+  });
+
+  it("skips a provider picker filed under the model category (fx)", () => {
+    const modelConfigId = extractModelConfigId({
+      sessionId: "session-1",
+      configOptions: [
+        {
+          id: "provider",
+          name: "Provider",
+          category: "model",
+          type: "select",
+          currentValue: "gateway",
+          options: [{ value: "gateway", name: "Vercel AI Gateway" }],
+        },
+        {
+          id: "model",
+          name: "Model",
+          category: "model",
+          type: "select",
+          currentValue: "moonshotai/kimi-k3",
+          options: [{ value: "moonshotai/kimi-k3", name: "moonshotai/kimi-k3" }],
+        },
+      ],
+    } satisfies EffectAcpSchema.NewSessionResponse);
+
+    expect(modelConfigId).toBe("model");
+  });
+
   it("projects typed ACP tool call updates into runtime events", () => {
     const created = parseSessionUpdateEvent({
       sessionId: "session-1",

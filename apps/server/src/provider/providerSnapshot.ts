@@ -44,11 +44,19 @@ export interface ProviderProbeResult {
   readonly auth: ServerProviderAuth;
   readonly accountUsage?: ServerProviderAccountUsage;
   readonly message?: string;
+  /**
+   * Newest release the provider itself reports, for CLIs not published to
+   * npm (Cursor's `agent about`, fx's GitHub releases). Lets the version
+   * advisory offer an update without an npm lookup.
+   */
+  readonly latestVersion?: string | null;
 }
 
 export interface ServerProviderPresentation {
   readonly displayName: string;
   readonly badgeLabel?: string;
+  /** Where the user manages this provider's subscription, for plan-gate CTAs. */
+  readonly planUpgradeUrl?: string;
   readonly showInteractionModeToggle?: boolean;
   // Runtime modes this driver honors natively; absent means the legacy
   // three-mode set. See `ServerProvider.supportedRuntimeModes`.
@@ -210,12 +218,16 @@ export function buildServerProvider(input: {
     ? createProviderVersionAdvisory({
         driver: input.driver,
         currentVersion: input.probe.version,
+        ...(input.probe.latestVersion ? { latestVersion: input.probe.latestVersion } : {}),
         checkedAt: input.checkedAt,
       })
     : undefined;
   return {
     displayName: input.presentation.displayName,
     ...(input.presentation.badgeLabel ? { badgeLabel: input.presentation.badgeLabel } : {}),
+    ...(input.presentation.planUpgradeUrl
+      ? { planUpgradeUrl: input.presentation.planUpgradeUrl }
+      : {}),
     ...(typeof input.presentation.showInteractionModeToggle === "boolean"
       ? { showInteractionModeToggle: input.presentation.showInteractionModeToggle }
       : {}),

@@ -229,6 +229,28 @@ describe("deriveProviderSettingsRows", () => {
     ]);
   });
 
+  it("offers reset for real setting changes, not for the on/off switch alone", () => {
+    const fx = ProviderDriverKind.make("fx");
+    const fxId = ProviderInstanceId.make("fx");
+    const rowFor = (instance: ProviderInstanceConfig) =>
+      deriveProviderSettingsRows({
+        settings: { ...DEFAULT_SERVER_SETTINGS, providerInstances: { [fxId]: instance } },
+        maintainedDriverKinds: [fx],
+      }).find((row) => row.instanceId === fxId);
+
+    // Switching opt-in fx on saves an instance that otherwise matches the defaults.
+    expect(
+      rowFor({ driver: fx, enabled: true, config: DEFAULT_SERVER_SETTINGS.providers.fx })?.isDirty,
+    ).toBe(false);
+    expect(
+      rowFor({
+        driver: fx,
+        enabled: true,
+        config: { ...DEFAULT_SERVER_SETTINGS.providers.fx, binaryPath: "/opt/fx/bin/fx" },
+      })?.isDirty,
+    ).toBe(true);
+  });
+
   it("omits dirty legacy Cursor and OpenCode defaults", () => {
     const settings = {
       ...DEFAULT_SERVER_SETTINGS,

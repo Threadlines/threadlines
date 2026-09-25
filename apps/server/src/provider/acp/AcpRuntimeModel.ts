@@ -69,6 +69,23 @@ export type AcpParsedSessionEvent =
       readonly itemId?: string;
       readonly text: string;
       readonly rawPayload: unknown;
+    }
+  | {
+      /** Provider-side turn status, e.g. fx's "Rate limited · retrying" recovery. */
+      readonly _tag: "SessionStatus";
+      readonly message: string;
+    }
+  | {
+      /** The agent's reasoning text, from ACP `agent_thought_chunk`. */
+      readonly _tag: "ReasoningDelta";
+      readonly text: string;
+      readonly rawPayload: unknown;
+    }
+  | {
+      /** How full the context window is, from ACP `usage_update`. */
+      readonly _tag: "ContextUsage";
+      readonly usedTokens: number;
+      readonly maxTokens?: number;
     };
 
 type AcpSessionSetupResponse =
@@ -81,15 +98,30 @@ type AcpToolCallUpdate = Extract<
   { readonly sessionUpdate: "tool_call" | "tool_call_update" }
 >;
 
-export function extractModelConfigId(sessionResponse: AcpSessionSetupResponse): string | undefined {
-  const configOptions = sessionResponse.configOptions;
+/**
+ * The config option that selects the model. Prefers the conventional `model`
+ * id, then falls back to the first `model`-category select — some agents
+ * (fx) file a `provider` picker under the same category ahead of the model.
+ */
+export function findModelConfigOption(
+  configOptions: ReadonlyArray<EffectAcpSchema.SessionConfigOption> | null | undefined,
+): EffectAcpSchema.SessionConfigOption | undefined {
   if (!configOptions) return undefined;
-  for (const opt of configOptions) {
-    if (opt.category === "model" && opt.id.trim().length > 0) {
-      return opt.id.trim();
-    }
-  }
-  return undefined;
+  const byId = configOptions.find(
+    (option) => option.id.trim().toLowerCase() === "model" && option.type === "select",
+  );
+  if (byId) return byId;
+  return configOptions.find(
+    (option) =>
+      option.category === "model" &&
+      option.type === "select" &&
+      option.id.trim().length > 0 &&
+      option.id.trim().toLowerCase() !== "provider",
+  );
+}
+
+export function extractModelConfigId(sessionResponse: AcpSessionSetupResponse): string | undefined {
+  return findModelConfigOption(sessionResponse.configOptions)?.id.trim();
 }
 
 export function findSessionConfigOption(
@@ -405,6 +437,17 @@ export function parsePermissionRequest(
   };
 }
 
+function sessionInfoStatusMessage(update: { readonly _meta?: unknown }): string | undefined {
+  const meta = update._meta;
+  if (typeof meta !== "object" || meta === null) return undefined;
+  const fx = (meta as Record<string, unknown>).fx;
+  if (typeof fx !== "object" || fx === null) return undefined;
+  const recovery = (fx as Record<string, unknown>).modelResponseRecovery;
+  if (typeof recovery !== "object" || recovery === null) return undefined;
+  const message = (recovery as Record<string, unknown>).message;
+  return typeof message === "string" && message.trim().length > 0 ? message.trim() : undefined;
+}
+
 export function parseSessionUpdateEvent(params: EffectAcpSchema.SessionNotification): {
   readonly modeId?: string;
   readonly events: ReadonlyArray<AcpParsedSessionEvent>;
@@ -470,6 +513,37 @@ export function parseSessionUpdateEvent(params: EffectAcpSchema.SessionNotificat
           _tag: "ContentDelta",
           text: upd.content.text,
           rawPayload: params,
+        });
+      }
+      break;
+    }
+    case "agent_thought_chunk": {
+      if (upd.content.type === "text" && upd.content.text.length > 0) {
+        events.push({
+          _tag: "ReasoningDelta",
+          text: upd.content.text,
+          rawPayload: params,
+        });
+      }
+      break;
+    }
+    case "session_info_update": {
+      // fx reports mid-turn model recovery (rate limits, retries) through
+      // vendor metadata here; without it a retried turn looks like a hang
+      // and an exhausted retry looks like a model refusal.
+      const message = sessionInfoStatusMessage(upd);
+      if (message) {
+        events.push({ _tag: "SessionStatus", message });
+      }
+      break;
+    }
+    case "usage_update": {
+      const isCount = (value: number) => Number.isInteger(value) && value >= 0;
+      if (isCount(upd.used)) {
+        events.push({
+          _tag: "ContextUsage",
+          usedTokens: upd.used,
+          ...(isCount(upd.size) && upd.size > 0 ? { maxTokens: upd.size } : {}),
         });
       }
       break;

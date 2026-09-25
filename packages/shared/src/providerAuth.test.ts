@@ -23,6 +23,17 @@ describe("provider auth helpers", () => {
     ).toBe(true);
     expect(isProviderAuthErrorMessage("Not logged in • Please run /login")).toBe(true);
     expect(isProviderAuthErrorMessage("Not logged in · Please run /login")).toBe(true);
+    // The ACP providers' own status lines.
+    expect(
+      isProviderAuthErrorMessage(
+        "Cursor Agent isn't signed in. Use Sign in, or run `agent login` in a terminal.",
+      ),
+    ).toBe(true);
+    expect(
+      isProviderAuthErrorMessage(
+        "fx isn't signed in to Vercel AI Gateway. Use Sign in, or run `wsl fx login` in a terminal.",
+      ),
+    ).toBe(true);
     expect(isProviderAuthErrorMessage("Sandbox setup failed")).toBe(false);
   });
 

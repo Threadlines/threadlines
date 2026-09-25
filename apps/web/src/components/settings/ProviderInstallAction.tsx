@@ -108,10 +108,10 @@ export function ProviderInstallAction({
         <Button
           size="xs"
           variant={buttonVariant ?? "default"}
-          aria-label={view.status === "failed" ? `Retry installing ${name}` : `Install ${name}`}
+          aria-label={view.status === "idle" ? `Install ${name}` : `Retry installing ${name}`}
           onClick={start}
         >
-          {view.status === "failed" ? "Retry" : "Install"}
+          {view.status === "idle" ? "Install" : "Retry"}
         </Button>
       )}
     </>
