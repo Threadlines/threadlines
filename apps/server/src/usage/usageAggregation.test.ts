@@ -130,4 +130,30 @@ describe("UsageAggregator", () => {
 
     expect(result.buckets).toHaveLength(3);
   });
+
+  it("breaks recent records out by hour and leaves older ones to the days", () => {
+    const aggregator = new UsageAggregator({
+      timeZone: "UTC",
+      sinceDay: "2026-08-01",
+      untilDay: "2026-08-31",
+      rates,
+      hourlySinceMs: Date.parse("2026-08-07T03:00:00Z"),
+    });
+    aggregator.add(record({ timestampMs: Date.parse("2026-08-07T04:05:00Z") }));
+    aggregator.add(record({ timestampMs: Date.parse("2026-08-07T04:55:00Z") }));
+    aggregator.add(record({ timestampMs: Date.parse("2026-08-07T02:59:00Z") }));
+
+    const result = aggregator.finish();
+
+    expect(result.hourlyBuckets).toEqual([
+      expect.objectContaining({
+        hourStartMs: Date.parse("2026-08-07T04:00:00Z"),
+        provider: "claude",
+        model: "claude-fable-5",
+        records: 2,
+        totals: expect.objectContaining({ cachedInputTokens: 2000, outputTokens: 100 }),
+      }),
+    ]);
+    expect(result.buckets.map((bucket) => bucket.records)).toEqual([3]);
+  });
 });

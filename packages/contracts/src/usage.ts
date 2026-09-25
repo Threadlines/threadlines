@@ -7,8 +7,9 @@
  * turns that were driven by the CLI, an editor extension, or another tool
  * entirely. `ccusage` takes the same approach.
  *
- * Environments return pre-aggregated `(day, provider, model)` buckets. Raw
- * transcript records never cross the wire.
+ * Environments return pre-aggregated `(day, provider, model)` buckets, plus
+ * `(hour, provider, model)` buckets for the trailing hours. Raw transcript
+ * records never cross the wire.
  *
  * Cost semantics: every `costUsd` in this module is the *API list-price
  * equivalent* of the tokens, not billed spend. Subscription plans bill on their
@@ -113,6 +114,35 @@ export const UsageBucket = Schema.Struct({
 export type UsageBucket = typeof UsageBucket.Type;
 
 /**
+ * How many trailing hours a summary breaks out by hour: the last day, and the
+ * day before it to compare against. Servers keep one extra hour so a client
+ * whose clock runs slightly behind still finds its whole range.
+ */
+export const USAGE_RECENT_HOURS = 48 as const;
+
+/**
+ * One `(hour, provider, model)` cell of the trailing hours.
+ *
+ * Leaner than a day bucket: the hourly view shows tokens, cost and responses,
+ * and leaves cost provenance and savings to the daily figures.
+ */
+export const UsageHourBucket = Schema.Struct({
+  /**
+   * Start of the hour as epoch milliseconds. Absolute rather than zoned, so
+   * environments in different time zones merge exactly; clients label it in
+   * their own zone.
+   */
+  hourStartMs: NonNegativeInt,
+  provider: UsageProviderKind,
+  model: TrimmedNonEmptyString,
+  totals: UsageTokenTotals,
+  /** API list-price equivalent, like every cost in this module. */
+  costUsd: Schema.Number,
+  records: NonNegativeInt,
+});
+export type UsageHourBucket = typeof UsageHourBucket.Type;
+
+/**
  * Identifies the physical transcript directory a source read from.
  *
  * Two environments on one machine (worktree servers, for example) resolve the
@@ -196,6 +226,12 @@ export const UsageSummary = Schema.Struct({
   sinceDay: UsageDay,
   untilDay: UsageDay,
   buckets: Schema.Array(UsageBucket),
+  /**
+   * The last {@link USAGE_RECENT_HOURS} hours of the window, by hour. Optional
+   * because servers from before the field omit it; a client tells that apart
+   * from a quiet day (an empty array) and says the machine is not counted.
+   */
+  hourlyBuckets: Schema.optional(Schema.Array(UsageHourBucket)),
   sources: Schema.Array(UsageSource),
   pricing: UsagePricing,
   /** Wall-clock cost of the scan, surfaced in diagnostics. */

@@ -1,6 +1,7 @@
 // @effect-diagnostics globalDate:off
 /**
- * Folds parsed transcript records into `(day, provider, model)` buckets.
+ * Folds parsed transcript records into `(day, provider, model)` buckets, and
+ * the trailing hours into `(hour, provider, model)` buckets.
  *
  * `Intl.DateTimeFormat` is the only reliable way to resolve a wall-clock day in
  * an arbitrary IANA zone, and it takes a `Date`. That is why the raw `Date`
@@ -11,7 +12,12 @@
  *
  * @module usageAggregation
  */
-import type { UsageBucket, UsageDay, UsageTokenTotals } from "@threadlines/contracts";
+import type {
+  UsageBucket,
+  UsageDay,
+  UsageHourBucket,
+  UsageTokenTotals,
+} from "@threadlines/contracts";
 
 import { addTotals, EMPTY_TOTALS, type UsageRecord } from "./usageTranscripts.ts";
 import { cacheSavingsUsd, priceUsage, type RateTable } from "./usagePricing.ts";
@@ -43,6 +49,19 @@ export function makeDayFormatter(timeZone: string): (timestampMs: number) => str
   return (timestampMs) => format.format(new Date(timestampMs));
 }
 
+const HOUR_MS = 60 * 60 * 1000;
+
+/** Start of the hour holding `timestampMs`, in absolute time. */
+export function hourStartOf(timestampMs: number): number {
+  return Math.floor(timestampMs / HOUR_MS) * HOUR_MS;
+}
+
+interface MutableHourBucket {
+  totals: UsageTokenTotals;
+  costUsd: number;
+  records: number;
+}
+
 interface MutableBucket {
   totals: UsageTokenTotals;
   costUsd: number;
@@ -58,10 +77,16 @@ export interface AggregateOptions {
   readonly sinceDay: string;
   readonly untilDay: string;
   readonly rates: RateTable;
+  /**
+   * In-window records at or after this instant are also bucketed by hour.
+   * Omitted, nothing is.
+   */
+  readonly hourlySinceMs?: number;
 }
 
 export interface AggregateResult {
   readonly buckets: readonly UsageBucket[];
+  readonly hourlyBuckets: readonly UsageHourBucket[];
   /** Records dropped because an earlier record carried the same dedupe key. */
   readonly duplicatesDropped: number;
   /** Records whose day fell outside the requested window. */
@@ -77,6 +102,7 @@ export interface AggregateResult {
  */
 export class UsageAggregator {
   readonly #buckets = new Map<string, MutableBucket>();
+  readonly #hourlyBuckets = new Map<string, MutableHourBucket>();
   readonly #seen = new Set<string>();
   readonly #toDay: (timestampMs: number) => string;
   readonly #options: AggregateOptions;
@@ -132,6 +158,19 @@ export class UsageAggregator {
     if (priced.costSource === "unpriced") bucket.unpricedRecords += 1;
     if (priced.costSource === "providerReported") bucket.providerReportedRecords += 1;
     if (record.sessionId.length > 0) bucket.sessions.add(record.sessionId);
+
+    const hourlySinceMs = this.#options.hourlySinceMs;
+    if (hourlySinceMs !== undefined && record.timestampMs >= hourlySinceMs) {
+      const hourKey = `${hourStartOf(record.timestampMs)} ${record.provider} ${record.model}`;
+      let hour = this.#hourlyBuckets.get(hourKey);
+      if (hour === undefined) {
+        hour = { totals: EMPTY_TOTALS, costUsd: 0, records: 0 };
+        this.#hourlyBuckets.set(hourKey, hour);
+      }
+      hour.totals = addTotals(hour.totals, record.totals);
+      hour.costUsd += priced.costUsd;
+      hour.records += 1;
+    }
     return true;
   }
 
@@ -160,8 +199,28 @@ export class UsageAggregator {
         a.model.localeCompare(b.model),
     );
 
+    const hourlyBuckets: UsageHourBucket[] = [];
+    for (const [key, hour] of this.#hourlyBuckets) {
+      const [hourStartMs = "0", provider = "", model = ""] = key.split(" ");
+      hourlyBuckets.push({
+        hourStartMs: Number(hourStartMs),
+        provider: provider as UsageHourBucket["provider"],
+        model,
+        totals: hour.totals,
+        costUsd: hour.costUsd,
+        records: hour.records,
+      });
+    }
+    hourlyBuckets.sort(
+      (a, b) =>
+        a.hourStartMs - b.hourStartMs ||
+        a.provider.localeCompare(b.provider) ||
+        a.model.localeCompare(b.model),
+    );
+
     return {
       buckets,
+      hourlyBuckets,
       duplicatesDropped: this.#duplicatesDropped,
       outOfWindow: this.#outOfWindow,
     };

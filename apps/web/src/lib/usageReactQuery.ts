@@ -51,6 +51,12 @@ export interface UsageEnvironmentReport {
 
 export interface UsageAcrossEnvironments {
   readonly window: UsageSummaryInput;
+  /**
+   * When the answers arrived, by this client's clock. The last-24-hours view
+   * ends on this hour, so a page left open shows the hours it has data for
+   * instead of drifting into empty ones before the next refetch.
+   */
+  readonly readAtMs: number;
   readonly merged: MergedUsage;
   readonly environments: readonly UsageEnvironmentReport[];
 }
@@ -110,6 +116,7 @@ async function readUsageAcrossEnvironments(
 
   return {
     window,
+    readAtMs: Date.now(),
     merged: mergeUsage(contributions, USAGE_CONTRACT_VERSION),
     environments,
   };
@@ -146,6 +153,10 @@ export function usageSummaryQueryOptions(input: {
     queryFn: () => readUsageAcrossEnvironments(targets, makeUsageWindow(USAGE_MAX_WINDOW_DAYS)),
     enabled: targets.length > 0,
     staleTime: USAGE_STALE_TIME_MS,
+    // The page says "to now" and "this hour so far", so it rescans while it is
+    // open and visible rather than letting those labels describe an old scan.
+    // Warm scans only reparse transcripts that changed.
+    refetchInterval: USAGE_STALE_TIME_MS,
     // A refresh keeps the page on screen: the numbers move, the layout does not.
     placeholderData: keepPreviousData,
   });
@@ -183,6 +194,7 @@ export function deriveUsageWindow(
   );
 
   return {
+    ...scan,
     window: { ...scan.window, sinceDay },
     merged: mergeUsage(contributions, USAGE_CONTRACT_VERSION),
     environments,

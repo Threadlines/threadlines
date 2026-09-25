@@ -20,6 +20,7 @@ import * as NodeOS from "node:os";
 import {
   USAGE_CONTRACT_VERSION,
   USAGE_MAX_WINDOW_DAYS,
+  USAGE_RECENT_HOURS,
   type UsageProviderKind,
   type UsageSource,
   type UsageSummary,
@@ -42,7 +43,7 @@ import { ServerConfig } from "../config.ts";
 import { resolveClaudeHomePath } from "../provider/Drivers/ClaudeHome.ts";
 import { resolveCodexHomeLayout } from "../provider/Drivers/CodexHomeLayout.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
-import { UsageAggregator } from "./usageAggregation.ts";
+import { hourStartOf, UsageAggregator } from "./usageAggregation.ts";
 import { parseRateTable, type RateTable } from "./usagePricing.ts";
 import {
   decodeScanCache,
@@ -67,6 +68,7 @@ const RATES_TTL_MS = 24 * 60 * 60 * 1000;
 const RATES_FETCH_TIMEOUT_MS = 10_000;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+const HOUR_MS = 60 * 60 * 1000;
 
 /**
  * Files are filtered by mtime before opening. The slack covers a session whose
@@ -116,6 +118,7 @@ export class UsageService extends Context.Service<UsageService, UsageServiceShap
           sinceDay: input.sinceDay,
           untilDay: input.untilDay,
           buckets: [],
+          hourlyBuckets: [],
           sources: [],
           pricing: {
             status: "unavailable",
@@ -359,6 +362,9 @@ export const make = Effect.gen(function* () {
       sinceDay: input.sinceDay,
       untilDay: input.untilDay,
       rates,
+      // The current hour and the USAGE_RECENT_HOURS before it, which is one
+      // hour of slack for a client whose clock trails this one.
+      hourlySinceMs: hourStartOf(startedAtMs) - USAGE_RECENT_HOURS * HOUR_MS,
     });
 
     const sources: UsageSource[] = [];
@@ -441,6 +447,7 @@ export const make = Effect.gen(function* () {
       sinceDay: input.sinceDay,
       untilDay: input.untilDay,
       buckets: aggregated.buckets,
+      hourlyBuckets: aggregated.hourlyBuckets,
       sources,
       pricing: {
         status: ratesStatus,
