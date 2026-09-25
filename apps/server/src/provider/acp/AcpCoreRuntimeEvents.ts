@@ -26,9 +26,15 @@ interface AcpEventStamp {
 
 type AcpCanonicalRequestType = Extract<
   CanonicalRequestType,
-  "exec_command_approval" | "file_read_approval" | "file_change_approval" | "unknown"
+  "exec_command_approval" | "file_read_approval" | "file_change_approval" | "dynamic_tool_call"
 >;
 
+/**
+ * Every kind gets a type the approval panel renders. Anything that isn't a
+ * shell command or a file access (MCP tools arrive as `other`) is a tool
+ * call, as it is for Claude; an `unknown` request never shows its panel and
+ * the turn waits forever.
+ */
 function canonicalRequestTypeFromAcpKind(kind: string | "unknown"): AcpCanonicalRequestType {
   switch (kind) {
     case "execute":
@@ -40,8 +46,21 @@ function canonicalRequestTypeFromAcpKind(kind: string | "unknown"): AcpCanonical
     case "move":
       return "file_change_approval";
     default:
-      return "unknown";
+      return "dynamic_tool_call";
   }
+}
+
+/**
+ * Names a tool-call approval in the panel heading. Agents title calls
+ * `<label>: <detail>` (Cursor: `threadlines_browser-browser_open_tab:
+ * browser_open_tab`), so the label before the colon is the tool.
+ */
+function acpApprovalToolName(permissionRequest: AcpPermissionRequest): string | undefined {
+  const title = permissionRequest.toolCall?.title?.trim();
+  if (!title) {
+    return undefined;
+  }
+  return title.split(": ")[0]?.trim() || title;
 }
 
 function canonicalItemTypeFromAcpToolKind(kind: string | undefined): ToolLifecycleItemType {
@@ -84,11 +103,14 @@ export function makeAcpRequestOpenedEvent(input: {
   readonly requestId: RuntimeRequestId;
   readonly permissionRequest: AcpPermissionRequest;
   readonly detail: string;
-  readonly args: unknown;
+  readonly args: object;
   readonly source: AcpAdapterRawSource;
   readonly method: string;
   readonly rawPayload: unknown;
 }): ProviderRuntimeEvent {
+  const requestType = canonicalRequestTypeFromAcpKind(input.permissionRequest.kind);
+  const toolName =
+    requestType === "dynamic_tool_call" ? acpApprovalToolName(input.permissionRequest) : undefined;
   return {
     type: "request.opened",
     ...input.stamp,
@@ -97,9 +119,9 @@ export function makeAcpRequestOpenedEvent(input: {
     turnId: input.turnId,
     requestId: input.requestId,
     payload: {
-      requestType: canonicalRequestTypeFromAcpKind(input.permissionRequest.kind),
+      requestType,
       detail: input.detail,
-      args: input.args,
+      args: toolName ? { ...input.args, toolName } : input.args,
     },
     raw: {
       source: input.source,
