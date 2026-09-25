@@ -10927,12 +10927,14 @@ describe("ChatView timeline estimator parity (full app)", () => {
       );
       expect(sourceMessageRow.textContent).toContain("Original prompt for branching.");
       await page.elementLocator(sourceMessageRow).hover();
-      const editAndBranchButton = await waitForElement(
+      const branchButton = await waitForElement(
         () =>
-          sourceMessageRow.querySelector<HTMLButtonElement>('button[aria-label="Edit and branch"]'),
-        "Edit-and-branch button did not render for the source message.",
+          sourceMessageRow.querySelector<HTMLButtonElement>(
+            'button[aria-label="Branch from here"]',
+          ),
+        "Branch button did not render for the source message.",
       );
-      await page.elementLocator(editAndBranchButton).click();
+      await page.elementLocator(branchButton).click();
       await expect
         .element(page.getByText("Edit this prompt in a new thread?", { exact: true }))
         .toBeInTheDocument();
