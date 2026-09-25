@@ -7,6 +7,10 @@ import {
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
+import {
+  parseParticipantSessionKey,
+  sessionSlotParticipantId,
+} from "@threadlines/shared/threadParticipants";
 
 import type { ProviderServiceShape } from "../provider/Services/ProviderService.ts";
 import type { OrchestrationEngineShape } from "./Services/OrchestrationEngine.ts";
@@ -31,6 +35,10 @@ export function toOrchestrationThreadGoal(
 /**
  * Pauses a provider-owned active goal before its live session is stopped.
  *
+ * Takes the provider session key of the runtime being stopped. In a room the
+ * thread's goal belongs to the agent holding the session slot, so stopping
+ * any other agent leaves it alone.
+ *
  * The provider call deliberately does not recover cold sessions. Persisting
  * the authoritative response here also makes shutdown ordering independent of
  * the asynchronous provider-event ingestion reactor.
@@ -42,10 +50,14 @@ export const pauseActiveThreadGoalForStop = Effect.fn("pauseActiveThreadGoalForS
     readonly providerService: ProviderServiceShape;
     readonly orchestrationEngine: OrchestrationEngineShape;
   }) {
+    const target = parseParticipantSessionKey(input.threadId);
     const thread = Option.getOrUndefined(
-      yield* input.projectionSnapshotQuery.getThreadShellById(input.threadId),
+      yield* input.projectionSnapshotQuery.getThreadShellById(target.threadId),
     );
     if (thread?.goal?.status !== "active" || thread.session?.status === "stopped") {
+      return false;
+    }
+    if (sessionSlotParticipantId(thread.session ?? null) !== target.participantId) {
       return false;
     }
 
@@ -58,8 +70,8 @@ export const pauseActiveThreadGoalForStop = Effect.fn("pauseActiveThreadGoalForS
     yield* input.orchestrationEngine.dispatch({
       type: "thread.goal.state.set",
       commandId: CommandId.make(`provider-goal-stop:${input.threadId}:${crypto.randomUUID()}`),
-      threadId: input.threadId,
-      goal: toOrchestrationThreadGoal(input.threadId, goal),
+      threadId: target.threadId,
+      goal: toOrchestrationThreadGoal(target.threadId, goal),
       createdAt,
     });
     return goal.status === "paused";

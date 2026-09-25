@@ -16,9 +16,11 @@ import type {
   OrchestrationQueuedFollowUp,
   OrchestrationThreadLinkedPullRequest,
   OrchestrationThreadGoal,
+  OrchestrationThreadParticipant,
   ProjectKind,
   ProjectScript as ContractProjectScript,
   ThreadId,
+  ThreadParticipantId,
   ProjectId,
   TurnId,
   MessageId,
@@ -71,6 +73,8 @@ export interface ChatMessage {
   text: string;
   attachments?: ChatAttachment[];
   skills?: ChatSkillReference[];
+  /** See OrchestrationMessage.participantId. Absent: the thread's own agent. */
+  participantId?: ThreadParticipantId | undefined;
   turnId?: TurnId | null;
   createdAt: string;
   completedAt?: string | undefined;
@@ -143,6 +147,8 @@ export interface Thread {
   linkedPullRequests?: readonly OrchestrationThreadLinkedPullRequest[];
   /** See ThreadShell.queuedFollowUps. */
   queuedFollowUps?: readonly OrchestrationQueuedFollowUp[];
+  /** See ThreadShell.participants. */
+  participants?: readonly OrchestrationThreadParticipant[];
   /** See ThreadShell.doneOverride. */
   doneOverride: OrchestrationThreadDoneOverride | null;
   /** See ThreadShell.lastSeenAt. */
@@ -209,6 +215,11 @@ export interface ThreadShell {
    */
   queuedFollowUps?: readonly OrchestrationQueuedFollowUp[];
   /**
+   * Agents added next to the thread's own agent; one or more makes the thread
+   * a room. Absent means none.
+   */
+  participants?: readonly OrchestrationThreadParticipant[];
+  /**
    * The user's last explicit Mark done / Reopen, held on the server so every
    * device agrees on the inbox's Active/Wrapped split. Null when never filed.
    */
@@ -266,6 +277,10 @@ export interface SidebarThreadSummary {
   cumulativeDiffStat: OrchestrationThreadDiffStat | null;
   /** See ThreadShell.linkedPullRequests; wrap-up waits on these too. */
   linkedPullRequests?: readonly OrchestrationThreadLinkedPullRequest[];
+  /** See ThreadShell.participants; the inbox marks rooms and names who is working. */
+  participants?: readonly OrchestrationThreadParticipant[];
+  /** In a room, the agent working or last worked ("astra"); null otherwise. */
+  roomSlotAgentName?: string | null;
 }
 
 export interface ThreadSession {
@@ -280,6 +295,8 @@ export interface ThreadSession {
    * `Thread.effectiveCwd` it never reflects a cwd the agent moved itself to.
    */
   checkoutCwd?: string | undefined;
+  /** In a room, the agent holding the session slot. Absent: the thread's own agent. */
+  participantId?: ThreadParticipantId | undefined;
   activeTurnId?: TurnId | undefined;
   pendingBackgroundTaskCount?: number | undefined;
   createdAt: string;

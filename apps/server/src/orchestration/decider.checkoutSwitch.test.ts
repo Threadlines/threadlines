@@ -90,6 +90,7 @@ function makeReadModel(input: {
         pullRequestAutoFix: false,
         pullRequestAutoMerge: null,
         linkedPullRequests: [],
+        participants: [],
         doneOverride: null,
         lastSeenAt: null,
         deletedAt: null,

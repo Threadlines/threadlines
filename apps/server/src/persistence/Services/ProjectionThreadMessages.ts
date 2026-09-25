@@ -13,6 +13,7 @@ import {
   NonNegativeInt,
   OrchestrationMessageRole,
   ThreadId,
+  ThreadParticipantId,
   TurnId,
   IsoDateTime,
 } from "@threadlines/contracts";
@@ -32,6 +33,8 @@ export const ProjectionThreadMessage = Schema.Struct({
   text: Schema.String,
   attachments: Schema.optional(Schema.Array(ChatAttachment)),
   skills: Schema.optional(ChatSkillReferenceList),
+  /** See OrchestrationMessage.participantId. Set when the row is created, never updated. */
+  participantId: Schema.optional(Schema.NullOr(ThreadParticipantId)),
   isStreaming: Schema.Boolean,
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,

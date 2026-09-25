@@ -9,6 +9,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Equal from "effect/Equal";
 import * as Option from "effect/Option";
+import { sessionSlotParticipantId } from "@threadlines/shared/threadParticipants";
 
 import type { OrchestrationEngineShape } from "../orchestration/Services/OrchestrationEngine.ts";
 import type { ProjectionSnapshotQueryShape } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
@@ -17,7 +18,7 @@ import type { ProviderServiceShape } from "./Services/ProviderService.ts";
 interface ProviderReviewCoordinatorServices {
   readonly providerService: Pick<
     ProviderServiceShape,
-    "getCapabilities" | "getInstanceInfo" | "startReview"
+    "getCapabilities" | "getInstanceInfo" | "startReview" | "listSessions" | "stopSession"
   >;
   readonly projectionSnapshotQuery: Pick<ProjectionSnapshotQueryShape, "getThreadShellById">;
   readonly orchestrationEngine: Pick<OrchestrationEngineShape, "dispatch">;
@@ -51,8 +52,14 @@ export function startProviderReviewForThread(
 
     const requestedModelSelection =
       input.modelSelection ?? input.bootstrap?.modelSelection ?? threadShell?.modelSelection;
+    // A native review runs on the thread's own agent. In a room the session
+    // slot may hold another agent, whose runtime says nothing about this one.
+    const ownSession =
+      sessionSlotParticipantId(threadShell?.session ?? null) === null
+        ? (threadShell?.session ?? null)
+        : null;
     const requestedInstanceId =
-      threadShell?.session?.providerInstanceId ?? requestedModelSelection?.instanceId;
+      ownSession?.providerInstanceId ?? requestedModelSelection?.instanceId;
 
     if (requestedInstanceId === undefined) {
       return yield* new ProviderStartReviewError({
@@ -109,11 +116,13 @@ export function startProviderReviewForThread(
 
     const effectiveModelSelection = requestedModelSelection ?? threadShell.modelSelection;
     const effectiveRuntimeMode =
-      threadShell.session?.runtimeMode ?? input.runtimeMode ?? threadShell.runtimeMode;
+      ownSession?.runtimeMode ?? input.runtimeMode ?? threadShell.runtimeMode;
     const reviewRequestedAt = DateTime.formatIso(yield* DateTime.now);
-    const previousSession = threadShell.session;
+    const previousSession = ownSession;
     const reviewSessionBase = {
       threadId: input.threadId,
+      // Hands the slot to the thread's own agent for the review.
+      participantId: null,
       providerName: reviewInstance.driverKind,
       providerInstanceId: requestedInstanceId,
       providerSessionId: previousSession?.providerSessionId ?? null,
@@ -127,7 +136,9 @@ export function startProviderReviewForThread(
         Effect.map((latestThreadShell) => ({
           ...reviewSessionBase,
           providerSessionId:
-            latestThreadShell?.session?.providerSessionId ?? reviewSessionBase.providerSessionId,
+            (sessionSlotParticipantId(latestThreadShell?.session ?? null) === null
+              ? latestThreadShell?.session?.providerSessionId
+              : undefined) ?? reviewSessionBase.providerSessionId,
           providerThreadId:
             latestThreadShell?.session?.providerThreadId ?? reviewSessionBase.providerThreadId,
           pendingBackgroundTaskCount:
@@ -136,6 +147,25 @@ export function startProviderReviewForThread(
         })),
         Effect.catch(() => Effect.succeed(reviewSessionBase)),
       );
+
+    // In a room the thread's own agent may be parked in an earlier checkout or
+    // access mode while another agent worked. A review must run where the
+    // thread is now, so a mismatched runtime is stopped and started fresh.
+    if ((threadShell.participants?.length ?? 0) > 0) {
+      const parked = (yield* services.providerService.listSessions()).find(
+        (session) => session.threadId === input.threadId,
+      );
+      const normalize = (value: string | undefined) => value?.replace(/[/\\]+$/, "");
+      if (
+        parked !== undefined &&
+        (normalize(parked.cwd) !== normalize(input.cwd) ||
+          parked.runtimeMode !== effectiveRuntimeMode)
+      ) {
+        yield* services.providerService
+          .stopSession({ threadId: input.threadId })
+          .pipe(Effect.catch(() => Effect.void));
+      }
+    }
 
     yield* services.orchestrationEngine.dispatch({
       type: "thread.message.user.record",

@@ -9,6 +9,7 @@ import {
   ChatAttachmentListLenient,
   ChatSkillReferenceList,
   NonNegativeInt,
+  ThreadParticipantId,
 } from "@threadlines/contracts";
 
 import { toPersistenceSqlError } from "../Errors.ts";
@@ -27,6 +28,7 @@ const ProjectionThreadMessageDbRowSchema = ProjectionThreadMessage.mapFields(
     eventSequence: Schema.NullOr(NonNegativeInt),
     attachments: Schema.NullOr(Schema.fromJsonString(ChatAttachmentListLenient)),
     skills: Schema.NullOr(Schema.fromJsonString(ChatSkillReferenceList)),
+    participantId: Schema.NullOr(ThreadParticipantId),
   }),
 );
 
@@ -45,6 +47,7 @@ function toProjectionThreadMessage(
     updatedAt: row.updatedAt,
     ...(row.attachments !== null ? { attachments: row.attachments } : {}),
     ...(row.skills !== null ? { skills: row.skills } : {}),
+    ...(row.participantId !== null ? { participantId: row.participantId } : {}),
   };
 }
 
@@ -67,6 +70,7 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
           text,
           attachments_json,
           skills_json,
+          participant_id,
           is_streaming,
           created_at,
           updated_at
@@ -94,6 +98,7 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
               WHERE message_id = ${row.messageId}
             )
           ),
+          ${row.participantId ?? null},
           ${row.isStreaming ? 1 : 0},
           ${row.createdAt},
           ${row.updatedAt}
@@ -112,6 +117,8 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
             excluded.skills_json,
             projection_thread_messages.skills_json
           ),
+          -- participant_id is left alone: a message's author is fixed by the
+          -- write that created it.
           is_streaming = excluded.is_streaming,
           created_at = excluded.created_at,
           updated_at = excluded.updated_at
@@ -133,6 +140,7 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
           text,
           attachments_json AS "attachments",
           skills_json AS "skills",
+          participant_id AS "participantId",
           is_streaming AS "isStreaming",
           created_at AS "createdAt",
           updated_at AS "updatedAt"
@@ -156,6 +164,7 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
           text,
           attachments_json AS "attachments",
           skills_json AS "skills",
+          participant_id AS "participantId",
           is_streaming AS "isStreaming",
           created_at AS "createdAt",
           updated_at AS "updatedAt"

@@ -1,0 +1,1459 @@
+<!-- Rooms proposal, 2026-09-05. A thread that holds the user plus two or more
+     agents from different providers, each keeping its own session. Drawn in the
+     real app frame (sidebar / header / timeline / composer) with the dark-mode
+     tokens from apps/web/src/index.css so it can be judged next to the app.
+     Companion to the brainstorm recorded in the co-work room memory. -->
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'"
+    />
+    <title>Rooms</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        /* Elevation ladder copied from index.css dark mode. */
+        --chrome: oklch(0.19 0 0);
+        --bg: oklch(0.228 0 0);
+        --rail: oklch(0.26 0 0);
+        --card: oklch(0.292 0 0);
+        --popover: oklch(0.312 0 0);
+        --fg: oklch(0.93 0 0);
+        --fg-muted: oklch(0.68 0 0);
+        --fg-dim: oklch(0.55 0 0);
+        --border: rgb(255 255 255 / 0.14);
+        --border-soft: rgb(255 255 255 / 0.08);
+        --hover: rgb(255 255 255 / 0.06);
+        --active-row: rgb(255 255 255 / 0.1);
+        --muted: rgb(255 255 255 / 0.09);
+        --primary: oklch(0.65 0.19 264);
+        --claude: #e08b66;
+        --codex: oklch(0.9 0 0);
+        --amber: oklch(0.8 0.15 80);
+        --green: oklch(0.75 0.15 160);
+        --font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Inter, sans-serif;
+        --mono: ui-monospace, "SF Mono", Menlo, monospace;
+      }
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      body {
+        background: var(--chrome);
+        color: var(--fg);
+        font-family: var(--font);
+        font-size: 13px;
+        line-height: 1.45;
+        padding: 36px 40px 64px;
+      }
+      h1 {
+        font-size: 20px;
+        font-weight: 600;
+        margin-bottom: 6px;
+      }
+      h2 {
+        font-size: 15px;
+        font-weight: 600;
+        margin: 40px 0 10px;
+      }
+      .sub {
+        color: var(--fg-muted);
+        max-width: 720px;
+        margin-bottom: 8px;
+      }
+      .frame-label {
+        font-size: 11px;
+        color: var(--fg-dim);
+        margin: 26px 0 8px;
+        font-family: var(--mono);
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+      }
+      .notes {
+        max-width: 720px;
+        color: var(--fg-muted);
+        padding-left: 18px;
+      }
+      .notes li {
+        margin-bottom: 6px;
+      }
+      .notes b {
+        color: var(--fg);
+        font-weight: 600;
+      }
+      code {
+        font-family: var(--mono);
+        font-size: 12px;
+      }
+
+      /* ── App frame ─────────────────────────────── */
+      .app {
+        width: min(1280px, 100%);
+        min-height: 860px;
+        display: grid;
+        grid-template-columns: 268px 1fr;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        overflow: hidden;
+        background: var(--bg);
+      }
+      .app.short {
+        min-height: 560px;
+      }
+      .sidebar {
+        background: var(--rail);
+        border-right: 1px solid var(--border-soft);
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+      }
+      .traffic {
+        height: 40px;
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        padding: 0 14px;
+      }
+      .traffic i {
+        width: 11px;
+        height: 11px;
+        border-radius: 50%;
+        background: rgb(255 255 255 / 0.14);
+      }
+      .search {
+        margin: 0 8px 6px;
+        height: 28px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 0 6px;
+        border: 1px solid var(--border-soft);
+        border-radius: 6px;
+        background: rgb(255 255 255 / 0.03);
+        color: var(--fg-dim);
+        font-size: 12px;
+      }
+      .search .kbd {
+        margin-left: auto;
+        font-family: var(--mono);
+        font-size: 10px;
+        border: 1px solid var(--border-soft);
+        border-radius: 3px;
+        padding: 0 5px;
+        line-height: 15px;
+      }
+      .dest {
+        padding: 6px 8px 0;
+      }
+      .dest .row {
+        height: 28px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 0 5px;
+        border-radius: 6px;
+        font-size: 12px;
+        color: rgb(255 255 255 / 0.85);
+        position: relative;
+      }
+      .dest .row.active {
+        background: var(--active-row);
+        color: var(--fg);
+      }
+      .dest .row .count {
+        margin-left: auto;
+        margin-right: 4px;
+        font-family: var(--mono);
+        font-size: 10px;
+        color: var(--fg-dim);
+      }
+      .dest .row .plus {
+        margin-left: auto;
+        color: var(--fg-muted);
+        width: 20px;
+        text-align: center;
+      }
+      .scope {
+        margin: 14px 8px 2px;
+        height: 28px;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 12px;
+        color: var(--fg-muted);
+        padding: 0 5px;
+      }
+      .scope .new {
+        margin-left: auto;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        color: var(--fg-muted);
+      }
+      .scope .kbd {
+        font-family: var(--mono);
+        font-size: 10px;
+        border: 1px solid var(--border-soft);
+        border-radius: 3px;
+        padding: 0 4px;
+        line-height: 15px;
+      }
+      .inbox {
+        flex: 1;
+        min-height: 0;
+        overflow: hidden;
+        padding: 2px 8px;
+      }
+      .thread {
+        padding: 6px 5px 7px;
+        border-radius: 6px;
+        border-bottom: 1px solid var(--border-soft);
+      }
+      .thread.active {
+        background: var(--active-row);
+        border-bottom-color: transparent;
+      }
+      .thread .l1 {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 12.5px;
+        min-width: 0;
+      }
+      .thread .l1 .t {
+        flex: 1;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .thread .l1 .status {
+        font-size: 11px;
+        color: var(--fg-muted);
+        white-space: nowrap;
+      }
+      .thread .l1 .status.working {
+        color: var(--amber);
+      }
+      .thread .l1 .status.done {
+        color: var(--primary);
+      }
+      .thread .l2 {
+        margin-top: 2px;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 11px;
+        color: var(--fg-dim);
+        font-family: var(--mono);
+        white-space: nowrap;
+        overflow: hidden;
+      }
+      .ri {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+      }
+      .ri-ico {
+        width: 12px;
+        height: 12px;
+        flex: none;
+      }
+      .dest .row .ri-ico {
+        width: 14px;
+        height: 14px;
+      }
+      .section-h {
+        margin: 10px 5px 4px;
+        padding-top: 8px;
+        border-top: 1px solid var(--border-soft);
+        font-size: 11px;
+        color: var(--fg-dim);
+        display: flex;
+        justify-content: space-between;
+      }
+      .foot {
+        padding: 8px;
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        font-size: 12px;
+        color: var(--fg-muted);
+      }
+      .foot .meter {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 4px 5px;
+      }
+      .foot .bar {
+        flex: 1;
+        height: 3px;
+        background: var(--muted);
+        border-radius: 2px;
+        overflow: hidden;
+      }
+      .foot .bar i {
+        display: block;
+        height: 100%;
+        width: 62%;
+        background: var(--fg-muted);
+      }
+      .foot .settings {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 4px 5px;
+      }
+      .foot .ver {
+        margin-left: auto;
+        font-family: var(--mono);
+        font-size: 10px;
+        color: var(--fg-dim);
+      }
+
+      /* stacked provider marks, used in rows and header */
+      .marks {
+        display: inline-flex;
+        align-items: center;
+      }
+      .mark {
+        width: 14px;
+        height: 14px;
+        border-radius: 50%;
+        display: inline-grid;
+        place-items: center;
+        font-size: 9px;
+        font-weight: 700;
+        line-height: 1;
+        color: var(--bg);
+        flex: none;
+      }
+      .mark.claude {
+        background: var(--claude);
+      }
+      .mark.codex {
+        background: var(--codex);
+      }
+      .mark.lg {
+        width: 18px;
+        height: 18px;
+        font-size: 11px;
+      }
+      .marks .mark + .mark {
+        margin-left: -4px;
+        box-shadow: 0 0 0 1.5px var(--rail);
+      }
+
+      /* ── Main pane ─────────────────────────────── */
+      .main {
+        display: flex;
+        flex-direction: column;
+        min-width: 0;
+        min-height: 0;
+      }
+      .header {
+        height: 52px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 0 12px;
+        border-bottom: 1px solid var(--border-soft);
+        font-size: 13px;
+      }
+      .header .crumb {
+        color: var(--fg-muted);
+      }
+      .header .sep {
+        color: rgb(255 255 255 / 0.3);
+      }
+      .header .title {
+        font-weight: 500;
+        color: var(--fg);
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .header .participants,
+      .header .right {
+        flex: none;
+        white-space: nowrap;
+      }
+      .header .participants {
+        margin-left: 10px;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        font-size: 12px;
+        color: var(--fg-muted);
+        padding-left: 12px;
+        border-left: 1px solid var(--border-soft);
+      }
+      .header .participants .p {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .header .participants .state {
+        color: var(--fg-dim);
+      }
+      .header .participants .state.working {
+        color: var(--amber);
+      }
+      .header .participants .add {
+        color: var(--fg-dim);
+      }
+      .header .right {
+        margin-left: auto;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        color: var(--fg-muted);
+      }
+      .header .btn {
+        height: 26px;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 0 8px;
+        border-radius: 6px;
+        border: 1px solid var(--border-soft);
+        font-size: 12px;
+        color: var(--fg-muted);
+      }
+      .header .icons {
+        display: flex;
+        gap: 4px;
+      }
+      .header .icons span {
+        width: 26px;
+        height: 26px;
+        display: grid;
+        place-items: center;
+        border-radius: 6px;
+        color: var(--fg-muted);
+      }
+      .header .icons span.on {
+        background: var(--muted);
+        color: var(--fg);
+      }
+      .dot {
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: var(--amber);
+        display: inline-block;
+        flex: none;
+      }
+
+      .timeline {
+        flex: 1;
+        min-height: 0;
+        padding: 20px 0 8px;
+      }
+      .col {
+        width: min(760px, 100% - 48px);
+        margin: 0 auto;
+        display: flex;
+        flex-direction: column;
+        gap: 22px;
+      }
+      .user {
+        align-self: flex-end;
+        max-width: 78%;
+        background: var(--card);
+        border-radius: 10px;
+        padding: 9px 12px;
+        font-size: 14px;
+        line-height: 1.5;
+      }
+      .mention {
+        display: inline-block;
+        padding: 0 5px;
+        border-radius: 4px;
+        background: rgb(255 255 255 / 0.1);
+        font-family: var(--mono);
+        font-size: 12px;
+        line-height: 18px;
+        vertical-align: 1px;
+      }
+      .agent {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        font-size: 14px;
+        line-height: 1.55;
+      }
+      .agent .author {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        font-size: 12px;
+        color: var(--fg-muted);
+      }
+      .agent .author .name {
+        color: var(--fg);
+        font-weight: 500;
+      }
+      .agent .author .model {
+        font-family: var(--mono);
+        font-size: 11px;
+        color: var(--fg-dim);
+      }
+      .agent .author .time {
+        margin-left: auto;
+        font-family: var(--mono);
+        font-size: 11px;
+        color: var(--fg-dim);
+      }
+      .agent .reason,
+      .agent .act {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 12px;
+        color: var(--fg-muted);
+      }
+      .agent .reason .chev,
+      .agent .act .chev {
+        color: var(--fg-dim);
+        font-size: 10px;
+      }
+      .agent .act .path {
+        font-family: var(--mono);
+        font-size: 11.5px;
+        color: var(--fg);
+      }
+      .agent .act .stat {
+        font-family: var(--mono);
+        font-size: 11px;
+      }
+      .plus {
+        color: var(--green);
+      }
+      .minus {
+        color: #f28b82;
+      }
+      .agent p {
+        color: var(--fg);
+      }
+      .agent p + p {
+        margin-top: 6px;
+      }
+      .agent ul {
+        padding-left: 18px;
+      }
+      .agent .body {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+      /* an agent-to-agent exchange, drawn as a nested strand on a hairline */
+      .exchange {
+        margin: 4px 0 2px 8px;
+        padding-left: 12px;
+        border-left: 1px solid var(--border);
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .exchange .line {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        font-size: 12px;
+        color: var(--fg-muted);
+      }
+      .exchange .line .who {
+        color: var(--fg);
+        font-weight: 500;
+      }
+      .exchange .line .arrow {
+        color: var(--fg-dim);
+      }
+      .exchange q {
+        display: block;
+        font-size: 13px;
+        color: var(--fg);
+        quotes: none;
+        margin-top: 2px;
+      }
+      .exchange .budget {
+        font-family: var(--mono);
+        font-size: 10.5px;
+        color: var(--fg-dim);
+        margin-left: auto;
+      }
+      .sys {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-family: var(--mono);
+        font-size: 11px;
+        color: var(--fg-dim);
+      }
+      .sys::before,
+      .sys::after {
+        content: "";
+        flex: 1;
+        height: 1px;
+        background: var(--border-soft);
+      }
+      .working {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 12px;
+        color: var(--fg-muted);
+      }
+
+      /* ── Participant picker (open, frame 1) ───── */
+      .composer {
+        position: relative;
+      }
+      .composer .pill.picker.open {
+        background: var(--muted);
+        border-color: var(--border);
+      }
+      .ppick {
+        position: absolute;
+        left: 8px;
+        bottom: 42px;
+        display: flex;
+        background: var(--popover);
+        border: 1px solid var(--border-soft);
+        border-radius: 8px;
+        box-shadow: 0 8px 24px rgb(0 0 0 / 0.35);
+        z-index: 5;
+        font-size: 12.5px;
+        overflow: hidden;
+      }
+      .ppick .list {
+        width: 236px;
+        padding: 6px 4px;
+        border-right: 1px solid var(--border-soft);
+      }
+      .ppick .h {
+        font-family: var(--mono);
+        font-size: 10.5px;
+        color: var(--fg-dim);
+        padding: 6px 8px 3px;
+      }
+      .ppick .h + .h,
+      .ppick .row + .h {
+        margin-top: 4px;
+      }
+      .ppick .row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        height: 28px;
+        padding: 0 8px;
+        border-radius: 5px;
+        color: var(--fg);
+      }
+      .ppick .row.sel {
+        background: var(--active-row);
+      }
+      .ppick .row .n {
+        font-weight: 500;
+      }
+      .ppick .row .m {
+        font-family: var(--mono);
+        font-size: 10.5px;
+        color: var(--fg-dim);
+        margin-left: auto;
+      }
+      .ppick .row .m.working {
+        color: var(--amber);
+      }
+      .ppick .row .chk {
+        color: var(--fg);
+        font-size: 11px;
+        margin-left: 6px;
+      }
+      .ppick .row.add {
+        color: var(--fg-muted);
+      }
+      .ppick .row.add .addmark {
+        color: var(--fg-dim);
+        margin-left: 6px;
+      }
+      .mark.cursor {
+        background: oklch(0.72 0.12 300);
+      }
+      .ppick .pane {
+        width: 160px;
+        padding: 8px 4px 6px;
+      }
+      .ppick .pane .who {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 2px 8px 8px;
+        border-bottom: 1px solid var(--border-soft);
+        margin-bottom: 4px;
+      }
+      .ppick .pane .who b {
+        display: block;
+        font-weight: 500;
+        color: var(--fg);
+      }
+      .ppick .pane .who span {
+        display: block;
+        font-family: var(--mono);
+        font-size: 10.5px;
+        color: var(--fg-dim);
+      }
+      .ppick .pane .opt {
+        display: flex;
+        align-items: center;
+        height: 26px;
+        padding: 0 8px;
+        border-radius: 5px;
+        color: var(--fg-muted);
+      }
+      .ppick .pane .opt.sel {
+        color: var(--fg);
+        background: var(--active-row);
+      }
+      .ppick .pane .opt .chk {
+        margin-left: auto;
+        font-size: 11px;
+      }
+      .ppick .pane .foot {
+        font-family: var(--mono);
+        font-size: 10.5px;
+        color: var(--fg-dim);
+        padding: 8px 8px 2px;
+        border-top: 1px solid var(--border-soft);
+        margin-top: 4px;
+        line-height: 1.5;
+      }
+
+      /* ── Composer ─────────────────────────────── */
+      .composer-wrap {
+        padding: 6px 24px 16px;
+      }
+      .composer {
+        width: min(760px, 100%);
+        margin: 0 auto;
+        background: var(--card);
+        border: 1px solid var(--border-soft);
+        border-radius: 10px;
+        padding: 10px 12px 8px;
+      }
+      .composer .to {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 11px;
+        color: var(--fg-dim);
+        margin-bottom: 6px;
+        font-family: var(--mono);
+      }
+      .composer .to .name {
+        color: var(--fg-muted);
+      }
+      .composer .text {
+        font-size: 14px;
+        min-height: 44px;
+        color: var(--fg);
+      }
+      .composer .text .ph {
+        color: var(--fg-dim);
+      }
+      .composer .footer {
+        margin-top: 8px;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 12px;
+        color: var(--fg-muted);
+      }
+      .composer .pill {
+        height: 24px;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 0 7px;
+        border-radius: 6px;
+        border: 1px solid transparent;
+      }
+      .composer .pill.picker {
+        border-color: var(--border-soft);
+        color: var(--fg);
+      }
+      .composer .footer .right {
+        margin-left: auto;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      .composer .ctx {
+        width: 46px;
+        height: 3px;
+        background: var(--muted);
+        border-radius: 2px;
+        overflow: hidden;
+      }
+      .composer .ctx i {
+        display: block;
+        height: 100%;
+        width: 38%;
+        background: var(--fg-muted);
+      }
+      .composer .send {
+        height: 26px;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 0 10px 0 9px;
+        border-radius: 6px;
+        background: var(--fg);
+        color: var(--bg);
+        font-weight: 500;
+        font-size: 12px;
+      }
+
+      /* ── Start-a-room hero ─────────────────────── */
+      .hero {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        justify-content: flex-end;
+        padding: 0 24px 6px;
+      }
+      .hero .inner {
+        width: min(760px, 100%);
+        margin: 0 auto;
+      }
+      .hero h3 {
+        font-size: 18px;
+        font-weight: 600;
+        margin-bottom: 4px;
+      }
+      .hero .lede {
+        color: var(--fg-muted);
+        font-size: 13px;
+        margin-bottom: 18px;
+      }
+      .roster {
+        border-top: 1px solid var(--border-soft);
+      }
+      .roster .r {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        height: 40px;
+        border-bottom: 1px solid var(--border-soft);
+        font-size: 13px;
+      }
+      .roster .r .box {
+        width: 14px;
+        height: 14px;
+        border: 1px solid var(--border);
+        border-radius: 3px;
+        display: grid;
+        place-items: center;
+        font-size: 10px;
+        color: var(--bg);
+      }
+      .roster .r .box.on {
+        background: var(--fg);
+        border-color: var(--fg);
+      }
+      .roster .r .nm {
+        color: var(--fg);
+      }
+      .roster .r .md {
+        font-family: var(--mono);
+        font-size: 11px;
+        color: var(--fg-dim);
+      }
+      .roster .r .role {
+        margin-left: auto;
+        font-size: 12px;
+        color: var(--fg-muted);
+      }
+      .roster .r .role.first {
+        color: var(--fg);
+      }
+      .roster .r.add {
+        color: var(--fg-dim);
+        font-size: 12px;
+      }
+      .hero .facts {
+        margin: 14px 0 12px;
+        display: flex;
+        gap: 18px;
+        font-size: 12px;
+        color: var(--fg-dim);
+        font-family: var(--mono);
+      }
+      .hero .facts span {
+        white-space: nowrap;
+      }
+      .hero .facts b {
+        color: var(--fg-muted);
+        font-weight: 500;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Rooms</h1>
+    <p class="sub">
+      A room is a project thread that holds you plus two or more agents, each on its own provider
+      session. It lives in the same inbox as every other thread. Both frames use the app's dark
+      tokens and layout; nothing here is a new surface type beyond one sidebar row and one header
+      cluster.
+    </p>
+
+    <div class="frame-label">Frame 1 · A room mid-conversation (Fable working, astra idle)</div>
+    <div class="app">
+      <!-- ───────────── Sidebar ───────────── -->
+      <aside class="sidebar">
+        <div class="traffic"><i></i><i></i><i></i></div>
+        <div class="search">
+          <span>&#x2315;</span>
+          <span>Search</span>
+          <span class="kbd">&#8984;K</span>
+        </div>
+        <div class="dest">
+          <div class="row"><span>&#x1F5E8;&#xFE0E;</span><span>General Chats</span></div>
+          <div class="row">
+            <span>&#x2442;</span><span>Pull Requests</span><span class="count">3</span>
+          </div>
+          <div class="row">
+            <svg
+              class="ri-ico"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.75"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path d="M18 21a8 8 0 0 0-16 0" />
+              <circle cx="10" cy="8" r="5" />
+              <path d="M22 20c0-3.37-2-6.5-4-8a5 5 0 0 0-.45-8.3" />
+            </svg>
+            <span>Rooms</span>
+            <span class="plus">+</span>
+          </div>
+        </div>
+        <div class="scope">
+          <span>Threadlines</span><span>&#9662;</span>
+          <span class="new">New thread <span class="kbd">&#8984;N</span></span>
+        </div>
+        <div class="inbox">
+          <div class="thread active">
+            <div class="l1">
+              <span class="marks"><i class="mark claude">✳</i><i class="mark codex">◎</i></span>
+              <span class="t">Reconnect replay can duplicate messages</span>
+              <span class="status working">Fable · working</span>
+            </div>
+            <div class="l2">
+              <span class="ri"
+                ><svg
+                  class="ri-ico"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.75"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <path d="M18 21a8 8 0 0 0-16 0" />
+                  <circle cx="10" cy="8" r="5" />
+                  <path d="M22 20c0-3.37-2-6.5-4-8a5 5 0 0 0-.45-8.3" /></svg
+                >reconnect-replay</span
+              ><span>+43 −12</span><span>2m</span>
+            </div>
+          </div>
+          <div class="thread">
+            <div class="l1">
+              <span class="t">Task list on the activity spine</span>
+              <span class="status done">Completed</span>
+            </div>
+            <div class="l2">
+              <span>feature/activity-spine</span><span>+210 −64</span><span>18m</span>
+            </div>
+          </div>
+          <div class="thread">
+            <div class="l1">
+              <span class="t">Inline previews for referenced images</span>
+              <span class="status">Waiting</span>
+            </div>
+            <div class="l2"><span>main</span><span>PR #216</span><span>1h</span></div>
+          </div>
+          <div class="thread">
+            <div class="l1">
+              <span class="marks"><i class="mark codex">◎</i><i class="mark claude">✳</i></span>
+              <span class="t">Usage page: is the Codex bucket math right?</span>
+              <span class="status">Idle</span>
+            </div>
+            <div class="l2">
+              <span class="ri"
+                ><svg
+                  class="ri-ico"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.75"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <path d="M18 21a8 8 0 0 0-16 0" />
+                  <circle cx="10" cy="8" r="5" />
+                  <path d="M22 20c0-3.37-2-6.5-4-8a5 5 0 0 0-.45-8.3" /></svg
+                >main</span
+              ><span>no changes</span><span>3h</span>
+            </div>
+          </div>
+          <div class="section-h"><span>Wrapped</span><span>12</span></div>
+          <div class="thread">
+            <div class="l1">
+              <span class="t">Checks list running-check dot</span>
+              <span class="status">Merged</span>
+            </div>
+            <div class="l2"><span>PR #217</span><span>yesterday</span></div>
+          </div>
+          <div class="thread">
+            <div class="l1">
+              <span class="t">Taskbar badge for background agents</span>
+              <span class="status">Merged</span>
+            </div>
+            <div class="l2"><span>PR #215</span><span>yesterday</span></div>
+          </div>
+        </div>
+        <div class="foot">
+          <div class="meter">
+            <span>Claude</span><span class="bar"><i></i></span><span>62%</span>
+          </div>
+          <div class="settings">
+            <span>&#9881;</span><span>Settings</span><span class="ver">0.3.6</span>
+          </div>
+        </div>
+      </aside>
+
+      <!-- ───────────── Main ───────────── -->
+      <section class="main">
+        <div class="header">
+          <span class="crumb">&#9776;</span>
+          <span class="crumb">Threadlines</span><span class="sep">/</span>
+          <span class="title">Reconnect replay can duplicate messages</span>
+          <div class="participants">
+            <span class="p"
+              ><i class="mark claude">✳</i>Fable <span class="state working">working</span></span
+            >
+            <span class="p"><i class="mark codex">◎</i>astra <span class="state">idle</span></span>
+            <span class="add">+ Add agent</span>
+          </div>
+          <div class="right">
+            <span class="btn"><span class="dot"></span>2 tasks</span>
+            <span class="btn">Open in &#9662;</span>
+            <div class="icons">
+              <span>&#9645;</span><span>&#8250;_</span><span class="on">&#9707;</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="timeline">
+          <div class="col">
+            <div class="user">
+              Can reconnect replay duplicate messages? If so, fix it so a client never sees the same
+              message twice after a reconnect storm.
+            </div>
+
+            <div class="agent">
+              <div class="author">
+                <i class="mark lg claude">✳</i><span class="name">Fable 5.1</span>
+                <span class="model">claude · fable-5-1</span><span class="time">2:14 PM</span>
+              </div>
+              <div class="reason"><span class="chev">&#9656;</span>Thought for 14s</div>
+              <div class="body">
+                <p>
+                  Yes. The replay cursor advances when the server sends, not when the client
+                  acknowledges. A reconnect that lands mid-batch replays from the old cursor and the
+                  client receives the tail of the batch twice.
+                </p>
+                <div class="act"><span class="chev">&#9656;</span>Read 6 files</div>
+                <div class="act">
+                  <span class="chev">&#9656;</span>Edited
+                  <span class="path">apps/web/src/environments/runtime/connection.ts</span>
+                  <span class="stat"
+                    ><span class="plus">+31</span> <span class="minus">−9</span></span
+                  >
+                </div>
+                <div class="act">
+                  <span class="chev">&#9656;</span>Edited
+                  <span class="path">connection.test.ts</span>
+                  <span class="stat"
+                    ><span class="plus">+12</span> <span class="minus">−3</span></span
+                  >
+                </div>
+                <div class="act">
+                  <span class="chev">&#9656;</span>Ran
+                  <span class="path">vp run '@threadlines/web#test' connection</span>
+                  <span class="stat plus">passed</span>
+                </div>
+                <p>
+                  The cursor now moves on ack, and replay dedupes by message id for the last 64 ids.
+                  Focused tests pass. I did not run the browser suite.
+                </p>
+              </div>
+            </div>
+
+            <div class="user">
+              <span class="mention">@astra</span> review Fable's change, especially ordering under a
+              reconnect storm. Be picky.
+            </div>
+
+            <div class="sys">
+              astra joined · read the last 8 messages and Fable's change summary
+            </div>
+
+            <div class="agent">
+              <div class="author">
+                <i class="mark lg codex">◎</i><span class="name">astra</span>
+                <span class="model">codex · gpt-6-astra · high</span
+                ><span class="time">2:21 PM</span>
+              </div>
+              <div class="reason"><span class="chev">&#9656;</span>Reasoned for 41s</div>
+              <div class="body">
+                <div class="act">
+                  <span class="chev">&#9656;</span>Read the diff at checkpoint C18 and 3 files
+                </div>
+                <div class="exchange">
+                  <div class="line">
+                    <span class="who">astra</span><span class="arrow">asked</span
+                    ><span class="who">Fable</span>
+                    <span class="budget">1 of 1 consults</span>
+                  </div>
+                  <q
+                    >Does the ack cursor advance per message or per batch? The test only covers per
+                    message.</q
+                  >
+                  <div class="line">
+                    <span class="who">Fable</span><span class="arrow">answered</span>
+                  </div>
+                  <q>Per message. Batches are a transport detail; each message acks on its own.</q>
+                </div>
+                <p>Ordering holds. Two things I would change before this ships:</p>
+                <ul>
+                  <li>
+                    The 64-id dedupe window is smaller than a large replay batch. Under a storm the
+                    window rolls over and a duplicate slips through. Key the window by cursor, not
+                    by count.
+                  </li>
+                  <li>
+                    <code>connection.test.ts</code> never reconnects twice in a row. Add that case;
+                    it is the one that failed in the field.
+                  </li>
+                </ul>
+              </div>
+            </div>
+
+            <div class="agent">
+              <div class="author">
+                <i class="mark lg claude">✳</i><span class="name">Fable 5.1</span>
+                <span class="model">claude · fable-5-1</span><span class="time">2:23 PM</span>
+              </div>
+              <div class="body">
+                <p>
+                  Agreed on both. Switching the window to cursor-keyed and adding the
+                  double-reconnect test.
+                </p>
+                <div class="act">
+                  <span class="chev">&#9656;</span>Editing
+                  <span class="path">connection.ts</span>
+                  <span class="stat"
+                    ><span class="plus">+8</span> <span class="minus">−4</span></span
+                  >
+                </div>
+                <div class="working">
+                  <span class="dot"></span>Fable is working · has the keyboard
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="composer-wrap">
+          <div class="composer">
+            <div class="to">
+              to <span class="name">astra</span> · Fable is working, your message queues until it
+              finishes
+            </div>
+            <div class="text">
+              <span class="mention">@astra</span> once Fable is done, run the browser suite on it
+              and report.
+            </div>
+            <div class="ppick">
+              <div class="list">
+                <div class="h">In this room</div>
+                <div class="row">
+                  <i class="mark claude">✳</i><span class="n">Fable 5.1</span>
+                  <span class="m working">claude · working</span>
+                </div>
+                <div class="row sel">
+                  <i class="mark codex">◎</i><span class="n">astra</span>
+                  <span class="m">codex · idle</span><span class="chk">✓</span>
+                </div>
+                <div class="h">Add to this room</div>
+                <div class="row add">
+                  <i class="mark claude">✳</i><span class="n">Opus 5</span>
+                  <span class="m">claude</span><span class="addmark">+</span>
+                </div>
+                <div class="row add">
+                  <i class="mark codex">◎</i><span class="n">gpt-6-sol</span>
+                  <span class="m">codex</span><span class="addmark">+</span>
+                </div>
+                <div class="row add">
+                  <i class="mark cursor">▲</i><span class="n">astra-cursor</span>
+                  <span class="m">cursor · gpt-6-astra</span><span class="addmark">+</span>
+                </div>
+              </div>
+              <div class="pane">
+                <div class="who">
+                  <i class="mark codex lg">◎</i>
+                  <div><b>astra</b><span>gpt-6-astra · Codex</span></div>
+                </div>
+                <div class="h">Reasoning</div>
+                <div class="opt">Low</div>
+                <div class="opt">Medium</div>
+                <div class="opt sel">High<span class="chk">✓</span></div>
+                <div class="opt">Extra high</div>
+                <div class="foot">Build · Auto<br />set in the footer</div>
+              </div>
+            </div>
+            <div class="footer">
+              <span class="pill picker open"
+                ><i class="mark codex">◎</i>astra · high <span>&#9662;</span></span
+              >
+              <span class="pill">Build &#9662;</span>
+              <span class="pill">Auto &#9662;</span>
+              <div class="right">
+                <span class="ctx"><i></i></span>
+                <span>&#x1F4CE;&#xFE0E;</span>
+                <span class="send">Ask astra <span>&#8593;</span></span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <div class="frame-label">
+      Frame 2 · Starting a room (from the + on the Rooms row, or "Add agent" in any thread)
+    </div>
+    <div class="app short">
+      <aside class="sidebar">
+        <div class="traffic"><i></i><i></i><i></i></div>
+        <div class="search">
+          <span>&#x2315;</span><span>Search</span><span class="kbd">&#8984;K</span>
+        </div>
+        <div class="dest">
+          <div class="row"><span>&#x1F5E8;&#xFE0E;</span><span>General Chats</span></div>
+          <div class="row">
+            <span>&#x2442;</span><span>Pull Requests</span><span class="count">3</span>
+          </div>
+          <div class="row">
+            <svg
+              class="ri-ico"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.75"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path d="M18 21a8 8 0 0 0-16 0" />
+              <circle cx="10" cy="8" r="5" />
+              <path d="M22 20c0-3.37-2-6.5-4-8a5 5 0 0 0-.45-8.3" />
+            </svg>
+            <span>Rooms</span>
+            <span class="plus">+</span>
+          </div>
+        </div>
+        <div class="scope">
+          <span>Threadlines</span><span>&#9662;</span>
+          <span class="new">New thread <span class="kbd">&#8984;N</span></span>
+        </div>
+        <div class="inbox">
+          <div class="thread active">
+            <div class="l1">
+              <span class="marks"><i class="mark claude">✳</i><i class="mark codex">◎</i></span>
+              <span class="t">New room</span>
+              <span class="status">Draft</span>
+            </div>
+            <div class="l2">
+              <span class="ri"
+                ><svg
+                  class="ri-ico"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.75"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <path d="M18 21a8 8 0 0 0-16 0" />
+                  <circle cx="10" cy="8" r="5" />
+                  <path d="M22 20c0-3.37-2-6.5-4-8a5 5 0 0 0-.45-8.3" /></svg
+                >main</span
+              >
+            </div>
+          </div>
+          <div class="thread">
+            <div class="l1">
+              <span class="marks"><i class="mark claude">✳</i><i class="mark codex">◎</i></span>
+              <span class="t">Reconnect replay can duplicate messages</span>
+              <span class="status done">Completed</span>
+            </div>
+            <div class="l2">
+              <span class="ri"
+                ><svg
+                  class="ri-ico"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.75"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <path d="M18 21a8 8 0 0 0-16 0" />
+                  <circle cx="10" cy="8" r="5" />
+                  <path d="M22 20c0-3.37-2-6.5-4-8a5 5 0 0 0-.45-8.3" /></svg
+                >reconnect-replay</span
+              ><span>+51 −16</span><span>40m</span>
+            </div>
+          </div>
+        </div>
+        <div class="foot">
+          <div class="meter">
+            <span>Claude</span><span class="bar"><i></i></span><span>62%</span>
+          </div>
+          <div class="settings">
+            <span>&#9881;</span><span>Settings</span><span class="ver">0.3.6</span>
+          </div>
+        </div>
+      </aside>
+      <section class="main">
+        <div class="header">
+          <span class="crumb">&#9776;</span>
+          <span class="crumb">Threadlines</span><span class="sep">/</span>
+          <span class="title">New room</span>
+          <div class="right">
+            <span class="btn">main &#9662;</span>
+            <div class="icons"><span>&#9645;</span><span>&#8250;_</span><span>&#9707;</span></div>
+          </div>
+        </div>
+        <div class="hero">
+          <div class="inner">
+            <h3>Who's in the room</h3>
+            <p class="lede">
+              Each agent keeps its own session and memory. The first one listed answers when you
+              don't mention anyone. Only one agent edits files at a time.
+            </p>
+            <div class="roster">
+              <div class="r">
+                <span class="box on">✓</span><i class="mark claude">✳</i>
+                <span class="nm">Fable 5.1</span><span class="md">claude · fable-5-1</span>
+                <span class="role first">answers by default</span>
+              </div>
+              <div class="r">
+                <span class="box on">✓</span><i class="mark codex">◎</i>
+                <span class="nm">astra</span><span class="md">codex · gpt-6-astra · high</span>
+                <span class="role">mention to bring in</span>
+              </div>
+              <div class="r">
+                <span class="box"></span><i class="mark claude">✳</i> <span class="nm">Opus 5</span
+                ><span class="md">claude · opus-5</span>
+                <span class="role">not in the room</span>
+              </div>
+              <div class="r add">+ Add another agent or provider account</div>
+            </div>
+            <div class="facts">
+              <span><b>Checkout</b> main, shared</span>
+              <span><b>Consults</b> 1 per request</span>
+              <span><b>Revert</b> off in rooms</span>
+            </div>
+          </div>
+        </div>
+        <div class="composer-wrap">
+          <div class="composer">
+            <div class="to">
+              to <span class="name">Fable 5.1</span> · type @ to address someone else
+            </div>
+            <div class="text">
+              <span class="ph">Start the room with a question or a task…</span>
+            </div>
+            <div class="footer">
+              <span class="pill picker"
+                ><i class="mark claude">✳</i>Fable 5.1 <span>&#9662;</span></span
+              >
+              <span class="pill">Build &#9662;</span>
+              <span class="pill">Auto &#9662;</span>
+              <div class="right">
+                <span>&#x1F4CE;&#xFE0E;</span>
+                <span class="send">Send <span>&#8593;</span></span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <h2>What the frames are showing</h2>
+    <ul class="notes">
+      <li>
+        <b>Where it lives.</b> One new row under Pull Requests. Clicking it filters the inbox to
+        rooms only (the row stays lit until you click it again or change scope); the + on hover
+        starts a new room. Rooms show up in the normal inbox as threads, marked by the stacked
+        provider dots before the title and the people icon in the mono line.
+      </li>
+      <li>
+        <b>Header.</b> Same header as a thread, plus one cluster after the title: each agent, its
+        current state, and Add agent. That cluster is the only place the word "room" changes the
+        chrome.
+      </li>
+      <li>
+        <b>Agent messages.</b> No bubbles. An author line (provider dot, name, model in mono, time),
+        then the folded reasoning row, then the same activity rows a thread already draws, then the
+        text. The user's own messages keep the existing right-aligned card.
+      </li>
+      <li>
+        <b>Agent-to-agent talk</b> is the indented strand on a hairline inside the asker's message.
+        It always shows the consult budget so you can see when the agents are out of turns and the
+        ball is back with you.
+      </li>
+      <li>
+        <b>The join line</b> ("astra joined · read the last 8 messages…") says exactly what the late
+        agent was given. No "has read everything" badge.
+      </li>
+      <li>
+        <b>Composer.</b> The picker at the bottom left now picks a participant, not a model. It is
+        drawn open in frame 1: "In this room" lists the roster with live state, "Add to this room"
+        lists every signed-in provider and model (choosing one adds it and addresses it in one step;
+        a second astra gets its provider appended to the handle). The right pane holds the selected
+        participant's own settings, here astra's reasoning level; Build and access stay as the
+        footer pills and are also per participant. A mention in the text switches the picker the
+        same way, and the send button says who is being asked. While someone is working, the line
+        above the text says your message will queue.
+      </li>
+      <li>
+        <b>Starting a room</b> reuses the composer-first draft page: a roster with checkboxes
+        instead of a hero illustration, three facts in mono (checkout, consult budget, revert off),
+        and the same composer beneath.
+      </li>
+    </ul>
+  </body>
+</html>

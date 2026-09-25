@@ -2,6 +2,8 @@ import type { OrchestrationQueuedFollowUp } from "@threadlines/contracts";
 import { CornerDownRightIcon, ListEndIcon, PencilIcon, XIcon } from "lucide-react";
 import { memo } from "react";
 
+import { type RoomAgentLabel, roomAgentKey } from "../../rooms";
+
 /** A steer on its way into the running turn, shown until the turn takes it. */
 export interface ComposerPendingSteer {
   readonly id: string;
@@ -40,6 +42,7 @@ export const ComposerFollowUpQueue = memo(function ComposerFollowUpQueue({
   queued,
   paused,
   attachmentOnlyPrompt,
+  roomAgents = null,
   onEdit,
   onRemove,
 }: {
@@ -47,6 +50,8 @@ export const ComposerFollowUpQueue = memo(function ComposerFollowUpQueue({
   readonly queued: ReadonlyArray<OrchestrationQueuedFollowUp>;
   readonly paused: boolean;
   readonly attachmentOnlyPrompt: string;
+  /** In a room, who each queued message is for. */
+  readonly roomAgents?: ReadonlyMap<string, RoomAgentLabel> | null;
   readonly onEdit: (followUp: OrchestrationQueuedFollowUp) => void;
   readonly onRemove: (followUp: OrchestrationQueuedFollowUp) => void;
 }) {
@@ -78,6 +83,9 @@ export const ComposerFollowUpQueue = memo(function ComposerFollowUpQueue({
             }
           >
             {paused ? "Paused" : "Queued"}
+            {roomAgents !== null
+              ? ` for ${roomAgents.get(roomAgentKey(followUp.participantId))?.name ?? "an agent"}`
+              : null}
           </span>
           <span className="min-w-0 flex-1 truncate text-foreground/80">
             {describeQueuedFollowUp(followUp, attachmentOnlyPrompt)}

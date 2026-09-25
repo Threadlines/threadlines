@@ -147,6 +147,8 @@ import type {
   TranscriptHighlightSourceRole,
 } from "~/lib/transcriptHighlightContext";
 import { formatTranscriptHighlightContextPreview } from "~/lib/transcriptHighlightContext";
+import { ProviderInstanceIcon } from "./ProviderInstanceIcon";
+import { type RoomAgentLabel, roomAgentKey } from "../../rooms";
 
 // ---------------------------------------------------------------------------
 // Context — shared state consumed by every row component via Context.
@@ -157,6 +159,10 @@ import { formatTranscriptHighlightContextPreview } from "~/lib/transcriptHighlig
 
 interface TimelineRowSharedState {
   timestampFormat: TimestampFormat;
+  /** Room agents by `roomAgentKey`; null outside rooms. */
+  roomAgents: ReadonlyMap<string, RoomAgentLabel> | null;
+  /** Agent messages that start a new speaker's stretch and carry an author line. */
+  roomAuthorLineMessageIds: ReadonlySet<MessageId>;
   routeThreadKey: string;
   markdownCwd: string | undefined;
   resolvedTheme: "light" | "dark";
@@ -589,6 +595,8 @@ interface MessagesTimelineProps {
   routeThreadKey: string;
   onOpenTurnDiff: (turnId: TurnId, filePath?: string) => void;
   revertTurnCountByUserMessageId: Map<MessageId, number>;
+  /** Room agents by `roomAgentKey`; null or absent outside rooms. */
+  roomAgents?: ReadonlyMap<string, RoomAgentLabel> | null;
   onRevertUserMessage: (messageId: MessageId) => void;
   onContinueInNewThread?: (messageId: MessageId) => void;
   onRevealPickedElement?: ((context: PickedElementContextDraft) => void) | undefined;
@@ -655,6 +663,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   routeThreadKey,
   onOpenTurnDiff,
   revertTurnCountByUserMessageId,
+  roomAgents = null,
   onRevertUserMessage,
   onContinueInNewThread,
   onRevealPickedElement,
@@ -715,6 +724,29 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   );
   const rows = useStableRows(rawRows);
   const anchorOwnsLiveAgents = rows.some((row) => row.kind === "working");
+  // In a room, an agent message gets an author line when the speaker changes:
+  // after the user spoke, or after a different agent.
+  const roomAuthorLineMessageIds = useMemo(() => {
+    const ids = new Set<MessageId>();
+    if (roomAgents === null) {
+      return ids;
+    }
+    let lastAuthor: string | null = null;
+    for (const row of rows) {
+      if (row.kind !== "message") continue;
+      if (row.message.role === "user") {
+        lastAuthor = null;
+        continue;
+      }
+      if (row.message.role !== "assistant") continue;
+      const author = roomAgentKey(row.message.participantId);
+      if (author !== lastAuthor) {
+        ids.add(row.message.id);
+      }
+      lastAuthor = author;
+    }
+    return ids;
+  }, [roomAgents, rows]);
   const resolvedProviderAuthReconnectIds = useMemo(
     () => deriveResolvedProviderAuthReconnectIds(rows),
     [rows],
@@ -1295,6 +1327,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   const sharedState = useMemo<TimelineRowSharedState>(
     () => ({
       timestampFormat,
+      roomAgents,
+      roomAuthorLineMessageIds,
       routeThreadKey,
       markdownCwd,
       resolvedTheme,
@@ -1325,6 +1359,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     }),
     [
       timestampFormat,
+      roomAgents,
+      roomAuthorLineMessageIds,
       routeThreadKey,
       markdownCwd,
       resolvedTheme,
@@ -2058,50 +2094,62 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
   const canRevertAgentWork = typeof row.revertTurnCount === "number";
   const canRetryFailedTurn = ctx.failedTurnRetry?.messageId === row.message.id;
 
+  const addressee =
+    ctx.roomAgents !== null && row.message.participantId
+      ? ctx.roomAgents.get(roomAgentKey(row.message.participantId))
+      : undefined;
+
   return (
-    <div className="flex justify-end">
-      <div className="group relative max-w-[80%] rounded-2xl rounded-br-sm border border-border bg-secondary px-4 py-3">
-        <TimelineFileAttachmentChips attachments={messageAttachments} className="mb-2" />
-        <TimelineImagePreviewGrid
-          images={userImages}
-          className="mb-2 max-w-[420px]"
-          imageClassName="max-h-[220px] object-cover"
-        />
-        <CollapsibleUserMessageBody
-          text={displayedUserMessage.visibleText}
-          terminalContexts={terminalContexts}
-          transcriptHighlights={transcriptHighlights}
-          pickedElements={pickedElements}
-          drawings={drawings}
-          transcriptMessage={{
-            id: row.message.id,
-            role: "user",
-          }}
-          skills={ctx.skills}
-          forceExpanded={ctx.searchTargetMessageId === row.message.id}
-          searchHighlightQuery={
-            ctx.activeSearchTargetMessageId === row.message.id ? ctx.searchTargetQuery : undefined
-          }
-          footer={
-            <>
-              <div className="flex items-center gap-1.5">
-                {canRetryFailedTurn && <RetryUserMessageButton />}
-                <div className="flex items-center gap-1.5 opacity-0 transition-opacity duration-200 focus-within:opacity-100 group-hover:opacity-100">
-                  {displayedUserMessage.copyText && (
-                    <MessageCopyButton text={displayedUserMessage.copyText} />
-                  )}
-                  {displayedUserMessage.copyText && (
-                    <ContinueInNewThreadButton messageId={row.message.id} />
-                  )}
-                  {canRevertAgentWork && <RevertUserMessageButton messageId={row.message.id} />}
+    <div className="flex flex-col items-end">
+      {addressee ? (
+        <div className="mb-1 pr-1 font-mono text-[10.5px] text-muted-foreground">
+          to {addressee.name}
+        </div>
+      ) : null}
+      <div className="flex w-full justify-end">
+        <div className="group relative max-w-[80%] rounded-2xl rounded-br-sm border border-border bg-secondary px-4 py-3">
+          <TimelineFileAttachmentChips attachments={messageAttachments} className="mb-2" />
+          <TimelineImagePreviewGrid
+            images={userImages}
+            className="mb-2 max-w-[420px]"
+            imageClassName="max-h-[220px] object-cover"
+          />
+          <CollapsibleUserMessageBody
+            text={displayedUserMessage.visibleText}
+            terminalContexts={terminalContexts}
+            transcriptHighlights={transcriptHighlights}
+            pickedElements={pickedElements}
+            drawings={drawings}
+            transcriptMessage={{
+              id: row.message.id,
+              role: "user",
+            }}
+            skills={ctx.skills}
+            forceExpanded={ctx.searchTargetMessageId === row.message.id}
+            searchHighlightQuery={
+              ctx.activeSearchTargetMessageId === row.message.id ? ctx.searchTargetQuery : undefined
+            }
+            footer={
+              <>
+                <div className="flex items-center gap-1.5">
+                  {canRetryFailedTurn && <RetryUserMessageButton />}
+                  <div className="flex items-center gap-1.5 opacity-0 transition-opacity duration-200 focus-within:opacity-100 group-hover:opacity-100">
+                    {displayedUserMessage.copyText && (
+                      <MessageCopyButton text={displayedUserMessage.copyText} />
+                    )}
+                    {displayedUserMessage.copyText && (
+                      <ContinueInNewThreadButton messageId={row.message.id} />
+                    )}
+                    {canRevertAgentWork && <RevertUserMessageButton messageId={row.message.id} />}
+                  </div>
                 </div>
-              </div>
-              <p className="text-right text-xs tracking-tight tabular-nums text-muted-foreground/50">
-                {formatTimestamp(row.message.createdAt, ctx.timestampFormat)}
-              </p>
-            </>
-          }
-        />
+                <p className="text-right text-xs tracking-tight tabular-nums text-muted-foreground/50">
+                  {formatTimestamp(row.message.createdAt, ctx.timestampFormat)}
+                </p>
+              </>
+            }
+          />
+        </div>
       </div>
     </div>
   );
@@ -2361,6 +2409,9 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
           data-settled-note={row.settledNote ? "true" : undefined}
           title={summary ? undefined : formatTimestamp(row.message.createdAt, ctx.timestampFormat)}
         >
+          {ctx.roomAgents !== null && ctx.roomAuthorLineMessageIds.has(row.message.id) ? (
+            <RoomAuthorLine label={ctx.roomAgents.get(roomAgentKey(row.message.participantId))} />
+          ) : null}
           {authReconnect ? (
             <ProviderAuthReconnectCard
               action={authReconnect}
@@ -4042,3 +4093,28 @@ const McpAuthReconnectCard = memo(function McpAuthReconnectCard({
     </div>
   );
 });
+
+/** Who wrote this stretch of a room: provider icon, name, and the model it runs. */
+function RoomAuthorLine({ label }: { label: RoomAgentLabel | undefined }) {
+  if (!label) {
+    return (
+      <div className="mb-1 font-mono text-[10.5px] text-muted-foreground">an agent that left</div>
+    );
+  }
+  return (
+    <div className="mb-1 flex items-center gap-1.5 text-xs">
+      {label.entry ? (
+        <ProviderInstanceIcon
+          driverKind={label.entry.driverKind}
+          displayName={label.entry.displayName}
+          accentColor={label.entry.accentColor}
+          showBadge={false}
+          className="size-3.5"
+          iconClassName="size-3.5"
+        />
+      ) : null}
+      <span className="font-medium text-foreground">{label.name}</span>
+      <span className="font-mono text-[10.5px] text-muted-foreground">{label.model}</span>
+    </div>
+  );
+}

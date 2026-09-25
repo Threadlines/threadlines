@@ -14,6 +14,8 @@ import {
   type ProjectId,
   type OrchestrationSession,
   ThreadId,
+  type ThreadParticipantId,
+  type OrchestrationThread,
   type ProviderSession,
   type ProviderSessionForkFrom,
   type RuntimeMode,
@@ -28,6 +30,10 @@ import {
   type TurnId,
 } from "@threadlines/contracts";
 import { withContextSeedPreamble } from "@threadlines/shared/contextSeed";
+import {
+  participantSessionKey,
+  sessionSlotParticipantId,
+} from "@threadlines/shared/threadParticipants";
 import { areFilesystemPathsEqual } from "@threadlines/shared/path";
 import { isTemporaryWorktreeBranch, WORKTREE_BRANCH_PREFIX } from "@threadlines/shared/git";
 import {
@@ -57,6 +63,7 @@ import {
 } from "../../checkpointing/Utils.ts";
 import { CheckpointStore } from "../../checkpointing/Services/CheckpointStore.ts";
 import { ensureGeneralChatThreadScratchCwd } from "../generalChats.ts";
+import { buildRoomCatchUp } from "../roomCatchUp.ts";
 import { pauseActiveThreadGoalForStop } from "../threadGoalLifecycle.ts";
 import { canReplaceThreadTitle } from "../threadTitle.ts";
 import { formatUserInputReply, readRequestedUserInput } from "../userInput.ts";
@@ -110,7 +117,8 @@ type ProviderIntentEvent = Extract<
       | "thread.session-set"
       | "thread.goal-set-requested"
       | "thread.goal-clear-requested"
-      | "thread.effective-cwd-set";
+      | "thread.effective-cwd-set"
+      | "thread.participant-removed";
   }
 >;
 
@@ -659,6 +667,16 @@ const make = Effect.gen(function* () {
   });
 
   /**
+   * The provider session key of the agent holding a thread's session slot:
+   * the one that is working or last worked. Steering, interrupts, approvals
+   * and answers all go to it. Plain thread id outside rooms.
+   */
+  const resolveSlotSessionKey = Effect.fnUntraced(function* (threadId: ThreadId) {
+    const thread = yield* resolveThread(threadId);
+    return participantSessionKey(threadId, sessionSlotParticipantId(thread?.session ?? null));
+  });
+
+  /**
    * Pending approval / user-input prompts are answered through the live
    * provider session. Once that runtime is gone — stopped, reaped, or replaced
    * by a restart into a different checkout/instance — the provider-side
@@ -766,12 +784,34 @@ const make = Effect.gen(function* () {
       /** Same-driver native fork request for a fresh session start. Falls
        *  back to a plain start (context-seed seeding) when the fork fails. */
       readonly forkFrom?: ProviderSessionForkFrom;
+      /** The room agent to run. Null or absent: the thread's own agent. */
+      readonly participantId?: ThreadParticipantId | null;
     },
   ) {
     const thread = yield* resolveThread(threadId);
     if (!thread) {
       return yield* Effect.die(new Error(`Thread '${threadId}' was not found in read model.`));
     }
+    // In a room each agent has its own provider session under its own key.
+    // The thread's projected session describes an agent only while that agent
+    // holds the slot; otherwise this agent is compared against its own live
+    // runtime, never against another agent's.
+    const participantId = options?.participantId ?? null;
+    const participant =
+      participantId === null
+        ? null
+        : (thread.participants.find((entry) => entry.id === participantId) ?? null);
+    if (participantId !== null && participant === null) {
+      return yield* new ProviderAdapterRequestError({
+        provider: providerErrorLabel(undefined),
+        method: "thread.turn.start",
+        detail: `Agent '${participantId}' is not part of thread '${threadId}'.`,
+      });
+    }
+    const sessionKey = participantSessionKey(threadId, participantId);
+    const projectedSession =
+      sessionSlotParticipantId(thread.session) === participantId ? thread.session : null;
+    const baseModelSelection = participant?.modelSelection ?? thread.modelSelection;
 
     const desiredRuntimeMode = thread.runtimeMode;
     const requestedModelSelection = options?.modelSelection;
@@ -780,10 +820,10 @@ const make = Effect.gen(function* () {
         .listSessions()
         .pipe(Effect.map((sessions) => sessions.find((session) => session.threadId === threadId)));
 
-    const activeSession = yield* resolveActiveSession(threadId);
+    const activeSession = yield* resolveActiveSession(sessionKey);
     const activeThreadSession =
-      thread.session !== null && thread.session.status !== "stopped" && activeSession
-        ? thread.session
+      projectedSession !== null && projectedSession.status !== "stopped" && activeSession
+        ? projectedSession
         : null;
     if (
       activeThreadSession !== null &&
@@ -802,8 +842,10 @@ const make = Effect.gen(function* () {
       activeSession !== undefined &&
       activeSession.providerInstanceId !== undefined
         ? activeSession.providerInstanceId
-        : (thread.session?.providerInstanceId ?? thread.modelSelection.instanceId);
-    const desiredModelSelection = requestedModelSelection ?? thread.modelSelection;
+        : (projectedSession?.providerInstanceId ??
+          activeSession?.providerInstanceId ??
+          baseModelSelection.instanceId);
+    const desiredModelSelection = requestedModelSelection ?? baseModelSelection;
     const desiredInstanceId = desiredModelSelection.instanceId;
     const currentInfo = yield* providerService.getInstanceInfo(currentInstanceId).pipe(
       Effect.mapError(
@@ -811,8 +853,8 @@ const make = Effect.gen(function* () {
           new ProviderAdapterRequestError({
             provider: providerErrorLabelFromInstanceHint({
               instanceId: String(currentInstanceId),
-              modelSelectionInstanceId: String(thread.modelSelection.instanceId),
-              sessionProvider: thread.session?.providerName ?? undefined,
+              modelSelectionInstanceId: String(baseModelSelection.instanceId),
+              sessionProvider: projectedSession?.providerName ?? undefined,
             }),
             method: "thread.turn.start",
             detail: `Thread '${threadId}' references unknown provider instance '${currentInstanceId}'. The instance is not configured in this build.`,
@@ -841,7 +883,7 @@ const make = Effect.gen(function* () {
     }
     const preferredProvider: ProviderDriverKind = desiredDriverKind;
     const hasProviderBinding =
-      activeThreadSession !== null || thread.session?.providerName !== null;
+      activeThreadSession !== null || projectedSession?.providerName !== null;
     const instanceSwitchRequested =
       hasProviderBinding &&
       requestedModelSelection !== undefined &&
@@ -852,8 +894,14 @@ const make = Effect.gen(function* () {
     // opaque (and non-portable) resume cursor. A same-driver switch to an
     // instance with an incompatible continuation key stays blocked — there the
     // native resume state matters and cannot be reconciled across instances.
+    // A room agent never changes provider in place. The thread's own agent
+    // can, and is compared against its own runtime or saved selection even
+    // while another agent holds the slot, so the handoff seed still carries
+    // its history.
     const isCrossDriverHandoff =
-      instanceSwitchRequested && currentInfo.driverKind !== desiredInfo.driverKind;
+      participantId === null &&
+      instanceSwitchRequested &&
+      currentInfo.driverKind !== desiredInfo.driverKind;
     if (
       instanceSwitchRequested &&
       currentInfo.driverKind === desiredInfo.driverKind &&
@@ -917,8 +965,8 @@ const make = Effect.gen(function* () {
       startKind: "fresh" | "restart" | "handoff" = "fresh",
     ) =>
       providerService
-        .startSession(threadId, {
-          threadId,
+        .startSession(sessionKey, {
+          threadId: sessionKey,
           ...(preferredProvider ? { provider: preferredProvider } : {}),
           providerInstanceId: desiredInstanceId,
           ...(effectiveCwd ? { cwd: effectiveCwd } : {}),
@@ -953,7 +1001,10 @@ const make = Effect.gen(function* () {
             new Error(`Thread '${threadId}' was not found in read model after session startup.`),
           );
         }
-        const latestSession = latestThread.session;
+        const latestSession =
+          sessionSlotParticipantId(latestThread.session) === participantId
+            ? latestThread.session
+            : null;
         const mappedStatus = mapProviderSessionStatusToOrchestrationStatus(session.status);
         const shouldPreservePendingTurnStartup =
           options?.preservePendingTurnStartup === true &&
@@ -969,6 +1020,7 @@ const make = Effect.gen(function* () {
           threadId,
           session: {
             threadId,
+            participantId,
             status: shouldPreservePendingTurnStartup ? "starting" : mappedStatus,
             providerName: session.provider,
             providerInstanceId: session.providerInstanceId,
@@ -1027,10 +1079,22 @@ const make = Effect.gen(function* () {
       return { sessionThreadId: handoffSession.threadId, nativeForkApplied: false };
     }
 
+    // A live runtime for this agent is reused. While it holds the slot, a
+    // projected "stopped" means the runtime is on its way out.
     const existingSessionThreadId =
-      thread.session && thread.session.status !== "stopped" && activeSession ? thread.id : null;
+      activeSession !== undefined &&
+      (projectedSession === null || projectedSession.status !== "stopped")
+        ? sessionKey
+        : null;
     if (existingSessionThreadId) {
-      const runtimeModeChanged = thread.runtimeMode !== thread.session?.runtimeMode;
+      // In a room the slot is re-stamped on every handover, so it can not
+      // vouch for the mode this agent's runtime actually started in.
+      const inRoom = thread.participants.length > 0;
+      const runtimeModeChanged =
+        thread.runtimeMode !==
+        (inRoom
+          ? (activeSession?.runtimeMode ?? projectedSession?.runtimeMode)
+          : (projectedSession?.runtimeMode ?? activeSession?.runtimeMode));
       const cwdChanged =
         !isSameWorkspaceCwd(effectiveCwd, activeSession?.cwd) ||
         threadsMovedAwayFromSession.has(threadId);
@@ -1050,6 +1114,18 @@ const make = Effect.gen(function* () {
 
       if (!runtimeModeChanged && !cwdChanged && !instanceChanged && !shouldRestartForModelChange) {
         deferredCheckoutSwitchThreads.delete(threadId);
+        // A handover blanks the slot's provider ids and checkout (the decider
+        // can not know them); an agent resuming a runtime that is still alive
+        // restores them from it. Only right after a handover: at any other
+        // time the slot is current, and rebinding would clear a running turn.
+        const slotBlankedByHandover =
+          projectedSession !== null &&
+          projectedSession.status === "starting" &&
+          (projectedSession.providerThreadId ?? null) === null &&
+          (projectedSession.checkoutCwd ?? null) === null;
+        if (inRoom && activeSession !== undefined && slotBlankedByHandover) {
+          yield* bindSessionToThread(activeSession);
+        }
         return { sessionThreadId: existingSessionThreadId, nativeForkApplied: false };
       }
 
@@ -1059,11 +1135,11 @@ const make = Effect.gen(function* () {
       // refuses that outright, which used to fail the turn. Run the turn where
       // the session already is and keep the switch queued for the first turn
       // after the tasks finish.
-      const pendingBackgroundTaskCount = thread.session?.pendingBackgroundTaskCount ?? 0;
+      const pendingBackgroundTaskCount = projectedSession?.pendingBackgroundTaskCount ?? 0;
       const restartRequiredBeyondCwd =
         runtimeModeChanged || instanceChanged || shouldRestartForModelChange;
       if (cwdChanged && !restartRequiredBeyondCwd && pendingBackgroundTaskCount > 0) {
-        const currentCwd = activeSession?.cwd ?? thread.session?.checkoutCwd ?? null;
+        const currentCwd = activeSession?.cwd ?? projectedSession?.checkoutCwd ?? null;
         if (currentCwd && effectiveCwd) {
           yield* noteCheckoutSwitchDeferred({
             threadId,
@@ -1099,7 +1175,7 @@ const make = Effect.gen(function* () {
         currentInstanceId,
         desiredInstanceId,
         desiredProvider: desiredModelSelection.instanceId,
-        currentRuntimeMode: thread.session?.runtimeMode,
+        currentRuntimeMode: projectedSession?.runtimeMode,
         desiredRuntimeMode: thread.runtimeMode,
         runtimeModeChanged,
         previousCwd: activeSession?.cwd,
@@ -1177,6 +1253,8 @@ const make = Effect.gen(function* () {
     readonly providerAttachments?: ReadonlyArray<ChatAttachment>;
     readonly modelSelection?: ModelSelection;
     readonly interactionMode?: "default" | "plan";
+    /** The room agent the turn is for. Null: the thread's own agent. */
+    readonly participantId: ThreadParticipantId | null;
     readonly createdAt: string;
   }) {
     const thread = yield* resolveThread(input.threadId);
@@ -1206,7 +1284,13 @@ const make = Effect.gen(function* () {
     // source's provider thread must live in the very instance the new session
     // starts in (provider forks copy instance-local persisted history).
     let forkFrom: ProviderSessionForkFrom | undefined;
-    if (forkContext !== undefined && sourceThread !== undefined) {
+    // A room's history is spread across several agents' transcripts; no one
+    // provider thread holds it, so room forks always take the context seed.
+    if (
+      forkContext !== undefined &&
+      sourceThread !== undefined &&
+      sourceThread.participants.length === 0
+    ) {
       const desiredInstanceId = (input.modelSelection ?? thread.modelSelection).instanceId;
       const sourceSession = sourceThread.session;
       const sourceProviderThreadId = sourceSession?.providerThreadId ?? null;
@@ -1228,7 +1312,9 @@ const make = Effect.gen(function* () {
       }
     }
 
+    const sessionKey = participantSessionKey(input.threadId, input.participantId);
     const ensured = yield* ensureSessionForThread(input.threadId, input.createdAt, {
+      participantId: input.participantId,
       ...(input.modelSelection !== undefined ? { modelSelection: input.modelSelection } : {}),
       excludeContextSeedMessageId: input.messageId,
       preservePendingTurnStartup: true,
@@ -1236,13 +1322,24 @@ const make = Effect.gen(function* () {
     });
     const nativeForkApplied = ensured.nativeForkApplied;
     if (input.modelSelection !== undefined) {
-      threadModelSelections.set(input.threadId, input.modelSelection);
+      threadModelSelections.set(sessionKey, input.modelSelection);
     }
+    // In a room, what the other agents said and changed since this agent last
+    // took part. Built now, from the thread as it stands when the turn is sent.
+    const roomCatchUp = buildRoomCatchUp({
+      thread,
+      participantId: input.participantId,
+      messageId: input.messageId,
+    });
     // A natively forked session already holds the full source history; the
     // context-seed preamble and re-sent source attachments would duplicate it.
+    const forkContextText = !nativeForkApplied ? input.providerContext : undefined;
+    const providerContext = [forkContextText, roomCatchUp]
+      .filter((part): part is string => part !== undefined && part.length > 0)
+      .join("\n\n");
     const messageText =
-      input.providerContext !== undefined && !nativeForkApplied
-        ? withContextSeedPreamble(input.providerContext, input.messageText)
+      providerContext.length > 0
+        ? withContextSeedPreamble(providerContext, input.messageText)
         : input.messageText;
     const normalizedInput = toNonEmptyProviderInput(messageText);
     const normalizedAttachments = [
@@ -1251,11 +1348,16 @@ const make = Effect.gen(function* () {
     ];
     const activeSession = yield* providerService
       .listSessions()
-      .pipe(
-        Effect.map((sessions) => sessions.find((session) => session.threadId === input.threadId)),
-      );
+      .pipe(Effect.map((sessions) => sessions.find((session) => session.threadId === sessionKey)));
+    const participant =
+      input.participantId === null
+        ? undefined
+        : thread.participants.find((entry) => entry.id === input.participantId);
     const requestedModelSelection =
-      input.modelSelection ?? threadModelSelections.get(input.threadId) ?? thread.modelSelection;
+      input.modelSelection ??
+      threadModelSelections.get(sessionKey) ??
+      participant?.modelSelection ??
+      thread.modelSelection;
     const telemetryContext =
       forkContext !== undefined
         ? {
@@ -1314,7 +1416,7 @@ const make = Effect.gen(function* () {
         : requestedModelSelection);
 
     return {
-      threadId: input.threadId,
+      threadId: sessionKey,
       messageId: input.providerMessageId ?? input.messageId,
       ...(normalizedInput ? { input: normalizedInput } : {}),
       ...(normalizedAttachments.length > 0 ? { attachments: normalizedAttachments } : {}),
@@ -1644,6 +1746,7 @@ const make = Effect.gen(function* () {
         ? { modelSelection: event.payload.modelSelection }
         : {}),
       interactionMode: event.payload.interactionMode,
+      participantId: event.payload.participantId ?? null,
       createdAt: event.payload.createdAt,
     }).pipe(
       Effect.map(Option.some),
@@ -1699,6 +1802,8 @@ const make = Effect.gen(function* () {
           ...(event.payload.skills !== undefined ? { skills: event.payload.skills } : {}),
         },
         delivery: "queue",
+        // Still for the agent it was sent to, even if another holds the slot now.
+        participantId: event.payload.participantId ?? null,
         createdAt: event.payload.createdAt,
       })
       .pipe(Effect.asVoid);
@@ -1775,9 +1880,12 @@ const make = Effect.gen(function* () {
       yield* requeue;
     });
 
+    // The agent that was working when the follow-up was submitted.
+    const steeredAgentId = event.payload.participantId ?? null;
+    const steerSessionKey = participantSessionKey(event.payload.threadId, steeredAgentId);
     const delivered = yield* providerService
       .steerTurn({
-        threadId: event.payload.threadId,
+        threadId: steerSessionKey,
         expectedTurnId: event.payload.turnId,
         messageId: event.payload.messageId,
         ...(normalizedInput ? { input: normalizedInput } : {}),
@@ -1809,6 +1917,7 @@ const make = Effect.gen(function* () {
       commandId: serverCommandId("follow-up-accepted"),
       threadId: event.payload.threadId,
       turnId: event.payload.turnId,
+      participantId: steeredAgentId,
       message: {
         messageId: event.payload.messageId,
         role: "user",
@@ -1849,8 +1958,9 @@ const make = Effect.gen(function* () {
     }
 
     // Orchestration turn ids are not provider turn ids, so interrupt by session.
+    const interruptSessionKey = yield* resolveSlotSessionKey(event.payload.threadId);
     const interruptOutcome = yield* providerService
-      .interruptTurn({ threadId: event.payload.threadId })
+      .interruptTurn({ threadId: interruptSessionKey })
       .pipe(
         Effect.as({ _tag: "success" as const }),
         Effect.catchCause((cause) => Effect.succeed({ _tag: "failure" as const, cause })),
@@ -1977,12 +2087,16 @@ const make = Effect.gen(function* () {
       return;
     }
     // Goals live provider-side, so the thread needs a live session before the
-    // goal RPC. Cold threads get their session started (or resumed) here.
-    yield* ensureSessionForThread(event.payload.threadId, event.payload.createdAt)
+    // goal RPC. Cold threads get their session started (or resumed) here. In a
+    // room the goal belongs to the agent holding the session slot.
+    const goalHolderId = sessionSlotParticipantId(thread.session);
+    yield* ensureSessionForThread(event.payload.threadId, event.payload.createdAt, {
+      participantId: goalHolderId,
+    })
       .pipe(
         Effect.flatMap(() =>
           providerService.setThreadGoal({
-            threadId: event.payload.threadId,
+            threadId: participantSessionKey(event.payload.threadId, goalHolderId),
             ...(event.payload.objective !== undefined
               ? { objective: event.payload.objective }
               : {}),
@@ -2015,9 +2129,16 @@ const make = Effect.gen(function* () {
     if (!thread) {
       return;
     }
-    yield* ensureSessionForThread(event.payload.threadId, event.payload.createdAt)
+    const goalHolderId = sessionSlotParticipantId(thread.session);
+    yield* ensureSessionForThread(event.payload.threadId, event.payload.createdAt, {
+      participantId: goalHolderId,
+    })
       .pipe(
-        Effect.flatMap(() => providerService.clearThreadGoal({ threadId: event.payload.threadId })),
+        Effect.flatMap(() =>
+          providerService.clearThreadGoal({
+            threadId: participantSessionKey(event.payload.threadId, goalHolderId),
+          }),
+        ),
       )
       .pipe(
         Effect.catchCause((cause) =>
@@ -2053,7 +2174,8 @@ const make = Effect.gen(function* () {
       });
     }
 
-    yield* providerService.compactContext({ threadId: event.payload.threadId }).pipe(
+    const compactSessionKey = yield* resolveSlotSessionKey(event.payload.threadId);
+    yield* providerService.compactContext({ threadId: compactSessionKey }).pipe(
       Effect.catchCause((cause) =>
         appendProviderFailureActivity({
           threadId: event.payload.threadId,
@@ -2087,9 +2209,10 @@ const make = Effect.gen(function* () {
       });
     }
 
+    const approvalSessionKey = yield* resolveSlotSessionKey(event.payload.threadId);
     yield* providerService
       .respondToRequest({
-        threadId: event.payload.threadId,
+        threadId: approvalSessionKey,
         requestId: event.payload.requestId,
         decision: event.payload.decision,
       })
@@ -2158,10 +2281,11 @@ const make = Effect.gen(function* () {
           if (!thread.messages.some((message) => message.id === messageId)) {
             const activeTurnId = thread.session?.activeTurnId;
             let steered = false;
+            const answeringAgentId = sessionSlotParticipantId(thread.session);
             if (thread.session?.status === "running" && activeTurnId) {
               steered = yield* providerService
                 .steerTurn({
-                  threadId: thread.id,
+                  threadId: participantSessionKey(thread.id, answeringAgentId),
                   expectedTurnId: activeTurnId,
                   messageId,
                   input,
@@ -2180,6 +2304,7 @@ const make = Effect.gen(function* () {
                   commandId: CommandId.make(`question-answer-accepted:${event.payload.requestId}`),
                   threadId: thread.id,
                   turnId: activeTurnId,
+                  participantId: answeringAgentId,
                   message: { messageId, role: "user", text: input, attachments: [] },
                   createdAt: event.payload.createdAt,
                 });
@@ -2256,9 +2381,10 @@ const make = Effect.gen(function* () {
         });
       }
 
+      const userInputSessionKey = yield* resolveSlotSessionKey(event.payload.threadId);
       yield* providerService
         .respondToUserInput({
-          threadId: event.payload.threadId,
+          threadId: userInputSessionKey,
           requestId: event.payload.requestId,
           answers: event.payload.answers,
         })
@@ -2280,6 +2406,43 @@ const make = Effect.gen(function* () {
     },
   );
 
+  /**
+   * Stop the live runtimes of a room's agents other than the slot holder, or
+   * of one agent that is leaving. Best-effort: an agent without a runtime has
+   * nothing to stop.
+   */
+  const stopIdleRoomAgentSessions = Effect.fnUntraced(function* (
+    thread: Pick<OrchestrationThread, "id" | "session" | "participants">,
+    onlyParticipantId?: ThreadParticipantId,
+  ) {
+    if (thread.participants.length === 0) {
+      return;
+    }
+    const slotKey = participantSessionKey(thread.id, sessionSlotParticipantId(thread.session));
+    const liveKeys = new Set(
+      (yield* providerService.listSessions()).map((session) => session.threadId),
+    );
+    const keys = [
+      participantSessionKey(thread.id, null),
+      ...thread.participants.map((entry) => participantSessionKey(thread.id, entry.id)),
+    ].filter((key) =>
+      onlyParticipantId === undefined
+        ? key !== slotKey && liveKeys.has(key)
+        : key === participantSessionKey(thread.id, onlyParticipantId) && liveKeys.has(key),
+    );
+    for (const key of keys) {
+      yield* providerService.stopSession({ threadId: key }).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("provider command reactor failed to stop a room agent session", {
+            threadId: thread.id,
+            sessionKey: key,
+            cause: Cause.pretty(cause),
+          }),
+        ),
+      );
+    }
+  });
+
   const processSessionStopRequested = Effect.fn("processSessionStopRequested")(function* (
     event: Extract<ProviderIntentEvent, { type: "thread.session-stop-requested" }>,
   ) {
@@ -2291,7 +2454,7 @@ const make = Effect.gen(function* () {
     const now = event.payload.createdAt;
     if (thread.session && thread.session.status !== "stopped") {
       yield* pauseActiveThreadGoalForStop({
-        threadId: thread.id,
+        threadId: participantSessionKey(thread.id, sessionSlotParticipantId(thread.session)),
         projectionSnapshotQuery,
         providerService,
         orchestrationEngine,
@@ -2313,8 +2476,12 @@ const make = Effect.gen(function* () {
           ),
         );
       }
-      yield* providerService.stopSession({ threadId: thread.id });
+      yield* providerService.stopSession({
+        threadId: participantSessionKey(thread.id, sessionSlotParticipantId(thread.session)),
+      });
     }
+    // In a room, the other agents' runtimes stop with the thread too.
+    yield* stopIdleRoomAgentSessions(thread);
 
     explicitlyStoppedThreads.add(thread.id);
     const stoppedThread = yield* resolveThread(thread.id);
@@ -2399,8 +2566,12 @@ const make = Effect.gen(function* () {
     ) {
       return;
     }
+    // In a room the slot holder is the runtime to move; the others move
+    // lazily, at their next turn.
+    const holderId = sessionSlotParticipantId(session);
+    const holderKey = participantSessionKey(threadId, holderId);
     const activeSession = (yield* providerService.listSessions()).find(
-      (candidate) => candidate.threadId === threadId,
+      (candidate) => candidate.threadId === holderKey,
     );
     if (
       !activeSession ||
@@ -2413,12 +2584,11 @@ const make = Effect.gen(function* () {
       fromCwd: sessionCheckoutCwd,
       toCwd: targetCwd,
     });
-    const cachedModelSelection = threadModelSelections.get(threadId);
-    yield* ensureSessionForThread(
-      threadId,
-      occurredAt,
-      cachedModelSelection !== undefined ? { modelSelection: cachedModelSelection } : {},
-    ).pipe(
+    const cachedModelSelection = threadModelSelections.get(holderKey);
+    yield* ensureSessionForThread(threadId, occurredAt, {
+      participantId: holderId,
+      ...(cachedModelSelection !== undefined ? { modelSelection: cachedModelSelection } : {}),
+    }).pipe(
       Effect.catch((error) =>
         Effect.logWarning("provider command reactor failed to apply queued checkout switch", {
           threadId,
@@ -2434,6 +2604,7 @@ const make = Effect.gen(function* () {
    * that just finished (running -> ready) from any other ready report. Events
    * for one thread are processed in order, so this needs no locking.
    */
+  const lastBackgroundTaskCountByThread = new Map<ThreadId, number>();
   const lastSessionStatusByThread = new Map<ThreadId, OrchestrationSession["status"]>();
 
   /** Starts a queued message's turn. Losing a race with Remove is fine. */
@@ -2487,18 +2658,42 @@ const make = Effect.gen(function* () {
   ) {
     const { session, threadId } = event.payload;
     const previousStatus = lastSessionStatusByThread.get(threadId);
+    const previousBackgroundTaskCount = lastBackgroundTaskCountByThread.get(threadId) ?? 0;
+    const backgroundTaskCount = session.pendingBackgroundTaskCount ?? 0;
     if (session.status === "stopped") {
       lastSessionStatusByThread.delete(threadId);
+      lastBackgroundTaskCountByThread.delete(threadId);
     } else {
       lastSessionStatusByThread.set(threadId, session.status);
+      lastBackgroundTaskCountByThread.set(threadId, backgroundTaskCount);
     }
-    if (previousStatus !== "running" || session.status !== "ready" || session.activeTurnId) {
+    const turnFinished =
+      previousStatus === "running" && session.status === "ready" && !session.activeTurnId;
+    // In a room, a message queued for another agent can not take the slot
+    // while the agent that just worked still has background work; it goes
+    // out once that work is done.
+    const backgroundWorkFinished =
+      previousStatus === "ready" &&
+      session.status === "ready" &&
+      !session.activeTurnId &&
+      previousBackgroundTaskCount > 0 &&
+      backgroundTaskCount === 0;
+    if (!turnFinished && !backgroundWorkFinished) {
       return;
     }
-    const next = (yield* resolveThread(threadId))?.queuedFollowUps?.[0];
-    if (next) {
-      yield* sendQueuedFollowUp(threadId, next.messageId, event.occurredAt);
+    const thread = yield* resolveThread(threadId);
+    const next = thread?.queuedFollowUps?.[0];
+    if (!thread || !next) {
+      return;
     }
+    if (
+      !turnFinished &&
+      (thread.participants.length === 0 ||
+        (next.participantId ?? null) === sessionSlotParticipantId(thread.session))
+    ) {
+      return;
+    }
+    yield* sendQueuedFollowUp(threadId, next.messageId, event.occurredAt);
   });
 
   /**
@@ -2613,12 +2808,15 @@ const make = Effect.gen(function* () {
         if (!thread?.session || thread.session.status === "stopped") {
           return;
         }
-        const cachedModelSelection = threadModelSelections.get(event.payload.threadId);
-        yield* ensureSessionForThread(
-          event.payload.threadId,
-          event.occurredAt,
-          cachedModelSelection !== undefined ? { modelSelection: cachedModelSelection } : {},
+        // The access mode applies to whichever agent holds the session slot.
+        const holderId = sessionSlotParticipantId(thread.session);
+        const cachedModelSelection = threadModelSelections.get(
+          participantSessionKey(event.payload.threadId, holderId),
         );
+        yield* ensureSessionForThread(event.payload.threadId, event.occurredAt, {
+          participantId: holderId,
+          ...(cachedModelSelection !== undefined ? { modelSelection: cachedModelSelection } : {}),
+        });
         return;
       }
       case "thread.meta-updated": {
@@ -2687,6 +2885,15 @@ const make = Effect.gen(function* () {
       case "thread.session-set":
         yield* processSessionSet(event);
         return;
+      case "thread.participant-removed": {
+        // The decider only lets an agent leave while it is not working, so its
+        // runtime is idle and can go.
+        const thread = yield* resolveThread(event.payload.threadId);
+        if (thread !== undefined) {
+          yield* stopIdleRoomAgentSessions(thread, event.payload.participantId);
+        }
+        return;
+      }
     }
   });
 
@@ -2828,7 +3035,8 @@ const make = Effect.gen(function* () {
         event.type === "thread.session-set" ||
         event.type === "thread.goal-set-requested" ||
         event.type === "thread.goal-clear-requested" ||
-        event.type === "thread.effective-cwd-set"
+        event.type === "thread.effective-cwd-set" ||
+        event.type === "thread.participant-removed"
       ) {
         return yield* worker.enqueue(String(event.aggregateId), event);
       }

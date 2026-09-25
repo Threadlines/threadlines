@@ -57,6 +57,7 @@ import {
   sumTurnDiffStats,
 } from "./session-logic";
 import { getThreadFromEnvironmentState } from "./threadDerivation";
+import { roomSlotAgentName } from "./rooms";
 const isProviderDriverKindValue = Schema.is(ProviderDriverKind);
 
 export interface EnvironmentState {
@@ -171,6 +172,7 @@ function mapSession(session: OrchestrationSession): ThreadSession {
     status: toLegacySessionStatus(session.status),
     orchestrationStatus: session.status,
     checkoutCwd: session.checkoutCwd ?? undefined,
+    ...(session.participantId ? { participantId: session.participantId } : {}),
     activeTurnId: session.activeTurnId ?? undefined,
     pendingBackgroundTaskCount: session.pendingBackgroundTaskCount ?? 0,
     createdAt: session.updatedAt,
@@ -224,6 +226,7 @@ function mapMessage(environmentId: EnvironmentId, message: OrchestrationMessage)
     ...(message.streaming ? {} : { completedAt: message.updatedAt }),
     ...(attachments && attachments.length > 0 ? { attachments } : {}),
     ...(message.skills !== undefined ? { skills: [...message.skills] } : {}),
+    ...(message.participantId ? { participantId: message.participantId } : {}),
   };
 }
 
@@ -299,6 +302,7 @@ function mapThread(thread: OrchestrationThread, environmentId: EnvironmentId): T
     pullRequestAutoMerge: thread.pullRequestAutoMerge ?? null,
     linkedPullRequests: thread.linkedPullRequests ?? [],
     queuedFollowUps: thread.queuedFollowUps ?? [],
+    participants: thread.participants ?? [],
     doneOverride: thread.doneOverride,
     lastSeenAt: thread.lastSeenAt,
     updatedAt: thread.updatedAt,
@@ -342,6 +346,7 @@ function mapThreadShell(
     pullRequestAutoMerge: thread.pullRequestAutoMerge ?? null,
     linkedPullRequests: thread.linkedPullRequests ?? [],
     queuedFollowUps: thread.queuedFollowUps ?? [],
+    participants: thread.participants ?? [],
     doneOverride: thread.doneOverride,
     lastSeenAt: thread.lastSeenAt,
     updatedAt: thread.updatedAt,
@@ -381,6 +386,8 @@ function mapThreadShell(
     hasActionableProposedPlan: thread.hasActionableProposedPlan,
     cumulativeDiffStat: thread.cumulativeDiffStat,
     linkedPullRequests: thread.linkedPullRequests ?? [],
+    participants: thread.participants ?? [],
+    roomSlotAgentName: roomSlotAgentName(thread),
   };
   return {
     shell,
@@ -408,6 +415,7 @@ function toThreadShell(thread: Thread): ThreadShell {
     pullRequestAutoMerge: thread.pullRequestAutoMerge ?? null,
     linkedPullRequests: thread.linkedPullRequests ?? [],
     queuedFollowUps: thread.queuedFollowUps ?? [],
+    participants: thread.participants ?? [],
     doneOverride: thread.doneOverride,
     lastSeenAt: thread.lastSeenAt,
     updatedAt: thread.updatedAt,
@@ -493,6 +501,8 @@ function toSidebarThreadSummary(
       ? sumTurnDiffStats(thread.turnDiffSummaries, thread.diffStatBaselineTurnCount ?? 0)
       : (previous?.cumulativeDiffStat ?? null),
     linkedPullRequests: thread.linkedPullRequests ?? [],
+    participants: thread.participants ?? [],
+    roomSlotAgentName: roomSlotAgentName(thread),
   };
 }
 
@@ -533,6 +543,7 @@ function threadSessionsEqual(
     left.status === right.status &&
     left.orchestrationStatus === right.orchestrationStatus &&
     left.activeTurnId === right.activeTurnId &&
+    left.participantId === right.participantId &&
     left.createdAt === right.createdAt &&
     left.updatedAt === right.updatedAt &&
     left.lastError === right.lastError
@@ -590,6 +601,29 @@ function queuedFollowUpsEqual(
   );
 }
 
+/** Participants change rarely and are replaced wholesale, so identity is enough. */
+function participantsEqual(
+  left: ThreadShell["participants"],
+  right: ThreadShell["participants"],
+): boolean {
+  const leftList = left ?? [];
+  const rightList = right ?? [];
+  return (
+    leftList.length === rightList.length &&
+    leftList.every((participant, index) => {
+      const other = rightList[index];
+      return (
+        other !== undefined &&
+        participant.id === other.id &&
+        participant.handle === other.handle &&
+        participant.leftAt === other.leftAt &&
+        participant.modelSelection.instanceId === other.modelSelection.instanceId &&
+        participant.modelSelection.model === other.modelSelection.model
+      );
+    })
+  );
+}
+
 function sidebarThreadSummariesEqual(
   left: SidebarThreadSummary | undefined,
   right: SidebarThreadSummary,
@@ -617,7 +651,9 @@ function sidebarThreadSummariesEqual(
     left.hasBlockingUserInput === right.hasBlockingUserInput &&
     left.hasActionableProposedPlan === right.hasActionableProposedPlan &&
     threadDiffStatsEqual(left.cumulativeDiffStat, right.cumulativeDiffStat) &&
-    linkedPullRequestsEqual(left.linkedPullRequests, right.linkedPullRequests)
+    linkedPullRequestsEqual(left.linkedPullRequests, right.linkedPullRequests) &&
+    participantsEqual(left.participants, right.participants) &&
+    (left.roomSlotAgentName ?? null) === (right.roomSlotAgentName ?? null)
   );
 }
 
@@ -640,6 +676,7 @@ function threadShellsEqual(left: ThreadShell | undefined, right: ThreadShell): b
     left.pullRequestAutoMerge === right.pullRequestAutoMerge &&
     linkedPullRequestsEqual(left.linkedPullRequests, right.linkedPullRequests) &&
     queuedFollowUpsEqual(left.queuedFollowUps, right.queuedFollowUps) &&
+    participantsEqual(left.participants, right.participants) &&
     doneOverridesEqual(left.doneOverride, right.doneOverride) &&
     left.lastSeenAt === right.lastSeenAt &&
     left.updatedAt === right.updatedAt &&
@@ -1619,6 +1656,7 @@ function applyEnvironmentOrchestrationEvent(
           pullRequestAutoFix: false,
           pullRequestAutoMerge: null,
           linkedPullRequests: [],
+          participants: [],
           doneOverride: null,
           lastSeenAt: null,
           deletedAt: null,
@@ -1692,6 +1730,28 @@ function applyEnvironmentOrchestrationEvent(
     }
 
     // Found in the conversation, not done to the thread: `updatedAt` stays.
+    case "thread.participant-added":
+      return updateThreadState(state, event.payload.threadId, (thread) =>
+        (thread.participants ?? []).some((entry) => entry.id === event.payload.participant.id)
+          ? thread
+          : {
+              ...thread,
+              participants: [...(thread.participants ?? []), event.payload.participant],
+              updatedAt: event.payload.updatedAt,
+            },
+      );
+
+    case "thread.participant-removed":
+      return updateThreadState(state, event.payload.threadId, (thread) => ({
+        ...thread,
+        participants: (thread.participants ?? []).map((entry) =>
+          entry.id === event.payload.participantId && entry.leftAt === null
+            ? { ...entry, leftAt: event.payload.updatedAt }
+            : entry,
+        ),
+        updatedAt: event.payload.updatedAt,
+      }));
+
     case "thread.pull-request-linked":
       return updateThreadState(state, event.payload.threadId, (thread) =>
         (thread.linkedPullRequests ?? []).some((linked) => linked.number === event.payload.number)
@@ -1802,20 +1862,42 @@ function applyEnvironmentOrchestrationEvent(
 
     case "thread.turn-start-requested":
       return updateThreadState(state, event.payload.threadId, (thread) => {
-        const modelSelection =
+        // A turn for a room agent carries that agent's model; the thread's own
+        // agent keeps its selection.
+        const participantId = event.payload.participantId ?? null;
+        const requestedModelSelection =
           event.payload.modelSelection !== undefined
             ? normalizeModelSelection(event.payload.modelSelection)
+            : undefined;
+        const modelSelection =
+          participantId === null && requestedModelSelection !== undefined
+            ? requestedModelSelection
             : thread.modelSelection;
+        const participants =
+          participantId !== null && requestedModelSelection !== undefined
+            ? (thread.participants ?? []).map((entry) =>
+                entry.id === participantId
+                  ? { ...entry, modelSelection: requestedModelSelection }
+                  : entry,
+              )
+            : thread.participants;
+        const sessionModelSelection =
+          participantId === null
+            ? modelSelection
+            : (requestedModelSelection ??
+              participants?.find((entry) => entry.id === participantId)?.modelSelection ??
+              modelSelection);
         const shouldPreserveRunningSession =
           thread.session?.orchestrationStatus === "running" || thread.session?.status === "running";
         const session = shouldPreserveRunningSession
           ? thread.session
           : ({
               provider: resolveSessionProviderFromModelSelection({
-                modelSelection,
+                modelSelection: sessionModelSelection,
                 previousSession: thread.session,
               }),
-              providerInstanceId: modelSelection.instanceId,
+              providerInstanceId: sessionModelSelection.instanceId,
+              ...(participantId !== null ? { participantId } : {}),
               status: "connecting",
               orchestrationStatus: "starting",
               createdAt: thread.session?.createdAt ?? event.payload.createdAt,
@@ -1825,6 +1907,7 @@ function applyEnvironmentOrchestrationEvent(
         return {
           ...thread,
           modelSelection,
+          ...(participants !== undefined ? { participants } : {}),
           session,
           runtimeMode: event.payload.runtimeMode,
           interactionMode: event.payload.interactionMode,
@@ -1848,6 +1931,9 @@ function applyEnvironmentOrchestrationEvent(
           text: event.payload.text,
           ...(event.payload.attachments !== undefined
             ? { attachments: event.payload.attachments }
+            : {}),
+          ...(event.payload.participantId !== undefined
+            ? { participantId: event.payload.participantId }
             : {}),
           turnId: event.payload.turnId,
           streaming: false,
@@ -1895,6 +1981,9 @@ function applyEnvironmentOrchestrationEvent(
           text: event.payload.text,
           ...(event.payload.attachments !== undefined
             ? { attachments: event.payload.attachments }
+            : {}),
+          ...(event.payload.participantId !== undefined
+            ? { participantId: event.payload.participantId }
             : {}),
           turnId: event.payload.turnId,
           streaming: event.payload.streaming,
@@ -1959,7 +2048,11 @@ function applyEnvironmentOrchestrationEvent(
     case "thread.session-set":
       return updateThreadState(state, event.payload.threadId, (thread) => ({
         ...thread,
-        session: mapSession(event.payload.session),
+        // An update that does not name the slot holder keeps the current one.
+        session:
+          event.payload.session.participantId !== undefined || !thread.session?.participantId
+            ? mapSession(event.payload.session)
+            : { ...mapSession(event.payload.session), participantId: thread.session.participantId },
         error: sanitizeThreadErrorMessage(event.payload.session.lastError),
         latestTurn:
           event.payload.session.status === "running" && event.payload.session.activeTurnId !== null

@@ -8,6 +8,7 @@ import type {
   ProjectEntry,
   ProviderApprovalDecision,
   ProviderInteractionMode,
+  ProviderOptionSelection,
   ResolvedKeybindingsConfig,
   RuntimeMode,
   ScopedThreadRef,
@@ -147,6 +148,15 @@ import { Button } from "../ui/button";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { toastManager } from "../ui/toast";
+import { RoomAgentPicker } from "./RoomAgentPicker";
+import { scopedThreadKey } from "@threadlines/client-runtime";
+import {
+  ownAgentSession,
+  resolveRoomRecipient,
+  useRoomAgentOptions,
+  useRoomRecipientStore,
+} from "../../rooms";
+import { shouldRenderTraitsControls, TraitsMenuContent, TraitsPicker } from "./TraitsPicker";
 import {
   canRequestProviderRateLimitResetCredit,
   useProviderRateLimitResetCredit,
@@ -652,7 +662,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     activeThreadId,
     activeThreadEnvironmentId: _activeThreadEnvironmentId,
     activeThread,
-    isServerThread: _isServerThread,
+    isServerThread,
     isLocalDraftThread: _isLocalDraftThread,
     phase,
     isConnecting,
@@ -856,8 +866,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     [providerStatuses],
   );
   const selectedProviderByThreadId = composerDraft.activeProvider ?? null;
+  // The model controls belong to the thread's own agent; in a room the session
+  // slot may hold another agent's runtime.
+  const ownSession = ownAgentSession(activeThread);
   const threadProvider =
-    activeThread?.session?.providerInstanceId ?? activeThreadModelSelection?.instanceId ?? null;
+    ownSession?.providerInstanceId ?? activeThreadModelSelection?.instanceId ?? null;
   const explicitSelectedInstanceId = selectedProviderByThreadId ?? threadProvider;
 
   const unlockedSelectedProvider =
@@ -876,7 +889,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const lockedContinuationGroupKey = useMemo((): string | null => {
     if (!lockedProvider || !activeThread) return null;
     const lockedInstanceId =
-      activeThread.session?.providerInstanceId ?? activeThreadModelSelection?.instanceId;
+      ownAgentSession(activeThread)?.providerInstanceId ?? activeThreadModelSelection?.instanceId;
     if (!lockedInstanceId) return null;
     return (
       providerInstanceEntries.find((entry) => entry.instanceId === lockedInstanceId)
@@ -901,7 +914,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const selectedInstanceId = useMemo<ProviderInstanceId>(() => {
     const candidates: Array<string | null | undefined> = [
       composerDraft.activeProvider,
-      activeThread?.session?.providerInstanceId,
+      ownSession?.providerInstanceId,
       activeThreadModelSelection?.instanceId,
     ];
     for (const candidate of candidates) {
@@ -937,7 +950,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       ProviderInstanceId.make("codex")
     );
   }, [
-    activeThread?.session?.providerInstanceId,
+    ownSession?.providerInstanceId,
     activeThreadModelSelection?.instanceId,
     composerDraft.activeProvider,
     lockedContinuationGroupKey,
@@ -1113,6 +1126,23 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     () => deriveActiveModelFallbackState(activeThreadActivities ?? [], activeThread?.latestTurn),
     [activeThread?.latestTurn, activeThreadActivities],
   );
+
+  // Rooms: which agent the next message goes to. Only saved threads can hold
+  // more than one agent; a draft has nothing to add one to yet.
+  const showRoomAgentPicker = settings.roomsEnabled && isServerThread && activeThread !== undefined;
+  const chosenRoomRecipientId = useRoomRecipientStore(
+    (state) => state.chosen[scopedThreadKey(routeThreadRef)],
+  );
+  const roomRecipientId =
+    activeThread !== undefined ? resolveRoomRecipient(activeThread, chosenRoomRecipientId) : null;
+  // An added agent keeps the model and reasoning it joined with; the model and
+  // reasoning controls belong to the thread's own agent.
+  const addressingRoomAgent = showRoomAgentPicker && roomRecipientId !== null;
+  const roomWorkingId =
+    activeThread?.session?.orchestrationStatus === "running" ||
+    activeThread?.session?.orchestrationStatus === "starting"
+      ? (activeThread.session.participantId ?? null)
+      : undefined;
   const activeFallbackModelDisplayName = useMemo(() => {
     if (!activeModelFallback) {
       return null;
@@ -1516,6 +1546,33 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     modelOptions: composerModelOptions?.[selectedInstanceId],
     iconOnly: composerFooterTier !== "full",
   });
+  // An added agent keeps its own reasoning and the like. Picking them here
+  // holds them until the next turn for that agent, which carries them.
+  const addressedRoomAgent =
+    addressingRoomAgent && activeThread
+      ? (activeThread.participants ?? []).find((entry) => entry.id === roomRecipientId)
+      : undefined;
+  const addressedRoomAgentEntry = addressedRoomAgent
+    ? providerInstanceEntries.find(
+        (entry) => entry.instanceId === addressedRoomAgent.modelSelection.instanceId,
+      )
+    : undefined;
+  const pendingRoomAgentOptions = useRoomAgentOptions(routeThreadRef, roomRecipientId);
+  const setRoomAgentOptions = useRoomRecipientStore((state) => state.setAgentOptions);
+  const roomAgentTraitsProps =
+    addressedRoomAgent && addressedRoomAgentEntry
+      ? {
+          provider: addressedRoomAgentEntry.driverKind,
+          instanceId: addressedRoomAgent.modelSelection.instanceId,
+          models: addressedRoomAgentEntry.models,
+          model: addressedRoomAgent.modelSelection.model,
+          modelOptions: pendingRoomAgentOptions ?? addressedRoomAgent.modelSelection.options,
+          onModelOptionsChange: (next: ReadonlyArray<ProviderOptionSelection> | undefined) =>
+            setRoomAgentOptions(routeThreadRef, addressedRoomAgent.id, next ?? []),
+        }
+      : null;
+  const showRoomAgentTraits =
+    roomAgentTraitsProps !== null && shouldRenderTraitsControls(roomAgentTraitsProps);
   const collapsedComposerPrimaryActionDisabled =
     isSendBusy || isConnecting || !composerSendState.hasSendableContent;
   const followUpDelivery = useSettings((settings) => settings.followUpDelivery);
@@ -3609,29 +3666,45 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                       "min-w-0",
                     )}
                   >
-                    <ProviderModelPicker
-                      compact={isComposerFooterCompact}
-                      activeInstanceId={selectedInstanceId}
-                      model={selectedModelForPickerWithCustomFallback}
-                      lockedProvider={lockedProvider}
-                      lockedContinuationGroupKey={lockedContinuationGroupKey}
-                      instanceEntries={providerInstanceEntries}
-                      keybindings={keybindings}
-                      modelOptionsByInstance={modelOptionsByInstance}
-                      terminalOpen={terminalOpen}
-                      side="top"
-                      open={isComposerModelPickerOpen}
-                      {...(composerProviderState.modelPickerIconClassName
-                        ? {
-                            activeProviderIconClassName:
-                              composerProviderState.modelPickerIconClassName,
-                          }
-                        : {})}
-                      onOpenChange={(open) => {
-                        setIsComposerModelPickerOpen(open);
-                      }}
-                      onInstanceModelChange={onProviderModelSelect}
-                    />
+                    {showRoomAgentPicker && activeThread ? (
+                      <RoomAgentPicker
+                        threadRef={routeThreadRef}
+                        primaryModelSelection={activeThread.modelSelection}
+                        participants={activeThread.participants ?? []}
+                        recipientId={roomRecipientId}
+                        workingId={roomWorkingId}
+                        instanceEntries={providerInstanceEntries}
+                        modelOptionsByInstance={modelOptionsByInstance}
+                        keybindings={keybindings}
+                        terminalOpen={terminalOpen}
+                        compact={isComposerFooterCompact}
+                      />
+                    ) : null}
+                    {addressingRoomAgent ? null : (
+                      <ProviderModelPicker
+                        compact={isComposerFooterCompact}
+                        activeInstanceId={selectedInstanceId}
+                        model={selectedModelForPickerWithCustomFallback}
+                        lockedProvider={lockedProvider}
+                        lockedContinuationGroupKey={lockedContinuationGroupKey}
+                        instanceEntries={providerInstanceEntries}
+                        keybindings={keybindings}
+                        modelOptionsByInstance={modelOptionsByInstance}
+                        terminalOpen={terminalOpen}
+                        side="top"
+                        open={isComposerModelPickerOpen}
+                        {...(composerProviderState.modelPickerIconClassName
+                          ? {
+                              activeProviderIconClassName:
+                                composerProviderState.modelPickerIconClassName,
+                            }
+                          : {})}
+                        onOpenChange={(open) => {
+                          setIsComposerModelPickerOpen(open);
+                        }}
+                        onInstanceModelChange={onProviderModelSelect}
+                      />
+                    )}
                     {activeModelFallback && activeFallbackModelDisplayName ? (
                       <Tooltip>
                         <TooltipTrigger
@@ -3670,13 +3743,33 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                         showInteractionModeToggle={
                           composerProviderControls.showInteractionModeToggle
                         }
-                        traitsMenuContent={providerTraitsMenuContent}
+                        traitsMenuContent={
+                          addressingRoomAgent ? (
+                            showRoomAgentTraits && roomAgentTraitsProps ? (
+                              <TraitsMenuContent {...roomAgentTraitsProps} />
+                            ) : null
+                          ) : (
+                            providerTraitsMenuContent
+                          )
+                        }
                         onInteractionModeChange={handleInteractionModeChange}
                         onRuntimeModeChange={handleRuntimeModeChange}
                       />
                     ) : (
                       <>
-                        {providerTraitsPicker ? (
+                        {showRoomAgentTraits && roomAgentTraitsProps ? (
+                          <>
+                            <Separator
+                              orientation="vertical"
+                              className="mx-0.5 hidden h-4 sm:block"
+                            />
+                            <TraitsPicker
+                              {...roomAgentTraitsProps}
+                              iconOnly={composerFooterTier !== "full"}
+                            />
+                          </>
+                        ) : null}
+                        {providerTraitsPicker && !addressingRoomAgent ? (
                           <>
                             <Separator
                               orientation="vertical"

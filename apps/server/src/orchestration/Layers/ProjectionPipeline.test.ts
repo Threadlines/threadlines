@@ -7,6 +7,7 @@ import {
   MessageId,
   ProjectId,
   ThreadId,
+  ThreadParticipantId,
   TurnId,
   ProviderInstanceId,
 } from "@threadlines/contracts";
@@ -2516,6 +2517,119 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
         WHERE thread_id = ${threadId}
       `;
       assert.deepEqual(threadRows, [{ latestTurnId: "turn-completed-status" }]);
+    }),
+  );
+
+  it.effect("stores room agents, message authors, and the session slot holder", () =>
+    Effect.gen(function* () {
+      const engine = yield* OrchestrationEngineService;
+      const sql = yield* SqlClient.SqlClient;
+      const createdAt = "2026-01-01T00:00:00.000Z";
+      const threadId = ThreadId.make("thread-room");
+      const astraId = ThreadParticipantId.make("7a0b1c2d-3e4f-4a5b-8c6d-7e8f9a0b1c2d");
+
+      yield* engine.dispatch({
+        type: "project.create",
+        commandId: CommandId.make("cmd-room-project"),
+        projectId: ProjectId.make("project-room"),
+        title: "Room Project",
+        workspaceRoot: "/tmp/project-room",
+        defaultModelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5-codex",
+        },
+        createdAt,
+      });
+      yield* engine.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("cmd-room-thread"),
+        threadId,
+        projectId: ProjectId.make("project-room"),
+        title: "Room",
+        modelSelection: { instanceId: ProviderInstanceId.make("claudeAgent"), model: "fable-5-1" },
+        interactionMode: "default",
+        runtimeMode: "full-access",
+        branch: null,
+        worktreePath: null,
+        createdAt,
+      });
+      yield* engine.dispatch({
+        type: "thread.participant.add",
+        commandId: CommandId.make("cmd-room-add"),
+        threadId,
+        participant: {
+          id: astraId,
+          handle: "astra",
+          modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6-astra" },
+        },
+        createdAt,
+      });
+      yield* engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-room-turn"),
+        threadId,
+        message: {
+          messageId: MessageId.make("message-room-user"),
+          role: "user",
+          text: "review this",
+          attachments: [],
+        },
+        participantId: astraId,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        createdAt: "2026-01-01T00:00:01.000Z",
+      });
+      // A provider status update that does not name the holder keeps it.
+      yield* engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-room-running"),
+        threadId,
+        session: {
+          threadId,
+          status: "running",
+          providerName: "codex",
+          runtimeMode: "full-access",
+          activeTurnId: TurnId.make("turn-room"),
+          lastError: null,
+          updatedAt: "2026-01-01T00:00:02.000Z",
+        },
+        createdAt: "2026-01-01T00:00:02.000Z",
+      });
+      yield* engine.dispatch({
+        type: "thread.message.assistant.delta",
+        commandId: CommandId.make("cmd-room-reply"),
+        threadId,
+        messageId: MessageId.make("message-room-reply"),
+        delta: "Looks right.",
+        turnId: TurnId.make("turn-room"),
+        createdAt: "2026-01-01T00:00:03.000Z",
+      });
+
+      const sessions = yield* sql<{ readonly participantId: string | null }>`
+        SELECT participant_id AS "participantId"
+        FROM projection_thread_sessions
+        WHERE thread_id = ${threadId}
+      `;
+      assert.deepEqual(sessions, [{ participantId: astraId }]);
+
+      const messages = yield* sql<{
+        readonly messageId: string;
+        readonly participantId: string | null;
+      }>`
+        SELECT message_id AS "messageId", participant_id AS "participantId"
+        FROM projection_thread_messages
+        WHERE thread_id = ${threadId}
+        ORDER BY message_id ASC
+      `;
+      assert.deepEqual(messages, [
+        { messageId: "message-room-reply", participantId: astraId },
+        { messageId: "message-room-user", participantId: astraId },
+      ]);
+
+      const threads = yield* sql<{ readonly participants: string }>`
+        SELECT participants FROM projection_threads WHERE thread_id = ${threadId}
+      `;
+      assert.equal(JSON.parse(threads[0]?.participants ?? "[]")[0]?.handle, "astra");
     }),
   );
 

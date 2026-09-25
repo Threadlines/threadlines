@@ -3226,6 +3226,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     context.session = {
       ...context.session,
       resumeCursor,
+      // The live session names its Claude conversation too, so a room agent
+      // handed the slot back while its runtime is still alive can restore it.
+      ...(context.resumeSessionId ? { providerThreadId: context.resumeSessionId } : {}),
       updatedAt: yield* nowIso,
     };
   });

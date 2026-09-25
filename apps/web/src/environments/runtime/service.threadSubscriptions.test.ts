@@ -132,6 +132,7 @@ function makeThreadShellSnapshot(params: {
         pullRequestAutoFix: false,
         pullRequestAutoMerge: null,
         linkedPullRequests: [],
+        participants: [],
         doneOverride: null,
         lastSeenAt: null,
         session: params.sessionStatus

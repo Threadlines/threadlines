@@ -381,6 +381,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           pullRequestAutoMerge: null,
           linkedPullRequests: [],
           queuedFollowUps: [],
+          participants: [],
           doneOverride: null,
           lastSeenAt: null,
           deletedAt: null,
@@ -509,6 +510,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           pullRequestAutoMerge: null,
           linkedPullRequests: [],
           queuedFollowUps: [],
+          participants: [],
           doneOverride: null,
           lastSeenAt: null,
           session: {

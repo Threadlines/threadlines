@@ -70,6 +70,11 @@ export const ClientSettingsSchema = Schema.Struct({
   ),
   confirmThreadArchive: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   confirmThreadDelete: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  /**
+   * Preview: add more agents to a thread (a room). Gates every entry point in
+   * the client; the server accepts room commands either way.
+   */
+  roomsEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   /** File a thread under Wrapped once its pull request merges or closes. */
   wrapUpThreadsOnPullRequestSettled: Schema.Boolean.pipe(
     Schema.withDecodingDefault(Effect.succeed(true)),
@@ -648,6 +653,7 @@ export const ClientSettingsPatch = Schema.Struct({
   chatChangedFilesDefaultExpanded: Schema.optionalKey(Schema.Boolean),
   confirmThreadArchive: Schema.optionalKey(Schema.Boolean),
   confirmThreadDelete: Schema.optionalKey(Schema.Boolean),
+  roomsEnabled: Schema.optionalKey(Schema.Boolean),
   wrapUpThreadsOnPullRequestSettled: Schema.optionalKey(Schema.Boolean),
   dictationHoldToRecord: Schema.optionalKey(Schema.Boolean),
   dictationMicrophoneDeviceId: Schema.optionalKey(Schema.NullOr(TrimmedNonEmptyString)),

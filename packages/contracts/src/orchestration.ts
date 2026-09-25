@@ -18,6 +18,7 @@ import {
   ProjectId,
   ProviderItemId,
   ThreadId,
+  ThreadParticipantId,
   TrimmedNonEmptyString,
   TurnId,
 } from "./baseSchemas.ts";
@@ -415,6 +416,11 @@ export const OrchestrationMessage = Schema.Struct({
   text: Schema.String,
   attachments: Schema.optional(Schema.Array(ChatAttachment)),
   skills: Schema.optional(ChatSkillReferenceList),
+  /**
+   * In a room: the agent that wrote an assistant message, or the agent a user
+   * message was addressed to. Null or absent means the thread's own agent.
+   */
+  participantId: Schema.optional(Schema.NullOr(ThreadParticipantId)),
   turnId: Schema.NullOr(TurnId),
   streaming: Schema.Boolean,
   createdAt: IsoDateTime,
@@ -553,6 +559,13 @@ export const OrchestrationSession = Schema.Struct({
    * the thread has a checkout switch queued for its next turn.
    */
   checkoutCwd: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
+  /**
+   * In a room, the agent this session belongs to. A thread has one session
+   * slot; it follows whichever agent the latest turn addressed. Null means the
+   * thread's own agent. A session update that leaves it out keeps the current
+   * holder, so only the code that hands over the slot has to name one.
+   */
+  participantId: Schema.optional(Schema.NullOr(ThreadParticipantId)),
   activeTurnId: Schema.NullOr(TurnId),
   // Provider-reported tasks (e.g. backgrounded shell commands) still running.
   // Non-zero after a turn settles means the provider will self-wake when they
@@ -768,11 +781,32 @@ export const OrchestrationQueuedFollowUp = Schema.Struct({
   attachments: Schema.Array(ChatAttachment),
   skills: Schema.optional(ChatSkillReferenceList),
   modelSelection: Schema.optional(ModelSelection),
+  /** In a room, the agent the message is for. Absent: the thread's own agent. */
+  participantId: Schema.optional(Schema.NullOr(ThreadParticipantId)),
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
   createdAt: IsoDateTime,
 });
 export type OrchestrationQueuedFollowUp = typeof OrchestrationQueuedFollowUp.Type;
+/**
+ * An agent added to a thread alongside the thread's own agent. A thread with
+ * at least one participant is a room. The thread's own agent is not listed:
+ * it keeps `OrchestrationThread.modelSelection` and is addressed with a null
+ * participant id.
+ */
+export const OrchestrationThreadParticipant = Schema.Struct({
+  id: ThreadParticipantId,
+  /** What the user types after `@`. Unique per thread, case-insensitively. */
+  handle: TrimmedNonEmptyString,
+  modelSelection: ModelSelection,
+  joinedAt: IsoDateTime,
+  /**
+   * Set when the agent was taken out of the thread. It stays listed so its
+   * earlier messages keep their author; its handle is free to reuse.
+   */
+  leftAt: Schema.NullOr(IsoDateTime).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
+});
+export type OrchestrationThreadParticipant = typeof OrchestrationThreadParticipant.Type;
 
 /** Where a thread's `effectiveCwd` came from. See OrchestrationThread. */
 export const ThreadEffectiveCwdSource = Schema.Literals(["session", "subagent", "selection"]);
@@ -824,6 +858,10 @@ export const OrchestrationThread = Schema.Struct({
   ),
   /** See OrchestrationThreadShell.linkedPullRequests. */
   linkedPullRequests: Schema.Array(OrchestrationThreadLinkedPullRequest).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
+  /** See OrchestrationThreadShell.participants. */
+  participants: Schema.Array(OrchestrationThreadParticipant).pipe(
     Schema.withDecodingDefault(Effect.succeed([])),
   ),
   /** See OrchestrationThreadShell.doneOverride. */
@@ -924,6 +962,13 @@ export const OrchestrationThreadShell = Schema.Struct({
    * the one its checkout can push to.
    */
   linkedPullRequests: Schema.Array(OrchestrationThreadLinkedPullRequest).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
+  /**
+   * Agents added to this thread next to its own agent. Empty for an ordinary
+   * thread; one or more makes the thread a room.
+   */
+  participants: Schema.Array(OrchestrationThreadParticipant).pipe(
     Schema.withDecodingDefault(Effect.succeed([])),
   ),
   /**
@@ -1215,6 +1260,31 @@ const ThreadSeenSetCommand = Schema.Struct({
   at: IsoDateTime,
 });
 
+/**
+ * Add an agent to a thread next to its own agent. The first one makes the
+ * thread a room. The id and handle come from the client, like message ids.
+ */
+const ThreadParticipantAddCommand = Schema.Struct({
+  type: Schema.Literal("thread.participant.add"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  participant: Schema.Struct({
+    id: ThreadParticipantId,
+    handle: TrimmedNonEmptyString,
+    modelSelection: ModelSelection,
+  }),
+  createdAt: IsoDateTime,
+});
+
+/** Take an added agent out of a thread. Its provider session is stopped. */
+const ThreadParticipantRemoveCommand = Schema.Struct({
+  type: Schema.Literal("thread.participant.remove"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  participantId: ThreadParticipantId,
+  createdAt: IsoDateTime,
+});
+
 const ThreadMetaUpdateCommand = Schema.Struct({
   type: Schema.Literal("thread.meta.update"),
   commandId: CommandId,
@@ -1292,6 +1362,8 @@ export const ThreadTurnStartCommand = Schema.Struct({
     skills: Schema.optional(ChatSkillReferenceList),
   }),
   modelSelection: Schema.optional(ModelSelection),
+  /** The agent this turn is for, in a room. Null or absent: the thread's own agent. */
+  participantId: Schema.optional(Schema.NullOr(ThreadParticipantId)),
   titleSeed: Schema.optional(TrimmedNonEmptyString),
   runtimeMode: RuntimeMode.pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_RUNTIME_MODE))),
   interactionMode: ProviderInteractionMode.pipe(
@@ -1323,6 +1395,11 @@ export const ThreadFollowUpSubmitCommand = Schema.Struct({
   }),
   delivery: Schema.optional(FollowUpDelivery),
   modelSelection: Schema.optional(ModelSelection),
+  /**
+   * In a room, the agent the message is for. A message for an agent that is
+   * not the one working can not steer; it waits in the queue for it.
+   */
+  participantId: Schema.optional(Schema.NullOr(ThreadParticipantId)),
   runtimeMode: Schema.optional(RuntimeMode),
   interactionMode: Schema.optional(ProviderInteractionMode),
   createdAt: IsoDateTime,
@@ -1349,6 +1426,8 @@ const ClientThreadTurnStartCommand = Schema.Struct({
     skills: Schema.optional(ChatSkillReferenceList),
   }),
   modelSelection: Schema.optional(ModelSelection),
+  /** The agent this turn is for, in a room. Null or absent: the thread's own agent. */
+  participantId: Schema.optional(Schema.NullOr(ThreadParticipantId)),
   titleSeed: Schema.optional(TrimmedNonEmptyString),
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
@@ -1371,6 +1450,11 @@ const ClientThreadFollowUpSubmitCommand = Schema.Struct({
   }),
   delivery: Schema.optional(FollowUpDelivery),
   modelSelection: Schema.optional(ModelSelection),
+  /**
+   * In a room, the agent the message is for. A message for an agent that is
+   * not the one working can not steer; it waits in the queue for it.
+   */
+  participantId: Schema.optional(Schema.NullOr(ThreadParticipantId)),
   runtimeMode: Schema.optional(RuntimeMode),
   interactionMode: Schema.optional(ProviderInteractionMode),
   createdAt: IsoDateTime,
@@ -1502,6 +1586,8 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ThreadPullRequestAutomationSetCommand,
   ThreadDoneOverrideSetCommand,
   ThreadSeenSetCommand,
+  ThreadParticipantAddCommand,
+  ThreadParticipantRemoveCommand,
   ThreadMetaUpdateCommand,
   ThreadCheckoutSelectCommand,
   ThreadForkCommand,
@@ -1539,6 +1625,8 @@ export const ClientOrchestrationCommand = Schema.Union([
   ThreadPullRequestAutomationSetCommand,
   ThreadDoneOverrideSetCommand,
   ThreadSeenSetCommand,
+  ThreadParticipantAddCommand,
+  ThreadParticipantRemoveCommand,
   ThreadMetaUpdateCommand,
   ThreadCheckoutSelectCommand,
   ClientThreadForkCommand,
@@ -1599,6 +1687,11 @@ const ThreadMessageAssistantDeltaCommand = Schema.Struct({
   commandId: CommandId,
   threadId: ThreadId,
   messageId: MessageId,
+  /**
+   * The room agent whose runtime produced this message, as ingestion saw it.
+   * Absent: the agent holding the session slot when the command is decided.
+   */
+  participantId: Schema.optional(Schema.NullOr(ThreadParticipantId)),
   delta: Schema.String,
   turnId: Schema.optional(TurnId),
   createdAt: IsoDateTime,
@@ -1621,6 +1714,11 @@ const ThreadMessageAssistantCompleteCommand = Schema.Struct({
   commandId: CommandId,
   threadId: ThreadId,
   messageId: MessageId,
+  /**
+   * The room agent whose runtime produced this message, as ingestion saw it.
+   * Absent: the agent holding the session slot when the command is decided.
+   */
+  participantId: Schema.optional(Schema.NullOr(ThreadParticipantId)),
   turnId: Schema.optional(TurnId),
   /** True only when the authoritative provider turn (or imported historical
    * turn) has settled. Completing one live assistant segment is non-terminal. */
@@ -1697,6 +1795,8 @@ const ThreadFollowUpAcceptCommand = Schema.Struct({
   commandId: CommandId,
   threadId: ThreadId,
   turnId: TurnId,
+  /** In a room, the agent the steering went to. Absent: the slot holder. */
+  participantId: Schema.optional(Schema.NullOr(ThreadParticipantId)),
   message: Schema.Struct({
     messageId: MessageId,
     role: Schema.Literal("user"),
@@ -1784,6 +1884,8 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.pull-request-linked",
   "thread.done-override-set",
   "thread.seen-set",
+  "thread.participant-added",
+  "thread.participant-removed",
   "thread.meta-updated",
   "thread.runtime-mode-set",
   "thread.interaction-mode-set",
@@ -1919,6 +2021,18 @@ export const ThreadSeenSetPayload = Schema.Struct({
   at: IsoDateTime,
 });
 
+export const ThreadParticipantAddedPayload = Schema.Struct({
+  threadId: ThreadId,
+  participant: OrchestrationThreadParticipant,
+  updatedAt: IsoDateTime,
+});
+
+export const ThreadParticipantRemovedPayload = Schema.Struct({
+  threadId: ThreadId,
+  participantId: ThreadParticipantId,
+  updatedAt: IsoDateTime,
+});
+
 export const ThreadMetaUpdatedPayload = Schema.Struct({
   threadId: ThreadId,
   title: Schema.optional(TrimmedNonEmptyString),
@@ -1949,6 +2063,8 @@ export const ThreadMessageSentPayload = Schema.Struct({
   text: Schema.String,
   attachments: Schema.optional(Schema.Array(ChatAttachment)),
   skills: Schema.optional(ChatSkillReferenceList),
+  /** See OrchestrationMessage.participantId. */
+  participantId: Schema.optional(Schema.NullOr(ThreadParticipantId)),
   turnId: Schema.NullOr(TurnId),
   streaming: Schema.Boolean,
   /** Missing means legacy behavior for events written before assistant
@@ -1963,6 +2079,8 @@ export const ThreadTurnStartRequestedPayload = Schema.Struct({
   messageId: MessageId,
   providerMessageId: Schema.optional(MessageId),
   modelSelection: Schema.optional(ModelSelection),
+  /** The agent this turn is for, in a room. Null or absent: the thread's own agent. */
+  participantId: Schema.optional(Schema.NullOr(ThreadParticipantId)),
   titleSeed: Schema.optional(TrimmedNonEmptyString),
   runtimeMode: RuntimeMode.pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_RUNTIME_MODE))),
   interactionMode: ProviderInteractionMode.pipe(
@@ -1983,6 +2101,8 @@ export const ThreadFollowUpSubmittedPayload = Schema.Struct({
   text: Schema.String,
   attachments: Schema.optional(Schema.Array(ChatAttachment)),
   skills: Schema.optional(ChatSkillReferenceList),
+  /** In a room, the agent being steered: the one holding the session slot. */
+  participantId: Schema.optional(Schema.NullOr(ThreadParticipantId)),
   createdAt: IsoDateTime,
 });
 
@@ -2213,6 +2333,16 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.seen-set"),
     payload: ThreadSeenSetPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.participant-added"),
+    payload: ThreadParticipantAddedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.participant-removed"),
+    payload: ThreadParticipantRemovedPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,

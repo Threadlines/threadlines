@@ -5,6 +5,11 @@ import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import {
+  parseParticipantSessionKey,
+  sessionKeyThreadId,
+  sessionSlotParticipantId,
+} from "@threadlines/shared/threadParticipants";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schedule from "effect/Schedule";
@@ -42,7 +47,7 @@ const buildStoppedProjectionSession = (input: {
 }): OrchestrationSession => {
   const session = input.thread?.session ?? null;
   return {
-    threadId: input.binding.threadId,
+    threadId: sessionKeyThreadId(input.binding.threadId),
     status: "stopped",
     providerName: session?.providerName ?? input.binding.provider,
     ...(session?.providerInstanceId !== undefined
@@ -117,6 +122,24 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
               .map((session) => session.threadId),
           );
 
+    // A room's agents each have a binding under their own session key, and the
+    // thread's projected session belongs to only one of them: the slot holder.
+    // Another agent's binding sees the thread with no session, so reaping or
+    // reconciling an idle agent never touches the working agent's state.
+    const resolveBindingThread = (binding: ProviderRuntimeBindingWithMetadata) =>
+      Effect.gen(function* () {
+        const target = parseParticipantSessionKey(binding.threadId);
+        const thread = yield* projectionSnapshotQuery
+          .getThreadShellById(target.threadId)
+          .pipe(Effect.map(Option.getOrUndefined));
+        if (thread === undefined) {
+          return undefined;
+        }
+        return sessionSlotParticipantId(thread.session ?? null) === target.participantId
+          ? thread
+          : { ...thread, session: null };
+      });
+
     const dispatchStoppedProjection = (input: {
       readonly binding: ProviderRuntimeBindingWithMetadata;
       readonly thread: ThreadShellWithSession | undefined;
@@ -135,7 +158,7 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
             commandId: CommandId.make(
               `provider-session-reaper:${input.reason}:${input.binding.threadId}:${randomUUID()}`,
             ),
-            threadId: input.binding.threadId,
+            threadId: sessionKeyThreadId(input.binding.threadId),
             session: buildStoppedProjectionSession(input),
             createdAt: input.nowIso,
           })
@@ -151,9 +174,7 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
       let orphanedCount = 0;
 
       for (const binding of bindings) {
-        const thread = yield* projectionSnapshotQuery
-          .getThreadShellById(binding.threadId)
-          .pipe(Effect.map(Option.getOrUndefined));
+        const thread = yield* resolveBindingThread(binding);
         const session = thread?.session ?? null;
         if (!session || session.status === "stopped") {
           continue;
@@ -241,9 +262,7 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
           continue;
         }
 
-        const thread = yield* projectionSnapshotQuery
-          .getThreadShellById(binding.threadId)
-          .pipe(Effect.map(Option.getOrUndefined));
+        const thread = yield* resolveBindingThread(binding);
         if (busyProviderThreadIds?.has(binding.threadId)) {
           yield* Effect.logDebug("provider.session.reaper.skipped-active-turn", {
             threadId: binding.threadId,

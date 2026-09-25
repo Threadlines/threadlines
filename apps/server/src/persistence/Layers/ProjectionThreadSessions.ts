@@ -29,6 +29,7 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
           provider_thread_id,
           runtime_mode,
           checkout_cwd,
+          participant_id,
           active_turn_id,
           pending_background_task_count,
           last_error,
@@ -43,6 +44,14 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
           ${row.providerThreadId},
           ${row.runtimeMode},
           ${row.checkoutCwd},
+          CASE
+            WHEN ${row.participantId === undefined ? 1 : 0} = 1 THEN (
+              SELECT participant_id
+              FROM projection_thread_sessions
+              WHERE thread_id = ${row.threadId}
+            )
+            ELSE ${row.participantId ?? null}
+          END,
           ${row.activeTurnId},
           ${row.pendingBackgroundTaskCount},
           ${row.lastError},
@@ -57,6 +66,7 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
           provider_thread_id = excluded.provider_thread_id,
           runtime_mode = excluded.runtime_mode,
           checkout_cwd = excluded.checkout_cwd,
+          participant_id = excluded.participant_id,
           active_turn_id = excluded.active_turn_id,
           pending_background_task_count = excluded.pending_background_task_count,
           last_error = excluded.last_error,
@@ -78,6 +88,7 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
           provider_thread_id AS "providerThreadId",
           runtime_mode AS "runtimeMode",
           checkout_cwd AS "checkoutCwd",
+          participant_id AS "participantId",
           active_turn_id AS "activeTurnId",
           pending_background_task_count AS "pendingBackgroundTaskCount",
           last_error AS "lastError",

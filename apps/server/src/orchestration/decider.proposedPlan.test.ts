@@ -60,6 +60,7 @@ function makeReadModel(proposedPlan: OrchestrationProposedPlan): OrchestrationRe
         pullRequestAutoFix: false,
         pullRequestAutoMerge: null,
         linkedPullRequests: [],
+        participants: [],
         doneOverride: null,
         lastSeenAt: null,
         deletedAt: null,

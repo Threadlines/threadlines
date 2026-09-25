@@ -10,6 +10,7 @@ import {
   type OrchestrationProposedPlanId,
   CheckpointRef,
   ThreadId,
+  type ThreadParticipantId,
   TurnId,
   type OrchestrationCheckpointSummary,
   type OrchestrationProposedPlan,
@@ -30,6 +31,10 @@ import * as Stream from "effect/Stream";
 import { countUnifiedDiffStats, type DiffLineStats } from "@threadlines/shared/diffStats";
 import { makeDrainableWorker } from "@threadlines/shared/DrainableWorker";
 import { areFilesystemPathsEqual } from "@threadlines/shared/path";
+import {
+  participantSessionKey,
+  sessionSlotParticipantId,
+} from "@threadlines/shared/threadParticipants";
 
 import { metricAttributes, providerFirstOutputDuration } from "../../observability/Metrics.ts";
 import { parseTurnDiffFilesFromUnifiedDiff } from "../../checkpointing/Diffs.ts";
@@ -1629,6 +1634,7 @@ const make = Effect.gen(function* () {
       commandId: providerCommandId(input.event, input.commandTag),
       threadId: input.threadId,
       messageId: input.messageId,
+      participantId: input.event.participantId ?? null,
       delta: input.delta,
       ...(input.turnId ? { turnId: input.turnId } : {}),
       createdAt: input.createdAt,
@@ -2132,6 +2138,7 @@ const make = Effect.gen(function* () {
           commandId: providerCommandId(input.event, input.commandTag),
           threadId: input.threadId,
           messageId: input.messageId,
+          participantId: input.event.participantId ?? null,
           ...(input.turnId ? { turnId: input.turnId } : {}),
           completesTurn: input.completesTurn ?? false,
           createdAt: input.createdAt,
@@ -2346,21 +2353,27 @@ const make = Effect.gen(function* () {
   });
 
   const getExpectedProviderTurnIdForThread = Effect.fn("getExpectedProviderTurnIdForThread")(
-    function* (threadId: ThreadId) {
+    function* (sessionKey: ThreadId) {
       const sessions = yield* providerService.listSessions();
-      const session = sessions.find((entry) => entry.threadId === threadId);
+      const session = sessions.find((entry) => entry.threadId === sessionKey);
       return session?.activeTurnId;
     },
   );
 
   const getSourceProposedPlanReferenceForAcceptedTurnStart = Effect.fn(
     "getSourceProposedPlanReferenceForAcceptedTurnStart",
-  )(function* (threadId: ThreadId, eventTurnId: TurnId | undefined) {
+  )(function* (
+    threadId: ThreadId,
+    participantId: ThreadParticipantId | null,
+    eventTurnId: TurnId | undefined,
+  ) {
     if (eventTurnId === undefined) {
       return null;
     }
 
-    const expectedTurnId = yield* getExpectedProviderTurnIdForThread(threadId);
+    const expectedTurnId = yield* getExpectedProviderTurnIdForThread(
+      participantSessionKey(threadId, participantId),
+    );
     if (!sameId(expectedTurnId, eventTurnId)) {
       return null;
     }
@@ -2411,6 +2424,18 @@ const make = Effect.gen(function* () {
       }
       const thread = yield* resolveThreadShell(event.threadId);
       if (!thread) return;
+      // In a room, only the agent holding the session slot is working; an
+      // idle agent's runtime (starting up, being reaped, finishing stray
+      // background work) must not overwrite the working agent's state.
+      if ((event.participantId ?? null) !== sessionSlotParticipantId(thread.session)) {
+        yield* Effect.logDebug("provider runtime ingestion ignored an idle room agent's event", {
+          eventId: event.eventId,
+          eventType: event.type,
+          threadId: thread.id,
+          participantId: event.participantId ?? null,
+        });
+        return;
+      }
       if (
         STRICT_PROVIDER_LIFECYCLE_GUARD &&
         !runtimeEventMatchesThreadSession(event, thread.session)
@@ -2654,7 +2679,11 @@ const make = Effect.gen(function* () {
       })();
       const acceptedTurnStartedSourcePlan =
         event.type === "turn.started" && shouldApplyThreadLifecycle
-          ? yield* getSourceProposedPlanReferenceForAcceptedTurnStart(thread.id, eventTurnId)
+          ? yield* getSourceProposedPlanReferenceForAcceptedTurnStart(
+              thread.id,
+              event.participantId ?? null,
+              eventTurnId,
+            )
           : null;
 
       const completedTurnState =
@@ -2988,6 +3017,7 @@ const make = Effect.gen(function* () {
                 commandId: providerCommandId(event, "assistant-delta-buffer-spill"),
                 threadId: thread.id,
                 messageId: assistantMessageId,
+                participantId: event.participantId ?? null,
                 delta: spillChunk,
                 ...(turnId ? { turnId } : {}),
                 createdAt: now,

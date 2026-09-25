@@ -42,6 +42,7 @@ function makeReadModel(): OrchestrationReadModel {
         pullRequestAutoFix: false,
         pullRequestAutoMerge: null,
         linkedPullRequests: [],
+        participants: [],
         doneOverride: null,
         lastSeenAt: null,
         deletedAt: null,
@@ -177,6 +178,7 @@ describe("decider inbox lifecycle", () => {
       threads: linked.threads.map((thread) => ({
         ...thread,
         linkedPullRequests: [{ number: 294, url, autoMerge: null }],
+        participants: [],
       })),
     };
     await expect(

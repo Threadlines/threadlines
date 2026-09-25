@@ -47,6 +47,14 @@ import { useCheckoutRecovery } from "../hooks/useCheckoutRecovery";
 import { buildCheckoutMissingNotice } from "./chat/checkoutMissingNotice";
 import { usePrimaryEnvironmentId } from "../environments/primary";
 import { readEnvironmentApi } from "../environmentApi";
+import { getProviderScopedDisplayModelName } from "./chat/providerIconUtils";
+import {
+  buildRoomAgentLabels,
+  isRoom,
+  ownAgentSession,
+  resolveRoomSend,
+  useRoomRecipientStore,
+} from "../rooms";
 import { ELECTRON_HEADER_HEIGHT_CLASS } from "../desktopChrome";
 import { isElectron } from "../env";
 import { ensureLocalApi, readLocalApi } from "../localApi";
@@ -1752,6 +1760,15 @@ export default function ChatView(props: ChatViewProps) {
     () => deriveDisplayProviderInstanceEntries(providerStatuses),
     [providerStatuses],
   );
+  const roomAgentLabels = useMemo(
+    () =>
+      activeThread
+        ? buildRoomAgentLabels(activeThread, providerInstanceEntries, (model, entry) =>
+            getProviderScopedDisplayModelName(model, entry.driverKind, { preferShortName: true }),
+          )
+        : null,
+    [activeThread, providerInstanceEntries],
+  );
   const modelOptionsByInstance = useMemo(() => {
     const out = new Map<ProviderInstanceId, ReturnType<typeof getAppModelOptionsForInstance>>();
     for (const entry of providerInstanceEntries) {
@@ -2330,8 +2347,14 @@ export default function ChatView(props: ChatViewProps) {
     }
     return byMessageId;
   }, [activeThread?.messages, turnDiffSummaries]);
+  const threadIsRoom = isRoom(activeThread);
   const revertTurnCountByUserMessageId = useMemo(() => {
     const byUserMessageId = new Map<MessageId, number>();
+    // Rooms have no revert: rewinding one agent cannot take back what the
+    // others already read. The server refuses it too.
+    if (threadIsRoom) {
+      return byUserMessageId;
+    }
     for (let index = 0; index < timelineEntries.length; index += 1) {
       const entry = timelineEntries[index];
       if (!entry || entry.kind !== "message" || entry.message.role !== "user") {
@@ -2361,7 +2384,12 @@ export default function ChatView(props: ChatViewProps) {
     }
 
     return byUserMessageId;
-  }, [inferredCheckpointTurnCountByTurnId, timelineEntries, turnDiffSummaryByAssistantMessageId]);
+  }, [
+    inferredCheckpointTurnCountByTurnId,
+    timelineEntries,
+    turnDiffSummaryByAssistantMessageId,
+    threadIsRoom,
+  ]);
 
   const gitCwd = activeProject
     ? resolveThreadWorkingCwd({
@@ -4598,12 +4626,41 @@ export default function ChatView(props: ChatViewProps) {
       }
       return;
     }
+    // Rooms: the message goes to one agent. A leading @name picks it;
+    // otherwise the composer's choice, which defaults to whoever worked last.
+    // Only one agent works at a time, so a message for another agent while
+    // one has a turn in flight waits in the queue for that agent.
+    const roomSend = resolveRoomSend({
+      enabled: settings.roomsEnabled && isServerThread,
+      thread: activeThread,
+      threadRef: scopeThreadRef(environmentId, activeThread.id),
+      text: promptForSend,
+    });
+    const roomsActive = roomSend.active;
+    const roomRecipient = roomSend.recipient;
+    const roomRecipientId = roomRecipient?.id ?? null;
+    // The added agent's model with any reasoning picked since its last turn.
+    const roomRecipientModelSelection = roomSend.modelSelection;
+    const queueForAnotherAgent =
+      roomsActive &&
+      canSubmitSteeringFollowUp &&
+      roomRecipientId !== (activeThread.session?.participantId ?? null);
+    // After a send: carrying on with the same agent stays one keystroke. Only
+    // a send that carried the model selection (a turn or a queued message)
+    // took the picked reasoning with it; a steer did not, so it is kept.
+    const rememberRoomSend = (threadRef: ScopedThreadRef, carriedModelSelection: boolean) => {
+      const store = useRoomRecipientStore.getState();
+      store.choose(threadRef, roomRecipientId);
+      if (roomRecipientId !== null && carriedModelSelection) {
+        store.setAgentOptions(threadRef, roomRecipientId, undefined);
+      }
+    };
     // Hold the turn back when the snapshot already says this instance cannot
     // serve it. The draft is untouched, so dismissing or fixing the provider
     // returns the user to exactly what they typed. The ref, not the render
     // value, is what a recheck-then-send has just written to.
     const preflight = deriveProviderSendPreflight({
-      instanceId: ctxSelectedModelSelection.instanceId,
+      instanceId: roomRecipient?.modelSelection.instanceId ?? ctxSelectedModelSelection.instanceId,
       providers: providerStatusesRef.current,
     });
     if (preflight) {
@@ -4618,7 +4675,7 @@ export default function ChatView(props: ChatViewProps) {
     const isSteeringFollowUp = canSubmitSteeringFollowUp && steeringThreadKey !== null;
     // "Send when done" holds the message on the server until the turn ends;
     // the queue list shows it from there, so it gets no steering row.
-    const followUpDelivery = settings.followUpDelivery;
+    const followUpDelivery = queueForAnotherAgent ? "queue" : settings.followUpDelivery;
     const baseBranchForWorktree =
       isFirstMessage && sendEnvMode === "worktree" && !activeThread.worktreePath
         ? activeThreadBranch
@@ -4722,6 +4779,7 @@ export default function ChatView(props: ChatViewProps) {
       ...(optimisticAttachments.length > 0 ? { attachments: optimisticAttachments } : {}),
       ...(composerSkillReferences.length > 0 ? { skills: composerSkillReferences } : {}),
       ...(isSteeringFollowUp && activeSteerTurnId !== null ? { turnId: activeSteerTurnId } : {}),
+      ...(roomRecipientId !== null ? { participantId: roomRecipientId } : {}),
       createdAt: messageCreatedAt,
       streaming: false,
     };
@@ -4819,11 +4877,19 @@ export default function ChatView(props: ChatViewProps) {
           delivery: followUpDelivery,
           // What a queued message runs with, like a normal send would.
           ...(followUpDelivery === "queue"
-            ? { modelSelection: ctxSelectedModelSelection, runtimeMode, interactionMode }
+            ? {
+                modelSelection: roomRecipientModelSelection ?? ctxSelectedModelSelection,
+                runtimeMode,
+                interactionMode,
+              }
             : {}),
+          ...(roomsActive ? { participantId: roomRecipientId } : {}),
           createdAt: messageCreatedAt,
         });
         dispatchSucceeded = true;
+        if (roomsActive) {
+          rememberRoomSend(threadRefForSend, followUpDelivery === "queue");
+        }
         return;
       }
 
@@ -4880,7 +4946,8 @@ export default function ChatView(props: ChatViewProps) {
           attachments: turnAttachments,
           ...(composerSkillReferences.length > 0 ? { skills: composerSkillReferences } : {}),
         },
-        modelSelection: ctxSelectedModelSelection,
+        modelSelection: roomRecipientModelSelection ?? ctxSelectedModelSelection,
+        ...(roomRecipientId !== null ? { participantId: roomRecipientId } : {}),
         titleSeed: title,
         runtimeMode,
         interactionMode,
@@ -4903,7 +4970,11 @@ export default function ChatView(props: ChatViewProps) {
       });
       dispatchSucceeded = true;
       markLocalDispatchAccepted(threadRefForSend);
-      if (isServerThread && ctxSelectedModel) {
+      if (roomsActive) {
+        rememberRoomSend(threadRefForSend, true);
+      }
+      // A turn for an added agent says nothing about the thread's own model.
+      if (isServerThread && ctxSelectedModel && roomRecipientId === null) {
         await persistThreadSettingsForNextTurn({
           threadId: threadIdForSend,
           createdAt: messageCreatedAt,
@@ -5064,8 +5135,14 @@ export default function ChatView(props: ChatViewProps) {
     const threadId = activeThread.id;
     const target = composerDraftTarget;
     const threadKeyAtStart = activeThreadKey;
+    // The box holds one message for one agent. In a room, only the messages
+    // for the first one's agent come back; the rest stay queued for theirs.
+    const firstAgentId = followUps[0]?.participantId ?? null;
+    const returning = isRoom(activeThread)
+      ? followUps.filter((followUp) => (followUp.participantId ?? null) === firstAgentId)
+      : followUps;
     const taken: OrchestrationQueuedFollowUp[] = [];
-    for (const followUp of followUps) {
+    for (const followUp of returning) {
       const removed = await api.orchestration
         .dispatchCommand({
           type: "thread.follow-up.unqueue",
@@ -5083,6 +5160,13 @@ export default function ChatView(props: ChatViewProps) {
       }
     }
     if (taken.length === 0) return;
+    // In a room, the message goes back to the agent it was waiting for.
+    const lastTaken = taken.at(-1);
+    if (isRoom(activeThread) && lastTaken !== undefined) {
+      useRoomRecipientStore
+        .getState()
+        .choose(scopeThreadRef(environmentId, threadId), lastTaken.participantId ?? null);
+    }
 
     const nextPrompt = appendRestoredFollowUpText(
       useComposerDraftStore.getState().getComposerDraft(target)?.prompt ?? "",
@@ -5793,6 +5877,15 @@ export default function ChatView(props: ChatViewProps) {
       }
       const { selectedModel: ctxSelectedModel, selectedModelSelection: ctxSelectedModelSelection } =
         sendCtx;
+      // In a room, plan feedback and implementation go where a typed message
+      // would: usually the agent that wrote the plan, since it worked last.
+      const roomSend = resolveRoomSend({
+        enabled: settings.roomsEnabled && isServerThread,
+        thread: activeThread,
+        threadRef: scopeThreadRef(activeThread.environmentId, activeThread.id),
+        text: trimmed,
+      });
+      const roomRecipientId = roomSend.recipient?.id ?? null;
 
       const threadIdForSend = activeThread.id;
       const messageIdForSend = newMessageId();
@@ -5810,6 +5903,7 @@ export default function ChatView(props: ChatViewProps) {
         id: messageIdForSend,
         role: "user",
         text: outgoingMessageText,
+        ...(roomRecipientId !== null ? { participantId: roomRecipientId } : {}),
         createdAt: messageCreatedAt,
         streaming: false,
       };
@@ -5841,7 +5935,8 @@ export default function ChatView(props: ChatViewProps) {
             text: outgoingMessageText,
             attachments: [],
           },
-          modelSelection: ctxSelectedModelSelection,
+          modelSelection: roomSend.modelSelection ?? ctxSelectedModelSelection,
+          ...(roomRecipientId !== null ? { participantId: roomRecipientId } : {}),
           titleSeed: activeThread.title,
           runtimeMode,
           interactionMode: nextInteractionMode,
@@ -5856,7 +5951,15 @@ export default function ChatView(props: ChatViewProps) {
           createdAt: messageCreatedAt,
         });
         markLocalDispatchAccepted(threadRefForSend);
-        if (ctxSelectedModel) {
+        if (roomSend.active) {
+          const store = useRoomRecipientStore.getState();
+          store.choose(threadRefForSend, roomRecipientId);
+          if (roomRecipientId !== null) {
+            store.setAgentOptions(threadRefForSend, roomRecipientId, undefined);
+          }
+        }
+        // A turn for an added agent says nothing about the thread's own model.
+        if (ctxSelectedModel && roomRecipientId === null) {
           await persistThreadSettingsForNextTurn({
             threadId: threadIdForSend,
             createdAt: messageCreatedAt,
@@ -5891,6 +5994,7 @@ export default function ChatView(props: ChatViewProps) {
       setComposerDraftInteractionMode,
       setThreadError,
       environmentId,
+      settings.roomsEnabled,
     ],
   );
 
@@ -6435,7 +6539,7 @@ export default function ChatView(props: ChatViewProps) {
       const entry = providerStatuses.find((snapshot) => snapshot.instanceId === instanceId);
       const pickedDriverKind = entry?.driver ?? null;
       const currentEntry = providerStatuses.find(
-        (snapshot) => snapshot.instanceId === activeThread.session?.providerInstanceId,
+        (snapshot) => snapshot.instanceId === ownAgentSession(activeThread)?.providerInstanceId,
       );
       const classification = classifyModelSwitch({
         boundProvider: lockedProvider,
@@ -6781,6 +6885,7 @@ export default function ChatView(props: ChatViewProps) {
               routeThreadKey={routeThreadKey}
               onOpenTurnDiff={onOpenTurnDiff}
               revertTurnCountByUserMessageId={revertTurnCountByUserMessageId}
+              roomAgents={roomAgentLabels}
               onRevertUserMessage={onRevertUserMessage}
               onContinueInNewThread={onContinueMessageInNewThread}
               onRevealPickedElement={isElectron ? revealPickedElement : undefined}
@@ -6840,6 +6945,7 @@ export default function ChatView(props: ChatViewProps) {
                 queued={queuedFollowUps}
                 paused={!isWorking}
                 attachmentOnlyPrompt={ATTACHMENT_ONLY_BOOTSTRAP_PROMPT}
+                roomAgents={roomAgentLabels}
                 onEdit={(followUp) => void returnQueuedFollowUpsToComposer([followUp])}
                 onRemove={removeQueuedFollowUp}
               />
