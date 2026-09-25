@@ -39,6 +39,7 @@ export const ProjectionThreadSession = Schema.Struct({
   participantId: Schema.optional(Schema.NullOr(ThreadParticipantId)),
   activeTurnId: Schema.NullOr(TurnId),
   pendingBackgroundTaskCount: NonNegativeInt,
+  awaitedBackgroundTaskCount: NonNegativeInt,
   lastError: Schema.NullOr(Schema.String),
   updatedAt: IsoDateTime,
 });

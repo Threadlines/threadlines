@@ -1051,7 +1051,9 @@ describe("ProviderRuntimeIngestion", () => {
 
     const snapshotThread = await waitForThread(
       harness.readModel,
-      (thread) => thread.session?.pendingBackgroundTaskCount === 2,
+      (thread) =>
+        thread.session?.pendingBackgroundTaskCount === 2 &&
+        thread.session.awaitedBackgroundTaskCount === 2,
     );
     expect(
       snapshotThread.activities.some(
@@ -1086,6 +1088,30 @@ describe("ProviderRuntimeIngestion", () => {
         ),
     );
 
+    // A command the agent is not waiting on (a dev server) still holds the
+    // runtime open, but the thread no longer reads as waiting on it.
+    harness.emit({
+      type: "task.snapshot.updated",
+      eventId: asEventId("evt-background-task-snapshot-released"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+      threadId: asThreadId("thread-1"),
+      createdAt: now,
+      payload: {
+        tasks: [
+          { taskId: "background-task-snapshot-1", taskType: "local_agent" },
+          { taskId: "background-task-snapshot-2", taskType: "local_bash", awaited: false },
+        ],
+      },
+    });
+
+    await waitForThread(
+      harness.readModel,
+      (thread) =>
+        thread.session?.pendingBackgroundTaskCount === 2 &&
+        thread.session.awaitedBackgroundTaskCount === 1,
+    );
+
     harness.emit({
       type: "task.snapshot.updated",
       eventId: asEventId("evt-background-task-snapshot-settled"),
@@ -1098,7 +1124,9 @@ describe("ProviderRuntimeIngestion", () => {
 
     await waitForThread(
       harness.readModel,
-      (thread) => thread.session?.pendingBackgroundTaskCount === 0,
+      (thread) =>
+        thread.session?.pendingBackgroundTaskCount === 0 &&
+        thread.session.awaitedBackgroundTaskCount === 0,
     );
 
     // A terminal edge arriving after the replace-all snapshot must not

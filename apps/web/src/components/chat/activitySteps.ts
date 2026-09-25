@@ -399,6 +399,20 @@ function mcpDraft(call: { server: string; tool: string; args: string | null }): 
       detail: { call: `${call.server} · ${call.tool}${call.args ? `: ${call.args}` : ""}` },
     };
   }
+  if (call.server === "threadlines" && tool === "mark_long_running") {
+    const wording = phrase(
+      "Left a command running in the background",
+      "Leaving a command running in the background",
+    );
+    return {
+      routine: true,
+      tallies: [{ tally: "tool" }],
+      icon: "tool",
+      label: wording.past,
+      liveLabel: wording.live,
+      detail: { call: `${call.server} · ${call.tool}${call.args ? `: ${call.args}` : ""}` },
+    };
+  }
   const server = serverLabel(call.server);
   const action = words(call.tool);
   const label = `Used ${server}: ${action}`;

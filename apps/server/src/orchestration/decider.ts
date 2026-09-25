@@ -1078,6 +1078,10 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
                   // tasks. Dropping the count here would tell the reactor the
                   // session is free to be cycled into another checkout.
                   pendingBackgroundTaskCount: priorSession?.pendingBackgroundTaskCount ?? 0,
+                  awaitedBackgroundTaskCount:
+                    priorSession?.awaitedBackgroundTaskCount ??
+                    priorSession?.pendingBackgroundTaskCount ??
+                    0,
                   activeTurnId: null,
                   lastError: priorSession?.lastError ?? null,
                   updatedAt: command.createdAt,
@@ -1187,6 +1191,8 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             runtimeMode: targetThread.runtimeMode,
             checkoutCwd: session.checkoutCwd ?? null,
             pendingBackgroundTaskCount: session.pendingBackgroundTaskCount ?? 0,
+            awaitedBackgroundTaskCount:
+              session.awaitedBackgroundTaskCount ?? session.pendingBackgroundTaskCount ?? 0,
             activeTurnId: null,
             lastError: session.lastError,
             updatedAt: command.createdAt,

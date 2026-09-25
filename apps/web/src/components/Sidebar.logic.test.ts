@@ -678,6 +678,7 @@ describe("resolveThreadStatusPill", () => {
             status: "ready",
             orchestrationStatus: "ready",
             pendingBackgroundTaskCount: 1,
+            awaitedBackgroundTaskCount: 1,
           },
         },
       }),
@@ -686,6 +687,24 @@ describe("resolveThreadStatusPill", () => {
       dotClass: THREAD_STATUS_DOT_CLASSES.cyan,
       pulse: true,
     });
+  });
+
+  it("shows completed while a command the agent is not waiting on keeps running", () => {
+    expect(
+      resolveThreadStatusPill({
+        thread: {
+          ...baseThread,
+          latestTurn: makeLatestTurn(),
+          session: {
+            ...baseThread.session,
+            status: "ready",
+            orchestrationStatus: "ready",
+            pendingBackgroundTaskCount: 1,
+            awaitedBackgroundTaskCount: 0,
+          },
+        },
+      }),
+    ).toMatchObject({ label: "Completed", pulse: false });
   });
 
   it("keeps active background-tracked turns in the working state", () => {
@@ -1081,7 +1100,11 @@ describe("inbox done lifecycle", () => {
         {
           ...base,
           latestTurn: settledTurn,
-          session: { ...settledSession, pendingBackgroundTaskCount: 1 } as never,
+          session: {
+            ...settledSession,
+            pendingBackgroundTaskCount: 1,
+            awaitedBackgroundTaskCount: 1,
+          } as never,
           lastVisitedAt: "2026-07-28T11:06:00.000Z",
         },
         { now: NOW },

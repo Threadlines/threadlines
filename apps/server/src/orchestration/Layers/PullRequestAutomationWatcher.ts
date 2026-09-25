@@ -122,7 +122,9 @@ function hasWorkInProgress(thread: OrchestrationThreadShell): boolean {
     session.status === "starting" ||
     session.status === "running" ||
     session.activeTurnId !== null ||
-    (session.pendingBackgroundTaskCount ?? 0) > 0
+    // A dev server left running is not work in progress; a run the agent will
+    // wake up for is.
+    (session.awaitedBackgroundTaskCount ?? session.pendingBackgroundTaskCount ?? 0) > 0
   );
 }
 

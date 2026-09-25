@@ -175,6 +175,9 @@ function mapSession(session: OrchestrationSession): ThreadSession {
     ...(session.participantId ? { participantId: session.participantId } : {}),
     activeTurnId: session.activeTurnId ?? undefined,
     pendingBackgroundTaskCount: session.pendingBackgroundTaskCount ?? 0,
+    // An older server does not split the count: it awaited every task.
+    awaitedBackgroundTaskCount:
+      session.awaitedBackgroundTaskCount ?? session.pendingBackgroundTaskCount ?? 0,
     createdAt: session.updatedAt,
     updatedAt: session.updatedAt,
     ...(session.lastError ? { lastError: session.lastError } : {}),

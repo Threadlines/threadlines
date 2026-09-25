@@ -1823,7 +1823,7 @@ describe("selectRunningSidebarThreadsAcrossEnvironments", () => {
     };
     const waiting = makeSidebarSummary({
       id: ThreadId.make("thread-waiting"),
-      session: { ...settledSession, pendingBackgroundTaskCount: 2 },
+      session: { ...settledSession, pendingBackgroundTaskCount: 2, awaitedBackgroundTaskCount: 2 },
       latestTurn: settledTurn,
     });
     const finished = makeSidebarSummary({

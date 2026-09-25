@@ -1410,6 +1410,11 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           : {}),
         activeTurnId: event.payload.session.activeTurnId,
         pendingBackgroundTaskCount: event.payload.session.pendingBackgroundTaskCount ?? 0,
+        // Events written before the split awaited every pending task.
+        awaitedBackgroundTaskCount:
+          event.payload.session.awaitedBackgroundTaskCount ??
+          event.payload.session.pendingBackgroundTaskCount ??
+          0,
         lastError: event.payload.session.lastError,
         updatedAt: event.payload.session.updatedAt,
       });

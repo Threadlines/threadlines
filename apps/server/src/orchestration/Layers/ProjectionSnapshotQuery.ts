@@ -332,6 +332,7 @@ function mapSessionRow(
     ...(row.participantId ? { participantId: row.participantId } : {}),
     activeTurnId: row.activeTurnId,
     pendingBackgroundTaskCount: row.pendingBackgroundTaskCount,
+    awaitedBackgroundTaskCount: row.awaitedBackgroundTaskCount,
     lastError: row.lastError,
     updatedAt: row.updatedAt,
   };
@@ -830,6 +831,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           participant_id AS "participantId",
           active_turn_id AS "activeTurnId",
           pending_background_task_count AS "pendingBackgroundTaskCount",
+          awaited_background_task_count AS "awaitedBackgroundTaskCount",
           last_error AS "lastError",
           updated_at AS "updatedAt"
         FROM projection_thread_sessions
@@ -876,6 +878,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           sessions.participant_id AS "participantId",
           sessions.active_turn_id AS "activeTurnId",
           sessions.pending_background_task_count AS "pendingBackgroundTaskCount",
+          sessions.awaited_background_task_count AS "awaitedBackgroundTaskCount",
           sessions.last_error AS "lastError",
           sessions.updated_at AS "updatedAt"
         FROM projection_thread_sessions sessions
@@ -904,6 +907,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           sessions.participant_id AS "participantId",
           sessions.active_turn_id AS "activeTurnId",
           sessions.pending_background_task_count AS "pendingBackgroundTaskCount",
+          sessions.awaited_background_task_count AS "awaitedBackgroundTaskCount",
           sessions.last_error AS "lastError",
           sessions.updated_at AS "updatedAt"
         FROM projection_thread_sessions sessions
@@ -1439,6 +1443,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           participant_id AS "participantId",
           active_turn_id AS "activeTurnId",
           pending_background_task_count AS "pendingBackgroundTaskCount",
+          awaited_background_task_count AS "awaitedBackgroundTaskCount",
           last_error AS "lastError",
           updated_at AS "updatedAt"
         FROM projection_thread_sessions

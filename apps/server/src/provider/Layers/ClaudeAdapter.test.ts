@@ -30,6 +30,7 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Queue from "effect/Queue";
 import * as Random from "effect/Random";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
@@ -41,6 +42,11 @@ import { ServerSettingsService } from "../../serverSettings.ts";
 import { ProviderAdapterValidationError } from "../Errors.ts";
 import type { ClaudeAdapterShape } from "../Services/ClaudeAdapter.ts";
 import { claudeProjectDirectoryName } from "../Drivers/ClaudeSessionTranscripts.ts";
+import {
+  MARK_LONG_RUNNING_TOOL_ID,
+  MARK_LONG_RUNNING_TOOL_NAME,
+  THREADLINES_CLAUDE_MCP_SERVER_NAME,
+} from "../claudeLongRunningTool.ts";
 import {
   makeClaudeAdapter,
   mapClaudeSubagentTranscript,
@@ -5259,6 +5265,96 @@ describe("ClaudeAdapterLive", () => {
             event.type === "task.completed" && event.payload.pendingCountManagedBySnapshot === true,
         ),
       );
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("stops awaiting background commands the model marks or the user moves past", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const snapshots = yield* Queue.unbounded<ProviderRuntimeEvent>();
+      yield* Stream.filter(
+        adapter.streamEvents,
+        (event) => event.type === "task.snapshot.updated",
+      ).pipe(
+        Stream.runForEach((event) => Queue.offer(snapshots, event)),
+        Effect.forkChild,
+      );
+      /** Which live tasks the next published snapshot says are awaited. */
+      const nextAwaited = Effect.gen(function* () {
+        const event = yield* Queue.take(snapshots);
+        return event.type === "task.snapshot.updated"
+          ? Object.fromEntries(
+              event.payload.tasks.map((task) => [task.taskId, task.awaited !== false]),
+            )
+          : {};
+      });
+      const emitTasks = (tasks: ReadonlyArray<Record<string, string>>, uuid: string) =>
+        harness.query.emit({
+          type: "system",
+          subtype: "background_tasks_changed",
+          tasks,
+          session_id: "sdk-session-long-running",
+          uuid,
+        } as unknown as SDKMessage);
+      // What the CLI's tools/call runs: the handler registered on the
+      // session's in-process MCP server.
+      const markLongRunning = (taskId: string) =>
+        Effect.promise(() => {
+          const server = harness.getLastCreateQueryInput()?.options.mcpServers?.[
+            THREADLINES_CLAUDE_MCP_SERVER_NAME
+          ] as unknown as {
+            readonly instance: {
+              readonly _registeredTools: Record<
+                string,
+                {
+                  readonly handler: (
+                    args: { readonly task_id: string },
+                    extra: unknown,
+                  ) => Promise<{ readonly isError?: boolean }>;
+                }
+              >;
+            };
+          };
+          return server.instance._registeredTools[MARK_LONG_RUNNING_TOOL_NAME]!.handler(
+            { task_id: taskId },
+            {},
+          );
+        });
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      assert.include(
+        harness.getLastCreateQueryInput()?.options.allowedTools ?? [],
+        MARK_LONG_RUNNING_TOOL_ID,
+      );
+
+      const devServer = { task_id: "dev-server", task_type: "local_bash" };
+      const reviewer = { task_id: "reviewer", task_type: "local_agent" };
+      emitTasks([devServer, reviewer], "tasks-started");
+      assert.deepEqual(yield* nextAwaited, { "dev-server": true, reviewer: true });
+
+      assert.notEqual((yield* markLongRunning("dev-server")).isError, true);
+      assert.deepEqual(yield* nextAwaited, { "dev-server": false, reviewer: true });
+      assert.equal((yield* markLongRunning("reviewer")).isError, true);
+      assert.equal((yield* markLongRunning("no-such-task")).isError, true);
+
+      // A test run started in the same turn is awaited, and the mark on the
+      // dev server survives the next snapshot.
+      const tests = { task_id: "tests", task_type: "local_bash" };
+      emitTasks([devServer, reviewer, tests], "tests-started");
+      assert.deepEqual(yield* nextAwaited, { "dev-server": false, reviewer: true, tests: true });
+
+      // The user moved on while the test run was still going: commands still
+      // running are no longer awaited, but the agent still is.
+      yield* adapter.sendTurn({ threadId: session.threadId, input: "next", attachments: [] });
+      assert.deepEqual(yield* nextAwaited, { "dev-server": false, reviewer: true, tests: false });
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
