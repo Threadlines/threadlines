@@ -16,6 +16,7 @@ import {
   type ThreadId,
   type TurnId,
   type KeybindingCommand,
+  type OrchestrationQueuedFollowUp,
   type OrchestrationThreadGoal,
   OrchestrationThreadActivity,
   ProviderInteractionMode,
@@ -139,7 +140,9 @@ import { summarizeLiveAgents } from "./chat/agentsPanel.logic";
 import { buildTemporaryWorktreeBranchName } from "@threadlines/shared/git";
 import { BranchToolbar } from "./BranchToolbar";
 import { resolveShortcutCommand, shortcutLabelForCommand } from "../keybindings";
-import { ChevronDownIcon, CornerDownRightIcon } from "lucide-react";
+import { ChevronDownIcon } from "lucide-react";
+import { ComposerFollowUpQueue } from "./chat/ComposerFollowUpQueue";
+import { loadChatAttachmentBlob } from "~/lib/attachmentPreviewQuery";
 import { cn, randomUUID } from "~/lib/utils";
 import { markThreadSeen, selectThreadLastSeenAt } from "~/lib/threadInboxSync";
 import { COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS } from "../workspaceTitlebar";
@@ -173,6 +176,7 @@ import { buildDraftThreadRouteParams } from "../threadRoutes";
 import {
   type ComposerAttachment,
   type DraftThreadEnvMode,
+  hydrateAttachmentsFromPersisted,
   useComposerDraftStore,
   type DraftId,
 } from "../composerDraftStore";
@@ -269,6 +273,7 @@ import {
   classifyModelSwitch,
   cloneComposerAttachmentForRetry,
   deriveLockedProvider,
+  appendRestoredFollowUpText,
   readFileAsDataUrl,
   reconcileSteeringHandoffStatuses,
   reconcileMountedTerminalThreadIds,
@@ -347,6 +352,7 @@ const ThreadTerminalDrawer = lazy(() => import("./ThreadTerminalDrawer"));
 const ATTACHMENT_ONLY_BOOTSTRAP_PROMPT =
   "[User attached one or more files without additional text. Respond using the conversation context and the attached file(s).]";
 const EMPTY_ACTIVITIES: OrchestrationThreadActivity[] = [];
+const EMPTY_QUEUED_FOLLOW_UPS: ReadonlyArray<OrchestrationQueuedFollowUp> = [];
 const EMPTY_PROVIDERS: ServerProvider[] = [];
 const EMPTY_PROVIDER_SKILLS: ServerProvider["skills"] = [];
 const EMPTY_PENDING_USER_INPUT_ANSWERS: Record<string, PendingUserInputDraftAnswer> = {};
@@ -512,38 +518,6 @@ type SteeringMessageHandoff = {
   readonly createdAt: string;
   readonly status: "queued" | "read";
 };
-
-function SteeringQueueIndicator({
-  messages,
-}: {
-  readonly messages: ReadonlyArray<SteeringMessageHandoff>;
-}) {
-  const latest = messages[messages.length - 1];
-  if (!latest) {
-    return null;
-  }
-
-  const countLabel = messages.length > 1 ? `${messages.length} pending` : "Pending";
-
-  return (
-    <div className="mx-auto mb-2 max-w-4xl px-1">
-      <div className="flex min-w-0 items-start gap-2 rounded-lg border border-primary/20 bg-primary/8 px-3 py-2 text-xs shadow-sm">
-        <CornerDownRightIcon className="mt-0.5 size-3.5 shrink-0 text-primary-readable" />
-        <div className="min-w-0 flex-1">
-          <div className="flex min-w-0 items-center gap-2">
-            <span className="font-medium text-primary-readable">Follow-up pending</span>
-            <span className="rounded-full bg-primary/12 px-1.5 py-0.5 text-[11px] text-primary-readable/80">
-              {countLabel}
-            </span>
-          </div>
-          <div className="mt-0.5 truncate text-muted-foreground/70">
-            {truncate(latest.text, 140)}
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
 
 function formatOutgoingPrompt(text: string): string {
   return text.trim();
@@ -1368,6 +1342,9 @@ export default function ChatView(props: ChatViewProps) {
     [activeThread],
   );
   const activeThreadKey = activeThreadRef ? scopedThreadKey(activeThreadRef) : null;
+  // Lets async work started on one thread tell whether the user is still on it.
+  const activeThreadKeyRef = useRef(activeThreadKey);
+  activeThreadKeyRef.current = activeThreadKey;
   const existingOpenTerminalThreadKeys = useMemo(() => {
     const existingThreadKeys = new Set<string>([...serverThreadKeys, ...draftThreadKeys]);
     return openTerminalThreadKeys.filter((nextThreadKey) => existingThreadKeys.has(nextThreadKey));
@@ -2112,6 +2089,11 @@ export default function ChatView(props: ChatViewProps) {
     return ids;
   }, [threadActivities]);
 
+  const queuedFollowUps = activeThread?.queuedFollowUps ?? EMPTY_QUEUED_FOLLOW_UPS;
+  const queuedFollowUpIds = useMemo(
+    () => new Set<string>(queuedFollowUps.map((followUp) => followUp.messageId)),
+    [queuedFollowUps],
+  );
   useEffect(() => {
     if (!activeThreadKey) {
       return;
@@ -2125,9 +2107,44 @@ export default function ChatView(props: ChatViewProps) {
         latestTurn: activeThread?.latestTurn,
         serverMessageIds,
         failedMessageIds: failedSteeringMessageIds,
+        queuedMessageIds: queuedFollowUpIds,
       });
     });
-  }, [activeThread?.latestTurn, activeThreadKey, failedSteeringMessageIds, serverMessages]);
+  }, [
+    activeThread?.latestTurn,
+    activeThreadKey,
+    failedSteeringMessageIds,
+    queuedFollowUpIds,
+    serverMessages,
+  ]);
+  // A steer the provider refused outright (one that merely missed its turn is
+  // queued by the server instead) must not take the typed text with it.
+  const restoredFailedSteerIdsRef = useRef(new Set<string>());
+  useEffect(() => {
+    for (const message of activeThreadSteeringMessages) {
+      if (
+        message.status !== "queued" ||
+        !failedSteeringMessageIds.has(message.id) ||
+        restoredFailedSteerIdsRef.current.has(message.id)
+      ) {
+        continue;
+      }
+      restoredFailedSteerIdsRef.current.add(message.id);
+      const nextPrompt = appendRestoredFollowUpText(promptRef.current, [message.text]);
+      promptRef.current = nextPrompt;
+      setComposerDraftPrompt(composerDraftTarget, nextPrompt);
+      composerRef.current?.resetCursorState({
+        cursor: collapseExpandedComposerCursor(nextPrompt, nextPrompt.length),
+        prompt: nextPrompt,
+      });
+    }
+  }, [
+    activeThreadSteeringMessages,
+    composerDraftTarget,
+    composerRef,
+    failedSteeringMessageIds,
+    setComposerDraftPrompt,
+  ]);
   useEffect(() => {
     if (typeof Image === "undefined" || !serverMessages || serverMessages.length === 0) {
       return;
@@ -4599,6 +4616,9 @@ export default function ChatView(props: ChatViewProps) {
     const isFirstMessage = !isServerThread || activeThread.messages.length === 0;
     const steeringThreadKey = activeThreadKey;
     const isSteeringFollowUp = canSubmitSteeringFollowUp && steeringThreadKey !== null;
+    // "Send when done" holds the message on the server until the turn ends;
+    // the queue list shows it from there, so it gets no steering row.
+    const followUpDelivery = settings.followUpDelivery;
     const baseBranchForWorktree =
       isFirstMessage && sendEnvMode === "worktree" && !activeThread.worktreePath
         ? activeThreadBranch
@@ -4714,16 +4734,18 @@ export default function ChatView(props: ChatViewProps) {
     await requestTimelineStickToBottom(false);
 
     if (isSteeringFollowUp) {
-      setSteeringMessagesById((existing) => ({
-        ...existing,
-        [messageIdForSend]: {
-          id: messageIdForSend,
-          threadKey: steeringThreadKey,
-          text: outgoingMessageText,
-          createdAt: messageCreatedAt,
-          status: "queued",
-        },
-      }));
+      if (followUpDelivery === "steer") {
+        setSteeringMessagesById((existing) => ({
+          ...existing,
+          [messageIdForSend]: {
+            id: messageIdForSend,
+            threadKey: steeringThreadKey,
+            text: outgoingMessageText,
+            createdAt: messageCreatedAt,
+            status: "queued",
+          },
+        }));
+      }
     } else {
       addOptimisticThreadMessage(threadRefForSend, optimisticMessage);
     }
@@ -4794,6 +4816,11 @@ export default function ChatView(props: ChatViewProps) {
             attachments: turnAttachments,
             ...(composerSkillReferences.length > 0 ? { skills: composerSkillReferences } : {}),
           },
+          delivery: followUpDelivery,
+          // What a queued message runs with, like a normal send would.
+          ...(followUpDelivery === "queue"
+            ? { modelSelection: ctxSelectedModelSelection, runtimeMode, interactionMode }
+            : {}),
           createdAt: messageCreatedAt,
         });
         dispatchSucceeded = true;
@@ -4991,6 +5018,121 @@ export default function ChatView(props: ChatViewProps) {
     void onConfirmProviderSignedIn();
   };
 
+  /** Rebuilds composer attachments from a queued message's stored files. */
+  const loadQueuedAttachmentsForComposer = async (
+    attachments: OrchestrationQueuedFollowUp["attachments"],
+  ): Promise<{ restored: ComposerAttachment[]; failedCount: number }> => {
+    const persisted = await Promise.all(
+      attachments.map(async (attachment) => {
+        try {
+          const blob = await loadChatAttachmentBlob({
+            environmentId,
+            attachmentId: attachment.id,
+          });
+          const dataUrl = await readFileAsDataUrl(
+            new File([blob], attachment.name, { type: attachment.mimeType }),
+          );
+          return {
+            id: crypto.randomUUID(),
+            name: attachment.name,
+            mimeType: attachment.mimeType,
+            sizeBytes: attachment.sizeBytes,
+            dataUrl,
+          };
+        } catch {
+          return null;
+        }
+      }),
+    );
+    const loaded = persisted.filter((entry) => entry !== null);
+    return {
+      restored: hydrateAttachmentsFromPersisted(loaded),
+      failedCount: attachments.length - loaded.length,
+    };
+  };
+
+  /**
+   * Takes queued messages out of the queue and back into the message box:
+   * their text after whatever is typed there, their attachments beside it. A
+   * message the server sent in the meantime stays sent and is left out.
+   */
+  const returnQueuedFollowUpsToComposer = async (
+    followUps: ReadonlyArray<OrchestrationQueuedFollowUp>,
+  ) => {
+    const api = readEnvironmentApi(environmentId);
+    if (!api || !activeThread || followUps.length === 0) return;
+    const threadId = activeThread.id;
+    const target = composerDraftTarget;
+    const threadKeyAtStart = activeThreadKey;
+    const taken: OrchestrationQueuedFollowUp[] = [];
+    for (const followUp of followUps) {
+      const removed = await api.orchestration
+        .dispatchCommand({
+          type: "thread.follow-up.unqueue",
+          commandId: newCommandId(),
+          threadId,
+          messageId: followUp.messageId,
+          createdAt: new Date().toISOString(),
+        })
+        .then(
+          () => true,
+          () => false,
+        );
+      if (removed) {
+        taken.push(followUp);
+      }
+    }
+    if (taken.length === 0) return;
+
+    const nextPrompt = appendRestoredFollowUpText(
+      useComposerDraftStore.getState().getComposerDraft(target)?.prompt ?? "",
+      taken
+        .map((followUp) => followUp.text)
+        .filter((text) => text !== ATTACHMENT_ONLY_BOOTSTRAP_PROMPT),
+    );
+    setComposerDraftPrompt(target, nextPrompt);
+    if (activeThreadKeyRef.current === threadKeyAtStart) {
+      promptRef.current = nextPrompt;
+      composerRef.current?.resetCursorState({
+        cursor: collapseExpandedComposerCursor(nextPrompt, nextPrompt.length),
+        prompt: nextPrompt,
+      });
+    }
+    const { restored, failedCount } = await loadQueuedAttachmentsForComposer(
+      taken.flatMap((followUp) => followUp.attachments),
+    );
+    if (restored.length > 0) {
+      addComposerDraftAttachments(target, restored);
+    }
+    if (failedCount > 0) {
+      toastManager.add(
+        stackedThreadToast({
+          type: "warning",
+          title:
+            failedCount === 1
+              ? "An attachment could not be restored"
+              : `${failedCount} attachments could not be restored`,
+          description: "Attach them again before sending.",
+        }),
+      );
+    }
+  };
+
+  const removeQueuedFollowUp = (followUp: OrchestrationQueuedFollowUp) => {
+    const api = readEnvironmentApi(environmentId);
+    if (!api || !activeThread) return;
+    // Losing to the server sending it first is fine: it is already sent.
+    void api.orchestration
+      .dispatchCommand({
+        type: "thread.follow-up.unqueue",
+        commandId: newCommandId(),
+        threadId: activeThread.id,
+        messageId: followUp.messageId,
+        createdAt: new Date().toISOString(),
+      })
+      .catch(() => undefined);
+  };
+
   const onInterrupt = async () => {
     const api = readEnvironmentApi(environmentId);
     if (!api || !activeThread) return;
@@ -5000,6 +5142,8 @@ export default function ChatView(props: ChatViewProps) {
       return;
     }
     interruptInFlightTurnByThreadRef.current.set(threadId, turnId);
+    // Nothing queued goes out after Stop: those messages come back to the box.
+    void returnQueuedFollowUpsToComposer(activeThread.queuedFollowUps ?? []);
     try {
       await api.orchestration.dispatchCommand({
         type: "thread.turn.interrupt",
@@ -6691,7 +6835,14 @@ export default function ChatView(props: ChatViewProps) {
             )}
           >
             <div className="relative isolate">
-              <SteeringQueueIndicator messages={queuedSteeringMessages} />
+              <ComposerFollowUpQueue
+                steering={queuedSteeringMessages}
+                queued={queuedFollowUps}
+                paused={!isWorking}
+                attachmentOnlyPrompt={ATTACHMENT_ONLY_BOOTSTRAP_PROMPT}
+                onEdit={(followUp) => void returnQueuedFollowUpsToComposer([followUp])}
+                onRemove={removeQueuedFollowUp}
+              />
               <div className="relative z-10">
                 <ChatComposer
                   composerRef={composerRef}

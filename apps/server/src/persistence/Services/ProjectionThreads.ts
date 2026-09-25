@@ -11,6 +11,7 @@ import {
   ModelSelection,
   NonNegativeInt,
   OrchestrationThreadGoal,
+  OrchestrationQueuedFollowUp,
   OrchestrationThreadLinkedPullRequest,
   ProjectId,
   ProviderInteractionMode,
@@ -75,6 +76,12 @@ export const ProjectionThread = Schema.Struct({
    * before migration 054 decode; absent reads as none.
    */
   linkedPullRequests: Schema.optional(Schema.Array(OrchestrationThreadLinkedPullRequest)),
+  /**
+   * Messages waiting for the running turn to finish; see
+   * `OrchestrationThreadShell.queuedFollowUps`. Optional so rows written before
+   * migration 055 decode; absent reads as none.
+   */
+  queuedFollowUps: Schema.optional(Schema.Array(OrchestrationQueuedFollowUp)),
   /**
    * The user's explicit inbox filing and its stamp. Optional so rows written
    * before migration 042 decode; absent reads as "never filed". Kept as two

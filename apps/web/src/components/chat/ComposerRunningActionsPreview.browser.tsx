@@ -19,6 +19,7 @@ const baseProps = {
   runtimeMode: "approval-required" as const,
   runtimeModeOptions: [],
   onRuntimeModeChange: noop,
+  onFollowUpDeliveryChange: noop,
   onInterrupt: noop,
   onImplementPlanInNewThread: noop,
 };
@@ -30,11 +31,13 @@ function ComposerFooterMock({
   draft,
   compact,
   hasSendableContent,
+  followUpDelivery = "steer",
 }: {
   label: string;
   draft: string;
   compact: boolean;
   hasSendableContent: boolean;
+  followUpDelivery?: "steer" | "queue";
 }) {
   return (
     <div className="flex flex-col gap-2">
@@ -52,6 +55,7 @@ function ComposerFooterMock({
             {...baseProps}
             compact={compact}
             hasSendableContent={hasSendableContent}
+            followUpDelivery={followUpDelivery}
           />
         </div>
       </div>
@@ -60,7 +64,7 @@ function ComposerFooterMock({
 }
 
 describe("ComposerPrimaryActions running-state preview", () => {
-  it("captures the Steer and Stop variants", async () => {
+  it("captures the Steer, Queue and Stop variants", async () => {
     document.documentElement.classList.add("dark");
     const host = document.createElement("div");
     host.className = "flex flex-col gap-6 bg-background p-8";
@@ -80,6 +84,13 @@ describe("ComposerPrimaryActions running-state preview", () => {
           draft="also rename the helper to clarify intent"
           compact={false}
           hasSendableContent={true}
+        />
+        <ComposerFooterMock
+          label="Running · draft typed → Send when done"
+          draft="then open a pull request"
+          compact={false}
+          hasSendableContent={true}
+          followUpDelivery="queue"
         />
         <ComposerFooterMock
           label="Compact · empty → Stop"

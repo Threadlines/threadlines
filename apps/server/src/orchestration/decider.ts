@@ -1054,18 +1054,50 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
-      const activeTurnId = targetThread.session?.activeTurnId ?? null;
-      if (targetThread.session?.status !== "running" || activeTurnId === null) {
-        return yield* new OrchestrationCommandInvariantError({
-          commandType: command.type,
-          detail: `Thread '${command.threadId}' does not have an active running provider turn to steer.`,
-        });
-      }
-      if (activeTurnId !== command.turnId) {
-        return yield* new OrchestrationCommandInvariantError({
-          commandType: command.type,
-          detail: `Follow-up expected active turn '${command.turnId}' but thread '${command.threadId}' is running '${activeTurnId}'.`,
-        });
+      const canSteer =
+        (command.delivery ?? "steer") === "steer" &&
+        targetThread.session?.status === "running" &&
+        targetThread.session.activeTurnId === command.turnId;
+      if (!canSteer) {
+        // Queued on purpose, or a steer that arrived after its turn ended (or
+        // while another turn runs): hold it for the next turn instead of
+        // refusing it, so the message is never lost to the race.
+        const alreadyQueued = (targetThread.queuedFollowUps ?? []).some(
+          (queued) => queued.messageId === command.message.messageId,
+        );
+        if (
+          alreadyQueued ||
+          targetThread.messages.some((message) => message.id === command.message.messageId)
+        ) {
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: `Message '${command.message.messageId}' was already sent on thread '${command.threadId}'.`,
+          });
+        }
+        return {
+          ...withEventBase({
+            aggregateKind: "thread",
+            aggregateId: command.threadId,
+            occurredAt: command.createdAt,
+            commandId: command.commandId,
+          }),
+          type: "thread.follow-up-queued",
+          payload: {
+            threadId: command.threadId,
+            followUp: {
+              messageId: command.message.messageId,
+              text: command.message.text,
+              attachments: command.message.attachments,
+              ...(command.message.skills !== undefined ? { skills: command.message.skills } : {}),
+              ...(command.modelSelection !== undefined
+                ? { modelSelection: command.modelSelection }
+                : {}),
+              runtimeMode: command.runtimeMode ?? targetThread.runtimeMode,
+              interactionMode: command.interactionMode ?? targetThread.interactionMode,
+              createdAt: command.createdAt,
+            },
+          },
+        };
       }
       return {
         ...withEventBase({
@@ -1086,6 +1118,121 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           createdAt: command.createdAt,
         },
       };
+    }
+
+    case "thread.follow-up.unqueue": {
+      const targetThread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      if (
+        !(targetThread.queuedFollowUps ?? []).some(
+          (queued) => queued.messageId === command.messageId,
+        )
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Message '${command.messageId}' is not queued on thread '${command.threadId}'; it may already have been sent.`,
+        });
+      }
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.follow-up-unqueued",
+        payload: {
+          threadId: command.threadId,
+          messageId: command.messageId,
+          reason: "cancelled",
+          createdAt: command.createdAt,
+        },
+      };
+    }
+
+    case "thread.follow-up.send-queued": {
+      const targetThread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const queued = (targetThread.queuedFollowUps ?? []).find(
+        (entry) => entry.messageId === command.messageId,
+      );
+      if (!queued) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Message '${command.messageId}' is not queued on thread '${command.threadId}'.`,
+        });
+      }
+      const unqueuedEvent: PlannedOrchestrationEvent = {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.follow-up-unqueued",
+        payload: {
+          threadId: command.threadId,
+          messageId: command.messageId,
+          reason: "sent",
+          createdAt: command.createdAt,
+        },
+      };
+      // The turn runs with the settings the message was queued with, applied
+      // the same way a normal send applies them before its turn starts. The
+      // message is stamped now, not when it was queued, so it lands after the
+      // answer it waited for.
+      const turnEvents = yield* decideCommandSequence({
+        readModel,
+        commands: [
+          ...(queued.runtimeMode !== targetThread.runtimeMode
+            ? [
+                {
+                  type: "thread.runtime-mode.set" as const,
+                  commandId: command.commandId,
+                  threadId: command.threadId,
+                  runtimeMode: queued.runtimeMode,
+                  createdAt: command.createdAt,
+                },
+              ]
+            : []),
+          ...(queued.interactionMode !== targetThread.interactionMode
+            ? [
+                {
+                  type: "thread.interaction-mode.set" as const,
+                  commandId: command.commandId,
+                  threadId: command.threadId,
+                  interactionMode: queued.interactionMode,
+                  createdAt: command.createdAt,
+                },
+              ]
+            : []),
+          {
+            type: "thread.turn.start",
+            commandId: command.commandId,
+            threadId: command.threadId,
+            message: {
+              messageId: queued.messageId,
+              role: "user",
+              text: queued.text,
+              attachments: queued.attachments,
+              ...(queued.skills !== undefined ? { skills: queued.skills } : {}),
+            },
+            ...(queued.modelSelection !== undefined
+              ? { modelSelection: queued.modelSelection }
+              : {}),
+            runtimeMode: queued.runtimeMode,
+            interactionMode: queued.interactionMode,
+            createdAt: command.createdAt,
+          },
+        ],
+      });
+      return [unqueuedEvent, ...turnEvents];
     }
 
     case "thread.turn.interrupt": {

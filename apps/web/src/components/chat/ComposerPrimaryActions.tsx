@@ -1,6 +1,6 @@
 import { memo, type PointerEventHandler } from "react";
-import type { RuntimeMode } from "@threadlines/contracts";
-import { ChevronDownIcon, CornerDownRightIcon, SquareIcon } from "lucide-react";
+import type { FollowUpDelivery, RuntimeMode } from "@threadlines/contracts";
+import { ChevronDownIcon, CornerDownRightIcon, ListEndIcon, SquareIcon } from "lucide-react";
 import { cn } from "~/lib/utils";
 import { Button } from "../ui/button";
 import {
@@ -28,9 +28,24 @@ interface ComposerPrimaryActionsProps {
   runtimeMode: RuntimeMode;
   runtimeModeOptions: ReadonlyArray<RuntimeModeOption>;
   onRuntimeModeChange: (mode: RuntimeMode) => void;
+  followUpDelivery: FollowUpDelivery;
+  onFollowUpDeliveryChange: (delivery: FollowUpDelivery) => void;
   onInterrupt: () => void;
   onImplementPlanInNewThread: () => void;
 }
+
+/** What the send button says it will do with a message typed mid-turn. */
+export const FOLLOW_UP_DELIVERY_LABELS: Record<
+  FollowUpDelivery,
+  { readonly action: string; readonly tooltip: string; readonly menuLabel: string }
+> = {
+  steer: { action: "Steer active turn", tooltip: "Steer", menuLabel: "Steer now" },
+  queue: {
+    action: "Send when this reply finishes",
+    tooltip: "Send when done",
+    menuLabel: "Send when done",
+  },
+};
 
 export const formatPendingPrimaryActionLabel = (input: {
   compact: boolean;
@@ -92,6 +107,8 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
   runtimeMode,
   runtimeModeOptions,
   onRuntimeModeChange,
+  followUpDelivery,
+  onFollowUpDeliveryChange,
   onInterrupt,
   onImplementPlanInNewThread,
 }: ComposerPrimaryActionsProps) {
@@ -103,17 +120,56 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
     return (
       <div className="flex shrink-0 items-center gap-1.5">
         {hasSendableContent ? (
-          <Button
-            type="submit"
-            size="icon"
-            className="rounded-full"
-            {...pointerFocusProps}
-            disabled={isSendBusy || isConnecting || isEnvironmentUnavailable}
-            aria-label="Steer active turn"
-            tooltip="Steer"
-          >
-            <CornerDownRightIcon className="size-3.5" />
-          </Button>
+          <div className="flex items-center" data-chat-composer-follow-up-actions="true">
+            <Button
+              type="submit"
+              size="icon"
+              className="rounded-l-full rounded-r-none"
+              {...pointerFocusProps}
+              disabled={isSendBusy || isConnecting || isEnvironmentUnavailable}
+              aria-label={FOLLOW_UP_DELIVERY_LABELS[followUpDelivery].action}
+              tooltip={FOLLOW_UP_DELIVERY_LABELS[followUpDelivery].tooltip}
+            >
+              {followUpDelivery === "queue" ? (
+                <ListEndIcon className="size-3.5" />
+              ) : (
+                <CornerDownRightIcon className="size-3.5" />
+              )}
+            </Button>
+            <Menu>
+              <MenuTrigger
+                render={
+                  <Button
+                    size="icon"
+                    variant="default"
+                    className="w-5 rounded-l-none rounded-r-full border-l-white/12 px-0"
+                    aria-label="Choose how this message is sent"
+                    {...pointerFocusProps}
+                    disabled={isSendBusy || isConnecting || isEnvironmentUnavailable}
+                  />
+                }
+              >
+                <ChevronDownIcon className="size-3" />
+              </MenuTrigger>
+              <MenuPopup align="end" side="top">
+                <MenuRadioGroup
+                  value={followUpDelivery}
+                  onValueChange={(value) => {
+                    if (value === "steer" || value === "queue") {
+                      onFollowUpDeliveryChange(value);
+                    }
+                  }}
+                >
+                  <MenuRadioItem value="steer" title="Add this message to the reply in progress">
+                    {FOLLOW_UP_DELIVERY_LABELS.steer.menuLabel}
+                  </MenuRadioItem>
+                  <MenuRadioItem value="queue" title="Wait for the reply to finish, then send">
+                    {FOLLOW_UP_DELIVERY_LABELS.queue.menuLabel}
+                  </MenuRadioItem>
+                </MenuRadioGroup>
+              </MenuPopup>
+            </Menu>
+          </div>
         ) : (
           <ComposerStopButton
             onInterrupt={onInterrupt}

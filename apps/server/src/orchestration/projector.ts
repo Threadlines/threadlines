@@ -44,6 +44,8 @@ import {
   ThreadGoalStateSetPayload,
   ThreadFollowUpSubmittedPayload,
   ThreadFollowUpAcceptedPayload,
+  ThreadFollowUpQueuedPayload,
+  ThreadFollowUpUnqueuedPayload,
   ThreadTurnDiffCompletedPayload,
   ThreadTurnDiffSummaryUpdatedPayload,
   ThreadDiffStatRebasedPayload,
@@ -314,6 +316,7 @@ export function projectEvent(
             subagents: [],
             checkpoints: [],
             session: null,
+            queuedFollowUps: [],
           },
           event.type,
           "thread",
@@ -642,6 +645,51 @@ export function projectEvent(
           }),
         };
       });
+
+    case "thread.follow-up-queued":
+      return decodeForEvent(ThreadFollowUpQueuedPayload, event.payload, event.type, "payload").pipe(
+        Effect.map((payload) => {
+          const thread = nextBase.threads.find((entry) => entry.id === payload.threadId);
+          if (!thread) {
+            return nextBase;
+          }
+          return {
+            ...nextBase,
+            threads: updateThread(nextBase.threads, payload.threadId, {
+              queuedFollowUps: [
+                ...(thread.queuedFollowUps ?? []).filter(
+                  (queued) => queued.messageId !== payload.followUp.messageId,
+                ),
+                payload.followUp,
+              ],
+              updatedAt: payload.followUp.createdAt,
+            }),
+          };
+        }),
+      );
+
+    case "thread.follow-up-unqueued":
+      return decodeForEvent(
+        ThreadFollowUpUnqueuedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => {
+          const thread = nextBase.threads.find((entry) => entry.id === payload.threadId);
+          if (!thread) {
+            return nextBase;
+          }
+          return {
+            ...nextBase,
+            threads: updateThread(nextBase.threads, payload.threadId, {
+              queuedFollowUps: (thread.queuedFollowUps ?? []).filter(
+                (queued) => queued.messageId !== payload.messageId,
+              ),
+            }),
+          };
+        }),
+      );
 
     case "thread.session-set":
       return Effect.gen(function* () {

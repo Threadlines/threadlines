@@ -298,6 +298,7 @@ function mapThread(thread: OrchestrationThread, environmentId: EnvironmentId): T
     pullRequestAutoFix: thread.pullRequestAutoFix ?? false,
     pullRequestAutoMerge: thread.pullRequestAutoMerge ?? null,
     linkedPullRequests: thread.linkedPullRequests ?? [],
+    queuedFollowUps: thread.queuedFollowUps ?? [],
     doneOverride: thread.doneOverride,
     lastSeenAt: thread.lastSeenAt,
     updatedAt: thread.updatedAt,
@@ -340,6 +341,7 @@ function mapThreadShell(
     pullRequestAutoFix: thread.pullRequestAutoFix ?? false,
     pullRequestAutoMerge: thread.pullRequestAutoMerge ?? null,
     linkedPullRequests: thread.linkedPullRequests ?? [],
+    queuedFollowUps: thread.queuedFollowUps ?? [],
     doneOverride: thread.doneOverride,
     lastSeenAt: thread.lastSeenAt,
     updatedAt: thread.updatedAt,
@@ -405,6 +407,7 @@ function toThreadShell(thread: Thread): ThreadShell {
     pullRequestAutoFix: thread.pullRequestAutoFix ?? false,
     pullRequestAutoMerge: thread.pullRequestAutoMerge ?? null,
     linkedPullRequests: thread.linkedPullRequests ?? [],
+    queuedFollowUps: thread.queuedFollowUps ?? [],
     doneOverride: thread.doneOverride,
     lastSeenAt: thread.lastSeenAt,
     updatedAt: thread.updatedAt,
@@ -574,6 +577,19 @@ function linkedPullRequestsEqual(
   );
 }
 
+/** Queue entries never change in place, so their ids decide equality. */
+function queuedFollowUpsEqual(
+  left: ThreadShell["queuedFollowUps"],
+  right: ThreadShell["queuedFollowUps"],
+): boolean {
+  const leftList = left ?? [];
+  const rightList = right ?? [];
+  return (
+    leftList.length === rightList.length &&
+    leftList.every((queued, index) => queued.messageId === rightList[index]?.messageId)
+  );
+}
+
 function sidebarThreadSummariesEqual(
   left: SidebarThreadSummary | undefined,
   right: SidebarThreadSummary,
@@ -623,6 +639,7 @@ function threadShellsEqual(left: ThreadShell | undefined, right: ThreadShell): b
     left.pullRequestAutoFix === right.pullRequestAutoFix &&
     left.pullRequestAutoMerge === right.pullRequestAutoMerge &&
     linkedPullRequestsEqual(left.linkedPullRequests, right.linkedPullRequests) &&
+    queuedFollowUpsEqual(left.queuedFollowUps, right.queuedFollowUps) &&
     doneOverridesEqual(left.doneOverride, right.doneOverride) &&
     left.lastSeenAt === right.lastSeenAt &&
     left.updatedAt === right.updatedAt &&
@@ -1687,6 +1704,25 @@ function applyEnvironmentOrchestrationEvent(
               ],
             },
       );
+
+    case "thread.follow-up-queued":
+      return updateThreadState(state, event.payload.threadId, (thread) => ({
+        ...thread,
+        queuedFollowUps: [
+          ...(thread.queuedFollowUps ?? []).filter(
+            (queued) => queued.messageId !== event.payload.followUp.messageId,
+          ),
+          event.payload.followUp,
+        ],
+      }));
+
+    case "thread.follow-up-unqueued":
+      return updateThreadState(state, event.payload.threadId, (thread) => ({
+        ...thread,
+        queuedFollowUps: (thread.queuedFollowUps ?? []).filter(
+          (queued) => queued.messageId !== event.payload.messageId,
+        ),
+      }));
 
     // Neither event moves `updatedAt`: filing or reading a thread is not work
     // on it, and the inbox weighs both stamps against real activity.

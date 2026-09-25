@@ -49,6 +49,7 @@ import {
 import { render } from "vitest-browser-react";
 
 import { useCommandPaletteStore } from "../commandPaletteStore";
+import { updateSettings } from "../hooks/useSettings";
 import { CLIENT_SETTINGS_STORAGE_KEY } from "../clientPersistenceStorage";
 import { useComposerDraftStore, DraftId } from "../composerDraftStore";
 import {
@@ -10247,6 +10248,71 @@ describe("ChatView timeline estimator parity (full app)", () => {
       }
     },
   );
+
+  it("queues a message for after the turn, and Stop puts queued messages back in the box", async () => {
+    const snapshot = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-queue-test" as MessageId,
+      targetText: "queue target",
+      sessionStatus: "running",
+      sessionActiveTurnId: "turn-queue-test" as TurnId,
+    });
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...snapshot,
+        threads: snapshot.threads.map((thread) =>
+          thread.id === THREAD_ID
+            ? {
+                ...thread,
+                queuedFollowUps: [
+                  {
+                    messageId: "msg-queued-earlier" as MessageId,
+                    text: "then run the tests",
+                    attachments: [],
+                    runtimeMode: "full-access" as const,
+                    interactionMode: "default" as const,
+                    createdAt: NOW_ISO,
+                  },
+                ],
+              }
+            : thread,
+        ),
+      },
+    });
+    const dispatched = (type: string) =>
+      wsRequests.find(
+        (request) =>
+          request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand && request.type === type,
+      );
+    try {
+      await expect.element(page.getByText("then run the tests"), { timeout: 5_000 }).toBeVisible();
+
+      const editor = page.getByTestId("composer-editor");
+      await editor.fill("and update the changelog", { timeout: 5_000 });
+      await waitForComposerText("and update the changelog");
+      await page.getByLabelText("Choose how this message is sent").click({ timeout: 5_000 });
+      await page.getByRole("menuitemradio", { name: "Send when done" }).click({ timeout: 5_000 });
+      await page.getByLabelText("Send when this reply finishes").click({ timeout: 5_000 });
+      await vi.waitFor(() => {
+        expect(dispatched("thread.follow-up.submit")).toMatchObject({
+          delivery: "queue",
+          message: { text: "and update the changelog" },
+        });
+      });
+
+      await page.getByLabelText("Stop generation").click({ timeout: 5_000 });
+      await vi.waitFor(() => {
+        expect(dispatched("thread.follow-up.unqueue")).toMatchObject({
+          messageId: "msg-queued-earlier",
+        });
+        expect(dispatched("thread.turn.interrupt")).toBeDefined();
+      });
+      await waitForComposerText("then run the tests");
+    } finally {
+      updateSettings({ followUpDelivery: "steer" });
+      await mounted.cleanup();
+    }
+  });
 
   it("keeps plan follow-up footer actions fused and aligned after a real resize", async () => {
     const mounted = await mountChatView({
