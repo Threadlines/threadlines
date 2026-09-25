@@ -97,6 +97,7 @@ describe("orchestration projector", () => {
         pullRequestAutoMerge: null,
         linkedPullRequests: [],
         queuedFollowUps: [],
+        participants: [],
         doneOverride: null,
         lastSeenAt: null,
         deletedAt: null,
@@ -771,6 +772,97 @@ describe("orchestration projector", () => {
       completedAt: stoppedAt,
     });
     expect(afterStopped.threads[0]?.session?.status).toBe("stopped");
+  });
+
+  it("keeps the room agent that holds the session until a turn hands it over", async () => {
+    const at = "2026-02-23T09:00:00.000Z";
+    const apply = (
+      model: Awaited<ReturnType<typeof run>>,
+      sequence: number,
+      type: OrchestrationEvent["type"],
+      payload: unknown,
+    ) =>
+      Effect.runPromise(
+        projectEvent(
+          model,
+          makeEvent({
+            sequence,
+            type,
+            aggregateKind: "thread",
+            aggregateId: "thread-1",
+            occurredAt: at,
+            commandId: `cmd-${sequence}`,
+            payload,
+          }),
+        ),
+      );
+    const run = () => Promise.resolve(createEmptyReadModel(at));
+    const session = (status: string, extra: Record<string, unknown> = {}) => ({
+      threadId: "thread-1",
+      session: {
+        threadId: "thread-1",
+        status,
+        providerName: "codex",
+        runtimeMode: "full-access",
+        activeTurnId: null,
+        lastError: null,
+        updatedAt: at,
+        ...extra,
+      },
+    });
+
+    let model = await run();
+    model = await apply(model, 1, "thread.created", {
+      threadId: "thread-1",
+      projectId: "project-1",
+      title: "room",
+      modelSelection: { instanceId: "claudeAgent", model: "fable-5-1" },
+      runtimeMode: "full-access",
+      branch: null,
+      worktreePath: null,
+      createdAt: at,
+      updatedAt: at,
+    });
+    model = await apply(model, 2, "thread.participant-added", {
+      threadId: "thread-1",
+      participant: {
+        id: "agent-astra",
+        handle: "astra",
+        modelSelection: { instanceId: "codex", model: "gpt-6-astra" },
+        joinedAt: at,
+        leftAt: null,
+      },
+      updatedAt: at,
+    });
+    model = await apply(
+      model,
+      3,
+      "thread.session-set",
+      session("starting", { participantId: "agent-astra" }),
+    );
+    // Provider status updates do not name the holder, and must not hand the
+    // slot back to the thread's own agent.
+    model = await apply(model, 4, "thread.session-set", session("ready"));
+    expect(model.threads[0]?.session).toMatchObject({
+      status: "ready",
+      participantId: "agent-astra",
+    });
+
+    model = await apply(
+      model,
+      5,
+      "thread.session-set",
+      session("starting", { participantId: null }),
+    );
+    expect(model.threads[0]?.session?.participantId).toBeNull();
+
+    model = await apply(model, 6, "thread.participant-removed", {
+      threadId: "thread-1",
+      participantId: "agent-astra",
+      updatedAt: at,
+    });
+    // A departed agent stays listed so its messages keep their author.
+    expect(model.threads[0]?.participants).toMatchObject([{ id: "agent-astra", leftAt: at }]);
   });
 
   it("keeps the latest turn running when a provider diff placeholder arrives mid-turn", async () => {

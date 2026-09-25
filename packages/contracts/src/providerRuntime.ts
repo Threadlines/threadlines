@@ -10,6 +10,7 @@ import {
   RuntimeRequestId,
   RuntimeTaskId,
   ThreadId,
+  ThreadParticipantId,
   TrimmedNonEmptyString,
   TurnId,
 } from "./baseSchemas.ts";
@@ -277,6 +278,12 @@ const ProviderRuntimeEventBase = Schema.Struct({
   // populates it (post-slice-4), routing flips to instance-id-only.
   providerInstanceId: Schema.optional(ProviderInstanceId),
   threadId: ThreadId,
+  /**
+   * In a room, the agent whose session emitted this event. ProviderService
+   * sets it while mapping the agent's session key back to `threadId`;
+   * adapters never do. Absent means the thread's own agent.
+   */
+  participantId: Schema.optional(ThreadParticipantId),
   createdAt: IsoDateTime,
   turnId: Schema.optional(TurnId),
   itemId: Schema.optional(RuntimeItemId),

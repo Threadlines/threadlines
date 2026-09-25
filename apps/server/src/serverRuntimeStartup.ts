@@ -47,6 +47,7 @@ import {
   issueHeadlessServeAccessInfo,
   resolveAdvertisedServerUrl,
 } from "./startupAccess.ts";
+import { participantSessionKey } from "@threadlines/shared/threadParticipants";
 
 export class ServerRuntimeStartupError extends Data.TaggedError("ServerRuntimeStartupError")<{
   readonly message: string;
@@ -306,7 +307,8 @@ export const pauseActiveGoalsForShutdown = Effect.gen(function* () {
     activeGoalThreads,
     (thread) =>
       pauseActiveThreadGoalForStop({
-        threadId: thread.id,
+        // In a room the goal belongs to the agent holding the session slot.
+        threadId: participantSessionKey(thread.id, thread.session?.participantId ?? null),
         projectionSnapshotQuery,
         providerService,
         orchestrationEngine,

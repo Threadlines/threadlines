@@ -404,6 +404,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       ...(settings.confirmThreadDelete !== DEFAULT_UNIFIED_SETTINGS.confirmThreadDelete
         ? ["Delete confirmation"]
         : []),
+      ...(settings.roomsEnabled !== DEFAULT_UNIFIED_SETTINGS.roomsEnabled ? ["Rooms"] : []),
       ...(isGitWritingModelDirty ? ["Git writing model"] : []),
       ...(isGitWritingBackupModelDirty ? ["Backup git writing model"] : []),
       ...(isSourceControlWritingStyleDirty ? ["Source control writing style"] : []),
@@ -418,6 +419,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.chatChangedFilesDefaultExpanded,
       settings.confirmThreadArchive,
       settings.confirmThreadDelete,
+      settings.roomsEnabled,
       settings.addProjectBaseDirectory,
       settings.defaultThreadEnvMode,
       settings.diffChangesOnly,
@@ -462,6 +464,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       addProjectBaseDirectory: DEFAULT_UNIFIED_SETTINGS.addProjectBaseDirectory,
       confirmThreadArchive: DEFAULT_UNIFIED_SETTINGS.confirmThreadArchive,
       confirmThreadDelete: DEFAULT_UNIFIED_SETTINGS.confirmThreadDelete,
+      roomsEnabled: DEFAULT_UNIFIED_SETTINGS.roomsEnabled,
       textGenerationModelSelection: DEFAULT_UNIFIED_SETTINGS.textGenerationModelSelection,
       textGenerationBackupModelSelection:
         DEFAULT_UNIFIED_SETTINGS.textGenerationBackupModelSelection,
@@ -1051,6 +1054,27 @@ export function GeneralSettingsPanel({ surface = "full" }: { surface?: "full" | 
                 updateSettings({ confirmThreadDelete: Boolean(checked) })
               }
               aria-label="Confirm thread deletion"
+            />
+          }
+        />
+        <SettingsRow
+          title="Rooms (preview)"
+          description="Add more agents to a thread and talk to each one with @name. One agent works at a time, and rooms have no revert."
+          resetAction={
+            settings.roomsEnabled !== DEFAULT_UNIFIED_SETTINGS.roomsEnabled ? (
+              <SettingResetButton
+                label="rooms"
+                onClick={() =>
+                  updateSettings({ roomsEnabled: DEFAULT_UNIFIED_SETTINGS.roomsEnabled })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Switch
+              checked={settings.roomsEnabled}
+              onCheckedChange={(checked) => updateSettings({ roomsEnabled: Boolean(checked) })}
+              aria-label="Enable rooms"
             />
           }
         />

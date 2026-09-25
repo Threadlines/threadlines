@@ -2,6 +2,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   ProjectId,
   ThreadId,
+  ThreadParticipantId,
   TurnId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -72,6 +73,7 @@ function makeReadModel(
       readonly runtimeMode: "approval-required" | "full-access" | "auto-accept-edits";
       readonly activeTurnId: TurnId | null;
       readonly pendingBackgroundTaskCount?: number;
+      readonly participantId?: ThreadParticipantId | null;
       readonly lastError: string | null;
       readonly updatedAt: string;
     } | null;
@@ -113,6 +115,7 @@ function makeReadModel(
       pullRequestAutoFix: false,
       pullRequestAutoMerge: null,
       linkedPullRequests: [],
+      participants: [],
       doneOverride: null,
       lastSeenAt: null,
       latestUserMessageAt: null,
@@ -514,6 +517,62 @@ describe("ProviderSessionReaper", () => {
 
     expect(harness.stopSession.mock.calls[0]?.[0]).toEqual({ threadId });
     expect(harness.stoppedThreadIds.has(threadId)).toBe(true);
+  });
+
+  it("reaps an idle room agent without touching the agent at work", async () => {
+    const threadId = ThreadId.make("thread-reaper-room");
+    const astraId = ThreadParticipantId.make("7a0b1c2d-3e4f-4a5b-8c6d-7e8f9a0b1c2d");
+    const now = "2026-01-01T00:00:00.000Z";
+    const harness = await createHarness({
+      activeProviderSessions: [
+        makeProviderSession({
+          threadId,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+          status: "ready",
+        }),
+      ],
+      readModel: makeReadModel([
+        {
+          id: threadId,
+          // The added agent holds the slot and is mid-turn.
+          session: {
+            threadId,
+            status: "running",
+            providerName: "codex",
+            runtimeMode: "full-access",
+            activeTurnId: TurnId.make("turn-room"),
+            participantId: astraId,
+            lastError: null,
+            updatedAt: now,
+          },
+        },
+      ]),
+    });
+    const repository = await runtime!.runPromise(Effect.service(ProviderSessionRuntimeRepository));
+    // The thread's own agent has sat idle past the threshold.
+    await runtime!.runPromise(
+      repository.upsert({
+        threadId,
+        providerName: "claudeAgent",
+        providerInstanceId: null,
+        adapterKey: "claudeAgent",
+        runtimeMode: "full-access",
+        status: "running",
+        lastSeenAt: "2026-04-14T00:00:00.000Z",
+        resumeCursor: { opaque: "resume-room-primary" },
+        runtimePayload: null,
+      }),
+    );
+
+    const reaper = await runtime!.runPromise(Effect.service(ProviderSessionReaper));
+    scope = await Effect.runPromise(Scope.make("sequential"));
+    await Effect.runPromise(reaper.start().pipe(Scope.provide(scope)));
+
+    await waitFor(() => harness.stopSession.mock.calls.length === 1);
+    expect(harness.stopSession.mock.calls[0]?.[0]).toEqual({ threadId });
+    // The working agent's session slot is not marked stopped.
+    expect(harness.dispatch).not.toHaveBeenCalled();
   });
 
   it("skips idle sessions with pending background tasks while reaping the rest", async () => {

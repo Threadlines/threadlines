@@ -67,6 +67,7 @@ function thread(
     pullRequestAutoFix: false,
     pullRequestAutoMerge: null,
     linkedPullRequests: [],
+    participants: [],
     doneOverride: null,
     lastSeenAt: null,
     session: null,

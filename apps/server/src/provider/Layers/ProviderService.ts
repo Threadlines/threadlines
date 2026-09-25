@@ -40,6 +40,10 @@ import {
 import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import {
+  parseParticipantSessionKey,
+  sessionKeyThreadId,
+} from "@threadlines/shared/threadParticipants";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
@@ -248,6 +252,20 @@ const correlateRuntimeEventWithInstance = (
   return { ...event, providerInstanceId: source.instanceId };
 };
 
+/**
+ * Consumers see the thread an event belongs to. A room agent runs under a
+ * derived session key (see `threadParticipants`); it is mapped back here, the
+ * one place events leave the provider layer, and the agent is kept on the
+ * event. Logs and the session directory above still use the key.
+ */
+const toThreadRuntimeEvent = (event: ProviderRuntimeEvent): ProviderRuntimeEvent => {
+  const target = parseParticipantSessionKey(event.threadId);
+  if (target.participantId === null) {
+    return event;
+  }
+  return { ...event, threadId: target.threadId, participantId: target.participantId };
+};
+
 const makeProviderService = Effect.fn("makeProviderService")(function* (
   options?: ProviderServiceLiveOptions,
 ) {
@@ -360,7 +378,9 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           : Effect.void,
       ),
       Effect.tap(recordRuntimeEventAnalytics),
-      Effect.flatMap((canonicalEvent) => PubSub.publish(runtimeEventPubSub, canonicalEvent)),
+      Effect.flatMap((canonicalEvent) =>
+        PubSub.publish(runtimeEventPubSub, toThreadRuntimeEvent(canonicalEvent)),
+      ),
       Effect.asVoid,
     );
 
@@ -1849,6 +1869,34 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     );
   });
 
+  /**
+   * Every provider session key of a thread: its own agent first, then any
+   * room agents. A subagent lives inside exactly one of those runtimes, and
+   * callers only know the thread, so subagent operations try each in turn.
+   */
+  const threadSessionKeys = (threadId: ThreadId) =>
+    directory.listThreadIds().pipe(
+      Effect.map((keys) => [
+        threadId,
+        ...keys.filter((key) => key !== threadId && sessionKeyThreadId(key) === threadId),
+      ]),
+      Effect.catch(() => Effect.succeed([threadId])),
+    );
+
+  /** Run `attempt` against each of a thread's session keys until one succeeds. */
+  const firstSucceedingSessionKey = <A, E, R>(
+    threadId: ThreadId,
+    attempt: (sessionKey: ThreadId) => Effect.Effect<A, E, R>,
+  ) =>
+    Effect.gen(function* () {
+      const keys = yield* threadSessionKeys(threadId);
+      let result = attempt(keys[0] ?? threadId);
+      for (const key of keys.slice(1)) {
+        result = result.pipe(Effect.catch(() => attempt(key)));
+      }
+      return yield* result;
+    });
+
   const readSubagentTranscript: ProviderServiceShape["readSubagentTranscript"] = Effect.fn(
     "readSubagentTranscript",
   )(function* (rawInput) {
@@ -1857,24 +1905,28 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       schema: ProviderSubagentTranscriptInput,
       payload: rawInput,
     });
-    const routed = yield* resolveRoutableSession({
-      threadId: input.threadId,
-      operation: "ProviderService.readSubagentTranscript",
-      allowRecovery: true,
-    });
-    yield* Effect.annotateCurrentSpan({
-      "provider.operation": "read-subagent-transcript",
-      "provider.kind": routed.adapter.provider,
-      "provider.thread_id": input.threadId,
-    });
-    const readTranscript = routed.adapter.readSubagentTranscript;
-    if (readTranscript === undefined) {
-      return yield* toValidationError(
-        "ProviderService.readSubagentTranscript",
-        `Provider '${routed.adapter.provider}' does not expose subagent transcripts.`,
-      );
-    }
-    return yield* readTranscript(routed.threadId, input);
+    return yield* firstSucceedingSessionKey(input.threadId, (sessionKey) =>
+      Effect.gen(function* () {
+        const routed = yield* resolveRoutableSession({
+          threadId: sessionKey,
+          operation: "ProviderService.readSubagentTranscript",
+          allowRecovery: true,
+        });
+        yield* Effect.annotateCurrentSpan({
+          "provider.operation": "read-subagent-transcript",
+          "provider.kind": routed.adapter.provider,
+          "provider.thread_id": sessionKey,
+        });
+        const readTranscript = routed.adapter.readSubagentTranscript;
+        if (readTranscript === undefined) {
+          return yield* toValidationError(
+            "ProviderService.readSubagentTranscript",
+            `Provider '${routed.adapter.provider}' does not expose subagent transcripts.`,
+          );
+        }
+        return yield* readTranscript(routed.threadId, input);
+      }),
+    );
   });
 
   const sendSubagentInput: ProviderServiceShape["sendSubagentInput"] = Effect.fn(
@@ -1885,45 +1937,52 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       schema: ProviderSubagentInputRequest,
       payload: rawInput,
     });
-    const routed = yield* resolveRoutableSession({
-      threadId: input.threadId,
-      operation: "ProviderService.sendSubagentInput",
-      allowRecovery: false,
-    });
-    yield* Effect.annotateCurrentSpan({
-      "provider.operation": "send-subagent-input",
-      "provider.kind": routed.adapter.provider,
-      "provider.thread_id": input.threadId,
-    });
-    const send = routed.adapter.sendSubagentInput;
-    if (send === undefined) {
-      return yield* new ProviderValidationError({
-        operation: "ProviderService.sendSubagentInput",
-        issue: `Provider '${routed.adapter.provider}' does not accept direct input to subagents.`,
-        code: "subagent_input_unsupported_provider",
-      });
-    }
-    return yield* send(routed.threadId, input);
+    return yield* firstSucceedingSessionKey(input.threadId, (sessionKey) =>
+      Effect.gen(function* () {
+        const routed = yield* resolveRoutableSession({
+          threadId: sessionKey,
+          operation: "ProviderService.sendSubagentInput",
+          allowRecovery: false,
+        });
+        yield* Effect.annotateCurrentSpan({
+          "provider.operation": "send-subagent-input",
+          "provider.kind": routed.adapter.provider,
+          "provider.thread_id": sessionKey,
+        });
+        const send = routed.adapter.sendSubagentInput;
+        if (send === undefined) {
+          return yield* new ProviderValidationError({
+            operation: "ProviderService.sendSubagentInput",
+            issue: `Provider '${routed.adapter.provider}' does not accept direct input to subagents.`,
+            code: "subagent_input_unsupported_provider",
+          });
+        }
+        return yield* send(routed.threadId, input);
+      }),
+    );
   });
 
   const resolveSubagentWorktree: ProviderServiceShape["resolveSubagentWorktree"] = Effect.fn(
     "resolveSubagentWorktree",
   )(function* (input) {
-    const routed = yield* resolveRoutableSession({
-      threadId: input.threadId,
-      operation: "ProviderService.resolveSubagentWorktree",
-      allowRecovery: false,
-    }).pipe(Effect.catch(() => Effect.succeed(undefined)));
-    if (!routed?.isActive) {
-      return null;
+    for (const sessionKey of yield* threadSessionKeys(input.threadId)) {
+      const routed = yield* resolveRoutableSession({
+        threadId: sessionKey,
+        operation: "ProviderService.resolveSubagentWorktree",
+        allowRecovery: false,
+      }).pipe(Effect.catch(() => Effect.succeed(undefined)));
+      const resolve = routed?.isActive ? routed.adapter.resolveSubagentWorktree : undefined;
+      if (routed === undefined || resolve === undefined) {
+        continue;
+      }
+      const worktree = yield* resolve(routed.threadId, { toolUseId: input.toolUseId }).pipe(
+        Effect.catch(() => Effect.succeed(null)),
+      );
+      if (worktree !== null) {
+        return worktree;
+      }
     }
-    const resolve = routed.adapter.resolveSubagentWorktree;
-    if (resolve === undefined) {
-      return null;
-    }
-    return yield* resolve(routed.threadId, { toolUseId: input.toolUseId }).pipe(
-      Effect.catch(() => Effect.succeed(null)),
-    );
+    return null;
   });
 
   const deleteThread: ProviderServiceShape["deleteThread"] = Effect.fn("deleteThread")(
@@ -1933,41 +1992,64 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         schema: ProviderDeleteThreadInput,
         payload: rawInput,
       });
-      let metricProvider = "unknown";
-      return yield* Effect.gen(function* () {
-        const routed = yield* resolveRoutableSession({
-          threadId: input.threadId,
-          operation: "ProviderService.deleteThread",
-          allowRecovery: true,
-        });
-        metricProvider = routed.adapter.provider;
-        yield* Effect.annotateCurrentSpan({
-          "provider.operation": "delete-thread",
-          "provider.kind": routed.adapter.provider,
-          "provider.thread_id": input.threadId,
-          "provider.native_delete_supported": routed.adapter.deleteThread !== undefined,
-        });
-        if (routed.adapter.deleteThread) {
-          yield* routed.adapter.deleteThread(routed.threadId);
-        } else if (routed.isActive) {
-          yield* routed.adapter.stopSession(routed.threadId);
-        }
-        yield* directory.deleteBinding(input.threadId);
-        yield* analytics.record("provider.thread.deleted", {
-          provider: routed.adapter.provider,
-          nativeDelete: routed.adapter.deleteThread !== undefined,
-        });
-      }).pipe(
-        withMetrics({
-          counter: providerSessionsTotal,
-          outcomeAttributes: () =>
-            providerMetricAttributes(metricProvider, {
-              operation: "delete-thread",
-            }),
-        }),
+      // A room's added agents run under their own session keys; they go with
+      // the thread. Best-effort, like the rest of deletion cleanup.
+      const agentKeys = (yield* directory.listThreadIds()).filter(
+        (key) => key !== input.threadId && sessionKeyThreadId(key) === input.threadId,
       );
+      for (const key of agentKeys) {
+        yield* deleteProviderThreadByKey(key).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logDebug("provider thread delete skipped a room agent session", {
+              threadId: input.threadId,
+              sessionKey: key,
+              cause: Cause.pretty(cause),
+            }),
+          ),
+        );
+      }
+      return yield* deleteProviderThreadByKey(input.threadId);
     },
   );
+
+  const deleteProviderThreadByKey = Effect.fn("deleteProviderThreadByKey")(function* (
+    threadId: ThreadId,
+  ) {
+    const input = { threadId };
+    let metricProvider = "unknown";
+    return yield* Effect.gen(function* () {
+      const routed = yield* resolveRoutableSession({
+        threadId: input.threadId,
+        operation: "ProviderService.deleteThread",
+        allowRecovery: true,
+      });
+      metricProvider = routed.adapter.provider;
+      yield* Effect.annotateCurrentSpan({
+        "provider.operation": "delete-thread",
+        "provider.kind": routed.adapter.provider,
+        "provider.thread_id": input.threadId,
+        "provider.native_delete_supported": routed.adapter.deleteThread !== undefined,
+      });
+      if (routed.adapter.deleteThread) {
+        yield* routed.adapter.deleteThread(routed.threadId);
+      } else if (routed.isActive) {
+        yield* routed.adapter.stopSession(routed.threadId);
+      }
+      yield* directory.deleteBinding(input.threadId);
+      yield* analytics.record("provider.thread.deleted", {
+        provider: routed.adapter.provider,
+        nativeDelete: routed.adapter.deleteThread !== undefined,
+      });
+    }).pipe(
+      withMetrics({
+        counter: providerSessionsTotal,
+        outcomeAttributes: () =>
+          providerMetricAttributes(metricProvider, {
+            operation: "delete-thread",
+          }),
+      }),
+    );
+  });
 
   const runStopAll = Effect.fn("runStopAll")(function* () {
     const threadIds = yield* directory.listThreadIds();

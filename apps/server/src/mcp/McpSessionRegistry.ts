@@ -15,6 +15,7 @@
 import type { ThreadId } from "@threadlines/contracts";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import * as Effect from "effect/Effect";
+import { sessionKeyThreadId } from "@threadlines/shared/threadParticipants";
 
 export interface McpInvocationScope {
   readonly threadId: ThreadId;
@@ -23,11 +24,15 @@ export interface McpInvocationScope {
 }
 
 export interface McpSessionRegistryShape {
-  /** Mint a credential for one provider runtime within a thread. */
-  readonly credentialFor: (threadId: ThreadId) => Effect.Effect<string>;
+  /**
+   * Mint a credential for one provider runtime. Takes the runtime's session
+   * key: a room agent's key maps back to its thread, so its tools drive the
+   * browser the user has open for that thread.
+   */
+  readonly credentialFor: (sessionKey: ThreadId) => Effect.Effect<string>;
   readonly resolve: (token: string) => Effect.Effect<McpInvocationScope | null>;
-  /** Called when a thread's session ends; the credential stops working. */
-  readonly revoke: (threadId: ThreadId) => Effect.Effect<void>;
+  /** Called when a runtime ends; its credentials stop working. */
+  readonly revoke: (sessionKey: ThreadId) => Effect.Effect<void>;
 }
 
 /**
@@ -44,17 +49,17 @@ export const makeMcpSessionRegistry = (): McpSessionRegistryShape => {
   const byThread = new Map<ThreadId, Set<string>>();
 
   return {
-    credentialFor: (threadId) =>
+    credentialFor: (sessionKey) =>
       Effect.sync(() => {
         // 32 bytes because this is the only thing standing between one agent
         // and another agent's browser, and it costs nothing to make guessing
         // hopeless rather than merely hard.
         const token = randomBytes(32).toString("base64url");
-        const tokens = byThread.get(threadId) ?? new Set<string>();
+        const tokens = byThread.get(sessionKey) ?? new Set<string>();
         tokens.add(token);
-        byThread.set(threadId, tokens);
+        byThread.set(sessionKey, tokens);
         byToken.set(token, {
-          threadId,
+          threadId: sessionKeyThreadId(sessionKey),
           agentId: `agent-${randomBytes(12).toString("base64url")}`,
         });
         return token;
@@ -79,13 +84,13 @@ export const makeMcpSessionRegistry = (): McpSessionRegistryShape => {
         }
         return null;
       }),
-    revoke: (threadId) =>
+    revoke: (sessionKey) =>
       Effect.sync(() => {
-        const tokens = byThread.get(threadId);
+        const tokens = byThread.get(sessionKey);
         if (tokens === undefined) {
           return;
         }
-        byThread.delete(threadId);
+        byThread.delete(sessionKey);
         for (const token of tokens) {
           byToken.delete(token);
         }

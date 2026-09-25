@@ -2212,13 +2212,20 @@ describe("deriveWorkLogEntries", () => {
     expect(entries[0]?.exitCode).toBe(127);
   });
 
-  it("omits account rate-limit telemetry entries", () => {
+  it("omits account telemetry entries", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({
         id: "rate-limits",
         createdAt: "2026-02-23T00:00:01.000Z",
         kind: "account.rate-limits.updated",
         summary: "Rate limits updated",
+        tone: "info",
+      }),
+      makeActivity({
+        id: "account",
+        createdAt: "2026-02-23T00:00:01.500Z",
+        kind: "account.updated",
+        summary: "Account updated",
         tone: "info",
       }),
       makeActivity({

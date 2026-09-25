@@ -37,12 +37,15 @@ import {
   ThreadUnpinnedPayload,
   ThreadPullRequestAutomationChangedPayload,
   ThreadPullRequestLinkedPayload,
+  ThreadParticipantAddedPayload,
+  ThreadParticipantRemovedPayload,
   ThreadRevertedPayload,
   ThreadSessionSetPayload,
   ThreadRealtimeStateSetPayload,
   ThreadEffectiveCwdSetPayload,
   ThreadGoalStateSetPayload,
   ThreadFollowUpSubmittedPayload,
+  ThreadTurnStartRequestedPayload,
   ThreadFollowUpAcceptedPayload,
   ThreadFollowUpQueuedPayload,
   ThreadFollowUpUnqueuedPayload,
@@ -308,6 +311,7 @@ export function projectEvent(
             pullRequestAutoFix: false,
             pullRequestAutoMerge: null,
             linkedPullRequests: [],
+            participants: [],
             doneOverride: null,
             lastSeenAt: null,
             deletedAt: null,
@@ -450,6 +454,87 @@ export function projectEvent(
         }),
       );
 
+    case "thread.participant-added":
+      return decodeForEvent(
+        ThreadParticipantAddedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => {
+          const thread = nextBase.threads.find((entry) => entry.id === payload.threadId);
+          if (
+            thread === undefined ||
+            thread.participants.some((entry) => entry.id === payload.participant.id)
+          ) {
+            return nextBase;
+          }
+          return {
+            ...nextBase,
+            threads: updateThread(nextBase.threads, payload.threadId, {
+              participants: [...thread.participants, payload.participant],
+              updatedAt: payload.updatedAt,
+            }),
+          };
+        }),
+      );
+
+    case "thread.participant-removed":
+      return decodeForEvent(
+        ThreadParticipantRemovedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => {
+          const thread = nextBase.threads.find((entry) => entry.id === payload.threadId);
+          if (thread === undefined) {
+            return nextBase;
+          }
+          return {
+            ...nextBase,
+            threads: updateThread(nextBase.threads, payload.threadId, {
+              participants: thread.participants.map((entry) =>
+                entry.id === payload.participantId && entry.leftAt === null
+                  ? { ...entry, leftAt: payload.updatedAt }
+                  : entry,
+              ),
+              updatedAt: payload.updatedAt,
+            }),
+          };
+        }),
+      );
+
+    // A room agent's model follows the composer the same way the thread's own
+    // agent's does, but it lives on the participant, not the thread.
+    case "thread.turn-start-requested":
+      return decodeForEvent(
+        ThreadTurnStartRequestedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => {
+          const participantId = payload.participantId ?? null;
+          const modelSelection = payload.modelSelection;
+          if (participantId === null || modelSelection === undefined) {
+            return nextBase;
+          }
+          const thread = nextBase.threads.find((entry) => entry.id === payload.threadId);
+          if (thread === undefined) {
+            return nextBase;
+          }
+          return {
+            ...nextBase,
+            threads: updateThread(nextBase.threads, payload.threadId, {
+              participants: thread.participants.map((entry) =>
+                entry.id === participantId ? { ...entry, modelSelection } : entry,
+              ),
+            }),
+          };
+        }),
+      );
+
     // Neither lifecycle event touches `updatedAt`: filing or reading a thread
     // is not work on it, and the inbox weighs these stamps against activity.
     case "thread.done-override-set":
@@ -542,6 +627,9 @@ export function projectEvent(
             text: payload.text,
             ...(payload.attachments !== undefined ? { attachments: payload.attachments } : {}),
             ...(payload.skills !== undefined ? { skills: payload.skills } : {}),
+            ...(payload.participantId !== undefined
+              ? { participantId: payload.participantId }
+              : {}),
             turnId: payload.turnId,
             streaming: payload.streaming,
             createdAt: payload.createdAt,
@@ -621,6 +709,9 @@ export function projectEvent(
             text: payload.text,
             ...(payload.attachments !== undefined ? { attachments: payload.attachments } : {}),
             ...(payload.skills !== undefined ? { skills: payload.skills } : {}),
+            ...(payload.participantId !== undefined
+              ? { participantId: payload.participantId }
+              : {}),
             turnId: payload.turnId,
             streaming: false,
             createdAt: payload.createdAt,
@@ -704,12 +795,17 @@ export function projectEvent(
           return nextBase;
         }
 
-        const session: OrchestrationSession = yield* decodeForEvent(
+        const decodedSession: OrchestrationSession = yield* decodeForEvent(
           OrchestrationSession,
           payload.session,
           event.type,
           "session",
         );
+        // An update that does not name the slot holder keeps the current one.
+        const session: OrchestrationSession =
+          decodedSession.participantId !== undefined
+            ? decodedSession
+            : { ...decodedSession, participantId: thread.session?.participantId ?? null };
 
         return {
           ...nextBase,

@@ -35,6 +35,7 @@ import {
 } from "../lib/terminalContext";
 import type { TranscriptHighlightContextDraft } from "../lib/transcriptHighlightContext";
 import type { DraftThreadEnvMode } from "../composerDraftStore";
+import { ownAgentSession } from "../rooms";
 
 export const LAST_INVOKED_SCRIPT_BY_PROJECT_KEY = "threadlines:last-invoked-script-by-project";
 export const LEGACY_LAST_INVOKED_SCRIPT_BY_PROJECT_KEYS = [
@@ -1776,7 +1777,8 @@ export function deriveLockedProvider(input: {
   if (!threadHasStarted(input.thread)) {
     return null;
   }
-  const sessionProvider = input.thread?.session?.provider ?? null;
+  // Locks follow the thread's own agent, not another room agent in the slot.
+  const sessionProvider = ownAgentSession(input.thread)?.provider ?? null;
   if (sessionProvider) {
     return sessionProvider;
   }

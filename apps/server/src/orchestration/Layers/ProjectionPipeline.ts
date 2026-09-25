@@ -596,6 +596,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             pullRequestAutoMerge: null,
             linkedPullRequests: [],
             queuedFollowUps: [],
+            participants: [],
             doneOverride: null,
             doneOverrideAt: null,
             lastSeenAt: null,
@@ -697,6 +698,67 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
               : { pullRequestAutoFix: event.payload.autoFix ? 1 : 0 }),
             ...(autoMerge === undefined ? {} : { pullRequestAutoMerge: autoMerge }),
             updatedAt: event.payload.updatedAt,
+          });
+          return;
+        }
+
+        case "thread.participant-added": {
+          const existingRow = yield* projectionThreadRepository.getById({
+            threadId: event.payload.threadId,
+          });
+          if (Option.isNone(existingRow)) {
+            return;
+          }
+          const participants = existingRow.value.participants ?? [];
+          if (participants.some((entry) => entry.id === event.payload.participant.id)) {
+            return;
+          }
+          yield* projectionThreadRepository.upsert({
+            ...existingRow.value,
+            participants: [...participants, event.payload.participant],
+            updatedAt: event.payload.updatedAt,
+          });
+          return;
+        }
+
+        case "thread.participant-removed": {
+          const existingRow = yield* projectionThreadRepository.getById({
+            threadId: event.payload.threadId,
+          });
+          if (Option.isNone(existingRow)) {
+            return;
+          }
+          yield* projectionThreadRepository.upsert({
+            ...existingRow.value,
+            participants: (existingRow.value.participants ?? []).map((entry) =>
+              entry.id === event.payload.participantId && entry.leftAt === null
+                ? { ...entry, leftAt: event.payload.updatedAt }
+                : entry,
+            ),
+            updatedAt: event.payload.updatedAt,
+          });
+          return;
+        }
+
+        // A room agent's model follows the composer, like the thread's own
+        // agent's, but it is kept on the participant.
+        case "thread.turn-start-requested": {
+          const participantId = event.payload.participantId ?? null;
+          const modelSelection = event.payload.modelSelection;
+          if (participantId === null || modelSelection === undefined) {
+            return;
+          }
+          const existingRow = yield* projectionThreadRepository.getById({
+            threadId: event.payload.threadId,
+          });
+          if (Option.isNone(existingRow)) {
+            return;
+          }
+          yield* projectionThreadRepository.upsert({
+            ...existingRow.value,
+            participants: (existingRow.value.participants ?? []).map((entry) =>
+              entry.id === participantId ? { ...entry, modelSelection } : entry,
+            ),
           });
           return;
         }
@@ -1098,6 +1160,9 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             text: nextText,
             ...(nextAttachments !== undefined ? { attachments: [...nextAttachments] } : {}),
             ...(nextSkills !== undefined ? { skills: [...nextSkills] } : {}),
+            ...(event.payload.participantId !== undefined
+              ? { participantId: event.payload.participantId }
+              : {}),
             isStreaming: event.payload.streaming,
             createdAt: previousMessage?.createdAt ?? event.payload.createdAt,
             updatedAt: event.payload.updatedAt,
@@ -1126,6 +1191,9 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             text: event.payload.text,
             ...(nextAttachments !== undefined ? { attachments: [...nextAttachments] } : {}),
             ...(nextSkills !== undefined ? { skills: [...nextSkills] } : {}),
+            ...(event.payload.participantId !== undefined
+              ? { participantId: event.payload.participantId }
+              : {}),
             isStreaming: false,
             createdAt: previousMessage?.createdAt ?? event.payload.createdAt,
             updatedAt: event.payload.createdAt,
@@ -1336,6 +1404,10 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         providerThreadId: event.payload.session.providerThreadId ?? null,
         runtimeMode: event.payload.session.runtimeMode,
         checkoutCwd: event.payload.session.checkoutCwd ?? null,
+        // Absent keeps the stored slot holder; see OrchestrationSession.
+        ...(event.payload.session.participantId !== undefined
+          ? { participantId: event.payload.session.participantId }
+          : {}),
         activeTurnId: event.payload.session.activeTurnId,
         pendingBackgroundTaskCount: event.payload.session.pendingBackgroundTaskCount ?? 0,
         lastError: event.payload.session.lastError,

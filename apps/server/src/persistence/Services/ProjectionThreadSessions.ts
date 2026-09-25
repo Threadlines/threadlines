@@ -13,6 +13,7 @@ import {
   OrchestrationSessionStatus,
   ProviderInstanceId,
   ThreadId,
+  ThreadParticipantId,
   TurnId,
 } from "@threadlines/contracts";
 import * as Option from "effect/Option";
@@ -31,6 +32,11 @@ export const ProjectionThreadSession = Schema.Struct({
   providerThreadId: Schema.NullOr(Schema.String),
   runtimeMode: RuntimeMode,
   checkoutCwd: Schema.NullOr(Schema.String),
+  /**
+   * The agent holding the slot; see OrchestrationSession.participantId.
+   * Absent on write keeps the stored holder.
+   */
+  participantId: Schema.optional(Schema.NullOr(ThreadParticipantId)),
   activeTurnId: Schema.NullOr(TurnId),
   pendingBackgroundTaskCount: NonNegativeInt,
   lastError: Schema.NullOr(Schema.String),

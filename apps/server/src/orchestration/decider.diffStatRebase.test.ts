@@ -43,6 +43,7 @@ function makeReadModel(diffStatBaselineTurnCount: number): OrchestrationReadMode
         pullRequestAutoFix: false,
         pullRequestAutoMerge: null,
         linkedPullRequests: [],
+        participants: [],
         doneOverride: null,
         lastSeenAt: null,
         deletedAt: null,

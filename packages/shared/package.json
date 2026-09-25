@@ -210,6 +210,10 @@
     "./usageFormat": {
       "types": "./src/usageFormat.ts",
       "import": "./src/usageFormat.ts"
+    },
+    "./threadParticipants": {
+      "types": "./src/threadParticipants.ts",
+      "import": "./src/threadParticipants.ts"
     }
   },
   "scripts": {

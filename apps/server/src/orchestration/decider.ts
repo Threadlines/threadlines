@@ -9,6 +9,13 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import { areFilesystemPathsEqual } from "@threadlines/shared/path";
 import { findProviderAuthRetryUserMessageIndex } from "@threadlines/shared/providerAuth";
+import {
+  activeParticipants,
+  findActiveParticipantByHandle,
+  isRoomThread,
+  isValidParticipantId,
+  sessionSlotParticipantId,
+} from "@threadlines/shared/threadParticipants";
 
 import { OrchestrationCommandInvariantError } from "./Errors.ts";
 import {
@@ -639,6 +646,102 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       };
     }
 
+    case "thread.participant.add": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      if (!isValidParticipantId(command.participant.id)) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Agent id '${command.participant.id}' must be a UUID.`,
+        });
+      }
+      if (thread.participants.some((entry) => entry.id === command.participant.id)) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Agent '${command.participant.id}' is already part of thread '${command.threadId}'.`,
+        });
+      }
+      // Voice drives the thread's own runtime directly, which a room can not
+      // route yet.
+      if (thread.voiceActive === true) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Stop voice before adding an agent to this thread.",
+        });
+      }
+      if (findActiveParticipantByHandle(thread, command.participant.handle) !== undefined) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `An agent called @${command.participant.handle} is already in this thread.`,
+        });
+      }
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.participant-added",
+        payload: {
+          threadId: command.threadId,
+          participant: {
+            id: command.participant.id,
+            handle: command.participant.handle,
+            modelSelection: command.participant.modelSelection,
+            joinedAt: command.createdAt,
+            leftAt: null,
+          },
+          updatedAt: command.createdAt,
+        },
+      };
+    }
+
+    case "thread.participant.remove": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const participant = activeParticipants(thread).find(
+        (entry) => entry.id === command.participantId,
+      );
+      if (participant === undefined) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Agent '${command.participantId}' is not in thread '${command.threadId}'.`,
+        });
+      }
+      const session = thread.session;
+      if (
+        session !== null &&
+        sessionSlotParticipantId(session) === participant.id &&
+        (session.status === "running" || session.status === "starting")
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `@${participant.handle} is working. Stop its turn before removing it.`,
+        });
+      }
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.participant-removed",
+        payload: {
+          threadId: command.threadId,
+          participantId: participant.id,
+          updatedAt: command.createdAt,
+        },
+      };
+    }
+
     case "thread.meta.update": {
       const thread = yield* requireThread({
         readModel,
@@ -848,6 +951,47 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           detail: `Proposed plan '${sourceProposedPlan?.planId}' belongs to thread '${sourceThread.id}' in a different project.`,
         });
       }
+      // In a room, the turn goes to one agent. Only one agent works at a time:
+      // the session slot changes hands only once its holder is done, including
+      // background work that would otherwise wake it up mid-turn of another.
+      const participantId = command.participantId ?? null;
+      const participant =
+        participantId === null
+          ? null
+          : (activeParticipants(targetThread).find((entry) => entry.id === participantId) ?? null);
+      if (participantId !== null && participant === null) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Agent '${participantId}' is not in thread '${command.threadId}'.`,
+        });
+      }
+      const slotSession = targetThread.session;
+      const slotHolderId = sessionSlotParticipantId(slotSession);
+      const handsOverSlot = slotSession !== null && slotHolderId !== participantId;
+      if (handsOverSlot) {
+        const holderName =
+          slotHolderId === null
+            ? "The thread's agent"
+            : `@${targetThread.participants.find((entry) => entry.id === slotHolderId)?.handle ?? "agent"}`;
+        if (slotSession.status === "running" || slotSession.status === "starting") {
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: `${holderName} is still working. Wait for its turn to finish, or stop it.`,
+          });
+        }
+        if ((slotSession.pendingBackgroundTaskCount ?? 0) > 0) {
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: `${holderName} still has background work running.`,
+          });
+        }
+        if (targetThread.voiceActive === true) {
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: "Stop voice before asking another agent.",
+          });
+        }
+      }
       const userMessageEvent: Omit<OrchestrationEvent, "sequence"> = {
         ...withEventBase({
           aggregateKind: "thread",
@@ -863,6 +1007,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           text: command.message.text,
           attachments: command.message.attachments,
           ...(command.message.skills !== undefined ? { skills: command.message.skills } : {}),
+          ...(participantId !== null ? { participantId } : {}),
           turnId: null,
           streaming: false,
           createdAt: command.createdAt,
@@ -890,9 +1035,13 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
               },
             }
           : null;
-      const requestedModelSelection = command.modelSelection ?? targetThread.modelSelection;
+      const requestedModelSelection =
+        command.modelSelection ?? participant?.modelSelection ?? targetThread.modelSelection;
+      // A handed-over slot starts clean: the previous holder's provider ids,
+      // checkout and errors describe a different runtime.
+      const priorSession = handsOverSlot ? null : slotSession;
       const startingSessionEvent: Omit<OrchestrationEvent, "sequence"> | null =
-        targetThread.session?.status === "running"
+        priorSession?.status === "running"
           ? null
           : {
               ...withEventBase({
@@ -908,21 +1057,29 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
                 session: {
                   threadId: command.threadId,
                   status: "starting",
-                  providerName: targetThread.session?.providerName ?? null,
+                  providerName: priorSession?.providerName ?? null,
+                  // After a handover, the incoming agent's own last provider:
+                  // the reactor compares the requested one against it to
+                  // detect a provider switch.
                   providerInstanceId:
-                    targetThread.session?.providerInstanceId ?? requestedModelSelection.instanceId,
-                  providerSessionId: targetThread.session?.providerSessionId ?? null,
-                  providerThreadId: targetThread.session?.providerThreadId ?? null,
+                    priorSession?.providerInstanceId ??
+                    (handsOverSlot
+                      ? (participant?.modelSelection.instanceId ??
+                        targetThread.modelSelection.instanceId)
+                      : requestedModelSelection.instanceId),
+                  providerSessionId: priorSession?.providerSessionId ?? null,
+                  providerThreadId: priorSession?.providerThreadId ?? null,
                   runtimeMode: targetThread.runtimeMode,
                   // The runtime is still in whatever checkout it started in;
                   // the reactor rewrites this once the session is (re)bound.
-                  checkoutCwd: targetThread.session?.checkoutCwd ?? null,
+                  checkoutCwd: priorSession?.checkoutCwd ?? null,
+                  participantId,
                   // Same reasoning: the live runtime still owns its background
                   // tasks. Dropping the count here would tell the reactor the
                   // session is free to be cycled into another checkout.
-                  pendingBackgroundTaskCount: targetThread.session?.pendingBackgroundTaskCount ?? 0,
+                  pendingBackgroundTaskCount: priorSession?.pendingBackgroundTaskCount ?? 0,
                   activeTurnId: null,
-                  lastError: targetThread.session?.lastError ?? null,
+                  lastError: priorSession?.lastError ?? null,
                   updatedAt: command.createdAt,
                 },
               },
@@ -942,6 +1099,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           ...(command.modelSelection !== undefined
             ? { modelSelection: command.modelSelection }
             : {}),
+          ...(participantId !== null ? { participantId } : {}),
           ...(command.titleSeed !== undefined ? { titleSeed: command.titleSeed } : {}),
           runtimeMode: targetThread.runtimeMode,
           interactionMode: targetThread.interactionMode,
@@ -990,6 +1148,18 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           detail: `Thread '${command.threadId}' has no user message to retry.`,
         });
       }
+      // A failed turn is retried with the agent that failed it: the slot
+      // still holds that agent's session.
+      const retryParticipantId = sessionSlotParticipantId(session);
+      if (
+        retryParticipantId !== null &&
+        !activeParticipants(targetThread).some((entry) => entry.id === retryParticipantId)
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "The agent that failed this turn is no longer in the thread.",
+        });
+      }
       // Mirrors thread.turn.start, but re-points at the persisted last user
       // message instead of appending a new one: the transcript keeps a single
       // bubble and attachments are reused as stored. A projected lastError is
@@ -1008,6 +1178,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           session: {
             threadId: command.threadId,
             status: "starting",
+            participantId: retryParticipantId,
             providerName: session.providerName ?? null,
             providerInstanceId:
               session.providerInstanceId ?? targetThread.modelSelection.instanceId,
@@ -1039,6 +1210,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           // persisted transcript message id stable while giving every retry
           // attempt a fresh provider command identity.
           providerMessageId: MessageId.make(crypto.randomUUID()),
+          ...(retryParticipantId !== null ? { participantId: retryParticipantId } : {}),
           runtimeMode: targetThread.runtimeMode,
           interactionMode: targetThread.interactionMode,
           ...(lastUserMessage.skills !== undefined ? { skills: lastUserMessage.skills } : {}),
@@ -1054,10 +1226,17 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
+      // In a room only the agent at work can be steered; a message for any
+      // other agent waits for its turn in the queue.
+      const addressedAgentId =
+        command.participantId !== undefined
+          ? command.participantId
+          : sessionSlotParticipantId(targetThread.session);
       const canSteer =
         (command.delivery ?? "steer") === "steer" &&
         targetThread.session?.status === "running" &&
-        targetThread.session.activeTurnId === command.turnId;
+        targetThread.session.activeTurnId === command.turnId &&
+        addressedAgentId === sessionSlotParticipantId(targetThread.session);
       if (!canSteer) {
         // Queued on purpose, or a steer that arrived after its turn ended (or
         // while another turn runs): hold it for the next turn instead of
@@ -1092,6 +1271,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
               ...(command.modelSelection !== undefined
                 ? { modelSelection: command.modelSelection }
                 : {}),
+              ...(addressedAgentId !== null ? { participantId: addressedAgentId } : {}),
               runtimeMode: command.runtimeMode ?? targetThread.runtimeMode,
               interactionMode: command.interactionMode ?? targetThread.interactionMode,
               createdAt: command.createdAt,
@@ -1115,6 +1295,8 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           text: command.message.text,
           attachments: command.message.attachments,
           ...(command.message.skills !== undefined ? { skills: command.message.skills } : {}),
+          // Steering goes to the agent at work.
+          ...(addressedAgentId !== null ? { participantId: addressedAgentId } : {}),
           createdAt: command.createdAt,
         },
       };
@@ -1226,6 +1408,13 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             ...(queued.modelSelection !== undefined
               ? { modelSelection: queued.modelSelection }
               : {}),
+            // The agent it was queued for, while it is still in the thread;
+            // otherwise the thread's own agent takes it.
+            ...(queued.participantId !== undefined &&
+            queued.participantId !== null &&
+            activeParticipants(targetThread).some((entry) => entry.id === queued.participantId)
+              ? { participantId: queued.participantId }
+              : {}),
             runtimeMode: queued.runtimeMode,
             interactionMode: queued.interactionMode,
             createdAt: command.createdAt,
@@ -1263,6 +1452,13 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
+      // Voice drives one agent's runtime directly; rooms do not route it yet.
+      if (isRoomThread(thread)) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Voice is not available in rooms yet.",
+        });
+      }
       if (thread.session?.providerName !== "codex") {
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
@@ -1398,11 +1594,19 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.checkpoint.revert": {
-      yield* requireThread({
+      const thread = yield* requireThread({
         readModel,
         command,
         threadId: command.threadId,
       });
+      // Rewinding one agent's conversation cannot take back what the other
+      // agents in a room have already read, so rooms have no revert.
+      if (isRoomThread(thread)) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Revert is off in rooms: the other agents have already seen this work.",
+        });
+      }
       return {
         ...withEventBase({
           aggregateKind: "thread",
@@ -1680,11 +1884,17 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.message.assistant.delta": {
-      yield* requireThread({
+      const thread = yield* requireThread({
         readModel,
         command,
         threadId: command.threadId,
       });
+      // Ingestion names the agent whose runtime wrote this; the slot holder
+      // is only a fallback, since the slot can change hands mid-flush.
+      const authorId =
+        command.participantId !== undefined
+          ? command.participantId
+          : sessionSlotParticipantId(thread.session);
       return {
         ...withEventBase({
           aggregateKind: "thread",
@@ -1698,6 +1908,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           messageId: command.messageId,
           role: "assistant",
           text: command.delta,
+          ...(authorId !== null ? { participantId: authorId } : {}),
           turnId: command.turnId ?? null,
           streaming: true,
           createdAt: command.createdAt,
@@ -1707,11 +1918,15 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.message.assistant.complete": {
-      yield* requireThread({
+      const thread = yield* requireThread({
         readModel,
         command,
         threadId: command.threadId,
       });
+      const authorId =
+        command.participantId !== undefined
+          ? command.participantId
+          : sessionSlotParticipantId(thread.session);
       return {
         ...withEventBase({
           aggregateKind: "thread",
@@ -1725,6 +1940,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           messageId: command.messageId,
           role: "assistant",
           text: "",
+          ...(authorId !== null ? { participantId: authorId } : {}),
           turnId: command.turnId ?? null,
           streaming: false,
           completesTurn: command.completesTurn,
@@ -1735,11 +1951,15 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.follow-up.accept": {
-      yield* requireThread({
+      const acceptingThread = yield* requireThread({
         readModel,
         command,
         threadId: command.threadId,
       });
+      const steeredAgentId =
+        command.participantId !== undefined
+          ? command.participantId
+          : sessionSlotParticipantId(acceptingThread.session);
       return {
         ...withEventBase({
           aggregateKind: "thread",
@@ -1756,6 +1976,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           text: command.message.text,
           attachments: command.message.attachments,
           ...(command.message.skills !== undefined ? { skills: command.message.skills } : {}),
+          ...(steeredAgentId !== null ? { participantId: steeredAgentId } : {}),
           createdAt: command.createdAt,
         },
       };

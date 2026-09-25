@@ -16,6 +16,7 @@ import { getComposerProviderState } from "../components/chat/composerProviderSta
 import { resolveAppModelSelectionForInstance } from "../modelSelection";
 import { deriveProviderInstanceEntries, type ProviderInstanceEntry } from "../providerInstances";
 import type { Project, Thread } from "../types";
+import { ownAgentSession } from "../rooms";
 
 const CODEX_DRIVER = ProviderDriverKind.make("codex");
 
@@ -48,7 +49,8 @@ export function resolveProviderReviewContext(input: {
   readonly providers: ReadonlyArray<ServerProvider>;
   readonly settings: UnifiedSettings;
 }): ProviderReviewContext {
-  const session = input.thread?.session ?? null;
+  // A native review runs on the thread's own agent.
+  const session = ownAgentSession(input.thread);
   const providerInstanceEntries = deriveProviderInstanceEntries(input.providers).filter(
     (entry) => entry.driverKind === CODEX_DRIVER,
   );

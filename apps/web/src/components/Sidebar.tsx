@@ -122,6 +122,8 @@ import { SidebarHoverCardGroup } from "./sidebar/hoverCard";
 import { ThreadHoverCardProvider } from "./sidebar/ThreadHoverCard";
 import { resolveThreadActionProjectRef, startNewGeneralChatThread } from "../lib/chatThreadActions";
 import { SidebarPullRequestsRow } from "./sidebar/SidebarPullRequestsRow";
+import { SidebarRoomsRow } from "./sidebar/SidebarRoomsRow";
+import { isRoom } from "../rooms";
 import {
   PULL_REQUEST_COUNT_REFETCH_INTERVAL_MS,
   PULL_REQUEST_SETTLED_REFETCH_INTERVAL_MS,
@@ -468,6 +470,11 @@ export default function Sidebar() {
   const isOnChats = pathname.startsWith("/chats");
   const projectGroupingSettings = useSettings(selectProjectGroupingSettings);
   const wrapUpOnPullRequestSettled = useSettings((s) => s.wrapUpThreadsOnPullRequestSettled);
+  const roomsEnabled = useSettings<boolean>((settings) => settings.roomsEnabled);
+  // The Rooms row narrows what the inbox shows, never what the wrap-up rules
+  // read, so it can not change which threads get filed away.
+  const [roomsOnly, setRoomsOnly] = useState(false);
+  const roomsFilterActive = roomsEnabled && roomsOnly;
   const appSettingsConfirmThreadArchive = useSettings<boolean>(
     (settings) => settings.confirmThreadArchive,
   );
@@ -815,10 +822,17 @@ export default function Sidebar() {
 
   const machineScopedEntries = useMemo(
     () =>
-      scopedEnvironmentIdValue === null
-        ? entries
-        : entries.filter((entry) => entry.thread.environmentId === scopedEnvironmentIdValue),
-    [entries, scopedEnvironmentIdValue],
+      entries.filter(
+        (entry) =>
+          (scopedEnvironmentIdValue === null ||
+            entry.thread.environmentId === scopedEnvironmentIdValue) &&
+          (!roomsFilterActive || isRoom(entry.thread)),
+      ),
+    [entries, roomsFilterActive, scopedEnvironmentIdValue],
+  );
+  const roomCount = useMemo(
+    () => (roomsEnabled ? entries.filter((entry) => isRoom(entry.thread)).length : 0),
+    [entries, roomsEnabled],
   );
 
   // Everything a draft row needs about its project, resolved once here: a
@@ -1450,6 +1464,7 @@ export default function Sidebar() {
   const handleScopeChange = useCallback(
     (projectKey: string | null) => {
       setInboxProjectScope(projectKey);
+      setRoomsOnly(false);
     },
     [setInboxProjectScope],
   );
@@ -1457,6 +1472,7 @@ export default function Sidebar() {
   const handleEnvironmentScopeChange = useCallback(
     (environmentId: string | null) => {
       setInboxEnvironmentScope(environmentId);
+      setRoomsOnly(false);
     },
     [setInboxEnvironmentScope],
   );
@@ -1732,6 +1748,13 @@ export default function Sidebar() {
                     </div>
 
                     <SidebarPullRequestsRow snapshot={openPullRequests} />
+                    {roomsEnabled ? (
+                      <SidebarRoomsRow
+                        active={roomsOnly}
+                        roomCount={roomCount}
+                        onToggle={() => setRoomsOnly((current) => !current)}
+                      />
+                    ) : null}
                   </div>
 
                   <ProjectScopeMenu

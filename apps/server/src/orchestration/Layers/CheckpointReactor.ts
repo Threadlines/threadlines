@@ -7,6 +7,7 @@ import {
   type OrchestrationThreadActivity,
   type ProjectId,
   ThreadId,
+  type ThreadParticipantId,
   TurnId,
   type OrchestrationEvent,
   type ProviderRuntimeEvent,
@@ -14,6 +15,11 @@ import {
 import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import {
+  participantSessionKey,
+  sessionKeyThreadId,
+  sessionSlotParticipantId,
+} from "@threadlines/shared/threadParticipants";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
@@ -312,11 +318,29 @@ const make = Effect.gen(function* () {
     });
   };
 
+  /**
+   * The live runtime whose checkout a capture should read. `owner` is the
+   * room agent a runtime event came from; without one, the agent holding the
+   * session slot. Never another agent's runtime: an idle agent can sit in an
+   * earlier checkout.
+   */
   const resolveSessionRuntimeForThread = Effect.fn("resolveSessionRuntimeForThread")(function* (
     threadId: ThreadId,
+    owner?: ThreadParticipantId | null,
   ): Effect.fn.Return<Option.Option<{ readonly threadId: ThreadId; readonly cwd: string }>> {
     const sessions = yield* providerService.listSessions();
-    const session = sessions.find((entry) => entry.threadId === threadId);
+    let ownerId: ThreadParticipantId | null;
+    if (owner !== undefined) {
+      ownerId = owner;
+    } else {
+      const thread = yield* projectionSnapshotQuery.getThreadShellById(threadId).pipe(
+        Effect.map(Option.getOrUndefined),
+        Effect.catch(() => Effect.succeed(undefined)),
+      );
+      ownerId = sessionSlotParticipantId(thread?.session ?? null);
+    }
+    const ownerKey = participantSessionKey(threadId, ownerId);
+    const session = sessions.find((entry) => entry.threadId === ownerKey);
     return session?.cwd
       ? Option.some({ threadId: session.threadId, cwd: session.cwd })
       : Option.none();
@@ -336,7 +360,8 @@ const make = Effect.gen(function* () {
       const sessions = yield* providerService.listSessions();
       const targetCwd = normalizeWorkspacePath(input.cwd);
       const liveConcurrent = sessions.some((session) => {
-        if (sameId(session.threadId, input.threadId) || !session.cwd) {
+        // A room's other agents are the same thread, not another writer.
+        if (sameId(sessionKeyThreadId(session.threadId), input.threadId) || !session.cwd) {
           return false;
         }
         if (session.status !== "running" && !session.activeTurnId) {
@@ -398,8 +423,10 @@ const make = Effect.gen(function* () {
     readonly thread: { readonly projectId: ProjectId; readonly worktreePath: string | null };
     readonly projects: ReadonlyArray<{ readonly id: ProjectId; readonly workspaceRoot: string }>;
     readonly preferSessionRuntime: boolean;
+    /** The room agent whose runtime event triggered the capture. */
+    readonly owner?: ThreadParticipantId | null;
   }): Effect.fn.Return<string | undefined> {
-    const fromSession = yield* resolveSessionRuntimeForThread(input.threadId);
+    const fromSession = yield* resolveSessionRuntimeForThread(input.threadId, input.owner);
     const fromThread = resolveThreadWorkspaceCwd({
       thread: input.thread,
       projects: input.projects,
@@ -674,6 +701,7 @@ const make = Effect.gen(function* () {
         thread,
         projects,
         preferSessionRuntime: true,
+        owner: event.participantId ?? null,
       });
       if (!checkpointCwd) {
         return;
@@ -801,6 +829,7 @@ const make = Effect.gen(function* () {
         thread,
         projects,
         preferSessionRuntime: false,
+        owner: event.participantId ?? null,
       });
       if (!checkpointCwd) {
         return;
@@ -846,7 +875,10 @@ const make = Effect.gen(function* () {
   const refreshLocalGitStatusFromTurnCompletion = Effect.fn(
     "refreshLocalGitStatusFromTurnCompletion",
   )(function* (event: Extract<ProviderRuntimeEvent, { type: "turn.completed" }>) {
-    const sessionRuntime = yield* resolveSessionRuntimeForThread(event.threadId);
+    const sessionRuntime = yield* resolveSessionRuntimeForThread(
+      event.threadId,
+      event.participantId ?? null,
+    );
     if (Option.isNone(sessionRuntime)) {
       return;
     }

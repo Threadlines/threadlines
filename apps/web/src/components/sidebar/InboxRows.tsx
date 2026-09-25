@@ -6,6 +6,7 @@ import {
   TerminalIcon,
   Undo2Icon,
   GitBranchIcon,
+  UsersRoundIcon,
 } from "lucide-react";
 import React, { memo, useCallback, useMemo } from "react";
 import { useShallow } from "zustand/react/shallow";
@@ -610,6 +611,8 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
                   statusWord
                 ) : isInFlight || isWaitingOnTasks ? (
                   <>
+                    {/* In a room, name the agent: "astra · working". */}
+                    {thread.roomSlotAgentName ? `${thread.roomSlotAgentName} · ` : null}
                     {isWaitingOnTasks
                       ? "waiting"
                       : status?.label === "Starting"
@@ -671,15 +674,23 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
             ) : (
               // No tooltip on the title: the hover card already carries the
               // full one, and two popups racing the same hover is the bug.
-              <span
-                className={cn(
-                  "min-w-0 flex-1 truncate text-xs font-medium",
-                  isUnseen ? "text-foreground" : "text-foreground/90",
-                )}
-                data-testid={`thread-title-${thread.id}`}
-              >
-                {thread.title}
-              </span>
+              <>
+                {(thread.participants?.length ?? 0) > 0 ? (
+                  <UsersRoundIcon
+                    aria-label="Room"
+                    className="size-3 shrink-0 text-muted-foreground/70"
+                  />
+                ) : null}
+                <span
+                  className={cn(
+                    "min-w-0 flex-1 truncate text-xs font-medium",
+                    isUnseen ? "text-foreground" : "text-foreground/90",
+                  )}
+                  data-testid={`thread-title-${thread.id}`}
+                >
+                  {thread.title}
+                </span>
+              </>
             )}
             <span className="ml-auto flex shrink-0 items-center gap-1.5">
               {terminalStatus ? (

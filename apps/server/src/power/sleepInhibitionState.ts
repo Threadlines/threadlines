@@ -9,6 +9,7 @@
  * @module sleepInhibitionState
  */
 import type { ProviderRuntimeEvent, ThreadId } from "@threadlines/contracts";
+import { participantSessionKey } from "@threadlines/shared/threadParticipants";
 
 export type SleepInhibitionInput =
   | { readonly kind: "runtime-event"; readonly event: ProviderRuntimeEvent }
@@ -45,23 +46,26 @@ export function reduceSleepInhibitionState(
   }
 
   const event = input.event;
+  // Tracked per agent: in a room, one agent's runtime ending says nothing
+  // about the agent that is working.
+  const sessionKey = participantSessionKey(event.threadId, event.participantId);
   switch (event.type) {
     case "turn.started": {
-      if (state.activeThreadIds.has(event.threadId)) {
+      if (state.activeThreadIds.has(sessionKey)) {
         return state;
       }
       const activeThreadIds = new Set(state.activeThreadIds);
-      activeThreadIds.add(event.threadId);
+      activeThreadIds.add(sessionKey);
       return { ...state, activeThreadIds };
     }
     case "turn.completed":
     case "turn.aborted":
     case "session.exited": {
-      if (!state.activeThreadIds.has(event.threadId)) {
+      if (!state.activeThreadIds.has(sessionKey)) {
         return state;
       }
       const activeThreadIds = new Set(state.activeThreadIds);
-      activeThreadIds.delete(event.threadId);
+      activeThreadIds.delete(sessionKey);
       return { ...state, activeThreadIds };
     }
     default:

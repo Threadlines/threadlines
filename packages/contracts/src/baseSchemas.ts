@@ -41,6 +41,9 @@ export const MessageId = makeEntityId("MessageId");
 export type MessageId = typeof MessageId.Type;
 export const TurnId = makeEntityId("TurnId");
 export type TurnId = typeof TurnId.Type;
+/** An agent added to a thread alongside the thread's own agent (a room). */
+export const ThreadParticipantId = makeEntityId("ThreadParticipantId");
+export type ThreadParticipantId = typeof ThreadParticipantId.Type;
 export const AuthSessionId = makeEntityId("AuthSessionId");
 export type AuthSessionId = typeof AuthSessionId.Type;
 

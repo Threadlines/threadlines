@@ -13,6 +13,7 @@ import {
   OrchestrationThreadGoal,
   OrchestrationQueuedFollowUp,
   OrchestrationThreadLinkedPullRequest,
+  OrchestrationThreadParticipant,
   ProjectId,
   ProviderInteractionMode,
   PullRequestMergeMethod,
@@ -82,6 +83,12 @@ export const ProjectionThread = Schema.Struct({
    * migration 055 decode; absent reads as none.
    */
   queuedFollowUps: Schema.optional(Schema.Array(OrchestrationQueuedFollowUp)),
+  /**
+   * Agents added next to the thread's own agent; see
+   * `OrchestrationThreadShell.participants`. Optional so rows written before
+   * migration 056 decode; absent reads as none.
+   */
+  participants: Schema.optional(Schema.Array(OrchestrationThreadParticipant)),
   /**
    * The user's explicit inbox filing and its stamp. Optional so rows written
    * before migration 042 decode; absent reads as "never filed". Kept as two

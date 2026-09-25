@@ -263,6 +263,7 @@ function makeThread(input: {
     pullRequestAutoFix: false,
     pullRequestAutoMerge: null,
     linkedPullRequests: [],
+    participants: [],
     doneOverride: null,
     lastSeenAt: null,
     deletedAt: null,

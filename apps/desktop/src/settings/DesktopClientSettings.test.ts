@@ -17,6 +17,7 @@ const clientSettings: ClientSettings = {
   chatChangedFilesDefaultExpanded: false,
   confirmThreadArchive: true,
   confirmThreadDelete: false,
+  roomsEnabled: false,
   wrapUpThreadsOnPullRequestSettled: true,
   dismissedProviderUpdateNotificationKeys: [],
   dictationHoldToRecord: true,

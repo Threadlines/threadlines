@@ -50,6 +50,7 @@ function makeThreadShell(
     pullRequestAutoFix: false,
     pullRequestAutoMerge: null,
     linkedPullRequests: [],
+    participants: [],
     doneOverride: null,
     lastSeenAt: null,
     session: null,
@@ -156,6 +157,8 @@ describe("startProviderReviewForThread", () => {
             }),
         },
         providerService: {
+          listSessions: () => Effect.succeed([]),
+          stopSession: () => Effect.void,
           getCapabilities: () =>
             Effect.succeed({ sessionModelSwitch: "in-session", reviewStart: "supported" }),
           getInstanceInfo: () => Effect.succeed(codexInstanceInfo()),
@@ -226,6 +229,8 @@ describe("startProviderReviewForThread", () => {
               }),
           },
           providerService: {
+            listSessions: () => Effect.succeed([]),
+            stopSession: () => Effect.void,
             getCapabilities: () =>
               Effect.succeed({ sessionModelSwitch: "unsupported", reviewStart: "unsupported" }),
             getInstanceInfo: () =>
@@ -292,6 +297,8 @@ describe("startProviderReviewForThread", () => {
               }),
           },
           providerService: {
+            listSessions: () => Effect.succeed([]),
+            stopSession: () => Effect.void,
             getCapabilities,
             getInstanceInfo: () =>
               Effect.succeed({
@@ -349,6 +356,8 @@ describe("startProviderReviewForThread", () => {
               }),
           },
           providerService: {
+            listSessions: () => Effect.succeed([]),
+            stopSession: () => Effect.void,
             getCapabilities: () =>
               Effect.succeed({ sessionModelSwitch: "in-session", reviewStart: "supported" }),
             getInstanceInfo: () => Effect.succeed(codexInstanceInfo()),
@@ -396,6 +405,8 @@ describe("startProviderReviewForThread", () => {
               }),
           },
           providerService: {
+            listSessions: () => Effect.succeed([]),
+            stopSession: () => Effect.void,
             getCapabilities: () =>
               Effect.succeed({ sessionModelSwitch: "in-session", reviewStart: "supported" }),
             getInstanceInfo: () => Effect.succeed(codexInstanceInfo()),
@@ -431,6 +442,8 @@ describe("startProviderReviewForThread", () => {
               }),
           },
           providerService: {
+            listSessions: () => Effect.succeed([]),
+            stopSession: () => Effect.void,
             getCapabilities: () =>
               Effect.succeed({ sessionModelSwitch: "in-session", reviewStart: "supported" }),
             getInstanceInfo: () => Effect.succeed(codexInstanceInfo()),
