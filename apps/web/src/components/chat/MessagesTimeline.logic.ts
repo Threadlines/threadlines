@@ -9,6 +9,7 @@ import {
 import { type ChatMessage, type ProposedPlan, type TurnDiffSummary } from "../../types";
 import { type MessageId, type TurnId } from "@threadlines/contracts";
 import { stripCodexInlineVisualizationDirectives } from "../../lib/codexInlineVisualization";
+import { deriveDisplayedUserMessageState } from "../../lib/terminalContext";
 import {
   activityStepFromWorkLogEntry,
   commandCheckKey,
@@ -1284,4 +1285,113 @@ function isTurnSummaryUnchanged(a: TurnSummary | null, b: TurnSummary | null): b
     a.trackerAgentSpawnIds.length === b.trackerAgentSpawnIds.length &&
     a.trackerAgentSpawnIds.every((spawnId, index) => spawnId === b.trackerAgentSpawnIds[index])
   );
+}
+
+const MAX_COLLAPSED_USER_MESSAGE_LINES = 8;
+const MAX_COLLAPSED_USER_MESSAGE_LENGTH = 600;
+
+/** A long message of yours shows folded, behind a fade and a way to open it. */
+export function shouldCollapseUserMessage(text: string): boolean {
+  if (text.trim().length === 0) {
+    return false;
+  }
+  return (
+    text.length > MAX_COLLAPSED_USER_MESSAGE_LENGTH ||
+    text.split("\n").length > MAX_COLLAPSED_USER_MESSAGE_LINES
+  );
+}
+
+// How tall a row draws, guessed from its data, for the rows the list has not
+// drawn yet. Left alone, the list guesses from the average of the rows it has
+// measured: long answers make it guess high for a step or a message that just
+// started streaming, which then shrinks as soon as it lands, and a phone
+// scrolled to the bottom snaps back by the difference. The average also moves
+// with every row measured, shifting every undrawn row above the reader. These
+// guesses stay put, and follow how the rows render in MessagesTimeline.tsx
+// closely enough; the list measures each row once it draws it.
+const TEXT_LINE_PX = 23;
+const TEXT_CHAR_PX = 6.5;
+const STEP_LINE_PX = 20;
+
+const rowHeightEstimates = new WeakMap<
+  MessagesTimelineRow,
+  { readonly width: number; readonly height: number }
+>();
+
+/** The guessed height of `row` in a timeline `width` pixels wide. */
+export function estimateTimelineRowHeight(row: MessagesTimelineRow, width: number): number {
+  const cached = rowHeightEstimates.get(row);
+  if (cached?.width === width) {
+    return cached.height;
+  }
+  const content = estimateRowContentHeight(row, width);
+  // A row that draws nothing drops its padding too.
+  const height = content > 0 && row.padTop ? content + 8 : content;
+  rowHeightEstimates.set(row, { width, height });
+  return height;
+}
+
+function estimateRowContentHeight(row: MessagesTimelineRow, width: number): number {
+  // The list's side padding, then the rows' 56rem column and its own padding.
+  const column = Math.min(width - (width < 640 ? 24 : 40), 896) - 16;
+  switch (row.kind) {
+    case "message": {
+      if (row.message.role === "assistant") {
+        const hasChangedFiles =
+          !row.assistantTurnInProgress && (row.assistantTurnDiffSummary?.files.length ?? 0) > 0;
+        return (
+          8 +
+          estimateTextLines(row.message.text, column - 8) * TEXT_LINE_PX +
+          (row.turnSummary ? 38 : 0) +
+          // The turn's changes, a card whose header wraps on a phone.
+          (hasChangedFiles ? (column < 430 ? 110 : 88) : 0)
+        );
+      }
+      if (row.message.role === "user") {
+        const text = deriveDisplayedUserMessageState(row.message.text).visibleText;
+        const images = row.message.attachments?.some((attachment) => attachment.type === "image")
+          ? 228
+          : 0;
+        if (shouldCollapseUserMessage(text)) {
+          return 252 + images;
+        }
+        // The bubble takes 80% of the column, less its padding.
+        return 78 + estimateTextLines(text, column * 0.8 - 34) * TEXT_LINE_PX + images;
+      }
+      return 0;
+    }
+    case "work": {
+      // A running step shows on the working row, not here, and the looking
+      // around folds into one line, so a group rarely shows more than three.
+      let settledSteps = 0;
+      for (const entry of row.groupedEntries) {
+        if (entry.executionState !== "running" && !isSilentWorkLogEntry(entry)) {
+          settledSteps += 1;
+        }
+      }
+      return settledSteps === 0 ? 0 : 10 + STEP_LINE_PX * Math.min(settledSteps, 3);
+    }
+    case "working":
+      return row.thought ? 46 : 30;
+    case "subagent-result":
+      return 40;
+    case "fork-context":
+      return 90;
+    case "proposed-plan":
+      return 240;
+  }
+}
+
+/** Rendered lines of `text` in a box `widthPx` wide, a blank line counting
+ *  half. A line breaks at a word, losing about half of one. */
+function estimateTextLines(text: string, widthPx: number): number {
+  if (text.length === 0) {
+    return 0;
+  }
+  const charsPerLine = Math.max(1, widthPx / TEXT_CHAR_PX - 3);
+  let lines = 0;
+  for (const line of text.split("\n")) {
+    lines += line.trim().length === 0 ? 0.5 : Math.ceil(line.length / charsPerLine);
+  }
+  return lines;
 }

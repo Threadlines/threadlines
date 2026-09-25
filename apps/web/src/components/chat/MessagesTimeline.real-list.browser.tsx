@@ -272,6 +272,176 @@ describe("MessagesTimeline with the real virtual list", () => {
     }
   });
 
+  // The list holds still for a touch until it comes to rest, so a stream that
+  // keeps growing meanwhile leaves the view short of the new bottom. A swipe
+  // that ended at the bottom still means "follow", even when the list reports
+  // that scroll only after more lines landed.
+  it("follows the stream again after a swipe ends at the bottom", async () => {
+    const props = buildProps();
+    const sentence =
+      "This is a plain streamed sentence with enough words to wrap onto another line. ";
+    const message: ChatMessage = {
+      id: "streaming-response" as ChatMessage["id"],
+      role: "assistant",
+      turnId: ACTIVE_TURN_ID,
+      text: sentence.repeat(20),
+      streaming: true,
+      createdAt: props.activeTurnStartedAt,
+    };
+    const renderList = (text: string) => (
+      <div style={{ height: 400, width: 600 }}>
+        <MessagesTimeline
+          {...props}
+          timelineEntries={[
+            {
+              id: message.id,
+              kind: "message",
+              createdAt: message.createdAt,
+              message: { ...message, text },
+            },
+          ]}
+        />
+      </div>
+    );
+    let text = message.text;
+    const screen = await renderTimeline(renderList(text));
+    // Four lines at a time, past the list's at-end tolerance.
+    const streamLines = async () => {
+      text += sentence.repeat(4);
+      await screen.rerender(renderList(text));
+      await nextFrame();
+      await nextFrame();
+    };
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      const list = document.querySelector<HTMLElement>('[data-chat-messages-list="true"]')!;
+      const distanceFromEnd = () => list.scrollHeight - list.clientHeight - list.scrollTop;
+      await streamLines();
+      expect(distanceFromEnd()).toBeLessThanOrEqual(1);
+
+      dispatchTouch(list, "touchstart", 200);
+      dispatchTouch(list, "touchmove", 260);
+      list.scrollTop -= 60;
+      await nextFrame();
+      await nextFrame();
+      // More lines land while the finger rests. Then the finger brings the
+      // list back to where the bottom was, which the list reports measured
+      // after those lines, and lifts.
+      const bottomBeforeLines = list.scrollHeight - list.clientHeight;
+      await streamLines();
+      list.scrollTop = bottomBeforeLines;
+      await nextFrame();
+      await nextFrame();
+      dispatchTouch(list, "touchend", 260);
+
+      // Once the list rests, it catches up and follows again. Wait for that
+      // instead of timing the rest, which a slow machine reaches later.
+      const atBottom = () => expect(distanceFromEnd()).toBeLessThanOrEqual(1);
+      await vi.waitFor(atBottom, { timeout: 1_500 });
+      await streamLines();
+      await vi.waitFor(atBottom, { timeout: 1_500 });
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  // A row that just landed first takes the list's guess of its height, then
+  // the list shrinks to the height the row really draws. Desktop browsers
+  // settle that before painting, but a phone's scroll can be caught past the
+  // new bottom and snap back. The rows a live turn adds must not make the list
+  // take back height it just gave them.
+  it("never takes back height from the rows a live turn adds", async () => {
+    const props = buildProps();
+    const createdAt = (second: number) =>
+      `2026-04-13T12:00:${String(second).padStart(2, "0")}.000Z`;
+    const history: TimelineEntry[] = Array.from({ length: 8 }, (_, index) => {
+      const message: ChatMessage = {
+        id: `message-history-${index}` as ChatMessage["id"],
+        role: index % 2 === 0 ? "user" : "assistant",
+        text: `Earlier message ${index + 1}, with enough text that the thread scrolls.`,
+        streaming: false,
+        createdAt: `2026-04-13T11:59:${String(index).padStart(2, "0")}.000Z`,
+      };
+      return { id: message.id, kind: "message", createdAt: message.createdAt, message };
+    });
+    const step = (id: string, second: number, running: boolean): TimelineEntry => {
+      const entry: WorkLogEntry = {
+        id,
+        createdAt: createdAt(second),
+        ...(running ? {} : { completedAt: createdAt(second + 1) }),
+        label: "Read file",
+        detail: `apps/web/src/${id}.ts`,
+        tone: "tool",
+        executionState: running ? "running" : "completed",
+        activityKind: running ? "tool.started" : "tool.completed",
+        turnId: ACTIVE_TURN_ID,
+      };
+      return { id, kind: "work", createdAt: entry.createdAt, entry };
+    };
+    const reply: ChatMessage = {
+      id: "reply" as ChatMessage["id"],
+      role: "assistant",
+      turnId: ACTIVE_TURN_ID,
+      text: "",
+      streaming: true,
+      createdAt: createdAt(12),
+    };
+    const replyEntry: TimelineEntry = {
+      id: reply.id,
+      kind: "message",
+      createdAt: reply.createdAt,
+      message: reply,
+    };
+    const stages: TimelineEntry[][] = [
+      [step("step-1", 10, true)],
+      [step("step-1", 10, false), replyEntry],
+      [step("step-1", 10, false), replyEntry, step("step-2", 14, false)],
+    ];
+    const renderList = (live: TimelineEntry[]) => (
+      <div style={{ height: 400, width: 600 }}>
+        <MessagesTimeline {...props} timelineEntries={[...history, ...live]} />
+      </div>
+    );
+    const screen = await renderTimeline(renderList([]));
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      // The list writes its content height on one element, and every write
+      // lands here, including ones undone before paint.
+      const content = document.querySelector(".legend-list-content-container")!;
+      const heightIn = (style: string | null) =>
+        Number(/(?:^|;)\s*height:\s*([\d.]+)px/.exec(style ?? "")?.[1] ?? Number.NaN);
+      const drops: string[] = [];
+      const collect = (records: MutationRecord[]) => {
+        for (const record of records) {
+          const target = record.target as Element;
+          if (target.parentElement !== content) continue;
+          const before = heightIn(record.oldValue);
+          const after = heightIn(target.getAttribute("style"));
+          if (after < before - 1) drops.push(`${before} -> ${after}`);
+        }
+      };
+      const observer = new MutationObserver(collect);
+      observer.observe(content, {
+        attributes: true,
+        attributeFilter: ["style"],
+        attributeOldValue: true,
+        subtree: true,
+      });
+      try {
+        for (const live of stages) {
+          await screen.rerender(renderList(live));
+          await nextFrame();
+        }
+      } finally {
+        collect(observer.takeRecords());
+        observer.disconnect();
+      }
+      expect(drops, "rows must land at the height they draw").toEqual([]);
+    } finally {
+      await screen.unmount();
+    }
+  });
+
   it("keeps the affected ongoing-thread snapshot at the bottom of the list", async () => {
     const fixture = await loadAffectedThreadFixture();
     const startedAtMs = Date.parse(fixture.activeTurnStartedAt);
