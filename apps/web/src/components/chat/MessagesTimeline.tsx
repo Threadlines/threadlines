@@ -355,10 +355,11 @@ function isTimelineScrollEventAtEnd(event: TimelineScrollEvent): boolean | null 
   });
 }
 
-function isTimelineListAtEnd(list: LegendListRef | null): boolean {
+/** The list's scroll position, read from its scroll node. */
+function readTimelineListMetrics(list: LegendListRef | null) {
   const scrollableNode = list?.getScrollableNode?.();
   if (!scrollableNode || typeof scrollableNode !== "object") {
-    return Boolean(list?.getState?.().isAtEnd);
+    return null;
   }
 
   const metrics = scrollableNode as {
@@ -369,13 +370,23 @@ function isTimelineListAtEnd(list: LegendListRef | null): boolean {
   const viewportLength = finiteScrollMetric(metrics.clientHeight);
   const contentLength = finiteScrollMetric(metrics.scrollHeight);
   if (viewportLength === null || contentLength === null) {
-    return Boolean(list?.getState?.().isAtEnd);
+    return null;
   }
 
-  return isScrollMetricsAtEnd({
+  return {
     scrollOffset: finiteScrollMetric(metrics.scrollTop) ?? 0,
     viewportLength,
     contentLength,
+  };
+}
+
+function isTimelineListAtEnd(list: LegendListRef | null): boolean {
+  const metrics = readTimelineListMetrics(list);
+  if (metrics === null) {
+    return Boolean(list?.getState?.().isAtEnd);
+  }
+  return isScrollMetricsAtEnd({
+    ...metrics,
     tolerancePx: DEFAULT_SCROLL_END_TOLERANCE_PX,
   });
 }
@@ -794,10 +805,12 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   const [touchScrollActive, setTouchScrollActive] = useState(false);
   const touchReleasedAtRef = useRef<number | null>(null);
   const touchSettleTimerRef = useRef<number | null>(null);
-  // Whether the gesture's latest scroll was at the bottom. Streamed content
-  // grows the list without scrolling it, so this still reads true for a glide
-  // that stopped at the bottom while new lines kept arriving below it.
+  // Whether the gesture's latest move left the list at the bottom. Streamed
+  // content grows the list without moving it, so this still reads true for a
+  // glide that stopped at the bottom while new lines kept arriving below it.
   const touchEndedAtBottomRef = useRef(false);
+  // Where the gesture last moved the list, and how long the list was then.
+  const touchLastMoveRef = useRef<{ scrollOffset: number; contentLength: number } | null>(null);
   const touchLiftListenersRef = useRef<AbortController | null>(null);
   const timelineContainerRef = useRef<HTMLDivElement | null>(null);
   // The timeline's width, for guessing how tall an undrawn row is. Read on
@@ -1096,8 +1109,23 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       const eventAtEnd = isTimelineScrollEventAtEnd(event);
       const nextIsAtEnd =
         eventAtEnd !== null ? eventAtEnd : Boolean(listRef.current?.getState?.().isAtEnd);
-      if (touchScrollActiveRef.current) {
-        touchEndedAtBottomRef.current = nextIsAtEnd;
+      // Only a report that moved the list speaks for the gesture. The list
+      // repeats reports, and sends them up to a frame late, measured after any
+      // lines that streamed in meanwhile, so reaching the end of the list as
+      // long as it was at the gesture's previous move counts as the bottom.
+      const metrics = getTimelineScrollMetrics(event);
+      const lastMove = touchLastMoveRef.current;
+      if (
+        touchScrollActiveRef.current &&
+        metrics !== null &&
+        (lastMove === null || Math.abs(metrics.scrollOffset - lastMove.scrollOffset) >= 1)
+      ) {
+        touchEndedAtBottomRef.current = isScrollMetricsAtEnd({
+          ...metrics,
+          contentLength: Math.min(metrics.contentLength, lastMove?.contentLength ?? Infinity),
+          tolerancePx: DEFAULT_SCROLL_END_TOLERANCE_PX,
+        });
+        touchLastMoveRef.current = metrics;
       }
       if (!nextIsAtEnd && (autoStickToBottomRef.current || stickToBottomRequestPending)) {
         onIsAtEndChange(true);
@@ -1235,6 +1263,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       touchStartYRef.current = event.touches[0]?.clientY ?? null;
       touchReleasedAtRef.current = null;
       touchEndedAtBottomRef.current = isTimelineListAtEnd(listRef.current);
+      touchLastMoveRef.current = readTimelineListMetrics(listRef.current);
       clearTouchSettleTimer();
       if (!touchScrollActiveRef.current) {
         touchScrollActiveRef.current = true;

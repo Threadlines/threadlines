@@ -272,10 +272,11 @@ describe("MessagesTimeline with the real virtual list", () => {
     }
   });
 
-  // The list holds still for a touch until its glide comes to rest, so a
-  // stream that keeps growing meanwhile leaves the view short of the new
-  // bottom. A flick that landed at the bottom still means "follow".
-  it("follows the stream again after a flick lands at the bottom", async () => {
+  // The list holds still for a touch until it comes to rest, so a stream that
+  // keeps growing meanwhile leaves the view short of the new bottom. A swipe
+  // that ended at the bottom still means "follow", even when the list reports
+  // that scroll only after more lines landed.
+  it("follows the stream again after a swipe ends at the bottom", async () => {
     const props = buildProps();
     const sentence =
       "This is a plain streamed sentence with enough words to wrap onto another line. ";
@@ -322,16 +323,19 @@ describe("MessagesTimeline with the real virtual list", () => {
       dispatchTouch(list, "touchmove", 260);
       list.scrollTop -= 60;
       await nextFrame();
-      dispatchTouch(list, "touchend", 260);
-      // The glide carries the list back down to the bottom, and more lines
-      // land right after, before the list has come to rest.
-      list.scrollTop = list.scrollHeight;
       await nextFrame();
+      // More lines land while the finger rests. Then the finger brings the
+      // list back to where the bottom was, which the list reports measured
+      // after those lines, and lifts.
+      const bottomBeforeLines = list.scrollHeight - list.clientHeight;
       await streamLines();
+      list.scrollTop = bottomBeforeLines;
+      await nextFrame();
+      await nextFrame();
+      dispatchTouch(list, "touchend", 260);
 
-      // Once the glide rests, the list catches up and follows again. Wait for
-      // that instead of timing the rest, which a slow machine reaches sooner
-      // or later than a fast one.
+      // Once the list rests, it catches up and follows again. Wait for that
+      // instead of timing the rest, which a slow machine reaches later.
       const atBottom = () => expect(distanceFromEnd()).toBeLessThanOrEqual(1);
       await vi.waitFor(atBottom, { timeout: 1_500 });
       await streamLines();
