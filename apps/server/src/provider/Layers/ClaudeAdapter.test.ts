@@ -1486,6 +1486,68 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  // A message sent while Claude writes its final answer runs as Claude's own
+  // next turn once that answer ends. The thread must read as busy, and the
+  // reply stream live, from its first streamed event.
+  it.effect("opens a turn as soon as Claude streams output on its own", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const eventsFiber = yield* Stream.filter(
+        adapter.streamEvents,
+        (event) =>
+          event.type === "turn.started" ||
+          event.type === "turn.completed" ||
+          event.type === "content.delta",
+      ).pipe(Stream.take(4), Stream.runCollect, Effect.forkChild);
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      const turn = yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "write it up",
+        attachments: [],
+      });
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        errors: [],
+        session_id: "sdk-session-own-turn",
+        uuid: "result-own-turn",
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "stream_event",
+        session_id: "sdk-session-own-turn",
+        uuid: "stream-own-turn",
+        parent_tool_use_id: null,
+        event: {
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "text_delta", text: "And the follow-up:" },
+        },
+      } as unknown as SDKMessage);
+
+      const events = Array.from(yield* Fiber.join(eventsFiber));
+      assert.deepEqual(
+        events.map((event) => event.type),
+        ["turn.started", "turn.completed", "turn.started", "content.delta"],
+      );
+      const [, , ownTurnStarted, delta] = events;
+      assert.notEqual(ownTurnStarted?.turnId, turn.turnId);
+      assert.equal(delta?.turnId, ownTurnStarted?.turnId);
+      if (delta?.type === "content.delta") {
+        assert.equal(delta.payload.delta, "And the follow-up:");
+      }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("embeds image attachments in Claude user messages", () => {
     const baseDir = mkdtempSync(path.join(os.tmpdir(), "claude-attachments-"));
     const harness = makeHarness({

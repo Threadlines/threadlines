@@ -98,6 +98,7 @@ type ProviderIntentEvent = Extract<
       | "thread.meta-updated"
       | "thread.turn-start-requested"
       | "thread.follow-up-submitted"
+      | "thread.follow-up-queued"
       | "thread.turn-interrupt-requested"
       | "thread.activity-appended"
       | "thread.realtime-start-requested"
@@ -1682,21 +1683,39 @@ const make = Effect.gen(function* () {
       return;
     }
 
-    const session = thread.session;
-    const activeTurnId = session?.activeTurnId ?? null;
-    if (session?.status !== "running" || activeTurnId !== event.payload.turnId) {
-      return yield* appendProviderFailureActivity({
+    // A steer that can no longer reach its turn becomes the next turn instead:
+    // the turn ended first, another one started, or the provider cannot steer.
+    const requeue = orchestrationEngine
+      .dispatch({
+        type: "thread.follow-up.submit",
+        commandId: serverCommandId("follow-up-requeue"),
         threadId: event.payload.threadId,
-        kind: "provider.follow-up.failed",
-        summary: "Follow-up send failed",
-        detail:
-          activeTurnId === null
-            ? "No active provider turn is available to steer."
-            : `Expected active turn '${event.payload.turnId}' but thread is running '${activeTurnId}'.`,
         turnId: event.payload.turnId,
+        message: {
+          messageId: event.payload.messageId,
+          role: "user",
+          text: event.payload.text,
+          attachments: event.payload.attachments ?? [],
+          ...(event.payload.skills !== undefined ? { skills: event.payload.skills } : {}),
+        },
+        delivery: "queue",
         createdAt: event.payload.createdAt,
-        requestId: event.payload.messageId,
-      });
+      })
+      .pipe(Effect.asVoid);
+
+    const session = thread.session;
+    if (session?.status !== "running" || session.activeTurnId !== event.payload.turnId) {
+      return yield* requeue;
+    }
+    const steeringSupported = yield* providerService
+      .getCapabilities(session.providerInstanceId ?? thread.modelSelection.instanceId)
+      .pipe(
+        Effect.map((capabilities) => capabilities.activeTurnSteering === "supported"),
+        // The steer itself reports an unknown instance; let it.
+        Effect.catch(() => Effect.succeed(true)),
+      );
+    if (!steeringSupported) {
+      return yield* requeue;
     }
     const normalizedInput = toNonEmptyProviderInput(event.payload.text);
     const attachments = event.payload.attachments ?? [];
@@ -1718,44 +1737,42 @@ const make = Effect.gen(function* () {
       if (Cause.hasInterruptsOnly(cause)) {
         return;
       }
-      const detail = formatFailureDetail(cause);
-      yield* appendProviderFailureActivity({
-        threadId: event.payload.threadId,
-        kind: "provider.follow-up.failed",
-        summary: "Follow-up send failed",
-        detail,
-        turnId: event.payload.turnId,
-        createdAt: event.payload.createdAt,
-        requestId: event.payload.messageId,
-      });
-
       if (!isNoActiveTurnSteerError(cause)) {
+        yield* appendProviderFailureActivity({
+          threadId: event.payload.threadId,
+          kind: "provider.follow-up.failed",
+          summary: "Follow-up send failed",
+          detail: formatFailureDetail(cause),
+          turnId: event.payload.turnId,
+          createdAt: event.payload.createdAt,
+          requestId: event.payload.messageId,
+        });
         return;
       }
 
-      // A provider's explicit "no active turn" rejection is authoritative.
-      // Re-read before updating so a concurrent lifecycle event or new turn is
-      // never overwritten by recovery from an older steer request.
+      // A provider's explicit "no active turn" rejection is authoritative: the
+      // turn ended before the steer reached it. Re-read before updating so a
+      // concurrent lifecycle event or new turn is never overwritten by
+      // recovery from an older steer request.
       const latestThread = yield* resolveThread(event.payload.threadId);
       const latestSession = latestThread?.session;
       if (
-        latestSession?.status !== "running" ||
-        latestSession.activeTurnId !== event.payload.turnId
+        latestSession?.status === "running" &&
+        latestSession.activeTurnId === event.payload.turnId
       ) {
-        return;
+        yield* setThreadSession({
+          threadId: event.payload.threadId,
+          session: {
+            ...latestSession,
+            status: "ready",
+            activeTurnId: null,
+            lastError: null,
+            updatedAt: event.payload.createdAt,
+          },
+          createdAt: event.payload.createdAt,
+        });
       }
-
-      yield* setThreadSession({
-        threadId: event.payload.threadId,
-        session: {
-          ...latestSession,
-          status: "ready",
-          activeTurnId: null,
-          lastError: null,
-          updatedAt: event.payload.createdAt,
-        },
-        createdAt: event.payload.createdAt,
-      });
+      yield* requeue;
     });
 
     const delivered = yield* providerService
@@ -2413,12 +2430,85 @@ const make = Effect.gen(function* () {
   });
 
   /**
+   * Last session status seen per thread, so a session update can tell a turn
+   * that just finished (running -> ready) from any other ready report. Events
+   * for one thread are processed in order, so this needs no locking.
+   */
+  const lastSessionStatusByThread = new Map<ThreadId, OrchestrationSession["status"]>();
+
+  /** Starts a queued message's turn. Losing a race with Remove is fine. */
+  const sendQueuedFollowUp = Effect.fnUntraced(function* (
+    threadId: ThreadId,
+    messageId: MessageId,
+    createdAt: string,
+  ) {
+    yield* orchestrationEngine
+      .dispatch({
+        type: "thread.follow-up.send-queued",
+        commandId: serverCommandId("follow-up-send-queued"),
+        threadId,
+        messageId,
+        createdAt,
+      })
+      .pipe(
+        Effect.catch((error) =>
+          Effect.logInfo("provider command reactor could not send a queued follow-up", {
+            threadId,
+            messageId,
+            detail: String(error),
+          }),
+        ),
+      );
+  });
+
+  /**
+   * A message queued while the thread is idle goes out at once: it was queued
+   * because the turn it meant to follow ended as it was sent. Older messages
+   * still waiting after a stopped or failed turn stay where they are.
+   */
+  const processFollowUpQueued = Effect.fn("processFollowUpQueued")(function* (
+    event: Extract<ProviderIntentEvent, { type: "thread.follow-up-queued" }>,
+  ) {
+    const thread = yield* resolveThread(event.payload.threadId);
+    const status = thread?.session?.status;
+    if (!thread || status === "running" || status === "starting") {
+      return;
+    }
+    yield* sendQueuedFollowUp(thread.id, event.payload.followUp.messageId, event.occurredAt);
+  });
+
+  /**
+   * A turn that finished normally sends the next queued message. An
+   * interrupted or failed turn does not, so nothing goes out after the user
+   * pressed Stop.
+   */
+  const maybeSendNextQueuedFollowUp = Effect.fnUntraced(function* (
+    event: Extract<ProviderIntentEvent, { type: "thread.session-set" }>,
+  ) {
+    const { session, threadId } = event.payload;
+    const previousStatus = lastSessionStatusByThread.get(threadId);
+    if (session.status === "stopped") {
+      lastSessionStatusByThread.delete(threadId);
+    } else {
+      lastSessionStatusByThread.set(threadId, session.status);
+    }
+    if (previousStatus !== "running" || session.status !== "ready" || session.activeTurnId) {
+      return;
+    }
+    const next = (yield* resolveThread(threadId))?.queuedFollowUps?.[0];
+    if (next) {
+      yield* sendQueuedFollowUp(threadId, next.messageId, event.occurredAt);
+    }
+  });
+
+  /**
    * RPC prompts need their live provider session and expire when it stops.
    * Message questions survive automatic session recycling and reconnects.
    */
   const processSessionSet = Effect.fn("processSessionSet")(function* (
     event: Extract<ProviderIntentEvent, { type: "thread.session-set" }>,
   ) {
+    yield* maybeSendNextQueuedFollowUp(event);
     if (event.payload.session.status !== "stopped") {
       if (
         event.payload.session.status === "starting" ||
@@ -2560,6 +2650,9 @@ const make = Effect.gen(function* () {
         return;
       case "thread.follow-up-submitted":
         yield* processFollowUpSubmitted(event);
+        return;
+      case "thread.follow-up-queued":
+        yield* processFollowUpQueued(event);
         return;
       case "thread.turn-interrupt-requested":
         yield* processTurnInterruptRequested(event);
@@ -2723,6 +2816,7 @@ const make = Effect.gen(function* () {
         event.type === "thread.meta-updated" ||
         event.type === "thread.turn-start-requested" ||
         event.type === "thread.follow-up-submitted" ||
+        event.type === "thread.follow-up-queued" ||
         event.type === "thread.turn-interrupt-requested" ||
         isPendingRequestActivityAppended(event) ||
         event.type === "thread.realtime-start-requested" ||

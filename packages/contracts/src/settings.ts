@@ -9,7 +9,7 @@ import {
   DEFAULT_GIT_TEXT_GENERATION_OPTIONS,
   ProviderOptionSelections,
 } from "./model.ts";
-import { ModelSelection } from "./orchestration.ts";
+import { FollowUpDelivery, ModelSelection } from "./orchestration.ts";
 import { ProviderInstanceConfig, ProviderInstanceId } from "./providerInstance.ts";
 
 // ── Client Settings (local-only) ───────────────────────────────
@@ -92,6 +92,9 @@ export const ClientSettingsSchema = Schema.Struct({
   diffWordWrap: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   // File viewer preferences. Code files default to horizontal scroll.
   fileViewerWordWrap: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  // What the send button does with a message typed while a turn runs: add it
+  // to that turn, or hold it for the next one. The last choice sticks.
+  followUpDelivery: FollowUpDelivery.pipe(Schema.withDecodingDefault(Effect.succeed("steer"))),
   // Model favorites. Historically keyed by provider kind, now
   // widened to `ProviderInstanceId` so users can favorite a specific model
   // on a custom provider instance (e.g. "Codex Personal · gpt-5") without
@@ -653,6 +656,7 @@ export const ClientSettingsPatch = Schema.Struct({
   diffRenderMode: Schema.optionalKey(DiffRenderMode),
   diffWordWrap: Schema.optionalKey(Schema.Boolean),
   fileViewerWordWrap: Schema.optionalKey(Schema.Boolean),
+  followUpDelivery: Schema.optionalKey(FollowUpDelivery),
   favorites: Schema.optionalKey(
     Schema.Array(
       Schema.Struct({

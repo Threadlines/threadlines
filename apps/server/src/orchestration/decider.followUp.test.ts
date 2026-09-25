@@ -107,4 +107,103 @@ describe("decider follow-up flows", () => {
       },
     });
   });
+
+  it("queues a steer whose turn already ended instead of refusing it", async () => {
+    const decided = await Effect.runPromise(
+      decideOrchestrationCommand({
+        command: {
+          type: "thread.follow-up.submit",
+          commandId: CommandId.make("cmd-late-steer"),
+          threadId: ThreadId.make("thread-follow-up"),
+          turnId: TurnId.make("turn-follow-up"),
+          message: {
+            messageId: MessageId.make("message-late-steer"),
+            role: "user",
+            text: "one more thing",
+            attachments: [],
+          },
+          createdAt: "2026-01-01T00:00:05.000Z",
+        },
+        readModel: readModelAfterProviderDelivery,
+      }),
+    );
+
+    expect(decided).toMatchObject({
+      type: "thread.follow-up-queued",
+      payload: {
+        followUp: {
+          messageId: MessageId.make("message-late-steer"),
+          text: "one more thing",
+          runtimeMode: "approval-required",
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        },
+      },
+    });
+  });
+
+  it("sends a queued message as a turn and takes it out of the queue in one step", async () => {
+    const [thread] = readModelAfterProviderDelivery.threads;
+    const readModel: OrchestrationReadModel = {
+      ...readModelAfterProviderDelivery,
+      threads: [
+        {
+          ...thread!,
+          queuedFollowUps: [
+            {
+              messageId: MessageId.make("message-queued"),
+              text: "now plan the next step",
+              attachments: [],
+              runtimeMode: "approval-required",
+              interactionMode: "plan",
+              createdAt: "2026-01-01T00:00:02.500Z",
+            },
+          ],
+        },
+      ],
+    };
+
+    const decided = await Effect.runPromise(
+      decideOrchestrationCommand({
+        command: {
+          type: "thread.follow-up.send-queued",
+          commandId: CommandId.make("cmd-send-queued"),
+          threadId: ThreadId.make("thread-follow-up"),
+          messageId: MessageId.make("message-queued"),
+          createdAt: "2026-01-01T00:00:05.000Z",
+        },
+        readModel,
+      }),
+    );
+    const events = Array.isArray(decided) ? decided : [decided];
+
+    expect(events.map((event) => event.type)).toEqual([
+      "thread.follow-up-unqueued",
+      "thread.interaction-mode-set",
+      "thread.message-sent",
+      "thread.session-set",
+      "thread.turn-start-requested",
+    ]);
+    expect(events[2]).toMatchObject({
+      payload: {
+        messageId: MessageId.make("message-queued"),
+        createdAt: "2026-01-01T00:00:05.000Z",
+      },
+    });
+    expect(events[4]).toMatchObject({ payload: { interactionMode: "plan" } });
+
+    await expect(
+      Effect.runPromise(
+        decideOrchestrationCommand({
+          command: {
+            type: "thread.follow-up.send-queued",
+            commandId: CommandId.make("cmd-send-queued-again"),
+            threadId: ThreadId.make("thread-follow-up"),
+            messageId: MessageId.make("message-queued"),
+            createdAt: "2026-01-01T00:00:06.000Z",
+          },
+          readModel: readModelAfterProviderDelivery,
+        }),
+      ),
+    ).rejects.toThrow(/not queued/);
+  });
 });

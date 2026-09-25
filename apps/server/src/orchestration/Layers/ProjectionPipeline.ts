@@ -301,7 +301,7 @@ function retainProjectionProposedPlansAfterRevert(
 
 function collectThreadAttachmentRelativePaths(
   threadId: string,
-  messages: ReadonlyArray<ProjectionThreadMessage>,
+  messages: ReadonlyArray<Pick<ProjectionThreadMessage, "attachments">>,
 ): Set<string> {
   const threadSegment = toSafeThreadAttachmentSegment(threadId);
   if (!threadSegment) {
@@ -595,6 +595,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             pullRequestAutoFix: 0,
             pullRequestAutoMerge: null,
             linkedPullRequests: [],
+            queuedFollowUps: [],
             doneOverride: null,
             doneOverrideAt: null,
             lastSeenAt: null,
@@ -870,6 +871,43 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           return;
         }
 
+        case "thread.follow-up-queued": {
+          const existingRow = yield* projectionThreadRepository.getById({
+            threadId: event.payload.threadId,
+          });
+          if (Option.isNone(existingRow)) {
+            return;
+          }
+          const { followUp } = event.payload;
+          yield* projectionThreadRepository.upsert({
+            ...existingRow.value,
+            queuedFollowUps: [
+              ...(existingRow.value.queuedFollowUps ?? []).filter(
+                (queued) => queued.messageId !== followUp.messageId,
+              ),
+              followUp,
+            ],
+            updatedAt: event.occurredAt,
+          });
+          return;
+        }
+
+        case "thread.follow-up-unqueued": {
+          const existingRow = yield* projectionThreadRepository.getById({
+            threadId: event.payload.threadId,
+          });
+          if (Option.isNone(existingRow)) {
+            return;
+          }
+          yield* projectionThreadRepository.upsert({
+            ...existingRow.value,
+            queuedFollowUps: (existingRow.value.queuedFollowUps ?? []).filter(
+              (queued) => queued.messageId !== event.payload.messageId,
+            ),
+          });
+          return;
+        }
+
         case "thread.message-sent":
         case "thread.follow-up-submitted":
         case "thread.follow-up-accepted":
@@ -1121,9 +1159,20 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           yield* Effect.forEach(keptRows, projectionThreadMessageRepository.upsert, {
             concurrency: 1,
           }).pipe(Effect.asVoid);
+          // Messages still waiting in the queue own attachments too, and
+          // their turn has not started yet.
+          const threadRow = yield* projectionThreadRepository.getById({
+            threadId: event.payload.threadId,
+          });
+          const queuedFollowUps = Option.isSome(threadRow)
+            ? (threadRow.value.queuedFollowUps ?? [])
+            : [];
           attachmentSideEffects.prunedThreadRelativePaths.set(
             event.payload.threadId,
-            collectThreadAttachmentRelativePaths(event.payload.threadId, keptRows),
+            collectThreadAttachmentRelativePaths(event.payload.threadId, [
+              ...keptRows,
+              ...queuedFollowUps,
+            ]),
           );
           return;
         }

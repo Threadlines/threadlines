@@ -3858,6 +3858,57 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     });
   });
 
+  /**
+   * Opens a turn for model output that arrives while none is active. Claude
+   * starts turns of its own: a message sent while it was writing its final
+   * answer runs as a new turn once that answer ends, and a background agent
+   * finishing wakes it too. Opening the turn on the first streamed event,
+   * rather than on the first whole message, keeps the thread from reading as
+   * finished while Claude thinks, and lets that output stream live.
+   */
+  const ensureSyntheticTurn = Effect.fnUntraced(function* (context: ClaudeSessionContext) {
+    if (context.turnState) {
+      return;
+    }
+    const turnId = TurnId.make(yield* randomUUIDv4);
+    const startedAt = yield* nowIso;
+    context.turnState = {
+      turnId,
+      startedAt,
+      items: [],
+      assistantTextBlocks: new Map(),
+      assistantTextBlockOrder: [],
+      thinkingBlocks: new Map(),
+      capturedProposedPlanKeys: new Set(),
+      nextSyntheticAssistantBlockIndex: -1,
+    };
+    context.session = {
+      ...context.session,
+      status: "running",
+      activeTurnId: turnId,
+      updatedAt: startedAt,
+    };
+    const turnStartedStamp = yield* makeEventStamp();
+    yield* offerRuntimeEvent({
+      type: "turn.started",
+      eventId: turnStartedStamp.eventId,
+      provider: PROVIDER,
+      createdAt: turnStartedStamp.createdAt,
+      threadId: context.session.threadId,
+      turnId,
+      payload: {},
+      providerRefs: {
+        ...nativeProviderRefs(context),
+        providerTurnId: turnId,
+      },
+      raw: {
+        source: "claude.sdk.message",
+        method: "claude/synthetic-turn-start",
+        payload: {},
+      },
+    });
+  });
+
   const handleStreamEvent = Effect.fn("handleStreamEvent")(function* (
     context: ClaudeSessionContext,
     message: SDKMessage,
@@ -3865,6 +3916,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     if (message.type !== "stream_event") {
       return;
     }
+
+    yield* ensureSyntheticTurn(context);
 
     const { event } = message;
 
@@ -4991,47 +5044,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       yield* options.onChatAuthStateChanged("verified").pipe(Effect.ignoreCause({ log: true }));
     }
 
-    // Auto-start a synthetic turn for assistant messages that arrive without
-    // an active turn (e.g., background agent/subagent responses between user prompts).
-    if (!context.turnState) {
-      const turnId = TurnId.make(yield* randomUUIDv4);
-      const startedAt = yield* nowIso;
-      context.turnState = {
-        turnId,
-        startedAt,
-        items: [],
-        assistantTextBlocks: new Map(),
-        assistantTextBlockOrder: [],
-        thinkingBlocks: new Map(),
-        capturedProposedPlanKeys: new Set(),
-        nextSyntheticAssistantBlockIndex: -1,
-      };
-      context.session = {
-        ...context.session,
-        status: "running",
-        activeTurnId: turnId,
-        updatedAt: startedAt,
-      };
-      const turnStartedStamp = yield* makeEventStamp();
-      yield* offerRuntimeEvent({
-        type: "turn.started",
-        eventId: turnStartedStamp.eventId,
-        provider: PROVIDER,
-        createdAt: turnStartedStamp.createdAt,
-        threadId: context.session.threadId,
-        turnId,
-        payload: {},
-        providerRefs: {
-          ...nativeProviderRefs(context),
-          providerTurnId: turnId,
-        },
-        raw: {
-          source: "claude.sdk.message",
-          method: "claude/synthetic-turn-start",
-          payload: {},
-        },
-      });
-    }
+    yield* ensureSyntheticTurn(context);
 
     const content = message.message?.content;
     if (Array.isArray(content)) {

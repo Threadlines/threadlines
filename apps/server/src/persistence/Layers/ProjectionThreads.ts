@@ -17,6 +17,7 @@ import {
 import {
   ModelSelection,
   OrchestrationThreadGoal,
+  OrchestrationQueuedFollowUp,
   OrchestrationThreadLinkedPullRequest,
 } from "@threadlines/contracts";
 
@@ -25,6 +26,7 @@ const ProjectionThreadDbRow = ProjectionThread.mapFields(
     modelSelection: Schema.fromJsonString(ModelSelection),
     goal: Schema.NullOr(Schema.fromJsonString(OrchestrationThreadGoal)),
     linkedPullRequests: Schema.fromJsonString(Schema.Array(OrchestrationThreadLinkedPullRequest)),
+    queuedFollowUps: Schema.fromJsonString(Schema.Array(OrchestrationQueuedFollowUp)),
   }),
 );
 type ProjectionThreadDbRow = typeof ProjectionThreadDbRow.Type;
@@ -58,6 +60,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           pull_request_auto_fix,
           pull_request_auto_merge,
           linked_pull_requests,
+          queued_follow_ups,
           done_override,
           done_override_at,
           last_seen_at,
@@ -90,6 +93,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           ${row.pullRequestAutoFix ?? 0},
           ${row.pullRequestAutoMerge ?? null},
           ${JSON.stringify(row.linkedPullRequests ?? [])},
+          ${JSON.stringify(row.queuedFollowUps ?? [])},
           ${row.doneOverride ?? null},
           ${row.doneOverrideAt ?? null},
           ${row.lastSeenAt ?? null},
@@ -122,6 +126,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           pull_request_auto_fix = excluded.pull_request_auto_fix,
           pull_request_auto_merge = excluded.pull_request_auto_merge,
           linked_pull_requests = excluded.linked_pull_requests,
+          queued_follow_ups = excluded.queued_follow_ups,
           done_override = excluded.done_override,
           done_override_at = excluded.done_override_at,
           last_seen_at = excluded.last_seen_at,
@@ -161,6 +166,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           pull_request_auto_fix AS "pullRequestAutoFix",
           pull_request_auto_merge AS "pullRequestAutoMerge",
           linked_pull_requests AS "linkedPullRequests",
+          queued_follow_ups AS "queuedFollowUps",
           done_override AS "doneOverride",
           done_override_at AS "doneOverrideAt",
           last_seen_at AS "lastSeenAt",
@@ -202,6 +208,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           pull_request_auto_fix AS "pullRequestAutoFix",
           pull_request_auto_merge AS "pullRequestAutoMerge",
           linked_pull_requests AS "linkedPullRequests",
+          queued_follow_ups AS "queuedFollowUps",
           done_override AS "doneOverride",
           done_override_at AS "doneOverrideAt",
           last_seen_at AS "lastSeenAt",

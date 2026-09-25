@@ -749,6 +749,31 @@ export const OrchestrationLatestTurn = Schema.Struct({
 });
 export type OrchestrationLatestTurn = typeof OrchestrationLatestTurn.Type;
 
+/**
+ * How a message sent while a turn runs reaches the agent. `steer` adds it to
+ * the running turn; `queue` holds it until the turn finishes and then sends
+ * it as the next turn.
+ */
+export const FollowUpDelivery = Schema.Literals(["steer", "queue"]);
+export type FollowUpDelivery = typeof FollowUpDelivery.Type;
+
+/**
+ * A message waiting for the running turn to finish. It carries the composer
+ * settings it was queued with, so the turn it starts runs the way the user
+ * asked even if the thread's settings move in the meantime.
+ */
+export const OrchestrationQueuedFollowUp = Schema.Struct({
+  messageId: MessageId,
+  text: Schema.String,
+  attachments: Schema.Array(ChatAttachment),
+  skills: Schema.optional(ChatSkillReferenceList),
+  modelSelection: Schema.optional(ModelSelection),
+  runtimeMode: RuntimeMode,
+  interactionMode: ProviderInteractionMode,
+  createdAt: IsoDateTime,
+});
+export type OrchestrationQueuedFollowUp = typeof OrchestrationQueuedFollowUp.Type;
+
 /** Where a thread's `effectiveCwd` came from. See OrchestrationThread. */
 export const ThreadEffectiveCwdSource = Schema.Literals(["session", "subagent", "selection"]);
 export type ThreadEffectiveCwdSource = typeof ThreadEffectiveCwdSource.Type;
@@ -821,6 +846,11 @@ export const OrchestrationThread = Schema.Struct({
   session: Schema.NullOr(OrchestrationSession),
   /** See OrchestrationThreadShell.diffStatBaselineTurnCount. */
   diffStatBaselineTurnCount: NonNegativeInt.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
+  /** See OrchestrationThreadShell.queuedFollowUps. */
+  queuedFollowUps: Schema.Array(OrchestrationQueuedFollowUp).pipe(
+    Schema.optional,
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
 });
 export type OrchestrationThread = typeof OrchestrationThread.Type;
 
@@ -936,6 +966,16 @@ export const OrchestrationThreadShell = Schema.Struct({
    * Zero means "count every turn", which is what pre-existing threads decode to.
    */
   diffStatBaselineTurnCount: NonNegativeInt.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
+  /**
+   * Messages waiting for the running turn to finish, oldest first. The server
+   * sends the first one as a new turn when a turn completes normally; a turn
+   * that was interrupted or failed leaves them waiting, so nothing is sent
+   * behind the user's back after they stopped the agent.
+   */
+  queuedFollowUps: Schema.Array(OrchestrationQueuedFollowUp).pipe(
+    Schema.optional,
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
 });
 export type OrchestrationThreadShell = typeof OrchestrationThreadShell.Type;
 
@@ -1262,6 +1302,13 @@ export const ThreadTurnStartCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+/**
+ * A message sent while `turnId` runs. `steer` (the default) adds it to that
+ * turn; `queue` holds it for the next one. A steer that finds the turn already
+ * over is queued instead, so it is sent as the next turn rather than lost. The
+ * settings are what a queued message's turn runs with; the thread's own
+ * settings fill in any that are missing.
+ */
 export const ThreadFollowUpSubmitCommand = Schema.Struct({
   type: Schema.Literal("thread.follow-up.submit"),
   commandId: CommandId,
@@ -1274,6 +1321,19 @@ export const ThreadFollowUpSubmitCommand = Schema.Struct({
     attachments: Schema.Array(ChatAttachment),
     skills: Schema.optional(ChatSkillReferenceList),
   }),
+  delivery: Schema.optional(FollowUpDelivery),
+  modelSelection: Schema.optional(ModelSelection),
+  runtimeMode: Schema.optional(RuntimeMode),
+  interactionMode: Schema.optional(ProviderInteractionMode),
+  createdAt: IsoDateTime,
+});
+
+/** Take a message out of the thread's queue before it is sent. */
+const ThreadFollowUpUnqueueCommand = Schema.Struct({
+  type: Schema.Literal("thread.follow-up.unqueue"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  messageId: MessageId,
   createdAt: IsoDateTime,
 });
 
@@ -1309,6 +1369,10 @@ const ClientThreadFollowUpSubmitCommand = Schema.Struct({
     attachments: Schema.Array(UploadChatAttachment),
     skills: Schema.optional(ChatSkillReferenceList),
   }),
+  delivery: Schema.optional(FollowUpDelivery),
+  modelSelection: Schema.optional(ModelSelection),
+  runtimeMode: Schema.optional(RuntimeMode),
+  interactionMode: Schema.optional(ProviderInteractionMode),
   createdAt: IsoDateTime,
 });
 
@@ -1445,6 +1509,7 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ThreadInteractionModeSetCommand,
   ThreadTurnStartCommand,
   ThreadFollowUpSubmitCommand,
+  ThreadFollowUpUnqueueCommand,
   ThreadTurnInterruptCommand,
   ThreadRealtimeStartCommand,
   ThreadRealtimeStopCommand,
@@ -1481,6 +1546,7 @@ export const ClientOrchestrationCommand = Schema.Union([
   ThreadInteractionModeSetCommand,
   ClientThreadTurnStartCommand,
   ClientThreadFollowUpSubmitCommand,
+  ThreadFollowUpUnqueueCommand,
   ThreadTurnInterruptCommand,
   ThreadRealtimeStartCommand,
   ThreadRealtimeStopCommand,
@@ -1663,6 +1729,19 @@ const ThreadPullRequestLinkCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+/**
+ * Send a queued message as a new turn. Dispatched by the server when the turn
+ * it was waiting on finishes; takes the message out of the queue and starts
+ * its turn in one step, so it can never be sent twice.
+ */
+const ThreadFollowUpSendQueuedCommand = Schema.Struct({
+  type: Schema.Literal("thread.follow-up.send-queued"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  messageId: MessageId,
+  createdAt: IsoDateTime,
+});
+
 const InternalOrchestrationCommand = Schema.Union([
   ThreadSessionSetCommand,
   ThreadRealtimeStateSetCommand,
@@ -1679,6 +1758,7 @@ const InternalOrchestrationCommand = Schema.Union([
   ThreadDiffStatRebaseCommand,
   ThreadActivityAppendCommand,
   ThreadFollowUpAcceptCommand,
+  ThreadFollowUpSendQueuedCommand,
   ThreadRevertCompleteCommand,
   ThreadPullRequestLinkCommand,
 ]);
@@ -1711,6 +1791,8 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.turn-start-requested",
   "thread.follow-up-submitted",
   "thread.follow-up-accepted",
+  "thread.follow-up-queued",
+  "thread.follow-up-unqueued",
   "thread.turn-interrupt-requested",
   "thread.realtime-start-requested",
   "thread.realtime-stop-requested",
@@ -1905,6 +1987,19 @@ export const ThreadFollowUpSubmittedPayload = Schema.Struct({
 });
 
 export const ThreadFollowUpAcceptedPayload = ThreadFollowUpSubmittedPayload;
+
+export const ThreadFollowUpQueuedPayload = Schema.Struct({
+  threadId: ThreadId,
+  followUp: OrchestrationQueuedFollowUp,
+});
+
+/** `sent` when its turn started, `cancelled` when the user took it back. */
+export const ThreadFollowUpUnqueuedPayload = Schema.Struct({
+  threadId: ThreadId,
+  messageId: MessageId,
+  reason: Schema.Literals(["sent", "cancelled"]),
+  createdAt: IsoDateTime,
+});
 
 export const ThreadTurnInterruptRequestedPayload = Schema.Struct({
   threadId: ThreadId,
@@ -2153,6 +2248,16 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.follow-up-accepted"),
     payload: ThreadFollowUpAcceptedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.follow-up-queued"),
+    payload: ThreadFollowUpQueuedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.follow-up-unqueued"),
+    payload: ThreadFollowUpUnqueuedPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,

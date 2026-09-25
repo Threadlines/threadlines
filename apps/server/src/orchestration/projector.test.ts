@@ -96,6 +96,7 @@ describe("orchestration projector", () => {
         pullRequestAutoFix: false,
         pullRequestAutoMerge: null,
         linkedPullRequests: [],
+        queuedFollowUps: [],
         doneOverride: null,
         lastSeenAt: null,
         deletedAt: null,

@@ -171,6 +171,8 @@ export function isThreadDetailEvent(event: OrchestrationEvent): event is Extract
       | "thread.message-sent"
       | "thread.follow-up-submitted"
       | "thread.follow-up-accepted"
+      | "thread.follow-up-queued"
+      | "thread.follow-up-unqueued"
       | "thread.proposed-plan-upserted"
       | "thread.activity-appended"
       | "thread.turn-diff-completed"
@@ -186,6 +188,8 @@ export function isThreadDetailEvent(event: OrchestrationEvent): event is Extract
     event.type === "thread.message-sent" ||
     event.type === "thread.follow-up-submitted" ||
     event.type === "thread.follow-up-accepted" ||
+    event.type === "thread.follow-up-queued" ||
+    event.type === "thread.follow-up-unqueued" ||
     event.type === "thread.proposed-plan-upserted" ||
     event.type === "thread.activity-appended" ||
     event.type === "thread.turn-diff-completed" ||

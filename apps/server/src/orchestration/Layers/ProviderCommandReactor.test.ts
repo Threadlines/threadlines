@@ -164,6 +164,7 @@ describe("ProviderCommandReactor", () => {
     readonly threadModelSelection?: ModelSelection;
     readonly sessionModelSwitch?: "unsupported" | "in-session";
     readonly nativeThreadFork?: "supported" | "unsupported";
+    readonly activeTurnSteering?: "supported" | "unsupported";
     /** Fail session starts that request a native fork, to exercise the
      *  context-seed fallback path. */
     readonly failNativeForkStart?: boolean;
@@ -425,6 +426,7 @@ describe("ProviderCommandReactor", () => {
       getCapabilities: (_provider) =>
         Effect.succeed({
           sessionModelSwitch: input?.sessionModelSwitch ?? "in-session",
+          activeTurnSteering: input?.activeTurnSteering ?? "supported",
           ...(input?.nativeThreadFork !== undefined
             ? { nativeThreadFork: input.nativeThreadFork }
             : {}),
@@ -1230,7 +1232,7 @@ describe("ProviderCommandReactor", () => {
     expect(freshThread?.session ?? null).toBeNull();
   });
 
-  it("settles a stale running session when the provider reports no active turn to steer", async () => {
+  it("sends a steer that missed its turn as the next turn", async () => {
     const harness = await createHarness();
     const turnId = asTurnId("turn-stale");
     const messageId = asMessageId("user-message-stale-follow-up");
@@ -1280,34 +1282,136 @@ describe("ProviderCommandReactor", () => {
       }),
     );
 
-    await waitFor(async () => {
-      const readModel = await harness.readModel();
-      const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
-      return (
-        thread?.session?.status === "ready" &&
-        thread.session.activeTurnId === null &&
-        thread.activities.some((entry) => entry.kind === "provider.follow-up.failed")
-      );
+    // The provider's "no active turn" settles the stale session, and the
+    // message becomes the next turn instead of being dropped.
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    expect(harness.sendTurn.mock.calls[0]?.[0]).toMatchObject({
+      threadId: ThreadId.make("thread-1"),
+      messageId,
+      input: "continue after the stale turn",
     });
 
     const readModel = await harness.readModel();
     const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
-    expect(thread?.session).toMatchObject({
-      status: "ready",
-      activeTurnId: null,
-      pendingBackgroundTaskCount: 0,
-      lastError: null,
+    expect(thread?.messages.find((entry) => entry.id === messageId)).toMatchObject({
+      role: "user",
+      text: "continue after the stale turn",
     });
-    expect(
-      thread?.activities.find((entry) => entry.kind === "provider.follow-up.failed"),
-    ).toMatchObject({
-      payload: {
-        detail: "no active turn to steer",
-        requestId: messageId,
-      },
-      turnId,
+    expect(thread?.queuedFollowUps ?? []).toEqual([]);
+    expect(thread?.activities.some((entry) => entry.kind === "provider.follow-up.failed")).toBe(
+      false,
+    );
+  });
+
+  describe("queued follow-ups", () => {
+    const threadId = ThreadId.make("thread-1");
+    const turnId = asTurnId("turn-queued");
+
+    const setSession = (
+      harness: Awaited<ReturnType<typeof createHarness>>,
+      status: "running" | "ready" | "interrupted",
+      at: string,
+    ) =>
+      Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.make(`cmd-queued-session-${status}-${at}`),
+          threadId,
+          session: {
+            threadId,
+            status,
+            providerName: "codex",
+            providerInstanceId: ProviderInstanceId.make("codex"),
+            runtimeMode: "approval-required",
+            activeTurnId: status === "running" ? turnId : null,
+            pendingBackgroundTaskCount: 0,
+            lastError: null,
+            updatedAt: at,
+          },
+          createdAt: at,
+        }),
+      );
+
+    const submit = (
+      harness: Awaited<ReturnType<typeof createHarness>>,
+      input: { messageId: MessageId; text: string; delivery?: "steer" | "queue" },
+    ) =>
+      Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.follow-up.submit",
+          commandId: CommandId.make(`cmd-submit-${input.messageId}`),
+          threadId,
+          turnId,
+          message: { messageId: input.messageId, role: "user", text: input.text, attachments: [] },
+          ...(input.delivery ? { delivery: input.delivery } : {}),
+          interactionMode: "plan",
+          createdAt: "2026-01-01T00:00:02.000Z",
+        }),
+      );
+
+    const readThread = async (harness: Awaited<ReturnType<typeof createHarness>>) =>
+      (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+
+    it("sends a queued message as the next turn once the running turn completes", async () => {
+      const harness = await createHarness();
+      const first = asMessageId("queued-first");
+      const second = asMessageId("queued-second");
+      await setSession(harness, "running", "2026-01-01T00:00:01.000Z");
+      await submit(harness, { messageId: first, text: "then write tests", delivery: "queue" });
+      await submit(harness, { messageId: second, text: "then open a PR", delivery: "queue" });
+
+      await waitFor(async () => (await readThread(harness))?.queuedFollowUps?.length === 2);
+      expect(harness.steerTurn).not.toHaveBeenCalled();
+      expect(harness.sendTurn).not.toHaveBeenCalled();
+
+      await setSession(harness, "ready", "2026-01-01T00:00:03.000Z");
+
+      // Only the first goes out; the second waits for the turn it starts.
+      await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+      expect(harness.sendTurn.mock.calls[0]?.[0]).toMatchObject({
+        threadId,
+        messageId: first,
+        input: "then write tests",
+        interactionMode: "plan",
+      });
+      const thread = await readThread(harness);
+      expect(thread?.interactionMode).toBe("plan");
+      expect(thread?.queuedFollowUps?.map((queued) => queued.messageId)).toEqual([second]);
+      expect(thread?.messages.find((entry) => entry.id === first)).toMatchObject({
+        role: "user",
+        text: "then write tests",
+      });
     });
-    expect(thread?.messages.some((entry) => entry.id === messageId)).toBe(false);
+
+    it("keeps queued messages waiting after the turn is interrupted", async () => {
+      const harness = await createHarness();
+      const queued = asMessageId("queued-after-stop");
+      await setSession(harness, "running", "2026-01-01T00:00:01.000Z");
+      await submit(harness, { messageId: queued, text: "and then this", delivery: "queue" });
+      await waitFor(async () => (await readThread(harness))?.queuedFollowUps?.length === 1);
+
+      await setSession(harness, "interrupted", "2026-01-01T00:00:03.000Z");
+      await harness.drain();
+
+      expect(harness.sendTurn).not.toHaveBeenCalled();
+      expect((await readThread(harness))?.queuedFollowUps?.map((entry) => entry.messageId)).toEqual(
+        [queued],
+      );
+    });
+
+    it("queues a steer for a provider that cannot steer", async () => {
+      const harness = await createHarness({ activeTurnSteering: "unsupported" });
+      const messageId = asMessageId("steer-without-support");
+      await setSession(harness, "running", "2026-01-01T00:00:01.000Z");
+      await submit(harness, { messageId, text: "adjust course" });
+
+      await waitFor(async () => (await readThread(harness))?.queuedFollowUps?.length === 1);
+      expect(harness.steerTurn).not.toHaveBeenCalled();
+
+      await setSession(harness, "ready", "2026-01-01T00:00:03.000Z");
+      await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+      expect(harness.sendTurn.mock.calls[0]?.[0]).toMatchObject({ messageId });
+    });
   });
 
   it("generates a thread title on the first turn", async () => {
