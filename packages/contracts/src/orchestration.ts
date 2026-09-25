@@ -567,10 +567,15 @@ export const OrchestrationSession = Schema.Struct({
    */
   participantId: Schema.optional(Schema.NullOr(ThreadParticipantId)),
   activeTurnId: Schema.NullOr(TurnId),
-  // Provider-reported tasks (e.g. backgrounded shell commands) still running.
-  // Non-zero after a turn settles means the provider will self-wake when they
-  // finish; the UI surfaces this as a pending-background state.
+  // Provider-reported tasks (e.g. backgrounded shell commands) still running,
+  // including long-lived ones like dev servers. They live inside the session's
+  // runtime, so anything that would stop or replace it waits while this is
+  // non-zero.
   pendingBackgroundTaskCount: Schema.optional(NonNegativeInt),
+  // The pending tasks the agent is waiting on: it wakes up when they finish.
+  // Non-zero after a turn settles is what the UI shows as waiting. Absent (an
+  // older server) means every pending task is awaited.
+  awaitedBackgroundTaskCount: Schema.optional(NonNegativeInt),
   lastError: Schema.NullOr(TrimmedNonEmptyString),
   updatedAt: IsoDateTime,
 });

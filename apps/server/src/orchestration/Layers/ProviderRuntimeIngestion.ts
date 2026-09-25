@@ -2836,6 +2836,12 @@ const make = Effect.gen(function* () {
                 event.type === "session.started" || event.type === "session.exited"
                   ? 0
                   : (thread.session?.pendingBackgroundTaskCount ?? 0),
+              awaitedBackgroundTaskCount:
+                event.type === "session.started" || event.type === "session.exited"
+                  ? 0
+                  : (thread.session?.awaitedBackgroundTaskCount ??
+                    thread.session?.pendingBackgroundTaskCount ??
+                    0),
               lastError,
               updatedAt: sessionUpdatedAt,
             },
@@ -2876,10 +2882,21 @@ const make = Effect.gen(function* () {
       if (event.type === "task.snapshot.updated" && thread.session != null) {
         // Ambient housekeeping (e.g. live-update watchers) is not work the
         // user is waiting on, so it never holds the thread in "Background".
-        const nextPendingCount = new Set(
-          event.payload.tasks.filter((task) => task.ambient !== true).map((task) => task.taskId),
-        ).size;
-        if (nextPendingCount !== (thread.session.pendingBackgroundTaskCount ?? 0)) {
+        const pendingTasks = new Map(
+          event.payload.tasks
+            .filter((task) => task.ambient !== true)
+            .map((task) => [task.taskId, task] as const),
+        );
+        const nextPendingCount = pendingTasks.size;
+        // A task meant to keep running (a dev server) still holds the runtime
+        // open, but the thread is not waiting on it.
+        const nextAwaitedCount = [...pendingTasks.values()].filter(
+          (task) => task.awaited !== false,
+        ).length;
+        if (
+          nextPendingCount !== (thread.session.pendingBackgroundTaskCount ?? 0) ||
+          nextAwaitedCount !== thread.session.awaitedBackgroundTaskCount
+        ) {
           yield* orchestrationEngine.dispatch({
             type: "thread.session.set",
             commandId: providerCommandId(event, "task-snapshot-session-set"),
@@ -2887,6 +2904,7 @@ const make = Effect.gen(function* () {
             session: {
               ...thread.session,
               pendingBackgroundTaskCount: nextPendingCount,
+              awaitedBackgroundTaskCount: nextAwaitedCount,
               updatedAt: now,
             },
             createdAt: now,
@@ -2926,6 +2944,8 @@ const make = Effect.gen(function* () {
             session: {
               ...thread.session,
               pendingBackgroundTaskCount: nextPendingCount,
+              // Edges carry no intent, so every task is awaited.
+              awaitedBackgroundTaskCount: nextPendingCount,
               updatedAt: now,
             },
             createdAt: now,
@@ -3309,6 +3329,10 @@ const make = Effect.gen(function* () {
               runtimeMode: thread.session?.runtimeMode ?? "full-access",
               activeTurnId: eventTurnId ?? null,
               pendingBackgroundTaskCount: thread.session?.pendingBackgroundTaskCount ?? 0,
+              awaitedBackgroundTaskCount:
+                thread.session?.awaitedBackgroundTaskCount ??
+                thread.session?.pendingBackgroundTaskCount ??
+                0,
               lastError: runtimeErrorMessage,
               updatedAt: now,
             },

@@ -76,6 +76,7 @@ import Migration0054 from "./Migrations/054_ProjectionThreadsLinkedPullRequests.
 import Migration0055 from "./Migrations/055_ProjectionThreadsQueuedFollowUps.ts";
 import Migration0056 from "./Migrations/056_ProjectionRoomParticipants.ts";
 import Migration0057 from "./Migrations/057_ProjectionTurnsThreadDiffStat.ts";
+import Migration0058 from "./Migrations/058_ProjectionThreadSessionAwaitedBackgroundTasks.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -145,6 +146,7 @@ export const migrationEntries = [
   [55, "ProjectionThreadsQueuedFollowUps", Migration0055],
   [56, "ProjectionRoomParticipants", Migration0056],
   [57, "ProjectionTurnsThreadDiffStat", Migration0057],
+  [58, "ProjectionThreadSessionAwaitedBackgroundTasks", Migration0058],
 ] as const;
 
 /** Highest id in the full registry, so the "n of total" count is the real total. */

@@ -692,6 +692,11 @@ const TaskSnapshotUpdatedPayload = Schema.Struct({
       /** See TaskStartedPayload.ambient. Ambient tasks stay in the snapshot
        *  for task panels but do not count as pending background work. */
       ambient: Schema.optional(Schema.Boolean),
+      /** False when the agent is not waiting for the task to finish: a
+       *  process meant to keep running (a dev server, a watcher). It still
+       *  counts as pending background work, which keeps its runtime alive,
+       *  but the thread does not read as waiting on it. Absent means awaited. */
+      awaited: Schema.optional(Schema.Boolean),
     }),
   ),
 });

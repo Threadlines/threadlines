@@ -366,6 +366,13 @@ describe("agent transcripts", () => {
         summary: "",
       }),
     ).toMatchObject({ routine: true, label: "Took a screenshot", tallies: [{ tally: "browser" }] });
+    expect(
+      activityStepFromTranscriptTool({
+        id: "4",
+        name: "mcp__threadlines__mark_long_running",
+        summary: "",
+      }),
+    ).toMatchObject({ routine: true, label: "Left a command running in the background" });
   });
 
   it("keeps a call's result one click away and words a failed call as a failure", () => {

@@ -300,7 +300,10 @@ export interface ThreadSession {
   /** In a room, the agent holding the session slot. Absent: the thread's own agent. */
   participantId?: ThreadParticipantId | undefined;
   activeTurnId?: TurnId | undefined;
+  /** Background tasks still running, dev servers included. */
   pendingBackgroundTaskCount?: number | undefined;
+  /** The pending tasks the agent will wake up for. What the UI shows as waiting. */
+  awaitedBackgroundTaskCount?: number | undefined;
   createdAt: string;
   updatedAt: string;
   lastError?: string;

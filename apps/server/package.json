@@ -52,7 +52,8 @@
     "@opencode-ai/sdk": "^1.18.31",
     "@pierre/diffs": "catalog:",
     "effect": "catalog:",
-    "node-pty": "^1.1.0"
+    "node-pty": "^1.1.0",
+    "zod": "^4.6.5"
   },
   "devDependencies": {
     "@effect/vitest": "catalog:",

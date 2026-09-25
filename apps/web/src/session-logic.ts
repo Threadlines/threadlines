@@ -482,20 +482,20 @@ export function isLatestTurnSettled(
 }
 
 type SessionBackgroundState = SessionLifecycleState &
-  Partial<Pick<ThreadSession, "pendingBackgroundTaskCount">>;
+  Partial<Pick<ThreadSession, "awaitedBackgroundTaskCount">>;
 
 /**
- * The turn has settled but provider tasks (background subagents, deferred
- * shell commands) are still running and will start the thread back up on
- * their own. The thread is waiting, not finished, so it counts as live work
+ * The turn has settled but provider tasks the agent is waiting on (background
+ * subagents, a test run) are still running and will start the thread back up
+ * on their own. The thread is waiting, not finished, so it counts as live work
  * everywhere the app counts it: sidebar pill, taskbar badge, quit and update
- * warnings.
+ * warnings. A command left running on purpose, like a dev server, does not.
  */
 export function isWaitingOnBackgroundTasks(
   latestTurn: LatestTurnTiming | null,
   session: SessionBackgroundState | null,
 ): boolean {
-  return (session?.pendingBackgroundTaskCount ?? 0) > 0 && isLatestTurnSettled(latestTurn, session);
+  return (session?.awaitedBackgroundTaskCount ?? 0) > 0 && isLatestTurnSettled(latestTurn, session);
 }
 
 export function deriveActiveModelFallbackState(

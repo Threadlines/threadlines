@@ -74,6 +74,13 @@ import {
   missingWorkingDirectoryDetail,
   resolveFollowedSessionCwd,
 } from "../../vcs/CheckoutPresence.ts";
+import {
+  isClaudeCommandTaskType,
+  makeThreadlinesClaudeMcpServer,
+  MARK_LONG_RUNNING_TOOL_ID,
+  type MarkLongRunningOutcome,
+  THREADLINES_CLAUDE_MCP_SERVER_NAME,
+} from "../claudeLongRunningTool.ts";
 import { CLAUDE_PREVIEW_PANEL_INSTRUCTIONS } from "../previewPanelInstructions.ts";
 import { FILE_LINK_INSTRUCTIONS } from "../fileLinkInstructions.ts";
 import * as Cause from "effect/Cause";
@@ -349,6 +356,14 @@ interface ClaudeTaskSnapshot {
   readonly ambient?: boolean;
 }
 
+/** One entry of a background_tasks_changed snapshot, as forwarded. */
+interface ClaudeBackgroundTask {
+  readonly taskId: RuntimeTaskId;
+  readonly taskType?: string;
+  readonly description?: string;
+  readonly ambient?: boolean;
+}
+
 type ClaudeStructuredAgentToolResult =
   | {
       readonly status: "async_launched";
@@ -443,6 +458,13 @@ interface ClaudeSessionContext {
    *  background-task snapshots. Older user-configured binaries retain the
    *  legacy edge-counting fallback until this becomes true. */
   backgroundTaskSnapshotObserved: boolean;
+  /** The latest background-task snapshot, kept so a change in which tasks
+   *  the agent waits on can be republished without a membership change. */
+  backgroundTasks: ReadonlyArray<ClaudeBackgroundTask>;
+  /** Background commands the agent is not waiting on: ones it marked as
+   *  long-running, and ones still running when the user started a new turn.
+   *  Pruned to the live set on every snapshot. */
+  readonly unawaitedBackgroundTaskIds: Set<string>;
   /** Mirror of the SDK task tracker (TaskCreate/TaskUpdate/TaskList), keyed
    *  by task id once the create result reveals it. Session-scoped because the
    *  tracker list persists across turns. */
@@ -5174,6 +5196,80 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     });
   });
 
+  /**
+   * Forwards the session's live background tasks, marking the ones the agent
+   * is not waiting on. Called on every snapshot from the SDK, and again when
+   * that marking changes between snapshots.
+   */
+  const publishBackgroundTasks = Effect.fn("publishBackgroundTasks")(function* (
+    context: ClaudeSessionContext,
+    raw?: ProviderRuntimeEvent["raw"],
+  ) {
+    const stamp = yield* makeEventStamp();
+    yield* offerRuntimeEvent({
+      type: "task.snapshot.updated",
+      eventId: stamp.eventId,
+      provider: PROVIDER,
+      createdAt: stamp.createdAt,
+      threadId: context.session.threadId,
+      ...(context.turnState ? { turnId: asCanonicalTurnId(context.turnState.turnId) } : {}),
+      providerRefs: nativeProviderRefs(context),
+      ...(raw ? { raw } : {}),
+      payload: {
+        tasks: context.backgroundTasks.map((task) =>
+          context.unawaitedBackgroundTaskIds.has(task.taskId) ? { ...task, awaited: false } : task,
+        ),
+      },
+    });
+  });
+
+  /**
+   * The user moved the thread on while background commands were still
+   * running. The agent ended its turn without being woken by them, so what is
+   * left (a dev server, a watcher) is running on purpose; the thread stops
+   * reading as waiting on it. Agents are exempt: they always report back.
+   */
+  const releaseBackgroundCommands = Effect.fn("releaseBackgroundCommands")(function* (
+    context: ClaudeSessionContext,
+  ) {
+    let released = false;
+    for (const task of context.backgroundTasks) {
+      if (
+        isClaudeCommandTaskType(task.taskType) &&
+        !context.codexExecRuns.has(task.taskId) &&
+        !context.unawaitedBackgroundTaskIds.has(task.taskId)
+      ) {
+        context.unawaitedBackgroundTaskIds.add(task.taskId);
+        released = true;
+      }
+    }
+    if (released) {
+      yield* publishBackgroundTasks(context);
+    }
+  });
+
+  /** The model's `mark_long_running` call: see claudeLongRunningTool.ts. */
+  const markBackgroundTaskLongRunning = Effect.fn("markBackgroundTaskLongRunning")(function* (
+    context: ClaudeSessionContext,
+    taskId: string,
+  ) {
+    const task = context.backgroundTasks.find((entry) => entry.taskId === taskId);
+    if (!task) {
+      return { kind: "unknown-task" } satisfies MarkLongRunningOutcome;
+    }
+    if (!isClaudeCommandTaskType(task.taskType) || context.codexExecRuns.has(taskId)) {
+      return { kind: "not-a-command" } satisfies MarkLongRunningOutcome;
+    }
+    if (!context.unawaitedBackgroundTaskIds.has(taskId)) {
+      context.unawaitedBackgroundTaskIds.add(taskId);
+      yield* publishBackgroundTasks(context);
+    }
+    return {
+      kind: "marked",
+      ...(task.description ? { description: task.description } : {}),
+    } satisfies MarkLongRunningOutcome;
+  });
+
   const handleSystemMessage = Effect.fn("handleSystemMessage")(function* (
     context: ClaudeSessionContext,
     message: SDKMessage,
@@ -5341,15 +5437,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         // infer terminal outcomes for disappeared ids because the snapshot
         // intentionally carries no completion status or tool correlation.
         context.backgroundTaskSnapshotObserved = true;
-        const tasksById = new Map<
-          string,
-          {
-            readonly taskId: RuntimeTaskId;
-            readonly taskType?: string;
-            readonly description?: string;
-            readonly ambient?: boolean;
-          }
-        >();
+        const tasksById = new Map<string, ClaudeBackgroundTask>();
         for (const task of message.tasks) {
           const description = nonEmptyString(task.description);
           const taskType = nonEmptyString(task.task_type);
@@ -5360,13 +5448,13 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             ...(task.ambient === true ? { ambient: true } : {}),
           });
         }
-        yield* offerRuntimeEvent({
-          ...base,
-          type: "task.snapshot.updated",
-          payload: {
-            tasks: Array.from(tasksById.values()),
-          },
-        });
+        context.backgroundTasks = Array.from(tasksById.values());
+        for (const taskId of context.unawaitedBackgroundTaskIds) {
+          if (!tasksById.has(taskId)) {
+            context.unawaitedBackgroundTaskIds.delete(taskId);
+          }
+        }
+        yield* publishBackgroundTasks(context, base.raw);
         return;
       }
       case "task_started": {
@@ -6764,6 +6852,16 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             // process, so the wait is nothing.
             alwaysLoad: true,
           },
+          [THREADLINES_CLAUDE_MCP_SERVER_NAME]: makeThreadlinesClaudeMcpServer((taskId) =>
+            runPromise(
+              Effect.gen(function* () {
+                const context = yield* Ref.get(contextRef);
+                return context
+                  ? yield* markBackgroundTaskLongRunning(context, taskId)
+                  : ({ kind: "unknown-task" } satisfies MarkLongRunningOutcome);
+              }),
+            ),
+          ),
         },
         ...(apiModelId ? { model: apiModelId } : {}),
         pathToClaudeCodeExecutable: claudeBinaryPath,
@@ -6779,8 +6877,16 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         settingSources: [...CLAUDE_SETTING_SOURCES],
         // SDK 0.3.233 dropped the todo/task tools from the default tool
         // surface on newer models; the plan timeline reads them, so keep
-        // them enabled explicitly.
-        allowedTools: ["TodoWrite", "TaskCreate", "TaskGet", "TaskUpdate", "TaskList"],
+        // them enabled explicitly. Marking a command as long-running changes
+        // only what the thread shows, so it never asks for approval.
+        allowedTools: [
+          "TodoWrite",
+          "TaskCreate",
+          "TaskGet",
+          "TaskUpdate",
+          "TaskList",
+          MARK_LONG_RUNNING_TOOL_ID,
+        ],
         ...(effectiveEffort
           ? {
               effort: effectiveEffort,
@@ -6918,6 +7024,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         claimedCodexExecRolloutPaths: new Set(),
         startedTaskIds: new Set(),
         backgroundTaskSnapshotObserved: false,
+        backgroundTasks: [],
+        unawaitedBackgroundTaskIds: new Set(),
         planTracker: new Map(),
         lastEmittedPlanTrackerFingerprint: undefined,
         turnState: undefined,
@@ -7157,6 +7265,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       payload: modelSelection?.model ? { model: modelSelection.model } : {},
       providerRefs: {},
     });
+    yield* releaseBackgroundCommands(context);
 
     const seedPreamble = context.pendingContextSeedText;
     const message = yield* buildUserMessageEffect(input, {
