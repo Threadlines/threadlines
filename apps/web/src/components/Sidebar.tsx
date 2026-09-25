@@ -155,8 +155,8 @@ import { CommandDialogTrigger } from "./ui/command";
 const EMPTY_THREAD_JUMP_LABELS = new Map<string, string>();
 /** One empty list for every row with no linked pull requests, so it never reads as a change. */
 const NO_PULL_REQUESTS: readonly ThreadPullRequest[] = [];
-/** How many quiet live rows rest unfolded; rows needing you are never folded. */
-const LIVE_PREVIEW_COUNT = 6;
+/** How many quiet live rows rest unfolded; pinned rows and rows needing you are never folded. */
+const LIVE_PREVIEW_COUNT = 10;
 /** Each click on the reveal row uncovers this many more. */
 const LIVE_REVEAL_STEP = 5;
 /** The Done tail opens short and reveals in bigger steps: it is history. */
@@ -926,12 +926,13 @@ export default function Sidebar() {
   }, [doneThreadOverlays, machineScopedEntries, scopedProjectKeyValue]);
 
   // Volume is managed by folding, not by flattening rows: quiet threads past
-  // the limit fold away, and anything with a status stays put.
+  // the limit fold away, and pins and anything with a status stay put.
   const { visible: visibleLiveEntries, hiddenCount: hiddenLiveCount } = useMemo(
     () =>
       windowInboxThreads({
         rows: liveEntries,
         hasAttention: (entry) => entry.status !== null,
+        isPinned: (entry) => entry.thread.pinnedAt !== null,
         limit: LIVE_PREVIEW_COUNT + revealedLiveCount,
         expanded: false,
       }),

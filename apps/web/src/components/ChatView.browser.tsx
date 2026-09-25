@@ -6993,7 +6993,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
 
   it("reveals the folded tail in increments and folds it back", async () => {
     const extraThreadIds = Array.from(
-      { length: 13 },
+      { length: 17 },
       (_, index) => `thread-quiet-${index}` as ThreadId,
     );
     const snapshot = extraThreadIds.reduce(
@@ -7021,17 +7021,17 @@ describe("ChatView timeline estimator parity (full app)", () => {
     };
 
     try {
-      // Fourteen quiet threads, six unfolded, revealed five at a time.
-      await expectRows(6, "Show 5 more");
+      // Eighteen quiet threads, ten unfolded, revealed five at a time.
+      await expectRows(10, "Show 5 more");
       await page.getByTestId("inbox-live-show-more").click();
-      await expectRows(11, "Show 3 more");
+      await expectRows(15, "Show 3 more");
       await page.getByTestId("inbox-live-show-more").click();
       // Nothing left to reveal, so only the fold-back and search icons remain.
-      await expectRows(14, null);
+      await expectRows(18, null);
       await expect.element(page.getByTestId("inbox-live-search")).toBeInTheDocument();
 
       await page.getByTestId("inbox-live-show-fewer").click();
-      await expectRows(6, "Show 5 more");
+      await expectRows(10, "Show 5 more");
     } finally {
       await mounted.cleanup();
     }
