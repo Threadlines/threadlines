@@ -2740,10 +2740,11 @@ function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "workin
   return (
     // The three dots are the anchor's whole "alive" signal. They sit in the
     // activity lines' icon column, so the word lines up with the steps above.
-    // Amber means the agent stopped and needs the user.
-    <div className="py-0.5" data-turn-working-anchor="true">
+    // Amber means the agent stopped and needs the user. Even room above and
+    // below keeps the word centered when it is the tray's only line.
+    <div className="py-1" data-turn-working-anchor="true">
       <div className="min-w-0 pl-1">
-        <p className="flex min-w-0 items-center gap-1.5 pt-0.5 text-xs leading-4 text-muted-foreground/70">
+        <p className="flex min-w-0 items-center gap-1.5 text-xs leading-4 text-muted-foreground/70">
           <span className="flex min-w-0 items-center gap-1 tabular-nums">
             <span
               className={cn(

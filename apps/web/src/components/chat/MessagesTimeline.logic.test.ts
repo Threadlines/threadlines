@@ -1026,6 +1026,26 @@ describe("finished turns and the live step", () => {
     ]);
   });
 
+  it("keeps the room above the tray's first line when the group above it draws nothing", () => {
+    // Right after you send, the turn request (and then a step still running)
+    // sit in a group that draws nothing, so the working row is the first line.
+    const turnRequest = workEntry("request", "2026-01-01T00:00:01Z", {
+      label: "Preparing provider turn",
+      tone: "info",
+      providerLifecyclePhase: "preparing",
+    });
+    const runningRead = workEntry("read", "2026-01-01T00:00:03Z", { executionState: "running" });
+    for (const work of [[turnRequest], [turnRequest, runningRead]]) {
+      const rows = derive([userEntry("user-1", "2026-01-01T00:00:00Z"), ...work], {
+        isWorking: true,
+        activeTurnInProgress: true,
+        activeTurnId: "turn-1" as never,
+        activeTurnStartedAt: "2026-01-01T00:00:00Z",
+      });
+      expect(rows.at(-1)).toMatchObject({ kind: "working", tray: "single", padTop: true });
+    }
+  });
+
   it("counts a retried turn's work, not the wait before the retry", () => {
     // The first attempt failed after 6s and the user pressed Retry 18 minutes
     // later. Retry sends no user message, only a turn request.
