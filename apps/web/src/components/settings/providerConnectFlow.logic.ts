@@ -23,6 +23,12 @@ export interface ProviderConnectFlowState {
    * URL and wait; the panel opens it for the user instead.
    */
   readonly signInUrl: string | null;
+  /**
+   * Recent output not yet holding a finished URL. Terminal output arrives in
+   * arbitrary chunks, so a device-code URL can be split mid-code; it is only
+   * taken once something follows it.
+   */
+  readonly urlScanTail: string;
 }
 
 export const initialProviderConnectFlowState: ProviderConnectFlowState = {
@@ -32,17 +38,23 @@ export const initialProviderConnectFlowState: ProviderConnectFlowState = {
   command: null,
   lastLine: "",
   signInUrl: null,
+  urlScanTail: "",
 };
 
-const SIGN_IN_URL_PATTERN = /https?:\/\/[^\s"'<>)\]]+/u;
+const SIGN_IN_URL_PATTERN = /https?:\/\/[^\s"'<>)\]]+/gu;
+const URL_SCAN_TAIL_CHARS = 2048;
 
-/** The first http(s) URL in a chunk of terminal output, minus trailing punctuation. */
-export function extractSignInUrl(chunk: string): string | null {
-  const match = SIGN_IN_URL_PATTERN.exec(stripTerminalControlSequences(chunk));
-  if (!match) {
-    return null;
+/**
+ * The first http(s) URL in `text` that something follows (so it cannot still
+ * be streaming in), minus trailing punctuation.
+ */
+export function extractSignInUrl(text: string): string | null {
+  for (const match of text.matchAll(SIGN_IN_URL_PATTERN)) {
+    if (match.index + match[0].length < text.length) {
+      return match[0].replace(/[.,;:!?]+$/u, "");
+    }
   }
-  return match[0].replace(/[.,;:!?]+$/u, "");
+  return null;
 }
 
 const ANSI_ESCAPE_PATTERN =
@@ -77,19 +89,27 @@ export function applyProviderAuthEvent(
   switch (event.type) {
     case "command":
       return { ...state, command: event.command };
-    case "output":
+    case "output": {
+      const lastLine = appendOutputPreview(state.lastLine, event.data);
+      if (state.signInUrl !== null) {
+        return { ...state, lastLine };
+      }
+      const scanned = `${state.urlScanTail}${stripTerminalControlSequences(event.data)}`;
+      const signInUrl = extractSignInUrl(scanned);
       return {
         ...state,
-        lastLine: appendOutputPreview(state.lastLine, event.data),
-        signInUrl: state.signInUrl ?? extractSignInUrl(event.data),
+        lastLine,
+        signInUrl,
+        urlScanTail: signInUrl === null ? scanned.slice(-URL_SCAN_TAIL_CHARS) : "",
       };
+    }
     case "status":
       return {
         ...state,
         status: event.status,
         exitCode: event.exitCode,
         detail: event.detail,
-        ...(event.status === "starting" ? { lastLine: "", signInUrl: null } : {}),
+        ...(event.status === "starting" ? { lastLine: "", signInUrl: null, urlScanTail: "" } : {}),
       };
   }
 }

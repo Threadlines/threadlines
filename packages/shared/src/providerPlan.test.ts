@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { isProviderPlanGateMessage } from "./providerPlan.ts";
+import { isProviderPlanGateMessage, isProviderPlanGateReply } from "./providerPlan.ts";
 
 describe("isProviderPlanGateMessage", () => {
   it("matches the short plan-gate replies providers actually send", () => {
@@ -23,5 +23,14 @@ describe("isProviderPlanGateMessage", () => {
         `To migrate, upgrade your plan file first. ${"x".repeat(400)} Then run the tests.`,
       ),
     ).toBe(false);
+  });
+});
+
+describe("isProviderPlanGateReply", () => {
+  it("takes only a reply that is nothing but the gate line", () => {
+    expect(isProviderPlanGateReply("\n\nUpgrade your plan to continue")).toBe(true);
+    // A real answer about billing is content, not a gate.
+    expect(isProviderPlanGateReply("HTTP 402 means Payment Required.")).toBe(false);
+    expect(isProviderPlanGateReply("Upgrade your plan to continue using the export.")).toBe(false);
   });
 });

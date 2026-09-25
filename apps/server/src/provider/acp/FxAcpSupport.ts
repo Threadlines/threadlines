@@ -22,6 +22,7 @@ import {
   describeWslLaunchFailure,
   toWslPath,
   WSL_SETUP_HINT,
+  withWslForwardedEnv,
   wslCommand,
   wslShellCommand,
 } from "@threadlines/shared/wsl";
@@ -164,6 +165,19 @@ export function buildFxCommand(
   return runsFxThroughWsl(platform) ? wslCommand(binary, args) : { file: binary, args };
 }
 
+/** fx's own credential variables, which must cross into WSL to take effect. */
+const FX_CREDENTIAL_ENV = ["AI_GATEWAY_API_KEY", "FX_API_KEY", "VERCEL_OIDC_TOKEN"] as const;
+
+/** The environment for an fx process, forwarding its credentials through WSL on Windows. */
+export function fxEnvironment(
+  environment: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform = process.platform,
+): NodeJS.ProcessEnv {
+  return runsFxThroughWsl(platform)
+    ? withWslForwardedEnv(environment, FX_CREDENTIAL_ENV)
+    : environment;
+}
+
 export function buildFxAcpSpawnInput(
   settings: Pick<FxSettings, "binaryPath"> | null | undefined,
   cwd: string,
@@ -174,7 +188,7 @@ export function buildFxAcpSpawnInput(
     command: command.file,
     args: command.args,
     cwd,
-    ...(environment ? { env: environment } : {}),
+    ...(environment ? { env: fxEnvironment(environment) } : {}),
     // wsl.exe is a real executable; a cmd.exe layer would re-split the bash line.
     ...(runsFxThroughWsl() ? { shell: false } : {}),
   };
@@ -264,7 +278,7 @@ const runFxCommand = (
       command.file,
       [...command.args],
       // Through WSL the shell is `bash -lc` inside the distro; no cmd.exe layer.
-      hideWindowsConsole({ env: environment, shell: false }),
+      hideWindowsConsole({ env: fxEnvironment(environment), shell: false }),
     ),
   ).pipe(Effect.timeoutOption(FX_PROBE_TIMEOUT_MS), Effect.result);
 };
@@ -391,21 +405,23 @@ const resolveFxLatestRelease = Effect.fn("resolveFxLatestRelease")(function* () 
   if (fxLatestReleaseCache && fxLatestReleaseCache.expiresAt > now) {
     return fxLatestReleaseCache.version;
   }
-  const version = yield* fetchFxLatestRelease().pipe(Effect.catch(() => Effect.succeed(null)));
+  // The limit covers reading the body too, not just the response headers.
+  const version = yield* fetchFxLatestRelease().pipe(
+    Effect.timeout(FX_LATEST_RELEASE_TIMEOUT_MS),
+    Effect.catch(() => Effect.succeed(null)),
+  );
   fxLatestReleaseCache = { expiresAt: now + FX_LATEST_RELEASE_TTL_MS, version };
   return version;
 });
 
 const fetchFxLatestRelease = Effect.fn("fetchFxLatestRelease")(function* () {
   const client = yield* HttpClient.HttpClient;
-  const response = yield* client
-    .execute(
-      HttpClientRequest.get(FX_LATEST_RELEASE_URL).pipe(
-        HttpClientRequest.setHeader("accept", "application/vnd.github+json"),
-        HttpClientRequest.setHeader("user-agent", "threadlines"),
-      ),
-    )
-    .pipe(Effect.timeout(FX_LATEST_RELEASE_TIMEOUT_MS));
+  const response = yield* client.execute(
+    HttpClientRequest.get(FX_LATEST_RELEASE_URL).pipe(
+      HttpClientRequest.setHeader("accept", "application/vnd.github+json"),
+      HttpClientRequest.setHeader("user-agent", "threadlines"),
+    ),
+  );
   if (response.status < 200 || response.status >= 300) {
     return null;
   }

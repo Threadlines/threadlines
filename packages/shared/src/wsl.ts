@@ -35,6 +35,25 @@ export function wslCommand(
   return wslShellCommand([executable, ...args].map(bashWord).join(" "));
 }
 
+/**
+ * Windows passes only the variables `WSLENV` names into a WSL process. Adds
+ * each of `names` that is set in `env` (flag `/u`: Windows to Linux only), so
+ * a provider's own settings (an API key) reach the CLI inside the distro.
+ */
+export function withWslForwardedEnv(
+  env: NodeJS.ProcessEnv,
+  names: ReadonlyArray<string>,
+): NodeJS.ProcessEnv {
+  const forwarded = names.filter((name) => env[name] !== undefined && env[name] !== "");
+  if (forwarded.length === 0) {
+    return env;
+  }
+  const existing = (env.WSLENV ?? "").split(":").filter((entry) => entry.length > 0);
+  const existingNames = new Set(existing.map((entry) => entry.split("/")[0]));
+  const additions = forwarded.filter((name) => !existingNames.has(name)).map((name) => `${name}/u`);
+  return { ...env, WSLENV: [...existing, ...additions].join(":") };
+}
+
 /** What to tell someone whose WSL can't run Linux commands yet. */
 export const WSL_SETUP_HINT =
   "Run `wsl --install` in an administrator terminal, restart Windows, then try again.";

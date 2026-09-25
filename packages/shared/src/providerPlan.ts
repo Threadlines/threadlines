@@ -26,10 +26,28 @@ const PLAN_GATE_PATTERNS = [
 /** A gate reply is short; long texts merely mentioning upgrades are content. */
 const PLAN_GATE_MAX_CHARS = 400;
 
+/**
+ * For error and status text (a failed turn's detail, a provider status line),
+ * where mentioning a billing term is itself the signal.
+ */
 export function isProviderPlanGateMessage(message: string | null | undefined): boolean {
   const trimmed = message?.trim();
   if (!trimmed || trimmed.length > PLAN_GATE_MAX_CHARS) {
     return false;
   }
   return PLAN_GATE_PATTERNS.some((pattern) => pattern.test(trimmed));
+}
+
+/**
+ * For a model's own reply text, which may legitimately discuss billing ("HTTP
+ * 402 means Payment Required"). Only a reply that is nothing but the gate
+ * line counts, the way Cursor Free answers a gated model.
+ */
+const PLAN_GATE_REPLY_PATTERNS = [
+  /^upgrade (?:your |to a )?(?:plan|subscription)(?: to continue)?[.!]?$/iu,
+] as const;
+
+export function isProviderPlanGateReply(reply: string | null | undefined): boolean {
+  const trimmed = reply?.trim();
+  return Boolean(trimmed) && PLAN_GATE_REPLY_PATTERNS.some((pattern) => pattern.test(trimmed!));
 }

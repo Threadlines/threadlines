@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { describeWslLaunchFailure, toWslPath, wslCommand, wslShellCommand } from "./wsl.ts";
+import {
+  describeWslLaunchFailure,
+  toWslPath,
+  withWslForwardedEnv,
+  wslCommand,
+  wslShellCommand,
+} from "./wsl.ts";
 
 describe("wsl", () => {
   it("maps drive-rooted Windows paths to /mnt mounts and leaves others alone", () => {
@@ -21,6 +27,18 @@ describe("wsl", () => {
       "-lc",
       "curl -fsSL https://fx.sh/setup.sh | bash",
     ]);
+  });
+
+  it("forwards set credentials into WSL without dropping existing WSLENV entries", () => {
+    expect(
+      withWslForwardedEnv({ AI_GATEWAY_API_KEY: "key", WSLENV: "USERPROFILE/p" }, [
+        "AI_GATEWAY_API_KEY",
+        "FX_API_KEY",
+      ]).WSLENV,
+    ).toBe("USERPROFILE/p:AI_GATEWAY_API_KEY/u");
+    // Nothing set: the environment passes through untouched.
+    const env = { PATH: "C:\\Windows" };
+    expect(withWslForwardedEnv(env, ["AI_GATEWAY_API_KEY"])).toBe(env);
   });
 
   it("recognizes wsl.exe's own launch failures in its UTF-16 output", () => {

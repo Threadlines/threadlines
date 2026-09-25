@@ -24,7 +24,10 @@ import {
   type ThreadId,
   TurnId,
 } from "@threadlines/contracts";
-import { isProviderPlanGateMessage } from "@threadlines/shared/providerPlan";
+import {
+  isProviderPlanGateMessage,
+  isProviderPlanGateReply,
+} from "@threadlines/shared/providerPlan";
 import { randomUUIDv4 } from "@threadlines/shared/uuid";
 import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
@@ -140,6 +143,8 @@ interface AcpSessionContext {
   lastContextUsageKey: string | undefined;
   /** The thought being streamed; closes when reply text, a tool call, or the turn end arrives. */
   activeReasoning: { readonly itemId: string; readonly turnId: TurnId; text: string } | undefined;
+  /** Held while a turn starts, so concurrent sends queue instead of racing. */
+  readonly turnStartLock: Semaphore.Semaphore;
   stopped: boolean;
 }
 
@@ -774,6 +779,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
             lastProviderStatus: undefined,
             lastContextUsageKey: undefined,
             activeReasoning: undefined,
+            turnStartLock: yield* Semaphore.make(1),
             stopped: false,
           };
 
@@ -936,12 +942,24 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
     // land before the streamed items and the completion, exactly as the
     // native drivers behave. The prompt itself runs in the session scope.
     const sendTurn: AcpAdapterShape["sendTurn"] = (input) =>
+      Effect.flatMap(requireSession(input.threadId), (ctx) =>
+        // One turn start at a time per session: two sends racing here would
+        // both see no prompt in flight and run their prompts interleaved.
+        ctx.turnStartLock.withPermit(startTurn(ctx, input)),
+      );
+
+    const startTurn = (ctx: AcpSessionContext, input: Parameters<AcpAdapterShape["sendTurn"]>[0]) =>
       Effect.gen(function* () {
-        const ctx = yield* requireSession(input.threadId);
         if (ctx.promptFiber) {
           // ACP serializes prompts per session; a turn sent while one is in
           // flight starts after it, never interleaved with it.
           yield* Fiber.await(ctx.promptFiber);
+        }
+        if (ctx.stopped) {
+          return yield* new ProviderAdapterSessionNotFoundError({
+            provider: PROVIDER,
+            threadId: input.threadId,
+          });
         }
         const turnId = TurnId.make(crypto.randomUUID());
         const turnModelSelection =
@@ -1043,7 +1061,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
             // as the failure it is so the chat can offer the upgrade page.
             const turnText = ctx.activeTurnText.trim();
             const planGateMessage =
-              result.stopReason !== "cancelled" && isProviderPlanGateMessage(turnText)
+              result.stopReason !== "cancelled" && isProviderPlanGateReply(turnText)
                 ? turnText
                 : undefined;
             // A refusal that produced no text would render as a silently

@@ -99,13 +99,11 @@ export function clearGatewayCatalogCacheForTests(): void {
 
 const fetchGatewayCatalog = Effect.fn("fetchGatewayCatalog")(function* () {
   const client = yield* HttpClient.HttpClient;
-  const response = yield* client
-    .execute(
-      HttpClientRequest.get(GATEWAY_MODELS_URL).pipe(
-        HttpClientRequest.setHeader("accept", "application/json"),
-      ),
-    )
-    .pipe(Effect.timeout(GATEWAY_FETCH_TIMEOUT_MS));
+  const response = yield* client.execute(
+    HttpClientRequest.get(GATEWAY_MODELS_URL).pipe(
+      HttpClientRequest.setHeader("accept", "application/json"),
+    ),
+  );
   if (response.status < 200 || response.status >= 300) {
     return null;
   }
@@ -129,7 +127,12 @@ export const enrichFxModelsWithGatewayCatalog = (
     }
     const now = DateTime.toEpochMillis(yield* DateTime.now);
     if (!gatewayCatalogCache || gatewayCatalogCache.expiresAt <= now) {
-      const entries = yield* fetchGatewayCatalog().pipe(Effect.catch(() => Effect.succeed(null)));
+      // The limit covers reading the body too: a server can send headers
+      // promptly and then stall.
+      const entries = yield* fetchGatewayCatalog().pipe(
+        Effect.timeout(GATEWAY_FETCH_TIMEOUT_MS),
+        Effect.catch(() => Effect.succeed(null)),
+      );
       gatewayCatalogCache = { expiresAt: now + GATEWAY_CATALOG_TTL_MS, entries };
     }
     const entries = gatewayCatalogCache.entries;
