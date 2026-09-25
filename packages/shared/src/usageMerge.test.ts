@@ -8,7 +8,12 @@ import {
 } from "@threadlines/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { filterSummaryWindow, mergeUsage, type EnvironmentUsage } from "./usageMerge.ts";
+import {
+  filterSummaryWindow,
+  mergeUsage,
+  sumUsagePeriods,
+  type EnvironmentUsage,
+} from "./usageMerge.ts";
 
 function bucket(overrides: Partial<UsageBucket> = {}): UsageBucket {
   return {
@@ -223,6 +228,81 @@ describe("mergeUsage", () => {
     );
 
     expect(merged.oldestScanAt).toBe("2026-08-07T06:00:00Z");
+  });
+
+  it("keeps each day's models apart, with every token kind", () => {
+    const merged = mergeUsage(
+      [
+        environment(
+          "env-a",
+          summary(
+            [
+              bucket(),
+              bucket({ model: "claude-haiku-4-5", costUsd: 1 }),
+              bucket({ day: "2026-08-08" as UsageDay, costUsd: 3 }),
+            ],
+            [claudeSource("mac")],
+          ),
+        ),
+      ],
+      USAGE_CONTRACT_VERSION,
+    );
+
+    const [first, second] = merged.daily;
+    expect([...(first?.byModel.keys() ?? [])]).toEqual([
+      "claude claude-fable-5",
+      "claude claude-haiku-4-5",
+    ]);
+    expect(first?.byModel.get("claude claude-haiku-4-5")).toMatchObject({
+      costUsd: 1,
+      cachedInputTokens: 1000,
+      totalTokens: 1160,
+      records: 5,
+    });
+    expect([...(second?.byModel.keys() ?? [])]).toEqual(["claude claude-fable-5"]);
+    expect(merged.models.find((model) => model.model === "claude-fable-5")).toMatchObject({
+      key: "claude claude-fable-5",
+      costUsd: 13,
+      cachedInputTokens: 2000,
+      outputTokens: 100,
+      totalTokens: 2320,
+    });
+  });
+
+  it("merges hours across environments and names one whose server reports none", () => {
+    const hourStartMs = Date.parse("2026-08-07T14:00:00Z");
+    const hour = {
+      hourStartMs,
+      provider: "claude" as const,
+      model: "claude-fable-5",
+      totals: bucket().totals,
+      costUsd: 2,
+      records: 1,
+    };
+    const merged = mergeUsage(
+      [
+        environment("env-a", {
+          ...summary([bucket()], [claudeSource("mac")]),
+          hourlyBuckets: [hour],
+        }),
+        environment("env-b", {
+          ...summary([bucket()], [claudeSource("windows")]),
+          hourlyBuckets: [hour],
+        }),
+        // An older server: its days count, its hours are unknown rather than zero.
+        environment("env-c", summary([bucket()], [claudeSource("linux")])),
+      ],
+      USAGE_CONTRACT_VERSION,
+    );
+
+    expect(
+      merged.hourly.map((entry) => [entry.hourStartMs, entry.totalTokens, entry.costUsd]),
+    ).toEqual([[hourStartMs, 2320, 4]]);
+    expect(merged.hourlyMissingEnvironments).toEqual(["env-c"]);
+    expect(merged.totalTokens).toBe(3480);
+    expect(sumUsagePeriods(merged.hourly).models).toEqual([
+      expect.objectContaining({ key: "claude claude-fable-5", totalTokens: 2320, tokenShare: 1 }),
+    ]);
   });
 
   it("totals tokens without adding reasoning on top of output", () => {

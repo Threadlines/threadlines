@@ -226,6 +226,17 @@
      stroke stays legible against either canvas. */
   --provider-claude: #c96442;
   --provider-codex: oklch(0.32 0 0);
+  /* Per-model series on the usage page, in stacking order. Adjacent pairs pass
+     a color-vision-deficiency separation check in both modes, so the order is
+     load-bearing: slot 1 is the terracotta family, reserved for the leading
+     Claude model. Models past six fold into the neutral "other". */
+  --usage-model-1: #eb6834;
+  --usage-model-2: #2a78d6;
+  --usage-model-3: #e87ba4;
+  --usage-model-4: #eda100;
+  --usage-model-5: #1baf7a;
+  --usage-model-6: #4a3aa7;
+  --usage-model-other: oklch(0.72 0 0);
   --primary-foreground: var(--color-white);
   --secondary: --alpha(var(--color-black) / 4%);
   --secondary-foreground: var(--foreground);
@@ -299,6 +310,13 @@
     --primary-graph: oklch(0.7 0.17 264);
     --provider-claude: #e08b66;
     --provider-codex: oklch(0.9 0 0);
+    --usage-model-1: #d95926;
+    --usage-model-2: #3987e5;
+    --usage-model-3: #d55181;
+    --usage-model-4: #c98500;
+    --usage-model-5: #199e70;
+    --usage-model-6: #9085e9;
+    --usage-model-other: oklch(0.5 0 0);
     --primary-foreground: var(--color-white);
     --secondary: --alpha(var(--color-white) / 8%);
     --secondary-foreground: var(--foreground);

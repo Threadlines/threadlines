@@ -12,6 +12,7 @@ import type {
   EnvironmentId,
   UsageBucket,
   UsageDay,
+  UsageHourBucket,
   UsageProviderKind,
   UsageSourceFingerprint,
   UsageSummary,
@@ -45,29 +46,62 @@ export interface EnvironmentUsage {
   readonly summary: UsageSummary;
 }
 
-export interface ProviderTotals {
-  readonly provider: UsageProviderKind;
-  readonly costUsd: number;
+/**
+ * Tokens by kind, with the cost and responses that came with them. Every level
+ * of the merge (the whole window, a provider, a model, a day, an hour) carries
+ * the same tally, so the page can split any of them the same way.
+ */
+export interface UsageTally {
+  readonly uncachedInputTokens: number;
+  readonly cachedInputTokens: number;
+  readonly cacheCreationTokens: number;
+  readonly outputTokens: number;
+  /** A subset of `outputTokens`, never added on top. */
+  readonly reasoningTokens: number;
   readonly totalTokens: number;
+  readonly costUsd: number;
   readonly records: number;
+}
+
+/** A tally that knows which model it belongs to. */
+export interface ModelTally extends UsageTally {
+  readonly provider: UsageProviderKind;
+  readonly model: string;
+}
+
+export interface ProviderTotals extends UsageTally {
+  readonly provider: UsageProviderKind;
   readonly costShare: number;
   readonly tokenShare: number;
 }
 
-export interface ModelTotals {
-  readonly model: string;
-  readonly provider: UsageProviderKind;
-  readonly costUsd: number;
-  readonly totalTokens: number;
-  readonly records: number;
+export interface ModelTotals extends ModelTally {
+  /** Identity across the merge: the key into {@link PeriodTotals.byModel}. */
+  readonly key: string;
   readonly costShare: number;
+  readonly tokenShare: number;
 }
 
-export interface DailyTotals {
+/** One day's or one hour's usage, split the same ways the whole window is. */
+export interface PeriodTotals extends UsageTally {
+  readonly byProvider: ReadonlyMap<UsageProviderKind, UsageTally>;
+  /** Keyed by {@link ModelTotals.key}. */
+  readonly byModel: ReadonlyMap<string, ModelTally>;
+}
+
+export interface DailyTotals extends PeriodTotals {
   readonly day: string;
-  readonly costUsd: number;
-  readonly totalTokens: number;
-  readonly byProvider: ReadonlyMap<UsageProviderKind, { costUsd: number; totalTokens: number }>;
+}
+
+export interface HourlyTotals extends PeriodTotals {
+  /** Start of the hour, epoch milliseconds. */
+  readonly hourStartMs: number;
+}
+
+/** A run of periods added up: the totals, and who used them, heaviest first. */
+export interface UsageBreakdown extends UsageTally {
+  readonly providers: readonly ProviderTotals[];
+  readonly models: readonly ModelTotals[];
 }
 
 export interface CostQuality {
@@ -77,24 +111,21 @@ export interface CostQuality {
   readonly cacheSavingsUsd: number;
 }
 
-export interface MergedUsage {
-  readonly costUsd: number;
-  readonly uncachedInputTokens: number;
-  readonly cachedInputTokens: number;
-  readonly cacheCreationTokens: number;
-  readonly outputTokens: number;
-  readonly reasoningTokens: number;
-  readonly totalTokens: number;
-  readonly records: number;
+export interface MergedUsage extends UsageBreakdown {
   readonly sessions: number;
-  readonly providers: readonly ProviderTotals[];
-  readonly models: readonly ModelTotals[];
   readonly daily: readonly DailyTotals[];
+  /** The trailing hours, oldest first; only the hours that had usage. */
+  readonly hourly: readonly HourlyTotals[];
   readonly costQuality: CostQuality;
   /** Environments whose data was dropped as a duplicate of another's. */
   readonly duplicateSources: readonly string[];
   readonly contributingEnvironments: readonly EnvironmentId[];
   readonly staleEnvironments: readonly EnvironmentId[];
+  /**
+   * Environments whose server predates hourly usage. Their days count; their
+   * hours are missing, and the hourly view must say so rather than show zero.
+   */
+  readonly hourlyMissingEnvironments: readonly EnvironmentId[];
   /** Oldest `lastScannedAt` across contributing sources, or `null` when none. */
   readonly oldestScanAt: string | null;
 }
@@ -154,7 +185,10 @@ function ownedContribution(
   environment: EnvironmentUsage,
   ownerByFingerprint: ReadonlyMap<string, EnvironmentId>,
 ): {
+  readonly ownsSources: boolean;
   readonly buckets: readonly UsageBucket[];
+  /** `null` when the environment's server does not report hours at all. */
+  readonly hourlyBuckets: readonly UsageHourBucket[] | null;
   readonly sessions: number;
   readonly oldestScanAt: string | null;
 } {
@@ -174,36 +208,154 @@ function ownedContribution(
       oldestScanAt = source.lastScannedAt;
     }
   }
+  const hourlyBuckets = environment.summary.hourlyBuckets;
   return {
+    ownsSources: ownedProviders.size > 0,
     buckets: environment.summary.buckets.filter((bucket) => ownedProviders.has(bucket.provider)),
+    hourlyBuckets:
+      hourlyBuckets === undefined
+        ? null
+        : hourlyBuckets.filter((bucket) => ownedProviders.has(bucket.provider)),
     sessions,
     oldestScanAt,
   };
 }
 
-function bucketTokens(bucket: UsageBucket): number {
-  // reasoningTokens is a subset of outputTokens and must not be added again.
-  return (
-    bucket.totals.uncachedInputTokens +
-    bucket.totals.cachedInputTokens +
-    bucket.totals.cacheCreationTokens +
-    bucket.totals.outputTokens
-  );
+type Mutable<Shape> = { -readonly [Field in keyof Shape]: Shape[Field] };
+
+function emptyTally(): Mutable<UsageTally> {
+  return {
+    uncachedInputTokens: 0,
+    cachedInputTokens: 0,
+    cacheCreationTokens: 0,
+    outputTokens: 0,
+    reasoningTokens: 0,
+    totalTokens: 0,
+    costUsd: 0,
+    records: 0,
+  };
+}
+
+function addTally(target: Mutable<UsageTally>, source: UsageTally): void {
+  target.uncachedInputTokens += source.uncachedInputTokens;
+  target.cachedInputTokens += source.cachedInputTokens;
+  target.cacheCreationTokens += source.cacheCreationTokens;
+  target.outputTokens += source.outputTokens;
+  target.reasoningTokens += source.reasoningTokens;
+  target.totalTokens += source.totalTokens;
+  target.costUsd += source.costUsd;
+  target.records += source.records;
+}
+
+/** What day and hour buckets have in common: one model's tokens, cost and responses. */
+type TalliedBucket = Pick<UsageBucket, "provider" | "model" | "totals" | "costUsd" | "records">;
+
+function bucketTally(bucket: TalliedBucket): UsageTally {
+  return {
+    ...bucket.totals,
+    // reasoningTokens is a subset of outputTokens and must not be added again.
+    totalTokens:
+      bucket.totals.uncachedInputTokens +
+      bucket.totals.cachedInputTokens +
+      bucket.totals.cacheCreationTokens +
+      bucket.totals.outputTokens,
+    costUsd: bucket.costUsd,
+    records: bucket.records,
+  };
+}
+
+function tallyIn<Key>(map: Map<Key, Mutable<UsageTally>>, key: Key): Mutable<UsageTally> {
+  let tally = map.get(key);
+  if (tally === undefined) {
+    tally = emptyTally();
+    map.set(key, tally);
+  }
+  return tally;
+}
+
+function modelTallyIn(
+  map: Map<string, Mutable<ModelTally>>,
+  key: string,
+  identity: { readonly provider: UsageProviderKind; readonly model: string },
+): Mutable<ModelTally> {
+  let tally = map.get(key);
+  if (tally === undefined) {
+    tally = { ...emptyTally(), provider: identity.provider, model: identity.model };
+    map.set(key, tally);
+  }
+  return tally;
+}
+
+/** One model's identity. Model names are only unique within a provider. */
+function modelKey(provider: UsageProviderKind, model: string): string {
+  return `${provider} ${model}`;
+}
+
+interface MutablePeriod extends Mutable<UsageTally> {
+  readonly byProvider: Map<UsageProviderKind, Mutable<UsageTally>>;
+  readonly byModel: Map<string, Mutable<ModelTally>>;
+}
+
+function addToPeriod<Key>(
+  periods: Map<Key, MutablePeriod>,
+  periodKey: Key,
+  bucket: TalliedBucket,
+): void {
+  let period = periods.get(periodKey);
+  if (period === undefined) {
+    period = { ...emptyTally(), byProvider: new Map(), byModel: new Map() };
+    periods.set(periodKey, period);
+  }
+  const tally = bucketTally(bucket);
+  addTally(period, tally);
+  addTally(tallyIn(period.byProvider, bucket.provider), tally);
+  addTally(modelTallyIn(period.byModel, modelKey(bucket.provider, bucket.model), bucket), tally);
+}
+
+/**
+ * Adds up a run of days or hours into totals plus a provider and model split.
+ * The whole window and the last 24 hours both come through here, so they rank
+ * and share identically.
+ */
+export function sumUsagePeriods(periods: Iterable<PeriodTotals>): UsageBreakdown {
+  const total = emptyTally();
+  const providers = new Map<UsageProviderKind, Mutable<UsageTally>>();
+  const models = new Map<string, Mutable<ModelTally>>();
+  for (const period of periods) {
+    addTally(total, period);
+    for (const [provider, tally] of period.byProvider)
+      addTally(tallyIn(providers, provider), tally);
+    for (const [key, tally] of period.byModel) addTally(modelTallyIn(models, key, tally), tally);
+  }
+
+  const share = (part: number, whole: number) => (whole === 0 ? 0 : part / whole);
+  // Token-first: the heaviest provider and model lead, cost breaks ties.
+  return {
+    ...total,
+    providers: [...providers.entries()]
+      .map(([provider, tally]) => ({
+        ...tally,
+        provider,
+        costShare: share(tally.costUsd, total.costUsd),
+        tokenShare: share(tally.totalTokens, total.totalTokens),
+      }))
+      .sort((a, b) => b.totalTokens - a.totalTokens || b.costUsd - a.costUsd),
+    models: [...models.entries()]
+      .map(([key, tally]) => ({
+        ...tally,
+        key,
+        costShare: share(tally.costUsd, total.costUsd),
+        tokenShare: share(tally.totalTokens, total.totalTokens),
+      }))
+      .sort((a, b) => b.totalTokens - a.totalTokens || b.costUsd - a.costUsd),
+  };
 }
 
 const EMPTY_MERGED: MergedUsage = {
-  costUsd: 0,
-  uncachedInputTokens: 0,
-  cachedInputTokens: 0,
-  cacheCreationTokens: 0,
-  outputTokens: 0,
-  reasoningTokens: 0,
-  totalTokens: 0,
-  records: 0,
+  ...sumUsagePeriods([]),
   sessions: 0,
-  providers: [],
-  models: [],
   daily: [],
+  hourly: [],
   costQuality: {
     providerReportedShare: 0,
     modelPricedShare: 0,
@@ -213,6 +365,7 @@ const EMPTY_MERGED: MergedUsage = {
   duplicateSources: [],
   contributingEnvironments: [],
   staleEnvironments: [],
+  hourlyMissingEnvironments: [],
   oldestScanAt: null,
 };
 
@@ -241,40 +394,22 @@ export function mergeUsage(
 
   const { ownerByFingerprint, duplicates } = claimSources(current);
 
-  let costUsd = 0;
-  let uncachedInputTokens = 0;
-  let cachedInputTokens = 0;
-  let cacheCreationTokens = 0;
-  let outputTokens = 0;
-  let reasoningTokens = 0;
-  let records = 0;
   let sessions = 0;
   let cacheSavingsUsd = 0;
   let providerReportedRecords = 0;
   let unpricedRecords = 0;
   let oldestScanAt: string | null = null;
-
-  const providerAccumulator = new Map<
-    UsageProviderKind,
-    { costUsd: number; totalTokens: number; records: number }
-  >();
-  const modelAccumulator = new Map<
-    string,
-    { provider: UsageProviderKind; costUsd: number; totalTokens: number; records: number }
-  >();
-  const dailyAccumulator = new Map<
-    string,
-    {
-      costUsd: number;
-      totalTokens: number;
-      byProvider: Map<UsageProviderKind, { costUsd: number; totalTokens: number }>;
-    }
-  >();
+  const dailyAccumulator = new Map<string, MutablePeriod>();
+  const hourlyAccumulator = new Map<number, MutablePeriod>();
   const contributingEnvironments: EnvironmentId[] = [];
+  const hourlyMissingEnvironments: EnvironmentId[] = [];
 
   for (const environment of current) {
     const contribution = ownedContribution(environment, ownerByFingerprint);
     if (contribution.buckets.length > 0) contributingEnvironments.push(environment.environmentId);
+    if (contribution.ownsSources && contribution.hourlyBuckets === null) {
+      hourlyMissingEnvironments.push(environment.environmentId);
+    }
     sessions += contribution.sessions;
     if (
       contribution.oldestScanAt !== null &&
@@ -284,102 +419,30 @@ export function mergeUsage(
     }
 
     for (const bucket of contribution.buckets) {
-      const tokens = bucketTokens(bucket);
-
-      costUsd += bucket.costUsd;
+      addToPeriod(dailyAccumulator, bucket.day, bucket);
       cacheSavingsUsd += bucket.cacheSavingsUsd;
-      uncachedInputTokens += bucket.totals.uncachedInputTokens;
-      cachedInputTokens += bucket.totals.cachedInputTokens;
-      cacheCreationTokens += bucket.totals.cacheCreationTokens;
-      outputTokens += bucket.totals.outputTokens;
-      reasoningTokens += bucket.totals.reasoningTokens;
-      records += bucket.records;
       unpricedRecords += bucket.unpricedRecords;
       if (bucket.costSource === "providerReported") providerReportedRecords += bucket.records;
-
-      const provider = providerAccumulator.get(bucket.provider) ?? {
-        costUsd: 0,
-        totalTokens: 0,
-        records: 0,
-      };
-      provider.costUsd += bucket.costUsd;
-      provider.totalTokens += tokens;
-      provider.records += bucket.records;
-      providerAccumulator.set(bucket.provider, provider);
-
-      const modelKey = `${bucket.provider} ${bucket.model}`;
-      const model = modelAccumulator.get(modelKey) ?? {
-        provider: bucket.provider,
-        costUsd: 0,
-        totalTokens: 0,
-        records: 0,
-      };
-      model.costUsd += bucket.costUsd;
-      model.totalTokens += tokens;
-      model.records += bucket.records;
-      modelAccumulator.set(modelKey, model);
-
-      const day = dailyAccumulator.get(bucket.day) ?? {
-        costUsd: 0,
-        totalTokens: 0,
-        byProvider: new Map<UsageProviderKind, { costUsd: number; totalTokens: number }>(),
-      };
-      day.costUsd += bucket.costUsd;
-      day.totalTokens += tokens;
-      const dayProvider = day.byProvider.get(bucket.provider) ?? { costUsd: 0, totalTokens: 0 };
-      dayProvider.costUsd += bucket.costUsd;
-      dayProvider.totalTokens += tokens;
-      day.byProvider.set(bucket.provider, dayProvider);
-      dailyAccumulator.set(bucket.day, day);
+    }
+    for (const bucket of contribution.hourlyBuckets ?? []) {
+      addToPeriod(hourlyAccumulator, bucket.hourStartMs, bucket);
     }
   }
 
-  const totalTokens = uncachedInputTokens + cachedInputTokens + cacheCreationTokens + outputTokens;
-
-  const providers: ProviderTotals[] = [...providerAccumulator.entries()]
-    .map(([provider, totals]) => ({
-      provider,
-      costUsd: totals.costUsd,
-      totalTokens: totals.totalTokens,
-      records: totals.records,
-      costShare: costUsd === 0 ? 0 : totals.costUsd / costUsd,
-      tokenShare: totalTokens === 0 ? 0 : totals.totalTokens / totalTokens,
-    }))
-    .sort((a, b) => b.costUsd - a.costUsd);
-
-  const models: ModelTotals[] = [...modelAccumulator.entries()]
-    .map(([key, totals]) => ({
-      model: key.slice(key.indexOf(" ") + 1),
-      provider: totals.provider,
-      costUsd: totals.costUsd,
-      totalTokens: totals.totalTokens,
-      records: totals.records,
-      costShare: costUsd === 0 ? 0 : totals.costUsd / costUsd,
-    }))
-    .sort((a, b) => b.costUsd - a.costUsd || b.totalTokens - a.totalTokens);
-
   const daily: DailyTotals[] = [...dailyAccumulator.entries()]
-    .map(([day, totals]) => ({
-      day,
-      costUsd: totals.costUsd,
-      totalTokens: totals.totalTokens,
-      byProvider: totals.byProvider,
-    }))
+    .map(([day, period]) => ({ ...period, day }))
     .sort((a, b) => a.day.localeCompare(b.day));
+  const hourly: HourlyTotals[] = [...hourlyAccumulator.entries()]
+    .map(([hourStartMs, period]) => ({ ...period, hourStartMs }))
+    .sort((a, b) => a.hourStartMs - b.hourStartMs);
+  const breakdown = sumUsagePeriods(daily);
+  const records = breakdown.records;
 
   return {
-    costUsd,
-    uncachedInputTokens,
-    cachedInputTokens,
-    cacheCreationTokens,
-    outputTokens,
-    reasoningTokens,
-    totalTokens,
-    records,
+    ...breakdown,
     sessions,
-    providers,
-    models,
     daily,
+    hourly,
     costQuality: {
       providerReportedShare: records === 0 ? 0 : providerReportedRecords / records,
       unpricedShare: records === 0 ? 0 : unpricedRecords / records,
@@ -390,6 +453,7 @@ export function mergeUsage(
     duplicateSources: duplicates,
     contributingEnvironments,
     staleEnvironments,
+    hourlyMissingEnvironments,
     oldestScanAt,
   };
 }
