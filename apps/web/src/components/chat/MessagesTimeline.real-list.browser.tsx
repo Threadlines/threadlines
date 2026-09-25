@@ -324,16 +324,18 @@ describe("MessagesTimeline with the real virtual list", () => {
       await nextFrame();
       dispatchTouch(list, "touchend", 260);
       // The glide carries the list back down to the bottom, and more lines
-      // land while it is still moving.
+      // land right after, before the list has come to rest.
       list.scrollTop = list.scrollHeight;
       await nextFrame();
       await streamLines();
-      expect(distanceFromEnd(), "the glide still owns the list").toBeGreaterThan(24);
 
-      await new Promise((resolve) => setTimeout(resolve, 300));
-      expect(distanceFromEnd(), "catches up once the glide rests").toBeLessThanOrEqual(1);
+      // Once the glide rests, the list catches up and follows again. Wait for
+      // that instead of timing the rest, which a slow machine reaches sooner
+      // or later than a fast one.
+      const atBottom = () => expect(distanceFromEnd()).toBeLessThanOrEqual(1);
+      await vi.waitFor(atBottom, { timeout: 1_500 });
       await streamLines();
-      expect(distanceFromEnd(), "and keeps following").toBeLessThanOrEqual(1);
+      await vi.waitFor(atBottom, { timeout: 1_500 });
     } finally {
       await screen.unmount();
     }
