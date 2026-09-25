@@ -35,6 +35,10 @@ export function wslCommand(
   return wslShellCommand([executable, ...args].map(bashWord).join(" "));
 }
 
+/** What to tell someone whose WSL can't run Linux commands yet. */
+export const WSL_SETUP_HINT =
+  "Run `wsl --install` in an administrator terminal, restart Windows, then try again.";
+
 const WSL_LAUNCH_FAILURE =
   /Error code: Wsl\/|WSL_E_[A-Z_]+|no installed distributions|Subsystem for Linux (?:is not|has not been) (?:installed|enabled)/iu;
 

@@ -566,6 +566,35 @@ describe("providerMaintenanceRunner", () => {
     ),
   );
 
+  it.effect("explains a command that WSL refused to start", () =>
+    Effect.gen(function* () {
+      const { registry } = yield* makeRegistry();
+      const updater = yield* makeTestRunner(registry);
+
+      const result = yield* updater.updateProvider(CODEX_DRIVER);
+
+      assert.strictEqual(
+        result.providers[0]?.updateState?.message,
+        "WSL isn't ready: Windows Subsystem for Linux has no installed distributions. Run `wsl --install` in an administrator terminal, restart Windows, then try again.",
+      );
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          latestVersionHttpClient("0.0.0"),
+          // wsl.exe writes its own errors as UTF-16, read here as UTF-8.
+          mockSpawnerLayer(() => ({
+            stdout: [
+              ..."Windows Subsystem for Linux has no installed distributions.\r\nError code: Wsl/Service/WSL_E_DEFAULT_DISTRO_NOT_FOUND\r\n",
+            ]
+              .map((char) => `${char}\0`)
+              .join(""),
+            code: -1,
+          })),
+        ),
+      ),
+    ),
+  );
+
   it.effect("runs the Windows Claude update directly when no Claude process is active", () => {
     const calls: Array<{
       kind: "preflight" | "update";

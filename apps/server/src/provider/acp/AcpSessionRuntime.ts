@@ -34,6 +34,20 @@ function formatConfigOptionValue(value: string | boolean): string {
 /** Short option lists (effort, mode) are worth spelling out in a rejection. */
 const MAX_LISTED_CONFIG_OPTION_VALUES = 8;
 
+/** ACP lets a client pass HTTP/SSE MCP servers only to agents that advertise them. */
+export function supportedMcpServers(
+  servers: ReadonlyArray<EffectAcpSchema.McpServer>,
+  capabilities: EffectAcpSchema.McpCapabilities | null | undefined,
+): Array<EffectAcpSchema.McpServer> {
+  return servers.filter((server) =>
+    "type" in server
+      ? server.type === "http"
+        ? capabilities?.http === true
+        : capabilities?.sse === true
+      : true,
+  );
+}
+
 export interface AcpSpawnInput {
   readonly command: string;
   readonly args: ReadonlyArray<string>;
@@ -59,6 +73,12 @@ export interface AcpSessionRuntimeOptions {
    * contain this id the call is skipped rather than failed.
    */
   readonly authMethodId?: string;
+  /**
+   * MCP servers Threadlines offers the session (the browser panel tools).
+   * HTTP/SSE entries are dropped unless the agent's `initialize` says it
+   * speaks that transport, as ACP requires.
+   */
+  readonly mcpServers?: ReadonlyArray<EffectAcpSchema.McpServer>;
   readonly requestLogger?: (event: AcpSessionRequestLogEvent) => Effect.Effect<void, never>;
   readonly protocolLogging?: {
     readonly logIncoming?: boolean;
@@ -439,6 +459,11 @@ const makeAcpSessionRuntime = (
         );
       }
 
+      const mcpServers = supportedMcpServers(
+        options.mcpServers ?? [],
+        initializeResult.agentCapabilities?.mcpCapabilities,
+      );
+
       let sessionId: string;
       let sessionSetupResult:
         | EffectAcpSchema.LoadSessionResponse
@@ -448,7 +473,7 @@ const makeAcpSessionRuntime = (
         const loadPayload = {
           sessionId: options.resumeSessionId,
           cwd: options.cwd,
-          mcpServers: [],
+          mcpServers,
         } satisfies EffectAcpSchema.LoadSessionRequest;
         const resumed = yield* runLoggedRequest(
           "session/load",
@@ -461,7 +486,7 @@ const makeAcpSessionRuntime = (
         } else {
           const createPayload = {
             cwd: options.cwd,
-            mcpServers: [],
+            mcpServers,
           } satisfies EffectAcpSchema.NewSessionRequest;
           const created = yield* runLoggedRequest(
             "session/new",
@@ -474,7 +499,7 @@ const makeAcpSessionRuntime = (
       } else {
         const createPayload = {
           cwd: options.cwd,
-          mcpServers: [],
+          mcpServers,
         } satisfies EffectAcpSchema.NewSessionRequest;
         const created = yield* runLoggedRequest(
           "session/new",
@@ -652,7 +677,10 @@ function configOptionCurrentValueMatches(
 }
 
 const isPromptContentEvent = (event: AcpParsedSessionEvent): boolean =>
-  event._tag === "ContentDelta" || event._tag === "ToolCallUpdated" || event._tag === "PlanUpdated";
+  event._tag === "ContentDelta" ||
+  event._tag === "ReasoningDelta" ||
+  event._tag === "ToolCallUpdated" ||
+  event._tag === "PlanUpdated";
 
 const handleSessionUpdate = ({
   queue,
@@ -685,6 +713,15 @@ const handleSessionUpdate = ({
         // History replay after session/load (or stray output between
         // turns): the transcript already holds it, so it must not be
         // appended to the latest message again.
+        continue;
+      }
+      if (event._tag === "ReasoningDelta") {
+        // Reply text after this thought starts a new segment below it.
+        yield* closeActiveAssistantSegment({
+          queue,
+          assistantSegmentRef,
+        });
+        yield* Queue.offer(queue, event);
         continue;
       }
       if (event._tag === "ToolCallUpdated") {

@@ -375,8 +375,10 @@ export type CursorSettings = typeof CursorSettings.Type;
 
 export const FxSettings = makeProviderSettingsSchema(
   {
+    // Opt-in like Cursor: checking fx on Windows boots WSL, which no one who
+    // hasn't chosen fx should pay for at every launch.
     enabled: Schema.Boolean.pipe(
-      Schema.withDecodingDefault(Effect.succeed(true)),
+      Schema.withDecodingDefault(Effect.succeed(false)),
       Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
     ),
     binaryPath: makeBinaryPathSetting("fx").pipe(

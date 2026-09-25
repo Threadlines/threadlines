@@ -133,6 +133,13 @@ export interface AcpProviderDescriptor<Settings extends AcpProviderSettings> {
    * the host path the process is spawned in (fx inside WSL sees `/mnt/c/…`).
    */
   readonly resolveSessionCwd?: (cwd: string) => string;
+  /**
+   * Whether the agent process can reach Threadlines' own `127.0.0.1`
+   * endpoints, which the browser panel tools are served from (default true).
+   * fx inside WSL's default NAT network sees its own loopback, not the
+   * Windows host's.
+   */
+  readonly reachesHostLoopback?: (platform: NodeJS.Platform) => boolean;
   /** Auth method to call after `initialize`; omit for agents that log in outside ACP. */
   readonly authMethodId?: string;
   readonly clientCapabilities?: EffectAcpSchema.InitializeRequest["clientCapabilities"];

@@ -74,6 +74,18 @@ export type AcpParsedSessionEvent =
       /** Provider-side turn status, e.g. fx's "Rate limited · retrying" recovery. */
       readonly _tag: "SessionStatus";
       readonly message: string;
+    }
+  | {
+      /** The agent's reasoning text, from ACP `agent_thought_chunk`. */
+      readonly _tag: "ReasoningDelta";
+      readonly text: string;
+      readonly rawPayload: unknown;
+    }
+  | {
+      /** How full the context window is, from ACP `usage_update`. */
+      readonly _tag: "ContextUsage";
+      readonly usedTokens: number;
+      readonly maxTokens?: number;
     };
 
 type AcpSessionSetupResponse =
@@ -505,6 +517,16 @@ export function parseSessionUpdateEvent(params: EffectAcpSchema.SessionNotificat
       }
       break;
     }
+    case "agent_thought_chunk": {
+      if (upd.content.type === "text" && upd.content.text.length > 0) {
+        events.push({
+          _tag: "ReasoningDelta",
+          text: upd.content.text,
+          rawPayload: params,
+        });
+      }
+      break;
+    }
     case "session_info_update": {
       // fx reports mid-turn model recovery (rate limits, retries) through
       // vendor metadata here; without it a retried turn looks like a hang
@@ -512,6 +534,17 @@ export function parseSessionUpdateEvent(params: EffectAcpSchema.SessionNotificat
       const message = sessionInfoStatusMessage(upd);
       if (message) {
         events.push({ _tag: "SessionStatus", message });
+      }
+      break;
+    }
+    case "usage_update": {
+      const isCount = (value: number) => Number.isInteger(value) && value >= 0;
+      if (isCount(upd.used)) {
+        events.push({
+          _tag: "ContextUsage",
+          usedTokens: upd.used,
+          ...(isCount(upd.size) && upd.size > 0 ? { maxTokens: upd.size } : {}),
+        });
       }
       break;
     }

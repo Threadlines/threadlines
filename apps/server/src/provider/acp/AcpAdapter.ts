@@ -18,6 +18,7 @@ import {
   type ProviderSession,
   type ProviderUserInputAnswers,
   ProviderInstanceId,
+  RuntimeItemId,
   RuntimeRequestId,
   type RuntimeMode,
   type ThreadId,
@@ -46,6 +47,8 @@ import type * as EffectAcpSchema from "effect-acp/schema";
 
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
+import { BROWSER_MCP_SERVER_NAME, mcpEndpointUrl } from "../../mcp/McpHttpServer.ts";
+import { mcpSessionRegistry } from "../../mcp/McpSessionRegistry.ts";
 import {
   type ProviderAdapterError,
   ProviderAdapterProcessError,
@@ -133,6 +136,10 @@ interface AcpSessionContext {
   activeTurnText: string;
   /** Last provider status this turn (fx rate-limit retries etc.), for failure detail. */
   lastProviderStatus: string | undefined;
+  /** Last context fill reported, so repeated identical `usage_update`s stay quiet. */
+  lastContextUsageKey: string | undefined;
+  /** The thought being streamed; closes when reply text, a tool call, or the turn end arrives. */
+  activeReasoning: { readonly itemId: string; readonly turnId: TurnId; text: string } | undefined;
   stopped: boolean;
 }
 
@@ -336,6 +343,67 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
         );
       });
 
+    /**
+     * ACP streams reasoning as `agent_thought_chunk`s. A run of them becomes
+     * one "Thinking" reasoning item, the same shape Claude's thinking blocks
+     * take: started on the first chunk, the text streamed as a readable
+     * summary, and the whole thought carried on completion.
+     */
+    const appendReasoning = (ctx: AcpSessionContext, text: string, rawPayload: unknown) =>
+      Effect.gen(function* () {
+        const turnId = ctx.activeTurnId;
+        if (!turnId) {
+          return;
+        }
+        if (!ctx.activeReasoning) {
+          ctx.activeReasoning = { itemId: `reasoning:${yield* randomUUIDv4}`, turnId, text: "" };
+          yield* offerRuntimeEvent({
+            type: "item.started",
+            ...(yield* makeEventStamp()),
+            provider: PROVIDER,
+            threadId: ctx.threadId,
+            turnId,
+            itemId: RuntimeItemId.make(ctx.activeReasoning.itemId),
+            payload: { itemType: "reasoning", status: "inProgress", title: "Thinking" },
+          });
+        }
+        ctx.activeReasoning.text += text;
+        yield* offerRuntimeEvent({
+          type: "content.delta",
+          ...(yield* makeEventStamp()),
+          provider: PROVIDER,
+          threadId: ctx.threadId,
+          turnId,
+          itemId: RuntimeItemId.make(ctx.activeReasoning.itemId),
+          payload: { streamKind: "reasoning_summary_text", delta: text },
+          raw: { source: "acp.jsonrpc", method: "session/update", payload: rawPayload },
+        });
+      });
+
+    const closeReasoning = (ctx: AcpSessionContext) =>
+      Effect.gen(function* () {
+        const reasoning = ctx.activeReasoning;
+        if (!reasoning) {
+          return;
+        }
+        ctx.activeReasoning = undefined;
+        const summary = reasoning.text.trim();
+        yield* offerRuntimeEvent({
+          type: "item.completed",
+          ...(yield* makeEventStamp()),
+          provider: PROVIDER,
+          threadId: ctx.threadId,
+          turnId: reasoning.turnId,
+          itemId: RuntimeItemId.make(reasoning.itemId),
+          payload: {
+            itemType: "reasoning",
+            status: "completed",
+            title: "Thinking",
+            ...(summary.length > 0 ? { data: { summary } } : {}),
+          },
+        });
+      });
+
     const emitPlanUpdate = (
       ctx: AcpSessionContext,
       payload: AcpPlanUpdate,
@@ -484,6 +552,25 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
           const effectiveSettings = options?.resolveSettings
             ? yield* options.resolveSettings
             : settings;
+          // The browser the user has open, offered as tools: the same HTTP
+          // endpoint Codex and Claude use, with a credential naming the thread
+          // because the tools take no thread argument.
+          const mcpServers: Array<EffectAcpSchema.McpServer> =
+            descriptor.reachesHostLoopback?.(process.platform) === false
+              ? []
+              : [
+                  {
+                    type: "http",
+                    name: BROWSER_MCP_SERVER_NAME,
+                    url: mcpEndpointUrl(serverConfig.port),
+                    headers: [
+                      {
+                        name: "Authorization",
+                        value: `Bearer ${yield* mcpSessionRegistry.credentialFor(input.threadId)}`,
+                      },
+                    ],
+                  },
+                ];
 
           const acp = yield* makeAcpProviderRuntime(descriptor, {
             settings: effectiveSettings,
@@ -492,6 +579,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
             cwd,
             ...(resumeSessionId ? { resumeSessionId } : {}),
             clientInfo: { name: "threadlines", version: "0.0.0" },
+            mcpServers,
             ...acpNativeLoggers,
           }).pipe(
             Effect.provideService(Scope.Scope, sessionScope),
@@ -684,6 +772,8 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
             activeTurnId: undefined,
             activeTurnText: "",
             lastProviderStatus: undefined,
+            lastContextUsageKey: undefined,
+            activeReasoning: undefined,
             stopped: false,
           };
 
@@ -712,10 +802,39 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
                       });
                     }
                     return;
+                  case "ContextUsage": {
+                    // Drives the composer's context meter, same event Codex
+                    // and Claude send. Not gated on a prompt: the fill after a
+                    // resumed session's replay is still the right reading.
+                    const usageKey = `${event.usedTokens}/${event.maxTokens ?? ""}`;
+                    if (usageKey === ctx.lastContextUsageKey) {
+                      return;
+                    }
+                    ctx.lastContextUsageKey = usageKey;
+                    yield* offerRuntimeEvent({
+                      type: "thread.token-usage.updated",
+                      ...(yield* makeEventStamp()),
+                      provider: PROVIDER,
+                      threadId: ctx.threadId,
+                      ...(ctx.activeTurnId ? { turnId: ctx.activeTurnId } : {}),
+                      payload: {
+                        usage: {
+                          usedTokens: event.usedTokens,
+                          ...(event.maxTokens !== undefined ? { maxTokens: event.maxTokens } : {}),
+                        },
+                      },
+                    });
+                    return;
+                  }
                   case "ModeChanged":
+                    return;
+                  case "ReasoningDelta":
+                    yield* logNative(ctx.threadId, "session/update", event.rawPayload);
+                    yield* appendReasoning(ctx, event.text, event.rawPayload);
                     return;
                   case "AssistantItemStarted":
                   case "AssistantItemCompleted":
+                    yield* closeReasoning(ctx);
                     yield* offerRuntimeEvent(
                       makeAcpAssistantItemEvent({
                         stamp: yield* makeEventStamp(),
@@ -729,6 +848,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
                     );
                     return;
                   case "PlanUpdated":
+                    yield* closeReasoning(ctx);
                     yield* logNative(ctx.threadId, "session/update", event.rawPayload);
                     yield* emitPlanUpdate(
                       ctx,
@@ -739,6 +859,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
                     );
                     return;
                   case "ToolCallUpdated":
+                    yield* closeReasoning(ctx);
                     yield* logNative(ctx.threadId, "session/update", event.rawPayload);
                     yield* offerRuntimeEvent(
                       makeAcpToolCallEvent({
@@ -752,6 +873,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
                     );
                     return;
                   case "ContentDelta":
+                    yield* closeReasoning(ctx);
                     if (ctx.activeTurnText.length < PLAN_GATE_SCAN_MAX_CHARS) {
                       ctx.activeTurnText += event.text;
                     }
@@ -906,6 +1028,8 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
           // Deltas travel through the notification fiber; make sure every one
           // queued before the prompt returned is out before the turn closes.
           yield* ctx.acp.flushEvents;
+          // A turn that ends mid-thought (or on one) still settles its row.
+          yield* closeReasoning(ctx);
           if (Exit.isSuccess(exit)) {
             const result = exit.value;
             ctx.turns.push({ id: turnId, items: [{ prompt: promptParts, result }] });

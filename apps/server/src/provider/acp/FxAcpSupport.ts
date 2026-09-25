@@ -21,6 +21,7 @@ import { hideWindowsConsole } from "@threadlines/shared/childProcess";
 import {
   describeWslLaunchFailure,
   toWslPath,
+  WSL_SETUP_HINT,
   wslCommand,
   wslShellCommand,
 } from "@threadlines/shared/wsl";
@@ -307,7 +308,7 @@ export const probeFx = Effect.fn("probeFx")(function* (
     : undefined;
   if (wslFailure) {
     return notInstalled(
-      `fx runs inside WSL on Windows, and WSL isn't ready: ${wslFailure} Run \`wsl --install\` in an administrator terminal, restart Windows, then install fx here.`,
+      `fx runs inside WSL on Windows, and WSL isn't ready: ${wslFailure} ${WSL_SETUP_HINT}`,
     );
   }
   if (isMissingInsideWsl(versionResult)) {
@@ -422,6 +423,9 @@ export const FX_ACP_DESCRIPTOR: AcpProviderDescriptor<FxSettings> = {
   resolveBinaryOnHost: (platform) => !runsFxThroughWsl(platform),
   // fx inside WSL needs the workspace as its Linux mount path.
   resolveSessionCwd: (cwd) => (runsFxThroughWsl() ? toWslPath(cwd) : cwd),
+  // WSL's default NAT network has its own loopback, so the browser tools
+  // (served on the host's 127.0.0.1) are out of reach there.
+  reachesHostLoopback: (platform) => !runsFxThroughWsl(platform),
   notInstalledMessage: fxNotInstalledMessage(),
   probe: probeFx,
   modelDiscoveryTimeoutMs: FX_MODEL_DISCOVERY_TIMEOUT_MS,

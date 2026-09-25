@@ -370,6 +370,57 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
     }),
   );
 
+  it.effect("offers the browser panel tools only to agents that speak HTTP MCP", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CursorAdapter;
+      const serverSettings = yield* ServerSettingsService;
+      const sessionNewServers = (advertiseHttpMcp: boolean) =>
+        Effect.gen(function* () {
+          const threadId = ThreadId.make(`acp-browser-mcp-${advertiseHttpMcp}`);
+          const tempDir = yield* Effect.promise(() =>
+            mkdtemp(path.join(os.tmpdir(), "cursor-acp-")),
+          );
+          const requestLogPath = path.join(tempDir, "requests.ndjson");
+          yield* Effect.promise(() => writeFile(requestLogPath, "", "utf8"));
+          const wrapperPath = yield* Effect.promise(() =>
+            makeProbeWrapper(
+              requestLogPath,
+              path.join(tempDir, "argv.txt"),
+              advertiseHttpMcp ? { T3_ACP_ADVERTISE_HTTP_MCP: "1" } : undefined,
+            ),
+          );
+          yield* serverSettings.updateSettings({
+            providers: { cursor: { binaryPath: wrapperPath } },
+          });
+          yield* adapter.startSession({
+            threadId,
+            provider: ProviderDriverKind.make("cursor"),
+            cwd: process.cwd(),
+            runtimeMode: "full-access",
+            modelSelection: { instanceId: ProviderInstanceId.make("cursor"), model: "default" },
+          });
+          yield* adapter.stopSession(threadId);
+          const requests = yield* Effect.promise(() => readJsonLines(requestLogPath));
+          const sessionNew = requests.find((entry) => entry.method === "session/new");
+          return (sessionNew?.params as { readonly mcpServers?: ReadonlyArray<unknown> })
+            ?.mcpServers;
+        });
+
+      const offered = yield* sessionNewServers(true);
+      assert.lengthOf(offered ?? [], 1);
+      assert.deepInclude(offered?.[0] as object, { type: "http", name: "threadlines_browser" });
+      const server = offered?.[0] as {
+        readonly url: string;
+        readonly headers: ReadonlyArray<{ readonly name: string; readonly value: string }>;
+      };
+      assert.match(server.url, /^http:\/\/127\.0\.0\.1:\d+\//);
+      assert.match(server.headers[0]?.value ?? "", /^Bearer \S+/);
+
+      // ACP forbids handing HTTP servers to an agent that did not advertise them.
+      assert.deepEqual(yield* sessionNewServers(false), []);
+    }),
+  );
+
   it.effect("maps app plan mode onto the ACP plan session mode", () =>
     Effect.gen(function* () {
       const adapter = yield* CursorAdapter;
@@ -892,6 +943,82 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
         assert.equal(String(assistantDeltas[0].itemId), String(assistantStarts[0].itemId));
         assert.equal(String(assistantDeltas[1].itemId), String(assistantStarts[1].itemId));
       }
+
+      yield* adapter.stopSession(threadId);
+    }),
+  );
+
+  it.effect("streams ACP thoughts as a Thinking item and reports the context fill", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CursorAdapter;
+      const serverSettings = yield* ServerSettingsService;
+      const threadId = ThreadId.make("acp-thoughts-and-usage");
+      const runtimeEvents: Array<ProviderRuntimeEvent> = [];
+      const turnCompleted = yield* Deferred.make<void>();
+
+      const wrapperPath = yield* Effect.promise(() =>
+        makeMockAgentWrapper({ T3_ACP_EMIT_THOUGHTS: "1" }),
+      );
+      yield* serverSettings.updateSettings({
+        providers: { cursor: { binaryPath: wrapperPath } },
+      });
+
+      const runtimeEventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.gen(function* () {
+          if (String(event.threadId) !== String(threadId)) {
+            return;
+          }
+          runtimeEvents.push(event);
+          if (event.type === "turn.completed") {
+            yield* Deferred.succeed(turnCompleted, undefined).pipe(Effect.orDie);
+          }
+        }),
+      ).pipe(Effect.forkChild);
+
+      yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("cursor"),
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+        modelSelection: { instanceId: ProviderInstanceId.make("cursor"), model: "default" },
+      });
+      yield* adapter.sendTurn({ threadId, input: "think first", attachments: [] });
+      yield* Deferred.await(turnCompleted);
+      yield* Fiber.interrupt(runtimeEventsFiber);
+
+      const indexOf = (predicate: (event: ProviderRuntimeEvent) => boolean) =>
+        runtimeEvents.findIndex(predicate);
+      const reasoningStart = indexOf(
+        (event) => event.type === "item.started" && event.payload.itemType === "reasoning",
+      );
+      const reasoningEnd = indexOf(
+        (event) => event.type === "item.completed" && event.payload.itemType === "reasoning",
+      );
+      const replyDelta = indexOf(
+        (event) => event.type === "content.delta" && event.payload.streamKind === "assistant_text",
+      );
+      const thoughtDeltas = runtimeEvents.filter(
+        (event) =>
+          event.type === "content.delta" && event.payload.streamKind === "reasoning_summary_text",
+      );
+
+      assert.isAtLeast(reasoningStart, 0);
+      assert.isBelow(reasoningStart, reasoningEnd);
+      assert.isBelow(reasoningEnd, replyDelta);
+      assert.deepEqual(
+        thoughtDeltas.map((event) => (event.type === "content.delta" ? event.payload.delta : "")),
+        ["Checking the ", "workspace first."],
+      );
+      const completed = runtimeEvents[reasoningEnd];
+      assert.deepEqual(completed?.type === "item.completed" ? completed.payload.data : undefined, {
+        summary: "Checking the workspace first.",
+      });
+
+      const usage = runtimeEvents.find((event) => event.type === "thread.token-usage.updated");
+      assert.deepEqual(
+        usage?.type === "thread.token-usage.updated" ? usage.payload.usage : undefined,
+        { usedTokens: 11_767, maxTokens: 256_000 },
+      );
 
       yield* adapter.stopSession(threadId);
     }),
