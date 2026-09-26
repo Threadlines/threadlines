@@ -1200,7 +1200,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
             : answeringId !== undefined && answeringId === participantId
               ? "answering"
               : participantId === null
-                ? "thread's agent"
+                ? "main"
                 : "",
       };
     });

@@ -304,9 +304,9 @@ export const RoomAgentPicker = memo(function RoomAgentPicker(props: {
                   role="option"
                   aria-selected={selected}
                   tabIndex={0}
-                  title={row.id === null ? `${row.name}, the thread's own agent` : row.name}
+                  title={row.id === null ? `${row.name}, the thread's main agent` : row.name}
                   className={cn(
-                    "group flex h-7 cursor-default items-center gap-2 rounded-sm px-2 outline-none hover:bg-accent focus-visible:bg-accent",
+                    "group flex h-7 cursor-pointer items-center gap-2 rounded-sm px-2 outline-none hover:bg-accent focus-visible:bg-accent",
                     selected ? "bg-accent/70 text-foreground" : "text-foreground/80",
                   )}
                   onClick={() => {
@@ -357,8 +357,13 @@ export const RoomAgentPicker = memo(function RoomAgentPicker(props: {
                   ) : row.role ? (
                     <span className="min-w-0 truncate text-muted-foreground">({row.role})</span>
                   ) : null}
-                  {/* Only what changes gets words; who is picked is the row's
-                      highlight, and the thread's own agent is always first. */}
+                  {row.id === null && !isRenaming ? (
+                    <span className="shrink-0 font-mono text-[10.5px] text-muted-foreground/70">
+                      main
+                    </span>
+                  ) : null}
+                  {/* Who is picked is the row's highlight; the thread's own
+                      agent is first and tagged "main". */}
                   <span className="ml-auto shrink-0 font-mono text-[10.5px] text-warning">
                     {working ? "working" : answering ? "answering" : null}
                   </span>
