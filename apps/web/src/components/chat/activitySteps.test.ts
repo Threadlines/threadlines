@@ -9,6 +9,7 @@ import {
   partitionActivitySteps,
   plainAgentStep,
   summarizeRoutineSteps,
+  summarizeStretch,
 } from "./activitySteps";
 import { describeAgentLabel } from "./activityWording";
 import { analyzeShellCommand } from "./shellCommands";
@@ -366,6 +367,51 @@ describe("groups", () => {
     );
 
     expect(liveActivityLabel(steps.filter((step) => step !== null))).toBe("Reading 3 files");
+  });
+
+  it("sums a finished stretch up as one line, failures and blocks keeping their color", () => {
+    const edit = (path: string, additions: number, deletions: number) =>
+      activityStepFromWorkLogEntry(
+        entry({
+          itemType: "file_change",
+          changedFiles: [path],
+          changedFileStats: [{ path, additions, deletions }],
+        }),
+      );
+    const tests = "pnpm exec vp run --cache '@threadlines/web#test'";
+    const steps = [
+      command("cat apps/a.ts"),
+      command("rg foo src"),
+      edit("src/a.ts", 31, 8),
+      edit("src/b.ts", 12, 3),
+      edit("src/a.ts", 2, 0),
+      command(tests, {
+        executionState: "failed",
+        outputPreview: "Tests  1 failed | 11 passed (12)",
+      }),
+      // The rerun passed, so the check counts once, as passed.
+      command(tests, { outputPreview: "Tests  12 passed (12)" }),
+      command("pnpm exec vp run typecheck"),
+      command("git push origin feature", { description: "Push the branch" }),
+      command("node shot.mjs", {
+        executionState: "failed",
+        description: "Take the screenshots",
+        outputPreview: "Error: boom",
+      }),
+      command("gh pr merge 12", {
+        executionState: "failed",
+        blocked: { by: "auto-mode", reason: "Merge Without Review" },
+      }),
+    ].filter((step) => step !== null);
+
+    expect(summarizeStretch(steps).map((part) => [part.text, part.tone, part.diff])).toEqual([
+      ["Read a.ts and searched once", "neutral", null],
+      ["edited 2 files", "neutral", { additions: 45, deletions: 11 }],
+      ["pushed the branch", "neutral", null],
+      ["tests and typecheck passed", "neutral", null],
+      ["couldn't take the screenshots", "fail", null],
+      ["auto mode blocked a step", "warning", null],
+    ]);
   });
 
   it("keeps a live thought to its newest sentence, without dropping to a word or two", () => {

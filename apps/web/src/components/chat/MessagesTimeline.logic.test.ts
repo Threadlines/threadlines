@@ -1026,6 +1026,49 @@ describe("finished turns and the live step", () => {
     ]);
   });
 
+  it("folds a stretch once the agent writes again, and keeps the one it is on open", () => {
+    const entries = [
+      userEntry("user-1", "2026-01-01T00:00:00Z"),
+      assistantEntry("note-1", "2026-01-01T00:00:02Z", "2026-01-01T00:00:03Z"),
+      workEntry("read-1", "2026-01-01T00:00:04Z"),
+      assistantEntry("note-2", "2026-01-01T00:00:10Z", "2026-01-01T00:00:11Z"),
+      workEntry("read-2", "2026-01-01T00:00:12Z"),
+    ];
+    const folds = (rows: ReturnType<typeof derive>) =>
+      rows.flatMap((row) => (row.kind === "work" ? [[row.id, row.folded]] : []));
+
+    expect(
+      folds(
+        derive(entries, {
+          isWorking: true,
+          activeTurnInProgress: true,
+          activeTurnId: "turn-1" as never,
+          activeTurnStartedAt: "2026-01-01T00:00:00Z",
+        }),
+      ),
+    ).toEqual([
+      ["read-1", true],
+      ["read-2", false],
+    ]);
+    // Once the answer is written, the stretch before it folds too, so the
+    // turn ending folds nothing more.
+    const answered = [...entries, assistantEntry("answer", "2026-01-01T00:00:20Z")];
+    expect(
+      folds(
+        derive(answered, {
+          isWorking: true,
+          activeTurnInProgress: true,
+          activeTurnId: "turn-1" as never,
+          activeTurnStartedAt: "2026-01-01T00:00:00Z",
+        }),
+      ),
+    ).toEqual(folds(derive(answered)));
+    expect(folds(derive(answered))).toEqual([
+      ["read-1", true],
+      ["read-2", true],
+    ]);
+  });
+
   it("keeps the room above the tray's first line when the group above it draws nothing", () => {
     // Right after you send, the turn request (and then a step still running)
     // sit in a group that draws nothing, so the working row is the first line.

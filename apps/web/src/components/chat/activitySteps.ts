@@ -24,6 +24,7 @@ import {
   failedPhrase,
   joinWords,
   looksLikePath,
+  lowerFirst,
   pathBasename,
   phrase,
   searchPhrase,
@@ -32,7 +33,13 @@ import {
   urlLabel,
   type Phrase,
 } from "./activityWording";
-import { analyzeShellCommand, checkResultLabel, firstFailureLine } from "./shellCommands";
+import {
+  analyzeShellCommand,
+  checkKindsOfKey,
+  checkResultLabel,
+  checkWords,
+  firstFailureLine,
+} from "./shellCommands";
 
 /** How the summary sentence counts a step that folds into it. */
 export type ActivityTally =
@@ -1186,6 +1193,34 @@ export type ActivityLineItem =
 
 const EDIT_RUN_MIN_LENGTH = 3;
 
+/** "Edited 3 files", counting a file edited twice once, and the edits' diff. */
+function summarizeEdits(edits: ReadonlyArray<ActivityStep>): {
+  readonly label: string;
+  readonly diff: ActivityStep["diff"];
+} {
+  const files = new Set(
+    edits.flatMap((step) =>
+      step.detail.files && step.detail.files.length > 0
+        ? step.detail.files.map((file) => file.path.toLowerCase())
+        : [step.id],
+    ),
+  );
+  const withDiff = edits.filter((step) => step.diff !== null);
+  return {
+    label: `Edited ${countWord(files.size, "file")}`,
+    diff:
+      withDiff.length > 0
+        ? withDiff.reduce(
+            (total, step) => ({
+              additions: total.additions + step.diff!.additions,
+              deletions: total.deletions + step.diff!.deletions,
+            }),
+            { additions: 0, deletions: 0 },
+          )
+        : null,
+  };
+}
+
 /** The lines a group's notable steps take. Three or more edits in a row read
  *  as one "Edited 6 files" line that opens into the files. */
 export function activityLineItems(notable: ReadonlyArray<ActivityStep>): ActivityLineItem[] {
@@ -1193,30 +1228,7 @@ export function activityLineItems(notable: ReadonlyArray<ActivityStep>): Activit
   let run: ActivityStep[] = [];
   const flush = () => {
     if (run.length >= EDIT_RUN_MIN_LENGTH) {
-      const files = new Set(
-        run.flatMap((step) =>
-          step.detail.files && step.detail.files.length > 0
-            ? step.detail.files.map((file) => file.path.toLowerCase())
-            : [step.id],
-        ),
-      );
-      const withDiff = run.filter((step) => step.diff !== null);
-      items.push({
-        kind: "edits",
-        id: `edits:${run[0]!.id}`,
-        label: `Edited ${countWord(files.size, "file")}`,
-        steps: run,
-        diff:
-          withDiff.length > 0
-            ? withDiff.reduce(
-                (total, step) => ({
-                  additions: total.additions + step.diff!.additions,
-                  deletions: total.deletions + step.diff!.deletions,
-                }),
-                { additions: 0, deletions: 0 },
-              )
-            : null,
-      });
+      items.push({ kind: "edits", id: `edits:${run[0]!.id}`, ...summarizeEdits(run), steps: run });
     } else {
       items.push(...run.map((step) => ({ kind: "step" as const, step })));
     }
@@ -1232,6 +1244,120 @@ export function activityLineItems(notable: ReadonlyArray<ActivityStep>): Activit
   }
   flush();
   return items;
+}
+
+/** One piece of a folded stretch's line. */
+export interface StretchPart {
+  /** Which part of the stretch this is, steady from one render to the next. */
+  readonly id: string;
+  readonly text: string;
+  readonly tone: ActivityTone;
+  readonly diff: ActivityStep["diff"];
+}
+
+/** How the folded line counts the other steps worth a line, by kind. */
+const OTHER_STEP_WORDS: Partial<Record<ActivityIcon, (count: number) => string>> = {
+  command: (count) => (count === 1 ? "ran a command" : `ran ${count} commands`),
+  agent: (count) => (count === 1 ? "started an agent" : `started ${count} agents`),
+  question: (count) => (count === 1 ? "asked you a question" : `asked you ${count} questions`),
+  image: (count) => (count === 1 ? "viewed an image" : `viewed ${count} images`),
+};
+
+/**
+ * A finished stretch of work as one line, in the order a reader asks about it:
+ * what the agent looked at, what it changed, what else it did, how its checks
+ * came out, and what went wrong ("Read 3 files · edited 2 files +43 / -11 ·
+ * 1 of 12 tests failed"). A rerun check counts once, by its last result.
+ * Failures stay red and blocks amber.
+ */
+export function summarizeStretch(steps: ReadonlyArray<ActivityStep>): StretchPart[] {
+  const { routine, notable } = partitionActivitySteps(steps);
+  const parts: Array<{
+    id: string;
+    text: string;
+    tone: ActivityTone;
+    diff?: ActivityStep["diff"];
+  }> = [];
+
+  const counted = routine.filter((step) => step.tallies.length > 0);
+  if (counted.length > 0) {
+    parts.push({ id: "looked", text: summarizeRoutineSteps(counted), tone: "neutral" });
+  }
+  const edits = notable.filter((step) => step.icon === "edit" && step.tone === "neutral");
+  if (edits.length > 0) {
+    const { label, diff } = summarizeEdits(edits);
+    parts.push({ id: "edits", text: label, tone: "neutral", diff });
+  }
+  const others = notable.filter(
+    (step) =>
+      step.checkKey === null &&
+      step.icon !== "edit" &&
+      step.tone !== "fail" &&
+      step.tone !== "warning",
+  );
+  if (others.length === 1) {
+    parts.push({ id: "other", text: others[0]!.label, tone: "neutral" });
+  } else if (others.length > 1) {
+    const countByIcon = new Map<ActivityIcon, number>();
+    for (const step of others) {
+      const icon = OTHER_STEP_WORDS[step.icon] ? step.icon : "tool";
+      countByIcon.set(icon, (countByIcon.get(icon) ?? 0) + 1);
+    }
+    for (const [icon, count] of countByIcon) {
+      const words = OTHER_STEP_WORDS[icon];
+      parts.push({
+        id: `other:${icon}`,
+        text: words ? words(count) : countWord(count, "more step"),
+        tone: "neutral",
+      });
+    }
+  }
+  const latestChecks = new Map<string, ActivityStep>();
+  for (const step of notable) {
+    if (step.checkKey !== null) latestChecks.set(step.checkKey, step);
+  }
+  const passed = [...latestChecks.values()].filter((step) => step.tone !== "fail");
+  if (passed.length === 1) {
+    parts.push({ id: "passed", text: passed[0]!.label, tone: "neutral" });
+  } else if (passed.length > 1) {
+    const kinds = [...new Set(passed.flatMap((step) => checkKindsOfKey(step.checkKey!)))];
+    parts.push({ id: "passed", text: `${checkWords(kinds)} passed`, tone: "neutral" });
+  }
+  for (const step of latestChecks.values()) {
+    if (step.tone === "fail")
+      parts.push({ id: `check:${step.checkKey}`, text: step.label, tone: "fail" });
+  }
+  const failures = notable.filter((step) => step.tone === "fail" && step.checkKey === null);
+  if (failures.length > 0) {
+    parts.push({
+      id: "failures",
+      text: failures.length === 1 ? failures[0]!.label : `${failures.length} steps failed`,
+      tone: "fail",
+    });
+  }
+  const warnings = notable.filter((step) => step.tone === "warning");
+  if (warnings.length > 0) {
+    parts.push({
+      id: "warnings",
+      text: warnings.length === 1 ? warnings[0]!.label : countWord(warnings.length, "warning"),
+      tone: "warning",
+    });
+  }
+
+  if (parts.length === 0) {
+    parts.push({ id: "steps", text: countWord(steps.length, "step"), tone: "neutral" });
+  }
+  return parts.map((part, index) => ({
+    id: part.id,
+    text:
+      index === 0
+        ? capitalize(part.text)
+        : /^[A-Z][a-z]/u.test(part.text)
+          ? lowerFirst(part.text)
+          : part.text,
+    tone: part.tone,
+    diff: part.diff ?? null,
+  }));
 }
 
 /** What the live line says while steps run: the newest one, and how many run

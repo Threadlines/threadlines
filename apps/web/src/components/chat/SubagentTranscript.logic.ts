@@ -250,6 +250,25 @@ export function groupSubagentTranscriptSteps(
   return grouped;
 }
 
+/** Tool runs the agent has written after, which read as one line, like the
+ *  conversation's own stretches. */
+export function foldedToolRunIds(
+  steps: ReadonlyArray<SubagentTranscriptStep>,
+): ReadonlySet<string> {
+  const folded = new Set<string>();
+  let agentWroteAfter = false;
+  for (let index = steps.length - 1; index >= 0; index -= 1) {
+    const step = steps[index]!;
+    if (step.kind === "tool-run") {
+      if (agentWroteAfter) folded.add(step.id);
+    } else if (step.item.kind === "message") {
+      if (step.item.role === "assistant") agentWroteAfter = true;
+      else if (step.item.role === "user") agentWroteAfter = false;
+    }
+  }
+  return folded;
+}
+
 /** One provider record's calls as steps. A record's output belongs to its calls
  *  as a batch, so only a lone call can claim it (and its error flag). */
 function toolsItemSteps(item: SubagentTranscriptToolsItem): ReadonlyArray<ActivityStep> {

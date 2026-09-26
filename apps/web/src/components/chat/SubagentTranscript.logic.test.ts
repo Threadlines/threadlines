@@ -4,6 +4,7 @@ import { partitionActivitySteps, summarizeRoutineSteps } from "./activitySteps";
 import {
   buildSubagentTranscriptActivityRun,
   buildSubagentTranscriptView,
+  foldedToolRunIds,
   groupSubagentTranscriptSteps,
   resolveSubagentTranscriptInstruction,
   shouldShowSubagentLiveTail,
@@ -200,6 +201,19 @@ describe("groupSubagentTranscriptSteps", () => {
       "item",
       "tool-run",
     ]);
+  });
+
+  it("folds the runs the agent has written after, not the one it is on", () => {
+    const grouped = groupSubagentTranscriptSteps(
+      buildSubagentTranscriptView([
+        entry({ role: "assistant", toolUses: [{ name: "Read", summary: "a.ts" }] }),
+        entry({ role: "assistant", text: "Halfway." }),
+        entry({ role: "assistant", toolUses: [{ name: "Edit", summary: "a.ts" }] }),
+      ]),
+    );
+    const firstRun = grouped.find((step) => step.kind === "tool-run");
+
+    expect([...foldedToolRunIds(grouped)]).toEqual([firstRun?.id]);
   });
 });
 

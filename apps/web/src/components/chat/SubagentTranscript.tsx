@@ -29,6 +29,7 @@ import { readSubagentTranscriptPage } from "./subagentTranscriptClient";
 import {
   buildSubagentTranscriptView,
   buildSubagentTranscriptActivityRun,
+  foldedToolRunIds,
   groupSubagentTranscriptSteps,
   isSameSubagentTranscriptItem,
   resolveSubagentTranscriptInstruction,
@@ -391,11 +392,13 @@ export function SubagentTranscript({
       );
       const activityRun =
         sectionIndex === 0 ? buildSubagentTranscriptActivityRun(activityEntries, items) : null;
+      const groupedSteps = groupSubagentTranscriptSteps(steps);
       return {
         agentId: section.agentId,
         result: section.result,
         items,
-        groupedSteps: groupSubagentTranscriptSteps(steps),
+        groupedSteps,
+        foldedRuns: foldedToolRunIds(groupedSteps),
         activityRun,
         // Only the first section can stand in the objective: the prop describes
         // one agent, and repeating it under each of several sections would
@@ -595,7 +598,7 @@ export function SubagentTranscript({
             />
           ) : (
             sectionViews.map((section, sectionIndex) => {
-              const { activityRun, instruction, items, groupedSteps } = section;
+              const { activityRun, instruction, items, groupedSteps, foldedRuns } = section;
               const showLiveTail =
                 follow &&
                 sectionIndex === sectionViews.length - 1 &&
@@ -643,7 +646,7 @@ export function SubagentTranscript({
                     {groupedSteps.map((step) =>
                       step.kind === "tool-run" ? (
                         <div key={`${section.agentId}:${step.id}`} className="pt-0.5 pb-2.5">
-                          <ActivityGroup steps={step.steps} />
+                          <ActivityGroup steps={step.steps} folded={foldedRuns.has(step.id)} />
                         </div>
                       ) : (
                         <div key={`${section.agentId}:${step.id}`} className="pb-1.5">
