@@ -207,7 +207,8 @@ export const RoomAgentPicker = memo(function RoomAgentPicker(props: {
                 props.compact ? "max-w-32" : recipient.role ? "max-w-60" : "max-w-44",
               )}
               aria-label={`Send to ${recipient.name}`}
-              title={recipient.name}
+              tooltip={recipient.name}
+              tooltipSide="top"
             />
           }
         >
@@ -334,13 +335,16 @@ export const RoomAgentPicker = memo(function RoomAgentPicker(props: {
                   <span className="min-w-0 shrink-0 truncate font-medium">{row.modelName}</span>
                   {isRenaming ? (
                     // The model's name stays; the user names the agent after it.
+                    // The box grows with the name; `size` keeps it at its
+                    // minimum where the browser can't size fields to content.
                     <input
                       autoFocus
                       aria-label={`Name for ${row.modelName}`}
                       defaultValue={row.role ?? ""}
-                      placeholder="Name, like Reviewer"
+                      placeholder="Name"
+                      size={1}
                       maxLength={ROOM_AGENT_ROLE_MAX_LENGTH}
-                      className="h-5 min-w-0 flex-1 rounded-sm border border-border bg-transparent px-1.5 text-sm outline-none placeholder:text-muted-foreground/60 focus:border-ring"
+                      className="field-sizing-content h-5 min-w-20 max-w-40 rounded-sm border border-border bg-transparent px-1.5 text-sm outline-none placeholder:text-muted-foreground/60 focus:border-ring"
                       onClick={(event) => event.stopPropagation()}
                       onKeyDown={(event) => {
                         event.stopPropagation();
