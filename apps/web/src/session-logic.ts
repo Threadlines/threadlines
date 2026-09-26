@@ -171,6 +171,9 @@ export interface WorkLogEntry {
   spawnedAgentIds?: ReadonlyArray<string>;
   requestKind?: PendingApproval["requestKind"];
   executionState?: "running" | "completed" | "failed";
+  /** Set on a failed step that never ran because something turned it down:
+   *  it reads as blocked, not as something that went wrong. */
+  blocked?: WorkLogStepBlock;
   authReconnect?: ProviderAuthReconnectAction;
   mcpAuthReconnect?: McpAuthReconnectAction;
   providerLifecyclePhase?: "preparing" | "waiting-for-model" | "provider-status";
@@ -183,6 +186,15 @@ export interface WorkLogEntry {
   redactedThinking?: boolean;
   turnId?: TurnId | null;
   modelFallback?: ModelFallbackState;
+}
+
+/** Who turned a step down: the provider's auto-mode reviewer, one of its
+ *  other safety checks, the user, or something that did not say (Claude
+ *  Code's worktree and sleep guards, a Codex step declined before it ran). */
+export interface WorkLogStepBlock {
+  readonly by: "auto-mode" | "safety-check" | "user" | "other";
+  /** The reviewer's own reason ("Production Deploy"), when it gave one. */
+  readonly reason?: string;
 }
 
 export interface ModelFallbackState {
@@ -2432,13 +2444,27 @@ export function deriveWorkLogEntries(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
   activeTurnId?: TurnId | null,
 ): WorkLogEntry[] {
-  const ordered = filterPairedGuardianReviewWarnings(
-    filterSupersededManualContextCompactionActivities(activities).toSorted(
-      compareActivitiesByOrder,
+  const ordered = filterRecoveredApiRetries(
+    filterPairedGuardianReviewWarnings(
+      filterSupersededManualContextCompactionActivities(activities).toSorted(
+        compareActivitiesByOrder,
+      ),
     ),
   );
   const agentTaskIndex = collectAgentTaskIndex(ordered);
+  const denials = collectPermissionDenials(ordered);
   const entries = ordered
+    // A denial is told on the step it turned down.
+    .filter((activity) => permissionDenialToolUseId(activity) === null)
+    // The Claude SDK's own diagnostics ("[ede_diagnostic] result_type=user
+    // ...") say nothing a reader can act on.
+    .filter(
+      (activity) =>
+        activity.kind !== "runtime.error" ||
+        !(asTrimmedString(asRecord(activity.payload)?.message) ?? "").startsWith(
+          "[ede_diagnostic]",
+        ),
+    )
     .filter((activity) => activity.kind !== "task.started")
     .filter((activity) => activity.kind !== "subagent.result")
     .filter((activity) => activity.kind !== "subagent.metadata")
@@ -2467,8 +2493,11 @@ export function deriveWorkLogEntries(
   // derivation-internal collapse key comes off.
   return enrichGenericThinkingEntries(
     collapseBrowserReceipts(
-      foldCommandTaskCompletions(
-        collapseDerivedWorkLogEntries(entries).filter(shouldKeepDerivedWorkLogEntry),
+      markBlockedSteps(
+        foldCommandTaskCompletions(
+          collapseDerivedWorkLogEntries(entries).filter(shouldKeepDerivedWorkLogEntry),
+        ),
+        denials,
       ),
     ),
   ).map(
@@ -2480,6 +2509,108 @@ export function deriveWorkLogEntries(
       ...entry
     }) => entry,
   );
+}
+
+/** A provider's connection retries matter only while they last: once the
+ *  provider answers again in that turn (a thought, a tool call, a usage
+ *  update), they drop out. Retries nothing followed stay, as one line. */
+function filterRecoveredApiRetries(
+  activities: ReadonlyArray<OrchestrationThreadActivity>,
+): OrchestrationThreadActivity[] {
+  const lastAnswerIndexByTurn = new Map<string, number>();
+  activities.forEach((activity, index) => {
+    if (
+      activity.turnId &&
+      (activity.kind === "context-window.updated" ||
+        activity.kind === "thinking.progress" ||
+        activity.kind.startsWith("tool."))
+    ) {
+      lastAnswerIndexByTurn.set(activity.turnId, index);
+    }
+  });
+  return activities.filter((activity, index) => {
+    if (
+      activity.kind !== "runtime.warning" ||
+      asTrimmedString(asRecord(activity.payload)?.warningKind) !== "api-retry" ||
+      !activity.turnId
+    ) {
+      return true;
+    }
+    const lastAnswer = lastAnswerIndexByTurn.get(activity.turnId);
+    return lastAnswer === undefined || lastAnswer < index;
+  });
+}
+
+/** The tool call a permission denial names (Claude reports each one as a
+ *  runtime warning), or null for any other activity. */
+function permissionDenialToolUseId(activity: OrchestrationThreadActivity): string | null {
+  if (activity.kind !== "runtime.warning") {
+    return null;
+  }
+  const detail = asRecord(asRecord(activity.payload)?.detail);
+  return asTrimmedString(detail?.subtype) === "permission_denied"
+    ? asTrimmedString(detail?.tool_use_id)
+    : null;
+}
+
+/** Steps a provider reviewer turned down, by tool call id. */
+function collectPermissionDenials(
+  activities: ReadonlyArray<OrchestrationThreadActivity>,
+): ReadonlyMap<string, WorkLogStepBlock> {
+  const denials = new Map<string, WorkLogStepBlock>();
+  for (const activity of activities) {
+    const toolUseId = permissionDenialToolUseId(activity);
+    if (!toolUseId) {
+      continue;
+    }
+    const detail = asRecord(asRecord(activity.payload)?.detail);
+    const reason = denialReason(asTrimmedString(detail?.decision_reason));
+    denials.set(toolUseId, {
+      by:
+        asTrimmedString(detail?.decision_reason_type) === "classifier"
+          ? "auto-mode"
+          : "safety-check",
+      ...(reason ? { reason } : {}),
+    });
+  }
+  return denials;
+}
+
+/** "[Production Deploy]" reads as "Production Deploy". The generic "Blocked by
+ *  classifier" says nothing the step's own line does not. */
+function denialReason(reason: string | null): string | null {
+  if (!reason || /^blocked by classifier\.?$/iu.test(reason)) {
+    return null;
+  }
+  return reason.replace(/^\[(.*)\]\.?$/u, "$1").trim() || null;
+}
+
+/** Claude's reply when the user turns a step down at its permission prompt. */
+const USER_DECLINED_REPLY = /^The user doesn't want to proceed with this tool use\b/u;
+/** Claude Code's own guards answer a command they stop with a fixed reply. */
+const GUARD_REPLY =
+  /^(?:<tool_use_error>)?(?:Blocked: |This session is isolated in the worktree\b)/u;
+
+/** Marks the failed steps that never ran because something turned them down,
+ *  so they read as blocked rather than as something that went wrong. */
+function markBlockedSteps(
+  entries: ReadonlyArray<DerivedWorkLogEntry>,
+  denials: ReadonlyMap<string, WorkLogStepBlock>,
+): DerivedWorkLogEntry[] {
+  return entries.map((entry) => {
+    if (entry.executionState !== "failed") {
+      return entry;
+    }
+    const reply = entry.outputPreview?.trimStart() ?? "";
+    const blocked =
+      (entry.toolCallId ? denials.get(entry.toolCallId) : undefined) ??
+      (USER_DECLINED_REPLY.test(reply)
+        ? { by: "user" as const }
+        : GUARD_REPLY.test(reply)
+          ? { by: "other" as const }
+          : entry.blocked);
+    return blocked && blocked !== entry.blocked ? { ...entry, blocked } : entry;
+  });
 }
 
 /** Codex emits a human-readable guardian warning immediately before the
@@ -2715,6 +2846,11 @@ function toDerivedWorkLogEntry(
       }
     }
   }
+  // Codex reports the exit code on the finished item, not in the output.
+  const itemExitCode = asRecord(asRecord(payload?.data)?.item)?.exitCode;
+  if (typeof itemExitCode === "number" && Number.isInteger(itemExitCode)) {
+    entry.exitCode = itemExitCode;
+  }
   if (changedFiles.length > 0) {
     entry.changedFiles = changedFiles;
   }
@@ -2753,6 +2889,9 @@ function toDerivedWorkLogEntry(
   const executionState = deriveWorkLogExecutionState(activity, entry, payload);
   if (executionState) {
     entry.executionState = executionState;
+  }
+  if (executionState === "failed" && isDeclinedStep(payload)) {
+    entry.blocked = { by: "other" };
   }
   if (activity.kind === "thinking.progress") {
     entry.redactedThinking = isRedactedThinkingActivity;
@@ -2837,12 +2976,20 @@ function deriveTransientWarningCollapseKey(
   return ["warning", warningKind, activity.turnId ?? "thread"].join("\u001f");
 }
 
+/** Claude's reply for a shell command it sent to the background, from the
+ *  start or after its timeout ran out. */
+const BACKGROUNDED_COMMAND_REPLY =
+  /\b(?:running in background with ID|was moved to the background)\b/iu;
+
 /**
  * Claude reports a long or backgrounded shell command twice: as the tool call,
  * and as a task that completes when the command really finishes. The task
  * carries the command's tool call id, so it folds into that command instead of
- * narrating the same step a second time. A backgrounded command settles when
- * its task does, and a failed task fails the command.
+ * narrating the same step a second time. Only a command that went to the
+ * background settles when its task does (a failed task fails it): its own
+ * reply came back at once. A command that ran in the foreground already
+ * reported how it ended, and its task can disagree (a final `grep -c` that
+ * counts nothing fails the task, not the command).
  */
 function foldCommandTaskCompletions(
   entries: ReadonlyArray<DerivedWorkLogEntry>,
@@ -2856,11 +3003,13 @@ function foldCommandTaskCompletions(
         : undefined;
     const command = owner === undefined ? undefined : folded[owner];
     if (owner !== undefined && command) {
-      folded[owner] = {
-        ...command,
-        completedAt: entry.createdAt,
-        ...(entry.taskStatus === "failed" ? { executionState: "failed" as const } : {}),
-      };
+      if (BACKGROUNDED_COMMAND_REPLY.test(command.outputPreview ?? "")) {
+        folded[owner] = {
+          ...command,
+          completedAt: entry.createdAt,
+          ...(entry.taskStatus === "failed" ? { executionState: "failed" as const } : {}),
+        };
+      }
       continue;
     }
     if (entry.itemType === "command_execution" && entry.toolCallId) {
@@ -2902,14 +3051,13 @@ function collapseDerivedWorkLogEntries(
       collapsed[activeIndex] = merged;
       deleteActiveToolLifecycleKeys(activeIndexByKey, previousKeys);
 
-      if (!shouldKeepCollapseKeysActive(merged)) {
+      const mergedKeys = activeCollapseKeys(
+        merged,
+        uniqueStrings([...previousKeys, ...keys, ...deriveToolLifecycleCollapseKeys(merged)]),
+      );
+      if (mergedKeys.length === 0) {
         activeKeysByIndex.delete(activeIndex);
       } else {
-        const mergedKeys = uniqueStrings([
-          ...previousKeys,
-          ...keys,
-          ...deriveToolLifecycleCollapseKeys(merged),
-        ]);
         activeKeysByIndex.set(activeIndex, mergedKeys);
         setActiveToolLifecycleKeys(activeIndexByKey, mergedKeys, activeIndex);
       }
@@ -2917,10 +3065,11 @@ function collapseDerivedWorkLogEntries(
     }
 
     collapsed.push(entry);
-    if (shouldKeepCollapseKeysActive(entry)) {
+    const entryKeys = activeCollapseKeys(entry, keys);
+    if (entryKeys.length > 0) {
       const entryIndex = collapsed.length - 1;
-      activeKeysByIndex.set(entryIndex, keys);
-      setActiveToolLifecycleKeys(activeIndexByKey, keys, entryIndex);
+      activeKeysByIndex.set(entryIndex, entryKeys);
+      setActiveToolLifecycleKeys(activeIndexByKey, entryKeys, entryIndex);
     }
   }
 
@@ -3031,11 +3180,22 @@ function collapsibleWorkLogLookupKeys(
   return keys.filter((key) => !key.startsWith("tool-loose\u001f"));
 }
 
-function shouldKeepCollapseKeysActive(entry: DerivedWorkLogEntry): boolean {
-  if (entry.executionState === "completed" || entry.executionState === "failed") {
-    return false;
+/**
+ * The keys that may still gather rows into an entry. A settled entry takes no
+ * more rows under its loose keys, so a later call with the same title starts
+ * a row of its own. Its tool call id stays open until the call's completion
+ * row: Claude settles a failed call on an update, then sends the call's output
+ * and completion, which would otherwise start a second, duplicate row.
+ */
+function activeCollapseKeys(entry: DerivedWorkLogEntry, keys: ReadonlyArray<string>): string[] {
+  if (entry.activityKind === "tool.completed") {
+    return [];
   }
-  return entry.activityKind !== "tool.completed";
+  if (entry.executionState === "completed" || entry.executionState === "failed") {
+    const ownKey = entry.toolCallId ? `tool:${entry.toolCallId}` : null;
+    return ownKey && keys.includes(ownKey) ? [ownKey] : [];
+  }
+  return [...keys];
 }
 
 function providerLifecyclePhaseFromActivityKind(
@@ -3222,7 +3382,12 @@ function mergeDerivedWorkLogEntries(
   const toolTitle = next.toolTitle ?? previous.toolTitle;
   const itemType = next.itemType ?? previous.itemType;
   const requestKind = next.requestKind ?? previous.requestKind;
-  const executionState = next.executionState ?? previous.executionState;
+  // Output that arrives after a call settled does not reopen it.
+  const executionState =
+    next.activityKind === "tool.output.updated" &&
+    (previous.executionState === "completed" || previous.executionState === "failed")
+      ? previous.executionState
+      : (next.executionState ?? previous.executionState);
   const authReconnect = next.authReconnect ?? previous.authReconnect;
   const mcpAuthReconnect = next.mcpAuthReconnect ?? previous.mcpAuthReconnect;
   const collapseKey = next.collapseKey ?? previous.collapseKey;
@@ -3381,6 +3546,11 @@ function deriveWorkLogExecutionState(
   ) {
     return undefined;
   }
+  // Codex keeps its own verdict on the item. Rows saved before the Codex
+  // adapter passed it through say "completed" for commands that failed.
+  if (codexItemStatus(payload) === "failed") {
+    return "failed";
+  }
   const payloadStatus = normalizeWorkLogExecutionStatus(
     asTrimmedString(payload?.status) ?? asTrimmedString(asRecord(payload?.data)?.status),
   );
@@ -3397,6 +3567,24 @@ function deriveWorkLogExecutionState(
     return entry.tone === "error" ? "failed" : "completed";
   }
   return undefined;
+}
+
+/** A step Codex declined before it ran: the user or its reviewer turned the
+ *  approval down. */
+function isDeclinedStep(payload: Record<string, unknown> | null): boolean {
+  return (
+    asTrimmedString(payload?.status) === "declined" ||
+    asTrimmedString(asRecord(asRecord(payload?.data)?.item)?.status) === "declined"
+  );
+}
+
+/** The status Codex put on the item itself (`data.item`), normalized. */
+function codexItemStatus(
+  payload: Record<string, unknown> | null,
+): WorkLogEntry["executionState"] | undefined {
+  return normalizeWorkLogExecutionStatus(
+    asTrimmedString(asRecord(asRecord(payload?.data)?.item)?.status),
+  );
 }
 
 function normalizeWorkLogExecutionStatus(

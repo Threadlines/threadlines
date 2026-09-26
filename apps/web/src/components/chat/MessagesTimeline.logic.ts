@@ -821,9 +821,12 @@ function summarizeTurnWork(
           editedFiles.add(path.replaceAll("\\", "/").toLowerCase());
         }
       }
-      // A rerun of the same check replaces the earlier result.
+      // A rerun of the same check replaces the earlier result. A check that
+      // was blocked never ran, so it has no result.
       const checkKey =
-        entry.command && entry.executionState !== "running" ? commandCheckKey(entry.command) : null;
+        entry.command && entry.executionState !== "running" && !entry.blocked
+          ? commandCheckKey(entry.command)
+          : null;
       if (checkKey) {
         checkResults.set(checkKey, entry.executionState !== "failed");
       }

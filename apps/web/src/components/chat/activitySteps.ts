@@ -13,9 +13,11 @@
  * does not (Codex), the label is read off the command itself. The exact call
  * stays one click away in `detail`.
  */
-import type { WorkLogEntry } from "../../session-logic";
+import type { WorkLogEntry, WorkLogStepBlock } from "../../session-logic";
 import { formatWorkspaceRelativePath } from "../../filePathDisplay";
 import {
+  basePhrase,
+  blockedPhrase,
   capitalize,
   countWord,
   describeAgentLabel,
@@ -276,13 +278,17 @@ export function commandStepDraft(input: {
   const wording = described ?? analysis.phrase;
   if (analysis.routine) {
     // A search that finds nothing exits non-zero; that is an answer, not a
-    // failure. Any other looking-around step that failed says so in the list.
+    // failure. One that printed results found something, whatever the exit
+    // code says (a second pattern or path may have come up empty). Any other
+    // looking-around step that failed says so in the list.
     const onlySearches =
       analysis.tallies.length > 0 && analysis.tallies.every((mark) => mark.tally === "search");
     const label = !input.failed
       ? wording.past
       : onlySearches
-        ? `${wording.past} (no matches)`
+        ? input.output?.trim()
+          ? wording.past
+          : `${wording.past} (no matches)`
         : failedPhrase(wording, input.description);
     return {
       routine: true,
@@ -667,8 +673,47 @@ export function activityStepFromWorkLogEntry(
   const running = entry.executionState === "running";
   const failed = entry.executionState === "failed";
   const timing = { running, durationMs: entryDurationMs(entry) };
-  const draft = entryDraft(entry, options, failed);
+  const draft = entry.blocked
+    ? blockedDraft(entry, entryDraft(entry, options, false), entry.blocked)
+    : entryDraft(entry, options, failed);
   return finishStep(entry.id, draft, timing);
+}
+
+/**
+ * A step something turned down before it ran, worded from what it would have
+ * done. A reviewer's block gets a line of its own, like Codex's "Auto-review
+ * blocked a step"; a guard's or the user's stays in the opened list, uncounted.
+ */
+function blockedDraft(
+  entry: WorkLogEntry,
+  natural: StepDraft,
+  blocked: WorkLogStepBlock,
+): StepDraft {
+  const wording = phrase(natural.label, natural.liveLabel ?? natural.label);
+  const detail: ActivityStepDetail = {
+    ...natural.detail,
+    ...(entry.outputPreview ? { output: entry.outputPreview } : {}),
+  };
+  if (blocked.by === "auto-mode" || blocked.by === "safety-check") {
+    const what = capitalize(basePhrase(wording, entry.description ?? null) ?? natural.label);
+    return {
+      routine: false,
+      icon: "warning",
+      tone: "warning",
+      label:
+        blocked.by === "auto-mode" ? "Auto mode blocked a step" : "A safety check blocked a step",
+      liveLabel: wording.live,
+      note: blocked.reason ? `${what} (${blocked.reason})` : what,
+      detail,
+    };
+  }
+  return {
+    routine: true,
+    icon: natural.icon,
+    label: blockedPhrase(wording, entry.description ?? null, blocked.by === "user"),
+    liveLabel: wording.live,
+    detail,
+  };
 }
 
 function entryDraft(entry: WorkLogEntry, options: ActivityStepOptions, failed: boolean): StepDraft {
