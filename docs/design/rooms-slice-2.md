@@ -231,18 +231,27 @@ Decisions go to a shared in-memory turn-admission registry, keyed by session
 key and provider turn.
 
 - **Raw provider stream**: the checkpoint reactor waits a bounded time for the
-  admission decision for a turn, then acts only on `main`. It never
-  re-derives the lane from who holds the slot when it gets there. So a main
-  turn's late completion after a handover still checkpoints. Side turns and a
-  non-holder's self-woken turn never do; that fixes a latent slice-1 bug.
+  admission decision for a turn, then acts only on `main`. An undecided turn
+  counts as `main` only for the agent holding the slot. Side turns and a
+  non-holder's self-woken turn never checkpoint; that fixes a latent slice-1
+  bug.
+- **Late completion after a handover** (built in PR1, then deferred): the
+  checkpoint reactor captures a turn from the live checkout, so a completion
+  processed after the next agent started is still dropped, as in slice 1.
+  Three review rounds showed a real fix needs a handover barrier coordinated
+  with the checkpoint reactor: the previous turn's _final_ capture (not an
+  early diff checkpoint) must be finished or permanently cancelled before the
+  next agent is sent anything, the wait must not block Stop, and a capture
+  already past its guard must not publish afterwards. That is its own change.
+  Until rooms get revert, the impact is a turn's changed-files summary in a
+  rare race.
 - **Domain stream**: user messages with `sideTurnId` never create or retake a
   baseline.
 
 Tests:
 
-- A holder woken by background work does real work, then hands off before its
-  completion is checkpointed.
-- An idle non-holder's self-wake is rejected.
+- An idle non-holder's self-wake is rejected, decided or not.
+- A late completion after another agent started editing records nothing.
 
 ### Catch-up note: a delivered-context cursor, per conversation
 
@@ -526,8 +535,9 @@ behavior tests during the build, with no live turns needed.
    None of these executes or prompts. Forbidden servers and hooks never start.
    Its first real turn is still restricted.
 
-5. A main turn's late checkpoint survives a handover. Side messages and side
-   completions never create one. An idle agent's self-woken turn never does.
+5. Side messages and side completions never create a checkpoint. An idle
+   agent's self-woken turn never does. (A main turn's late checkpoint surviving
+   a handover is deferred; see "Checkpoints" above.)
 6. A hand-off reply reaches the right caller despite user work in between.
    Stop plus a new user message cannot revive the chain. A restart does not
    duplicate the reply.

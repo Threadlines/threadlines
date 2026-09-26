@@ -1540,8 +1540,6 @@ describe("CheckpointReactor", () => {
     fs.writeFileSync(path.join(harness.cwd, "README.md"), "v2\n", "utf8");
 
     // Astra takes the thread and edits before the completion is processed.
-    // (The command reactor normally holds a handover until the checkpoint
-    // is in; this is the backstop when that wait ran out.)
     await dispatch({
       type: "thread.session.set",
       commandId: CommandId.make("cmd-handover-astra"),

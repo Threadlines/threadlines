@@ -252,9 +252,6 @@ const HANDLED_TURN_START_KEY_MAX = 10_000;
 const HANDLED_TURN_START_KEY_TTL = Duration.minutes(30);
 const DEFAULT_RUNTIME_MODE: RuntimeMode = "full-access";
 const PROVIDER_INTERRUPT_ACK_TIMEOUT = Duration.seconds(10);
-/** How long a room handover waits for the previous turn's checkpoint. */
-const HANDOVER_CHECKPOINT_POLL = Duration.millis(100);
-const HANDOVER_CHECKPOINT_WAIT_ATTEMPTS = 50;
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 
 export function providerErrorLabel(value: string | undefined): string {
@@ -1521,49 +1518,19 @@ const make = Effect.gen(function* () {
         ),
       );
 
-  /**
-   * In a room, the turn before this one gets its checkpoint before the next
-   * turn is sent. The checkpoint reactor captures a turn from the live
-   * checkout when its completion arrives; once another agent edits, that
-   * capture would be wrong, so a completion that arrives after the thread
-   * changed hands is dropped (see CheckpointReactor). Waiting here keeps it
-   * from coming to that. The latest turn reads "running" until its checkpoint
-   * lands, whatever the agent is doing. Bounded: a turn whose capture failed
-   * holds the next one for at most this long.
-   */
-  const awaitHandoverCheckpoint = Effect.fnUntraced(function* (
-    threadId: ThreadId,
-    previousTurnId: TurnId,
-  ) {
-    for (let attempt = 0; attempt < HANDOVER_CHECKPOINT_WAIT_ATTEMPTS; attempt += 1) {
-      const latest = yield* resolveThread(threadId);
-      if (
-        !latest ||
-        latest.checkpoints.some((checkpoint) => checkpoint.turnId === previousTurnId)
-      ) {
-        return;
-      }
-      yield* Effect.sleep(HANDOVER_CHECKPOINT_POLL);
-    }
-    yield* Effect.logWarning("room handover went ahead without the previous turn's checkpoint", {
-      threadId,
-      turnId: previousTurnId,
-    });
-  });
-
   const capturePreTurnCheckpointForTurnStart = Effect.fn("capturePreTurnCheckpointForTurnStart")(
     function* (input: { readonly threadId: ThreadId }) {
-      const initial = yield* resolveThread(input.threadId);
-      if (!initial) {
+      const thread = yield* resolveThread(input.threadId);
+      if (!thread) {
         return;
       }
 
-      const project = yield* resolveProject(initial.projectId);
+      const project = yield* resolveProject(thread.projectId);
       if (project?.kind === "general-chat") {
         return;
       }
       const cwd = resolveThreadWorkspaceCwd({
-        thread: initial,
+        thread,
         projects: project ? [project] : [],
       });
       if (!cwd) {
@@ -1582,16 +1549,6 @@ const make = Effect.gen(function* () {
       if (!isRepository) {
         return;
       }
-      const previousTurnId =
-        initial.participants.length > 0 ? initial.latestTurn?.turnId : undefined;
-      if (
-        previousTurnId !== undefined &&
-        !initial.checkpoints.some((checkpoint) => checkpoint.turnId === previousTurnId)
-      ) {
-        yield* awaitHandoverCheckpoint(input.threadId, previousTurnId);
-      }
-      // Counted after the wait: the previous turn's checkpoint is in by now.
-      const thread = (yield* resolveThread(input.threadId)) ?? initial;
 
       const currentTurnCount = thread.checkpoints.reduce(
         (maxTurnCount, checkpoint) => Math.max(maxTurnCount, checkpoint.checkpointTurnCount),

@@ -2912,34 +2912,46 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
   let sweptSideAnswerHomes = false;
 
   /**
-   * Ask the user's own Codex to renew its login the normal way. A Codex
-   * session of theirs already running here does it through its own auth
-   * manager, which serializes against its own refreshes. With none running,
-   * a regular app server on their home does, as the provider status check
-   * runs one. Either rewrites their `auth.json` itself; renewals for one home
-   * are coalesced by `borrowCodexSignIn`.
+   * Ask the user's own Codex to renew its login the normal way, through a
+   * Codex session of theirs already running here: the one working if there
+   * is one (it may be renewing right now, and its auth manager serializes
+   * the two), else any. With none running, a regular app server on their
+   * home does, as the provider status check runs one. Either rewrites their
+   * `auth.json` itself; renewals for one home are coalesced by
+   * `borrowCodexSignIn`. Codex sessions each own an auth manager, so two
+   * working at once can still renew side by side, as they already do.
    */
-  const renewCodexSignIn = (cwd: string) => {
-    const owner = [...sessions.values()].find((context) => !context.stopped && !context.lockdown);
-    if (owner !== undefined) {
-      return owner.runtime.renewSignIn;
-    }
-    return Effect.scoped(
-      Effect.gen(function* () {
-        const client = yield* makeCodexAppServerClient({
-          binaryPath: codexConfig.binaryPath,
-          ...(codexConfig.homePath ? { homePath: codexConfig.homePath } : {}),
-          cwd,
-          ...(options?.environment ? { environment: options.environment } : {}),
-        });
-        yield* initializeCodexAppServerClient(client);
-        yield* client.request("account/read", { refreshToken: true });
-      }),
-    ).pipe(
-      Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, childProcessSpawner),
-      Effect.timeout("30 seconds"),
-    );
-  };
+  const renewCodexSignIn = (cwd: string) =>
+    Effect.gen(function* () {
+      const owners = [...sessions.values()].filter(
+        (context) => !context.stopped && !context.lockdown,
+      );
+      let owner = owners[0];
+      for (const candidate of owners) {
+        if ((yield* candidate.runtime.getSession).status === "running") {
+          owner = candidate;
+          break;
+        }
+      }
+      if (owner !== undefined) {
+        return yield* owner.runtime.renewSignIn;
+      }
+      return yield* Effect.scoped(
+        Effect.gen(function* () {
+          const client = yield* makeCodexAppServerClient({
+            binaryPath: codexConfig.binaryPath,
+            ...(codexConfig.homePath ? { homePath: codexConfig.homePath } : {}),
+            cwd,
+            ...(options?.environment ? { environment: options.environment } : {}),
+          });
+          yield* initializeCodexAppServerClient(client);
+          yield* client.request("account/read", { refreshToken: true });
+        }),
+      ).pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, childProcessSpawner),
+        Effect.timeout("30 seconds"),
+      );
+    });
 
   const startSession: CodexAdapterShape["startSession"] = (input) =>
     Effect.scoped(

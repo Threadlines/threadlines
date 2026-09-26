@@ -18,7 +18,6 @@ import { createModelSelection } from "@threadlines/shared/model";
 import { participantSessionKey, sideSessionKey } from "@threadlines/shared/threadParticipants";
 import {
   ApprovalRequestId,
-  CheckpointRef,
   CommandId,
   DEFAULT_PROVIDER_INTERACTION_MODE,
   EventId,
@@ -180,8 +179,6 @@ describe("ProviderCommandReactor", () => {
     /** State left behind by a previous server process, seeded before the
      *  reactor starts. */
     readonly beforeStart?: (engine: OrchestrationEngineShape) => Effect.Effect<void, unknown>;
-    /** The workspace is a git repository, so turns take checkpoints. */
-    readonly gitCheckpoints?: boolean;
   }) {
     const now = "2026-01-01T00:00:00.000Z";
     const baseDir =
@@ -412,7 +409,7 @@ describe("ProviderCommandReactor", () => {
 
     const unsupported = () => Effect.die(new Error("Unsupported provider call in test")) as never;
     const checkpointStore = makeCheckpointStoreStub({
-      isGitRepository: () => Effect.succeed(input?.gitCheckpoints === true),
+      isGitRepository: () => Effect.succeed(false),
       restoreCheckpoint: () => Effect.succeed(false),
     });
     const service: ProviderServiceShape = {
@@ -896,8 +893,8 @@ describe("ProviderCommandReactor", () => {
    * waits in the queue. `settle` ends the turn with the given background
    * counts.
    */
-  async function startRoomWithMessageQueuedForAstra(options?: Parameters<typeof createHarness>[0]) {
-    const harness = await createHarness(options);
+  async function startRoomWithMessageQueuedForAstra() {
+    const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
     const threadId = ThreadId.make("thread-1");
     const astraId = ThreadParticipantId.make("7a0b1c2d-3e4f-4a5b-8c6d-7e8f9a0b1c2d");
@@ -1142,37 +1139,6 @@ describe("ProviderCommandReactor", () => {
         ([request]) => (request as { threadId: string }).threadId === toAstra,
       ),
     );
-  });
-
-  it("hands the thread to another agent only once the last turn's checkpoint is in", async () => {
-    const { harness, threadId, astraId, dispatch, settle, now } =
-      await startRoomWithMessageQueuedForAstra({ gitCheckpoints: true });
-    const toAstra = participantSessionKey(threadId, astraId);
-    const sentToAstra = () =>
-      harness.sendTurn.mock.calls.some(
-        ([request]) => (request as { threadId: string }).threadId === toAstra,
-      );
-    // Not drained: the reactor is holding the handover.
-    await settle(0, 0, "cmd-handover-turn-done");
-    // The checkpoint reactor captures turn-1 from the live checkout; astra
-    // editing first would put astra's work in it.
-    await new Promise((resolve) => setTimeout(resolve, 300));
-    expect(sentToAstra()).toBe(false);
-
-    await dispatch({
-      type: "thread.turn.diff.complete",
-      commandId: CommandId.make("cmd-handover-checkpoint"),
-      threadId,
-      turnId: asTurnId("turn-1"),
-      completedAt: now,
-      checkpointRef: CheckpointRef.make("refs/threadlines/checkpoints/thread-1/turn/1"),
-      status: "ready",
-      files: [],
-      checkpointTurnCount: 1,
-      completesTurn: true,
-      createdAt: now,
-    });
-    await waitFor(sentToAstra);
   });
 
   /** Astra answering on the side while the thread's own agent works turn-1. */

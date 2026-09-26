@@ -831,8 +831,9 @@ const make = Effect.gen(function* () {
       // When a primary turn is active, only that turn may produce completion
       // checkpoints. In a room, a completion that arrives after the thread
       // changed hands is dropped: the checkout already holds the next agent's
-      // edits. The command reactor holds a handover until the previous turn's
-      // checkpoint is in, so this is only a backstop.
+      // edits. (A capture that passed this check just before a handover can
+      // still race the next agent's first edits; a real handover barrier is
+      // follow-up work, see docs/design/rooms-slice-2.md.)
       if (thread.session?.activeTurnId && !sameId(thread.session.activeTurnId, turnId)) {
         return;
       }
