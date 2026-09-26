@@ -31,6 +31,9 @@ import {
   OrchestrationQueuedFollowUp,
   OrchestrationThreadLinkedPullRequest,
   OrchestrationThreadParticipant,
+  OrchestrationRoomContextCursor,
+  OrchestrationSideTurn,
+  SideTurnId,
   ProjectId,
   ThreadId,
   ThreadParticipantId,
@@ -100,6 +103,7 @@ const ProjectionThreadMessageDbRowSchema = ProjectionThreadMessage.mapFields(
     attachments: Schema.NullOr(Schema.fromJsonString(ChatAttachmentListLenient)),
     skills: Schema.NullOr(Schema.fromJsonString(ChatSkillReferenceList)),
     participantId: Schema.NullOr(ThreadParticipantId),
+    sideTurnId: Schema.NullOr(SideTurnId),
   }),
 );
 const ProjectionThreadProposedPlanDbRowSchema = ProjectionThreadProposedPlan.mapFields(
@@ -112,6 +116,10 @@ const ProjectionThreadDbRowSchema = ProjectionThread.mapFields(
     linkedPullRequests: Schema.fromJsonString(Schema.Array(OrchestrationThreadLinkedPullRequest)),
     queuedFollowUps: Schema.fromJsonString(Schema.Array(OrchestrationQueuedFollowUp)),
     participants: Schema.fromJsonString(Schema.Array(OrchestrationThreadParticipant)),
+    sideTurn: Schema.optional(Schema.NullOr(Schema.fromJsonString(OrchestrationSideTurn))),
+    roomContext: Schema.optional(
+      Schema.fromJsonString(Schema.Record(Schema.String, OrchestrationRoomContextCursor)),
+    ),
   }),
 );
 const ProjectionThreadActivityDbRowSchema = ProjectionThreadActivity.mapFields(
@@ -119,6 +127,8 @@ const ProjectionThreadActivityDbRowSchema = ProjectionThreadActivity.mapFields(
     payload: Schema.fromJsonString(Schema.Unknown),
     sequence: Schema.NullOr(NonNegativeInt),
     eventSequence: Schema.NullOr(NonNegativeInt),
+    sideTurnId: Schema.NullOr(SideTurnId),
+    participantId: Schema.NullOr(ThreadParticipantId),
   }),
 );
 const ProjectionThreadSessionDbRowSchema = ProjectionThreadSession;
@@ -349,6 +359,7 @@ function mapThreadMessageRow(
     ...(row.attachments !== null ? { attachments: row.attachments } : {}),
     ...(row.skills !== null ? { skills: row.skills } : {}),
     ...(row.participantId !== null ? { participantId: row.participantId } : {}),
+    ...(row.sideTurnId !== null ? { sideTurnId: row.sideTurnId } : {}),
     turnId: row.turnId,
     streaming: row.isStreaming === 1,
     createdAt: row.createdAt,
@@ -367,6 +378,8 @@ function mapThreadActivityRow(
     summary: row.summary,
     payload: row.payload,
     turnId: row.turnId,
+    ...(row.sideTurnId !== null ? { sideTurnId: row.sideTurnId } : {}),
+    ...(row.participantId !== null ? { participantId: row.participantId } : {}),
     ...(row.sequence !== null ? { sequence: row.sequence } : {}),
     createdAt: row.createdAt,
   };
@@ -560,6 +573,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           linked_pull_requests AS "linkedPullRequests",
           queued_follow_ups AS "queuedFollowUps",
           participants AS "participants",
+          side_turn AS "sideTurn",
+          room_context AS "roomContext",
           done_override AS "doneOverride",
           done_override_at AS "doneOverrideAt",
           last_seen_at AS "lastSeenAt",
@@ -603,6 +618,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           linked_pull_requests AS "linkedPullRequests",
           queued_follow_ups AS "queuedFollowUps",
           participants AS "participants",
+          side_turn AS "sideTurn",
+          room_context AS "roomContext",
           done_override AS "doneOverride",
           done_override_at AS "doneOverrideAt",
           last_seen_at AS "lastSeenAt",
@@ -648,6 +665,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           linked_pull_requests AS "linkedPullRequests",
           queued_follow_ups AS "queuedFollowUps",
           participants AS "participants",
+          side_turn AS "sideTurn",
+          room_context AS "roomContext",
           done_override AS "doneOverride",
           done_override_at AS "doneOverrideAt",
           last_seen_at AS "lastSeenAt",
@@ -679,6 +698,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           attachments_json AS "attachments",
           skills_json AS "skills",
           participant_id AS "participantId",
+          side_turn_id AS "sideTurnId",
           is_streaming AS "isStreaming",
           created_at AS "createdAt",
           updated_at AS "updatedAt"
@@ -718,6 +738,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           attachments_json AS "attachments",
           skills_json AS "skills",
           participant_id AS "participantId",
+          side_turn_id AS "sideTurnId",
           is_streaming AS "isStreaming",
           created_at AS "createdAt",
           updated_at AS "updatedAt"
@@ -790,6 +811,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           event_sequence AS "eventSequence",
           thread_id AS "threadId",
           turn_id AS "turnId",
+          side_turn_id AS "sideTurnId",
+          participant_id AS "participantId",
           tone,
           kind,
           summary,
@@ -1305,6 +1328,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           linked_pull_requests AS "linkedPullRequests",
           queued_follow_ups AS "queuedFollowUps",
           participants AS "participants",
+          side_turn AS "sideTurn",
+          room_context AS "roomContext",
           done_override AS "doneOverride",
           done_override_at AS "doneOverrideAt",
           last_seen_at AS "lastSeenAt",
@@ -1337,6 +1362,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           attachments_json AS "attachments",
           skills_json AS "skills",
           participant_id AS "participantId",
+          side_turn_id AS "sideTurnId",
           is_streaming AS "isStreaming",
           created_at AS "createdAt",
           updated_at AS "updatedAt"
@@ -1411,6 +1437,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           event_sequence AS "eventSequence",
           thread_id AS "threadId",
           turn_id AS "turnId",
+          side_turn_id AS "sideTurnId",
+          participant_id AS "participantId",
           tone,
           kind,
           summary,
@@ -1886,6 +1914,10 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                 linkedPullRequests: row.linkedPullRequests ?? [],
                 queuedFollowUps: row.queuedFollowUps ?? [],
                 participants: row.participants ?? [],
+                ...(row.sideTurn ? { sideTurn: row.sideTurn } : {}),
+                ...(row.roomContext && Object.keys(row.roomContext).length > 0
+                  ? { roomContext: row.roomContext }
+                  : {}),
                 doneOverride: mapThreadDoneOverride(row),
                 lastSeenAt: row.lastSeenAt ?? null,
                 deletedAt: row.deletedAt,
@@ -2137,6 +2169,10 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   linkedPullRequests: row.linkedPullRequests ?? [],
                   queuedFollowUps: row.queuedFollowUps ?? [],
                   participants: row.participants ?? [],
+                  ...(row.sideTurn ? { sideTurn: row.sideTurn } : {}),
+                  ...(row.roomContext && Object.keys(row.roomContext).length > 0
+                    ? { roomContext: row.roomContext }
+                    : {}),
                   doneOverride: mapThreadDoneOverride(row),
                   lastSeenAt: row.lastSeenAt ?? null,
                   deletedAt: row.deletedAt,
@@ -2290,6 +2326,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                     linkedPullRequests: row.linkedPullRequests ?? [],
                     queuedFollowUps: row.queuedFollowUps ?? [],
                     participants: row.participants ?? [],
+                    ...(row.sideTurn ? { sideTurn: row.sideTurn } : {}),
                     doneOverride: mapThreadDoneOverride(row),
                     lastSeenAt: row.lastSeenAt ?? null,
                     session: sessionByThread.get(row.threadId) ?? null,
@@ -2446,6 +2483,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   linkedPullRequests: row.linkedPullRequests ?? [],
                   queuedFollowUps: row.queuedFollowUps ?? [],
                   participants: row.participants ?? [],
+                  ...(row.sideTurn ? { sideTurn: row.sideTurn } : {}),
                   doneOverride: mapThreadDoneOverride(row),
                   lastSeenAt: row.lastSeenAt ?? null,
                   session: sessionByThread.get(row.threadId) ?? null,
@@ -2721,6 +2759,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         linkedPullRequests: threadRow.value.linkedPullRequests ?? [],
         queuedFollowUps: threadRow.value.queuedFollowUps ?? [],
         participants: threadRow.value.participants ?? [],
+        ...(threadRow.value.sideTurn ? { sideTurn: threadRow.value.sideTurn } : {}),
         doneOverride: mapThreadDoneOverride(threadRow.value),
         lastSeenAt: threadRow.value.lastSeenAt ?? null,
         session: Option.isSome(sessionRow) ? mapSessionRow(sessionRow.value) : null,
@@ -2839,6 +2878,10 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         linkedPullRequests: threadRow.value.linkedPullRequests ?? [],
         queuedFollowUps: threadRow.value.queuedFollowUps ?? [],
         participants: threadRow.value.participants ?? [],
+        ...(threadRow.value.sideTurn ? { sideTurn: threadRow.value.sideTurn } : {}),
+        ...(threadRow.value.roomContext && Object.keys(threadRow.value.roomContext).length > 0
+          ? { roomContext: threadRow.value.roomContext }
+          : {}),
         doneOverride: mapThreadDoneOverride(threadRow.value),
         lastSeenAt: threadRow.value.lastSeenAt ?? null,
         deletedAt: null,

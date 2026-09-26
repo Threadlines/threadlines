@@ -4,6 +4,7 @@ import {
   MessageId,
   ProjectId,
   ProviderInstanceId,
+  SideTurnId,
   ThreadId,
   ThreadParticipantId,
   TurnId,
@@ -347,6 +348,120 @@ describe("decider rooms", () => {
     expect(removed).toMatchObject({
       type: "thread.participant-removed",
       payload: { participantId: astraId },
+    });
+  });
+
+  describe("side answers", () => {
+    const sideTurnId = SideTurnId.make("0d9e8f7a-6b5c-4d3e-8f1a-2b3c4d5e6f70");
+    const working = session({ status: "running", activeTurnId: TurnId.make("turn-1") });
+    const ask = (
+      participantId: ThreadParticipantId | null,
+    ): Extract<OrchestrationCommand, { type: "thread.side-turn.start" }> => ({
+      type: "thread.side-turn.start",
+      commandId: CommandId.make("cmd-side"),
+      threadId,
+      sideTurnId,
+      participantId,
+      message: { messageId: MessageId.make("message-side"), role: "user", text: "is this right?" },
+      createdAt: "2026-01-01T00:00:05.000Z",
+    });
+    const answering = {
+      sideTurnId,
+      participantId: astraId,
+      messageId: MessageId.make("message-side"),
+      status: "running" as const,
+      startedAt: now,
+    };
+
+    it("asks another agent while one works, with the question outside any turn", async () => {
+      const [question, started] = await decideEvents(ask(astraId), readModel({ session: working }));
+      expect(question).toMatchObject({
+        type: "thread.message-sent",
+        payload: { participantId: astraId, sideTurnId, turnId: null, role: "user" },
+      });
+      expect(started).toMatchObject({
+        type: "thread.side-turn-started",
+        payload: {
+          sideTurn: { sideTurnId, participantId: astraId, status: "starting" },
+          modelSelection: astra.modelSelection,
+        },
+      });
+    });
+
+    it("refuses a side answer from the agent holding the thread, or a second one", async () => {
+      // The thread's own agent holds it: that is a normal message.
+      expect(Exit.isFailure(await decide(ask(null), readModel({ session: working })))).toBe(true);
+      expect(
+        Exit.isFailure(
+          await decide(ask(astraId), readModel({ session: working, sideTurn: answering })),
+        ),
+      ).toBe(true);
+      // Outside a room there is no one else to ask.
+      expect(
+        Exit.isFailure(
+          await decide(ask(astraId), readModel({ participants: [], session: working })),
+        ),
+      ).toBe(true);
+    });
+
+    it("keeps an answering agent from taking the thread or leaving it", async () => {
+      const model = readModel({ sideTurn: answering });
+      expect(Exit.isFailure(await decide(turnStart(astraId), model))).toBe(true);
+      expect(
+        Exit.isFailure(
+          await decide(
+            {
+              type: "thread.participant.remove",
+              commandId: CommandId.make("cmd-remove"),
+              threadId,
+              participantId: astraId,
+              createdAt: now,
+            },
+            model,
+          ),
+        ),
+      ).toBe(true);
+    });
+
+    it("ignores a stop or finish for a side answer that is not the current one", async () => {
+      const stale = SideTurnId.make("11111111-2222-4333-8444-555566667777");
+      const model = readModel({ sideTurn: answering });
+      expect(
+        Exit.isFailure(
+          await decide(
+            {
+              type: "thread.side-turn.settle",
+              commandId: CommandId.make("cmd-settle"),
+              threadId,
+              sideTurnId: stale,
+              outcome: "completed",
+              createdAt: now,
+            },
+            model,
+          ),
+        ),
+      ).toBe(true);
+      const [settled] = await decideEvents(
+        {
+          type: "thread.side-turn.settle",
+          commandId: CommandId.make("cmd-settle-current"),
+          threadId,
+          sideTurnId,
+          outcome: "completed",
+          answerMessageId: MessageId.make("answer"),
+          createdAt: now,
+        },
+        model,
+      );
+      expect(settled).toMatchObject({
+        type: "thread.side-turn-settled",
+        payload: {
+          sideTurnId,
+          participantId: astraId,
+          outcome: "completed",
+          answerMessageId: "answer",
+        },
+      });
     });
   });
 });

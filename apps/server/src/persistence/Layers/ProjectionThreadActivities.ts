@@ -1,6 +1,6 @@
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as SqlSchema from "effect/unstable/sql/SqlSchema";
-import { NonNegativeInt } from "@threadlines/contracts";
+import { NonNegativeInt, SideTurnId, ThreadParticipantId } from "@threadlines/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
@@ -21,6 +21,8 @@ const ProjectionThreadActivityDbRowSchema = ProjectionThreadActivity.mapFields(
     payload: Schema.fromJsonString(Schema.Unknown),
     sequence: Schema.NullOr(NonNegativeInt),
     eventSequence: Schema.NullOr(NonNegativeInt),
+    sideTurnId: Schema.NullOr(SideTurnId),
+    participantId: Schema.NullOr(ThreadParticipantId),
   }),
 );
 
@@ -43,6 +45,8 @@ const makeProjectionThreadActivityRepository = Effect.gen(function* () {
               event_sequence,
               thread_id,
               turn_id,
+              side_turn_id,
+              participant_id,
               tone,
               kind,
               summary,
@@ -55,6 +59,8 @@ const makeProjectionThreadActivityRepository = Effect.gen(function* () {
           ${row.eventSequence ?? null},
               ${row.threadId},
               ${row.turnId},
+              ${row.sideTurnId ?? null},
+              ${row.participantId ?? null},
               ${row.tone},
               ${row.kind},
               ${row.summary},
@@ -66,6 +72,8 @@ const makeProjectionThreadActivityRepository = Effect.gen(function* () {
             DO UPDATE SET
               thread_id = excluded.thread_id,
               turn_id = excluded.turn_id,
+              side_turn_id = excluded.side_turn_id,
+              participant_id = excluded.participant_id,
               tone = excluded.tone,
               kind = excluded.kind,
               summary = excluded.summary,
@@ -85,6 +93,8 @@ const makeProjectionThreadActivityRepository = Effect.gen(function* () {
           event_sequence AS "eventSequence",
           thread_id AS "threadId",
           turn_id AS "turnId",
+          side_turn_id AS "sideTurnId",
+          participant_id AS "participantId",
           tone,
           kind,
           summary,
@@ -134,6 +144,8 @@ const makeProjectionThreadActivityRepository = Effect.gen(function* () {
           ...(row.eventSequence !== null ? { eventSequence: row.eventSequence } : {}),
           threadId: row.threadId,
           turnId: row.turnId,
+          ...(row.sideTurnId !== null ? { sideTurnId: row.sideTurnId } : {}),
+          ...(row.participantId !== null ? { participantId: row.participantId } : {}),
           tone: row.tone,
           kind: row.kind,
           summary: row.summary,

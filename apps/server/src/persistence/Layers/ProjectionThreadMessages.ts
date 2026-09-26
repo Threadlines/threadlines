@@ -6,6 +6,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Struct from "effect/Struct";
 import {
+  SideTurnId,
   ChatAttachmentListLenient,
   ChatSkillReferenceList,
   NonNegativeInt,
@@ -29,6 +30,7 @@ const ProjectionThreadMessageDbRowSchema = ProjectionThreadMessage.mapFields(
     attachments: Schema.NullOr(Schema.fromJsonString(ChatAttachmentListLenient)),
     skills: Schema.NullOr(Schema.fromJsonString(ChatSkillReferenceList)),
     participantId: Schema.NullOr(ThreadParticipantId),
+    sideTurnId: Schema.NullOr(SideTurnId),
   }),
 );
 
@@ -48,6 +50,7 @@ function toProjectionThreadMessage(
     ...(row.attachments !== null ? { attachments: row.attachments } : {}),
     ...(row.skills !== null ? { skills: row.skills } : {}),
     ...(row.participantId !== null ? { participantId: row.participantId } : {}),
+    ...(row.sideTurnId !== null ? { sideTurnId: row.sideTurnId } : {}),
   };
 }
 
@@ -71,6 +74,7 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
           attachments_json,
           skills_json,
           participant_id,
+          side_turn_id,
           is_streaming,
           created_at,
           updated_at
@@ -99,6 +103,7 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
             )
           ),
           ${row.participantId ?? null},
+          ${row.sideTurnId ?? null},
           ${row.isStreaming ? 1 : 0},
           ${row.createdAt},
           ${row.updatedAt}
@@ -117,8 +122,8 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
             excluded.skills_json,
             projection_thread_messages.skills_json
           ),
-          -- participant_id is left alone: a message's author is fixed by the
-          -- write that created it.
+          -- participant_id and side_turn_id are left alone: a message's author
+          -- and lane are fixed by the write that created it.
           is_streaming = excluded.is_streaming,
           created_at = excluded.created_at,
           updated_at = excluded.updated_at
@@ -141,6 +146,7 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
           attachments_json AS "attachments",
           skills_json AS "skills",
           participant_id AS "participantId",
+          side_turn_id AS "sideTurnId",
           is_streaming AS "isStreaming",
           created_at AS "createdAt",
           updated_at AS "updatedAt"
@@ -165,6 +171,7 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
           attachments_json AS "attachments",
           skills_json AS "skills",
           participant_id AS "participantId",
+          side_turn_id AS "sideTurnId",
           is_streaming AS "isStreaming",
           created_at AS "createdAt",
           updated_at AS "updatedAt"

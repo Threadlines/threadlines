@@ -14,6 +14,8 @@ import {
   OrchestrationQueuedFollowUp,
   OrchestrationThreadLinkedPullRequest,
   OrchestrationThreadParticipant,
+  OrchestrationRoomContextCursor,
+  OrchestrationSideTurn,
   ProjectId,
   ProviderInteractionMode,
   PullRequestMergeMethod,
@@ -89,6 +91,17 @@ export const ProjectionThread = Schema.Struct({
    * migration 056 decode; absent reads as none.
    */
   participants: Schema.optional(Schema.Array(OrchestrationThreadParticipant)),
+  /**
+   * The side answer in progress; see `OrchestrationThreadShell.sideTurn`.
+   * Optional so rows written before migration 059 decode.
+   */
+  sideTurn: Schema.optional(Schema.NullOr(OrchestrationSideTurn)),
+  /**
+   * Per agent, what its conversation has been told; see
+   * `OrchestrationThread.roomContext`. Optional so rows written before
+   * migration 059 decode; absent reads as nothing told yet.
+   */
+  roomContext: Schema.optional(Schema.Record(Schema.String, OrchestrationRoomContextCursor)),
   /**
    * The user's explicit inbox filing and its stamp. Optional so rows written
    * before migration 042 decode; absent reads as "never filed". Kept as two

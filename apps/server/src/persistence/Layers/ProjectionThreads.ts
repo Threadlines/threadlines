@@ -20,6 +20,8 @@ import {
   OrchestrationQueuedFollowUp,
   OrchestrationThreadLinkedPullRequest,
   OrchestrationThreadParticipant,
+  OrchestrationRoomContextCursor,
+  OrchestrationSideTurn,
 } from "@threadlines/contracts";
 
 const ProjectionThreadDbRow = ProjectionThread.mapFields(
@@ -29,6 +31,10 @@ const ProjectionThreadDbRow = ProjectionThread.mapFields(
     linkedPullRequests: Schema.fromJsonString(Schema.Array(OrchestrationThreadLinkedPullRequest)),
     queuedFollowUps: Schema.fromJsonString(Schema.Array(OrchestrationQueuedFollowUp)),
     participants: Schema.fromJsonString(Schema.Array(OrchestrationThreadParticipant)),
+    sideTurn: Schema.NullOr(Schema.fromJsonString(OrchestrationSideTurn)),
+    roomContext: Schema.fromJsonString(
+      Schema.Record(Schema.String, OrchestrationRoomContextCursor),
+    ),
   }),
 );
 type ProjectionThreadDbRow = typeof ProjectionThreadDbRow.Type;
@@ -64,6 +70,8 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           linked_pull_requests,
           queued_follow_ups,
           participants,
+          side_turn,
+          room_context,
           done_override,
           done_override_at,
           last_seen_at,
@@ -98,6 +106,8 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           ${JSON.stringify(row.linkedPullRequests ?? [])},
           ${JSON.stringify(row.queuedFollowUps ?? [])},
           ${JSON.stringify(row.participants ?? [])},
+          ${row.sideTurn ? JSON.stringify(row.sideTurn) : null},
+          ${JSON.stringify(row.roomContext ?? {})},
           ${row.doneOverride ?? null},
           ${row.doneOverrideAt ?? null},
           ${row.lastSeenAt ?? null},
@@ -132,6 +142,8 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           linked_pull_requests = excluded.linked_pull_requests,
           queued_follow_ups = excluded.queued_follow_ups,
           participants = excluded.participants,
+          side_turn = excluded.side_turn,
+          room_context = excluded.room_context,
           done_override = excluded.done_override,
           done_override_at = excluded.done_override_at,
           last_seen_at = excluded.last_seen_at,
@@ -173,6 +185,8 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           linked_pull_requests AS "linkedPullRequests",
           queued_follow_ups AS "queuedFollowUps",
           participants AS "participants",
+          side_turn AS "sideTurn",
+          room_context AS "roomContext",
           done_override AS "doneOverride",
           done_override_at AS "doneOverrideAt",
           last_seen_at AS "lastSeenAt",
@@ -216,6 +230,8 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           linked_pull_requests AS "linkedPullRequests",
           queued_follow_ups AS "queuedFollowUps",
           participants AS "participants",
+          side_turn AS "sideTurn",
+          room_context AS "roomContext",
           done_override AS "doneOverride",
           done_override_at AS "doneOverrideAt",
           last_seen_at AS "lastSeenAt",

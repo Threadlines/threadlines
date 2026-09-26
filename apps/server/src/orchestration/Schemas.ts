@@ -15,6 +15,11 @@ import {
   ThreadPullRequestLinkedPayload as ContractsThreadPullRequestLinkedPayloadSchema,
   ThreadParticipantAddedPayload as ContractsThreadParticipantAddedPayloadSchema,
   ThreadParticipantRemovedPayload as ContractsThreadParticipantRemovedPayloadSchema,
+  ThreadRoomContextRecordedPayload as ContractsThreadRoomContextRecordedPayloadSchema,
+  ThreadSideTurnInterruptRequestedPayload as ContractsThreadSideTurnInterruptRequestedPayloadSchema,
+  ThreadSideTurnRunningPayload as ContractsThreadSideTurnRunningPayloadSchema,
+  ThreadSideTurnSettledPayload as ContractsThreadSideTurnSettledPayloadSchema,
+  ThreadSideTurnStartedPayload as ContractsThreadSideTurnStartedPayloadSchema,
   ThreadDoneOverrideSetPayload as ContractsThreadDoneOverrideSetPayloadSchema,
   ThreadSeenSetPayload as ContractsThreadSeenSetPayloadSchema,
   ThreadMessageSentPayload as ContractsThreadMessageSentPayloadSchema,
@@ -58,6 +63,12 @@ export const ThreadPullRequestAutomationChangedPayload =
 export const ThreadPullRequestLinkedPayload = ContractsThreadPullRequestLinkedPayloadSchema;
 export const ThreadParticipantAddedPayload = ContractsThreadParticipantAddedPayloadSchema;
 export const ThreadParticipantRemovedPayload = ContractsThreadParticipantRemovedPayloadSchema;
+export const ThreadRoomContextRecordedPayload = ContractsThreadRoomContextRecordedPayloadSchema;
+export const ThreadSideTurnInterruptRequestedPayload =
+  ContractsThreadSideTurnInterruptRequestedPayloadSchema;
+export const ThreadSideTurnRunningPayload = ContractsThreadSideTurnRunningPayloadSchema;
+export const ThreadSideTurnSettledPayload = ContractsThreadSideTurnSettledPayloadSchema;
+export const ThreadSideTurnStartedPayload = ContractsThreadSideTurnStartedPayloadSchema;
 export const ThreadDoneOverrideSetPayload = ContractsThreadDoneOverrideSetPayloadSchema;
 export const ThreadSeenSetPayload = ContractsThreadSeenSetPayloadSchema;
 

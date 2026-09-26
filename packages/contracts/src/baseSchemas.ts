@@ -44,6 +44,12 @@ export type TurnId = typeof TurnId.Type;
 /** An agent added to a thread alongside the thread's own agent (a room). */
 export const ThreadParticipantId = makeEntityId("ThreadParticipantId");
 export type ThreadParticipantId = typeof ThreadParticipantId.Type;
+/**
+ * One side answer in a room: an agent answering read-only, in its own
+ * locked-down runtime, while another agent holds the thread.
+ */
+export const SideTurnId = makeEntityId("SideTurnId");
+export type SideTurnId = typeof SideTurnId.Type;
 export const AuthSessionId = makeEntityId("AuthSessionId");
 export type AuthSessionId = typeof AuthSessionId.Type;
 

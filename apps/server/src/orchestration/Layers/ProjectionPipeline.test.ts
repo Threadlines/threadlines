@@ -7,6 +7,7 @@ import {
   MessageId,
   ProjectId,
   ThreadId,
+  SideTurnId,
   ThreadParticipantId,
   TurnId,
   ProviderInstanceId,
@@ -2630,6 +2631,75 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
         SELECT participants FROM projection_threads WHERE thread_id = ${threadId}
       `;
       assert.equal(JSON.parse(threads[0]?.participants ?? "[]")[0]?.handle, "astra");
+
+      // While astra works, the user asks the thread's own agent on the side.
+      const sideTurnId = SideTurnId.make("0d9e8f7a-6b5c-4d3e-8f1a-2b3c4d5e6f70");
+      yield* engine.dispatch({
+        type: "thread.side-turn.start",
+        commandId: CommandId.make("cmd-room-side"),
+        threadId,
+        sideTurnId,
+        participantId: null,
+        message: { messageId: MessageId.make("message-room-side"), role: "user", text: "why?" },
+        createdAt: "2026-01-01T00:00:04.000Z",
+      });
+      yield* engine.dispatch({
+        type: "thread.message.assistant.complete",
+        commandId: CommandId.make("cmd-room-side-answer"),
+        threadId,
+        messageId: MessageId.make("message-room-side-answer"),
+        participantId: null,
+        sideTurnId,
+        completesTurn: false,
+        createdAt: "2026-01-01T00:00:05.000Z",
+      });
+      const sideTurnRow = () =>
+        sql<{ readonly sideTurn: string | null }>`
+          SELECT side_turn AS "sideTurn" FROM projection_threads WHERE thread_id = ${threadId}
+        `;
+      const answering = yield* sideTurnRow();
+      assert.deepEqual(JSON.parse(answering[0]?.sideTurn ?? "null"), {
+        sideTurnId,
+        participantId: null,
+        messageId: "message-room-side",
+        status: "starting",
+        startedAt: "2026-01-01T00:00:04.000Z",
+      });
+      const sideMessages = yield* sql<{
+        readonly messageId: string;
+        readonly turnId: string | null;
+      }>`
+        SELECT message_id AS "messageId", turn_id AS "turnId"
+        FROM projection_thread_messages
+        WHERE side_turn_id = ${sideTurnId}
+        ORDER BY message_id ASC
+      `;
+      assert.deepEqual(sideMessages, [
+        { messageId: "message-room-side", turnId: null },
+        { messageId: "message-room-side-answer", turnId: null },
+      ]);
+
+      yield* engine.dispatch({
+        type: "thread.side-turn.settle",
+        commandId: CommandId.make("cmd-room-side-settle"),
+        threadId,
+        sideTurnId,
+        outcome: "completed",
+        answerMessageId: MessageId.make("message-room-side-answer"),
+        createdAt: "2026-01-01T00:00:06.000Z",
+      });
+      const settled = yield* sideTurnRow();
+      assert.equal(settled[0]?.sideTurn ?? null, null);
+      // Astra's working turn is untouched throughout.
+      const stillWorking = yield* sql<{
+        readonly participantId: string | null;
+        readonly status: string;
+      }>`
+        SELECT participant_id AS "participantId", status
+        FROM projection_thread_sessions
+        WHERE thread_id = ${threadId}
+      `;
+      assert.deepEqual(stillWorking, [{ participantId: astraId, status: "running" }]);
     }),
   );
 

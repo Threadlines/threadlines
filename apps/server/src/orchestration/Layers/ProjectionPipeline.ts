@@ -721,6 +721,60 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           return;
         }
 
+        case "thread.side-turn-started":
+        case "thread.side-turn-running":
+        case "thread.side-turn-interrupt-requested":
+        case "thread.side-turn-settled": {
+          const existingRow = yield* projectionThreadRepository.getById({
+            threadId: event.payload.threadId,
+          });
+          if (Option.isNone(existingRow)) {
+            return;
+          }
+          const current = existingRow.value.sideTurn ?? null;
+          const nextSideTurn =
+            event.type === "thread.side-turn-started"
+              ? event.payload.sideTurn
+              : current === null || current.sideTurnId !== event.payload.sideTurnId
+                ? current
+                : event.type === "thread.side-turn-settled"
+                  ? null
+                  : {
+                      ...current,
+                      status:
+                        event.type === "thread.side-turn-interrupt-requested" ||
+                        current.status === "cancelling"
+                          ? ("cancelling" as const)
+                          : ("running" as const),
+                    };
+          if (nextSideTurn === current) {
+            return;
+          }
+          yield* projectionThreadRepository.upsert({
+            ...existingRow.value,
+            sideTurn: nextSideTurn,
+            updatedAt: event.occurredAt,
+          });
+          return;
+        }
+
+        case "thread.room-context-recorded": {
+          const existingRow = yield* projectionThreadRepository.getById({
+            threadId: event.payload.threadId,
+          });
+          if (Option.isNone(existingRow)) {
+            return;
+          }
+          yield* projectionThreadRepository.upsert({
+            ...existingRow.value,
+            roomContext: {
+              ...existingRow.value.roomContext,
+              [event.payload.agentKey]: event.payload.cursor,
+            },
+          });
+          return;
+        }
+
         case "thread.participant-removed": {
           const existingRow = yield* projectionThreadRepository.getById({
             threadId: event.payload.threadId,
@@ -1163,6 +1217,9 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             ...(event.payload.participantId !== undefined
               ? { participantId: event.payload.participantId }
               : {}),
+            ...(event.payload.sideTurnId !== undefined
+              ? { sideTurnId: event.payload.sideTurnId }
+              : {}),
             isStreaming: event.payload.streaming,
             createdAt: previousMessage?.createdAt ?? event.payload.createdAt,
             updatedAt: event.payload.updatedAt,
@@ -1313,6 +1370,12 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             eventSequence: event.sequence,
             threadId: event.payload.threadId,
             turnId: event.payload.activity.turnId,
+            ...(event.payload.activity.sideTurnId !== undefined
+              ? { sideTurnId: event.payload.activity.sideTurnId }
+              : {}),
+            ...(event.payload.activity.participantId !== undefined
+              ? { participantId: event.payload.activity.participantId }
+              : {}),
             tone: event.payload.activity.tone,
             kind: event.payload.activity.kind,
             summary: event.payload.activity.summary,
