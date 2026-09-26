@@ -28,6 +28,30 @@ export const CODEX_APP_SERVER_ARGS: ReadonlyArray<string> = [
   "suppress_unstable_features_warning=true",
 ];
 
+/**
+ * Argv for a room's side-answer app server: no browser tools, no questions
+ * to the user, no hooks or app connectors, read-only with no approvals. Its
+ * home holds the same values in config.toml (see codexSideAnswerHome.ts);
+ * both are set so neither alone has to be trusted.
+ */
+export const CODEX_SIDE_ANSWER_APP_SERVER_ARGS: ReadonlyArray<string> = [
+  "app-server",
+  "-c",
+  "features.default_mode_request_user_input=false",
+  "-c",
+  "features.apply_patch_streaming_events=true",
+  "-c",
+  "features.hooks=false",
+  "-c",
+  "features.apps=false",
+  "-c",
+  'sandbox_mode="read-only"',
+  "-c",
+  'approval_policy="never"',
+  "-c",
+  "suppress_unstable_features_warning=true",
+];
+
 /** The env var the spawned app server reads the browser credential from. */
 export const CODEX_BROWSER_TOKEN_ENV_VAR = "THREADLINES_MCP_BEARER_TOKEN";
 

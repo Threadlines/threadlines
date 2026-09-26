@@ -80,6 +80,11 @@ import {
   type CodexSessionRuntimeOptions,
   type CodexSessionRuntimeShape,
 } from "./CodexSessionRuntime.ts";
+import {
+  codexSignInHome,
+  prepareCodexSideAnswerHome,
+  removeCodexSideAnswerHome,
+} from "../codexSideAnswerHome.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
 import { initializeCodexAppServerClient, makeCodexAppServerClient } from "./CodexProvider.ts";
 const isCodexAppServerProcessExitedError = Schema.is(CodexErrors.CodexAppServerProcessExitedError);
@@ -2920,6 +2925,31 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
         const serviceTier = resolveCodexServiceTier(input.modelSelection, {
           instanceId: boundInstanceId,
         });
+        // A room's side answer runs in a home of its own, continuing a copy of
+        // the answering agent's conversation; see codexSideAnswerHome.ts.
+        const sideAnswer =
+          input.lockdown === "side-answer"
+            ? yield* Effect.gen(function* () {
+                const signInHome = codexSignInHome(codexConfig.homePath);
+                const home = yield* prepareCodexSideAnswerHome({
+                  signInHome,
+                  ...(input.forkFrom !== undefined
+                    ? { sourceProviderThreadId: input.forkFrom.providerThreadId }
+                    : {}),
+                });
+                return { signInHome, home };
+              }).pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new ProviderAdapterProcessError({
+                      provider: PROVIDER,
+                      threadId: input.threadId,
+                      detail: cause.message,
+                      cause,
+                    }),
+                ),
+              )
+            : undefined;
         const runtimeInput: CodexSessionRuntimeOptions = {
           threadId: input.threadId,
           providerInstanceId: boundInstanceId,
@@ -2927,12 +2957,27 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           cwd: input.cwd ?? process.cwd(),
           binaryPath: codexConfig.binaryPath,
           ...(options?.environment ? { environment: options.environment } : {}),
-          ...(codexConfig.homePath ? { homePath: codexConfig.homePath } : {}),
-          ...(isCodexResumeCursorSchema(input.resumeCursor)
-            ? { resumeCursor: input.resumeCursor }
-            : {}),
+          ...(sideAnswer !== undefined
+            ? {
+                homePath: sideAnswer.home.homePath,
+                lockdown: {
+                  signInHome: sideAnswer.signInHome,
+                  ...(sideAnswer.home.rolloutPath !== undefined && input.forkFrom !== undefined
+                    ? {
+                        rolloutPath: sideAnswer.home.rolloutPath,
+                        sourceProviderThreadId: input.forkFrom.providerThreadId,
+                      }
+                    : {}),
+                },
+              }
+            : {
+                ...(codexConfig.homePath ? { homePath: codexConfig.homePath } : {}),
+                ...(isCodexResumeCursorSchema(input.resumeCursor)
+                  ? { resumeCursor: input.resumeCursor }
+                  : {}),
+                ...(input.forkFrom !== undefined ? { forkFrom: input.forkFrom } : {}),
+              }),
           ...(input.resumePolicy === "required" ? { resumeRequired: true } : {}),
-          ...(input.forkFrom !== undefined ? { forkFrom: input.forkFrom } : {}),
           runtimeMode: input.runtimeMode,
           ...(input.modelSelection?.instanceId === boundInstanceId
             ? { model: input.modelSelection.model }
@@ -2948,7 +2993,16 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
         const sessionScope = yield* Scope.make("sequential");
         let sessionScopeTransferred = false;
         yield* Effect.addFinalizer(() =>
-          sessionScopeTransferred ? Effect.void : Scope.close(sessionScope, Exit.void),
+          sessionScopeTransferred
+            ? Effect.void
+            : Scope.close(sessionScope, Exit.void).pipe(
+                // A side answer that never started leaves no home behind.
+                Effect.andThen(
+                  sideAnswer !== undefined
+                    ? removeCodexSideAnswerHome(sideAnswer.home.homePath)
+                    : Effect.void,
+                ),
+              ),
         );
         const createRuntime = options?.makeRuntime ?? makeCodexSessionRuntime;
         const runtime = yield* createRuntime(runtimeInput).pipe(

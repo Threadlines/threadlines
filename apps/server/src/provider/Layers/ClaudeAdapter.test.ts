@@ -49,6 +49,7 @@ import {
   THREADLINES_CLAUDE_MCP_SERVER_NAME,
 } from "../claudeLongRunningTool.ts";
 import {
+  lockDownClaudeQueryOptions,
   makeClaudeAdapter,
   mapClaudeSubagentTranscript,
   pageClaudeSubagentTranscriptEntries,
@@ -3745,6 +3746,56 @@ describe("ClaudeAdapterLive", () => {
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
     );
+  });
+
+  it("locks a side answer down to reading, whatever the normal session loads", async () => {
+    const locked = lockDownClaudeQueryOptions(
+      {
+        mcpServers: { threadlines_browser: { type: "http", url: "http://localhost/mcp" } },
+        settingSources: ["user", "project", "local"],
+        permissionMode: "bypassPermissions",
+        allowDangerouslySkipPermissions: true,
+        allowedTools: ["TodoWrite"],
+        model: "claude-haiku-4-5",
+      },
+      { resume: "30d8aa06-ed90-469b-b864-3c4e5801581e", forkSessionId: "fork-id" },
+    );
+    assert.deepEqual(locked.mcpServers, {});
+    assert.equal(locked.strictMcpConfig, true);
+    assert.deepEqual(locked.settingSources, []);
+    assert.equal(locked.permissionMode, "default");
+    assert.equal(locked.allowDangerouslySkipPermissions, undefined);
+    assert.equal(locked.allowedTools, undefined);
+    assert.equal(locked.forkSession, true);
+    assert.equal(locked.sessionId, "fork-id");
+    assert.equal(locked.persistSession, false);
+    assert.equal(locked.model, "claude-haiku-4-5");
+
+    const hook = locked.hooks?.PreToolUse?.[0]?.hooks[0];
+    const decide = async (toolName: string) => {
+      const output = await hook!({ tool_name: toolName } as never, undefined, {
+        signal: new AbortController().signal,
+      });
+      return (output as { hookSpecificOutput: { permissionDecision: string } }).hookSpecificOutput
+        .permissionDecision;
+    };
+    assert.equal(await decide("Read"), "allow");
+    for (const forbidden of [
+      "Bash",
+      "Write",
+      "Edit",
+      "Agent",
+      "mcp__claude_ai_Vercel__deploy",
+      "Unknown",
+    ]) {
+      assert.equal(await decide(forbidden), "deny");
+    }
+    const prompted = await locked.canUseTool!("Write", {}, {
+      signal: new AbortController().signal,
+      suggestions: [],
+      toolUseID: "tool-1",
+    } as never);
+    assert.equal(prompted?.behavior, "deny");
   });
 
   it.effect("stops only the turn it is aimed at when given a turn id", () => {

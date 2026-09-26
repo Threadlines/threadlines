@@ -523,6 +523,15 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
               issue: `Expected provider '${PROVIDER}' but received '${input.provider}'.`,
             });
           }
+          // A side answer must be read-only for certain; this driver cannot
+          // promise that, so it never runs one.
+          if (input.lockdown !== undefined) {
+            return yield* new ProviderAdapterValidationError({
+              provider: PROVIDER,
+              operation: "startSession",
+              issue: "This provider cannot answer on the side while another agent works.",
+            });
+          }
           if (!input.cwd?.trim()) {
             return yield* new ProviderAdapterValidationError({
               provider: PROVIDER,

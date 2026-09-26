@@ -40,10 +40,7 @@ import {
 import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
-import {
-  parseParticipantSessionKey,
-  sessionKeyThreadId,
-} from "@threadlines/shared/threadParticipants";
+import { parseSessionKey, sessionKeyThreadId } from "@threadlines/shared/threadParticipants";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
@@ -256,10 +253,20 @@ const correlateRuntimeEventWithInstance = (
  * Consumers see the thread an event belongs to. A room agent runs under a
  * derived session key (see `threadParticipants`); it is mapped back here, the
  * one place events leave the provider layer, and the agent is kept on the
- * event. Logs and the session directory above still use the key.
+ * event. A side answer's runtime also stamps its side answer, so every
+ * consumer can tell it from the agent's working session by the event alone.
+ * Logs and the session directory above still use the key.
  */
 const toThreadRuntimeEvent = (event: ProviderRuntimeEvent): ProviderRuntimeEvent => {
-  const target = parseParticipantSessionKey(event.threadId);
+  const target = parseSessionKey(event.threadId);
+  if (target.kind === "side") {
+    return {
+      ...event,
+      threadId: target.threadId,
+      ...(target.participantId !== null ? { participantId: target.participantId } : {}),
+      sideTurnId: target.sideTurnId,
+    };
+  }
   if (target.participantId === null) {
     return event;
   }

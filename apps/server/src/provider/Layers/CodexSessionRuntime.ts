@@ -1,5 +1,6 @@
 import { BROWSER_MCP_SERVER_NAME, mcpEndpointUrl } from "../../mcp/McpHttpServer.ts";
 import { mcpSessionRegistry } from "../../mcp/McpSessionRegistry.ts";
+import { readCodexSignIn, removeCodexSideAnswerHome } from "../codexSideAnswerHome.ts";
 import {
   ApprovalRequestId,
   DEFAULT_MODEL,
@@ -62,7 +63,11 @@ import {
   CODEX_PREVIEW_PANEL_DEVELOPER_INSTRUCTIONS,
 } from "../CodexDeveloperInstructions.ts";
 import { FILE_LINK_INSTRUCTIONS } from "../fileLinkInstructions.ts";
-import { CODEX_BROWSER_TOKEN_ENV_VAR, codexAppServerArgs } from "../codexAppServerArgs.ts";
+import {
+  CODEX_BROWSER_TOKEN_ENV_VAR,
+  CODEX_SIDE_ANSWER_APP_SERVER_ARGS,
+  codexAppServerArgs,
+} from "../codexAppServerArgs.ts";
 const decodeV2TurnStartResponse = Schema.decodeUnknownEffect(EffectCodexSchema.V2TurnStartResponse);
 const decodeV2ReviewStartResponse = Schema.decodeUnknownEffect(
   EffectCodexSchema.V2ReviewStartResponse,
@@ -195,8 +200,33 @@ export interface CodexSessionRuntimeOptions {
    *  own thread). Fork failures fail the start — the orchestration reactor
    *  owns the fallback to context-seed seeding. */
   readonly forkFrom?: ProviderSessionForkFrom;
+  /** A room's side answer; see CodexSessionRuntimeLockdown. */
+  readonly lockdown?: CodexSessionRuntimeLockdown;
   readonly onRealtimeAudio?: (audio: ProviderRealtimeAudioChunk) => Effect.Effect<void>;
 }
+
+/**
+ * A room's side-answer runtime (ProviderSessionStartInput.lockdown): it runs
+ * in its own temporary home (`homePath`), read-only with no approvals or
+ * questions, signs in with a borrowed token, and continues a copy of the
+ * answering agent's conversation when there is one. See codexSideAnswerHome.
+ */
+export interface CodexSessionRuntimeLockdown {
+  /** The user's own Codex home; its sign-in is read, never written. */
+  readonly signInHome: string;
+  /** The copied conversation to continue, inside this runtime's own home. */
+  readonly rolloutPath?: string;
+  readonly sourceProviderThreadId?: string;
+}
+
+/** A side answer's thread: read-only, and nothing ever asks for approval. */
+const SIDE_ANSWER_THREAD_CONFIG = {
+  approvalPolicy: "never",
+  sandbox: "read-only",
+} as const satisfies {
+  readonly approvalPolicy: EffectCodexSchema.V2ThreadStartParams__AskForApproval;
+  readonly sandbox: EffectCodexSchema.V2ThreadStartParams__SandboxMode;
+};
 
 /** Attachment input items appended after the prompt text. Codex app-server
  *  has no document input type, so non-image attachments arrive as extra
@@ -481,8 +511,11 @@ function buildThreadStartParams(input: {
   readonly runtimeMode: RuntimeMode;
   readonly model: string | undefined;
   readonly serviceTier: CodexServiceTier | undefined;
+  readonly lockdown?: boolean;
 }): EffectCodexSchema.V2ThreadStartParams {
-  const config = runtimeModeToThreadConfig(input.runtimeMode);
+  const config: ReturnType<typeof runtimeModeToThreadConfig> = input.lockdown
+    ? SIDE_ANSWER_THREAD_CONFIG
+    : runtimeModeToThreadConfig(input.runtimeMode);
   return {
     cwd: input.cwd,
     threadSource: CODEX_THREAD_SOURCE,
@@ -582,6 +615,8 @@ export function buildTurnStartParams(input: {
   readonly interactionMode?: ProviderInteractionMode;
   /** Session runs in a git worktree Threadlines created and must not delete. */
   readonly managedWorktree?: boolean;
+  /** A side answer: every turn is read-only with no approvals. */
+  readonly lockdown?: boolean;
 }): Effect.Effect<
   CodexTurnStartParamsWithCollaborationMode,
   CodexErrors.CodexAppServerProtocolParseError
@@ -600,7 +635,9 @@ export function buildTurnStartParams(input: {
     turnInput.push(attachment);
   }
 
-  const config = runtimeModeToThreadConfig(input.runtimeMode);
+  const config: ReturnType<typeof runtimeModeToThreadConfig> = input.lockdown
+    ? SIDE_ANSWER_THREAD_CONFIG
+    : runtimeModeToThreadConfig(input.runtimeMode);
   const collaborationMode = buildCodexCollaborationMode({
     ...(input.interactionMode ? { interactionMode: input.interactionMode } : {}),
     ...(input.model ? { model: input.model } : {}),
@@ -614,7 +651,9 @@ export function buildTurnStartParams(input: {
     ...(input.clientUserMessageId ? { clientUserMessageId: input.clientUserMessageId } : {}),
     approvalPolicy: config.approvalPolicy,
     ...(config.approvalsReviewer ? { approvalsReviewer: config.approvalsReviewer } : {}),
-    sandboxPolicy: runtimeModeToTurnSandboxPolicy(input.runtimeMode),
+    sandboxPolicy: input.lockdown
+      ? { type: "readOnly" }
+      : runtimeModeToTurnSandboxPolicy(input.runtimeMode),
     ...(input.model ? { model: input.model } : {}),
     ...(input.serviceTier ? { serviceTier: input.serviceTier } : {}),
     ...(input.effort ? { effort: input.effort } : {}),
@@ -815,6 +854,9 @@ export const openCodexThread = (input: {
    *  user-prompt replacement; `lastTurnId` remains the stable compatibility
    *  fallback. Only honored when there is no `resumeThreadId`. */
   readonly forkFrom?: ProviderSessionForkFrom | undefined;
+  /** A side answer: continue the copied conversation, or start fresh,
+   *  read-only. Resume ids and forks are never used. */
+  readonly lockdown?: CodexSessionRuntimeLockdown | undefined;
   /** Invoked when a requested native resume is unrecoverable and the thread
    *  falls back to a fresh start. Lets callers surface the degraded resume
    *  instead of silently continuing without history. */
@@ -826,7 +868,30 @@ export const openCodexThread = (input: {
     runtimeMode: input.runtimeMode,
     model: input.requestedModel,
     serviceTier: input.serviceTier,
+    ...(input.lockdown !== undefined ? { lockdown: true } : {}),
   });
+
+  if (input.lockdown !== undefined) {
+    const { rolloutPath, sourceProviderThreadId } = input.lockdown;
+    if (rolloutPath === undefined || sourceProviderThreadId === undefined) {
+      return withCodexRequestTimeout(
+        "start a Codex thread",
+        input.client.request("thread/start", startParams),
+      );
+    }
+    // The copy lives in this runtime's own home, so resuming it forks the
+    // agent's conversation without touching the original.
+    const { threadSource: _threadSource, ...resumeParams } = startParams;
+    return withCodexRequestTimeout(
+      "resume a Codex thread",
+      input.client.request("thread/resume", {
+        threadId: sourceProviderThreadId,
+        path: rolloutPath,
+        excludeTurns: true,
+        ...resumeParams,
+      }),
+    );
+  }
 
   if (resumeThreadId === undefined) {
     const forkFrom = input.forkFrom;
@@ -1490,20 +1555,43 @@ export const makeCodexSessionRuntime = (
     // `child_process.spawn`; `expandHomePath` lets a configured
     // `CODEX_HOME=~/.codex_work` reach codex as an absolute path.
     const resolvedHomePath = options.homePath ? expandHomePath(options.homePath) : undefined;
+    const lockdown = options.lockdown;
+    // A side answer borrows the user's sign-in read-only: a ChatGPT token is
+    // handed over after initialize, an API key through the environment.
+    const borrowedSignIn =
+      lockdown !== undefined
+        ? yield* readCodexSignIn(lockdown.signInHome).pipe(
+            Effect.mapError(
+              (cause) =>
+                new CodexErrors.CodexAppServerSpawnError({
+                  command: options.binaryPath,
+                  cause,
+                }),
+            ),
+          )
+        : undefined;
     // The browser tools are named at spawn, and the credential travels in the
-    // environment so it never appears in argv.
-    const browserCredential = yield* mcpSessionRegistry.credentialFor(options.threadId);
+    // environment so it never appears in argv. A side answer gets neither.
     const env = {
       ...(options.environment ?? process.env),
       ...(resolvedHomePath ? { CODEX_HOME: resolvedHomePath } : {}),
-      [CODEX_BROWSER_TOKEN_ENV_VAR]: browserCredential,
+      ...(lockdown === undefined
+        ? {
+            [CODEX_BROWSER_TOKEN_ENV_VAR]: yield* mcpSessionRegistry.credentialFor(
+              options.threadId,
+            ),
+          }
+        : {}),
+      ...(borrowedSignIn?.kind === "apiKey" ? { OPENAI_API_KEY: borrowedSignIn.apiKey } : {}),
     };
     const spawnPlan = planCliSpawn(
       options.binaryPath,
-      codexAppServerArgs({
-        url: mcpEndpointUrl(options.serverPort),
-        serverName: BROWSER_MCP_SERVER_NAME,
-      }),
+      lockdown !== undefined
+        ? CODEX_SIDE_ANSWER_APP_SERVER_ARGS
+        : codexAppServerArgs({
+            url: mcpEndpointUrl(options.serverPort),
+            serverName: BROWSER_MCP_SERVER_NAME,
+          }),
       env,
     );
     const child = yield* spawner
@@ -1828,10 +1916,38 @@ export const makeCodexSessionRuntime = (
       ),
     );
 
+    // A side answer never reaches the user with a question or an approval:
+    // anything that asks is declined on the spot, so no request is left
+    // hanging. Codex should not ask at all (approvals are off, questions are
+    // disabled, and no MCP server is loaded); this is the backstop.
+    if (lockdown !== undefined) {
+      yield* client.handleServerRequest("account/chatgptAuthTokens/refresh", () =>
+        readCodexSignIn(lockdown.signInHome).pipe(
+          Effect.flatMap((signIn) =>
+            signIn.kind === "chatgpt"
+              ? Effect.succeed({
+                  accessToken: signIn.accessToken,
+                  chatgptAccountId: signIn.chatgptAccountId,
+                  ...(signIn.chatgptPlanType !== undefined
+                    ? { chatgptPlanType: signIn.chatgptPlanType }
+                    : {}),
+                })
+              : Effect.fail(signIn),
+          ),
+          Effect.orDie,
+        ),
+      );
+    }
+
     yield* client.handleServerRequest(
       "item/commandExecution/requestApproval",
       (payload, metadata) =>
         Effect.gen(function* () {
+          if (lockdown !== undefined) {
+            return {
+              decision: "decline",
+            } satisfies EffectCodexSchema.CommandExecutionRequestApprovalResponse;
+          }
           const requestId = ApprovalRequestId.make(yield* randomUUIDv4);
           const turnId = TurnId.make(payload.turnId);
           const itemId = ProviderItemId.make(payload.itemId);
@@ -1888,6 +2004,11 @@ export const makeCodexSessionRuntime = (
 
     yield* client.handleServerRequest("item/fileChange/requestApproval", (payload, metadata) =>
       Effect.gen(function* () {
+        if (lockdown !== undefined) {
+          return {
+            decision: "decline",
+          } satisfies EffectCodexSchema.FileChangeRequestApprovalResponse;
+        }
         const requestId = ApprovalRequestId.make(yield* randomUUIDv4);
         const turnId = TurnId.make(payload.turnId);
         const itemId = ProviderItemId.make(payload.itemId);
@@ -1944,6 +2065,9 @@ export const makeCodexSessionRuntime = (
 
     yield* client.handleServerRequest("item/permissions/requestApproval", (payload, metadata) =>
       Effect.gen(function* () {
+        if (lockdown !== undefined) {
+          return buildPermissionsApprovalResponse(payload, "decline");
+        }
         const requestId = ApprovalRequestId.make(yield* randomUUIDv4);
         const turnId = TurnId.make(payload.turnId);
         const itemId = ProviderItemId.make(payload.itemId);
@@ -1998,6 +2122,9 @@ export const makeCodexSessionRuntime = (
 
     yield* client.handleServerRequest("mcpServer/elicitation/request", (payload, metadata) =>
       Effect.gen(function* () {
+        if (lockdown !== undefined) {
+          return { action: "decline" as const, content: null };
+        }
         const elicitation = codexMcpElicitation(payload);
         if (!elicitation) {
           yield* emitEvent({
@@ -2044,6 +2171,9 @@ export const makeCodexSessionRuntime = (
 
     yield* client.handleServerRequest("item/tool/requestUserInput", (payload, metadata) =>
       Effect.gen(function* () {
+        if (lockdown !== undefined) {
+          return { answers: {} };
+        }
         const requestId = ApprovalRequestId.make(yield* randomUUIDv4);
         const turnId = TurnId.make(payload.turnId);
         const itemId = ProviderItemId.make(payload.itemId);
@@ -2204,6 +2334,19 @@ export const makeCodexSessionRuntime = (
         "confirm Codex initialization",
         client.notify("initialized", undefined),
       );
+      if (borrowedSignIn?.kind === "chatgpt") {
+        yield* withCodexRequestTimeout(
+          "sign in a Codex side answer",
+          client.request("account/login/start", {
+            type: "chatgptAuthTokens",
+            accessToken: borrowedSignIn.accessToken,
+            chatgptAccountId: borrowedSignIn.chatgptAccountId,
+            ...(borrowedSignIn.chatgptPlanType !== undefined
+              ? { chatgptPlanType: borrowedSignIn.chatgptPlanType }
+              : {}),
+          }),
+        );
+      }
 
       const requestedModel = normalizeCodexModelSlug(options.model);
 
@@ -2214,9 +2357,11 @@ export const makeCodexSessionRuntime = (
         cwd: options.cwd,
         requestedModel,
         serviceTier: options.serviceTier,
-        resumeThreadId: readResumeCursorThreadId(options.resumeCursor),
+        resumeThreadId:
+          lockdown === undefined ? readResumeCursorThreadId(options.resumeCursor) : undefined,
         resumeRequired: options.resumeRequired,
-        forkFrom: options.forkFrom,
+        forkFrom: lockdown === undefined ? options.forkFrom : undefined,
+        lockdown,
         onResumeFallback: (cause) =>
           emitEvent({
             kind: "notification",
@@ -2266,6 +2411,10 @@ export const makeCodexSessionRuntime = (
       yield* Scope.close(runtimeScope, Exit.void);
       yield* Queue.shutdown(serverNotifications);
       yield* Queue.shutdown(events);
+      // A side answer's home (and its copy of the conversation) goes with it.
+      if (lockdown !== undefined && resolvedHomePath !== undefined) {
+        yield* removeCodexSideAnswerHome(resolvedHomePath);
+      }
     });
 
     return {
@@ -2291,6 +2440,7 @@ export const makeCodexSessionRuntime = (
             ...(input.effort ? { effort: input.effort } : {}),
             ...(input.interactionMode ? { interactionMode: input.interactionMode } : {}),
             ...((yield* runsInManagedWorktree) ? { managedWorktree: true } : {}),
+            ...(lockdown !== undefined ? { lockdown: true } : {}),
           });
           const rawResponse = yield* withCodexRequestTimeout(
             "start a Codex turn",

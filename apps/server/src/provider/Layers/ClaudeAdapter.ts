@@ -566,6 +566,79 @@ export function parseEnterWorktreeCwd(
   return parsed && parsed.length > 0 ? parsed : undefined;
 }
 
+/** Built-in tools a side answer may use: reading and searching, nothing else. */
+export const SIDE_ANSWER_CLAUDE_TOOLS: ReadonlyArray<string> = [
+  "Read",
+  "Grep",
+  "Glob",
+  "WebFetch",
+  "WebSearch",
+];
+
+const denySideAnswerTool: HookCallback = async (hookInput) => {
+  const toolName = (hookInput as { readonly tool_name?: unknown }).tool_name;
+  const allowed = typeof toolName === "string" && SIDE_ANSWER_CLAUDE_TOOLS.includes(toolName);
+  return {
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      permissionDecision: allowed ? "allow" : "deny",
+      permissionDecisionReason: allowed
+        ? "Reading is allowed in a side answer."
+        : "A side answer is read-only: it cannot change files, run commands, or ask anyone.",
+    },
+  };
+};
+
+/**
+ * A room's side answer (ProviderSessionStartInput.lockdown): the normal query
+ * with everything that could act, or reach the user, taken out.
+ *
+ * Its settings, hooks, plugins and MCP servers never load: no setting sources,
+ * and a strict MCP config naming none, which also keeps the account's
+ * claude.ai connectors out. Its only built-in tools read; a hook denies every
+ * other tool by name, known or not, and nothing prompts. It forks the
+ * answering agent's conversation under a fresh id and writes no transcript of
+ * its own, so the original is never touched and nothing is left to clean up.
+ */
+export function lockDownClaudeQueryOptions(
+  base: ClaudeQueryOptions,
+  fork: { readonly resume: string | undefined; readonly forkSessionId: string | undefined },
+): ClaudeQueryOptions {
+  const {
+    mcpServers: _mcpServers,
+    settingSources: _settingSources,
+    allowedTools: _allowedTools,
+    permissionMode: _permissionMode,
+    allowDangerouslySkipPermissions: _allowDangerouslySkipPermissions,
+    hooks: _hooks,
+    canUseTool: _canUseTool,
+    resume: _resume,
+    forkSession: _forkSession,
+    sessionId: _sessionId,
+    systemPrompt: _systemPrompt,
+    ...rest
+  } = base;
+  return {
+    ...rest,
+    systemPrompt: { type: "preset", preset: "claude_code", append: FILE_LINK_INSTRUCTIONS },
+    mcpServers: {},
+    strictMcpConfig: true,
+    settingSources: [],
+    tools: [...SIDE_ANSWER_CLAUDE_TOOLS],
+    permissionMode: "default",
+    promptSuggestions: false,
+    enableFileCheckpointing: false,
+    persistSession: false,
+    ...(fork.resume !== undefined ? { resume: fork.resume, forkSession: true } : {}),
+    ...(fork.forkSessionId !== undefined ? { sessionId: fork.forkSessionId } : {}),
+    canUseTool: async (toolName) => ({
+      behavior: "deny",
+      message: `A side answer is read-only (${toolName}).`,
+    }),
+    hooks: { PreToolUse: [{ hooks: [denySideAnswerTool] }] },
+  };
+}
+
 function isUuid(value: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }
@@ -6317,7 +6390,15 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       }
 
       const startedAt = yield* nowIso;
-      const requestedResumeState = readClaudeResumeState(input.resumeCursor);
+      // A room's side answer (see ProviderSessionStartInput.lockdown) forks
+      // the answering agent's conversation, or starts fresh without one. It
+      // never resumes a session of its own.
+      const lockdown = input.lockdown === "side-answer";
+      const requestedResumeState = lockdown
+        ? input.forkFrom !== undefined && isUuid(input.forkFrom.providerThreadId)
+          ? { resume: input.forkFrom.providerThreadId }
+          : undefined
+        : readClaudeResumeState(input.resumeCursor);
       const threadId = input.threadId;
 
       // Claude Code scopes transcript lookup to the cwd-derived project
@@ -6386,8 +6467,11 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       }
 
       const existingResumeSessionId = resumeState?.resume;
-      const newSessionId = existingResumeSessionId === undefined ? yield* randomUUIDv4 : undefined;
-      const sessionId = existingResumeSessionId ?? newSessionId;
+      // A side answer's fork gets an id of its own up front, so it is never
+      // confused with the conversation it copies.
+      const newSessionId =
+        existingResumeSessionId === undefined || lockdown ? yield* randomUUIDv4 : undefined;
+      const sessionId = lockdown ? newSessionId : (existingResumeSessionId ?? newSessionId);
 
       // A plain resume re-enters the last worktree the transcript records,
       // whatever cwd it is launched from, so a thread the user moved out of
@@ -6828,7 +6912,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       // as an in-process server so Claude and Codex reach the same endpoint,
       // and with a credential that names the thread, because the tools take no
       // thread argument and must not.
-      const browserCredential = yield* mcpSessionRegistry.credentialFor(threadId);
+      const browserCredential = lockdown ? "" : yield* mcpSessionRegistry.credentialFor(threadId);
       // Agents treat `git worktree remove` as ordinary post-merge tidying. Here
       // it deletes the session's own working directory, so a session running in
       // a Threadlines-managed worktree is told once, up front, not to.
@@ -6837,7 +6921,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             Effect.provideService(FileSystem.FileSystem, fileSystem),
           )
         : false;
-      const queryOptions: ClaudeQueryOptions = {
+      const normalQueryOptions: ClaudeQueryOptions = {
         ...(input.cwd ? { cwd: input.cwd } : {}),
         mcpServers: {
           [BROWSER_MCP_SERVER_NAME]: {
@@ -6927,6 +7011,12 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         ...(input.cwd ? { additionalDirectories: [input.cwd] } : {}),
         extraArgs,
       };
+      const queryOptions: ClaudeQueryOptions = lockdown
+        ? lockDownClaudeQueryOptions(normalQueryOptions, {
+            resume: existingResumeSessionId,
+            forkSessionId: newSessionId,
+          })
+        : normalQueryOptions;
 
       yield* Effect.annotateCurrentSpan({
         "provider.kind": PROVIDER,
