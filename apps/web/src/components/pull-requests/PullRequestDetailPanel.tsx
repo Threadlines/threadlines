@@ -12,6 +12,7 @@ import type {
   ScopedThreadRef,
   SourceControlProviderKind,
 } from "@threadlines/contracts";
+import { pullRequestArmedToMerge } from "@threadlines/shared/pullRequestPolling";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import * as Schema from "effect/Schema";
@@ -102,7 +103,6 @@ import {
   formatPullRequestBehindLabel,
   formatPullRequestChecksHeadline,
   pullRequestBadgeTone,
-  pullRequestArmedToMerge,
   pullRequestMergeQueueLabel,
   pullRequestUpdateMethodLabel,
   resolveDefaultMergeMethod,

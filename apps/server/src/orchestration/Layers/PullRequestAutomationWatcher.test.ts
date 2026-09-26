@@ -182,6 +182,15 @@ const PASSING_CHECK: PullRequestCheck = {
 const FAILING_CHECK: PullRequestCheck = { ...PASSING_CHECK, status: "failure" };
 const PENDING_CHECK: PullRequestCheck = { ...PASSING_CHECK, status: "pending" };
 
+const RUNNING_TURN = {
+  turnId: TurnId.make("turn-1"),
+  state: "running",
+  requestedAt: NOW_ISO,
+  startedAt: NOW_ISO,
+  completedAt: null,
+  assistantMessageId: null,
+} as const;
+
 /** A pull request GitHub would merge right now, once its checks allow. */
 function mergeable(checks: readonly PullRequestCheck[]): PullRequestDetail {
   const base = detail(checks);
@@ -295,6 +304,7 @@ describe("PullRequestAutomationWatcher", () => {
     readonly threads: readonly OrchestrationThreadShell[];
     readonly projects?: readonly OrchestrationProjectShell[];
     readonly script: HostScript;
+    readonly inMotionIntervalMs?: number;
   }) {
     let script = input.script;
     let threads = input.threads;
@@ -371,7 +381,12 @@ describe("PullRequestAutomationWatcher", () => {
       requestReviewers: () => Effect.die("unused"),
     };
 
-    const layer = makePullRequestAutomationWatcherLive({ sweepIntervalMs: 60_000 }).pipe(
+    const layer = makePullRequestAutomationWatcherLive({
+      sweepIntervalMs: 60_000,
+      ...(input.inMotionIntervalMs === undefined
+        ? {}
+        : { inMotionIntervalMs: input.inMotionIntervalMs }),
+    }).pipe(
       Layer.provideMerge(
         Layer.succeed(
           ProjectionSnapshotQuery,
@@ -572,6 +587,88 @@ describe("PullRequestAutomationWatcher", () => {
 
     setThreads([thread()]);
     expect(await sweep()).toBe(1);
+  });
+
+  it("does not start a turn on top of a message the user sent while the host was being read", async () => {
+    const { dispatched, setScript, setThreads, sweep } = await createHarness({
+      threads: [thread()],
+      script: { remote: OPEN_PULL_REQUEST, detail: detail([PASSING_CHECK]), activity: activity() },
+    });
+
+    await sweep();
+    setScript({
+      remote: OPEN_PULL_REQUEST,
+      // The user sends a message of their own while the watcher reads the host.
+      get detail() {
+        setThreads([thread({ latestTurn: RUNNING_TURN })]);
+        return detail([FAILING_CHECK]);
+      },
+      activity: activity(),
+    });
+    expect(await sweep()).toBe(0);
+    expect(dispatched).toEqual([]);
+
+    // Once that turn is over, the failure is still news.
+    setThreads([thread()]);
+    setScript({ remote: OPEN_PULL_REQUEST, detail: detail([FAILING_CHECK]), activity: activity() });
+    expect(await sweep()).toBe(1);
+  });
+
+  it("looks again soon while checks run, so a failure reaches the agent before the next sweep", async () => {
+    const { dispatched, setScript, snapshotReads, start } = await createHarness({
+      threads: [thread()],
+      script: {
+        remote: OPEN_PULL_REQUEST,
+        detail: { ...detail([PENDING_CHECK]), checksState: "pending" },
+        activity: activity(),
+      },
+      inMotionIntervalMs: 10,
+    });
+    const stop = await start();
+    try {
+      await vi.waitFor(() => expect(snapshotReads()).toBeGreaterThan(1));
+      // The next full sweep is a minute away; only the quicker look can see this.
+      setScript({
+        remote: OPEN_PULL_REQUEST,
+        detail: detail([FAILING_CHECK]),
+        activity: activity(),
+      });
+      await vi.waitFor(() => expect(dispatched).toHaveLength(1));
+      expect(dispatched[0]?.message.text).toContain("These checks failed:\n- typecheck");
+
+      // Settled checks go back to the slow pace: nothing is read in between.
+      const reads = snapshotReads();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(snapshotReads()).toBe(reads);
+    } finally {
+      await stop();
+    }
+  });
+
+  it("gives up the quicker look while the thread is busy", async () => {
+    const { setThreads, snapshotReads, start } = await createHarness({
+      threads: [thread()],
+      script: {
+        remote: OPEN_PULL_REQUEST,
+        detail: { ...detail([PENDING_CHECK]), checksState: "pending" },
+        activity: activity(),
+      },
+      inMotionIntervalMs: 10,
+    });
+    const stop = await start();
+    try {
+      await vi.waitFor(() => expect(snapshotReads()).toBeGreaterThan(1));
+      // A turn that runs for hours, or waits on the user, must not keep the
+      // quicker look reading all that time.
+      setThreads([thread({ latestTurn: RUNNING_TURN })]);
+      const reads = snapshotReads();
+      await vi.waitFor(() => expect(snapshotReads()).toBeGreaterThan(reads));
+      const settled = snapshotReads();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(snapshotReads()).toBe(settled);
+    } finally {
+      await stop();
+    }
   });
 
   describe("merge queue failures", () => {

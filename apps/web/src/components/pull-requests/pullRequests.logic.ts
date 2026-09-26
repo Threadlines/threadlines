@@ -1795,62 +1795,6 @@ export function pullRequestMergeQueueLabel(
 }
 
 /**
- * Whether the host is landing this pull request on its own: armed by the
- * standing instruction, or already taken into the base's merge queue. A queued
- * pull request need not carry the instruction any more, so the queue's own
- * position counts as much as the instruction does.
- */
-export function pullRequestArmedToMerge(
-  detail: Pick<PullRequestDetail, "autoMergeEnabled" | "mergeQueue">,
-): boolean {
-  return detail.autoMergeEnabled === true || (detail.mergeQueue?.position ?? null) !== null;
-}
-
-/** How long after a push the header waits for the host to register the new commit's checks. */
-export const PULL_REQUEST_FRESH_PUSH_WATCH_MS = 120_000;
-
-/**
- * Whether the header should keep re-reading itself. A check still running is
- * the plain case. The other is the quiet moment right after a push (an update
- * from the base, a new commit) when the host has the commit but has not queued
- * its checks or decided whether it merges: a read then shows no checks at all,
- * and would otherwise sit on that answer until the user hit Refresh. A pull
- * request the host is landing on its own is the third: in a merge queue, or
- * armed with nothing the host says is in the way, it can be queued or merged
- * without anyone here asking, and the surfaces showing it should see that
- * happen. Armed but blocked (a review still owed, a failed check) is a settled
- * state: nothing moves until someone acts, and that act is re-read on its own.
- */
-export function shouldPollPullRequestDetail(
-  detail: Pick<
-    PullRequestDetail,
-    | "state"
-    | "checks"
-    | "mergeability"
-    | "updatedAt"
-    | "mergeQueue"
-    | "autoMergeEnabled"
-    | "mergeGate"
-  >,
-  now: number,
-): boolean {
-  if (detail.checks.some((check) => check.status === "pending")) {
-    return true;
-  }
-  if (detail.state !== "open") {
-    return false;
-  }
-  if (pullRequestArmedToMerge(detail) && detail.mergeGate !== "blocked") {
-    return true;
-  }
-  const unsettled = detail.checks.length === 0 || detail.mergeability === "unknown";
-  const updatedAt = Date.parse(detail.updatedAt);
-  return (
-    unsettled && Number.isFinite(updatedAt) && now - updatedAt < PULL_REQUEST_FRESH_PUSH_WATCH_MS
-  );
-}
-
-/**
  * The prompt a review comment becomes when it is handed to the thread working
  * the branch. The comment is quoted rather than restated, so the agent reads
  * the reviewer's own words and the user still sends it themselves.
