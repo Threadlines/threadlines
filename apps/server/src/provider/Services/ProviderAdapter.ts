@@ -203,6 +203,15 @@ export interface ProviderAdapterShape<TError> {
   readonly compactContext?: (threadId: ThreadId) => Effect.Effect<void, TError>;
 
   /**
+   * The user moved on to another agent while background commands this
+   * session started are still running: stop counting them as work the agent
+   * is waiting on, the same as when the user's next message starts a new
+   * turn. Background agents keep counting. Drivers without background
+   * commands omit it.
+   */
+  readonly releaseBackgroundCommands?: (threadId: ThreadId) => Effect.Effect<void, TError>;
+
+  /**
    * Attach or update a long-horizon goal on the thread's provider session.
    * Optional; must be present when `capabilities.threadGoals` is
    * `"supported"`. Returns the provider's authoritative goal state.

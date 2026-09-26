@@ -47,12 +47,13 @@ import { useCheckoutRecovery } from "../hooks/useCheckoutRecovery";
 import { buildCheckoutMissingNotice } from "./chat/checkoutMissingNotice";
 import { usePrimaryEnvironmentId } from "../environments/primary";
 import { readEnvironmentApi } from "../environmentApi";
-import { getProviderScopedDisplayModelName } from "./chat/providerIconUtils";
+import { getPickerModelName } from "./chat/providerIconUtils";
 import {
   buildRoomAgentLabels,
   isRoom,
   ownAgentSession,
   resolveRoomSend,
+  roomAgentKey,
   useRoomRecipientStore,
 } from "../rooms";
 import { ELECTRON_HEADER_HEIGHT_CLASS } from "../desktopChrome";
@@ -1764,7 +1765,7 @@ export default function ChatView(props: ChatViewProps) {
     () =>
       activeThread
         ? buildRoomAgentLabels(activeThread, providerInstanceEntries, (model, entry) =>
-            getProviderScopedDisplayModelName(model, entry.driverKind, { preferShortName: true }),
+            getPickerModelName(model, entry.driverKind),
           )
         : null,
     [activeThread, providerInstanceEntries],
@@ -4561,6 +4562,28 @@ export default function ChatView(props: ChatViewProps) {
       drawingContextCount: composerDrawingContexts.length,
     });
     if (showPlanFollowUpPrompt && activeProposedPlan) {
+      // In a room, plan feedback for another agent carries the plan with it,
+      // so it can not wait in the queue while the agent holding the thread
+      // is still waiting on background work. It stays in the box instead.
+      const planRoomSend = resolveRoomSend({
+        enabled: settings.roomsEnabled && isServerThread,
+        thread: activeThread,
+        threadRef: scopeThreadRef(environmentId, activeThread.id),
+      });
+      if (
+        planRoomSend.active &&
+        waitingOnBackgroundTasks &&
+        (planRoomSend.recipient?.id ?? null) !== (activeThread.session?.participantId ?? null)
+      ) {
+        toastManager.add(
+          stackedThreadToast({
+            type: "warning",
+            title: `${roomAgentLabels?.get(roomAgentKey(activeThread.session?.participantId))?.name ?? "The agent"} is still waiting on background work`,
+            description: "Send this once it finishes.",
+          }),
+        );
+        return;
+      }
       const followUp = resolvePlanFollowUpSubmission({
         draftText: trimmed,
         planMarkdown: activeProposedPlan.planMarkdown,
@@ -4626,25 +4649,29 @@ export default function ChatView(props: ChatViewProps) {
       }
       return;
     }
-    // Rooms: the message goes to one agent. A leading @name picks it;
-    // otherwise the composer's choice, which defaults to whoever worked last.
-    // Only one agent works at a time, so a message for another agent while
-    // one has a turn in flight waits in the queue for that agent.
+    // Rooms: the message goes to the agent picked in the composer, which
+    // defaults to whoever worked last. Only one agent works at a time, so a message for another agent waits in
+    // the queue while the one at work has a turn in flight, or has finished
+    // but is still waiting on background work it will wake up for.
     const roomSend = resolveRoomSend({
       enabled: settings.roomsEnabled && isServerThread,
       thread: activeThread,
       threadRef: scopeThreadRef(environmentId, activeThread.id),
-      text: promptForSend,
     });
     const roomsActive = roomSend.active;
     const roomRecipient = roomSend.recipient;
     const roomRecipientId = roomRecipient?.id ?? null;
     // The added agent's model with any reasoning picked since its last turn.
     const roomRecipientModelSelection = roomSend.modelSelection;
-    const queueForAnotherAgent =
-      roomsActive &&
-      canSubmitSteeringFollowUp &&
-      roomRecipientId !== (activeThread.session?.participantId ?? null);
+    const queueBehindTurnId =
+      roomsActive && roomRecipientId !== (activeThread.session?.participantId ?? null)
+        ? canSubmitSteeringFollowUp
+          ? activeSteerTurnId
+          : waitingOnBackgroundTasks
+            ? (activeThread.latestTurn?.turnId ?? null)
+            : null
+        : null;
+    const queueForAnotherAgent = queueBehindTurnId !== null;
     // After a send: carrying on with the same agent stays one keystroke. Only
     // a send that carried the model selection (a turn or a queued message)
     // took the picked reasoning with it; a steer did not, so it is kept.
@@ -4672,7 +4699,8 @@ export default function ChatView(props: ChatViewProps) {
     const threadIdForSend = activeThread.id;
     const isFirstMessage = !isServerThread || activeThread.messages.length === 0;
     const steeringThreadKey = activeThreadKey;
-    const isSteeringFollowUp = canSubmitSteeringFollowUp && steeringThreadKey !== null;
+    const isSteeringFollowUp =
+      (canSubmitSteeringFollowUp || queueForAnotherAgent) && steeringThreadKey !== null;
     // "Send when done" holds the message on the server until the turn ends;
     // the queue list shows it from there, so it gets no steering row.
     const followUpDelivery = queueForAnotherAgent ? "queue" : settings.followUpDelivery;
@@ -4857,7 +4885,7 @@ export default function ChatView(props: ChatViewProps) {
       );
 
       if (isSteeringFollowUp) {
-        const steerTurnId = activeSteerTurnId;
+        const steerTurnId = queueBehindTurnId ?? activeSteerTurnId;
         if (steerTurnId == null) {
           throw new Error("No active provider turn is available for a follow-up.");
         }
@@ -5885,7 +5913,6 @@ export default function ChatView(props: ChatViewProps) {
         enabled: settings.roomsEnabled && isServerThread,
         thread: activeThread,
         threadRef: scopeThreadRef(activeThread.environmentId, activeThread.id),
-        text: trimmed,
       });
       const roomRecipientId = roomSend.recipient?.id ?? null;
 
@@ -6945,7 +6972,7 @@ export default function ChatView(props: ChatViewProps) {
               <ComposerFollowUpQueue
                 steering={queuedSteeringMessages}
                 queued={queuedFollowUps}
-                paused={!isWorking}
+                paused={!isWorking && !waitingOnBackgroundTasks}
                 attachmentOnlyPrompt={ATTACHMENT_ONLY_BOOTSTRAP_PROMPT}
                 roomAgents={roomAgentLabels}
                 onEdit={(followUp) => void returnQueuedFollowUpsToComposer([followUp])}

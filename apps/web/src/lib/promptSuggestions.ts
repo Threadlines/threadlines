@@ -50,6 +50,11 @@ export interface PromptSuggestionSelectionInput {
   readonly hasComposerApproval: boolean;
   readonly pendingUserInputCount: number;
   readonly showPlanFollowUpPrompt: boolean;
+  /**
+   * Messages waiting above the composer. The next message is already
+   * decided, and the list sits where the suggestion would.
+   */
+  readonly queuedMessageCount: number;
   readonly latestTurn: Pick<OrchestrationLatestTurn, "turnId" | "state"> | null;
   /**
    * The turn whose suggestion the user has already acted on by sending a
@@ -78,7 +83,8 @@ export function selectPromptSuggestion(input: PromptSuggestionSelectionInput): s
     input.phase === "running" ||
     input.isSendBusy ||
     input.hasComposerApproval ||
-    input.pendingUserInputCount > 0
+    input.pendingUserInputCount > 0 ||
+    input.queuedMessageCount > 0
   ) {
     return null;
   }

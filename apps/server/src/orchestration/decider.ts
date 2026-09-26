@@ -675,7 +675,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       if (findActiveParticipantByHandle(thread, command.participant.handle) !== undefined) {
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
-          detail: `An agent called @${command.participant.handle} is already in this thread.`,
+          detail: `An agent called ${command.participant.handle} is already in this thread.`,
         });
       }
       return {
@@ -723,7 +723,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       ) {
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
-          detail: `@${participant.handle} is working. Stop its turn before removing it.`,
+          detail: `${participant.handle} is working. Stop its turn before removing it.`,
         });
       }
       return {
@@ -953,7 +953,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       }
       // In a room, the turn goes to one agent. Only one agent works at a time:
       // the session slot changes hands only once its holder is done, including
-      // background work that would otherwise wake it up mid-turn of another.
+      // background work it is waiting on (a test run, a helper agent), which
+      // would wake it up mid-turn of another. A command it left running on
+      // purpose, like a dev server, keeps running and does not hold the slot.
       const participantId = command.participantId ?? null;
       const participant =
         participantId === null
@@ -972,17 +974,21 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         const holderName =
           slotHolderId === null
             ? "The thread's agent"
-            : `@${targetThread.participants.find((entry) => entry.id === slotHolderId)?.handle ?? "agent"}`;
+            : (targetThread.participants.find((entry) => entry.id === slotHolderId)?.handle ??
+              "The agent");
         if (slotSession.status === "running" || slotSession.status === "starting") {
           return yield* new OrchestrationCommandInvariantError({
             commandType: command.type,
             detail: `${holderName} is still working. Wait for its turn to finish, or stop it.`,
           });
         }
-        if ((slotSession.pendingBackgroundTaskCount ?? 0) > 0) {
+        if (
+          (slotSession.awaitedBackgroundTaskCount ?? slotSession.pendingBackgroundTaskCount ?? 0) >
+          0
+        ) {
           return yield* new OrchestrationCommandInvariantError({
             commandType: command.type,
-            detail: `${holderName} still has background work running.`,
+            detail: `${holderName} is still waiting on background work.`,
           });
         }
         if (targetThread.voiceActive === true) {

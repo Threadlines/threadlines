@@ -75,6 +75,15 @@ export function getProviderScopedDisplayModelName(
   return displayName;
 }
 
+/**
+ * The short name the model picker shows for a model: "Opus 5.5", "GPT-6
+ * Astra". Rooms name their agents with it, so the picker, the timeline and
+ * the inbox always agree.
+ */
+export function getPickerModelName(model: ModelEsque, driverKind: ProviderDriverKind): string {
+  return getProviderScopedDisplayModelName(model, driverKind, { preferShortName: true });
+}
+
 export function getProviderScopedDisplayModelLabel(
   model: ModelEsque,
   driverKind: ProviderDriverKind,

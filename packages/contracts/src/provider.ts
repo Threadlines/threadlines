@@ -52,6 +52,14 @@ export const ProviderSession = Schema.Struct({
   /** Provider-owned id for the primary conversation, when the driver exposes it. */
   providerThreadId: Schema.optional(TrimmedNonEmptyString),
   activeTurnId: Schema.optional(TurnId),
+  /**
+   * Background tasks (commands, agents) alive in this runtime right now, when
+   * the driver can tell. Same meaning as on the thread's session, but the
+   * runtime's own count, so it holds even for a room agent whose thread
+   * session belongs to another agent. Stopping or restarting the runtime
+   * kills them.
+   */
+  pendingBackgroundTaskCount: Schema.optional(NonNegativeInt),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
   lastError: Schema.optional(TrimmedNonEmptyString),

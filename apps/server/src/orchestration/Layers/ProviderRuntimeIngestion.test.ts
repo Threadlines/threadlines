@@ -20,6 +20,7 @@ import {
   ProviderItemId,
   type ServerSettings,
   ThreadId,
+  ThreadParticipantId,
   TurnId,
 } from "@threadlines/contracts";
 import * as Clock from "effect/Clock";
@@ -100,6 +101,7 @@ function isLegacyTurnCompletedEvent(
 function createProviderServiceHarness() {
   const runtimeEventPubSub = Effect.runSync(PubSub.unbounded<ProviderRuntimeEvent>());
   const runtimeSessions: ProviderSession[] = [];
+  const interruptedThreadIds: ThreadId[] = [];
   // Where the provider says each spawned subagent is working. Empty means the
   // provider has not written the record yet, which is its normal first answer.
   const subagentWorktreesByToolUseId = new Map<string, { readonly worktreePath: string }>();
@@ -112,11 +114,15 @@ function createProviderServiceHarness() {
     sendTurn: () => unsupported(),
     steerTurn: () => unsupported(),
     startReview: () => unsupported(),
-    interruptTurn: () => unsupported(),
+    interruptTurn: ({ threadId }) =>
+      Effect.sync(() => {
+        interruptedThreadIds.push(threadId);
+      }),
     realtimeStart: () => unsupported(),
     realtimeStop: () => unsupported(),
     realtimeAppendAudio: () => unsupported(),
     realtimeListVoices: () => unsupported(),
+    releaseBackgroundCommands: () => Effect.void,
     compactContext: () => unsupported(),
     setThreadGoal: () => unsupported(),
     pauseThreadGoalForStop: () => unsupported(),
@@ -191,6 +197,7 @@ function createProviderServiceHarness() {
     emit,
     setSession,
     setSubagentWorktree,
+    interruptedThreadIds,
   };
 }
 
@@ -380,6 +387,7 @@ describe("ProviderRuntimeIngestion", () => {
       setProviderSession: provider.setSession,
       setSubagentWorktree: provider.setSubagentWorktree,
       setRepositoryWorktrees: gitWorkflow.setWorktrees,
+      interruptedThreadIds: provider.interruptedThreadIds,
       drain,
     };
   }
@@ -436,6 +444,75 @@ describe("ProviderRuntimeIngestion", () => {
       (entry: ProviderRuntimeTestMessage) => entry.role === "user",
     );
     expect(message?.id).toBe("user:realtime:thread-1:evt-realtime-user-done");
+  });
+
+  it("stops a room agent that starts working on its own while another agent holds the thread", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    const threadId = asThreadId("thread-1");
+    const astraId = ThreadParticipantId.make("7a0b1c2d-3e4f-4a5b-8c6d-7e8f9a0b1c2d");
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.participant.add",
+        commandId: CommandId.make("cmd-room-add-astra"),
+        threadId,
+        participant: {
+          id: astraId,
+          handle: "astra",
+          modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6-astra" },
+        },
+        createdAt: now,
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-room-astra-working"),
+        threadId,
+        session: {
+          threadId,
+          status: "running",
+          providerName: "codex",
+          runtimeMode: "approval-required",
+          participantId: astraId,
+          activeTurnId: asTurnId("turn-astra"),
+          updatedAt: now,
+          lastError: null,
+        },
+        createdAt: now,
+      }),
+    );
+
+    // The thread's own agent wakes up: a dev server it left running exited.
+    harness.setProviderSession({
+      provider: ProviderDriverKind.make("claudeAgent"),
+      status: "running",
+      runtimeMode: "approval-required",
+      threadId,
+      activeTurnId: asTurnId("turn-wake"),
+      createdAt: now,
+      updatedAt: now,
+    });
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-idle-agent-wakes"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      threadId,
+      createdAt: now,
+      turnId: asTurnId("turn-wake"),
+    });
+    await harness.drain();
+    // The stop is sent on the side, so ingestion never waits on the provider.
+    for (let attempt = 0; attempt < 100 && harness.interruptedThreadIds.length === 0; attempt++) {
+      await Effect.runPromise(Effect.sleep("10 millis"));
+    }
+
+    expect(harness.interruptedThreadIds).toEqual([threadId]);
+    const thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+    expect(thread?.session).toMatchObject({
+      participantId: astraId,
+      activeTurnId: "turn-astra",
+    });
   });
 
   it("maps turn started/completed events into thread session updates", async () => {

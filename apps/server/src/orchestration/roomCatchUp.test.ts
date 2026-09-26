@@ -14,7 +14,7 @@ const at = "2026-01-01T00:00:00.000Z";
 const astraId = ThreadParticipantId.make("agent-astra");
 const astra = {
   id: astraId,
-  handle: "astra",
+  handle: "GPT-6 Astra",
   modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6-astra" },
   joinedAt: at,
   leftAt: null,
@@ -90,8 +90,8 @@ describe("buildRoomCatchUp", () => {
     });
 
     expect(note).toContain("since you last took part");
-    expect(note).toContain("User, to @astra (gpt-6-astra):\nreview Fable's change");
-    expect(note).toContain("@astra (gpt-6-astra):\nOne ordering issue remains.");
+    expect(note).toContain("User, to GPT-6 Astra (gpt-6-astra):\nreview Fable's change");
+    expect(note).toContain("GPT-6 Astra (gpt-6-astra):\nOne ordering issue remains.");
     expect(note).toContain("connection.ts +4 -1");
     // The agent's own earlier words, and the message being sent, are not repeated.
     expect(note).not.toContain("Fixed it.");

@@ -114,6 +114,15 @@ export interface ProviderServiceShape {
   ) => Effect.Effect<ProviderRealtimeListVoicesResult, ProviderServiceError>;
 
   /**
+   * Stop counting a live session's background commands as work it is
+   * waiting on (see ProviderAdapter.releaseBackgroundCommands). Does nothing
+   * when the session is not running or its driver has no such commands.
+   */
+  readonly releaseBackgroundCommands: (input: {
+    readonly threadId: ThreadId;
+  }) => Effect.Effect<void, ProviderServiceError>;
+
+  /**
    * Ask the active provider session to compact its context.
    */
   readonly compactContext: (input: {

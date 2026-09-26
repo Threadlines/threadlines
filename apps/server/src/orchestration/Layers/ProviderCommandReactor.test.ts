@@ -309,6 +309,9 @@ describe("ProviderCommandReactor", () => {
       () => Effect.void,
     );
     const compactContext = vi.fn<ProviderServiceShape["compactContext"]>(() => Effect.void);
+    const releaseBackgroundCommands = vi.fn<ProviderServiceShape["releaseBackgroundCommands"]>(
+      () => Effect.void,
+    );
     const setThreadGoal = vi.fn<ProviderServiceShape["setThreadGoal"]>((goalInput) =>
       Effect.succeed({
         objective: goalInput.objective ?? "existing objective",
@@ -417,6 +420,7 @@ describe("ProviderCommandReactor", () => {
       realtimeStop,
       realtimeAppendAudio: () => unsupported(),
       realtimeListVoices: () => unsupported(),
+      releaseBackgroundCommands,
       compactContext,
       setThreadGoal: setThreadGoal as ProviderServiceShape["setThreadGoal"],
       pauseThreadGoalForStop,
@@ -594,6 +598,7 @@ describe("ProviderCommandReactor", () => {
       interruptTurn,
       realtimeStart,
       realtimeStop,
+      releaseBackgroundCommands,
       compactContext,
       setThreadGoal,
       pauseThreadGoalForStop,
@@ -877,14 +882,23 @@ describe("ProviderCommandReactor", () => {
     expect(thread?.session?.participantId).toBe(astraId);
   });
 
-  it("sends a message queued for another room agent once background work finishes", async () => {
+  /**
+   * A room where the thread's own agent is at work and a message for @astra
+   * waits in the queue. `settle` ends the turn with the given background
+   * counts.
+   */
+  async function startRoomWithMessageQueuedForAstra() {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
     const threadId = ThreadId.make("thread-1");
     const astraId = ThreadParticipantId.make("7a0b1c2d-3e4f-4a5b-8c6d-7e8f9a0b1c2d");
     const dispatch = (command: Parameters<typeof harness.engine.dispatch>[0]) =>
       Effect.runPromise(harness.engine.dispatch(command));
-    const settle = (pendingBackgroundTaskCount: number, commandId: string) =>
+    const settle = (
+      pendingBackgroundTaskCount: number,
+      awaitedBackgroundTaskCount: number,
+      commandId: string,
+    ) =>
       dispatch({
         type: "thread.session.set",
         commandId: CommandId.make(commandId),
@@ -896,6 +910,7 @@ describe("ProviderCommandReactor", () => {
           runtimeMode: "full-access",
           activeTurnId: null,
           pendingBackgroundTaskCount,
+          awaitedBackgroundTaskCount,
           lastError: null,
           updatedAt: now,
         },
@@ -947,17 +962,117 @@ describe("ProviderCommandReactor", () => {
       participantId: astraId,
       createdAt: now,
     });
+    await harness.drain();
+    return { harness, threadId, astraId, dispatch, settle, now };
+  }
 
-    // The turn ends with background work: the slot can not change hands yet.
-    await settle(1, "cmd-queue-settled-busy");
+  it("sends a message queued for another room agent once the work it waits on finishes", async () => {
+    const { harness, threadId, astraId, settle } = await startRoomWithMessageQueuedForAstra();
+
+    // The turn ends with a test run it waits on and a dev server: the slot
+    // can not change hands yet, and the commands it left running stop
+    // counting as work it waits on.
+    await settle(2, 1, "cmd-queue-settled-busy");
     await harness.drain();
     expect(harness.sendTurn.mock.calls.length).toBe(1);
+    expect(harness.releaseBackgroundCommands.mock.calls.map(([input]) => input)).toEqual([
+      { threadId },
+    ]);
 
-    // The work finishes: the queued message goes to astra.
-    await settle(0, "cmd-queue-settled-idle");
+    // Nothing left that it waits on: the dev server still running does not
+    // hold the queued message back.
+    await settle(1, 0, "cmd-queue-settled-idle");
     await waitFor(() => harness.sendTurn.mock.calls.length === 2);
     const sent = harness.sendTurn.mock.calls[1]?.[0] as { threadId: string };
     expect(sent.threadId).toBe(participantSessionKey(threadId, astraId));
+  });
+
+  it("sends a new message for another room agent after a failed turn once its commands let go", async () => {
+    const { harness, threadId, astraId, dispatch, now } =
+      await startRoomWithMessageQueuedForAstra();
+    const failed = (awaitedBackgroundTaskCount: number, commandId: string) =>
+      dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make(commandId),
+        threadId,
+        session: {
+          threadId,
+          status: "error",
+          providerName: "codex",
+          runtimeMode: "full-access",
+          activeTurnId: null,
+          pendingBackgroundTaskCount: 1,
+          awaitedBackgroundTaskCount,
+          lastError: "turn failed",
+          updatedAt: now,
+        },
+        createdAt: now,
+      });
+    // The turn fails with a background command still running.
+    await failed(1, "cmd-failed-with-command");
+    await harness.drain();
+
+    await dispatch({
+      type: "thread.follow-up.submit",
+      commandId: CommandId.make("cmd-new-for-astra"),
+      threadId,
+      turnId: asTurnId("turn-1"),
+      message: {
+        messageId: asMessageId("new-for-astra"),
+        role: "user",
+        text: "take over",
+        attachments: [],
+      },
+      delivery: "queue",
+      participantId: astraId,
+      createdAt: now,
+    });
+    await waitFor(() => harness.releaseBackgroundCommands.mock.calls.length === 1);
+
+    // The command stops counting as work it waits on: the new message goes.
+    await failed(0, "cmd-failed-command-released");
+    await waitFor(() => harness.sendTurn.mock.calls.length === 2);
+    expect((harness.sendTurn.mock.calls[1]?.[0] as { threadId: string }).threadId).toBe(
+      participantSessionKey(threadId, astraId),
+    );
+    // The message queued before the failure stays held.
+    await harness.drain();
+    const thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+    expect(thread?.queuedFollowUps?.map((entry) => entry.messageId)).toEqual(["queue-for-astra"]);
+  });
+
+  it("holds a message queued for another room agent after Stop, even with no turn to stop", async () => {
+    const { harness, threadId, dispatch, settle, now } = await startRoomWithMessageQueuedForAstra();
+    await settle(1, 1, "cmd-stop-settled-waiting");
+    await dispatch({
+      type: "thread.turn.interrupt",
+      commandId: CommandId.make("cmd-stop-while-waiting"),
+      threadId,
+      createdAt: now,
+    });
+    await harness.drain();
+
+    // A late report from the stopped runtime does not count as moving on.
+    await dispatch({
+      type: "thread.session.set",
+      commandId: CommandId.make("cmd-stop-late-running"),
+      threadId,
+      session: {
+        threadId,
+        status: "running",
+        providerName: "codex",
+        runtimeMode: "full-access",
+        activeTurnId: asTurnId("turn-1"),
+        pendingBackgroundTaskCount: 1,
+        awaitedBackgroundTaskCount: 1,
+        lastError: null,
+        updatedAt: now,
+      },
+      createdAt: now,
+    });
+    await settle(0, 0, "cmd-stop-work-done");
+    await harness.drain();
+    expect(harness.sendTurn.mock.calls.length).toBe(1);
   });
 
   it("preserves provider identifiers published while session startup is in flight", async () => {
@@ -1352,6 +1467,7 @@ describe("ProviderCommandReactor", () => {
     const now = "2026-01-01T00:00:00.000Z";
     const staleThreadId = ThreadId.make("thread-stale-restart");
     const staleTurnId = asTurnId("turn-stale-restart");
+    const waitingThreadId = ThreadId.make("thread-waiting-restart");
     const harness = await createHarness({
       beforeStart: (engine) =>
         Effect.gen(function* () {
@@ -1388,7 +1504,40 @@ describe("ProviderCommandReactor", () => {
               providerInstanceId: ProviderInstanceId.make("codex"),
               runtimeMode: "approval-required",
               activeTurnId: staleTurnId,
-              pendingBackgroundTaskCount: 0,
+              pendingBackgroundTaskCount: 1,
+              awaitedBackgroundTaskCount: 1,
+              lastError: null,
+              updatedAt: now,
+            },
+            createdAt: now,
+          });
+          // A thread whose agent had finished but was waiting on a test run.
+          yield* engine.dispatch({
+            type: "thread.create",
+            commandId: CommandId.make("cmd-thread-create-waiting"),
+            threadId: waitingThreadId,
+            projectId: asProjectId("project-stale"),
+            title: "Waiting Thread",
+            modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5-codex" },
+            interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+            runtimeMode: "approval-required",
+            branch: null,
+            worktreePath: null,
+            createdAt: now,
+          });
+          yield* engine.dispatch({
+            type: "thread.session.set",
+            commandId: CommandId.make("cmd-session-set-waiting"),
+            threadId: waitingThreadId,
+            session: {
+              threadId: waitingThreadId,
+              status: "ready",
+              providerName: "codex",
+              providerInstanceId: ProviderInstanceId.make("codex"),
+              runtimeMode: "approval-required",
+              activeTurnId: null,
+              pendingBackgroundTaskCount: 1,
+              awaitedBackgroundTaskCount: 1,
               lastError: null,
               updatedAt: now,
             },
@@ -1408,8 +1557,24 @@ describe("ProviderCommandReactor", () => {
 
     const readModel = await harness.readModel();
     const thread = readModel.threads.find((entry) => entry.id === staleThreadId);
-    expect(thread?.session).toMatchObject({ status: "interrupted", activeTurnId: null });
+    // Background tasks died with the old process: nothing is left to wait on.
+    expect(thread?.session).toMatchObject({
+      status: "interrupted",
+      activeTurnId: null,
+      pendingBackgroundTaskCount: 0,
+      awaitedBackgroundTaskCount: 0,
+    });
     expect(thread?.latestTurn).toMatchObject({ turnId: staleTurnId, state: "interrupted" });
+    await waitFor(async () => {
+      const waiting = (await harness.readModel()).threads.find(
+        (entry) => entry.id === waitingThreadId,
+      );
+      return waiting?.session?.awaitedBackgroundTaskCount === 0;
+    });
+    const waiting = (await harness.readModel()).threads.find(
+      (entry) => entry.id === waitingThreadId,
+    );
+    expect(waiting?.session).toMatchObject({ status: "ready", pendingBackgroundTaskCount: 0 });
     expect(
       thread?.activities.find((entry) => entry.kind === "provider.session.restart-interrupted"),
     ).toMatchObject({ turnId: staleTurnId });

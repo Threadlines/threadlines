@@ -2434,6 +2434,36 @@ const make = Effect.gen(function* () {
           threadId: thread.id,
           participantId: event.participantId ?? null,
         });
+        // An idle agent starting a turn by itself means background work it
+        // left running (a dev server that exited) woke it up. It would work
+        // unseen beside the agent at work, so stop it; the report stays in
+        // its own transcript for the next time it is addressed.
+        if (event.type === "turn.started" && event.turnId !== undefined) {
+          const agentId = event.participantId ?? null;
+          const agentKey = participantSessionKey(thread.id, agentId);
+          const wakeTurnId = event.turnId;
+          yield* Effect.gen(function* () {
+            // Checked again right before: by now the agent may have been
+            // handed the thread back and started the turn it was asked for.
+            const latest = yield* resolveThreadShell(thread.id);
+            if (latest && agentId === sessionSlotParticipantId(latest.session)) {
+              return;
+            }
+            const runtime = (yield* providerService.listSessions()).find(
+              (session) => session.threadId === agentKey,
+            );
+            if (runtime?.activeTurnId !== wakeTurnId) {
+              return;
+            }
+            yield* Effect.logInfo("provider runtime ingestion stopped an idle room agent's turn", {
+              threadId: thread.id,
+              participantId: agentId,
+              turnId: wakeTurnId,
+            });
+            // The adapter checks the turn again as it stops it.
+            yield* providerService.interruptTurn({ threadId: agentKey, turnId: wakeTurnId });
+          }).pipe(Effect.ignoreCause({ log: true }), Effect.forkDetach);
+        }
         return;
       }
       if (

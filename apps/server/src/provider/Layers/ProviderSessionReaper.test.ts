@@ -215,6 +215,7 @@ describe("ProviderSessionReaper", () => {
       steerTurn: () => unsupported(),
       startReview: () => unsupported(),
       interruptTurn: () => unsupported(),
+      releaseBackgroundCommands: () => Effect.void,
       compactContext: () => unsupported(),
       setThreadGoal: () => unsupported(),
       pauseThreadGoalForStop: () => Effect.succeed(null),
@@ -573,6 +574,70 @@ describe("ProviderSessionReaper", () => {
     expect(harness.stopSession.mock.calls[0]?.[0]).toEqual({ threadId });
     // The working agent's session slot is not marked stopped.
     expect(harness.dispatch).not.toHaveBeenCalled();
+  });
+
+  it("keeps an idle room agent whose runtime still hosts a dev server", async () => {
+    const roomThreadId = ThreadId.make("thread-reaper-room-dev-server");
+    const idleThreadId = ThreadId.make("thread-reaper-room-plain-idle");
+    const astraId = ThreadParticipantId.make("7a0b1c2d-3e4f-4a5b-8c6d-7e8f9a0b1c2d");
+    const claudeAgent = ProviderDriverKind.make("claudeAgent");
+    const now = "2026-01-01T00:00:00.000Z";
+    const readySession = (threadId: ThreadId) => ({
+      threadId,
+      status: "ready" as const,
+      providerName: "claudeAgent" as const,
+      runtimeMode: "full-access" as const,
+      activeTurnId: null,
+      lastError: null,
+      updatedAt: now,
+    });
+    const harness = await createHarness({
+      backgroundTaskGraceMs: 1_000_000_000_000,
+      activeProviderSessions: [
+        // The thread's own agent left a dev server running, then astra took
+        // the thread's session, so only the runtime itself knows about it.
+        {
+          ...makeProviderSession({
+            threadId: roomThreadId,
+            provider: claudeAgent,
+            providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+            status: "ready",
+          }),
+          pendingBackgroundTaskCount: 1,
+        },
+      ],
+      readModel: makeReadModel([
+        { id: roomThreadId, session: { ...readySession(roomThreadId), participantId: astraId } },
+        { id: idleThreadId, session: readySession(idleThreadId) },
+      ]),
+    });
+    const repository = await runtime!.runPromise(Effect.service(ProviderSessionRuntimeRepository));
+    for (const threadId of [roomThreadId, idleThreadId]) {
+      await runtime!.runPromise(
+        repository.upsert({
+          threadId,
+          providerName: "claudeAgent",
+          providerInstanceId: null,
+          adapterKey: "claudeAgent",
+          runtimeMode: "full-access",
+          status: "running",
+          lastSeenAt: "2026-04-14T00:00:00.000Z",
+          resumeCursor: { opaque: `resume-${threadId}` },
+          runtimePayload: null,
+        }),
+      );
+    }
+
+    const reaper = await runtime!.runPromise(Effect.service(ProviderSessionReaper));
+    scope = await Effect.runPromise(Scope.make("sequential"));
+    await Effect.runPromise(reaper.start().pipe(Scope.provide(scope)));
+
+    await waitFor(() => harness.stopSession.mock.calls.length === 1);
+    await Effect.runPromise(drainFibers);
+
+    expect(harness.stopSession.mock.calls.map(([request]) => request.threadId)).toEqual([
+      idleThreadId,
+    ]);
   });
 
   it("skips idle sessions with pending background tasks while reaping the rest", async () => {

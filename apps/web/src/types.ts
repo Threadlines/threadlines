@@ -281,8 +281,8 @@ export interface SidebarThreadSummary {
   linkedPullRequests?: readonly OrchestrationThreadLinkedPullRequest[];
   /** See ThreadShell.participants; the inbox marks rooms and names who is working. */
   participants?: readonly OrchestrationThreadParticipant[];
-  /** In a room, the agent working or last worked ("astra"); null otherwise. */
-  roomSlotAgentName?: string | null;
+  /** In a room, the model of the agent working or last at work; null otherwise. */
+  roomSlotModelSelection?: ModelSelection | null;
 }
 
 export interface ThreadSession {

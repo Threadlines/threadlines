@@ -10,7 +10,7 @@ import {
 } from "lucide-react";
 import React, { memo, useCallback, useMemo } from "react";
 import { useShallow } from "zustand/react/shallow";
-import type { ScopedThreadRef, VcsStatusResult } from "@threadlines/contracts";
+import type { ModelSelection, ScopedThreadRef, VcsStatusResult } from "@threadlines/contracts";
 import { scopedThreadKey, scopeProjectRef, scopeThreadRef } from "@threadlines/client-runtime";
 import { resolveThreadWorkingCwd } from "@threadlines/shared/threadCwd";
 import type { SidebarThreadSummary } from "../../types";
@@ -26,7 +26,8 @@ import { selectThreadTerminalState, useTerminalStateStore } from "../../terminal
 import { useThreadSelectionStore } from "../../threadSelectionStore";
 import { useRelativeTimeTick } from "../../hooks/useRelativeTimeTick";
 import { formatRelativeTimeLabel, formatWorkingDurationLabel } from "../../timestampFormat";
-import { PROVIDER_ICON_BY_PROVIDER } from "../chat/providerIconUtils";
+import { getPickerModelName, PROVIDER_ICON_BY_PROVIDER } from "../chat/providerIconUtils";
+import { useServerProviders } from "../../rpc/serverState";
 import { prStatusIndicator, terminalStatusFromRunningIds } from "../ThreadStatusIndicators";
 import {
   leadThreadPullRequest,
@@ -281,6 +282,20 @@ function formatDiffCount(count: number): string {
 function ThreadElapsedLabel({ startedAt }: { startedAt: string }) {
   const nowMs = useRelativeTimeTick(1_000);
   return <>{formatWorkingDurationLabel(startedAt, nowMs)}</>;
+}
+
+/**
+ * In a room, the agent working or last at work, named the way the composer's
+ * model picker names it: "GPT-6 Astra · working".
+ */
+function RoomSlotAgentPrefix({ selection }: { selection: ModelSelection }) {
+  const providers = useServerProviders();
+  const name = useMemo(() => {
+    const provider = providers.find((entry) => entry.instanceId === selection.instanceId);
+    const model = provider?.models.find((entry) => entry.slug === selection.model);
+    return provider && model ? getPickerModelName(model, provider.driver) : selection.model;
+  }, [providers, selection.instanceId, selection.model]);
+  return <>{name} · </>;
 }
 
 function ThreadProviderGlyph({ thread }: { thread: SidebarThreadSummary }) {
@@ -611,8 +626,9 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
                   statusWord
                 ) : isInFlight || isWaitingOnTasks ? (
                   <>
-                    {/* In a room, name the agent: "astra · working". */}
-                    {thread.roomSlotAgentName ? `${thread.roomSlotAgentName} · ` : null}
+                    {thread.roomSlotModelSelection ? (
+                      <RoomSlotAgentPrefix selection={thread.roomSlotModelSelection} />
+                    ) : null}
                     {isWaitingOnTasks
                       ? "waiting"
                       : status?.label === "Starting"

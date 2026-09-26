@@ -1,11 +1,11 @@
 /**
  * Client rules for rooms: threads with more than one agent.
  *
- * The thread's own agent is addressed with a null participant id; agents added
- * later have a handle the user types after `@`. Which agent the composer
- * addresses is remembered per thread in memory and defaults to the agent that
- * worked last, so the common case of carrying on with the same agent stays one
- * keystroke.
+ * The thread's own agent is addressed with a null participant id. Every agent
+ * is named by its model, the short name the model picker shows ("Opus 5.5",
+ * "GPT-6 Astra"). The composer's agent picker says who a message goes to; the
+ * choice is remembered per thread in memory and defaults to the agent that
+ * worked last, so carrying on with the same agent stays one keystroke.
  */
 import { scopedThreadKey } from "@threadlines/client-runtime";
 import type {
@@ -15,10 +15,7 @@ import type {
   ScopedThreadRef,
   ThreadParticipantId,
 } from "@threadlines/contracts";
-import {
-  activeParticipants,
-  findActiveParticipantByHandle,
-} from "@threadlines/shared/threadParticipants";
+import { activeParticipants } from "@threadlines/shared/threadParticipants";
 import { create } from "zustand";
 
 import type { ProviderInstanceEntry } from "./providerInstances";
@@ -51,51 +48,21 @@ export function resolveRoomRecipient(
   return holder !== null && present.has(holder) ? holder : null;
 }
 
-/** The agent named by a message that starts with `@handle`, if any. */
-export function parseLeadingRoomMention(
-  text: string,
-  thread: RoomThreadLike,
-): OrchestrationThreadParticipant | null {
-  const match = /^\s*@([\w.-]+)(?=\s|$)/.exec(text);
-  if (!match?.[1]) {
-    return null;
-  }
-  return findActiveParticipantByHandle(participantsOf(thread), match[1]) ?? null;
-}
-
-const VENDOR_WORDS = new Set(["gpt", "claude", "codex", "openai", "anthropic", "cursor"]);
-
 /**
- * A short handle for a new agent from its model's display name: the first
- * plain word that is not a vendor name ("GPT-6 Astra" → "astra", "Claude
- * Opus 5" → "opus"). Taken handles get the provider appended, then a number.
+ * The name for an agent joining a room: its model's name, numbered when an
+ * agent with that name is already here ("GPT-6 Astra 2"). The same rule
+ * `buildRoomAgentLabels` applies, so the stored name and the shown one agree.
  */
-export function suggestParticipantHandle(input: {
-  readonly modelDisplayName: string;
-  readonly model: string;
-  readonly providerName: string;
-  readonly taken: ReadonlyArray<string>;
-}): string {
-  const words = input.modelDisplayName
-    .toLowerCase()
-    .split(/[^a-z0-9]+/)
-    .filter((word) => word.length > 0);
-  const base =
-    words.find((word) => /^[a-z]+$/.test(word) && !VENDOR_WORDS.has(word)) ??
-    input.model.toLowerCase().replace(/[^a-z0-9-]+/g, "-");
-  const taken = new Set(input.taken.map((handle) => handle.toLowerCase()));
-  if (!taken.has(base)) {
-    return base;
-  }
-  const withProvider = `${base}-${input.providerName.toLowerCase().replace(/[^a-z0-9]+/g, "")}`;
-  if (!taken.has(withProvider)) {
-    return withProvider;
+export function nextRoomAgentName(modelName: string, taken: ReadonlyArray<string>): string {
+  const takenLower = new Set(taken.map((name) => name.toLowerCase()));
+  if (!takenLower.has(modelName.toLowerCase())) {
+    return modelName;
   }
   let index = 2;
-  while (taken.has(`${withProvider}-${index}`)) {
+  while (takenLower.has(`${modelName} ${index}`.toLowerCase())) {
     index += 1;
   }
-  return `${withProvider}-${index}`;
+  return `${modelName} ${index}`;
 }
 
 interface RoomRecipientState {
@@ -168,10 +135,9 @@ export function chosenRoomRecipient(
   return useRoomRecipientStore.getState().chosen[scopedThreadKey(threadRef)];
 }
 
-/** How an agent is shown in a room: its name, the model it runs, and its provider. */
+/** How an agent is shown in a room: its name and its provider. */
 export interface RoomAgentLabel {
   readonly name: string;
-  readonly model: string;
   readonly entry: ProviderInstanceEntry | undefined;
 }
 
@@ -181,7 +147,9 @@ export const roomAgentKey = (participantId: ThreadParticipantId | null | undefin
 
 /**
  * Labels for every agent that ever took part in a room, including ones that
- * left, so their earlier messages keep an author. Null outside rooms.
+ * left, so their earlier messages keep a name. Each is named by its model;
+ * agents on the same model are numbered in the order they joined, the
+ * thread's own agent first. Null outside rooms.
  */
 export function buildRoomAgentLabels(
   thread: RoomThreadLike & { readonly modelSelection: ModelSelection },
@@ -195,46 +163,57 @@ export function buildRoomAgentLabels(
   if (!isRoom(thread)) {
     return null;
   }
-  const label = (selection: ModelSelection, name?: string): RoomAgentLabel => {
-    const entry = entries.find((candidate) => candidate.instanceId === selection.instanceId);
-    const model = entry?.models.find((candidate) => candidate.slug === selection.model);
-    return {
-      name: name ?? (model && entry ? modelDisplayName(model, entry) : selection.model),
-      model: selection.model,
-      entry,
-    };
-  };
-  const labels = new Map<string, RoomAgentLabel>([
-    [roomAgentKey(null), label(thread.modelSelection)],
-  ]);
-  for (const participant of thread.participants ?? []) {
-    labels.set(
-      roomAgentKey(participant.id),
-      label(participant.modelSelection, `@${participant.handle}`),
+  const agents = [
+    { key: roomAgentKey(null), selection: thread.modelSelection },
+    ...(thread.participants ?? []).map((participant) => ({
+      key: roomAgentKey(participant.id),
+      selection: participant.modelSelection,
+    })),
+  ];
+  const labels = new Map<string, RoomAgentLabel>();
+  const named: string[] = [];
+  for (const agent of agents) {
+    const name = nextRoomAgentName(
+      roomModelName(agent.selection, entries, modelDisplayName),
+      named,
     );
+    named.push(name);
+    labels.set(agent.key, {
+      name,
+      entry: entries.find((candidate) => candidate.instanceId === agent.selection.instanceId),
+    });
   }
   return labels;
 }
 
+/** A model's name as the model picker shows it, or its id when unknown here. */
+export function roomModelName(
+  selection: ModelSelection,
+  entries: ReadonlyArray<ProviderInstanceEntry>,
+  modelDisplayName: (
+    model: ProviderInstanceEntry["models"][number],
+    entry: ProviderInstanceEntry,
+  ) => string,
+): string {
+  const entry = entries.find((candidate) => candidate.instanceId === selection.instanceId);
+  const model = entry?.models.find((candidate) => candidate.slug === selection.model);
+  return model && entry ? modelDisplayName(model, entry) : selection.model;
+}
+
 /**
- * The name the inbox gives the agent holding a room's session slot: its
- * handle, or a short name from the thread's own model ("claude-fable-5-1" →
- * "fable"). Null outside rooms, where the row just says "working".
+ * The model of the agent a room's inbox row names as working or last at
+ * work. Null outside rooms, where the row just says "working".
  */
-export function roomSlotAgentName(
+export function roomSlotModelSelection(
   thread: RoomThreadLike & { readonly modelSelection: ModelSelection },
-): string | null {
+): ModelSelection | null {
   if (!isRoom(thread)) {
     return null;
   }
   const holderId = thread.session?.participantId ?? null;
   const holder =
     holderId === null ? undefined : thread.participants?.find((entry) => entry.id === holderId);
-  if (holder) {
-    return holder.handle;
-  }
-  const model = thread.modelSelection.model;
-  return suggestParticipantHandle({ modelDisplayName: model, model, providerName: "", taken: [] });
+  return holder?.modelSelection ?? thread.modelSelection;
 }
 
 /**
@@ -251,17 +230,15 @@ export function ownAgentSession<
 }
 
 /**
- * Who a send goes to in a room, and the model it runs with. A message that
- * starts with `@name` picks the agent; otherwise the composer's choice, which
- * defaults to the agent that worked last. Null recipient: the thread's own
- * agent, whose model the composer controls. Every send path uses this, so a
- * plan follow-up and a typed message route the same way.
+ * Who a send goes to in a room, and the model it runs with: the composer's
+ * choice, which defaults to the agent that worked last. Null recipient: the
+ * thread's own agent, whose model the composer controls. Every send path uses
+ * this, so a plan follow-up and a typed message route the same way.
  */
 export function resolveRoomSend(input: {
   readonly enabled: boolean;
   readonly thread: RoomThreadLike;
   readonly threadRef: ScopedThreadRef;
-  readonly text: string;
 }): {
   readonly active: boolean;
   readonly recipient: OrchestrationThreadParticipant | null;
@@ -272,9 +249,7 @@ export function resolveRoomSend(input: {
   }
   const chosenId = resolveRoomRecipient(input.thread, chosenRoomRecipient(input.threadRef));
   const recipient =
-    parseLeadingRoomMention(input.text, input.thread) ??
-    (input.thread.participants ?? []).find((entry) => entry.id === chosenId) ??
-    null;
+    (input.thread.participants ?? []).find((entry) => entry.id === chosenId) ?? null;
   return {
     active: true,
     recipient,

@@ -84,6 +84,7 @@ describe("selectPromptSuggestion", () => {
       hasComposerApproval: false,
       pendingUserInputCount: 0,
       showPlanFollowUpPrompt: false,
+      queuedMessageCount: 0,
       latestTurn: { turnId: TurnId.make("turn-1"), state: "completed" },
       dismissedTurnId: null,
       activities: [
@@ -111,6 +112,7 @@ describe("selectPromptSuggestion", () => {
     ["pending approval", { hasComposerApproval: true }],
     ["pending user input", { pendingUserInputCount: 1 }],
     ["plan follow-up", { showPlanFollowUpPrompt: true }],
+    ["queued messages", { queuedMessageCount: 1 }],
   ])("hides the suggestion during %s", (_label, overrides) => {
     expect(selectPromptSuggestion(makeInput(overrides))).toBeNull();
   });

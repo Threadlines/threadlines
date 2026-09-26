@@ -7339,16 +7339,28 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
 
   // Stop means stop everything: follow-ups steered into the running turn wait
   // in the CLI's queue, and a plain interrupt would start them as a new turn
-  // right after the stopped one.
+  // right after the stopped one. Given a turn id, only that turn is stopped:
+  // a caller aiming at one turn (an idle room agent that woke itself up) must
+  // not hit a turn the user asked for since.
   const interruptTurn: ClaudeAdapterShape["interruptTurn"] = Effect.fn("interruptTurn")(
-    function* (threadId, _turnId) {
+    function* (threadId, turnId) {
       const context = yield* requireSession(threadId);
+      if (turnId !== undefined && context.turnState?.turnId !== turnId) {
+        return;
+      }
       yield* Effect.tryPromise({
         try: () => context.query.interrupt({ cancelQueued: true }),
         catch: (cause) => toRequestError(threadId, "turn/interrupt", cause),
       });
     },
   );
+
+  const releaseBackgroundCommandsForThread: NonNullable<
+    ClaudeAdapterShape["releaseBackgroundCommands"]
+  > = Effect.fn("releaseBackgroundCommandsForThread")(function* (threadId) {
+    const context = yield* requireSession(threadId);
+    yield* releaseBackgroundCommands(context);
+  });
 
   const compactContext: NonNullable<ClaudeAdapterShape["compactContext"]> = Effect.fn(
     "compactContext",
@@ -7647,7 +7659,20 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
   );
 
   const listSessions: ClaudeAdapterShape["listSessions"] = () =>
-    Effect.sync(() => Array.from(sessions.values(), ({ session }) => ({ ...session })));
+    Effect.sync(() =>
+      Array.from(sessions.values(), (context) => {
+        // Only snapshots say what is alive; edge counting can drift.
+        if (!context.backgroundTaskSnapshotObserved) {
+          return { ...context.session };
+        }
+        return {
+          ...context.session,
+          pendingBackgroundTaskCount: context.backgroundTasks.filter(
+            (task) => task.ambient !== true,
+          ).length,
+        };
+      }),
+    );
 
   const hasSession: ClaudeAdapterShape["hasSession"] = (threadId) =>
     Effect.sync(() => {
@@ -7687,6 +7712,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     sendTurn,
     steerTurn,
     interruptTurn,
+    releaseBackgroundCommands: releaseBackgroundCommandsForThread,
     compactContext,
     readThread,
     readSubagentTranscript,

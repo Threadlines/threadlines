@@ -237,7 +237,16 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
 
     const sweep = Effect.gen(function* () {
       const bindings = yield* directory.listBindings();
-      const busyProviderThreadIds = toBusyProviderThreadIds(yield* listProviderSessions);
+      const providerSessions = yield* listProviderSessions;
+      const busyProviderThreadIds = toBusyProviderThreadIds(providerSessions);
+      // What each runtime says it hosts. A room agent that is not holding the
+      // thread's session can still host a dev server it left running, and the
+      // projection only tracks the agent that holds the session.
+      const liveBackgroundTaskCounts = new Map(
+        (providerSessions ?? []).map(
+          (session) => [session.threadId, session.pendingBackgroundTaskCount ?? 0] as const,
+        ),
+      );
       const now = yield* Clock.currentTimeMillis;
       const nowIso = DateTime.formatIso(yield* DateTime.now);
       let reapedCount = 0;
@@ -288,10 +297,12 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
         // task activity, so the idle clock alone cannot see this work. Skip
         // while tasks are pending, up to a hard grace cap so a leaked pending
         // count cannot pin a provider subprocess forever.
-        const pendingBackgroundTaskCount =
+        const pendingBackgroundTaskCount = Math.max(
           thread?.session != null && thread.session.status !== "stopped"
             ? (thread.session.pendingBackgroundTaskCount ?? 0)
-            : 0;
+            : 0,
+          liveBackgroundTaskCounts.get(binding.threadId) ?? 0,
+        );
         if (pendingBackgroundTaskCount > 0) {
           if (idleDurationMs < backgroundTaskGraceMs) {
             yield* Effect.logDebug("provider.session.reaper.skipped-pending-background-tasks", {

@@ -57,7 +57,7 @@ import {
   sumTurnDiffStats,
 } from "./session-logic";
 import { getThreadFromEnvironmentState } from "./threadDerivation";
-import { roomSlotAgentName } from "./rooms";
+import { roomSlotModelSelection } from "./rooms";
 const isProviderDriverKindValue = Schema.is(ProviderDriverKind);
 
 export interface EnvironmentState {
@@ -393,7 +393,7 @@ function mapThreadShell(
     cumulativeDiffStat: thread.cumulativeDiffStat,
     linkedPullRequests: thread.linkedPullRequests ?? [],
     participants: thread.participants ?? [],
-    roomSlotAgentName: roomSlotAgentName(thread),
+    roomSlotModelSelection: roomSlotModelSelection(thread),
   };
   return {
     shell,
@@ -508,7 +508,7 @@ function toSidebarThreadSummary(
       : (previous?.cumulativeDiffStat ?? null),
     linkedPullRequests: thread.linkedPullRequests ?? [],
     participants: thread.participants ?? [],
-    roomSlotAgentName: roomSlotAgentName(thread),
+    roomSlotModelSelection: roomSlotModelSelection(thread),
   };
 }
 
@@ -659,7 +659,9 @@ function sidebarThreadSummariesEqual(
     threadDiffStatsEqual(left.cumulativeDiffStat, right.cumulativeDiffStat) &&
     linkedPullRequestsEqual(left.linkedPullRequests, right.linkedPullRequests) &&
     participantsEqual(left.participants, right.participants) &&
-    (left.roomSlotAgentName ?? null) === (right.roomSlotAgentName ?? null)
+    (left.roomSlotModelSelection?.instanceId ?? null) ===
+      (right.roomSlotModelSelection?.instanceId ?? null) &&
+    (left.roomSlotModelSelection?.model ?? null) === (right.roomSlotModelSelection?.model ?? null)
   );
 }
 
