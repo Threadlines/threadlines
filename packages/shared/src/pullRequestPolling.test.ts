@@ -60,15 +60,14 @@ describe("shouldPollPullRequestDetail", () => {
 
   it("keeps watching a pull request the host has taken into its merge queue", () => {
     const inQueue = { ...settled, checks: [check("success")] };
-    expect(shouldPollPullRequestDetail({ ...inQueue, mergeQueue: { position: 2 } }, now)).toBe(
-      true,
-    );
+    const queued = { ...inQueue, mergeQueue: { position: 2 } };
+    expect(shouldPollPullRequestDetail(queued, now)).toBe(true);
     expect(shouldPollPullRequestDetail({ ...inQueue, mergeQueue: { position: null } }, now)).toBe(
       false,
     );
     // The host landing it is not a check about to report: the server's
     // watcher keeps its quicker look for that.
-    expect(pullRequestChecksInMotion({ ...inQueue, mergeQueue: { position: 2 } }, now)).toBe(false);
+    expect(pullRequestChecksInMotion(queued, now)).toBe(false);
   });
 
   it("keeps watching an armed pull request with nothing in its way", () => {
