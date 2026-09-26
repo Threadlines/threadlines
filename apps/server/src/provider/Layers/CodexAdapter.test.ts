@@ -1335,7 +1335,16 @@ sessionErrorLayer("CodexAdapterLive session errors", (it) => {
       assert.equal(idle.renewSignInImpl.mock.calls.length, 0);
     }).pipe(
       Effect.provide(layer),
-      Effect.ensuring(Effect.sync(() => fs.rmSync(signInHome, { recursive: true, force: true }))),
+      Effect.ensuring(
+        Effect.sync(() => {
+          fs.rmSync(signInHome, { recursive: true, force: true });
+          // The real runtime removes its side home when it closes; this fake does not.
+          const sideHome = factory.factory.mock.calls.at(-1)?.[0].homePath;
+          if (sideHome?.includes("threadlines-side-")) {
+            fs.rmSync(sideHome, { recursive: true, force: true });
+          }
+        }),
+      ),
     );
   });
 });

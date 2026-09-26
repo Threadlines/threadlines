@@ -1059,7 +1059,7 @@ export function GeneralSettingsPanel({ surface = "full" }: { surface?: "full" | 
         />
         <SettingsRow
           title="Rooms (preview)"
-          description="Add more agents to a thread and talk to each one with @name. One agent works at a time, and rooms have no revert."
+          description="Add more agents to a thread and pick who each message goes to. One agent works at a time, and the others can still answer questions. Rooms have no revert."
           resetAction={
             settings.roomsEnabled !== DEFAULT_UNIFIED_SETTINGS.roomsEnabled ? (
               <SettingResetButton

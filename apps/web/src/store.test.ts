@@ -1294,6 +1294,69 @@ describe("incremental orchestration updates", () => {
     });
   });
 
+  it("follows a side answer live, from the question to its settle", () => {
+    const threadId = ThreadId.make("thread-1");
+    const sideTurnId = SideTurnId.make("side-live-1");
+    const questionId = MessageId.make("side-question-1");
+    const ref = scopeThreadRef(localEnvironmentId, threadId);
+    const apply = (state: AppState, event: OrchestrationEvent) =>
+      applyOrchestrationEvent(state, event, localEnvironmentId);
+
+    let state = makeState(makeThread({ id: threadId }));
+    state = apply(
+      state,
+      makeEvent("thread.message-sent", {
+        threadId,
+        messageId: questionId,
+        role: "user",
+        text: "how many attempts?",
+        sideTurnId,
+        turnId: null,
+        streaming: false,
+        createdAt: "2026-02-27T00:00:02.000Z",
+        updatedAt: "2026-02-27T00:00:02.000Z",
+      }),
+    );
+    state = apply(
+      state,
+      makeEvent("thread.side-turn-started", {
+        threadId,
+        sideTurn: {
+          sideTurnId,
+          participantId: null,
+          messageId: questionId,
+          status: "starting",
+          startedAt: "2026-02-27T00:00:02.000Z",
+        },
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: DEFAULT_MODEL },
+      }),
+    );
+    state = apply(
+      state,
+      makeEvent("thread.side-turn-running", {
+        threadId,
+        sideTurnId,
+        updatedAt: "2026-02-27T00:00:03.000Z",
+      }),
+    );
+    const answering = selectThreadByRef(state, ref);
+    expect(answering?.messages[0]?.sideTurnId).toBe(sideTurnId);
+    expect(answering?.sideTurn?.status).toBe("running");
+
+    state = apply(
+      state,
+      makeEvent("thread.side-turn-settled", {
+        threadId,
+        sideTurnId,
+        participantId: null,
+        messageId: questionId,
+        outcome: "completed",
+        settledAt: "2026-02-27T00:00:09.000Z",
+      }),
+    );
+    expect(selectThreadByRef(state, ref)?.sideTurn ?? null).toBeNull();
+  });
+
   it("updates only the affected thread for message events", () => {
     const thread1 = makeThread({
       id: ThreadId.make("thread-1"),

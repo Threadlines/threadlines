@@ -2019,6 +2019,9 @@ function applyEnvironmentOrchestrationEvent(
           ...(event.payload.participantId !== undefined
             ? { participantId: event.payload.participantId }
             : {}),
+          ...(event.payload.sideTurnId !== undefined
+            ? { sideTurnId: event.payload.sideTurnId }
+            : {}),
           turnId: event.payload.turnId,
           streaming: event.payload.streaming,
           createdAt: event.payload.createdAt,
@@ -2297,6 +2300,36 @@ function applyEnvironmentOrchestrationEvent(
             ...event.payload.activity,
             eventSequence: event.sequence,
           }),
+          updatedAt: event.occurredAt,
+        };
+      });
+
+    // A room's side answer in progress; see OrchestrationThread.sideTurn.
+    case "thread.side-turn-started":
+      return updateThreadState(state, event.payload.threadId, (thread) => ({
+        ...thread,
+        sideTurn: event.payload.sideTurn,
+        updatedAt: event.occurredAt,
+      }));
+
+    case "thread.side-turn-running":
+    case "thread.side-turn-interrupt-requested":
+    case "thread.side-turn-settled":
+      return updateThreadState(state, event.payload.threadId, (thread) => {
+        const current = thread.sideTurn ?? null;
+        // Events for an answer that is no longer the current one change nothing.
+        if (current === null || current.sideTurnId !== event.payload.sideTurnId) {
+          return thread;
+        }
+        return {
+          ...thread,
+          sideTurn:
+            event.type === "thread.side-turn-settled"
+              ? null
+              : {
+                  ...current,
+                  status: event.type === "thread.side-turn-running" ? "running" : "cancelling",
+                },
           updatedAt: event.occurredAt,
         };
       });
