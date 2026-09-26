@@ -252,6 +252,9 @@ const HANDLED_TURN_START_KEY_MAX = 10_000;
 const HANDLED_TURN_START_KEY_TTL = Duration.minutes(30);
 const DEFAULT_RUNTIME_MODE: RuntimeMode = "full-access";
 const PROVIDER_INTERRUPT_ACK_TIMEOUT = Duration.seconds(10);
+/** How long a room handover waits for the previous turn's checkpoint. */
+const HANDOVER_CHECKPOINT_POLL = Duration.millis(100);
+const HANDOVER_CHECKPOINT_WAIT_ATTEMPTS = 50;
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 
 export function providerErrorLabel(value: string | undefined): string {
@@ -403,9 +406,11 @@ const make = Effect.gen(function* () {
   const releasedMessageByThread = new Map<ThreadId, MessageId>();
   /**
    * A queued message whose turn came (the working turn finished, or the user
-   * just sent it) while its agent was answering on the side. It goes out when
-   * that answer settles. A side answer ending is never a reason to send by
-   * itself: a failed or stopped working turn keeps holding the queue.
+   * just sent it) while its agent was answering on the side. When that answer
+   * settles the queue takes that one step: the message, or whatever is first
+   * in line if it was taken out meanwhile. A side answer ending is never a
+   * reason to send by itself: a failed or stopped working turn keeps holding
+   * the queue, and a new turn clears the entry (processTurnStartRequested).
    */
   const waitingOnSideAnswer = new Map<ThreadId, MessageId>();
 
@@ -1516,19 +1521,49 @@ const make = Effect.gen(function* () {
         ),
       );
 
+  /**
+   * In a room, the turn before this one gets its checkpoint before the next
+   * turn is sent. The checkpoint reactor captures a turn from the live
+   * checkout when its completion arrives; once another agent edits, that
+   * capture would be wrong, so a completion that arrives after the thread
+   * changed hands is dropped (see CheckpointReactor). Waiting here keeps it
+   * from coming to that. The latest turn reads "running" until its checkpoint
+   * lands, whatever the agent is doing. Bounded: a turn whose capture failed
+   * holds the next one for at most this long.
+   */
+  const awaitHandoverCheckpoint = Effect.fnUntraced(function* (
+    threadId: ThreadId,
+    previousTurnId: TurnId,
+  ) {
+    for (let attempt = 0; attempt < HANDOVER_CHECKPOINT_WAIT_ATTEMPTS; attempt += 1) {
+      const latest = yield* resolveThread(threadId);
+      if (
+        !latest ||
+        latest.checkpoints.some((checkpoint) => checkpoint.turnId === previousTurnId)
+      ) {
+        return;
+      }
+      yield* Effect.sleep(HANDOVER_CHECKPOINT_POLL);
+    }
+    yield* Effect.logWarning("room handover went ahead without the previous turn's checkpoint", {
+      threadId,
+      turnId: previousTurnId,
+    });
+  });
+
   const capturePreTurnCheckpointForTurnStart = Effect.fn("capturePreTurnCheckpointForTurnStart")(
     function* (input: { readonly threadId: ThreadId }) {
-      const thread = yield* resolveThread(input.threadId);
-      if (!thread) {
+      const initial = yield* resolveThread(input.threadId);
+      if (!initial) {
         return;
       }
 
-      const project = yield* resolveProject(thread.projectId);
+      const project = yield* resolveProject(initial.projectId);
       if (project?.kind === "general-chat") {
         return;
       }
       const cwd = resolveThreadWorkspaceCwd({
-        thread,
+        thread: initial,
         projects: project ? [project] : [],
       });
       if (!cwd) {
@@ -1547,6 +1582,16 @@ const make = Effect.gen(function* () {
       if (!isRepository) {
         return;
       }
+      const previousTurnId =
+        initial.participants.length > 0 ? initial.latestTurn?.turnId : undefined;
+      if (
+        previousTurnId !== undefined &&
+        !initial.checkpoints.some((checkpoint) => checkpoint.turnId === previousTurnId)
+      ) {
+        yield* awaitHandoverCheckpoint(input.threadId, previousTurnId);
+      }
+      // Counted after the wait: the previous turn's checkpoint is in by now.
+      const thread = (yield* resolveThread(input.threadId)) ?? initial;
 
       const currentTurnCount = thread.checkpoints.reduce(
         (maxTurnCount, checkpoint) => Math.max(maxTurnCount, checkpoint.checkpointTurnCount),
@@ -1696,9 +1741,11 @@ const make = Effect.gen(function* () {
       return;
     }
     // A new turn is the user moving on after Stop, and supersedes a message
-    // that was waiting on its own release.
+    // that was waiting on its own release or on a side answer: how this turn
+    // ends decides whether the queue moves again.
     queueHeldByStop.delete(event.payload.threadId);
     releasedMessageByThread.delete(event.payload.threadId);
+    waitingOnSideAnswer.delete(event.payload.threadId);
 
     const thread = yield* resolveThread(event.payload.threadId);
     if (!thread) {
@@ -2996,6 +3043,12 @@ const make = Effect.gen(function* () {
   const SIDE_TURN_CANCEL_GRACE = Duration.seconds(10);
   /** Cap on the working-tree diff handed to a side answer. */
   const SIDE_TURN_DIFF_CHAR_LIMIT = 20_000;
+  /**
+   * The longest a side answer may run. A read-only answer that takes longer
+   * is stuck or wandering; stopping it keeps usage bounded, and keeps its
+   * Codex home well inside the stale-home sweep (codexSideAnswerHome.ts).
+   */
+  const SIDE_TURN_MAX_DURATION = Duration.minutes(30);
 
   /** Settle a side answer; one that is no longer current is refused, harmlessly. */
   const settleSideTurn = (input: {
@@ -3176,11 +3229,28 @@ const make = Effect.gen(function* () {
     event: Extract<ProviderIntentEvent, { type: "thread.side-turn-started" }>,
   ) {
     const { threadId, sideTurn, modelSelection } = event.payload;
+    // Still going at the limit: stopped, and it says why.
+    const stopIfStillRunning = Effect.gen(function* () {
+      yield* Effect.sleep(SIDE_TURN_MAX_DURATION);
+      const latest = yield* resolveThread(threadId);
+      if (latest?.sideTurn?.sideTurnId !== sideTurn.sideTurnId) {
+        return;
+      }
+      yield* stopSideRuntime(threadId, sideTurn);
+      yield* settleSideTurn({
+        threadId,
+        sideTurnId: sideTurn.sideTurnId,
+        outcome: "failed",
+        error: "it ran for 30 minutes and was stopped.",
+        createdAt: yield* nowIso,
+      });
+    });
     yield* runSideTurn({ threadId, sideTurnId: sideTurn.sideTurnId, modelSelection }).pipe(
       Effect.timeoutOrElse({
         duration: SIDE_TURN_START_TIMEOUT,
         orElse: () => Effect.fail(new Error("The side answer did not start in time.")),
       }),
+      Effect.as(true),
       Effect.catchCause((cause) =>
         Effect.gen(function* () {
           yield* Effect.logWarning("provider command reactor could not start a side answer", {
@@ -3196,7 +3266,11 @@ const make = Effect.gen(function* () {
             error: `The side answer could not start: ${Cause.squash(cause) instanceof Error ? (Cause.squash(cause) as Error).message : "unknown error"}`,
             createdAt: yield* nowIso,
           });
+          return false;
         }),
+      ),
+      Effect.flatMap((started) =>
+        started ? stopIfStillRunning.pipe(Effect.ignoreCause({ log: true })) : Effect.void,
       ),
       Effect.forkScoped,
     );
@@ -3256,16 +3330,12 @@ const make = Effect.gen(function* () {
       return;
     }
     const thread = yield* resolveThread(threadId);
+    const head = thread?.queuedFollowUps?.[0];
     const status = thread?.session?.status;
-    if (
-      !thread ||
-      thread.queuedFollowUps?.[0]?.messageId !== waiting ||
-      status === "running" ||
-      status === "starting"
-    ) {
+    if (!thread || !head || status === "running" || status === "starting") {
       return;
     }
-    yield* sendQueuedFollowUp(threadId, waiting, event.occurredAt);
+    yield* sendQueuedFollowUpWhenFree(threadId, head.messageId, event.occurredAt);
   });
 
   /** Stop and settle the side answer in progress, if any (session stop, restart). */

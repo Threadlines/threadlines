@@ -52,14 +52,15 @@ export const turnAdmission = {
     ),
   /**
    * The lane a turn was admitted to. A turn nobody decided on in time (its
-   * thread gone, or started before this process) keeps the old behavior:
-   * main.
+   * thread gone, started before this process, or forgotten) takes
+   * `whenUndecided`: main for the agent holding the thread, as before rooms;
+   * rejected for any other agent, so an unknown wake-up never counts as work.
    */
-  laneOf: (sessionKey: string, providerTurnId: string) =>
+  laneOf: (sessionKey: string, providerTurnId: string, whenUndecided: TurnLane) =>
     entryFor(keyOf(sessionKey, providerTurnId)).pipe(
       Effect.flatMap((deferred) =>
         Deferred.await(deferred).pipe(Effect.timeoutOption(DECISION_WAIT)),
       ),
-      Effect.map((lane) => Option.getOrElse(lane, (): TurnLane => "main")),
+      Effect.map((lane) => Option.getOrElse(lane, () => whenUndecided)),
     ),
 };

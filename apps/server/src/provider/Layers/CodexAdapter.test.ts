@@ -417,6 +417,8 @@ class FakeCodexRuntime implements CodexSessionRuntimeShape {
 
   compactContext = Effect.promise(() => this.compactContextImpl());
 
+  renewSignIn = Effect.void;
+
   setGoal = (input: CodexSessionRuntimeSetGoalInput) =>
     Effect.promise(() => this.setGoalImpl(input));
 

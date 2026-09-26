@@ -307,6 +307,12 @@ export interface CodexSessionRuntimeShape {
   ) => Effect.Effect<void, CodexSessionRuntimeError>;
   readonly realtimeListVoices: Effect.Effect<ProviderRealtimeVoicesList, CodexSessionRuntimeError>;
   readonly compactContext: Effect.Effect<void, CodexSessionRuntimeError>;
+  /**
+   * Have this runtime's own auth manager refresh the sign-in (managed auth:
+   * it rewrites `auth.json` and serializes against its own refreshes). A
+   * room's side answer borrows the renewed token.
+   */
+  readonly renewSignIn: Effect.Effect<void, CodexSessionRuntimeError>;
   readonly setGoal: (
     input: CodexSessionRuntimeSetGoalInput,
   ) => Effect.Effect<CodexThreadGoal, CodexSessionRuntimeError>;
@@ -2655,6 +2661,10 @@ export const makeCodexSessionRuntime = (
         );
         return response.voices;
       }),
+      renewSignIn: withCodexRequestTimeout(
+        "renew the Codex sign-in",
+        client.request("account/read", { refreshToken: true }),
+      ).pipe(Effect.asVoid),
       compactContext: Effect.gen(function* () {
         const providerThreadId = yield* readProviderThreadId;
         yield* withCodexRequestTimeout(

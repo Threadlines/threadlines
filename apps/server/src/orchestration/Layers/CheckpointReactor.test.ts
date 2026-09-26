@@ -1462,21 +1462,25 @@ describe("CheckpointReactor", () => {
         createdAt,
       }),
     );
-    // Astra, idle, woke itself up; ingestion turned the turn away.
+    // Astra, idle, woke itself up; ingestion turned the turn away. A second
+    // wake-up has no decision at all (ingestion stalled, or it was
+    // forgotten): from an agent not holding the thread, that is no either.
     await Effect.runPromise(
       turnAdmission.decide(participantSessionKey(threadId, astraId), "turn-wake", "rejected"),
     );
-    for (const type of ["turn.started", "turn.completed"] as const) {
-      harness.provider.emit({
-        type,
-        eventId: EventId.make(`evt-wake-${type}`),
-        provider: ProviderDriverKind.make("codex"),
-        createdAt,
-        threadId,
-        participantId: astraId,
-        turnId: asTurnId("turn-wake"),
-        ...(type === "turn.completed" ? { payload: { state: "interrupted" } } : {}),
-      } as never);
+    for (const turnId of ["turn-wake", "turn-wake-undecided"]) {
+      for (const type of ["turn.started", "turn.completed"] as const) {
+        harness.provider.emit({
+          type,
+          eventId: EventId.make(`evt-${turnId}-${type}`),
+          provider: ProviderDriverKind.make("codex"),
+          createdAt,
+          threadId,
+          participantId: astraId,
+          turnId: asTurnId(turnId),
+          ...(type === "turn.completed" ? { payload: { state: "interrupted" } } : {}),
+        } as never);
+      }
     }
     await harness.drain();
 
@@ -1485,7 +1489,7 @@ describe("CheckpointReactor", () => {
     expect(thread?.latestTurn ?? null).toBeNull();
   });
 
-  it("still checkpoints a turn whose completion arrives after the thread changed hands", async () => {
+  it("never checkpoints another agent's edits as a turn whose completion arrived late", async () => {
     const harness = await createHarness({ seedFilesystemCheckpoints: false });
     const createdAt = "2026-01-01T00:00:00.000Z";
     const threadId = ThreadId.make("thread-1");
@@ -1535,7 +1539,9 @@ describe("CheckpointReactor", () => {
     await waitForGitRefExists(harness.cwd, checkpointRefForThreadTurn(threadId, 0));
     fs.writeFileSync(path.join(harness.cwd, "README.md"), "v2\n", "utf8");
 
-    // Astra takes the thread before the completion is checkpointed.
+    // Astra takes the thread and edits before the completion is processed.
+    // (The command reactor normally holds a handover until the checkpoint
+    // is in; this is the backstop when that wait ran out.)
     await dispatch({
       type: "thread.session.set",
       commandId: CommandId.make("cmd-handover-astra"),
@@ -1547,6 +1553,7 @@ describe("CheckpointReactor", () => {
       }),
       createdAt,
     });
+    fs.writeFileSync(path.join(harness.cwd, "astra.md"), "astra's work\n", "utf8");
     harness.provider.emit({
       type: "turn.completed",
       eventId: EventId.make("evt-handover-completed"),
@@ -1557,12 +1564,10 @@ describe("CheckpointReactor", () => {
       payload: { state: "completed" },
     });
 
-    // The only checkpoint here is the handed-over turn's.
-    const thread = await waitForThread(
-      harness.readModel,
-      (entry) => entry.checkpoints.length === 1,
-    );
-    expect(thread.checkpoints[0]?.checkpointTurnCount).toBe(1);
+    await harness.drain();
+    // Dropped rather than captured from a checkout holding astra's edits.
+    const thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+    expect(thread?.checkpoints).toHaveLength(0);
   });
 
   it("captures pre-turn and completion checkpoints for claude runtime events", async () => {

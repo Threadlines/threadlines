@@ -762,7 +762,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         return yield* refuse(`Message '${command.message.messageId}' was already sent.`);
       }
       // One id, one answer: it names the runtime and the answer's message, so
-      // a reused one would pick up the old answer's late words.
+      // a reused one would pick up the old answer's late words. Clients make a
+      // fresh UUID per question; this catches a resend against the messages
+      // the read model holds, not every id ever used.
       if (thread.messages.some((message) => message.sideTurnId === command.sideTurnId)) {
         return yield* refuse(`Side answer '${command.sideTurnId}' was already asked.`);
       }

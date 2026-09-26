@@ -596,6 +596,8 @@ interface CodexAdapterSessionContext {
   // seed (no native resume).
   pendingContextSeedText: string | undefined;
   stopped: boolean;
+  /** A room's side answer: never asked to act for the user's own Codex. */
+  readonly lockdown: boolean;
 }
 
 function mapCodexRuntimeError(
@@ -2910,12 +2912,19 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
   let sweptSideAnswerHomes = false;
 
   /**
-   * Ask the user's own Codex to renew its login the normal way: a regular
-   * app server on their home, as the provider status check runs, with a
-   * token refresh requested. It rewrites their `auth.json` itself.
+   * Ask the user's own Codex to renew its login the normal way. A Codex
+   * session of theirs already running here does it through its own auth
+   * manager, which serializes against its own refreshes. With none running,
+   * a regular app server on their home does, as the provider status check
+   * runs one. Either rewrites their `auth.json` itself; renewals for one home
+   * are coalesced by `borrowCodexSignIn`.
    */
-  const renewCodexSignIn = (cwd: string) =>
-    Effect.scoped(
+  const renewCodexSignIn = (cwd: string) => {
+    const owner = [...sessions.values()].find((context) => !context.stopped && !context.lockdown);
+    if (owner !== undefined) {
+      return owner.runtime.renewSignIn;
+    }
+    return Effect.scoped(
       Effect.gen(function* () {
         const client = yield* makeCodexAppServerClient({
           binaryPath: codexConfig.binaryPath,
@@ -2930,6 +2939,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
       Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, childProcessSpawner),
       Effect.timeout("30 seconds"),
     );
+  };
 
   const startSession: CodexAdapterShape["startSession"] = (input) =>
     Effect.scoped(
@@ -3172,6 +3182,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
               ? renderThreadContextSeed(input.contextSeed)
               : undefined,
           stopped: false,
+          lockdown: input.lockdown === "side-answer",
         });
         sessionScopeTransferred = true;
 

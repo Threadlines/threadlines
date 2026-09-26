@@ -17,6 +17,7 @@
  * normal way first (`borrowCodexSignIn`).
  */
 import * as Clock from "effect/Clock";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import { randomUUID } from "node:crypto";
 import * as fs from "node:fs/promises";
@@ -129,6 +130,36 @@ export const readCodexSignIn = (signInHome: string, environment: NodeJS.ProcessE
           ),
   });
 
+/**
+ * Renewals in flight, by Codex home: side answers that need a new token at
+ * once share one renewal instead of each asking the owner to refresh. The
+ * value says whether that renewal failed.
+ */
+const renewalsInFlight = new Map<string, Deferred.Deferred<boolean>>();
+
+const renewOnce = (signInHome: string, renewOwner: Effect.Effect<void, unknown>) =>
+  Effect.gen(function* () {
+    const inFlight = renewalsInFlight.get(signInHome);
+    if (inFlight !== undefined) {
+      return yield* Deferred.await(inFlight);
+    }
+    const renewal = yield* Deferred.make<boolean>();
+    renewalsInFlight.set(signInHome, renewal);
+    const failed = yield* renewOwner.pipe(
+      Effect.as(false),
+      Effect.catchCause(() => Effect.succeed(true)),
+      Effect.tap((result) => Deferred.succeed(renewal, result)),
+      // Interrupted: waiters are released as failed, never left hanging.
+      Effect.ensuring(
+        Effect.andThen(
+          Deferred.succeed(renewal, true),
+          Effect.sync(() => renewalsInFlight.delete(signInHome)),
+        ),
+      ),
+    );
+    return failed;
+  });
+
 /** How long before expiry a borrowed token is renewed rather than handed over. */
 const RENEW_BEFORE_EXPIRY_MS = 5 * 60_000;
 
@@ -163,10 +194,7 @@ export const borrowCodexSignIn = (input: {
     if (!rejected && (expiresAt === undefined || expiresAt - now > RENEW_BEFORE_EXPIRY_MS)) {
       return current;
     }
-    const renewalFailed = yield* input.renewOwner.pipe(
-      Effect.as(false),
-      Effect.catchCause(() => Effect.succeed(true)),
-    );
+    const renewalFailed = yield* renewOnce(input.signInHome, input.renewOwner);
     const renewed = yield* readCodexSignIn(input.signInHome, input.environment);
     if (renewed.kind === "chatgpt" && renewed.accessToken === current.accessToken) {
       // Still expiring but usable: hand it over rather than fail early.

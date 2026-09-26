@@ -116,4 +116,34 @@ describe("codex side-answer home", () => {
     writeToken(jwt(expired));
     expect(await borrow(null)).toBe("The Codex sign-in has expired. Sign in to Codex again.");
   });
+
+  it("shares one renewal between side answers that need a new token at once", async () => {
+    const signInHome = fakeSignInHome();
+    const jwt = (expSeconds: number) =>
+      `x.${Buffer.from(JSON.stringify({ exp: expSeconds })).toString("base64url")}.y`;
+    const writeToken = (accessToken: string) =>
+      fs.writeFileSync(
+        path.join(signInHome, "auth.json"),
+        JSON.stringify({ tokens: { access_token: accessToken, account_id: "acct" } }),
+      );
+    const expired = jwt(Math.floor(Date.now() / 1000) - 60);
+    const renewed = jwt(Math.floor(Date.now() / 1000) + 3600);
+    writeToken(expired);
+    let renewals = 0;
+    const renewOwner = Effect.sleep("50 millis").pipe(
+      Effect.andThen(
+        Effect.sync(() => {
+          renewals += 1;
+          writeToken(renewed);
+        }),
+      ),
+    );
+    const borrow = borrowCodexSignIn({ signInHome, environment: {}, renewOwner });
+    const both = await Effect.runPromise(Effect.all([borrow, borrow], { concurrency: 2 }));
+    expect(renewals).toBe(1);
+    expect(both.map((signIn) => signIn.kind === "chatgpt" && signIn.accessToken)).toEqual([
+      renewed,
+      renewed,
+    ]);
+  });
 });

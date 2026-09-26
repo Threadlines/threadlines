@@ -394,10 +394,15 @@ const make = Effect.gen(function* () {
   );
 
   /** Only rooms have runtimes that can start turns without holding the thread. */
-  const isRoomThread = (threadId: ThreadId) =>
+  /** Who holds a room thread's slot; undefined outside rooms. */
+  const roomSlotHolder = (threadId: ThreadId) =>
     projectionSnapshotQuery.getThreadShellById(threadId).pipe(
-      Effect.map((thread) => Option.isSome(thread) && thread.value.participants.length > 0),
-      Effect.orElseSucceed(() => false),
+      Effect.map((thread) =>
+        Option.isSome(thread) && thread.value.participants.length > 0
+          ? { holderId: sessionSlotParticipantId(thread.value.session) }
+          : undefined,
+      ),
+      Effect.orElseSucceed(() => undefined),
     );
 
   const resolveThreadDetail = Effect.fn("resolveThreadDetail")(function* (threadId: ThreadId) {
@@ -824,17 +829,11 @@ const make = Effect.gen(function* () {
       }
 
       // When a primary turn is active, only that turn may produce completion
-      // checkpoints. In a room, a completion from an agent that has since
-      // handed the thread over is that agent's own turn, admitted as main when
-      // it started (see turnAdmission), so it still checkpoints.
-      const handedOver =
-        thread.participants.length > 0 &&
-        (event.participantId ?? null) !== sessionSlotParticipantId(thread.session);
-      if (
-        thread.session?.activeTurnId &&
-        !sameId(thread.session.activeTurnId, turnId) &&
-        !handedOver
-      ) {
+      // checkpoints. In a room, a completion that arrives after the thread
+      // changed hands is dropped: the checkout already holds the next agent's
+      // edits. The command reactor holds a handover until the previous turn's
+      // checkpoint is in, so this is only a backstop.
+      if (thread.session?.activeTurnId && !sameId(thread.session.activeTurnId, turnId)) {
         return;
       }
 
@@ -1293,17 +1292,20 @@ const make = Effect.gen(function* () {
   ) {
     // Only turns ingestion admitted to the main lane are checkpointed. A room
     // agent that woke itself up while another held the thread was rejected;
-    // its turn is not the thread's work.
-    if (
-      (event.type === "turn.started" || event.type === "turn.completed") &&
-      event.turnId !== undefined &&
-      (yield* isRoomThread(event.threadId)) &&
-      (yield* turnAdmission.laneOf(
-        participantSessionKey(event.threadId, event.participantId ?? null),
-        event.turnId,
-      )) !== "main"
-    ) {
-      return;
+    // its turn is not the thread's work. Undecided counts as rejected for an
+    // agent that does not hold the thread.
+    if ((event.type === "turn.started" || event.type === "turn.completed") && event.turnId) {
+      const room = yield* roomSlotHolder(event.threadId);
+      if (
+        room !== undefined &&
+        (yield* turnAdmission.laneOf(
+          participantSessionKey(event.threadId, event.participantId ?? null),
+          event.turnId,
+          (event.participantId ?? null) === room.holderId ? "main" : "rejected",
+        )) !== "main"
+      ) {
+        return;
+      }
     }
     if (event.type === "turn.started") {
       yield* ensurePreTurnBaselineFromTurnStart(event);
