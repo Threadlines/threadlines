@@ -7,7 +7,12 @@ import {
   type WorkLogEntry,
 } from "../../session-logic";
 import { type ChatMessage, type ProposedPlan, type TurnDiffSummary } from "../../types";
-import { type MessageId, type TurnId } from "@threadlines/contracts";
+import {
+  type MessageId,
+  type SideTurnId,
+  type ThreadParticipantId,
+  type TurnId,
+} from "@threadlines/contracts";
 import { stripCodexInlineVisualizationDirectives } from "../../lib/codexInlineVisualization";
 import { deriveDisplayedUserMessageState } from "../../lib/terminalContext";
 import {
@@ -126,6 +131,17 @@ export type MessagesTimelineRow = TimelineRowPlacement &
         label: string;
         /** What the agent is thinking right now, in its own summary's words. */
         thought: string | null;
+      }
+    | {
+        /** A side answer's state line: answering (with Stop), or how it ended
+         *  without a reply. See sideAnswers.ts. */
+        kind: "side-status";
+        id: string;
+        createdAt: string;
+        sideTurnId: SideTurnId;
+        participantId: ThreadParticipantId | null;
+        state: "answering" | "stopping" | "failed" | "stopped";
+        error: string | null;
       }
   );
 
@@ -1292,6 +1308,11 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
     case "fork-context":
       return a.forkContext === (b as typeof a).forkContext;
 
+    case "side-status": {
+      const bs = b as typeof a;
+      return a.state === bs.state && a.error === bs.error && a.participantId === bs.participantId;
+    }
+
     case "work": {
       const bw = b as typeof a;
       return (
@@ -1438,6 +1459,8 @@ function estimateRowContentHeight(row: MessagesTimelineRow, width: number): numb
       return 90;
     case "proposed-plan":
       return 240;
+    case "side-status":
+      return 30;
   }
 }
 

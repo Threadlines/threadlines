@@ -2,6 +2,7 @@ import {
   CheckpointRef,
   MessageId,
   ProviderInstanceId,
+  SideTurnId,
   ThreadParticipantId,
   TurnId,
   type OrchestrationMessage,
@@ -20,14 +21,18 @@ const astra = {
   leftAt: null,
 };
 
+let nextSequence = 0;
 function message(
   id: string,
   role: "user" | "assistant",
   text: string,
   participantId: ThreadParticipantId | null = null,
+  extra: Partial<OrchestrationMessage> = {},
 ): OrchestrationMessage {
+  nextSequence += 1;
   return {
     id: MessageId.make(id),
+    eventSequence: nextSequence,
     role,
     text,
     ...(participantId !== null ? { participantId } : {}),
@@ -35,8 +40,11 @@ function message(
     streaming: false,
     createdAt: at,
     updatedAt: at,
+    ...extra,
   };
 }
+
+const main = { cursor: null, lane: "main" } as const;
 
 function thread(
   messages: ReadonlyArray<OrchestrationMessage>,
@@ -59,6 +67,7 @@ describe("buildRoomCatchUp", () => {
         thread: thread(messages, { participants: [] }),
         participantId: null,
         messageId: MessageId.make("u2"),
+        ...main,
       }),
     ).toBeUndefined();
   });
@@ -87,15 +96,35 @@ describe("buildRoomCatchUp", () => {
       }),
       participantId: null,
       messageId: MessageId.make("u3"),
-    });
+      ...main,
+    })?.note;
 
-    expect(note).toContain("since you last took part");
+    expect(note).toContain("since you were last caught up");
     expect(note).toContain("User, to GPT-6 Astra (gpt-6-astra):\nreview Fable's change");
     expect(note).toContain("GPT-6 Astra (gpt-6-astra):\nOne ordering issue remains.");
     expect(note).toContain("connection.ts +4 -1");
     // The agent's own earlier words, and the message being sent, are not repeated.
     expect(note).not.toContain("Fixed it.");
     expect(note).not.toContain("what did astra find?");
+  });
+
+  it("introduces every agent by the name the user gave it", () => {
+    const messages = [
+      message("u1", "user", "look into the retry cap", astraId),
+      message("a1", "assistant", "It is off by one.", astraId),
+      message("u2", "user", "Reviewer found something, check it"),
+    ];
+    const note = buildRoomCatchUp({
+      thread: thread(messages, {
+        agentRole: "Researcher",
+        participants: [{ ...astra, role: "Reviewer" }],
+      }),
+      participantId: null,
+      messageId: MessageId.make("u2"),
+      ...main,
+    })?.note;
+    expect(note).toContain(`You are the thread's own agent, "Researcher" (fable-5-1).`);
+    expect(note).toContain(`GPT-6 Astra, "Reviewer" (gpt-6-astra):\nIt is off by one.`);
   });
 
   it("sends nothing to an agent that is already up to date", () => {
@@ -109,7 +138,8 @@ describe("buildRoomCatchUp", () => {
         thread: thread(messages),
         participantId: astraId,
         messageId: MessageId.make("u2"),
-      }),
+        ...main,
+      })?.note,
     ).toBeUndefined();
   });
 
@@ -124,11 +154,69 @@ describe("buildRoomCatchUp", () => {
       thread: thread(messages),
       participantId: astraId,
       messageId: MessageId.make("now"),
-    });
+      ...main,
+    })?.note;
 
     expect(note).toContain("You were just brought into this thread.");
     expect(note).toContain("(3 earlier messages left out.)");
     expect(note).not.toContain("message 2\n");
     expect(note).toContain(`message ${ROOM_JOIN_MESSAGE_COUNT + 2}`);
+  });
+
+  it("delivers a side exchange that landed before the agent's own reply", () => {
+    const sideTurnId = SideTurnId.make("0d9e8f7a-6b5c-4d3e-8f1a-2b3c4d5e6f70");
+    const messages = [
+      message("u1", "user", "fix the reconnect bug"),
+      message("s1", "user", "is that approach safe?", astraId, { sideTurnId }),
+      message("s2", "assistant", "Mostly; watch the retry cap.", astraId, { sideTurnId }),
+      message("a1", "assistant", "Fixed it."),
+      message("u2", "user", "and now?"),
+    ];
+    const caughtUp = buildRoomCatchUp({
+      thread: thread(messages),
+      participantId: null,
+      messageId: MessageId.make("u2"),
+      // It was told everything up to its last turn's start.
+      cursor: {
+        conversationId: "c1",
+        throughSequence: messages[0]!.eventSequence!,
+        partialMessageIds: [],
+      },
+      lane: "main",
+    });
+
+    expect(caughtUp?.note).toContain("(asked on the side):\nis that approach safe?");
+    expect(caughtUp?.note).toContain("(answering on the side):\nMostly; watch the retry cap.");
+    expect(caughtUp?.note).not.toContain("Fixed it.");
+    expect(caughtUp?.cursor.throughSequence).toBe(messages[3]!.eventSequence);
+  });
+
+  it("sends a reply again in full once it has finished streaming", () => {
+    const messages = [
+      message("u1", "user", "review it", astraId),
+      message(
+        "a1",
+        "assistant",
+        "One ordering issue remains, and the retry cap is off by one.",
+        astraId,
+      ),
+      message("u2", "user", "what did astra find?"),
+    ];
+    const caughtUp = buildRoomCatchUp({
+      thread: thread(messages),
+      participantId: null,
+      messageId: MessageId.make("u2"),
+      cursor: {
+        conversationId: "c1",
+        throughSequence: messages[1]!.eventSequence!,
+        partialMessageIds: [MessageId.make("a1")],
+      },
+      lane: "main",
+    });
+
+    expect(caughtUp?.note).toContain(
+      "(finished since you last saw it):\nOne ordering issue remains",
+    );
+    expect(caughtUp?.cursor.partialMessageIds).toEqual([]);
   });
 });

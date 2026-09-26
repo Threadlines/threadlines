@@ -10,11 +10,12 @@ import {
   type ProviderSessionStartInput,
   ProviderDriverKind,
   ProviderInstanceId,
+  SideTurnId,
   type ThreadContextSeed,
   ThreadForkSeedOutcomeActivityKind,
 } from "@threadlines/contracts";
 import { createModelSelection } from "@threadlines/shared/model";
-import { participantSessionKey } from "@threadlines/shared/threadParticipants";
+import { participantSessionKey, sideSessionKey } from "@threadlines/shared/threadParticipants";
 import {
   ApprovalRequestId,
   CommandId,
@@ -312,6 +313,9 @@ describe("ProviderCommandReactor", () => {
     const releaseBackgroundCommands = vi.fn<ProviderServiceShape["releaseBackgroundCommands"]>(
       () => Effect.void,
     );
+    const readConversation = vi.fn<ProviderServiceShape["readConversation"]>(() =>
+      Effect.succeed(null),
+    );
     const setThreadGoal = vi.fn<ProviderServiceShape["setThreadGoal"]>((goalInput) =>
       Effect.succeed({
         objective: goalInput.objective ?? "existing objective",
@@ -421,6 +425,7 @@ describe("ProviderCommandReactor", () => {
       realtimeAppendAudio: () => unsupported(),
       realtimeListVoices: () => unsupported(),
       releaseBackgroundCommands,
+      readConversation,
       compactContext,
       setThreadGoal: setThreadGoal as ProviderServiceShape["setThreadGoal"],
       pauseThreadGoalForStop,
@@ -599,6 +604,7 @@ describe("ProviderCommandReactor", () => {
       realtimeStart,
       realtimeStop,
       releaseBackgroundCommands,
+      readConversation,
       compactContext,
       setThreadGoal,
       pauseThreadGoalForStop,
@@ -1039,6 +1045,255 @@ describe("ProviderCommandReactor", () => {
     await harness.drain();
     const thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
     expect(thread?.queuedFollowUps?.map((entry) => entry.messageId)).toEqual(["queue-for-astra"]);
+  });
+
+  it("answers on the side in a locked-down fork, without touching the agent at work", async () => {
+    const { harness, threadId, astraId, dispatch, now } =
+      await startRoomWithMessageQueuedForAstra();
+    harness.readConversation.mockImplementation(() =>
+      Effect.succeed({
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        providerThreadId: "astra-native-thread",
+      }),
+    );
+    const sideTurnId = SideTurnId.make("0d9e8f7a-6b5c-4d3e-8f1a-2b3c4d5e6f70");
+    const sideKey = sideSessionKey(threadId, sideTurnId, astraId);
+    await dispatch({
+      type: "thread.side-turn.start",
+      commandId: CommandId.make("cmd-side-ask"),
+      threadId,
+      sideTurnId,
+      participantId: astraId,
+      message: { messageId: asMessageId("side-question"), role: "user", text: "is this right?" },
+      createdAt: now,
+    });
+    await waitFor(() =>
+      harness.sendTurn.mock.calls.some(
+        ([request]) => (request as { threadId: string }).threadId === sideKey,
+      ),
+    );
+
+    // Its own locked-down runtime, forked from astra's conversation.
+    const started = harness.startSession.mock.calls.find(([key]) => key === sideKey)?.[1];
+    expect(started).toMatchObject({
+      lockdown: "side-answer",
+      forkFrom: { providerThreadId: "astra-native-thread" },
+    });
+    const sent = harness.sendTurn.mock.calls
+      .map(([request]) => request as { threadId: string; input?: string })
+      .find((request) => request.threadId === sideKey);
+    expect(sent?.input).toContain("asking you something on the side");
+    expect(sent?.input).toContain("is this right?");
+
+    await waitFor(async () => {
+      const thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+      return thread?.sideTurn?.status === "running";
+    });
+    // The thread's own agent still holds the thread and is still working.
+    const thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+    expect(thread?.session?.status).toBe("running");
+    expect(thread?.session?.participantId ?? null).toBeNull();
+  });
+
+  it("closes a settled side answer and sends the message that was waiting for it", async () => {
+    const { harness, threadId, astraId, dispatch, settle, now } =
+      await startRoomWithMessageQueuedForAstra();
+    const sideTurnId = SideTurnId.make("0d9e8f7a-6b5c-4d3e-8f1a-2b3c4d5e6f70");
+    await dispatch({
+      type: "thread.side-turn.start",
+      commandId: CommandId.make("cmd-side-ask-2"),
+      threadId,
+      sideTurnId,
+      participantId: astraId,
+      message: { messageId: asMessageId("side-question-2"), role: "user", text: "quick one" },
+      createdAt: now,
+    });
+    await harness.drain();
+    // The working turn ends; astra is still answering, so its queued message waits.
+    await settle(0, 0, "cmd-side-holder-done");
+    await harness.drain();
+    const toAstra = participantSessionKey(threadId, astraId);
+    expect(
+      harness.sendTurn.mock.calls.some(
+        ([request]) => (request as { threadId: string }).threadId === toAstra,
+      ),
+    ).toBe(false);
+
+    await dispatch({
+      type: "thread.side-turn.settle",
+      commandId: CommandId.make("cmd-side-settle"),
+      threadId,
+      sideTurnId,
+      outcome: "completed",
+      createdAt: now,
+    });
+    await waitFor(() =>
+      harness.stopSession.mock.calls.some(
+        ([request]) =>
+          (request as { threadId: string }).threadId ===
+          sideSessionKey(threadId, sideTurnId, astraId),
+      ),
+    );
+    await waitFor(() =>
+      harness.sendTurn.mock.calls.some(
+        ([request]) => (request as { threadId: string }).threadId === toAstra,
+      ),
+    );
+  });
+
+  /** Astra answering on the side while the thread's own agent works turn-1. */
+  async function startRoomWithAstraAnswering() {
+    const room = await startRoomWithMessageQueuedForAstra();
+    const sideTurnId = SideTurnId.make("2b3c4d5e-6f70-4812-9a3b-4c5d6e7f8091");
+    await room.dispatch({
+      type: "thread.side-turn.start",
+      commandId: CommandId.make("cmd-side-ask-queue"),
+      threadId: room.threadId,
+      sideTurnId,
+      participantId: room.astraId,
+      message: { messageId: asMessageId("side-question-queue"), role: "user", text: "quick one" },
+      createdAt: room.now,
+    });
+    await room.harness.drain();
+    const toAstra = participantSessionKey(room.threadId, room.astraId);
+    const settleSide = () =>
+      room.dispatch({
+        type: "thread.side-turn.settle",
+        commandId: CommandId.make("cmd-side-settle-queue"),
+        threadId: room.threadId,
+        sideTurnId,
+        outcome: "completed",
+        createdAt: room.now,
+      });
+    const sentToAstra = () =>
+      room.harness.sendTurn.mock.calls.some(
+        ([request]) => (request as { threadId: string }).threadId === toAstra,
+      );
+    return { ...room, settleSide, sentToAstra };
+  }
+
+  it("moves the queue on when the message waiting for a side answer was taken out", async () => {
+    const { harness, threadId, astraId, dispatch, settle, settleSide, sentToAstra, now } =
+      await startRoomWithAstraAnswering();
+    await dispatch({
+      type: "thread.follow-up.submit",
+      commandId: CommandId.make("cmd-queue-for-astra-2"),
+      threadId,
+      turnId: asTurnId("turn-1"),
+      message: {
+        messageId: asMessageId("queue-for-astra-2"),
+        role: "user",
+        text: "then this",
+        attachments: [],
+      },
+      delivery: "queue",
+      participantId: astraId,
+      createdAt: now,
+    });
+    await settle(0, 0, "cmd-queue-edit-turn-done");
+    await harness.drain();
+    await dispatch({
+      type: "thread.follow-up.unqueue",
+      commandId: CommandId.make("cmd-unqueue-first"),
+      threadId,
+      messageId: asMessageId("queue-for-astra"),
+      createdAt: now,
+    });
+    await settleSide();
+    await waitFor(sentToAstra);
+    const thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+    expect(thread?.queuedFollowUps ?? []).toHaveLength(0);
+  });
+
+  it("keeps the queue held when a newer turn fails before the side answer ends", async () => {
+    const { harness, threadId, dispatch, settle, settleSide, sentToAstra, now } =
+      await startRoomWithAstraAnswering();
+    // Turn-1 ends well, so astra's message only waits for its side answer.
+    await settle(0, 0, "cmd-newer-turn-1-done");
+    await harness.drain();
+    // The user sends the thread's own agent something new, and that fails.
+    await dispatch({
+      type: "thread.turn.start",
+      commandId: CommandId.make("cmd-newer-turn"),
+      threadId,
+      message: { messageId: asMessageId("newer"), role: "user", text: "and this", attachments: [] },
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+      runtimeMode: "full-access",
+      createdAt: now,
+    });
+    await waitFor(() => harness.sendTurn.mock.calls.length === 2);
+    await dispatch({
+      type: "thread.session.set",
+      commandId: CommandId.make("cmd-newer-turn-failed"),
+      threadId,
+      session: {
+        threadId,
+        status: "error",
+        providerName: "codex",
+        runtimeMode: "full-access",
+        activeTurnId: null,
+        lastError: "boom",
+        updatedAt: now,
+      },
+      createdAt: now,
+    });
+    await settleSide();
+    await harness.drain();
+    expect(sentToAstra()).toBe(false);
+  });
+
+  it("keeps a failed turn's queue held when a side answer ends", async () => {
+    const { harness, threadId, astraId, dispatch, now } =
+      await startRoomWithMessageQueuedForAstra();
+    const sideTurnId = SideTurnId.make("5c6d7e8f-9a0b-4c1d-8e2f-3a4b5c6d7e8f");
+    await dispatch({
+      type: "thread.side-turn.start",
+      commandId: CommandId.make("cmd-side-ask-fail"),
+      threadId,
+      sideTurnId,
+      participantId: astraId,
+      message: { messageId: asMessageId("side-question-fail"), role: "user", text: "quick one" },
+      createdAt: now,
+    });
+    await harness.drain();
+    // The working turn fails: nothing queued goes out on its own.
+    await dispatch({
+      type: "thread.session.set",
+      commandId: CommandId.make("cmd-holder-failed"),
+      threadId,
+      session: {
+        threadId,
+        status: "error",
+        providerName: "codex",
+        runtimeMode: "full-access",
+        activeTurnId: null,
+        lastError: "boom",
+        updatedAt: now,
+      },
+      createdAt: now,
+    });
+    await dispatch({
+      type: "thread.side-turn.settle",
+      commandId: CommandId.make("cmd-side-settle-fail"),
+      threadId,
+      sideTurnId,
+      outcome: "completed",
+      createdAt: now,
+    });
+    await waitFor(() =>
+      harness.stopSession.mock.calls.some(
+        ([request]) =>
+          (request as { threadId: string }).threadId ===
+          sideSessionKey(threadId, sideTurnId, astraId),
+      ),
+    );
+    await harness.drain();
+    const toAstra = participantSessionKey(threadId, astraId);
+    expect(
+      harness.sendTurn.mock.calls.some(
+        ([request]) => (request as { threadId: string }).threadId === toAstra,
+      ),
+    ).toBe(false);
   });
 
   it("holds a message queued for another room agent after Stop, even with no turn to stop", async () => {

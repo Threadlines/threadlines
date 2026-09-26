@@ -40,10 +40,7 @@ import {
 import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
-import {
-  parseParticipantSessionKey,
-  sessionKeyThreadId,
-} from "@threadlines/shared/threadParticipants";
+import { parseSessionKey, sessionKeyThreadId } from "@threadlines/shared/threadParticipants";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
@@ -256,10 +253,20 @@ const correlateRuntimeEventWithInstance = (
  * Consumers see the thread an event belongs to. A room agent runs under a
  * derived session key (see `threadParticipants`); it is mapped back here, the
  * one place events leave the provider layer, and the agent is kept on the
- * event. Logs and the session directory above still use the key.
+ * event. A side answer's runtime also stamps its side answer, so every
+ * consumer can tell it from the agent's working session by the event alone.
+ * Logs and the session directory above still use the key.
  */
 const toThreadRuntimeEvent = (event: ProviderRuntimeEvent): ProviderRuntimeEvent => {
-  const target = parseParticipantSessionKey(event.threadId);
+  const target = parseSessionKey(event.threadId);
+  if (target.kind === "side") {
+    return {
+      ...event,
+      threadId: target.threadId,
+      ...(target.participantId !== null ? { participantId: target.participantId } : {}),
+      sideTurnId: target.sideTurnId,
+    };
+  }
   if (target.participantId === null) {
     return event;
   }
@@ -605,7 +612,10 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       } as const;
     }
 
-    if (!input.allowRecovery) {
+    // A side answer's runtime is never brought back: its binding does not
+    // record the lockdown, so recovering it would start an unrestricted
+    // session under a side key.
+    if (!input.allowRecovery || parseSessionKey(input.threadId).kind === "side") {
       return {
         adapter,
         instanceId,
@@ -1362,6 +1372,38 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     return yield* routed.adapter.realtimeListVoices(routed.threadId);
   });
 
+  const readConversation: ProviderServiceShape["readConversation"] = Effect.fn("readConversation")(
+    function* (input) {
+      const live = (yield* listSessions()).find((session) => session.threadId === input.threadId);
+      if (live?.providerThreadId !== undefined && live.providerInstanceId !== undefined) {
+        return {
+          providerInstanceId: live.providerInstanceId,
+          providerThreadId: live.providerThreadId,
+        };
+      }
+      const binding = Option.getOrUndefined(
+        yield* directory.getBinding(input.threadId).pipe(Effect.orElseSucceed(() => Option.none())),
+      );
+      if (binding === undefined || binding.providerInstanceId === undefined) {
+        return null;
+      }
+      const cursor = (binding.resumeCursor ?? null) as {
+        readonly threadId?: unknown;
+        readonly resume?: unknown;
+      } | null;
+      // Resume cursors are the drivers' own: Codex names its thread, Claude its session.
+      const providerThreadId =
+        binding.provider === "codex"
+          ? cursor?.threadId
+          : binding.provider === "claudeAgent"
+            ? cursor?.resume
+            : undefined;
+      return typeof providerThreadId === "string" && providerThreadId.length > 0
+        ? { providerInstanceId: binding.providerInstanceId, providerThreadId }
+        : null;
+    },
+  );
+
   const releaseBackgroundCommands: ProviderServiceShape["releaseBackgroundCommands"] = Effect.fn(
     "releaseBackgroundCommands",
   )(function* (input) {
@@ -1719,15 +1761,21 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         if (routed.isActive) {
           yield* routed.adapter.stopSession(routed.threadId);
         }
-        yield* directory.upsert({
-          threadId: input.threadId,
-          provider: routed.adapter.provider,
-          providerInstanceId: routed.instanceId,
-          status: "stopped",
-          runtimePayload: {
-            activeTurnId: null,
-          },
-        });
+        // A side answer's runtime is disposable: nothing ever resumes it, so
+        // its binding goes with it rather than piling up as "stopped".
+        if (parseSessionKey(input.threadId).kind === "side") {
+          yield* directory.deleteBinding(input.threadId);
+        } else {
+          yield* directory.upsert({
+            threadId: input.threadId,
+            provider: routed.adapter.provider,
+            providerInstanceId: routed.instanceId,
+            status: "stopped",
+            runtimePayload: {
+              activeTurnId: null,
+            },
+          });
+        }
         yield* analytics.record("provider.session.stopped", {
           provider: routed.adapter.provider,
         });
@@ -2008,8 +2056,24 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         payload: rawInput,
       });
       // A room's added agents run under their own session keys; they go with
-      // the thread. Best-effort, like the rest of deletion cleanup.
-      const agentKeys = (yield* directory.listThreadIds()).filter(
+      // the thread. Best-effort, like the rest of deletion cleanup. A side
+      // answer's runtime is only stopped: it is a disposable copy, and a
+      // native delete could reach the conversation it copied.
+      const keys = yield* directory.listThreadIds();
+      for (const key of keys) {
+        const target = parseSessionKey(key);
+        if (target.kind !== "side" || target.threadId !== input.threadId) continue;
+        yield* stopSession({ threadId: key }).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logDebug("provider thread delete skipped a side answer runtime", {
+              threadId: input.threadId,
+              sessionKey: key,
+              cause: Cause.pretty(cause),
+            }),
+          ),
+        );
+      }
+      const agentKeys = keys.filter(
         (key) => key !== input.threadId && sessionKeyThreadId(key) === input.threadId,
       );
       for (const key of agentKeys) {
@@ -2135,6 +2199,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     realtimeAppendAudio,
     realtimeListVoices,
     releaseBackgroundCommands,
+    readConversation,
     compactContext,
     setThreadGoal,
     pauseThreadGoalForStop,

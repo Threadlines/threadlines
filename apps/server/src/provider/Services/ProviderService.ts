@@ -123,6 +123,16 @@ export interface ProviderServiceShape {
   }) => Effect.Effect<void, ProviderServiceError>;
 
   /**
+   * The native conversation one session key continues: its provider instance
+   * and the provider's own thread or session id. From the live runtime when
+   * there is one, else from the persisted binding. Null when there is none.
+   */
+  readonly readConversation: (input: { readonly threadId: ThreadId }) => Effect.Effect<{
+    readonly providerInstanceId: ProviderInstanceId;
+    readonly providerThreadId: string;
+  } | null>;
+
+  /**
    * Ask the active provider session to compact its context.
    */
   readonly compactContext: (input: {

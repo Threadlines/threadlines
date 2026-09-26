@@ -113,9 +113,11 @@ import { CompactComposerControlsMenu } from "./CompactComposerControlsMenu";
 import { ComposerAttachmentMenu } from "./ComposerAttachmentMenu";
 import { ComposerStashControl } from "./ComposerStashControl";
 import {
+  type ComposerRoomDelivery,
   ComposerPrimaryActions,
   ComposerStopButton,
   FOLLOW_UP_DELIVERY_LABELS,
+  roomDeliveryLabels,
 } from "./ComposerPrimaryActions";
 import { useSettings, useUpdateSettings } from "../../hooks/useSettings";
 import { ComposerPendingApprovalPanel } from "./ComposerPendingApprovalPanel";
@@ -149,13 +151,21 @@ import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { toastManager } from "../ui/toast";
 import { RoomAgentPicker } from "./RoomAgentPicker";
+import { pickRoomAgentOptions } from "./roomAgentActions";
 import { scopedThreadKey } from "@threadlines/client-runtime";
 import {
+  buildRoomAgentLabels,
+  canAnswerOnTheSide,
+  matchRoomAgents,
   ownAgentSession,
+  resolveRoomDelivery,
   resolveRoomRecipient,
+  roomAgentKey,
   useRoomAgentOptions,
   useRoomRecipientStore,
 } from "../../rooms";
+import { getPickerModelName } from "./providerIconUtils";
+import { activeParticipants } from "@threadlines/shared/threadParticipants";
 import { shouldRenderTraitsControls, TraitsMenuContent, TraitsPicker } from "./TraitsPicker";
 import {
   canRequestProviderRateLimitResetCredit,
@@ -185,6 +195,7 @@ import type { SessionPhase, Thread } from "../../types";
 import type { PendingUserInputDraftAnswer } from "../../pendingUserInput";
 import {
   deriveActiveModelFallbackState,
+  isWaitingOnBackgroundTasks,
   type PendingApproval,
   type PendingUserInput,
 } from "../../session-logic";
@@ -414,6 +425,7 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
   onRuntimeModeChange: (mode: RuntimeMode) => void;
   followUpDelivery: FollowUpDelivery;
   onFollowUpDeliveryChange: (delivery: FollowUpDelivery) => void;
+  roomDelivery: ComposerRoomDelivery | null;
   onInterrupt: () => void;
   onImplementPlanInNewThread: () => void;
   onResetAccountUsage?: (() => void) | undefined;
@@ -455,6 +467,7 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
         onRuntimeModeChange={props.onRuntimeModeChange}
         followUpDelivery={props.followUpDelivery}
         onFollowUpDeliveryChange={props.onFollowUpDeliveryChange}
+        roomDelivery={props.roomDelivery}
         onInterrupt={props.onInterrupt}
         onImplementPlanInNewThread={props.onImplementPlanInNewThread}
       />
@@ -1143,6 +1156,55 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     activeThread?.session?.orchestrationStatus === "starting"
       ? (activeThread.session.participantId ?? null)
       : undefined;
+  // Every agent in a room by the name the model picker shows; null outside rooms.
+  const roomAgentLabels = useMemo(
+    () =>
+      showRoomAgentPicker && activeThread
+        ? buildRoomAgentLabels(
+            {
+              modelSelection: activeThread.modelSelection,
+              participants: activeThread.participants,
+              agentRole: activeThread.agentRole,
+            },
+            providerInstanceEntries,
+            (model, entry) => getPickerModelName(model, entry.driverKind),
+          )
+        : null,
+    [
+      activeThread?.modelSelection,
+      activeThread?.participants,
+      activeThread?.agentRole,
+      providerInstanceEntries,
+      showRoomAgentPicker,
+    ],
+  );
+  // The agents "@" offers in a room, first in the menu above files. Picking
+  // one sends the message to it, like the agent picker.
+  const roomMentionAgents = useMemo(() => {
+    if (roomAgentLabels === null || activeThread === undefined) {
+      return [];
+    }
+    const answeringId = activeThread.sideTurn?.participantId;
+    return [
+      null,
+      ...activeParticipants({ participants: activeThread.participants ?? [] }).map((p) => p.id),
+    ].map((participantId) => {
+      const label = roomAgentLabels.get(roomAgentKey(participantId));
+      return {
+        participantId,
+        name: label?.name ?? "Agent",
+        entry: label?.entry,
+        status:
+          roomWorkingId !== undefined && roomWorkingId === participantId
+            ? "working"
+            : answeringId !== undefined && answeringId === participantId
+              ? "answering"
+              : participantId === null
+                ? "main"
+                : "",
+      };
+    });
+  }, [activeThread, roomAgentLabels, roomWorkingId]);
   const activeFallbackModelDisplayName = useMemo(() => {
     if (!activeModelFallback) {
       return null;
@@ -1280,7 +1342,17 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const composerMenuItems = useMemo<ComposerCommandItem[]>(() => {
     if (!composerTrigger) return [];
     if (composerTrigger.kind === "path") {
-      return workspaceEntries.map((entry) => ({
+      const agentItems = matchRoomAgents(roomMentionAgents, composerTrigger.query).map(
+        (agent): ComposerCommandItem => ({
+          id: `agent:${roomAgentKey(agent.participantId)}`,
+          type: "room-agent",
+          participantId: agent.participantId,
+          entry: agent.entry,
+          label: agent.name,
+          description: agent.status,
+        }),
+      );
+      const pathItems = workspaceEntries.map((entry): ComposerCommandItem => ({
         id: `path:${entry.kind}:${entry.path}`,
         type: "path",
         path: entry.path,
@@ -1288,6 +1360,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         label: basenameOfPath(entry.path),
         description: entry.parentPath ?? "",
       }));
+      return [...agentItems, ...pathItems];
     }
     if (composerTrigger.kind === "slash-command") {
       const builtInSlashCommandItems = [
@@ -1523,8 +1596,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       buildDefaultComposerPlaceholder({
         canReferenceFiles: canReferenceWorkspaceFiles,
         canInvokeSkills: composerSkills.some((skill) => skill.enabled),
+        canMentionAgents: roomMentionAgents.length > 0,
       }),
-    [canReferenceWorkspaceFiles, composerSkills],
+    [canReferenceWorkspaceFiles, composerSkills, roomMentionAgents.length],
   );
 
   // ------------------------------------------------------------------
@@ -1561,7 +1635,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       )
     : undefined;
   const pendingRoomAgentOptions = useRoomAgentOptions(routeThreadRef, roomRecipientId);
-  const setRoomAgentOptions = useRoomRecipientStore((state) => state.setAgentOptions);
   const roomAgentTraitsProps =
     addressedRoomAgent && addressedRoomAgentEntry
       ? {
@@ -1571,7 +1644,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           model: addressedRoomAgent.modelSelection.model,
           modelOptions: pendingRoomAgentOptions ?? addressedRoomAgent.modelSelection.options,
           onModelOptionsChange: (next: ReadonlyArray<ProviderOptionSelection> | undefined) =>
-            setRoomAgentOptions(routeThreadRef, addressedRoomAgent.id, next ?? []),
+            pickRoomAgentOptions(routeThreadRef, addressedRoomAgent.id, next ?? []),
         }
       : null;
   const showRoomAgentTraits =
@@ -1584,8 +1657,48 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     (delivery: FollowUpDelivery) => updateSettings({ followUpDelivery: delivery }),
     [updateSettings],
   );
-  const collapsedComposerPrimaryActionLabel =
-    phase === "running" ? FOLLOW_UP_DELIVERY_LABELS[followUpDelivery].action : "Send message";
+  // Rooms: while another agent works, a message for this one is asked now
+  // (answered read-only on the side) or waits until the other finishes. The
+  // send path reads the same rule (resolveRoomDelivery).
+  const roomHolderId = activeThread?.session?.participantId ?? null;
+  const roomRecipientDriverKind = providerInstanceEntries.find(
+    (entry) =>
+      entry.instanceId ===
+      (addressedRoomAgent?.modelSelection ?? activeThread?.modelSelection)?.instanceId,
+  )?.driverKind;
+  const roomDeliveryMode =
+    roomAgentLabels !== null
+      ? resolveRoomDelivery({
+          recipientId: roomRecipientId,
+          holderId: roomHolderId,
+          holderBusy:
+            hasActiveTurn ||
+            isWaitingOnBackgroundTasks(
+              activeThread?.latestTurn ?? null,
+              activeThread?.session ?? null,
+            ),
+          recipientDriverKind: roomRecipientDriverKind,
+          preferred: followUpDelivery,
+        })
+      : "direct";
+  const roomDelivery = useMemo<ComposerRoomDelivery | null>(
+    () =>
+      roomAgentLabels === null || roomDeliveryMode === "direct"
+        ? null
+        : {
+            mode: roomDeliveryMode,
+            canAsk: canAnswerOnTheSide(roomRecipientDriverKind),
+            recipientName: roomAgentLabels.get(roomAgentKey(roomRecipientId))?.name ?? "this agent",
+            holderName:
+              roomAgentLabels.get(roomAgentKey(roomHolderId))?.name ?? "the agent at work",
+          },
+    [roomAgentLabels, roomDeliveryMode, roomHolderId, roomRecipientDriverKind, roomRecipientId],
+  );
+  const collapsedComposerPrimaryActionLabel = roomDelivery
+    ? roomDeliveryLabels(roomDelivery).action
+    : phase === "running"
+      ? FOLLOW_UP_DELIVERY_LABELS[followUpDelivery].action
+      : "Send message";
   // Shared gate for every "Add" action (upload + screenshot). The in-flight
   // capture only blocks the screenshot item, not uploading images, so it is
   // handled inside the menu rather than here. Models without image input
@@ -2493,6 +2606,17 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       });
       const { snapshot, trigger } = resolveActiveComposerTrigger();
       if (!trigger) return;
+      if (item.type === "room-agent") {
+        // The "@name" goes; the message now goes to that agent.
+        const applied = applyPromptReplacement(trigger.rangeStart, trigger.rangeEnd, "", {
+          expectedText: snapshot.value.slice(trigger.rangeStart, trigger.rangeEnd),
+        });
+        if (applied) {
+          setComposerHighlightedItemId(null);
+          useRoomRecipientStore.getState().choose(routeThreadRef, item.participantId);
+        }
+        return;
+      }
       if (item.type === "path") {
         const replacement = `@${serializeComposerMentionPath(item.path)} `;
         const replacementRangeEnd = extendReplacementRangeForTrailingSpace(
@@ -2580,7 +2704,12 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         return;
       }
     },
-    [applyPromptReplacement, handleInteractionModeChange, resolveActiveComposerTrigger],
+    [
+      applyPromptReplacement,
+      handleInteractionModeChange,
+      resolveActiveComposerTrigger,
+      routeThreadRef,
+    ],
   );
 
   const onComposerMenuItemHighlighted = useCallback(
@@ -3673,9 +3802,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                       <RoomAgentPicker
                         threadRef={routeThreadRef}
                         primaryModelSelection={activeThread.modelSelection}
+                        primaryRole={activeThread.agentRole}
                         participants={activeThread.participants ?? []}
                         recipientId={roomRecipientId}
                         workingId={roomWorkingId}
+                        answeringId={activeThread.sideTurn?.participantId}
                         instanceEntries={providerInstanceEntries}
                         modelOptionsByInstance={modelOptionsByInstance}
                         keybindings={keybindings}
@@ -3875,6 +4006,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                       onRuntimeModeChange={handleRuntimeModeChange}
                       followUpDelivery={followUpDelivery}
                       onFollowUpDeliveryChange={handleFollowUpDeliveryChange}
+                      roomDelivery={roomDelivery}
                       onInterrupt={handleInterruptPrimaryAction}
                       onImplementPlanInNewThread={handleImplementPlanInNewThreadPrimaryAction}
                       onResetAccountUsage={

@@ -236,7 +236,7 @@ class FakeCodexRuntime implements CodexSessionRuntimeShape {
   private readonly eventQueue = Effect.runSync(Queue.unbounded<ProviderEvent>());
   private readonly now = "2026-01-01T00:00:00.000Z";
 
-  public readonly startImpl = vi.fn(() =>
+  public readonly startImpl = vi.fn((): Promise<ProviderSession> =>
     Promise.resolve({
       provider: ProviderDriverKind.make("codex"),
       status: "ready" as const,
@@ -246,7 +246,7 @@ class FakeCodexRuntime implements CodexSessionRuntimeShape {
       ...(this.options.model ? { model: this.options.model } : {}),
       createdAt: this.now,
       updatedAt: this.now,
-    } satisfies ProviderSession),
+    }),
   );
 
   public readonly sendTurnImpl = vi.fn(
@@ -416,6 +416,10 @@ class FakeCodexRuntime implements CodexSessionRuntimeShape {
   realtimeListVoices = Effect.promise(() => this.realtimeListVoicesImpl());
 
   compactContext = Effect.promise(() => this.compactContextImpl());
+
+  public readonly renewSignInImpl = vi.fn((): Promise<void> => Promise.resolve(undefined));
+
+  renewSignIn = Effect.promise(() => this.renewSignInImpl());
 
   setGoal = (input: CodexSessionRuntimeSetGoalInput) =>
     Effect.promise(() => this.setGoalImpl(input));
@@ -1274,6 +1278,74 @@ sessionErrorLayer("CodexAdapterLive session errors", (it) => {
         serviceTier: "priority",
       });
     }).pipe(Effect.provide(customLayer));
+  });
+
+  it.effect("has the working Codex session renew a side answer's refused sign-in", () => {
+    const signInHome = fs.mkdtempSync(path.join(os.tmpdir(), "codex-renew-owner-"));
+    const token = (label: string) =>
+      `x.${Buffer.from(JSON.stringify({ exp: Math.floor(Date.now() / 1000) + 3600, label })).toString("base64url")}.y`;
+    const writeToken = (accessToken: string) =>
+      fs.writeFileSync(
+        path.join(signInHome, "auth.json"),
+        JSON.stringify({ tokens: { access_token: accessToken, account_id: "acct" } }),
+      );
+    const refused = token("refused");
+    const renewed = token("renewed");
+    writeToken(refused);
+    const factory = makeRuntimeFactory();
+    const layer = Layer.effect(
+      CodexAdapter,
+      Effect.gen(function* () {
+        return yield* makeCodexAdapter(decodeCodexSettings({ homePath: signInHome }), {
+          makeRuntime: factory.factory,
+        });
+      }),
+    ).pipe(
+      Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
+      Layer.provideMerge(ServerSettingsService.layerTest()),
+      Layer.provideMerge(providerSessionDirectoryTestLayer),
+      Layer.provideMerge(NodeServices.layer),
+    );
+
+    return Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const start = (threadId: string, lockdown?: "side-answer") =>
+        adapter.startSession({
+          provider: ProviderDriverKind.make("codex"),
+          threadId: asThreadId(threadId),
+          runtimeMode: "full-access",
+          ...(lockdown !== undefined ? { lockdown } : {}),
+        });
+      // Opened first and idle, then one that is working.
+      yield* start("sess-idle");
+      const idle = factory.lastRuntime!;
+      yield* start("sess-working");
+      const working = factory.lastRuntime!;
+      const workingSession = yield* working.getSession;
+      working.getSession = Effect.succeed({ ...workingSession, status: "running" });
+      working.renewSignInImpl.mockImplementation(async () => writeToken(renewed));
+
+      yield* start("sess-side", "side-answer");
+      const sideOptions = factory.factory.mock.calls.at(-1)?.[0];
+      assert.ok(sideOptions?.lockdown);
+      const signIn = yield* sideOptions.lockdown.signIn({ rejectedAccessToken: refused });
+
+      assert.equal(signIn.kind === "chatgpt" ? signIn.accessToken : undefined, renewed);
+      assert.equal(working.renewSignInImpl.mock.calls.length, 1);
+      assert.equal(idle.renewSignInImpl.mock.calls.length, 0);
+    }).pipe(
+      Effect.provide(layer),
+      Effect.ensuring(
+        Effect.sync(() => {
+          fs.rmSync(signInHome, { recursive: true, force: true });
+          // The real runtime removes its side home when it closes; this fake does not.
+          const sideHome = factory.factory.mock.calls.at(-1)?.[0].homePath;
+          if (sideHome?.includes("threadlines-side-")) {
+            fs.rmSync(sideHome, { recursive: true, force: true });
+          }
+        }),
+      ),
+    );
   });
 });
 

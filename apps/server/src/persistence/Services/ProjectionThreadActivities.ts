@@ -11,7 +11,9 @@ import {
   IsoDateTime,
   NonNegativeInt,
   OrchestrationThreadActivityTone,
+  SideTurnId,
   ThreadId,
+  ThreadParticipantId,
   TurnId,
 } from "@threadlines/contracts";
 import * as Schema from "effect/Schema";
@@ -25,6 +27,10 @@ export const ProjectionThreadActivity = Schema.Struct({
   eventSequence: Schema.optional(NonNegativeInt),
   threadId: ThreadId,
   turnId: Schema.NullOr(TurnId),
+  /** See OrchestrationThreadActivity.sideTurnId. */
+  sideTurnId: Schema.optional(SideTurnId),
+  /** See OrchestrationThreadActivity.participantId. */
+  participantId: Schema.optional(Schema.NullOr(ThreadParticipantId)),
   tone: OrchestrationThreadActivityTone,
   kind: Schema.String,
   summary: Schema.String,

@@ -4,6 +4,8 @@ import {
   MessageId,
   ProjectId,
   ProviderInstanceId,
+  SIDE_ANSWER_OUTCOME_ACTIVITY_KIND,
+  SideTurnId,
   ThreadId,
   ThreadParticipantId,
   TurnId,
@@ -347,6 +349,243 @@ describe("decider rooms", () => {
     expect(removed).toMatchObject({
       type: "thread.participant-removed",
       payload: { participantId: astraId },
+    });
+  });
+
+  it("names any agent, and keeps an added agent's reasoning on it", async () => {
+    const update = (
+      participantId: ThreadParticipantId | null,
+      change: {
+        readonly role?: string | null;
+        readonly modelOptions?: [] | [{ id: string; value: string }];
+      },
+    ): OrchestrationCommand => ({
+      type: "thread.participant.update",
+      commandId: CommandId.make("cmd-update"),
+      threadId,
+      participantId,
+      ...change,
+      createdAt: now,
+    });
+    const [renamed] = await decideEvents(
+      update(astraId, {
+        role: "Reviewer",
+        modelOptions: [{ id: "reasoningEffort", value: "high" }],
+      }),
+      readModel(),
+    );
+    expect(renamed).toMatchObject({
+      type: "thread.participant-updated",
+      payload: {
+        participantId: astraId,
+        role: "Reviewer",
+        modelSelection: {
+          instanceId: astra.modelSelection.instanceId,
+          model: astra.modelSelection.model,
+          options: [{ id: "reasoningEffort", value: "high" }],
+        },
+      },
+    });
+    // The thread's own agent can be named; its options live with the thread.
+    expect(Exit.isSuccess(await decide(update(null, { role: "Researcher" }), readModel()))).toBe(
+      true,
+    );
+    expect(
+      Exit.isFailure(
+        await decide(
+          update(null, { modelOptions: [{ id: "reasoningEffort", value: "high" }] }),
+          readModel(),
+        ),
+      ),
+    ).toBe(true);
+  });
+
+  describe("side answers", () => {
+    const sideTurnId = SideTurnId.make("0d9e8f7a-6b5c-4d3e-8f1a-2b3c4d5e6f70");
+    const working = session({ status: "running", activeTurnId: TurnId.make("turn-1") });
+    const ask = (
+      participantId: ThreadParticipantId | null,
+    ): Extract<OrchestrationCommand, { type: "thread.side-turn.start" }> => ({
+      type: "thread.side-turn.start",
+      commandId: CommandId.make("cmd-side"),
+      threadId,
+      sideTurnId,
+      participantId,
+      message: { messageId: MessageId.make("message-side"), role: "user", text: "is this right?" },
+      createdAt: "2026-01-01T00:00:05.000Z",
+    });
+    const answering = {
+      sideTurnId,
+      participantId: astraId,
+      messageId: MessageId.make("message-side"),
+      status: "running" as const,
+      startedAt: now,
+    };
+
+    it("asks another agent while one works, with the question outside any turn", async () => {
+      const [question, started] = await decideEvents(ask(astraId), readModel({ session: working }));
+      expect(question).toMatchObject({
+        type: "thread.message-sent",
+        payload: { participantId: astraId, sideTurnId, turnId: null, role: "user" },
+      });
+      expect(started).toMatchObject({
+        type: "thread.side-turn-started",
+        payload: {
+          sideTurn: { sideTurnId, participantId: astraId, status: "starting" },
+          modelSelection: astra.modelSelection,
+        },
+      });
+    });
+
+    it("refuses a side answer from the agent holding the thread, or a second one", async () => {
+      // The thread's own agent holds it: that is a normal message.
+      expect(Exit.isFailure(await decide(ask(null), readModel({ session: working })))).toBe(true);
+      // An id already used: it would pick up that answer's late words.
+      const earlierQuestion = {
+        id: MessageId.make("message-earlier"),
+        role: "user" as const,
+        text: "earlier",
+        participantId: astraId,
+        sideTurnId,
+        turnId: null,
+        streaming: false,
+        createdAt: now,
+        updatedAt: now,
+      };
+      expect(
+        Exit.isFailure(
+          await decide(ask(astraId), readModel({ session: working, messages: [earlierQuestion] })),
+        ),
+      ).toBe(true);
+      expect(
+        Exit.isFailure(
+          await decide(ask(astraId), readModel({ session: working, sideTurn: answering })),
+        ),
+      ).toBe(true);
+      // Outside a room there is no one else to ask.
+      expect(
+        Exit.isFailure(
+          await decide(ask(astraId), readModel({ participants: [], session: working })),
+        ),
+      ).toBe(true);
+    });
+
+    it("keeps an answering agent from taking the thread or leaving it", async () => {
+      const model = readModel({ sideTurn: answering });
+      expect(Exit.isFailure(await decide(turnStart(astraId), model))).toBe(true);
+      expect(
+        Exit.isFailure(
+          await decide(
+            {
+              type: "thread.participant.remove",
+              commandId: CommandId.make("cmd-remove"),
+              threadId,
+              participantId: astraId,
+              createdAt: now,
+            },
+            model,
+          ),
+        ),
+      ).toBe(true);
+    });
+
+    const sideAnswer = (text: string, streaming: boolean) => ({
+      id: MessageId.make("answer"),
+      role: "assistant" as const,
+      text,
+      participantId: astraId,
+      sideTurnId,
+      turnId: null,
+      streaming,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    it("ignores a stop or finish for a side answer that is not the current one", async () => {
+      const stale = SideTurnId.make("11111111-2222-4333-8444-555566667777");
+      const model = readModel({ sideTurn: answering, messages: [sideAnswer("Yes.", false)] });
+      expect(
+        Exit.isFailure(
+          await decide(
+            {
+              type: "thread.side-turn.settle",
+              commandId: CommandId.make("cmd-settle"),
+              threadId,
+              sideTurnId: stale,
+              outcome: "completed",
+              createdAt: now,
+            },
+            model,
+          ),
+        ),
+      ).toBe(true);
+      const [settled] = await decideEvents(
+        {
+          type: "thread.side-turn.settle",
+          commandId: CommandId.make("cmd-settle-current"),
+          threadId,
+          sideTurnId,
+          outcome: "completed",
+          answerMessageId: MessageId.make("answer"),
+          createdAt: now,
+        },
+        model,
+      );
+      expect(settled).toMatchObject({
+        type: "thread.side-turn-settled",
+        payload: {
+          sideTurnId,
+          participantId: astraId,
+          outcome: "completed",
+          answerMessageId: "answer",
+        },
+      });
+    });
+
+    it("finishes a stopped answer in one step and takes nothing after it", async () => {
+      const halfWritten = sideAnswer("The cap is", true);
+      const events = await decideEvents(
+        {
+          type: "thread.side-turn.settle",
+          commandId: CommandId.make("cmd-settle-stop"),
+          threadId,
+          sideTurnId,
+          outcome: "interrupted",
+          createdAt: now,
+        },
+        readModel({ sideTurn: answering, messages: [halfWritten] }),
+      );
+      // Its text is closed and why it ended is recorded with the settle
+      // itself, so a restart's settle leaves the same trail as a live one.
+      expect(events.map((event) => event.type)).toEqual([
+        "thread.message-sent",
+        "thread.activity-appended",
+        "thread.side-turn-settled",
+      ]);
+      expect(events[0]).toMatchObject({ payload: { messageId: "answer", streaming: false } });
+      expect(events[1]).toMatchObject({
+        payload: {
+          activity: {
+            kind: SIDE_ANSWER_OUTCOME_ACTIVITY_KIND,
+            sideTurnId,
+            payload: { outcome: "interrupted" },
+          },
+        },
+      });
+      // A flush that arrives after is refused, not written over the answer.
+      const lateWords = await decide(
+        {
+          type: "thread.message.assistant.delta",
+          commandId: CommandId.make("cmd-late"),
+          threadId,
+          messageId: halfWritten.id,
+          sideTurnId,
+          delta: " off by one.",
+          createdAt: now,
+        },
+        readModel({ messages: [{ ...halfWritten, streaming: false }] }),
+      );
+      expect(Exit.isFailure(lateWords)).toBe(true);
     });
   });
 });

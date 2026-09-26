@@ -13,6 +13,7 @@ import {
   NonNegativeInt,
   OrchestrationMessageRole,
   ThreadId,
+  SideTurnId,
   ThreadParticipantId,
   TurnId,
   IsoDateTime,
@@ -35,6 +36,8 @@ export const ProjectionThreadMessage = Schema.Struct({
   skills: Schema.optional(ChatSkillReferenceList),
   /** See OrchestrationMessage.participantId. Set when the row is created, never updated. */
   participantId: Schema.optional(Schema.NullOr(ThreadParticipantId)),
+  /** See OrchestrationMessage.sideTurnId. Set when the row is created, never updated. */
+  sideTurnId: Schema.optional(SideTurnId),
   isStreaming: Schema.Boolean,
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,

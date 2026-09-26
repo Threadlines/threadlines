@@ -11,6 +11,8 @@ import {
   CheckpointRef,
   ThreadId,
   type ThreadParticipantId,
+  type SideTurnId,
+  type OrchestrationSideTurnOutcome,
   TurnId,
   type OrchestrationCheckpointSummary,
   type OrchestrationProposedPlan,
@@ -35,6 +37,7 @@ import {
   participantSessionKey,
   sessionSlotParticipantId,
 } from "@threadlines/shared/threadParticipants";
+import { turnAdmission } from "../turnAdmission.ts";
 
 import { metricAttributes, providerFirstOutputDuration } from "../../observability/Metrics.ts";
 import { parseTurnDiffFilesFromUnifiedDiff } from "../../checkpointing/Diffs.ts";
@@ -1628,17 +1631,28 @@ const make = Effect.gen(function* () {
     turnId?: TurnId;
     createdAt: string;
     commandTag: string;
-  }) =>
-    orchestrationEngine.dispatch({
+  }) => {
+    const dispatch = orchestrationEngine.dispatch({
       type: "thread.message.assistant.delta",
       commandId: providerCommandId(input.event, input.commandTag),
       threadId: input.threadId,
       messageId: input.messageId,
       participantId: input.event.participantId ?? null,
+      ...(input.event.sideTurnId !== undefined ? { sideTurnId: input.event.sideTurnId } : {}),
       delta: input.delta,
       ...(input.turnId ? { turnId: input.turnId } : {}),
       createdAt: input.createdAt,
     });
+    // A side answer that has settled refuses late words (it may have been
+    // stopped, timed out or cut off by a restart); what was still buffered
+    // for it goes too.
+    return input.event.sideTurnId === undefined
+      ? dispatch
+      : dispatch.pipe(
+          Effect.asVoid,
+          Effect.catch(() => clearAssistantMessageState(input.messageId)),
+        );
+  };
 
   const dispatchSubagentResultActivity = (input: {
     event: ProviderRuntimeEvent;
@@ -2411,6 +2425,161 @@ const make = Effect.gen(function* () {
     },
   );
 
+  // ---------------------------------------------------------------------------
+  // Side answers: a room agent answering read-only in its own runtime while
+  // another agent holds the thread (docs/design/rooms-slice-2.md). Its events
+  // carry `sideTurnId`. They become the answer message and its steps, in the
+  // side answer's own lane, and never touch the session, the latest turn,
+  // checkpoints, diffs, or background task counts.
+  // ---------------------------------------------------------------------------
+
+  /** The one answer message a side answer writes. */
+  const sideAnswerMessageId = (sideTurnId: SideTurnId) =>
+    MessageId.make(`side-answer:${sideTurnId}`);
+
+  /**
+   * Side answers that have written text, with the provider item that wrote
+   * last. The answer is one message: an agent that writes, reads a file and
+   * writes again gets a paragraph break between the two, not glued words.
+   */
+  const sideAnswersWithText = new Map<SideTurnId, string | undefined>();
+
+  const sideTurnOutcome = (
+    event: ProviderRuntimeEvent,
+  ): { readonly outcome: OrchestrationSideTurnOutcome; readonly error?: string } | undefined => {
+    switch (event.type) {
+      case "turn.completed":
+        return event.payload.state === "completed"
+          ? { outcome: "completed" }
+          : event.payload.state === "failed"
+            ? {
+                outcome: "failed",
+                ...(event.payload.errorMessage !== undefined
+                  ? { error: event.payload.errorMessage }
+                  : {}),
+              }
+            : { outcome: "interrupted" };
+      case "turn.aborted":
+      case "session.exited":
+        return { outcome: "interrupted" };
+      case "runtime.error":
+        return { outcome: "failed", error: event.payload.message };
+      default:
+        return undefined;
+    }
+  };
+
+  const processSideTurnEvent = Effect.fnUntraced(function* (
+    event: ProviderRuntimeEvent & { readonly sideTurnId: SideTurnId },
+    thread: Pick<OrchestrationThread, "id" | "sideTurn" | "session" | "subagents">,
+  ) {
+    const { sideTurnId } = event;
+    // Only the side answer in progress. One already settled is final: its
+    // late output is dropped, never written over the answer.
+    if ((thread.sideTurn ?? null)?.sideTurnId !== sideTurnId) {
+      sideAnswersWithText.delete(sideTurnId);
+      yield* clearAssistantMessageState(sideAnswerMessageId(sideTurnId));
+      return;
+    }
+    const messageId = sideAnswerMessageId(sideTurnId);
+    const now = event.createdAt;
+
+    if (event.type === "content.delta" && event.payload.streamKind === "assistant_text") {
+      if (event.payload.delta.length === 0) {
+        return;
+      }
+      const lastItemId = sideAnswersWithText.get(sideTurnId);
+      const startsNewItem =
+        sideAnswersWithText.has(sideTurnId) &&
+        event.itemId !== undefined &&
+        lastItemId !== undefined &&
+        event.itemId !== lastItemId;
+      sideAnswersWithText.set(sideTurnId, event.itemId ?? lastItemId);
+      yield* queueStreamingAssistantDelta({
+        event,
+        threadId: thread.id,
+        messageId,
+        delta: startsNewItem ? `\n\n${event.payload.delta}` : event.payload.delta,
+        createdAt: now,
+      });
+      return;
+    }
+
+    if (
+      event.type === "item.started" ||
+      event.type === "item.updated" ||
+      event.type === "item.completed" ||
+      event.type === "content.delta"
+    ) {
+      const activities = yield* projectRuntimeActivities(event, thread);
+      yield* Effect.forEach(activities, (activity) =>
+        orchestrationEngine.dispatch({
+          type: "thread.activity.append",
+          commandId: providerCommandId(event, "side-answer-activity-append"),
+          threadId: thread.id,
+          activity: {
+            ...activity,
+            turnId: null,
+            sideTurnId,
+            participantId: event.participantId ?? null,
+          },
+          createdAt: activity.createdAt,
+        }),
+      ).pipe(
+        Effect.asVoid,
+        // Refused once the answer has settled.
+        Effect.catch(() => Effect.void),
+      );
+      return;
+    }
+
+    const settled = sideTurnOutcome(event);
+    if (settled === undefined) {
+      return;
+    }
+    // The answer is final before the side answer settles, so anyone reading
+    // the settled answer reads all of it.
+    const hadText = sideAnswersWithText.has(sideTurnId);
+    sideAnswersWithText.delete(sideTurnId);
+    if (hadText) {
+      yield* flushBufferedAssistantMessage({
+        event,
+        threadId: thread.id,
+        messageId,
+        createdAt: now,
+        commandTag: "side-answer-flush",
+      });
+      yield* clearAssistantMessageState(messageId);
+      yield* orchestrationEngine
+        .dispatch({
+          type: "thread.message.assistant.complete",
+          commandId: providerCommandId(event, "side-answer-complete"),
+          threadId: thread.id,
+          messageId,
+          participantId: event.participantId ?? null,
+          sideTurnId,
+          completesTurn: false,
+          createdAt: now,
+        })
+        // Settled meanwhile (stopped or timed out): the settle closed it.
+        .pipe(Effect.catch(() => Effect.void));
+    }
+    yield* orchestrationEngine
+      .dispatch({
+        type: "thread.side-turn.settle",
+        commandId: providerCommandId(event, "side-answer-settle"),
+        threadId: thread.id,
+        sideTurnId,
+        outcome: settled.outcome,
+        ...(hadText ? { answerMessageId: messageId } : {}),
+        ...(settled.error !== undefined && settled.error.trim().length > 0
+          ? { error: settled.error.trim().slice(0, 500) }
+          : {}),
+        createdAt: now,
+      })
+      .pipe(Effect.catch(() => Effect.void));
+  });
+
   const processRuntimeEvent = (event: ProviderRuntimeEvent) =>
     Effect.gen(function* () {
       // Realtime audio/item traffic is intentionally in-memory only. Keep this
@@ -2424,6 +2593,10 @@ const make = Effect.gen(function* () {
       }
       const thread = yield* resolveThreadShell(event.threadId);
       if (!thread) return;
+      if (event.sideTurnId !== undefined) {
+        yield* processSideTurnEvent({ ...event, sideTurnId: event.sideTurnId }, thread);
+        return;
+      }
       // In a room, only the agent holding the session slot is working; an
       // idle agent's runtime (starting up, being reaped, finishing stray
       // background work) must not overwrite the working agent's state.
@@ -2439,6 +2612,11 @@ const make = Effect.gen(function* () {
         // unseen beside the agent at work, so stop it; the report stays in
         // its own transcript for the next time it is addressed.
         if (event.type === "turn.started" && event.turnId !== undefined) {
+          yield* turnAdmission.decide(
+            participantSessionKey(thread.id, event.participantId ?? null),
+            event.turnId,
+            "rejected",
+          );
           const agentId = event.participantId ?? null;
           const agentKey = participantSessionKey(thread.id, agentId);
           const wakeTurnId = event.turnId;
@@ -2465,6 +2643,13 @@ const make = Effect.gen(function* () {
           }).pipe(Effect.ignoreCause({ log: true }), Effect.forkDetach);
         }
         return;
+      }
+      if (event.type === "turn.started" && event.turnId !== undefined) {
+        yield* turnAdmission.decide(
+          participantSessionKey(thread.id, event.participantId ?? null),
+          event.turnId,
+          "main",
+        );
       }
       if (
         STRICT_PROVIDER_LIFECYCLE_GUARD &&

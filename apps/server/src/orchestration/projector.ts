@@ -1,5 +1,11 @@
 import { compareTranscriptOrder } from "@threadlines/shared/transcriptOrder";
-import type { OrchestrationEvent, OrchestrationReadModel, ThreadId } from "@threadlines/contracts";
+import type {
+  OrchestrationEvent,
+  OrchestrationReadModel,
+  OrchestrationSideTurnStatus,
+  SideTurnId,
+  ThreadId,
+} from "@threadlines/contracts";
 import {
   OrchestrationCheckpointSummary,
   OrchestrationMessage,
@@ -15,6 +21,7 @@ import {
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { retainThreadActivities } from "@threadlines/shared/threadActivityRetention";
+import { applyRoomAgentUpdate } from "@threadlines/shared/threadParticipants";
 
 import { toProjectorDecodeError, type OrchestrationProjectorDecodeError } from "./Errors.ts";
 import {
@@ -39,6 +46,12 @@ import {
   ThreadPullRequestLinkedPayload,
   ThreadParticipantAddedPayload,
   ThreadParticipantRemovedPayload,
+  ThreadParticipantUpdatedPayload,
+  ThreadRoomContextRecordedPayload,
+  ThreadSideTurnInterruptRequestedPayload,
+  ThreadSideTurnRunningPayload,
+  ThreadSideTurnSettledPayload,
+  ThreadSideTurnStartedPayload,
   ThreadRevertedPayload,
   ThreadSessionSetPayload,
   ThreadRealtimeStateSetPayload,
@@ -72,6 +85,28 @@ function turnDiffEventCompletesTurn(
   }
   const activeTurnId = thread.session?.activeTurnId ?? null;
   return activeTurnId === null || activeTurnId !== payload.turnId;
+}
+
+/**
+ * Moves the thread's side answer to a new status, but only the side answer
+ * named: an event about one that is already over changes nothing.
+ */
+function updateSideTurnStatus(
+  model: OrchestrationReadModel,
+  threadId: ThreadId,
+  sideTurnId: SideTurnId,
+  next: (status: OrchestrationSideTurnStatus) => OrchestrationSideTurnStatus,
+): OrchestrationReadModel {
+  const sideTurn = model.threads.find((entry) => entry.id === threadId)?.sideTurn ?? null;
+  if (sideTurn === null || sideTurn.sideTurnId !== sideTurnId) {
+    return model;
+  }
+  return {
+    ...model,
+    threads: updateThread(model.threads, threadId, {
+      sideTurn: { ...sideTurn, status: next(sideTurn.status) },
+    }),
+  };
 }
 
 function updateThread(
@@ -479,6 +514,118 @@ export function projectEvent(
         }),
       );
 
+    case "thread.participant-updated":
+      return decodeForEvent(
+        ThreadParticipantUpdatedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => {
+          const thread = nextBase.threads.find((entry) => entry.id === payload.threadId);
+          if (thread === undefined) {
+            return nextBase;
+          }
+          const { participants, agentRole } = applyRoomAgentUpdate(thread, payload);
+          const { agentRole: _previous, ...rest } = thread;
+          const next: OrchestrationThread = {
+            ...rest,
+            participants,
+            ...(agentRole !== undefined ? { agentRole } : {}),
+            updatedAt: payload.updatedAt,
+          };
+          return {
+            ...nextBase,
+            threads: nextBase.threads.map((entry) => (entry.id === thread.id ? next : entry)),
+          };
+        }),
+      );
+
+    case "thread.side-turn-started":
+      return decodeForEvent(
+        ThreadSideTurnStartedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, {
+            sideTurn: payload.sideTurn,
+            updatedAt: event.occurredAt,
+          }),
+        })),
+      );
+
+    case "thread.side-turn-running":
+      return decodeForEvent(
+        ThreadSideTurnRunningPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) =>
+          updateSideTurnStatus(nextBase, payload.threadId, payload.sideTurnId, (status) =>
+            status === "cancelling" ? "cancelling" : "running",
+          ),
+        ),
+      );
+
+    case "thread.side-turn-interrupt-requested":
+      return decodeForEvent(
+        ThreadSideTurnInterruptRequestedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) =>
+          updateSideTurnStatus(nextBase, payload.threadId, payload.sideTurnId, () => "cancelling"),
+        ),
+      );
+
+    case "thread.side-turn-settled":
+      return decodeForEvent(
+        ThreadSideTurnSettledPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => {
+          const thread = nextBase.threads.find((entry) => entry.id === payload.threadId);
+          if ((thread?.sideTurn ?? null)?.sideTurnId !== payload.sideTurnId) {
+            return nextBase;
+          }
+          return {
+            ...nextBase,
+            threads: updateThread(nextBase.threads, payload.threadId, {
+              sideTurn: null,
+              updatedAt: event.occurredAt,
+            }),
+          };
+        }),
+      );
+
+    case "thread.room-context-recorded":
+      return decodeForEvent(
+        ThreadRoomContextRecordedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => {
+          const thread = nextBase.threads.find((entry) => entry.id === payload.threadId);
+          if (thread === undefined) {
+            return nextBase;
+          }
+          return {
+            ...nextBase,
+            threads: updateThread(nextBase.threads, payload.threadId, {
+              roomContext: { ...(thread.roomContext ?? {}), [payload.agentKey]: payload.cursor },
+            }),
+          };
+        }),
+      );
+
     case "thread.participant-removed":
       return decodeForEvent(
         ThreadParticipantRemovedPayload,
@@ -630,6 +777,7 @@ export function projectEvent(
             ...(payload.participantId !== undefined
               ? { participantId: payload.participantId }
               : {}),
+            ...(payload.sideTurnId !== undefined ? { sideTurnId: payload.sideTurnId } : {}),
             turnId: payload.turnId,
             streaming: payload.streaming,
             createdAt: payload.createdAt,

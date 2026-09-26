@@ -13,6 +13,10 @@ import {
   ProviderDriverKind,
   type ProjectId,
   type OrchestrationQueuedFollowUp,
+  type OrchestrationRoomContextCursor,
+  type OrchestrationSideTurn,
+  type OrchestrationSideTurnOutcome,
+  type SideTurnId,
   type OrchestrationSession,
   ThreadId,
   type ThreadParticipantId,
@@ -34,6 +38,7 @@ import { withContextSeedPreamble } from "@threadlines/shared/contextSeed";
 import {
   participantSessionKey,
   sessionSlotParticipantId,
+  sideSessionKey,
 } from "@threadlines/shared/threadParticipants";
 import { areFilesystemPathsEqual } from "@threadlines/shared/path";
 import { isTemporaryWorktreeBranch, WORKTREE_BRANCH_PREFIX } from "@threadlines/shared/git";
@@ -65,6 +70,10 @@ import {
 import { CheckpointStore } from "../../checkpointing/Services/CheckpointStore.ts";
 import { ensureGeneralChatThreadScratchCwd } from "../generalChats.ts";
 import { buildRoomCatchUp } from "../roomCatchUp.ts";
+
+/** Key for one agent in `OrchestrationThread.roomContext`. */
+const roomAgentContextKey = (participantId: ThreadParticipantId | null): string =>
+  participantId ?? "primary";
 import { pauseActiveThreadGoalForStop } from "../threadGoalLifecycle.ts";
 import { canReplaceThreadTitle } from "../threadTitle.ts";
 import { formatUserInputReply, readRequestedUserInput } from "../userInput.ts";
@@ -119,7 +128,10 @@ type ProviderIntentEvent = Extract<
       | "thread.goal-set-requested"
       | "thread.goal-clear-requested"
       | "thread.effective-cwd-set"
-      | "thread.participant-removed";
+      | "thread.participant-removed"
+      | "thread.side-turn-started"
+      | "thread.side-turn-interrupt-requested"
+      | "thread.side-turn-settled";
   }
 >;
 
@@ -389,6 +401,15 @@ const make = Effect.gen(function* () {
    * stay where they are.
    */
   const releasedMessageByThread = new Map<ThreadId, MessageId>();
+  /**
+   * A queued message whose turn came (the working turn finished, or the user
+   * just sent it) while its agent was answering on the side. When that answer
+   * settles the queue takes that one step: the message, or whatever is first
+   * in line if it was taken out meanwhile. A side answer ending is never a
+   * reason to send by itself: a failed or stopped working turn keeps holding
+   * the queue, and a new turn clears the entry (processTurnStartRequested).
+   */
+  const waitingOnSideAnswer = new Map<ThreadId, MessageId>();
 
   /**
    * Threads whose queued checkout switch is currently deferred because the
@@ -1351,17 +1372,32 @@ const make = Effect.gen(function* () {
     if (input.modelSelection !== undefined) {
       threadModelSelections.set(sessionKey, input.modelSelection);
     }
-    // In a room, what the other agents said and changed since this agent last
-    // took part. Built now, from the thread as it stands when the turn is sent.
+    const activeSession = yield* providerService
+      .listSessions()
+      .pipe(Effect.map((sessions) => sessions.find((session) => session.threadId === sessionKey)));
+    // In a room, what the other agents said and changed since this agent's
+    // conversation was last caught up. Built now, from the thread as it stands
+    // when the turn is sent; the cursor is only kept for the conversation it
+    // was delivered to.
+    const agentKey = roomAgentContextKey(input.participantId);
+    const conversationId = activeSession?.providerThreadId ?? null;
+    const storedCursor = thread.roomContext?.[agentKey] ?? null;
     const roomCatchUp = buildRoomCatchUp({
       thread,
       participantId: input.participantId,
       messageId: input.messageId,
+      cursor:
+        storedCursor !== null &&
+        conversationId !== null &&
+        storedCursor.conversationId === conversationId
+          ? storedCursor
+          : null,
+      lane: "main",
     });
     // A natively forked session already holds the full source history; the
     // context-seed preamble and re-sent source attachments would duplicate it.
     const forkContextText = !nativeForkApplied ? input.providerContext : undefined;
-    const providerContext = [forkContextText, roomCatchUp]
+    const providerContext = [forkContextText, roomCatchUp?.note]
       .filter((part): part is string => part !== undefined && part.length > 0)
       .join("\n\n");
     const messageText =
@@ -1373,9 +1409,6 @@ const make = Effect.gen(function* () {
       ...(nativeForkApplied ? [] : (input.providerAttachments ?? [])),
       ...(input.attachments ?? []),
     ];
-    const activeSession = yield* providerService
-      .listSessions()
-      .pipe(Effect.map((sessions) => sessions.find((session) => session.threadId === sessionKey)));
     const participant =
       input.participantId === null
         ? undefined
@@ -1443,16 +1476,47 @@ const make = Effect.gen(function* () {
         : requestedModelSelection);
 
     return {
-      threadId: sessionKey,
-      messageId: input.providerMessageId ?? input.messageId,
-      ...(normalizedInput ? { input: normalizedInput } : {}),
-      ...(normalizedAttachments.length > 0 ? { attachments: normalizedAttachments } : {}),
-      ...(input.skills !== undefined && input.skills.length > 0 ? { skills: input.skills } : {}),
-      ...(modelForTurn !== undefined ? { modelSelection: modelForTurn } : {}),
-      ...(input.interactionMode !== undefined ? { interactionMode: input.interactionMode } : {}),
-      ...(telemetryContext !== undefined ? { telemetryContext } : {}),
+      request: {
+        threadId: sessionKey,
+        messageId: input.providerMessageId ?? input.messageId,
+        ...(normalizedInput ? { input: normalizedInput } : {}),
+        ...(normalizedAttachments.length > 0 ? { attachments: normalizedAttachments } : {}),
+        ...(input.skills !== undefined && input.skills.length > 0 ? { skills: input.skills } : {}),
+        ...(modelForTurn !== undefined ? { modelSelection: modelForTurn } : {}),
+        ...(input.interactionMode !== undefined ? { interactionMode: input.interactionMode } : {}),
+        ...(telemetryContext !== undefined ? { telemetryContext } : {}),
+      },
+      // Recorded only once the provider has taken the turn.
+      roomContext:
+        roomCatchUp !== undefined && conversationId !== null
+          ? { agentKey, cursor: { conversationId, ...roomCatchUp.cursor } }
+          : undefined,
     };
   });
+
+  /** Record what one agent's conversation has now been told. */
+  const recordRoomContext = (
+    threadId: ThreadId,
+    roomContext: { readonly agentKey: string; readonly cursor: OrchestrationRoomContextCursor },
+    createdAt: string,
+  ) =>
+    orchestrationEngine
+      .dispatch({
+        type: "thread.room-context.record",
+        commandId: serverCommandId("room-context-record"),
+        threadId,
+        agentKey: roomContext.agentKey,
+        cursor: roomContext.cursor,
+        createdAt,
+      })
+      .pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("provider command reactor could not record room context", {
+            threadId,
+            cause: Cause.pretty(cause),
+          }),
+        ),
+      );
 
   const capturePreTurnCheckpointForTurnStart = Effect.fn("capturePreTurnCheckpointForTurnStart")(
     function* (input: { readonly threadId: ThreadId }) {
@@ -1634,9 +1698,11 @@ const make = Effect.gen(function* () {
       return;
     }
     // A new turn is the user moving on after Stop, and supersedes a message
-    // that was waiting on its own release.
+    // that was waiting on its own release or on a side answer: how this turn
+    // ends decides whether the queue moves again.
     queueHeldByStop.delete(event.payload.threadId);
     releasedMessageByThread.delete(event.payload.threadId);
+    waitingOnSideAnswer.delete(event.payload.threadId);
 
     const thread = yield* resolveThread(event.payload.threadId);
     if (!thread) {
@@ -1797,12 +1863,18 @@ const make = Effect.gen(function* () {
       ),
     );
 
-    yield* providerService.sendTurn(sendTurnRequest.value).pipe(
+    const { request: turnRequest, roomContext } = sendTurnRequest.value;
+    yield* providerService.sendTurn(turnRequest).pipe(
       Effect.flatMap((turn) =>
         markProviderTurnAccepted({
           threadId: event.payload.threadId,
           turnId: turn.turnId,
         }),
+      ),
+      Effect.tap(() =>
+        roomContext !== undefined
+          ? recordRoomContext(event.payload.threadId, roomContext, event.payload.createdAt)
+          : Effect.void,
       ),
       Effect.catchCause(recoverTurnStartFailure),
       Effect.forkScoped,
@@ -2514,6 +2586,7 @@ const make = Effect.gen(function* () {
     }
     // In a room, the other agents' runtimes stop with the thread too.
     yield* stopIdleRoomAgentSessions(thread);
+    yield* endSideTurn(thread.id, thread.sideTurn, event.payload.createdAt);
 
     explicitlyStoppedThreads.add(thread.id);
     const stoppedThread = yield* resolveThread(thread.id);
@@ -2720,7 +2793,11 @@ const make = Effect.gen(function* () {
       releasedMessageByThread.set(thread.id, event.payload.followUp.messageId);
       return;
     }
-    yield* sendQueuedFollowUp(thread.id, event.payload.followUp.messageId, event.occurredAt);
+    yield* sendQueuedFollowUpWhenFree(
+      thread.id,
+      event.payload.followUp.messageId,
+      event.occurredAt,
+    );
   });
 
   /**
@@ -2728,6 +2805,26 @@ const make = Effect.gen(function* () {
    * interrupted or failed turn does not, so nothing goes out after the user
    * pressed Stop.
    */
+  /** Send a queued message now, or once its agent's side answer settles. */
+  const sendQueuedFollowUpWhenFree = Effect.fnUntraced(function* (
+    threadId: ThreadId,
+    messageId: MessageId,
+    createdAt: string,
+  ) {
+    const thread = yield* resolveThread(threadId);
+    const queued = thread?.queuedFollowUps?.find((entry) => entry.messageId === messageId);
+    const sideTurn = thread?.sideTurn ?? null;
+    if (
+      queued !== undefined &&
+      sideTurn !== null &&
+      sideTurn.participantId === (queued.participantId ?? null)
+    ) {
+      waitingOnSideAnswer.set(threadId, messageId);
+      return;
+    }
+    yield* sendQueuedFollowUp(threadId, messageId, createdAt);
+  });
+
   const maybeSendNextQueuedFollowUp = Effect.fnUntraced(function* (
     event: Extract<ProviderIntentEvent, { type: "thread.session-set" }>,
   ) {
@@ -2741,6 +2838,7 @@ const make = Effect.gen(function* () {
       lastSessionStatusByThread.delete(threadId);
       lastBackgroundTaskCountByThread.delete(threadId);
       releasedMessageByThread.delete(threadId);
+      waitingOnSideAnswer.delete(threadId);
     } else {
       lastSessionStatusByThread.set(threadId, session.status);
       lastBackgroundTaskCountByThread.set(threadId, backgroundTaskCount);
@@ -2769,7 +2867,7 @@ const make = Effect.gen(function* () {
       session.status !== "starting"
     ) {
       releasedMessageByThread.delete(threadId);
-      yield* sendQueuedFollowUp(threadId, releasedMessageId, event.occurredAt);
+      yield* sendQueuedFollowUpWhenFree(threadId, releasedMessageId, event.occurredAt);
       return;
     }
     if (!turnFinished && !backgroundWorkFinished) {
@@ -2790,7 +2888,7 @@ const make = Effect.gen(function* () {
     ) {
       return;
     }
-    yield* sendQueuedFollowUp(threadId, next.messageId, event.occurredAt);
+    yield* sendQueuedFollowUpWhenFree(threadId, next.messageId, event.occurredAt);
   });
 
   /**
@@ -2888,6 +2986,333 @@ const make = Effect.gen(function* () {
     },
   );
 
+  // ---------------------------------------------------------------------------
+  // Side answers: a room agent answering the user read-only, in its own
+  // locked-down runtime, while another agent holds the thread. The runtime
+  // is a fork of the agent's own conversation (never that conversation), it
+  // is started with `lockdown`, and it is stopped once the answer settles.
+  // See docs/design/rooms-slice-2.md.
+  // ---------------------------------------------------------------------------
+
+  /** A side runtime has this long to take the question before it is given up. */
+  const SIDE_TURN_START_TIMEOUT = Duration.seconds(60);
+  /** After Stop, how long a side runtime gets to wind down before it is stopped. */
+  const SIDE_TURN_CANCEL_GRACE = Duration.seconds(10);
+  /** Cap on the working-tree diff handed to a side answer. */
+  const SIDE_TURN_DIFF_CHAR_LIMIT = 20_000;
+  /**
+   * The longest a side answer may run. A read-only answer that takes longer
+   * is stuck or wandering; stopping it keeps usage bounded, and keeps its
+   * Codex home well inside the stale-home sweep (codexSideAnswerHome.ts).
+   */
+  const SIDE_TURN_MAX_DURATION = Duration.minutes(30);
+
+  /** Settle a side answer; one that is no longer current is refused, harmlessly. */
+  const settleSideTurn = (input: {
+    readonly threadId: ThreadId;
+    readonly sideTurnId: SideTurnId;
+    readonly outcome: OrchestrationSideTurnOutcome;
+    readonly error?: string;
+    readonly createdAt: string;
+  }) =>
+    orchestrationEngine
+      .dispatch({
+        type: "thread.side-turn.settle",
+        commandId: serverCommandId("side-turn-settle"),
+        threadId: input.threadId,
+        sideTurnId: input.sideTurnId,
+        outcome: input.outcome,
+        ...(input.error !== undefined ? { error: input.error.slice(0, 500) } : {}),
+        createdAt: input.createdAt,
+      })
+      .pipe(
+        Effect.catch((error) =>
+          Effect.logDebug("provider command reactor did not settle a side answer", {
+            threadId: input.threadId,
+            sideTurnId: input.sideTurnId,
+            detail: String(error),
+          }),
+        ),
+      );
+
+  /** Stop a side answer's runtime. Retried once; a runtime already gone is fine. */
+  const stopSideRuntime = (
+    threadId: ThreadId,
+    sideTurn: Pick<OrchestrationSideTurn, "sideTurnId" | "participantId">,
+  ) =>
+    providerService
+      .stopSession({
+        threadId: sideSessionKey(threadId, sideTurn.sideTurnId, sideTurn.participantId),
+      })
+      .pipe(
+        Effect.retry({ times: 1 }),
+        Effect.catchCause((cause) =>
+          Effect.logDebug("provider command reactor could not stop a side runtime", {
+            threadId,
+            sideTurnId: sideTurn.sideTurnId,
+            cause: Cause.pretty(cause),
+          }),
+        ),
+      );
+
+  /** The checkout's uncommitted changes, bounded, for a side answer to read. */
+  const describeCheckoutChanges = (cwd: string) =>
+    gitWorkflow.workingTreeDiff({ cwd }).pipe(
+      Effect.map(({ diff }) =>
+        diff.trim().length === 0
+          ? "There are no uncommitted changes in the checkout right now."
+          : `The checkout's uncommitted changes right now (git diff):\n${
+              diff.length > SIDE_TURN_DIFF_CHAR_LIMIT
+                ? `${diff.slice(0, SIDE_TURN_DIFF_CHAR_LIMIT)}\n[diff clipped]`
+                : diff
+            }`,
+      ),
+      Effect.catchCause(() => Effect.succeed(undefined)),
+    );
+
+  const runSideTurn = Effect.fnUntraced(function* (input: {
+    readonly threadId: ThreadId;
+    readonly sideTurnId: SideTurnId;
+    readonly modelSelection: ModelSelection;
+  }) {
+    const { threadId, sideTurnId, modelSelection } = input;
+    const thread = yield* resolveThread(threadId);
+    const sideTurn = thread?.sideTurn ?? null;
+    if (!thread || sideTurn === null || sideTurn.sideTurnId !== sideTurnId) {
+      return;
+    }
+    const question = thread.messages.find((message) => message.id === sideTurn.messageId);
+    if (question === undefined) {
+      return yield* Effect.fail(new Error("The question for this side answer was not found."));
+    }
+    const key = sideSessionKey(threadId, sideTurnId, sideTurn.participantId);
+    const project = yield* resolveProject(thread.projectId);
+    const cwd =
+      resolveThreadWorkspaceCwd({ thread, projects: project ? [project] : [] }) ??
+      project?.workspaceRoot;
+    // Answer from the agent's own conversation when it lives on the provider
+    // instance it answers with; otherwise start fresh with the joining note.
+    const conversation = yield* providerService.readConversation({
+      threadId: participantSessionKey(threadId, sideTurn.participantId),
+    });
+    const forkFrom =
+      conversation !== null && conversation.providerInstanceId === modelSelection.instanceId
+        ? { providerThreadId: conversation.providerThreadId }
+        : undefined;
+    const startInput = (withFork: boolean) => ({
+      threadId: key,
+      providerInstanceId: modelSelection.instanceId,
+      ...(cwd !== undefined ? { cwd } : {}),
+      modelSelection,
+      runtimeMode: thread.runtimeMode,
+      lockdown: "side-answer" as const,
+      ...(withFork && forkFrom !== undefined ? { forkFrom } : {}),
+    });
+    const forked = yield* providerService.startSession(key, startInput(true)).pipe(
+      Effect.as(forkFrom !== undefined),
+      Effect.catch((error) =>
+        forkFrom === undefined
+          ? Effect.fail(error)
+          : Effect.logWarning("side answer could not fork the agent's conversation", {
+              threadId,
+              sideTurnId,
+              detail: String(error),
+            }).pipe(
+              Effect.andThen(providerService.startSession(key, startInput(false))),
+              Effect.as(false),
+            ),
+      ),
+    );
+    const storedCursor = thread.roomContext?.[roomAgentContextKey(sideTurn.participantId)] ?? null;
+    const catchUp = buildRoomCatchUp({
+      thread,
+      participantId: sideTurn.participantId,
+      messageId: sideTurn.messageId,
+      // The fork continues the agent's conversation, so it has been told what
+      // that conversation was told. A fresh start knows nothing.
+      cursor:
+        forked &&
+        storedCursor !== null &&
+        storedCursor.conversationId === forkFrom?.providerThreadId
+          ? storedCursor
+          : null,
+      fresh: !forked,
+      lane: "side",
+      workingParticipantId: sessionSlotParticipantId(thread.session),
+    });
+    const changes = cwd !== undefined ? yield* describeCheckoutChanges(cwd) : undefined;
+    const note = [catchUp?.note, changes]
+      .filter((part): part is string => part !== undefined && part.length > 0)
+      .join("\n\n");
+
+    // Stopped while it was starting: the question is never sent.
+    const latest = yield* resolveThread(threadId);
+    if (latest?.sideTurn?.sideTurnId !== sideTurnId || latest.sideTurn.status === "cancelling") {
+      yield* stopSideRuntime(threadId, sideTurn);
+      yield* settleSideTurn({
+        threadId,
+        sideTurnId,
+        outcome: "interrupted",
+        createdAt: yield* nowIso,
+      });
+      return;
+    }
+    const text = note.length > 0 ? withContextSeedPreamble(note, question.text) : question.text;
+    const providerInput = toNonEmptyProviderInput(text);
+    yield* providerService.sendTurn({
+      threadId: key,
+      messageId: sideTurn.messageId,
+      ...(providerInput !== undefined ? { input: providerInput } : {}),
+      modelSelection,
+      interactionMode: "default",
+    });
+    yield* orchestrationEngine
+      .dispatch({
+        type: "thread.side-turn.mark-running",
+        commandId: serverCommandId("side-turn-running"),
+        threadId,
+        sideTurnId,
+        createdAt: yield* nowIso,
+      })
+      .pipe(Effect.catch(() => Effect.void));
+  });
+
+  /**
+   * Start a side answer on the side: it never holds up this thread's other
+   * work in the reactor. Any failure, or no answer starting in time, settles
+   * it as failed and stops whatever runtime it got.
+   */
+  const processSideTurnStarted = Effect.fn("processSideTurnStarted")(function* (
+    event: Extract<ProviderIntentEvent, { type: "thread.side-turn-started" }>,
+  ) {
+    const { threadId, sideTurn, modelSelection } = event.payload;
+    // Still going at the limit: stopped, and it says why.
+    const stopIfStillRunning = Effect.gen(function* () {
+      yield* Effect.sleep(SIDE_TURN_MAX_DURATION);
+      const latest = yield* resolveThread(threadId);
+      if (latest?.sideTurn?.sideTurnId !== sideTurn.sideTurnId) {
+        return;
+      }
+      yield* stopSideRuntime(threadId, sideTurn);
+      yield* settleSideTurn({
+        threadId,
+        sideTurnId: sideTurn.sideTurnId,
+        outcome: "failed",
+        error: "it ran for 30 minutes and was stopped.",
+        createdAt: yield* nowIso,
+      });
+    });
+    yield* runSideTurn({ threadId, sideTurnId: sideTurn.sideTurnId, modelSelection }).pipe(
+      Effect.timeoutOrElse({
+        duration: SIDE_TURN_START_TIMEOUT,
+        orElse: () => Effect.fail(new Error("The side answer did not start in time.")),
+      }),
+      Effect.as(true),
+      Effect.catchCause((cause) =>
+        Effect.gen(function* () {
+          yield* Effect.logWarning("provider command reactor could not start a side answer", {
+            threadId,
+            sideTurnId: sideTurn.sideTurnId,
+            cause: Cause.pretty(cause),
+          });
+          yield* stopSideRuntime(threadId, sideTurn);
+          yield* settleSideTurn({
+            threadId,
+            sideTurnId: sideTurn.sideTurnId,
+            outcome: "failed",
+            error: `The side answer could not start: ${Cause.squash(cause) instanceof Error ? (Cause.squash(cause) as Error).message : "unknown error"}`,
+            createdAt: yield* nowIso,
+          });
+          return false;
+        }),
+      ),
+      Effect.flatMap((started) =>
+        started ? stopIfStillRunning.pipe(Effect.ignoreCause({ log: true })) : Effect.void,
+      ),
+      Effect.forkScoped,
+    );
+  });
+
+  /**
+   * Stop a side answer. Its runtime only ever runs this one turn, so the
+   * interrupt cannot hit anything else. Whatever it does next, the answer is
+   * over within the grace period.
+   */
+  const processSideTurnInterruptRequested = Effect.fn("processSideTurnInterruptRequested")(
+    function* (
+      event: Extract<ProviderIntentEvent, { type: "thread.side-turn-interrupt-requested" }>,
+    ) {
+      const { threadId, sideTurnId } = event.payload;
+      const thread = yield* resolveThread(threadId);
+      const sideTurn = thread?.sideTurn ?? null;
+      if (sideTurn === null || sideTurn.sideTurnId !== sideTurnId) {
+        return;
+      }
+      yield* providerService
+        .interruptTurn({ threadId: sideSessionKey(threadId, sideTurnId, sideTurn.participantId) })
+        .pipe(Effect.timeout(SIDE_TURN_CANCEL_GRACE), Effect.ignoreCause({ log: false }));
+      yield* Effect.sleep(SIDE_TURN_CANCEL_GRACE).pipe(
+        Effect.andThen(
+          Effect.gen(function* () {
+            const latest = yield* resolveThread(threadId);
+            if (latest?.sideTurn?.sideTurnId !== sideTurnId) {
+              return;
+            }
+            yield* stopSideRuntime(threadId, sideTurn);
+            yield* settleSideTurn({
+              threadId,
+              sideTurnId,
+              outcome: "interrupted",
+              createdAt: yield* nowIso,
+            });
+          }),
+        ),
+        Effect.forkScoped,
+      );
+    },
+  );
+
+  /**
+   * A side answer is over: its runtime goes, and a message that was waiting
+   * for that agent (it could not take the thread while answering) can go now.
+   */
+  const processSideTurnSettled = Effect.fn("processSideTurnSettled")(function* (
+    event: Extract<ProviderIntentEvent, { type: "thread.side-turn-settled" }>,
+  ) {
+    const { threadId, sideTurnId, participantId } = event.payload;
+    yield* stopSideRuntime(threadId, { sideTurnId, participantId }).pipe(Effect.forkScoped);
+    const waiting = waitingOnSideAnswer.get(threadId);
+    waitingOnSideAnswer.delete(threadId);
+    if (waiting === undefined || queueHeldByStop.has(threadId)) {
+      return;
+    }
+    const thread = yield* resolveThread(threadId);
+    const head = thread?.queuedFollowUps?.[0];
+    const status = thread?.session?.status;
+    if (!thread || !head || status === "running" || status === "starting") {
+      return;
+    }
+    yield* sendQueuedFollowUpWhenFree(threadId, head.messageId, event.occurredAt);
+  });
+
+  /** Stop and settle the side answer in progress, if any (session stop, restart). */
+  const endSideTurn = Effect.fnUntraced(function* (
+    threadId: ThreadId,
+    sideTurn: OrchestrationSideTurn | null | undefined,
+    createdAt: string,
+  ) {
+    if (sideTurn === null || sideTurn === undefined) {
+      return;
+    }
+    yield* stopSideRuntime(threadId, sideTurn);
+    yield* settleSideTurn({
+      threadId,
+      sideTurnId: sideTurn.sideTurnId,
+      outcome: "interrupted",
+      createdAt,
+    });
+  });
+
   const processDomainEvent = Effect.fn("processDomainEvent")(function* (
     event: ProviderIntentEvent,
   ) {
@@ -2982,6 +3407,15 @@ const make = Effect.gen(function* () {
       case "thread.session-set":
         yield* processSessionSet(event);
         return;
+      case "thread.side-turn-started":
+        yield* processSideTurnStarted(event);
+        return;
+      case "thread.side-turn-interrupt-requested":
+        yield* processSideTurnInterruptRequested(event);
+        return;
+      case "thread.side-turn-settled":
+        yield* processSideTurnSettled(event);
+        return;
       case "thread.participant-removed": {
         // The decider only lets an agent leave while it is not working, so its
         // runtime is idle and can go.
@@ -3072,6 +3506,15 @@ const make = Effect.gen(function* () {
     function* () {
       const snapshot = yield* projectionSnapshotQuery.getShellSnapshot();
       for (const thread of snapshot.threads) {
+        // Side runtimes lived in the previous process too.
+        if (thread.sideTurn) {
+          yield* settleSideTurn({
+            threadId: thread.id,
+            sideTurnId: thread.sideTurn.sideTurnId,
+            outcome: "interrupted",
+            createdAt: yield* nowIso,
+          });
+        }
         const session = thread.session;
         if (!session) {
           continue;
@@ -3157,7 +3600,10 @@ const make = Effect.gen(function* () {
         event.type === "thread.goal-set-requested" ||
         event.type === "thread.goal-clear-requested" ||
         event.type === "thread.effective-cwd-set" ||
-        event.type === "thread.participant-removed"
+        event.type === "thread.participant-removed" ||
+        event.type === "thread.side-turn-started" ||
+        event.type === "thread.side-turn-interrupt-requested" ||
+        event.type === "thread.side-turn-settled"
       ) {
         return yield* worker.enqueue(String(event.aggregateId), event);
       }

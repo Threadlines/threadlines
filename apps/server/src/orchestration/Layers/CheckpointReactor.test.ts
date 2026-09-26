@@ -9,6 +9,7 @@ import {
   ProviderRuntimeEvent,
   ProviderSession,
   ProviderInstanceId,
+  ThreadParticipantId,
 } from "@threadlines/contracts";
 import {
   CheckpointRef,
@@ -24,6 +25,8 @@ import {
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
+import { participantSessionKey } from "@threadlines/shared/threadParticipants";
+import { turnAdmission } from "../turnAdmission.ts";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as ManagedRuntime from "effect/ManagedRuntime";
@@ -131,6 +134,7 @@ function createProviderServiceHarness(
     startReview: () => unsupported(),
     interruptTurn: () => unsupported(),
     releaseBackgroundCommands: () => Effect.void,
+    readConversation: () => Effect.succeed(null),
     compactContext: () => unsupported(),
     setThreadGoal: () => unsupported(),
     pauseThreadGoalForStop: () => unsupported(),
@@ -1438,6 +1442,130 @@ describe("CheckpointReactor", () => {
       (entry) => entry.latestTurn?.turnId === "turn-main" && entry.checkpoints.length === 1,
     );
     expect(thread.checkpoints[0]?.checkpointTurnCount).toBe(1);
+  });
+
+  it("never checkpoints a room agent's own wake-up that ingestion turned away", async () => {
+    const harness = await createHarness({ seedFilesystemCheckpoints: false });
+    const createdAt = "2026-01-01T00:00:00.000Z";
+    const threadId = ThreadId.make("thread-1");
+    const astraId = ThreadParticipantId.make("7a0b1c2d-3e4f-4a5b-8c6d-7e8f9a0b1c2d");
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.participant.add",
+        commandId: CommandId.make("cmd-room-add"),
+        threadId,
+        participant: {
+          id: astraId,
+          handle: "GPT-6 Astra",
+          modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6-astra" },
+        },
+        createdAt,
+      }),
+    );
+    // Astra, idle, woke itself up; ingestion turned the turn away. A second
+    // wake-up has no decision at all (ingestion stalled, or it was
+    // forgotten): from an agent not holding the thread, that is no either.
+    await Effect.runPromise(
+      turnAdmission.decide(participantSessionKey(threadId, astraId), "turn-wake", "rejected"),
+    );
+    for (const turnId of ["turn-wake", "turn-wake-undecided"]) {
+      for (const type of ["turn.started", "turn.completed"] as const) {
+        harness.provider.emit({
+          type,
+          eventId: EventId.make(`evt-${turnId}-${type}`),
+          provider: ProviderDriverKind.make("codex"),
+          createdAt,
+          threadId,
+          participantId: astraId,
+          turnId: asTurnId(turnId),
+          ...(type === "turn.completed" ? { payload: { state: "interrupted" } } : {}),
+        } as never);
+      }
+    }
+    await harness.drain();
+
+    const thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+    expect(thread?.checkpoints).toHaveLength(0);
+    expect(thread?.latestTurn ?? null).toBeNull();
+  });
+
+  it("never checkpoints another agent's edits as a turn whose completion arrived late", async () => {
+    const harness = await createHarness({ seedFilesystemCheckpoints: false });
+    const createdAt = "2026-01-01T00:00:00.000Z";
+    const threadId = ThreadId.make("thread-1");
+    const astraId = ThreadParticipantId.make("7a0b1c2d-3e4f-4a5b-8c6d-7e8f9a0b1c2d");
+    const dispatch = (command: Parameters<typeof harness.engine.dispatch>[0]) =>
+      Effect.runPromise(harness.engine.dispatch(command));
+    const session = (overrides: Record<string, unknown>) => ({
+      threadId,
+      status: "ready" as const,
+      providerName: "codex",
+      runtimeMode: "approval-required" as const,
+      activeTurnId: null,
+      lastError: null,
+      updatedAt: createdAt,
+      ...overrides,
+    });
+    await dispatch({
+      type: "thread.participant.add",
+      commandId: CommandId.make("cmd-handover-add"),
+      threadId,
+      participant: {
+        id: astraId,
+        handle: "GPT-6 Astra",
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6-astra" },
+      },
+      createdAt,
+    });
+    await dispatch({
+      type: "thread.session.set",
+      commandId: CommandId.make("cmd-handover-ready"),
+      threadId,
+      session: session({}),
+      createdAt,
+    });
+    // The thread's own agent works a turn that ingestion admitted as main.
+    await Effect.runPromise(
+      turnAdmission.decide(participantSessionKey(threadId, null), "turn-own", "main"),
+    );
+    harness.provider.emit({
+      type: "turn.started",
+      eventId: EventId.make("evt-handover-started"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt,
+      threadId,
+      turnId: asTurnId("turn-own"),
+    });
+    await waitForGitRefExists(harness.cwd, checkpointRefForThreadTurn(threadId, 0));
+    fs.writeFileSync(path.join(harness.cwd, "README.md"), "v2\n", "utf8");
+
+    // Astra takes the thread and edits before the completion is processed.
+    await dispatch({
+      type: "thread.session.set",
+      commandId: CommandId.make("cmd-handover-astra"),
+      threadId,
+      session: session({
+        status: "running",
+        participantId: astraId,
+        activeTurnId: asTurnId("turn-astra"),
+      }),
+      createdAt,
+    });
+    fs.writeFileSync(path.join(harness.cwd, "astra.md"), "astra's work\n", "utf8");
+    harness.provider.emit({
+      type: "turn.completed",
+      eventId: EventId.make("evt-handover-completed"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt,
+      threadId,
+      turnId: asTurnId("turn-own"),
+      payload: { state: "completed" },
+    });
+
+    await harness.drain();
+    // Dropped rather than captured from a checkout holding astra's edits.
+    const thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+    expect(thread?.checkpoints).toHaveLength(0);
   });
 
   it("captures pre-turn and completion checkpoints for claude runtime events", async () => {

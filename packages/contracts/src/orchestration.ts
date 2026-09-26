@@ -4,7 +4,7 @@ import * as Schema from "effect/Schema";
 import * as SchemaIssue from "effect/SchemaIssue";
 import * as SchemaTransformation from "effect/SchemaTransformation";
 import * as Struct from "effect/Struct";
-import { ProviderOptionSelections } from "./model.ts";
+import { ProviderOptionSelection, ProviderOptionSelections } from "./model.ts";
 import { RepositoryIdentity } from "./environment.ts";
 import {
   ApprovalRequestId,
@@ -18,6 +18,7 @@ import {
   ProjectId,
   ProviderItemId,
   ThreadId,
+  SideTurnId,
   ThreadParticipantId,
   TrimmedNonEmptyString,
   TurnId,
@@ -421,6 +422,11 @@ export const OrchestrationMessage = Schema.Struct({
    * message was addressed to. Null or absent means the thread's own agent.
    */
   participantId: Schema.optional(Schema.NullOr(ThreadParticipantId)),
+  /**
+   * Set on the question and the answer of a side answer (see SideTurnId).
+   * Those carry `turnId: null`: they are never part of a main turn.
+   */
+  sideTurnId: Schema.optional(SideTurnId),
   turnId: Schema.NullOr(TurnId),
   streaming: Schema.Boolean,
   createdAt: IsoDateTime,
@@ -699,6 +705,10 @@ export const OrchestrationThreadActivity = Schema.Struct({
   summary: TrimmedNonEmptyString,
   payload: Schema.Unknown,
   turnId: Schema.NullOr(TurnId),
+  /** A step of a side answer; `turnId` is null. See OrchestrationMessage.sideTurnId. */
+  sideTurnId: Schema.optional(SideTurnId),
+  /** In a room, the agent that took the step. Absent: the one holding the thread. */
+  participantId: Schema.optional(Schema.NullOr(ThreadParticipantId)),
   sequence: Schema.optional(NonNegativeInt),
   createdAt: IsoDateTime,
 });
@@ -807,10 +817,25 @@ export type OrchestrationQueuedFollowUp = typeof OrchestrationQueuedFollowUp.Typ
  * it keeps `OrchestrationThread.modelSelection` and is addressed with a null
  * participant id.
  */
+/**
+ * A name the user gives a room agent ("Reviewer"). It is shown after the
+ * model's name, "GPT-6 Astra 2 (Reviewer)", so the model stays visible.
+ */
+export const ROOM_AGENT_ROLE_MAX_LENGTH = 32;
+export const RoomAgentRole = TrimmedNonEmptyString.check(
+  Schema.isMaxLength(ROOM_AGENT_ROLE_MAX_LENGTH),
+);
+export type RoomAgentRole = typeof RoomAgentRole.Type;
+
 export const OrchestrationThreadParticipant = Schema.Struct({
   id: ThreadParticipantId,
-  /** What the user types after `@`. Unique per thread, case-insensitively. */
+  /**
+   * The agent's name, as the room shows it (its model's name, numbered for
+   * repeats). Unique per thread, case-insensitively.
+   */
   handle: TrimmedNonEmptyString,
+  /** See RoomAgentRole. Absent: none. */
+  role: Schema.optional(RoomAgentRole),
   modelSelection: ModelSelection,
   joinedAt: IsoDateTime,
   /**
@@ -820,6 +845,50 @@ export const OrchestrationThreadParticipant = Schema.Struct({
   leftAt: Schema.NullOr(IsoDateTime).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
 });
 export type OrchestrationThreadParticipant = typeof OrchestrationThreadParticipant.Type;
+
+export const OrchestrationSideTurnStatus = Schema.Literals(["starting", "running", "cancelling"]);
+export type OrchestrationSideTurnStatus = typeof OrchestrationSideTurnStatus.Type;
+
+/**
+ * A side answer in progress: a room agent answering the user read-only, in
+ * its own locked-down runtime, while another agent holds the thread. At most
+ * one per thread. See docs/design/rooms-slice-2.md.
+ */
+export const OrchestrationSideTurn = Schema.Struct({
+  sideTurnId: SideTurnId,
+  /** The answering agent. Null: the thread's own agent. */
+  participantId: Schema.NullOr(ThreadParticipantId),
+  /** The question it is answering. */
+  messageId: MessageId,
+  status: OrchestrationSideTurnStatus,
+  startedAt: IsoDateTime,
+});
+export type OrchestrationSideTurn = typeof OrchestrationSideTurn.Type;
+
+export const OrchestrationSideTurnOutcome = Schema.Literals(["completed", "failed", "interrupted"]);
+export type OrchestrationSideTurnOutcome = typeof OrchestrationSideTurnOutcome.Type;
+
+/**
+ * The activity kind a side answer that ended without a finished reply leaves
+ * behind (payload `{ outcome, error? }`), recorded with the settle itself.
+ */
+export const SIDE_ANSWER_OUTCOME_ACTIVITY_KIND = "side-answer.outcome";
+
+/**
+ * How much of the room one agent's own conversation has been told, so its
+ * next catch-up note starts where the last one ended. It belongs to a
+ * durable conversation: a new native conversation starts over, and a side
+ * answer's disposable fork never moves it.
+ */
+export const OrchestrationRoomContextCursor = Schema.Struct({
+  /** The native conversation it was delivered to. */
+  conversationId: Schema.NullOr(TrimmedNonEmptyString),
+  /** Room messages up to this event sequence have been delivered. */
+  throughSequence: NonNegativeInt,
+  /** Messages delivered while still streaming, owed again with final text. */
+  partialMessageIds: Schema.Array(MessageId),
+});
+export type OrchestrationRoomContextCursor = typeof OrchestrationRoomContextCursor.Type;
 
 /** Where a thread's `effectiveCwd` came from. See OrchestrationThread. */
 export const ThreadEffectiveCwdSource = Schema.Literals(["session", "subagent", "selection"]);
@@ -877,6 +946,15 @@ export const OrchestrationThread = Schema.Struct({
   participants: Schema.Array(OrchestrationThreadParticipant).pipe(
     Schema.withDecodingDefault(Effect.succeed([])),
   ),
+  /** See OrchestrationThreadShell.sideTurn. */
+  sideTurn: Schema.optional(Schema.NullOr(OrchestrationSideTurn)),
+  /** See OrchestrationThreadShell.agentRole. */
+  agentRole: Schema.optional(RoomAgentRole),
+  /**
+   * Per agent (`primary` or a participant id), what its conversation has been
+   * told. Absent: nothing yet.
+   */
+  roomContext: Schema.optional(Schema.Record(Schema.String, OrchestrationRoomContextCursor)),
   /** See OrchestrationThreadShell.doneOverride. */
   doneOverride: Schema.NullOr(OrchestrationThreadDoneOverride).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
@@ -984,6 +1062,14 @@ export const OrchestrationThreadShell = Schema.Struct({
   participants: Schema.Array(OrchestrationThreadParticipant).pipe(
     Schema.withDecodingDefault(Effect.succeed([])),
   ),
+  /**
+   * In a room, the side answer in progress, if any. It counts as live work
+   * everywhere the app counts work, next to the session. Absent or null:
+   * none.
+   */
+  sideTurn: Schema.optional(Schema.NullOr(OrchestrationSideTurn)),
+  /** In a room, the user's name for the thread's own agent (RoomAgentRole). */
+  agentRole: Schema.optional(RoomAgentRole),
   /**
    * The user's last explicit Mark done / Reopen for this thread, or null if
    * they never gave one. Deliberately does not move `updatedAt`: the inbox
@@ -1289,6 +1375,24 @@ const ThreadParticipantAddCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+/**
+ * Change a room agent: its name (any agent, the thread's own included) or an
+ * added agent's model options, saved as soon as they are picked. The thread's
+ * own agent keeps its model options with the thread's settings.
+ */
+const ThreadParticipantUpdateCommand = Schema.Struct({
+  type: Schema.Literal("thread.participant.update"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  /** Null: the thread's own agent. */
+  participantId: Schema.NullOr(ThreadParticipantId),
+  /** Null clears the name. Absent: unchanged. */
+  role: Schema.optional(Schema.NullOr(RoomAgentRole)),
+  /** An added agent's options (reasoning and the like). Absent: unchanged. */
+  modelOptions: Schema.optional(Schema.Array(ProviderOptionSelection)),
+  createdAt: IsoDateTime,
+});
+
 /** Take an added agent out of a thread. Its provider session is stopped. */
 const ThreadParticipantRemoveCommand = Schema.Struct({
   type: Schema.Literal("thread.participant.remove"),
@@ -1481,6 +1585,37 @@ const ThreadTurnInterruptCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+/**
+ * Ask a room agent something while another agent holds the thread. It
+ * answers read-only, in its own locked-down runtime (a side answer).
+ */
+const ThreadSideTurnStartCommand = Schema.Struct({
+  type: Schema.Literal("thread.side-turn.start"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  sideTurnId: SideTurnId,
+  /** The agent to ask. Null: the thread's own agent. */
+  participantId: Schema.NullOr(ThreadParticipantId),
+  message: Schema.Struct({
+    messageId: MessageId,
+    role: Schema.Literal("user"),
+    text: Schema.String,
+    skills: Schema.optional(ChatSkillReferenceList),
+  }),
+  /** Reasoning or other options picked for this agent and not sent yet. */
+  modelSelection: Schema.optional(ModelSelection),
+  createdAt: IsoDateTime,
+});
+
+/** Stop a side answer. A side answer that is no longer running is left alone. */
+const ThreadSideTurnInterruptCommand = Schema.Struct({
+  type: Schema.Literal("thread.side-turn.interrupt"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  sideTurnId: SideTurnId,
+  createdAt: IsoDateTime,
+});
+
 const ThreadRealtimeStartCommand = Schema.Struct({
   type: Schema.Literal("thread.realtime.start"),
   commandId: CommandId,
@@ -1600,6 +1735,7 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ThreadDoneOverrideSetCommand,
   ThreadSeenSetCommand,
   ThreadParticipantAddCommand,
+  ThreadParticipantUpdateCommand,
   ThreadParticipantRemoveCommand,
   ThreadMetaUpdateCommand,
   ThreadCheckoutSelectCommand,
@@ -1610,6 +1746,8 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ThreadFollowUpSubmitCommand,
   ThreadFollowUpUnqueueCommand,
   ThreadTurnInterruptCommand,
+  ThreadSideTurnStartCommand,
+  ThreadSideTurnInterruptCommand,
   ThreadRealtimeStartCommand,
   ThreadRealtimeStopCommand,
   ThreadTurnRetryCommand,
@@ -1639,6 +1777,7 @@ export const ClientOrchestrationCommand = Schema.Union([
   ThreadDoneOverrideSetCommand,
   ThreadSeenSetCommand,
   ThreadParticipantAddCommand,
+  ThreadParticipantUpdateCommand,
   ThreadParticipantRemoveCommand,
   ThreadMetaUpdateCommand,
   ThreadCheckoutSelectCommand,
@@ -1649,6 +1788,8 @@ export const ClientOrchestrationCommand = Schema.Union([
   ClientThreadFollowUpSubmitCommand,
   ThreadFollowUpUnqueueCommand,
   ThreadTurnInterruptCommand,
+  ThreadSideTurnStartCommand,
+  ThreadSideTurnInterruptCommand,
   ThreadRealtimeStartCommand,
   ThreadRealtimeStopCommand,
   ThreadTurnRetryCommand,
@@ -1705,6 +1846,8 @@ const ThreadMessageAssistantDeltaCommand = Schema.Struct({
    * Absent: the agent holding the session slot when the command is decided.
    */
   participantId: Schema.optional(Schema.NullOr(ThreadParticipantId)),
+  /** Part of a side answer; see OrchestrationMessage.sideTurnId. */
+  sideTurnId: Schema.optional(SideTurnId),
   delta: Schema.String,
   turnId: Schema.optional(TurnId),
   createdAt: IsoDateTime,
@@ -1732,6 +1875,8 @@ const ThreadMessageAssistantCompleteCommand = Schema.Struct({
    * Absent: the agent holding the session slot when the command is decided.
    */
   participantId: Schema.optional(Schema.NullOr(ThreadParticipantId)),
+  /** Part of a side answer; see OrchestrationMessage.sideTurnId. */
+  sideTurnId: Schema.optional(SideTurnId),
   turnId: Schema.optional(TurnId),
   /** True only when the authoritative provider turn (or imported historical
    * turn) has settled. Completing one live assistant segment is non-terminal. */
@@ -1857,6 +2002,40 @@ const ThreadFollowUpSendQueuedCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+/** The side answer's runtime has taken the question. */
+const ThreadSideTurnMarkRunningCommand = Schema.Struct({
+  type: Schema.Literal("thread.side-turn.mark-running"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  sideTurnId: SideTurnId,
+  createdAt: IsoDateTime,
+});
+
+/**
+ * A side answer is over. Its answer message is final before this is sent.
+ * A side answer that is no longer the thread's current one is left alone.
+ */
+const ThreadSideTurnSettleCommand = Schema.Struct({
+  type: Schema.Literal("thread.side-turn.settle"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  sideTurnId: SideTurnId,
+  outcome: OrchestrationSideTurnOutcome,
+  answerMessageId: Schema.optional(MessageId),
+  error: Schema.optional(TrimmedNonEmptyString),
+  createdAt: IsoDateTime,
+});
+
+/** Record what one agent's conversation was told; see OrchestrationRoomContextCursor. */
+const ThreadRoomContextRecordCommand = Schema.Struct({
+  type: Schema.Literal("thread.room-context.record"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  agentKey: TrimmedNonEmptyString,
+  cursor: OrchestrationRoomContextCursor,
+  createdAt: IsoDateTime,
+});
+
 const InternalOrchestrationCommand = Schema.Union([
   ThreadSessionSetCommand,
   ThreadRealtimeStateSetCommand,
@@ -1874,6 +2053,9 @@ const InternalOrchestrationCommand = Schema.Union([
   ThreadActivityAppendCommand,
   ThreadFollowUpAcceptCommand,
   ThreadFollowUpSendQueuedCommand,
+  ThreadSideTurnMarkRunningCommand,
+  ThreadSideTurnSettleCommand,
+  ThreadRoomContextRecordCommand,
   ThreadRevertCompleteCommand,
   ThreadPullRequestLinkCommand,
 ]);
@@ -1900,7 +2082,13 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.done-override-set",
   "thread.seen-set",
   "thread.participant-added",
+  "thread.participant-updated",
   "thread.participant-removed",
+  "thread.side-turn-started",
+  "thread.side-turn-interrupt-requested",
+  "thread.side-turn-running",
+  "thread.side-turn-settled",
+  "thread.room-context-recorded",
   "thread.meta-updated",
   "thread.runtime-mode-set",
   "thread.interaction-mode-set",
@@ -2042,10 +2230,59 @@ export const ThreadParticipantAddedPayload = Schema.Struct({
   updatedAt: IsoDateTime,
 });
 
+export const ThreadParticipantUpdatedPayload = Schema.Struct({
+  threadId: ThreadId,
+  /** Null: the thread's own agent. */
+  participantId: Schema.NullOr(ThreadParticipantId),
+  /** Null clears the name. Absent: unchanged. */
+  role: Schema.optional(Schema.NullOr(RoomAgentRole)),
+  /** An added agent's model with its new options. Absent: unchanged. */
+  modelSelection: Schema.optional(ModelSelection),
+  updatedAt: IsoDateTime,
+});
+
 export const ThreadParticipantRemovedPayload = Schema.Struct({
   threadId: ThreadId,
   participantId: ThreadParticipantId,
   updatedAt: IsoDateTime,
+});
+
+/** The question itself is recorded by the `thread.message-sent` beside it. */
+export const ThreadSideTurnStartedPayload = Schema.Struct({
+  threadId: ThreadId,
+  sideTurn: OrchestrationSideTurn,
+  /** The model the answering agent runs with, options included. */
+  modelSelection: ModelSelection,
+});
+
+export const ThreadSideTurnInterruptRequestedPayload = Schema.Struct({
+  threadId: ThreadId,
+  sideTurnId: SideTurnId,
+  createdAt: IsoDateTime,
+});
+
+export const ThreadSideTurnRunningPayload = Schema.Struct({
+  threadId: ThreadId,
+  sideTurnId: SideTurnId,
+  updatedAt: IsoDateTime,
+});
+
+export const ThreadSideTurnSettledPayload = Schema.Struct({
+  threadId: ThreadId,
+  sideTurnId: SideTurnId,
+  participantId: Schema.NullOr(ThreadParticipantId),
+  messageId: MessageId,
+  outcome: OrchestrationSideTurnOutcome,
+  answerMessageId: Schema.optional(MessageId),
+  error: Schema.optional(TrimmedNonEmptyString),
+  settledAt: IsoDateTime,
+});
+
+export const ThreadRoomContextRecordedPayload = Schema.Struct({
+  threadId: ThreadId,
+  agentKey: TrimmedNonEmptyString,
+  cursor: OrchestrationRoomContextCursor,
+  createdAt: IsoDateTime,
 });
 
 export const ThreadMetaUpdatedPayload = Schema.Struct({
@@ -2080,6 +2317,8 @@ export const ThreadMessageSentPayload = Schema.Struct({
   skills: Schema.optional(ChatSkillReferenceList),
   /** See OrchestrationMessage.participantId. */
   participantId: Schema.optional(Schema.NullOr(ThreadParticipantId)),
+  /** See OrchestrationMessage.sideTurnId. */
+  sideTurnId: Schema.optional(SideTurnId),
   turnId: Schema.NullOr(TurnId),
   streaming: Schema.Boolean,
   /** Missing means legacy behavior for events written before assistant
@@ -2358,8 +2597,38 @@ export const OrchestrationEvent = Schema.Union([
   }),
   Schema.Struct({
     ...EventBaseFields,
+    type: Schema.Literal("thread.participant-updated"),
+    payload: ThreadParticipantUpdatedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
     type: Schema.Literal("thread.participant-removed"),
     payload: ThreadParticipantRemovedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.side-turn-started"),
+    payload: ThreadSideTurnStartedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.side-turn-interrupt-requested"),
+    payload: ThreadSideTurnInterruptRequestedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.side-turn-running"),
+    payload: ThreadSideTurnRunningPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.side-turn-settled"),
+    payload: ThreadSideTurnSettledPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.room-context-recorded"),
+    payload: ThreadRoomContextRecordedPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,

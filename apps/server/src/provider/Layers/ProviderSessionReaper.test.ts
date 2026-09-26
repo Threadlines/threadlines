@@ -216,6 +216,7 @@ describe("ProviderSessionReaper", () => {
       startReview: () => unsupported(),
       interruptTurn: () => unsupported(),
       releaseBackgroundCommands: () => Effect.void,
+      readConversation: () => Effect.succeed(null),
       compactContext: () => unsupported(),
       setThreadGoal: () => unsupported(),
       pauseThreadGoalForStop: () => Effect.succeed(null),

@@ -219,6 +219,19 @@ function makeThreadOpenResponse(
 }
 
 describe("buildTurnStartParams", () => {
+  it("keeps a side answer read-only with no approvals, whatever the thread's mode", () => {
+    const params = Effect.runSync(
+      buildTurnStartParams({
+        threadId: "provider-thread-side",
+        runtimeMode: "full-access",
+        prompt: "What does this do?",
+        lockdown: true,
+      }),
+    );
+    assert.equal(params.approvalPolicy, "never");
+    assert.deepStrictEqual(params.sandboxPolicy, { type: "readOnly" });
+  });
+
   it("includes plan collaboration mode when requested", () => {
     const params = Effect.runSync(
       buildTurnStartParams({

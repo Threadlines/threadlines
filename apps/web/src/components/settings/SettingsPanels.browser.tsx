@@ -79,6 +79,17 @@ function renderWithTestRouter(children: ReactNode) {
   return render(<RouterProvider router={router} />);
 }
 
+/**
+ * Waits for the collapsible panel around `inside` to finish opening. The
+ * element can have stable bounds while its panel is still revealing it, and a
+ * pointer click sent then can miss.
+ */
+async function waitForPanelOpen(inside: Element | null) {
+  const panel = inside?.closest('[data-slot="collapsible-panel"]');
+  if (!panel) throw new Error("Expected the element inside a collapsible panel");
+  await Promise.all(panel.getAnimations().map((animation) => animation.finished));
+}
+
 const authAccessHarness = vi.hoisted(() => {
   type Snapshot = AuthAccessSnapshot;
   let snapshot: Snapshot = {
@@ -1893,12 +1904,8 @@ describe("GeneralSettingsPanel observability", () => {
     const advancedTokenLabel = page.getByText("Advanced: headless chat token");
     await expect.element(advancedTokenLabel).toBeVisible();
     const advancedTokenToggle = advancedTokenLabel.element().closest("summary");
-    // The summary can have stable bounds while its parent is still revealing it.
-    // Wait for that height transition before sending a pointer click.
-    const detailsPanel = advancedTokenToggle?.closest('[data-slot="collapsible-panel"]');
-    if (!advancedTokenToggle || !detailsPanel)
-      throw new Error("Claude details panel did not render");
-    await Promise.all(detailsPanel.getAnimations().map((animation) => animation.finished));
+    if (!advancedTokenToggle) throw new Error("Claude details panel did not render");
+    await waitForPanelOpen(advancedTokenToggle);
     await page.elementLocator(advancedTokenToggle).click();
     await expect.element(page.getByText(/Optional for remote or headless chat/)).toBeVisible();
   });
@@ -1921,7 +1928,10 @@ describe("GeneralSettingsPanel observability", () => {
     );
 
     await page.getByLabelText("Toggle Claude details").click();
-    await page.getByRole("button", { name: "Sign in", exact: true }).click();
+    const signIn = page.getByRole("button", { name: "Sign in", exact: true });
+    await expect.element(signIn).toBeVisible();
+    await waitForPanelOpen(signIn.element());
+    await signIn.click();
 
     await vi.waitFor(() => {
       expect(providerAuthHarness.startCalls).toEqual([

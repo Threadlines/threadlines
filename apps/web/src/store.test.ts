@@ -8,7 +8,9 @@ import {
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
+  SideTurnId,
   ThreadId,
+  ThreadParticipantId,
   TurnId,
   type OrchestrationEvent,
 } from "@threadlines/contracts";
@@ -1293,6 +1295,122 @@ describe("incremental orchestration updates", () => {
     });
   });
 
+  it("follows a side answer live, from the question to its settle", () => {
+    const threadId = ThreadId.make("thread-1");
+    const sideTurnId = SideTurnId.make("side-live-1");
+    const questionId = MessageId.make("side-question-1");
+    const ref = scopeThreadRef(localEnvironmentId, threadId);
+    const apply = (state: AppState, event: OrchestrationEvent) =>
+      applyOrchestrationEvent(state, event, localEnvironmentId);
+
+    let state = makeState(makeThread({ id: threadId }));
+    state = apply(
+      state,
+      makeEvent("thread.message-sent", {
+        threadId,
+        messageId: questionId,
+        role: "user",
+        text: "how many attempts?",
+        sideTurnId,
+        turnId: null,
+        streaming: false,
+        createdAt: "2026-02-27T00:00:02.000Z",
+        updatedAt: "2026-02-27T00:00:02.000Z",
+      }),
+    );
+    state = apply(
+      state,
+      makeEvent("thread.side-turn-started", {
+        threadId,
+        sideTurn: {
+          sideTurnId,
+          participantId: null,
+          messageId: questionId,
+          status: "starting",
+          startedAt: "2026-02-27T00:00:02.000Z",
+        },
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: DEFAULT_MODEL },
+      }),
+    );
+    state = apply(
+      state,
+      makeEvent("thread.side-turn-running", {
+        threadId,
+        sideTurnId,
+        updatedAt: "2026-02-27T00:00:03.000Z",
+      }),
+    );
+    const answering = selectThreadByRef(state, ref);
+    expect(answering?.messages[0]?.sideTurnId).toBe(sideTurnId);
+    expect(answering?.sideTurn?.status).toBe("running");
+
+    state = apply(
+      state,
+      makeEvent("thread.side-turn-settled", {
+        threadId,
+        sideTurnId,
+        participantId: null,
+        messageId: questionId,
+        outcome: "completed",
+        settledAt: "2026-02-27T00:00:09.000Z",
+      }),
+    );
+    expect(selectThreadByRef(state, ref)?.sideTurn ?? null).toBeNull();
+  });
+
+  it("shows an agent's new name and reasoning as soon as they are saved", () => {
+    const threadId = ThreadId.make("thread-1");
+    const astraId = ThreadParticipantId.make("agent-astra");
+    const ref = scopeThreadRef(localEnvironmentId, threadId);
+    const astra = {
+      id: astraId,
+      handle: "GPT-6 Astra",
+      modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6-astra" },
+      joinedAt: "2026-02-27T00:00:00.000Z",
+      leftAt: null,
+    };
+    let state = makeState(makeThread({ id: threadId }));
+    state = applyOrchestrationEvent(
+      state,
+      makeEvent("thread.participant-added", {
+        threadId,
+        participant: astra,
+        updatedAt: "2026-02-27T00:00:00.000Z",
+      }),
+      localEnvironmentId,
+    );
+    state = applyOrchestrationEvent(
+      state,
+      makeEvent("thread.participant-updated", {
+        threadId,
+        participantId: astraId,
+        role: "Reviewer",
+        modelSelection: {
+          ...astra.modelSelection,
+          options: [{ id: "reasoningEffort", value: "high" }],
+        },
+        updatedAt: "2026-02-27T00:00:05.000Z",
+      }),
+      localEnvironmentId,
+    );
+    state = applyOrchestrationEvent(
+      state,
+      makeEvent("thread.participant-updated", {
+        threadId,
+        participantId: null,
+        role: "Researcher",
+        updatedAt: "2026-02-27T00:00:06.000Z",
+      }),
+      localEnvironmentId,
+    );
+    const thread = selectThreadByRef(state, ref);
+    expect(thread?.participants?.[0]).toMatchObject({
+      role: "Reviewer",
+      modelSelection: { options: [{ id: "reasoningEffort", value: "high" }] },
+    });
+    expect(thread?.agentRole).toBe("Researcher");
+  });
+
   it("updates only the affected thread for message events", () => {
     const thread1 = makeThread({
       id: ThreadId.make("thread-1"),
@@ -1841,6 +1959,28 @@ describe("selectRunningSidebarThreadsAcrossEnvironments", () => {
 
     expect(selectRunningSidebarThreadsAcrossEnvironments(state).map((thread) => thread.id)).toEqual(
       [waiting.id],
+    );
+  });
+
+  it("keeps a room live while an agent answers on the side and the others are idle", () => {
+    const answering = makeSidebarSummary({
+      id: ThreadId.make("thread-answering"),
+      sideTurn: {
+        sideTurnId: SideTurnId.make("side-1"),
+        participantId: null,
+        messageId: MessageId.make("question-1"),
+        status: "running",
+        startedAt: "2026-02-13T00:06:00.000Z",
+      },
+    });
+    const state = makeEmptyState({
+      threadIds: [answering.id],
+      sidebarThreadSummaryById: { [answering.id]: answering },
+    });
+
+    // The taskbar count and the quit and update warnings read this list.
+    expect(selectRunningSidebarThreadsAcrossEnvironments(state).map((thread) => thread.id)).toEqual(
+      [answering.id],
     );
   });
 });

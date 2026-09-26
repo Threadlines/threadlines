@@ -14,14 +14,27 @@
  * ids are both UUIDs (the decider refuses non-UUID agent ids), and a key is
  * only recognized as `<uuid>__agent__<uuid>`, so a thread id that merely
  * contains the separator is never mistaken for an agent's key.
+ *
+ * A side answer runs in its own short-lived runtime under a third kind of
+ * key, `<thread>__side__<sideTurn>__<agent|primary>` (all UUIDs). It is a
+ * disposable copy, never the agent's working session, so
+ * `parseParticipantSessionKey` deliberately does not recognize it: to any
+ * code that has not been taught about side answers, a side key looks like an
+ * unrelated thread, and it can never be mistaken for the agent it copies.
+ * Code that must route side runtimes (event mapping, their lifecycle) reads
+ * them with `parseSessionKey`.
  */
 import {
+  type ModelSelection,
   type OrchestrationThreadParticipant,
+  SideTurnId,
   ThreadId,
   ThreadParticipantId,
 } from "@threadlines/contracts";
 
 const PARTICIPANT_KEY_SEPARATOR = "__agent__";
+const SIDE_KEY_SEPARATOR = "__side__";
+const SIDE_PRIMARY_AGENT = "primary";
 const PARTICIPANT_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** Agent ids are UUIDs; see the module note. */
@@ -63,9 +76,58 @@ export function parseParticipantSessionKey(key: ThreadId): ParticipantSessionTar
   };
 }
 
-/** The thread a provider session key belongs to. */
+/** The thread a provider session key belongs to. A side key maps to itself. */
 export function sessionKeyThreadId(key: ThreadId): ThreadId {
   return parseParticipantSessionKey(key).threadId;
+}
+
+/** The provider session key for one side answer's runtime. */
+export function sideSessionKey(
+  threadId: ThreadId,
+  sideTurnId: SideTurnId,
+  participantId: ThreadParticipantId | null,
+): ThreadId {
+  return ThreadId.make(
+    `${threadId}${SIDE_KEY_SEPARATOR}${sideTurnId}__${participantId ?? SIDE_PRIMARY_AGENT}`,
+  );
+}
+
+export type SessionKeyTarget =
+  | ({ readonly kind: "main" } & ParticipantSessionTarget)
+  | ({ readonly kind: "side"; readonly sideTurnId: SideTurnId } & ParticipantSessionTarget);
+
+/**
+ * Map any provider session key back to its thread and agent, telling an
+ * agent's working session (`main`) from a side answer's runtime (`side`).
+ */
+export function parseSessionKey(key: ThreadId): SessionKeyTarget {
+  const side = parseSideSessionKey(key);
+  return side ?? { kind: "main", ...parseParticipantSessionKey(key) };
+}
+
+function parseSideSessionKey(key: ThreadId): SessionKeyTarget | null {
+  const index = key.indexOf(SIDE_KEY_SEPARATOR);
+  if (index <= 0) {
+    return null;
+  }
+  const thread = key.slice(0, index);
+  const [sideTurn, agent, ...rest] = key.slice(index + SIDE_KEY_SEPARATOR.length).split("__");
+  if (
+    rest.length > 0 ||
+    sideTurn === undefined ||
+    agent === undefined ||
+    !PARTICIPANT_ID_PATTERN.test(thread) ||
+    !PARTICIPANT_ID_PATTERN.test(sideTurn) ||
+    (agent !== SIDE_PRIMARY_AGENT && !isValidParticipantId(agent))
+  ) {
+    return null;
+  }
+  return {
+    kind: "side",
+    threadId: ThreadId.make(thread),
+    sideTurnId: SideTurnId.make(sideTurn),
+    participantId: agent === SIDE_PRIMARY_AGENT ? null : ThreadParticipantId.make(agent),
+  };
 }
 
 interface ParticipantListHolder {
@@ -100,4 +162,49 @@ export function sessionSlotParticipantId(
   session: { readonly participantId?: ThreadParticipantId | null | undefined } | null,
 ): ThreadParticipantId | null {
   return session?.participantId ?? null;
+}
+
+/**
+ * Apply a `thread.participant-updated` event to a room's agents: a name for
+ * any of them (null clears it), new model options for an added one. The
+ * in-memory projector and the SQL projection both use this, so they agree.
+ */
+export function applyRoomAgentUpdate(
+  room: {
+    readonly participants: ReadonlyArray<OrchestrationThreadParticipant>;
+    readonly agentRole?: string | undefined;
+  },
+  update: {
+    readonly participantId: ThreadParticipantId | null;
+    readonly role?: string | null | undefined;
+    readonly modelSelection?: ModelSelection | undefined;
+  },
+): {
+  readonly participants: OrchestrationThreadParticipant[];
+  readonly agentRole: string | undefined;
+} {
+  const withRole = <T extends { readonly role?: string | undefined }>(entry: T): T => {
+    if (update.role === undefined) return entry;
+    const { role: _previous, ...rest } = entry;
+    return (update.role === null ? rest : { ...rest, role: update.role }) as T;
+  };
+  if (update.participantId === null) {
+    return {
+      participants: [...room.participants],
+      agentRole: update.role === undefined ? room.agentRole : (update.role ?? undefined),
+    };
+  }
+  return {
+    participants: room.participants.map((entry) =>
+      entry.id !== update.participantId
+        ? entry
+        : {
+            ...withRole(entry),
+            ...(update.modelSelection !== undefined
+              ? { modelSelection: update.modelSelection }
+              : {}),
+          },
+    ),
+    agentRole: room.agentRole,
+  };
 }

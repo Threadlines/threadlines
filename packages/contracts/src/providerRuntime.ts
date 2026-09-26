@@ -10,6 +10,7 @@ import {
   RuntimeRequestId,
   RuntimeTaskId,
   ThreadId,
+  SideTurnId,
   ThreadParticipantId,
   TrimmedNonEmptyString,
   TurnId,
@@ -286,6 +287,11 @@ const ProviderRuntimeEventBase = Schema.Struct({
    * adapters never do. Absent means the thread's own agent.
    */
   participantId: Schema.optional(ThreadParticipantId),
+  /**
+   * Set when the event came from a side-answer runtime (see SideTurnId).
+   * ProviderService stamps it from the session key; adapters never do.
+   */
+  sideTurnId: Schema.optional(SideTurnId),
   createdAt: IsoDateTime,
   turnId: Schema.optional(TurnId),
   itemId: Schema.optional(RuntimeItemId),

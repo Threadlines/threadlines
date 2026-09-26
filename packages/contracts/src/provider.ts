@@ -144,6 +144,14 @@ export const ProviderSessionStartInput = Schema.Struct({
   // exclusive with `resumeCursor`; callers fall back to `contextSeed` seeding
   // when the fork cannot be honored.
   forkFrom: Schema.optional(ProviderSessionForkFrom),
+  /**
+   * Start locked down, for a room's side answer: read-only tools, no
+   * approvals or questions, and nothing loaded from the user's or the
+   * project's settings (no hooks, plugins, or MCP servers). The runtime stays
+   * that way for its whole life. A driver that cannot guarantee this refuses
+   * to start. See docs/design/rooms-slice-2.md.
+   */
+  lockdown: Schema.optional(Schema.Literal("side-answer")),
   approvalPolicy: Schema.optional(ProviderApprovalPolicy),
   sandboxMode: Schema.optional(ProviderSandboxMode),
   runtimeMode: RuntimeMode,

@@ -2,7 +2,13 @@ import { ProviderInstanceId, ThreadParticipantId } from "@threadlines/contracts"
 import { describe, expect, it } from "vite-plus/test";
 
 import type { ProviderInstanceEntry } from "./providerInstances";
-import { buildRoomAgentLabels, resolveRoomRecipient, roomAgentKey } from "./rooms";
+import {
+  buildRoomAgentLabels,
+  matchRoomAgents,
+  resolveRoomDelivery,
+  resolveRoomRecipient,
+  roomAgentKey,
+} from "./rooms";
 
 const astraId = ThreadParticipantId.make("agent-astra");
 const astra = {
@@ -46,5 +52,60 @@ describe("rooms", () => {
     expect(labels?.get(roomAgentKey(null))?.name).toBe("opus-9");
     expect(labels?.get(roomAgentKey(astraId))?.name).toBe("GPT-6 Astra");
     expect(labels?.get(roomAgentKey(secondAstraId))?.name).toBe("GPT-6 Astra 2");
+  });
+
+  it("keeps the model's name first when the user names an agent", () => {
+    const entries = [
+      {
+        instanceId: ProviderInstanceId.make("codex"),
+        models: [{ slug: "gpt-6-astra", name: "GPT-6 Astra" }],
+      },
+    ] as unknown as ReadonlyArray<ProviderInstanceEntry>;
+    const secondAstraId = ThreadParticipantId.make("agent-astra-2");
+    const labels = buildRoomAgentLabels(
+      {
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6-astra" },
+        agentRole: "Researcher",
+        participants: [{ ...astra, id: secondAstraId, role: "Reviewer" }],
+      },
+      entries,
+      (model) => model.name,
+    );
+    // Names never change the numbering, so clearing one brings back the same label.
+    expect(labels?.get(roomAgentKey(null))?.name).toBe("GPT-6 Astra (Researcher)");
+    expect(labels?.get(roomAgentKey(secondAstraId))).toMatchObject({
+      name: "GPT-6 Astra 2 (Reviewer)",
+      modelName: "GPT-6 Astra 2",
+      role: "Reviewer",
+    });
+  });
+
+  it("asks another agent now while one works, and queues when asked to or when it cannot", () => {
+    const delivery = (overrides: Partial<Parameters<typeof resolveRoomDelivery>[0]>) =>
+      resolveRoomDelivery({
+        recipientId: astraId,
+        holderId: null,
+        holderBusy: true,
+        recipientDriverKind: "codex",
+        preferred: "steer",
+        ...overrides,
+      });
+    expect(delivery({})).toBe("ask");
+    expect(delivery({ preferred: "queue" })).toBe("queue");
+    // A provider that cannot answer read-only on the side always waits.
+    expect(delivery({ recipientDriverKind: "cursor" })).toBe("queue");
+    // The agent at work gets a steer, and an idle room just sends.
+    expect(delivery({ holderId: astraId })).toBe("direct");
+    expect(delivery({ holderBusy: false })).toBe("direct");
+  });
+
+  it("matches agents typed after @ however their names are spaced", () => {
+    const agents = [{ name: "Opus 5.5" }, { name: "GPT-6 Astra" }, { name: "GPT-6 Astra 2" }];
+    const names = (query: string) => matchRoomAgents(agents, query).map((agent) => agent.name);
+    expect(names("astra")).toEqual(["GPT-6 Astra", "GPT-6 Astra 2"]);
+    expect(names("gpt6astra2")).toEqual(["GPT-6 Astra 2"]);
+    expect(names("opus5")).toEqual(["Opus 5.5"]);
+    expect(names("")).toHaveLength(3);
+    expect(names("retry.ts")).toEqual([]);
   });
 });

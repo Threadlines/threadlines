@@ -2,9 +2,10 @@
  * The composer control for rooms: who the next message goes to.
  *
  * Lists the thread's own agent and every agent added to it, marks the one
- * working, and lets the user pick a recipient, remove an agent, or add one
- * from the same model list the model picker uses. In a thread with one agent
- * it is a single icon button that adds the first one.
+ * working and the one answering on the side, and lets the user pick a
+ * recipient, name an agent ("GPT-6 Astra 2 (Reviewer)"), remove one, or add
+ * one from the same model list the model picker uses. In a thread with one
+ * agent it is a single icon button that adds the first one.
  */
 import {
   type ClientOrchestrationCommand,
@@ -12,11 +13,12 @@ import {
   type OrchestrationThreadParticipant,
   type ProviderInstanceId,
   type ResolvedKeybindingsConfig,
+  ROOM_AGENT_ROLE_MAX_LENGTH,
   type ScopedThreadRef,
   ThreadParticipantId,
 } from "@threadlines/contracts";
 import { activeParticipants } from "@threadlines/shared/threadParticipants";
-import { CheckIcon, ChevronDownIcon, PlusIcon, UsersRoundIcon, XIcon } from "lucide-react";
+import { ChevronDownIcon, PencilIcon, PlusIcon, UsersRoundIcon, XIcon } from "lucide-react";
 import { memo, useState } from "react";
 
 import { readEnvironmentApi } from "~/environmentApi";
@@ -35,11 +37,16 @@ import { toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { ModelPickerContent } from "./ModelPickerContent";
 import { ProviderInstanceIcon } from "./ProviderInstanceIcon";
+import { renameRoomAgent } from "./roomAgentActions";
 import { type ModelEsque, getPickerModelName } from "./providerIconUtils";
 
 interface AgentRow {
   readonly id: ThreadParticipantId | null;
+  /** "GPT-6 Astra 2 (Reviewer)". */
   readonly name: string;
+  /** "GPT-6 Astra 2": what stays when the user's name is cleared. */
+  readonly modelName: string;
+  readonly role: string | null;
   readonly modelSelection: ModelSelection;
 }
 
@@ -47,10 +54,14 @@ export const RoomAgentPicker = memo(function RoomAgentPicker(props: {
   threadRef: ScopedThreadRef;
   /** The thread's own agent. */
   primaryModelSelection: ModelSelection;
+  /** The user's name for the thread's own agent, if any. */
+  primaryRole?: string | undefined;
   participants: ReadonlyArray<OrchestrationThreadParticipant>;
   recipientId: ThreadParticipantId | null;
   /** The agent with a turn in flight, if any. */
   workingId: ThreadParticipantId | null | undefined;
+  /** The agent answering on the side, if any. */
+  answeringId?: ThreadParticipantId | null | undefined;
   instanceEntries: ReadonlyArray<ProviderInstanceEntry>;
   modelOptionsByInstance: ReadonlyMap<ProviderInstanceId, ReadonlyArray<ModelEsque>>;
   keybindings?: ResolvedKeybindingsConfig;
@@ -59,6 +70,8 @@ export const RoomAgentPicker = memo(function RoomAgentPicker(props: {
 }) {
   const [open, setOpen] = useState(false);
   const [adding, setAdding] = useState(false);
+  /** The row being renamed, by `roomAgentKey`. */
+  const [renaming, setRenaming] = useState<string | null>(null);
   const choose = useRoomRecipientStore((state) => state.choose);
   const present = activeParticipants({ participants: props.participants });
   const inRoom = props.participants.length > 0;
@@ -71,25 +84,30 @@ export const RoomAgentPicker = memo(function RoomAgentPicker(props: {
   ) => getPickerModelName(model, entry.driverKind);
   // Every agent is named by its model, like the model picker names it.
   const labels = buildRoomAgentLabels(
-    { modelSelection: props.primaryModelSelection, participants: props.participants },
+    {
+      modelSelection: props.primaryModelSelection,
+      participants: props.participants,
+      agentRole: props.primaryRole,
+    },
     props.instanceEntries,
     pickerName,
   );
-  const nameOf = (id: ThreadParticipantId | null, selection: ModelSelection) =>
-    labels?.get(roomAgentKey(id))?.name ??
-    roomModelName(selection, props.instanceEntries, pickerName);
+  const rowFor = (id: ThreadParticipantId | null, selection: ModelSelection): AgentRow => {
+    const label = labels?.get(roomAgentKey(id));
+    const modelName =
+      label?.modelName ?? roomModelName(selection, props.instanceEntries, pickerName);
+    return {
+      id,
+      name: label?.name ?? modelName,
+      modelName,
+      role: label?.role ?? null,
+      modelSelection: selection,
+    };
+  };
 
   const rows: AgentRow[] = [
-    {
-      id: null,
-      name: nameOf(null, props.primaryModelSelection),
-      modelSelection: props.primaryModelSelection,
-    },
-    ...present.map((participant) => ({
-      id: participant.id,
-      name: nameOf(participant.id, participant.modelSelection),
-      modelSelection: participant.modelSelection,
-    })),
+    rowFor(null, props.primaryModelSelection),
+    ...present.map((participant) => rowFor(participant.id, participant.modelSelection)),
   ];
   const recipient = rows.find((row) => row.id === props.recipientId) ?? rows[0]!;
 
@@ -97,6 +115,23 @@ export const RoomAgentPicker = memo(function RoomAgentPicker(props: {
     setOpen(next);
     if (!next) {
       setAdding(false);
+      setRenaming(null);
+    }
+  };
+
+  /** Save the user's name for an agent; an empty one clears it. */
+  const renameAgent = async (row: AgentRow, typed: string) => {
+    setRenaming(null);
+    const role = typed.trim().slice(0, ROOM_AGENT_ROLE_MAX_LENGTH) || null;
+    if (role === row.role) return;
+    try {
+      await renameRoomAgent(props.threadRef, row.id, role);
+    } catch (error) {
+      toastManager.add({
+        type: "error",
+        title: `Could not rename ${row.modelName}`,
+        description: error instanceof Error ? error.message : String(error),
+      });
     }
   };
 
@@ -113,7 +148,7 @@ export const RoomAgentPicker = memo(function RoomAgentPicker(props: {
     // messages call it the same.
     const handle = nextRoomAgentName(
       roomModelName({ instanceId, model }, props.instanceEntries, pickerName),
-      labels ? [...labels.values()].map((label) => label.name) : [rows[0]!.name],
+      labels ? [...labels.values()].map((label) => label.modelName) : [rows[0]!.modelName],
     );
     const id = ThreadParticipantId.make(randomUUID());
     setMenuOpen(false);
@@ -168,9 +203,12 @@ export const RoomAgentPicker = memo(function RoomAgentPicker(props: {
               data-chat-room-agent-picker="true"
               className={cn(
                 "min-w-0 shrink-0 justify-start overflow-hidden whitespace-nowrap px-1.5 text-foreground/85 hover:text-foreground [&_svg]:mx-0",
-                props.compact ? "max-w-32" : "max-w-44",
+                // A named agent ("GPT-6 Astra (Reviewer)") gets a little more room.
+                props.compact ? "max-w-32" : recipient.role ? "max-w-60" : "max-w-44",
               )}
               aria-label={`Send to ${recipient.name}`}
+              tooltip={recipient.name}
+              tooltipSide="top"
             />
           }
         >
@@ -244,6 +282,7 @@ export const RoomAgentPicker = memo(function RoomAgentPicker(props: {
               </div>
             }
             onRequestClose={() => setMenuOpen(false)}
+            openOnFavorites
             onInstanceModelChange={(instanceId, model) => {
               void addAgent(instanceId, model);
             }}
@@ -257,15 +296,19 @@ export const RoomAgentPicker = memo(function RoomAgentPicker(props: {
               const entry = entryFor(row.modelSelection.instanceId);
               const selected = row.id === recipient.id;
               const working = props.workingId !== undefined && props.workingId === row.id;
+              const answering = props.answeringId !== undefined && props.answeringId === row.id;
+              const busy = working || answering;
+              const isRenaming = renaming === roomAgentKey(row.id);
               return (
                 <div
                   key={row.id ?? "primary"}
                   role="option"
                   aria-selected={selected}
                   tabIndex={0}
+                  title={row.id === null ? `${row.name}, the thread's main agent` : row.name}
                   className={cn(
-                    "group flex h-7 cursor-default items-center gap-2 rounded-sm px-2 outline-none hover:bg-accent focus-visible:bg-accent",
-                    selected && "bg-accent/60",
+                    "group flex h-7 cursor-pointer items-center gap-2 rounded-sm px-2 outline-none hover:bg-accent focus-visible:bg-accent",
+                    selected ? "bg-accent/70 text-foreground" : "text-foreground/80",
                   )}
                   onClick={() => {
                     choose(props.threadRef, row.id);
@@ -289,17 +332,59 @@ export const RoomAgentPicker = memo(function RoomAgentPicker(props: {
                       iconClassName="size-4"
                     />
                   ) : null}
-                  <span className="min-w-0 truncate font-medium">{row.name}</span>
-                  <span
-                    className={cn(
-                      "ml-auto shrink-0 font-mono text-[10.5px]",
-                      working ? "text-warning" : "text-muted-foreground",
-                    )}
-                  >
-                    {working ? "working" : row.id === null ? "thread's agent" : null}
+                  <span className="min-w-0 shrink-0 truncate font-medium">{row.modelName}</span>
+                  {isRenaming ? (
+                    // The model's name stays; the user names the agent after it.
+                    // The box grows with the name; `size` keeps it at its
+                    // minimum where the browser can't size fields to content.
+                    <input
+                      autoFocus
+                      aria-label={`Name for ${row.modelName}`}
+                      defaultValue={row.role ?? ""}
+                      placeholder="Name"
+                      size={1}
+                      maxLength={ROOM_AGENT_ROLE_MAX_LENGTH}
+                      className="field-sizing-content h-5 min-w-20 max-w-40 rounded-sm border border-border bg-transparent px-1.5 text-sm outline-none placeholder:text-muted-foreground/60 focus:border-ring"
+                      onClick={(event) => event.stopPropagation()}
+                      onKeyDown={(event) => {
+                        event.stopPropagation();
+                        if (event.key === "Escape") {
+                          event.currentTarget.value = row.role ?? "";
+                          event.currentTarget.blur();
+                        } else if (event.key === "Enter") {
+                          event.preventDefault();
+                          event.currentTarget.blur();
+                        }
+                      }}
+                      onBlur={(event) => void renameAgent(row, event.currentTarget.value)}
+                    />
+                  ) : row.role ? (
+                    <span className="min-w-0 truncate text-muted-foreground">({row.role})</span>
+                  ) : null}
+                  {row.id === null && !isRenaming ? (
+                    <span className="shrink-0 font-mono text-[10.5px] text-muted-foreground/70">
+                      main
+                    </span>
+                  ) : null}
+                  {/* Who is picked is the row's highlight; the thread's own
+                      agent is first and tagged "main". */}
+                  <span className="ml-auto shrink-0 font-mono text-[10.5px] text-warning">
+                    {working ? "working" : answering ? "answering" : null}
                   </span>
-                  {selected ? <CheckIcon aria-hidden="true" className="size-3.5 shrink-0" /> : null}
-                  {row.id !== null && !working ? (
+                  {isRenaming ? null : (
+                    <button
+                      type="button"
+                      aria-label={`Rename ${row.name}`}
+                      className="hidden shrink-0 rounded-sm p-0.5 text-muted-foreground hover:text-foreground group-hover:block"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        setRenaming(roomAgentKey(row.id));
+                      }}
+                    >
+                      <PencilIcon aria-hidden="true" className="size-3.5" />
+                    </button>
+                  )}
+                  {row.id !== null && !busy && !isRenaming ? (
                     <button
                       type="button"
                       aria-label={`Remove ${row.name}`}

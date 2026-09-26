@@ -80,6 +80,13 @@ import {
   type CodexSessionRuntimeOptions,
   type CodexSessionRuntimeShape,
 } from "./CodexSessionRuntime.ts";
+import {
+  borrowCodexSignIn,
+  codexSignInHome,
+  prepareCodexSideAnswerHome,
+  removeCodexSideAnswerHome,
+  sweepStaleCodexSideAnswerHomes,
+} from "../codexSideAnswerHome.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
 import { initializeCodexAppServerClient, makeCodexAppServerClient } from "./CodexProvider.ts";
 const isCodexAppServerProcessExitedError = Schema.is(CodexErrors.CodexAppServerProcessExitedError);
@@ -589,6 +596,8 @@ interface CodexAdapterSessionContext {
   // seed (no native resume).
   pendingContextSeedText: string | undefined;
   stopped: boolean;
+  /** A room's side answer: never asked to act for the user's own Codex. */
+  readonly lockdown: boolean;
 }
 
 function mapCodexRuntimeError(
@@ -2900,6 +2909,49 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     options?.nativeEventLogger === undefined ? nativeEventLogger : undefined;
   const runtimeEventQueue = yield* Queue.unbounded<ProviderRuntimeEvent>();
   const sessions = new Map<ThreadId, CodexAdapterSessionContext>();
+  let sweptSideAnswerHomes = false;
+
+  /**
+   * Ask the user's own Codex to renew its login the normal way, through a
+   * Codex session of theirs already running here: the one working if there
+   * is one (it may be renewing right now, and its auth manager serializes
+   * the two), else any. With none running, a regular app server on their
+   * home does, as the provider status check runs one. Either rewrites their
+   * `auth.json` itself; renewals for one home are coalesced by
+   * `borrowCodexSignIn`. Codex sessions each own an auth manager, so two
+   * working at once can still renew side by side, as they already do.
+   */
+  const renewCodexSignIn = (cwd: string) =>
+    Effect.gen(function* () {
+      const owners = [...sessions.values()].filter(
+        (context) => !context.stopped && !context.lockdown,
+      );
+      let owner = owners[0];
+      for (const candidate of owners) {
+        if ((yield* candidate.runtime.getSession).status === "running") {
+          owner = candidate;
+          break;
+        }
+      }
+      if (owner !== undefined) {
+        return yield* owner.runtime.renewSignIn;
+      }
+      return yield* Effect.scoped(
+        Effect.gen(function* () {
+          const client = yield* makeCodexAppServerClient({
+            binaryPath: codexConfig.binaryPath,
+            ...(codexConfig.homePath ? { homePath: codexConfig.homePath } : {}),
+            cwd,
+            ...(options?.environment ? { environment: options.environment } : {}),
+          });
+          yield* initializeCodexAppServerClient(client);
+          yield* client.request("account/read", { refreshToken: true });
+        }),
+      ).pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, childProcessSpawner),
+        Effect.timeout("30 seconds"),
+      );
+    });
 
   const startSession: CodexAdapterShape["startSession"] = (input) =>
     Effect.scoped(
@@ -2920,6 +2972,44 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
         const serviceTier = resolveCodexServiceTier(input.modelSelection, {
           instanceId: boundInstanceId,
         });
+        // A room's side answer runs in a home of its own, continuing a copy of
+        // the answering agent's conversation; see codexSideAnswerHome.ts.
+        const sideAnswer =
+          input.lockdown === "side-answer"
+            ? yield* Effect.gen(function* () {
+                if (!sweptSideAnswerHomes) {
+                  sweptSideAnswerHomes = true;
+                  yield* sweepStaleCodexSideAnswerHomes.pipe(Effect.forkDetach);
+                }
+                const environment = options?.environment ?? process.env;
+                const signInHome = codexSignInHome(codexConfig.homePath, environment);
+                const cwd = input.cwd ?? process.cwd();
+                const signIn = (request: { readonly rejectedAccessToken?: string }) =>
+                  borrowCodexSignIn({
+                    signInHome,
+                    environment,
+                    renewOwner: renewCodexSignIn(cwd),
+                    ...request,
+                  });
+                const home = yield* prepareCodexSideAnswerHome({
+                  signInHome,
+                  ...(input.forkFrom !== undefined
+                    ? { sourceProviderThreadId: input.forkFrom.providerThreadId }
+                    : {}),
+                });
+                return { signIn, home };
+              }).pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new ProviderAdapterProcessError({
+                      provider: PROVIDER,
+                      threadId: input.threadId,
+                      detail: cause.message,
+                      cause,
+                    }),
+                ),
+              )
+            : undefined;
         const runtimeInput: CodexSessionRuntimeOptions = {
           threadId: input.threadId,
           providerInstanceId: boundInstanceId,
@@ -2927,12 +3017,27 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           cwd: input.cwd ?? process.cwd(),
           binaryPath: codexConfig.binaryPath,
           ...(options?.environment ? { environment: options.environment } : {}),
-          ...(codexConfig.homePath ? { homePath: codexConfig.homePath } : {}),
-          ...(isCodexResumeCursorSchema(input.resumeCursor)
-            ? { resumeCursor: input.resumeCursor }
-            : {}),
+          ...(sideAnswer !== undefined
+            ? {
+                homePath: sideAnswer.home.homePath,
+                lockdown: {
+                  signIn: sideAnswer.signIn,
+                  ...(sideAnswer.home.rolloutPath !== undefined && input.forkFrom !== undefined
+                    ? {
+                        rolloutPath: sideAnswer.home.rolloutPath,
+                        sourceProviderThreadId: input.forkFrom.providerThreadId,
+                      }
+                    : {}),
+                },
+              }
+            : {
+                ...(codexConfig.homePath ? { homePath: codexConfig.homePath } : {}),
+                ...(isCodexResumeCursorSchema(input.resumeCursor)
+                  ? { resumeCursor: input.resumeCursor }
+                  : {}),
+                ...(input.forkFrom !== undefined ? { forkFrom: input.forkFrom } : {}),
+              }),
           ...(input.resumePolicy === "required" ? { resumeRequired: true } : {}),
-          ...(input.forkFrom !== undefined ? { forkFrom: input.forkFrom } : {}),
           runtimeMode: input.runtimeMode,
           ...(input.modelSelection?.instanceId === boundInstanceId
             ? { model: input.modelSelection.model }
@@ -2948,7 +3053,16 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
         const sessionScope = yield* Scope.make("sequential");
         let sessionScopeTransferred = false;
         yield* Effect.addFinalizer(() =>
-          sessionScopeTransferred ? Effect.void : Scope.close(sessionScope, Exit.void),
+          sessionScopeTransferred
+            ? Effect.void
+            : Scope.close(sessionScope, Exit.void).pipe(
+                // A side answer that never started leaves no home behind.
+                Effect.andThen(
+                  sideAnswer !== undefined
+                    ? removeCodexSideAnswerHome(sideAnswer.home.homePath)
+                    : Effect.void,
+                ),
+              ),
         );
         const createRuntime = options?.makeRuntime ?? makeCodexSessionRuntime;
         const runtime = yield* createRuntime(runtimeInput).pipe(
@@ -3080,6 +3194,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
               ? renderThreadContextSeed(input.contextSeed)
               : undefined,
           stopped: false,
+          lockdown: input.lockdown === "side-answer",
         });
         sessionScopeTransferred = true;
 

@@ -20,10 +20,12 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   ProviderSessionStartInput,
+  SideTurnId,
   ThreadId,
   TurnId,
 } from "@threadlines/contracts";
 import { createModelSelection } from "@threadlines/shared/model";
+import { sideSessionKey } from "@threadlines/shared/threadParticipants";
 import { it, assert, vi } from "@effect/vitest";
 
 import * as Effect from "effect/Effect";
@@ -1412,6 +1414,37 @@ routing.layer("ProviderServiceLive routing", (it) => {
       assert.deepEqual(routing.codex.deleteThread.mock.calls, [[threadId]]);
       const persistedAfterDelete = yield* runtimeRepository.getByThreadId({ threadId });
       assert.equal(Option.isNone(persistedAfterDelete), true);
+    }),
+  );
+
+  it.effect("stops a side answer's runtime with its thread, without deleting what it copied", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      const runtimeRepository = yield* ProviderSessionRuntimeRepository;
+      const threadId = asThreadId("6f9f2a44-8c1e-4f0e-9a51-6d2b0b3c7a10");
+      const sideKey = sideSessionKey(
+        threadId,
+        SideTurnId.make("0b7e4d52-3f7a-4a8e-8c43-2f9f5b1e6d21"),
+        null,
+      );
+      for (const key of [threadId, sideKey]) {
+        yield* provider.startSession(key, {
+          provider: ProviderDriverKind.make("codex"),
+          providerInstanceId: codexInstanceId,
+          threadId: key,
+          cwd: "/tmp/project-delete-side",
+          runtimeMode: "full-access",
+        });
+      }
+      routing.codex.deleteThread.mockClear();
+      routing.codex.stopSession.mockClear();
+
+      yield* provider.deleteThread({ threadId });
+
+      assert.deepEqual(routing.codex.deleteThread.mock.calls, [[threadId]]);
+      assert.deepEqual(routing.codex.stopSession.mock.calls, [[sideKey]]);
+      const sideBinding = yield* runtimeRepository.getByThreadId({ threadId: sideKey });
+      assert.equal(Option.isNone(sideBinding), true);
     }),
   );
 

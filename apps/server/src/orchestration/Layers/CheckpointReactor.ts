@@ -26,6 +26,7 @@ import {
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
+import { turnAdmission } from "../turnAdmission.ts";
 import { makeDrainableWorker } from "@threadlines/shared/DrainableWorker";
 import { normalizeWorkspacePath } from "@threadlines/shared/path";
 import { compareTranscriptOrder } from "@threadlines/shared/transcriptOrder";
@@ -391,6 +392,18 @@ const make = Effect.gen(function* () {
       );
     },
   );
+
+  /** Only rooms have runtimes that can start turns without holding the thread. */
+  /** Who holds a room thread's slot; undefined outside rooms. */
+  const roomSlotHolder = (threadId: ThreadId) =>
+    projectionSnapshotQuery.getThreadShellById(threadId).pipe(
+      Effect.map((thread) =>
+        Option.isSome(thread) && thread.value.participants.length > 0
+          ? { holderId: sessionSlotParticipantId(thread.value.session) }
+          : undefined,
+      ),
+      Effect.orElseSucceed(() => undefined),
+    );
 
   const resolveThreadDetail = Effect.fn("resolveThreadDetail")(function* (threadId: ThreadId) {
     return yield* projectionSnapshotQuery
@@ -815,7 +828,12 @@ const make = Effect.gen(function* () {
         return;
       }
 
-      // When a primary turn is active, only that turn may produce completion checkpoints.
+      // When a primary turn is active, only that turn may produce completion
+      // checkpoints. In a room, a completion that arrives after the thread
+      // changed hands is dropped: the checkout already holds the next agent's
+      // edits. (A capture that passed this check just before a handover can
+      // still race the next agent's first edits; a real handover barrier is
+      // follow-up work, see docs/design/rooms-slice-2.md.)
       if (thread.session?.activeTurnId && !sameId(thread.session.activeTurnId, turnId)) {
         return;
       }
@@ -1273,6 +1291,23 @@ const make = Effect.gen(function* () {
   const processRuntimeEvent = Effect.fn("processRuntimeEvent")(function* (
     event: ProviderRuntimeEvent,
   ) {
+    // Only turns ingestion admitted to the main lane are checkpointed. A room
+    // agent that woke itself up while another held the thread was rejected;
+    // its turn is not the thread's work. Undecided counts as rejected for an
+    // agent that does not hold the thread.
+    if ((event.type === "turn.started" || event.type === "turn.completed") && event.turnId) {
+      const room = yield* roomSlotHolder(event.threadId);
+      if (
+        room !== undefined &&
+        (yield* turnAdmission.laneOf(
+          participantSessionKey(event.threadId, event.participantId ?? null),
+          event.turnId,
+          (event.participantId ?? null) === room.holderId ? "main" : "rejected",
+        )) !== "main"
+      ) {
+        return;
+      }
+    }
     if (event.type === "turn.started") {
       yield* ensurePreTurnBaselineFromTurnStart(event);
       return;
@@ -1329,6 +1364,10 @@ const make = Effect.gen(function* () {
         ) {
           return Effect.void;
         }
+        // A side answer's question is never the start of a main turn.
+        if (event.type === "thread.message-sent" && event.payload.sideTurnId !== undefined) {
+          return Effect.void;
+        }
         return worker.enqueue({ source: "domain", event });
       }),
     );
@@ -1336,6 +1375,10 @@ const make = Effect.gen(function* () {
     yield* Effect.forkScoped(
       Stream.runForEach(providerService.streamEvents, (event) => {
         if (event.type !== "turn.started" && event.type !== "turn.completed") {
+          return Effect.void;
+        }
+        // A side answer runs read-only in its own runtime: nothing to capture.
+        if (event.sideTurnId !== undefined) {
           return Effect.void;
         }
         return worker.enqueue({ source: "runtime", event });

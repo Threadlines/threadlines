@@ -9,7 +9,9 @@
  */
 import { scopedThreadKey } from "@threadlines/client-runtime";
 import type {
+  FollowUpDelivery,
   ModelSelection,
+  OrchestrationSideTurn,
   OrchestrationThreadParticipant,
   ProviderOptionSelection,
   ScopedThreadRef,
@@ -137,9 +139,18 @@ export function chosenRoomRecipient(
 
 /** How an agent is shown in a room: its name and its provider. */
 export interface RoomAgentLabel {
+  /** What the room calls it: "GPT-6 Astra 2", or "GPT-6 Astra 2 (Reviewer)". */
   readonly name: string;
+  /** Its model's name, numbered for repeats, without the user's name. */
+  readonly modelName: string;
+  /** The name the user gave it, if any (RoomAgentRole). */
+  readonly role: string | null;
   readonly entry: ProviderInstanceEntry | undefined;
 }
+
+/** "GPT-6 Astra 2 (Reviewer)": the model stays visible next to the user's name. */
+export const roomAgentDisplayName = (modelName: string, role: string | null | undefined) =>
+  role ? `${modelName} (${role})` : modelName;
 
 /** Map key for an agent; the thread's own agent has no participant id. */
 export const roomAgentKey = (participantId: ThreadParticipantId | null | undefined): string =>
@@ -152,7 +163,10 @@ export const roomAgentKey = (participantId: ThreadParticipantId | null | undefin
  * thread's own agent first. Null outside rooms.
  */
 export function buildRoomAgentLabels(
-  thread: RoomThreadLike & { readonly modelSelection: ModelSelection },
+  thread: RoomThreadLike & {
+    readonly modelSelection: ModelSelection;
+    readonly agentRole?: string | undefined;
+  },
   entries: ReadonlyArray<ProviderInstanceEntry>,
   /** The name the model picker shows, so the two always match. */
   modelDisplayName: (
@@ -164,22 +178,25 @@ export function buildRoomAgentLabels(
     return null;
   }
   const agents = [
-    { key: roomAgentKey(null), selection: thread.modelSelection },
+    { key: roomAgentKey(null), selection: thread.modelSelection, role: thread.agentRole ?? null },
     ...(thread.participants ?? []).map((participant) => ({
       key: roomAgentKey(participant.id),
       selection: participant.modelSelection,
+      role: participant.role ?? null,
     })),
   ];
   const labels = new Map<string, RoomAgentLabel>();
   const named: string[] = [];
   for (const agent of agents) {
-    const name = nextRoomAgentName(
+    const modelName = nextRoomAgentName(
       roomModelName(agent.selection, entries, modelDisplayName),
       named,
     );
-    named.push(name);
+    named.push(modelName);
     labels.set(agent.key, {
-      name,
+      name: roomAgentDisplayName(modelName, agent.role),
+      modelName,
+      role: agent.role,
       entry: entries.find((candidate) => candidate.instanceId === agent.selection.instanceId),
     });
   }
@@ -214,6 +231,58 @@ export function roomSlotModelSelection(
   const holder =
     holderId === null ? undefined : thread.participants?.find((entry) => entry.id === holderId);
   return holder?.modelSelection ?? thread.modelSelection;
+}
+
+/** The user's name for the agent a room's inbox row names as working. */
+export function roomSlotRole(
+  thread: RoomThreadLike & { readonly agentRole?: string | undefined },
+): string | null {
+  if (!isRoom(thread)) {
+    return null;
+  }
+  const holderId = thread.session?.participantId ?? null;
+  return holderId === null
+    ? (thread.agentRole ?? null)
+    : (thread.participants?.find((entry) => entry.id === holderId)?.role ?? null);
+}
+
+/** The user's name for the agent answering on the side, if any. */
+export function roomSideRole(
+  thread: RoomThreadLike & {
+    readonly agentRole?: string | undefined;
+    readonly sideTurn?: OrchestrationSideTurn | null | undefined;
+  },
+): string | null {
+  const sideTurn = thread.sideTurn ?? null;
+  if (sideTurn === null) {
+    return null;
+  }
+  return sideTurn.participantId === null
+    ? (thread.agentRole ?? null)
+    : (thread.participants?.find((entry) => entry.id === sideTurn.participantId)?.role ?? null);
+}
+
+/**
+ * The model of the agent answering on the side, for the inbox row's
+ * "GPT-6 Astra · answering". Null when nobody is.
+ */
+export function roomSideModelSelection(
+  thread: RoomThreadLike & {
+    readonly modelSelection: ModelSelection;
+    readonly sideTurn?: OrchestrationSideTurn | null | undefined;
+  },
+): ModelSelection | null {
+  const sideTurn = thread.sideTurn ?? null;
+  if (sideTurn === null) {
+    return null;
+  }
+  if (sideTurn.participantId === null) {
+    return thread.modelSelection;
+  }
+  return (
+    thread.participants?.find((entry) => entry.id === sideTurn.participantId)?.modelSelection ??
+    null
+  );
 }
 
 /**
@@ -255,4 +324,52 @@ export function resolveRoomSend(input: {
     recipient,
     modelSelection: recipient ? roomAgentModelSelection(input.threadRef, recipient) : null,
   };
+}
+
+/**
+ * Providers whose agents can answer on the side: in a locked-down, read-only
+ * copy of their conversation (docs/design/rooms-slice-2.md). The server
+ * refuses the rest; this keeps the composer from offering it.
+ */
+const SIDE_ANSWER_DRIVER_KINDS: ReadonlySet<string> = new Set(["codex", "claudeAgent"]);
+
+export const canAnswerOnTheSide = (driverKind: string | undefined): boolean =>
+  driverKind !== undefined && SIDE_ANSWER_DRIVER_KINDS.has(driverKind);
+
+/**
+ * How a message goes out in a room. "direct": to the agent at work (a steer)
+ * or while nobody works (a turn). While another agent works: "ask" answers it
+ * now, read-only, on the side; "queue" waits for the one at work to finish.
+ * The user's "Steer now" / "Send when done" choice carries over: acting now
+ * means asking now. An agent that cannot answer on the side always queues.
+ * The send button and the send path both read this, so they agree.
+ */
+export function resolveRoomDelivery(input: {
+  readonly recipientId: ThreadParticipantId | null;
+  readonly holderId: ThreadParticipantId | null;
+  /** The agent holding the thread has a turn in flight or background work. */
+  readonly holderBusy: boolean;
+  readonly recipientDriverKind: string | undefined;
+  readonly preferred: FollowUpDelivery;
+}): "direct" | "ask" | "queue" {
+  if (!input.holderBusy || input.recipientId === input.holderId) {
+    return "direct";
+  }
+  return input.preferred === "steer" && canAnswerOnTheSide(input.recipientDriverKind)
+    ? "ask"
+    : "queue";
+}
+
+/**
+ * Room agents whose name matches what was typed after "@" in the composer:
+ * "@astra", "@gpt6", "@opus". Only letters and digits count, so the spaces
+ * and dashes in a model's name never get in the way. Nothing typed: all.
+ */
+export function matchRoomAgents<Agent extends { readonly name: string }>(
+  agents: ReadonlyArray<Agent>,
+  query: string,
+): Agent[] {
+  const normalize = (value: string) => value.toLowerCase().replace(/[^a-z0-9]/g, "");
+  const wanted = normalize(query);
+  return agents.filter((agent) => normalize(agent.name).includes(wanted));
 }
