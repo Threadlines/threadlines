@@ -8,6 +8,7 @@ import {
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
+  SideTurnId,
   ThreadId,
   TurnId,
   type OrchestrationEvent,
@@ -1841,6 +1842,28 @@ describe("selectRunningSidebarThreadsAcrossEnvironments", () => {
 
     expect(selectRunningSidebarThreadsAcrossEnvironments(state).map((thread) => thread.id)).toEqual(
       [waiting.id],
+    );
+  });
+
+  it("keeps a room live while an agent answers on the side and the others are idle", () => {
+    const answering = makeSidebarSummary({
+      id: ThreadId.make("thread-answering"),
+      sideTurn: {
+        sideTurnId: SideTurnId.make("side-1"),
+        participantId: null,
+        messageId: MessageId.make("question-1"),
+        status: "running",
+        startedAt: "2026-02-13T00:06:00.000Z",
+      },
+    });
+    const state = makeEmptyState({
+      threadIds: [answering.id],
+      sidebarThreadSummaryById: { [answering.id]: answering },
+    });
+
+    // The taskbar count and the quit and update warnings read this list.
+    expect(selectRunningSidebarThreadsAcrossEnvironments(state).map((thread) => thread.id)).toEqual(
+      [answering.id],
     );
   });
 });

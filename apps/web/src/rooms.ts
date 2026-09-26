@@ -9,7 +9,9 @@
  */
 import { scopedThreadKey } from "@threadlines/client-runtime";
 import type {
+  FollowUpDelivery,
   ModelSelection,
+  OrchestrationSideTurn,
   OrchestrationThreadParticipant,
   ProviderOptionSelection,
   ScopedThreadRef,
@@ -217,6 +219,29 @@ export function roomSlotModelSelection(
 }
 
 /**
+ * The model of the agent answering on the side, for the inbox row's
+ * "GPT-6 Astra · answering". Null when nobody is.
+ */
+export function roomSideModelSelection(
+  thread: RoomThreadLike & {
+    readonly modelSelection: ModelSelection;
+    readonly sideTurn?: OrchestrationSideTurn | null | undefined;
+  },
+): ModelSelection | null {
+  const sideTurn = thread.sideTurn ?? null;
+  if (sideTurn === null) {
+    return null;
+  }
+  if (sideTurn.participantId === null) {
+    return thread.modelSelection;
+  }
+  return (
+    thread.participants?.find((entry) => entry.id === sideTurn.participantId)?.modelSelection ??
+    null
+  );
+}
+
+/**
  * The thread's session while its own agent holds the slot; null while an
  * added agent does. The composer's model controls, the provider lock and
  * native review all belong to the thread's own agent, and must not read
@@ -255,4 +280,38 @@ export function resolveRoomSend(input: {
     recipient,
     modelSelection: recipient ? roomAgentModelSelection(input.threadRef, recipient) : null,
   };
+}
+
+/**
+ * Providers whose agents can answer on the side: in a locked-down, read-only
+ * copy of their conversation (docs/design/rooms-slice-2.md). The server
+ * refuses the rest; this keeps the composer from offering it.
+ */
+const SIDE_ANSWER_DRIVER_KINDS: ReadonlySet<string> = new Set(["codex", "claudeAgent"]);
+
+export const canAnswerOnTheSide = (driverKind: string | undefined): boolean =>
+  driverKind !== undefined && SIDE_ANSWER_DRIVER_KINDS.has(driverKind);
+
+/**
+ * How a message goes out in a room. "direct": to the agent at work (a steer)
+ * or while nobody works (a turn). While another agent works: "ask" answers it
+ * now, read-only, on the side; "queue" waits for the one at work to finish.
+ * The user's "Steer now" / "Send when done" choice carries over: acting now
+ * means asking now. An agent that cannot answer on the side always queues.
+ * The send button and the send path both read this, so they agree.
+ */
+export function resolveRoomDelivery(input: {
+  readonly recipientId: ThreadParticipantId | null;
+  readonly holderId: ThreadParticipantId | null;
+  /** The agent holding the thread has a turn in flight or background work. */
+  readonly holderBusy: boolean;
+  readonly recipientDriverKind: string | undefined;
+  readonly preferred: FollowUpDelivery;
+}): "direct" | "ask" | "queue" {
+  if (!input.holderBusy || input.recipientId === input.holderId) {
+    return "direct";
+  }
+  return input.preferred === "steer" && canAnswerOnTheSide(input.recipientDriverKind)
+    ? "ask"
+    : "queue";
 }

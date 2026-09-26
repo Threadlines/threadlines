@@ -71,6 +71,9 @@ import { CheckpointStore } from "../../checkpointing/Services/CheckpointStore.ts
 import { ensureGeneralChatThreadScratchCwd } from "../generalChats.ts";
 import { buildRoomCatchUp } from "../roomCatchUp.ts";
 
+/** How a side answer that ended without a finished reply is recorded. */
+const SIDE_ANSWER_OUTCOME_ACTIVITY_KIND = "side-answer.outcome";
+
 /** Key for one agent in `OrchestrationThread.roomContext`. */
 const roomAgentContextKey = (participantId: ThreadParticipantId | null): string =>
   participantId ?? "primary";
@@ -3216,8 +3219,35 @@ const make = Effect.gen(function* () {
   const processSideTurnSettled = Effect.fn("processSideTurnSettled")(function* (
     event: Extract<ProviderIntentEvent, { type: "thread.side-turn-settled" }>,
   ) {
-    const { threadId, sideTurnId, participantId } = event.payload;
+    const { threadId, sideTurnId, participantId, outcome, answerMessageId, error } = event.payload;
     yield* stopSideRuntime(threadId, { sideTurnId, participantId }).pipe(Effect.forkScoped);
+    // A side answer that ends without a finished answer says why, in its own lane.
+    if (outcome !== "completed" || answerMessageId === undefined) {
+      yield* orchestrationEngine
+        .dispatch({
+          type: "thread.activity.append",
+          commandId: serverCommandId("side-answer-outcome"),
+          threadId,
+          activity: {
+            id: EventId.make(crypto.randomUUID()),
+            tone: outcome === "failed" ? "error" : "info",
+            kind: SIDE_ANSWER_OUTCOME_ACTIVITY_KIND,
+            summary:
+              outcome === "failed"
+                ? "Side answer failed"
+                : outcome === "interrupted"
+                  ? "Side answer stopped"
+                  : "Side answer ended without a reply",
+            payload: { outcome, ...(error !== undefined ? { error } : {}) },
+            turnId: null,
+            sideTurnId,
+            participantId,
+            createdAt: event.payload.settledAt,
+          },
+          createdAt: event.payload.settledAt,
+        })
+        .pipe(Effect.catch(() => Effect.void));
+    }
     if (queueHeldByStop.has(threadId)) {
       return;
     }

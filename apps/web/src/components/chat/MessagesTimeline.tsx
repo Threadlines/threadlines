@@ -4,6 +4,7 @@ import {
   type ProviderDriverKind,
   PROVIDER_DISPLAY_NAMES,
   type ServerProviderSkill,
+  type SideTurnId,
   type ThreadId,
   type TurnId,
 } from "@threadlines/contracts";
@@ -152,6 +153,7 @@ import type {
 import { formatTranscriptHighlightContextPreview } from "~/lib/transcriptHighlightContext";
 import { ProviderInstanceIcon } from "./ProviderInstanceIcon";
 import { type RoomAgentLabel, roomAgentKey } from "../../rooms";
+import { placeSideAnswerRows, type SideAnswerView } from "./sideAnswers";
 
 // ---------------------------------------------------------------------------
 // Context — shared state consumed by every row component via Context.
@@ -180,6 +182,8 @@ interface TimelineRowSharedState {
   failedTurnRetry: FailedTurnRetryAction | null;
   onRevertUserMessage: (messageId: MessageId) => void;
   onContinueInNewThread?: (messageId: MessageId) => void;
+  /** Stops a side answer; absent where side answers cannot be asked. */
+  onStopSideAnswer?: ((sideTurnId: SideTurnId) => void) | undefined;
   /** Shows a sent message's picked element again in the preview; absent
    *  outside the desktop app. */
   onRevealPickedElement?: ((context: PickedElementContextDraft) => void) | undefined;
@@ -597,6 +601,8 @@ function revealTimelineSearchMatch(
 // Props (public API)
 // ---------------------------------------------------------------------------
 
+const EMPTY_SIDE_ANSWERS: ReadonlyArray<SideAnswerView> = [];
+
 interface MessagesTimelineProps {
   emptyState?: ReactNode;
   isWorking: boolean;
@@ -610,6 +616,9 @@ interface MessagesTimelineProps {
   listRef: React.RefObject<LegendListRef | null>;
   stickToBottomRequestKey?: number;
   timelineEntries: ReturnType<typeof deriveTimelineEntries>;
+  /** Side answers, placed among the working turn's rows; see sideAnswers.ts. */
+  sideAnswers?: ReadonlyArray<SideAnswerView>;
+  onStopSideAnswer?: (sideTurnId: SideTurnId) => void;
   turnDiffSummaryByAssistantMessageId: Map<MessageId, TurnDiffSummary>;
   routeThreadKey: string;
   onOpenTurnDiff: (turnId: TurnId, filePath?: string) => void;
@@ -678,6 +687,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   listRef,
   stickToBottomRequestKey = 0,
   timelineEntries,
+  sideAnswers = EMPTY_SIDE_ANSWERS,
+  onStopSideAnswer,
   turnDiffSummaryByAssistantMessageId,
   routeThreadKey,
   onOpenTurnDiff,
@@ -716,19 +727,23 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   );
   const rawRows = useMemo(
     () =>
-      deriveMessagesTimelineRows({
-        timelineEntries,
-        isWorking,
-        liveAgentCount,
-        isWaitingOnBackgroundTasks,
-        activeStatusLabel,
-        activeTurnInProgress,
-        activeTurnId: activeTurnId ?? null,
-        activeTurnStartedAt,
-        turnDiffSummaryByAssistantMessageId,
-        revertTurnCountByUserMessageId,
-      }),
+      placeSideAnswerRows(
+        deriveMessagesTimelineRows({
+          timelineEntries,
+          isWorking,
+          liveAgentCount,
+          isWaitingOnBackgroundTasks,
+          activeStatusLabel,
+          activeTurnInProgress,
+          activeTurnId: activeTurnId ?? null,
+          activeTurnStartedAt,
+          turnDiffSummaryByAssistantMessageId,
+          revertTurnCountByUserMessageId,
+        }),
+        sideAnswers,
+      ),
     [
+      sideAnswers,
       timelineEntries,
       isWorking,
       liveAgentCount,
@@ -1500,6 +1515,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       failedTurnRetry,
       onRevertUserMessage,
       ...(onContinueInNewThread ? { onContinueInNewThread } : {}),
+      ...(onStopSideAnswer ? { onStopSideAnswer } : {}),
       ...(onRevealPickedElement ? { onRevealPickedElement } : {}),
       onImageExpand,
       onPreviewFile,
@@ -1532,6 +1548,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       failedTurnRetry,
       onRevertUserMessage,
       onContinueInNewThread,
+      onStopSideAnswer,
       onRevealPickedElement,
       onImageExpand,
       onPreviewFile,
@@ -2077,6 +2094,7 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
       {row.kind === "proposed-plan" ? <ProposedPlanTimelineRow row={row} /> : null}
       {row.kind === "subagent-result" ? <SubagentReceiptTimelineRow row={row} /> : null}
       {row.kind === "working" ? <WorkingTimelineRow row={row} /> : null}
+      {row.kind === "side-status" ? <SideStatusTimelineRow row={row} /> : null}
     </div>
   );
 });
@@ -2253,8 +2271,9 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
   const canRevertAgentWork = typeof row.revertTurnCount === "number";
   const canRetryFailedTurn = ctx.failedTurnRetry?.messageId === row.message.id;
 
+  const onTheSide = row.message.sideTurnId !== undefined;
   const addressee =
-    ctx.roomAgents !== null && row.message.participantId
+    ctx.roomAgents !== null && (row.message.participantId || onTheSide)
       ? ctx.roomAgents.get(roomAgentKey(row.message.participantId))
       : undefined;
 
@@ -2263,6 +2282,7 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
       {addressee ? (
         <div className="mb-1 pr-1 font-mono text-[10.5px] text-muted-foreground">
           to {addressee.name}
+          {onTheSide ? " · on the side" : null}
         </div>
       ) : null}
       <div className="flex w-full justify-end">
@@ -2569,7 +2589,10 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
           title={summary ? undefined : formatTimestamp(row.message.createdAt, ctx.timestampFormat)}
         >
           {ctx.roomAgents !== null && ctx.roomAuthorLineMessageIds.has(row.message.id) ? (
-            <RoomAuthorLine label={ctx.roomAgents.get(roomAgentKey(row.message.participantId))} />
+            <RoomAuthorLine
+              label={ctx.roomAgents.get(roomAgentKey(row.message.participantId))}
+              onTheSide={row.message.sideTurnId !== undefined}
+            />
           ) : null}
           {authReconnect ? (
             <ProviderAuthReconnectCard
@@ -2949,6 +2972,54 @@ function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "workin
         </div>
       </div>
     </div>
+  );
+}
+
+/**
+ * Where a side answer stands when it is not simply answered: still going
+ * (with its own Stop, which leaves the working agent alone), stopping,
+ * stopped, or failed.
+ */
+function SideStatusTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "side-status" }> }) {
+  const { roomAgents, onStopSideAnswer } = use(TimelineRowCtx);
+  const name = roomAgents?.get(roomAgentKey(row.participantId))?.name ?? "The agent";
+  if (row.state === "answering" || row.state === "stopping") {
+    const stopping = row.state === "stopping";
+    return (
+      <div className="py-1" data-side-answer-status={row.state}>
+        <p className="flex min-w-0 items-center gap-1.5 pl-1 text-xs leading-4 text-muted-foreground/70">
+          <WorkingAnchorDots state="working" className="relative -top-px -mr-0.5 shrink-0" />
+          <span className="min-w-0 truncate">
+            {name} · {stopping ? "stopping" : "answering"}
+          </span>
+          {!stopping && onStopSideAnswer ? (
+            <>
+              <span className="shrink-0 text-muted-foreground/35">·</span>
+              <button
+                type="button"
+                className="shrink-0 text-muted-foreground transition-colors hover:text-foreground"
+                onClick={() => onStopSideAnswer(row.sideTurnId)}
+              >
+                Stop
+              </button>
+            </>
+          ) : null}
+        </p>
+      </div>
+    );
+  }
+  return (
+    <p
+      className={cn(
+        "pl-1 text-xs leading-4",
+        row.state === "failed" ? "text-destructive-foreground" : "text-muted-foreground/70",
+      )}
+      data-side-answer-status={row.state}
+    >
+      {row.state === "failed"
+        ? `${name} couldn't answer${row.error ? `: ${row.error}` : "."}`
+        : `Stopped before ${name} finished.`}
+    </p>
   );
 }
 
@@ -4240,7 +4311,14 @@ const McpAuthReconnectCard = memo(function McpAuthReconnectCard({
 });
 
 /** Who wrote this stretch of a room: provider icon, name, and the model it runs. */
-function RoomAuthorLine({ label }: { label: RoomAgentLabel | undefined }) {
+function RoomAuthorLine({
+  label,
+  onTheSide = false,
+}: {
+  label: RoomAgentLabel | undefined;
+  /** A read-only answer given while another agent worked. */
+  onTheSide?: boolean;
+}) {
   if (!label) {
     return (
       <div className="mb-1 font-mono text-[10.5px] text-muted-foreground">an agent that left</div>
@@ -4259,6 +4337,7 @@ function RoomAuthorLine({ label }: { label: RoomAgentLabel | undefined }) {
         />
       ) : null}
       <span className="font-medium text-foreground">{label.name}</span>
+      {onTheSide ? <span className="text-muted-foreground">on the side</span> : null}
     </div>
   );
 }

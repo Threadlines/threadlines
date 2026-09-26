@@ -436,6 +436,9 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
   const isRenaming = renamingThreadKey === threadKey;
   const statusWord = inboxStatusWord(status);
   const isInFlight = status?.label === "Working" || status?.label === "Starting";
+  // In a room, an agent answering on the side while the others are idle: its
+  // own name, and a clock from when it was asked.
+  const isAnswering = status?.label === "Answering";
   // A follow-up flips the pill to "Starting" before the new turn's row lands
   // in the projection, so for a beat `latestTurn` is still the previous,
   // finished turn -- its clock must not run under the new label. That is the
@@ -458,7 +461,9 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
     ? inFlightStartedAt
     : isWaitingOnTasks
       ? (thread.latestTurn?.completedAt ?? null)
-      : null;
+      : isAnswering
+        ? (thread.sideTurn?.startedAt ?? null)
+        : null;
   // A completion nobody has looked at yet keeps the title bright until the
   // thread is opened.
   const isUnseen = status?.label === "Completed";
@@ -466,7 +471,11 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
   // whole, and the left cluster yields to it in a fixed order. The branch goes
   // first and goes completely -- half a branch name is worse than none, and a
   // row that is *doing* something has more to say than which ref it is on.
-  const hasStatusLabel = statusWord !== null || isInFlight || isWaitingOnTasks;
+  const hasStatusLabel = statusWord !== null || isInFlight || isWaitingOnTasks || isAnswering;
+  // Who the status names in a room: the agent answering, or the one at work.
+  const roomAgentSelection = isAnswering
+    ? thread.roomSideModelSelection
+    : thread.roomSlotModelSelection;
   const showBranch = thread.branch !== null && !hasStatusLabel;
 
   const handleRowClick = useCallback(
@@ -624,16 +633,18 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
                   </span>
                 ) : statusWord !== null ? (
                   statusWord
-                ) : isInFlight || isWaitingOnTasks ? (
+                ) : isInFlight || isWaitingOnTasks || isAnswering ? (
                   <>
-                    {thread.roomSlotModelSelection ? (
-                      <RoomSlotAgentPrefix selection={thread.roomSlotModelSelection} />
+                    {roomAgentSelection ? (
+                      <RoomSlotAgentPrefix selection={roomAgentSelection} />
                     ) : null}
-                    {isWaitingOnTasks
-                      ? "waiting"
-                      : status?.label === "Starting"
-                        ? "starting"
-                        : "working"}
+                    {isAnswering
+                      ? "answering"
+                      : isWaitingOnTasks
+                        ? "waiting"
+                        : status?.label === "Starting"
+                          ? "starting"
+                          : "working"}
                     {liveClockStartedAt ? (
                       <>
                         {" · "}

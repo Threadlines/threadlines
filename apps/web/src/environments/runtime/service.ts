@@ -351,7 +351,10 @@ function isNonIdleThreadDetailSubscription(entry: ThreadDetailSubscriptionEntry)
       return true;
     }
 
-    if (sidebarThread.latestTurn?.state === "running") {
+    if (
+      sidebarThread.latestTurn?.state === "running" ||
+      (sidebarThread.sideTurn ?? null) !== null
+    ) {
       return true;
     }
   }
@@ -367,6 +370,7 @@ function isNonIdleThreadDetailSubscription(entry: ThreadDetailSubscriptionEntry)
       orchestrationStatus && orchestrationStatus !== "idle" && orchestrationStatus !== "stopped",
     ) ||
     thread.latestTurn?.state === "running" ||
+    (thread.sideTurn ?? null) !== null ||
     thread.pendingSourceProposedPlan !== undefined
   );
 }
@@ -389,7 +393,7 @@ function shouldWarmThreadDetailSubscription(thread: OrchestrationThreadShell): b
     return true;
   }
 
-  return thread.latestTurn?.state === "running";
+  return thread.latestTurn?.state === "running" || (thread.sideTurn ?? null) !== null;
 }
 
 function attachThreadDetailSubscription(entry: ThreadDetailSubscriptionEntry): boolean {

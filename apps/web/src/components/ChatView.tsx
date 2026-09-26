@@ -13,7 +13,9 @@ import {
   type ServerProvider,
   type ResolvedKeybindingsConfig,
   type ScopedThreadRef,
+  SideTurnId,
   type ThreadId,
+  type ThreadParticipantId,
   type TurnId,
   type KeybindingCommand,
   type OrchestrationQueuedFollowUp,
@@ -52,6 +54,7 @@ import {
   buildRoomAgentLabels,
   isRoom,
   ownAgentSession,
+  resolveRoomDelivery,
   resolveRoomSend,
   roomAgentKey,
   useRoomRecipientStore,
@@ -151,6 +154,7 @@ import { BranchToolbar } from "./BranchToolbar";
 import { resolveShortcutCommand, shortcutLabelForCommand } from "../keybindings";
 import { ChevronDownIcon } from "lucide-react";
 import { ComposerFollowUpQueue } from "./chat/ComposerFollowUpQueue";
+import { deriveSideAnswers, isSideActivity, isSideMessage } from "./chat/sideAnswers";
 import { loadChatAttachmentBlob } from "~/lib/attachmentPreviewQuery";
 import { cn, randomUUID } from "~/lib/utils";
 import { markThreadSeen, selectThreadLastSeenAt } from "~/lib/threadInboxSync";
@@ -1823,7 +1827,17 @@ export default function ChatView(props: ChatViewProps) {
     };
   }, [environmentId, phase, shouldRetainThreadDetailSubscription, threadId]);
   const isSessionStarting = activeThread?.session?.orchestrationStatus === "starting";
-  const threadActivities = activeThread?.activities ?? EMPTY_ACTIVITIES;
+  const allThreadActivities = activeThread?.activities ?? EMPTY_ACTIVITIES;
+  // A side answer's steps are its own: only its block reads them. Everything
+  // else here (the working turn's steps, prompts, plans, the context meter)
+  // describes the agent at work.
+  const threadActivities = useMemo(
+    () =>
+      allThreadActivities.some(isSideActivity)
+        ? allThreadActivities.filter((activity) => !isSideActivity(activity))
+        : allThreadActivities,
+    [allThreadActivities],
+  );
   const activeTurnId = activeThread?.session?.activeTurnId ?? null;
   const workLogEntries = useMemo(
     () => deriveWorkLogEntries(threadActivities, activeTurnId),
@@ -2312,10 +2326,19 @@ export default function ChatView(props: ChatViewProps) {
     attachmentPreviewHandoffByMessageId,
     optimisticUserMessages,
   ]);
+  const sideAnswers = useMemo(
+    () =>
+      deriveSideAnswers({
+        messages: timelineMessages,
+        activities: allThreadActivities,
+        sideTurn: activeThread?.sideTurn,
+      }),
+    [activeThread?.sideTurn, allThreadActivities, timelineMessages],
+  );
   const timelineEntries = useMemo(
     () =>
       deriveTimelineEntries(
-        timelineMessages,
+        timelineMessages.filter((message) => !isSideMessage(message)),
         activeThread?.proposedPlans ?? [],
         workLogEntries,
         subagentActivityState.resultEntries,
@@ -2515,9 +2538,7 @@ export default function ChatView(props: ChatViewProps) {
     activeProviderStatus,
     activeProviderDriver,
   );
-  const contextCompactActivityInProgress = hasActiveContextCompactionActivity(
-    activeThread?.activities,
-  );
+  const contextCompactActivityInProgress = hasActiveContextCompactionActivity(threadActivities);
   const contextCompactInFlight =
     contextCompactActivityInProgress || contextCompactDispatchingThreadId === activeThread?.id;
   const contextCompactDisabledReason =
@@ -4650,9 +4671,11 @@ export default function ChatView(props: ChatViewProps) {
       return;
     }
     // Rooms: the message goes to the agent picked in the composer, which
-    // defaults to whoever worked last. Only one agent works at a time, so a message for another agent waits in
-    // the queue while the one at work has a turn in flight, or has finished
-    // but is still waiting on background work it will wake up for.
+    // defaults to whoever worked last. Only one agent works at a time. While
+    // one has a turn in flight, or has finished but is still waiting on
+    // background work it will wake up for, a message for another agent is
+    // either asked now and answered read-only on the side, or waits in the
+    // queue (resolveRoomDelivery).
     const roomSend = resolveRoomSend({
       enabled: settings.roomsEnabled && isServerThread,
       thread: activeThread,
@@ -4663,13 +4686,26 @@ export default function ChatView(props: ChatViewProps) {
     const roomRecipientId = roomRecipient?.id ?? null;
     // The added agent's model with any reasoning picked since its last turn.
     const roomRecipientModelSelection = roomSend.modelSelection;
+    const roomHolderId = activeThread.session?.participantId ?? null;
+    const roomDelivery = roomsActive
+      ? resolveRoomDelivery({
+          recipientId: roomRecipientId,
+          holderId: roomHolderId,
+          holderBusy: canSubmitSteeringFollowUp || waitingOnBackgroundTasks,
+          recipientDriverKind: providerInstanceEntries.find(
+            (entry) =>
+              entry.instanceId ===
+              (roomRecipient?.modelSelection ?? activeThread.modelSelection).instanceId,
+          )?.driverKind,
+          preferred: settings.followUpDelivery,
+        })
+      : "direct";
+    const askOnTheSide = roomDelivery === "ask";
     const queueBehindTurnId =
-      roomsActive && roomRecipientId !== (activeThread.session?.participantId ?? null)
+      roomDelivery === "queue"
         ? canSubmitSteeringFollowUp
           ? activeSteerTurnId
-          : waitingOnBackgroundTasks
-            ? (activeThread.latestTurn?.turnId ?? null)
-            : null
+          : (activeThread.latestTurn?.turnId ?? null)
         : null;
     const queueForAnotherAgent = queueBehindTurnId !== null;
     // After a send: carrying on with the same agent stays one keystroke. Only
@@ -4696,11 +4732,35 @@ export default function ChatView(props: ChatViewProps) {
     }
     setProviderSendPreflight(null);
     if (!activeProject) return;
+    // A side question is text only, and one agent answers on the side at a
+    // time. Either way the draft stays, so nothing is lost and a read-only
+    // question never quietly becomes a queued editing turn.
+    if (askOnTheSide) {
+      const nameOf = (participantId: ThreadParticipantId | null) =>
+        roomAgentLabels?.get(roomAgentKey(participantId))?.name ?? "The agent";
+      const refusal = activeThread.sideTurn
+        ? {
+            title: `${nameOf(activeThread.sideTurn.participantId)} is already answering on the side`,
+            description: `Wait for it to finish, or pick "Send when done" to send this after ${nameOf(roomHolderId)}.`,
+          }
+        : composerAttachments.length > 0 || composerDrawingContexts.length > 0
+          ? {
+              title: "Pictures and files can't go with a side question",
+              description: `Pick "Send when done" to send them after ${nameOf(roomHolderId)}.`,
+            }
+          : null;
+      if (refusal) {
+        toastManager.add(stackedThreadToast({ type: "warning", ...refusal }));
+        return;
+      }
+    }
     const threadIdForSend = activeThread.id;
     const isFirstMessage = !isServerThread || activeThread.messages.length === 0;
     const steeringThreadKey = activeThreadKey;
     const isSteeringFollowUp =
-      (canSubmitSteeringFollowUp || queueForAnotherAgent) && steeringThreadKey !== null;
+      !askOnTheSide &&
+      (canSubmitSteeringFollowUp || queueForAnotherAgent) &&
+      steeringThreadKey !== null;
     // "Send when done" holds the message on the server until the turn ends;
     // the queue list shows it from there, so it gets no steering row.
     const followUpDelivery = queueForAnotherAgent ? "queue" : settings.followUpDelivery;
@@ -4725,7 +4785,7 @@ export default function ChatView(props: ChatViewProps) {
     }
 
     sendInFlightRef.current = true;
-    if (!isSteeringFollowUp) {
+    if (!isSteeringFollowUp && !askOnTheSide) {
       beginLocalDispatch({ preparingWorktree: Boolean(baseBranchForWorktree) });
     }
 
@@ -4832,7 +4892,9 @@ export default function ChatView(props: ChatViewProps) {
           },
         }));
       }
-    } else {
+    } else if (!askOnTheSide) {
+      // A side question shows once the server has it: until then it has no
+      // answer state to draw.
       addOptimisticThreadMessage(threadRefForSend, optimisticMessage);
     }
 
@@ -4883,6 +4945,29 @@ export default function ChatView(props: ChatViewProps) {
         ctxSelectedModel || DEFAULT_MODEL,
         ctxSelectedModelSelection.options,
       );
+
+      if (askOnTheSide) {
+        await api.orchestration.dispatchCommand({
+          type: "thread.side-turn.start",
+          commandId: newCommandId(),
+          threadId: threadIdForSend,
+          sideTurnId: SideTurnId.make(randomUUID()),
+          participantId: roomRecipientId,
+          message: {
+            messageId: messageIdForSend,
+            role: "user",
+            text: outgoingMessageText,
+            ...(composerSkillReferences.length > 0 ? { skills: composerSkillReferences } : {}),
+          },
+          // Reasoning picked for the agent rides along; it stays picked for
+          // the agent's next real turn.
+          ...(roomRecipientModelSelection ? { modelSelection: roomRecipientModelSelection } : {}),
+          createdAt: messageCreatedAt,
+        });
+        dispatchSucceeded = true;
+        rememberRoomSend(threadRefForSend, false);
+        return;
+      }
 
       if (isSteeringFollowUp) {
         const steerTurnId = queueBehindTurnId ?? activeSteerTurnId;
@@ -5071,7 +5156,7 @@ export default function ChatView(props: ChatViewProps) {
       );
     });
     sendInFlightRef.current = false;
-    if (!dispatchSucceeded && !isSteeringFollowUp) {
+    if (!dispatchSucceeded && !isSteeringFollowUp && !askOnTheSide) {
       resetLocalDispatch();
     }
   };
@@ -5244,6 +5329,24 @@ export default function ChatView(props: ChatViewProps) {
       })
       .catch(() => undefined);
   };
+
+  /** Stop a side answer; one that already ended is left alone, quietly. */
+  const stopSideAnswer = useCallback(
+    (sideTurnId: SideTurnId) => {
+      const api = readEnvironmentApi(environmentId);
+      if (!api || !activeThread) return;
+      void api.orchestration
+        .dispatchCommand({
+          type: "thread.side-turn.interrupt",
+          commandId: newCommandId(),
+          threadId: activeThread.id,
+          sideTurnId,
+          createdAt: new Date().toISOString(),
+        })
+        .catch(() => undefined);
+    },
+    [activeThread, environmentId],
+  );
 
   const onInterrupt = async () => {
     const api = readEnvironmentApi(environmentId);
@@ -5545,7 +5648,8 @@ export default function ChatView(props: ChatViewProps) {
 
   const failedTurnRetryAction = useMemo(() => {
     const failedMessageId = deriveFailedTurnRetryMessageId({
-      messages: activeThread?.messages ?? [],
+      // A side question is never the failed turn's message.
+      messages: (activeThread?.messages ?? []).filter((message) => !isSideMessage(message)),
       sessionLastError: activeThread?.session?.lastError,
     });
     if (
@@ -6908,6 +7012,8 @@ export default function ChatView(props: ChatViewProps) {
               listRef={legendListRef}
               stickToBottomRequestKey={stickToBottomRequestKey}
               timelineEntries={timelineEntries}
+              sideAnswers={sideAnswers}
+              onStopSideAnswer={stopSideAnswer}
               turnDiffSummaryByAssistantMessageId={turnDiffSummaryByAssistantMessageId}
               activeThreadEnvironmentId={activeThread.environmentId}
               activeThreadId={activeThread.id}
@@ -7019,7 +7125,7 @@ export default function ChatView(props: ChatViewProps) {
                   activeThreadModelSelection={
                     isLocalDraftThread ? null : activeThread?.modelSelection
                   }
-                  activeThreadActivities={activeThread?.activities}
+                  activeThreadActivities={activeThread ? threadActivities : undefined}
                   notices={composerNotices}
                   pullRequests={composerPullRequests}
                   resolvedTheme={resolvedTheme}

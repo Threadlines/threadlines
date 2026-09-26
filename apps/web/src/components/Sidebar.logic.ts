@@ -34,6 +34,7 @@ export interface ThreadStatusPill {
     | "Awaiting Input"
     | "Plan Ready"
     | "Background"
+    | "Answering"
     | "Failed";
   colorClass: string;
   dotClass: string;
@@ -58,6 +59,7 @@ type ThreadStatusInput = Pick<
   | "interactionMode"
   | "latestTurn"
   | "session"
+  | "sideTurn"
 > & {
   lastVisitedAt?: string | undefined;
 };
@@ -326,6 +328,16 @@ export function resolveThreadStatusPill(input: {
   if (inFlightStatus === "starting") {
     return {
       label: "Starting",
+      colorClass: "text-primary-readable",
+      dotClass: THREAD_STATUS_DOT_CLASSES.blue,
+      pulse: true,
+    };
+  }
+
+  // In a room, an agent answering on the side while the others are idle.
+  if ((thread.sideTurn ?? null) !== null) {
+    return {
+      label: "Answering",
       colorClass: "text-primary-readable",
       dotClass: THREAD_STATUS_DOT_CLASSES.blue,
       pulse: true,

@@ -113,9 +113,11 @@ import { CompactComposerControlsMenu } from "./CompactComposerControlsMenu";
 import { ComposerAttachmentMenu } from "./ComposerAttachmentMenu";
 import { ComposerStashControl } from "./ComposerStashControl";
 import {
+  type ComposerRoomDelivery,
   ComposerPrimaryActions,
   ComposerStopButton,
   FOLLOW_UP_DELIVERY_LABELS,
+  roomDeliveryLabels,
 } from "./ComposerPrimaryActions";
 import { useSettings, useUpdateSettings } from "../../hooks/useSettings";
 import { ComposerPendingApprovalPanel } from "./ComposerPendingApprovalPanel";
@@ -151,11 +153,16 @@ import { toastManager } from "../ui/toast";
 import { RoomAgentPicker } from "./RoomAgentPicker";
 import { scopedThreadKey } from "@threadlines/client-runtime";
 import {
+  buildRoomAgentLabels,
+  canAnswerOnTheSide,
   ownAgentSession,
+  resolveRoomDelivery,
   resolveRoomRecipient,
+  roomAgentKey,
   useRoomAgentOptions,
   useRoomRecipientStore,
 } from "../../rooms";
+import { getPickerModelName } from "./providerIconUtils";
 import { shouldRenderTraitsControls, TraitsMenuContent, TraitsPicker } from "./TraitsPicker";
 import {
   canRequestProviderRateLimitResetCredit,
@@ -185,6 +192,7 @@ import type { SessionPhase, Thread } from "../../types";
 import type { PendingUserInputDraftAnswer } from "../../pendingUserInput";
 import {
   deriveActiveModelFallbackState,
+  isWaitingOnBackgroundTasks,
   type PendingApproval,
   type PendingUserInput,
 } from "../../session-logic";
@@ -414,6 +422,7 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
   onRuntimeModeChange: (mode: RuntimeMode) => void;
   followUpDelivery: FollowUpDelivery;
   onFollowUpDeliveryChange: (delivery: FollowUpDelivery) => void;
+  roomDelivery: ComposerRoomDelivery | null;
   onInterrupt: () => void;
   onImplementPlanInNewThread: () => void;
   onResetAccountUsage?: (() => void) | undefined;
@@ -455,6 +464,7 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
         onRuntimeModeChange={props.onRuntimeModeChange}
         followUpDelivery={props.followUpDelivery}
         onFollowUpDeliveryChange={props.onFollowUpDeliveryChange}
+        roomDelivery={props.roomDelivery}
         onInterrupt={props.onInterrupt}
         onImplementPlanInNewThread={props.onImplementPlanInNewThread}
       />
@@ -1584,8 +1594,67 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     (delivery: FollowUpDelivery) => updateSettings({ followUpDelivery: delivery }),
     [updateSettings],
   );
-  const collapsedComposerPrimaryActionLabel =
-    phase === "running" ? FOLLOW_UP_DELIVERY_LABELS[followUpDelivery].action : "Send message";
+  // Rooms: while another agent works, a message for this one is asked now
+  // (answered read-only on the side) or waits until the other finishes. The
+  // send path reads the same rule (resolveRoomDelivery).
+  const roomAgentLabels = useMemo(
+    () =>
+      showRoomAgentPicker && activeThread
+        ? buildRoomAgentLabels(
+            {
+              modelSelection: activeThread.modelSelection,
+              participants: activeThread.participants,
+            },
+            providerInstanceEntries,
+            (model, entry) => getPickerModelName(model, entry.driverKind),
+          )
+        : null,
+    [
+      activeThread?.modelSelection,
+      activeThread?.participants,
+      providerInstanceEntries,
+      showRoomAgentPicker,
+    ],
+  );
+  const roomHolderId = activeThread?.session?.participantId ?? null;
+  const roomRecipientDriverKind = providerInstanceEntries.find(
+    (entry) =>
+      entry.instanceId ===
+      (addressedRoomAgent?.modelSelection ?? activeThread?.modelSelection)?.instanceId,
+  )?.driverKind;
+  const roomDeliveryMode =
+    roomAgentLabels !== null
+      ? resolveRoomDelivery({
+          recipientId: roomRecipientId,
+          holderId: roomHolderId,
+          holderBusy:
+            hasActiveTurn ||
+            isWaitingOnBackgroundTasks(
+              activeThread?.latestTurn ?? null,
+              activeThread?.session ?? null,
+            ),
+          recipientDriverKind: roomRecipientDriverKind,
+          preferred: followUpDelivery,
+        })
+      : "direct";
+  const roomDelivery = useMemo<ComposerRoomDelivery | null>(
+    () =>
+      roomAgentLabels === null || roomDeliveryMode === "direct"
+        ? null
+        : {
+            mode: roomDeliveryMode,
+            canAsk: canAnswerOnTheSide(roomRecipientDriverKind),
+            recipientName: roomAgentLabels.get(roomAgentKey(roomRecipientId))?.name ?? "this agent",
+            holderName:
+              roomAgentLabels.get(roomAgentKey(roomHolderId))?.name ?? "the agent at work",
+          },
+    [roomAgentLabels, roomDeliveryMode, roomHolderId, roomRecipientDriverKind, roomRecipientId],
+  );
+  const collapsedComposerPrimaryActionLabel = roomDelivery
+    ? roomDeliveryLabels(roomDelivery).action
+    : phase === "running"
+      ? FOLLOW_UP_DELIVERY_LABELS[followUpDelivery].action
+      : "Send message";
   // Shared gate for every "Add" action (upload + screenshot). The in-flight
   // capture only blocks the screenshot item, not uploading images, so it is
   // handled inside the menu rather than here. Models without image input
@@ -3676,6 +3745,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                         participants={activeThread.participants ?? []}
                         recipientId={roomRecipientId}
                         workingId={roomWorkingId}
+                        answeringId={activeThread.sideTurn?.participantId}
                         instanceEntries={providerInstanceEntries}
                         modelOptionsByInstance={modelOptionsByInstance}
                         keybindings={keybindings}
@@ -3875,6 +3945,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                       onRuntimeModeChange={handleRuntimeModeChange}
                       followUpDelivery={followUpDelivery}
                       onFollowUpDeliveryChange={handleFollowUpDeliveryChange}
+                      roomDelivery={roomDelivery}
                       onInterrupt={handleInterruptPrimaryAction}
                       onImplementPlanInNewThread={handleImplementPlanInNewThreadPrimaryAction}
                       onResetAccountUsage={

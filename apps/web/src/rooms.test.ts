@@ -2,7 +2,12 @@ import { ProviderInstanceId, ThreadParticipantId } from "@threadlines/contracts"
 import { describe, expect, it } from "vite-plus/test";
 
 import type { ProviderInstanceEntry } from "./providerInstances";
-import { buildRoomAgentLabels, resolveRoomRecipient, roomAgentKey } from "./rooms";
+import {
+  buildRoomAgentLabels,
+  resolveRoomDelivery,
+  resolveRoomRecipient,
+  roomAgentKey,
+} from "./rooms";
 
 const astraId = ThreadParticipantId.make("agent-astra");
 const astra = {
@@ -46,5 +51,24 @@ describe("rooms", () => {
     expect(labels?.get(roomAgentKey(null))?.name).toBe("opus-9");
     expect(labels?.get(roomAgentKey(astraId))?.name).toBe("GPT-6 Astra");
     expect(labels?.get(roomAgentKey(secondAstraId))?.name).toBe("GPT-6 Astra 2");
+  });
+
+  it("asks another agent now while one works, and queues when asked to or when it cannot", () => {
+    const delivery = (overrides: Partial<Parameters<typeof resolveRoomDelivery>[0]>) =>
+      resolveRoomDelivery({
+        recipientId: astraId,
+        holderId: null,
+        holderBusy: true,
+        recipientDriverKind: "codex",
+        preferred: "steer",
+        ...overrides,
+      });
+    expect(delivery({})).toBe("ask");
+    expect(delivery({ preferred: "queue" })).toBe("queue");
+    // A provider that cannot answer read-only on the side always waits.
+    expect(delivery({ recipientDriverKind: "cursor" })).toBe("queue");
+    // The agent at work gets a steer, and an idle room just sends.
+    expect(delivery({ holderId: astraId })).toBe("direct");
+    expect(delivery({ holderBusy: false })).toBe("direct");
   });
 });

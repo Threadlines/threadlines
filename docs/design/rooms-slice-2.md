@@ -410,9 +410,10 @@ ids.
     and offers the choice to wait or queue. A read-only question never
     silently turns into an editing turn.
 - **Timeline**:
-  - A side exchange is its own block: the question "to GPT-6 Astra · while
-    Opus 5.5 works", then the answer with its author line and its read-only
-    steps in its own small tray.
+  - A side exchange is its own block: the question "to GPT-6 Astra · on the
+    side", then the answer with its author line ("GPT-6 Astra on the side")
+    and its read-only steps in its own small tray. The block sits where it was
+    asked, moved past any tray it would split, so a live tray stays whole.
   - Side messages are left out of the main turn's spans, trays, settle and
     hoist logic, and are never the "last user message" boundary.
   - While answering: a "GPT-6 Astra · answering" row with its own Stop.

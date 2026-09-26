@@ -12,6 +12,7 @@ import type {
   OrchestrationShellStreamEvent,
   OrchestrationSession,
   OrchestrationSessionStatus,
+  OrchestrationSideTurn,
   OrchestrationThread,
   OrchestrationThreadShell,
   OrchestrationThreadActivity,
@@ -57,7 +58,7 @@ import {
   sumTurnDiffStats,
 } from "./session-logic";
 import { getThreadFromEnvironmentState } from "./threadDerivation";
-import { roomSlotModelSelection } from "./rooms";
+import { roomSideModelSelection, roomSlotModelSelection } from "./rooms";
 const isProviderDriverKindValue = Schema.is(ProviderDriverKind);
 
 export interface EnvironmentState {
@@ -230,6 +231,7 @@ function mapMessage(environmentId: EnvironmentId, message: OrchestrationMessage)
     ...(attachments && attachments.length > 0 ? { attachments } : {}),
     ...(message.skills !== undefined ? { skills: [...message.skills] } : {}),
     ...(message.participantId ? { participantId: message.participantId } : {}),
+    ...(message.sideTurnId ? { sideTurnId: message.sideTurnId } : {}),
   };
 }
 
@@ -309,6 +311,7 @@ function mapThread(thread: OrchestrationThread, environmentId: EnvironmentId): T
     linkedPullRequests: thread.linkedPullRequests ?? [],
     queuedFollowUps: thread.queuedFollowUps ?? [],
     participants: thread.participants ?? [],
+    sideTurn: thread.sideTurn ?? null,
     doneOverride: thread.doneOverride,
     lastSeenAt: thread.lastSeenAt,
     updatedAt: thread.updatedAt,
@@ -353,6 +356,7 @@ function mapThreadShell(
     linkedPullRequests: thread.linkedPullRequests ?? [],
     queuedFollowUps: thread.queuedFollowUps ?? [],
     participants: thread.participants ?? [],
+    sideTurn: thread.sideTurn ?? null,
     doneOverride: thread.doneOverride,
     lastSeenAt: thread.lastSeenAt,
     updatedAt: thread.updatedAt,
@@ -393,7 +397,9 @@ function mapThreadShell(
     cumulativeDiffStat: thread.cumulativeDiffStat,
     linkedPullRequests: thread.linkedPullRequests ?? [],
     participants: thread.participants ?? [],
+    sideTurn: thread.sideTurn ?? null,
     roomSlotModelSelection: roomSlotModelSelection(thread),
+    roomSideModelSelection: roomSideModelSelection(thread),
   };
   return {
     shell,
@@ -422,6 +428,7 @@ function toThreadShell(thread: Thread): ThreadShell {
     linkedPullRequests: thread.linkedPullRequests ?? [],
     queuedFollowUps: thread.queuedFollowUps ?? [],
     participants: thread.participants ?? [],
+    sideTurn: thread.sideTurn ?? null,
     doneOverride: thread.doneOverride,
     lastSeenAt: thread.lastSeenAt,
     updatedAt: thread.updatedAt,
@@ -508,7 +515,9 @@ function toSidebarThreadSummary(
       : (previous?.cumulativeDiffStat ?? null),
     linkedPullRequests: thread.linkedPullRequests ?? [],
     participants: thread.participants ?? [],
+    sideTurn: thread.sideTurn ?? null,
     roomSlotModelSelection: roomSlotModelSelection(thread),
+    roomSideModelSelection: roomSideModelSelection(thread),
   };
 }
 
@@ -659,10 +668,26 @@ function sidebarThreadSummariesEqual(
     threadDiffStatsEqual(left.cumulativeDiffStat, right.cumulativeDiffStat) &&
     linkedPullRequestsEqual(left.linkedPullRequests, right.linkedPullRequests) &&
     participantsEqual(left.participants, right.participants) &&
+    sideTurnsEqual(left.sideTurn, right.sideTurn) &&
     (left.roomSlotModelSelection?.instanceId ?? null) ===
       (right.roomSlotModelSelection?.instanceId ?? null) &&
-    (left.roomSlotModelSelection?.model ?? null) === (right.roomSlotModelSelection?.model ?? null)
+    (left.roomSlotModelSelection?.model ?? null) ===
+      (right.roomSlotModelSelection?.model ?? null) &&
+    (left.roomSideModelSelection?.instanceId ?? null) ===
+      (right.roomSideModelSelection?.instanceId ?? null) &&
+    (left.roomSideModelSelection?.model ?? null) === (right.roomSideModelSelection?.model ?? null)
   );
+}
+
+function sideTurnsEqual(
+  left: OrchestrationSideTurn | null | undefined,
+  right: OrchestrationSideTurn | null | undefined,
+): boolean {
+  const a = left ?? null;
+  const b = right ?? null;
+  return a === null || b === null
+    ? a === b
+    : a.sideTurnId === b.sideTurnId && a.status === b.status && a.participantId === b.participantId;
 }
 
 function threadShellsEqual(left: ThreadShell | undefined, right: ThreadShell): boolean {
@@ -685,6 +710,7 @@ function threadShellsEqual(left: ThreadShell | undefined, right: ThreadShell): b
     linkedPullRequestsEqual(left.linkedPullRequests, right.linkedPullRequests) &&
     queuedFollowUpsEqual(left.queuedFollowUps, right.queuedFollowUps) &&
     participantsEqual(left.participants, right.participants) &&
+    sideTurnsEqual(left.sideTurn, right.sideTurn) &&
     doneOverridesEqual(left.doneOverride, right.doneOverride) &&
     left.lastSeenAt === right.lastSeenAt &&
     left.updatedAt === right.updatedAt &&
@@ -2438,7 +2464,8 @@ export function selectSidebarThreadsAcrossEnvironments(state: AppState): Sidebar
 /**
  * Sidebar threads with live agent work, across every environment: the session
  * is running a turn, or the turn settled and background provider tasks
- * (subagents, deferred commands) will start it back up on their own. Drives the
+ * (subagents, deferred commands) will start it back up on their own, or an
+ * agent in a room is answering on the side. Drives the
  * taskbar badge and the quit and update warnings, so a thread that is only
  * waiting on its subagents must not read as finished here.
  */
@@ -2449,7 +2476,8 @@ export function selectRunningSidebarThreadsAcrossEnvironments(
     (thread) =>
       thread.session?.status === "running" ||
       thread.session?.orchestrationStatus === "running" ||
-      isWaitingOnBackgroundTasks(thread.latestTurn, thread.session),
+      isWaitingOnBackgroundTasks(thread.latestTurn, thread.session) ||
+      (thread.sideTurn ?? null) !== null,
   );
 }
 

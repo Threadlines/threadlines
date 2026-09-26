@@ -16,10 +16,12 @@ import type {
   OrchestrationQueuedFollowUp,
   OrchestrationThreadLinkedPullRequest,
   OrchestrationThreadGoal,
+  OrchestrationSideTurn,
   OrchestrationThreadParticipant,
   ProjectKind,
   ProjectScript as ContractProjectScript,
   ThreadId,
+  SideTurnId,
   ThreadParticipantId,
   ProjectId,
   TurnId,
@@ -75,6 +77,8 @@ export interface ChatMessage {
   skills?: ChatSkillReference[];
   /** See OrchestrationMessage.participantId. Absent: the thread's own agent. */
   participantId?: ThreadParticipantId | undefined;
+  /** See OrchestrationMessage.sideTurnId: part of a side answer. */
+  sideTurnId?: SideTurnId | undefined;
   turnId?: TurnId | null;
   createdAt: string;
   completedAt?: string | undefined;
@@ -151,6 +155,8 @@ export interface Thread {
   queuedFollowUps?: readonly OrchestrationQueuedFollowUp[];
   /** See ThreadShell.participants. */
   participants?: readonly OrchestrationThreadParticipant[];
+  /** See OrchestrationThreadShell.sideTurn: the side answer in progress, if any. */
+  sideTurn?: OrchestrationSideTurn | null;
   /** See ThreadShell.doneOverride. */
   doneOverride: OrchestrationThreadDoneOverride | null;
   /** See ThreadShell.lastSeenAt. */
@@ -221,6 +227,8 @@ export interface ThreadShell {
    * a room. Absent means none.
    */
   participants?: readonly OrchestrationThreadParticipant[];
+  /** See OrchestrationThreadShell.sideTurn: the side answer in progress, if any. */
+  sideTurn?: OrchestrationSideTurn | null;
   /**
    * The user's last explicit Mark done / Reopen, held on the server so every
    * device agrees on the inbox's Active/Wrapped split. Null when never filed.
@@ -281,8 +289,12 @@ export interface SidebarThreadSummary {
   linkedPullRequests?: readonly OrchestrationThreadLinkedPullRequest[];
   /** See ThreadShell.participants; the inbox marks rooms and names who is working. */
   participants?: readonly OrchestrationThreadParticipant[];
+  /** See OrchestrationThreadShell.sideTurn: the side answer in progress, if any. */
+  sideTurn?: OrchestrationSideTurn | null;
   /** In a room, the model of the agent working or last at work; null otherwise. */
   roomSlotModelSelection?: ModelSelection | null;
+  /** The model of the agent answering on the side; null when nobody is. */
+  roomSideModelSelection?: ModelSelection | null;
 }
 
 export interface ThreadSession {

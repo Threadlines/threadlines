@@ -2,7 +2,7 @@
  * The composer control for rooms: who the next message goes to.
  *
  * Lists the thread's own agent and every agent added to it, marks the one
- * working, and lets the user pick a recipient, remove an agent, or add one
+ * working and the one answering on the side, and lets the user pick a recipient, remove an agent, or add one
  * from the same model list the model picker uses. In a thread with one agent
  * it is a single icon button that adds the first one.
  */
@@ -51,6 +51,8 @@ export const RoomAgentPicker = memo(function RoomAgentPicker(props: {
   recipientId: ThreadParticipantId | null;
   /** The agent with a turn in flight, if any. */
   workingId: ThreadParticipantId | null | undefined;
+  /** The agent answering on the side, if any. */
+  answeringId?: ThreadParticipantId | null | undefined;
   instanceEntries: ReadonlyArray<ProviderInstanceEntry>;
   modelOptionsByInstance: ReadonlyMap<ProviderInstanceId, ReadonlyArray<ModelEsque>>;
   keybindings?: ResolvedKeybindingsConfig;
@@ -257,6 +259,8 @@ export const RoomAgentPicker = memo(function RoomAgentPicker(props: {
               const entry = entryFor(row.modelSelection.instanceId);
               const selected = row.id === recipient.id;
               const working = props.workingId !== undefined && props.workingId === row.id;
+              const answering = props.answeringId !== undefined && props.answeringId === row.id;
+              const busy = working || answering;
               return (
                 <div
                   key={row.id ?? "primary"}
@@ -293,13 +297,19 @@ export const RoomAgentPicker = memo(function RoomAgentPicker(props: {
                   <span
                     className={cn(
                       "ml-auto shrink-0 font-mono text-[10.5px]",
-                      working ? "text-warning" : "text-muted-foreground",
+                      busy ? "text-warning" : "text-muted-foreground",
                     )}
                   >
-                    {working ? "working" : row.id === null ? "thread's agent" : null}
+                    {working
+                      ? "working"
+                      : answering
+                        ? "answering"
+                        : row.id === null
+                          ? "thread's agent"
+                          : null}
                   </span>
                   {selected ? <CheckIcon aria-hidden="true" className="size-3.5 shrink-0" /> : null}
-                  {row.id !== null && !working ? (
+                  {row.id !== null && !busy ? (
                     <button
                       type="button"
                       aria-label={`Remove ${row.name}`}

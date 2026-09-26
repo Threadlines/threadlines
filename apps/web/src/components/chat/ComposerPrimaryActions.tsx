@@ -1,6 +1,12 @@
-import { memo, type PointerEventHandler } from "react";
+import { memo, type PointerEventHandler, type ReactNode } from "react";
 import type { FollowUpDelivery, RuntimeMode } from "@threadlines/contracts";
-import { ChevronDownIcon, CornerDownRightIcon, ListEndIcon, SquareIcon } from "lucide-react";
+import {
+  ChevronDownIcon,
+  CornerDownRightIcon,
+  ListEndIcon,
+  MessageCircleQuestionIcon,
+  SquareIcon,
+} from "lucide-react";
 import { cn } from "~/lib/utils";
 import { Button } from "../ui/button";
 import {
@@ -30,6 +36,8 @@ interface ComposerPrimaryActionsProps {
   onRuntimeModeChange: (mode: RuntimeMode) => void;
   followUpDelivery: FollowUpDelivery;
   onFollowUpDeliveryChange: (delivery: FollowUpDelivery) => void;
+  /** In a room, while another agent works and this message is for a different one. */
+  roomDelivery?: ComposerRoomDelivery | null;
   onInterrupt: () => void;
   onImplementPlanInNewThread: () => void;
 }
@@ -46,6 +54,28 @@ export const FOLLOW_UP_DELIVERY_LABELS: Record<
     menuLabel: "Send when done",
   },
 };
+
+/**
+ * A message for one room agent while another works: asked now, answered
+ * read-only on the side, or sent once the agent at work finishes. The mode
+ * comes from `resolveRoomDelivery`; the "Steer now" / "Send when done" choice
+ * carries over, acting now meaning asking now.
+ */
+export interface ComposerRoomDelivery {
+  readonly mode: "ask" | "queue";
+  /** False when the picked agent's provider cannot answer on the side. */
+  readonly canAsk: boolean;
+  readonly recipientName: string;
+  readonly holderName: string;
+}
+
+export const roomDeliveryLabels = (delivery: ComposerRoomDelivery) =>
+  delivery.mode === "ask"
+    ? { action: `Ask ${delivery.recipientName} now`, tooltip: "Ask now" }
+    : {
+        action: `Send to ${delivery.recipientName} when ${delivery.holderName} finishes`,
+        tooltip: "Send when done",
+      };
 
 export const formatPendingPrimaryActionLabel = (input: {
   compact: boolean;
@@ -93,6 +123,82 @@ export const ComposerStopButton = memo(function ComposerStopButton({
   );
 });
 
+/** Send button with a menu choosing how a message typed mid-turn goes out. */
+function FollowUpSplitButton(props: {
+  /** Which way the button sends now, for tests and styling. */
+  mode: string;
+  action: string;
+  tooltip: string;
+  icon: ReactNode;
+  value: FollowUpDelivery;
+  options: ReadonlyArray<{
+    value: FollowUpDelivery;
+    label: string;
+    title: string;
+    disabled?: boolean;
+  }>;
+  onChange: (delivery: FollowUpDelivery) => void;
+  disabled: boolean;
+  pointerFocusProps: { onPointerDown: PointerEventHandler<HTMLElement> } | undefined;
+}) {
+  return (
+    <div
+      className="flex items-center"
+      data-chat-composer-follow-up-actions="true"
+      data-follow-up-mode={props.mode}
+    >
+      <Button
+        type="submit"
+        size="icon"
+        className="rounded-l-full rounded-r-none"
+        {...props.pointerFocusProps}
+        disabled={props.disabled}
+        aria-label={props.action}
+        tooltip={props.tooltip}
+      >
+        {props.icon}
+      </Button>
+      <Menu>
+        <MenuTrigger
+          render={
+            <Button
+              size="icon"
+              variant="default"
+              className="w-5 rounded-l-none rounded-r-full border-l-white/12 px-0"
+              aria-label="Choose how this message is sent"
+              {...props.pointerFocusProps}
+              disabled={props.disabled}
+            />
+          }
+        >
+          <ChevronDownIcon className="size-3" />
+        </MenuTrigger>
+        <MenuPopup align="end" side="top">
+          <MenuRadioGroup
+            value={props.value}
+            onValueChange={(value) => {
+              if (value === "steer" || value === "queue") {
+                props.onChange(value);
+              }
+            }}
+          >
+            {props.options.map((option) => (
+              <MenuRadioItem
+                key={option.value}
+                value={option.value}
+                disabled={option.disabled === true}
+                title={option.title}
+              >
+                {option.label}
+              </MenuRadioItem>
+            ))}
+          </MenuRadioGroup>
+        </MenuPopup>
+      </Menu>
+    </div>
+  );
+}
+
 export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
   compact,
   isRunning,
@@ -109,6 +215,7 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
   onRuntimeModeChange,
   followUpDelivery,
   onFollowUpDeliveryChange,
+  roomDelivery = null,
   onInterrupt,
   onImplementPlanInNewThread,
 }: ComposerPrimaryActionsProps) {
@@ -116,60 +223,79 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
     ? { onPointerDown: preventPointerFocus }
     : undefined;
 
+  // Also while the agent at work only waits on background work, when there
+  // is no turn to steer or stop.
+  if (roomDelivery !== null && hasSendableContent) {
+    const labels = roomDeliveryLabels(roomDelivery);
+    return (
+      <div className="flex shrink-0 items-center gap-1.5">
+        <FollowUpSplitButton
+          mode={roomDelivery.mode}
+          action={labels.action}
+          tooltip={labels.tooltip}
+          icon={
+            roomDelivery.mode === "queue" ? (
+              <ListEndIcon className="size-3.5" />
+            ) : (
+              <MessageCircleQuestionIcon className="size-3.5" />
+            )
+          }
+          value={roomDelivery.mode === "ask" ? "steer" : "queue"}
+          options={[
+            {
+              value: "steer",
+              label: "Ask now",
+              disabled: !roomDelivery.canAsk,
+              title: roomDelivery.canAsk
+                ? `${roomDelivery.recipientName} answers now and can only read, while ${roomDelivery.holderName} keeps working`
+                : `${roomDelivery.recipientName} can't answer while another agent works`,
+            },
+            {
+              value: "queue",
+              label: `Send when ${roomDelivery.holderName} finishes`,
+              title: `Send to ${roomDelivery.recipientName} when ${roomDelivery.holderName} finishes`,
+            },
+          ]}
+          onChange={onFollowUpDeliveryChange}
+          disabled={isSendBusy || isConnecting || isEnvironmentUnavailable}
+          pointerFocusProps={pointerFocusProps}
+        />
+      </div>
+    );
+  }
+
   if (isRunning) {
     return (
       <div className="flex shrink-0 items-center gap-1.5">
         {hasSendableContent ? (
-          <div className="flex items-center" data-chat-composer-follow-up-actions="true">
-            <Button
-              type="submit"
-              size="icon"
-              className="rounded-l-full rounded-r-none"
-              {...pointerFocusProps}
-              disabled={isSendBusy || isConnecting || isEnvironmentUnavailable}
-              aria-label={FOLLOW_UP_DELIVERY_LABELS[followUpDelivery].action}
-              tooltip={FOLLOW_UP_DELIVERY_LABELS[followUpDelivery].tooltip}
-            >
-              {followUpDelivery === "queue" ? (
+          <FollowUpSplitButton
+            mode={followUpDelivery}
+            action={FOLLOW_UP_DELIVERY_LABELS[followUpDelivery].action}
+            tooltip={FOLLOW_UP_DELIVERY_LABELS[followUpDelivery].tooltip}
+            icon={
+              followUpDelivery === "queue" ? (
                 <ListEndIcon className="size-3.5" />
               ) : (
                 <CornerDownRightIcon className="size-3.5" />
-              )}
-            </Button>
-            <Menu>
-              <MenuTrigger
-                render={
-                  <Button
-                    size="icon"
-                    variant="default"
-                    className="w-5 rounded-l-none rounded-r-full border-l-white/12 px-0"
-                    aria-label="Choose how this message is sent"
-                    {...pointerFocusProps}
-                    disabled={isSendBusy || isConnecting || isEnvironmentUnavailable}
-                  />
-                }
-              >
-                <ChevronDownIcon className="size-3" />
-              </MenuTrigger>
-              <MenuPopup align="end" side="top">
-                <MenuRadioGroup
-                  value={followUpDelivery}
-                  onValueChange={(value) => {
-                    if (value === "steer" || value === "queue") {
-                      onFollowUpDeliveryChange(value);
-                    }
-                  }}
-                >
-                  <MenuRadioItem value="steer" title="Add this message to the reply in progress">
-                    {FOLLOW_UP_DELIVERY_LABELS.steer.menuLabel}
-                  </MenuRadioItem>
-                  <MenuRadioItem value="queue" title="Wait for the reply to finish, then send">
-                    {FOLLOW_UP_DELIVERY_LABELS.queue.menuLabel}
-                  </MenuRadioItem>
-                </MenuRadioGroup>
-              </MenuPopup>
-            </Menu>
-          </div>
+              )
+            }
+            value={followUpDelivery}
+            options={[
+              {
+                value: "steer",
+                label: FOLLOW_UP_DELIVERY_LABELS.steer.menuLabel,
+                title: "Add this message to the reply in progress",
+              },
+              {
+                value: "queue",
+                label: FOLLOW_UP_DELIVERY_LABELS.queue.menuLabel,
+                title: "Wait for the reply to finish, then send",
+              },
+            ]}
+            onChange={onFollowUpDeliveryChange}
+            disabled={isSendBusy || isConnecting || isEnvironmentUnavailable}
+            pointerFocusProps={pointerFocusProps}
+          />
         ) : (
           <ComposerStopButton
             onInterrupt={onInterrupt}
