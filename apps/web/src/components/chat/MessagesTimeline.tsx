@@ -4251,7 +4251,6 @@ function RoomAuthorLine({ label }: { label: RoomAgentLabel | undefined }) {
         />
       ) : null}
       <span className="font-medium text-foreground">{label.name}</span>
-      <span className="font-mono text-[10.5px] text-muted-foreground">{label.model}</span>
     </div>
   );
 }

@@ -204,9 +204,20 @@ describe("decider rooms", () => {
 
     const backgroundWork = await decide(
       turnStart(astraId),
-      readModel({ session: session({ pendingBackgroundTaskCount: 1 }) }),
+      readModel({
+        session: session({ pendingBackgroundTaskCount: 1, awaitedBackgroundTaskCount: 1 }),
+      }),
     );
     expect(Exit.isFailure(backgroundWork)).toBe(true);
+
+    // A dev server it left running is not work it will wake up for.
+    const devServer = await decide(
+      turnStart(astraId),
+      readModel({
+        session: session({ pendingBackgroundTaskCount: 1, awaitedBackgroundTaskCount: 0 }),
+      }),
+    );
+    expect(Exit.isSuccess(devServer)).toBe(true);
 
     // The holder itself keeps its existing behavior.
     const sameAgent = await decide(

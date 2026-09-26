@@ -34,8 +34,9 @@ const ACTION_CLASS =
  * Messages sent while a turn runs, listed just above the composer: steers
  * still on their way into the running turn, then messages waiting for it to
  * finish. A waiting message can go back into the box to edit, or be removed.
- * `paused` means nothing is running to wait on: the last turn was stopped or
- * failed, so the queue holds until the next turn finishes.
+ * `paused` means nothing is running to wait on (no turn, no background work
+ * the agent will wake up for): the last turn was stopped or failed, so the
+ * queue holds until the next turn finishes.
  */
 export const ComposerFollowUpQueue = memo(function ComposerFollowUpQueue({
   steering,
@@ -79,7 +80,7 @@ export const ComposerFollowUpQueue = memo(function ComposerFollowUpQueue({
             title={
               paused
                 ? "The last reply stopped, so this waits until the next reply finishes."
-                : "Sends when this reply finishes."
+                : "Sends when the current work finishes."
             }
           >
             {paused ? "Paused" : "Queued"}

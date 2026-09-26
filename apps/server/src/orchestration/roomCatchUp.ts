@@ -50,7 +50,7 @@ export function buildRoomCatchUp(input: RoomCatchUpInput): string | undefined {
     }
     const participant = thread.participants.find((entry) => entry.id === id);
     return participant
-      ? `@${participant.handle} (${participant.modelSelection.model})`
+      ? `${participant.handle} (${participant.modelSelection.model})`
       : "an agent that has left";
   };
 

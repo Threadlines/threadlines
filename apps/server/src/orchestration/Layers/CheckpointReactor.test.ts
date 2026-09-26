@@ -130,6 +130,7 @@ function createProviderServiceHarness(
     steerTurn: () => unsupported(),
     startReview: () => unsupported(),
     interruptTurn: () => unsupported(),
+    releaseBackgroundCommands: () => Effect.void,
     compactContext: () => unsupported(),
     setThreadGoal: () => unsupported(),
     pauseThreadGoalForStop: () => unsupported(),

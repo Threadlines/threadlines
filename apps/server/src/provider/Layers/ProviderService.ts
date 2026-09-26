@@ -1362,6 +1362,21 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     return yield* routed.adapter.realtimeListVoices(routed.threadId);
   });
 
+  const releaseBackgroundCommands: ProviderServiceShape["releaseBackgroundCommands"] = Effect.fn(
+    "releaseBackgroundCommands",
+  )(function* (input) {
+    // Never starts a runtime: one that is not running has nothing to release.
+    const routed = yield* resolveRoutableSession({
+      threadId: input.threadId,
+      operation: "ProviderService.releaseBackgroundCommands",
+      allowRecovery: false,
+    });
+    if (!routed.isActive || routed.adapter.releaseBackgroundCommands === undefined) {
+      return;
+    }
+    yield* routed.adapter.releaseBackgroundCommands(routed.threadId);
+  });
+
   const compactContext: ProviderServiceShape["compactContext"] = Effect.fn("compactContext")(
     function* (rawInput) {
       const input = yield* decodeInputOrValidationError({
@@ -2119,6 +2134,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     realtimeStop,
     realtimeAppendAudio,
     realtimeListVoices,
+    releaseBackgroundCommands,
     compactContext,
     setThreadGoal,
     pauseThreadGoalForStop,

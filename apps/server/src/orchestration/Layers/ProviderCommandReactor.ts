@@ -12,6 +12,7 @@ import {
   type OrchestrationEvent,
   ProviderDriverKind,
   type ProjectId,
+  type OrchestrationQueuedFollowUp,
   type OrchestrationSession,
   ThreadId,
   type ThreadParticipantId,
@@ -372,6 +373,22 @@ const make = Effect.gen(function* () {
   // reconnects leave them answerable. Keep shutdown notifications covered until
   // a new session starts; no provider can send late notifications after restart.
   const explicitlyStoppedThreads = new Set<ThreadId>();
+  /**
+   * Threads where the user pressed Stop and has not sent anything since.
+   * Nothing queued before it goes out on its own, even when Stop had no turn
+   * to end (the agent was only waiting on background work). A new turn or a
+   * newly queued message lets the queue move again; provider status reports
+   * do not, since a late one can still belong to the stopped turn.
+   */
+  const queueHeldByStop = new Set<ThreadId>();
+  /**
+   * A message the user just sent to another agent in a room, waiting only
+   * for the agent holding the thread to finish background work it waits on.
+   * It goes out as soon as that work is gone, however the last turn ended
+   * (a failed or stopped turn included); older messages held by that turn
+   * stay where they are.
+   */
+  const releasedMessageByThread = new Map<ThreadId, MessageId>();
 
   /**
    * Threads whose queued checkout switch is currently deferred because the
@@ -1112,20 +1129,23 @@ const make = Effect.gen(function* () {
       // the driver reports model switching as unsupported.
       const shouldRestartForModelChange = modelChanged && sessionModelSwitch === "unsupported";
 
+      // A handover blanks the slot's provider ids and checkout (the decider
+      // can not know them); an agent resuming a runtime that is still alive
+      // restores them from it. Only right after a handover: at any other time
+      // the slot is current, and rebinding would clear a running turn.
+      const slotBlankedByHandover =
+        projectedSession !== null &&
+        projectedSession.status === "starting" &&
+        (projectedSession.providerThreadId ?? null) === null &&
+        (projectedSession.checkoutCwd ?? null) === null;
+      const rebindAfterHandover =
+        inRoom && activeSession !== undefined && slotBlankedByHandover
+          ? bindSessionToThread(activeSession)
+          : Effect.void;
+
       if (!runtimeModeChanged && !cwdChanged && !instanceChanged && !shouldRestartForModelChange) {
         deferredCheckoutSwitchThreads.delete(threadId);
-        // A handover blanks the slot's provider ids and checkout (the decider
-        // can not know them); an agent resuming a runtime that is still alive
-        // restores them from it. Only right after a handover: at any other
-        // time the slot is current, and rebinding would clear a running turn.
-        const slotBlankedByHandover =
-          projectedSession !== null &&
-          projectedSession.status === "starting" &&
-          (projectedSession.providerThreadId ?? null) === null &&
-          (projectedSession.checkoutCwd ?? null) === null;
-        if (inRoom && activeSession !== undefined && slotBlankedByHandover) {
-          yield* bindSessionToThread(activeSession);
-        }
+        yield* rebindAfterHandover;
         return { sessionThreadId: existingSessionThreadId, nativeForkApplied: false };
       }
 
@@ -1134,8 +1154,12 @@ const make = Effect.gen(function* () {
       // runtime, so cycling it to move checkouts would kill them — the adapter
       // refuses that outright, which used to fail the turn. Run the turn where
       // the session already is and keep the switch queued for the first turn
-      // after the tasks finish.
-      const pendingBackgroundTaskCount = projectedSession?.pendingBackgroundTaskCount ?? 0;
+      // after the tasks finish. The runtime's own count covers a room agent
+      // taking the session back while a dev server it left is still running.
+      const pendingBackgroundTaskCount = Math.max(
+        projectedSession?.pendingBackgroundTaskCount ?? 0,
+        activeSession?.pendingBackgroundTaskCount ?? 0,
+      );
       const restartRequiredBeyondCwd =
         runtimeModeChanged || instanceChanged || shouldRestartForModelChange;
       if (cwdChanged && !restartRequiredBeyondCwd && pendingBackgroundTaskCount > 0) {
@@ -1149,6 +1173,9 @@ const make = Effect.gen(function* () {
             createdAt,
           });
         }
+        // The runtime stays where it is, so the slot has to say where that is
+        // for the switch to apply once the tasks finish.
+        yield* rebindAfterHandover;
         return { sessionThreadId: existingSessionThreadId, nativeForkApplied: false };
       }
       deferredCheckoutSwitchThreads.delete(threadId);
@@ -1606,6 +1633,10 @@ const make = Effect.gen(function* () {
     if (yield* hasHandledTurnStartRecently(key)) {
       return;
     }
+    // A new turn is the user moving on after Stop, and supersedes a message
+    // that was waiting on its own release.
+    queueHeldByStop.delete(event.payload.threadId);
+    releasedMessageByThread.delete(event.payload.threadId);
 
     const thread = yield* resolveThread(event.payload.threadId);
     if (!thread) {
@@ -1936,6 +1967,7 @@ const make = Effect.gen(function* () {
     if (!thread) {
       return;
     }
+    queueHeldByStop.add(thread.id);
     const hasSession = thread.session && thread.session.status !== "stopped";
     if (!hasSession) {
       return yield* appendProviderFailureActivity({
@@ -2607,6 +2639,43 @@ const make = Effect.gen(function* () {
   const lastBackgroundTaskCountByThread = new Map<ThreadId, number>();
   const lastSessionStatusByThread = new Map<ThreadId, OrchestrationSession["status"]>();
 
+  /**
+   * In a room, the next queued message is for another agent, but the agent
+   * holding the thread is still waiting on background work. The user moving
+   * on is the same signal as their next message starting a new turn: the
+   * commands it left running (a dev server) stop counting as work it waits
+   * on. Its background agents still do, and the message waits for them.
+   * Returns true when the message has to keep waiting.
+   */
+  const releaseSlotForQueuedAgent = Effect.fnUntraced(function* (
+    thread: Pick<OrchestrationThread, "id" | "session" | "participants">,
+    next: Pick<OrchestrationQueuedFollowUp, "participantId">,
+  ) {
+    const session = thread.session;
+    const holderId = sessionSlotParticipantId(session);
+    if (
+      thread.participants.length === 0 ||
+      session === null ||
+      (next.participantId ?? null) === holderId ||
+      (session.awaitedBackgroundTaskCount ?? session.pendingBackgroundTaskCount ?? 0) === 0
+    ) {
+      return false;
+    }
+    // The adapter republishes its tasks, and the drop in the waited-on count
+    // sends the message (see maybeSendNextQueuedFollowUp).
+    yield* providerService
+      .releaseBackgroundCommands({ threadId: participantSessionKey(thread.id, holderId) })
+      .pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("provider command reactor could not release background commands", {
+            threadId: thread.id,
+            cause: Cause.pretty(cause),
+          }),
+        ),
+      );
+    return true;
+  });
+
   /** Starts a queued message's turn. Losing a race with Remove is fine. */
   const sendQueuedFollowUp = Effect.fnUntraced(function* (
     threadId: ThreadId,
@@ -2640,9 +2709,15 @@ const make = Effect.gen(function* () {
   const processFollowUpQueued = Effect.fn("processFollowUpQueued")(function* (
     event: Extract<ProviderIntentEvent, { type: "thread.follow-up-queued" }>,
   ) {
+    // A message sent after Stop means the user is moving on.
+    queueHeldByStop.delete(event.payload.threadId);
     const thread = yield* resolveThread(event.payload.threadId);
     const status = thread?.session?.status;
     if (!thread || status === "running" || status === "starting") {
+      return;
+    }
+    if (yield* releaseSlotForQueuedAgent(thread, event.payload.followUp)) {
+      releasedMessageByThread.set(thread.id, event.payload.followUp.messageId);
       return;
     }
     yield* sendQueuedFollowUp(thread.id, event.payload.followUp.messageId, event.occurredAt);
@@ -2659,10 +2734,13 @@ const make = Effect.gen(function* () {
     const { session, threadId } = event.payload;
     const previousStatus = lastSessionStatusByThread.get(threadId);
     const previousBackgroundTaskCount = lastBackgroundTaskCountByThread.get(threadId) ?? 0;
-    const backgroundTaskCount = session.pendingBackgroundTaskCount ?? 0;
+    // Only work the agent is waiting on holds the slot; see the decider.
+    const backgroundTaskCount =
+      session.awaitedBackgroundTaskCount ?? session.pendingBackgroundTaskCount ?? 0;
     if (session.status === "stopped") {
       lastSessionStatusByThread.delete(threadId);
       lastBackgroundTaskCountByThread.delete(threadId);
+      releasedMessageByThread.delete(threadId);
     } else {
       lastSessionStatusByThread.set(threadId, session.status);
       lastBackgroundTaskCountByThread.set(threadId, backgroundTaskCount);
@@ -2670,20 +2748,39 @@ const make = Effect.gen(function* () {
     const turnFinished =
       previousStatus === "running" && session.status === "ready" && !session.activeTurnId;
     // In a room, a message queued for another agent can not take the slot
-    // while the agent that just worked still has background work; it goes
-    // out once that work is done.
+    // while the agent that just worked is still waiting on background work;
+    // it goes out once that work is done.
     const backgroundWorkFinished =
       previousStatus === "ready" &&
       session.status === "ready" &&
       !session.activeTurnId &&
       previousBackgroundTaskCount > 0 &&
       backgroundTaskCount === 0;
+    if (queueHeldByStop.has(threadId)) {
+      return;
+    }
+    const releasedMessageId = releasedMessageByThread.get(threadId);
+    if (
+      releasedMessageId !== undefined &&
+      previousBackgroundTaskCount > 0 &&
+      backgroundTaskCount === 0 &&
+      !session.activeTurnId &&
+      session.status !== "running" &&
+      session.status !== "starting"
+    ) {
+      releasedMessageByThread.delete(threadId);
+      yield* sendQueuedFollowUp(threadId, releasedMessageId, event.occurredAt);
+      return;
+    }
     if (!turnFinished && !backgroundWorkFinished) {
       return;
     }
     const thread = yield* resolveThread(threadId);
     const next = thread?.queuedFollowUps?.[0];
     if (!thread || !next) {
+      return;
+    }
+    if (yield* releaseSlotForQueuedAgent(thread, next)) {
       return;
     }
     if (
@@ -2976,7 +3073,30 @@ const make = Effect.gen(function* () {
       const snapshot = yield* projectionSnapshotQuery.getShellSnapshot();
       for (const thread of snapshot.threads) {
         const session = thread.session;
-        if (!session || !restartInterruptedStatuses.has(session.status)) {
+        if (!session) {
+          continue;
+        }
+        // Background tasks lived in the previous process's runtimes, so none
+        // survive. A settled session still counting them would read as
+        // waiting forever, and in a room would never hand the thread over.
+        if (!restartInterruptedStatuses.has(session.status)) {
+          if (
+            session.status !== "stopped" &&
+            ((session.pendingBackgroundTaskCount ?? 0) > 0 ||
+              (session.awaitedBackgroundTaskCount ?? 0) > 0)
+          ) {
+            const updatedAt = yield* nowIso;
+            yield* setThreadSession({
+              threadId: thread.id,
+              session: {
+                ...session,
+                pendingBackgroundTaskCount: 0,
+                awaitedBackgroundTaskCount: 0,
+                updatedAt,
+              },
+              createdAt: updatedAt,
+            });
+          }
           continue;
         }
         const createdAt = yield* nowIso;
@@ -2987,6 +3107,7 @@ const make = Effect.gen(function* () {
             status: "interrupted",
             activeTurnId: null,
             pendingBackgroundTaskCount: 0,
+            awaitedBackgroundTaskCount: 0,
             lastError: null,
             updatedAt: createdAt,
           },

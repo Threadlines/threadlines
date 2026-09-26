@@ -22,18 +22,20 @@ import { memo, useState } from "react";
 import { readEnvironmentApi } from "~/environmentApi";
 import { cn, newCommandId, randomUUID } from "~/lib/utils";
 import type { ProviderInstanceEntry } from "../../providerInstances";
-import { suggestParticipantHandle, useRoomRecipientStore } from "../../rooms";
+import {
+  buildRoomAgentLabels,
+  nextRoomAgentName,
+  roomAgentKey,
+  roomModelName,
+  useRoomRecipientStore,
+} from "../../rooms";
 import { Button } from "../ui/button";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import { toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { ModelPickerContent } from "./ModelPickerContent";
 import { ProviderInstanceIcon } from "./ProviderInstanceIcon";
-import {
-  type ModelEsque,
-  getProviderScopedDisplayModelName,
-  getTriggerDisplayModelName,
-} from "./providerIconUtils";
+import { type ModelEsque, getPickerModelName } from "./providerIconUtils";
 
 interface AgentRow {
   readonly id: ThreadParticipantId | null;
@@ -63,27 +65,29 @@ export const RoomAgentPicker = memo(function RoomAgentPicker(props: {
 
   const entryFor = (instanceId: ProviderInstanceId) =>
     props.instanceEntries.find((entry) => entry.instanceId === instanceId);
-  // The same short name the model picker shows ("Opus 4.5", not "Claude Opus 4.5").
-  const modelName = (selection: ModelSelection) => {
-    const option = props.modelOptionsByInstance
-      .get(selection.instanceId)
-      ?.find((entry) => entry.slug === selection.model);
-    const entry = entryFor(selection.instanceId);
-    if (!option) return selection.model;
-    return entry
-      ? getProviderScopedDisplayModelName(option, entry.driverKind, { preferShortName: true })
-      : getTriggerDisplayModelName(option);
-  };
+  const pickerName = (
+    model: ProviderInstanceEntry["models"][number],
+    entry: ProviderInstanceEntry,
+  ) => getPickerModelName(model, entry.driverKind);
+  // Every agent is named by its model, like the model picker names it.
+  const labels = buildRoomAgentLabels(
+    { modelSelection: props.primaryModelSelection, participants: props.participants },
+    props.instanceEntries,
+    pickerName,
+  );
+  const nameOf = (id: ThreadParticipantId | null, selection: ModelSelection) =>
+    labels?.get(roomAgentKey(id))?.name ??
+    roomModelName(selection, props.instanceEntries, pickerName);
 
   const rows: AgentRow[] = [
     {
       id: null,
-      name: modelName(props.primaryModelSelection),
+      name: nameOf(null, props.primaryModelSelection),
       modelSelection: props.primaryModelSelection,
     },
     ...present.map((participant) => ({
       id: participant.id,
-      name: `@${participant.handle}`,
+      name: nameOf(participant.id, participant.modelSelection),
       modelSelection: participant.modelSelection,
     })),
   ];
@@ -105,15 +109,12 @@ export const RoomAgentPicker = memo(function RoomAgentPicker(props: {
   };
 
   const addAgent = async (instanceId: ProviderInstanceId, model: string) => {
-    const option = props.modelOptionsByInstance
-      .get(instanceId)
-      ?.find((entry) => entry.slug === model);
-    const handle = suggestParticipantHandle({
-      modelDisplayName: option ? getTriggerDisplayModelName(option) : model,
-      model,
-      providerName: entryFor(instanceId)?.displayName ?? String(instanceId),
-      taken: present.map((participant) => participant.handle),
-    });
+    // The name it will be shown with, stored so the agents and the server's
+    // messages call it the same.
+    const handle = nextRoomAgentName(
+      roomModelName({ instanceId, model }, props.instanceEntries, pickerName),
+      labels ? [...labels.values()].map((label) => label.name) : [rows[0]!.name],
+    );
     const id = ThreadParticipantId.make(randomUUID());
     setMenuOpen(false);
     try {
@@ -156,8 +157,6 @@ export const RoomAgentPicker = memo(function RoomAgentPicker(props: {
     }
   };
 
-  const recipientEntry = entryFor(recipient.modelSelection.instanceId);
-
   return (
     <Popover open={open} onOpenChange={setMenuOpen}>
       {recipient.id !== null ? (
@@ -168,24 +167,17 @@ export const RoomAgentPicker = memo(function RoomAgentPicker(props: {
               variant="ghost"
               data-chat-room-agent-picker="true"
               className={cn(
-                "min-w-0 shrink-0 justify-start overflow-hidden whitespace-nowrap px-2 text-foreground/85 hover:text-foreground [&_svg]:mx-0",
+                "min-w-0 shrink-0 justify-start overflow-hidden whitespace-nowrap px-1.5 text-foreground/85 hover:text-foreground [&_svg]:mx-0",
                 props.compact ? "max-w-32" : "max-w-44",
               )}
               aria-label={`Send to ${recipient.name}`}
             />
           }
         >
-          <span className="flex min-w-0 items-center gap-1.5 overflow-hidden">
-            {recipientEntry ? (
-              <ProviderInstanceIcon
-                driverKind={recipientEntry.driverKind}
-                displayName={recipientEntry.displayName}
-                accentColor={recipientEntry.accentColor}
-                showBadge={false}
-                className="size-4"
-                iconClassName="size-4"
-              />
-            ) : null}
+          {/* The people icon, not the provider's: this names who the message
+              goes to, and must not read as the model picker it replaces. */}
+          <span className="flex min-w-0 items-center gap-2.5 overflow-hidden">
+            <UsersRoundIcon aria-hidden="true" className="size-4 shrink-0 opacity-70" />
             <span className="min-w-0 truncate">{recipient.name}</span>
             <ChevronDownIcon aria-hidden="true" className="size-3 shrink-0 opacity-60" />
           </span>
@@ -203,7 +195,10 @@ export const RoomAgentPicker = memo(function RoomAgentPicker(props: {
                     size="sm"
                     variant="ghost"
                     data-chat-room-agent-picker="true"
-                    className="shrink-0 gap-1 px-2 text-muted-foreground/70 hover:text-foreground/80"
+                    // The footer's gap is dropped here so the count sits
+                    // as far from the model picker as the people icon sits
+                    // from an added agent's name.
+                    className="-me-1 shrink-0 gap-0.5 pr-1 pl-1.5 text-muted-foreground/70 hover:text-foreground/80"
                     aria-label={inRoom ? "Send to another agent" : "Add an agent to this thread"}
                   />
                 }
@@ -226,8 +221,12 @@ export const RoomAgentPicker = memo(function RoomAgentPicker(props: {
         className={cn(
           adding || !inRoom
             ? "border-0 bg-transparent p-0 shadow-none before:hidden [--viewport-inline-padding:0] *:data-[slot=popover-viewport]:p-0"
-            : "w-64 p-1",
+            : "w-max min-w-44 max-w-80",
         )}
+        // The list is as tight as the composer's other menus.
+        {...(adding || !inRoom
+          ? {}
+          : { viewportClassName: "p-1 [--viewport-inline-padding:--spacing(1)]" })}
       >
         {adding || !inRoom ? (
           <ModelPickerContent
@@ -251,7 +250,7 @@ export const RoomAgentPicker = memo(function RoomAgentPicker(props: {
           />
         ) : (
           <div role="listbox" aria-label="Send to" className="flex flex-col text-sm">
-            <div className="px-2 pt-1.5 pb-1 font-mono text-[10.5px] text-muted-foreground">
+            <div className="px-2 pt-0.5 pb-1 font-mono text-[10.5px] text-muted-foreground">
               Send to
             </div>
             {rows.map((row) => {
@@ -265,7 +264,7 @@ export const RoomAgentPicker = memo(function RoomAgentPicker(props: {
                   aria-selected={selected}
                   tabIndex={0}
                   className={cn(
-                    "group flex h-8 cursor-default items-center gap-2 rounded-md px-2 outline-none hover:bg-accent focus-visible:bg-accent",
+                    "group flex h-7 cursor-default items-center gap-2 rounded-sm px-2 outline-none hover:bg-accent focus-visible:bg-accent",
                     selected && "bg-accent/60",
                   )}
                   onClick={() => {
@@ -297,11 +296,7 @@ export const RoomAgentPicker = memo(function RoomAgentPicker(props: {
                       working ? "text-warning" : "text-muted-foreground",
                     )}
                   >
-                    {working
-                      ? "working"
-                      : row.id === null
-                        ? "thread's agent"
-                        : modelName(row.modelSelection)}
+                    {working ? "working" : row.id === null ? "thread's agent" : null}
                   </span>
                   {selected ? <CheckIcon aria-hidden="true" className="size-3.5 shrink-0" /> : null}
                   {row.id !== null && !working ? (
@@ -324,7 +319,7 @@ export const RoomAgentPicker = memo(function RoomAgentPicker(props: {
             <div className="my-1 h-px bg-border" />
             <button
               type="button"
-              className="flex h-8 items-center gap-2 rounded-md px-2 text-muted-foreground outline-none hover:bg-accent hover:text-foreground focus-visible:bg-accent"
+              className="flex h-7 items-center gap-2 rounded-sm px-2 text-muted-foreground outline-none hover:bg-accent hover:text-foreground focus-visible:bg-accent"
               onClick={() => setAdding(true)}
             >
               <PlusIcon aria-hidden="true" className="size-4" />

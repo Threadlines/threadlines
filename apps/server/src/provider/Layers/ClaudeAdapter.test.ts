@@ -23,6 +23,7 @@ import {
   type RuntimeMode,
   ThreadId,
   ProviderInstanceId,
+  TurnId,
 } from "@threadlines/contracts";
 import { createModelCapabilities, createModelSelection } from "@threadlines/shared/model";
 import { assert, describe, it } from "@effect/vitest";
@@ -3740,6 +3741,33 @@ describe("ClaudeAdapterLive", () => {
       for (const update of liveUpdates) {
         assert.equal(String(update.event.itemId), "tool-task-nested-root");
       }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("stops only the turn it is aimed at when given a turn id", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      const turn = yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "hello",
+        attachments: [],
+      });
+
+      // A stop meant for a turn that already gave way to this one.
+      yield* adapter.interruptTurn(session.threadId, TurnId.make("turn-woken-earlier"));
+      assert.equal(harness.query.interruptCalls.length, 0);
+
+      yield* adapter.interruptTurn(session.threadId, turn.turnId);
+      assert.equal(harness.query.interruptCalls.length, 1);
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),

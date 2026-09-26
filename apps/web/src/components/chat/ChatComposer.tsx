@@ -1428,6 +1428,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   // suggestion from flashing back over an empty composer while the next turn is
   // connecting / starting (before it registers as the latest turn).
   const [dismissedSuggestionTurnId, setDismissedSuggestionTurnId] = useState<TurnId | null>(null);
+  const queuedFollowUpCount = activeThread?.queuedFollowUps?.length ?? 0;
   const latestPromptSuggestion = useMemo(
     () =>
       selectPromptSuggestion({
@@ -1438,6 +1439,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         hasComposerApproval: isComposerApprovalState,
         pendingUserInputCount: pendingUserInputs.length,
         showPlanFollowUpPrompt,
+        queuedMessageCount: queuedFollowUpCount,
         latestTurn: activeThread?.latestTurn ?? null,
         dismissedTurnId: dismissedSuggestionTurnId,
         activities: activeThreadActivities ?? [],
@@ -1451,6 +1453,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       pendingUserInputs.length,
       phase,
       prompt,
+      queuedFollowUpCount,
       selectedProvider,
       showPlanFollowUpPrompt,
     ],
@@ -3683,6 +3686,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     {addressingRoomAgent ? null : (
                       <ProviderModelPicker
                         compact={isComposerFooterCompact}
+                        // Sits tight against the agent picker, which already
+                        // pads the gap between them.
+                        {...(showRoomAgentPicker ? { triggerClassName: "sm:pl-1.5" } : {})}
                         activeInstanceId={selectedInstanceId}
                         model={selectedModelForPickerWithCustomFallback}
                         lockedProvider={lockedProvider}

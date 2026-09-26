@@ -1,7 +1,8 @@
 import { ProviderInstanceId, ThreadParticipantId } from "@threadlines/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { parseLeadingRoomMention, resolveRoomRecipient, suggestParticipantHandle } from "./rooms";
+import type { ProviderInstanceEntry } from "./providerInstances";
+import { buildRoomAgentLabels, resolveRoomRecipient, roomAgentKey } from "./rooms";
 
 const astraId = ThreadParticipantId.make("agent-astra");
 const astra = {
@@ -25,28 +26,25 @@ describe("rooms", () => {
     expect(resolveRoomRecipient(left, astraId)).toBeNull();
   });
 
-  it("routes a message that starts with @handle", () => {
-    const thread = { participants: [astra] };
-    expect(parseLeadingRoomMention("@Astra review this", thread)?.id).toBe(astraId);
-    expect(parseLeadingRoomMention("ask @astra later", thread)).toBeNull();
-    expect(parseLeadingRoomMention("@astral review", thread)).toBeNull();
-  });
-
-  it("suggests a short handle and avoids taken ones", () => {
-    const base = { model: "gpt-6-astra", providerName: "Cursor" };
-    expect(suggestParticipantHandle({ ...base, modelDisplayName: "GPT-6 Astra", taken: [] })).toBe(
-      "astra",
+  it("names every agent by its model and numbers agents on the same model", () => {
+    const entries = [
+      {
+        instanceId: ProviderInstanceId.make("codex"),
+        models: [{ slug: "gpt-6-astra", name: "GPT-6 Astra" }],
+      },
+    ] as unknown as ReadonlyArray<ProviderInstanceEntry>;
+    const secondAstraId = ThreadParticipantId.make("agent-astra-2");
+    const labels = buildRoomAgentLabels(
+      {
+        modelSelection: { instanceId: ProviderInstanceId.make("claudeAgent"), model: "opus-9" },
+        participants: [astra, { ...astra, id: secondAstraId }],
+      },
+      entries,
+      (model) => model.name,
     );
-    expect(
-      suggestParticipantHandle({ ...base, modelDisplayName: "GPT-6 Astra", taken: ["astra"] }),
-    ).toBe("astra-cursor");
-    expect(
-      suggestParticipantHandle({
-        model: "claude-opus-5",
-        providerName: "Claude",
-        modelDisplayName: "Claude Opus 5",
-        taken: [],
-      }),
-    ).toBe("opus");
+    // A model this client does not know keeps its id.
+    expect(labels?.get(roomAgentKey(null))?.name).toBe("opus-9");
+    expect(labels?.get(roomAgentKey(astraId))?.name).toBe("GPT-6 Astra");
+    expect(labels?.get(roomAgentKey(secondAstraId))?.name).toBe("GPT-6 Astra 2");
   });
 });
