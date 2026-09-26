@@ -15,6 +15,12 @@ import type * as Scope from "effect/Scope";
  * host's rules allow it, and looks as soon as that switch comes on too, so a
  * pull request that is already green merges straight away.
  *
+ * It looks every two minutes, and every twenty seconds, for up to half an
+ * hour, at an idle thread whose checks are in motion (one running, or a push
+ * whose checks are not listed yet), the same pace the composer's checks chip
+ * keeps. It reads the thread again just before starting a turn, so a message
+ * the user sent meanwhile goes alone.
+ *
  * It runs only while the server does: the auto-fix baseline lives in memory, so
  * a restart re-observes rather than replaying what it missed. The merge switch
  * lives in the read model and survives a restart.

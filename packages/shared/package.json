@@ -179,6 +179,10 @@
       "types": "./src/pullRequestAutoMerge.ts",
       "import": "./src/pullRequestAutoMerge.ts"
     },
+    "./pullRequestPolling": {
+      "types": "./src/pullRequestPolling.ts",
+      "import": "./src/pullRequestPolling.ts"
+    },
     "./pendingRequests": {
       "types": "./src/pendingRequests.ts",
       "import": "./src/pendingRequests.ts"

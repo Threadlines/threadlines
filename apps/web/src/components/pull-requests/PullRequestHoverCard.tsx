@@ -15,6 +15,7 @@
  * @module PullRequestHoverCard
  */
 import type { EnvironmentId, PullRequestRef, PullRequestState } from "@threadlines/contracts";
+import { pullRequestArmedToMerge } from "@threadlines/shared/pullRequestPolling";
 import { useQuery } from "@tanstack/react-query";
 import { createContext, useContext, useMemo, useState, type ReactNode } from "react";
 import { useShallow } from "zustand/shallow";
@@ -36,7 +37,6 @@ import {
 import { PullRequestActorAvatar } from "./pullRequestPresentation";
 import {
   projectRepository,
-  pullRequestArmedToMerge,
   pullRequestBadgeTone,
   type ThreadPullRequest,
 } from "./pullRequests.logic";

@@ -22,6 +22,10 @@ import {
   PULL_REQUEST_AUTO_MERGE_ACTIVITY_KIND_PREFIX,
   resolvePullRequestAutoMergeStep,
 } from "@threadlines/shared/pullRequestAutoMerge";
+import {
+  PULL_REQUEST_CHECKS_POLL_INTERVAL_MS,
+  pullRequestChecksInMotion,
+} from "@threadlines/shared/pullRequestPolling";
 import { changeRequestRepositoryName } from "@threadlines/shared/sourceControl";
 import { resolveThreadWorkingCwd } from "@threadlines/shared/threadCwd";
 import * as Cause from "effect/Cause";
@@ -47,6 +51,14 @@ import {
 } from "../Services/PullRequestAutomationWatcher.ts";
 
 const DEFAULT_SWEEP_INTERVAL_MS = 120 * 1_000;
+
+/**
+ * How long a thread keeps the quicker look while its checks stay in motion. A
+ * check still running after this is waiting on something a quicker look will
+ * not hurry, an approval or a free runner, and the host is asked about it at
+ * the usual pace from then on.
+ */
+const MAX_IN_MOTION_MS = 30 * 60 * 1_000;
 
 /**
  * How many turns one thread's pull request may start on its own before the
@@ -154,6 +166,18 @@ function failingCheckNames(detail: PullRequestDetail): ReadonlySet<string> {
   );
 }
 
+/**
+ * Whether the watcher has anything to do for a thread's pull requests: fixing
+ * its own, or merging its own or a linked one. An archived thread has nothing.
+ */
+function isWatched(thread: OrchestrationThreadShell): boolean {
+  const armed =
+    thread.pullRequestAutoFix ||
+    thread.pullRequestAutoMerge !== null ||
+    thread.linkedPullRequests.some((linked) => linked.autoMerge !== null);
+  return armed && thread.archivedAt === null;
+}
+
 /** A thread the watcher has something to do for, and where its pull requests live. */
 interface SweepCandidate {
   readonly thread: OrchestrationThreadShell;
@@ -208,6 +232,8 @@ function landingAfterMerge(detail: PullRequestDetail | null): "merged" | "queued
 
 export interface PullRequestAutomationWatcherLiveOptions {
   readonly sweepIntervalMs?: number;
+  /** How soon a thread whose pull request is in motion is looked at again. */
+  readonly inMotionIntervalMs?: number;
 }
 
 const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcherLiveOptions) =>
@@ -218,6 +244,10 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
     const pullRequestService = yield* PullRequestService;
 
     const sweepIntervalMs = Math.max(1, options?.sweepIntervalMs ?? DEFAULT_SWEEP_INTERVAL_MS);
+    const inMotionIntervalMs = Math.max(
+      1,
+      options?.inMotionIntervalMs ?? PULL_REQUEST_CHECKS_POLL_INTERVAL_MS,
+    );
     // What each armed pull request looked like at the last look. It lives in
     // memory only, so a restart re-observes instead of acting on what was
     // already there.
@@ -235,6 +265,14 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
     // cannot buy three more turns.
     const turnCountsRef = yield* Ref.make(new Map<string, number>());
     const cappedLoggedRef = yield* Ref.make(new Set<string>());
+    // Threads whose checks were in motion at their last look (one still
+    // running, or a push the host has not listed checks for yet), with when
+    // that stretch began. They are looked at again at the pace the composer's
+    // checks chip keeps, so a check that fails goes to the agent about when the
+    // chip turns red, not up to a whole interval later.
+    const inMotionRef = yield* Ref.make(new Map<string, number>());
+    // When every armed thread was last looked at, which the interval counts from.
+    const lastFullSweepAtRef = yield* Ref.make(Number.NEGATIVE_INFINITY);
     // One sweep at a time: the interval fiber and `sweepNow` reach for the same
     // baselines, and two sweeps racing would start the same turn twice.
     const sweepSemaphore = yield* Semaphore.make(1);
@@ -249,6 +287,26 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
           }).pipe(Effect.as(null)),
         ),
       );
+
+    /**
+     * A pull request as the host has it now, past the service's cache. One
+     * whose checks are in motion puts its thread on the quicker pace.
+     */
+    const readDetail = (threadId: ThreadId, reference: PullRequestRef) =>
+      Effect.gen(function* () {
+        const detail = yield* attempt(
+          "detail-read",
+          threadId,
+          pullRequestService.detail({ ...reference, force: true }),
+        );
+        const now = yield* Clock.currentTimeMillis;
+        if (detail !== null && pullRequestChecksInMotion(detail, now)) {
+          yield* Ref.update(inMotionRef, (threads) =>
+            threads.has(threadId) ? threads : threads.set(threadId, now),
+          );
+        }
+        return detail;
+      });
 
     /** Answers when the turn was asked for, or null where the engine refused it. */
     const startTurn = (input: {
@@ -664,11 +722,7 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
           number: pullRequest.number,
           force: true,
         } as const;
-        const detail = yield* attempt(
-          "detail-read",
-          thread.id,
-          pullRequestService.detail(reference),
-        );
+        const detail = yield* readDetail(thread.id, reference);
         if (detail === null) {
           return false;
         }
@@ -788,8 +842,29 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
           return false;
         }
 
+        // The reads above take seconds, and in that time the user may have sent
+        // a message of their own or turned the switch off. Either one means
+        // "not now", so the thread is read again just before a turn is started
+        // for it. What would have been said stays news: the baseline goes back
+        // to the one this look started from, and the first look after that
+        // turn says it if it still needs saying.
+        const latest = yield* attempt(
+          "thread-read",
+          thread.id,
+          projectionSnapshotQuery.getThreadShellById(thread.id),
+        );
+        if (
+          latest === null ||
+          Option.isNone(latest) ||
+          !latest.value.pullRequestAutoFix ||
+          hasWorkInProgress(latest.value)
+        ) {
+          yield* Ref.update(baselinesRef, (map) => map.set(key, baseline));
+          return false;
+        }
+
         const requestedAt = yield* startTurn({
-          thread,
+          thread: latest.value,
           number: pullRequest.number,
           text,
           trigger: [
@@ -843,11 +918,7 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
           number: linked.number,
           force: true,
         } as const;
-        const detail = yield* attempt(
-          "detail-read",
-          thread.id,
-          pullRequestService.detail(reference),
-        );
+        const detail = yield* readDetail(thread.id, reference);
         if (detail === null) {
           continue;
         }
@@ -888,16 +959,31 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
       candidate: SweepCandidate,
     ) {
       const { thread } = candidate;
+      // This look decides the pace again: checks it finds in motion put the
+      // thread back on the quicker one, in the stretch it was already in.
+      const inMotionSince = yield* Ref.modify(inMotionRef, (threads) => {
+        const since = threads.get(thread.id);
+        threads.delete(thread.id);
+        return [since, threads];
+      });
       // The thread's own pull request is the one on its branch, so a thread
       // with no branch has only linked ones.
       const ownArmed = thread.pullRequestAutoFix || thread.pullRequestAutoMerge !== null;
       const started =
         thread.branch !== null && ownArmed ? yield* sweepOwnPullRequest(candidate) : false;
       yield* sweepLinkedPullRequests(candidate);
+      if (inMotionSince !== undefined) {
+        yield* Ref.update(inMotionRef, (threads) =>
+          threads.has(thread.id) ? threads.set(thread.id, inMotionSince) : threads,
+        );
+      }
       return started;
     });
 
-    const runSweep = Effect.gen(function* () {
+    /** Every armed thread, or only the ones named in `only`. */
+    const runSweep = Effect.fn("PullRequestAutomationWatcher.runSweep")(function* (
+      only?: ReadonlySet<string>,
+    ) {
       const snapshot = yield* projectionSnapshotQuery.getShellSnapshot().pipe(
         Effect.catchCause((cause) =>
           Effect.logWarning("pull-request.auto-fix.snapshot-query-failed", {
@@ -940,19 +1026,29 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
         }
         return armed;
       });
-
-      // Deleted threads never reach the shell snapshot, so archived and busy
-      // are the only ones left to rule out here.
-      const candidates = snapshot.threads.flatMap((thread): SweepCandidate[] => {
-        const armed =
-          thread.pullRequestAutoFix ||
-          thread.pullRequestAutoMerge !== null ||
-          thread.linkedPullRequests.some((linked) => linked.autoMerge !== null);
-        if (!armed || thread.archivedAt !== null) {
-          return [];
+      // Deleted threads never reach the shell snapshot, and archived ones are
+      // not watched, so busy is the only one left to rule out here. Busy is
+      // also "not yet" for a merge: the agent may be about to push.
+      const idleThreadIds = new Set<string>(
+        snapshot.threads
+          .filter((thread) => isWatched(thread) && !hasWorkInProgress(thread))
+          .map((thread) => thread.id as string),
+      );
+      // The quicker pace is for a thread still watched and idle. A busy one
+      // gives it up too: its turn is likely to change the pull request, and a
+      // thread left waiting on the user must not keep this read going for as
+      // long as it waits. The next full sweep sets its pace again.
+      yield* Ref.update(inMotionRef, (threads) => {
+        for (const threadId of threads.keys()) {
+          if (!idleThreadIds.has(threadId)) {
+            threads.delete(threadId);
+          }
         }
-        // Busy is also "not yet" for a merge: the agent may be about to push.
-        if (hasWorkInProgress(thread)) {
+        return threads;
+      });
+
+      const candidates = snapshot.threads.flatMap((thread): SweepCandidate[] => {
+        if (!idleThreadIds.has(thread.id) || (only !== undefined && !only.has(thread.id))) {
           return [];
         }
         const project = projectsById.get(thread.projectId);
@@ -976,7 +1072,41 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
       return startedCount;
     });
 
-    const sweep = sweepSemaphore.withPermits(1)(runSweep);
+    const sweep = sweepSemaphore.withPermits(1)(
+      Clock.currentTimeMillis.pipe(
+        Effect.flatMap((now) => Ref.set(lastFullSweepAtRef, now)),
+        Effect.andThen(runSweep()),
+      ),
+    );
+
+    /**
+     * Looks again at the threads whose checks were in motion at their last
+     * look, and only those, so the host is not asked about every armed pull
+     * request at this pace. Nothing in motion reads nothing at all.
+     */
+    const sweepInMotion = sweepSemaphore.withPermits(1)(
+      Effect.gen(function* () {
+        const now = yield* Clock.currentTimeMillis;
+        const due = new Set<string>();
+        for (const [threadId, since] of yield* Ref.get(inMotionRef)) {
+          if (now - since < MAX_IN_MOTION_MS) {
+            due.add(threadId);
+          }
+        }
+        return due.size === 0 ? 0 : yield* runSweep(due);
+      }),
+    );
+
+    /**
+     * One beat of the watcher's own pace: every armed thread once an
+     * interval, and in between, the ones whose checks are in motion. One
+     * fiber for both, so the two never read the same pull request back to back.
+     */
+    const tick = Effect.gen(function* () {
+      const now = yield* Clock.currentTimeMillis;
+      const lastFullSweepAt = yield* Ref.get(lastFullSweepAtRef);
+      return now - lastFullSweepAt >= sweepIntervalMs ? yield* sweep : yield* sweepInMotion;
+    });
 
     /**
      * Marks the thread's fixing switch as just turned on, then sweeps. Both
@@ -985,7 +1115,9 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
      */
     const sweepFreshlyArmed = (threadId: ThreadId) =>
       sweepSemaphore.withPermits(1)(
-        Ref.update(freshlyArmedRef, (armed) => armed.add(threadId)).pipe(Effect.andThen(runSweep)),
+        Ref.update(freshlyArmedRef, (armed) => armed.add(threadId)).pipe(
+          Effect.andThen(runSweep()),
+        ),
       );
 
     const sweepNow: PullRequestAutomationWatcherShape["sweepNow"] = () => sweep;
@@ -993,7 +1125,11 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
     const start: PullRequestAutomationWatcherShape["start"] = () =>
       Effect.gen(function* () {
         yield* Effect.forkScoped(
-          sweep.pipe(Effect.repeat(Schedule.spaced(Duration.millis(sweepIntervalMs)))),
+          tick.pipe(
+            Effect.repeat(
+              Schedule.spaced(Duration.millis(Math.min(inMotionIntervalMs, sweepIntervalMs))),
+            ),
+          ),
         );
         // Turning either switch on is answered at once rather than at the next
         // interval: a check already failing goes to the agent, and a pull
@@ -1010,7 +1146,10 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
             return event.payload.autoMerge != null ? sweep.pipe(Effect.asVoid) : Effect.void;
           }),
         );
-        yield* Effect.logInfo("pull-request.auto-fix.started", { sweepIntervalMs });
+        yield* Effect.logInfo("pull-request.auto-fix.started", {
+          sweepIntervalMs,
+          inMotionIntervalMs,
+        });
       });
 
     return { start, sweepNow } satisfies PullRequestAutomationWatcherShape;

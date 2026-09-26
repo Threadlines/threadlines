@@ -19,10 +19,10 @@ import {
   resolvePullRequestAutoMergeStep,
   type PullRequestAutoMergeStep,
 } from "@threadlines/shared/pullRequestAutoMerge";
+import { pullRequestArmedToMerge } from "@threadlines/shared/pullRequestPolling";
 
 import {
   summarizePullRequestChecks,
-  pullRequestArmedToMerge,
   resolveMergeWhenReadyBlock,
   resolvePullRequestAutoMergeBlock,
   type ThreadPullRequest,

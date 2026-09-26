@@ -14,6 +14,10 @@ import type {
 } from "@threadlines/contracts";
 import type { PullRequestDetail } from "@threadlines/contracts";
 import {
+  PULL_REQUEST_CHECKS_POLL_INTERVAL_MS,
+  shouldPollPullRequestDetail,
+} from "@threadlines/shared/pullRequestPolling";
+import {
   keepPreviousData,
   mutationOptions,
   queryOptions,
@@ -26,7 +30,6 @@ import { useMemo } from "react";
 import { resolveEnvironmentOptionLabel } from "~/components/BranchToolbar.logic";
 import {
   mergePullRequestListResults,
-  shouldPollPullRequestDetail,
   type PullRequestEntry,
   type PullRequestProjectFailure,
 } from "~/components/pull-requests/pullRequests.logic";
@@ -86,14 +89,6 @@ function readPayload(input: PullRequestReadInput) {
   return { ...input.reference, ...(input.force ? { force: true as const } : {}) };
 }
 
-/**
- * The pace the header keeps itself current at while there is something to wait
- * for: a running check, or a fresh push whose checks the host has not queued
- * yet. The rest of the time it is a document the user reads, and the panel's
- * own Refresh is the one thing that re-runs `gh`.
- */
-export const PULL_REQUEST_CHECKS_POLL_INTERVAL_MS = 20_000;
-
 export function pullRequestDetailQueryOptions(input: PullRequestReadInput) {
   return queryOptions({
     queryKey: pullRequestQueryKeys.detail(
@@ -105,6 +100,9 @@ export function pullRequestDetailQueryOptions(input: PullRequestReadInput) {
       ensureEnvironmentApi(input.environmentId).pullRequests.detail(readPayload(input)),
     staleTime: PULL_REQUEST_READ_STALE_TIME_MS,
     refetchOnWindowFocus: false,
+    // Kept current while there is something to wait for. The rest of the time
+    // it is a document the user reads, and the panel's own Refresh is the one
+    // thing that re-runs `gh`.
     refetchInterval: (query) =>
       query.state.data !== undefined && shouldPollPullRequestDetail(query.state.data, Date.now())
         ? PULL_REQUEST_CHECKS_POLL_INTERVAL_MS
