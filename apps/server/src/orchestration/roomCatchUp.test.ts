@@ -108,6 +108,25 @@ describe("buildRoomCatchUp", () => {
     expect(note).not.toContain("what did astra find?");
   });
 
+  it("introduces every agent by the name the user gave it", () => {
+    const messages = [
+      message("u1", "user", "look into the retry cap", astraId),
+      message("a1", "assistant", "It is off by one.", astraId),
+      message("u2", "user", "Reviewer found something, check it"),
+    ];
+    const note = buildRoomCatchUp({
+      thread: thread(messages, {
+        agentRole: "Researcher",
+        participants: [{ ...astra, role: "Reviewer" }],
+      }),
+      participantId: null,
+      messageId: MessageId.make("u2"),
+      ...main,
+    })?.note;
+    expect(note).toContain(`You are the thread's own agent, "Researcher" (fable-5-1).`);
+    expect(note).toContain(`GPT-6 Astra, "Reviewer" (gpt-6-astra):\nIt is off by one.`);
+  });
+
   it("sends nothing to an agent that is already up to date", () => {
     const messages = [
       message("u1", "user", "review", astraId),

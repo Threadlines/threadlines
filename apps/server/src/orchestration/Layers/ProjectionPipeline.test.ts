@@ -2632,6 +2632,39 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
       `;
       assert.equal(JSON.parse(threads[0]?.participants ?? "[]")[0]?.handle, "astra");
 
+      // Named and given a reasoning level, both kept on the rows; the thread's
+      // own agent keeps its name on the thread.
+      for (const [commandId, participantId, change] of [
+        [
+          "cmd-room-name-astra",
+          astraId,
+          { role: "Reviewer", modelOptions: [{ id: "reasoningEffort", value: "high" }] },
+        ],
+        ["cmd-room-name-own", null, { role: "Researcher" }],
+      ] as const) {
+        yield* engine.dispatch({
+          type: "thread.participant.update",
+          commandId: CommandId.make(commandId),
+          threadId,
+          participantId,
+          ...change,
+          createdAt: "2026-01-01T00:00:03.500Z",
+        });
+      }
+      const named = yield* sql<{
+        readonly participants: string;
+        readonly agentRole: string | null;
+      }>`
+        SELECT participants, agent_role AS "agentRole"
+        FROM projection_threads WHERE thread_id = ${threadId}
+      `;
+      const namedAstra = JSON.parse(named[0]?.participants ?? "[]")[0];
+      assert.equal(namedAstra?.role, "Reviewer");
+      assert.deepEqual(namedAstra?.modelSelection.options, [
+        { id: "reasoningEffort", value: "high" },
+      ]);
+      assert.equal(named[0]?.agentRole, "Researcher");
+
       // While astra works, the user asks the thread's own agent on the side.
       const sideTurnId = SideTurnId.make("0d9e8f7a-6b5c-4d3e-8f1a-2b3c4d5e6f70");
       yield* engine.dispatch({

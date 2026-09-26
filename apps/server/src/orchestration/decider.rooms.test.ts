@@ -352,6 +352,54 @@ describe("decider rooms", () => {
     });
   });
 
+  it("names any agent, and keeps an added agent's reasoning on it", async () => {
+    const update = (
+      participantId: ThreadParticipantId | null,
+      change: {
+        readonly role?: string | null;
+        readonly modelOptions?: [] | [{ id: string; value: string }];
+      },
+    ): OrchestrationCommand => ({
+      type: "thread.participant.update",
+      commandId: CommandId.make("cmd-update"),
+      threadId,
+      participantId,
+      ...change,
+      createdAt: now,
+    });
+    const [renamed] = await decideEvents(
+      update(astraId, {
+        role: "Reviewer",
+        modelOptions: [{ id: "reasoningEffort", value: "high" }],
+      }),
+      readModel(),
+    );
+    expect(renamed).toMatchObject({
+      type: "thread.participant-updated",
+      payload: {
+        participantId: astraId,
+        role: "Reviewer",
+        modelSelection: {
+          instanceId: astra.modelSelection.instanceId,
+          model: astra.modelSelection.model,
+          options: [{ id: "reasoningEffort", value: "high" }],
+        },
+      },
+    });
+    // The thread's own agent can be named; its options live with the thread.
+    expect(Exit.isSuccess(await decide(update(null, { role: "Researcher" }), readModel()))).toBe(
+      true,
+    );
+    expect(
+      Exit.isFailure(
+        await decide(
+          update(null, { modelOptions: [{ id: "reasoningEffort", value: "high" }] }),
+          readModel(),
+        ),
+      ),
+    ).toBe(true);
+  });
+
   describe("side answers", () => {
     const sideTurnId = SideTurnId.make("0d9e8f7a-6b5c-4d3e-8f1a-2b3c4d5e6f70");
     const working = session({ status: "running", activeTurnId: TurnId.make("turn-1") });

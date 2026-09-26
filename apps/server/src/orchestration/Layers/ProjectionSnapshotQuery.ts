@@ -574,6 +574,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           queued_follow_ups AS "queuedFollowUps",
           participants AS "participants",
           side_turn AS "sideTurn",
+          agent_role AS "agentRole",
           room_context AS "roomContext",
           done_override AS "doneOverride",
           done_override_at AS "doneOverrideAt",
@@ -619,6 +620,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           queued_follow_ups AS "queuedFollowUps",
           participants AS "participants",
           side_turn AS "sideTurn",
+          agent_role AS "agentRole",
           room_context AS "roomContext",
           done_override AS "doneOverride",
           done_override_at AS "doneOverrideAt",
@@ -666,6 +668,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           queued_follow_ups AS "queuedFollowUps",
           participants AS "participants",
           side_turn AS "sideTurn",
+          agent_role AS "agentRole",
           room_context AS "roomContext",
           done_override AS "doneOverride",
           done_override_at AS "doneOverrideAt",
@@ -1329,6 +1332,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           queued_follow_ups AS "queuedFollowUps",
           participants AS "participants",
           side_turn AS "sideTurn",
+          agent_role AS "agentRole",
           room_context AS "roomContext",
           done_override AS "doneOverride",
           done_override_at AS "doneOverrideAt",
@@ -1915,6 +1919,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                 queuedFollowUps: row.queuedFollowUps ?? [],
                 participants: row.participants ?? [],
                 ...(row.sideTurn ? { sideTurn: row.sideTurn } : {}),
+                ...(row.agentRole ? { agentRole: row.agentRole } : {}),
                 ...(row.roomContext && Object.keys(row.roomContext).length > 0
                   ? { roomContext: row.roomContext }
                   : {}),
@@ -2170,6 +2175,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   queuedFollowUps: row.queuedFollowUps ?? [],
                   participants: row.participants ?? [],
                   ...(row.sideTurn ? { sideTurn: row.sideTurn } : {}),
+                  ...(row.agentRole ? { agentRole: row.agentRole } : {}),
                   ...(row.roomContext && Object.keys(row.roomContext).length > 0
                     ? { roomContext: row.roomContext }
                     : {}),
@@ -2327,6 +2333,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                     queuedFollowUps: row.queuedFollowUps ?? [],
                     participants: row.participants ?? [],
                     ...(row.sideTurn ? { sideTurn: row.sideTurn } : {}),
+                    ...(row.agentRole ? { agentRole: row.agentRole } : {}),
                     doneOverride: mapThreadDoneOverride(row),
                     lastSeenAt: row.lastSeenAt ?? null,
                     session: sessionByThread.get(row.threadId) ?? null,
@@ -2484,6 +2491,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   queuedFollowUps: row.queuedFollowUps ?? [],
                   participants: row.participants ?? [],
                   ...(row.sideTurn ? { sideTurn: row.sideTurn } : {}),
+                  ...(row.agentRole ? { agentRole: row.agentRole } : {}),
                   doneOverride: mapThreadDoneOverride(row),
                   lastSeenAt: row.lastSeenAt ?? null,
                   session: sessionByThread.get(row.threadId) ?? null,
@@ -2760,6 +2768,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         queuedFollowUps: threadRow.value.queuedFollowUps ?? [],
         participants: threadRow.value.participants ?? [],
         ...(threadRow.value.sideTurn ? { sideTurn: threadRow.value.sideTurn } : {}),
+        ...(threadRow.value.agentRole ? { agentRole: threadRow.value.agentRole } : {}),
         doneOverride: mapThreadDoneOverride(threadRow.value),
         lastSeenAt: threadRow.value.lastSeenAt ?? null,
         session: Option.isSome(sessionRow) ? mapSessionRow(sessionRow.value) : null,
@@ -2879,6 +2888,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         queuedFollowUps: threadRow.value.queuedFollowUps ?? [],
         participants: threadRow.value.participants ?? [],
         ...(threadRow.value.sideTurn ? { sideTurn: threadRow.value.sideTurn } : {}),
+        ...(threadRow.value.agentRole ? { agentRole: threadRow.value.agentRole } : {}),
         ...(threadRow.value.roomContext && Object.keys(threadRow.value.roomContext).length > 0
           ? { roomContext: threadRow.value.roomContext }
           : {}),

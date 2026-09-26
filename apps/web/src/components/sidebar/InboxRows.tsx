@@ -27,6 +27,7 @@ import { useThreadSelectionStore } from "../../threadSelectionStore";
 import { useRelativeTimeTick } from "../../hooks/useRelativeTimeTick";
 import { formatRelativeTimeLabel, formatWorkingDurationLabel } from "../../timestampFormat";
 import { getPickerModelName, PROVIDER_ICON_BY_PROVIDER } from "../chat/providerIconUtils";
+import { roomAgentDisplayName } from "../../rooms";
 import { useServerProviders } from "../../rpc/serverState";
 import { prStatusIndicator, terminalStatusFromRunningIds } from "../ThreadStatusIndicators";
 import {
@@ -288,14 +289,21 @@ function ThreadElapsedLabel({ startedAt }: { startedAt: string }) {
  * In a room, the agent working or last at work, named the way the composer's
  * model picker names it: "GPT-6 Astra · working".
  */
-function RoomSlotAgentPrefix({ selection }: { selection: ModelSelection }) {
+function RoomSlotAgentPrefix({
+  selection,
+  role,
+}: {
+  selection: ModelSelection;
+  /** The user's name for the agent, shown after its model's. */
+  role?: string | null | undefined;
+}) {
   const providers = useServerProviders();
   const name = useMemo(() => {
     const provider = providers.find((entry) => entry.instanceId === selection.instanceId);
     const model = provider?.models.find((entry) => entry.slug === selection.model);
     return provider && model ? getPickerModelName(model, provider.driver) : selection.model;
   }, [providers, selection.instanceId, selection.model]);
-  return <>{name} · </>;
+  return <>{roomAgentDisplayName(name, role)} · </>;
 }
 
 function ThreadProviderGlyph({ thread }: { thread: SidebarThreadSummary }) {
@@ -476,6 +484,7 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
   const roomAgentSelection = isAnswering
     ? thread.roomSideModelSelection
     : thread.roomSlotModelSelection;
+  const roomAgentRole = isAnswering ? thread.roomSideRole : thread.roomSlotRole;
   const showBranch = thread.branch !== null && !hasStatusLabel;
 
   const handleRowClick = useCallback(
@@ -636,7 +645,7 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
                 ) : isInFlight || isWaitingOnTasks || isAnswering ? (
                   <>
                     {roomAgentSelection ? (
-                      <RoomSlotAgentPrefix selection={roomAgentSelection} />
+                      <RoomSlotAgentPrefix selection={roomAgentSelection} role={roomAgentRole} />
                     ) : null}
                     {isAnswering
                       ? "answering"

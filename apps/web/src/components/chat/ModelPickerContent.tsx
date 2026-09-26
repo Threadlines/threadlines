@@ -189,6 +189,11 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
   terminalOpen: boolean;
   onRequestClose?: () => void;
   notice?: ReactNode;
+  /**
+   * Open on Favorites whenever it has models, not only when the active model
+   * is one of them: picking an agent to add has no active model to follow.
+   */
+  openOnFavorites?: boolean;
   onInstanceModelChange: (instanceId: ProviderInstanceId, model: string) => void;
 }) {
   const {
@@ -419,7 +424,9 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
   // instance that is no longer ready), so falling through to the provider
   // tab keeps the picker from opening on an empty pane.
   const defaultActiveTabId =
-    activeModelIsFavorite && favoriteModels.length > 0 ? "favorites" : props.activeInstanceId;
+    (activeModelIsFavorite || props.openOnFavorites === true) && favoriteModels.length > 0
+      ? "favorites"
+      : props.activeInstanceId;
   const activeTab = useMemo(() => {
     if (!showTabList) {
       return null;

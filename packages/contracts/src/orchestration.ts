@@ -4,7 +4,7 @@ import * as Schema from "effect/Schema";
 import * as SchemaIssue from "effect/SchemaIssue";
 import * as SchemaTransformation from "effect/SchemaTransformation";
 import * as Struct from "effect/Struct";
-import { ProviderOptionSelections } from "./model.ts";
+import { ProviderOptionSelection, ProviderOptionSelections } from "./model.ts";
 import { RepositoryIdentity } from "./environment.ts";
 import {
   ApprovalRequestId,
@@ -817,6 +817,16 @@ export type OrchestrationQueuedFollowUp = typeof OrchestrationQueuedFollowUp.Typ
  * it keeps `OrchestrationThread.modelSelection` and is addressed with a null
  * participant id.
  */
+/**
+ * A name the user gives a room agent ("Reviewer"). It is shown after the
+ * model's name, "GPT-6 Astra 2 (Reviewer)", so the model stays visible.
+ */
+export const ROOM_AGENT_ROLE_MAX_LENGTH = 32;
+export const RoomAgentRole = TrimmedNonEmptyString.check(
+  Schema.isMaxLength(ROOM_AGENT_ROLE_MAX_LENGTH),
+);
+export type RoomAgentRole = typeof RoomAgentRole.Type;
+
 export const OrchestrationThreadParticipant = Schema.Struct({
   id: ThreadParticipantId,
   /**
@@ -824,6 +834,8 @@ export const OrchestrationThreadParticipant = Schema.Struct({
    * repeats). Unique per thread, case-insensitively.
    */
   handle: TrimmedNonEmptyString,
+  /** See RoomAgentRole. Absent: none. */
+  role: Schema.optional(RoomAgentRole),
   modelSelection: ModelSelection,
   joinedAt: IsoDateTime,
   /**
@@ -936,6 +948,8 @@ export const OrchestrationThread = Schema.Struct({
   ),
   /** See OrchestrationThreadShell.sideTurn. */
   sideTurn: Schema.optional(Schema.NullOr(OrchestrationSideTurn)),
+  /** See OrchestrationThreadShell.agentRole. */
+  agentRole: Schema.optional(RoomAgentRole),
   /**
    * Per agent (`primary` or a participant id), what its conversation has been
    * told. Absent: nothing yet.
@@ -1054,6 +1068,8 @@ export const OrchestrationThreadShell = Schema.Struct({
    * none.
    */
   sideTurn: Schema.optional(Schema.NullOr(OrchestrationSideTurn)),
+  /** In a room, the user's name for the thread's own agent (RoomAgentRole). */
+  agentRole: Schema.optional(RoomAgentRole),
   /**
    * The user's last explicit Mark done / Reopen for this thread, or null if
    * they never gave one. Deliberately does not move `updatedAt`: the inbox
@@ -1356,6 +1372,24 @@ const ThreadParticipantAddCommand = Schema.Struct({
     handle: TrimmedNonEmptyString,
     modelSelection: ModelSelection,
   }),
+  createdAt: IsoDateTime,
+});
+
+/**
+ * Change a room agent: its name (any agent, the thread's own included) or an
+ * added agent's model options, saved as soon as they are picked. The thread's
+ * own agent keeps its model options with the thread's settings.
+ */
+const ThreadParticipantUpdateCommand = Schema.Struct({
+  type: Schema.Literal("thread.participant.update"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  /** Null: the thread's own agent. */
+  participantId: Schema.NullOr(ThreadParticipantId),
+  /** Null clears the name. Absent: unchanged. */
+  role: Schema.optional(Schema.NullOr(RoomAgentRole)),
+  /** An added agent's options (reasoning and the like). Absent: unchanged. */
+  modelOptions: Schema.optional(Schema.Array(ProviderOptionSelection)),
   createdAt: IsoDateTime,
 });
 
@@ -1701,6 +1735,7 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ThreadDoneOverrideSetCommand,
   ThreadSeenSetCommand,
   ThreadParticipantAddCommand,
+  ThreadParticipantUpdateCommand,
   ThreadParticipantRemoveCommand,
   ThreadMetaUpdateCommand,
   ThreadCheckoutSelectCommand,
@@ -1742,6 +1777,7 @@ export const ClientOrchestrationCommand = Schema.Union([
   ThreadDoneOverrideSetCommand,
   ThreadSeenSetCommand,
   ThreadParticipantAddCommand,
+  ThreadParticipantUpdateCommand,
   ThreadParticipantRemoveCommand,
   ThreadMetaUpdateCommand,
   ThreadCheckoutSelectCommand,
@@ -2046,6 +2082,7 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.done-override-set",
   "thread.seen-set",
   "thread.participant-added",
+  "thread.participant-updated",
   "thread.participant-removed",
   "thread.side-turn-started",
   "thread.side-turn-interrupt-requested",
@@ -2190,6 +2227,17 @@ export const ThreadSeenSetPayload = Schema.Struct({
 export const ThreadParticipantAddedPayload = Schema.Struct({
   threadId: ThreadId,
   participant: OrchestrationThreadParticipant,
+  updatedAt: IsoDateTime,
+});
+
+export const ThreadParticipantUpdatedPayload = Schema.Struct({
+  threadId: ThreadId,
+  /** Null: the thread's own agent. */
+  participantId: Schema.NullOr(ThreadParticipantId),
+  /** Null clears the name. Absent: unchanged. */
+  role: Schema.optional(Schema.NullOr(RoomAgentRole)),
+  /** An added agent's model with its new options. Absent: unchanged. */
+  modelSelection: Schema.optional(ModelSelection),
   updatedAt: IsoDateTime,
 });
 
@@ -2546,6 +2594,11 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.participant-added"),
     payload: ThreadParticipantAddedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.participant-updated"),
+    payload: ThreadParticipantUpdatedPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,

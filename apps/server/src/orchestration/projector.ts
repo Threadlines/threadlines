@@ -21,6 +21,7 @@ import {
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { retainThreadActivities } from "@threadlines/shared/threadActivityRetention";
+import { applyRoomAgentUpdate } from "@threadlines/shared/threadParticipants";
 
 import { toProjectorDecodeError, type OrchestrationProjectorDecodeError } from "./Errors.ts";
 import {
@@ -45,6 +46,7 @@ import {
   ThreadPullRequestLinkedPayload,
   ThreadParticipantAddedPayload,
   ThreadParticipantRemovedPayload,
+  ThreadParticipantUpdatedPayload,
   ThreadRoomContextRecordedPayload,
   ThreadSideTurnInterruptRequestedPayload,
   ThreadSideTurnRunningPayload,
@@ -508,6 +510,33 @@ export function projectEvent(
               participants: [...thread.participants, payload.participant],
               updatedAt: payload.updatedAt,
             }),
+          };
+        }),
+      );
+
+    case "thread.participant-updated":
+      return decodeForEvent(
+        ThreadParticipantUpdatedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => {
+          const thread = nextBase.threads.find((entry) => entry.id === payload.threadId);
+          if (thread === undefined) {
+            return nextBase;
+          }
+          const { participants, agentRole } = applyRoomAgentUpdate(thread, payload);
+          const { agentRole: _previous, ...rest } = thread;
+          const next: OrchestrationThread = {
+            ...rest,
+            participants,
+            ...(agentRole !== undefined ? { agentRole } : {}),
+            updatedAt: payload.updatedAt,
+          };
+          return {
+            ...nextBase,
+            threads: nextBase.threads.map((entry) => (entry.id === thread.id ? next : entry)),
           };
         }),
       );

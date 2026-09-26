@@ -1,4 +1,5 @@
 import { compareTranscriptOrder } from "@threadlines/shared/transcriptOrder";
+import { applyRoomAgentUpdate } from "@threadlines/shared/threadParticipants";
 import {
   ApprovalRequestId,
   type ChatAttachment,
@@ -716,6 +717,29 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           yield* projectionThreadRepository.upsert({
             ...existingRow.value,
             participants: [...participants, event.payload.participant],
+            updatedAt: event.payload.updatedAt,
+          });
+          return;
+        }
+
+        case "thread.participant-updated": {
+          const existingRow = yield* projectionThreadRepository.getById({
+            threadId: event.payload.threadId,
+          });
+          if (Option.isNone(existingRow)) {
+            return;
+          }
+          const { participants, agentRole } = applyRoomAgentUpdate(
+            {
+              participants: existingRow.value.participants ?? [],
+              agentRole: existingRow.value.agentRole ?? undefined,
+            },
+            event.payload,
+          );
+          yield* projectionThreadRepository.upsert({
+            ...existingRow.value,
+            participants,
+            agentRole: agentRole ?? null,
             updatedAt: event.payload.updatedAt,
           });
           return;

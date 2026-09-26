@@ -36,6 +36,8 @@ const FILES_PER_TURN_LIMIT = 12;
 export interface RoomCatchUpInput {
   readonly thread: {
     readonly modelSelection: ModelSelection;
+    /** The user's name for the thread's own agent (RoomAgentRole). */
+    readonly agentRole?: string | undefined;
     readonly participants: ReadonlyArray<OrchestrationThreadParticipant>;
     readonly messages: ReadonlyArray<OrchestrationMessage>;
     readonly checkpoints: ReadonlyArray<OrchestrationCheckpointSummary>;
@@ -75,14 +77,21 @@ export function buildRoomCatchUp(input: RoomCatchUpInput): RoomCatchUp | undefin
     return undefined;
   }
 
+  // The user may call an agent by the name they gave it ("Reviewer"), so
+  // every agent is introduced with it.
   const nameOf = (id: ThreadParticipantId | null): string => {
     if (id === null) {
-      return `the thread's own agent (${thread.modelSelection.model})`;
+      return thread.agentRole !== undefined
+        ? `the thread's own agent, "${thread.agentRole}" (${thread.modelSelection.model})`
+        : `the thread's own agent (${thread.modelSelection.model})`;
     }
     const participant = thread.participants.find((entry) => entry.id === id);
-    return participant
-      ? `${participant.handle} (${participant.modelSelection.model})`
-      : "an agent that has left";
+    if (participant === undefined) {
+      return "an agent that has left";
+    }
+    return participant.role !== undefined
+      ? `${participant.handle}, "${participant.role}" (${participant.modelSelection.model})`
+      : `${participant.handle} (${participant.modelSelection.model})`;
   };
 
   // A reply still streaming is kept: the slot can change hands in the moment

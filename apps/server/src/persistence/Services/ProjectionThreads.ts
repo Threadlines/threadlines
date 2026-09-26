@@ -17,6 +17,7 @@ import {
   OrchestrationRoomContextCursor,
   OrchestrationSideTurn,
   ProjectId,
+  RoomAgentRole,
   ProviderInteractionMode,
   PullRequestMergeMethod,
   RuntimeMode,
@@ -102,6 +103,12 @@ export const ProjectionThread = Schema.Struct({
    * migration 059 decode; absent reads as nothing told yet.
    */
   roomContext: Schema.optional(Schema.Record(Schema.String, OrchestrationRoomContextCursor)),
+  /**
+   * The user's name for the thread's own agent; see
+   * `OrchestrationThreadShell.agentRole`. Optional so rows written before
+   * migration 060 decode.
+   */
+  agentRole: Schema.optional(Schema.NullOr(RoomAgentRole)),
   /**
    * The user's explicit inbox filing and its stamp. Optional so rows written
    * before migration 042 decode; absent reads as "never filed". Kept as two

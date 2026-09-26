@@ -139,9 +139,18 @@ export function chosenRoomRecipient(
 
 /** How an agent is shown in a room: its name and its provider. */
 export interface RoomAgentLabel {
+  /** What the room calls it: "GPT-6 Astra 2", or "GPT-6 Astra 2 (Reviewer)". */
   readonly name: string;
+  /** Its model's name, numbered for repeats, without the user's name. */
+  readonly modelName: string;
+  /** The name the user gave it, if any (RoomAgentRole). */
+  readonly role: string | null;
   readonly entry: ProviderInstanceEntry | undefined;
 }
+
+/** "GPT-6 Astra 2 (Reviewer)": the model stays visible next to the user's name. */
+export const roomAgentDisplayName = (modelName: string, role: string | null | undefined) =>
+  role ? `${modelName} (${role})` : modelName;
 
 /** Map key for an agent; the thread's own agent has no participant id. */
 export const roomAgentKey = (participantId: ThreadParticipantId | null | undefined): string =>
@@ -154,7 +163,10 @@ export const roomAgentKey = (participantId: ThreadParticipantId | null | undefin
  * thread's own agent first. Null outside rooms.
  */
 export function buildRoomAgentLabels(
-  thread: RoomThreadLike & { readonly modelSelection: ModelSelection },
+  thread: RoomThreadLike & {
+    readonly modelSelection: ModelSelection;
+    readonly agentRole?: string | undefined;
+  },
   entries: ReadonlyArray<ProviderInstanceEntry>,
   /** The name the model picker shows, so the two always match. */
   modelDisplayName: (
@@ -166,22 +178,25 @@ export function buildRoomAgentLabels(
     return null;
   }
   const agents = [
-    { key: roomAgentKey(null), selection: thread.modelSelection },
+    { key: roomAgentKey(null), selection: thread.modelSelection, role: thread.agentRole ?? null },
     ...(thread.participants ?? []).map((participant) => ({
       key: roomAgentKey(participant.id),
       selection: participant.modelSelection,
+      role: participant.role ?? null,
     })),
   ];
   const labels = new Map<string, RoomAgentLabel>();
   const named: string[] = [];
   for (const agent of agents) {
-    const name = nextRoomAgentName(
+    const modelName = nextRoomAgentName(
       roomModelName(agent.selection, entries, modelDisplayName),
       named,
     );
-    named.push(name);
+    named.push(modelName);
     labels.set(agent.key, {
-      name,
+      name: roomAgentDisplayName(modelName, agent.role),
+      modelName,
+      role: agent.role,
       entry: entries.find((candidate) => candidate.instanceId === agent.selection.instanceId),
     });
   }
@@ -216,6 +231,35 @@ export function roomSlotModelSelection(
   const holder =
     holderId === null ? undefined : thread.participants?.find((entry) => entry.id === holderId);
   return holder?.modelSelection ?? thread.modelSelection;
+}
+
+/** The user's name for the agent a room's inbox row names as working. */
+export function roomSlotRole(
+  thread: RoomThreadLike & { readonly agentRole?: string | undefined },
+): string | null {
+  if (!isRoom(thread)) {
+    return null;
+  }
+  const holderId = thread.session?.participantId ?? null;
+  return holderId === null
+    ? (thread.agentRole ?? null)
+    : (thread.participants?.find((entry) => entry.id === holderId)?.role ?? null);
+}
+
+/** The user's name for the agent answering on the side, if any. */
+export function roomSideRole(
+  thread: RoomThreadLike & {
+    readonly agentRole?: string | undefined;
+    readonly sideTurn?: OrchestrationSideTurn | null | undefined;
+  },
+): string | null {
+  const sideTurn = thread.sideTurn ?? null;
+  if (sideTurn === null) {
+    return null;
+  }
+  return sideTurn.participantId === null
+    ? (thread.agentRole ?? null)
+    : (thread.participants?.find((entry) => entry.id === sideTurn.participantId)?.role ?? null);
 }
 
 /**

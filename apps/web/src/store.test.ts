@@ -10,6 +10,7 @@ import {
   ProviderInstanceId,
   SideTurnId,
   ThreadId,
+  ThreadParticipantId,
   TurnId,
   type OrchestrationEvent,
 } from "@threadlines/contracts";
@@ -1355,6 +1356,59 @@ describe("incremental orchestration updates", () => {
       }),
     );
     expect(selectThreadByRef(state, ref)?.sideTurn ?? null).toBeNull();
+  });
+
+  it("shows an agent's new name and reasoning as soon as they are saved", () => {
+    const threadId = ThreadId.make("thread-1");
+    const astraId = ThreadParticipantId.make("agent-astra");
+    const ref = scopeThreadRef(localEnvironmentId, threadId);
+    const astra = {
+      id: astraId,
+      handle: "GPT-6 Astra",
+      modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6-astra" },
+      joinedAt: "2026-02-27T00:00:00.000Z",
+      leftAt: null,
+    };
+    let state = makeState(makeThread({ id: threadId }));
+    state = applyOrchestrationEvent(
+      state,
+      makeEvent("thread.participant-added", {
+        threadId,
+        participant: astra,
+        updatedAt: "2026-02-27T00:00:00.000Z",
+      }),
+      localEnvironmentId,
+    );
+    state = applyOrchestrationEvent(
+      state,
+      makeEvent("thread.participant-updated", {
+        threadId,
+        participantId: astraId,
+        role: "Reviewer",
+        modelSelection: {
+          ...astra.modelSelection,
+          options: [{ id: "reasoningEffort", value: "high" }],
+        },
+        updatedAt: "2026-02-27T00:00:05.000Z",
+      }),
+      localEnvironmentId,
+    );
+    state = applyOrchestrationEvent(
+      state,
+      makeEvent("thread.participant-updated", {
+        threadId,
+        participantId: null,
+        role: "Researcher",
+        updatedAt: "2026-02-27T00:00:06.000Z",
+      }),
+      localEnvironmentId,
+    );
+    const thread = selectThreadByRef(state, ref);
+    expect(thread?.participants?.[0]).toMatchObject({
+      role: "Reviewer",
+      modelSelection: { options: [{ id: "reasoningEffort", value: "high" }] },
+    });
+    expect(thread?.agentRole).toBe("Researcher");
   });
 
   it("updates only the affected thread for message events", () => {

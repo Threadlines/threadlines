@@ -157,6 +157,8 @@ export interface Thread {
   participants?: readonly OrchestrationThreadParticipant[];
   /** See OrchestrationThreadShell.sideTurn: the side answer in progress, if any. */
   sideTurn?: OrchestrationSideTurn | null;
+  /** See OrchestrationThreadShell.agentRole: the user's name for the thread's own agent. */
+  agentRole?: string | undefined;
   /** See ThreadShell.doneOverride. */
   doneOverride: OrchestrationThreadDoneOverride | null;
   /** See ThreadShell.lastSeenAt. */
@@ -229,6 +231,8 @@ export interface ThreadShell {
   participants?: readonly OrchestrationThreadParticipant[];
   /** See OrchestrationThreadShell.sideTurn: the side answer in progress, if any. */
   sideTurn?: OrchestrationSideTurn | null;
+  /** See OrchestrationThreadShell.agentRole: the user's name for the thread's own agent. */
+  agentRole?: string | undefined;
   /**
    * The user's last explicit Mark done / Reopen, held on the server so every
    * device agrees on the inbox's Active/Wrapped split. Null when never filed.
@@ -291,10 +295,16 @@ export interface SidebarThreadSummary {
   participants?: readonly OrchestrationThreadParticipant[];
   /** See OrchestrationThreadShell.sideTurn: the side answer in progress, if any. */
   sideTurn?: OrchestrationSideTurn | null;
+  /** See OrchestrationThreadShell.agentRole: the user's name for the thread's own agent. */
+  agentRole?: string | undefined;
   /** In a room, the model of the agent working or last at work; null otherwise. */
   roomSlotModelSelection?: ModelSelection | null;
+  /** The user's name for that agent, if any. */
+  roomSlotRole?: string | null;
   /** The model of the agent answering on the side; null when nobody is. */
   roomSideModelSelection?: ModelSelection | null;
+  /** The user's name for the agent answering on the side, if any. */
+  roomSideRole?: string | null;
 }
 
 export interface ThreadSession {

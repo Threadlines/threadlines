@@ -970,6 +970,57 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       };
     }
 
+    case "thread.participant.update": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const refuse = (detail: string) =>
+        new OrchestrationCommandInvariantError({ commandType: command.type, detail });
+      if (!isRoomThread(thread)) {
+        return yield* refuse("Only agents in a room can be renamed.");
+      }
+      const participant =
+        command.participantId === null
+          ? null
+          : (activeParticipants(thread).find((entry) => entry.id === command.participantId) ??
+            null);
+      if (command.participantId !== null && participant === null) {
+        return yield* refuse(
+          `Agent '${command.participantId}' is not in thread '${command.threadId}'.`,
+        );
+      }
+      // The thread's own agent keeps its model options with the thread.
+      if (command.modelOptions !== undefined && participant === null) {
+        return yield* refuse("The thread's own agent takes its options from the composer.");
+      }
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.participant-updated",
+        payload: {
+          threadId: command.threadId,
+          participantId: command.participantId,
+          ...(command.role !== undefined ? { role: command.role } : {}),
+          ...(command.modelOptions !== undefined && participant !== null
+            ? {
+                modelSelection: {
+                  instanceId: participant.modelSelection.instanceId,
+                  model: participant.modelSelection.model,
+                  ...(command.modelOptions.length > 0 ? { options: command.modelOptions } : {}),
+                },
+              }
+            : {}),
+          updatedAt: command.createdAt,
+        },
+      };
+    }
+
     case "thread.participant.remove": {
       const thread = yield* requireThread({
         readModel,

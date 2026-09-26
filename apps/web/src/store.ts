@@ -58,7 +58,13 @@ import {
   sumTurnDiffStats,
 } from "./session-logic";
 import { getThreadFromEnvironmentState } from "./threadDerivation";
-import { roomSideModelSelection, roomSlotModelSelection } from "./rooms";
+import {
+  roomSideModelSelection,
+  roomSideRole,
+  roomSlotModelSelection,
+  roomSlotRole,
+} from "./rooms";
+import { applyRoomAgentUpdate } from "@threadlines/shared/threadParticipants";
 const isProviderDriverKindValue = Schema.is(ProviderDriverKind);
 
 export interface EnvironmentState {
@@ -312,6 +318,7 @@ function mapThread(thread: OrchestrationThread, environmentId: EnvironmentId): T
     queuedFollowUps: thread.queuedFollowUps ?? [],
     participants: thread.participants ?? [],
     sideTurn: thread.sideTurn ?? null,
+    ...(thread.agentRole !== undefined ? { agentRole: thread.agentRole } : {}),
     doneOverride: thread.doneOverride,
     lastSeenAt: thread.lastSeenAt,
     updatedAt: thread.updatedAt,
@@ -357,6 +364,7 @@ function mapThreadShell(
     queuedFollowUps: thread.queuedFollowUps ?? [],
     participants: thread.participants ?? [],
     sideTurn: thread.sideTurn ?? null,
+    ...(thread.agentRole !== undefined ? { agentRole: thread.agentRole } : {}),
     doneOverride: thread.doneOverride,
     lastSeenAt: thread.lastSeenAt,
     updatedAt: thread.updatedAt,
@@ -398,8 +406,11 @@ function mapThreadShell(
     linkedPullRequests: thread.linkedPullRequests ?? [],
     participants: thread.participants ?? [],
     sideTurn: thread.sideTurn ?? null,
+    ...(thread.agentRole !== undefined ? { agentRole: thread.agentRole } : {}),
     roomSlotModelSelection: roomSlotModelSelection(thread),
+    roomSlotRole: roomSlotRole(thread),
     roomSideModelSelection: roomSideModelSelection(thread),
+    roomSideRole: roomSideRole(thread),
   };
   return {
     shell,
@@ -429,6 +440,7 @@ function toThreadShell(thread: Thread): ThreadShell {
     queuedFollowUps: thread.queuedFollowUps ?? [],
     participants: thread.participants ?? [],
     sideTurn: thread.sideTurn ?? null,
+    ...(thread.agentRole !== undefined ? { agentRole: thread.agentRole } : {}),
     doneOverride: thread.doneOverride,
     lastSeenAt: thread.lastSeenAt,
     updatedAt: thread.updatedAt,
@@ -516,8 +528,11 @@ function toSidebarThreadSummary(
     linkedPullRequests: thread.linkedPullRequests ?? [],
     participants: thread.participants ?? [],
     sideTurn: thread.sideTurn ?? null,
+    ...(thread.agentRole !== undefined ? { agentRole: thread.agentRole } : {}),
     roomSlotModelSelection: roomSlotModelSelection(thread),
+    roomSlotRole: roomSlotRole(thread),
     roomSideModelSelection: roomSideModelSelection(thread),
+    roomSideRole: roomSideRole(thread),
   };
 }
 
@@ -632,8 +647,11 @@ function participantsEqual(
         participant.id === other.id &&
         participant.handle === other.handle &&
         participant.leftAt === other.leftAt &&
+        participant.role === other.role &&
         participant.modelSelection.instanceId === other.modelSelection.instanceId &&
-        participant.modelSelection.model === other.modelSelection.model
+        participant.modelSelection.model === other.modelSelection.model &&
+        JSON.stringify(participant.modelSelection.options ?? []) ===
+          JSON.stringify(other.modelSelection.options ?? [])
       );
     })
   );
@@ -675,7 +693,11 @@ function sidebarThreadSummariesEqual(
       (right.roomSlotModelSelection?.model ?? null) &&
     (left.roomSideModelSelection?.instanceId ?? null) ===
       (right.roomSideModelSelection?.instanceId ?? null) &&
-    (left.roomSideModelSelection?.model ?? null) === (right.roomSideModelSelection?.model ?? null)
+    (left.roomSideModelSelection?.model ?? null) ===
+      (right.roomSideModelSelection?.model ?? null) &&
+    (left.agentRole ?? null) === (right.agentRole ?? null) &&
+    (left.roomSlotRole ?? null) === (right.roomSlotRole ?? null) &&
+    (left.roomSideRole ?? null) === (right.roomSideRole ?? null)
   );
 }
 
@@ -711,6 +733,7 @@ function threadShellsEqual(left: ThreadShell | undefined, right: ThreadShell): b
     queuedFollowUpsEqual(left.queuedFollowUps, right.queuedFollowUps) &&
     participantsEqual(left.participants, right.participants) &&
     sideTurnsEqual(left.sideTurn, right.sideTurn) &&
+    (left.agentRole ?? null) === (right.agentRole ?? null) &&
     doneOverridesEqual(left.doneOverride, right.doneOverride) &&
     left.lastSeenAt === right.lastSeenAt &&
     left.updatedAt === right.updatedAt &&
@@ -1774,6 +1797,21 @@ function applyEnvironmentOrchestrationEvent(
               updatedAt: event.payload.updatedAt,
             },
       );
+
+    case "thread.participant-updated":
+      return updateThreadState(state, event.payload.threadId, (thread) => {
+        const { participants, agentRole } = applyRoomAgentUpdate(
+          { participants: thread.participants ?? [], agentRole: thread.agentRole },
+          event.payload,
+        );
+        const { agentRole: _previous, ...rest } = thread;
+        return {
+          ...rest,
+          participants,
+          ...(agentRole !== undefined ? { agentRole } : {}),
+          updatedAt: event.payload.updatedAt,
+        };
+      });
 
     case "thread.participant-removed":
       return updateThreadState(state, event.payload.threadId, (thread) => ({

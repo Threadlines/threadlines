@@ -54,6 +54,32 @@ describe("rooms", () => {
     expect(labels?.get(roomAgentKey(secondAstraId))?.name).toBe("GPT-6 Astra 2");
   });
 
+  it("keeps the model's name first when the user names an agent", () => {
+    const entries = [
+      {
+        instanceId: ProviderInstanceId.make("codex"),
+        models: [{ slug: "gpt-6-astra", name: "GPT-6 Astra" }],
+      },
+    ] as unknown as ReadonlyArray<ProviderInstanceEntry>;
+    const secondAstraId = ThreadParticipantId.make("agent-astra-2");
+    const labels = buildRoomAgentLabels(
+      {
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6-astra" },
+        agentRole: "Researcher",
+        participants: [{ ...astra, id: secondAstraId, role: "Reviewer" }],
+      },
+      entries,
+      (model) => model.name,
+    );
+    // Names never change the numbering, so clearing one brings back the same label.
+    expect(labels?.get(roomAgentKey(null))?.name).toBe("GPT-6 Astra (Researcher)");
+    expect(labels?.get(roomAgentKey(secondAstraId))).toMatchObject({
+      name: "GPT-6 Astra 2 (Reviewer)",
+      modelName: "GPT-6 Astra 2",
+      role: "Reviewer",
+    });
+  });
+
   it("asks another agent now while one works, and queues when asked to or when it cannot", () => {
     const delivery = (overrides: Partial<Parameters<typeof resolveRoomDelivery>[0]>) =>
       resolveRoomDelivery({

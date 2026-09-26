@@ -151,6 +151,7 @@ import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { toastManager } from "../ui/toast";
 import { RoomAgentPicker } from "./RoomAgentPicker";
+import { pickRoomAgentOptions } from "./roomAgentActions";
 import { scopedThreadKey } from "@threadlines/client-runtime";
 import {
   buildRoomAgentLabels,
@@ -1163,6 +1164,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
             {
               modelSelection: activeThread.modelSelection,
               participants: activeThread.participants,
+              agentRole: activeThread.agentRole,
             },
             providerInstanceEntries,
             (model, entry) => getPickerModelName(model, entry.driverKind),
@@ -1171,6 +1173,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     [
       activeThread?.modelSelection,
       activeThread?.participants,
+      activeThread?.agentRole,
       providerInstanceEntries,
       showRoomAgentPicker,
     ],
@@ -1632,7 +1635,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       )
     : undefined;
   const pendingRoomAgentOptions = useRoomAgentOptions(routeThreadRef, roomRecipientId);
-  const setRoomAgentOptions = useRoomRecipientStore((state) => state.setAgentOptions);
   const roomAgentTraitsProps =
     addressedRoomAgent && addressedRoomAgentEntry
       ? {
@@ -1642,7 +1644,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           model: addressedRoomAgent.modelSelection.model,
           modelOptions: pendingRoomAgentOptions ?? addressedRoomAgent.modelSelection.options,
           onModelOptionsChange: (next: ReadonlyArray<ProviderOptionSelection> | undefined) =>
-            setRoomAgentOptions(routeThreadRef, addressedRoomAgent.id, next ?? []),
+            pickRoomAgentOptions(routeThreadRef, addressedRoomAgent.id, next ?? []),
         }
       : null;
   const showRoomAgentTraits =
@@ -3800,6 +3802,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                       <RoomAgentPicker
                         threadRef={routeThreadRef}
                         primaryModelSelection={activeThread.modelSelection}
+                        primaryRole={activeThread.agentRole}
                         participants={activeThread.participants ?? []}
                         recipientId={roomRecipientId}
                         workingId={roomWorkingId}

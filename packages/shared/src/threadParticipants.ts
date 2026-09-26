@@ -25,6 +25,7 @@
  * them with `parseSessionKey`.
  */
 import {
+  type ModelSelection,
   type OrchestrationThreadParticipant,
   SideTurnId,
   ThreadId,
@@ -161,4 +162,49 @@ export function sessionSlotParticipantId(
   session: { readonly participantId?: ThreadParticipantId | null | undefined } | null,
 ): ThreadParticipantId | null {
   return session?.participantId ?? null;
+}
+
+/**
+ * Apply a `thread.participant-updated` event to a room's agents: a name for
+ * any of them (null clears it), new model options for an added one. The
+ * in-memory projector and the SQL projection both use this, so they agree.
+ */
+export function applyRoomAgentUpdate(
+  room: {
+    readonly participants: ReadonlyArray<OrchestrationThreadParticipant>;
+    readonly agentRole?: string | undefined;
+  },
+  update: {
+    readonly participantId: ThreadParticipantId | null;
+    readonly role?: string | null | undefined;
+    readonly modelSelection?: ModelSelection | undefined;
+  },
+): {
+  readonly participants: OrchestrationThreadParticipant[];
+  readonly agentRole: string | undefined;
+} {
+  const withRole = <T extends { readonly role?: string | undefined }>(entry: T): T => {
+    if (update.role === undefined) return entry;
+    const { role: _previous, ...rest } = entry;
+    return (update.role === null ? rest : { ...rest, role: update.role }) as T;
+  };
+  if (update.participantId === null) {
+    return {
+      participants: [...room.participants],
+      agentRole: update.role === undefined ? room.agentRole : (update.role ?? undefined),
+    };
+  }
+  return {
+    participants: room.participants.map((entry) =>
+      entry.id !== update.participantId
+        ? entry
+        : {
+            ...withRole(entry),
+            ...(update.modelSelection !== undefined
+              ? { modelSelection: update.modelSelection }
+              : {}),
+          },
+    ),
+    agentRole: room.agentRole,
+  };
 }
