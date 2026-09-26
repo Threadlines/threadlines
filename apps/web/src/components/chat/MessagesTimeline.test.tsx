@@ -106,6 +106,10 @@ function buildProps() {
   };
 }
 
+/** A stretch the agent is still on stays open, one line per step; a settled
+ *  stretch folds into one line. */
+const OPEN_STRETCH = { isWorking: true, activeTurnInProgress: true } as const;
+
 function buildLongUserMessageText(tail = "deep hidden detail only after expand") {
   return Array.from({ length: 9 }, (_, index) =>
     index === 8 ? tail : `Line ${index + 1}: ${"verbose prompt content ".repeat(8).trim()}`,
@@ -316,6 +320,7 @@ describe("MessagesTimeline", () => {
     const markup = renderTimeline(
       <MessagesTimeline
         {...buildProps()}
+        {...OPEN_STRETCH}
         timelineEntries={[
           'Remove-Item "C:\\repo\\activity-feed-scratch.md"',
           "rm -rf .tmp-scratch",
@@ -340,6 +345,41 @@ describe("MessagesTimeline", () => {
     expect(markup.match(/data-activity-line="true"/gu)).toHaveLength(2);
     expect(markup).toContain("Deleted activity-feed-scratch.md");
     expect(markup).toContain("Deleted .tmp-scratch");
+  });
+
+  it("folds a finished stretch into one line that says what it did", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const markup = renderTimeline(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          { command: "cat src/a.ts", executionState: "completed" as const },
+          {
+            command: "pnpm exec vp run test",
+            executionState: "failed" as const,
+            outputPreview: "Tests  1 failed | 11 passed (12)",
+          },
+        ].map((step, index) => ({
+          id: `entry-${index}`,
+          kind: "work" as const,
+          createdAt: `2026-03-17T19:12:2${index}.000Z`,
+          entry: {
+            id: `work-${index}`,
+            createdAt: `2026-03-17T19:12:2${index}.000Z`,
+            label: "Ran command",
+            tone: "tool" as const,
+            requestKind: "command" as const,
+            ...step,
+          },
+        }))}
+      />,
+    );
+
+    expect(markup).toContain('data-activity-folded="true"');
+    expect(markup).not.toContain('data-activity-line="true"');
+    expect(markup).toContain("Read a.ts");
+    // A failure folds too, and stays red in the folded line.
+    expect(markup).toMatch(/text-destructive-foreground\/85">1 of 12 tests failed/u);
   });
 
   it("surfaces the first error line and output toggle on failed commands", async () => {
@@ -742,6 +782,7 @@ describe("MessagesTimeline", () => {
     const markup = renderTimeline(
       <MessagesTimeline
         {...buildProps()}
+        {...OPEN_STRETCH}
         timelineEntries={[
           {
             id: "entry-warning",
@@ -847,6 +888,7 @@ describe("MessagesTimeline", () => {
     const markup = renderTimeline(
       <MessagesTimeline
         {...buildProps()}
+        {...OPEN_STRETCH}
         timelineEntries={[
           "bun run test src/components/chat/MessagesTimeline.test.tsx",
           "bun lint",

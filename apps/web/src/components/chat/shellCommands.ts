@@ -1411,8 +1411,25 @@ export function checkResultLabel(
     }
     return failed ? "Checks failed" : "Checks passed";
   }
-  const words = checks.map((check) => CHECK_WORDS[check]);
   return failed
-    ? `${capitalize(joinWords(words, "or"))} failed`
-    : `${capitalize(joinWords(words))} passed`;
+    ? `${capitalize(checkWords(checks, "or"))} failed`
+    : `${capitalize(checkWords(checks))} passed`;
+}
+
+/** Checks as a reader names them: "tests and typecheck". */
+export function checkWords(
+  checks: ReadonlyArray<CheckKind>,
+  conjunction: "and" | "or" = "and",
+): string {
+  return joinWords(
+    checks.map((check) => CHECK_WORDS[check]),
+    conjunction,
+  );
+}
+
+/** The checks a check key names (the key leads with them: "test+lint:…"). */
+export function checkKindsOfKey(checkKey: string): CheckKind[] {
+  const end = checkKey.indexOf(":");
+  const kinds = (end === -1 ? checkKey : checkKey.slice(0, end)).split("+");
+  return kinds.filter((kind): kind is CheckKind => Object.hasOwn(CHECK_WORDS, kind));
 }

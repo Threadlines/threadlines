@@ -776,11 +776,20 @@ describe("AgentsPanel", () => {
       await expect.element(page.getByText("Looking for the handler.")).toBeVisible();
       await expect.element(page.getByText("Fixed it.")).toBeVisible();
 
-      // The looking around folds; the edit and the test run get lines of their own.
-      const summary = page.getByRole("button", { name: "Read 3 files" });
+      // The agent wrote after the run, so the run reads as one line.
+      const fold = page.getByRole("button", {
+        name: "Read 3 files · edited 1 file · tests passed",
+      });
+      await expect.element(fold).toHaveAttribute("aria-expanded", "false");
+      expect(document.querySelector("[data-activity-summary='true']")).toBeNull();
+      await fold.click();
+
+      // Opened, the looking around folds; the edit and the test run get lines
+      // of their own.
+      const summary = page.getByRole("button", { name: "Read 3 files", exact: true });
       await expect.element(summary).toHaveAttribute("aria-expanded", "false");
       await expect.element(page.getByText("Edited router.ts")).toBeVisible();
-      await expect.element(page.getByText("Tests passed")).toBeVisible();
+      await expect.element(page.getByText("Tests passed", { exact: true })).toBeVisible();
       expect(document.querySelector("[data-activity-steps='true']")).toBeNull();
 
       await summary.click();

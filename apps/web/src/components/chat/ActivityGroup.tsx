@@ -19,7 +19,15 @@ import {
   WrenchIcon,
   XIcon,
 } from "lucide-react";
-import { memo, useCallback, useMemo, useState, type ReactElement, type ReactNode } from "react";
+import {
+  Fragment,
+  memo,
+  useCallback,
+  useMemo,
+  useState,
+  type ReactElement,
+  type ReactNode,
+} from "react";
 
 import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
 import { cn } from "~/lib/utils";
@@ -28,8 +36,10 @@ import {
   activityLineItems,
   partitionActivitySteps,
   summarizeRoutineSteps,
+  summarizeStretch,
   type ActivityIcon,
   type ActivityStep,
+  type StretchPart,
 } from "./activitySteps";
 import { DiffStatLabel } from "./DiffStatLabel";
 
@@ -311,6 +321,64 @@ function EditRunLine({
   );
 }
 
+function partToneClass(part: StretchPart): string | undefined {
+  if (part.tone === "fail") return "text-destructive-foreground/85";
+  if (part.tone === "warning") return "text-warning-foreground/85";
+  return undefined;
+}
+
+/** A stretch the agent has moved on from, as one line: what it looked at,
+ *  changed, and ran, with failures still red. */
+function FoldedLine({
+  parts,
+  durationMs,
+  open,
+  onToggle,
+}: {
+  parts: ReadonlyArray<StretchPart>;
+  durationMs: number | null;
+  open: boolean;
+  onToggle: () => void;
+}) {
+  const duration =
+    durationMs !== null && durationMs >= SHOW_DURATION_FROM_MS ? formatDuration(durationMs) : null;
+  return (
+    <button
+      type="button"
+      className="flex w-full min-w-0 items-center gap-[7px] text-left text-xs leading-5 text-foreground/70 transition-colors duration-150 hover:text-foreground/90"
+      aria-expanded={open}
+      onClick={onToggle}
+      data-activity-fold-line="true"
+    >
+      <ChevronRightIcon
+        className={cn(
+          "size-3 shrink-0 text-muted-foreground/45 transition-transform duration-150",
+          open && "rotate-90",
+        )}
+        aria-hidden="true"
+      />
+      <span className="min-w-0 truncate">
+        {parts.map((part, index) => (
+          <Fragment key={part.id}>
+            {index > 0 ? <span className="text-muted-foreground/40"> · </span> : null}
+            <span className={partToneClass(part)}>{part.text}</span>
+            {part.diff ? (
+              <span className="ml-1.5 font-mono text-[11px]">
+                <DiffStatLabel additions={part.diff.additions} deletions={part.diff.deletions} />
+              </span>
+            ) : null}
+          </Fragment>
+        ))}
+      </span>
+      {duration ? (
+        <span className="shrink-0 font-mono text-[10px] text-muted-foreground/40 tabular-nums">
+          {duration}
+        </span>
+      ) : null}
+    </button>
+  );
+}
+
 export interface ActivityGroupProps {
   /** Every step between two things the agent said, in order. Running steps
    *  are skipped: the live line names them. */
@@ -318,15 +386,23 @@ export interface ActivityGroupProps {
   /** Anything a surface hangs under a step of its own: a sign-in card, the
    *  images a step produced. */
   renderExtras?: ((step: ActivityStep) => ReactNode) | undefined;
+  /** The agent has moved on from this stretch: it reads as one line that
+   *  opens into the group. A group that is one line anyway stays as it is. */
+  folded?: boolean | undefined;
+  /** How long the stretch took, shown on its folded line. */
+  durationMs?: number | null | undefined;
   className?: string | undefined;
 }
 
 export const ActivityGroup = memo(function ActivityGroup({
   steps,
   renderExtras,
+  folded = false,
+  durationMs = null,
   className,
 }: ActivityGroupProps) {
   const [summaryOpen, setSummaryOpen] = useState(false);
+  const [foldOpen, setFoldOpen] = useState(false);
   const [openIds, setOpenIds] = useState<ReadonlySet<string>>(() => new Set());
   const { routine, notable } = useMemo(() => partitionActivitySteps(steps), [steps]);
   const summary = useMemo(
@@ -334,6 +410,11 @@ export const ActivityGroup = memo(function ActivityGroup({
     [routine],
   );
   const lineItems = useMemo(() => activityLineItems(notable), [notable]);
+  const lineCount = (summary !== null ? 1 : 0) + lineItems.length;
+  const stretch = useMemo(
+    () => (folded && lineCount > 1 ? summarizeStretch(steps) : null),
+    [folded, lineCount, steps],
+  );
 
   const toggle = useCallback((id: string) => {
     setOpenIds((current) => {
@@ -355,8 +436,8 @@ export const ActivityGroup = memo(function ActivityGroup({
   const lone = routine.length === 1 ? routine[0]! : null;
   const summaryExpanded = lone ? openIds.has(lone.id) : summaryOpen;
 
-  return (
-    <div className={cn("min-w-0", className)} data-activity-group="true">
+  const lines = (
+    <>
       {summary !== null ? (
         <div data-activity-summary="true">
           <button
@@ -411,6 +492,29 @@ export const ActivityGroup = memo(function ActivityGroup({
           />
         ),
       )}
+    </>
+  );
+
+  if (stretch !== null) {
+    return (
+      <div
+        className={cn("min-w-0", className)}
+        data-activity-group="true"
+        data-activity-folded="true"
+      >
+        <FoldedLine
+          parts={stretch}
+          durationMs={durationMs}
+          open={foldOpen}
+          onToggle={() => setFoldOpen((value) => !value)}
+        />
+        {foldOpen ? <div className="ml-[19px]">{lines}</div> : null}
+      </div>
+    );
+  }
+  return (
+    <div className={cn("min-w-0", className)} data-activity-group="true">
+      {lines}
     </div>
   );
 });

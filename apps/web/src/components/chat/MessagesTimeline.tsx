@@ -90,6 +90,7 @@ import {
   estimateTimelineRowHeight,
   resolveAssistantMessageCopyState,
   shouldCollapseUserMessage,
+  stretchDurationMs,
   type StableMessagesTimelineRowsState,
   type TrayPlacement,
   type TurnSummary,
@@ -1565,7 +1566,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       <div
         className={cn(
           "mx-auto w-full min-w-0 max-w-4xl overflow-x-clip px-2 transition-colors duration-300",
-          item.tray && "bg-[var(--app-chrome-background)]",
+          item.tray && "bg-work-tray",
           item.tray && TRAY_CORNERS[item.tray],
         )}
         data-timeline-root="true"
@@ -3047,7 +3048,14 @@ const WorkGroupSection = memo(function WorkGroupSection({
       {showTracker && !anchorOwnsLiveAgents ? (
         <LiveAgentRoster roster={turnAgentTracker.liveRoster} />
       ) : null}
-      {hasSettledSteps ? <ActivityGroup steps={steps} renderExtras={renderExtras} /> : null}
+      {hasSettledSteps ? (
+        <ActivityGroup
+          steps={steps}
+          renderExtras={renderExtras}
+          folded={row.folded}
+          durationMs={row.folded ? stretchDurationMs(row.groupedEntries) : null}
+        />
+      ) : null}
     </div>
   );
 });

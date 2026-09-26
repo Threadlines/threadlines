@@ -80,6 +80,9 @@ export type MessagesTimelineRow = TimelineRowPlacement &
          *  instead of collapsing into a receipt mid-turn — the settle happens
          *  once, when the turn ends. */
         inActiveExchange: boolean;
+        /** The agent has written since this stretch, or its exchange is over:
+         *  the stretch reads as one line that opens into its steps. */
+        folded: boolean;
       }
     | {
         kind: "message";
@@ -363,6 +366,7 @@ export function deriveMessagesTimelineRows(input: {
         isLive: false,
         liveStartedAt: null,
         inActiveExchange: input.isWorking && index > lastUserMessageIndex,
+        folded: false,
       });
       index = cursor - 1;
       continue;
@@ -496,7 +500,55 @@ export function deriveMessagesTimelineRows(input: {
     });
   }
 
-  return placeRows(rows, input.isWorking);
+  return placeRows(foldFinishedStretches(rows, input.isWorking), input.isWorking);
+}
+
+/** How long a stretch of work took: its first step's start to its last
+ *  finished step's end. Null while nothing in it has finished. */
+export function stretchDurationMs(entries: ReadonlyArray<WorkLogEntry>): number | null {
+  let start = Number.POSITIVE_INFINITY;
+  let end = Number.NEGATIVE_INFINITY;
+  for (const entry of entries) {
+    const started = Date.parse(entry.createdAt);
+    if (Number.isFinite(started)) start = Math.min(start, started);
+    const finished = entry.completedAt ? Date.parse(entry.completedAt) : Number.NaN;
+    if (entry.executionState !== "running" && Number.isFinite(finished)) {
+      end = Math.max(end, finished);
+    }
+  }
+  return end > start ? end - start : null;
+}
+
+/**
+ * Folds each stretch of work the agent has moved on from: it wrote again after
+ * the stretch, or the stretch's exchange is over. The stretch it is still on
+ * stays open. The last stretch of a turn folds when the answer starts, so the
+ * turn ending folds nothing above the answer.
+ */
+function foldFinishedStretches(
+  rows: ReadonlyArray<MessagesTimelineRow>,
+  isWorking: boolean,
+): MessagesTimelineRow[] {
+  const folded = [...rows];
+  let agentWroteAfter = false;
+  for (let index = rows.length - 1; index >= 0; index -= 1) {
+    const row = rows[index]!;
+    // Walking back from the end: the agent's words fold what came before them
+    // in that exchange; your message starts an earlier exchange.
+    if (row.kind === "message") {
+      if (row.message.role === "assistant") agentWroteAfter = true;
+      else if (row.message.role === "user") agentWroteAfter = false;
+      continue;
+    }
+    if (row.kind !== "work") {
+      continue;
+    }
+    const fold = agentWroteAfter || !(isWorking && row.inActiveExchange);
+    if (row.folded !== fold) {
+      folded[index] = { ...row, folded: fold };
+    }
+  }
+  return folded;
 }
 
 type MessageRow = Extract<MessagesTimelineRow, { kind: "message" }>;
@@ -1246,6 +1298,7 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
         a.isLive === bw.isLive &&
         a.liveStartedAt === bw.liveStartedAt &&
         a.inActiveExchange === bw.inActiveExchange &&
+        a.folded === bw.folded &&
         a.trackerTurnIds.length === bw.trackerTurnIds.length &&
         a.trackerTurnIds.every((turnId, index) => turnId === bw.trackerTurnIds[index]) &&
         a.trackerAgentSpawnIds.length === bw.trackerAgentSpawnIds.length &&
@@ -1366,13 +1419,16 @@ function estimateRowContentHeight(row: MessagesTimelineRow, width: number): numb
     case "work": {
       // A running step shows on the working row, not here, and the looking
       // around folds into one line, so a group rarely shows more than three.
+      // A folded stretch is one line.
       let settledSteps = 0;
       for (const entry of row.groupedEntries) {
         if (entry.executionState !== "running" && !isSilentWorkLogEntry(entry)) {
           settledSteps += 1;
         }
       }
-      return settledSteps === 0 ? 0 : 10 + STEP_LINE_PX * Math.min(settledSteps, 3);
+      return settledSteps === 0
+        ? 0
+        : 10 + STEP_LINE_PX * (row.folded ? 1 : Math.min(settledSteps, 3));
     }
     case "working":
       return row.thought ? 46 : 30;
