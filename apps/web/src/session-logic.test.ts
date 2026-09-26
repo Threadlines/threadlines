@@ -2142,6 +2142,21 @@ describe("deriveWorkLogEntries", () => {
   it("folds a command's background task completion into the command", () => {
     const entries = deriveWorkLogEntries([
       makeActivity({
+        id: "bash-output",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "tool.output.updated",
+        summary: "Command output",
+        payload: {
+          itemType: "command_execution",
+          toolCallId: "toolu_1",
+          status: "inProgress",
+          title: "Command output",
+          detail:
+            "Command running in background with ID: b1. Output is being written to: C:/tmp/b1.output",
+          streamKind: "command_output",
+        },
+      }),
+      makeActivity({
         id: "bash-done",
         createdAt: "2026-02-23T00:00:01.000Z",
         kind: "tool.completed",
@@ -2183,6 +2198,74 @@ describe("deriveWorkLogEntries", () => {
       executionState: "failed",
       completedAt: "2026-02-23T00:00:40.000Z",
     });
+  });
+
+  it("keeps a foreground command's own result when its task disagrees", () => {
+    // The build worked and the final `grep -c` counted nothing, which fails
+    // the task but not the command.
+    const command = "npm run build && ls dist/assets | grep -ci art-lab";
+    const entries = deriveWorkLogEntries([
+      makeActivity({
+        id: "bash-started",
+        createdAt: "2026-02-23T00:00:04.000Z",
+        kind: "tool.started",
+        summary: "Command run started",
+        payload: {
+          itemType: "command_execution",
+          toolCallId: "toolu_2",
+          status: "inProgress",
+          title: "Command run",
+          detail: "Bash",
+        },
+      }),
+      makeActivity({
+        id: "task-started",
+        createdAt: "2026-02-23T00:00:05.000Z",
+        kind: "task.started",
+        summary: "local_bash task started",
+        tone: "info",
+        payload: { taskId: "b2", taskType: "local_bash", detail: "Build", toolUseId: "toolu_2" },
+      }),
+      makeActivity({
+        id: "task-done",
+        createdAt: "2026-02-23T00:00:30.000Z",
+        kind: "task.completed",
+        summary: "Task failed",
+        tone: "error",
+        payload: { taskId: "b2", status: "failed", detail: "Build", toolUseId: "toolu_2" },
+      }),
+      makeActivity({
+        id: "bash-output",
+        createdAt: "2026-02-23T00:00:30.100Z",
+        kind: "tool.output.updated",
+        summary: "Command output",
+        payload: {
+          itemType: "command_execution",
+          toolCallId: "toolu_2",
+          status: "inProgress",
+          title: "Command output",
+          detail: "dist/assets/index.js 173.66 kB\n0",
+          streamKind: "command_output",
+        },
+      }),
+      makeActivity({
+        id: "bash-done",
+        createdAt: "2026-02-23T00:00:30.100Z",
+        kind: "tool.completed",
+        summary: "Command run",
+        payload: {
+          itemType: "command_execution",
+          toolCallId: "toolu_2",
+          status: "completed",
+          title: "Command run",
+          detail: command,
+          data: { toolName: "Bash", input: { command, description: "Build" } },
+        },
+      }),
+    ]);
+
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ command, executionState: "completed" });
   });
 
   it("lifts the leading exit-code line out of Claude bash failure output", () => {
@@ -2526,6 +2609,53 @@ describe("deriveWorkLogEntries", () => {
     const warningEntries = entries.filter((entry) => entry.tone === "warning");
     expect(warningEntries).toHaveLength(1);
     expect(warningEntries[0]?.label).toBe("Claude API rate limited, retrying in 8s (attempt 2/10)");
+  });
+
+  it("drops connection retries once the provider answers again in that turn", () => {
+    const retry = (id: string, createdAt: string, attempt: number) =>
+      makeActivity({
+        id,
+        createdAt,
+        kind: "runtime.warning",
+        summary: "Runtime warning",
+        tone: "warning",
+        turnId: "turn-1",
+        payload: {
+          message: `Claude API connection issue, retrying in 2s (attempt ${attempt}/10)`,
+          warningKind: "api-retry",
+        },
+      });
+    const entries = deriveWorkLogEntries([
+      retry("retry-1", "2026-02-23T00:00:01.000Z", 1),
+      retry("retry-2", "2026-02-23T00:00:03.000Z", 2),
+      makeActivity({
+        id: "usage",
+        createdAt: "2026-02-23T00:00:09.000Z",
+        kind: "context-window.updated",
+        summary: "Context window updated",
+        tone: "info",
+        turnId: "turn-1",
+      }),
+    ]);
+
+    expect(entries.filter((entry) => entry.tone === "warning")).toEqual([]);
+  });
+
+  it("hides the Claude SDK's own diagnostics", () => {
+    const entries = deriveWorkLogEntries([
+      makeActivity({
+        id: "diagnostic",
+        kind: "runtime.error",
+        summary: "Runtime error",
+        tone: "error",
+        turnId: "turn-1",
+        payload: {
+          message: "[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=null",
+        },
+      }),
+    ]);
+
+    expect(entries).toEqual([]);
   });
 
   it("attaches a provider auth reconnect action to authentication runtime errors", () => {
@@ -3831,6 +3961,142 @@ describe("deriveWorkLogEntries", () => {
       label: "Ran command",
       executionState: "failed",
     });
+  });
+
+  it("takes Codex's own verdict on a command saved as completed", () => {
+    // Before the Codex adapter passed the item's status through, a typecheck
+    // that exited 2 was saved as completed and read as passed.
+    const [entry] = deriveWorkLogEntries([
+      makeActivity({
+        id: "codex-typecheck",
+        kind: "tool.completed",
+        summary: "Ran command",
+        payload: {
+          itemType: "command_execution",
+          toolCallId: "exec-1",
+          status: "completed",
+          title: "Ran command",
+          detail: "pnpm exec tsc --noEmit",
+          data: {
+            item: {
+              type: "commandExecution",
+              command: "pnpm exec tsc --noEmit",
+              status: "failed",
+              exitCode: 2,
+            },
+          },
+        },
+      }),
+    ]);
+
+    expect(entry).toMatchObject({ executionState: "failed", exitCode: 2 });
+  });
+
+  it("keeps a failed command on one row when its output arrives after it failed", () => {
+    // Claude settles a failed call on an update, then sends its output and
+    // completion. Those used to start a second row, so every failure showed
+    // twice: once bare and once with its error.
+    const row = (id: string, sequence: number, kind: string, payload: Record<string, unknown>) =>
+      makeActivity({
+        id,
+        sequence,
+        kind,
+        summary: "Command run",
+        turnId: "turn-1",
+        payload: { itemType: "command_execution", toolCallId: "toolu_7", ...payload },
+      });
+    const entries = deriveWorkLogEntries([
+      row("started", 1, "tool.started", { status: "inProgress", detail: "Bash" }),
+      row("failed", 2, "tool.updated", { status: "failed", detail: "node shot.mjs" }),
+      row("output", 3, "tool.output.updated", {
+        status: "inProgress",
+        detail: "Exit code 1\nTypeError: Cannot read properties of null",
+        streamKind: "command_output",
+      }),
+      row("done", 4, "tool.completed", { status: "failed", detail: "node shot.mjs" }),
+    ]);
+
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      executionState: "failed",
+      exitCode: 1,
+      outputPreview: "TypeError: Cannot read properties of null",
+    });
+  });
+
+  it("reads a step something turned down as blocked, not failed", () => {
+    let sequence = 0;
+    const command = (id: string, reply: string, status = "failed") => [
+      makeActivity({
+        id: `${id}-started`,
+        sequence: ++sequence,
+        kind: "tool.started",
+        summary: "Command run started",
+        turnId: "turn-1",
+        payload: { itemType: "command_execution", toolCallId: id, status: "inProgress" },
+      }),
+      makeActivity({
+        id: `${id}-output`,
+        sequence: ++sequence,
+        kind: "tool.output.updated",
+        summary: "Command output",
+        turnId: "turn-1",
+        payload: {
+          itemType: "command_execution",
+          toolCallId: id,
+          status: "inProgress",
+          detail: reply,
+          streamKind: "command_output",
+        },
+      }),
+      makeActivity({
+        id: `${id}-done`,
+        sequence: ++sequence,
+        kind: "tool.completed",
+        summary: "Command run",
+        turnId: "turn-1",
+        payload: { itemType: "command_execution", toolCallId: id, status, detail: `run ${id}` },
+      }),
+    ];
+    const entries = deriveWorkLogEntries([
+      // Auto mode reports its denial as a warning naming the step; the long
+      // reply is cut to its tail, so the warning is what says it was blocked.
+      makeActivity({
+        id: "denial",
+        sequence: 0,
+        kind: "runtime.warning",
+        summary: "Runtime warning",
+        tone: "warning",
+        turnId: "turn-1",
+        payload: {
+          message: "Claude denied tool 'Bash': [Merge Without Review].",
+          detail: {
+            subtype: "permission_denied",
+            tool_use_id: "auto",
+            decision_reason_type: "classifier",
+            decision_reason: "[Merge Without Review]",
+          },
+        },
+      }),
+      ...command("auto", "...then STOP and explain to the user what you were trying to do."),
+      ...command("guard", "<tool_use_error>Blocked: sleep 240 followed by: ls</tool_use_error>"),
+      ...command(
+        "user",
+        "The user doesn't want to proceed with this tool use. The tool use was rejected.",
+      ),
+      ...command("codex", "", "declined"),
+      ...command("broken", "Exit code 1\nError: ENOENT: no such file or directory"),
+    ]);
+
+    expect(entries.map((entry) => [entry.toolCallId, entry.executionState, entry.blocked])).toEqual(
+      [
+        ["auto", "failed", { by: "auto-mode", reason: "Merge Without Review" }],
+        ["guard", "failed", { by: "other" }],
+        ["user", "failed", { by: "user" }],
+        ["codex", "failed", { by: "other" }],
+        ["broken", "failed", undefined],
+      ],
+    );
   });
 
   it("collapses legacy completed tool rows that are missing tool metadata", () => {

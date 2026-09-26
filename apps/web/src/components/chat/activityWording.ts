@@ -478,16 +478,33 @@ const GERUND_BASES: Readonly<Record<string, string>> = {
   writing: "write",
 };
 
-/** How a step that did not work reads: "Couldn't delete scratch.md". An
- *  agent's own label is an imperative, which follows "Couldn't" as written. */
-export function failedPhrase(wording: Phrase, agentLabel: string | null): string {
+/** A step as an instruction, the form that follows "Couldn't": "delete
+ *  scratch.md". An agent's own label is one already. Null when the lead verb
+ *  has no known base form. */
+export function basePhrase(wording: Phrase, agentLabel: string | null): string | null {
   const label = agentLabel?.trim();
   if (label) {
-    return `Couldn't ${/^[A-Z][a-z]/u.test(label) ? lowerFirst(label) : label}`;
+    return /^[A-Z][a-z]/u.test(label) ? lowerFirst(label) : label;
   }
   const match = /^([A-Za-z-]+)(.*)$/su.exec(wording.live);
   const base = match ? GERUND_BASES[match[1]!.toLowerCase()] : undefined;
-  return base ? `Couldn't ${base}${match![2]}` : `${wording.past} (failed)`;
+  return base ? `${base}${match![2]}` : null;
+}
+
+/** How a step that did not work reads: "Couldn't delete scratch.md". */
+export function failedPhrase(wording: Phrase, agentLabel: string | null): string {
+  const base = basePhrase(wording, agentLabel);
+  return base ? `Couldn't ${base}` : `${wording.past} (failed)`;
+}
+
+/** How a step that never ran reads: "You declined to delete scratch.md" when
+ *  the user turned it down, "Blocked: delete scratch.md" when a guard did. */
+export function blockedPhrase(wording: Phrase, agentLabel: string | null, byUser: boolean): string {
+  const base = basePhrase(wording, agentLabel);
+  if (!base) {
+    return `${wording.past} (${byUser ? "declined" : "blocked"})`;
+  }
+  return byUser ? `You declined to ${base}` : `Blocked: ${base}`;
 }
 
 /** A task's label as it reads while the task runs: "Fix the login bug" turns

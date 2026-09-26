@@ -841,6 +841,17 @@ function itemTitle(itemType: CanonicalItemType): string | undefined {
   }
 }
 
+/** How a finished item ended, in Codex's own words: a command that exited
+ *  non-zero or a tool call that errored is failed, and a step the user turned
+ *  down is declined. Anything else that finished is completed; an agent spawn
+ *  call can finish while its agent still runs, so "inProgress" is not kept. */
+function completedItemStatus(item: CodexLifecycleItem): "completed" | "failed" | "declined" {
+  if (!("status" in item)) {
+    return "completed";
+  }
+  return item.status === "failed" || item.status === "declined" ? item.status : "completed";
+}
+
 function itemDetail(item: CodexLifecycleItem): string | undefined {
   const candidates = [
     "command" in item ? item.command : undefined,
@@ -1375,7 +1386,7 @@ function mapItemLifecycle(
     lifecycle === "item.started"
       ? "inProgress"
       : lifecycle === "item.completed"
-        ? "completed"
+        ? completedItemStatus(item)
         : undefined;
 
   return {

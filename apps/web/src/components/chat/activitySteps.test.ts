@@ -134,6 +134,45 @@ describe("shell commands", () => {
     expect(command("rg -n useQuery src", { executionState: "failed" })?.label).toBe(
       "Searched for useQuery (no matches)",
     );
+    // One that printed results found something, whatever the exit code says.
+    expect(
+      command("rg -n useQuery src missing-dir", {
+        executionState: "failed",
+        outputPreview: "src/App.tsx:4:import { useQuery } from '@tanstack/react-query';",
+      })?.label,
+    ).toBe("Searched for useQuery");
+  });
+
+  it("words a step that never ran by who turned it down", () => {
+    // A reviewer's block gets its own amber line, like Codex's auto-review.
+    expect(
+      command("gh pr merge 320 --squash", {
+        executionState: "failed",
+        description: "Enqueue the PR",
+        blocked: { by: "auto-mode", reason: "Merge Without Review" },
+      }),
+    ).toMatchObject({
+      routine: false,
+      tone: "warning",
+      label: "Auto mode blocked a step",
+      note: "Enqueue the PR (Merge Without Review)",
+    });
+    // A guard's or the user's stays quiet in the opened list, uncounted.
+    expect(
+      command("sleep 240; tail -5 dev.log", {
+        executionState: "failed",
+        description: "Check the server log",
+        blocked: { by: "other" },
+      }),
+    ).toMatchObject({
+      routine: true,
+      tone: "neutral",
+      tallies: [],
+      label: "Blocked: check the server log",
+    });
+    expect(
+      command("rm scratch.md", { executionState: "failed", blocked: { by: "user" } }),
+    ).toMatchObject({ routine: true, tone: "neutral", label: "You declined to delete scratch.md" });
   });
 
   it("recognizes a rerun of the same check", () => {

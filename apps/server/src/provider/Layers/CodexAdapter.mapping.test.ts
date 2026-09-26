@@ -122,6 +122,52 @@ describe("CodexAdapter item mapping", () => {
     }
   });
 
+  it("keeps Codex's own verdict on a finished command", () => {
+    // Codex marks a command that exits non-zero as failed and one the user
+    // turned down as declined; a failed typecheck must not read as completed.
+    const cases = [
+      { status: "failed", exitCode: 2, expected: "failed" },
+      { status: "declined", exitCode: null, expected: "declined" },
+      { status: "completed", exitCode: 0, expected: "completed" },
+    ] as const;
+
+    for (const { status, exitCode, expected } of cases) {
+      const [runtimeEvent] = mapToRuntimeEvents(
+        {
+          id: EventId.make(`evt-command-${status}`),
+          kind: "notification",
+          provider: ProviderDriverKind.make("codex"),
+          createdAt: "2026-09-25T12:00:00.000Z",
+          method: "item/completed",
+          threadId: ThreadId.make("thread-1"),
+          turnId: TurnId.make("turn-1"),
+          itemId: ProviderItemId.make("command-1"),
+          payload: {
+            completedAtMs: 1_790_000_000_000,
+            threadId: "provider-thread-1",
+            turnId: "turn-1",
+            item: {
+              type: "commandExecution",
+              id: "command-1",
+              command: "pnpm exec tsc --noEmit",
+              commandActions: [],
+              cwd: "C:/repo",
+              status,
+              exitCode,
+            },
+          },
+        },
+        ThreadId.make("thread-1"),
+      );
+
+      assert.equal(runtimeEvent?.type, "item.completed");
+      if (runtimeEvent?.type !== "item.completed") {
+        continue;
+      }
+      assert.equal(runtimeEvent.payload.status, expected);
+    }
+  });
+
   it("classifies guardian notices without inferring their outcome from text", () => {
     const [runtimeEvent] = mapToRuntimeEvents(
       {

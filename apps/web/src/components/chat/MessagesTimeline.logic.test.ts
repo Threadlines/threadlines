@@ -1186,6 +1186,14 @@ describe("finished turns and the live step", () => {
       }),
       command("typecheck-1", "failed"),
       command("typecheck-2", "completed"),
+      // A rerun something turned down never ran, so it leaves the result be.
+      workEntry("typecheck-3", "2026-01-01T00:00:12Z", {
+        label: "Ran command",
+        itemType: "command_execution",
+        command: "pnpm exec vp run typecheck",
+        executionState: "failed",
+        blocked: { by: "auto-mode" },
+      }),
       assistantEntry("answer", "2026-01-01T00:01:00Z"),
     ]);
 
