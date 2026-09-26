@@ -612,7 +612,10 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       } as const;
     }
 
-    if (!input.allowRecovery) {
+    // A side answer's runtime is never brought back: its binding does not
+    // record the lockdown, so recovering it would start an unrestricted
+    // session under a side key.
+    if (!input.allowRecovery || parseSessionKey(input.threadId).kind === "side") {
       return {
         adapter,
         instanceId,
@@ -1368,6 +1371,38 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     }
     return yield* routed.adapter.realtimeListVoices(routed.threadId);
   });
+
+  const readConversation: ProviderServiceShape["readConversation"] = Effect.fn("readConversation")(
+    function* (input) {
+      const live = (yield* listSessions()).find((session) => session.threadId === input.threadId);
+      if (live?.providerThreadId !== undefined && live.providerInstanceId !== undefined) {
+        return {
+          providerInstanceId: live.providerInstanceId,
+          providerThreadId: live.providerThreadId,
+        };
+      }
+      const binding = Option.getOrUndefined(
+        yield* directory.getBinding(input.threadId).pipe(Effect.orElseSucceed(() => Option.none())),
+      );
+      if (binding === undefined || binding.providerInstanceId === undefined) {
+        return null;
+      }
+      const cursor = (binding.resumeCursor ?? null) as {
+        readonly threadId?: unknown;
+        readonly resume?: unknown;
+      } | null;
+      // Resume cursors are the drivers' own: Codex names its thread, Claude its session.
+      const providerThreadId =
+        binding.provider === "codex"
+          ? cursor?.threadId
+          : binding.provider === "claudeAgent"
+            ? cursor?.resume
+            : undefined;
+      return typeof providerThreadId === "string" && providerThreadId.length > 0
+        ? { providerInstanceId: binding.providerInstanceId, providerThreadId }
+        : null;
+    },
+  );
 
   const releaseBackgroundCommands: ProviderServiceShape["releaseBackgroundCommands"] = Effect.fn(
     "releaseBackgroundCommands",
@@ -2142,6 +2177,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     realtimeAppendAudio,
     realtimeListVoices,
     releaseBackgroundCommands,
+    readConversation,
     compactContext,
     setThreadGoal,
     pauseThreadGoalForStop,

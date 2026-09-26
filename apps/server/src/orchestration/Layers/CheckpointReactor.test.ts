@@ -9,6 +9,7 @@ import {
   ProviderRuntimeEvent,
   ProviderSession,
   ProviderInstanceId,
+  ThreadParticipantId,
 } from "@threadlines/contracts";
 import {
   CheckpointRef,
@@ -24,6 +25,8 @@ import {
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
+import { participantSessionKey } from "@threadlines/shared/threadParticipants";
+import { turnAdmission } from "../turnAdmission.ts";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as ManagedRuntime from "effect/ManagedRuntime";
@@ -131,6 +134,7 @@ function createProviderServiceHarness(
     startReview: () => unsupported(),
     interruptTurn: () => unsupported(),
     releaseBackgroundCommands: () => Effect.void,
+    readConversation: () => Effect.succeed(null),
     compactContext: () => unsupported(),
     setThreadGoal: () => unsupported(),
     pauseThreadGoalForStop: () => unsupported(),
@@ -1438,6 +1442,47 @@ describe("CheckpointReactor", () => {
       (entry) => entry.latestTurn?.turnId === "turn-main" && entry.checkpoints.length === 1,
     );
     expect(thread.checkpoints[0]?.checkpointTurnCount).toBe(1);
+  });
+
+  it("never checkpoints a room agent's own wake-up that ingestion turned away", async () => {
+    const harness = await createHarness({ seedFilesystemCheckpoints: false });
+    const createdAt = "2026-01-01T00:00:00.000Z";
+    const threadId = ThreadId.make("thread-1");
+    const astraId = ThreadParticipantId.make("7a0b1c2d-3e4f-4a5b-8c6d-7e8f9a0b1c2d");
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.participant.add",
+        commandId: CommandId.make("cmd-room-add"),
+        threadId,
+        participant: {
+          id: astraId,
+          handle: "GPT-6 Astra",
+          modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6-astra" },
+        },
+        createdAt,
+      }),
+    );
+    // Astra, idle, woke itself up; ingestion turned the turn away.
+    await Effect.runPromise(
+      turnAdmission.decide(participantSessionKey(threadId, astraId), "turn-wake", "rejected"),
+    );
+    for (const type of ["turn.started", "turn.completed"] as const) {
+      harness.provider.emit({
+        type,
+        eventId: EventId.make(`evt-wake-${type}`),
+        provider: ProviderDriverKind.make("codex"),
+        createdAt,
+        threadId,
+        participantId: astraId,
+        turnId: asTurnId("turn-wake"),
+        ...(type === "turn.completed" ? { payload: { state: "interrupted" } } : {}),
+      } as never);
+    }
+    await harness.drain();
+
+    const thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+    expect(thread?.checkpoints).toHaveLength(0);
+    expect(thread?.latestTurn ?? null).toBeNull();
   });
 
   it("captures pre-turn and completion checkpoints for claude runtime events", async () => {

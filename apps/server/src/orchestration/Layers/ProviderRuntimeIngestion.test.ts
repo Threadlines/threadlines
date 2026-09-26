@@ -19,6 +19,7 @@ import {
   ProjectId,
   ProviderItemId,
   type ServerSettings,
+  SideTurnId,
   ThreadId,
   ThreadParticipantId,
   TurnId,
@@ -123,6 +124,7 @@ function createProviderServiceHarness() {
     realtimeAppendAudio: () => unsupported(),
     realtimeListVoices: () => unsupported(),
     releaseBackgroundCommands: () => Effect.void,
+    readConversation: () => Effect.succeed(null),
     compactContext: () => unsupported(),
     setThreadGoal: () => unsupported(),
     pauseThreadGoalForStop: () => unsupported(),
@@ -444,6 +446,104 @@ describe("ProviderRuntimeIngestion", () => {
       (entry: ProviderRuntimeTestMessage) => entry.role === "user",
     );
     expect(message?.id).toBe("user:realtime:thread-1:evt-realtime-user-done");
+  });
+
+  it("turns a side answer into its own answer message, and leaves the working turn alone", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    const threadId = asThreadId("thread-1");
+    const astraId = ThreadParticipantId.make("7a0b1c2d-3e4f-4a5b-8c6d-7e8f9a0b1c2d");
+    const sideTurnId = SideTurnId.make("0d9e8f7a-6b5c-4d3e-8f1a-2b3c4d5e6f70");
+    const dispatch = (command: Parameters<typeof harness.engine.dispatch>[0]) =>
+      Effect.runPromise(harness.engine.dispatch(command));
+    await dispatch({
+      type: "thread.participant.add",
+      commandId: CommandId.make("cmd-side-add-astra"),
+      threadId,
+      participant: {
+        id: astraId,
+        handle: "GPT-6 Astra",
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6-astra" },
+      },
+      createdAt: now,
+    });
+    await dispatch({
+      type: "thread.session.set",
+      commandId: CommandId.make("cmd-side-astra-working"),
+      threadId,
+      session: {
+        threadId,
+        status: "running",
+        providerName: "codex",
+        runtimeMode: "approval-required",
+        participantId: astraId,
+        activeTurnId: asTurnId("turn-astra"),
+        updatedAt: now,
+        lastError: null,
+      },
+      createdAt: now,
+    });
+    // While astra works, the user asks the thread's own agent on the side.
+    await dispatch({
+      type: "thread.side-turn.start",
+      commandId: CommandId.make("cmd-side-ask"),
+      threadId,
+      sideTurnId,
+      participantId: null,
+      message: { messageId: asMessageId("side-question"), role: "user", text: "why?" },
+      createdAt: now,
+    });
+    const sideEvent = (id: string, event: Record<string, unknown>) =>
+      harness.emit({
+        eventId: asEventId(id),
+        provider: ProviderDriverKind.make("claudeAgent"),
+        threadId,
+        createdAt: now,
+        turnId: asTurnId("turn-side"),
+        sideTurnId,
+        ...event,
+      } as never);
+    sideEvent("evt-side-1", {
+      type: "content.delta",
+      payload: { streamKind: "assistant_text", delta: "Because the retry " },
+    });
+    sideEvent("evt-side-2", {
+      type: "content.delta",
+      payload: { streamKind: "assistant_text", delta: "cap is off by one." },
+    });
+    sideEvent("evt-side-done", { type: "turn.completed", payload: { state: "completed" } });
+    await harness.drain();
+
+    const settled = await waitForThread(
+      harness.readModel,
+      (thread) => (thread.sideTurn ?? null) === null,
+    );
+    const answer = settled.messages.find((message) => message.id === `side-answer:${sideTurnId}`);
+    expect(answer).toMatchObject({
+      role: "assistant",
+      text: "Because the retry cap is off by one.",
+      sideTurnId,
+      turnId: null,
+      streaming: false,
+    });
+    expect(answer?.participantId ?? null).toBeNull();
+    // Astra's working turn is untouched.
+    expect(settled.session).toMatchObject({
+      status: "running",
+      participantId: astraId,
+      activeTurnId: "turn-astra",
+    });
+
+    // Anything the side runtime says after it settled is dropped.
+    sideEvent("evt-side-late", {
+      type: "content.delta",
+      payload: { streamKind: "assistant_text", delta: " And more." },
+    });
+    await harness.drain();
+    const after = (await harness.readModel()).threads.find((thread) => thread.id === threadId);
+    expect(
+      after?.messages.find((message) => message.id === `side-answer:${sideTurnId}`)?.text,
+    ).toBe("Because the retry cap is off by one.");
   });
 
   it("stops a room agent that starts working on its own while another agent holds the thread", async () => {

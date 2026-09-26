@@ -26,6 +26,7 @@ import {
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
+import { turnAdmission } from "../turnAdmission.ts";
 import { makeDrainableWorker } from "@threadlines/shared/DrainableWorker";
 import { normalizeWorkspacePath } from "@threadlines/shared/path";
 import { compareTranscriptOrder } from "@threadlines/shared/transcriptOrder";
@@ -391,6 +392,13 @@ const make = Effect.gen(function* () {
       );
     },
   );
+
+  /** Only rooms have runtimes that can start turns without holding the thread. */
+  const isRoomThread = (threadId: ThreadId) =>
+    projectionSnapshotQuery.getThreadShellById(threadId).pipe(
+      Effect.map((thread) => Option.isSome(thread) && thread.value.participants.length > 0),
+      Effect.orElseSucceed(() => false),
+    );
 
   const resolveThreadDetail = Effect.fn("resolveThreadDetail")(function* (threadId: ThreadId) {
     return yield* projectionSnapshotQuery
@@ -1273,6 +1281,20 @@ const make = Effect.gen(function* () {
   const processRuntimeEvent = Effect.fn("processRuntimeEvent")(function* (
     event: ProviderRuntimeEvent,
   ) {
+    // Only turns ingestion admitted to the main lane are checkpointed. A room
+    // agent that woke itself up while another held the thread was rejected;
+    // its turn is not the thread's work.
+    if (
+      (event.type === "turn.started" || event.type === "turn.completed") &&
+      event.turnId !== undefined &&
+      (yield* isRoomThread(event.threadId)) &&
+      (yield* turnAdmission.laneOf(
+        participantSessionKey(event.threadId, event.participantId ?? null),
+        event.turnId,
+      )) !== "main"
+    ) {
+      return;
+    }
     if (event.type === "turn.started") {
       yield* ensurePreTurnBaselineFromTurnStart(event);
       return;
@@ -1329,6 +1351,10 @@ const make = Effect.gen(function* () {
         ) {
           return Effect.void;
         }
+        // A side answer's question is never the start of a main turn.
+        if (event.type === "thread.message-sent" && event.payload.sideTurnId !== undefined) {
+          return Effect.void;
+        }
         return worker.enqueue({ source: "domain", event });
       }),
     );
@@ -1336,6 +1362,10 @@ const make = Effect.gen(function* () {
     yield* Effect.forkScoped(
       Stream.runForEach(providerService.streamEvents, (event) => {
         if (event.type !== "turn.started" && event.type !== "turn.completed") {
+          return Effect.void;
+        }
+        // A side answer runs read-only in its own runtime: nothing to capture.
+        if (event.sideTurnId !== undefined) {
           return Effect.void;
         }
         return worker.enqueue({ source: "runtime", event });
