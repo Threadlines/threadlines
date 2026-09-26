@@ -196,7 +196,7 @@ export function buildRoomCatchUp(input: RoomCatchUpInput): RoomCatchUp | undefin
     `You are working in a Threadlines room: one thread shared by the user and several coding agents, each with its own conversation. You are ${nameOf(participantId)}.` +
       (others.length > 0 ? ` Also here: ${others.join(", ")}.` : ""),
     input.lane === "side"
-      ? `The user is asking you something on the side while ${nameOf(input.workingParticipantId ?? null)} is working in this checkout. Answer it; you can read files and search, but you cannot change anything, run commands, or ask questions. The files may be mid-edit, so treat what you read as a snapshot, not a finished result.`
+      ? `The user is asking you something on the side while ${nameOf(input.workingParticipantId ?? null)} is working in this checkout. Answer it. You can look through the checkout, but nothing you do can change it, and you cannot ask questions. The files may be mid-edit, so treat what you read as a snapshot, not a finished result.`
       : "Only one agent works at a time, in the same checkout, so the files already reflect the others' changes.",
     joining
       ? "You were just brought into this thread. These are its most recent messages."

@@ -1141,6 +1141,60 @@ describe("ProviderCommandReactor", () => {
     );
   });
 
+  it("keeps a failed turn's queue held when a side answer ends", async () => {
+    const { harness, threadId, astraId, dispatch, now } =
+      await startRoomWithMessageQueuedForAstra();
+    const sideTurnId = SideTurnId.make("5c6d7e8f-9a0b-4c1d-8e2f-3a4b5c6d7e8f");
+    await dispatch({
+      type: "thread.side-turn.start",
+      commandId: CommandId.make("cmd-side-ask-fail"),
+      threadId,
+      sideTurnId,
+      participantId: astraId,
+      message: { messageId: asMessageId("side-question-fail"), role: "user", text: "quick one" },
+      createdAt: now,
+    });
+    await harness.drain();
+    // The working turn fails: nothing queued goes out on its own.
+    await dispatch({
+      type: "thread.session.set",
+      commandId: CommandId.make("cmd-holder-failed"),
+      threadId,
+      session: {
+        threadId,
+        status: "error",
+        providerName: "codex",
+        runtimeMode: "full-access",
+        activeTurnId: null,
+        lastError: "boom",
+        updatedAt: now,
+      },
+      createdAt: now,
+    });
+    await dispatch({
+      type: "thread.side-turn.settle",
+      commandId: CommandId.make("cmd-side-settle-fail"),
+      threadId,
+      sideTurnId,
+      outcome: "completed",
+      createdAt: now,
+    });
+    await waitFor(() =>
+      harness.stopSession.mock.calls.some(
+        ([request]) =>
+          (request as { threadId: string }).threadId ===
+          sideSessionKey(threadId, sideTurnId, astraId),
+      ),
+    );
+    await harness.drain();
+    const toAstra = participantSessionKey(threadId, astraId);
+    expect(
+      harness.sendTurn.mock.calls.some(
+        ([request]) => (request as { threadId: string }).threadId === toAstra,
+      ),
+    ).toBe(false);
+  });
+
   it("holds a message queued for another room agent after Stop, even with no turn to stop", async () => {
     const { harness, threadId, dispatch, settle, now } = await startRoomWithMessageQueuedForAstra();
     await settle(1, 1, "cmd-stop-settled-waiting");

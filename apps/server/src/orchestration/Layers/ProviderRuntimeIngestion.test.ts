@@ -505,11 +505,19 @@ describe("ProviderRuntimeIngestion", () => {
       } as never);
     sideEvent("evt-side-1", {
       type: "content.delta",
+      itemId: "msg-1",
       payload: { streamKind: "assistant_text", delta: "Because the retry " },
     });
     sideEvent("evt-side-2", {
       type: "content.delta",
+      itemId: "msg-1",
       payload: { streamKind: "assistant_text", delta: "cap is off by one." },
+    });
+    // It read a file in between, then wrote again: a new paragraph.
+    sideEvent("evt-side-3", {
+      type: "content.delta",
+      itemId: "msg-2",
+      payload: { streamKind: "assistant_text", delta: "It came in with the April change." },
     });
     sideEvent("evt-side-done", { type: "turn.completed", payload: { state: "completed" } });
     await harness.drain();
@@ -521,7 +529,7 @@ describe("ProviderRuntimeIngestion", () => {
     const answer = settled.messages.find((message) => message.id === `side-answer:${sideTurnId}`);
     expect(answer).toMatchObject({
       role: "assistant",
-      text: "Because the retry cap is off by one.",
+      text: "Because the retry cap is off by one.\n\nIt came in with the April change.",
       sideTurnId,
       turnId: null,
       streaming: false,
@@ -543,7 +551,7 @@ describe("ProviderRuntimeIngestion", () => {
     const after = (await harness.readModel()).threads.find((thread) => thread.id === threadId);
     expect(
       after?.messages.find((message) => message.id === `side-answer:${sideTurnId}`)?.text,
-    ).toBe("Because the retry cap is off by one.");
+    ).toBe("Because the retry cap is off by one.\n\nIt came in with the April change.");
   });
 
   it("stops a room agent that starts working on its own while another agent holds the thread", async () => {

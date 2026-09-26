@@ -1761,15 +1761,21 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         if (routed.isActive) {
           yield* routed.adapter.stopSession(routed.threadId);
         }
-        yield* directory.upsert({
-          threadId: input.threadId,
-          provider: routed.adapter.provider,
-          providerInstanceId: routed.instanceId,
-          status: "stopped",
-          runtimePayload: {
-            activeTurnId: null,
-          },
-        });
+        // A side answer's runtime is disposable: nothing ever resumes it, so
+        // its binding goes with it rather than piling up as "stopped".
+        if (parseSessionKey(input.threadId).kind === "side") {
+          yield* directory.deleteBinding(input.threadId);
+        } else {
+          yield* directory.upsert({
+            threadId: input.threadId,
+            provider: routed.adapter.provider,
+            providerInstanceId: routed.instanceId,
+            status: "stopped",
+            runtimePayload: {
+              activeTurnId: null,
+            },
+          });
+        }
         yield* analytics.record("provider.session.stopped", {
           provider: routed.adapter.provider,
         });
@@ -2050,8 +2056,24 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         payload: rawInput,
       });
       // A room's added agents run under their own session keys; they go with
-      // the thread. Best-effort, like the rest of deletion cleanup.
-      const agentKeys = (yield* directory.listThreadIds()).filter(
+      // the thread. Best-effort, like the rest of deletion cleanup. A side
+      // answer's runtime is only stopped: it is a disposable copy, and a
+      // native delete could reach the conversation it copied.
+      const keys = yield* directory.listThreadIds();
+      for (const key of keys) {
+        const target = parseSessionKey(key);
+        if (target.kind !== "side" || target.threadId !== input.threadId) continue;
+        yield* stopSession({ threadId: key }).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logDebug("provider thread delete skipped a side answer runtime", {
+              threadId: input.threadId,
+              sessionKey: key,
+              cause: Cause.pretty(cause),
+            }),
+          ),
+        );
+      }
+      const agentKeys = keys.filter(
         (key) => key !== input.threadId && sessionKeyThreadId(key) === input.threadId,
       );
       for (const key of agentKeys) {

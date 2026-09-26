@@ -5,7 +5,9 @@ import * as path from "node:path";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
 import {
+  borrowCodexSignIn,
   CODEX_SIDE_ANSWER_CONFIG,
+  codexSignInHome,
   prepareCodexSideAnswerHome,
   readCodexSignIn,
   removeCodexSideAnswerHome,
@@ -51,7 +53,7 @@ describe("codex side-answer home", () => {
     expect(fs.existsSync(home.rolloutPath!)).toBe(true);
     expect(fs.existsSync(path.join(home.homePath, "auth.json"))).toBe(false);
     expect(fs.readFileSync(path.join(signInHome, "auth.json"), "utf8")).toBe(authBefore);
-    expect(await Effect.runPromise(readCodexSignIn(signInHome))).toEqual({
+    expect(await Effect.runPromise(readCodexSignIn(signInHome, {}))).toEqual({
       kind: "chatgpt",
       accessToken: "at",
       chatgptAccountId: "acct",
@@ -66,5 +68,52 @@ describe("codex side-answer home", () => {
     const signInHome = fakeSignInHome();
     expect(await Effect.runPromise(removeCodexSideAnswerHome(signInHome))).toBe(false);
     expect(fs.existsSync(path.join(signInHome, "auth.json"))).toBe(true);
+  });
+
+  it("finds the user's Codex home the way their normal runtime does", () => {
+    expect(codexSignInHome("/configured", { CODEX_HOME: "/from-env" })).toBe("/configured");
+    expect(codexSignInHome(undefined, { CODEX_HOME: "/from-env" })).toBe("/from-env");
+    expect(codexSignInHome("", {})).toBe(path.join(os.homedir(), ".codex"));
+  });
+
+  it("has the user's own Codex renew a refused or expiring token, and never hands back a dead one", async () => {
+    const signInHome = fakeSignInHome();
+    const jwt = (expSeconds: number) =>
+      `x.${Buffer.from(JSON.stringify({ exp: expSeconds })).toString("base64url")}.y`;
+    const writeToken = (accessToken: string) =>
+      fs.writeFileSync(
+        path.join(signInHome, "auth.json"),
+        JSON.stringify({ tokens: { access_token: accessToken, account_id: "acct" } }),
+      );
+    const inAnHour = Math.floor(Date.now() / 1000) + 3600;
+    const expired = Math.floor(Date.now() / 1000) - 60;
+    let renewals = 0;
+    const borrow = (renewTo: string | null, rejectedAccessToken?: string) =>
+      Effect.runPromise(
+        borrowCodexSignIn({
+          signInHome,
+          environment: {},
+          renewOwner: Effect.sync(() => {
+            renewals += 1;
+            if (renewTo !== null) writeToken(renewTo);
+          }),
+          ...(rejectedAccessToken !== undefined ? { rejectedAccessToken } : {}),
+        }).pipe(
+          Effect.flip,
+          Effect.map((error) => error.message),
+          Effect.orElseSucceed(() => "ok"),
+        ),
+      );
+
+    // A live token is handed over as is.
+    writeToken(jwt(inAnHour));
+    expect(await borrow(null)).toBe("ok");
+    expect(renewals).toBe(0);
+    // Codex refused it: the owner renews, and the new one goes over.
+    expect(await borrow(jwt(inAnHour + 1), jwt(inAnHour))).toBe("ok");
+    expect(renewals).toBe(1);
+    // Expired and the owner could not renew it: a clear failure, not the dead token.
+    writeToken(jwt(expired));
+    expect(await borrow(null)).toBe("The Codex sign-in has expired. Sign in to Codex again.");
   });
 });

@@ -857,6 +857,12 @@ export const OrchestrationSideTurnOutcome = Schema.Literals(["completed", "faile
 export type OrchestrationSideTurnOutcome = typeof OrchestrationSideTurnOutcome.Type;
 
 /**
+ * The activity kind a side answer that ended without a finished reply leaves
+ * behind (payload `{ outcome, error? }`), recorded with the settle itself.
+ */
+export const SIDE_ANSWER_OUTCOME_ACTIVITY_KIND = "side-answer.outcome";
+
+/**
  * How much of the room one agent's own conversation has been told, so its
  * next catch-up note starts where the last one ended. It belongs to a
  * durable conversation: a new native conversation starts over, and a side

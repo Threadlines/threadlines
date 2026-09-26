@@ -590,8 +590,11 @@ const denySideAnswerTool: HookCallback = async (hookInput) => {
 };
 
 /**
- * A room's side answer (ProviderSessionStartInput.lockdown): the normal query
- * with everything that could act, or reach the user, taken out.
+ * A room's side answer (ProviderSessionStartInput.lockdown): built from an
+ * allowlist of the normal query's options (where it runs, which model, how to
+ * reach the CLI), never from the normal query minus a few. The user's launch
+ * args are dropped: one like `--plugin-dir` loads hooks that run whatever the
+ * model may do.
  *
  * Its settings, hooks, plugins and MCP servers never load: no setting sources,
  * and a strict MCP config naming none, which also keeps the account's
@@ -604,22 +607,29 @@ export function lockDownClaudeQueryOptions(
   base: ClaudeQueryOptions,
   fork: { readonly resume: string | undefined; readonly forkSessionId: string | undefined },
 ): ClaudeQueryOptions {
-  const {
-    mcpServers: _mcpServers,
-    settingSources: _settingSources,
-    allowedTools: _allowedTools,
-    permissionMode: _permissionMode,
-    allowDangerouslySkipPermissions: _allowDangerouslySkipPermissions,
-    hooks: _hooks,
-    canUseTool: _canUseTool,
-    resume: _resume,
-    forkSession: _forkSession,
-    sessionId: _sessionId,
-    systemPrompt: _systemPrompt,
-    ...rest
-  } = base;
+  // A settings file path would load that file; only the inline flags pass.
+  const inline = typeof base.settings === "object" ? base.settings : undefined;
+  const alwaysThinkingEnabled = inline?.alwaysThinkingEnabled;
+  const fastMode = inline?.fastMode;
+  const settings = {
+    ...(alwaysThinkingEnabled !== undefined ? { alwaysThinkingEnabled } : {}),
+    ...(fastMode !== undefined ? { fastMode } : {}),
+  };
   return {
-    ...rest,
+    ...(base.cwd !== undefined ? { cwd: base.cwd } : {}),
+    ...(base.additionalDirectories !== undefined
+      ? { additionalDirectories: base.additionalDirectories }
+      : {}),
+    ...(base.model !== undefined ? { model: base.model } : {}),
+    ...(base.fallbackModel !== undefined ? { fallbackModel: base.fallbackModel } : {}),
+    ...(base.effort !== undefined ? { effort: base.effort } : {}),
+    ...(base.pathToClaudeCodeExecutable !== undefined
+      ? { pathToClaudeCodeExecutable: base.pathToClaudeCodeExecutable }
+      : {}),
+    ...(base.env !== undefined ? { env: base.env } : {}),
+    ...(Object.keys(settings).length > 0 ? { settings } : {}),
+    extraArgs: { "thinking-display": "summarized" },
+    includePartialMessages: true,
     systemPrompt: { type: "preset", preset: "claude_code", append: FILE_LINK_INSTRUCTIONS },
     mcpServers: {},
     strictMcpConfig: true,
@@ -6438,6 +6448,15 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             sessionId: requestedResumeState.resume,
             sourcePath: transcriptResolution.sourcePath,
             transcriptPath: transcriptResolution.transcriptPath,
+          });
+        } else if (transcriptResolution?.outcome === "missing" && lockdown) {
+          // A side answer must not quietly answer without the history it was
+          // meant to fork: failing lets the reactor start it fresh, told
+          // the room's recent messages instead.
+          return yield* new ProviderAdapterProcessError({
+            provider: PROVIDER,
+            threadId,
+            detail: `Claude conversation ${requestedResumeState.resume} was not found to answer from.`,
           });
         } else if (transcriptResolution?.outcome === "missing") {
           yield* Effect.logWarning("claude.resume.transcript-missing", {

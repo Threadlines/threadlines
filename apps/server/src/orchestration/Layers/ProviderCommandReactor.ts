@@ -71,9 +71,6 @@ import { CheckpointStore } from "../../checkpointing/Services/CheckpointStore.ts
 import { ensureGeneralChatThreadScratchCwd } from "../generalChats.ts";
 import { buildRoomCatchUp } from "../roomCatchUp.ts";
 
-/** How a side answer that ended without a finished reply is recorded. */
-const SIDE_ANSWER_OUTCOME_ACTIVITY_KIND = "side-answer.outcome";
-
 /** Key for one agent in `OrchestrationThread.roomContext`. */
 const roomAgentContextKey = (participantId: ThreadParticipantId | null): string =>
   participantId ?? "primary";
@@ -404,6 +401,13 @@ const make = Effect.gen(function* () {
    * stay where they are.
    */
   const releasedMessageByThread = new Map<ThreadId, MessageId>();
+  /**
+   * A queued message whose turn came (the working turn finished, or the user
+   * just sent it) while its agent was answering on the side. It goes out when
+   * that answer settles. A side answer ending is never a reason to send by
+   * itself: a failed or stopped working turn keeps holding the queue.
+   */
+  const waitingOnSideAnswer = new Map<ThreadId, MessageId>();
 
   /**
    * Threads whose queued checkout switch is currently deferred because the
@@ -2785,7 +2789,11 @@ const make = Effect.gen(function* () {
       releasedMessageByThread.set(thread.id, event.payload.followUp.messageId);
       return;
     }
-    yield* sendQueuedFollowUp(thread.id, event.payload.followUp.messageId, event.occurredAt);
+    yield* sendQueuedFollowUpWhenFree(
+      thread.id,
+      event.payload.followUp.messageId,
+      event.occurredAt,
+    );
   });
 
   /**
@@ -2793,6 +2801,26 @@ const make = Effect.gen(function* () {
    * interrupted or failed turn does not, so nothing goes out after the user
    * pressed Stop.
    */
+  /** Send a queued message now, or once its agent's side answer settles. */
+  const sendQueuedFollowUpWhenFree = Effect.fnUntraced(function* (
+    threadId: ThreadId,
+    messageId: MessageId,
+    createdAt: string,
+  ) {
+    const thread = yield* resolveThread(threadId);
+    const queued = thread?.queuedFollowUps?.find((entry) => entry.messageId === messageId);
+    const sideTurn = thread?.sideTurn ?? null;
+    if (
+      queued !== undefined &&
+      sideTurn !== null &&
+      sideTurn.participantId === (queued.participantId ?? null)
+    ) {
+      waitingOnSideAnswer.set(threadId, messageId);
+      return;
+    }
+    yield* sendQueuedFollowUp(threadId, messageId, createdAt);
+  });
+
   const maybeSendNextQueuedFollowUp = Effect.fnUntraced(function* (
     event: Extract<ProviderIntentEvent, { type: "thread.session-set" }>,
   ) {
@@ -2806,6 +2834,7 @@ const make = Effect.gen(function* () {
       lastSessionStatusByThread.delete(threadId);
       lastBackgroundTaskCountByThread.delete(threadId);
       releasedMessageByThread.delete(threadId);
+      waitingOnSideAnswer.delete(threadId);
     } else {
       lastSessionStatusByThread.set(threadId, session.status);
       lastBackgroundTaskCountByThread.set(threadId, backgroundTaskCount);
@@ -2834,7 +2863,7 @@ const make = Effect.gen(function* () {
       session.status !== "starting"
     ) {
       releasedMessageByThread.delete(threadId);
-      yield* sendQueuedFollowUp(threadId, releasedMessageId, event.occurredAt);
+      yield* sendQueuedFollowUpWhenFree(threadId, releasedMessageId, event.occurredAt);
       return;
     }
     if (!turnFinished && !backgroundWorkFinished) {
@@ -2855,7 +2884,7 @@ const make = Effect.gen(function* () {
     ) {
       return;
     }
-    yield* sendQueuedFollowUp(threadId, next.messageId, event.occurredAt);
+    yield* sendQueuedFollowUpWhenFree(threadId, next.messageId, event.occurredAt);
   });
 
   /**
@@ -3219,51 +3248,24 @@ const make = Effect.gen(function* () {
   const processSideTurnSettled = Effect.fn("processSideTurnSettled")(function* (
     event: Extract<ProviderIntentEvent, { type: "thread.side-turn-settled" }>,
   ) {
-    const { threadId, sideTurnId, participantId, outcome, answerMessageId, error } = event.payload;
+    const { threadId, sideTurnId, participantId } = event.payload;
     yield* stopSideRuntime(threadId, { sideTurnId, participantId }).pipe(Effect.forkScoped);
-    // A side answer that ends without a finished answer says why, in its own lane.
-    if (outcome !== "completed" || answerMessageId === undefined) {
-      yield* orchestrationEngine
-        .dispatch({
-          type: "thread.activity.append",
-          commandId: serverCommandId("side-answer-outcome"),
-          threadId,
-          activity: {
-            id: EventId.make(crypto.randomUUID()),
-            tone: outcome === "failed" ? "error" : "info",
-            kind: SIDE_ANSWER_OUTCOME_ACTIVITY_KIND,
-            summary:
-              outcome === "failed"
-                ? "Side answer failed"
-                : outcome === "interrupted"
-                  ? "Side answer stopped"
-                  : "Side answer ended without a reply",
-            payload: { outcome, ...(error !== undefined ? { error } : {}) },
-            turnId: null,
-            sideTurnId,
-            participantId,
-            createdAt: event.payload.settledAt,
-          },
-          createdAt: event.payload.settledAt,
-        })
-        .pipe(Effect.catch(() => Effect.void));
-    }
-    if (queueHeldByStop.has(threadId)) {
+    const waiting = waitingOnSideAnswer.get(threadId);
+    waitingOnSideAnswer.delete(threadId);
+    if (waiting === undefined || queueHeldByStop.has(threadId)) {
       return;
     }
     const thread = yield* resolveThread(threadId);
-    const next = thread?.queuedFollowUps?.[0];
     const status = thread?.session?.status;
     if (
       !thread ||
-      !next ||
-      (next.participantId ?? null) !== participantId ||
+      thread.queuedFollowUps?.[0]?.messageId !== waiting ||
       status === "running" ||
       status === "starting"
     ) {
       return;
     }
-    yield* sendQueuedFollowUp(threadId, next.messageId, event.occurredAt);
+    yield* sendQueuedFollowUp(threadId, waiting, event.occurredAt);
   });
 
   /** Stop and settle the side answer in progress, if any (session stop, restart). */

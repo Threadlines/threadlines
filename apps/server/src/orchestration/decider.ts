@@ -1,9 +1,13 @@
 import {
   DEFAULT_PROJECT_KIND,
+  EventId,
   MessageId,
   type OrchestrationCommand,
   type OrchestrationEvent,
   type OrchestrationReadModel,
+  type OrchestrationThread,
+  SIDE_ANSWER_OUTCOME_ACTIVITY_KIND,
+  type SideTurnId,
 } from "@threadlines/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -64,6 +68,26 @@ function withEventBase(
 }
 
 type PlannedOrchestrationEvent = Omit<OrchestrationEvent, "sequence">;
+
+/**
+ * A side answer's output is only taken while that answer is open. Once it
+ * settles it is final: a late flush or step from its runtime is refused, never
+ * written over the answer.
+ */
+function requireSideTurnOpen(
+  thread: Pick<OrchestrationThread, "id" | "sideTurn">,
+  command: { readonly type: string; readonly sideTurnId?: SideTurnId | undefined },
+) {
+  if (command.sideTurnId === undefined || thread.sideTurn?.sideTurnId === command.sideTurnId) {
+    return Effect.void;
+  }
+  return Effect.fail(
+    new OrchestrationCommandInvariantError({
+      commandType: command.type,
+      detail: `Side answer '${command.sideTurnId}' on thread '${thread.id}' is over.`,
+    }),
+  );
+}
 
 type DecideOrchestrationCommandResult =
   | PlannedOrchestrationEvent
@@ -737,6 +761,11 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       if (thread.messages.some((message) => message.id === command.message.messageId)) {
         return yield* refuse(`Message '${command.message.messageId}' was already sent.`);
       }
+      // One id, one answer: it names the runtime and the answer's message, so
+      // a reused one would pick up the old answer's late words.
+      if (thread.messages.some((message) => message.sideTurnId === command.sideTurnId)) {
+        return yield* refuse(`Side answer '${command.sideTurnId}' was already asked.`);
+      }
       const base = withEventBase({
         aggregateKind: "thread",
         aggregateId: command.threadId,
@@ -803,12 +832,14 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           detail: `Side answer '${command.sideTurnId}' is not running on thread '${command.threadId}'.`,
         });
       }
-      const base = withEventBase({
-        aggregateKind: "thread",
-        aggregateId: command.threadId,
-        occurredAt: command.createdAt,
-        commandId: command.commandId,
-      });
+      const eventBase = () =>
+        withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        });
+      const base = eventBase();
       if (command.type === "thread.side-turn.interrupt") {
         return {
           ...base,
@@ -831,22 +862,87 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           },
         };
       }
-      return {
-        ...base,
-        type: "thread.side-turn-settled",
-        payload: {
-          threadId: command.threadId,
-          sideTurnId: command.sideTurnId,
-          participantId: sideTurn.participantId,
-          messageId: sideTurn.messageId,
-          outcome: command.outcome,
-          ...(command.answerMessageId !== undefined
-            ? { answerMessageId: command.answerMessageId }
-            : {}),
-          ...(command.error !== undefined ? { error: command.error } : {}),
-          settledAt: command.createdAt,
+      // Settling is final in one step, whichever way the answer ended
+      // (finished, stopped, timed out, or cut off by a restart): its text is
+      // closed, and an answer without a finished reply records why. Nothing
+      // later can add to it (see the side checks on delta, complete and
+      // activity.append).
+      const answer = thread.messages.find(
+        (message) => message.role === "assistant" && message.sideTurnId === command.sideTurnId,
+      );
+      const closeAnswer: PlannedOrchestrationEvent[] =
+        answer !== undefined && answer.streaming
+          ? [
+              {
+                ...eventBase(),
+                type: "thread.message-sent",
+                payload: {
+                  threadId: command.threadId,
+                  messageId: answer.id,
+                  role: "assistant",
+                  text: "",
+                  ...(sideTurn.participantId !== null
+                    ? { participantId: sideTurn.participantId }
+                    : {}),
+                  sideTurnId: command.sideTurnId,
+                  turnId: null,
+                  streaming: false,
+                  completesTurn: false,
+                  createdAt: command.createdAt,
+                  updatedAt: command.createdAt,
+                },
+              },
+            ]
+          : [];
+      const recordOutcome: PlannedOrchestrationEvent[] =
+        command.outcome !== "completed" || answer === undefined
+          ? [
+              {
+                ...eventBase(),
+                type: "thread.activity-appended",
+                payload: {
+                  threadId: command.threadId,
+                  activity: {
+                    id: EventId.make(`side-answer-outcome:${command.sideTurnId}`),
+                    tone: command.outcome === "failed" ? "error" : "info",
+                    kind: SIDE_ANSWER_OUTCOME_ACTIVITY_KIND,
+                    summary:
+                      command.outcome === "failed"
+                        ? "Side answer failed"
+                        : command.outcome === "interrupted"
+                          ? "Side answer stopped"
+                          : "Side answer ended without a reply",
+                    payload: {
+                      outcome: command.outcome,
+                      ...(command.error !== undefined ? { error: command.error } : {}),
+                    },
+                    turnId: null,
+                    sideTurnId: command.sideTurnId,
+                    participantId: sideTurn.participantId,
+                    createdAt: command.createdAt,
+                  },
+                },
+              },
+            ]
+          : [];
+      return [
+        ...closeAnswer,
+        ...recordOutcome,
+        {
+          ...base,
+          type: "thread.side-turn-settled",
+          payload: {
+            threadId: command.threadId,
+            sideTurnId: command.sideTurnId,
+            participantId: sideTurn.participantId,
+            messageId: sideTurn.messageId,
+            outcome: command.outcome,
+            ...(answer !== undefined ? { answerMessageId: answer.id } : {}),
+            ...(command.error !== undefined ? { error: command.error } : {}),
+            settledAt: command.createdAt,
+          },
         },
-      };
+      ];
     }
 
     case "thread.room-context.record": {
@@ -1177,7 +1273,8 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         }
       }
       // An agent answering on the side waits until that answer is over
-      // before it can take the thread; a queued message for it is retried.
+      // before it can take the thread; a queued message whose turn came
+      // meanwhile goes out when the answer settles (the reactor holds it).
       if (
         targetThread.sideTurn !== undefined &&
         targetThread.sideTurn !== null &&
@@ -1185,7 +1282,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       ) {
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
-          detail: "That agent is still answering. Your message goes out when it finishes.",
+          detail: "That agent is answering on the side. Wait for it to finish, or stop its answer.",
         });
       }
       const userMessageEvent: Omit<OrchestrationEvent, "sequence"> = {
@@ -2091,6 +2188,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
+      yield* requireSideTurnOpen(thread, command);
       // Ingestion names the agent whose runtime wrote this; the slot holder
       // is only a fallback, since the slot can change hands mid-flush.
       const authorId =
@@ -2127,6 +2225,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
+      yield* requireSideTurnOpen(thread, command);
       const authorId =
         command.participantId !== undefined
           ? command.participantId
@@ -2361,11 +2460,17 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.activity.append": {
-      yield* requireThread({
+      const thread = yield* requireThread({
         readModel,
         command,
         threadId: command.threadId,
       });
+      if (command.activity.sideTurnId !== undefined) {
+        yield* requireSideTurnOpen(thread, {
+          type: command.type,
+          sideTurnId: command.activity.sideTurnId,
+        });
+      }
       const requestId =
         typeof command.activity.payload === "object" &&
         command.activity.payload !== null &&

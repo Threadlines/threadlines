@@ -1485,6 +1485,86 @@ describe("CheckpointReactor", () => {
     expect(thread?.latestTurn ?? null).toBeNull();
   });
 
+  it("still checkpoints a turn whose completion arrives after the thread changed hands", async () => {
+    const harness = await createHarness({ seedFilesystemCheckpoints: false });
+    const createdAt = "2026-01-01T00:00:00.000Z";
+    const threadId = ThreadId.make("thread-1");
+    const astraId = ThreadParticipantId.make("7a0b1c2d-3e4f-4a5b-8c6d-7e8f9a0b1c2d");
+    const dispatch = (command: Parameters<typeof harness.engine.dispatch>[0]) =>
+      Effect.runPromise(harness.engine.dispatch(command));
+    const session = (overrides: Record<string, unknown>) => ({
+      threadId,
+      status: "ready" as const,
+      providerName: "codex",
+      runtimeMode: "approval-required" as const,
+      activeTurnId: null,
+      lastError: null,
+      updatedAt: createdAt,
+      ...overrides,
+    });
+    await dispatch({
+      type: "thread.participant.add",
+      commandId: CommandId.make("cmd-handover-add"),
+      threadId,
+      participant: {
+        id: astraId,
+        handle: "GPT-6 Astra",
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6-astra" },
+      },
+      createdAt,
+    });
+    await dispatch({
+      type: "thread.session.set",
+      commandId: CommandId.make("cmd-handover-ready"),
+      threadId,
+      session: session({}),
+      createdAt,
+    });
+    // The thread's own agent works a turn that ingestion admitted as main.
+    await Effect.runPromise(
+      turnAdmission.decide(participantSessionKey(threadId, null), "turn-own", "main"),
+    );
+    harness.provider.emit({
+      type: "turn.started",
+      eventId: EventId.make("evt-handover-started"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt,
+      threadId,
+      turnId: asTurnId("turn-own"),
+    });
+    await waitForGitRefExists(harness.cwd, checkpointRefForThreadTurn(threadId, 0));
+    fs.writeFileSync(path.join(harness.cwd, "README.md"), "v2\n", "utf8");
+
+    // Astra takes the thread before the completion is checkpointed.
+    await dispatch({
+      type: "thread.session.set",
+      commandId: CommandId.make("cmd-handover-astra"),
+      threadId,
+      session: session({
+        status: "running",
+        participantId: astraId,
+        activeTurnId: asTurnId("turn-astra"),
+      }),
+      createdAt,
+    });
+    harness.provider.emit({
+      type: "turn.completed",
+      eventId: EventId.make("evt-handover-completed"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt,
+      threadId,
+      turnId: asTurnId("turn-own"),
+      payload: { state: "completed" },
+    });
+
+    // The only checkpoint here is the handed-over turn's.
+    const thread = await waitForThread(
+      harness.readModel,
+      (entry) => entry.checkpoints.length === 1,
+    );
+    expect(thread.checkpoints[0]?.checkpointTurnCount).toBe(1);
+  });
+
   it("captures pre-turn and completion checkpoints for claude runtime events", async () => {
     const harness = await createHarness({
       seedFilesystemCheckpoints: false,

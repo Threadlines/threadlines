@@ -4732,23 +4732,34 @@ export default function ChatView(props: ChatViewProps) {
     }
     setProviderSendPreflight(null);
     if (!activeProject) return;
-    // A side question is text only, and one agent answers on the side at a
-    // time. Either way the draft stays, so nothing is lost and a read-only
+    // One agent answers on the side at a time, a side question is text only,
+    // and an agent answering on the side cannot take the thread until it is
+    // done. Each way the draft stays, so nothing is lost and a read-only
     // question never quietly becomes a queued editing turn.
-    if (askOnTheSide) {
+    const answeringOnTheSide = roomsActive ? (activeThread.sideTurn ?? null) : null;
+    if (
+      askOnTheSide ||
+      (roomDelivery === "direct" && answeringOnTheSide?.participantId === roomRecipientId)
+    ) {
       const nameOf = (participantId: ThreadParticipantId | null) =>
         roomAgentLabels?.get(roomAgentKey(participantId))?.name ?? "The agent";
-      const refusal = activeThread.sideTurn
-        ? {
-            title: `${nameOf(activeThread.sideTurn.participantId)} is already answering on the side`,
-            description: `Wait for it to finish, or pick "Send when done" to send this after ${nameOf(roomHolderId)}.`,
-          }
-        : composerAttachments.length > 0 || composerDrawingContexts.length > 0
+      const refusal =
+        answeringOnTheSide !== null && !askOnTheSide
           ? {
-              title: "Pictures and files can't go with a side question",
-              description: `Pick "Send when done" to send them after ${nameOf(roomHolderId)}.`,
+              title: `${nameOf(roomRecipientId)} is answering on the side`,
+              description: "Send this once it finishes, or stop its answer.",
             }
-          : null;
+          : answeringOnTheSide !== null
+            ? {
+                title: `${nameOf(answeringOnTheSide.participantId)} is already answering on the side`,
+                description: `Wait for it to finish, or pick "Send when done" to send this after ${nameOf(roomHolderId)}.`,
+              }
+            : composerAttachments.length > 0 || composerDrawingContexts.length > 0
+              ? {
+                  title: "Pictures and files can't go with a side question",
+                  description: `Pick "Send when done" to send them after ${nameOf(roomHolderId)}.`,
+                }
+              : null;
       if (refusal) {
         toastManager.add(stackedThreadToast({ type: "warning", ...refusal }));
         return;

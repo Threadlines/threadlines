@@ -1631,8 +1631,8 @@ const make = Effect.gen(function* () {
     turnId?: TurnId;
     createdAt: string;
     commandTag: string;
-  }) =>
-    orchestrationEngine.dispatch({
+  }) => {
+    const dispatch = orchestrationEngine.dispatch({
       type: "thread.message.assistant.delta",
       commandId: providerCommandId(input.event, input.commandTag),
       threadId: input.threadId,
@@ -1643,6 +1643,16 @@ const make = Effect.gen(function* () {
       ...(input.turnId ? { turnId: input.turnId } : {}),
       createdAt: input.createdAt,
     });
+    // A side answer that has settled refuses late words (it may have been
+    // stopped, timed out or cut off by a restart); what was still buffered
+    // for it goes too.
+    return input.event.sideTurnId === undefined
+      ? dispatch
+      : dispatch.pipe(
+          Effect.asVoid,
+          Effect.catch(() => clearAssistantMessageState(input.messageId)),
+        );
+  };
 
   const dispatchSubagentResultActivity = (input: {
     event: ProviderRuntimeEvent;
@@ -2427,7 +2437,12 @@ const make = Effect.gen(function* () {
   const sideAnswerMessageId = (sideTurnId: SideTurnId) =>
     MessageId.make(`side-answer:${sideTurnId}`);
 
-  const sideAnswersWithText = new Set<SideTurnId>();
+  /**
+   * Side answers that have written text, with the provider item that wrote
+   * last. The answer is one message: an agent that writes, reads a file and
+   * writes again gets a paragraph break between the two, not glued words.
+   */
+  const sideAnswersWithText = new Map<SideTurnId, string | undefined>();
 
   const sideTurnOutcome = (
     event: ProviderRuntimeEvent,
@@ -2463,6 +2478,7 @@ const make = Effect.gen(function* () {
     // late output is dropped, never written over the answer.
     if ((thread.sideTurn ?? null)?.sideTurnId !== sideTurnId) {
       sideAnswersWithText.delete(sideTurnId);
+      yield* clearAssistantMessageState(sideAnswerMessageId(sideTurnId));
       return;
     }
     const messageId = sideAnswerMessageId(sideTurnId);
@@ -2472,12 +2488,18 @@ const make = Effect.gen(function* () {
       if (event.payload.delta.length === 0) {
         return;
       }
-      sideAnswersWithText.add(sideTurnId);
+      const lastItemId = sideAnswersWithText.get(sideTurnId);
+      const startsNewItem =
+        sideAnswersWithText.has(sideTurnId) &&
+        event.itemId !== undefined &&
+        lastItemId !== undefined &&
+        event.itemId !== lastItemId;
+      sideAnswersWithText.set(sideTurnId, event.itemId ?? lastItemId);
       yield* queueStreamingAssistantDelta({
         event,
         threadId: thread.id,
         messageId,
-        delta: event.payload.delta,
+        delta: startsNewItem ? `\n\n${event.payload.delta}` : event.payload.delta,
         createdAt: now,
       });
       return;
@@ -2503,7 +2525,11 @@ const make = Effect.gen(function* () {
           },
           createdAt: activity.createdAt,
         }),
-      ).pipe(Effect.asVoid);
+      ).pipe(
+        Effect.asVoid,
+        // Refused once the answer has settled.
+        Effect.catch(() => Effect.void),
+      );
       return;
     }
 
@@ -2524,16 +2550,19 @@ const make = Effect.gen(function* () {
         commandTag: "side-answer-flush",
       });
       yield* clearAssistantMessageState(messageId);
-      yield* orchestrationEngine.dispatch({
-        type: "thread.message.assistant.complete",
-        commandId: providerCommandId(event, "side-answer-complete"),
-        threadId: thread.id,
-        messageId,
-        participantId: event.participantId ?? null,
-        sideTurnId,
-        completesTurn: false,
-        createdAt: now,
-      });
+      yield* orchestrationEngine
+        .dispatch({
+          type: "thread.message.assistant.complete",
+          commandId: providerCommandId(event, "side-answer-complete"),
+          threadId: thread.id,
+          messageId,
+          participantId: event.participantId ?? null,
+          sideTurnId,
+          completesTurn: false,
+          createdAt: now,
+        })
+        // Settled meanwhile (stopped or timed out): the settle closed it.
+        .pipe(Effect.catch(() => Effect.void));
     }
     yield* orchestrationEngine
       .dispatch({

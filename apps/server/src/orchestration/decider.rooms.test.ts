@@ -4,6 +4,7 @@ import {
   MessageId,
   ProjectId,
   ProviderInstanceId,
+  SIDE_ANSWER_OUTCOME_ACTIVITY_KIND,
   SideTurnId,
   ThreadId,
   ThreadParticipantId,
@@ -391,6 +392,23 @@ describe("decider rooms", () => {
     it("refuses a side answer from the agent holding the thread, or a second one", async () => {
       // The thread's own agent holds it: that is a normal message.
       expect(Exit.isFailure(await decide(ask(null), readModel({ session: working })))).toBe(true);
+      // An id already used: it would pick up that answer's late words.
+      const earlierQuestion = {
+        id: MessageId.make("message-earlier"),
+        role: "user" as const,
+        text: "earlier",
+        participantId: astraId,
+        sideTurnId,
+        turnId: null,
+        streaming: false,
+        createdAt: now,
+        updatedAt: now,
+      };
+      expect(
+        Exit.isFailure(
+          await decide(ask(astraId), readModel({ session: working, messages: [earlierQuestion] })),
+        ),
+      ).toBe(true);
       expect(
         Exit.isFailure(
           await decide(ask(astraId), readModel({ session: working, sideTurn: answering })),
@@ -423,9 +441,21 @@ describe("decider rooms", () => {
       ).toBe(true);
     });
 
+    const sideAnswer = (text: string, streaming: boolean) => ({
+      id: MessageId.make("answer"),
+      role: "assistant" as const,
+      text,
+      participantId: astraId,
+      sideTurnId,
+      turnId: null,
+      streaming,
+      createdAt: now,
+      updatedAt: now,
+    });
+
     it("ignores a stop or finish for a side answer that is not the current one", async () => {
       const stale = SideTurnId.make("11111111-2222-4333-8444-555566667777");
-      const model = readModel({ sideTurn: answering });
+      const model = readModel({ sideTurn: answering, messages: [sideAnswer("Yes.", false)] });
       expect(
         Exit.isFailure(
           await decide(
@@ -462,6 +492,52 @@ describe("decider rooms", () => {
           answerMessageId: "answer",
         },
       });
+    });
+
+    it("finishes a stopped answer in one step and takes nothing after it", async () => {
+      const halfWritten = sideAnswer("The cap is", true);
+      const events = await decideEvents(
+        {
+          type: "thread.side-turn.settle",
+          commandId: CommandId.make("cmd-settle-stop"),
+          threadId,
+          sideTurnId,
+          outcome: "interrupted",
+          createdAt: now,
+        },
+        readModel({ sideTurn: answering, messages: [halfWritten] }),
+      );
+      // Its text is closed and why it ended is recorded with the settle
+      // itself, so a restart's settle leaves the same trail as a live one.
+      expect(events.map((event) => event.type)).toEqual([
+        "thread.message-sent",
+        "thread.activity-appended",
+        "thread.side-turn-settled",
+      ]);
+      expect(events[0]).toMatchObject({ payload: { messageId: "answer", streaming: false } });
+      expect(events[1]).toMatchObject({
+        payload: {
+          activity: {
+            kind: SIDE_ANSWER_OUTCOME_ACTIVITY_KIND,
+            sideTurnId,
+            payload: { outcome: "interrupted" },
+          },
+        },
+      });
+      // A flush that arrives after is refused, not written over the answer.
+      const lateWords = await decide(
+        {
+          type: "thread.message.assistant.delta",
+          commandId: CommandId.make("cmd-late"),
+          threadId,
+          messageId: halfWritten.id,
+          sideTurnId,
+          delta: " off by one.",
+          createdAt: now,
+        },
+        readModel({ messages: [{ ...halfWritten, streaming: false }] }),
+      );
+      expect(Exit.isFailure(lateWords)).toBe(true);
     });
   });
 });

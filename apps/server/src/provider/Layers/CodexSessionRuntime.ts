@@ -1,6 +1,10 @@
 import { BROWSER_MCP_SERVER_NAME, mcpEndpointUrl } from "../../mcp/McpHttpServer.ts";
 import { mcpSessionRegistry } from "../../mcp/McpSessionRegistry.ts";
-import { readCodexSignIn, removeCodexSideAnswerHome } from "../codexSideAnswerHome.ts";
+import {
+  type CodexBorrowedSignIn,
+  type CodexSideAnswerHomeError,
+  removeCodexSideAnswerHome,
+} from "../codexSideAnswerHome.ts";
 import {
   ApprovalRequestId,
   DEFAULT_MODEL,
@@ -212,8 +216,14 @@ export interface CodexSessionRuntimeOptions {
  * answering agent's conversation when there is one. See codexSideAnswerHome.
  */
 export interface CodexSessionRuntimeLockdown {
-  /** The user's own Codex home; its sign-in is read, never written. */
-  readonly signInHome: string;
+  /**
+   * The user's sign-in to borrow, read from their own Codex home and never
+   * written (see `borrowCodexSignIn`). `rejectedAccessToken` is the token
+   * Codex just had refused, so it is renewed rather than handed back.
+   */
+  readonly signIn: (input: {
+    readonly rejectedAccessToken?: string;
+  }) => Effect.Effect<CodexBorrowedSignIn, CodexSideAnswerHomeError>;
   /** The copied conversation to continue, inside this runtime's own home. */
   readonly rolloutPath?: string;
   readonly sourceProviderThreadId?: string;
@@ -1560,7 +1570,7 @@ export const makeCodexSessionRuntime = (
     // handed over after initialize, an API key through the environment.
     const borrowedSignIn =
       lockdown !== undefined
-        ? yield* readCodexSignIn(lockdown.signInHome).pipe(
+        ? yield* lockdown.signIn({}).pipe(
             Effect.mapError(
               (cause) =>
                 new CodexErrors.CodexAppServerSpawnError({
@@ -1921,8 +1931,20 @@ export const makeCodexSessionRuntime = (
     // hanging. Codex should not ask at all (approvals are off, questions are
     // disabled, and no MCP server is loaded); this is the backstop.
     if (lockdown !== undefined) {
+      // Codex asks after a 401: the token it holds was refused.
+      const handedAccessTokenRef = yield* Ref.make(
+        borrowedSignIn?.kind === "chatgpt" ? borrowedSignIn.accessToken : undefined,
+      );
       yield* client.handleServerRequest("account/chatgptAuthTokens/refresh", () =>
-        readCodexSignIn(lockdown.signInHome).pipe(
+        Ref.get(handedAccessTokenRef).pipe(
+          Effect.flatMap((rejectedAccessToken) =>
+            lockdown.signIn(rejectedAccessToken !== undefined ? { rejectedAccessToken } : {}),
+          ),
+          Effect.tap((signIn) =>
+            signIn.kind === "chatgpt"
+              ? Ref.set(handedAccessTokenRef, signIn.accessToken)
+              : Effect.void,
+          ),
           Effect.flatMap((signIn) =>
             signIn.kind === "chatgpt"
               ? Effect.succeed({

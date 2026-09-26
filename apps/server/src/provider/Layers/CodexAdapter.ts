@@ -81,9 +81,11 @@ import {
   type CodexSessionRuntimeShape,
 } from "./CodexSessionRuntime.ts";
 import {
+  borrowCodexSignIn,
   codexSignInHome,
   prepareCodexSideAnswerHome,
   removeCodexSideAnswerHome,
+  sweepStaleCodexSideAnswerHomes,
 } from "../codexSideAnswerHome.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
 import { initializeCodexAppServerClient, makeCodexAppServerClient } from "./CodexProvider.ts";
@@ -2905,6 +2907,29 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     options?.nativeEventLogger === undefined ? nativeEventLogger : undefined;
   const runtimeEventQueue = yield* Queue.unbounded<ProviderRuntimeEvent>();
   const sessions = new Map<ThreadId, CodexAdapterSessionContext>();
+  let sweptSideAnswerHomes = false;
+
+  /**
+   * Ask the user's own Codex to renew its login the normal way: a regular
+   * app server on their home, as the provider status check runs, with a
+   * token refresh requested. It rewrites their `auth.json` itself.
+   */
+  const renewCodexSignIn = (cwd: string) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const client = yield* makeCodexAppServerClient({
+          binaryPath: codexConfig.binaryPath,
+          ...(codexConfig.homePath ? { homePath: codexConfig.homePath } : {}),
+          cwd,
+          ...(options?.environment ? { environment: options.environment } : {}),
+        });
+        yield* initializeCodexAppServerClient(client);
+        yield* client.request("account/read", { refreshToken: true });
+      }),
+    ).pipe(
+      Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, childProcessSpawner),
+      Effect.timeout("30 seconds"),
+    );
 
   const startSession: CodexAdapterShape["startSession"] = (input) =>
     Effect.scoped(
@@ -2930,14 +2955,27 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
         const sideAnswer =
           input.lockdown === "side-answer"
             ? yield* Effect.gen(function* () {
-                const signInHome = codexSignInHome(codexConfig.homePath);
+                if (!sweptSideAnswerHomes) {
+                  sweptSideAnswerHomes = true;
+                  yield* sweepStaleCodexSideAnswerHomes.pipe(Effect.forkDetach);
+                }
+                const environment = options?.environment ?? process.env;
+                const signInHome = codexSignInHome(codexConfig.homePath, environment);
+                const cwd = input.cwd ?? process.cwd();
+                const signIn = (request: { readonly rejectedAccessToken?: string }) =>
+                  borrowCodexSignIn({
+                    signInHome,
+                    environment,
+                    renewOwner: renewCodexSignIn(cwd),
+                    ...request,
+                  });
                 const home = yield* prepareCodexSideAnswerHome({
                   signInHome,
                   ...(input.forkFrom !== undefined
                     ? { sourceProviderThreadId: input.forkFrom.providerThreadId }
                     : {}),
                 });
-                return { signInHome, home };
+                return { signIn, home };
               }).pipe(
                 Effect.mapError(
                   (cause) =>
@@ -2961,7 +2999,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
             ? {
                 homePath: sideAnswer.home.homePath,
                 lockdown: {
-                  signInHome: sideAnswer.signInHome,
+                  signIn: sideAnswer.signIn,
                   ...(sideAnswer.home.rolloutPath !== undefined && input.forkFrom !== undefined
                     ? {
                         rolloutPath: sideAnswer.home.rolloutPath,

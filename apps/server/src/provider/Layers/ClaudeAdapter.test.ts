@@ -29,6 +29,7 @@ import { createModelCapabilities, createModelSelection } from "@threadlines/shar
 import { assert, describe, it } from "@effect/vitest";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
@@ -3757,9 +3758,14 @@ describe("ClaudeAdapterLive", () => {
         allowDangerouslySkipPermissions: true,
         allowedTools: ["TodoWrite"],
         model: "claude-haiku-4-5",
+        // The user's launch args: a plugin's hooks run whatever the model may do.
+        extraArgs: { "plugin-dir": "/Users/me/plugin", "thinking-display": "summarized" },
+        settings: { alwaysThinkingEnabled: true, ultracode: true },
       },
       { resume: "30d8aa06-ed90-469b-b864-3c4e5801581e", forkSessionId: "fork-id" },
     );
+    assert.deepEqual(locked.extraArgs, { "thinking-display": "summarized" });
+    assert.deepEqual(locked.settings, { alwaysThinkingEnabled: true });
     assert.deepEqual(locked.mcpServers, {});
     assert.equal(locked.strictMcpConfig, true);
     assert.deepEqual(locked.settingSources, []);
@@ -7811,6 +7817,29 @@ describe("ClaudeAdapterLive", () => {
         assert.equal(warning.value.payload.warningKind, "resume-fallback");
         assert.match(warning.value.payload.message, /Starting fresh/);
       }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("refuses to answer on the side without the conversation it was asked to fork", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      // A fresh start here would answer as if it knew the conversation; the
+      // reactor seeds the room's history instead when this fails.
+      const started = yield* adapter
+        .startSession({
+          threadId: RESUME_THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          lockdown: "side-answer",
+          forkFrom: { providerThreadId: "0f0e0d0c-0b0a-4908-8706-050403020100" },
+          runtimeMode: "full-access",
+        })
+        .pipe(Effect.exit);
+      assert.equal(Exit.isFailure(started), true);
+      assert.equal(harness.getLastCreateQueryInput(), undefined);
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),

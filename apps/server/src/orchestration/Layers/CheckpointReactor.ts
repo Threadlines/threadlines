@@ -823,8 +823,18 @@ const make = Effect.gen(function* () {
         return;
       }
 
-      // When a primary turn is active, only that turn may produce completion checkpoints.
-      if (thread.session?.activeTurnId && !sameId(thread.session.activeTurnId, turnId)) {
+      // When a primary turn is active, only that turn may produce completion
+      // checkpoints. In a room, a completion from an agent that has since
+      // handed the thread over is that agent's own turn, admitted as main when
+      // it started (see turnAdmission), so it still checkpoints.
+      const handedOver =
+        thread.participants.length > 0 &&
+        (event.participantId ?? null) !== sessionSlotParticipantId(thread.session);
+      if (
+        thread.session?.activeTurnId &&
+        !sameId(thread.session.activeTurnId, turnId) &&
+        !handedOver
+      ) {
         return;
       }
 

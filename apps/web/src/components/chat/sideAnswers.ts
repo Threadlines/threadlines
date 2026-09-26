@@ -8,19 +8,17 @@
  * where it was asked, but never inside a tray, so a working turn's tray stays
  * whole while another agent answers under it.
  */
-import type {
-  OrchestrationSideTurn,
-  OrchestrationThreadActivity,
-  SideTurnId,
-  ThreadParticipantId,
+import {
+  type OrchestrationSideTurn,
+  type OrchestrationThreadActivity,
+  SIDE_ANSWER_OUTCOME_ACTIVITY_KIND,
+  type SideTurnId,
+  type ThreadParticipantId,
 } from "@threadlines/contracts";
 
 import { deriveWorkLogEntries, type WorkLogEntry } from "../../session-logic";
 import type { ChatMessage } from "../../types";
 import type { MessagesTimelineRow } from "./MessagesTimeline.logic";
-
-/** Recorded when a side answer ends without a finished reply. */
-export const SIDE_ANSWER_OUTCOME_KIND = "side-answer.outcome";
 
 export interface SideAnswerView {
   readonly sideTurnId: SideTurnId;
@@ -66,9 +64,11 @@ export function deriveSideAnswers(input: {
         (message) => message.role === "assistant" && message.sideTurnId === sideTurnId,
       ) ?? null;
     const own = input.activities.filter((activity) => activity.sideTurnId === sideTurnId);
-    const outcomeActivity = own.find((activity) => activity.kind === SIDE_ANSWER_OUTCOME_KIND);
+    const outcomeActivity = own.find(
+      (activity) => activity.kind === SIDE_ANSWER_OUTCOME_ACTIVITY_KIND,
+    );
     const steps = deriveWorkLogEntries(
-      own.filter((activity) => activity.kind !== SIDE_ANSWER_OUTCOME_KIND),
+      own.filter((activity) => activity.kind !== SIDE_ANSWER_OUTCOME_ACTIVITY_KIND),
       null,
     );
     const current = input.sideTurn?.sideTurnId === sideTurnId ? input.sideTurn : null;

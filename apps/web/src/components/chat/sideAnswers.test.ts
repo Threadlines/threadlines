@@ -2,6 +2,7 @@ import {
   EventId,
   MessageId,
   type OrchestrationThreadActivity,
+  SIDE_ANSWER_OUTCOME_ACTIVITY_KIND,
   SideTurnId,
   ThreadParticipantId,
 } from "@threadlines/contracts";
@@ -9,12 +10,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import type { ChatMessage } from "../../types";
 import type { MessagesTimelineRow } from "./MessagesTimeline.logic";
-import {
-  deriveSideAnswers,
-  placeSideAnswerRows,
-  SIDE_ANSWER_OUTCOME_KIND,
-  type SideAnswerView,
-} from "./sideAnswers";
+import { deriveSideAnswers, placeSideAnswerRows, type SideAnswerView } from "./sideAnswers";
 
 const astra = ThreadParticipantId.make("agent-astra");
 
@@ -43,7 +39,7 @@ const outcome = (
   payload: Record<string, unknown>,
 ): OrchestrationThreadActivity => ({
   id: EventId.make(`outcome-${sideTurnId}`),
-  kind: SIDE_ANSWER_OUTCOME_KIND,
+  kind: SIDE_ANSWER_OUTCOME_ACTIVITY_KIND,
   summary: "Side answer ended",
   tone: "info",
   payload,
