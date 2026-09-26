@@ -3,6 +3,7 @@ import {
   type ProviderDriverKind,
   type ServerProviderSkill,
   type ServerProviderSlashCommand,
+  type ThreadParticipantId,
 } from "@threadlines/contracts";
 import { BotIcon } from "lucide-react";
 import { memo, useLayoutEffect, useMemo, useRef } from "react";
@@ -19,6 +20,8 @@ import {
   CommandList,
   CommandSeparator,
 } from "../ui/command";
+import type { ProviderInstanceEntry } from "../../providerInstances";
+import { ProviderInstanceIcon } from "./ProviderInstanceIcon";
 import { VscodeEntryIcon } from "./VscodeEntryIcon";
 
 export type ComposerCommandItem =
@@ -50,6 +53,16 @@ export type ComposerCommandItem =
       type: "skill";
       provider: ProviderDriverKind;
       skill: ServerProviderSkill;
+      label: string;
+      description: string;
+    }
+  | {
+      /** A room agent: picking it sends the message to that agent. */
+      id: string;
+      type: "room-agent";
+      /** Null: the thread's own agent. */
+      participantId: ThreadParticipantId | null;
+      entry: ProviderInstanceEntry | undefined;
       label: string;
       description: string;
     };
@@ -88,7 +101,16 @@ function groupCommandItems(
     return items.length > 0 ? [{ id: "skills", label: "Skills", items }] : [];
   }
   if (triggerKind === "path") {
-    return items.length > 0 ? [{ id: "paths", label: "Files & folders", items }] : [];
+    // In a room, "@" also picks an agent; agents come first (ChatComposer
+    // builds the flat list in the same order, which keyboard moves follow).
+    const agentItems = items.filter((item) => item.type === "room-agent");
+    const pathItems = items.filter((item) => item.type === "path");
+    return [
+      ...(agentItems.length > 0 ? [{ id: "agents", label: "Agents", items: agentItems }] : []),
+      ...(pathItems.length > 0
+        ? [{ id: "paths", label: "Files & folders", items: pathItems }]
+        : []),
+    ];
   }
   if (triggerKind !== "slash-command") {
     return [{ id: "default", label: null, items }];
@@ -248,6 +270,16 @@ const ComposerCommandMenuItem = memo(function ComposerCommandMenuItem(props: {
         props.onSelect(props.item);
       }}
     >
+      {props.item.type === "room-agent" && props.item.entry ? (
+        <ProviderInstanceIcon
+          driverKind={props.item.entry.driverKind}
+          displayName={props.item.entry.displayName}
+          accentColor={props.item.entry.accentColor}
+          showBadge={false}
+          className="size-4"
+          iconClassName="size-4"
+        />
+      ) : null}
       {props.item.type === "path" ? (
         <VscodeEntryIcon
           pathValue={props.item.path}

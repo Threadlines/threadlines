@@ -155,6 +155,7 @@ import { scopedThreadKey } from "@threadlines/client-runtime";
 import {
   buildRoomAgentLabels,
   canAnswerOnTheSide,
+  matchRoomAgents,
   ownAgentSession,
   resolveRoomDelivery,
   resolveRoomRecipient,
@@ -163,6 +164,7 @@ import {
   useRoomRecipientStore,
 } from "../../rooms";
 import { getPickerModelName } from "./providerIconUtils";
+import { activeParticipants } from "@threadlines/shared/threadParticipants";
 import { shouldRenderTraitsControls, TraitsMenuContent, TraitsPicker } from "./TraitsPicker";
 import {
   canRequestProviderRateLimitResetCredit,
@@ -1153,6 +1155,53 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     activeThread?.session?.orchestrationStatus === "starting"
       ? (activeThread.session.participantId ?? null)
       : undefined;
+  // Every agent in a room by the name the model picker shows; null outside rooms.
+  const roomAgentLabels = useMemo(
+    () =>
+      showRoomAgentPicker && activeThread
+        ? buildRoomAgentLabels(
+            {
+              modelSelection: activeThread.modelSelection,
+              participants: activeThread.participants,
+            },
+            providerInstanceEntries,
+            (model, entry) => getPickerModelName(model, entry.driverKind),
+          )
+        : null,
+    [
+      activeThread?.modelSelection,
+      activeThread?.participants,
+      providerInstanceEntries,
+      showRoomAgentPicker,
+    ],
+  );
+  // The agents "@" offers in a room, first in the menu above files. Picking
+  // one sends the message to it, like the agent picker.
+  const roomMentionAgents = useMemo(() => {
+    if (roomAgentLabels === null || activeThread === undefined) {
+      return [];
+    }
+    const answeringId = activeThread.sideTurn?.participantId;
+    return [
+      null,
+      ...activeParticipants({ participants: activeThread.participants ?? [] }).map((p) => p.id),
+    ].map((participantId) => {
+      const label = roomAgentLabels.get(roomAgentKey(participantId));
+      return {
+        participantId,
+        name: label?.name ?? "Agent",
+        entry: label?.entry,
+        status:
+          roomWorkingId !== undefined && roomWorkingId === participantId
+            ? "working"
+            : answeringId !== undefined && answeringId === participantId
+              ? "answering"
+              : participantId === null
+                ? "thread's agent"
+                : "",
+      };
+    });
+  }, [activeThread, roomAgentLabels, roomWorkingId]);
   const activeFallbackModelDisplayName = useMemo(() => {
     if (!activeModelFallback) {
       return null;
@@ -1290,7 +1339,17 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const composerMenuItems = useMemo<ComposerCommandItem[]>(() => {
     if (!composerTrigger) return [];
     if (composerTrigger.kind === "path") {
-      return workspaceEntries.map((entry) => ({
+      const agentItems = matchRoomAgents(roomMentionAgents, composerTrigger.query).map(
+        (agent): ComposerCommandItem => ({
+          id: `agent:${roomAgentKey(agent.participantId)}`,
+          type: "room-agent",
+          participantId: agent.participantId,
+          entry: agent.entry,
+          label: agent.name,
+          description: agent.status,
+        }),
+      );
+      const pathItems = workspaceEntries.map((entry): ComposerCommandItem => ({
         id: `path:${entry.kind}:${entry.path}`,
         type: "path",
         path: entry.path,
@@ -1298,6 +1357,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         label: basenameOfPath(entry.path),
         description: entry.parentPath ?? "",
       }));
+      return [...agentItems, ...pathItems];
     }
     if (composerTrigger.kind === "slash-command") {
       const builtInSlashCommandItems = [
@@ -1533,8 +1593,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       buildDefaultComposerPlaceholder({
         canReferenceFiles: canReferenceWorkspaceFiles,
         canInvokeSkills: composerSkills.some((skill) => skill.enabled),
+        canMentionAgents: roomMentionAgents.length > 0,
       }),
-    [canReferenceWorkspaceFiles, composerSkills],
+    [canReferenceWorkspaceFiles, composerSkills, roomMentionAgents.length],
   );
 
   // ------------------------------------------------------------------
@@ -1597,25 +1658,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   // Rooms: while another agent works, a message for this one is asked now
   // (answered read-only on the side) or waits until the other finishes. The
   // send path reads the same rule (resolveRoomDelivery).
-  const roomAgentLabels = useMemo(
-    () =>
-      showRoomAgentPicker && activeThread
-        ? buildRoomAgentLabels(
-            {
-              modelSelection: activeThread.modelSelection,
-              participants: activeThread.participants,
-            },
-            providerInstanceEntries,
-            (model, entry) => getPickerModelName(model, entry.driverKind),
-          )
-        : null,
-    [
-      activeThread?.modelSelection,
-      activeThread?.participants,
-      providerInstanceEntries,
-      showRoomAgentPicker,
-    ],
-  );
   const roomHolderId = activeThread?.session?.participantId ?? null;
   const roomRecipientDriverKind = providerInstanceEntries.find(
     (entry) =>
@@ -2562,6 +2604,17 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       });
       const { snapshot, trigger } = resolveActiveComposerTrigger();
       if (!trigger) return;
+      if (item.type === "room-agent") {
+        // The "@name" goes; the message now goes to that agent.
+        const applied = applyPromptReplacement(trigger.rangeStart, trigger.rangeEnd, "", {
+          expectedText: snapshot.value.slice(trigger.rangeStart, trigger.rangeEnd),
+        });
+        if (applied) {
+          setComposerHighlightedItemId(null);
+          useRoomRecipientStore.getState().choose(routeThreadRef, item.participantId);
+        }
+        return;
+      }
       if (item.type === "path") {
         const replacement = `@${serializeComposerMentionPath(item.path)} `;
         const replacementRangeEnd = extendReplacementRangeForTrailingSpace(
@@ -2649,7 +2702,12 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         return;
       }
     },
-    [applyPromptReplacement, handleInteractionModeChange, resolveActiveComposerTrigger],
+    [
+      applyPromptReplacement,
+      handleInteractionModeChange,
+      resolveActiveComposerTrigger,
+      routeThreadRef,
+    ],
   );
 
   const onComposerMenuItemHighlighted = useCallback(

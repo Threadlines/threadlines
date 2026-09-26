@@ -315,3 +315,17 @@ export function resolveRoomDelivery(input: {
     ? "ask"
     : "queue";
 }
+
+/**
+ * Room agents whose name matches what was typed after "@" in the composer:
+ * "@astra", "@gpt6", "@opus". Only letters and digits count, so the spaces
+ * and dashes in a model's name never get in the way. Nothing typed: all.
+ */
+export function matchRoomAgents<Agent extends { readonly name: string }>(
+  agents: ReadonlyArray<Agent>,
+  query: string,
+): Agent[] {
+  const normalize = (value: string) => value.toLowerCase().replace(/[^a-z0-9]/g, "");
+  const wanted = normalize(query);
+  return agents.filter((agent) => normalize(agent.name).includes(wanted));
+}

@@ -29,4 +29,14 @@ describe("buildDefaultComposerPlaceholder", () => {
       }),
     ).toBe("Ask anything · $ invoke skills, / commands");
   });
+
+  it("offers agents under @ in a room", () => {
+    expect(
+      buildDefaultComposerPlaceholder({
+        canReferenceFiles: true,
+        canInvokeSkills: false,
+        canMentionAgents: true,
+      }),
+    ).toBe("Ask anything · @ agents or files, / commands");
+  });
 });

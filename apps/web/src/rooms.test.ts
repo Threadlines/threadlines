@@ -4,6 +4,7 @@ import { describe, expect, it } from "vite-plus/test";
 import type { ProviderInstanceEntry } from "./providerInstances";
 import {
   buildRoomAgentLabels,
+  matchRoomAgents,
   resolveRoomDelivery,
   resolveRoomRecipient,
   roomAgentKey,
@@ -70,5 +71,15 @@ describe("rooms", () => {
     // The agent at work gets a steer, and an idle room just sends.
     expect(delivery({ holderId: astraId })).toBe("direct");
     expect(delivery({ holderBusy: false })).toBe("direct");
+  });
+
+  it("matches agents typed after @ however their names are spaced", () => {
+    const agents = [{ name: "Opus 5.5" }, { name: "GPT-6 Astra" }, { name: "GPT-6 Astra 2" }];
+    const names = (query: string) => matchRoomAgents(agents, query).map((agent) => agent.name);
+    expect(names("astra")).toEqual(["GPT-6 Astra", "GPT-6 Astra 2"]);
+    expect(names("gpt6astra2")).toEqual(["GPT-6 Astra 2"]);
+    expect(names("opus5")).toEqual(["Opus 5.5"]);
+    expect(names("")).toHaveLength(3);
+    expect(names("retry.ts")).toEqual([]);
   });
 });
