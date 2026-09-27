@@ -80,6 +80,9 @@ const STEP_ICONS: Readonly<Record<ActivityIcon | "fail", (className: string) => 
 
 /** Only long steps say how long they took; a 783ms search is noise. */
 const SHOW_DURATION_FROM_MS = 10_000;
+/** The stretch the agent is on shows only its newest lines; the ones before
+ *  them read as one folded line above, so a long run of steps stops growing. */
+const OPEN_TAIL_LINES = 4;
 const OUTPUT_TAIL_LINES = 20;
 
 /** A check shows its result: a tick when it passed, a cross when it failed. */
@@ -415,6 +418,19 @@ export const ActivityGroup = memo(function ActivityGroup({
     () => (folded && lineCount > 1 ? summarizeStretch(steps) : null),
     [folded, lineCount, steps],
   );
+  const [earlierOpen, setEarlierOpen] = useState(false);
+  const earlierCount = stretch === null ? Math.max(0, lineItems.length - OPEN_TAIL_LINES) : 0;
+  const earlier = useMemo(
+    () =>
+      earlierCount > 0
+        ? summarizeStretch(
+            lineItems
+              .slice(0, earlierCount)
+              .flatMap((item) => (item.kind === "step" ? [item.step] : item.steps)),
+          )
+        : null,
+    [earlierCount, lineItems],
+  );
 
   const toggle = useCallback((id: string) => {
     setOpenIds((current) => {
@@ -435,6 +451,28 @@ export const ActivityGroup = memo(function ActivityGroup({
   // A summary standing for a single step opens straight into that step.
   const lone = routine.length === 1 ? routine[0]! : null;
   const summaryExpanded = lone ? openIds.has(lone.id) : summaryOpen;
+
+  const renderItem = (item: (typeof lineItems)[number]) =>
+    item.kind === "step" ? (
+      <NotableLine
+        key={item.step.id}
+        step={item.step}
+        open={openIds.has(item.step.id)}
+        onToggle={toggle}
+        extras={renderExtras?.(item.step) ?? null}
+      />
+    ) : (
+      <EditRunLine
+        key={item.id}
+        label={item.label}
+        diff={item.diff}
+        steps={item.steps}
+        open={openIds.has(item.id)}
+        onToggle={() => toggle(item.id)}
+        openStepIds={openIds}
+        onToggleStep={toggle}
+      />
+    );
 
   const lines = (
     <>
@@ -470,28 +508,20 @@ export const ActivityGroup = memo(function ActivityGroup({
           ) : null}
         </div>
       ) : null}
-      {lineItems.map((item) =>
-        item.kind === "step" ? (
-          <NotableLine
-            key={item.step.id}
-            step={item.step}
-            open={openIds.has(item.step.id)}
-            onToggle={toggle}
-            extras={renderExtras?.(item.step) ?? null}
+      {earlier !== null ? (
+        <div data-activity-earlier="true">
+          <FoldedLine
+            parts={earlier}
+            durationMs={null}
+            open={earlierOpen}
+            onToggle={() => setEarlierOpen((value) => !value)}
           />
-        ) : (
-          <EditRunLine
-            key={item.id}
-            label={item.label}
-            diff={item.diff}
-            steps={item.steps}
-            open={openIds.has(item.id)}
-            onToggle={() => toggle(item.id)}
-            openStepIds={openIds}
-            onToggleStep={toggle}
-          />
-        ),
-      )}
+          {earlierOpen ? (
+            <div className="ml-[19px]">{lineItems.slice(0, earlierCount).map(renderItem)}</div>
+          ) : null}
+        </div>
+      ) : null}
+      {lineItems.slice(earlierCount).map(renderItem)}
     </>
   );
 
