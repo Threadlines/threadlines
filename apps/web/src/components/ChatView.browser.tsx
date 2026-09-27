@@ -21,6 +21,7 @@ import {
   type ServerLifecycleWelcomePayload,
   type ServerProvider,
   type ThreadId,
+  type ThreadParticipantId,
   type TurnId,
   WS_METHODS,
   CheckpointRef,
@@ -6996,6 +6997,84 @@ describe("ChatView timeline estimator parity (full app)", () => {
       );
       // The branch yields first, and yields completely.
       expect(row.textContent).not.toContain("feature/");
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("names a room's working agent and keeps its state and clock whole at the default width", async () => {
+    const agentId = "7a0b1c2d-3e4f-4a5b-8c6d-7e8f9a0b1c2d" as ThreadParticipantId;
+    const startedAt = new Date(Date.now() - 65 * 60_000).toISOString();
+    const base = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-room-working" as MessageId,
+      targetText: "room working target",
+      sessionStatus: "running",
+      sessionActiveTurnId: "turn-room-working" as TurnId,
+    });
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...base,
+        threads: base.threads.map((thread) =>
+          thread.id === THREAD_ID
+            ? {
+                ...thread,
+                // An added agent, at work for over an hour, whose model name
+                // is too long for the row.
+                participants: [
+                  {
+                    id: agentId,
+                    handle: "agent-2",
+                    modelSelection: {
+                      instanceId: ProviderInstanceId.make("codex"),
+                      model: "a-model-with-a-deliberately-long-name",
+                    },
+                    joinedAt: NOW_ISO,
+                    leftAt: null,
+                  },
+                ],
+                session: thread.session ? { ...thread.session, participantId: agentId } : null,
+                latestTurn: {
+                  turnId: "turn-room-working" as TurnId,
+                  state: "running" as const,
+                  requestedAt: startedAt,
+                  startedAt,
+                  completedAt: null,
+                  assistantMessageId: null,
+                },
+              }
+            : thread,
+        ),
+      },
+    });
+
+    try {
+      const line = await waitForElement(
+        () => document.querySelector<HTMLElement>(`[data-testid="thread-detail-${THREAD_ID}"]`),
+        "Unable to find the working room's row.",
+      );
+      const meta = await waitForElement(
+        () => document.querySelector<HTMLElement>(`[data-testid="thread-meta-${THREAD_ID}"]`),
+        "Unable to find the row's status slot.",
+      );
+      await vi.waitFor(
+        () => {
+          expect(meta.textContent).toMatch(/^a-model-.* · working · 1h \d+m$/);
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+      const [name, , state, , clock] = [...meta.children] as HTMLElement[];
+      // The name is what gives way; the state and the clock are whole and in
+      // the row.
+      expect(name!.scrollWidth).toBeGreaterThan(name!.clientWidth);
+      for (const part of [state!, clock!]) {
+        expect(part.scrollWidth).toBeLessThanOrEqual(part.clientWidth + 1);
+        expect(part.getBoundingClientRect().right).toBeLessThanOrEqual(
+          line.getBoundingClientRect().right + 0.5,
+        );
+      }
+      // The project keeps only its icon.
+      expect(line.textContent).not.toContain("Project");
     } finally {
       await mounted.cleanup();
     }

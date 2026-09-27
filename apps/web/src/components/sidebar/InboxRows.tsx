@@ -286,15 +286,27 @@ function ThreadElapsedLabel({ startedAt }: { startedAt: string }) {
 }
 
 /**
- * In a room, the agent working or last at work, named the way the composer's
- * model picker names it: "GPT-6 Astra · working".
+ * The dot between parts of a row's status ("working · 4m"). Set in the UI
+ * font, whose space and dot are about half as wide as the mono ones, so the
+ * status stays tight; the text still reads " · ".
  */
-function RoomSlotAgentPrefix({
+function MetaSeparator() {
+  // `whitespace-pre` keeps the spaces where the status is a flex row (rooms).
+  return <span className="font-sans whitespace-pre opacity-60">{" · "}</span>;
+}
+
+/**
+ * In a room, the agent working or last at work: the name the user gave it,
+ * otherwise its model named the way the composer's model picker names it
+ * ("GPT-6 Astra · working"). The one part of the status that yields when the
+ * row is narrow; the full name is in its tooltip.
+ */
+function RoomSlotAgentName({
   selection,
   role,
 }: {
   selection: ModelSelection;
-  /** The user's name for the agent, shown after its model's. */
+  /** The user's name for the agent. */
   role?: string | null | undefined;
 }) {
   const providers = useServerProviders();
@@ -303,7 +315,11 @@ function RoomSlotAgentPrefix({
     const model = provider?.models.find((entry) => entry.slug === selection.model);
     return provider && model ? getPickerModelName(model, provider.driver) : selection.model;
   }, [providers, selection.instanceId, selection.model]);
-  return <>{roomAgentDisplayName(name, role)} · </>;
+  return (
+    <span title={roomAgentDisplayName(name, role)} className="min-w-0 truncate font-sans">
+      {role || name}
+    </span>
+  );
 }
 
 function ThreadProviderGlyph({ thread }: { thread: SidebarThreadSummary }) {
@@ -486,6 +502,14 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
     : thread.roomSlotModelSelection;
   const roomAgentRole = isAnswering ? thread.roomSideRole : thread.roomSlotRole;
   const showBranch = thread.branch !== null && !hasStatusLabel;
+  // A room's live status also names the agent, which needs the width: the
+  // project keeps only its icon, and the name is what truncates, never the
+  // state or the clock.
+  const namesRoomAgent =
+    roomAgentSelection != null &&
+    !jumpLabel &&
+    statusWord === null &&
+    (isInFlight || isWaitingOnTasks || isAnswering);
 
   const handleRowClick = useCallback(
     (event: React.MouseEvent) => {
@@ -617,7 +641,7 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
                 className="size-3 shrink-0"
               />
             ) : null}
-            {projectLabel ? (
+            {projectLabel && !namesRoomAgent ? (
               <span className="min-w-0 truncate text-muted-foreground/60">{projectLabel}</span>
             ) : null}
             {showBranch ? (
@@ -626,11 +650,14 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
                 <span className="min-w-0 truncate font-mono text-[10px]">{thread.branch}</span>
               </span>
             ) : null}
-            <span className={ROW_META_SLOT_CLASS_NAME}>
+            <span
+              className={cn(ROW_META_SLOT_CLASS_NAME, namesRoomAgent && "min-w-0 flex-initial")}
+            >
               <span
                 data-testid={`thread-meta-${thread.id}`}
                 className={cn(
                   "shrink-0 font-mono text-[11px] leading-none tabular-nums",
+                  namesRoomAgent && "flex min-w-0 shrink items-baseline",
                   hasStatusLabel
                     ? (status?.colorClass ?? "text-muted-foreground/50")
                     : "text-muted-foreground/50",
@@ -644,20 +671,27 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
                   statusWord
                 ) : isInFlight || isWaitingOnTasks || isAnswering ? (
                   <>
-                    {roomAgentSelection ? (
-                      <RoomSlotAgentPrefix selection={roomAgentSelection} role={roomAgentRole} />
+                    {namesRoomAgent && roomAgentSelection ? (
+                      <>
+                        <RoomSlotAgentName selection={roomAgentSelection} role={roomAgentRole} />
+                        <MetaSeparator />
+                      </>
                     ) : null}
-                    {isAnswering
-                      ? "answering"
-                      : isWaitingOnTasks
-                        ? "waiting"
-                        : status?.label === "Starting"
-                          ? "starting"
-                          : "working"}
+                    <span className="shrink-0">
+                      {isAnswering
+                        ? "answering"
+                        : isWaitingOnTasks
+                          ? "waiting"
+                          : status?.label === "Starting"
+                            ? "starting"
+                            : "working"}
+                    </span>
                     {liveClockStartedAt ? (
                       <>
-                        {" · "}
-                        <ThreadElapsedLabel startedAt={liveClockStartedAt} />
+                        <MetaSeparator />
+                        <span className="shrink-0">
+                          <ThreadElapsedLabel startedAt={liveClockStartedAt} />
+                        </span>
                       </>
                     ) : null}
                   </>
