@@ -81,6 +81,8 @@ const BUFFERED_PROPOSED_PLAN_BY_ID_TTL = Duration.minutes(120);
 const BUFFERED_ACTIVITY_STREAM_BY_KEY_CACHE_CAPACITY = 20_000;
 const BUFFERED_ACTIVITY_STREAM_BY_KEY_TTL = Duration.minutes(120);
 const STREAMING_ASSISTANT_DELTA_FLUSH_INTERVAL = Duration.millis(50);
+/** How much of a hand-off's reply goes back to the agent that handed off. */
+const HAND_OFF_REPLY_CHAR_LIMIT = 24_000;
 const SUBAGENT_RESULT_ACTIVITY_FLUSH_INTERVAL = Duration.millis(100);
 const MARKDOWN_FENCE_INDENT_LIMIT = 3;
 type ContentDeltaStreamKind = Extract<
@@ -2580,6 +2582,67 @@ const make = Effect.gen(function* () {
       .pipe(Effect.catch(() => Effect.void));
   });
 
+  /**
+   * Room tools: the agent a hand-off went to finished the turn it was handed,
+   * and that turn's words were just flushed. Its last reply goes back to the
+   * agent that handed off, matched to the one running hand-off addressed to
+   * it, in one decider step that also settles the request. Never on the
+   * session going idle, which comes before buffered text is final.
+   */
+  const routeHandOffReply = Effect.fn("routeHandOffReply")(function* (input: {
+    readonly threadId: ThreadId;
+    readonly participantId: ThreadParticipantId | null;
+    readonly assistantMessageIds: ReadonlySet<MessageId>;
+    readonly completed: boolean;
+    readonly createdAt: string;
+  }) {
+    const detail = yield* resolveThreadDetail(input.threadId);
+    const request = detail?.agentRequests.open.find(
+      (entry) =>
+        entry.kind === "hand_off" &&
+        entry.status === "running" &&
+        (entry.to.participantId ?? null) === input.participantId,
+    );
+    if (detail === undefined || detail === null || request === undefined) {
+      return;
+    }
+    const reply = [...detail.messages]
+      .reverse()
+      .find(
+        (message) =>
+          message.role === "assistant" &&
+          input.assistantMessageIds.has(message.id) &&
+          message.text.trim().length > 0,
+      );
+    const text =
+      reply === undefined
+        ? "(The agent finished without writing a reply.)"
+        : reply.text.trim().length > HAND_OFF_REPLY_CHAR_LIMIT
+          ? `${reply.text.trim().slice(0, HAND_OFF_REPLY_CHAR_LIMIT)} [clipped; the full reply is in the chat]`
+          : reply.text.trim();
+    yield* orchestrationEngine
+      .dispatch({
+        type: "thread.agent-request.settle",
+        commandId: CommandId.make(`server:hand-off-settle:${request.requestId}`),
+        threadId: input.threadId,
+        requestId: request.requestId,
+        outcome: input.completed ? "answered" : "failed",
+        ...(input.completed
+          ? { reply: { messageId: MessageId.make(`hand-off-reply:${request.requestId}`), text } }
+          : { error: "The agent's turn did not finish." }),
+        createdAt: input.createdAt,
+      })
+      .pipe(
+        Effect.catch((error) =>
+          Effect.logInfo("provider runtime ingestion could not settle a hand-off", {
+            threadId: input.threadId,
+            requestId: request.requestId,
+            detail: String(error),
+          }),
+        ),
+      );
+  });
+
   const processRuntimeEvent = (event: ProviderRuntimeEvent) =>
     Effect.gen(function* () {
       // Realtime audio/item traffic is intentionally in-memory only. Keep this
@@ -3503,6 +3566,14 @@ const make = Effect.gen(function* () {
           ).pipe(Effect.asVoid);
           yield* clearAssistantMessageIdsForTurn(thread.id, turnId);
           yield* clearAssistantSegmentStateForTurn(thread.id, turnId);
+          // The words are final now, so a hand-off's reply can go back.
+          yield* routeHandOffReply({
+            threadId: thread.id,
+            participantId: event.participantId ?? null,
+            assistantMessageIds,
+            completed: event.type === "turn.completed",
+            createdAt: now,
+          });
 
           yield* finalizeBufferedProposedPlan({
             event,

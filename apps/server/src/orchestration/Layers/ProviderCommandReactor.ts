@@ -69,6 +69,7 @@ import {
 } from "../../checkpointing/Utils.ts";
 import { CheckpointStore } from "../../checkpointing/Services/CheckpointStore.ts";
 import { ensureGeneralChatThreadScratchCwd } from "../generalChats.ts";
+import { buildIndependentReviewPrompt } from "../roomReviewPrompt.ts";
 import { buildRoomCatchUp } from "../roomCatchUp.ts";
 
 /** Key for one agent in `OrchestrationThread.roomContext`. */
@@ -102,6 +103,7 @@ import {
 import { VcsStatusBroadcaster } from "../../vcs/VcsStatusBroadcaster.ts";
 import { checkoutPresence } from "../../vcs/CheckoutPresence.ts";
 import { GitWorkflowService } from "../../git/GitWorkflowService.ts";
+import { checkpointHandover } from "../checkpointHandover.ts";
 const isProviderAdapterRequestError = Schema.is(ProviderAdapterRequestError);
 const isCheckoutMissingError = Schema.is(CheckoutMissingError);
 const isProviderDriverKind = Schema.is(ProviderDriverKind);
@@ -242,6 +244,17 @@ function mapProviderSessionStatusToOrchestrationStatus(
   }
 }
 
+/**
+ * The queued message to send next: the user's own messages go first, even
+ * ones queued after an agent's hand-off or reply (room tools).
+ */
+const nextQueuedFollowUp = (
+  thread: Pick<OrchestrationThread, "queuedFollowUps">,
+): OrchestrationQueuedFollowUp | undefined => {
+  const queued = thread.queuedFollowUps ?? [];
+  return queued.find((entry) => entry.fromAgent === undefined) ?? queued[0];
+};
+
 const turnStartKeyForEvent = (event: ProviderIntentEvent): string =>
   event.commandId !== null ? `command:${event.commandId}` : `event:${event.eventId}`;
 
@@ -252,6 +265,10 @@ const HANDLED_TURN_START_KEY_MAX = 10_000;
 const HANDLED_TURN_START_KEY_TTL = Duration.minutes(30);
 const DEFAULT_RUNTIME_MODE: RuntimeMode = "full-access";
 const PROVIDER_INTERRUPT_ACK_TIMEOUT = Duration.seconds(10);
+/** How long a turn for another agent waits for the previous turn's checkpoint. */
+const HANDOVER_CAPTURE_WAIT = Duration.seconds(10);
+/** How long preparing a session for a turn (a restart included) may take. */
+const TURN_PREPARATION_TIMEOUT = Duration.seconds(90);
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 
 export function providerErrorLabel(value: string | undefined): string {
@@ -1012,6 +1029,8 @@ const make = Effect.gen(function* () {
           ...(input?.resumeCursor !== undefined ? { resumeCursor: input.resumeCursor } : {}),
           ...(input?.contextSeed !== undefined ? { contextSeed: input.contextSeed } : {}),
           ...(input?.forkFrom !== undefined ? { forkFrom: input.forkFrom } : {}),
+          // A room agent's runtime carries the room tools.
+          ...(thread.participants.length > 0 ? { roomTools: true } : {}),
           runtimeMode: desiredRuntimeMode,
         })
         .pipe(
@@ -1164,7 +1183,18 @@ const make = Effect.gen(function* () {
           ? bindSessionToThread(activeSession)
           : Effect.void;
 
-      if (!runtimeModeChanged && !cwdChanged && !instanceChanged && !shouldRestartForModelChange) {
+      // A runtime started before its thread became a room has no room tools.
+      // It gets them by restarting with resume, once; an adapter that could
+      // not attach them reports false, and restarting again would not help.
+      const roomToolsMissing = inRoom && activeSession?.roomTools === undefined;
+
+      if (
+        !runtimeModeChanged &&
+        !cwdChanged &&
+        !instanceChanged &&
+        !shouldRestartForModelChange &&
+        !roomToolsMissing
+      ) {
         deferredCheckoutSwitchThreads.delete(threadId);
         yield* rebindAfterHandover;
         return { sessionThreadId: existingSessionThreadId, nativeForkApplied: false };
@@ -1183,9 +1213,14 @@ const make = Effect.gen(function* () {
       );
       const restartRequiredBeyondCwd =
         runtimeModeChanged || instanceChanged || shouldRestartForModelChange;
-      if (cwdChanged && !restartRequiredBeyondCwd && pendingBackgroundTaskCount > 0) {
+      // Picking up room tools can wait the same way.
+      if (
+        (cwdChanged || roomToolsMissing) &&
+        !restartRequiredBeyondCwd &&
+        pendingBackgroundTaskCount > 0
+      ) {
         const currentCwd = activeSession?.cwd ?? projectedSession?.checkoutCwd ?? null;
-        if (currentCwd && effectiveCwd) {
+        if (cwdChanged && currentCwd && effectiveCwd) {
           yield* noteCheckoutSwitchDeferred({
             threadId,
             fromCwd: currentCwd,
@@ -1208,7 +1243,9 @@ const make = Effect.gen(function* () {
           ? "cwd"
           : instanceChanged
             ? "instance"
-            : "model";
+            : shouldRestartForModelChange
+              ? "model"
+              : "room_tools";
       yield* increment(providerSessionRestartsTotal, {
         provider: preferredProvider,
         reason: restartReason,
@@ -1812,8 +1849,37 @@ const make = Effect.gen(function* () {
       );
     };
 
+    // A hand-off whose turn could not start is over, so its caller hears.
+    const failHandOffForFailedStart = (detail: string) =>
+      Effect.gen(function* () {
+        const latest = yield* resolveThread(event.payload.threadId);
+        const request = latest?.agentRequests.open.find(
+          (entry) =>
+            entry.kind === "hand_off" &&
+            entry.status === "running" &&
+            entry.requestMessageId === event.payload.messageId,
+        );
+        if (request === undefined) {
+          return;
+        }
+        yield* orchestrationEngine.dispatch({
+          type: "thread.agent-request.settle",
+          commandId: serverCommandId("agent-request-start-failed"),
+          threadId: event.payload.threadId,
+          requestId: request.requestId,
+          outcome: "failed",
+          error: detail,
+          createdAt: yield* nowIso,
+        });
+      }).pipe(Effect.ignoreCause({ log: true }));
+
     const recoverTurnStartFailure = (cause: Cause.Cause<unknown>) =>
       handleTurnStartFailure(cause).pipe(
+        Effect.andThen(
+          Cause.hasInterruptsOnly(cause)
+            ? Effect.void
+            : failHandOffForFailedStart(formatFailureDetail(cause)),
+        ),
         Effect.catchCause((recoveryCause) =>
           Effect.logWarning("provider command reactor failed to recover turn start failure", {
             eventType: event.type,
@@ -1824,61 +1890,120 @@ const make = Effect.gen(function* () {
         ),
       );
 
-    const sendTurnRequest = yield* buildSendTurnRequestForThread({
-      threadId: event.payload.threadId,
-      messageId: event.payload.messageId,
-      ...(event.payload.providerMessageId !== undefined
-        ? { providerMessageId: event.payload.providerMessageId }
-        : {}),
-      messageText: message.text,
-      ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
-      ...(event.payload.skills !== undefined ? { skills: event.payload.skills } : {}),
-      ...(event.payload.providerContext !== undefined
-        ? { providerContext: event.payload.providerContext }
-        : {}),
-      ...(event.payload.providerAttachments !== undefined
-        ? { providerAttachments: event.payload.providerAttachments }
-        : {}),
-      ...(event.payload.modelSelection !== undefined
-        ? { modelSelection: event.payload.modelSelection }
-        : {}),
-      interactionMode: event.payload.interactionMode,
-      participantId: event.payload.participantId ?? null,
-      createdAt: event.payload.createdAt,
-    }).pipe(
-      Effect.map(Option.some),
-      Effect.catchCause((cause) => handleTurnStartFailure(cause).pipe(Effect.as(Option.none()))),
-    );
+    // Preparing the session and sending the turn. In a room, a turn for
+    // another agent first waits for the previous agent's turn to be recorded
+    // (checkpointHandover), off this thread's worker so Stop and the thread's
+    // other events are handled meanwhile; the hold check below still stops it.
+    const prepareAndSend = Effect.gen(function* () {
+      const sendTurnRequest = yield* buildSendTurnRequestForThread({
+        threadId: event.payload.threadId,
+        messageId: event.payload.messageId,
+        ...(event.payload.providerMessageId !== undefined
+          ? { providerMessageId: event.payload.providerMessageId }
+          : {}),
+        messageText: message.text,
+        ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
+        ...(event.payload.skills !== undefined ? { skills: event.payload.skills } : {}),
+        ...(event.payload.providerContext !== undefined
+          ? { providerContext: event.payload.providerContext }
+          : {}),
+        ...(event.payload.providerAttachments !== undefined
+          ? { providerAttachments: event.payload.providerAttachments }
+          : {}),
+        ...(event.payload.modelSelection !== undefined
+          ? { modelSelection: event.payload.modelSelection }
+          : {}),
+        interactionMode: event.payload.interactionMode,
+        participantId: event.payload.participantId ?? null,
+        createdAt: event.payload.createdAt,
+      }).pipe(
+        // Preparing the session, a restart included, runs in this thread's
+        // worker. A firm bound keeps a stuck start from holding up Stop and the
+        // thread's other events for long.
+        Effect.timeoutOrElse({
+          duration: TURN_PREPARATION_TIMEOUT,
+          orElse: () =>
+            Effect.fail(
+              new ProviderAdapterRequestError({
+                provider: providerErrorLabel(undefined),
+                method: "thread.turn.start",
+                detail: "Starting the agent took more than 90 seconds.",
+              }),
+            ),
+        }),
+        Effect.map(Option.some),
+        Effect.catchCause((cause) =>
+          handleTurnStartFailure(cause).pipe(
+            Effect.andThen(
+              Cause.hasInterruptsOnly(cause)
+                ? Effect.void
+                : failHandOffForFailedStart(formatFailureDetail(cause)),
+            ),
+            Effect.as(Option.none()),
+          ),
+        ),
+      );
 
-    if (Option.isNone(sendTurnRequest)) {
+      if (Option.isNone(sendTurnRequest)) {
+        return;
+      }
+
+      // In a room, Stop pressed while this turn was being prepared waited behind
+      // it in this worker, but has already put the hold on. The turn is not sent
+      // then: it ends as if Stop had reached it. (The user's own sends lift the
+      // hold, so a hold now can only have come after this turn was asked for.)
+      const latestForSend = yield* resolveThread(event.payload.threadId);
+      if (latestForSend !== undefined && latestForSend.agentRequests.hold) {
+        yield* Effect.logInfo("room turn not sent: stopped while it was being prepared", {
+          threadId: event.payload.threadId,
+          messageId: event.payload.messageId,
+        });
+        yield* setThreadSessionErrorOnTurnStartFailure({
+          threadId: event.payload.threadId,
+          detail: "Stopped before the turn started.",
+          createdAt: yield* nowIso,
+        });
+        return;
+      }
+
+      yield* capturePreTurnCheckpointForTurnStart({ threadId: event.payload.threadId }).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("provider command reactor failed to capture pre-turn checkpoint", {
+            threadId: event.payload.threadId,
+            cause: Cause.pretty(cause),
+          }),
+        ),
+      );
+
+      const { request: turnRequest, roomContext } = sendTurnRequest.value;
+      yield* providerService.sendTurn(turnRequest).pipe(
+        Effect.flatMap((turn) =>
+          markProviderTurnAccepted({
+            threadId: event.payload.threadId,
+            turnId: turn.turnId,
+          }),
+        ),
+        Effect.tap(() =>
+          roomContext !== undefined
+            ? recordRoomContext(event.payload.threadId, roomContext, event.payload.createdAt)
+            : Effect.void,
+        ),
+        Effect.catchCause(recoverTurnStartFailure),
+        Effect.forkScoped,
+      );
+    });
+
+    const participantForTurn = event.payload.participantId ?? null;
+    if (
+      thread.participants.length > 0 &&
+      checkpointHandover.mustWait(event.payload.threadId, participantForTurn)
+    ) {
+      yield* checkpointHandover
+        .handOver(event.payload.threadId, participantForTurn, HANDOVER_CAPTURE_WAIT)
+        .pipe(Effect.andThen(prepareAndSend), Effect.forkScoped);
       return;
     }
-
-    yield* capturePreTurnCheckpointForTurnStart({ threadId: event.payload.threadId }).pipe(
-      Effect.catchCause((cause) =>
-        Effect.logWarning("provider command reactor failed to capture pre-turn checkpoint", {
-          threadId: event.payload.threadId,
-          cause: Cause.pretty(cause),
-        }),
-      ),
-    );
-
-    const { request: turnRequest, roomContext } = sendTurnRequest.value;
-    yield* providerService.sendTurn(turnRequest).pipe(
-      Effect.flatMap((turn) =>
-        markProviderTurnAccepted({
-          threadId: event.payload.threadId,
-          turnId: turn.turnId,
-        }),
-      ),
-      Effect.tap(() =>
-        roomContext !== undefined
-          ? recordRoomContext(event.payload.threadId, roomContext, event.payload.createdAt)
-          : Effect.void,
-      ),
-      Effect.catchCause(recoverTurnStartFailure),
-      Effect.forkScoped,
-    );
+    yield* prepareAndSend;
   });
 
   const processFollowUpSubmitted = Effect.fn("processFollowUpSubmitted")(function* (
@@ -2749,6 +2874,81 @@ const make = Effect.gen(function* () {
     return true;
   });
 
+  /**
+   * Room tools: the working agent's turn ended. Its asks and reviews still
+   * running are stopped (nobody is waiting for them now). A hand-off it made
+   * takes effect only if the turn completed normally; after Stop or a failure
+   * it is cancelled.
+   */
+  const closeRequestsOfEndedTurn = Effect.fnUntraced(function* (
+    threadId: ThreadId,
+    completedNormally: boolean,
+    createdAt: string,
+  ) {
+    const thread = yield* resolveThread(threadId);
+    if (!thread || thread.agentRequests.open.length === 0) {
+      return;
+    }
+    const holderId = sessionSlotParticipantId(thread.session);
+    const activeTurnId = thread.session?.activeTurnId ?? null;
+    const ignoreRace = (label: string) =>
+      Effect.catch((error: unknown) =>
+        Effect.logInfo(`provider command reactor could not ${label}`, {
+          threadId,
+          detail: String(error),
+        }),
+      );
+    for (const request of thread.agentRequests.open) {
+      if (
+        (request.from.participantId ?? null) !== holderId ||
+        request.callerTurnId === activeTurnId
+      ) {
+        continue;
+      }
+      if (request.kind === "hand_off" && request.status === "pending") {
+        yield* orchestrationEngine
+          .dispatch(
+            completedNormally
+              ? {
+                  type: "thread.agent-request.queue",
+                  commandId: serverCommandId("agent-request-queue"),
+                  threadId,
+                  requestId: request.requestId,
+                  createdAt,
+                }
+              : {
+                  type: "thread.agent-request.settle",
+                  commandId: serverCommandId("agent-request-cancel"),
+                  threadId,
+                  requestId: request.requestId,
+                  outcome: "cancelled",
+                  error: "The turn that made it did not finish.",
+                  createdAt,
+                },
+          )
+          .pipe(ignoreRace("move a hand-off on"));
+        continue;
+      }
+      const sideTurn = thread.sideTurn ?? null;
+      if (
+        request.kind !== "hand_off" &&
+        sideTurn !== null &&
+        sideTurn.sideTurnId === request.sideTurnId &&
+        sideTurn.status !== "cancelling"
+      ) {
+        yield* orchestrationEngine
+          .dispatch({
+            type: "thread.side-turn.interrupt",
+            commandId: serverCommandId("agent-request-caller-ended"),
+            threadId,
+            sideTurnId: sideTurn.sideTurnId,
+            createdAt,
+          })
+          .pipe(ignoreRace("stop an agent's side answer"));
+      }
+    }
+  });
+
   /** Starts a queued message's turn. Losing a race with Remove is fine. */
   const sendQueuedFollowUp = Effect.fnUntraced(function* (
     threadId: ThreadId,
@@ -2777,27 +2977,39 @@ const make = Effect.gen(function* () {
   /**
    * A message queued while the thread is idle goes out at once: it was queued
    * because the turn it meant to follow ended as it was sent. Older messages
-   * still waiting after a stopped or failed turn stay where they are.
+   * still waiting after a stopped or failed turn stay where they are. A
+   * message an agent queued never goes ahead of one the user queued.
    */
   const processFollowUpQueued = Effect.fn("processFollowUpQueued")(function* (
     event: Extract<ProviderIntentEvent, { type: "thread.follow-up-queued" }>,
   ) {
-    // A message sent after Stop means the user is moving on.
-    queueHeldByStop.delete(event.payload.threadId);
+    // A message the user sent after Stop means they are moving on. One an
+    // agent queued never does.
+    const fromUser = event.payload.followUp.fromAgent === undefined;
+    if (fromUser) {
+      queueHeldByStop.delete(event.payload.threadId);
+    } else if (queueHeldByStop.has(event.payload.threadId)) {
+      return;
+    }
     const thread = yield* resolveThread(event.payload.threadId);
     const status = thread?.session?.status;
     if (!thread || status === "running" || status === "starting") {
       return;
     }
-    if (yield* releaseSlotForQueuedAgent(thread, event.payload.followUp)) {
-      releasedMessageByThread.set(thread.id, event.payload.followUp.messageId);
+    // A message an agent queued waits behind any the user queued; the queue
+    // release sends those first (see nextQueuedFollowUp).
+    if (
+      !fromUser &&
+      (thread.queuedFollowUps ?? []).some((entry) => entry.fromAgent === undefined)
+    ) {
       return;
     }
-    yield* sendQueuedFollowUpWhenFree(
-      thread.id,
-      event.payload.followUp.messageId,
-      event.occurredAt,
-    );
+    const next = event.payload.followUp;
+    if (yield* releaseSlotForQueuedAgent(thread, next)) {
+      releasedMessageByThread.set(thread.id, next.messageId);
+      return;
+    }
+    yield* sendQueuedFollowUpWhenFree(thread.id, next.messageId, event.occurredAt);
   });
 
   /**
@@ -2874,7 +3086,7 @@ const make = Effect.gen(function* () {
       return;
     }
     const thread = yield* resolveThread(threadId);
-    const next = thread?.queuedFollowUps?.[0];
+    const next = thread ? nextQueuedFollowUp(thread) : undefined;
     if (!thread || !next) {
       return;
     }
@@ -2898,6 +3110,21 @@ const make = Effect.gen(function* () {
   const processSessionSet = Effect.fn("processSessionSet")(function* (
     event: Extract<ProviderIntentEvent, { type: "thread.session-set" }>,
   ) {
+    // First, so a hand-off from the turn that just ended is in the queue
+    // before the queue decides what goes next.
+    const previousStatus = lastSessionStatusByThread.get(event.payload.threadId);
+    if (
+      previousStatus === "running" &&
+      event.payload.session.status !== "running" &&
+      event.payload.session.status !== "starting" &&
+      !event.payload.session.activeTurnId
+    ) {
+      yield* closeRequestsOfEndedTurn(
+        event.payload.threadId,
+        event.payload.session.status === "ready",
+        event.occurredAt,
+      );
+    }
     yield* maybeSendNextQueuedFollowUp(event);
     if (event.payload.session.status !== "stopped") {
       if (
@@ -3090,11 +3317,16 @@ const make = Effect.gen(function* () {
     const cwd =
       resolveThreadWorkspaceCwd({ thread, projects: project ? [project] : [] }) ??
       project?.workspaceRoot;
+    // An independent review starts fresh on purpose: no conversation, no room
+    // note, only its request and the basis the server captured.
+    const isReview = sideTurn.kind === "review";
     // Answer from the agent's own conversation when it lives on the provider
     // instance it answers with; otherwise start fresh with the joining note.
-    const conversation = yield* providerService.readConversation({
-      threadId: participantSessionKey(threadId, sideTurn.participantId),
-    });
+    const conversation = isReview
+      ? null
+      : yield* providerService.readConversation({
+          threadId: participantSessionKey(threadId, sideTurn.participantId),
+        });
     const forkFrom =
       conversation !== null && conversation.providerInstanceId === modelSelection.instanceId
         ? { providerThreadId: conversation.providerThreadId }
@@ -3105,7 +3337,9 @@ const make = Effect.gen(function* () {
       ...(cwd !== undefined ? { cwd } : {}),
       modelSelection,
       runtimeMode: thread.runtimeMode,
-      lockdown: "side-answer" as const,
+      lockdown: isReview ? ("side-review" as const) : ("side-answer" as const),
+      // Its read tools: room_history and room_diff, or for a review room_diff.
+      roomTools: true,
       ...(withFork && forkFrom !== undefined ? { forkFrom } : {}),
     });
     const forked = yield* providerService.startSession(key, startInput(true)).pipe(
@@ -3124,23 +3358,27 @@ const make = Effect.gen(function* () {
       ),
     );
     const storedCursor = thread.roomContext?.[roomAgentContextKey(sideTurn.participantId)] ?? null;
-    const catchUp = buildRoomCatchUp({
-      thread,
-      participantId: sideTurn.participantId,
-      messageId: sideTurn.messageId,
-      // The fork continues the agent's conversation, so it has been told what
-      // that conversation was told. A fresh start knows nothing.
-      cursor:
-        forked &&
-        storedCursor !== null &&
-        storedCursor.conversationId === forkFrom?.providerThreadId
-          ? storedCursor
-          : null,
-      fresh: !forked,
-      lane: "side",
-      workingParticipantId: sessionSlotParticipantId(thread.session),
-    });
-    const changes = cwd !== undefined ? yield* describeCheckoutChanges(cwd) : undefined;
+    const catchUp = isReview
+      ? undefined
+      : buildRoomCatchUp({
+          thread,
+          participantId: sideTurn.participantId,
+          messageId: sideTurn.messageId,
+          // The fork continues the agent's conversation, so it has been told what
+          // that conversation was told. A fresh start knows nothing.
+          cursor:
+            forked &&
+            storedCursor !== null &&
+            storedCursor.conversationId === forkFrom?.providerThreadId
+              ? storedCursor
+              : null,
+          fresh: !forked,
+          lane: "side",
+          workingParticipantId: sessionSlotParticipantId(thread.session),
+          ...(sideTurn.askedBy !== undefined ? { askedBy: sideTurn.askedBy.participantId } : {}),
+        });
+    const changes =
+      cwd !== undefined && !isReview ? yield* describeCheckoutChanges(cwd) : undefined;
     const note = [catchUp?.note, changes]
       .filter((part): part is string => part !== undefined && part.length > 0)
       .join("\n\n");
@@ -3157,7 +3395,11 @@ const make = Effect.gen(function* () {
       });
       return;
     }
-    const text = note.length > 0 ? withContextSeedPreamble(note, question.text) : question.text;
+    const text = isReview
+      ? buildIndependentReviewPrompt(question.text, question.reviewInput)
+      : note.length > 0
+        ? withContextSeedPreamble(note, question.text)
+        : question.text;
     const providerInput = toNonEmptyProviderInput(text);
     yield* providerService.sendTurn({
       threadId: key,
@@ -3287,7 +3529,7 @@ const make = Effect.gen(function* () {
       return;
     }
     const thread = yield* resolveThread(threadId);
-    const head = thread?.queuedFollowUps?.[0];
+    const head = thread ? nextQueuedFollowUp(thread) : undefined;
     const status = thread?.session?.status;
     if (!thread || !head || status === "running" || status === "starting") {
       return;
@@ -3493,6 +3735,43 @@ const make = Effect.gen(function* () {
     }
   });
 
+  /**
+   * Room tools after a restart: a hand-off waiting on the turn that made it,
+   * or running as its target's turn, died with the previous process, and so
+   * did any ask or review. Each is closed with a note. A hand-off still in
+   * the queue is left to run.
+   */
+  const closeRequestsFromPreviousProcess = Effect.fnUntraced(function* (threadId: ThreadId) {
+    const thread = yield* resolveThread(threadId);
+    if (!thread) {
+      return;
+    }
+    for (const request of thread.agentRequests.open) {
+      if (request.kind === "hand_off" && request.status === "queued") {
+        continue;
+      }
+      yield* orchestrationEngine
+        .dispatch({
+          type: "thread.agent-request.settle",
+          commandId: serverCommandId("agent-request-restart"),
+          threadId,
+          requestId: request.requestId,
+          outcome: request.status === "pending" ? "cancelled" : "failed",
+          error: "The server restarted before this finished.",
+          createdAt: yield* nowIso,
+        })
+        .pipe(
+          Effect.catch((error) =>
+            Effect.logInfo("provider command reactor could not close a room request", {
+              threadId,
+              requestId: request.requestId,
+              detail: String(error),
+            }),
+          ),
+        );
+    }
+  });
+
   // Provider processes do not outlive the server, so a session still recorded
   // as starting or running when the server comes up belongs to the previous
   // process and no command can reach it. Settle each one as interrupted, with
@@ -3514,6 +3793,10 @@ const make = Effect.gen(function* () {
             outcome: "interrupted",
             createdAt: yield* nowIso,
           });
+        }
+        // Room requests whose turns lived in the previous process end too.
+        if (thread.participants.length > 0) {
+          yield* closeRequestsFromPreviousProcess(thread.id);
         }
         const session = thread.session;
         if (!session) {

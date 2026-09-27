@@ -100,6 +100,14 @@ function requireSideTurnOpen(
   );
 }
 
+/** One event, after any extra ones it brings; a lone event stays a lone event. */
+function withLeadingEvents(
+  leading: ReadonlyArray<PlannedOrchestrationEvent>,
+  event: PlannedOrchestrationEvent,
+): DecideOrchestrationCommandResult {
+  return leading.length > 0 ? [...leading, event] : event;
+}
+
 /** Plan an agent-request decision's events, or refuse the command with its reason. */
 function planAgentRequestDecision(commandType: string, decision: AgentRequestDecision) {
   return "refusal" in decision
@@ -1693,7 +1701,22 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           createdAt: command.createdAt,
         },
       };
-      return [retrySessionEvent, retryTurnStartRequestedEvent];
+      // Retrying is the user acting: agents may make requests again.
+      return [
+        retrySessionEvent,
+        retryTurnStartRequestedEvent,
+        ...resetAgentRequestsForUser(
+          targetThread,
+          () =>
+            withEventBase({
+              aggregateKind: "thread",
+              aggregateId: command.threadId,
+              occurredAt: command.createdAt,
+              commandId: command.commandId,
+            }),
+          command.createdAt,
+        ),
+      ];
     }
 
     case "thread.follow-up.submit": {
@@ -1736,8 +1759,8 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             occurredAt: command.createdAt,
             commandId: command.commandId,
           });
-        return [
-          ...resetAgentRequestsForUser(targetThread, userBase, command.createdAt),
+        return withLeadingEvents(
+          resetAgentRequestsForUser(targetThread, userBase, command.createdAt),
           {
             ...userBase(),
             type: "thread.follow-up-queued",
@@ -1758,7 +1781,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
               },
             },
           },
-        ];
+        );
       }
       const steerBase = () =>
         withEventBase({
@@ -1767,8 +1790,8 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           occurredAt: command.createdAt,
           commandId: command.commandId,
         });
-      return [
-        ...resetAgentRequestsForUser(targetThread, steerBase, command.createdAt),
+      return withLeadingEvents(
+        resetAgentRequestsForUser(targetThread, steerBase, command.createdAt),
         {
           ...steerBase(),
           type: "thread.follow-up-submitted",
@@ -1785,7 +1808,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             createdAt: command.createdAt,
           },
         },
-      ];
+      );
     }
 
     case "thread.follow-up.unqueue": {
@@ -1998,19 +2021,18 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           occurredAt: command.createdAt,
           commandId: command.commandId,
         });
-      return [
-        {
-          ...base(),
-          type: "thread.turn-interrupt-requested",
-          payload: {
-            threadId: command.threadId,
-            ...(command.turnId !== undefined ? { turnId: command.turnId } : {}),
-            createdAt: command.createdAt,
-          },
+      // In a room, Stop also ends the agents' chain of requests.
+      const chainStop = decideAgentChainStop(thread, base, command.createdAt);
+      const interruptEvent: PlannedOrchestrationEvent = {
+        ...base(),
+        type: "thread.turn-interrupt-requested",
+        payload: {
+          threadId: command.threadId,
+          ...(command.turnId !== undefined ? { turnId: command.turnId } : {}),
+          createdAt: command.createdAt,
         },
-        // In a room, Stop also ends the agents' chain of requests.
-        ...decideAgentChainStop(thread, base, command.createdAt),
-      ];
+      };
+      return chainStop.length > 0 ? [interruptEvent, ...chainStop] : interruptEvent;
     }
 
     case "thread.realtime.start": {
