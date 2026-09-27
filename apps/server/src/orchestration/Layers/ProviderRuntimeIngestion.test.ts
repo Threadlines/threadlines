@@ -9,6 +9,7 @@ import {
   ProviderRuntimeEvent,
   ProviderSession,
   ProviderInstanceId,
+  RoomAgentRequestId,
 } from "@threadlines/contracts";
 import {
   ApprovalRequestId,
@@ -553,6 +554,121 @@ describe("ProviderRuntimeIngestion", () => {
     expect(
       after?.messages.find((message) => message.id === `side-answer:${sideTurnId}`)?.text,
     ).toBe("Because the retry cap is off by one.\n\nIt came in with the April change.");
+  });
+
+  it("sends a hand-off's final reply back to the agent that handed off, once its words are final", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    const threadId = asThreadId("thread-1");
+    const astraId = ThreadParticipantId.make("7a0b1c2d-3e4f-4a5b-8c6d-7e8f9a0b1c2d");
+    const requestId = RoomAgentRequestId.make("request-hand-off");
+    const dispatch = (command: Parameters<typeof harness.engine.dispatch>[0]) =>
+      Effect.runPromise(harness.engine.dispatch(command));
+    const setSession = (
+      id: string,
+      participantId: ThreadParticipantId | null,
+      turn: string | null,
+    ) =>
+      dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make(id),
+        threadId,
+        session: {
+          threadId,
+          status: turn === null ? "ready" : "running",
+          providerName: "codex",
+          runtimeMode: "approval-required",
+          participantId,
+          activeTurnId: turn === null ? null : asTurnId(turn),
+          updatedAt: now,
+          lastError: null,
+        },
+        createdAt: now,
+      });
+    await dispatch({
+      type: "thread.participant.add",
+      commandId: CommandId.make("cmd-hand-off-add-astra"),
+      threadId,
+      participant: {
+        id: astraId,
+        handle: "astra",
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6-astra" },
+      },
+      createdAt: now,
+    });
+    // The thread's own agent hands the work to astra, and its turn completes.
+    await setSession("cmd-caller-working", null, "turn-caller");
+    await dispatch({
+      type: "thread.agent-request.submit",
+      commandId: CommandId.make("cmd-hand-off"),
+      threadId,
+      requestId,
+      kind: "hand_off",
+      from: { participantId: null },
+      to: { participantId: astraId },
+      callerTurnId: asTurnId("turn-caller"),
+      chainEpoch: 0,
+      message: { messageId: asMessageId("hand-off-request"), text: "Fix the retry tests." },
+      createdAt: now,
+    });
+    await dispatch({
+      type: "thread.agent-request.queue",
+      commandId: CommandId.make("cmd-hand-off-queue"),
+      threadId,
+      requestId,
+      createdAt: now,
+    });
+    await setSession("cmd-caller-done", null, null);
+    await dispatch({
+      type: "thread.follow-up.send-queued",
+      commandId: CommandId.make("cmd-hand-off-send"),
+      threadId,
+      messageId: asMessageId("hand-off-request"),
+      createdAt: now,
+    });
+    await setSession("cmd-astra-working", astraId, "turn-astra");
+
+    const astraEvent = (id: string, event: Record<string, unknown>) =>
+      harness.emit({
+        eventId: asEventId(id),
+        provider: ProviderDriverKind.make("codex"),
+        threadId,
+        participantId: astraId,
+        createdAt: now,
+        turnId: asTurnId("turn-astra"),
+        ...event,
+      } as never);
+    astraEvent("evt-astra-1", {
+      type: "content.delta",
+      itemId: "msg-astra",
+      payload: { streamKind: "assistant_text", delta: "Fixed the retry " },
+    });
+    astraEvent("evt-astra-2", {
+      type: "content.delta",
+      itemId: "msg-astra",
+      payload: { streamKind: "assistant_text", delta: "tests." },
+    });
+    astraEvent("evt-astra-done", { type: "turn.completed", payload: { state: "completed" } });
+    await harness.drain();
+
+    const thread = await waitForThread(
+      harness.readModel,
+      (entry) => (entry.agentRequests?.open ?? []).length === 0,
+    );
+    // The whole final reply goes back, written by astra, for the thread's own agent.
+    const reply = thread.messages.find((message) => message.id === `hand-off-reply:${requestId}`);
+    expect(reply).toMatchObject({
+      text: "Fixed the retry tests.",
+      fromAgent: { participantId: astraId },
+      requestKind: "reply",
+    });
+    expect(reply?.participantId ?? null).toBeNull();
+    expect(thread.queuedFollowUps?.map((entry) => entry.messageId)).toEqual([
+      `hand-off-reply:${requestId}`,
+    ]);
+    expect(
+      thread.messages.find((message) => message.id === "hand-off-request")?.requestOutcome,
+    ).toBe("answered");
   });
 
   it("stops a room agent that starts working on its own while another agent holds the thread", async () => {

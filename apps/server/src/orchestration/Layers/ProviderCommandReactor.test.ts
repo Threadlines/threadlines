@@ -10,6 +10,7 @@ import {
   type ProviderSessionStartInput,
   ProviderDriverKind,
   ProviderInstanceId,
+  RoomAgentRequestId,
   SideTurnId,
   type ThreadContextSeed,
   ThreadForkSeedOutcomeActivityKind,
@@ -265,9 +266,21 @@ describe("ProviderCommandReactor", () => {
             : {}),
           threadId,
           resumeCursor: resumeCursor ?? { opaque: `resume-${sessionIndex}` },
+          // Like the adapters: a runtime asked for the room tools reports them.
+          ...(typeof input === "object" &&
+          input !== null &&
+          "roomTools" in input &&
+          input.roomTools === true
+            ? { roomTools: true }
+            : {}),
           createdAt: now,
           updatedAt: now,
         };
+        // Like ProviderService: starting a session replaces the runtime under that key.
+        const replaced = runtimeSessions.findIndex((entry) => entry.threadId === threadId);
+        if (replaced !== -1) {
+          runtimeSessions.splice(replaced, 1);
+        }
         runtimeSessions.push(session);
         const projectStarting =
           projectStartingDuringRestart && sessionIndex > 1 && projectRestartStarting
@@ -1046,6 +1059,184 @@ describe("ProviderCommandReactor", () => {
     await harness.drain();
     const thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
     expect(thread?.queuedFollowUps?.map((entry) => entry.messageId)).toEqual(["queue-for-astra"]);
+  });
+
+  it("runs an independent review fresh, with only its request and the captured changes", async () => {
+    const { harness, threadId, astraId, dispatch, now } =
+      await startRoomWithMessageQueuedForAstra();
+    harness.readConversation.mockClear();
+    const sideTurnId = SideTurnId.make("0d9e8f7a-6b5c-4d3e-8f1a-2b3c4d5e6f71");
+    const sideKey = sideSessionKey(threadId, sideTurnId, astraId);
+    await dispatch({
+      type: "thread.agent-request.submit",
+      commandId: CommandId.make("cmd-review"),
+      threadId,
+      requestId: RoomAgentRequestId.make("request-review"),
+      kind: "review",
+      from: { participantId: null },
+      to: { participantId: astraId },
+      callerTurnId: asTurnId("turn-1"),
+      chainEpoch: 0,
+      message: { messageId: asMessageId("review-request"), text: "Check the retry backoff." },
+      sideTurnId,
+      reviewInput: {
+        basis: { kind: "uncommitted", files: 1, truncated: false, capturedAt: now },
+        diff: "diff --git a/retry.ts b/retry.ts\n+const backoff = 2;",
+      },
+      createdAt: now,
+    });
+    await waitFor(() =>
+      harness.sendTurn.mock.calls.some(
+        ([request]) => (request as { threadId: string }).threadId === sideKey,
+      ),
+    );
+
+    const started = harness.startSession.mock.calls.find(([key]) => key === sideKey)?.[1];
+    expect(started).toMatchObject({ lockdown: "side-review", roomTools: true });
+    expect(started).not.toHaveProperty("forkFrom");
+    // It never reads the agent's own conversation.
+    expect(harness.readConversation).not.toHaveBeenCalled();
+    const sent = harness.sendTurn.mock.calls
+      .map(([request]) => request as { threadId: string; input?: string })
+      .find((request) => request.threadId === sideKey);
+    expect(sent?.input).toContain("independent review");
+    expect(sent?.input).toContain("Check the retry backoff.");
+    expect(sent?.input).toContain("+const backoff = 2;");
+    // No room conversation: not even the question the user queued for astra.
+    expect(sent?.input).not.toContain("review it");
+  });
+
+  it("queues a hand-off when the turn that made it completes, behind the user's own message", async () => {
+    const { harness, threadId, astraId, dispatch, settle, now } =
+      await startRoomWithMessageQueuedForAstra();
+    await dispatch({
+      type: "thread.agent-request.submit",
+      commandId: CommandId.make("cmd-hand-off"),
+      threadId,
+      requestId: RoomAgentRequestId.make("request-hand-off"),
+      kind: "hand_off",
+      from: { participantId: null },
+      to: { participantId: astraId },
+      callerTurnId: asTurnId("turn-1"),
+      chainEpoch: 0,
+      message: { messageId: asMessageId("hand-off-request"), text: "Fix the retry tests." },
+      createdAt: now,
+    });
+    await harness.drain();
+    // Nothing moves while the turn that made it is still running.
+    let thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+    expect(thread?.queuedFollowUps?.map((entry) => entry.messageId)).toEqual(["queue-for-astra"]);
+
+    await settle(0, 0, "cmd-caller-completed");
+    await waitFor(() => harness.sendTurn.mock.calls.length === 2);
+    // The user's message goes first; the hand-off waits its turn.
+    expect((harness.sendTurn.mock.calls[1]?.[0] as { messageId?: string }).messageId).toBe(
+      "queue-for-astra",
+    );
+    await harness.drain();
+    thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+    expect(thread?.queuedFollowUps).toMatchObject([
+      { messageId: "hand-off-request", fromAgent: { participantId: null } },
+    ]);
+    expect(thread?.agentRequests.open).toMatchObject([{ status: "queued" }]);
+  });
+
+  it("does not send a room turn the user stopped while it was being prepared", async () => {
+    const { harness, threadId, astraId, dispatch, settle, now } =
+      await startRoomWithMessageQueuedForAstra();
+    let releaseStart: (() => void) | undefined;
+    const startGate = new Promise<void>((resolve) => {
+      releaseStart = resolve;
+    });
+    const defaultStart = harness.startSession.getMockImplementation()!;
+    harness.startSession.mockImplementation((key: unknown, input: unknown) =>
+      key === participantSessionKey(threadId, astraId)
+        ? Effect.promise(() => startGate).pipe(Effect.andThen(defaultStart(key, input)))
+        : defaultStart(key, input),
+    );
+
+    // The queued message for astra starts preparing astra's session...
+    await settle(0, 0, "cmd-primary-done");
+    await waitFor(() =>
+      harness.startSession.mock.calls.some(
+        ([key]) => key === participantSessionKey(threadId, astraId),
+      ),
+    );
+    // ...and the user presses Stop before it is ready.
+    await dispatch({
+      type: "thread.turn.interrupt",
+      commandId: CommandId.make("cmd-stop-while-starting"),
+      threadId,
+      createdAt: now,
+    });
+    releaseStart?.();
+    await harness.drain();
+    expect(harness.sendTurn.mock.calls.length).toBe(1);
+  });
+
+  it("restarts the thread's own agent with resume once, to pick up the room tools", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    const threadId = ThreadId.make("thread-1");
+    const dispatch = (command: Parameters<typeof harness.engine.dispatch>[0]) =>
+      Effect.runPromise(harness.engine.dispatch(command));
+    const startTurn = (id: string) =>
+      dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make(`cmd-${id}`),
+        threadId,
+        message: { messageId: asMessageId(id), role: "user", text: "work", attachments: [] },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "full-access",
+        createdAt: now,
+      });
+    const settleReady = (id: string) =>
+      dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make(`cmd-ready-${id}`),
+        threadId,
+        session: {
+          threadId,
+          status: "ready",
+          providerName: "codex",
+          runtimeMode: "full-access",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: now,
+        },
+        createdAt: now,
+      });
+
+    // Before the thread is a room: no room tools.
+    await startTurn("before-room");
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    expect(harness.startSession.mock.calls[0]?.[1]).not.toHaveProperty("roomTools");
+    await settleReady("1");
+    await dispatch({
+      type: "thread.participant.add",
+      commandId: CommandId.make("cmd-add-astra"),
+      threadId,
+      participant: {
+        id: ThreadParticipantId.make("7a0b1c2d-3e4f-4a5b-8c6d-7e8f9a0b1c2d"),
+        handle: "astra",
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6-astra" },
+      },
+      createdAt: now,
+    });
+
+    await startTurn("in-room");
+    await waitFor(() => harness.sendTurn.mock.calls.length === 2);
+    expect(harness.startSession.mock.calls.length).toBe(2);
+    expect(harness.startSession.mock.calls[1]?.[1]).toMatchObject({
+      roomTools: true,
+      resumeCursor: { opaque: "resume-1" },
+    });
+
+    // Once it has them, it keeps its runtime.
+    await settleReady("2");
+    await startTurn("again");
+    await waitFor(() => harness.sendTurn.mock.calls.length === 3);
+    expect(harness.startSession.mock.calls.length).toBe(2);
   });
 
   it("answers on the side in a locked-down fork, without touching the agent at work", async () => {

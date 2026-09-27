@@ -4,6 +4,7 @@ import {
   MessageId,
   ProjectId,
   ProviderInstanceId,
+  RoomAgentRequestId,
   SIDE_ANSWER_OUTCOME_ACTIVITY_KIND,
   SideTurnId,
   ThreadId,
@@ -21,6 +22,7 @@ import * as Exit from "effect/Exit";
 import { describe, expect, it } from "vite-plus/test";
 
 import { decideOrchestrationCommand } from "./decider.ts";
+import { projectEvent } from "./projector.ts";
 
 const now = "2026-01-01T00:00:00.000Z";
 const threadId = ThreadId.make("thread-room");
@@ -588,6 +590,263 @@ describe("decider rooms", () => {
         readModel({ messages: [{ ...halfWritten, streaming: false }] }),
       );
       expect(Exit.isFailure(lateWords)).toBe(true);
+    });
+  });
+  describe("room tools", () => {
+    const callerTurn = TurnId.make("turn-caller");
+    const working = () => session({ status: "running", activeTurnId: callerTurn });
+
+    // Apply decided events, so a test can walk a request through its steps.
+    async function apply(
+      model: OrchestrationReadModel,
+      events: ReadonlyArray<Omit<OrchestrationEvent, "sequence">>,
+    ): Promise<OrchestrationReadModel> {
+      let next = model;
+      for (const event of events) {
+        next = await Effect.runPromise(
+          projectEvent(next, {
+            ...event,
+            sequence: next.snapshotSequence + 1,
+          } as OrchestrationEvent),
+        );
+      }
+      return next;
+    }
+    const threadOf = (model: OrchestrationReadModel) =>
+      model.threads.find((entry) => entry.id === threadId)!;
+
+    let requestNumber = 0;
+    function request(
+      kind: "ask" | "review" | "hand_off",
+      overrides: Partial<
+        Extract<OrchestrationCommand, { type: "thread.agent-request.submit" }>
+      > = {},
+    ): Extract<OrchestrationCommand, { type: "thread.agent-request.submit" }> {
+      requestNumber += 1;
+      return {
+        type: "thread.agent-request.submit",
+        commandId: CommandId.make(`cmd-request-${requestNumber}`),
+        threadId,
+        requestId: RoomAgentRequestId.make(`request-${requestNumber}`),
+        kind,
+        from: { participantId: null },
+        to: { participantId: astraId },
+        callerTurnId: callerTurn,
+        chainEpoch: 0,
+        message: {
+          messageId: MessageId.make(`request-message-${requestNumber}`),
+          text: "check the retry logic",
+        },
+        ...(kind === "hand_off"
+          ? {}
+          : {
+              sideTurnId: SideTurnId.make(
+                `0d9e8f7a-6b5c-4d3e-8f1a-2b3c4d5e6f${String(requestNumber).padStart(2, "0")}`,
+              ),
+            }),
+        ...(kind === "review"
+          ? {
+              reviewInput: {
+                basis: { kind: "uncommitted", files: 2, truncated: false, capturedAt: now },
+                diff: "diff --git a/retry.ts b/retry.ts",
+              },
+            }
+          : {}),
+        createdAt: now,
+        ...overrides,
+      } as Extract<OrchestrationCommand, { type: "thread.agent-request.submit" }>;
+    }
+
+    it("lets the agent at work ask another during its turn, and refuses every other case", async () => {
+      const model = readModel({ session: working() });
+      const events = await decideEvents(request("review"), model);
+      expect(events.map((event) => event.type)).toEqual([
+        "thread.message-sent",
+        "thread.agent-request-submitted",
+        "thread.side-turn-started",
+      ]);
+      expect(events[0]?.payload).toMatchObject({
+        participantId: astraId,
+        fromAgent: { participantId: null },
+        requestKind: "review",
+        reviewInput: { basis: { files: 2 } },
+      });
+      expect(events[2]?.payload).toMatchObject({
+        sideTurn: { kind: "review", askedBy: { participantId: null } },
+      });
+
+      const refused = async (command: OrchestrationCommand, thread: Partial<OrchestrationThread>) =>
+        Exit.isFailure(await decide(command, readModel(thread)));
+      // An agent that does not hold the thread.
+      expect(
+        await refused(
+          request("ask", { from: { participantId: astraId }, to: { participantId: null } }),
+          { session: working() },
+        ),
+      ).toBe(true);
+      // No turn in flight.
+      expect(await refused(request("ask"), { session: session() })).toBe(true);
+      // After Stop, until the user writes.
+      expect(
+        await refused(request("ask"), {
+          session: working(),
+          agentRequests: { ...EMPTY_AGENT_REQUEST_STATE, hold: true },
+        }),
+      ).toBe(true);
+      // Three requests since the user wrote, hand-offs included.
+      expect(
+        await refused(request("hand_off"), {
+          session: working(),
+          agentRequests: { ...EMPTY_AGENT_REQUEST_STATE, requestsSinceUser: 3 },
+        }),
+      ).toBe(true);
+      // Someone is already answering on the side.
+      expect(
+        await refused(request("ask"), {
+          session: working(),
+          sideTurn: {
+            sideTurnId: SideTurnId.make("0d9e8f7a-6b5c-4d3e-8f1a-2b3c4d5e6f99"),
+            participantId: astraId,
+            messageId: MessageId.make("other-question"),
+            status: "running",
+            startedAt: now,
+          },
+        }),
+      ).toBe(true);
+    });
+
+    it("hands off once the calling turn completes, and routes the reply back exactly once", async () => {
+      let model = readModel({ session: working() });
+      const handOff = request("hand_off");
+      model = await apply(model, await decideEvents(handOff, model));
+      expect(threadOf(model).agentRequests.open[0]).toMatchObject({ status: "pending" });
+      expect(threadOf(model).agentRequests.requestsSinceUser).toBe(1);
+
+      // The calling turn completed (the reactor's call): the target's turn joins the queue.
+      model = await apply(
+        model,
+        await decideEvents(
+          {
+            type: "thread.agent-request.queue",
+            commandId: CommandId.make("cmd-queue"),
+            threadId,
+            requestId: handOff.requestId,
+            createdAt: now,
+          },
+          model,
+        ),
+      );
+      expect(threadOf(model).queuedFollowUps).toMatchObject([
+        {
+          messageId: handOff.message.messageId,
+          participantId: astraId,
+          fromAgent: { participantId: null },
+        },
+      ]);
+
+      // Sending it, once the caller is idle, keeps who wrote it, and the
+      // request is running.
+      model = { ...model, threads: [{ ...threadOf(model), session: session() }] };
+      const sent = await decideEvents(
+        {
+          type: "thread.follow-up.send-queued",
+          commandId: CommandId.make("cmd-send"),
+          threadId,
+          messageId: handOff.message.messageId,
+          createdAt: "2026-01-01T00:00:09.000Z",
+        },
+        model,
+      );
+      expect(sent.find((event) => event.type === "thread.message-sent")?.payload).toMatchObject({
+        fromAgent: { participantId: null },
+        requestId: handOff.requestId,
+        requestKind: "hand_off",
+        createdAt: now,
+      });
+      expect(sent.some((event) => event.type === "thread.agent-requests-reset")).toBe(false);
+      model = await apply(model, sent);
+      expect(threadOf(model).agentRequests.open[0]).toMatchObject({ status: "running" });
+
+      const settle = {
+        type: "thread.agent-request.settle" as const,
+        commandId: CommandId.make("cmd-settle"),
+        threadId,
+        requestId: handOff.requestId,
+        outcome: "answered" as const,
+        reply: {
+          messageId: MessageId.make(`hand-off-reply:${handOff.requestId}`),
+          text: "fixed it",
+        },
+        createdAt: now,
+      };
+      model = await apply(model, await decideEvents(settle, model));
+      const thread = threadOf(model);
+      expect(thread.agentRequests.open).toEqual([]);
+      expect(
+        thread.messages.find((message) => message.id === handOff.message.messageId),
+      ).toMatchObject({
+        requestOutcome: "answered",
+      });
+      // The reply is queued for the thread's own agent, written by astra.
+      expect(thread.queuedFollowUps?.at(-1)).toMatchObject({
+        messageId: settle.reply.messageId,
+        fromAgent: { participantId: astraId },
+      });
+      // Settling again finds nothing open: no second reply.
+      expect(Exit.isFailure(await decide(settle, model))).toBe(true);
+    });
+
+    it("ends the agents' chain on Stop, until the user writes again", async () => {
+      let model = readModel({ session: working() });
+      const ask = request("ask");
+      model = await apply(model, await decideEvents(ask, model));
+      const handOff = request("hand_off");
+      model = await apply(model, await decideEvents(handOff, model));
+
+      const stopped = await decideEvents(
+        {
+          type: "thread.turn.interrupt",
+          commandId: CommandId.make("cmd-stop"),
+          threadId,
+          turnId: callerTurn,
+          createdAt: now,
+        },
+        model,
+      );
+      expect(stopped.map((event) => event.type)).toEqual([
+        "thread.turn-interrupt-requested",
+        "thread.agent-requests-held",
+        "thread.agent-request-settled",
+        "thread.agent-request-settled",
+        "thread.side-turn-interrupt-requested",
+      ]);
+      model = await apply(model, stopped);
+      expect(threadOf(model).agentRequests).toMatchObject({ hold: true, chainEpoch: 1, open: [] });
+      // A request from before Stop is refused even once the hold is gone.
+      expect(Exit.isFailure(await decide(request("ask"), model))).toBe(true);
+
+      const userTurn = await decideEvents(
+        turnStart(null),
+        readModel({ ...threadOf(model), session: session() }),
+      );
+      expect(userTurn.some((event) => event.type === "thread.agent-requests-reset")).toBe(true);
+    });
+
+    it("changes an added agent's model only when it has nothing in flight", async () => {
+      const change = {
+        type: "thread.participant.update" as const,
+        commandId: CommandId.make("cmd-model"),
+        threadId,
+        participantId: astraId,
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6-sol" },
+        createdAt: now,
+      };
+      expect(await decideEvents(change, readModel())).toMatchObject([
+        { type: "thread.participant-updated", payload: { modelSelection: { model: "gpt-6-sol" } } },
+      ]);
+      let busy = readModel({ session: working() });
+      busy = await apply(busy, await decideEvents(request("hand_off"), busy));
+      expect(Exit.isFailure(await decide(change, busy))).toBe(true);
     });
   });
 });
