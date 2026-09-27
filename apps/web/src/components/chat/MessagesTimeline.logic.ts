@@ -54,6 +54,14 @@ export interface TimelineRowPlacement {
 
 const UNPLACED: TimelineRowPlacement = { tray: null, padTop: false };
 
+/**
+ * The user writing starts an exchange. A message one room agent wrote to
+ * another (a hand-off, its reply) happens inside the exchange: it neither
+ * splits the turn that wrote it nor ends the user's exchange.
+ */
+const startsExchange = (message: Pick<ChatMessage, "role" | "fromAgent">) =>
+  message.role === "user" && message.fromAgent === undefined;
+
 export type MessagesTimelineRow = TimelineRowPlacement &
   (
     | {
@@ -323,7 +331,7 @@ export function deriveMessagesTimelineRows(input: {
   // and lifecycle entries arrive without turn ids, so position is the reliable
   // signal across providers.
   const lastUserMessageIndex = visibleTimelineEntries.findLastIndex(
-    (entry) => entry.kind === "message" && entry.message.role === "user",
+    (entry) => entry.kind === "message" && startsExchange(entry.message),
   );
 
   for (let index = 0; index < visibleTimelineEntries.length; index += 1) {
@@ -559,7 +567,7 @@ function foldFinishedStretches(
     // in that exchange; your message starts an earlier exchange.
     if (row.kind === "message") {
       if (row.message.role === "assistant") agentWroteAfter = true;
-      else if (row.message.role === "user") agentWroteAfter = false;
+      else if (startsExchange(row.message)) agentWroteAfter = false;
       continue;
     }
     if (row.kind !== "work") {
@@ -705,7 +713,7 @@ function settleFinishedTurns(
     .map((requestedAt) => Date.parse(requestedAt))
     .filter(Number.isFinite);
   const lastUserIndex = result.findLastIndex(
-    (row) => row.kind === "message" && row.message.role === "user",
+    (row) => row.kind === "message" && startsExchange(row.message),
   );
   let spanStart = 0;
   let userMessageAt: string | null = null;
@@ -715,7 +723,7 @@ function settleFinishedTurns(
     if (row.kind !== "message") {
       continue;
     }
-    if (row.message.role === "user") {
+    if (startsExchange(row.message)) {
       spanStart = index + 1;
       userMessageAt = row.message.createdAt;
       previousAnswerEndMs = Number.NEGATIVE_INFINITY;
@@ -980,7 +988,7 @@ function resolveLiveAnchorLabel(
     return label;
   }
   const lastUserIndex = rows.findLastIndex(
-    (row) => row.kind === "message" && row.message.role === "user",
+    (row) => row.kind === "message" && startsExchange(row.message),
   );
   const runningSteps = rows.slice(lastUserIndex + 1).flatMap((row) =>
     row.kind === "work"

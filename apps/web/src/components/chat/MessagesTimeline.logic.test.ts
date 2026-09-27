@@ -1133,6 +1133,27 @@ describe("finished turns and the live step", () => {
     expect(messageRow(settled, "answer-2")?.turnSummary).toMatchObject({ workedMs: 30_000 });
   });
 
+  it("keeps a turn whole when it hands off to another agent partway", () => {
+    const handOff = {
+      ...userEntry("hand-off", "2026-01-01T00:00:50Z"),
+      message: {
+        ...userEntry("hand-off", "2026-01-01T00:00:50Z").message,
+        text: "Take the retry loop from here.",
+        fromAgent: { participantId: null },
+        requestKind: "hand_off" as const,
+      },
+    };
+    const rows = derive([
+      userEntry("user-1", "2026-01-01T00:00:00Z"),
+      workEntry("read", "2026-01-01T00:00:07Z"),
+      handOff,
+      assistantEntry("answer", "2026-01-01T00:01:00Z", "2026-01-01T00:01:15Z"),
+    ]);
+
+    // Timed from the user's message, with the work before the hand-off.
+    expect(messageRow(rows, "answer")?.turnSummary).toMatchObject({ workedMs: 75_000 });
+  });
+
   it("leaves the turn in flight alone, and a turn with no answer keeps its tracker", () => {
     const inFlight = derive(settledTurn, {
       isWorking: true,

@@ -62,8 +62,8 @@ export const pickRoomAgentOptions = (
 
 /**
  * Move an added agent to another model. The server refuses while that agent
- * is working or answering. Options picked for the old model and not sent yet
- * are dropped.
+ * is working or answering. Options picked here for the old model and not sent
+ * yet are dropped.
  */
 export const changeRoomAgentModel = async (
   threadRef: ScopedThreadRef,

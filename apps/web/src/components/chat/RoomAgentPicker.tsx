@@ -49,6 +49,9 @@ import { ProviderInstanceIcon } from "./ProviderInstanceIcon";
 import { changeRoomAgentModel, renameRoomAgent } from "./roomAgentActions";
 import { type ModelEsque, getPickerModelName } from "./providerIconUtils";
 
+/** How long a palette's "Add agent" waits for this picker to be there. */
+const ADD_AGENT_REQUEST_LAPSE_MS = 2_000;
+
 interface AgentRow {
   readonly id: ThreadParticipantId | null;
   /** "GPT-6 Astra 2 (Reviewer)". */
@@ -85,12 +88,17 @@ export const RoomAgentPicker = memo(function RoomAgentPicker(props: {
   const [changingModelOf, setChangingModelOf] = useState<ThreadParticipantId | null>(null);
   const choose = useRoomRecipientStore((state) => state.choose);
   const addAgentRequested = useRoomRecipientStore(
-    (state) => state.addAgentRequested === scopedThreadKey(props.threadRef),
+    (state) => state.addAgentRequested?.threadKey === scopedThreadKey(props.threadRef),
   );
   // Asked for from the command palette: open once the closing palette has
   // handed focus back, or the list would lose it and close at once.
   useEffect(() => {
     if (!addAgentRequested) return;
+    const requestedAt = useRoomRecipientStore.getState().addAgentRequested?.at ?? 0;
+    if (Date.now() - requestedAt > ADD_AGENT_REQUEST_LAPSE_MS) {
+      useRoomRecipientStore.getState().requestAddAgent(null);
+      return;
+    }
     let frame = requestAnimationFrame(() => {
       frame = requestAnimationFrame(() => {
         useRoomRecipientStore.getState().requestAddAgent(null);
@@ -386,6 +394,8 @@ export const RoomAgentPicker = memo(function RoomAgentPicker(props: {
                     setMenuOpen(false);
                   }}
                   onKeyDown={(event) => {
+                    // Keys on the row's own buttons are theirs.
+                    if (event.target !== event.currentTarget) return;
                     if (event.key === "Enter" || event.key === " ") {
                       event.preventDefault();
                       choose(props.threadRef, row.id);
@@ -457,7 +467,7 @@ export const RoomAgentPicker = memo(function RoomAgentPicker(props: {
                             : "Change model"
                       }
                       className={cn(
-                        "hidden shrink-0 rounded-sm p-0.5 text-muted-foreground group-hover:block",
+                        "hidden shrink-0 rounded-sm p-0.5 text-muted-foreground group-focus-within:block group-hover:block",
                         busy ? "cursor-not-allowed opacity-50" : "hover:text-foreground",
                       )}
                       onClick={(event) => {
@@ -473,7 +483,7 @@ export const RoomAgentPicker = memo(function RoomAgentPicker(props: {
                     <button
                       type="button"
                       aria-label={`Rename ${row.name}`}
-                      className="hidden shrink-0 rounded-sm p-0.5 text-muted-foreground hover:text-foreground group-hover:block"
+                      className="hidden shrink-0 rounded-sm p-0.5 text-muted-foreground hover:text-foreground group-focus-within:block group-hover:block"
                       onClick={(event) => {
                         event.stopPropagation();
                         setRenaming(roomAgentKey(row.id));
@@ -486,7 +496,7 @@ export const RoomAgentPicker = memo(function RoomAgentPicker(props: {
                     <button
                       type="button"
                       aria-label={`Remove ${row.name}`}
-                      className="hidden shrink-0 rounded-sm p-0.5 text-muted-foreground hover:text-foreground group-hover:block"
+                      className="hidden shrink-0 rounded-sm p-0.5 text-muted-foreground hover:text-foreground group-focus-within:block group-hover:block"
                       onClick={(event) => {
                         event.stopPropagation();
                         setMenuOpen(false);

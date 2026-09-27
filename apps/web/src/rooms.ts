@@ -97,11 +97,12 @@ interface RoomRecipientState {
     wait: boolean,
   ) => void;
   /**
-   * "Add agent" asked for from outside the composer (the command palette),
-   * by scoped thread key. That thread's agent picker opens its model list
-   * and clears it.
+   * "Add agent" asked for from outside the composer (the command palette):
+   * the thread, by scoped key, and when. That thread's agent picker opens its
+   * model list and clears it; a picker that was not there to see it in time
+   * lets it lapse rather than open later out of nowhere.
    */
-  readonly addAgentRequested: string | null;
+  readonly addAgentRequested: { readonly threadKey: string; readonly at: number } | null;
   readonly requestAddAgent: (threadRef: ScopedThreadRef | null) => void;
 }
 
@@ -132,7 +133,10 @@ export const useRoomRecipientStore = create<RoomRecipientState>((set) => ({
     }),
   addAgentRequested: null,
   requestAddAgent: (threadRef) =>
-    set({ addAgentRequested: threadRef === null ? null : scopedThreadKey(threadRef) }),
+    set({
+      addAgentRequested:
+        threadRef === null ? null : { threadKey: scopedThreadKey(threadRef), at: Date.now() },
+    }),
 }));
 
 /** Whether "Send when done" was picked for the message being written. */

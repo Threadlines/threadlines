@@ -55,6 +55,7 @@ import {
 import { useShallow } from "zustand/react/shallow";
 import { useCommandPaletteStore } from "../commandPaletteStore";
 import { useRoomRecipientStore } from "../rooms";
+import { derivePendingApprovals } from "../session-logic";
 import { readEnvironmentApi } from "../environmentApi";
 import { readPrimaryEnvironmentDescriptor, usePrimaryEnvironmentId } from "../environments/primary";
 import {
@@ -1699,9 +1700,14 @@ function OpenCommandPaletteDialog() {
     });
   }
 
-  // Where the composer's agent picker is: a server thread, with rooms on. It
-  // opens the picker's model list, the same as its "Add agent" row.
-  if (settings.roomsEnabled && activeThread) {
+  // Where the composer's agent picker is: a server thread, with rooms on, and
+  // no approval holding the composer's toolbar. It opens the picker's model
+  // list, the same as its "Add agent" row.
+  if (
+    settings.roomsEnabled &&
+    activeThread &&
+    derivePendingApprovals(activeThread.activities).length === 0
+  ) {
     const threadRef = scopeThreadRef(activeThread.environmentId, activeThread.id);
     actionItems.push({
       kind: "action",

@@ -562,6 +562,10 @@ function buildForkSourceExcerpt(message: ChatMessage): string {
   return formatForkSourceExcerpt(message.text, FORK_SOURCE_EXCERPT_CHARS);
 }
 
+/** A message an agent wrote to another is shown as an agent's words, not the user's. */
+const forkSourceRole = (message: Pick<ChatMessage, "role" | "fromAgent">): ChatMessage["role"] =>
+  message.fromAgent !== undefined ? "assistant" : message.role;
+
 function roleLabelForForkSource(role: ChatMessage["role"]): string {
   switch (role) {
     case "assistant":
@@ -5670,8 +5674,11 @@ export default function ChatView(props: ChatViewProps) {
 
   const failedTurnRetryAction = useMemo(() => {
     const failedMessageId = deriveFailedTurnRetryMessageId({
-      // A side question is never the failed turn's message.
-      messages: (activeThread?.messages ?? []).filter((message) => !isSideMessage(message)),
+      // A side question is never the failed turn's message, and Retry sits on
+      // the user's own message, not on one an agent wrote to another.
+      messages: (activeThread?.messages ?? []).filter(
+        (message) => !isSideMessage(message) && message.fromAgent === undefined,
+      ),
       sessionLastError: activeThread?.session?.lastError,
     });
     if (
@@ -6320,7 +6327,7 @@ export default function ChatView(props: ChatViewProps) {
         }
         setForkDialogState({
           sourceMessageId: lastMessage.id,
-          sourceMessageRole: lastMessage.role,
+          sourceMessageRole: forkSourceRole(lastMessage),
           sourceMessageText: buildForkSourceExcerpt(lastMessage),
           sourceAttachmentCount: lastMessage.attachments?.length ?? 0,
           instruction: DEFAULT_CONTINUE_IN_PROJECT_INSTRUCTION,
