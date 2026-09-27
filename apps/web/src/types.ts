@@ -16,6 +16,7 @@ import type {
   OrchestrationQueuedFollowUp,
   OrchestrationThreadLinkedPullRequest,
   OrchestrationThreadGoal,
+  OrchestrationAgentRequestState,
   OrchestrationSideTurn,
   OrchestrationThreadParticipant,
   ProjectKind,
@@ -30,6 +31,11 @@ import type {
   ProviderInstanceId,
   CheckpointRef,
   ProviderInteractionMode,
+  RoomAgentMessageKind,
+  RoomAgentRef,
+  RoomAgentRequestId,
+  RoomAgentRequestOutcome,
+  RoomReviewInput,
   RuntimeMode,
 } from "@threadlines/contracts";
 
@@ -79,6 +85,16 @@ export interface ChatMessage {
   participantId?: ThreadParticipantId | undefined;
   /** See OrchestrationMessage.sideTurnId: part of a side answer. */
   sideTurnId?: SideTurnId | undefined;
+  /** See OrchestrationMessage.fromAgent: a user-role message an agent wrote. */
+  fromAgent?: RoomAgentRef | undefined;
+  requestId?: RoomAgentRequestId | undefined;
+  requestKind?: RoomAgentMessageKind | undefined;
+  /** How the request this message made ended; absent while it is open. */
+  requestOutcome?: RoomAgentRequestOutcome | undefined;
+  /** Why a request that did not get its answer ended, when known. */
+  requestError?: string | undefined;
+  /** See OrchestrationMessage.reviewInput. */
+  reviewInput?: RoomReviewInput | undefined;
   turnId?: TurnId | null;
   createdAt: string;
   completedAt?: string | undefined;
@@ -159,6 +175,11 @@ export interface Thread {
   sideTurn?: OrchestrationSideTurn | null;
   /** See OrchestrationThreadShell.agentRole: the user's name for the thread's own agent. */
   agentRole?: string | undefined;
+  /**
+   * See OrchestrationThread.agentRequests: requests agents made of each other.
+   * Carried by the thread's detail stream only.
+   */
+  agentRequests?: OrchestrationAgentRequestState;
   /** See ThreadShell.doneOverride. */
   doneOverride: OrchestrationThreadDoneOverride | null;
   /** See ThreadShell.lastSeenAt. */

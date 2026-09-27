@@ -178,6 +178,8 @@ export function applyRoomAgentUpdate(
     readonly participantId: ThreadParticipantId | null;
     readonly role?: string | null | undefined;
     readonly modelSelection?: ModelSelection | undefined;
+    /** The agent's name for its new model, with a model change. */
+    readonly handle?: string | undefined;
   },
 ): {
   readonly participants: OrchestrationThreadParticipant[];
@@ -203,6 +205,7 @@ export function applyRoomAgentUpdate(
             ...(update.modelSelection !== undefined
               ? { modelSelection: update.modelSelection }
               : {}),
+            ...(update.handle !== undefined ? { handle: update.handle } : {}),
           },
     ),
     agentRole: room.agentRole,

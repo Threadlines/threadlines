@@ -1,6 +1,7 @@
 import {
   type EnvironmentId,
   type MessageId,
+  type OrchestrationAgentRequest,
   type ProviderDriverKind,
   PROVIDER_DISPLAY_NAMES,
   type ServerProviderSkill,
@@ -47,7 +48,7 @@ import {
   type TurnAgentSummary,
 } from "./agentsPanel.logic";
 import { DEFAULT_SCROLL_END_TOLERANCE_PX, isScrollMetricsAtEnd } from "../ChatView.logic";
-import { type ChatAttachment, type TurnDiffSummary } from "../../types";
+import { type ChatAttachment, type ChatMessage, type TurnDiffSummary } from "../../types";
 import { chatAttachmentPreviewQueryOptions } from "../../lib/attachmentPreviewQuery";
 import { environmentRequiresRpcAssetTransport } from "../../environments/runtime";
 import { summarizeTurnDiffStats } from "../../lib/turnDiffTree";
@@ -152,7 +153,8 @@ import type {
 } from "~/lib/transcriptHighlightContext";
 import { formatTranscriptHighlightContextPreview } from "~/lib/transcriptHighlightContext";
 import { ProviderInstanceIcon } from "./ProviderInstanceIcon";
-import { type RoomAgentLabel, roomAgentKey } from "../../rooms";
+import { describeRoomAgentMessage, type RoomAgentLabel, roomAgentKey } from "../../rooms";
+import { RoomReviewTag } from "./RoomReviewTag";
 import { placeSideAnswerRows, type SideAnswerView } from "./sideAnswers";
 
 // ---------------------------------------------------------------------------
@@ -168,6 +170,8 @@ interface TimelineRowSharedState {
   roomAgents: ReadonlyMap<string, RoomAgentLabel> | null;
   /** Agent messages that start a new speaker's stretch and carry an author line. */
   roomAuthorLineMessageIds: ReadonlySet<MessageId>;
+  /** Room requests still open, by their request message. */
+  openAgentRequestByMessageId: ReadonlyMap<MessageId, OrchestrationAgentRequest>;
   routeThreadKey: string;
   markdownCwd: string | undefined;
   resolvedTheme: "light" | "dark";
@@ -602,6 +606,7 @@ function revealTimelineSearchMatch(
 // ---------------------------------------------------------------------------
 
 const EMPTY_SIDE_ANSWERS: ReadonlyArray<SideAnswerView> = [];
+const EMPTY_AGENT_REQUESTS: ReadonlyArray<OrchestrationAgentRequest> = [];
 
 interface MessagesTimelineProps {
   emptyState?: ReactNode;
@@ -625,6 +630,8 @@ interface MessagesTimelineProps {
   revertTurnCountByUserMessageId: Map<MessageId, number>;
   /** Room agents by `roomAgentKey`; null or absent outside rooms. */
   roomAgents?: ReadonlyMap<string, RoomAgentLabel> | null;
+  /** Requests room agents made of each other that are not over yet. */
+  openAgentRequests?: ReadonlyArray<OrchestrationAgentRequest>;
   onRevertUserMessage: (messageId: MessageId) => void;
   onContinueInNewThread?: (messageId: MessageId) => void;
   onRevealPickedElement?: ((context: PickedElementContextDraft) => void) | undefined;
@@ -694,6 +701,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   onOpenTurnDiff,
   revertTurnCountByUserMessageId,
   roomAgents = null,
+  openAgentRequests = EMPTY_AGENT_REQUESTS,
   onRevertUserMessage,
   onContinueInNewThread,
   onRevealPickedElement,
@@ -759,7 +767,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   const rows = useStableRows(rawRows);
   const anchorOwnsLiveAgents = rows.some((row) => row.kind === "working");
   // In a room, an agent message gets an author line when the speaker changes:
-  // after the user spoke, or after a different agent.
+  // after the user spoke, or after a different agent. A message an agent wrote
+  // to another names its writer, so it counts as that agent speaking. A side
+  // answer always names who answered.
   const roomAuthorLineMessageIds = useMemo(() => {
     const ids = new Set<MessageId>();
     if (roomAgents === null) {
@@ -769,18 +779,25 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     for (const row of rows) {
       if (row.kind !== "message") continue;
       if (row.message.role === "user") {
-        lastAuthor = null;
+        lastAuthor =
+          row.message.fromAgent === undefined
+            ? null
+            : roomAgentKey(row.message.fromAgent.participantId);
         continue;
       }
       if (row.message.role !== "assistant") continue;
       const author = roomAgentKey(row.message.participantId);
-      if (author !== lastAuthor) {
+      if (author !== lastAuthor || row.message.sideTurnId !== undefined) {
         ids.add(row.message.id);
       }
       lastAuthor = author;
     }
     return ids;
   }, [roomAgents, rows]);
+  const openAgentRequestByMessageId = useMemo(
+    () => new Map(openAgentRequests.map((request) => [request.requestMessageId, request] as const)),
+    [openAgentRequests],
+  );
   const resolvedProviderAuthReconnectIds = useMemo(
     () => deriveResolvedProviderAuthReconnectIds(rows),
     [rows],
@@ -1501,6 +1518,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       timestampFormat,
       roomAgents,
       roomAuthorLineMessageIds,
+      openAgentRequestByMessageId,
       routeThreadKey,
       markdownCwd,
       resolvedTheme,
@@ -1534,6 +1552,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       timestampFormat,
       roomAgents,
       roomAuthorLineMessageIds,
+      openAgentRequestByMessageId,
       routeThreadKey,
       markdownCwd,
       resolvedTheme,
@@ -2086,7 +2105,13 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
       data-thread-search-target={isActiveSearchTarget ? "true" : undefined}
     >
       {row.kind === "work" ? <WorkGroupSection row={row} /> : null}
-      {row.kind === "message" && row.message.role === "user" ? <UserTimelineRow row={row} /> : null}
+      {row.kind === "message" && row.message.role === "user" ? (
+        row.message.fromAgent === undefined ? (
+          <UserTimelineRow row={row} />
+        ) : (
+          <AgentMessageTimelineRow row={row} />
+        )
+      ) : null}
       {row.kind === "message" && row.message.role === "assistant" ? (
         <AssistantTimelineRow row={row} />
       ) : null}
@@ -2330,6 +2355,87 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
           />
         </div>
       </div>
+    </div>
+  );
+}
+
+const NO_TERMINAL_CONTEXTS: ParsedTerminalContextEntry[] = [];
+const NO_TRANSCRIPT_HIGHLIGHTS: ParsedTranscriptHighlightContextEntry[] = [];
+const NO_PICKED_ELEMENTS: SentPickedElementEntry[] = [];
+const NO_DRAWINGS: Array<{ id: string; entry: ParsedDrawingContextEntry }> = [];
+
+/**
+ * A message one room agent wrote to another through a room tool: a question,
+ * an independent review, a hand-off or a hand-off's reply. Quieter than the
+ * user's own messages, and never read as the user speaking.
+ */
+function AgentMessageTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
+  const ctx = use(TimelineRowCtx);
+  const { message } = row;
+  const description = describeRoomAgentMessage({
+    message,
+    labels: ctx.roomAgents,
+    openStatus: ctx.openAgentRequestByMessageId.get(message.id)?.status ?? null,
+  });
+  if (description === null) {
+    return null;
+  }
+  return (
+    <div
+      className="group min-w-0 px-1 py-0.5"
+      data-room-agent-message={message.requestKind ?? "message"}
+      title={formatTimestamp(message.createdAt, ctx.timestampFormat)}
+    >
+      <div className="mb-1 flex min-h-5 min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 font-mono text-[10.5px] text-muted-foreground">
+        <span className="min-w-0 truncate">{`${description.from} → ${description.to}`}</span>
+        {description.kind ? (
+          <>
+            <span className="shrink-0 text-muted-foreground/50">·</span>
+            <span className="shrink-0">{description.kind}</span>
+          </>
+        ) : null}
+        {description.review ? (
+          <>
+            <span className="shrink-0 text-muted-foreground/50">·</span>
+            <RoomReviewTag request={message} timestampFormat={ctx.timestampFormat} />
+          </>
+        ) : null}
+        {message.text.length > 0 ? (
+          <div className="ml-auto opacity-0 transition-opacity duration-200 focus-within:opacity-100 group-hover:opacity-100">
+            <MessageCopyButton
+              text={message.text}
+              ariaLabel="Copy message"
+              size="icon-xs"
+              variant="ghost"
+              className="-my-1.5"
+            />
+          </div>
+        ) : null}
+      </div>
+      <div className="border-l border-border pl-3">
+        <CollapsibleUserMessageBody
+          text={message.text}
+          terminalContexts={NO_TERMINAL_CONTEXTS}
+          transcriptHighlights={NO_TRANSCRIPT_HIGHLIGHTS}
+          pickedElements={NO_PICKED_ELEMENTS}
+          drawings={NO_DRAWINGS}
+          skills={ctx.skills}
+          bodyClassName="text-muted-foreground"
+          forceExpanded={ctx.searchTargetMessageId === message.id}
+          searchHighlightQuery={
+            ctx.activeSearchTargetMessageId === message.id ? ctx.searchTargetQuery : undefined
+          }
+        />
+      </div>
+      {/* A side request's ending shows at the end of its side block instead. */}
+      {description.outcomeNote !== null && message.sideTurnId === undefined ? (
+        <p
+          className="mt-1 pl-3 text-xs leading-4 text-muted-foreground/70"
+          data-room-request-outcome={message.requestOutcome}
+        >
+          {description.outcomeNote}
+        </p>
+      ) : null}
     </div>
   );
 }
@@ -2592,6 +2698,7 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
             <RoomAuthorLine
               label={ctx.roomAgents.get(roomAgentKey(row.message.participantId))}
               onTheSide={row.message.sideTurnId !== undefined}
+              review={row.sideReview}
             />
           ) : null}
           {authReconnect ? (
@@ -2981,17 +3088,23 @@ function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "workin
  * stopped, or failed.
  */
 function SideStatusTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "side-status" }> }) {
-  const { roomAgents, onStopSideAnswer } = use(TimelineRowCtx);
+  const { roomAgents, onStopSideAnswer, timestampFormat } = use(TimelineRowCtx);
   const name = roomAgents?.get(roomAgentKey(row.participantId))?.name ?? "The agent";
   if (row.state === "answering" || row.state === "stopping") {
     const stopping = row.state === "stopping";
     return (
       <div className="py-1" data-side-answer-status={row.state}>
-        <p className="flex min-w-0 items-center gap-1.5 pl-1 text-xs leading-4 text-muted-foreground/70">
+        <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 pl-1 text-xs leading-4 text-muted-foreground/70">
           <WorkingAnchorDots state="working" className="relative -top-px -mr-0.5 shrink-0" />
           <span className="min-w-0 truncate">
-            {name} · {stopping ? "stopping" : "answering"}
+            {name} · {stopping ? "stopping" : row.review ? "reviewing independently" : "answering"}
           </span>
+          {row.review ? (
+            <>
+              <span className="shrink-0 text-muted-foreground/35">·</span>
+              <RoomReviewTag request={row.question} timestampFormat={timestampFormat} />
+            </>
+          ) : null}
           {!stopping && onStopSideAnswer ? (
             <>
               <span className="shrink-0 text-muted-foreground/35">·</span>
@@ -3004,21 +3117,34 @@ function SideStatusTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "sid
               </button>
             </>
           ) : null}
-        </p>
+        </div>
       </div>
     );
   }
+  // An agent's request says why it ended (a timeout, the agent leaving); a
+  // failure keeps the side answer's own error.
+  const outcomeNote =
+    row.question.requestOutcome === "failed"
+      ? null
+      : (describeRoomAgentMessage({
+          message: row.question,
+          labels: roomAgents,
+          openStatus: null,
+        })?.outcomeNote ?? null);
   return (
     <p
       className={cn(
         "pl-1 text-xs leading-4",
-        row.state === "failed" ? "text-destructive-foreground" : "text-muted-foreground/70",
+        row.state === "failed" && outcomeNote === null
+          ? "text-destructive-foreground"
+          : "text-muted-foreground/70",
       )}
       data-side-answer-status={row.state}
     >
-      {row.state === "failed"
-        ? `${name} couldn't answer${row.error ? `: ${row.error}` : "."}`
-        : `Stopped before ${name} finished.`}
+      {outcomeNote ??
+        (row.state === "failed"
+          ? `${name} couldn't answer${row.error ? `: ${row.error}` : "."}`
+          : `Stopped before ${name} finished.`)}
     </p>
   );
 }
@@ -3785,6 +3911,8 @@ const CollapsibleUserMessageBody = memo(function CollapsibleUserMessageBody(prop
   forceExpanded?: boolean | undefined;
   searchHighlightQuery?: string | undefined;
   footer?: ReactNode;
+  /** Overrides the text's classes (its color, for an agent's quieter message). */
+  bodyClassName?: string | undefined;
 }) {
   const [expanded, setExpanded] = useState(false);
   const hasVisibleBody =
@@ -3815,6 +3943,7 @@ const CollapsibleUserMessageBody = memo(function CollapsibleUserMessageBody(prop
             transcriptHighlights={props.transcriptHighlights}
             skills={props.skills}
             searchHighlightQuery={props.searchHighlightQuery}
+            className={props.bodyClassName}
           />
         </div>
       ) : null}
@@ -3885,7 +4014,12 @@ const UserMessageBody = memo(function UserMessageBody(props: {
   transcriptHighlights: ParsedTranscriptHighlightContextEntry[];
   skills: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">>;
   searchHighlightQuery?: string | undefined;
+  className?: string | undefined;
 }) {
+  const textClassName = cn(
+    "whitespace-pre-wrap wrap-break-word text-sm leading-relaxed text-foreground",
+    props.className,
+  );
   const transcriptHighlightNodes =
     props.transcriptHighlights.length > 0 ? (
       <div className="mb-1.5 flex flex-wrap gap-1.5">
@@ -3952,9 +4086,7 @@ const UserMessageBody = memo(function UserMessageBody(props: {
         return (
           <>
             {transcriptHighlightNodes}
-            <div className="whitespace-pre-wrap wrap-break-word text-sm leading-relaxed text-foreground">
-              {inlineNodes}
-            </div>
+            <div className={textClassName}>{inlineNodes}</div>
           </>
         );
       }
@@ -3991,9 +4123,7 @@ const UserMessageBody = memo(function UserMessageBody(props: {
     return (
       <>
         {transcriptHighlightNodes}
-        <div className="whitespace-pre-wrap wrap-break-word text-sm leading-relaxed text-foreground">
-          {inlineNodes}
-        </div>
+        <div className={textClassName}>{inlineNodes}</div>
       </>
     );
   }
@@ -4006,7 +4136,7 @@ const UserMessageBody = memo(function UserMessageBody(props: {
     <>
       {transcriptHighlightNodes}
       {props.text.length > 0 ? (
-        <div className="whitespace-pre-wrap wrap-break-word text-sm leading-relaxed text-foreground">
+        <div className={textClassName}>
           <SkillInlineText
             text={props.text}
             skills={props.skills}
@@ -4314,18 +4444,22 @@ const McpAuthReconnectCard = memo(function McpAuthReconnectCard({
 function RoomAuthorLine({
   label,
   onTheSide = false,
+  review,
 }: {
   label: RoomAgentLabel | undefined;
   /** A read-only answer given while another agent worked. */
   onTheSide?: boolean;
+  /** An independent review's answer: the request, for its tag. */
+  review?: ChatMessage | undefined;
 }) {
+  const { timestampFormat } = use(TimelineRowCtx);
   if (!label) {
     return (
       <div className="mb-1 font-mono text-[10.5px] text-muted-foreground">an agent that left</div>
     );
   }
   return (
-    <div className="mb-1 flex items-center gap-1.5 text-xs">
+    <div className="mb-1 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs">
       {label.entry ? (
         <ProviderInstanceIcon
           driverKind={label.entry.driverKind}
@@ -4337,7 +4471,11 @@ function RoomAuthorLine({
         />
       ) : null}
       <span className="font-medium text-foreground">{label.name}</span>
-      {onTheSide ? <span className="text-muted-foreground">on the side</span> : null}
+      {review ? (
+        <RoomReviewTag request={review} timestampFormat={timestampFormat} />
+      ) : onTheSide ? (
+        <span className="text-muted-foreground">on the side</span>
+      ) : null}
     </div>
   );
 }

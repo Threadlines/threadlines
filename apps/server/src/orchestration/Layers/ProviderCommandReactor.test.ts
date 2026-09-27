@@ -5,11 +5,13 @@ import path from "node:path";
 
 import {
   ModelSelection,
+  type OrchestrationSession,
   ProviderRuntimeEvent,
   ProviderSession,
   type ProviderSessionStartInput,
   ProviderDriverKind,
   ProviderInstanceId,
+  RoomAgentRequestId,
   SideTurnId,
   type ThreadContextSeed,
   ThreadForkSeedOutcomeActivityKind,
@@ -27,6 +29,8 @@ import {
   ThreadParticipantId,
   TurnId,
 } from "@threadlines/contracts";
+import * as Deferred from "effect/Deferred";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
@@ -36,7 +40,7 @@ import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
-import { afterEach, describe, expect, it, vi } from "vite-plus/test";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vite-plus/test";
 
 import { deriveServerPaths, ServerConfig } from "../../config.ts";
 import { TextGenerationError } from "@threadlines/contracts";
@@ -76,6 +80,7 @@ import { VcsStatusBroadcaster } from "../../vcs/VcsStatusBroadcaster.ts";
 import { GitWorkflowService, type GitWorkflowServiceShape } from "../../git/GitWorkflowService.ts";
 import { CheckpointStore } from "../../checkpointing/Services/CheckpointStore.ts";
 import { makeCheckpointStoreStub } from "../../checkpointing/testing/CheckpointStoreStub.ts";
+import { checkpointHandover, HandoverCaptureWait } from "../checkpointHandover.ts";
 
 const asProjectId = (value: string): ProjectId => ProjectId.make(value);
 const asApprovalRequestId = (value: string): ApprovalRequestId => ApprovalRequestId.make(value);
@@ -265,9 +270,21 @@ describe("ProviderCommandReactor", () => {
             : {}),
           threadId,
           resumeCursor: resumeCursor ?? { opaque: `resume-${sessionIndex}` },
+          // Like the adapters: a runtime asked for the room tools reports them.
+          ...(typeof input === "object" &&
+          input !== null &&
+          "roomTools" in input &&
+          input.roomTools === true
+            ? { roomTools: true }
+            : {}),
           createdAt: now,
           updatedAt: now,
         };
+        // Like ProviderService: starting a session replaces the runtime under that key.
+        const replaced = runtimeSessions.findIndex((entry) => entry.threadId === threadId);
+        if (replaced !== -1) {
+          runtimeSessions.splice(replaced, 1);
+        }
         runtimeSessions.push(session);
         const projectStarting =
           projectStartingDuringRestart && sessionIndex > 1 && projectRestartStarting
@@ -485,6 +502,8 @@ describe("ProviderCommandReactor", () => {
       Layer.provide(SqlitePersistenceMemory),
     );
     const layer = ProviderCommandReactorLive.pipe(
+      // No checkpoint reactor here to report captures done: hand over at once.
+      Layer.provideMerge(Layer.succeed(HandoverCaptureWait, Duration.zero)),
       Layer.provideMerge(orchestrationLayer),
       Layer.provideMerge(projectionSnapshotLayer),
       Layer.provideMerge(Layer.succeed(ProviderService, service)),
@@ -532,6 +551,7 @@ describe("ProviderCommandReactor", () => {
       ),
       Layer.provideMerge(ServerSettingsService.layerTest()),
       Layer.provideMerge(ServerConfig.layerTest(process.cwd(), baseDir)),
+      Layer.provideMerge(SqlitePersistenceMemory),
       Layer.provideMerge(NodeServices.layer),
     );
     runtime = ManagedRuntime.make(layer);
@@ -1046,6 +1066,557 @@ describe("ProviderCommandReactor", () => {
     await harness.drain();
     const thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
     expect(thread?.queuedFollowUps?.map((entry) => entry.messageId)).toEqual(["queue-for-astra"]);
+  });
+
+  it("runs an independent review fresh, with only its request and the captured changes", async () => {
+    const { harness, threadId, astraId, dispatch, now } =
+      await startRoomWithMessageQueuedForAstra();
+    harness.readConversation.mockClear();
+    const sideTurnId = SideTurnId.make("0d9e8f7a-6b5c-4d3e-8f1a-2b3c4d5e6f71");
+    const sideKey = sideSessionKey(threadId, sideTurnId, astraId);
+    await dispatch({
+      type: "thread.agent-request.submit",
+      commandId: CommandId.make("cmd-review"),
+      threadId,
+      requestId: RoomAgentRequestId.make("request-review"),
+      kind: "review",
+      from: { participantId: null },
+      to: { participantId: astraId },
+      callerTurnId: asTurnId("turn-1"),
+      chainEpoch: 0,
+      message: { messageId: asMessageId("review-request"), text: "Check the retry backoff." },
+      sideTurnId,
+      reviewInput: {
+        basis: { kind: "uncommitted", files: 1, truncated: false, capturedAt: now },
+        diff: "diff --git a/retry.ts b/retry.ts\n+const backoff = 2;",
+      },
+      createdAt: now,
+    });
+    await waitFor(() =>
+      harness.sendTurn.mock.calls.some(
+        ([request]) => (request as { threadId: string }).threadId === sideKey,
+      ),
+    );
+
+    const started = harness.startSession.mock.calls.find(([key]) => key === sideKey)?.[1];
+    expect(started).toMatchObject({ lockdown: "side-review", roomTools: true });
+    expect(started).not.toHaveProperty("forkFrom");
+    // It never reads the agent's own conversation.
+    expect(harness.readConversation).not.toHaveBeenCalled();
+    const sent = harness.sendTurn.mock.calls
+      .map(([request]) => request as { threadId: string; input?: string })
+      .find((request) => request.threadId === sideKey);
+    expect(sent?.input).toContain("independent review");
+    expect(sent?.input).toContain("Check the retry backoff.");
+    expect(sent?.input).toContain("+const backoff = 2;");
+    // No room conversation: not even the question the user queued for astra.
+    expect(sent?.input).not.toContain("review it");
+  });
+
+  it("queues a hand-off when the turn that made it completes, behind the user's own message", async () => {
+    const { harness, threadId, astraId, dispatch, settle, now } =
+      await startRoomWithMessageQueuedForAstra();
+    await dispatch({
+      type: "thread.agent-request.submit",
+      commandId: CommandId.make("cmd-hand-off"),
+      threadId,
+      requestId: RoomAgentRequestId.make("request-hand-off"),
+      kind: "hand_off",
+      from: { participantId: null },
+      to: { participantId: astraId },
+      callerTurnId: asTurnId("turn-1"),
+      chainEpoch: 0,
+      message: { messageId: asMessageId("hand-off-request"), text: "Fix the retry tests." },
+      createdAt: now,
+    });
+    await harness.drain();
+    // Nothing moves while the turn that made it is still running.
+    let thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+    expect(thread?.queuedFollowUps?.map((entry) => entry.messageId)).toEqual(["queue-for-astra"]);
+
+    await settle(0, 0, "cmd-caller-completed");
+    await waitFor(() => harness.sendTurn.mock.calls.length === 2);
+    // The user's message goes first; the hand-off waits its turn.
+    expect((harness.sendTurn.mock.calls[1]?.[0] as { messageId?: string }).messageId).toBe(
+      "queue-for-astra",
+    );
+    await harness.drain();
+    thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+    expect(thread?.queuedFollowUps).toMatchObject([
+      { messageId: "hand-off-request", fromAgent: { participantId: null } },
+    ]);
+    expect(thread?.agentRequests.open).toMatchObject([{ status: "queued" }]);
+  });
+
+  it("does not send a room turn the user stopped while it was being prepared", async () => {
+    const { harness, threadId, astraId, dispatch, settle, now } =
+      await startRoomWithMessageQueuedForAstra();
+    let releaseStart: (() => void) | undefined;
+    const startGate = new Promise<void>((resolve) => {
+      releaseStart = resolve;
+    });
+    const defaultStart = harness.startSession.getMockImplementation()!;
+    harness.startSession.mockImplementation((key: unknown, input: unknown) =>
+      key === participantSessionKey(threadId, astraId)
+        ? Effect.promise(() => startGate).pipe(Effect.andThen(defaultStart(key, input)))
+        : defaultStart(key, input),
+    );
+
+    // The queued message for astra starts preparing astra's session...
+    await settle(0, 0, "cmd-primary-done");
+    await waitFor(() =>
+      harness.startSession.mock.calls.some(
+        ([key]) => key === participantSessionKey(threadId, astraId),
+      ),
+    );
+    // ...and the user presses Stop before it is ready, then writes again
+    // (which lifts the hold) before that preparation finishes.
+    await dispatch({
+      type: "thread.turn.interrupt",
+      commandId: CommandId.make("cmd-stop-while-starting"),
+      threadId,
+      createdAt: now,
+    });
+    await dispatch({
+      type: "thread.follow-up.submit",
+      commandId: CommandId.make("cmd-after-stop"),
+      threadId,
+      turnId: asTurnId("turn-1"),
+      message: {
+        messageId: asMessageId("after-stop"),
+        role: "user",
+        text: "never mind",
+        attachments: [],
+      },
+      delivery: "queue",
+      createdAt: now,
+    });
+    releaseStart?.();
+    // The turn was prepared in its own fiber: wait until it is either sent or
+    // dropped, then check which.
+    const stoppedTurnSent = () =>
+      harness.sendTurn.mock.calls.some(
+        ([request]) => (request as { messageId?: string }).messageId === "queue-for-astra",
+      );
+    await waitFor(async () => {
+      const thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+      return stoppedTurnSent() || thread?.session?.lastError === "Stopped before the turn started.";
+    });
+    // The turn that was stopped is never sent, whatever came after.
+    expect(stoppedTurnSent()).toBe(false);
+  });
+
+  it("after a restart, answers a hand-off only from its own finished turn, and sends that answer on", async () => {
+    const now = "2026-01-01T00:00:00.000Z";
+    const astraId = ThreadParticipantId.make("7a0b1c2d-3e4f-4a5b-8c6d-7e8f9a0b1c2d");
+    const projectId = asProjectId("project-restart-room");
+    // The server went down with a hand-off to astra running. Astra finished a
+    // message the user queued for it first, so its latest turn is unrelated.
+    // With `ownTurnFinished`, astra also finished the hand-off's own turn.
+    const crashedRoom = (
+      engine: OrchestrationEngineShape,
+      threadId: ThreadId,
+      ownTurnFinished: boolean,
+    ) =>
+      Effect.gen(function* () {
+        const id = (name: string) => `${threadId}-${name}`;
+        const sessionSet = (name: string, session: Partial<OrchestrationSession>) =>
+          engine.dispatch({
+            type: "thread.session.set",
+            commandId: CommandId.make(id(`session-${name}`)),
+            threadId,
+            session: {
+              threadId,
+              status: "ready",
+              providerName: "codex",
+              runtimeMode: "full-access",
+              activeTurnId: null,
+              lastError: null,
+              updatedAt: now,
+              ...session,
+            },
+            createdAt: now,
+          });
+        const answer = (turnId: string, participantId: ThreadParticipantId | null, text: string) =>
+          Effect.gen(function* () {
+            yield* engine.dispatch({
+              type: "thread.message.assistant.delta",
+              commandId: CommandId.make(id(`delta-${turnId}`)),
+              threadId,
+              messageId: asMessageId(id(`answer-${turnId}`)),
+              participantId,
+              delta: text,
+              turnId: asTurnId(turnId),
+              createdAt: now,
+            });
+            yield* engine.dispatch({
+              type: "thread.message.assistant.complete",
+              commandId: CommandId.make(id(`complete-${turnId}`)),
+              threadId,
+              messageId: asMessageId(id(`answer-${turnId}`)),
+              participantId,
+              turnId: asTurnId(turnId),
+              completesTurn: true,
+              createdAt: now,
+            });
+          });
+        const sendQueued = (messageId: string) =>
+          engine.dispatch({
+            type: "thread.follow-up.send-queued",
+            commandId: CommandId.make(id(`send-${messageId}`)),
+            threadId,
+            messageId: asMessageId(messageId),
+            createdAt: now,
+          });
+
+        yield* engine.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make(id("create")),
+          threadId,
+          projectId,
+          title: "Crashed room",
+          modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5-codex" },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "full-access",
+          branch: null,
+          worktreePath: null,
+          createdAt: now,
+        });
+        yield* engine.dispatch({
+          type: "thread.participant.add",
+          commandId: CommandId.make(id("add")),
+          threadId,
+          participant: {
+            id: astraId,
+            handle: "astra",
+            modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6-astra" },
+          },
+          createdAt: now,
+        });
+        yield* engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make(id("turn")),
+          threadId,
+          message: {
+            messageId: asMessageId(id("work")),
+            role: "user",
+            text: "work",
+            attachments: [],
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "full-access",
+          createdAt: now,
+        });
+        yield* sessionSet("caller-running", {
+          status: "running",
+          activeTurnId: asTurnId("turn-caller"),
+        });
+        yield* engine.dispatch({
+          type: "thread.follow-up.submit",
+          commandId: CommandId.make(id("user-for-astra")),
+          threadId,
+          turnId: asTurnId("turn-caller"),
+          message: {
+            messageId: asMessageId(id("user-for-astra")),
+            role: "user",
+            text: "look at the logs",
+            attachments: [],
+          },
+          delivery: "queue",
+          participantId: astraId,
+          createdAt: now,
+        });
+        yield* engine.dispatch({
+          type: "thread.agent-request.submit",
+          commandId: CommandId.make(id("hand-off")),
+          threadId,
+          requestId: RoomAgentRequestId.make(id("request")),
+          kind: "hand_off",
+          from: { participantId: null },
+          to: { participantId: astraId },
+          callerTurnId: asTurnId("turn-caller"),
+          chainEpoch: 0,
+          message: { messageId: asMessageId(id("hand-off")), text: "Fix the retry tests." },
+          createdAt: now,
+        });
+        yield* answer("turn-caller", null, "handing off");
+        yield* sessionSet("caller-ready", {});
+        yield* engine.dispatch({
+          type: "thread.agent-request.queue",
+          commandId: CommandId.make(id("queue")),
+          threadId,
+          requestId: RoomAgentRequestId.make(id("request")),
+          createdAt: now,
+        });
+        // Astra works the user's message first, then the hand-off starts.
+        yield* sendQueued(id("user-for-astra"));
+        yield* sessionSet("astra-user-running", {
+          status: "running",
+          activeTurnId: asTurnId("turn-astra-user"),
+          participantId: astraId,
+        });
+        yield* answer("turn-astra-user", astraId, "the logs look fine");
+        yield* sessionSet("astra-user-ready", { participantId: astraId });
+        yield* sendQueued(id("hand-off"));
+        if (ownTurnFinished) {
+          yield* sessionSet("astra-hand-off-running", {
+            status: "running",
+            activeTurnId: asTurnId("turn-astra-hand-off"),
+            participantId: astraId,
+          });
+          yield* answer("turn-astra-hand-off", astraId, "retry tests fixed");
+          yield* sessionSet("astra-hand-off-ready", { participantId: astraId });
+        }
+      });
+    const neverStarted = ThreadId.make("thread-restart-never-started");
+    const finished = ThreadId.make("thread-restart-finished");
+    const harness = await createHarness({
+      beforeStart: (engine) =>
+        Effect.gen(function* () {
+          yield* engine.dispatch({
+            type: "project.create",
+            commandId: CommandId.make("cmd-project-restart-room"),
+            projectId,
+            title: "Restart Room",
+            workspaceRoot: PROJECT_ROOT,
+            defaultModelSelection: null,
+            createdAt: now,
+          });
+          yield* crashedRoom(engine, neverStarted, false);
+          yield* crashedRoom(engine, finished, true);
+        }),
+    });
+    const handOffMessage = async (threadId: ThreadId) =>
+      (await harness.readModel()).threads
+        .find((entry) => entry.id === threadId)
+        ?.messages.find((message) => message.id === `${threadId}-hand-off`);
+
+    // Its own turn never started: it failed, and astra's unrelated answer is
+    // not passed off as its result.
+    await waitFor(async () => (await handOffMessage(neverStarted))?.requestOutcome !== undefined);
+    expect(await handOffMessage(neverStarted)).toMatchObject({ requestOutcome: "failed" });
+
+    // Its own turn finished: the answer goes back to the agent that asked.
+    await waitFor(() =>
+      harness.sendTurn.mock.calls.some(
+        ([request]) =>
+          (request as { messageId?: string }).messageId === `hand-off-reply:${finished}-request`,
+      ),
+    );
+    expect(await handOffMessage(finished)).toMatchObject({ requestOutcome: "answered" });
+    const reply = harness.sendTurn.mock.calls
+      .map(([request]) => request as { threadId: string; messageId?: string; input?: string })
+      .find((request) => request.messageId === `hand-off-reply:${finished}-request`);
+    expect(reply?.threadId).toBe(finished);
+    // The reply itself is the hand-off's own answer (the room catch-up above
+    // it carries the rest).
+    expect(reply?.input?.split("\n---\n").at(-1)?.trim()).toBe("retry tests fixed");
+    expect(
+      harness.sendTurn.mock.calls.some(
+        ([request]) =>
+          (request as { messageId?: string }).messageId ===
+          `hand-off-reply:${neverStarted}-request`,
+      ),
+    ).toBe(false);
+  });
+
+  it("does not start an agent whose session was stopped while its turn waited to take over", async () => {
+    const { harness, threadId, astraId, dispatch, settle, now } =
+      await startRoomWithMessageQueuedForAstra();
+    // Another capture holds the thread's checkpoint lock, so the handover to
+    // astra waits.
+    const releaseLock = await Effect.runPromise(Deferred.make<void>());
+    const lockHeld = await Effect.runPromise(Deferred.make<void>());
+    Effect.runFork(
+      checkpointHandover.capture(
+        threadId,
+        "turn-holding-the-lock",
+        Deferred.succeed(lockHeld, undefined).pipe(Effect.andThen(Deferred.await(releaseLock))),
+      ),
+    );
+    await Effect.runPromise(Deferred.await(lockHeld));
+    // A failed assertion must not leave the lock held for later tests.
+    onTestFinished(() =>
+      Effect.runPromise(Deferred.succeed(releaseLock, undefined)).then(() => {}),
+    );
+    const astraStarts = () =>
+      harness.startSession.mock.calls.filter(
+        ([key]) => key === participantSessionKey(threadId, astraId),
+      ).length;
+
+    await settle(0, 0, "cmd-primary-done-before-stop");
+    await harness.drain();
+    await dispatch({
+      type: "thread.session.stop",
+      commandId: CommandId.make("cmd-session-stop-during-handover"),
+      threadId,
+      createdAt: now,
+    });
+    await harness.drain();
+    await Effect.runPromise(Deferred.succeed(releaseLock, undefined));
+
+    await waitFor(async () => {
+      const thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+      return thread?.session?.lastError === "Stopped before the turn started." || astraStarts() > 0;
+    });
+    // Nothing starts astra back up, and its turn is never sent.
+    expect(astraStarts()).toBe(0);
+    expect(
+      harness.sendTurn.mock.calls.some(
+        ([request]) => (request as { messageId?: string }).messageId === "queue-for-astra",
+      ),
+    ).toBe(false);
+  });
+
+  it("leaves a newer turn alone when a stopped turn that waited to take over is dropped", async () => {
+    const { harness, threadId, astraId, dispatch, settle, now } =
+      await startRoomWithMessageQueuedForAstra();
+    const releaseLock = await Effect.runPromise(Deferred.make<void>());
+    const lockHeld = await Effect.runPromise(Deferred.make<void>());
+    Effect.runFork(
+      checkpointHandover.capture(
+        threadId,
+        "turn-holding-the-lock-2",
+        Deferred.succeed(lockHeld, undefined).pipe(Effect.andThen(Deferred.await(releaseLock))),
+      ),
+    );
+    await Effect.runPromise(Deferred.await(lockHeld));
+    // A failed assertion must not leave the lock held for later tests.
+    onTestFinished(() =>
+      Effect.runPromise(Deferred.succeed(releaseLock, undefined)).then(() => {}),
+    );
+
+    // The queued message for astra waits to take over; the user stops the
+    // session and writes to astra again, and that turn starts at once.
+    await settle(0, 0, "cmd-primary-done-before-newer");
+    await harness.drain();
+    await dispatch({
+      type: "thread.session.stop",
+      commandId: CommandId.make("cmd-session-stop-before-newer"),
+      threadId,
+      createdAt: now,
+    });
+    await dispatch({
+      type: "thread.turn.start",
+      commandId: CommandId.make("cmd-newer-for-astra"),
+      threadId,
+      message: {
+        messageId: asMessageId("newer-for-astra"),
+        role: "user",
+        text: "start over",
+        attachments: [],
+      },
+      participantId: astraId,
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+      runtimeMode: "full-access",
+      createdAt: now,
+    });
+    await waitFor(() =>
+      harness.sendTurn.mock.calls.some(
+        ([request]) => (request as { messageId?: string }).messageId === "newer-for-astra",
+      ),
+    );
+    // Astra's runtime reports the newer turn running, as ingestion would.
+    const newerTurnId = asTurnId("turn-newer-for-astra");
+    await dispatch({
+      type: "thread.session.set",
+      commandId: CommandId.make("cmd-newer-running"),
+      threadId,
+      session: {
+        threadId,
+        status: "running",
+        providerName: "codex",
+        runtimeMode: "full-access",
+        activeTurnId: newerTurnId,
+        participantId: astraId,
+        lastError: null,
+        updatedAt: now,
+      },
+      createdAt: now,
+    });
+    await harness.drain();
+
+    // The stopped turn is dropped once the wait ends...
+    await Effect.runPromise(Deferred.succeed(releaseLock, undefined));
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    await harness.drain();
+    expect(
+      harness.sendTurn.mock.calls.some(
+        ([request]) => (request as { messageId?: string }).messageId === "queue-for-astra",
+      ),
+    ).toBe(false);
+    // ...and the turn that started after it keeps running.
+    const thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+    expect(thread?.session).toMatchObject({
+      status: "running",
+      activeTurnId: newerTurnId,
+      lastError: null,
+    });
+  });
+
+  it("restarts the thread's own agent with resume once, to pick up the room tools", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    const threadId = ThreadId.make("thread-1");
+    const dispatch = (command: Parameters<typeof harness.engine.dispatch>[0]) =>
+      Effect.runPromise(harness.engine.dispatch(command));
+    const startTurn = (id: string) =>
+      dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make(`cmd-${id}`),
+        threadId,
+        message: { messageId: asMessageId(id), role: "user", text: "work", attachments: [] },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "full-access",
+        createdAt: now,
+      });
+    const settleReady = (id: string) =>
+      dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make(`cmd-ready-${id}`),
+        threadId,
+        session: {
+          threadId,
+          status: "ready",
+          providerName: "codex",
+          runtimeMode: "full-access",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: now,
+        },
+        createdAt: now,
+      });
+
+    // Before the thread is a room: no room tools.
+    await startTurn("before-room");
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    expect(harness.startSession.mock.calls[0]?.[1]).not.toHaveProperty("roomTools");
+    await settleReady("1");
+    await dispatch({
+      type: "thread.participant.add",
+      commandId: CommandId.make("cmd-add-astra"),
+      threadId,
+      participant: {
+        id: ThreadParticipantId.make("7a0b1c2d-3e4f-4a5b-8c6d-7e8f9a0b1c2d"),
+        handle: "astra",
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6-astra" },
+      },
+      createdAt: now,
+    });
+
+    await startTurn("in-room");
+    await waitFor(() => harness.sendTurn.mock.calls.length === 2);
+    expect(harness.startSession.mock.calls.length).toBe(2);
+    expect(harness.startSession.mock.calls[1]?.[1]).toMatchObject({
+      roomTools: true,
+      resumeCursor: { opaque: "resume-1" },
+    });
+
+    // Once it has them, it keeps its runtime.
+    await settleReady("2");
+    await startTurn("again");
+    await waitFor(() => harness.sendTurn.mock.calls.length === 3);
+    expect(harness.startSession.mock.calls.length).toBe(2);
   });
 
   it("answers on the side in a locked-down fork, without touching the agent at work", async () => {

@@ -117,6 +117,7 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
           opaque: `resume-${String(input.threadId)}`,
         },
         cwd: input.cwd ?? process.cwd(),
+        ...(input.roomTools === true ? { roomTools: true } : {}),
         createdAt: now,
         updatedAt: now,
       };
@@ -1626,6 +1627,29 @@ routing.layer("ProviderServiceLive routing", (it) => {
         assert.equal(startPayload.threadId, initial.threadId);
       }
       assert.equal(routing.codex.sendTurn.mock.calls.length, 1);
+    }),
+  );
+
+  it.effect("brings a recovered room runtime back with its room tools", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      const initial = yield* provider.startSession(asThreadId("thread-room-recover"), {
+        provider: ProviderDriverKind.make("codex"),
+        providerInstanceId: codexInstanceId,
+        threadId: asThreadId("thread-room-recover"),
+        cwd: "/tmp/project-room",
+        runtimeMode: "full-access",
+        roomTools: true,
+      });
+
+      yield* routing.codex.stopAll();
+      routing.codex.startSession.mockClear();
+      yield* provider.sendTurn({ threadId: initial.threadId, input: "resume", attachments: [] });
+
+      const resumed = routing.codex.startSession.mock.calls[0]?.[0] as
+        | { readonly roomTools?: boolean }
+        | undefined;
+      assert.equal(resumed?.roomTools, true);
     }),
   );
 

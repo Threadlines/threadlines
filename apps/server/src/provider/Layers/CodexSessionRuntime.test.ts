@@ -8,7 +8,8 @@ import * as Schema from "effect/Schema";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { describe, it } from "vite-plus/test";
-import { ThreadId, TurnId, type ProviderEvent } from "@threadlines/contracts";
+import { SideTurnId, ThreadId, TurnId, type ProviderEvent } from "@threadlines/contracts";
+import { sideSessionKey } from "@threadlines/shared/threadParticipants";
 import * as CodexErrors from "effect-codex-app-server/errors";
 import * as CodexRpc from "effect-codex-app-server/rpc";
 
@@ -18,6 +19,8 @@ import {
   CODEX_PREVIEW_PANEL_DEVELOPER_INSTRUCTIONS,
 } from "../CodexDeveloperInstructions.ts";
 import { FILE_LINK_INSTRUCTIONS } from "../fileLinkInstructions.ts";
+import { CODEX_BROWSER_TOKEN_ENV_VAR } from "../codexAppServerArgs.ts";
+import { mcpSessionRegistry } from "../../mcp/McpSessionRegistry.ts";
 import {
   buildPermissionsApprovalResponse,
   buildTurnStartParams,
@@ -1371,5 +1374,96 @@ describe("isNativeThreadForkUnsupportedError", () => {
       false,
     );
     assert.equal(isNativeThreadForkUnsupportedError(new Error("boom")), false);
+  });
+});
+
+const MOCK_CODEX_PEER = fileURLToPath(
+  new URL(
+    "../../../../../packages/effect-codex-app-server/test/fixtures/codex-app-server-mock-peer.ts",
+    import.meta.url,
+  ),
+);
+
+describe("Codex room tools", () => {
+  /** Start a runtime against the mock peer, keeping the command Codex was spawned with. */
+  const spawnRuntime = (
+    options: Omit<Parameters<typeof makeCodexSessionRuntime>[0], "binaryPath" | "cwd">,
+  ) =>
+    Effect.gen(function* () {
+      const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+      let spawned: ChildProcess.StandardCommand | undefined;
+      const runtime = yield* makeCodexSessionRuntime({
+        ...options,
+        binaryPath: process.execPath,
+        cwd: process.cwd(),
+      }).pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, {
+          ...spawner,
+          spawn: (command) => {
+            spawned = command as ChildProcess.StandardCommand;
+            return spawner.spawn(ChildProcess.make(process.execPath, [MOCK_CODEX_PEER]));
+          },
+        }),
+      );
+      const token = spawned?.options.env?.[CODEX_BROWSER_TOKEN_ENV_VAR] ?? "";
+      return { runtime, args: spawned?.args ?? [], token };
+    });
+
+  it("attaches the room endpoint on the runtime's own credential, which ends with it", async () => {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const { runtime, args, token } = yield* spawnRuntime({
+          threadId: ThreadId.make("room-thread"),
+          serverPort: 4321,
+          runtimeMode: "full-access",
+          roomTools: true,
+        });
+        assert.ok(args.includes("mcp_servers.threadlines_room.url=http://127.0.0.1:4321/mcp/room"));
+        assert.ok(args.includes("mcp_servers.threadlines_room.tool_timeout_sec=660"));
+        assert.ok(
+          args.includes('mcp_servers.threadlines_room.default_tools_approval_mode="approve"'),
+        );
+        const scope = yield* mcpSessionRegistry.resolve(token);
+        assert.equal(scope?.browser, true);
+        assert.equal(scope?.roomTools.size, 6);
+
+        yield* runtime.start();
+        assert.equal((yield* runtime.getSession).roomTools, true);
+
+        yield* runtime.close;
+        assert.equal(yield* mcpSessionRegistry.resolve(token), null);
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer), Effect.timeout("10 seconds")),
+    );
+  });
+
+  it("gives an independent review only room_diff, no browser and no project docs", async () => {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const key = sideSessionKey(
+          ThreadId.make("0f8f5a52-4d0e-4c1b-9d56-1e7c1f9b7a01"),
+          SideTurnId.make("b2c4d6e8-1a3b-4c5d-8e9f-0a1b2c3d4e5f"),
+          null,
+        );
+        const { runtime, args, token } = yield* spawnRuntime({
+          threadId: key,
+          serverPort: 4321,
+          runtimeMode: "full-access",
+          roomTools: true,
+          lockdown: {
+            kind: "review",
+            signIn: () => Effect.succeed({ kind: "apiKey", apiKey: "sk-test" }),
+          },
+        });
+        assert.ok(args.includes("project_doc_max_bytes=0"));
+        assert.ok(args.includes('mcp_servers.threadlines_room.enabled_tools=["room_diff"]'));
+        assert.ok(args.every((arg) => !arg.includes("threadlines_browser")));
+        const scope = yield* mcpSessionRegistry.resolve(token);
+        assert.equal(scope?.browser, false);
+        assert.deepEqual([...(scope?.roomTools ?? [])], ["room_diff"]);
+
+        yield* runtime.close;
+        assert.equal(yield* mcpSessionRegistry.resolve(token), null);
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer), Effect.timeout("10 seconds")),
+    );
   });
 });

@@ -5,6 +5,7 @@ import {
   ProviderInstanceId,
   ThreadId,
   type OrchestrationReadModel,
+  EMPTY_AGENT_REQUEST_STATE,
 } from "@threadlines/contracts";
 import * as Effect from "effect/Effect";
 import { describe, expect, it } from "vite-plus/test";
@@ -42,6 +43,7 @@ function makeReadModel(): OrchestrationReadModel {
         pullRequestAutoFix: false,
         pullRequestAutoMerge: null,
         linkedPullRequests: [],
+        agentRequests: EMPTY_AGENT_REQUEST_STATE,
         participants: [],
         doneOverride: null,
         lastSeenAt: null,
@@ -178,6 +180,7 @@ describe("decider inbox lifecycle", () => {
       threads: linked.threads.map((thread) => ({
         ...thread,
         linkedPullRequests: [{ number: 294, url, autoMerge: null }],
+        agentRequests: EMPTY_AGENT_REQUEST_STATE,
         participants: [],
       })),
     };

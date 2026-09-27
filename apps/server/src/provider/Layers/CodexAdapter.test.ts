@@ -621,6 +621,32 @@ validationLayer("CodexAdapterLive validation", (it) => {
       });
     }),
   );
+  it.effect("starts an independent review fresh, whatever conversation it is offered", () =>
+    Effect.gen(function* () {
+      validationRuntimeFactory.factory.mockClear();
+      const adapter = yield* CodexAdapter;
+
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("codex"),
+        threadId: asThreadId("thread-review"),
+        runtimeMode: "full-access",
+        lockdown: "side-review",
+        roomTools: true,
+        forkFrom: { providerThreadId: "reviewer-own-thread" },
+      });
+
+      const options = validationRuntimeFactory.factory.mock.calls[0]?.[0];
+      assert.equal(options?.lockdown?.kind, "review");
+      assert.equal(options?.lockdown?.rolloutPath, undefined);
+      assert.equal(options?.forkFrom, undefined);
+      assert.equal(options?.roomTools, true);
+      const config = fs.readFileSync(path.join(options!.homePath!, "config.toml"), "utf8");
+      assert.ok(config.includes("project_doc_max_bytes = 0"));
+      assert.ok(config.includes('enabled_tools = ["room_diff"]'));
+      yield* adapter.stopSession(asThreadId("thread-review"));
+      fs.rmSync(options!.homePath!, { recursive: true, force: true });
+    }),
+  );
 });
 
 const transcriptRuntimeFactory = makeRuntimeFactory();

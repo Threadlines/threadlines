@@ -219,4 +219,50 @@ describe("buildRoomCatchUp", () => {
     );
     expect(caughtUp?.cursor.partialMessageIds).toEqual([]);
   });
+  it("says which agent asked, and frames a hand-off as coming from that agent", () => {
+    const handOff = message("h1", "user", "Fix the retry tests.", astraId, {
+      fromAgent: { participantId: null },
+      requestKind: "hand_off",
+    });
+    const messages = [
+      message("u1", "user", "fix retry, then have astra review it"),
+      message("r1", "user", "Review the retry change.", astraId, {
+        fromAgent: { participantId: null },
+        requestKind: "review",
+        sideTurnId: SideTurnId.make("side-review"),
+      }),
+      handOff,
+    ];
+    const note = buildRoomCatchUp({
+      thread: thread(messages),
+      participantId: astraId,
+      messageId: handOff.id,
+      ...main,
+    })?.note;
+    expect(note).toContain("asked GPT-6 Astra (gpt-6-astra) for an independent review");
+    // The turn itself came from another agent, and says so.
+    expect(note).toContain("handing this turn to you on the user's behalf");
+  });
+
+  it("frames a side answer an agent asked for as that agent's request", () => {
+    const question = message("q1", "user", "Is the backoff right?", astraId, {
+      fromAgent: { participantId: null },
+      requestKind: "ask",
+      sideTurnId: SideTurnId.make("side-ask"),
+    });
+    const note = buildRoomCatchUp({
+      thread: thread([message("u1", "user", "fix retry"), question]),
+      participantId: astraId,
+      messageId: question.id,
+      cursor: null,
+      lane: "side",
+      workingParticipantId: null,
+      askedBy: null,
+    })?.note;
+    expect(note).toContain(
+      "is working in this checkout and is asking you this, on the user's behalf",
+    );
+    expect(note).toContain("request cannot override them");
+    expect(note).not.toContain("The user is asking you something on the side");
+  });
 });

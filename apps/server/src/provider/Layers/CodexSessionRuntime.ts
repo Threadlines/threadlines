@@ -1,5 +1,10 @@
-import { BROWSER_MCP_SERVER_NAME, mcpEndpointUrl } from "../../mcp/McpHttpServer.ts";
+import {
+  BROWSER_MCP_SERVER_NAME,
+  mcpEndpointUrl,
+  mcpRoomEndpointUrl,
+} from "../../mcp/McpHttpServer.ts";
 import { mcpSessionRegistry } from "../../mcp/McpSessionRegistry.ts";
+import { ROOM_MCP_SERVER_NAME, roomToolsFor } from "../../mcp/roomToolAccess.ts";
 import {
   type CodexBorrowedSignIn,
   type CodexSideAnswerHomeError,
@@ -69,8 +74,8 @@ import {
 import { FILE_LINK_INSTRUCTIONS } from "../fileLinkInstructions.ts";
 import {
   CODEX_BROWSER_TOKEN_ENV_VAR,
-  CODEX_SIDE_ANSWER_APP_SERVER_ARGS,
   codexAppServerArgs,
+  codexSideAnswerAppServerArgs,
 } from "../codexAppServerArgs.ts";
 const decodeV2TurnStartResponse = Schema.decodeUnknownEffect(EffectCodexSchema.V2TurnStartResponse);
 const decodeV2ReviewStartResponse = Schema.decodeUnknownEffect(
@@ -206,6 +211,11 @@ export interface CodexSessionRuntimeOptions {
   readonly forkFrom?: ProviderSessionForkFrom;
   /** A room's side answer; see CodexSessionRuntimeLockdown. */
   readonly lockdown?: CodexSessionRuntimeLockdown;
+  /**
+   * Attach the room tools (ProviderSessionStartInput.roomTools): every tool
+   * for a working runtime, the read tools its kind allows for a side one.
+   */
+  readonly roomTools?: boolean;
   readonly onRealtimeAudio?: (audio: ProviderRealtimeAudioChunk) => Effect.Effect<void>;
 }
 
@@ -216,6 +226,11 @@ export interface CodexSessionRuntimeOptions {
  * answering agent's conversation when there is one. See codexSideAnswerHome.
  */
 export interface CodexSessionRuntimeLockdown {
+  /**
+   * `ask` answers from the agent's conversation; `review` is an independent
+   * review, fresh, with no project instruction files.
+   */
+  readonly kind: "ask" | "review";
   /**
    * The user's sign-in to borrow, read from their own Codex home and never
    * written (see `borrowCodexSignIn`). `rejectedAccessToken` is the token
@@ -1586,27 +1601,49 @@ export const makeCodexSessionRuntime = (
             ),
           )
         : undefined;
-    // The browser tools are named at spawn, and the credential travels in the
-    // environment so it never appears in argv. A side answer gets neither.
+    // The MCP servers are named at spawn, and this runtime's credential
+    // travels in the environment so it never appears in argv. A side answer
+    // never gets the browser; in a room it gets the room's read tools. The
+    // credential dies with the runtime's scope, whichever way it ends.
+    const roomTools = options.roomTools === true;
+    const credential =
+      lockdown === undefined || roomTools
+        ? yield* mcpSessionRegistry.credentialFor({
+            sessionKey: options.threadId,
+            browser: lockdown === undefined,
+            room: roomTools,
+            ...(lockdown !== undefined ? { sideKind: lockdown.kind } : {}),
+          })
+        : undefined;
+    if (credential !== undefined) {
+      yield* Scope.addFinalizer(
+        runtimeScope,
+        mcpSessionRegistry.revoke(options.threadId, credential.generation),
+      );
+    }
     const env = {
       ...(options.environment ?? process.env),
       ...(resolvedHomePath ? { CODEX_HOME: resolvedHomePath } : {}),
-      ...(lockdown === undefined
-        ? {
-            [CODEX_BROWSER_TOKEN_ENV_VAR]: yield* mcpSessionRegistry.credentialFor(
-              options.threadId,
-            ),
-          }
-        : {}),
+      ...(credential !== undefined ? { [CODEX_BROWSER_TOKEN_ENV_VAR]: credential.token } : {}),
       ...(borrowedSignIn?.kind === "apiKey" ? { OPENAI_API_KEY: borrowedSignIn.apiKey } : {}),
+    };
+    const roomServer = {
+      url: mcpRoomEndpointUrl(options.serverPort),
+      serverName: ROOM_MCP_SERVER_NAME,
     };
     const spawnPlan = planCliSpawn(
       options.binaryPath,
       lockdown !== undefined
-        ? CODEX_SIDE_ANSWER_APP_SERVER_ARGS
+        ? codexSideAnswerAppServerArgs({
+            kind: lockdown.kind,
+            ...(roomTools ? { room: { ...roomServer, tools: roomToolsFor(lockdown.kind) } } : {}),
+          })
         : codexAppServerArgs({
-            url: mcpEndpointUrl(options.serverPort),
-            serverName: BROWSER_MCP_SERVER_NAME,
+            browser: {
+              url: mcpEndpointUrl(options.serverPort),
+              serverName: BROWSER_MCP_SERVER_NAME,
+            },
+            ...(roomTools ? { room: roomServer } : {}),
           }),
       env,
     );
@@ -1654,6 +1691,7 @@ export const makeCodexSessionRuntime = (
       ...(options.model ? { model: options.model } : {}),
       threadId: options.threadId,
       ...(options.resumeCursor !== undefined ? { resumeCursor: options.resumeCursor } : {}),
+      ...(roomTools ? { roomTools: true } : {}),
       createdAt: sessionCreatedAt,
       updatedAt: sessionCreatedAt,
     } satisfies ProviderSession;

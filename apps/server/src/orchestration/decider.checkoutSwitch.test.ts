@@ -7,6 +7,7 @@ import {
   type OrchestrationCommand,
   type OrchestrationReadModel,
   type OrchestrationSession,
+  EMPTY_AGENT_REQUEST_STATE,
 } from "@threadlines/contracts";
 import * as Effect from "effect/Effect";
 import { describe, expect, it } from "vite-plus/test";
@@ -90,6 +91,7 @@ function makeReadModel(input: {
         pullRequestAutoFix: false,
         pullRequestAutoMerge: null,
         linkedPullRequests: [],
+        agentRequests: EMPTY_AGENT_REQUEST_STATE,
         participants: [],
         doneOverride: null,
         lastSeenAt: null,

@@ -17,6 +17,7 @@ import {
   PositiveInt,
   ProjectId,
   ProviderItemId,
+  RoomAgentRequestId,
   ThreadId,
   SideTurnId,
   ThreadParticipantId,
@@ -407,6 +408,62 @@ export const OrchestrationProjectCatalogSnapshot = Schema.Struct({
 });
 export type OrchestrationProjectCatalogSnapshot = typeof OrchestrationProjectCatalogSnapshot.Type;
 
+/**
+ * Room tools: requests one room agent makes of another (docs/design/rooms-slice-2.md,
+ * Part B). `ask` and `review` are answered read-only on the side; `hand_off`
+ * gives the target the next working turn, and its reply comes back.
+ */
+export const RoomAgentRequestKind = Schema.Literals(["ask", "review", "hand_off"]);
+export type RoomAgentRequestKind = typeof RoomAgentRequestKind.Type;
+
+/**
+ * What a message is in a room request: the request itself, or the routed
+ * reply to a hand-off.
+ */
+export const RoomAgentMessageKind = Schema.Literals(["ask", "review", "hand_off", "reply"]);
+export type RoomAgentMessageKind = typeof RoomAgentMessageKind.Type;
+
+/** How a room request ended. */
+export const RoomAgentRequestOutcome = Schema.Literals([
+  "answered",
+  "failed",
+  "stopped",
+  "timeout",
+  "cancelled",
+]);
+export type RoomAgentRequestOutcome = typeof RoomAgentRequestOutcome.Type;
+
+/** An agent in a room, named by its participant id. Null: the thread's own agent. */
+export const RoomAgentRef = Schema.Struct({
+  participantId: Schema.NullOr(ThreadParticipantId),
+});
+export type RoomAgentRef = typeof RoomAgentRef.Type;
+
+/** What an independent review was given besides its request. */
+export const RoomReviewBasis = Schema.Struct({
+  /** `uncommitted`: the checkout's changes; `range`: `base..head`. */
+  kind: Schema.Literals(["uncommitted", "range"]),
+  base: Schema.optional(TrimmedNonEmptyString),
+  head: Schema.optional(TrimmedNonEmptyString),
+  files: NonNegativeInt,
+  /** The captured diff was cut to fit. */
+  truncated: Schema.Boolean,
+  capturedAt: IsoDateTime,
+});
+export type RoomReviewBasis = typeof RoomReviewBasis.Type;
+
+/**
+ * Everything an independent review received besides the fixed preamble and
+ * its request text, kept on the request message so the chat can show it
+ * after the review is over.
+ */
+export const RoomReviewInput = Schema.Struct({
+  basis: RoomReviewBasis,
+  /** The captured diff, bounded. */
+  diff: Schema.String,
+});
+export type RoomReviewInput = typeof RoomReviewInput.Type;
+
 export const OrchestrationMessageRole = Schema.Literals(["user", "assistant", "system"]);
 export type OrchestrationMessageRole = typeof OrchestrationMessageRole.Type;
 
@@ -427,6 +484,19 @@ export const OrchestrationMessage = Schema.Struct({
    * Those carry `turnId: null`: they are never part of a main turn.
    */
   sideTurnId: Schema.optional(SideTurnId),
+  /**
+   * Room tools: a user-role message written by an agent (a request, or a
+   * routed hand-off reply). `participantId` stays the addressee.
+   */
+  fromAgent: Schema.optional(RoomAgentRef),
+  requestId: Schema.optional(RoomAgentRequestId),
+  requestKind: Schema.optional(RoomAgentMessageKind),
+  /** Set on a request message once its request is over. */
+  requestOutcome: Schema.optional(RoomAgentRequestOutcome),
+  /** Why a request that did not get its answer ended, when known. */
+  requestError: Schema.optional(TrimmedNonEmptyString),
+  /** An independent review's captured input. See RoomReviewInput. */
+  reviewInput: Schema.optional(RoomReviewInput),
   turnId: Schema.NullOr(TurnId),
   streaming: Schema.Boolean,
   createdAt: IsoDateTime,
@@ -806,6 +876,13 @@ export const OrchestrationQueuedFollowUp = Schema.Struct({
   modelSelection: Schema.optional(ModelSelection),
   /** In a room, the agent the message is for. Absent: the thread's own agent. */
   participantId: Schema.optional(Schema.NullOr(ThreadParticipantId)),
+  /**
+   * Room tools: queued by an agent (a hand-off or a routed reply), not the
+   * user. Its message already exists (`messageId`), so sending it starts the
+   * turn without writing the message again.
+   */
+  fromAgent: Schema.optional(RoomAgentRef),
+  requestId: Schema.optional(RoomAgentRequestId),
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
   createdAt: IsoDateTime,
@@ -862,8 +939,71 @@ export const OrchestrationSideTurn = Schema.Struct({
   messageId: MessageId,
   status: OrchestrationSideTurnStatus,
   startedAt: IsoDateTime,
+  /**
+   * `review`: an independent review, run fresh with no room context.
+   * Absent: `ask`, the user's own side answers included.
+   */
+  kind: Schema.optional(Schema.Literals(["ask", "review"])),
+  /** The agent that asked, when an agent did. Absent: the user. */
+  askedBy: Schema.optional(RoomAgentRef),
+  /** The room request this answers, when an agent asked. */
+  requestId: Schema.optional(RoomAgentRequestId),
 });
 export type OrchestrationSideTurn = typeof OrchestrationSideTurn.Type;
+
+/**
+ * An open room request: made, not yet over. A hand-off is `pending` until
+ * the turn that made it completes, `queued` once its turn for the target is
+ * in the queue, and `running` once that turn is sent. Asks and reviews are
+ * `running` from the start. A settled request leaves the open set; its
+ * outcome stays on its request message.
+ */
+export const OrchestrationAgentRequestStatus = Schema.Literals(["pending", "queued", "running"]);
+export type OrchestrationAgentRequestStatus = typeof OrchestrationAgentRequestStatus.Type;
+
+export const OrchestrationAgentRequest = Schema.Struct({
+  requestId: RoomAgentRequestId,
+  kind: RoomAgentRequestKind,
+  from: RoomAgentRef,
+  to: RoomAgentRef,
+  /** The caller's turn when the request arrived. */
+  callerTurnId: TurnId,
+  /** The thread's chain epoch when the request arrived; Stop raises it. */
+  chainEpoch: NonNegativeInt,
+  status: OrchestrationAgentRequestStatus,
+  requestMessageId: MessageId,
+  /** Asks and reviews: the side turn answering it. */
+  sideTurnId: Schema.optional(SideTurnId),
+  createdAt: IsoDateTime,
+});
+export type OrchestrationAgentRequest = typeof OrchestrationAgentRequest.Type;
+
+/**
+ * How many requests agents may make of each other before they wait for the
+ * user. The user's next submission resets the count.
+ */
+export const ROOM_AGENT_REQUEST_LIMIT = 3;
+
+/**
+ * Room tools state on a thread. `hold` is set by Stop and cleared by the
+ * user's next submission; `chainEpoch` is raised by Stop, and no request
+ * from an older epoch survives it; `requestsSinceUser` counts requests
+ * toward ROOM_AGENT_REQUEST_LIMIT.
+ */
+export const OrchestrationAgentRequestState = Schema.Struct({
+  open: Schema.Array(OrchestrationAgentRequest),
+  hold: Schema.Boolean,
+  chainEpoch: NonNegativeInt,
+  requestsSinceUser: NonNegativeInt,
+});
+export type OrchestrationAgentRequestState = typeof OrchestrationAgentRequestState.Type;
+
+export const EMPTY_AGENT_REQUEST_STATE: OrchestrationAgentRequestState = {
+  open: [],
+  hold: false,
+  chainEpoch: 0,
+  requestsSinceUser: 0,
+};
 
 export const OrchestrationSideTurnOutcome = Schema.Literals(["completed", "failed", "interrupted"]);
 export type OrchestrationSideTurnOutcome = typeof OrchestrationSideTurnOutcome.Type;
@@ -950,6 +1090,10 @@ export const OrchestrationThread = Schema.Struct({
   sideTurn: Schema.optional(Schema.NullOr(OrchestrationSideTurn)),
   /** See OrchestrationThreadShell.agentRole. */
   agentRole: Schema.optional(RoomAgentRole),
+  /** Room tools: open agent requests, the Stop hold and the limit's count. */
+  agentRequests: OrchestrationAgentRequestState.pipe(
+    Schema.withDecodingDefault(Effect.succeed(EMPTY_AGENT_REQUEST_STATE)),
+  ),
   /**
    * Per agent (`primary` or a participant id), what its conversation has been
    * told. Absent: nothing yet.
@@ -1390,6 +1534,16 @@ const ThreadParticipantUpdateCommand = Schema.Struct({
   role: Schema.optional(Schema.NullOr(RoomAgentRole)),
   /** An added agent's options (reasoning and the like). Absent: unchanged. */
   modelOptions: Schema.optional(Schema.Array(ProviderOptionSelection)),
+  /**
+   * An added agent's new model, options included. Refused while that agent
+   * is working or answering. Absent: unchanged.
+   */
+  modelSelection: Schema.optional(ModelSelection),
+  /**
+   * With a model change: the agent's name for its new model ("GPT-6 Sol 2"),
+   * unique in the room like an added agent's. Absent: unchanged.
+   */
+  handle: Schema.optional(TrimmedNonEmptyString),
   createdAt: IsoDateTime,
 });
 
@@ -2036,6 +2190,63 @@ const ThreadRoomContextRecordCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+/**
+ * Room tools: an agent's request of another agent, made through the room MCP
+ * server. The decider checks the caller holds the slot with this turn in
+ * flight, the chain epoch, the Stop hold and the limit in one place.
+ */
+const ThreadAgentRequestSubmitCommand = Schema.Struct({
+  type: Schema.Literal("thread.agent-request.submit"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  requestId: RoomAgentRequestId,
+  kind: RoomAgentRequestKind,
+  from: RoomAgentRef,
+  to: RoomAgentRef,
+  callerTurnId: TurnId,
+  /** The chain epoch the caller's request arrived under. */
+  chainEpoch: NonNegativeInt,
+  message: Schema.Struct({
+    messageId: MessageId,
+    text: Schema.String,
+  }),
+  /** Asks and reviews: the side turn that answers. */
+  sideTurnId: Schema.optional(SideTurnId),
+  /** Reviews: what the reviewer gets besides the request. */
+  reviewInput: Schema.optional(RoomReviewInput),
+  createdAt: IsoDateTime,
+});
+
+/** A pending hand-off's calling turn completed: queue the target's turn. */
+const ThreadAgentRequestQueueCommand = Schema.Struct({
+  type: Schema.Literal("thread.agent-request.queue"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  requestId: RoomAgentRequestId,
+  createdAt: IsoDateTime,
+});
+
+/**
+ * A room request is over. For an answered hand-off, `reply` is queued back
+ * to the caller in the same step. Asks and reviews settle with their side
+ * turn instead. A request no longer open is left alone.
+ */
+const ThreadAgentRequestSettleCommand = Schema.Struct({
+  type: Schema.Literal("thread.agent-request.settle"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  requestId: RoomAgentRequestId,
+  outcome: RoomAgentRequestOutcome,
+  reply: Schema.optional(
+    Schema.Struct({
+      messageId: MessageId,
+      text: Schema.String,
+    }),
+  ),
+  error: Schema.optional(TrimmedNonEmptyString),
+  createdAt: IsoDateTime,
+});
+
 const InternalOrchestrationCommand = Schema.Union([
   ThreadSessionSetCommand,
   ThreadRealtimeStateSetCommand,
@@ -2056,6 +2267,9 @@ const InternalOrchestrationCommand = Schema.Union([
   ThreadSideTurnMarkRunningCommand,
   ThreadSideTurnSettleCommand,
   ThreadRoomContextRecordCommand,
+  ThreadAgentRequestSubmitCommand,
+  ThreadAgentRequestQueueCommand,
+  ThreadAgentRequestSettleCommand,
   ThreadRevertCompleteCommand,
   ThreadPullRequestLinkCommand,
 ]);
@@ -2089,6 +2303,11 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.side-turn-running",
   "thread.side-turn-settled",
   "thread.room-context-recorded",
+  "thread.agent-request-submitted",
+  "thread.agent-request-updated",
+  "thread.agent-request-settled",
+  "thread.agent-requests-held",
+  "thread.agent-requests-reset",
   "thread.meta-updated",
   "thread.runtime-mode-set",
   "thread.interaction-mode-set",
@@ -2238,6 +2457,8 @@ export const ThreadParticipantUpdatedPayload = Schema.Struct({
   role: Schema.optional(Schema.NullOr(RoomAgentRole)),
   /** An added agent's model with its new options. Absent: unchanged. */
   modelSelection: Schema.optional(ModelSelection),
+  /** An added agent's new name, with a model change. Absent: unchanged. */
+  handle: Schema.optional(TrimmedNonEmptyString),
   updatedAt: IsoDateTime,
 });
 
@@ -2276,6 +2497,41 @@ export const ThreadSideTurnSettledPayload = Schema.Struct({
   answerMessageId: Schema.optional(MessageId),
   error: Schema.optional(TrimmedNonEmptyString),
   settledAt: IsoDateTime,
+});
+
+/** The request message and any side turn are recorded by events beside it. */
+export const ThreadAgentRequestSubmittedPayload = Schema.Struct({
+  threadId: ThreadId,
+  request: OrchestrationAgentRequest,
+});
+
+export const ThreadAgentRequestUpdatedPayload = Schema.Struct({
+  threadId: ThreadId,
+  requestId: RoomAgentRequestId,
+  status: OrchestrationAgentRequestStatus,
+  updatedAt: IsoDateTime,
+});
+
+export const ThreadAgentRequestSettledPayload = Schema.Struct({
+  threadId: ThreadId,
+  requestId: RoomAgentRequestId,
+  requestMessageId: MessageId,
+  outcome: RoomAgentRequestOutcome,
+  error: Schema.optional(TrimmedNonEmptyString),
+  settledAt: IsoDateTime,
+});
+
+/** Stop in a room: the hold goes on and the chain epoch moves to `chainEpoch`. */
+export const ThreadAgentRequestsHeldPayload = Schema.Struct({
+  threadId: ThreadId,
+  chainEpoch: NonNegativeInt,
+  createdAt: IsoDateTime,
+});
+
+/** The user wrote: the hold comes off and the count starts over. */
+export const ThreadAgentRequestsResetPayload = Schema.Struct({
+  threadId: ThreadId,
+  createdAt: IsoDateTime,
 });
 
 export const ThreadRoomContextRecordedPayload = Schema.Struct({
@@ -2319,6 +2575,11 @@ export const ThreadMessageSentPayload = Schema.Struct({
   participantId: Schema.optional(Schema.NullOr(ThreadParticipantId)),
   /** See OrchestrationMessage.sideTurnId. */
   sideTurnId: Schema.optional(SideTurnId),
+  /** See OrchestrationMessage.fromAgent and the fields after it. */
+  fromAgent: Schema.optional(RoomAgentRef),
+  requestId: Schema.optional(RoomAgentRequestId),
+  requestKind: Schema.optional(RoomAgentMessageKind),
+  reviewInput: Schema.optional(RoomReviewInput),
   turnId: Schema.NullOr(TurnId),
   streaming: Schema.Boolean,
   /** Missing means legacy behavior for events written before assistant
@@ -2344,6 +2605,18 @@ export const ThreadTurnStartRequestedPayload = Schema.Struct({
   providerContext: Schema.optional(Schema.String),
   providerAttachments: Schema.optional(Schema.Array(ChatAttachment)),
   skills: Schema.optional(ChatSkillReferenceList),
+  /**
+   * Rooms: the thread's chain epoch when this turn was asked for. Stop raises
+   * it, so a turn whose epoch no longer matches right before it is sent was
+   * stopped while it was being prepared.
+   */
+  chainEpoch: Schema.optional(NonNegativeInt),
+  /**
+   * Rooms: the turn of the agent that held the thread before this one, when
+   * this turn hands the thread to another agent. It must be recorded (its
+   * checkpoint captured, or closed for good) before this turn is sent.
+   */
+  handoverFromTurnId: Schema.optional(TurnId),
   createdAt: IsoDateTime,
 });
 
@@ -2629,6 +2902,31 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.room-context-recorded"),
     payload: ThreadRoomContextRecordedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.agent-request-submitted"),
+    payload: ThreadAgentRequestSubmittedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.agent-request-updated"),
+    payload: ThreadAgentRequestUpdatedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.agent-request-settled"),
+    payload: ThreadAgentRequestSettledPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.agent-requests-held"),
+    payload: ThreadAgentRequestsHeldPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.agent-requests-reset"),
+    payload: ThreadAgentRequestsResetPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,

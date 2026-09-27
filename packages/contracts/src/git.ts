@@ -299,6 +299,12 @@ export const VcsWorkingTreeDiffInput = Schema.Struct({
     Schema.Array(TrimmedNonEmptyStringSchema).check(Schema.isMinLength(1)),
   ),
   ignoreWhitespace: Schema.optional(Schema.Boolean),
+  /**
+   * For a diff an agent asked for (room tools, side answers): no text
+   * conversion or filesystem monitor programs run, and paths are literal.
+   * The repo's clean filters still run on staging, as every checkpoint does.
+   */
+  readOnlyProfile: Schema.optional(Schema.Boolean),
 });
 export type VcsWorkingTreeDiffInput = typeof VcsWorkingTreeDiffInput.Type;
 

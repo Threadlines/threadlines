@@ -10,7 +10,13 @@ import {
   ChatAttachmentListLenient,
   ChatSkillReferenceList,
   NonNegativeInt,
+  RoomAgentMessageKind,
+  RoomAgentRef,
+  RoomAgentRequestId,
+  RoomAgentRequestOutcome,
+  RoomReviewInput,
   ThreadParticipantId,
+  TrimmedNonEmptyString,
 } from "@threadlines/contracts";
 
 import { toPersistenceSqlError } from "../Errors.ts";
@@ -31,6 +37,12 @@ const ProjectionThreadMessageDbRowSchema = ProjectionThreadMessage.mapFields(
     skills: Schema.NullOr(Schema.fromJsonString(ChatSkillReferenceList)),
     participantId: Schema.NullOr(ThreadParticipantId),
     sideTurnId: Schema.NullOr(SideTurnId),
+    fromAgent: Schema.NullOr(Schema.fromJsonString(RoomAgentRef)),
+    requestId: Schema.NullOr(RoomAgentRequestId),
+    requestKind: Schema.NullOr(RoomAgentMessageKind),
+    requestOutcome: Schema.NullOr(RoomAgentRequestOutcome),
+    requestError: Schema.NullOr(TrimmedNonEmptyString),
+    reviewInput: Schema.NullOr(Schema.fromJsonString(RoomReviewInput)),
   }),
 );
 
@@ -51,6 +63,12 @@ function toProjectionThreadMessage(
     ...(row.skills !== null ? { skills: row.skills } : {}),
     ...(row.participantId !== null ? { participantId: row.participantId } : {}),
     ...(row.sideTurnId !== null ? { sideTurnId: row.sideTurnId } : {}),
+    ...(row.fromAgent !== null ? { fromAgent: row.fromAgent } : {}),
+    ...(row.requestId !== null ? { requestId: row.requestId } : {}),
+    ...(row.requestKind !== null ? { requestKind: row.requestKind } : {}),
+    ...(row.requestOutcome !== null ? { requestOutcome: row.requestOutcome } : {}),
+    ...(row.requestError !== null ? { requestError: row.requestError } : {}),
+    ...(row.reviewInput !== null ? { reviewInput: row.reviewInput } : {}),
   };
 }
 
@@ -75,6 +93,12 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
           skills_json,
           participant_id,
           side_turn_id,
+          from_agent,
+          request_id,
+          request_kind,
+          request_outcome,
+          request_error,
+          review_input,
           is_streaming,
           created_at,
           updated_at
@@ -104,6 +128,12 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
           ),
           ${row.participantId ?? null},
           ${row.sideTurnId ?? null},
+          ${row.fromAgent !== undefined ? JSON.stringify(row.fromAgent) : null},
+          ${row.requestId ?? null},
+          ${row.requestKind ?? null},
+          ${row.requestOutcome ?? null},
+          ${row.requestError ?? null},
+          ${row.reviewInput !== undefined ? JSON.stringify(row.reviewInput) : null},
           ${row.isStreaming ? 1 : 0},
           ${row.createdAt},
           ${row.updatedAt}
@@ -123,7 +153,17 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
             projection_thread_messages.skills_json
           ),
           -- participant_id and side_turn_id are left alone: a message's author
-          -- and lane are fixed by the write that created it.
+          -- and lane are fixed by the write that created it. The room request
+          -- fields are kept when a later write leaves them out.
+          from_agent = COALESCE(excluded.from_agent, projection_thread_messages.from_agent),
+          request_id = COALESCE(excluded.request_id, projection_thread_messages.request_id),
+          request_kind = COALESCE(excluded.request_kind, projection_thread_messages.request_kind),
+          request_outcome = COALESCE(
+            excluded.request_outcome,
+            projection_thread_messages.request_outcome
+          ),
+          request_error = COALESCE(excluded.request_error, projection_thread_messages.request_error),
+          review_input = COALESCE(excluded.review_input, projection_thread_messages.review_input),
           is_streaming = excluded.is_streaming,
           created_at = excluded.created_at,
           updated_at = excluded.updated_at
@@ -147,6 +187,12 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
           skills_json AS "skills",
           participant_id AS "participantId",
           side_turn_id AS "sideTurnId",
+          from_agent AS "fromAgent",
+          request_id AS "requestId",
+          request_kind AS "requestKind",
+          request_outcome AS "requestOutcome",
+          request_error AS "requestError",
+          review_input AS "reviewInput",
           is_streaming AS "isStreaming",
           created_at AS "createdAt",
           updated_at AS "updatedAt"
@@ -172,6 +218,12 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
           skills_json AS "skills",
           participant_id AS "participantId",
           side_turn_id AS "sideTurnId",
+          from_agent AS "fromAgent",
+          request_id AS "requestId",
+          request_kind AS "requestKind",
+          request_outcome AS "requestOutcome",
+          request_error AS "requestError",
+          review_input AS "reviewInput",
           is_streaming AS "isStreaming",
           created_at AS "createdAt",
           updated_at AS "updatedAt"

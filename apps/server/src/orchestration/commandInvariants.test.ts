@@ -8,6 +8,7 @@ import {
   type OrchestrationCommand,
   type OrchestrationReadModel,
   ProviderInstanceId,
+  EMPTY_AGENT_REQUEST_STATE,
 } from "@threadlines/contracts";
 import * as Effect from "effect/Effect";
 
@@ -76,6 +77,7 @@ const readModel: OrchestrationReadModel = {
       pullRequestAutoFix: false,
       pullRequestAutoMerge: null,
       linkedPullRequests: [],
+      agentRequests: EMPTY_AGENT_REQUEST_STATE,
       participants: [],
       doneOverride: null,
       lastSeenAt: null,
@@ -109,6 +111,7 @@ const readModel: OrchestrationReadModel = {
       pullRequestAutoFix: false,
       pullRequestAutoMerge: null,
       linkedPullRequests: [],
+      agentRequests: EMPTY_AGENT_REQUEST_STATE,
       participants: [],
       doneOverride: null,
       lastSeenAt: null,

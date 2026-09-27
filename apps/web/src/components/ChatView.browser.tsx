@@ -2,6 +2,7 @@
 import "../index.css";
 
 import {
+  EMPTY_AGENT_REQUEST_STATE,
   EventId,
   ORCHESTRATION_WS_METHODS,
   EnvironmentId,
@@ -20,6 +21,7 @@ import {
   type ServerLifecycleWelcomePayload,
   type ServerProvider,
   type ThreadId,
+  type ThreadParticipantId,
   type TurnId,
   WS_METHODS,
   CheckpointRef,
@@ -456,6 +458,7 @@ function createSnapshotForTargetUser(options: {
         proposedPlans: [],
         checkpoints: [],
         diffStatBaselineTurnCount: 0,
+        agentRequests: EMPTY_AGENT_REQUEST_STATE,
         session: {
           threadId: THREAD_ID,
           providerThreadId: null,
@@ -676,6 +679,7 @@ function addThreadToSnapshot(
         proposedPlans: [],
         checkpoints: [],
         diffStatBaselineTurnCount: 0,
+        agentRequests: EMPTY_AGENT_REQUEST_STATE,
         session: {
           threadId,
           providerThreadId: null,
@@ -1244,6 +1248,7 @@ function createSnapshotWithSecondaryProject(options?: {
           proposedPlans: [],
           checkpoints: [],
           diffStatBaselineTurnCount: 0,
+          agentRequests: EMPTY_AGENT_REQUEST_STATE,
           session: {
             threadId: "thread-secondary-project" as ThreadId,
             providerThreadId: null,
@@ -1288,6 +1293,7 @@ function createSnapshotWithSecondaryProject(options?: {
           proposedPlans: [],
           checkpoints: [],
           diffStatBaselineTurnCount: 0,
+          agentRequests: EMPTY_AGENT_REQUEST_STATE,
           session: {
             threadId: ARCHIVED_SECONDARY_THREAD_ID,
             providerThreadId: null,
@@ -6979,7 +6985,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
       await vi.waitFor(
         () => {
           // A duration, never the relative formatter's "just now".
-          expect(meta.textContent).toMatch(/^working · \d+[smh]/);
+          expect(meta.textContent).toMatch(/^working\s·\s\d+[smh]/);
         },
         { timeout: 8_000, interval: 16 },
       );
@@ -6991,6 +6997,87 @@ describe("ChatView timeline estimator parity (full app)", () => {
       );
       // The branch yields first, and yields completely.
       expect(row.textContent).not.toContain("feature/");
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("keeps a room's working agent, state and clock whole at the default width", async () => {
+    const agentId = "7a0b1c2d-3e4f-4a5b-8c6d-7e8f9a0b1c2d" as ThreadParticipantId;
+    const startedAt = new Date(Date.now() - 12.5 * 60_000).toISOString();
+    const base = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-room-working" as MessageId,
+      targetText: "room working target",
+      sessionStatus: "running",
+      sessionActiveTurnId: "turn-room-working" as TurnId,
+    });
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...base,
+        threads: base.threads.map((thread) =>
+          thread.id === THREAD_ID
+            ? {
+                ...thread,
+                // An added agent, at work for over twelve minutes: the
+                // widest clock a turn shows before its first hour.
+                participants: [
+                  {
+                    id: agentId,
+                    handle: "agent-2",
+                    modelSelection: {
+                      instanceId: ProviderInstanceId.make("codex"),
+                      model: "Opus 5.5",
+                    },
+                    joinedAt: NOW_ISO,
+                    leftAt: null,
+                  },
+                ],
+                session: thread.session ? { ...thread.session, participantId: agentId } : null,
+                latestTurn: {
+                  turnId: "turn-room-working" as TurnId,
+                  state: "running" as const,
+                  requestedAt: startedAt,
+                  startedAt,
+                  completedAt: null,
+                  assistantMessageId: null,
+                },
+              }
+            : thread,
+        ),
+      },
+    });
+
+    try {
+      const line = await waitForElement(
+        () => document.querySelector<HTMLElement>(`[data-testid="thread-detail-${THREAD_ID}"]`),
+        "Unable to find the working room's row.",
+      );
+      const meta = await waitForElement(
+        () => document.querySelector<HTMLElement>(`[data-testid="thread-meta-${THREAD_ID}"]`),
+        "Unable to find the row's status slot.",
+      );
+      await vi.waitFor(
+        () => {
+          expect(meta.textContent).toMatch(/^Opus 5\.5\s·\sworking\s·\s12m \d+s$/);
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+      const [name, , state, , clock] = [...meta.children] as HTMLElement[];
+      // The agent's name, the state and the clock are whole (not a pixel
+      // short, which already shows an ellipsis) and in the row.
+      for (const part of [name!, state!, clock!]) {
+        expect(part.scrollWidth).toBeLessThanOrEqual(part.clientWidth);
+        expect(part.getBoundingClientRect().right).toBeLessThanOrEqual(
+          line.getBoundingClientRect().right + 0.5,
+        );
+      }
+      // The project name stays in the row; it is what gave way.
+      const project = [...line.querySelectorAll<HTMLElement>("span")].find(
+        (element) => element.textContent === "Project",
+      );
+      expect(project).toBeDefined();
+      expect(project!.scrollWidth).toBeGreaterThan(project!.clientWidth);
     } finally {
       await mounted.cleanup();
     }
@@ -7948,6 +8035,41 @@ describe("ChatView timeline estimator parity (full app)", () => {
       expect(useCommandPaletteStore.getState().open).toBe(true);
       await expect.element(page.getByTestId("command-palette")).toBeInTheDocument();
     } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("opens the agent picker's model list from Add agent, and it stays open", async () => {
+    updateSettings({ roomsEnabled: true });
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-command-palette-add-agent" as MessageId,
+        targetText: "command palette add agent",
+      }),
+      strictMode: true,
+    });
+
+    try {
+      await openCommandPaletteFromTrigger();
+      const palette = page.getByTestId("command-palette");
+      await palette.getByText("Add agent", { exact: true }).click();
+
+      // The closing palette hands focus back to the composer first; the list
+      // must open after that, not lose focus to it and close.
+      await waitForElement(
+        () => document.querySelector(".model-picker-list"),
+        "The agent picker's model list should open from the command palette.",
+      );
+      // Long enough for a closing popover's exit to finish.
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      expect(document.querySelector('[data-testid="command-palette"]')).toBeNull();
+      expect(document.querySelector(".model-picker-list")).not.toBeNull();
+      await expect
+        .element(page.getByText("Pick a model to add to this thread.", { exact: false }))
+        .toBeInTheDocument();
+    } finally {
+      updateSettings({ roomsEnabled: false });
       await mounted.cleanup();
     }
   });

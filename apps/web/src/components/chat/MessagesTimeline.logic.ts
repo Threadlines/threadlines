@@ -6,6 +6,7 @@ import {
   type TimelineEntry,
   type WorkLogEntry,
 } from "../../session-logic";
+import { isUserWrittenMessage } from "@threadlines/shared/roomAgentRequests";
 import { type ChatMessage, type ProposedPlan, type TurnDiffSummary } from "../../types";
 import {
   type MessageId,
@@ -53,6 +54,14 @@ export interface TimelineRowPlacement {
 }
 
 const UNPLACED: TimelineRowPlacement = { tray: null, padTop: false };
+
+/**
+ * The user writing starts an exchange. A message one room agent wrote to
+ * another (a hand-off, its reply) happens inside the exchange: it neither
+ * splits the turn that wrote it nor ends the user's exchange.
+ */
+const startsExchange = (message: Pick<ChatMessage, "role" | "fromAgent">) =>
+  isUserWrittenMessage(message);
 
 export type MessagesTimelineRow = TimelineRowPlacement &
   (
@@ -105,6 +114,8 @@ export type MessagesTimelineRow = TimelineRowPlacement &
         assistantModelFallback?: ModelFallbackState | undefined;
         assistantTurnDiffSummary?: TurnDiffSummary | undefined;
         revertTurnCount?: number | undefined;
+        /** A side answer to an independent review: the request, for its tag. */
+        sideReview?: ChatMessage | undefined;
       }
     | {
         kind: "proposed-plan";
@@ -140,6 +151,10 @@ export type MessagesTimelineRow = TimelineRowPlacement &
         createdAt: string;
         sideTurnId: SideTurnId;
         participantId: ThreadParticipantId | null;
+        /** An independent review an agent asked for. */
+        review: boolean;
+        /** The question, or an agent's request with how it ended. */
+        question: ChatMessage;
         state: "answering" | "stopping" | "failed" | "stopped";
         error: string | null;
       }
@@ -317,7 +332,7 @@ export function deriveMessagesTimelineRows(input: {
   // and lifecycle entries arrive without turn ids, so position is the reliable
   // signal across providers.
   const lastUserMessageIndex = visibleTimelineEntries.findLastIndex(
-    (entry) => entry.kind === "message" && entry.message.role === "user",
+    (entry) => entry.kind === "message" && startsExchange(entry.message),
   );
 
   for (let index = 0; index < visibleTimelineEntries.length; index += 1) {
@@ -553,7 +568,7 @@ function foldFinishedStretches(
     // in that exchange; your message starts an earlier exchange.
     if (row.kind === "message") {
       if (row.message.role === "assistant") agentWroteAfter = true;
-      else if (row.message.role === "user") agentWroteAfter = false;
+      else if (startsExchange(row.message)) agentWroteAfter = false;
       continue;
     }
     if (row.kind !== "work") {
@@ -699,7 +714,7 @@ function settleFinishedTurns(
     .map((requestedAt) => Date.parse(requestedAt))
     .filter(Number.isFinite);
   const lastUserIndex = result.findLastIndex(
-    (row) => row.kind === "message" && row.message.role === "user",
+    (row) => row.kind === "message" && startsExchange(row.message),
   );
   let spanStart = 0;
   let userMessageAt: string | null = null;
@@ -709,7 +724,7 @@ function settleFinishedTurns(
     if (row.kind !== "message") {
       continue;
     }
-    if (row.message.role === "user") {
+    if (startsExchange(row.message)) {
       spanStart = index + 1;
       userMessageAt = row.message.createdAt;
       previousAnswerEndMs = Number.NEGATIVE_INFINITY;
@@ -974,7 +989,7 @@ function resolveLiveAnchorLabel(
     return label;
   }
   const lastUserIndex = rows.findLastIndex(
-    (row) => row.kind === "message" && row.message.role === "user",
+    (row) => row.kind === "message" && startsExchange(row.message),
   );
   const runningSteps = rows.slice(lastUserIndex + 1).flatMap((row) =>
     row.kind === "work"
@@ -1310,7 +1325,13 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
 
     case "side-status": {
       const bs = b as typeof a;
-      return a.state === bs.state && a.error === bs.error && a.participantId === bs.participantId;
+      return (
+        a.state === bs.state &&
+        a.error === bs.error &&
+        a.participantId === bs.participantId &&
+        a.review === bs.review &&
+        a.question === bs.question
+      );
     }
 
     case "work": {
@@ -1342,7 +1363,8 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
         a.assistantTurnInProgress === bm.assistantTurnInProgress &&
         a.assistantModelFallback === bm.assistantModelFallback &&
         a.assistantTurnDiffSummary === bm.assistantTurnDiffSummary &&
-        a.revertTurnCount === bm.revertTurnCount
+        a.revertTurnCount === bm.revertTurnCount &&
+        a.sideReview === bm.sideReview
       );
     }
   }
@@ -1423,6 +1445,12 @@ function estimateRowContentHeight(row: MessagesTimelineRow, width: number): numb
           // The turn's changes, a card whose header wraps on a phone.
           (hasChangedFiles ? (column < 430 ? 110 : 88) : 0)
         );
+      }
+      if (row.message.role === "user" && row.message.fromAgent !== undefined) {
+        // An agent's message to another: a meta line over its text, no bubble.
+        return shouldCollapseUserMessage(row.message.text)
+          ? 234
+          : 28 + estimateTextLines(row.message.text, column - 24) * TEXT_LINE_PX;
       }
       if (row.message.role === "user") {
         const text = deriveDisplayedUserMessageState(row.message.text).visibleText;

@@ -10,6 +10,7 @@ import {
   type OrchestrationReadModel,
   type OrchestrationSession,
   type OrchestrationThread,
+  EMPTY_AGENT_REQUEST_STATE,
 } from "@threadlines/contracts";
 import * as Effect from "effect/Effect";
 import { describe, expect, it } from "vite-plus/test";
@@ -63,6 +64,7 @@ function makeThread(overrides: Partial<OrchestrationThread> = {}): Orchestration
     pullRequestAutoFix: false,
     pullRequestAutoMerge: null,
     linkedPullRequests: [],
+    agentRequests: EMPTY_AGENT_REQUEST_STATE,
     participants: [],
     doneOverride: null,
     lastSeenAt: null,

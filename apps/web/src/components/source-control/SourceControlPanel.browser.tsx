@@ -370,6 +370,7 @@ function seedWorktreeThread(worktreePath: string): void {
         proposedPlanByThreadId: {},
         turnDiffIdsByThreadId: {},
         turnDiffSummaryByThreadId: {},
+        agentRequestsByThreadId: {},
         sidebarThreadSummaryById: {},
         bootstrapComplete: true,
       },

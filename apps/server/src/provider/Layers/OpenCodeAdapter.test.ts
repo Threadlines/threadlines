@@ -249,6 +249,21 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
     }),
   );
 
+  it.effect("says plainly that it has no room tools when a room asks for them", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      // Left unanswered, the room would restart this agent at every turn.
+      const session = yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencode"),
+        threadId: asThreadId("thread-opencode-room"),
+        runtimeMode: "full-access",
+        roomTools: true,
+      });
+      assert.equal(session.roomTools, false);
+      yield* adapter.stopSession(asThreadId("thread-opencode-room"));
+    }),
+  );
+
   it.effect("stops a configured-server session without trying to own server lifecycle", () =>
     Effect.gen(function* () {
       const adapter = yield* OpenCodeAdapter;

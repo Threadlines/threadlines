@@ -10,7 +10,12 @@ import { describe, expect, it } from "vite-plus/test";
 
 import type { ChatMessage } from "../../types";
 import type { MessagesTimelineRow } from "./MessagesTimeline.logic";
-import { deriveSideAnswers, placeSideAnswerRows, type SideAnswerView } from "./sideAnswers";
+import {
+  deriveSideAnswers,
+  placeSideAnswerRows,
+  sideAnswerRows,
+  type SideAnswerView,
+} from "./sideAnswers";
 
 const astra = ThreadParticipantId.make("agent-astra");
 
@@ -87,6 +92,37 @@ describe("deriveSideAnswers", () => {
       ["failed", "it ended without a reply."],
     ]);
   });
+
+  it("keeps an agent's review tagged after it settles, read from its request message", () => {
+    const sideTurnId = SideTurnId.make("side-review");
+    const request: ChatMessage = {
+      ...question(sideTurnId, "2026-01-01T00:00:01Z"),
+      fromAgent: { participantId: null },
+      requestKind: "review",
+      reviewInput: {
+        basis: {
+          kind: "uncommitted",
+          files: 2,
+          truncated: true,
+          capturedAt: "2026-01-01T00:00:01Z",
+        },
+        diff: "diff --git a/lock.ts b/lock.ts",
+      },
+    };
+    // Settled: the side turn is gone, only the messages remain.
+    const [view] = deriveSideAnswers({
+      messages: [request, answer(sideTurnId, "2026-01-01T00:00:05Z")],
+      activities: [],
+      sideTurn: null,
+    });
+    expect(view).toMatchObject({
+      kind: "review",
+      askedBy: { participantId: null },
+      state: "answered",
+    });
+    const answerRow = sideAnswerRows(view!).find((row) => row.id === view!.answer?.id);
+    expect(answerRow).toMatchObject({ kind: "message", sideReview: request });
+  });
 });
 
 describe("placeSideAnswerRows", () => {
@@ -107,6 +143,8 @@ describe("placeSideAnswerRows", () => {
   const view: SideAnswerView = {
     sideTurnId,
     participantId: astra,
+    kind: "ask",
+    askedBy: null,
     question: question(sideTurnId, "2026-01-01T00:00:05Z"),
     answer: answer(sideTurnId, "2026-01-01T00:00:08Z"),
     steps: [],

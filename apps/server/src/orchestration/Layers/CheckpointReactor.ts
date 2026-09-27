@@ -27,6 +27,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 import { turnAdmission } from "../turnAdmission.ts";
+import { checkpointHandover } from "../checkpointHandover.ts";
 import { makeDrainableWorker } from "@threadlines/shared/DrainableWorker";
 import { normalizeWorkspacePath } from "@threadlines/shared/path";
 import { compareTranscriptOrder } from "@threadlines/shared/transcriptOrder";
@@ -563,115 +564,134 @@ const make = Effect.gen(function* () {
   // Shared tail for both capture paths: creates the git checkpoint ref, diffs
   // it against the previous turn, then dispatches the domain events to update
   // the orchestration read model.
-  const captureAndDispatchCheckpoint = Effect.fn("captureAndDispatchCheckpoint")(function* (input: {
-    readonly threadId: ThreadId;
-    readonly turnId: TurnId;
-    readonly thread: {
-      readonly messages: ReadonlyArray<{
-        readonly id: MessageId;
-        readonly role: string;
-        readonly turnId: TurnId | null;
-      }>;
-      readonly checkpoints: ReadonlyArray<OrchestrationCheckpointSummary>;
-      readonly diffStatBaselineTurnCount: number;
-    };
-    readonly cwd: string;
-    readonly turnCount: number;
-    readonly status: "ready" | "missing" | "error";
-    readonly assistantMessageId: MessageId | undefined;
-    readonly providerSummaryFiles: ReadonlyArray<OrchestrationCheckpointFile> | undefined;
-    readonly refreshSharedCheckoutSummaryFromCheckpoint: boolean;
-    readonly completesTurn: boolean;
-    /** When the turn's diff window opened (turn start). Undefined falls back
-     * to the instantaneous live-session check alone. */
-    readonly turnWindowStartIso: string | undefined;
-    readonly createdAt: string;
-  }) {
-    const fromTurnCount = Math.max(0, input.turnCount - 1);
-    const fromCheckpointRef = checkpointRefForThreadTurn(input.threadId, fromTurnCount);
-    const targetCheckpointRef = checkpointRefForThreadTurn(input.threadId, input.turnCount);
-    const preTurnCheckpointRef = checkpointPreTurnRefForThreadTurn(input.threadId, input.turnId);
-    const preTurnCountCheckpointRef = checkpointPreTurnRefForThreadTurnCount(
-      input.threadId,
-      input.turnCount,
-    );
+  const captureAndDispatchCheckpointUnguarded = Effect.fn("captureAndDispatchCheckpoint")(
+    function* (input: {
+      readonly threadId: ThreadId;
+      readonly turnId: TurnId;
+      readonly thread: {
+        readonly messages: ReadonlyArray<{
+          readonly id: MessageId;
+          readonly role: string;
+          readonly turnId: TurnId | null;
+        }>;
+        readonly checkpoints: ReadonlyArray<OrchestrationCheckpointSummary>;
+        readonly diffStatBaselineTurnCount: number;
+      };
+      readonly cwd: string;
+      readonly turnCount: number;
+      readonly status: "ready" | "missing" | "error";
+      readonly assistantMessageId: MessageId | undefined;
+      readonly providerSummaryFiles: ReadonlyArray<OrchestrationCheckpointFile> | undefined;
+      readonly refreshSharedCheckoutSummaryFromCheckpoint: boolean;
+      readonly completesTurn: boolean;
+      /** When the turn's diff window opened (turn start). Undefined falls back
+       * to the instantaneous live-session check alone. */
+      readonly turnWindowStartIso: string | undefined;
+      readonly createdAt: string;
+    }) {
+      const fromTurnCount = Math.max(0, input.turnCount - 1);
+      const fromCheckpointRef = checkpointRefForThreadTurn(input.threadId, fromTurnCount);
+      const targetCheckpointRef = checkpointRefForThreadTurn(input.threadId, input.turnCount);
+      const preTurnCheckpointRef = checkpointPreTurnRefForThreadTurn(input.threadId, input.turnId);
+      const preTurnCountCheckpointRef = checkpointPreTurnRefForThreadTurnCount(
+        input.threadId,
+        input.turnCount,
+      );
 
-    const fromCheckpointExists = yield* checkpointStore.hasCheckpointRef({
-      cwd: input.cwd,
-      checkpointRef: fromCheckpointRef,
-    });
-    const preTurnCountCheckpointExists = yield* checkpointStore.hasCheckpointRef({
-      cwd: input.cwd,
-      checkpointRef: preTurnCountCheckpointRef,
-    });
-    const preTurnCheckpointExists = yield* checkpointStore.hasCheckpointRef({
-      cwd: input.cwd,
-      checkpointRef: preTurnCheckpointRef,
-    });
-    if (!fromCheckpointExists && !preTurnCountCheckpointExists && !preTurnCheckpointExists) {
-      yield* Effect.logWarning("checkpoint capture missing summary baseline", {
-        threadId: input.threadId,
-        turnId: input.turnId,
-        fromTurnCount,
-      });
-    }
-
-    yield* checkpointStore.captureCheckpoint({
-      cwd: input.cwd,
-      checkpointRef: targetCheckpointRef,
-    });
-
-    // Invalidate the workspace entry cache so the @-mention file picker
-    // reflects files created or deleted during this turn.
-    yield* workspaceEntries.invalidate(input.cwd);
-
-    const summaryFromCheckpointRef = preTurnCountCheckpointExists
-      ? preTurnCountCheckpointRef
-      : preTurnCheckpointExists
-        ? preTurnCheckpointRef
-        : fromCheckpointRef;
-    const hasConcurrentSession = yield* hasConcurrentSessionInWorkspace({
-      threadId: input.threadId,
-      cwd: input.cwd,
-      turnWindowStartIso: input.turnWindowStartIso,
-    });
-    const files = yield* checkpointStore
-      .diffCheckpoints({
+      const fromCheckpointExists = yield* checkpointStore.hasCheckpointRef({
         cwd: input.cwd,
-        fromCheckpointRef: summaryFromCheckpointRef,
-        toCheckpointRef: targetCheckpointRef,
-        fallbackFromToHead: false,
-        ignoreWhitespace: false,
-      })
-      .pipe(
-        Effect.map((diff) =>
-          parseTurnDiffFilesFromUnifiedDiff(diff).map((file) => ({
-            path: file.path,
-            kind: "modified" as const,
-            additions: file.additions,
-            deletions: file.deletions,
-          })),
-        ),
-        Effect.flatMap((diffFiles) =>
-          withoutHeadMovementFiles({
-            threadId: input.threadId,
-            turnId: input.turnId,
-            cwd: input.cwd,
-            fromCheckpointRef: summaryFromCheckpointRef,
-            toCheckpointRef: targetCheckpointRef,
-            files: diffFiles,
-            providerSummaryFiles: input.providerSummaryFiles,
-          }),
-        ),
-        Effect.flatMap((derivedFiles) => {
-          if (!hasConcurrentSession) {
-            return Effect.succeed(derivedFiles);
-          }
+        checkpointRef: fromCheckpointRef,
+      });
+      const preTurnCountCheckpointExists = yield* checkpointStore.hasCheckpointRef({
+        cwd: input.cwd,
+        checkpointRef: preTurnCountCheckpointRef,
+      });
+      const preTurnCheckpointExists = yield* checkpointStore.hasCheckpointRef({
+        cwd: input.cwd,
+        checkpointRef: preTurnCheckpointRef,
+      });
+      if (!fromCheckpointExists && !preTurnCountCheckpointExists && !preTurnCheckpointExists) {
+        yield* Effect.logWarning("checkpoint capture missing summary baseline", {
+          threadId: input.threadId,
+          turnId: input.turnId,
+          fromTurnCount,
+        });
+      }
 
-          if (!input.refreshSharedCheckoutSummaryFromCheckpoint) {
-            const providerFiles = cloneCheckpointFiles(input.providerSummaryFiles);
-            if (providerFiles !== undefined) {
-              return Effect.succeed(providerFiles);
+      yield* checkpointStore.captureCheckpoint({
+        cwd: input.cwd,
+        checkpointRef: targetCheckpointRef,
+      });
+
+      // Invalidate the workspace entry cache so the @-mention file picker
+      // reflects files created or deleted during this turn.
+      yield* workspaceEntries.invalidate(input.cwd);
+
+      const summaryFromCheckpointRef = preTurnCountCheckpointExists
+        ? preTurnCountCheckpointRef
+        : preTurnCheckpointExists
+          ? preTurnCheckpointRef
+          : fromCheckpointRef;
+      const hasConcurrentSession = yield* hasConcurrentSessionInWorkspace({
+        threadId: input.threadId,
+        cwd: input.cwd,
+        turnWindowStartIso: input.turnWindowStartIso,
+      });
+      const files = yield* checkpointStore
+        .diffCheckpoints({
+          cwd: input.cwd,
+          fromCheckpointRef: summaryFromCheckpointRef,
+          toCheckpointRef: targetCheckpointRef,
+          fallbackFromToHead: false,
+          ignoreWhitespace: false,
+        })
+        .pipe(
+          Effect.map((diff) =>
+            parseTurnDiffFilesFromUnifiedDiff(diff).map((file) => ({
+              path: file.path,
+              kind: "modified" as const,
+              additions: file.additions,
+              deletions: file.deletions,
+            })),
+          ),
+          Effect.flatMap((diffFiles) =>
+            withoutHeadMovementFiles({
+              threadId: input.threadId,
+              turnId: input.turnId,
+              cwd: input.cwd,
+              fromCheckpointRef: summaryFromCheckpointRef,
+              toCheckpointRef: targetCheckpointRef,
+              files: diffFiles,
+              providerSummaryFiles: input.providerSummaryFiles,
+            }),
+          ),
+          Effect.flatMap((derivedFiles) => {
+            if (!hasConcurrentSession) {
+              return Effect.succeed(derivedFiles);
+            }
+
+            if (!input.refreshSharedCheckoutSummaryFromCheckpoint) {
+              const providerFiles = cloneCheckpointFiles(input.providerSummaryFiles);
+              if (providerFiles !== undefined) {
+                return Effect.succeed(providerFiles);
+              }
+
+              return Effect.logWarning("skipping shared-checkout checkpoint file summary", {
+                threadId: input.threadId,
+                turnId: input.turnId,
+                turnCount: input.turnCount,
+                cwd: input.cwd,
+                derivedFileCount: derivedFiles.length,
+                providerFileCount: 0,
+              }).pipe(Effect.as([]));
+            }
+
+            const sharedCheckoutFiles = sharedCheckoutFilesFromDerivedDiff({
+              derivedFiles,
+              providerSummaryFiles: input.providerSummaryFiles,
+            });
+            if (sharedCheckoutFiles !== null) {
+              return Effect.succeed(sharedCheckoutFiles);
             }
 
             return Effect.logWarning("skipping shared-checkout checkpoint file summary", {
@@ -680,142 +700,136 @@ const make = Effect.gen(function* () {
               turnCount: input.turnCount,
               cwd: input.cwd,
               derivedFileCount: derivedFiles.length,
-              providerFileCount: 0,
-            }).pipe(Effect.as([]));
-          }
+              providerFileCount: input.providerSummaryFiles?.length ?? 0,
+            }).pipe(Effect.as(cloneCheckpointFiles(input.providerSummaryFiles) ?? []));
+          }),
+          Effect.catch((error) => {
+            const fallbackFiles = cloneCheckpointFiles(input.providerSummaryFiles);
+            if (fallbackFiles !== undefined) {
+              return Effect.logWarning("failed to derive checkpoint file summary", {
+                threadId: input.threadId,
+                turnId: input.turnId,
+                turnCount: input.turnCount,
+                detail: error.message,
+                fallback: "provider-summary",
+              }).pipe(Effect.as(fallbackFiles));
+            }
 
-          const sharedCheckoutFiles = sharedCheckoutFilesFromDerivedDiff({
-            derivedFiles,
-            providerSummaryFiles: input.providerSummaryFiles,
-          });
-          if (sharedCheckoutFiles !== null) {
-            return Effect.succeed(sharedCheckoutFiles);
-          }
+            return Effect.gen(function* () {
+              yield* appendCaptureFailureActivity({
+                threadId: input.threadId,
+                turnId: input.turnId,
+                detail: `Checkpoint captured, but turn diff summary is unavailable: ${error.message}`,
+                createdAt: input.createdAt,
+              });
+              yield* Effect.logWarning("failed to derive checkpoint file summary", {
+                threadId: input.threadId,
+                turnId: input.turnId,
+                turnCount: input.turnCount,
+                detail: error.message,
+              });
+              return [];
+            });
+          }),
+        );
 
-          return Effect.logWarning("skipping shared-checkout checkpoint file summary", {
+      // Only a turn's final capture measures: the rollup adds later turns' live
+      // summaries on top of the newest measurement, so a mid-turn one would
+      // freeze the badge while that same turn keeps editing.
+      const threadDiffStat = input.completesTurn
+        ? yield* measureThreadDiffStat({
             threadId: input.threadId,
             turnId: input.turnId,
-            turnCount: input.turnCount,
             cwd: input.cwd,
-            derivedFileCount: derivedFiles.length,
-            providerFileCount: input.providerSummaryFiles?.length ?? 0,
-          }).pipe(Effect.as(cloneCheckpointFiles(input.providerSummaryFiles) ?? []));
-        }),
-        Effect.catch((error) => {
-          const fallbackFiles = cloneCheckpointFiles(input.providerSummaryFiles);
-          if (fallbackFiles !== undefined) {
-            return Effect.logWarning("failed to derive checkpoint file summary", {
-              threadId: input.threadId,
-              turnId: input.turnId,
-              turnCount: input.turnCount,
-              detail: error.message,
-              fallback: "provider-summary",
-            }).pipe(Effect.as(fallbackFiles));
-          }
+            checkpointRef: targetCheckpointRef,
+            turnCount: input.turnCount,
+            files,
+            checkpoints: input.thread.checkpoints,
+            diffStatBaselineTurnCount: input.thread.diffStatBaselineTurnCount,
+          })
+        : undefined;
 
-          return Effect.gen(function* () {
-            yield* appendCaptureFailureActivity({
-              threadId: input.threadId,
-              turnId: input.turnId,
-              detail: `Checkpoint captured, but turn diff summary is unavailable: ${error.message}`,
-              createdAt: input.createdAt,
-            });
-            yield* Effect.logWarning("failed to derive checkpoint file summary", {
-              threadId: input.threadId,
-              turnId: input.turnId,
-              turnCount: input.turnCount,
-              detail: error.message,
-            });
-            return [];
-          });
-        }),
-      );
+      const assistantMessageId =
+        input.assistantMessageId ??
+        input.thread.messages
+          .toReversed()
+          .find((entry) => entry.role === "assistant" && entry.turnId === input.turnId)?.id ??
+        MessageId.make(`assistant:${input.turnId}`);
 
-    // Only a turn's final capture measures: the rollup adds later turns' live
-    // summaries on top of the newest measurement, so a mid-turn one would
-    // freeze the badge while that same turn keeps editing.
-    const threadDiffStat = input.completesTurn
-      ? yield* measureThreadDiffStat({
-          threadId: input.threadId,
-          turnId: input.turnId,
-          cwd: input.cwd,
-          checkpointRef: targetCheckpointRef,
-          turnCount: input.turnCount,
-          files,
-          checkpoints: input.thread.checkpoints,
-          diffStatBaselineTurnCount: input.thread.diffStatBaselineTurnCount,
-        })
-      : undefined;
-
-    const assistantMessageId =
-      input.assistantMessageId ??
-      input.thread.messages
-        .toReversed()
-        .find((entry) => entry.role === "assistant" && entry.turnId === input.turnId)?.id ??
-      MessageId.make(`assistant:${input.turnId}`);
-
-    yield* orchestrationEngine.dispatch({
-      type: "thread.turn.diff.complete",
-      commandId: serverCommandId("checkpoint-turn-diff-complete"),
-      threadId: input.threadId,
-      turnId: input.turnId,
-      completedAt: input.createdAt,
-      checkpointRef: targetCheckpointRef,
-      status: input.status,
-      files,
-      ...(threadDiffStat !== undefined ? { threadDiffStat } : {}),
-      assistantMessageId,
-      checkpointTurnCount: input.turnCount,
-      completesTurn: input.completesTurn,
-      createdAt: input.createdAt,
-    });
-    yield* appendCheckpointFileChangeActivity({
-      threadId: input.threadId,
-      turnId: input.turnId,
-      turnCount: input.turnCount,
-      files,
-      createdAt: input.createdAt,
-    });
-    yield* receiptBus.publish({
-      type: "checkpoint.diff.finalized",
-      threadId: input.threadId,
-      turnId: input.turnId,
-      checkpointTurnCount: input.turnCount,
-      checkpointRef: targetCheckpointRef,
-      status: input.status,
-      createdAt: input.createdAt,
-    });
-    if (input.completesTurn) {
+      yield* orchestrationEngine.dispatch({
+        type: "thread.turn.diff.complete",
+        commandId: serverCommandId("checkpoint-turn-diff-complete"),
+        threadId: input.threadId,
+        turnId: input.turnId,
+        completedAt: input.createdAt,
+        checkpointRef: targetCheckpointRef,
+        status: input.status,
+        files,
+        ...(threadDiffStat !== undefined ? { threadDiffStat } : {}),
+        assistantMessageId,
+        checkpointTurnCount: input.turnCount,
+        completesTurn: input.completesTurn,
+        createdAt: input.createdAt,
+      });
+      yield* appendCheckpointFileChangeActivity({
+        threadId: input.threadId,
+        turnId: input.turnId,
+        turnCount: input.turnCount,
+        files,
+        createdAt: input.createdAt,
+      });
       yield* receiptBus.publish({
-        type: "turn.processing.quiesced",
+        type: "checkpoint.diff.finalized",
         threadId: input.threadId,
         turnId: input.turnId,
         checkpointTurnCount: input.turnCount,
+        checkpointRef: targetCheckpointRef,
+        status: input.status,
         createdAt: input.createdAt,
       });
-    }
+      if (input.completesTurn) {
+        yield* receiptBus.publish({
+          type: "turn.processing.quiesced",
+          threadId: input.threadId,
+          turnId: input.turnId,
+          checkpointTurnCount: input.turnCount,
+          createdAt: input.createdAt,
+        });
+      }
 
-    yield* orchestrationEngine.dispatch({
-      type: "thread.activity.append",
-      commandId: serverCommandId("checkpoint-captured-activity"),
-      threadId: input.threadId,
-      activity: {
-        id: EventId.make(crypto.randomUUID()),
-        tone: "info",
-        kind: "checkpoint.captured",
-        summary: "Checkpoint captured",
-        payload: {
-          turnCount: input.turnCount,
-          status: input.status,
+      yield* orchestrationEngine.dispatch({
+        type: "thread.activity.append",
+        commandId: serverCommandId("checkpoint-captured-activity"),
+        threadId: input.threadId,
+        activity: {
+          id: EventId.make(crypto.randomUUID()),
+          tone: "info",
+          kind: "checkpoint.captured",
+          summary: "Checkpoint captured",
+          payload: {
+            turnCount: input.turnCount,
+            status: input.status,
+          },
+          turnId: input.turnId,
+          createdAt: input.createdAt,
         },
-        turnId: input.turnId,
         createdAt: input.createdAt,
-      },
-      createdAt: input.createdAt,
-    });
-  });
+      });
+    },
+  );
 
   // Captures a real git checkpoint when a turn completes via a runtime event.
+  /**
+   * Every capture runs under its thread's handover lock and is skipped for a
+   * turn a handover closed; see checkpointHandover.
+   */
+  const captureAndDispatchCheckpoint = (
+    input: Parameters<typeof captureAndDispatchCheckpointUnguarded>[0],
+  ) =>
+    checkpointHandover
+      .capture(input.threadId, input.turnId, captureAndDispatchCheckpointUnguarded(input))
+      .pipe(Effect.asVoid);
+
   const captureCheckpointFromTurnCompletion = Effect.fn("captureCheckpointFromTurnCompletion")(
     function* (event: Extract<ProviderRuntimeEvent, { type: "turn.completed" }>) {
       const turnId = toTurnId(event.turnId);
@@ -831,9 +845,8 @@ const make = Effect.gen(function* () {
       // When a primary turn is active, only that turn may produce completion
       // checkpoints. In a room, a completion that arrives after the thread
       // changed hands is dropped: the checkout already holds the next agent's
-      // edits. (A capture that passed this check just before a handover can
-      // still race the next agent's first edits; a real handover barrier is
-      // follow-up work, see docs/design/rooms-slice-2.md.)
+      // edits. The handover barrier (checkpointHandover) covers the capture
+      // that is already under way when the thread changes hands.
       if (thread.session?.activeTurnId && !sameId(thread.session.activeTurnId, turnId)) {
         return;
       }
@@ -1309,6 +1322,10 @@ const make = Effect.gen(function* () {
       }
     }
     if (event.type === "turn.started") {
+      // A turn owes its final capture before another agent may write.
+      if (event.turnId) {
+        yield* checkpointHandover.turnStarted(event.threadId, event.turnId);
+      }
       yield* ensurePreTurnBaselineFromTurnStart(event);
       return;
     }
@@ -1327,8 +1344,19 @@ const make = Effect.gen(function* () {
             }).pipe(Effect.catch(() => Effect.void)),
           ),
         ),
+        // Captured, skipped or failed: the turn's final capture is over.
+        Effect.ensuring(
+          event.turnId
+            ? checkpointHandover.finalCaptureFinished(event.threadId, event.turnId)
+            : Effect.void,
+        ),
       );
       return;
+    }
+
+    // A turn that ends without completing gets no final capture.
+    if (event.type === "turn.aborted" && event.turnId) {
+      yield* checkpointHandover.finalCaptureFinished(event.threadId, event.turnId);
     }
   });
 
@@ -1374,7 +1402,11 @@ const make = Effect.gen(function* () {
 
     yield* Effect.forkScoped(
       Stream.runForEach(providerService.streamEvents, (event) => {
-        if (event.type !== "turn.started" && event.type !== "turn.completed") {
+        if (
+          event.type !== "turn.started" &&
+          event.type !== "turn.completed" &&
+          event.type !== "turn.aborted"
+        ) {
           return Effect.void;
         }
         // A side answer runs read-only in its own runtime: nothing to capture.

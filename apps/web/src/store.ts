@@ -2,6 +2,7 @@ import { compareTranscriptOrder } from "@threadlines/shared/transcriptOrder";
 import type {
   EnvironmentId,
   MessageId,
+  OrchestrationAgentRequestState,
   OrchestrationCheckpointSummary,
   OrchestrationEvent,
   OrchestrationLatestTurn,
@@ -21,7 +22,11 @@ import type {
   ScopedProjectRef,
   ScopedThreadRef,
 } from "@threadlines/contracts";
-import { isProviderDriverKind, ProviderDriverKind } from "@threadlines/contracts";
+import {
+  EMPTY_AGENT_REQUEST_STATE,
+  isProviderDriverKind,
+  ProviderDriverKind,
+} from "@threadlines/contracts";
 import type { ThreadId, TurnId } from "@threadlines/contracts";
 import * as Schema from "effect/Schema";
 import { resolveModelSlugForProvider } from "@threadlines/shared/model";
@@ -65,6 +70,7 @@ import {
   roomSlotRole,
 } from "./rooms";
 import { applyRoomAgentUpdate } from "@threadlines/shared/threadParticipants";
+import { agentRequestStateOn, isUserWrittenMessage } from "@threadlines/shared/roomAgentRequests";
 const isProviderDriverKindValue = Schema.is(ProviderDriverKind);
 
 export interface EnvironmentState {
@@ -105,6 +111,8 @@ export interface EnvironmentState {
   proposedPlanByThreadId: Record<ThreadId, Record<string, ProposedPlan>>;
   turnDiffIdsByThreadId: Record<ThreadId, TurnId[]>;
   turnDiffSummaryByThreadId: Record<ThreadId, Record<TurnId, TurnDiffSummary>>;
+  /** Room tools: open agent requests, the Stop hold and the limit's count. */
+  agentRequestsByThreadId: Record<ThreadId, OrchestrationAgentRequestState>;
 
   // ---------------------------------------------------------------------------
   // Sidebar summary — written by the shell stream and provisionally by the
@@ -138,6 +146,7 @@ const initialEnvironmentState: EnvironmentState = {
   proposedPlanByThreadId: {},
   turnDiffIdsByThreadId: {},
   turnDiffSummaryByThreadId: {},
+  agentRequestsByThreadId: {},
   sidebarThreadSummaryById: {},
   bootstrapComplete: false,
 };
@@ -238,6 +247,12 @@ function mapMessage(environmentId: EnvironmentId, message: OrchestrationMessage)
     ...(message.skills !== undefined ? { skills: [...message.skills] } : {}),
     ...(message.participantId ? { participantId: message.participantId } : {}),
     ...(message.sideTurnId ? { sideTurnId: message.sideTurnId } : {}),
+    ...(message.fromAgent ? { fromAgent: message.fromAgent } : {}),
+    ...(message.requestId ? { requestId: message.requestId } : {}),
+    ...(message.requestKind ? { requestKind: message.requestKind } : {}),
+    ...(message.requestOutcome ? { requestOutcome: message.requestOutcome } : {}),
+    ...(message.requestError ? { requestError: message.requestError } : {}),
+    ...(message.reviewInput ? { reviewInput: message.reviewInput } : {}),
   };
 }
 
@@ -319,6 +334,7 @@ function mapThread(thread: OrchestrationThread, environmentId: EnvironmentId): T
     participants: thread.participants ?? [],
     sideTurn: thread.sideTurn ?? null,
     ...(thread.agentRole !== undefined ? { agentRole: thread.agentRole } : {}),
+    agentRequests: thread.agentRequests,
     doneOverride: thread.doneOverride,
     lastSeenAt: thread.lastSeenAt,
     updatedAt: thread.updatedAt,
@@ -473,10 +489,8 @@ function toSidebarThreadSummary(
   previous: SidebarThreadSummary | undefined,
 ): SidebarThreadSummary {
   const latestDetailUserMessageAt =
-    thread.messages
-      .filter((message) => message.role === "user")
-      .toSorted(compareTranscriptOrder)
-      .at(-1)?.createdAt ?? null;
+    thread.messages.filter(isUserWrittenMessage).toSorted(compareTranscriptOrder).at(-1)
+      ?.createdAt ?? null;
   const latestUserMessageAt = latestIso(
     previous?.latestUserMessageAt ?? null,
     latestDetailUserMessageAt,
@@ -709,7 +723,12 @@ function sideTurnsEqual(
   const b = right ?? null;
   return a === null || b === null
     ? a === b
-    : a.sideTurnId === b.sideTurnId && a.status === b.status && a.participantId === b.participantId;
+    : a.sideTurnId === b.sideTurnId &&
+        a.status === b.status &&
+        a.participantId === b.participantId &&
+        a.kind === b.kind &&
+        a.askedBy?.participantId === b.askedBy?.participantId &&
+        a.requestId === b.requestId;
 }
 
 function threadShellsEqual(left: ThreadShell | undefined, right: ThreadShell): boolean {
@@ -1016,6 +1035,19 @@ function writeThreadState(
     };
   }
 
+  if (
+    nextThread.agentRequests !== undefined &&
+    previousThread?.agentRequests !== nextThread.agentRequests
+  ) {
+    nextState = {
+      ...nextState,
+      agentRequestsByThreadId: {
+        ...nextState.agentRequestsByThreadId,
+        [nextThread.id]: nextThread.agentRequests,
+      },
+    };
+  }
+
   if (previousThread?.turnDiffSummaries !== nextThread.turnDiffSummaries) {
     const nextTurnDiffSlice = buildTurnDiffSlice(nextThread);
     nextState = {
@@ -1159,6 +1191,8 @@ function removeThreadState(state: EnvironmentState, threadId: ThreadId): Environ
   const { [threadId]: _removedTurnDiffIds, ...turnDiffIdsByThreadId } = state.turnDiffIdsByThreadId;
   const { [threadId]: _removedTurnDiffs, ...turnDiffSummaryByThreadId } =
     state.turnDiffSummaryByThreadId;
+  const { [threadId]: _removedAgentRequests, ...agentRequestsByThreadId } =
+    state.agentRequestsByThreadId;
   const { [threadId]: _removedSidebarSummary, ...sidebarThreadSummaryById } =
     state.sidebarThreadSummaryById;
 
@@ -1177,6 +1211,7 @@ function removeThreadState(state: EnvironmentState, threadId: ThreadId): Environ
     proposedPlanByThreadId,
     turnDiffIdsByThreadId,
     turnDiffSummaryByThreadId,
+    agentRequestsByThreadId,
     sidebarThreadSummaryById,
   };
 }
@@ -1272,6 +1307,10 @@ function upsertThreadMessage(
         ? { completedAt: message.completedAt }
         : {}),
     ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
+    ...(message.fromAgent !== undefined ? { fromAgent: message.fromAgent } : {}),
+    ...(message.requestId !== undefined ? { requestId: message.requestId } : {}),
+    ...(message.requestKind !== undefined ? { requestKind: message.requestKind } : {}),
+    ...(message.reviewInput !== undefined ? { reviewInput: message.reviewInput } : {}),
   };
   const nextMessages = messages.slice();
   nextMessages[existingIndex] = nextMessage;
@@ -1475,6 +1514,19 @@ function updateThreadState(
   return writeThreadState(state, nextThread, currentThread);
 }
 
+/** Apply a change to one thread's room request state (room tools). */
+function updateAgentRequestState(
+  state: EnvironmentState,
+  threadId: ThreadId,
+  change: (current: OrchestrationAgentRequestState) => OrchestrationAgentRequestState,
+): EnvironmentState {
+  return updateThreadState(state, threadId, (thread) => {
+    const current = thread.agentRequests ?? EMPTY_AGENT_REQUEST_STATE;
+    const next = change(current);
+    return next === current ? thread : { ...thread, agentRequests: next };
+  });
+}
+
 function buildProjectState(
   projects: ReadonlyArray<Project>,
 ): Pick<EnvironmentState, "projectIds" | "projectById"> {
@@ -1547,6 +1599,7 @@ function syncEnvironmentShellSnapshot(
       state.turnDiffSummaryByThreadId,
       nextThreadIds,
     ),
+    agentRequestsByThreadId: retainThreadScopedRecord(state.agentRequestsByThreadId, nextThreadIds),
     bootstrapComplete: true,
   };
 
@@ -1723,6 +1776,7 @@ function applyEnvironmentOrchestrationEvent(
           checkpoints: [],
           session: null,
           diffStatBaselineTurnCount: 0,
+          agentRequests: EMPTY_AGENT_REQUEST_STATE,
         },
         environmentId,
       );
@@ -2060,6 +2114,14 @@ function applyEnvironmentOrchestrationEvent(
           ...(event.payload.sideTurnId !== undefined
             ? { sideTurnId: event.payload.sideTurnId }
             : {}),
+          ...(event.payload.fromAgent !== undefined ? { fromAgent: event.payload.fromAgent } : {}),
+          ...(event.payload.requestId !== undefined ? { requestId: event.payload.requestId } : {}),
+          ...(event.payload.requestKind !== undefined
+            ? { requestKind: event.payload.requestKind }
+            : {}),
+          ...(event.payload.reviewInput !== undefined
+            ? { reviewInput: event.payload.reviewInput }
+            : {}),
           turnId: event.payload.turnId,
           streaming: event.payload.streaming,
           createdAt: event.payload.createdAt,
@@ -2371,6 +2433,53 @@ function applyEnvironmentOrchestrationEvent(
           updatedAt: event.occurredAt,
         };
       });
+
+    // Room tools: requests agents make of each other. The request message and
+    // any side turn arrive in their own events beside these.
+    case "thread.agent-request-submitted":
+      return updateAgentRequestState(state, event.payload.threadId, (current) =>
+        agentRequestStateOn.submitted(current, event.payload.request),
+      );
+
+    case "thread.agent-request-updated":
+      return updateAgentRequestState(state, event.payload.threadId, (current) =>
+        agentRequestStateOn.updated(current, event.payload.requestId, event.payload.status),
+      );
+
+    // Over: the request leaves the open set and its message keeps the outcome.
+    case "thread.agent-request-settled":
+      return updateThreadState(
+        updateAgentRequestState(state, event.payload.threadId, (current) =>
+          agentRequestStateOn.settled(current, event.payload.requestId),
+        ),
+        event.payload.threadId,
+        (thread) => {
+          const { requestMessageId, outcome, error } = event.payload;
+          const requestMessage = thread.messages.find((message) => message.id === requestMessageId);
+          return requestMessage === undefined || requestMessage.requestOutcome === outcome
+            ? thread
+            : {
+                ...thread,
+                messages: thread.messages.map((message) =>
+                  message === requestMessage
+                    ? {
+                        ...message,
+                        requestOutcome: outcome,
+                        ...(error !== undefined ? { requestError: error } : {}),
+                      }
+                    : message,
+                ),
+              };
+        },
+      );
+
+    case "thread.agent-requests-held":
+      return updateAgentRequestState(state, event.payload.threadId, (current) =>
+        agentRequestStateOn.held(current, event.payload.chainEpoch),
+      );
+
+    case "thread.agent-requests-reset":
+      return updateAgentRequestState(state, event.payload.threadId, agentRequestStateOn.reset);
 
     case "thread.approval-response-requested":
     case "thread.user-input-response-requested":

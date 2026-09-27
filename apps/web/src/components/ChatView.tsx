@@ -37,6 +37,7 @@ import { isProviderAuthErrorMessage } from "@threadlines/shared/providerAuth";
 import { normalizeTerminalActivityCommand } from "@threadlines/shared/terminalCommandTracker";
 import { projectScriptCwd, projectScriptRuntimeEnv } from "@threadlines/shared/projectScripts";
 import { resolveThreadWorkingCwd } from "@threadlines/shared/threadCwd";
+import { agentRequestLimitReached } from "@threadlines/shared/roomAgentRequests";
 import { formatForkSourceExcerpt, truncate } from "@threadlines/shared/String";
 import { Debouncer } from "@tanstack/react-pacer";
 import * as Option from "effect/Option";
@@ -560,6 +561,10 @@ type ForkThreadDialogState = {
 function buildForkSourceExcerpt(message: ChatMessage): string {
   return formatForkSourceExcerpt(message.text, FORK_SOURCE_EXCERPT_CHARS);
 }
+
+/** A message an agent wrote to another is shown as an agent's words, not the user's. */
+const forkSourceRole = (message: Pick<ChatMessage, "role" | "fromAgent">): ChatMessage["role"] =>
+  message.fromAgent !== undefined ? "assistant" : message.role;
 
 function roleLabelForForkSource(role: ChatMessage["role"]): string {
   switch (role) {
@@ -5269,10 +5274,12 @@ export default function ChatView(props: ChatViewProps) {
     const threadKeyAtStart = activeThreadKey;
     // The box holds one message for one agent. In a room, only the messages
     // for the first one's agent come back; the rest stay queued for theirs.
-    const firstAgentId = followUps[0]?.participantId ?? null;
+    // What an agent queued (a hand-off, a reply) is never the user's to edit.
+    const usersOwn = followUps.filter((followUp) => followUp.fromAgent === undefined);
+    const firstAgentId = usersOwn[0]?.participantId ?? null;
     const returning = isRoom(activeThread)
-      ? followUps.filter((followUp) => (followUp.participantId ?? null) === firstAgentId)
-      : followUps;
+      ? usersOwn.filter((followUp) => (followUp.participantId ?? null) === firstAgentId)
+      : usersOwn;
     const taken: OrchestrationQueuedFollowUp[] = [];
     for (const followUp of returning) {
       const removed = await api.orchestration
@@ -5667,8 +5674,11 @@ export default function ChatView(props: ChatViewProps) {
 
   const failedTurnRetryAction = useMemo(() => {
     const failedMessageId = deriveFailedTurnRetryMessageId({
-      // A side question is never the failed turn's message.
-      messages: (activeThread?.messages ?? []).filter((message) => !isSideMessage(message)),
+      // A side question is never the failed turn's message, and Retry sits on
+      // the user's own message, not on one an agent wrote to another.
+      messages: (activeThread?.messages ?? []).filter(
+        (message) => !isSideMessage(message) && message.fromAgent === undefined,
+      ),
       sessionLastError: activeThread?.session?.lastError,
     });
     if (
@@ -6317,7 +6327,7 @@ export default function ChatView(props: ChatViewProps) {
         }
         setForkDialogState({
           sourceMessageId: lastMessage.id,
-          sourceMessageRole: lastMessage.role,
+          sourceMessageRole: forkSourceRole(lastMessage),
           sourceMessageText: buildForkSourceExcerpt(lastMessage),
           sourceAttachmentCount: lastMessage.attachments?.length ?? 0,
           instruction: DEFAULT_CONTINUE_IN_PROJECT_INSTRUCTION,
@@ -7040,6 +7050,9 @@ export default function ChatView(props: ChatViewProps) {
               onOpenTurnDiff={onOpenTurnDiff}
               revertTurnCountByUserMessageId={revertTurnCountByUserMessageId}
               roomAgents={roomAgentLabels}
+              {...(activeThread.agentRequests
+                ? { openAgentRequests: activeThread.agentRequests.open }
+                : {})}
               onRevertUserMessage={onRevertUserMessage}
               onContinueInNewThread={onContinueMessageInNewThread}
               onRevealPickedElement={isElectron ? revealPickedElement : undefined}
@@ -7103,6 +7116,17 @@ export default function ChatView(props: ChatViewProps) {
                 onEdit={(followUp) => void returnQueuedFollowUpsToComposer([followUp])}
                 onRemove={removeQueuedFollowUp}
               />
+              {roomAgentLabels !== null &&
+              activeThread.agentRequests &&
+              agentRequestLimitReached(activeThread.agentRequests) ? (
+                <p
+                  className="mx-auto mb-1.5 max-w-4xl px-3 text-xs text-muted-foreground"
+                  data-room-agent-limit="true"
+                >
+                  Agents are waiting for you ({activeThread.agentRequests.requestsSinceUser}{" "}
+                  requests used)
+                </p>
+              ) : null}
               <div className="relative z-10">
                 <ChatComposer
                   composerRef={composerRef}

@@ -5,6 +5,7 @@ import {
   ProviderDriverKind,
   ThreadId,
   type OrchestrationEvent,
+  EMPTY_AGENT_REQUEST_STATE,
 } from "@threadlines/contracts";
 import { MAX_THREAD_ACTIVITIES } from "@threadlines/shared/threadLimits";
 import * as Effect from "effect/Effect";
@@ -97,6 +98,7 @@ describe("orchestration projector", () => {
         pullRequestAutoMerge: null,
         linkedPullRequests: [],
         queuedFollowUps: [],
+        agentRequests: EMPTY_AGENT_REQUEST_STATE,
         participants: [],
         doneOverride: null,
         lastSeenAt: null,

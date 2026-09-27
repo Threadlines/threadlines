@@ -11,6 +11,8 @@ import { describe, expect, it } from "vite-plus/test";
 import type { ProviderInstanceEntry } from "./providerInstances";
 import {
   buildRoomAgentLabels,
+  describeRoomAgentMessage,
+  describeRoomReviewBasis,
   isRoomWaitChosen,
   matchRoomAgents,
   resolveRoomDelivery,
@@ -131,5 +133,89 @@ describe("rooms", () => {
     expect(names("opus5")).toEqual(["Opus 5.5"]);
     expect(names("")).toHaveLength(3);
     expect(names("retry.ts")).toEqual([]);
+  });
+
+  it("names who wrote an agent's message, who it is for, and how its request ended", () => {
+    const entries = [
+      {
+        instanceId: ProviderInstanceId.make("codex"),
+        models: [{ slug: "gpt-6-astra", name: "GPT-6 Astra" }],
+      },
+      {
+        instanceId: ProviderInstanceId.make("claudeAgent"),
+        models: [{ slug: "opus-5-5", name: "Opus 5.5" }],
+      },
+    ] as unknown as ReadonlyArray<ProviderInstanceEntry>;
+    const room = (leftAt: string | null) =>
+      buildRoomAgentLabels(
+        {
+          modelSelection: { instanceId: ProviderInstanceId.make("claudeAgent"), model: "opus-5-5" },
+          participants: [{ ...astra, leftAt }],
+        },
+        entries,
+        (model) => model.name,
+      );
+    const describeMessage = (
+      message: Parameters<typeof describeRoomAgentMessage>[0]["message"],
+      openStatus: "pending" | "queued" | "running" | null = null,
+      leftAt: string | null = null,
+    ) => describeRoomAgentMessage({ message, labels: room(leftAt), openStatus });
+    const handOff = {
+      fromAgent: { participantId: null },
+      participantId: astraId,
+      requestKind: "hand_off" as const,
+    };
+
+    // The user's own messages are not agents' messages.
+    expect(describeMessage({ participantId: astraId })).toBeNull();
+    expect(describeMessage(handOff, "pending")).toMatchObject({
+      from: "Opus 5.5",
+      to: "GPT-6 Astra",
+      kind: "handed off, starts when Opus 5.5 finishes",
+      outcomeNote: null,
+    });
+    // The reply comes back the other way, and never carries a failure note.
+    expect(
+      describeMessage({
+        fromAgent: { participantId: astraId },
+        requestKind: "reply",
+        requestOutcome: "failed",
+      }),
+    ).toMatchObject({ from: "GPT-6 Astra", to: "Opus 5.5", kind: "reply", outcomeNote: null });
+    expect(
+      describeMessage({ ...handOff, requestKind: "review", requestOutcome: "stopped" }),
+    ).toMatchObject({
+      kind: null,
+      review: true,
+      outcomeNote: "Stopped before GPT-6 Astra answered.",
+    });
+    expect(
+      describeMessage({ ...handOff, requestOutcome: "cancelled" }, null, "2026-01-02T00:00:00.000Z")
+        ?.outcomeNote,
+    ).toBe("Cancelled: GPT-6 Astra left the room.");
+    expect(describeMessage({ ...handOff, requestOutcome: "answered" })?.outcomeNote).toBeNull();
+  });
+
+  it("says what an independent review was shown", () => {
+    const time = () => "10:32";
+    expect(
+      describeRoomReviewBasis(
+        { kind: "uncommitted", files: 4, truncated: false, capturedAt: "2026-01-01T10:32:00Z" },
+        time,
+      ),
+    ).toBe("Uncommitted changes, 4 files, captured 10:32");
+    expect(
+      describeRoomReviewBasis(
+        {
+          kind: "range",
+          base: "0123456789abcdef0123456789abcdef01234567",
+          head: "main",
+          files: 1,
+          truncated: true,
+          capturedAt: "2026-01-01T10:32:00Z",
+        },
+        time,
+      ),
+    ).toBe("Changes from 0123456 to main, 1 file, captured 10:32, cut to fit");
   });
 });

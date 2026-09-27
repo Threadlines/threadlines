@@ -182,6 +182,8 @@ function toRuntimePayloadFromSession(
     model: session.model ?? null,
     activeTurnId: session.activeTurnId ?? null,
     lastError: session.lastError ?? null,
+    // Kept so a recovered runtime gets the room tools it was started with.
+    ...(session.roomTools !== undefined ? { roomTools: session.roomTools } : {}),
     ...(extra?.modelSelection !== undefined ? { modelSelection: extra.modelSelection } : {}),
     ...(extra?.lastRuntimeEvent !== undefined ? { lastRuntimeEvent: extra.lastRuntimeEvent } : {}),
     ...(extra?.lastRuntimeEventAt !== undefined
@@ -198,6 +200,23 @@ function readPersistedModelSelection(
   }
   const raw = "modelSelection" in runtimePayload ? runtimePayload.modelSelection : undefined;
   return isModelSelection(raw) ? raw : undefined;
+}
+
+/**
+ * Whether the runtime was asked for the room tools. Reported either way
+ * (ProviderSession.roomTools is true or false once asked), so a recovered
+ * runtime is asked again and answers again, even one that could not take them.
+ */
+function readPersistedRoomToolsRequest(
+  runtimePayload: ProviderRuntimeBinding["runtimePayload"],
+): boolean {
+  return (
+    runtimePayload !== null &&
+    typeof runtimePayload === "object" &&
+    !Array.isArray(runtimePayload) &&
+    "roomTools" in runtimePayload &&
+    typeof runtimePayload.roomTools === "boolean"
+  );
 }
 
 function readPersistedCwd(
@@ -557,6 +576,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         ...(persistedCwd ? { cwd: persistedCwd } : {}),
         ...(persistedModelSelection ? { modelSelection: persistedModelSelection } : {}),
         ...(hasResumeCursor ? { resumeCursor: input.binding.resumeCursor } : {}),
+        ...(readPersistedRoomToolsRequest(input.binding.runtimePayload) ? { roomTools: true } : {}),
         runtimeMode: input.binding.runtimeMode ?? "full-access",
       });
       if (resumed.provider !== adapter.provider) {

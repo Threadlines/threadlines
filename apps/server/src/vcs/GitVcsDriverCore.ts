@@ -2399,6 +2399,15 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     const env: NodeJS.ProcessEnv = {
       ...process.env,
       GIT_INDEX_FILE: tempIndexPath,
+      // An agent's diff: paths are literal, and no fsmonitor program runs.
+      ...(input.readOnlyProfile
+        ? {
+            GIT_LITERAL_PATHSPECS: "1",
+            GIT_CONFIG_COUNT: "1",
+            GIT_CONFIG_KEY_0: "core.fsmonitor",
+            GIT_CONFIG_VALUE_0: "false",
+          }
+        : {}),
     };
     const cleanupTempIndex = fileSystem.remove(tempIndexPath, { force: true }).pipe(Effect.ignore);
 
@@ -2420,6 +2429,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
         "diff",
         "--no-color",
         "--no-ext-diff",
+        ...(input.readOnlyProfile ? ["--no-textconv"] : []),
         "--cached",
         "--patch",
         "--minimal",

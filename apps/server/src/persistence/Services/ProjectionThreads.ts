@@ -25,6 +25,7 @@ import {
   ThreadEffectiveCwdSource,
   ThreadId,
   TurnId,
+  OrchestrationAgentRequestState,
 } from "@threadlines/contracts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -109,6 +110,12 @@ export const ProjectionThread = Schema.Struct({
    * migration 060 decode.
    */
   agentRole: Schema.optional(Schema.NullOr(RoomAgentRole)),
+  /**
+   * Room tools: open agent requests, the Stop hold and the limit's count; see
+   * `OrchestrationThread.agentRequests`. Optional so rows written before
+   * migration 061 decode; absent or null reads as none.
+   */
+  agentRequests: Schema.optional(Schema.NullOr(OrchestrationAgentRequestState)),
   /**
    * The user's explicit inbox filing and its stamp. Optional so rows written
    * before migration 042 decode; absent reads as "never filed". Kept as two
