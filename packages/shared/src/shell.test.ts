@@ -377,6 +377,38 @@ describe("resolveCommandPath", () => {
       }),
     ).toBe("C:\\Users\\testuser\\AppData\\Local\\Microsoft\\WindowsApps\\winget.EXE");
   });
+
+  it("probes only what a Windows PATH directory lists, and every candidate where it cannot list", () => {
+    const failWith = (code: string) => {
+      throw Object.assign(new Error(code), { code });
+    };
+    const probed: string[] = [];
+    const resolved = resolveCommandPath("code", {
+      platform: "win32",
+      env: { PATH: "C:\\Missing;C:\\Locked;C:\\Tools", PATHEXT: ".EXE;.CMD" },
+      fileSystem: {
+        isFile: (filePath) => {
+          probed.push(filePath);
+          return filePath.toLowerCase() === "c:\\tools\\code.cmd";
+        },
+        canAccess: () => true,
+        listDirectory: (directoryPath) => {
+          if (directoryPath === "C:\\Missing") return failWith("ENOENT");
+          if (directoryPath === "C:\\Locked") return failWith("EACCES");
+          return ["README.md", "Code.CMD"];
+        },
+      },
+    });
+
+    expect(resolved).toBe("C:\\Tools\\code.cmd");
+    expect(probed).toEqual([
+      "C:\\Locked\\code.exe",
+      "C:\\Locked\\code.EXE",
+      "C:\\Locked\\code.cmd",
+      "C:\\Locked\\code.CMD",
+      "C:\\Tools\\code.cmd",
+    ]);
+  });
 });
 
 describe("refreshWindowsPath", () => {

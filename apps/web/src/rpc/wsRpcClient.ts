@@ -510,7 +510,16 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
       browse: (input) => transport.request((client) => client[WS_METHODS.filesystemBrowse](input)),
     },
     usage: {
-      summary: (input) => transport.request((client) => client[WS_METHODS.usageSummary](input)),
+      // Pure read that lands in the busiest seconds after launch, when a missed
+      // heartbeat drops the socket; a plain request would just fail there. A
+      // cold transcript scan can take a minute on a slow disk, so one attempt
+      // gets two. An interrupted scan keeps the files it already parsed.
+      summary: (input) =>
+        transport.requestWithReconnectRetry((client) => client[WS_METHODS.usageSummary](input), {
+          label: WS_METHODS.usageSummary,
+          attemptTimeoutMs: 120_000,
+          totalBudgetMs: 180_000,
+        }),
     },
     sourceControl: {
       lookupRepository: (input) =>

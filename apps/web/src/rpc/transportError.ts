@@ -90,7 +90,7 @@ export class TransportRequestRetriesExhaustedError extends Error {
  * schema errors, previously-rejected receipts — must surface, not retry.
  */
 export function isRetryableRequestFailure(error: unknown): boolean {
-  if (error instanceof TransportRequestTimeoutError) {
+  if (error instanceof TransportRequestTimeoutError || error instanceof TransportRequestLostError) {
     return true;
   }
   if (error instanceof TransportRequestRetriesExhaustedError) {
