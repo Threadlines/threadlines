@@ -194,7 +194,11 @@ export function makeRoomGit(git: Pick<GitVcsDriverShape, "execute" | "workingTre
     Effect.gen(function* () {
       const paths = yield* pathArgs(path);
       const { diff } = yield* git
-        .workingTreeDiff({ cwd, ...(paths.length > 0 ? { filePaths: [paths[1]!] } : {}) })
+        .workingTreeDiff({
+          cwd,
+          readOnlyProfile: true,
+          ...(paths.length > 0 ? { filePaths: [paths[1]!] } : {}),
+        })
         .pipe(Effect.mapError((error) => new RoomGitError(error.detail)));
       return diff;
     });

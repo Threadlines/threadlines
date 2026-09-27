@@ -252,8 +252,13 @@ export function decideAgentRequestSettle(
     return refuse(`Request '${command.requestId}' is not open.`);
   }
   // An ask or review settles with its side answer, unless that answer is
-  // already gone (a restart), and then it is closed directly.
-  if (request.kind !== "hand_off" && thread.sideTurn?.requestId === request.requestId) {
+  // already gone (a restart) or ran out of time, and then it is closed
+  // directly; its side answer is stopped next and finds it already closed.
+  if (
+    request.kind !== "hand_off" &&
+    thread.sideTurn?.requestId === request.requestId &&
+    command.outcome !== "timeout"
+  ) {
     return refuse("Asks and reviews settle with their side answer.");
   }
   const settled = settledEvent(

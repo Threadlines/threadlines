@@ -165,6 +165,8 @@ const makeRoom = (options: {
       },
       readThread: () => Effect.sync(() => thread),
       readProjectRoot: () => Effect.succeed("/project"),
+      // The Cursor agent runs where the room tools cannot reach it.
+      roomToolsOf: (sessionKey) => Effect.succeed(!sessionKey.endsWith(CURSOR_AGENT)),
       driverKindOf: (instanceId) =>
         Effect.succeed(
           DRIVERS[instanceId] !== undefined
@@ -394,10 +396,18 @@ describe("room_ask", () => {
       const result = yield* Fiber.join(waiter);
 
       expect(result.outcome).toBe("timeout");
-      expect(room.dispatched.at(-1)).toMatchObject({
-        type: "thread.side-turn.interrupt",
-        sideTurnId: submits(room.dispatched)[0]!.sideTurnId,
-      });
+      // Recorded as a timeout first, so the chat says so, then stopped.
+      expect(room.dispatched.slice(-2)).toMatchObject([
+        {
+          type: "thread.agent-request.settle",
+          requestId: submits(room.dispatched)[0]!.requestId,
+          outcome: "timeout",
+        },
+        {
+          type: "thread.side-turn.interrupt",
+          sideTurnId: submits(room.dispatched)[0]!.sideTurnId,
+        },
+      ]);
     }),
   );
 });
@@ -551,6 +561,7 @@ describe("room_agents and room_history", () => {
           model: "gpt-6-astra",
           status: "working",
           canAnswer: true,
+          roomTools: "attached",
           you: true,
         },
         {
@@ -560,6 +571,7 @@ describe("room_agents and room_history", () => {
           model: "claude-opus-5-5",
           status: "idle",
           canAnswer: true,
+          roomTools: "attached",
           you: false,
         },
         {
@@ -569,6 +581,7 @@ describe("room_agents and room_history", () => {
           model: "composer-2",
           status: "idle",
           canAnswer: false,
+          roomTools: "unavailable",
           you: false,
         },
       ]);

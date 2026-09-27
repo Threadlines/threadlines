@@ -30,6 +30,8 @@ import {
   type ThreadId,
   type TurnId,
 } from "@threadlines/contracts";
+import { participantSessionKey } from "@threadlines/shared/threadParticipants";
+import { resolveThreadWorkingCwd } from "@threadlines/shared/threadCwd";
 import { agentRequestRefusal } from "@threadlines/shared/roomAgentRequests";
 import { randomUUID } from "node:crypto";
 import * as DateTime from "effect/DateTime";
@@ -113,7 +115,13 @@ export function roomCheckoutCwd(
   thread: Pick<OrchestrationThread, "effectiveCwd" | "worktreePath">,
   projectRoot: string | undefined,
 ): string | undefined {
-  return thread.effectiveCwd ?? thread.worktreePath ?? projectRoot;
+  return (
+    resolveThreadWorkingCwd({
+      projectCwd: projectRoot,
+      worktreePath: thread.worktreePath,
+      effectiveCwd: thread.effectiveCwd,
+    }) ?? undefined
+  );
 }
 
 export interface RoomToolDeps {
@@ -123,6 +131,12 @@ export interface RoomToolDeps {
   readonly driverKindOf: (
     instanceId: ProviderInstanceId,
   ) => Effect.Effect<ProviderDriverKind | undefined>;
+  /**
+   * What an agent's live runtime reports about the room tools (keyed by its
+   * session key): true attached, false asked for but not reachable, undefined
+   * no runtime yet or started before the room.
+   */
+  readonly roomToolsOf: (sessionKey: ThreadId) => Effect.Effect<boolean | undefined>;
   /** A model's name as the model picker shows it. */
   readonly modelNameOf: (selection: ModelSelection) => Effect.Effect<string>;
   readonly git: Pick<GitVcsDriverShape, "execute" | "workingTreeDiff">;
@@ -230,8 +244,11 @@ export function makeRoomToolHandlers(deps: RoomToolDeps) {
       const agents = yield* Effect.forEach(
         room.entries.filter((entry) => entry.present),
         (entry) =>
-          canAnswerOnTheSide(entry).pipe(
-            Effect.map((canAnswer) => ({
+          Effect.all([
+            canAnswerOnTheSide(entry),
+            deps.roomToolsOf(participantSessionKey(scope.threadId, entry.participantId)),
+          ]).pipe(
+            Effect.map(([canAnswer, roomTools]) => ({
               key: entry.key,
               participantId: entry.participantId,
               name: entry.name,
@@ -243,6 +260,12 @@ export function makeRoomToolHandlers(deps: RoomToolDeps) {
                     ? ("answering" as const)
                     : ("idle" as const),
               canAnswer,
+              roomTools:
+                roomTools === true
+                  ? ("attached" as const)
+                  : roomTools === false
+                    ? ("unavailable" as const)
+                    : ("next_turn" as const),
               you: entry.participantId === scope.participantId,
             })),
           ),
@@ -412,6 +435,27 @@ export function makeRoomToolHandlers(deps: RoomToolDeps) {
           Effect.as(undefined),
           Effect.catch((error) => Effect.succeed(dispatchDetail(error))),
         );
+    });
+
+  /** Close an ask or review before its side answer settles (a timeout). */
+  const settleRequestEarly = (
+    threadId: ThreadId,
+    requestId: RoomAgentRequestId,
+    outcome: "timeout",
+    error: string,
+  ) =>
+    Effect.gen(function* () {
+      yield* deps.engine
+        .dispatch({
+          type: "thread.agent-request.settle",
+          commandId: CommandId.make(`server:room-request-timeout:${requestId}`),
+          threadId,
+          requestId,
+          outcome,
+          error,
+          createdAt: yield* nowIso,
+        })
+        .pipe(Effect.ignore);
     });
 
   const interruptSideTurn = (threadId: ThreadId, sideTurnId: SideTurnId) =>
@@ -593,7 +637,16 @@ export function makeRoomToolHandlers(deps: RoomToolDeps) {
           return outcome;
         }
         // Out of time, or nobody is waiting any more: stop what was started.
+        // A timeout is recorded as one first, so the chat says so.
         if (submitted) {
+          if (outcome === "timeout") {
+            yield* settleRequestEarly(
+              scope.threadId,
+              requestId,
+              "timeout",
+              `No answer within ${Duration.format(deadline)}.`,
+            );
+          }
           yield* interruptSideTurn(scope.threadId, sideTurnId);
         }
         return outcome === "timeout"

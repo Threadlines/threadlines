@@ -74,6 +74,10 @@ describe("room_diff", () => {
         expect(status.output).toContain("?? fresh.ts");
         const pending = yield* roomGit.view({ cwd: checkout.repo, view: "diff_stat" });
         expect(pending.output).toContain("fresh.ts");
+        // The uncommitted view goes through the temp index, converted file included.
+        fs.writeFileSync(path.join(checkout.repo, "notes.txt"), "first\nsecond\nthird\n");
+        const uncommitted = yield* roomGit.view({ cwd: checkout.repo, view: "diff" });
+        expect(uncommitted.output).toContain("+third");
 
         expect(fs.existsSync(checkout.markers.textconv)).toBe(false);
         expect(fs.existsSync(checkout.markers.external)).toBe(false);

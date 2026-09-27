@@ -22,6 +22,7 @@ import { HttpRouter, HttpServerRequest, type HttpServerResponse } from "effect/u
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { ProviderRegistry } from "../provider/Services/ProviderRegistry.ts";
+import { ProviderService } from "../provider/Services/ProviderService.ts";
 import { GitVcsDriver } from "../vcs/GitVcsDriver.ts";
 import {
   MCP_ROOM_ROUTE_PATH,
@@ -64,6 +65,7 @@ const RoomToolHandlersLive = RoomToolkit.toLayer(
     const engine = yield* OrchestrationEngineService;
     const snapshots = yield* ProjectionSnapshotQuery;
     const providers = yield* ProviderRegistry;
+    const providerService = yield* ProviderService;
     const git = yield* GitVcsDriver;
     // Requests outlive the HTTP calls waiting on them; they end with the server.
     const requests = makeRoomRequestRegistry(yield* Effect.scope);
@@ -82,6 +84,13 @@ const RoomToolHandlersLive = RoomToolkit.toLayer(
       driverKindOf: (instanceId) =>
         providers.getProviders.pipe(
           Effect.map((all) => all.find((provider) => provider.instanceId === instanceId)?.driver),
+        ),
+      roomToolsOf: (sessionKey) =>
+        providerService.listSessions().pipe(
+          Effect.map(
+            (sessions) => sessions.find((entry) => entry.threadId === sessionKey)?.roomTools,
+          ),
+          Effect.orElseSucceed(() => undefined),
         ),
       modelNameOf: (selection) =>
         providers.getProviders.pipe(

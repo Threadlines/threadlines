@@ -1,5 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { resolveThreadWorkingCwd } from "@threadlines/shared/threadCwd";
 
 import {
   type ChatAttachment,
@@ -3284,7 +3285,7 @@ const make = Effect.gen(function* () {
 
   /** The checkout's uncommitted changes, bounded, for a side answer to read. */
   const describeCheckoutChanges = (cwd: string) =>
-    gitWorkflow.workingTreeDiff({ cwd }).pipe(
+    gitWorkflow.workingTreeDiff({ cwd, readOnlyProfile: true }).pipe(
       Effect.map(({ diff }) =>
         diff.trim().length === 0
           ? "There are no uncommitted changes in the checkout right now."
@@ -3314,9 +3315,14 @@ const make = Effect.gen(function* () {
     }
     const key = sideSessionKey(threadId, sideTurnId, sideTurn.participantId);
     const project = yield* resolveProject(thread.projectId);
+    // Where the agent at work really is (it may have moved into a worktree),
+    // the same checkout the room tools read.
     const cwd =
-      resolveThreadWorkspaceCwd({ thread, projects: project ? [project] : [] }) ??
-      project?.workspaceRoot;
+      resolveThreadWorkingCwd({
+        projectCwd: project?.workspaceRoot,
+        worktreePath: thread.worktreePath,
+        effectiveCwd: thread.effectiveCwd,
+      }) ?? undefined;
     // An independent review starts fresh on purpose: no conversation, no room
     // note, only its request and the basis the server captured.
     const isReview = sideTurn.kind === "review";

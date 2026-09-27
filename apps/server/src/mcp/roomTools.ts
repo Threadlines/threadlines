@@ -81,6 +81,12 @@ export const RoomAgentsResult = Schema.Struct({
       status: Schema.Literals(["working", "answering", "idle"]),
       /** Can answer an ask or a review on the side (Codex and Claude can). */
       canAnswer: Schema.Boolean,
+      /**
+       * Whether it can use the room tools itself: `attached`, `unavailable`
+       * (its provider cannot reach them from where it runs), or `next_turn`
+       * (it gets them the next time it works).
+       */
+      roomTools: Schema.Literals(["attached", "unavailable", "next_turn"]),
       you: Schema.Boolean,
     }),
   ),
