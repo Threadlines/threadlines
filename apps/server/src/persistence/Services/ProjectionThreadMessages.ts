@@ -22,6 +22,7 @@ import {
   RoomAgentRequestId,
   RoomAgentRequestOutcome,
   RoomReviewInput,
+  TrimmedNonEmptyString,
 } from "@threadlines/contracts";
 import * as Schema from "effect/Schema";
 import * as Context from "effect/Context";
@@ -51,6 +52,7 @@ export const ProjectionThreadMessage = Schema.Struct({
   requestId: Schema.optional(RoomAgentRequestId),
   requestKind: Schema.optional(RoomAgentMessageKind),
   requestOutcome: Schema.optional(RoomAgentRequestOutcome),
+  requestError: Schema.optional(TrimmedNonEmptyString),
   reviewInput: Schema.optional(RoomReviewInput),
   isStreaming: Schema.Boolean,
   createdAt: IsoDateTime,

@@ -44,6 +44,7 @@ import {
   RoomAgentRequestId,
   RoomAgentRequestOutcome,
   RoomReviewInput,
+  TrimmedNonEmptyString,
 } from "@threadlines/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -115,6 +116,7 @@ const ProjectionThreadMessageDbRowSchema = ProjectionThreadMessage.mapFields(
     requestId: Schema.NullOr(RoomAgentRequestId),
     requestKind: Schema.NullOr(RoomAgentMessageKind),
     requestOutcome: Schema.NullOr(RoomAgentRequestOutcome),
+    requestError: Schema.NullOr(TrimmedNonEmptyString),
     reviewInput: Schema.NullOr(Schema.fromJsonString(RoomReviewInput)),
   }),
 );
@@ -379,6 +381,7 @@ function mapThreadMessageRow(
     ...(row.requestId !== null ? { requestId: row.requestId } : {}),
     ...(row.requestKind !== null ? { requestKind: row.requestKind } : {}),
     ...(row.requestOutcome !== null ? { requestOutcome: row.requestOutcome } : {}),
+    ...(row.requestError !== null ? { requestError: row.requestError } : {}),
     ...(row.reviewInput !== null ? { reviewInput: row.reviewInput } : {}),
     turnId: row.turnId,
     streaming: row.isStreaming === 1,
@@ -729,6 +732,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           request_id AS "requestId",
           request_kind AS "requestKind",
           request_outcome AS "requestOutcome",
+          request_error AS "requestError",
           review_input AS "reviewInput",
           is_streaming AS "isStreaming",
           created_at AS "createdAt",
@@ -774,6 +778,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           request_id AS "requestId",
           request_kind AS "requestKind",
           request_outcome AS "requestOutcome",
+          request_error AS "requestError",
           review_input AS "reviewInput",
           is_streaming AS "isStreaming",
           created_at AS "createdAt",
@@ -1405,6 +1410,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           request_id AS "requestId",
           request_kind AS "requestKind",
           request_outcome AS "requestOutcome",
+          request_error AS "requestError",
           review_input AS "reviewInput",
           is_streaming AS "isStreaming",
           created_at AS "createdAt",

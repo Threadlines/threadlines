@@ -91,6 +91,8 @@ export interface ChatMessage {
   requestKind?: RoomAgentMessageKind | undefined;
   /** How the request this message made ended; absent while it is open. */
   requestOutcome?: RoomAgentRequestOutcome | undefined;
+  /** Why a request that did not get its answer ended, when known. */
+  requestError?: string | undefined;
   /** See OrchestrationMessage.reviewInput. */
   reviewInput?: RoomReviewInput | undefined;
   turnId?: TurnId | null;

@@ -107,43 +107,48 @@ export const agentRequestLimitReached = (state: OrchestrationAgentRequestState):
 /**
  * How each room-request event changes a thread's request state. The server's
  * projector and the web store both apply events through these, so the two
- * never disagree.
+ * never disagree. Each returns the same state object when nothing changes
+ * (an event seen twice, say), so a client can skip re-rendering.
  */
 export const agentRequestStateOn = {
   submitted: (
     state: OrchestrationAgentRequestState,
     request: OrchestrationAgentRequestState["open"][number],
-  ): OrchestrationAgentRequestState => ({
-    ...state,
-    open: [...state.open.filter((entry) => entry.requestId !== request.requestId), request],
-    requestsSinceUser: state.requestsSinceUser + 1,
-  }),
+  ): OrchestrationAgentRequestState =>
+    state.open.some((entry) => entry.requestId === request.requestId)
+      ? state
+      : {
+          ...state,
+          open: [...state.open, request],
+          requestsSinceUser: state.requestsSinceUser + 1,
+        },
   updated: (
     state: OrchestrationAgentRequestState,
     requestId: OrchestrationAgentRequestState["open"][number]["requestId"],
     status: OrchestrationAgentRequestState["open"][number]["status"],
-  ): OrchestrationAgentRequestState => ({
-    ...state,
-    open: state.open.map((entry) => (entry.requestId === requestId ? { ...entry, status } : entry)),
-  }),
+  ): OrchestrationAgentRequestState =>
+    state.open.some((entry) => entry.requestId === requestId && entry.status !== status)
+      ? {
+          ...state,
+          open: state.open.map((entry) =>
+            entry.requestId === requestId ? { ...entry, status } : entry,
+          ),
+        }
+      : state,
   settled: (
     state: OrchestrationAgentRequestState,
     requestId: OrchestrationAgentRequestState["open"][number]["requestId"],
-  ): OrchestrationAgentRequestState => ({
-    ...state,
-    open: state.open.filter((entry) => entry.requestId !== requestId),
-  }),
+  ): OrchestrationAgentRequestState =>
+    state.open.some((entry) => entry.requestId === requestId)
+      ? { ...state, open: state.open.filter((entry) => entry.requestId !== requestId) }
+      : state,
   held: (
     state: OrchestrationAgentRequestState,
     chainEpoch: number,
-  ): OrchestrationAgentRequestState => ({
-    ...state,
-    hold: true,
-    chainEpoch,
-  }),
-  reset: (state: OrchestrationAgentRequestState): OrchestrationAgentRequestState => ({
-    ...state,
-    hold: false,
-    requestsSinceUser: 0,
-  }),
+  ): OrchestrationAgentRequestState =>
+    state.hold && state.chainEpoch === chainEpoch ? state : { ...state, hold: true, chainEpoch },
+  reset: (state: OrchestrationAgentRequestState): OrchestrationAgentRequestState =>
+    !state.hold && state.requestsSinceUser === 0
+      ? state
+      : { ...state, hold: false, requestsSinceUser: 0 },
 };

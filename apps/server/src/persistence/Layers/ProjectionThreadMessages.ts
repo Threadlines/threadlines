@@ -16,6 +16,7 @@ import {
   RoomAgentRequestOutcome,
   RoomReviewInput,
   ThreadParticipantId,
+  TrimmedNonEmptyString,
 } from "@threadlines/contracts";
 
 import { toPersistenceSqlError } from "../Errors.ts";
@@ -40,6 +41,7 @@ const ProjectionThreadMessageDbRowSchema = ProjectionThreadMessage.mapFields(
     requestId: Schema.NullOr(RoomAgentRequestId),
     requestKind: Schema.NullOr(RoomAgentMessageKind),
     requestOutcome: Schema.NullOr(RoomAgentRequestOutcome),
+    requestError: Schema.NullOr(TrimmedNonEmptyString),
     reviewInput: Schema.NullOr(Schema.fromJsonString(RoomReviewInput)),
   }),
 );
@@ -65,6 +67,7 @@ function toProjectionThreadMessage(
     ...(row.requestId !== null ? { requestId: row.requestId } : {}),
     ...(row.requestKind !== null ? { requestKind: row.requestKind } : {}),
     ...(row.requestOutcome !== null ? { requestOutcome: row.requestOutcome } : {}),
+    ...(row.requestError !== null ? { requestError: row.requestError } : {}),
     ...(row.reviewInput !== null ? { reviewInput: row.reviewInput } : {}),
   };
 }
@@ -94,6 +97,7 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
           request_id,
           request_kind,
           request_outcome,
+          request_error,
           review_input,
           is_streaming,
           created_at,
@@ -128,6 +132,7 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
           ${row.requestId ?? null},
           ${row.requestKind ?? null},
           ${row.requestOutcome ?? null},
+          ${row.requestError ?? null},
           ${row.reviewInput !== undefined ? JSON.stringify(row.reviewInput) : null},
           ${row.isStreaming ? 1 : 0},
           ${row.createdAt},
@@ -157,6 +162,7 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
             excluded.request_outcome,
             projection_thread_messages.request_outcome
           ),
+          request_error = COALESCE(excluded.request_error, projection_thread_messages.request_error),
           review_input = COALESCE(excluded.review_input, projection_thread_messages.review_input),
           is_streaming = excluded.is_streaming,
           created_at = excluded.created_at,
@@ -185,6 +191,7 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
           request_id AS "requestId",
           request_kind AS "requestKind",
           request_outcome AS "requestOutcome",
+          request_error AS "requestError",
           review_input AS "reviewInput",
           is_streaming AS "isStreaming",
           created_at AS "createdAt",
@@ -215,6 +222,7 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
           request_id AS "requestId",
           request_kind AS "requestKind",
           request_outcome AS "requestOutcome",
+          request_error AS "requestError",
           review_input AS "reviewInput",
           is_streaming AS "isStreaming",
           created_at AS "createdAt",

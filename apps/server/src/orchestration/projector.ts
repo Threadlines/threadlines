@@ -699,7 +699,11 @@ export function projectEvent(
             threads: updateThread(next.threads, payload.threadId, {
               messages: thread.messages.map((message) =>
                 message.id === payload.requestMessageId
-                  ? { ...message, requestOutcome: payload.outcome }
+                  ? {
+                      ...message,
+                      requestOutcome: payload.outcome,
+                      ...(payload.error !== undefined ? { requestError: payload.error } : {}),
+                    }
                   : message,
               ),
             }),

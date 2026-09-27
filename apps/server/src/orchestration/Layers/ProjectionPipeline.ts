@@ -1242,6 +1242,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             yield* projectionThreadMessageRepository.upsert({
               ...message.value,
               requestOutcome: event.payload.outcome,
+              ...(event.payload.error !== undefined ? { requestError: event.payload.error } : {}),
             });
           }
           return;

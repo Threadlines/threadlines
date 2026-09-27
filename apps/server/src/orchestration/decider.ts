@@ -1095,6 +1095,16 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             `${participant.handle} is answering. Change its model once it is done.`,
           );
         }
+        if (
+          command.handle !== undefined &&
+          activeParticipants(thread).some(
+            (entry) =>
+              entry.id !== participant.id &&
+              entry.handle.toLowerCase() === command.handle!.toLowerCase(),
+          )
+        ) {
+          return yield* refuse(`Another agent here is already called ${command.handle}.`);
+        }
         if (hasOpenAgentRequests(thread, participant.id)) {
           return yield* refuse(
             `${participant.handle} has a request from another agent in progress. Change its model once it is done.`,
@@ -1114,7 +1124,10 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           participantId: command.participantId,
           ...(command.role !== undefined ? { role: command.role } : {}),
           ...(command.modelSelection !== undefined && participant !== null
-            ? { modelSelection: command.modelSelection }
+            ? {
+                modelSelection: command.modelSelection,
+                ...(command.handle !== undefined ? { handle: command.handle } : {}),
+              }
             : command.modelOptions !== undefined && participant !== null
               ? {
                   modelSelection: {

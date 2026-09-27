@@ -451,7 +451,7 @@ export interface RoomAgentMessageDescription {
 export function describeRoomAgentMessage(input: {
   readonly message: Pick<
     ChatMessage,
-    "fromAgent" | "participantId" | "requestKind" | "requestOutcome"
+    "fromAgent" | "participantId" | "requestKind" | "requestOutcome" | "requestError"
   >;
   readonly labels: ReadonlyMap<string, RoomAgentLabel> | null;
   /** The request's status while it is still open. */
@@ -478,6 +478,8 @@ export function describeRoomAgentMessage(input: {
           ? "reply"
           : null;
   const targetLeft = input.labels?.get(roomAgentKey(message.participantId))?.left ?? false;
+  // The server's reason, when it gave one ("The server restarted before this finished.").
+  const reason = message.requestError !== undefined ? ` ${message.requestError}` : "";
   const outcomeNote =
     message.requestKind === "reply"
       ? null
@@ -486,11 +488,11 @@ export function describeRoomAgentMessage(input: {
         : message.requestOutcome === "timeout"
           ? `Timed out before ${to} answered.`
           : message.requestOutcome === "failed"
-            ? `${to} couldn't answer.`
+            ? `${to} couldn't answer.${reason}`
             : message.requestOutcome === "cancelled"
               ? targetLeft
                 ? `Cancelled: ${to} left the room.`
-                : `Cancelled before ${to} answered.`
+                : `Cancelled before ${to} answered.${reason}`
               : null;
   return { from, to, kind, review: message.requestKind === "review", outcomeNote };
 }

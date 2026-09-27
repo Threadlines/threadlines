@@ -216,8 +216,17 @@ export const RoomAgentPicker = memo(function RoomAgentPicker(props: {
     ) {
       return;
     }
+    // Named like a newly added agent on that model, numbered past the others.
+    const handle = nextRoomAgentName(
+      roomModelName({ instanceId, model }, props.instanceEntries, pickerName),
+      labels
+        ? [...labels.entries()]
+            .filter(([key]) => key !== roomAgentKey(row.id))
+            .map(([, label]) => label.modelName)
+        : [],
+    );
     try {
-      await changeRoomAgentModel(props.threadRef, row.id, { instanceId, model });
+      await changeRoomAgentModel(props.threadRef, row.id, { instanceId, model }, handle);
     } catch (error) {
       toastManager.add({
         type: "error",

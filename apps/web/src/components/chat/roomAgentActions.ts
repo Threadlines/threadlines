@@ -21,6 +21,7 @@ const updateRoomAgent = async (
     readonly role?: string | null;
     readonly modelOptions?: ReadonlyArray<ProviderOptionSelection>;
     readonly modelSelection?: ModelSelection;
+    readonly handle?: string;
   },
 ) => {
   const api = readEnvironmentApi(threadRef.environmentId);
@@ -35,6 +36,7 @@ const updateRoomAgent = async (
     ...(change.role !== undefined ? { role: change.role } : {}),
     ...(change.modelOptions !== undefined ? { modelOptions: [...change.modelOptions] } : {}),
     ...(change.modelSelection !== undefined ? { modelSelection: change.modelSelection } : {}),
+    ...(change.handle !== undefined ? { handle: change.handle } : {}),
     createdAt: new Date().toISOString(),
   });
 };
@@ -61,15 +63,17 @@ export const pickRoomAgentOptions = (
 };
 
 /**
- * Move an added agent to another model. The server refuses while that agent
- * is working or answering. Options picked here for the old model and not sent
- * yet are dropped.
+ * Move an added agent to another model, under its name for that model
+ * ("GPT-6 Sol 2"), so the other agents are told the same name the room
+ * shows. The server refuses while that agent is working or answering.
+ * Options picked here for the old model and not sent yet are dropped.
  */
 export const changeRoomAgentModel = async (
   threadRef: ScopedThreadRef,
   participantId: ThreadParticipantId,
   modelSelection: ModelSelection,
+  handle: string,
 ) => {
-  await updateRoomAgent(threadRef, participantId, { modelSelection });
+  await updateRoomAgent(threadRef, participantId, { modelSelection, handle });
   useRoomRecipientStore.getState().setAgentOptions(threadRef, participantId, undefined);
 };

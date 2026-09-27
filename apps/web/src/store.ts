@@ -70,6 +70,7 @@ import {
   roomSlotRole,
 } from "./rooms";
 import { applyRoomAgentUpdate } from "@threadlines/shared/threadParticipants";
+import { agentRequestStateOn } from "@threadlines/shared/roomAgentRequests";
 const isProviderDriverKindValue = Schema.is(ProviderDriverKind);
 
 export interface EnvironmentState {
@@ -250,6 +251,7 @@ function mapMessage(environmentId: EnvironmentId, message: OrchestrationMessage)
     ...(message.requestId ? { requestId: message.requestId } : {}),
     ...(message.requestKind ? { requestKind: message.requestKind } : {}),
     ...(message.requestOutcome ? { requestOutcome: message.requestOutcome } : {}),
+    ...(message.requestError ? { requestError: message.requestError } : {}),
     ...(message.reviewInput ? { reviewInput: message.reviewInput } : {}),
   };
 }
@@ -1514,6 +1516,19 @@ function updateThreadState(
   return writeThreadState(state, nextThread, currentThread);
 }
 
+/** Apply a change to one thread's room request state (room tools). */
+function updateAgentRequestState(
+  state: EnvironmentState,
+  threadId: ThreadId,
+  change: (current: OrchestrationAgentRequestState) => OrchestrationAgentRequestState,
+): EnvironmentState {
+  return updateThreadState(state, threadId, (thread) => {
+    const current = thread.agentRequests ?? EMPTY_AGENT_REQUEST_STATE;
+    const next = change(current);
+    return next === current ? thread : { ...thread, agentRequests: next };
+  });
+}
+
 function buildProjectState(
   projects: ReadonlyArray<Project>,
 ): Pick<EnvironmentState, "projectIds" | "projectById"> {
@@ -2424,83 +2439,49 @@ function applyEnvironmentOrchestrationEvent(
     // Room tools: requests agents make of each other. The request message and
     // any side turn arrive in their own events beside these.
     case "thread.agent-request-submitted":
-      return updateThreadState(state, event.payload.threadId, (thread) => {
-        const current = thread.agentRequests ?? EMPTY_AGENT_REQUEST_STATE;
-        const { request } = event.payload;
-        if (current.open.some((entry) => entry.requestId === request.requestId)) {
-          return thread;
-        }
-        return {
-          ...thread,
-          agentRequests: {
-            ...current,
-            open: [...current.open, request],
-            requestsSinceUser: current.requestsSinceUser + 1,
-          },
-        };
-      });
+      return updateAgentRequestState(state, event.payload.threadId, (current) =>
+        agentRequestStateOn.submitted(current, event.payload.request),
+      );
 
     case "thread.agent-request-updated":
-      return updateThreadState(state, event.payload.threadId, (thread) => {
-        const current = thread.agentRequests ?? EMPTY_AGENT_REQUEST_STATE;
-        const { requestId, status } = event.payload;
-        if (
-          !current.open.some((entry) => entry.requestId === requestId && entry.status !== status)
-        ) {
-          return thread;
-        }
-        return {
-          ...thread,
-          agentRequests: {
-            ...current,
-            open: current.open.map((entry) =>
-              entry.requestId === requestId ? { ...entry, status } : entry,
-            ),
-          },
-        };
-      });
+      return updateAgentRequestState(state, event.payload.threadId, (current) =>
+        agentRequestStateOn.updated(current, event.payload.requestId, event.payload.status),
+      );
 
     // Over: the request leaves the open set and its message keeps the outcome.
     case "thread.agent-request-settled":
-      return updateThreadState(state, event.payload.threadId, (thread) => {
-        const current = thread.agentRequests ?? EMPTY_AGENT_REQUEST_STATE;
-        const { requestId, requestMessageId, outcome } = event.payload;
-        const open = current.open.filter((entry) => entry.requestId !== requestId);
-        const requestMessage = thread.messages.find((message) => message.id === requestMessageId);
-        if (open.length === current.open.length && requestMessage?.requestOutcome === outcome) {
-          return thread;
-        }
-        return {
-          ...thread,
-          ...(open.length === current.open.length ? {} : { agentRequests: { ...current, open } }),
-          ...(requestMessage === undefined || requestMessage.requestOutcome === outcome
-            ? {}
+      return updateThreadState(
+        updateAgentRequestState(state, event.payload.threadId, (current) =>
+          agentRequestStateOn.settled(current, event.payload.requestId),
+        ),
+        event.payload.threadId,
+        (thread) => {
+          const { requestMessageId, outcome, error } = event.payload;
+          const requestMessage = thread.messages.find((message) => message.id === requestMessageId);
+          return requestMessage === undefined || requestMessage.requestOutcome === outcome
+            ? thread
             : {
+                ...thread,
                 messages: thread.messages.map((message) =>
-                  message === requestMessage ? { ...message, requestOutcome: outcome } : message,
+                  message === requestMessage
+                    ? {
+                        ...message,
+                        requestOutcome: outcome,
+                        ...(error !== undefined ? { requestError: error } : {}),
+                      }
+                    : message,
                 ),
-              }),
-        };
-      });
+              };
+        },
+      );
 
     case "thread.agent-requests-held":
-      return updateThreadState(state, event.payload.threadId, (thread) => {
-        const current = thread.agentRequests ?? EMPTY_AGENT_REQUEST_STATE;
-        return current.hold && current.chainEpoch === event.payload.chainEpoch
-          ? thread
-          : {
-              ...thread,
-              agentRequests: { ...current, hold: true, chainEpoch: event.payload.chainEpoch },
-            };
-      });
+      return updateAgentRequestState(state, event.payload.threadId, (current) =>
+        agentRequestStateOn.held(current, event.payload.chainEpoch),
+      );
 
     case "thread.agent-requests-reset":
-      return updateThreadState(state, event.payload.threadId, (thread) => {
-        const current = thread.agentRequests ?? EMPTY_AGENT_REQUEST_STATE;
-        return !current.hold && current.requestsSinceUser === 0
-          ? thread
-          : { ...thread, agentRequests: { ...current, hold: false, requestsSinceUser: 0 } };
-      });
+      return updateAgentRequestState(state, event.payload.threadId, agentRequestStateOn.reset);
 
     case "thread.approval-response-requested":
     case "thread.user-input-response-requested":

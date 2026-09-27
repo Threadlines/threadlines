@@ -493,6 +493,8 @@ export const OrchestrationMessage = Schema.Struct({
   requestKind: Schema.optional(RoomAgentMessageKind),
   /** Set on a request message once its request is over. */
   requestOutcome: Schema.optional(RoomAgentRequestOutcome),
+  /** Why a request that did not get its answer ended, when known. */
+  requestError: Schema.optional(TrimmedNonEmptyString),
   /** An independent review's captured input. See RoomReviewInput. */
   reviewInput: Schema.optional(RoomReviewInput),
   turnId: Schema.NullOr(TurnId),
@@ -1537,6 +1539,11 @@ const ThreadParticipantUpdateCommand = Schema.Struct({
    * is working or answering. Absent: unchanged.
    */
   modelSelection: Schema.optional(ModelSelection),
+  /**
+   * With a model change: the agent's name for its new model ("GPT-6 Sol 2"),
+   * unique in the room like an added agent's. Absent: unchanged.
+   */
+  handle: Schema.optional(TrimmedNonEmptyString),
   createdAt: IsoDateTime,
 });
 
@@ -2450,6 +2457,8 @@ export const ThreadParticipantUpdatedPayload = Schema.Struct({
   role: Schema.optional(Schema.NullOr(RoomAgentRole)),
   /** An added agent's model with its new options. Absent: unchanged. */
   modelSelection: Schema.optional(ModelSelection),
+  /** An added agent's new name, with a model change. Absent: unchanged. */
+  handle: Schema.optional(TrimmedNonEmptyString),
   updatedAt: IsoDateTime,
 });
 

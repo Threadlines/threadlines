@@ -7,9 +7,9 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
  * - `projection_threads.agent_requests`: open requests, the Stop hold and the
  *   limit's count, as JSON, or null for none.
  * - `projection_thread_messages.from_agent` (JSON), `request_id`,
- *   `request_kind`, `request_outcome` and `review_input` (JSON): a message an
- *   agent wrote, the request it belongs to, how that request ended, and what
- *   an independent review was given.
+ *   `request_kind`, `request_outcome`, `request_error` and `review_input`
+ *   (JSON): a message an agent wrote, the request it belongs to, how and why
+ *   that request ended, and what an independent review was given.
  *
  * Every column is nullable with no default, so no row is rewritten.
  */
@@ -29,6 +29,7 @@ export default Effect.gen(function* () {
     "request_id",
     "request_kind",
     "request_outcome",
+    "request_error",
     "review_input",
   ]) {
     if (!(yield* hasColumn("projection_thread_messages", column))) {
