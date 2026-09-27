@@ -8,6 +8,7 @@ import {
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
+  RoomAgentRequestId,
   SideTurnId,
   ThreadId,
   ThreadParticipantId,
@@ -207,6 +208,7 @@ function makeState(thread: Thread): AppState {
         thread.turnDiffSummaries.map((summary) => [summary.turnId, summary] as const),
       ) as EnvironmentState["turnDiffSummaryByThreadId"][ThreadId],
     },
+    agentRequestsByThreadId: {},
     sidebarThreadSummaryById: {},
     bootstrapComplete: true,
   };
@@ -232,6 +234,7 @@ function makeEmptyState(overrides: Partial<AppState & EnvironmentState> = {}): A
     proposedPlanByThreadId: {},
     turnDiffIdsByThreadId: {},
     turnDiffSummaryByThreadId: {},
+    agentRequestsByThreadId: {},
     sidebarThreadSummaryById: {},
     bootstrapComplete: true,
   };
@@ -1356,6 +1359,134 @@ describe("incremental orchestration updates", () => {
       }),
     );
     expect(selectThreadByRef(state, ref)?.sideTurn ?? null).toBeNull();
+  });
+
+  it("follows an agent's request live, from its message to the user writing again", () => {
+    const threadId = ThreadId.make("thread-1");
+    const astraId = ThreadParticipantId.make("agent-astra");
+    const requestId = RoomAgentRequestId.make("request-1");
+    const sideTurnId = SideTurnId.make("side-review-1");
+    const requestMessageId = MessageId.make("request-message-1");
+    const ref = scopeThreadRef(localEnvironmentId, threadId);
+    const apply = (state: AppState, event: OrchestrationEvent) =>
+      applyOrchestrationEvent(state, event, localEnvironmentId);
+    const reviewInput = {
+      basis: {
+        kind: "uncommitted" as const,
+        files: 4,
+        truncated: false,
+        capturedAt: "2026-02-27T00:00:02.000Z",
+      },
+      diff: "diff --git a/lock.ts b/lock.ts",
+    };
+
+    let state = makeState(makeThread({ id: threadId }));
+    state = apply(
+      state,
+      makeEvent("thread.message-sent", {
+        threadId,
+        messageId: requestMessageId,
+        role: "user",
+        text: "Check the lock is released on every path.",
+        participantId: astraId,
+        sideTurnId,
+        fromAgent: { participantId: null },
+        requestId,
+        requestKind: "review",
+        reviewInput,
+        turnId: null,
+        streaming: false,
+        createdAt: "2026-02-27T00:00:02.000Z",
+        updatedAt: "2026-02-27T00:00:02.000Z",
+      }),
+    );
+    state = apply(
+      state,
+      makeEvent("thread.side-turn-started", {
+        threadId,
+        sideTurn: {
+          sideTurnId,
+          participantId: astraId,
+          messageId: requestMessageId,
+          status: "starting",
+          startedAt: "2026-02-27T00:00:02.000Z",
+          kind: "review",
+          askedBy: { participantId: null },
+          requestId,
+        },
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: DEFAULT_MODEL },
+      }),
+    );
+    state = apply(
+      state,
+      makeEvent("thread.agent-request-submitted", {
+        threadId,
+        request: {
+          requestId,
+          kind: "review",
+          from: { participantId: null },
+          to: { participantId: astraId },
+          callerTurnId: TurnId.make("turn-1"),
+          chainEpoch: 0,
+          status: "running",
+          requestMessageId,
+          sideTurnId,
+          createdAt: "2026-02-27T00:00:02.000Z",
+        },
+      }),
+    );
+    const running = selectThreadByRef(state, ref);
+    expect(running?.messages[0]).toMatchObject({
+      fromAgent: { participantId: null },
+      requestKind: "review",
+      reviewInput,
+    });
+    expect(running?.sideTurn).toMatchObject({ kind: "review", askedBy: { participantId: null } });
+    expect(running?.agentRequests).toMatchObject({
+      open: [{ requestId, status: "running" }],
+      requestsSinceUser: 1,
+    });
+
+    state = apply(
+      state,
+      makeEvent("thread.agent-request-settled", {
+        threadId,
+        requestId,
+        requestMessageId,
+        outcome: "stopped",
+        settledAt: "2026-02-27T00:00:09.000Z",
+      }),
+    );
+    state = apply(
+      state,
+      makeEvent("thread.agent-requests-held", {
+        threadId,
+        chainEpoch: 1,
+        createdAt: "2026-02-27T00:00:09.000Z",
+      }),
+    );
+    const stopped = selectThreadByRef(state, ref);
+    expect(stopped?.agentRequests).toMatchObject({
+      open: [],
+      hold: true,
+      chainEpoch: 1,
+      requestsSinceUser: 1,
+    });
+    // The outcome stays on the message, beside what the review was given.
+    expect(stopped?.messages[0]).toMatchObject({ requestOutcome: "stopped", reviewInput });
+
+    state = apply(
+      state,
+      makeEvent("thread.agent-requests-reset", {
+        threadId,
+        createdAt: "2026-02-27T00:00:12.000Z",
+      }),
+    );
+    expect(selectThreadByRef(state, ref)?.agentRequests).toMatchObject({
+      hold: false,
+      chainEpoch: 1,
+      requestsSinceUser: 0,
+    });
   });
 
   it("shows an agent's new name and reasoning as soon as they are saved", () => {

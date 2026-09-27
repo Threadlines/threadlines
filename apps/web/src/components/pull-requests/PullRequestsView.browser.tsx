@@ -228,6 +228,7 @@ function seedProject(): void {
         proposedPlanByThreadId: {},
         turnDiffIdsByThreadId: {},
         turnDiffSummaryByThreadId: {},
+        agentRequestsByThreadId: {},
         sidebarThreadSummaryById: {},
         bootstrapComplete: true,
       },

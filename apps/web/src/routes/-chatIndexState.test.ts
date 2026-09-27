@@ -46,6 +46,7 @@ function environmentState(bootstrapComplete: boolean): EnvironmentState {
     proposedPlanByThreadId: {},
     turnDiffIdsByThreadId: {},
     turnDiffSummaryByThreadId: {},
+    agentRequestsByThreadId: {},
     sidebarThreadSummaryById: {},
     bootstrapComplete,
   };

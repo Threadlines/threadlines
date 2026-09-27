@@ -3,9 +3,10 @@
  *
  * Lists the thread's own agent and every agent added to it, marks the one
  * working and the one answering on the side, and lets the user pick a
- * recipient, name an agent ("GPT-6 Astra 2 (Reviewer)"), remove one, or add
- * one from the same model list the model picker uses. In a thread with one
- * agent it is a single icon button that adds the first one.
+ * recipient, name an agent ("GPT-6 Astra 2 (Reviewer)"), move an added one
+ * to another model, remove one, or add one from the same model list the model
+ * picker uses. In a thread with one agent it is a single icon button that adds
+ * the first one. The command palette's "Add agent" opens the same list.
  */
 import {
   type ClientOrchestrationCommand,
@@ -17,9 +18,17 @@ import {
   type ScopedThreadRef,
   ThreadParticipantId,
 } from "@threadlines/contracts";
+import { scopedThreadKey } from "@threadlines/client-runtime";
 import { activeParticipants } from "@threadlines/shared/threadParticipants";
-import { ChevronDownIcon, PencilIcon, PlusIcon, UsersRoundIcon, XIcon } from "lucide-react";
-import { memo, useState } from "react";
+import {
+  ArrowLeftRightIcon,
+  ChevronDownIcon,
+  PencilIcon,
+  PlusIcon,
+  UsersRoundIcon,
+  XIcon,
+} from "lucide-react";
+import { memo, useEffect, useState } from "react";
 
 import { readEnvironmentApi } from "~/environmentApi";
 import { cn, newCommandId, randomUUID } from "~/lib/utils";
@@ -37,7 +46,7 @@ import { toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { ModelPickerContent } from "./ModelPickerContent";
 import { ProviderInstanceIcon } from "./ProviderInstanceIcon";
-import { renameRoomAgent } from "./roomAgentActions";
+import { changeRoomAgentModel, renameRoomAgent } from "./roomAgentActions";
 import { type ModelEsque, getPickerModelName } from "./providerIconUtils";
 
 interface AgentRow {
@@ -72,7 +81,27 @@ export const RoomAgentPicker = memo(function RoomAgentPicker(props: {
   const [adding, setAdding] = useState(false);
   /** The row being renamed, by `roomAgentKey`. */
   const [renaming, setRenaming] = useState<string | null>(null);
+  /** The added agent whose model is being changed. */
+  const [changingModelOf, setChangingModelOf] = useState<ThreadParticipantId | null>(null);
   const choose = useRoomRecipientStore((state) => state.choose);
+  const addAgentRequested = useRoomRecipientStore(
+    (state) => state.addAgentRequested === scopedThreadKey(props.threadRef),
+  );
+  // Asked for from the command palette: open once the closing palette has
+  // handed focus back, or the list would lose it and close at once.
+  useEffect(() => {
+    if (!addAgentRequested) return;
+    let frame = requestAnimationFrame(() => {
+      frame = requestAnimationFrame(() => {
+        useRoomRecipientStore.getState().requestAddAgent(null);
+        setRenaming(null);
+        setChangingModelOf(null);
+        setAdding(true);
+        setOpen(true);
+      });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [addAgentRequested]);
   const present = activeParticipants({ participants: props.participants });
   const inRoom = props.participants.length > 0;
 
@@ -116,6 +145,7 @@ export const RoomAgentPicker = memo(function RoomAgentPicker(props: {
     if (!next) {
       setAdding(false);
       setRenaming(null);
+      setChangingModelOf(null);
     }
   };
 
@@ -169,6 +199,28 @@ export const RoomAgentPicker = memo(function RoomAgentPicker(props: {
       });
     }
   };
+
+  const changeModel = async (row: AgentRow, instanceId: ProviderInstanceId, model: string) => {
+    setMenuOpen(false);
+    if (
+      row.id === null ||
+      (instanceId === row.modelSelection.instanceId && model === row.modelSelection.model)
+    ) {
+      return;
+    }
+    try {
+      await changeRoomAgentModel(props.threadRef, row.id, { instanceId, model });
+    } catch (error) {
+      toastManager.add({
+        type: "error",
+        title: `Could not change the model of ${row.name}`,
+        description: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+  const changingRow =
+    changingModelOf === null ? undefined : rows.find((row) => row.id === changingModelOf);
+  const pickingModel = adding || changingRow !== undefined || !inRoom;
 
   const removeAgent = async (participant: AgentRow) => {
     if (participant.id === null) return;
@@ -257,16 +309,35 @@ export const RoomAgentPicker = memo(function RoomAgentPicker(props: {
         align="start"
         side="top"
         className={cn(
-          adding || !inRoom
+          pickingModel
             ? "border-0 bg-transparent p-0 shadow-none before:hidden [--viewport-inline-padding:0] *:data-[slot=popover-viewport]:p-0"
             : "w-max min-w-44 max-w-80",
         )}
         // The list is as tight as the composer's other menus.
-        {...(adding || !inRoom
+        {...(pickingModel
           ? {}
           : { viewportClassName: "p-1 [--viewport-inline-padding:--spacing(1)]" })}
       >
-        {adding || !inRoom ? (
+        {changingRow !== undefined ? (
+          <ModelPickerContent
+            activeInstanceId={changingRow.modelSelection.instanceId}
+            model={changingRow.modelSelection.model}
+            lockedProvider={null}
+            instanceEntries={props.instanceEntries}
+            {...(props.keybindings ? { keybindings: props.keybindings } : {})}
+            modelOptionsByInstance={props.modelOptionsByInstance}
+            terminalOpen={props.terminalOpen}
+            notice={
+              <div className="shrink-0 border-b border-border px-3 py-2 text-xs text-muted-foreground">
+                Pick a new model for {changingRow.name}.
+              </div>
+            }
+            onRequestClose={() => setMenuOpen(false)}
+            onInstanceModelChange={(instanceId, model) => {
+              void changeModel(changingRow, instanceId, model);
+            }}
+          />
+        ) : pickingModel ? (
           <ModelPickerContent
             activeInstanceId={props.primaryModelSelection.instanceId}
             model=""
@@ -371,6 +442,33 @@ export const RoomAgentPicker = memo(function RoomAgentPicker(props: {
                   <span className="ml-auto shrink-0 font-mono text-[10.5px] text-warning">
                     {working ? "working" : answering ? "answering" : null}
                   </span>
+                  {row.id !== null && !isRenaming ? (
+                    // Shown while the agent works, but refused: the server
+                    // will not move a working or answering agent.
+                    <button
+                      type="button"
+                      aria-label={`Change the model of ${row.name}`}
+                      aria-disabled={busy}
+                      title={
+                        working
+                          ? `${row.name} is working. Change its model once it finishes.`
+                          : answering
+                            ? `${row.name} is answering. Change its model once it finishes.`
+                            : "Change model"
+                      }
+                      className={cn(
+                        "hidden shrink-0 rounded-sm p-0.5 text-muted-foreground group-hover:block",
+                        busy ? "cursor-not-allowed opacity-50" : "hover:text-foreground",
+                      )}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        if (busy || row.id === null) return;
+                        setChangingModelOf(row.id);
+                      }}
+                    >
+                      <ArrowLeftRightIcon aria-hidden="true" className="size-3.5" />
+                    </button>
+                  ) : null}
                   {isRenaming ? null : (
                     <button
                       type="button"

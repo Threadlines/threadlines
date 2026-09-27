@@ -1,9 +1,10 @@
 /**
  * Changes to a room's agents that the server keeps: the user's name for an
- * agent, and an added agent's model options. Both go out as
+ * agent, and an added agent's model and model options. All go out as
  * `thread.participant.update`.
  */
 import type {
+  ModelSelection,
   ProviderOptionSelection,
   ScopedThreadRef,
   ThreadParticipantId,
@@ -19,6 +20,7 @@ const updateRoomAgent = async (
   change: {
     readonly role?: string | null;
     readonly modelOptions?: ReadonlyArray<ProviderOptionSelection>;
+    readonly modelSelection?: ModelSelection;
   },
 ) => {
   const api = readEnvironmentApi(threadRef.environmentId);
@@ -32,6 +34,7 @@ const updateRoomAgent = async (
     participantId,
     ...(change.role !== undefined ? { role: change.role } : {}),
     ...(change.modelOptions !== undefined ? { modelOptions: [...change.modelOptions] } : {}),
+    ...(change.modelSelection !== undefined ? { modelSelection: change.modelSelection } : {}),
     createdAt: new Date().toISOString(),
   });
 };
@@ -55,4 +58,18 @@ export const pickRoomAgentOptions = (
 ) => {
   useRoomRecipientStore.getState().setAgentOptions(threadRef, participantId, options);
   void updateRoomAgent(threadRef, participantId, { modelOptions: options }).catch(() => undefined);
+};
+
+/**
+ * Move an added agent to another model. The server refuses while that agent
+ * is working or answering. Options picked for the old model and not sent yet
+ * are dropped.
+ */
+export const changeRoomAgentModel = async (
+  threadRef: ScopedThreadRef,
+  participantId: ThreadParticipantId,
+  modelSelection: ModelSelection,
+) => {
+  await updateRoomAgent(threadRef, participantId, { modelSelection });
+  useRoomRecipientStore.getState().setAgentOptions(threadRef, participantId, undefined);
 };

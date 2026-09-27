@@ -1,6 +1,7 @@
 import "../index.css";
 
 import {
+  EMPTY_AGENT_REQUEST_STATE,
   DEFAULT_SERVER_SETTINGS,
   EnvironmentId,
   ORCHESTRATION_WS_METHODS,
@@ -216,6 +217,7 @@ function createMinimalSnapshot(): OrchestrationReadModel {
         proposedPlans: [],
         checkpoints: [],
         diffStatBaselineTurnCount: 0,
+        agentRequests: EMPTY_AGENT_REQUEST_STATE,
         session: {
           threadId: THREAD_ID,
           providerThreadId: null,

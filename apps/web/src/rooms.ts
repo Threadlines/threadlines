@@ -10,9 +10,11 @@
 import { scopedThreadKey } from "@threadlines/client-runtime";
 import type {
   ModelSelection,
+  OrchestrationAgentRequestStatus,
   OrchestrationSideTurn,
   OrchestrationThreadParticipant,
   ProviderOptionSelection,
+  RoomReviewBasis,
   ScopedThreadRef,
   ThreadParticipantId,
   TurnId,
@@ -21,6 +23,7 @@ import { activeParticipants } from "@threadlines/shared/threadParticipants";
 import { create } from "zustand";
 
 import type { ProviderInstanceEntry } from "./providerInstances";
+import type { ChatMessage } from "./types";
 
 interface RoomThreadLike {
   readonly participants?: ReadonlyArray<OrchestrationThreadParticipant> | undefined;
@@ -93,6 +96,13 @@ interface RoomRecipientState {
     turnId: TurnId | null | undefined,
     wait: boolean,
   ) => void;
+  /**
+   * "Add agent" asked for from outside the composer (the command palette),
+   * by scoped thread key. That thread's agent picker opens its model list
+   * and clears it.
+   */
+  readonly addAgentRequested: string | null;
+  readonly requestAddAgent: (threadRef: ScopedThreadRef | null) => void;
 }
 
 const roomAgentOptionsKey = (threadRef: ScopedThreadRef, participantId: ThreadParticipantId) =>
@@ -120,6 +130,9 @@ export const useRoomRecipientStore = create<RoomRecipientState>((set) => ({
       const { [key]: _previous, ...rest } = state.waitChosen;
       return { waitChosen: wait ? { ...rest, [key]: turnId ?? "" } : rest };
     }),
+  addAgentRequested: null,
+  requestAddAgent: (threadRef) =>
+    set({ addAgentRequested: threadRef === null ? null : scopedThreadKey(threadRef) }),
 }));
 
 /** Whether "Send when done" was picked for the message being written. */
@@ -172,6 +185,8 @@ export interface RoomAgentLabel {
   readonly modelName: string;
   /** The name the user gave it, if any (RoomAgentRole). */
   readonly role: string | null;
+  /** It has left the room. */
+  readonly left: boolean;
   readonly entry: ProviderInstanceEntry | undefined;
 }
 
@@ -205,11 +220,17 @@ export function buildRoomAgentLabels(
     return null;
   }
   const agents = [
-    { key: roomAgentKey(null), selection: thread.modelSelection, role: thread.agentRole ?? null },
+    {
+      key: roomAgentKey(null),
+      selection: thread.modelSelection,
+      role: thread.agentRole ?? null,
+      left: false,
+    },
     ...(thread.participants ?? []).map((participant) => ({
       key: roomAgentKey(participant.id),
       selection: participant.modelSelection,
       role: participant.role ?? null,
+      left: participant.leftAt !== null,
     })),
   ];
   const labels = new Map<string, RoomAgentLabel>();
@@ -224,6 +245,7 @@ export function buildRoomAgentLabels(
       name: roomAgentDisplayName(modelName, agent.role),
       modelName,
       role: agent.role,
+      left: agent.left,
       entry: entries.find((candidate) => candidate.instanceId === agent.selection.instanceId),
     });
   }
@@ -399,4 +421,96 @@ export function matchRoomAgents<Agent extends { readonly name: string }>(
   const normalize = (value: string) => value.toLowerCase().replace(/[^a-z0-9]/g, "");
   const wanted = normalize(query);
   return agents.filter((agent) => normalize(agent.name).includes(wanted));
+}
+
+/** The tag every part of an independent review carries in the chat. */
+export const ROOM_REVIEW_TAG = "Independent review · no room context";
+
+/** What an agent's message in a room says about itself, for its meta line. */
+export interface RoomAgentMessageDescription {
+  /** The agent that wrote it. */
+  readonly from: string;
+  /** The agent it is for. */
+  readonly to: string;
+  /** "question on the side", "handed off", "reply"; null for a review, which has its tag. */
+  readonly kind: string | null;
+  readonly review: boolean;
+  /** How a request ended without an answer: "Stopped before GPT-6 Astra 2 answered." */
+  readonly outcomeNote: string | null;
+}
+
+/**
+ * Describes a user-role message an agent wrote through a room tool: who to
+ * whom, what it is, and how its request ended when that was not an answer.
+ * Null for the user's own messages.
+ */
+export function describeRoomAgentMessage(input: {
+  readonly message: Pick<
+    ChatMessage,
+    "fromAgent" | "participantId" | "requestKind" | "requestOutcome"
+  >;
+  readonly labels: ReadonlyMap<string, RoomAgentLabel> | null;
+  /** The request's status while it is still open. */
+  readonly openStatus: OrchestrationAgentRequestStatus | null;
+}): RoomAgentMessageDescription | null {
+  const { message } = input;
+  if (message.fromAgent === undefined) {
+    return null;
+  }
+  const nameOf = (participantId: ThreadParticipantId | null | undefined) =>
+    input.labels?.get(roomAgentKey(participantId))?.name ?? "an agent";
+  const from = nameOf(message.fromAgent.participantId);
+  const to = nameOf(message.participantId);
+  const kind =
+    message.requestKind === "ask"
+      ? "question on the side"
+      : message.requestKind === "hand_off"
+        ? input.openStatus === "pending"
+          ? `handed off, starts when ${from} finishes`
+          : input.openStatus === "queued"
+            ? "handed off, waiting in the queue"
+            : "handed off"
+        : message.requestKind === "reply"
+          ? "reply"
+          : null;
+  const targetLeft = input.labels?.get(roomAgentKey(message.participantId))?.left ?? false;
+  const outcomeNote =
+    message.requestKind === "reply"
+      ? null
+      : message.requestOutcome === "stopped"
+        ? `Stopped before ${to} answered.`
+        : message.requestOutcome === "timeout"
+          ? `Timed out before ${to} answered.`
+          : message.requestOutcome === "failed"
+            ? `${to} couldn't answer.`
+            : message.requestOutcome === "cancelled"
+              ? targetLeft
+                ? `Cancelled: ${to} left the room.`
+                : `Cancelled before ${to} answered.`
+              : null;
+  return { from, to, kind, review: message.requestKind === "review", outcomeNote };
+}
+
+const shortRevision = (revision: string) =>
+  /^[0-9a-f]{40}$/i.test(revision) ? revision.slice(0, 7) : revision;
+
+/**
+ * What an independent review was shown, in a line: "Uncommitted changes,
+ * 4 files, captured 10:32", with ", cut to fit" when the diff was trimmed.
+ */
+export function describeRoomReviewBasis(
+  basis: RoomReviewBasis,
+  formatTime: (iso: string) => string,
+): string {
+  const what =
+    basis.kind === "uncommitted"
+      ? "Uncommitted changes"
+      : basis.base === undefined
+        ? "Committed changes"
+        : basis.head === undefined
+          ? `Changes since ${shortRevision(basis.base)}`
+          : `Changes from ${shortRevision(basis.base)} to ${shortRevision(basis.head)}`;
+  const files = `${basis.files} ${basis.files === 1 ? "file" : "files"}`;
+  const cut = basis.truncated ? ", cut to fit" : "";
+  return `${what}, ${files}, captured ${formatTime(basis.capturedAt)}${cut}`;
 }

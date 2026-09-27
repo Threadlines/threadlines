@@ -259,6 +259,7 @@ vi.mock("~/store", () => ({
           proposedPlanByThreadId: {},
           turnDiffIdsByThreadId: {},
           turnDiffSummaryByThreadId: {},
+          agentRequestsByThreadId: {},
         },
         [ENVIRONMENT_B]: {
           threadShellById: hasServerThreadRef.current
@@ -280,6 +281,7 @@ vi.mock("~/store", () => ({
           proposedPlanByThreadId: {},
           turnDiffIdsByThreadId: {},
           turnDiffSummaryByThreadId: {},
+          agentRequestsByThreadId: {},
         },
       },
     }),

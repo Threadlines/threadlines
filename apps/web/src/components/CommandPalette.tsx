@@ -39,6 +39,7 @@ import {
   MessagesSquareIcon,
   SettingsIcon,
   SquarePenIcon,
+  UsersRoundIcon,
 } from "lucide-react";
 import {
   useCallback,
@@ -53,6 +54,7 @@ import {
 } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { useCommandPaletteStore } from "../commandPaletteStore";
+import { useRoomRecipientStore } from "../rooms";
 import { readEnvironmentApi } from "../environmentApi";
 import { readPrimaryEnvironmentDescriptor, usePrimaryEnvironmentId } from "../environments/primary";
 import {
@@ -1693,6 +1695,23 @@ function OpenCommandPaletteDialog() {
           params: buildThreadRouteParams(threadRef),
           search: (previous) => pullRequestTabSearchParams(previous, pullRequestNumber),
         });
+      },
+    });
+  }
+
+  // Where the composer's agent picker is: a server thread, with rooms on. It
+  // opens the picker's model list, the same as its "Add agent" row.
+  if (settings.roomsEnabled && activeThread) {
+    const threadRef = scopeThreadRef(activeThread.environmentId, activeThread.id);
+    actionItems.push({
+      kind: "action",
+      value: "action:add-room-agent",
+      searchTerms: ["add agent", "agents", "room", "model", "invite", "second opinion", "review"],
+      title: "Add agent",
+      description: "Bring another model into this thread",
+      icon: <UsersRoundIcon className={ITEM_ICON_CLASS} />,
+      run: async () => {
+        useRoomRecipientStore.getState().requestAddAgent(threadRef);
       },
     });
   }

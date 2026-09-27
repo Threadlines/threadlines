@@ -1947,6 +1947,7 @@ function setStoreThreads(threads: ReadonlyArray<ReturnType<typeof makeThread>>) 
         Object.fromEntries(thread.turnDiffSummaries.map((summary) => [summary.turnId, summary])),
       ]),
     ),
+    agentRequestsByThreadId: {},
     sidebarThreadSummaryById: {},
     bootstrapComplete: true,
   };

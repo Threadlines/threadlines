@@ -2,6 +2,7 @@
 import "../index.css";
 
 import {
+  EMPTY_AGENT_REQUEST_STATE,
   EventId,
   ORCHESTRATION_WS_METHODS,
   EnvironmentId,
@@ -456,6 +457,7 @@ function createSnapshotForTargetUser(options: {
         proposedPlans: [],
         checkpoints: [],
         diffStatBaselineTurnCount: 0,
+        agentRequests: EMPTY_AGENT_REQUEST_STATE,
         session: {
           threadId: THREAD_ID,
           providerThreadId: null,
@@ -676,6 +678,7 @@ function addThreadToSnapshot(
         proposedPlans: [],
         checkpoints: [],
         diffStatBaselineTurnCount: 0,
+        agentRequests: EMPTY_AGENT_REQUEST_STATE,
         session: {
           threadId,
           providerThreadId: null,
@@ -1244,6 +1247,7 @@ function createSnapshotWithSecondaryProject(options?: {
           proposedPlans: [],
           checkpoints: [],
           diffStatBaselineTurnCount: 0,
+          agentRequests: EMPTY_AGENT_REQUEST_STATE,
           session: {
             threadId: "thread-secondary-project" as ThreadId,
             providerThreadId: null,
@@ -1288,6 +1292,7 @@ function createSnapshotWithSecondaryProject(options?: {
           proposedPlans: [],
           checkpoints: [],
           diffStatBaselineTurnCount: 0,
+          agentRequests: EMPTY_AGENT_REQUEST_STATE,
           session: {
             threadId: ARCHIVED_SECONDARY_THREAD_ID,
             providerThreadId: null,
@@ -7948,6 +7953,41 @@ describe("ChatView timeline estimator parity (full app)", () => {
       expect(useCommandPaletteStore.getState().open).toBe(true);
       await expect.element(page.getByTestId("command-palette")).toBeInTheDocument();
     } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("opens the agent picker's model list from Add agent, and it stays open", async () => {
+    updateSettings({ roomsEnabled: true });
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-command-palette-add-agent" as MessageId,
+        targetText: "command palette add agent",
+      }),
+      strictMode: true,
+    });
+
+    try {
+      await openCommandPaletteFromTrigger();
+      const palette = page.getByTestId("command-palette");
+      await palette.getByText("Add agent", { exact: true }).click();
+
+      // The closing palette hands focus back to the composer first; the list
+      // must open after that, not lose focus to it and close.
+      await waitForElement(
+        () => document.querySelector(".model-picker-list"),
+        "The agent picker's model list should open from the command palette.",
+      );
+      // Long enough for a closing popover's exit to finish.
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      expect(document.querySelector('[data-testid="command-palette"]')).toBeNull();
+      expect(document.querySelector(".model-picker-list")).not.toBeNull();
+      await expect
+        .element(page.getByText("Pick a model to add to this thread.", { exact: false }))
+        .toBeInTheDocument();
+    } finally {
+      updateSettings({ roomsEnabled: false });
       await mounted.cleanup();
     }
   });

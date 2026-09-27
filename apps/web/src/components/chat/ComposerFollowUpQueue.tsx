@@ -2,6 +2,7 @@ import type { OrchestrationQueuedFollowUp } from "@threadlines/contracts";
 import { CornerDownRightIcon, ListEndIcon, PencilIcon, XIcon } from "lucide-react";
 import { memo } from "react";
 
+import { cn } from "~/lib/utils";
 import { type RoomAgentLabel, roomAgentKey } from "../../rooms";
 
 /** A steer on its way into the running turn, shown until the turn takes it. */
@@ -34,6 +35,8 @@ const ACTION_CLASS =
  * Messages sent while a turn runs, listed just above the composer: steers
  * still on their way into the running turn, then messages waiting for it to
  * finish. A waiting message can go back into the box to edit, or be removed.
+ * One an agent queued (a hand-off, or the reply to one) names that agent and
+ * stays as it is: Stop is the way to cancel it.
  * `paused` means nothing is running to wait on (no turn, no background work
  * the agent will wake up for): the last turn was stopped or failed, so the
  * queue holds until the next turn finishes.
@@ -68,49 +71,68 @@ export const ComposerFollowUpQueue = memo(function ComposerFollowUpQueue({
           <span className="min-w-0 truncate text-foreground/80">{message.text}</span>
         </li>
       ))}
-      {queued.map((followUp) => (
-        <li
-          key={followUp.messageId}
-          className="flex min-w-0 items-center gap-2 py-0.5 text-xs"
-          data-chat-follow-up-queued={followUp.messageId}
-        >
-          <ListEndIcon className="size-3 shrink-0 text-muted-foreground/70" />
-          <span
-            className="shrink-0 text-muted-foreground"
-            title={
-              paused
-                ? "The last reply stopped, so this waits until the next reply finishes."
-                : "Sends when the current work finishes."
-            }
+      {queued.map((followUp) => {
+        const nameOf = (participantId: OrchestrationQueuedFollowUp["participantId"]) =>
+          roomAgents?.get(roomAgentKey(participantId))?.name ?? "an agent";
+        const fromAgent = followUp.fromAgent;
+        return (
+          <li
+            key={followUp.messageId}
+            className="flex min-w-0 items-center gap-2 py-0.5 text-xs"
+            data-chat-follow-up-queued={followUp.messageId}
+            data-chat-follow-up-from-agent={fromAgent ? "true" : undefined}
           >
-            {paused ? "Paused" : "Queued"}
-            {roomAgents !== null
-              ? ` for ${roomAgents.get(roomAgentKey(followUp.participantId))?.name ?? "an agent"}`
-              : null}
-          </span>
-          <span className="min-w-0 flex-1 truncate text-foreground/80">
-            {describeQueuedFollowUp(followUp, attachmentOnlyPrompt)}
-          </span>
-          <button
-            type="button"
-            className={ACTION_CLASS}
-            aria-label="Edit queued message"
-            title="Move back to the message box"
-            onClick={() => onEdit(followUp)}
-          >
-            <PencilIcon className="size-3" />
-          </button>
-          <button
-            type="button"
-            className={ACTION_CLASS}
-            aria-label="Remove queued message"
-            title="Remove"
-            onClick={() => onRemove(followUp)}
-          >
-            <XIcon className="size-3" />
-          </button>
-        </li>
-      ))}
+            <ListEndIcon className="size-3 shrink-0 text-muted-foreground/70" />
+            <span
+              className="shrink-0 text-muted-foreground"
+              title={
+                paused
+                  ? "The last reply stopped, so this waits until the next reply finishes."
+                  : fromAgent
+                    ? "An agent queued this. It sends when the current work finishes; Stop cancels it."
+                    : "Sends when the current work finishes."
+              }
+            >
+              {paused ? "Paused" : "Queued"}
+              {fromAgent
+                ? ` from ${nameOf(fromAgent.participantId)} for ${nameOf(followUp.participantId)}`
+                : roomAgents !== null
+                  ? ` for ${nameOf(followUp.participantId)}`
+                  : null}
+            </span>
+            <span
+              className={cn(
+                "min-w-0 flex-1 truncate",
+                fromAgent ? "text-muted-foreground" : "text-foreground/80",
+              )}
+            >
+              {describeQueuedFollowUp(followUp, attachmentOnlyPrompt)}
+            </span>
+            {fromAgent ? null : (
+              <>
+                <button
+                  type="button"
+                  className={ACTION_CLASS}
+                  aria-label="Edit queued message"
+                  title="Move back to the message box"
+                  onClick={() => onEdit(followUp)}
+                >
+                  <PencilIcon className="size-3" />
+                </button>
+                <button
+                  type="button"
+                  className={ACTION_CLASS}
+                  aria-label="Remove queued message"
+                  title="Remove"
+                  onClick={() => onRemove(followUp)}
+                >
+                  <XIcon className="size-3" />
+                </button>
+              </>
+            )}
+          </li>
+        );
+      })}
     </ul>
   );
 });

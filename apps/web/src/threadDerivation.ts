@@ -1,4 +1,9 @@
-import type { MessageId, ThreadId, TurnId } from "@threadlines/contracts";
+import {
+  EMPTY_AGENT_REQUEST_STATE,
+  type MessageId,
+  type ThreadId,
+  type TurnId,
+} from "@threadlines/contracts";
 import type { EnvironmentState } from "./store";
 import type {
   ChatMessage,
@@ -29,6 +34,7 @@ const threadCache = new WeakMap<
     activities: Thread["activities"];
     proposedPlans: Thread["proposedPlans"];
     turnDiffSummaries: Thread["turnDiffSummaries"];
+    agentRequests: NonNullable<Thread["agentRequests"]>;
     thread: Thread;
   }
 >();
@@ -113,6 +119,7 @@ export function getThreadFromEnvironmentState(
   const activities = selectThreadActivities(state, threadId);
   const proposedPlans = selectThreadProposedPlans(state, threadId);
   const turnDiffSummaries = selectThreadTurnDiffSummaries(state, threadId);
+  const agentRequests = state.agentRequestsByThreadId[threadId] ?? EMPTY_AGENT_REQUEST_STATE;
   const cached = threadCache.get(shell);
 
   if (
@@ -122,7 +129,8 @@ export function getThreadFromEnvironmentState(
     cached.messages === messages &&
     cached.activities === activities &&
     cached.proposedPlans === proposedPlans &&
-    cached.turnDiffSummaries === turnDiffSummaries
+    cached.turnDiffSummaries === turnDiffSummaries &&
+    cached.agentRequests === agentRequests
   ) {
     return cached.thread;
   }
@@ -136,6 +144,7 @@ export function getThreadFromEnvironmentState(
     activities,
     proposedPlans,
     turnDiffSummaries,
+    agentRequests,
   };
 
   threadCache.set(shell, {
@@ -145,6 +154,7 @@ export function getThreadFromEnvironmentState(
     activities,
     proposedPlans,
     turnDiffSummaries,
+    agentRequests,
     thread,
   });
 

@@ -1,4 +1,11 @@
-import { EnvironmentId, MessageId, ProviderDriverKind, TurnId } from "@threadlines/contracts";
+import {
+  EnvironmentId,
+  MessageId,
+  ProviderDriverKind,
+  SideTurnId,
+  ThreadParticipantId,
+  TurnId,
+} from "@threadlines/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createRef, type ReactElement, type ReactNode, type Ref } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -1769,5 +1776,105 @@ describe("MessagesTimeline", () => {
 
     expect(markup).not.toContain("Turn changes (1)");
     expect(markup).not.toContain("View turn diff");
+  });
+
+  describe("in a room", () => {
+    const astraId = ThreadParticipantId.make("agent-astra");
+    const roomAgents = new Map([
+      [
+        "primary",
+        { name: "Opus 5.5", modelName: "Opus 5.5", role: null, left: false, entry: undefined },
+      ],
+      [
+        "agent-astra",
+        {
+          name: "GPT-6 Astra 2",
+          modelName: "GPT-6 Astra 2",
+          role: null,
+          left: true,
+          entry: undefined,
+        },
+      ],
+    ]);
+
+    it("tags every part of an independent review, and keeps the tag once it is over", async () => {
+      const { MessagesTimeline } = await import("./MessagesTimeline");
+      const { deriveSideAnswers } = await import("./sideAnswers");
+      const sideTurnId = SideTurnId.make("side-review");
+      const sideAnswers = deriveSideAnswers({
+        messages: [
+          {
+            id: MessageId.make("review-request"),
+            role: "user",
+            text: "Check the lock is released on every path.",
+            participantId: astraId,
+            sideTurnId,
+            fromAgent: { participantId: null },
+            requestKind: "review",
+            requestOutcome: "answered",
+            createdAt: MESSAGE_CREATED_AT,
+            streaming: false,
+          },
+          {
+            id: MessageId.make("review-answer"),
+            role: "assistant",
+            text: "It leaks when the write fails.",
+            participantId: astraId,
+            sideTurnId,
+            createdAt: "2026-03-17T19:13:28.000Z",
+            streaming: false,
+          },
+        ],
+        activities: [],
+        // Over: nothing live says it was a review any more.
+        sideTurn: null,
+      });
+      const markup = renderTimeline(
+        <MessagesTimeline
+          {...buildProps()}
+          timelineEntries={[]}
+          sideAnswers={sideAnswers}
+          roomAgents={roomAgents}
+        />,
+      );
+
+      expect(markup).toContain("Opus 5.5 → GPT-6 Astra 2");
+      // On the request and on the answer's author line.
+      expect(markup.split("Independent review · no room context")).toHaveLength(3);
+      // Never read as the user's own message.
+      expect(markup).not.toContain("to GPT-6 Astra 2");
+    });
+
+    it("says a hand-off ended without a reply under its message", async () => {
+      const { MessagesTimeline } = await import("./MessagesTimeline");
+      const markup = renderTimeline(
+        <MessagesTimeline
+          {...buildProps()}
+          timelineEntries={[
+            {
+              id: "hand-off-entry",
+              kind: "message" as const,
+              createdAt: MESSAGE_CREATED_AT,
+              message: {
+                id: MessageId.make("hand-off"),
+                role: "user" as const,
+                text: "Take the migration from here.",
+                participantId: astraId,
+                fromAgent: { participantId: null },
+                requestKind: "hand_off" as const,
+                requestOutcome: "cancelled" as const,
+                createdAt: MESSAGE_CREATED_AT,
+                streaming: false,
+              },
+            },
+          ]}
+          roomAgents={roomAgents}
+        />,
+      );
+
+      expect(markup).toContain("Opus 5.5 → GPT-6 Astra 2");
+      expect(markup).toContain("handed off");
+      expect(markup).toContain("Cancelled: GPT-6 Astra 2 left the room.");
+    });
   });
 });

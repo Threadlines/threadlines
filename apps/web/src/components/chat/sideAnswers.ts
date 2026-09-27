@@ -11,6 +11,7 @@
 import {
   type OrchestrationSideTurn,
   type OrchestrationThreadActivity,
+  type RoomAgentRef,
   SIDE_ANSWER_OUTCOME_ACTIVITY_KIND,
   type SideTurnId,
   type ThreadParticipantId,
@@ -23,6 +24,10 @@ import type { MessagesTimelineRow } from "./MessagesTimeline.logic";
 export interface SideAnswerView {
   readonly sideTurnId: SideTurnId;
   readonly participantId: ThreadParticipantId | null;
+  /** `review`: an independent review, run fresh with no room context. */
+  readonly kind: "ask" | "review";
+  /** The agent that asked; null when the user did. */
+  readonly askedBy: RoomAgentRef | null;
   readonly question: ChatMessage;
   readonly answer: ChatMessage | null;
   readonly steps: ReadonlyArray<WorkLogEntry>;
@@ -87,9 +92,13 @@ export function deriveSideAnswers(input: {
             : answer !== null
               ? "answered"
               : "stopped";
+    // The question message keeps what the live side turn says, so both last
+    // past the settle and a reload.
     views.push({
       sideTurnId,
       participantId: question.participantId ?? null,
+      kind: question.requestKind === "review" || current?.kind === "review" ? "review" : "ask",
+      askedBy: question.fromAgent ?? current?.askedBy ?? null,
       question,
       answer,
       steps,
@@ -146,6 +155,7 @@ export function sideAnswerRows(view: SideAnswerView): MessagesTimelineRow[] {
       showAssistantCopyButton: !view.answer.streaming,
       assistantCopyStreaming: view.answer.streaming,
       assistantTurnInProgress: answering,
+      ...(view.kind === "review" ? { sideReview: view.question } : {}),
       tray: null,
       padTop: view.steps.length === 0,
     });
@@ -157,6 +167,8 @@ export function sideAnswerRows(view: SideAnswerView): MessagesTimelineRow[] {
       createdAt: view.question.createdAt,
       sideTurnId: view.sideTurnId,
       participantId: view.participantId,
+      review: view.kind === "review",
+      question: view.question,
       state: view.state,
       error: view.error,
       tray: null,
