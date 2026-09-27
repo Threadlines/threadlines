@@ -414,7 +414,9 @@ ids.
 - **Composer**:
   - While the holder is busy (running, starting, or waiting on background
     work) and another agent is picked, Enter asks it now. The send menu offers
-    "Send when {holder} finishes", which queues and can edit.
+    "Send when {holder} finishes", which queues and can edit. That choice is
+    for one message: the next one asks now again, and the lone-agent "Steer
+    now" / "Send when done" setting plays no part.
   - If a side answer is already running, asking a third agent keeps the draft
     and offers the choice to wait or queue. A read-only question never
     silently turns into an editing turn.

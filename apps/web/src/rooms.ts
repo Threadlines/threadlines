@@ -9,13 +9,13 @@
  */
 import { scopedThreadKey } from "@threadlines/client-runtime";
 import type {
-  FollowUpDelivery,
   ModelSelection,
   OrchestrationSideTurn,
   OrchestrationThreadParticipant,
   ProviderOptionSelection,
   ScopedThreadRef,
   ThreadParticipantId,
+  TurnId,
 } from "@threadlines/contracts";
 import { activeParticipants } from "@threadlines/shared/threadParticipants";
 import { create } from "zustand";
@@ -82,6 +82,17 @@ interface RoomRecipientState {
     participantId: ThreadParticipantId,
     options: ReadonlyArray<ProviderOptionSelection> | undefined,
   ) => void;
+  /**
+   * "Send when done" picked for the message being written, by scoped thread
+   * key: the turn at work when it was picked. It lapses once that turn is
+   * over or the message is sent, so each new message is asked now.
+   */
+  readonly waitChosen: Readonly<Record<string, string>>;
+  readonly chooseWait: (
+    threadRef: ScopedThreadRef,
+    turnId: TurnId | null | undefined,
+    wait: boolean,
+  ) => void;
 }
 
 const roomAgentOptionsKey = (threadRef: ScopedThreadRef, participantId: ThreadParticipantId) =>
@@ -101,7 +112,23 @@ export const useRoomRecipientStore = create<RoomRecipientState>((set) => ({
       const { [key]: _previous, ...rest } = state.agentOptions;
       return { agentOptions: options === undefined ? rest : { ...rest, [key]: options } };
     }),
+  waitChosen: {},
+  chooseWait: (threadRef, turnId, wait) =>
+    set((state) => {
+      const key = scopedThreadKey(threadRef);
+      if (!wait && !(key in state.waitChosen)) return state;
+      const { [key]: _previous, ...rest } = state.waitChosen;
+      return { waitChosen: wait ? { ...rest, [key]: turnId ?? "" } : rest };
+    }),
 }));
+
+/** Whether "Send when done" was picked for the message being written. */
+export const isRoomWaitChosen = (
+  waitChosen: RoomRecipientState["waitChosen"],
+  threadRef: ScopedThreadRef,
+  /** The thread's latest turn: a pick made during an earlier one has lapsed. */
+  turnId: TurnId | null | undefined,
+): boolean => waitChosen[scopedThreadKey(threadRef)] === (turnId ?? "");
 
 /**
  * The model selection a turn for an added agent runs with: the one it joined
@@ -340,9 +367,10 @@ export const canAnswerOnTheSide = (driverKind: string | undefined): boolean =>
  * How a message goes out in a room. "direct": to the agent at work (a steer)
  * or while nobody works (a turn). While another agent works: "ask" answers it
  * now, read-only, on the side; "queue" waits for the one at work to finish.
- * The user's "Steer now" / "Send when done" choice carries over: acting now
- * means asking now. An agent that cannot answer on the side always queues.
- * The send button and the send path both read this, so they agree.
+ * Asking is the default; waiting is picked per message (`chooseWait`), apart
+ * from the "Steer now" / "Send when done" setting of a lone agent. An agent
+ * that cannot answer on the side always queues. The send button and the send
+ * path both read this, so they agree.
  */
 export function resolveRoomDelivery(input: {
   readonly recipientId: ThreadParticipantId | null;
@@ -350,14 +378,13 @@ export function resolveRoomDelivery(input: {
   /** The agent holding the thread has a turn in flight or background work. */
   readonly holderBusy: boolean;
   readonly recipientDriverKind: string | undefined;
-  readonly preferred: FollowUpDelivery;
+  /** The user picked "Send when done" for this message. */
+  readonly waitChosen: boolean;
 }): "direct" | "ask" | "queue" {
   if (!input.holderBusy || input.recipientId === input.holderId) {
     return "direct";
   }
-  return input.preferred === "steer" && canAnswerOnTheSide(input.recipientDriverKind)
-    ? "ask"
-    : "queue";
+  return !input.waitChosen && canAnswerOnTheSide(input.recipientDriverKind) ? "ask" : "queue";
 }
 
 /**
