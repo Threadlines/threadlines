@@ -60,6 +60,12 @@ export const ProviderSession = Schema.Struct({
    * kills them.
    */
   pendingBackgroundTaskCount: Schema.optional(NonNegativeInt),
+  /**
+   * The runtime was started with the room tools endpoint attached. A room
+   * agent whose runtime predates the room lacks it and is restarted with
+   * resume at its next turn.
+   */
+  roomTools: Schema.optional(Schema.Boolean),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
   lastError: Schema.optional(TrimmedNonEmptyString),
@@ -150,8 +156,17 @@ export const ProviderSessionStartInput = Schema.Struct({
    * project's settings (no hooks, plugins, or MCP servers). The runtime stays
    * that way for its whole life. A driver that cannot guarantee this refuses
    * to start. See docs/design/rooms-slice-2.md.
+   *
+   * `side-review` is an independent review: also fresh (never a fork), with
+   * no project instruction files and no memory loaded automatically.
    */
-  lockdown: Schema.optional(Schema.Literal("side-answer")),
+  lockdown: Schema.optional(Schema.Literals(["side-answer", "side-review"])),
+  /**
+   * Attach the room tools endpoint (`threadlines_room`). A main runtime gets
+   * every room tool; a locked-down side runtime gets only the read tools its
+   * kind allows. See docs/design/rooms-slice-2.md, Part B.
+   */
+  roomTools: Schema.optional(Schema.Boolean),
   approvalPolicy: Schema.optional(ProviderApprovalPolicy),
   sandboxMode: Schema.optional(ProviderSandboxMode),
   runtimeMode: RuntimeMode,
