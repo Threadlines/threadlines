@@ -1322,13 +1322,9 @@ const make = Effect.gen(function* () {
       }
     }
     if (event.type === "turn.started") {
-      // A room turn owes its final capture before another agent may write.
-      if (event.turnId && (yield* roomSlotHolder(event.threadId)) !== undefined) {
-        yield* checkpointHandover.turnStarted(
-          event.threadId,
-          event.turnId,
-          event.participantId ?? null,
-        );
+      // A turn owes its final capture before another agent may write.
+      if (event.turnId) {
+        yield* checkpointHandover.turnStarted(event.threadId, event.turnId);
       }
       yield* ensurePreTurnBaselineFromTurnStart(event);
       return;

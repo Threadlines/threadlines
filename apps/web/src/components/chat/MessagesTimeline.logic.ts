@@ -6,6 +6,7 @@ import {
   type TimelineEntry,
   type WorkLogEntry,
 } from "../../session-logic";
+import { isUserWrittenMessage } from "@threadlines/shared/roomAgentRequests";
 import { type ChatMessage, type ProposedPlan, type TurnDiffSummary } from "../../types";
 import {
   type MessageId,
@@ -60,7 +61,7 @@ const UNPLACED: TimelineRowPlacement = { tray: null, padTop: false };
  * splits the turn that wrote it nor ends the user's exchange.
  */
 const startsExchange = (message: Pick<ChatMessage, "role" | "fromAgent">) =>
-  message.role === "user" && message.fromAgent === undefined;
+  isUserWrittenMessage(message);
 
 export type MessagesTimelineRow = TimelineRowPlacement &
   (

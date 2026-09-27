@@ -29,6 +29,20 @@ type CommandOf<Type extends OrchestrationCommand["type"]> = Extract<
   { readonly type: Type }
 >;
 
+/** How much of a hand-off's reply goes back to the agent that handed off. */
+const HAND_OFF_REPLY_CHAR_LIMIT = 24_000;
+
+/** A hand-off's reply as the agent that handed off receives it. */
+export function handOffReplyText(text: string | undefined): string {
+  const trimmed = text?.trim() ?? "";
+  if (trimmed.length === 0) {
+    return "(The agent finished without writing a reply.)";
+  }
+  return trimmed.length > HAND_OFF_REPLY_CHAR_LIMIT
+    ? `${trimmed.slice(0, HAND_OFF_REPLY_CHAR_LIMIT)} [clipped; the full reply is in the chat]`
+    : trimmed;
+}
+
 /** Events to plan, or why the command is refused. */
 export type AgentRequestDecision = ReadonlyArray<PlannedEvent> | { readonly refusal: string };
 

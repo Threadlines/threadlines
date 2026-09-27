@@ -1587,6 +1587,14 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           interactionMode: targetThread.interactionMode,
           ...(sourceProposedPlan !== undefined ? { sourceProposedPlan } : {}),
           ...(command.message.skills !== undefined ? { skills: command.message.skills } : {}),
+          // Rooms: the Stop count this turn was asked under, and the turn of
+          // the agent it takes the thread from, which must be recorded first.
+          ...(isRoomThread(targetThread)
+            ? { chainEpoch: targetThread.agentRequests.chainEpoch }
+            : {}),
+          ...(handsOverSlot && targetThread.latestTurn !== null
+            ? { handoverFromTurnId: targetThread.latestTurn.turnId }
+            : {}),
           createdAt: command.createdAt,
         },
       };
@@ -1711,6 +1719,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           runtimeMode: targetThread.runtimeMode,
           interactionMode: targetThread.interactionMode,
           ...(lastUserMessage.skills !== undefined ? { skills: lastUserMessage.skills } : {}),
+          ...(isRoomThread(targetThread)
+            ? { chainEpoch: targetThread.agentRequests.chainEpoch }
+            : {}),
           createdAt: command.createdAt,
         },
       };
@@ -1893,6 +1904,15 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       // the agent it was for. If that agent left, it is taken back and its
       // request cancelled, never handed to another agent.
       const fromAgent = queued.fromAgent;
+      // A message an agent queued carries no model: its agent's current one
+      // applies, so a model change since it was queued is honored.
+      const queuedAgentModel =
+        fromAgent !== undefined &&
+        queued.participantId !== undefined &&
+        queued.participantId !== null
+          ? activeParticipants(targetThread).find((entry) => entry.id === queued.participantId)
+              ?.modelSelection
+          : undefined;
       const queuedParticipantPresent =
         queued.participantId === undefined ||
         queued.participantId === null ||
@@ -1952,7 +1972,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             },
             ...(queued.modelSelection !== undefined
               ? { modelSelection: queued.modelSelection }
-              : {}),
+              : queuedAgentModel !== undefined
+                ? { modelSelection: queuedAgentModel }
+                : {}),
             // The agent it was queued for, while it is still in the thread;
             // otherwise the thread's own agent takes it.
             ...(queued.participantId !== undefined &&

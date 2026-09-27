@@ -28,6 +28,7 @@ import {
   ThreadParticipantId,
   TurnId,
 } from "@threadlines/contracts";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
@@ -77,6 +78,7 @@ import { VcsStatusBroadcaster } from "../../vcs/VcsStatusBroadcaster.ts";
 import { GitWorkflowService, type GitWorkflowServiceShape } from "../../git/GitWorkflowService.ts";
 import { CheckpointStore } from "../../checkpointing/Services/CheckpointStore.ts";
 import { makeCheckpointStoreStub } from "../../checkpointing/testing/CheckpointStoreStub.ts";
+import { HandoverCaptureWait } from "../checkpointHandover.ts";
 
 const asProjectId = (value: string): ProjectId => ProjectId.make(value);
 const asApprovalRequestId = (value: string): ApprovalRequestId => ApprovalRequestId.make(value);
@@ -498,6 +500,8 @@ describe("ProviderCommandReactor", () => {
       Layer.provide(SqlitePersistenceMemory),
     );
     const layer = ProviderCommandReactorLive.pipe(
+      // No checkpoint reactor here to report captures done: hand over at once.
+      Layer.provideMerge(Layer.succeed(HandoverCaptureWait, Duration.zero)),
       Layer.provideMerge(orchestrationLayer),
       Layer.provideMerge(projectionSnapshotLayer),
       Layer.provideMerge(Layer.succeed(ProviderService, service)),
@@ -1162,16 +1166,41 @@ describe("ProviderCommandReactor", () => {
         ([key]) => key === participantSessionKey(threadId, astraId),
       ),
     );
-    // ...and the user presses Stop before it is ready.
+    // ...and the user presses Stop before it is ready, then writes again
+    // (which lifts the hold) before that preparation finishes.
     await dispatch({
       type: "thread.turn.interrupt",
       commandId: CommandId.make("cmd-stop-while-starting"),
       threadId,
       createdAt: now,
     });
+    await dispatch({
+      type: "thread.follow-up.submit",
+      commandId: CommandId.make("cmd-after-stop"),
+      threadId,
+      turnId: asTurnId("turn-1"),
+      message: {
+        messageId: asMessageId("after-stop"),
+        role: "user",
+        text: "never mind",
+        attachments: [],
+      },
+      delivery: "queue",
+      createdAt: now,
+    });
     releaseStart?.();
-    await harness.drain();
-    expect(harness.sendTurn.mock.calls.length).toBe(1);
+    // The turn was prepared in its own fiber: wait until it is either sent or
+    // dropped, then check which.
+    const stoppedTurnSent = () =>
+      harness.sendTurn.mock.calls.some(
+        ([request]) => (request as { messageId?: string }).messageId === "queue-for-astra",
+      );
+    await waitFor(async () => {
+      const thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+      return stoppedTurnSent() || thread?.session?.lastError === "Stopped before the turn started.";
+    });
+    // The turn that was stopped is never sent, whatever came after.
+    expect(stoppedTurnSent()).toBe(false);
   });
 
   it("restarts the thread's own agent with resume once, to pick up the room tools", async () => {

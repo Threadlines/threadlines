@@ -104,7 +104,8 @@ import {
 import { VcsStatusBroadcaster } from "../../vcs/VcsStatusBroadcaster.ts";
 import { checkoutPresence } from "../../vcs/CheckoutPresence.ts";
 import { GitWorkflowService } from "../../git/GitWorkflowService.ts";
-import { checkpointHandover } from "../checkpointHandover.ts";
+import { checkpointHandover, HandoverCaptureWait } from "../checkpointHandover.ts";
+import { handOffReplyText } from "../agentRequestDecisions.ts";
 const isProviderAdapterRequestError = Schema.is(ProviderAdapterRequestError);
 const isCheckoutMissingError = Schema.is(CheckoutMissingError);
 const isProviderDriverKind = Schema.is(ProviderDriverKind);
@@ -266,8 +267,6 @@ const HANDLED_TURN_START_KEY_MAX = 10_000;
 const HANDLED_TURN_START_KEY_TTL = Duration.minutes(30);
 const DEFAULT_RUNTIME_MODE: RuntimeMode = "full-access";
 const PROVIDER_INTERRUPT_ACK_TIMEOUT = Duration.seconds(10);
-/** How long a turn for another agent waits for the previous turn's checkpoint. */
-const HANDOVER_CAPTURE_WAIT = Duration.seconds(10);
 /** How long preparing a session for a turn (a restart included) may take. */
 const TURN_PREPARATION_TIMEOUT = Duration.seconds(90);
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
@@ -371,6 +370,7 @@ function buildGeneratedWorktreeBranchName(raw: string): string {
 }
 
 const make = Effect.gen(function* () {
+  const handoverCaptureWait = yield* HandoverCaptureWait;
   const orchestrationEngine = yield* OrchestrationEngineService;
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
   const providerService = yield* ProviderService;
@@ -674,6 +674,9 @@ const make = Effect.gen(function* () {
     readonly threadId: ThreadId;
     readonly turnId: TurnId;
   }) {
+    // The turn owes its checkpoint from now on, whether or not its thread is
+    // a room yet: an agent added mid-turn must wait for it (checkpointHandover).
+    yield* checkpointHandover.turnStarted(input.threadId, input.turnId);
     const thread = yield* resolveThread(input.threadId);
     const session = thread?.session;
     if (!thread || !session) {
@@ -1949,12 +1952,27 @@ const make = Effect.gen(function* () {
         return;
       }
 
+      yield* capturePreTurnCheckpointForTurnStart({ threadId: event.payload.threadId }).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("provider command reactor failed to capture pre-turn checkpoint", {
+            threadId: event.payload.threadId,
+            cause: Cause.pretty(cause),
+          }),
+        ),
+      );
+
       // In a room, Stop pressed while this turn was being prepared waited behind
-      // it in this worker, but has already put the hold on. The turn is not sent
-      // then: it ends as if Stop had reached it. (The user's own sends lift the
-      // hold, so a hold now can only have come after this turn was asked for.)
+      // it in this worker, but has already raised the chain epoch. Right before
+      // sending, after everything this turn waited on, a turn asked for under
+      // an older epoch is not sent: it ends as if Stop had reached it. (Stop is
+      // the only thing that raises the epoch, so a later user message cannot
+      // bring a stopped turn back.)
       const latestForSend = yield* resolveThread(event.payload.threadId);
-      if (latestForSend !== undefined && latestForSend.agentRequests.hold) {
+      if (
+        event.payload.chainEpoch !== undefined &&
+        latestForSend !== undefined &&
+        latestForSend.agentRequests.chainEpoch !== event.payload.chainEpoch
+      ) {
         yield* Effect.logInfo("room turn not sent: stopped while it was being prepared", {
           threadId: event.payload.threadId,
           messageId: event.payload.messageId,
@@ -1966,15 +1984,6 @@ const make = Effect.gen(function* () {
         });
         return;
       }
-
-      yield* capturePreTurnCheckpointForTurnStart({ threadId: event.payload.threadId }).pipe(
-        Effect.catchCause((cause) =>
-          Effect.logWarning("provider command reactor failed to capture pre-turn checkpoint", {
-            threadId: event.payload.threadId,
-            cause: Cause.pretty(cause),
-          }),
-        ),
-      );
 
       const { request: turnRequest, roomContext } = sendTurnRequest.value;
       yield* providerService.sendTurn(turnRequest).pipe(
@@ -1994,13 +2003,12 @@ const make = Effect.gen(function* () {
       );
     });
 
-    const participantForTurn = event.payload.participantId ?? null;
-    if (
-      thread.participants.length > 0 &&
-      checkpointHandover.mustWait(event.payload.threadId, participantForTurn)
-    ) {
+    // Taking the thread from another agent: that agent's last turn is recorded
+    // (or closed for good) first, in its own fiber.
+    const handoverFromTurnId = event.payload.handoverFromTurnId;
+    if (handoverFromTurnId !== undefined) {
       yield* checkpointHandover
-        .handOver(event.payload.threadId, participantForTurn, HANDOVER_CAPTURE_WAIT)
+        .handOver(event.payload.threadId, handoverFromTurnId, handoverCaptureWait)
         .pipe(Effect.andThen(prepareAndSend), Effect.forkScoped);
       return;
     }
@@ -2900,6 +2908,29 @@ const make = Effect.gen(function* () {
         }),
       );
     for (const request of thread.agentRequests.open) {
+      // A hand-off this agent was working on: a normal end routes its reply
+      // (ingestion, once the words are final); any other end fails it here,
+      // or nothing would ever close it.
+      if (
+        request.kind === "hand_off" &&
+        request.status === "running" &&
+        (request.to.participantId ?? null) === holderId
+      ) {
+        if (!completedNormally) {
+          yield* orchestrationEngine
+            .dispatch({
+              type: "thread.agent-request.settle",
+              commandId: serverCommandId("agent-request-target-ended"),
+              threadId,
+              requestId: request.requestId,
+              outcome: "failed",
+              error: "The agent's turn did not finish.",
+              createdAt,
+            })
+            .pipe(ignoreRace("fail a hand-off whose turn ended"));
+        }
+        continue;
+      }
       if (
         (request.from.participantId ?? null) !== holderId ||
         request.callerTurnId === activeTurnId
@@ -3756,14 +3787,44 @@ const make = Effect.gen(function* () {
       if (request.kind === "hand_off" && request.status === "queued") {
         continue;
       }
+      // A hand-off whose target finished its turn, answer saved, before the
+      // server went down still gets its reply routed: the latest turn is the
+      // target's, since only one agent works at a time.
+      const latestTurn = thread.latestTurn;
+      const savedReply =
+        request.kind === "hand_off" &&
+        request.status === "running" &&
+        latestTurn !== null &&
+        latestTurn.state === "completed"
+          ? [...thread.messages]
+              .reverse()
+              .find(
+                (message) =>
+                  message.role === "assistant" &&
+                  message.turnId === latestTurn.turnId &&
+                  (message.participantId ?? null) === (request.to.participantId ?? null) &&
+                  !message.streaming,
+              )
+          : undefined;
       yield* orchestrationEngine
         .dispatch({
           type: "thread.agent-request.settle",
           commandId: serverCommandId("agent-request-restart"),
           threadId,
           requestId: request.requestId,
-          outcome: request.status === "pending" ? "cancelled" : "failed",
-          error: "The server restarted before this finished.",
+          ...(savedReply !== undefined
+            ? {
+                outcome: "answered" as const,
+                reply: {
+                  messageId: MessageId.make(`hand-off-reply:${request.requestId}`),
+                  text: handOffReplyText(savedReply.text),
+                },
+              }
+            : {
+                outcome:
+                  request.status === "pending" ? ("cancelled" as const) : ("failed" as const),
+                error: "The server restarted before this finished.",
+              }),
           createdAt: yield* nowIso,
         })
         .pipe(

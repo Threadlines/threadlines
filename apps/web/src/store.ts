@@ -70,7 +70,7 @@ import {
   roomSlotRole,
 } from "./rooms";
 import { applyRoomAgentUpdate } from "@threadlines/shared/threadParticipants";
-import { agentRequestStateOn } from "@threadlines/shared/roomAgentRequests";
+import { agentRequestStateOn, isUserWrittenMessage } from "@threadlines/shared/roomAgentRequests";
 const isProviderDriverKindValue = Schema.is(ProviderDriverKind);
 
 export interface EnvironmentState {
@@ -489,10 +489,8 @@ function toSidebarThreadSummary(
   previous: SidebarThreadSummary | undefined,
 ): SidebarThreadSummary {
   const latestDetailUserMessageAt =
-    thread.messages
-      .filter((message) => message.role === "user" && message.fromAgent === undefined)
-      .toSorted(compareTranscriptOrder)
-      .at(-1)?.createdAt ?? null;
+    thread.messages.filter(isUserWrittenMessage).toSorted(compareTranscriptOrder).at(-1)
+      ?.createdAt ?? null;
   const latestUserMessageAt = latestIso(
     previous?.latestUserMessageAt ?? null,
     latestDetailUserMessageAt,

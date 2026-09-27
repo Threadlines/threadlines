@@ -152,3 +152,13 @@ export const agentRequestStateOn = {
       ? state
       : { ...state, hold: false, requestsSinceUser: 0 },
 };
+
+/**
+ * Whether the user wrote a message. In a room, an agent can write a user-role
+ * message too (a request or a routed reply); those never count as the user's
+ * activity (inbox order, "last message from you").
+ */
+export const isUserWrittenMessage = (message: {
+  readonly role: string;
+  readonly fromAgent?: unknown;
+}): boolean => message.role === "user" && message.fromAgent === undefined;

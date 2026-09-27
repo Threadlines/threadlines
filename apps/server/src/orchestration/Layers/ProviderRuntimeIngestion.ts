@@ -59,6 +59,7 @@ import {
   projectRuntimeEventToActivities,
   type ProviderActivityStreamSnapshot,
 } from "./ProviderActivityProjection.ts";
+import { handOffReplyText } from "../agentRequestDecisions.ts";
 
 const providerTurnKey = (threadId: ThreadId, turnId: TurnId) => `${threadId}:${turnId}`;
 const providerCommandId = (event: ProviderRuntimeEvent, tag: string): CommandId =>
@@ -81,8 +82,7 @@ const BUFFERED_PROPOSED_PLAN_BY_ID_TTL = Duration.minutes(120);
 const BUFFERED_ACTIVITY_STREAM_BY_KEY_CACHE_CAPACITY = 20_000;
 const BUFFERED_ACTIVITY_STREAM_BY_KEY_TTL = Duration.minutes(120);
 const STREAMING_ASSISTANT_DELTA_FLUSH_INTERVAL = Duration.millis(50);
-/** How much of a hand-off's reply goes back to the agent that handed off. */
-const HAND_OFF_REPLY_CHAR_LIMIT = 24_000;
+
 const SUBAGENT_RESULT_ACTIVITY_FLUSH_INTERVAL = Duration.millis(100);
 const MARKDOWN_FENCE_INDENT_LIMIT = 3;
 type ContentDeltaStreamKind = Extract<
@@ -2584,26 +2584,44 @@ const make = Effect.gen(function* () {
 
   /**
    * Room tools: the agent a hand-off went to finished the turn it was handed,
-   * and that turn's words were just flushed. Its last reply goes back to the
-   * agent that handed off, matched to the one running hand-off addressed to
-   * it, in one decider step that also settles the request. Never on the
-   * session going idle, which comes before buffered text is final.
+   * and that turn's words were just flushed. The request is the one whose
+   * message started this exact turn (the turn's pending message), never just
+   * "a hand-off to this agent". Its reply is the turn's last saved answer,
+   * read back from the thread, and goes to the agent that handed off in one
+   * decider step that also settles the request. A turn that failed or was
+   * interrupted settles it as failed, with no reply. Never on the session
+   * going idle, which comes before buffered text is final.
    */
   const routeHandOffReply = Effect.fn("routeHandOffReply")(function* (input: {
     readonly threadId: ThreadId;
     readonly participantId: ThreadParticipantId | null;
-    readonly assistantMessageIds: ReadonlySet<MessageId>;
+    readonly turnId: TurnId;
     readonly completed: boolean;
     readonly createdAt: string;
   }) {
     const detail = yield* resolveThreadDetail(input.threadId);
-    const request = detail?.agentRequests.open.find(
+    if (detail === undefined || detail === null) {
+      return;
+    }
+    const handOffs = detail.agentRequests.open.filter(
       (entry) =>
         entry.kind === "hand_off" &&
         entry.status === "running" &&
         (entry.to.participantId ?? null) === input.participantId,
     );
-    if (detail === undefined || detail === null || request === undefined) {
+    if (handOffs.length === 0) {
+      return;
+    }
+    const turn = yield* projectionTurnRepository
+      .getByTurnId({ threadId: input.threadId, turnId: input.turnId })
+      .pipe(
+        Effect.map(Option.getOrUndefined),
+        Effect.orElseSucceed(() => undefined),
+      );
+    const request = handOffs.find(
+      (entry) => entry.requestMessageId === (turn?.pendingMessageId ?? null),
+    );
+    if (request === undefined) {
       return;
     }
     const reply = [...detail.messages]
@@ -2611,15 +2629,9 @@ const make = Effect.gen(function* () {
       .find(
         (message) =>
           message.role === "assistant" &&
-          input.assistantMessageIds.has(message.id) &&
+          message.turnId === input.turnId &&
           message.text.trim().length > 0,
       );
-    const text =
-      reply === undefined
-        ? "(The agent finished without writing a reply.)"
-        : reply.text.trim().length > HAND_OFF_REPLY_CHAR_LIMIT
-          ? `${reply.text.trim().slice(0, HAND_OFF_REPLY_CHAR_LIMIT)} [clipped; the full reply is in the chat]`
-          : reply.text.trim();
     yield* orchestrationEngine
       .dispatch({
         type: "thread.agent-request.settle",
@@ -2628,7 +2640,12 @@ const make = Effect.gen(function* () {
         requestId: request.requestId,
         outcome: input.completed ? "answered" : "failed",
         ...(input.completed
-          ? { reply: { messageId: MessageId.make(`hand-off-reply:${request.requestId}`), text } }
+          ? {
+              reply: {
+                messageId: MessageId.make(`hand-off-reply:${request.requestId}`),
+                text: handOffReplyText(reply?.text),
+              },
+            }
           : { error: "The agent's turn did not finish." }),
         createdAt: input.createdAt,
       })
@@ -3570,8 +3587,10 @@ const make = Effect.gen(function* () {
           yield* routeHandOffReply({
             threadId: thread.id,
             participantId: event.participantId ?? null,
-            assistantMessageIds,
-            completed: event.type === "turn.completed",
+            turnId,
+            completed:
+              event.type === "turn.completed" &&
+              normalizeRuntimeTurnState(event.payload.state) === "completed",
             createdAt: now,
           });
 

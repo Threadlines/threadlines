@@ -2605,6 +2605,18 @@ export const ThreadTurnStartRequestedPayload = Schema.Struct({
   providerContext: Schema.optional(Schema.String),
   providerAttachments: Schema.optional(Schema.Array(ChatAttachment)),
   skills: Schema.optional(ChatSkillReferenceList),
+  /**
+   * Rooms: the thread's chain epoch when this turn was asked for. Stop raises
+   * it, so a turn whose epoch no longer matches right before it is sent was
+   * stopped while it was being prepared.
+   */
+  chainEpoch: Schema.optional(NonNegativeInt),
+  /**
+   * Rooms: the turn of the agent that held the thread before this one, when
+   * this turn hands the thread to another agent. It must be recorded (its
+   * checkpoint captured, or closed for good) before this turn is sent.
+   */
+  handoverFromTurnId: Schema.optional(TurnId),
   createdAt: IsoDateTime,
 });
 

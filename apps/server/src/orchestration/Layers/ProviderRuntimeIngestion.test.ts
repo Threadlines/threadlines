@@ -556,7 +556,9 @@ describe("ProviderRuntimeIngestion", () => {
     ).toBe("Because the retry cap is off by one.\n\nIt came in with the April change.");
   });
 
-  it("sends a hand-off's final reply back to the agent that handed off, once its words are final", async () => {
+  // A thread where the thread's own agent handed work to astra, and astra's
+  // turn for it ended in `finalState`, after writing its answer.
+  async function handOffToAstra(finalState: "completed" | "failed") {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
     const threadId = asThreadId("thread-1");
@@ -638,6 +640,7 @@ describe("ProviderRuntimeIngestion", () => {
         turnId: asTurnId("turn-astra"),
         ...event,
       } as never);
+    astraEvent("evt-astra-started", { type: "turn.started" });
     astraEvent("evt-astra-1", {
       type: "content.delta",
       itemId: "msg-astra",
@@ -648,13 +651,24 @@ describe("ProviderRuntimeIngestion", () => {
       itemId: "msg-astra",
       payload: { streamKind: "assistant_text", delta: "tests." },
     });
-    astraEvent("evt-astra-done", { type: "turn.completed", payload: { state: "completed" } });
+    // The answer finishes as an item before the turn ends, as it normally does.
+    astraEvent("evt-astra-item-done", {
+      type: "item.completed",
+      itemId: "msg-astra",
+      payload: { itemType: "assistant_message", status: "completed" },
+    });
+    astraEvent("evt-astra-done", { type: "turn.completed", payload: { state: finalState } });
     await harness.drain();
 
     const thread = await waitForThread(
       harness.readModel,
       (entry) => (entry.agentRequests?.open ?? []).length === 0,
     );
+    return { thread, requestId, astraId };
+  }
+
+  it("sends a hand-off's final reply back to the agent that handed off, once its words are final", async () => {
+    const { thread, requestId, astraId } = await handOffToAstra("completed");
     // The whole final reply goes back, written by astra, for the thread's own agent.
     const reply = thread.messages.find((message) => message.id === `hand-off-reply:${requestId}`);
     expect(reply).toMatchObject({
@@ -669,6 +683,16 @@ describe("ProviderRuntimeIngestion", () => {
     expect(
       thread.messages.find((message) => message.id === "hand-off-request")?.requestOutcome,
     ).toBe("answered");
+  });
+
+  it("fails a hand-off whose turn failed, and sends no reply", async () => {
+    const { thread, requestId } = await handOffToAstra("failed");
+    expect(thread.messages.some((message) => message.id === `hand-off-reply:${requestId}`)).toBe(
+      false,
+    );
+    expect(
+      thread.messages.find((message) => message.id === "hand-off-request")?.requestOutcome,
+    ).toBe("failed");
   });
 
   it("stops a room agent that starts working on its own while another agent holds the thread", async () => {

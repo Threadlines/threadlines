@@ -12,10 +12,7 @@ const run = <A>(effect: Effect.Effect<A>) => Effect.runPromise(effect);
 describe("checkpointHandover", () => {
   it("lets the next agent in only after the previous turn's capture, and refuses a later one", async () => {
     const thread = "thread-barrier-1";
-    await run(checkpointHandover.turnStarted(thread, "turn-a", null));
-    expect(checkpointHandover.mustWait(thread, "astra")).toBe(true);
-    // The same agent's next turn does not wait on itself.
-    expect(checkpointHandover.mustWait(thread, null)).toBe(false);
+    await run(checkpointHandover.turnStarted(thread, "turn-a"));
 
     const order: string[] = [];
     await run(
@@ -37,7 +34,7 @@ describe("checkpointHandover", () => {
         yield* Deferred.await(captureStarted);
         // The wait runs out, but closing still waits for the capture in progress.
         const handOver = yield* checkpointHandover
-          .handOver(thread, "astra", Duration.millis(10))
+          .handOver(thread, "turn-a", Duration.millis(10))
           .pipe(
             Effect.tap(() => Effect.sync(() => order.push("handed over"))),
             Effect.forkChild,
@@ -54,13 +51,24 @@ describe("checkpointHandover", () => {
     // A capture of the closed turn that comes afterwards is refused.
     const late = await run(checkpointHandover.capture(thread, "turn-a", Effect.succeed("late")));
     expect(Option.isNone(late)).toBe(true);
-    expect(checkpointHandover.mustWait(thread, "astra")).toBe(false);
   });
 
-  it("hands over at once when the previous turn is already recorded", async () => {
+  it("closes a turn that was already recorded, so a repeated capture cannot publish", async () => {
     const thread = "thread-barrier-2";
-    await run(checkpointHandover.turnStarted(thread, "turn-a", null));
+    await run(checkpointHandover.turnStarted(thread, "turn-a"));
     await run(checkpointHandover.finalCaptureFinished(thread, "turn-a"));
-    expect(checkpointHandover.mustWait(thread, "astra")).toBe(false);
+    await run(checkpointHandover.handOver(thread, "turn-a", Duration.seconds(10)));
+    const repeated = await run(
+      checkpointHandover.capture(thread, "turn-a", Effect.succeed("recaptured")),
+    );
+    expect(Option.isNone(repeated)).toBe(true);
+  });
+
+  it("does not wait for a turn this process never started", async () => {
+    const thread = "thread-barrier-3";
+    const started = Date.now();
+    // A turn from before a restart: nothing of it is in flight.
+    await run(checkpointHandover.handOver(thread, "turn-before-restart", Duration.seconds(10)));
+    expect(Date.now() - started).toBeLessThan(1_000);
   });
 });

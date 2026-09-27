@@ -1,6 +1,6 @@
 import { compareTranscriptOrder } from "@threadlines/shared/transcriptOrder";
 import { applyRoomAgentUpdate } from "@threadlines/shared/threadParticipants";
-import { agentRequestStateOn } from "@threadlines/shared/roomAgentRequests";
+import { agentRequestStateOn, isUserWrittenMessage } from "@threadlines/shared/roomAgentRequests";
 import {
   ApprovalRequestId,
   EMPTY_AGENT_REQUEST_STATE,
@@ -542,7 +542,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
 
       const latestUserMessageAt =
         messages
-          .filter((message) => message.role === "user")
+          .filter(isUserWrittenMessage)
           .map((message) => message.createdAt)
           .toSorted()
           .at(-1) ?? null;
