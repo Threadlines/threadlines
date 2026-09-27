@@ -64,6 +64,16 @@ describe("checkpointHandover", () => {
     expect(Option.isNone(repeated)).toBe(true);
   });
 
+  it("does not reopen a turn captured before its acceptance was registered", async () => {
+    const thread = "thread-barrier-4";
+    // A fast turn: its final capture finishes before the reactor registers it.
+    await run(checkpointHandover.finalCaptureFinished(thread, "turn-a"));
+    await run(checkpointHandover.turnStarted(thread, "turn-a"));
+    const started = Date.now();
+    await run(checkpointHandover.handOver(thread, "turn-a", Duration.seconds(10)));
+    expect(Date.now() - started).toBeLessThan(1_000);
+  });
+
   it("does not wait for a turn this process never started", async () => {
     const thread = "thread-barrier-3";
     const started = Date.now();

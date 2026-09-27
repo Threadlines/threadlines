@@ -1,5 +1,6 @@
 import {
   DEFAULT_PROJECT_KIND,
+  EMPTY_AGENT_REQUEST_STATE,
   EventId,
   MessageId,
   type OrchestrationCommand,
@@ -447,6 +448,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           providerContext: command.providerContext,
           providerAttachments: command.providerAttachments,
           ...(command.message.skills !== undefined ? { skills: command.message.skills } : {}),
+          // A new thread starts at the first Stop count; it can become a room
+          // while this turn is prepared.
+          chainEpoch: EMPTY_AGENT_REQUEST_STATE.chainEpoch,
           createdAt: command.createdAt,
         },
       };
@@ -1587,11 +1591,11 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           interactionMode: targetThread.interactionMode,
           ...(sourceProposedPlan !== undefined ? { sourceProposedPlan } : {}),
           ...(command.message.skills !== undefined ? { skills: command.message.skills } : {}),
-          // Rooms: the Stop count this turn was asked under, and the turn of
-          // the agent it takes the thread from, which must be recorded first.
-          ...(isRoomThread(targetThread)
-            ? { chainEpoch: targetThread.agentRequests.chainEpoch }
-            : {}),
+          // Rooms: the Stop count this turn was asked under (stamped on every
+          // thread, since one can become a room while the turn is prepared),
+          // and the turn of the agent it takes the thread from, which must be
+          // recorded first.
+          chainEpoch: targetThread.agentRequests.chainEpoch,
           ...(handsOverSlot && targetThread.latestTurn !== null
             ? { handoverFromTurnId: targetThread.latestTurn.turnId }
             : {}),
@@ -1719,9 +1723,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           runtimeMode: targetThread.runtimeMode,
           interactionMode: targetThread.interactionMode,
           ...(lastUserMessage.skills !== undefined ? { skills: lastUserMessage.skills } : {}),
-          ...(isRoomThread(targetThread)
-            ? { chainEpoch: targetThread.agentRequests.chainEpoch }
-            : {}),
+          chainEpoch: targetThread.agentRequests.chainEpoch,
           createdAt: command.createdAt,
         },
       };
@@ -1905,14 +1907,15 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       // request cancelled, never handed to another agent.
       const fromAgent = queued.fromAgent;
       // A message an agent queued carries no model: its agent's current one
-      // applies, so a model change since it was queued is honored.
+      // applies (the thread's own model for the thread's own agent), so a
+      // model change since it was queued is honored.
       const queuedAgentModel =
-        fromAgent !== undefined &&
-        queued.participantId !== undefined &&
-        queued.participantId !== null
-          ? activeParticipants(targetThread).find((entry) => entry.id === queued.participantId)
-              ?.modelSelection
-          : undefined;
+        fromAgent === undefined
+          ? undefined
+          : queued.participantId === undefined || queued.participantId === null
+            ? targetThread.modelSelection
+            : activeParticipants(targetThread).find((entry) => entry.id === queued.participantId)
+                ?.modelSelection;
       const queuedParticipantPresent =
         queued.participantId === undefined ||
         queued.participantId === null ||
@@ -2248,24 +2251,30 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.session.stop": {
-      yield* requireThread({
+      const thread = yield* requireThread({
         readModel,
         command,
         threadId: command.threadId,
       });
-      return {
-        ...withEventBase({
+      const base = () =>
+        withEventBase({
           aggregateKind: "thread",
           aggregateId: command.threadId,
           occurredAt: command.createdAt,
           commandId: command.commandId,
-        }),
+        });
+      // In a room, stopping the session ends the agents' chain the same way
+      // Stop does, so a turn still being prepared for an agent is dropped.
+      const chainStop = decideAgentChainStop(thread, base, command.createdAt);
+      const stopEvent: PlannedOrchestrationEvent = {
+        ...base(),
         type: "thread.session-stop-requested",
         payload: {
           threadId: command.threadId,
           createdAt: command.createdAt,
         },
       };
+      return chainStop.length > 0 ? [stopEvent, ...chainStop] : stopEvent;
     }
 
     case "thread.session.set": {

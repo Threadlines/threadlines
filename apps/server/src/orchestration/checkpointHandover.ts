@@ -6,7 +6,8 @@
  * A turn is registered as owing its final capture as soon as it is accepted
  * (and again when the checkpoint reactor sees it start), whether or not its
  * thread is a room yet. The checkpoint reactor marks it finished once its
- * final capture is done, skipped, or not needed. Every capture runs under its
+ * final capture is done, skipped, or not needed; a turn marked finished
+ * before it registered stays finished. Every capture runs under its
  * thread's lock and refuses a turn that is closed. Handing the thread to
  * another agent names the previous turn: it waits for that turn to finish,
  * for a bounded time, then closes it for good under the same lock, which
@@ -38,6 +39,8 @@ interface ThreadGate {
   readonly lock: Semaphore.Semaphore;
   /** Turns owing their final capture, each with what finishing it resolves. */
   readonly pending: Map<string, Deferred.Deferred<void>>;
+  /** Turns whose final capture is done, so a late registration owes nothing. */
+  readonly finished: Set<string>;
   readonly closed: Set<string>;
 }
 
@@ -53,6 +56,7 @@ const gateFor = (threadId: string) =>
     const created: ThreadGate = {
       lock: yield* Semaphore.make(1),
       pending: new Map(),
+      finished: new Set(),
       closed: new Set(),
     };
     gates.set(threadId, created);
@@ -67,11 +71,15 @@ const remember = <T>(entries: Map<string, T> | Set<string>) => {
 };
 
 export const checkpointHandover = {
-  /** A turn was accepted or started: its final capture is now owed. Idempotent. */
+  /**
+   * A turn was accepted or started: its final capture is now owed, unless it
+   * already finished (a fast turn can be captured before its acceptance is
+   * registered). Idempotent.
+   */
   turnStarted: (threadId: string, turnId: string) =>
     Effect.gen(function* () {
       const gate = yield* gateFor(threadId);
-      if (gate.pending.has(turnId) || gate.closed.has(turnId)) {
+      if (gate.pending.has(turnId) || gate.finished.has(turnId) || gate.closed.has(turnId)) {
         return;
       }
       gate.pending.set(turnId, yield* Deferred.make<void>());
@@ -81,13 +89,15 @@ export const checkpointHandover = {
   /** The turn's final capture is done, or will not happen. Idempotent. */
   finalCaptureFinished: (threadId: string, turnId: string) =>
     Effect.gen(function* () {
-      const gate = gates.get(threadId);
-      const finished = gate?.pending.get(turnId);
-      if (gate === undefined || finished === undefined) {
+      const gate = yield* gateFor(threadId);
+      gate.finished.add(turnId);
+      remember(gate.finished);
+      const owed = gate.pending.get(turnId);
+      if (owed === undefined) {
         return;
       }
       gate.pending.delete(turnId);
-      yield* Deferred.succeed(finished, undefined);
+      yield* Deferred.succeed(owed, undefined);
     }),
 
   /**

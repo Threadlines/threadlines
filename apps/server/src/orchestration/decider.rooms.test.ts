@@ -794,6 +794,33 @@ describe("decider rooms", () => {
       });
       // Settling again finds nothing open: no second reply.
       expect(Exit.isFailure(await decide(settle, model))).toBe(true);
+
+      // The reply runs on the thread's own agent's current model, changed
+      // since the hand-off was made.
+      const changedModel = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6-sol" };
+      model = {
+        ...model,
+        threads: [
+          {
+            ...threadOf(model),
+            modelSelection: changedModel,
+            session: session({ participantId: astraId }),
+          },
+        ],
+      };
+      const replySent = await decideEvents(
+        {
+          type: "thread.follow-up.send-queued",
+          commandId: CommandId.make("cmd-send-reply"),
+          threadId,
+          messageId: settle.reply.messageId,
+          createdAt: "2026-01-01T00:00:10.000Z",
+        },
+        model,
+      );
+      expect(
+        replySent.find((event) => event.type === "thread.turn-start-requested")?.payload,
+      ).toMatchObject({ modelSelection: changedModel });
     });
 
     it("ends the agents' chain on Stop, until the user writes again", async () => {
@@ -830,6 +857,27 @@ describe("decider rooms", () => {
         readModel({ ...threadOf(model), session: session() }),
       );
       expect(userTurn.some((event) => event.type === "thread.agent-requests-reset")).toBe(true);
+    });
+
+    it("ends the agents' chain when the session is stopped, too", async () => {
+      let model = readModel({ session: working() });
+      model = await apply(model, await decideEvents(request("hand_off"), model));
+      const stopped = await decideEvents(
+        {
+          type: "thread.session.stop",
+          commandId: CommandId.make("cmd-session-stop"),
+          threadId,
+          createdAt: now,
+        },
+        model,
+      );
+      expect(stopped.map((event) => event.type)).toEqual([
+        "thread.session-stop-requested",
+        "thread.agent-requests-held",
+        "thread.agent-request-settled",
+      ]);
+      model = await apply(model, stopped);
+      expect(threadOf(model).agentRequests).toMatchObject({ hold: true, chainEpoch: 1, open: [] });
     });
 
     it("changes an added agent's model only when it has nothing in flight", async () => {

@@ -445,11 +445,15 @@ answer?, answerMessageId?, sideTurnId? }`. The answer is bounded; the full
     restart per agent per room.
   - **Stop during preparation**: preparing a session (a restart included)
     runs inside the thread's worker, so a Stop pressed meanwhile waits behind
-    it. Before any turn is sent, a final check compares the chain epoch the
-    turn was requested under with the thread's current one (read from the
-    engine's state, which Stop updates at once). If Stop came in between, the
-    turn is not sent and settles as interrupted. Stop may still take a moment
-    to register during a slow restart; it can no longer be overtaken.
+    it. Every turn start carries the chain epoch it was requested under, in
+    any thread, since a thread can become a room while its turn is prepared.
+    Before preparing and again right before sending, the reactor compares it
+    with the thread's current one (read from the engine's state, which Stop
+    updates at once). If Stop came in between, the turn is not prepared or
+    sent and settles as interrupted. Stopping the session in a room raises
+    the epoch the same way, so a turn waiting to take over never starts the
+    stopped agent back up. Stop may still take a moment to register during a
+    slow restart; it can no longer be overtaken.
   - **A firm bound**: preparing a session for a turn gets 90 seconds. Past
     that, the turn fails with a visible error and the worker moves on, so a
     stuck restart delays Stop and other control events by at most that long.
@@ -525,9 +529,12 @@ chainEpoch, status, requestMessageId, sideTurnId?, targetTurnId? }`. Status
 - **The thread** gains, durably: `agentRequestHold` (set by Stop, cleared by
   the user's next submission), `agentChainEpoch` (raised by Stop) and
   `agentRequestsSinceUser` (the limit's counter).
-- **Restart**: on startup the reactor reconciles open requests. A hand-off
-  whose target turn finished while the server was down is settled and its
-  reply routed (the reply's derived id prevents a duplicate). A request whose
+- **Restart**: on startup the reactor reconciles open requests, after it
+  subscribes to the engine's events so a routed reply is seen and sent on. A
+  hand-off whose own target turn (matched by `pendingMessageId`, as for a live
+  completion) finished while the server was down is settled and its reply
+  routed (the reply's derived id prevents a duplicate). The target's latest
+  turn is never taken as the answer. A request whose
   side turn, queue entry or target turn is gone is cancelled with a note. An
   ask or review has no waiter after a restart, so it is cancelled.
 - **Ids and duplicates**: the server generates the request id. A call
@@ -622,9 +629,13 @@ moves the ref before any check), and a wait that blocks Stop.
 - **The next agent waits off the worker**: a turn for another agent is parked
   in its own fiber until the open turn is finished, and the reactor's
   per-thread worker keeps running, so Stop, side answers and other control
-  events are handled meanwhile.
-- **Stop cancels the parked send**: the final hold check before sending (see
-  "Stop during preparation") drops it.
+  events are handled meanwhile. Preparing and sending then go back into the
+  worker, behind whatever arrived during the wait.
+- **Stop cancels the parked send**: the epoch checks (see "Stop during
+  preparation") drop it before the session is touched.
+- **Late registration**: a turn whose final capture finished before its
+  acceptance was registered is remembered as finished, so registering it
+  late does not make the next handover wait.
 - **Closing is final and serialized**: after the wait (10s at most), the
   handover closes the previous turn under the same lock. If a capture is
   running, closing waits for it, and that capture read the checkout before the

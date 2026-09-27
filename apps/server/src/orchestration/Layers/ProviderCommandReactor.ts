@@ -57,11 +57,16 @@ import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
+import * as Scope from "effect/Scope";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
-import { makeKeyedSequentialWorker } from "@threadlines/shared/KeyedSequentialWorker";
+import {
+  type KeyedSequentialWorker,
+  makeKeyedSequentialWorker,
+} from "@threadlines/shared/KeyedSequentialWorker";
 
 import {
   checkpointPreTurnRefForThreadTurnCount,
@@ -92,6 +97,8 @@ import { TextGeneration } from "../../textGeneration/TextGeneration.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { ThreadContextSeedBuilder } from "../../provider/contextSeed/ThreadContextSeedBuilder.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
+import { ProjectionTurnRepositoryLive } from "../../persistence/Layers/ProjectionTurns.ts";
+import { ProjectionTurnRepository } from "../../persistence/Services/ProjectionTurns.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
 import {
   ProviderCommandReactor,
@@ -138,6 +145,17 @@ type ProviderIntentEvent = Extract<
       | "thread.side-turn-settled";
   }
 >;
+
+/**
+ * What a thread's worker runs, in order: an event, or work an event started
+ * elsewhere that has to finish in order with the thread's other events.
+ */
+type ReactorWork =
+  | ProviderIntentEvent
+  | {
+      readonly type: "continue";
+      readonly run: Effect.Effect<void, unknown, FileSystem.FileSystem | Path.Path | Scope.Scope>;
+    };
 
 function toNonEmptyProviderInput(value: string | undefined): string | undefined {
   const normalized = value?.trim();
@@ -373,6 +391,7 @@ const make = Effect.gen(function* () {
   const handoverCaptureWait = yield* HandoverCaptureWait;
   const orchestrationEngine = yield* OrchestrationEngineService;
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
+  const projectionTurnRepository = yield* ProjectionTurnRepository;
   const providerService = yield* ProviderService;
   const seedBuilder = yield* ThreadContextSeedBuilder;
   const checkpointStore = yield* CheckpointStore;
@@ -1894,11 +1913,50 @@ const make = Effect.gen(function* () {
         ),
       );
 
-    // Preparing the session and sending the turn. In a room, a turn for
-    // another agent first waits for the previous agent's turn to be recorded
-    // (checkpointHandover), off this thread's worker so Stop and the thread's
-    // other events are handled meanwhile; the hold check below still stops it.
+    // In a room, Stop (or stopping the session) raises the chain epoch. A
+    // turn asked for under an older epoch is not prepared or sent: it ends as
+    // if Stop had reached it. Stop is the only thing that raises the epoch, so
+    // a later user message cannot bring a stopped turn back.
+    const stoppedSinceRequested = Effect.gen(function* () {
+      const latest = yield* resolveThread(event.payload.threadId);
+      if (
+        event.payload.chainEpoch === undefined ||
+        latest === undefined ||
+        latest.agentRequests.chainEpoch === event.payload.chainEpoch
+      ) {
+        return false;
+      }
+      yield* Effect.logInfo("room turn not sent: stopped while it was being prepared", {
+        threadId: event.payload.threadId,
+        messageId: event.payload.messageId,
+      });
+      // The session is settled only while this turn is still the thread's
+      // latest start. A turn that waited to take over can be dropped after a
+      // newer one started, and that one's session is left alone.
+      const stillLatestStart = yield* projectionTurnRepository
+        .getPendingTurnStartByThreadId({ threadId: event.payload.threadId })
+        .pipe(
+          Effect.map(
+            (pending) =>
+              Option.isSome(pending) && pending.value.messageId === event.payload.messageId,
+          ),
+          Effect.orElseSucceed(() => false),
+        );
+      if (stillLatestStart) {
+        yield* setThreadSessionErrorOnTurnStartFailure({
+          threadId: event.payload.threadId,
+          detail: "Stopped before the turn started.",
+          createdAt: yield* nowIso,
+        });
+      }
+      return true;
+    });
+
+    // Preparing the session and sending the turn, in this thread's worker.
     const prepareAndSend = Effect.gen(function* () {
+      if (yield* stoppedSinceRequested) {
+        return;
+      }
       const sendTurnRequest = yield* buildSendTurnRequestForThread({
         threadId: event.payload.threadId,
         messageId: event.payload.messageId,
@@ -1961,27 +2019,9 @@ const make = Effect.gen(function* () {
         ),
       );
 
-      // In a room, Stop pressed while this turn was being prepared waited behind
-      // it in this worker, but has already raised the chain epoch. Right before
-      // sending, after everything this turn waited on, a turn asked for under
-      // an older epoch is not sent: it ends as if Stop had reached it. (Stop is
-      // the only thing that raises the epoch, so a later user message cannot
-      // bring a stopped turn back.)
-      const latestForSend = yield* resolveThread(event.payload.threadId);
-      if (
-        event.payload.chainEpoch !== undefined &&
-        latestForSend !== undefined &&
-        latestForSend.agentRequests.chainEpoch !== event.payload.chainEpoch
-      ) {
-        yield* Effect.logInfo("room turn not sent: stopped while it was being prepared", {
-          threadId: event.payload.threadId,
-          messageId: event.payload.messageId,
-        });
-        yield* setThreadSessionErrorOnTurnStartFailure({
-          threadId: event.payload.threadId,
-          detail: "Stopped before the turn started.",
-          createdAt: yield* nowIso,
-        });
+      // Stop pressed while this turn was being prepared waited behind it in
+      // this worker, but has already raised the chain epoch.
+      if (yield* stoppedSinceRequested) {
         return;
       }
 
@@ -2004,12 +2044,22 @@ const make = Effect.gen(function* () {
     });
 
     // Taking the thread from another agent: that agent's last turn is recorded
-    // (or closed for good) first, in its own fiber.
+    // (or closed for good) first. The wait runs in its own fiber so Stop and
+    // the thread's other events are handled meanwhile; preparing and sending
+    // then go back into this thread's worker, behind whatever arrived.
     const handoverFromTurnId = event.payload.handoverFromTurnId;
     if (handoverFromTurnId !== undefined) {
       yield* checkpointHandover
         .handOver(event.payload.threadId, handoverFromTurnId, handoverCaptureWait)
-        .pipe(Effect.andThen(prepareAndSend), Effect.forkScoped);
+        .pipe(
+          Effect.andThen(
+            worker.enqueue(String(event.payload.threadId), {
+              type: "continue",
+              run: prepareAndSend,
+            }),
+          ),
+          Effect.forkScoped,
+        );
       return;
     }
     yield* prepareAndSend;
@@ -3723,8 +3773,20 @@ const make = Effect.gen(function* () {
   // Keyed by thread so one thread's slow provider work (session spawn, turn
   // RPC round-trips) cannot delay other threads' commands. Events for the
   // same thread keep strict arrival order.
-  const worker = yield* makeKeyedSequentialWorker((_key: string, event: ProviderIntentEvent) =>
-    processDomainEventSafely(event),
+  // Annotated: turn starts hand work back to it, so it cannot be inferred.
+  const worker: KeyedSequentialWorker<string, ReactorWork> = yield* makeKeyedSequentialWorker(
+    (_key: string, work: ReactorWork) =>
+      work.type === "continue"
+        ? work.run.pipe(
+            Effect.catchCause((cause) =>
+              Cause.hasInterruptsOnly(cause)
+                ? Effect.failCause(cause)
+                : Effect.logWarning("provider command reactor failed to continue work", {
+                    cause: Cause.pretty(cause),
+                  }),
+            ),
+          )
+        : processDomainEventSafely(work),
   );
 
   /**
@@ -3776,48 +3838,58 @@ const make = Effect.gen(function* () {
    * Room tools after a restart: a hand-off waiting on the turn that made it,
    * or running as its target's turn, died with the previous process, and so
    * did any ask or review. Each is closed with a note. A hand-off still in
-   * the queue is left to run.
+   * the queue is left to run. A hand-off whose own turn (the one its message
+   * started) finished before the server went down still gets its reply
+   * routed, exactly as a live completion would have.
    */
   const closeRequestsFromPreviousProcess = Effect.fnUntraced(function* (threadId: ThreadId) {
     const thread = yield* resolveThread(threadId);
     if (!thread) {
       return;
     }
+    const turns = thread.agentRequests.open.some(
+      (request) => request.kind === "hand_off" && request.status === "running",
+    )
+      ? yield* projectionTurnRepository
+          .listByThreadId({ threadId })
+          .pipe(Effect.orElseSucceed(() => []))
+      : [];
     for (const request of thread.agentRequests.open) {
       if (request.kind === "hand_off" && request.status === "queued") {
         continue;
       }
-      // A hand-off whose target finished its turn, answer saved, before the
-      // server went down still gets its reply routed: the latest turn is the
-      // target's, since only one agent works at a time.
-      const latestTurn = thread.latestTurn;
+      const ownTurn =
+        request.kind === "hand_off" && request.status === "running"
+          ? turns.find(
+              (turn) => turn.turnId !== null && turn.pendingMessageId === request.requestMessageId,
+            )
+          : undefined;
+      const finishedTurnId =
+        ownTurn?.state === "completed" && ownTurn.turnId !== null ? ownTurn.turnId : undefined;
       const savedReply =
-        request.kind === "hand_off" &&
-        request.status === "running" &&
-        latestTurn !== null &&
-        latestTurn.state === "completed"
-          ? [...thread.messages]
+        finishedTurnId === undefined
+          ? undefined
+          : [...thread.messages]
               .reverse()
               .find(
                 (message) =>
                   message.role === "assistant" &&
-                  message.turnId === latestTurn.turnId &&
-                  (message.participantId ?? null) === (request.to.participantId ?? null) &&
-                  !message.streaming,
-              )
-          : undefined;
+                  message.turnId === finishedTurnId &&
+                  !message.streaming &&
+                  message.text.trim().length > 0,
+              );
       yield* orchestrationEngine
         .dispatch({
           type: "thread.agent-request.settle",
           commandId: serverCommandId("agent-request-restart"),
           threadId,
           requestId: request.requestId,
-          ...(savedReply !== undefined
+          ...(finishedTurnId !== undefined
             ? {
                 outcome: "answered" as const,
                 reply: {
                   messageId: MessageId.make(`hand-off-reply:${request.requestId}`),
-                  text: handOffReplyText(savedReply.text),
+                  text: handOffReplyText(savedReply?.text),
                 },
               }
             : {
@@ -3838,6 +3910,17 @@ const make = Effect.gen(function* () {
         );
     }
   });
+
+  const closeRoomRequestsFromPreviousProcess = Effect.fn("closeRoomRequestsFromPreviousProcess")(
+    function* () {
+      const snapshot = yield* projectionSnapshotQuery.getShellSnapshot();
+      for (const thread of snapshot.threads) {
+        if (thread.participants.length > 0) {
+          yield* closeRequestsFromPreviousProcess(thread.id);
+        }
+      }
+    },
+  );
 
   // Provider processes do not outlive the server, so a session still recorded
   // as starting or running when the server comes up belongs to the previous
@@ -3860,10 +3943,6 @@ const make = Effect.gen(function* () {
             outcome: "interrupted",
             createdAt: yield* nowIso,
           });
-        }
-        // Room requests whose turns lived in the previous process end too.
-        if (thread.participants.length > 0) {
-          yield* closeRequestsFromPreviousProcess(thread.id);
         }
         const session = thread.session;
         if (!session) {
@@ -3959,9 +4038,19 @@ const make = Effect.gen(function* () {
       }
     });
 
-    yield* Effect.forkScoped(
-      Stream.runForEach(orchestrationEngine.streamDomainEvents, processEvent),
+    // Subscribed before room requests from the previous process are closed,
+    // so a reply routed back then is queued where this reactor sees it and
+    // goes to the agent that asked.
+    const domainEvents = yield* orchestrationEngine.subscribeDomainEvents;
+    yield* closeRoomRequestsFromPreviousProcess().pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning(
+          "provider command reactor failed to close room requests left by the previous process",
+          { cause: Cause.pretty(cause) },
+        ),
+      ),
     );
+    yield* Effect.forkScoped(Stream.runForEach(domainEvents, processEvent));
 
     // A checkout deleted between turns is reported the moment the watcher
     // confirms it, so the thread shows its way out immediately instead of
@@ -3980,4 +4069,6 @@ const make = Effect.gen(function* () {
   } satisfies ProviderCommandReactorShape;
 });
 
-export const ProviderCommandReactorLive = Layer.effect(ProviderCommandReactor, make);
+export const ProviderCommandReactorLive = Layer.effect(ProviderCommandReactor, make).pipe(
+  Layer.provide(ProjectionTurnRepositoryLive),
+);

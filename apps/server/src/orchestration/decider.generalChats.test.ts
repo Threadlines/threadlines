@@ -419,6 +419,8 @@ describe("decider continue-in-project forks", () => {
       events.find((event) => event.type === "thread.turn-start-requested")?.payload,
     ).toMatchObject({
       skills: [{ name: "review", path: "/skills/review/SKILL.md" }],
+      // Stop can still drop it if the fork becomes a room while it starts.
+      chainEpoch: 0,
     });
   });
 
