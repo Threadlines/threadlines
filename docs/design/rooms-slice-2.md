@@ -344,11 +344,13 @@ Inputs name an agent by participant id or by an unambiguous name ("astra 2",
   - The reviewer reads the checkout the way side answers do (Codex in its
     read-only sandbox; Claude with Read, Grep and Glob), plus `room_diff`.
   - **Its inputs, exactly**: the preamble, the request, the captured basis,
-    and the project instruction files its provider loads by itself (Codex
-    reads `AGENTS.md`; Claude's lockdown loads none). No memory: Claude's
-    auto-memory is off in side runtimes, and Codex's memories are off in the
-    side home. The review tag's panel lists all of it, instruction files
-    included.
+    and nothing else. No project instruction files are loaded automatically:
+    Claude's lockdown loads none, and a review's Codex side home turns off
+    project docs (`project_doc_max_bytes = 0`), so both providers match. The
+    reviewer can still open `AGENTS.md` from the checkout like any file, which
+    shows in its steps. No memory: Claude's auto-memory is off in side
+    runtimes, and Codex's memories are off in the side home. The review tag's
+    panel lists everything it got.
   - The request message stores the review's kind and its exact captured input
     (the basis summary and the bounded diff text), so the tag and panel
     survive settle, reload, restart and a projection rebuild.
@@ -446,6 +448,9 @@ answer?, answerMessageId?, sideTurnId? }`. The answer is bounded; the full
     engine's state, which Stop updates at once). If Stop came in between, the
     turn is not sent and settles as interrupted. Stop may still take a moment
     to register during a slow restart; it can no longer be overtaken.
+  - **A firm bound**: preparing a session for a turn gets 90 seconds. Past
+    that, the turn fails with a visible error and the worker moves on, so a
+    stuck restart delays Stop and other control events by at most that long.
 - **Attaching to side runtimes**: side runtimes get the same endpoint, and
   only its read tools.
   - Claude lockdown: `mcpServers` holds only `threadlines_room`
@@ -563,8 +568,9 @@ chainEpoch, status, requestMessageId, sideTurnId?, targetTurnId? }`. Status
 - **Deadline**: after 10 minutes an ask or review is cancelled and returns
   `timeout`.
 - **Dropped call**: if the HTTP server interrupts the handler when the client
-  goes away, the handler cancels the side turn. To verify at build time; if it
-  does not, the caller's turn ending covers it.
+  goes away, that waiter detaches; the request is cancelled only when its
+  last waiter leaves. To verify at build time; if the handler is not
+  interrupted, the caller's turn ending covers it.
 - **Limit: 3 agent requests (asks, reviews and hand-offs) since the user last
   wrote.**
   - The decider counts accepted requests in `agentRequestsSinceUser` at
@@ -622,8 +628,11 @@ moves the ref before any check), and a wait that blocks Stop.
   step moves the ref and emits the events. Both the capture's start and its
   publish check that the turn is not closed. A capture that starts after the
   turn closed is refused; a snapshot taken while the next agent may already
-  be writing (closed mid-capture) is never published. Validity is bound to
-  the turn, not to a counter sampled at start.
+  be writing (closed mid-capture) is never published. Validity is bound to the turn, not to a counter sampled at start.
+- **Closing and publishing never interleave**: each thread has one capture
+  lock. The publish step holds it from its check through `update-ref` and the
+  events; closing a turn takes the same lock. So a turn cannot close between
+  a passed check and the ref moving.
 - **Only on handovers**: a turn for the same agent, or a room with one agent,
   never waits.
 
@@ -692,10 +701,14 @@ moves the ref before any check), and a wait that blocks Stop.
      1. Codex takes the room endpoint and its `tool_timeout_sec`, and a call
         can wait several minutes without the turn failing. Same for Claude
         with `timeout`.
-     2. A Codex side runtime can call the room read tools under its approval
+     2. fx and Cursor over ACP: how long a room tool call can wait. An ask or
+        review's deadline is the shorter of 10 minutes and that provider's
+        limit less a margin, so a caller always gets an outcome.
+     3. A Codex side runtime can call the room read tools under its approval
         policy, and a Claude side runtime can call exactly the allowed ones.
-     3. Whether the HTTP server interrupts a tool handler when the client
+     4. Whether the HTTP server interrupts a tool handler when the client
         drops the call.
+     5. The Codex config key that turns off project docs for review runtimes.
    - It also ships the handover checkpoint barrier Part A deferred.
 
 Each PR gets:
@@ -821,14 +834,16 @@ Room tools (PR 2):
     review's credential cannot call `room_history`.
 19. `room_diff` and `room_history` output is bounded, and `room_diff` runs no
     command outside its fixed views.
-20. Handover barrier: with the previous turn's final capture delayed, the
+20. Handover barrier (also: a capture paused right after its publish check
+    cannot be overtaken by the timeout closing the turn): with the previous
+    turn's final capture delayed, the
     next agent's turn is not sent until it finishes; an early diff checkpoint
     does not release it; Stop during the wait means the next agent is never
     sent its turn; after the timeout, a capture that resumes never publishes.
 21. Changing an added agent's model is refused while it works or answers, and
     a queued hand-off for it is revalidated.
 22. The review tag shows on the request, the working row and the answer, and
-    its panel lists the basis and the instruction files. A settled review
+    its panel lists the basis. A settled review
     still shows both after a reload, a restart and a projection rebuild.
 23. Isolation: a side or review token is refused by `/mcp` (screenshot
     included); `tools/list` on each endpoint shows only its own tools.
@@ -840,7 +855,8 @@ Room tools (PR 2):
     crash between the target finishing and routing still routes exactly once
     after restart.
 27. Stop during a `room_tools` restart: the turn that was being prepared is
-    never sent.
+    never sent, and a restart stuck past its bound fails the turn and frees
+    the worker.
 28. Two identical waiters on one request: one disconnecting does not cancel
     it; the other still gets the answer.
 29. A hand-off made in a turn that is then stopped never queues; one made in
