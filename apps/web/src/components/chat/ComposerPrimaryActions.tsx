@@ -38,6 +38,8 @@ interface ComposerPrimaryActionsProps {
   onFollowUpDeliveryChange: (delivery: FollowUpDelivery) => void;
   /** In a room, while another agent works and this message is for a different one. */
   roomDelivery?: ComposerRoomDelivery | null;
+  /** Picks, for this message only, between asking now and waiting. */
+  onRoomDeliveryChange?: (delivery: FollowUpDelivery) => void;
   onInterrupt: () => void;
   onImplementPlanInNewThread: () => void;
 }
@@ -58,8 +60,8 @@ export const FOLLOW_UP_DELIVERY_LABELS: Record<
 /**
  * A message for one room agent while another works: asked now, answered
  * read-only on the side, or sent once the agent at work finishes. The mode
- * comes from `resolveRoomDelivery`; the "Steer now" / "Send when done" choice
- * carries over, acting now meaning asking now.
+ * comes from `resolveRoomDelivery`: asking now unless waiting was picked for
+ * this message.
  */
 export interface ComposerRoomDelivery {
   readonly mode: "ask" | "queue";
@@ -216,6 +218,7 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
   followUpDelivery,
   onFollowUpDeliveryChange,
   roomDelivery = null,
+  onRoomDeliveryChange,
   onInterrupt,
   onImplementPlanInNewThread,
 }: ComposerPrimaryActionsProps) {
@@ -256,7 +259,7 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
               title: `Send to ${roomDelivery.recipientName} when ${roomDelivery.holderName} finishes`,
             },
           ]}
-          onChange={onFollowUpDeliveryChange}
+          onChange={(delivery) => onRoomDeliveryChange?.(delivery)}
           disabled={isSendBusy || isConnecting || isEnvironmentUnavailable}
           pointerFocusProps={pointerFocusProps}
         />

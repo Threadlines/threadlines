@@ -53,6 +53,7 @@ import { getPickerModelName } from "./chat/providerIconUtils";
 import {
   buildRoomAgentLabels,
   isRoom,
+  isRoomWaitChosen,
   ownAgentSession,
   resolveRoomDelivery,
   resolveRoomSend,
@@ -4676,10 +4677,11 @@ export default function ChatView(props: ChatViewProps) {
     // background work it will wake up for, a message for another agent is
     // either asked now and answered read-only on the side, or waits in the
     // queue (resolveRoomDelivery).
+    const roomThreadRef = scopeThreadRef(environmentId, activeThread.id);
     const roomSend = resolveRoomSend({
       enabled: settings.roomsEnabled && isServerThread,
       thread: activeThread,
-      threadRef: scopeThreadRef(environmentId, activeThread.id),
+      threadRef: roomThreadRef,
     });
     const roomsActive = roomSend.active;
     const roomRecipient = roomSend.recipient;
@@ -4697,7 +4699,11 @@ export default function ChatView(props: ChatViewProps) {
               entry.instanceId ===
               (roomRecipient?.modelSelection ?? activeThread.modelSelection).instanceId,
           )?.driverKind,
-          preferred: settings.followUpDelivery,
+          waitChosen: isRoomWaitChosen(
+            useRoomRecipientStore.getState().waitChosen,
+            roomThreadRef,
+            activeThread.latestTurn?.turnId,
+          ),
         })
       : "direct";
     const askOnTheSide = roomDelivery === "ask";
@@ -4708,12 +4714,14 @@ export default function ChatView(props: ChatViewProps) {
           : (activeThread.latestTurn?.turnId ?? null)
         : null;
     const queueForAnotherAgent = queueBehindTurnId !== null;
-    // After a send: carrying on with the same agent stays one keystroke. Only
-    // a send that carried the model selection (a turn or a queued message)
-    // took the picked reasoning with it; a steer did not, so it is kept.
+    // After a send: carrying on with the same agent stays one keystroke, and
+    // the next message is asked now again. Only a send that carried the model
+    // selection (a turn or a queued message) took the picked reasoning with
+    // it; a steer did not, so it is kept.
     const rememberRoomSend = (threadRef: ScopedThreadRef, carriedModelSelection: boolean) => {
       const store = useRoomRecipientStore.getState();
       store.choose(threadRef, roomRecipientId);
+      store.chooseWait(threadRef, null, false);
       if (roomRecipientId !== null && carriedModelSelection) {
         store.setAgentOptions(threadRef, roomRecipientId, undefined);
       }

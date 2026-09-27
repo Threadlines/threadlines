@@ -1,13 +1,22 @@
-import { ProviderInstanceId, ThreadParticipantId } from "@threadlines/contracts";
+import { scopeThreadRef } from "@threadlines/client-runtime";
+import {
+  EnvironmentId,
+  ProviderInstanceId,
+  ThreadId,
+  ThreadParticipantId,
+  TurnId,
+} from "@threadlines/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import type { ProviderInstanceEntry } from "./providerInstances";
 import {
   buildRoomAgentLabels,
+  isRoomWaitChosen,
   matchRoomAgents,
   resolveRoomDelivery,
   resolveRoomRecipient,
   roomAgentKey,
+  useRoomRecipientStore,
 } from "./rooms";
 
 const astraId = ThreadParticipantId.make("agent-astra");
@@ -87,16 +96,31 @@ describe("rooms", () => {
         holderId: null,
         holderBusy: true,
         recipientDriverKind: "codex",
-        preferred: "steer",
+        waitChosen: false,
         ...overrides,
       });
     expect(delivery({})).toBe("ask");
-    expect(delivery({ preferred: "queue" })).toBe("queue");
+    expect(delivery({ waitChosen: true })).toBe("queue");
     // A provider that cannot answer read-only on the side always waits.
     expect(delivery({ recipientDriverKind: "cursor" })).toBe("queue");
     // The agent at work gets a steer, and an idle room just sends.
     expect(delivery({ holderId: astraId })).toBe("direct");
     expect(delivery({ holderBusy: false })).toBe("direct");
+  });
+
+  it("keeps a Send when done pick for one message while one turn works", () => {
+    const threadRef = scopeThreadRef(EnvironmentId.make("env"), ThreadId.make("thread-room"));
+    const [firstTurn, nextTurn] = [TurnId.make("turn-1"), TurnId.make("turn-2")];
+    const store = useRoomRecipientStore.getState();
+    const waitChosen = (turnId: TurnId) =>
+      isRoomWaitChosen(useRoomRecipientStore.getState().waitChosen, threadRef, turnId);
+    store.chooseWait(threadRef, firstTurn, true);
+    expect(waitChosen(firstTurn)).toBe(true);
+    // Once that turn is over, the next message is asked now again.
+    expect(waitChosen(nextTurn)).toBe(false);
+    // So is the one after a send.
+    store.chooseWait(threadRef, null, false);
+    expect(waitChosen(firstTurn)).toBe(false);
   });
 
   it("matches agents typed after @ however their names are spaced", () => {

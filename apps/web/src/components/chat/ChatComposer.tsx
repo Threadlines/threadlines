@@ -156,6 +156,7 @@ import { scopedThreadKey } from "@threadlines/client-runtime";
 import {
   buildRoomAgentLabels,
   canAnswerOnTheSide,
+  isRoomWaitChosen,
   matchRoomAgents,
   ownAgentSession,
   resolveRoomDelivery,
@@ -426,6 +427,7 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
   followUpDelivery: FollowUpDelivery;
   onFollowUpDeliveryChange: (delivery: FollowUpDelivery) => void;
   roomDelivery: ComposerRoomDelivery | null;
+  onRoomDeliveryChange: (delivery: FollowUpDelivery) => void;
   onInterrupt: () => void;
   onImplementPlanInNewThread: () => void;
   onResetAccountUsage?: (() => void) | undefined;
@@ -468,6 +470,7 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
         followUpDelivery={props.followUpDelivery}
         onFollowUpDeliveryChange={props.onFollowUpDeliveryChange}
         roomDelivery={props.roomDelivery}
+        onRoomDeliveryChange={props.onRoomDeliveryChange}
         onInterrupt={props.onInterrupt}
         onImplementPlanInNewThread={props.onImplementPlanInNewThread}
       />
@@ -1148,6 +1151,17 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   );
   const roomRecipientId =
     activeThread !== undefined ? resolveRoomRecipient(activeThread, chosenRoomRecipientId) : null;
+  // "Send when done" picked for the message being written; asking now is the
+  // default for each new one.
+  const roomTurnId = activeThread?.latestTurn?.turnId;
+  const roomWaitChosen = useRoomRecipientStore((state) =>
+    isRoomWaitChosen(state.waitChosen, routeThreadRef, roomTurnId),
+  );
+  const handleRoomDeliveryChange = useCallback(
+    (delivery: FollowUpDelivery) =>
+      useRoomRecipientStore.getState().chooseWait(routeThreadRef, roomTurnId, delivery === "queue"),
+    [routeThreadRef, roomTurnId],
+  );
   // An added agent keeps the model and reasoning it joined with; the model and
   // reasoning controls belong to the thread's own agent.
   const addressingRoomAgent = showRoomAgentPicker && roomRecipientId !== null;
@@ -1658,8 +1672,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     [updateSettings],
   );
   // Rooms: while another agent works, a message for this one is asked now
-  // (answered read-only on the side) or waits until the other finishes. The
-  // send path reads the same rule (resolveRoomDelivery).
+  // (answered read-only on the side) or, when picked for this message, waits
+  // until the other finishes. The send path reads the same rule
+  // (resolveRoomDelivery).
   const roomHolderId = activeThread?.session?.participantId ?? null;
   const roomRecipientDriverKind = providerInstanceEntries.find(
     (entry) =>
@@ -1678,7 +1693,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
               activeThread?.session ?? null,
             ),
           recipientDriverKind: roomRecipientDriverKind,
-          preferred: followUpDelivery,
+          waitChosen: roomWaitChosen,
         })
       : "direct";
   const roomDelivery = useMemo<ComposerRoomDelivery | null>(
@@ -4007,6 +4022,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                       followUpDelivery={followUpDelivery}
                       onFollowUpDeliveryChange={handleFollowUpDeliveryChange}
                       roomDelivery={roomDelivery}
+                      onRoomDeliveryChange={handleRoomDeliveryChange}
                       onInterrupt={handleInterruptPrimaryAction}
                       onImplementPlanInNewThread={handleImplementPlanInNewThreadPrimaryAction}
                       onResetAccountUsage={
