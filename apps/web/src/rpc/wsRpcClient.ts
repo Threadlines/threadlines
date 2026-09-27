@@ -333,6 +333,7 @@ export interface WsRpcClient {
     readonly getFullThreadDiff: RpcUnaryMethod<typeof ORCHESTRATION_WS_METHODS.getFullThreadDiff>;
     readonly getRevertPlan: RpcUnaryMethod<typeof ORCHESTRATION_WS_METHODS.getRevertPlan>;
     readonly searchThreads: RpcUnaryMethod<typeof ORCHESTRATION_WS_METHODS.searchThreads>;
+    readonly getTurnActivities: RpcUnaryMethod<typeof ORCHESTRATION_WS_METHODS.getTurnActivities>;
     readonly getArchivedShellSnapshot: RpcUnaryNoArgMethod<
       typeof ORCHESTRATION_WS_METHODS.getArchivedShellSnapshot
     >;
@@ -893,6 +894,8 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
         transport.request((client) => client[ORCHESTRATION_WS_METHODS.getRevertPlan](input)),
       searchThreads: (input) =>
         transport.request((client) => client[ORCHESTRATION_WS_METHODS.searchThreads](input)),
+      getTurnActivities: (input) =>
+        transport.request((client) => client[ORCHESTRATION_WS_METHODS.getTurnActivities](input)),
       getArchivedShellSnapshot: () =>
         transport.request((client) =>
           client[ORCHESTRATION_WS_METHODS.getArchivedShellSnapshot]({}),

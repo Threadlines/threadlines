@@ -160,6 +160,7 @@ import { deriveSideAnswers, isSideActivity, isSideMessage } from "./chat/sideAns
 import { loadChatAttachmentBlob } from "~/lib/attachmentPreviewQuery";
 import { cn, randomUUID } from "~/lib/utils";
 import { markThreadSeen, selectThreadLastSeenAt } from "~/lib/threadInboxSync";
+import { mergeTurnStepHistory, turnsWithCutSteps, useTurnStepHistory } from "~/lib/turnStepHistory";
 import { COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS } from "../workspaceTitlebar";
 import { stackedThreadToast, toastManager } from "./ui/toast";
 import { decodeProjectScriptKeybindingRule } from "~/lib/projectScriptKeybindings";
@@ -367,6 +368,8 @@ const ThreadTerminalDrawer = lazy(() => import("./ThreadTerminalDrawer"));
 const ATTACHMENT_ONLY_BOOTSTRAP_PROMPT =
   "[User attached one or more files without additional text. Respond using the conversation context and the attached file(s).]";
 const EMPTY_ACTIVITIES: OrchestrationThreadActivity[] = [];
+const EMPTY_TURN_IDS: ReadonlyArray<TurnId> = [];
+const NO_SEEN_TURNS = { threadId: null, turnIds: EMPTY_TURN_IDS } as const;
 const EMPTY_QUEUED_FOLLOW_UPS: ReadonlyArray<OrchestrationQueuedFollowUp> = [];
 const EMPTY_PROVIDERS: ServerProvider[] = [];
 const EMPTY_PROVIDER_SKILLS: ServerProvider["skills"] = [];
@@ -2341,12 +2344,56 @@ export default function ChatView(props: ChatViewProps) {
       }),
     [activeThread?.sideTurn, allThreadActivities, timelineMessages],
   );
+  // Every turn that has come near the screen in this thread. Those whose steps
+  // the live feed cut are fetched, and stay fetched while the thread is open.
+  const [seenTurns, setSeenTurns] = useState<{
+    readonly threadId: ThreadId | null;
+    readonly turnIds: ReadonlyArray<TurnId>;
+  }>(NO_SEEN_TURNS);
+  const handleVisibleTurnIdsChange = useCallback(
+    (turnIds: ReadonlyArray<TurnId>) => {
+      setSeenTurns((current) => {
+        const seen = current.threadId === activeThreadId ? current.turnIds : EMPTY_TURN_IDS;
+        const added = turnIds.filter((turnId) => !seen.includes(turnId));
+        if (added.length === 0 && current.threadId === activeThreadId) {
+          return current;
+        }
+        return { threadId: activeThreadId, turnIds: [...seen, ...added] };
+      });
+    },
+    [activeThreadId],
+  );
+  const cutTurnIds = useMemo(
+    () =>
+      turnsWithCutSteps({
+        activities: allThreadActivities,
+        messages: timelineMessages,
+        activeTurnId,
+      }),
+    [activeTurnId, allThreadActivities, timelineMessages],
+  );
+  const historyTurnIds = useMemo(
+    () =>
+      seenTurns.threadId === activeThreadId && cutTurnIds.size > 0
+        ? seenTurns.turnIds.filter((turnId) => cutTurnIds.has(turnId))
+        : EMPTY_TURN_IDS,
+    [activeThreadId, cutTurnIds, seenTurns],
+  );
+  const turnStepHistory = useTurnStepHistory({
+    environmentId,
+    threadId: activeThreadId,
+    turnIds: historyTurnIds,
+  });
+  const timelineWorkEntries = useMemo(
+    () => mergeTurnStepHistory(workLogEntries, turnStepHistory),
+    [turnStepHistory, workLogEntries],
+  );
   const timelineEntries = useMemo(
     () =>
       deriveTimelineEntries(
         timelineMessages.filter((message) => !isSideMessage(message)),
         activeThread?.proposedPlans ?? [],
-        workLogEntries,
+        timelineWorkEntries,
         subagentActivityState.resultEntries,
         forkContextEntries,
         subagentActivityState.liveEntries,
@@ -2357,7 +2404,7 @@ export default function ChatView(props: ChatViewProps) {
       subagentActivityState.liveEntries,
       subagentActivityState.resultEntries,
       timelineMessages,
-      workLogEntries,
+      timelineWorkEntries,
     ],
   );
   const { turnDiffSummaries, inferredCheckpointTurnCountByTurnId } =
@@ -7071,6 +7118,7 @@ export default function ChatView(props: ChatViewProps) {
               mcpAuthReconnectStatusByServerName={activeMcpAuthReconnectStatusByServerName}
               onRunMcpAuthReconnect={runMcpAuthReconnect}
               onIsAtEndChange={onIsAtEndChange}
+              onVisibleTurnIdsChange={handleVisibleTurnIdsChange}
               searchTarget={timelineSearchTarget}
               planScrollTarget={planScrollTarget}
               proposedPlanState={timelineProposedPlanState}

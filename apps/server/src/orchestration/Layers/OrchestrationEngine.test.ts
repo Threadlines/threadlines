@@ -215,6 +215,7 @@ describe("OrchestrationEngine", () => {
           listThreadDiffStatBaselines: () => Effect.succeed([]),
           listThreadTurnOverlapsSince: () => Effect.succeed([]),
           getThreadShellById: () => Effect.succeed(Option.none()),
+          getTurnActivities: () => Effect.succeed([]),
           getThreadDetailById: () => Effect.succeed(Option.none()),
         }),
       ),

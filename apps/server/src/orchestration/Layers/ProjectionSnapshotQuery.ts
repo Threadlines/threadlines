@@ -233,6 +233,10 @@ const ProjectIdLookupInput = Schema.Struct({
 const ThreadIdLookupInput = Schema.Struct({
   threadId: ThreadId,
 });
+const TurnActivityLookupInput = Schema.Struct({
+  threadId: ThreadId,
+  turnId: TurnId,
+});
 const ProjectionProjectLookupRowSchema = ProjectionProjectDbRowSchema;
 const ProjectionThreadIdLookupRowSchema = Schema.Struct({
   threadId: ThreadId,
@@ -1495,6 +1499,35 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           sequence,
           created_at AS "createdAt"
         FROM retained_candidates
+        ORDER BY
+          event_sequence ASC,
+          sequence ASC,
+          created_at ASC,
+          activity_id ASC
+      `,
+  });
+
+  const listThreadActivityRowsByTurn = SqlSchema.findAll({
+    Request: TurnActivityLookupInput,
+    Result: ProjectionThreadActivityDbRowSchema,
+    execute: ({ threadId, turnId }) =>
+      sql`
+        SELECT
+          activity_id AS "activityId",
+          event_sequence AS "eventSequence",
+          thread_id AS "threadId",
+          turn_id AS "turnId",
+          side_turn_id AS "sideTurnId",
+          participant_id AS "participantId",
+          tone,
+          kind,
+          summary,
+          payload_json AS "payload",
+          sequence,
+          created_at AS "createdAt"
+        FROM projection_thread_activities
+        WHERE thread_id = ${threadId}
+          AND turn_id = ${turnId}
         ORDER BY
           event_sequence ASC,
           sequence ASC,
@@ -2829,6 +2862,17 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       } satisfies OrchestrationThreadShell);
     });
 
+  const getTurnActivities: ProjectionSnapshotQueryShape["getTurnActivities"] = (input) =>
+    listThreadActivityRowsByTurn(input).pipe(
+      Effect.map((rows) => rows.map(mapThreadActivityRow)),
+      Effect.mapError(
+        toPersistenceSqlOrDecodeError(
+          "ProjectionSnapshotQuery.getTurnActivities:query",
+          "ProjectionSnapshotQuery.getTurnActivities:decodeRows",
+        ),
+      ),
+    );
+
   const getThreadDetailById: ProjectionSnapshotQueryShape["getThreadDetailById"] = (threadId) =>
     Effect.gen(function* () {
       const [
@@ -2980,6 +3024,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     listThreadTurnOverlapsSince,
     getThreadShellById,
     getThreadDetailById,
+    getTurnActivities,
   } satisfies ProjectionSnapshotQueryShape;
 });
 

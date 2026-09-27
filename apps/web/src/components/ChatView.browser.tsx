@@ -31,6 +31,7 @@ import {
 } from "@threadlines/contracts";
 import { scopedThreadKey, scopeThreadRef } from "@threadlines/client-runtime";
 import { createModelCapabilities, createModelSelection } from "@threadlines/shared/model";
+import { MAX_THREAD_ACTIVITIES } from "@threadlines/shared/threadLimits";
 import { RouterProvider, createMemoryHistory } from "@tanstack/react-router";
 import { StrictMode } from "react";
 import * as Option from "effect/Option";
@@ -299,6 +300,9 @@ function createMockEnvironmentApi(input: {
         matches: [],
         truncated: false,
       })) as EnvironmentApi["orchestration"]["searchThreads"],
+      getTurnActivities: (async () => ({
+        activities: [],
+      })) as EnvironmentApi["orchestration"]["getTurnActivities"],
       getArchivedShellSnapshot: (() => {
         throw new Error("Not implemented in browser test.");
       }) as EnvironmentApi["orchestration"]["getArchivedShellSnapshot"],
@@ -4163,6 +4167,101 @@ describe("ChatView timeline estimator parity (full app)", () => {
       await waitForLayout();
 
       expect(document.querySelector('button[aria-label="Scroll to bottom"]')).toBeNull();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("fetches an older turn's steps as it scrolls near the screen", async () => {
+    const snapshot = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-step-history" as MessageId,
+      targetText: "step history target",
+    });
+    const thread = snapshot.threads[0]!;
+    // Each reply is its own turn, and the newest turn fills the live window,
+    // so every older turn arrives without its steps.
+    const messages = thread.messages.map((message, index) =>
+      message.role === "assistant"
+        ? { ...message, turnId: `turn-${(index - 1) / 2}` as TurnId }
+        : message,
+    );
+    const newestAt = messages.at(-1)!.createdAt;
+    const windowRows = Array.from({ length: MAX_THREAD_ACTIVITIES }, (_, index) => ({
+      id: EventId.make(`window-${index}`),
+      tone: "info" as const,
+      kind: "context-window.updated",
+      summary: "Context window updated",
+      payload: { usedTokens: 1_000, maxTokens: 100_000 },
+      turnId: "turn-21" as TurnId,
+      sequence: index + 1,
+      createdAt: newestAt,
+    }));
+    const stepText = () =>
+      Array.from(document.querySelectorAll('[data-activity-group="true"]'))
+        .map((group) => group.textContent ?? "")
+        .join("\n");
+    const requestedTurnIds = () =>
+      wsRequests
+        .filter((request) => request._tag === ORCHESTRATION_WS_METHODS.getTurnActivities)
+        .map((request) => request.turnId);
+
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...snapshot,
+        threads: [{ ...thread, messages, activities: windowRows }],
+      },
+      resolveRpc: (body) => {
+        if (body._tag !== ORCHESTRATION_WS_METHODS.getTurnActivities) {
+          return undefined;
+        }
+        const turnId = body.turnId as TurnId;
+        const reply = messages.find((message) => message.turnId === turnId)!;
+        return {
+          activities: [
+            {
+              id: EventId.make(`command-${turnId}`),
+              tone: "tool",
+              kind: "tool.completed",
+              summary: "Ran command",
+              payload: {
+                itemType: "command_execution",
+                toolCallId: `call-${turnId}`,
+                title: "Ran command",
+                detail: `rm -rf .scratch-${turnId}`,
+              },
+              turnId,
+              createdAt: new Date(Date.parse(reply.createdAt) - 1_000).toISOString(),
+            },
+          ],
+        };
+      },
+    });
+
+    try {
+      // At the bottom, the turns on screen fetch their steps; the first does not.
+      await vi.waitFor(
+        () => {
+          expect(requestedTurnIds()).toContain("turn-20");
+          expect(stepText()).toContain(".scratch-turn-20");
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+      expect(requestedTurnIds()).not.toContain("turn-0");
+
+      const messagesList = await waitForElement(
+        () => document.querySelector<HTMLElement>('[data-chat-messages-list="true"]'),
+        "Unable to find messages list.",
+      );
+      await vi.waitFor(
+        () => {
+          messagesList.scrollTop = 0;
+          messagesList.dispatchEvent(new Event("scroll", { bubbles: true }));
+          expect(requestedTurnIds()).toContain("turn-0");
+          expect(stepText()).toContain(".scratch-turn-0");
+        },
+        { timeout: 8_000, interval: 50 },
+      );
     } finally {
       await mounted.cleanup();
     }

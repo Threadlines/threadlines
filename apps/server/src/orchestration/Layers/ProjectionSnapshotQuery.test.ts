@@ -1451,6 +1451,47 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
     }),
   );
 
+  it.effect("reads an older turn's whole activity after it leaves the thread window", () =>
+    Effect.gen(function* () {
+      const snapshotQuery = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+
+      yield* sql`DELETE FROM projection_thread_activities`;
+
+      // An older turn's three rows, then a newer turn big enough to fill the
+      // window, then one late row of the older turn.
+      const rows = [
+        { id: "old-1", turnId: "turn-old" },
+        { id: "old-2", turnId: "turn-old" },
+        ...Array.from({ length: MAX_THREAD_ACTIVITIES }, (_, index) => ({
+          id: `new-${index + 1}`,
+          turnId: "turn-new",
+        })),
+        { id: "old-3", turnId: "turn-old" },
+      ];
+      for (const [index, row] of rows.entries()) {
+        yield* sql`
+          INSERT INTO projection_thread_activities (
+            activity_id, thread_id, turn_id, tone, kind, summary, payload_json, sequence, created_at
+          ) VALUES (
+            ${row.id}, 'thread-turn-history', ${row.turnId}, 'tool', 'tool.completed',
+            ${row.id}, '{}', ${index + 1}, '2026-04-01T00:00:02.000Z'
+          )
+        `;
+      }
+
+      const activities = yield* snapshotQuery.getTurnActivities({
+        threadId: ThreadId.make("thread-turn-history"),
+        turnId: asTurnId("turn-old"),
+      });
+
+      assert.deepEqual(
+        activities.map((activity) => activity.id),
+        ["old-1", "old-2", "old-3"].map(asEventId),
+      );
+    }),
+  );
+
   it.effect("hydrates thread messages into the command read model", () =>
     Effect.gen(function* () {
       const snapshotQuery = yield* ProjectionSnapshotQuery;

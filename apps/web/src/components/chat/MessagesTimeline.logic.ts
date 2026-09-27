@@ -1224,6 +1224,39 @@ function hasLaterConcreteTurnActivityForTurn(
   return later.laterConcreteTurnIds.has(turnId);
 }
 
+/** The turns of rows `start` through `end` (clamped to the list), in row
+ *  order. The chat reads it to fetch older turns' steps as they come into view. */
+export function timelineRowTurnIds(
+  rows: ReadonlyArray<MessagesTimelineRow>,
+  start: number,
+  end: number,
+): TurnId[] {
+  const turnIds = new Set<TurnId>();
+  for (let index = Math.max(0, start); index <= Math.min(rows.length - 1, end); index += 1) {
+    const row = rows[index];
+    const turnId = row ? timelineRowTurnId(row) : null;
+    if (turnId) {
+      turnIds.add(turnId);
+    }
+  }
+  return [...turnIds];
+}
+
+function timelineRowTurnId(row: MessagesTimelineRow): TurnId | null | undefined {
+  switch (row.kind) {
+    case "message":
+      return row.message.turnId;
+    case "work":
+      return row.groupedEntries[0]?.turnId;
+    case "proposed-plan":
+      return row.proposedPlan.turnId;
+    case "subagent-result":
+      return row.result.turnId;
+    default:
+      return null;
+  }
+}
+
 function concreteTimelineEntryTurnId(entry: TimelineEntry): TurnId | null | undefined {
   if (entry.kind === "message") {
     return entry.message.role === "assistant" ? (entry.message.turnId ?? null) : undefined;

@@ -27,6 +27,7 @@ import {
   OrchestrationGetFullThreadDiffError,
   OrchestrationGetRevertPlanError,
   OrchestrationGetSnapshotError,
+  OrchestrationGetTurnActivitiesError,
   OrchestrationGetTurnDiffError,
   OrchestrationThreadSearchError,
   ORCHESTRATION_WS_METHODS,
@@ -928,6 +929,21 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
                 (cause) =>
                   new OrchestrationThreadSearchError({
                     message: "Failed to search thread messages",
+                    cause,
+                  }),
+              ),
+            ),
+            { "rpc.aggregate": "orchestration" },
+          ),
+        [ORCHESTRATION_WS_METHODS.getTurnActivities]: (input) =>
+          observeRpcEffect(
+            ORCHESTRATION_WS_METHODS.getTurnActivities,
+            projectionSnapshotQuery.getTurnActivities(input).pipe(
+              Effect.map((activities) => ({ activities })),
+              Effect.mapError(
+                (cause) =>
+                  new OrchestrationGetTurnActivitiesError({
+                    message: "Failed to read the turn's activity",
                     cause,
                   }),
               ),
