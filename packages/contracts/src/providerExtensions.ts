@@ -13,6 +13,11 @@ export const ProviderExtensionsInventoryInput = Schema.Struct({
   providerThreadId: Schema.optional(TrimmedNonEmptyString),
   includeMcpServers: Schema.optional(Schema.Boolean),
   includeApps: Schema.optional(Schema.Boolean),
+  /**
+   * Include every plugin the marketplaces offer, not just the installed ones. Codex's store runs to
+   * thousands of entries, so only Browse asks for it. Omitted means included, for older clients.
+   */
+  includePluginCatalog: Schema.optional(Schema.Boolean),
 });
 export type ProviderExtensionsInventoryInput = typeof ProviderExtensionsInventoryInput.Type;
 
@@ -260,6 +265,35 @@ export const ProviderExtensionApp = Schema.Struct({
 });
 export type ProviderExtensionApp = typeof ProviderExtensionApp.Type;
 
+export const ProviderExtensionHookHandler = Schema.Literals([
+  "command",
+  "mcpTool",
+  "prompt",
+  "agent",
+  "other",
+]);
+export type ProviderExtensionHookHandler = typeof ProviderExtensionHookHandler.Type;
+
+/** Something a provider runs on its own at a set point in a session, such as before a tool call. */
+export const ProviderExtensionHook = Schema.Struct({
+  key: TrimmedNonEmptyString,
+  /** The session event that fires it, as the provider names it (`preToolUse`, `PreToolUse`). */
+  event: TrimmedNonEmptyString,
+  /** Which tools or inputs it applies to. Absent means all of them. */
+  matcher: Schema.optional(TrimmedString),
+  handler: ProviderExtensionHookHandler,
+  /** The command line, or `server/tool` for an MCP tool. */
+  command: Schema.optional(TrimmedString),
+  /** Where it is configured: user, project, local, plugin, or a managed source. */
+  source: TrimmedNonEmptyString,
+  sourcePath: Schema.optional(TrimmedNonEmptyString),
+  pluginId: Schema.optional(TrimmedNonEmptyString),
+  enabled: Schema.optional(Schema.Boolean),
+  /** Codex's trust state for the hook's current contents: trusted, untrusted, modified, managed. */
+  trustStatus: Schema.optional(TrimmedNonEmptyString),
+});
+export type ProviderExtensionHook = typeof ProviderExtensionHook.Type;
+
 export const ProviderExtensionProviderInventory = Schema.Struct({
   instanceId: ProviderInstanceId,
   driver: ProviderDriverKind,
@@ -268,6 +302,8 @@ export const ProviderExtensionProviderInventory = Schema.Struct({
   message: Schema.optional(TrimmedString),
   plugins: Schema.Array(ProviderExtensionPlugin),
   marketplaces: Schema.Array(ProviderExtensionMarketplace),
+  /** `deferred` means `plugins` holds only installed plugins; the store was not requested. */
+  pluginCatalogStatus: Schema.optional(ProviderExtensionInventorySectionStatus),
   skills: Schema.Array(ProviderExtensionSkill),
   mcpServers: Schema.Array(ProviderExtensionMcpServer),
   mcpServersStatus: Schema.optional(ProviderExtensionInventorySectionStatus),
@@ -285,6 +321,10 @@ export const ProviderExtensionProviderInventory = Schema.Struct({
    * user opens Browse. `deferred` means the catalog is not in `apps` yet.
    */
   appsCatalogStatus: Schema.optional(ProviderExtensionInventorySectionStatus),
+  /** Absent when the provider could not list them (older CLIs) or the server predates hooks. */
+  hooks: Schema.optional(Schema.Array(ProviderExtensionHook)),
+  /** Config problems the provider reported while reading hooks. */
+  hooksMessage: Schema.optional(TrimmedString),
 });
 export type ProviderExtensionProviderInventory = typeof ProviderExtensionProviderInventory.Type;
 

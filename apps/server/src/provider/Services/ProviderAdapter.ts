@@ -212,6 +212,13 @@ export interface ProviderAdapterShape<TError> {
   readonly releaseBackgroundCommands?: (threadId: ThreadId) => Effect.Effect<void, TError>;
 
   /**
+   * Plugins or skills changed outside the sessions, from Settings. Drivers whose live sessions do
+   * not notice such changes on their own apply them, no later than each session's next turn.
+   * Drivers whose runtime watches for changes itself omit it.
+   */
+  readonly noteExtensionsChanged?: () => Effect.Effect<void>;
+
+  /**
    * Attach or update a long-horizon goal on the thread's provider session.
    * Optional; must be present when `capabilities.threadGoals` is
    * `"supported"`. Returns the provider's authoritative goal state.

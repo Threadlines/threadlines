@@ -1419,6 +1419,17 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     yield* routed.adapter.releaseBackgroundCommands(routed.threadId);
   });
 
+  const noteExtensionsChanged: ProviderServiceShape["noteExtensionsChanged"] = Effect.fn(
+    "noteExtensionsChanged",
+  )(function* (input) {
+    // An instance that is not running has no sessions to tell.
+    const adapter = yield* registry
+      .getByInstance(input.providerInstanceId)
+      .pipe(Effect.option, Effect.map(Option.getOrUndefined));
+    if (adapter?.noteExtensionsChanged === undefined) return;
+    yield* adapter.noteExtensionsChanged();
+  });
+
   const compactContext: ProviderServiceShape["compactContext"] = Effect.fn("compactContext")(
     function* (rawInput) {
       const input = yield* decodeInputOrValidationError({
@@ -2199,6 +2210,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     realtimeAppendAudio,
     realtimeListVoices,
     releaseBackgroundCommands,
+    noteExtensionsChanged,
     readConversation,
     compactContext,
     setThreadGoal,

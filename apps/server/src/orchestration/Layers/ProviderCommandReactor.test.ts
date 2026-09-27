@@ -425,6 +425,7 @@ describe("ProviderCommandReactor", () => {
       realtimeAppendAudio: () => unsupported(),
       realtimeListVoices: () => unsupported(),
       releaseBackgroundCommands,
+      noteExtensionsChanged: () => Effect.void,
       readConversation,
       compactContext,
       setThreadGoal: setThreadGoal as ProviderServiceShape["setThreadGoal"],

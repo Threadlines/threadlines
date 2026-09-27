@@ -44,6 +44,7 @@ import {
   type ProviderAuthEvent,
   ProviderExtensionsError,
   ProviderExternalThreadError,
+  type ProviderInstanceId,
   ProviderRealtimeError,
   ProviderSubagentInputError,
   ProviderSubagentTranscriptError,
@@ -802,6 +803,10 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
             }),
         ),
       );
+      // Settings changed a provider's plugins or skills. Its open sessions pick that up before
+      // their next turn (see ProviderAdapter.noteExtensionsChanged).
+      const noteExtensionsChanged = (input: { readonly providerInstanceId: ProviderInstanceId }) =>
+        providerService.noteExtensionsChanged({ providerInstanceId: input.providerInstanceId });
 
       return WsRpcGroup.of({
         [ORCHESTRATION_WS_METHODS.dispatchCommand]: (command) =>
@@ -1496,7 +1501,9 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
             WS_METHODS.serverSetProviderExtensionSkillEnabled,
             Effect.gen(function* () {
               const settings = yield* loadProviderExtensionSettings;
-              return yield* setProviderExtensionSkillEnabled({ request: input, settings });
+              return yield* setProviderExtensionSkillEnabled({ request: input, settings }).pipe(
+                Effect.tap(() => noteExtensionsChanged(input)),
+              );
             }),
             { "rpc.aggregate": "server" },
           ),
@@ -1514,7 +1521,9 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
             WS_METHODS.serverCreateProviderExtensionSkill,
             Effect.gen(function* () {
               const settings = yield* loadProviderExtensionSettings;
-              return yield* createProviderExtensionSkill({ request: input, settings });
+              return yield* createProviderExtensionSkill({ request: input, settings }).pipe(
+                Effect.tap(() => noteExtensionsChanged(input)),
+              );
             }),
             { "rpc.aggregate": "server" },
           ),
@@ -1523,7 +1532,9 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
             WS_METHODS.serverDeleteProviderExtensionSkill,
             Effect.gen(function* () {
               const settings = yield* loadProviderExtensionSettings;
-              return yield* deleteProviderExtensionSkill({ request: input, settings });
+              return yield* deleteProviderExtensionSkill({ request: input, settings }).pipe(
+                Effect.tap(() => noteExtensionsChanged(input)),
+              );
             }),
             { "rpc.aggregate": "server" },
           ),
@@ -1541,7 +1552,9 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
             WS_METHODS.serverInstallProviderExtensionPlugin,
             Effect.gen(function* () {
               const settings = yield* loadProviderExtensionSettings;
-              return yield* installProviderExtensionPlugin({ request: input, settings });
+              return yield* installProviderExtensionPlugin({ request: input, settings }).pipe(
+                Effect.tap(() => noteExtensionsChanged(input)),
+              );
             }),
             { "rpc.aggregate": "server" },
           ),
@@ -1550,7 +1563,9 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
             WS_METHODS.serverUninstallProviderExtensionPlugin,
             Effect.gen(function* () {
               const settings = yield* loadProviderExtensionSettings;
-              return yield* uninstallProviderExtensionPlugin({ request: input, settings });
+              return yield* uninstallProviderExtensionPlugin({ request: input, settings }).pipe(
+                Effect.tap(() => noteExtensionsChanged(input)),
+              );
             }),
             { "rpc.aggregate": "server" },
           ),
@@ -1559,7 +1574,9 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
             WS_METHODS.serverSetProviderExtensionPluginEnabled,
             Effect.gen(function* () {
               const settings = yield* loadProviderExtensionSettings;
-              return yield* setProviderExtensionPluginEnabled({ request: input, settings });
+              return yield* setProviderExtensionPluginEnabled({ request: input, settings }).pipe(
+                Effect.tap(() => noteExtensionsChanged(input)),
+              );
             }),
             { "rpc.aggregate": "server" },
           ),
@@ -1568,7 +1585,9 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
             WS_METHODS.serverUpdateProviderExtensionPlugin,
             Effect.gen(function* () {
               const settings = yield* loadProviderExtensionSettings;
-              return yield* updateProviderExtensionPlugin({ request: input, settings });
+              return yield* updateProviderExtensionPlugin({ request: input, settings }).pipe(
+                Effect.tap(() => noteExtensionsChanged(input)),
+              );
             }),
             { "rpc.aggregate": "server" },
           ),
@@ -1580,7 +1599,7 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
               return yield* refreshProviderExtensionPluginMarketplaces({
                 request: input,
                 settings,
-              });
+              }).pipe(Effect.tap(() => noteExtensionsChanged(input)));
             }),
             { "rpc.aggregate": "server" },
           ),
@@ -1598,7 +1617,9 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
             WS_METHODS.serverRemoveProviderExtensionMarketplace,
             Effect.gen(function* () {
               const settings = yield* loadProviderExtensionSettings;
-              return yield* removeProviderExtensionMarketplace({ request: input, settings });
+              return yield* removeProviderExtensionMarketplace({ request: input, settings }).pipe(
+                Effect.tap(() => noteExtensionsChanged(input)),
+              );
             }),
             { "rpc.aggregate": "server" },
           ),

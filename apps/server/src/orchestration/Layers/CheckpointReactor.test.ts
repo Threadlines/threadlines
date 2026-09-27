@@ -134,6 +134,7 @@ function createProviderServiceHarness(
     startReview: () => unsupported(),
     interruptTurn: () => unsupported(),
     releaseBackgroundCommands: () => Effect.void,
+    noteExtensionsChanged: () => Effect.void,
     readConversation: () => Effect.succeed(null),
     compactContext: () => unsupported(),
     setThreadGoal: () => unsupported(),

@@ -204,6 +204,21 @@ class FakeClaudeQuery implements AsyncIterable<SDKMessage> {
     this.applyFlagSettingsCalls.push(settings);
   };
 
+  public readonly reloadCalls: Array<"plugins" | "skills"> = [];
+  public failNextPluginReload = false;
+
+  readonly reloadPlugins = async (): Promise<void> => {
+    this.reloadCalls.push("plugins");
+    if (this.failNextPluginReload) {
+      this.failNextPluginReload = false;
+      throw new Error("reload_plugins failed");
+    }
+  };
+
+  readonly reloadSkills = async (): Promise<void> => {
+    this.reloadCalls.push("skills");
+  };
+
   readonly rewindFiles = async (
     userMessageId: string,
     options?: { readonly dryRun?: boolean },
@@ -8302,6 +8317,53 @@ describe("ClaudeAdapterLive", () => {
       Effect.provide(harness.layer),
     );
   });
+
+  // The CLI reads plugins and skills only at launch, so a change made in Settings reached an open
+  // chat only after a restart.
+  it.effect(
+    "reloads plugins and skills once, before the next turn after Settings changed them",
+    () => {
+      const harness = makeHarness();
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        const session = yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          runtimeMode: "full-access",
+        });
+        const send = (input: string) =>
+          adapter.sendTurn({ threadId: session.threadId, input, attachments: [] });
+
+        yield* send("hello");
+        yield* adapter.noteExtensionsChanged!();
+        assert.deepEqual(harness.query.reloadCalls, []);
+
+        yield* send("use the new skill");
+        assert.deepEqual(harness.query.reloadCalls, ["plugins", "skills"]);
+
+        yield* send("and again");
+        assert.deepEqual(harness.query.reloadCalls, ["plugins", "skills"]);
+
+        // A failed reload does not count as done: the next turn tries again.
+        yield* adapter.noteExtensionsChanged!();
+        harness.query.failNextPluginReload = true;
+        yield* send("after a failed reload");
+        yield* send("retry");
+        yield* send("settled");
+        assert.deepEqual(harness.query.reloadCalls, [
+          "plugins",
+          "skills",
+          "plugins",
+          "skills",
+          "plugins",
+          "skills",
+        ]);
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    },
+  );
 
   it.effect("sets plan permission mode on sendTurn when interactionMode is plan", () => {
     const harness = makeHarness();

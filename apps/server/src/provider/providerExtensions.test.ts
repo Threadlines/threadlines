@@ -30,6 +30,7 @@ import {
   claudePluginSkillRoots,
   derivePluginBackedSkillBundle,
   isCodexAppsDirectoryAccessDeniedError,
+  mapCodexHooks,
   mapCodexMcpServers,
   mapCodexInstalledApps,
   mergeCodexAppSources,
@@ -49,6 +50,7 @@ import {
   deleteProviderExtensionSkill,
   setProviderExtensionSkillEnabled,
   parseClaudeEnabledPlugins,
+  parseClaudeHooks,
   parseSkillFrontMatter,
   skillDirectoryUnderRoots,
   annotateClaudeSkillCapabilities,
@@ -265,7 +267,9 @@ const codexInventoryPeerHandlers: Record<string, ((params: unknown) => unknown) 
     platformOs: process.platform === "darwin" ? "macos" : process.platform,
   }),
   "plugin/list": () => ({ marketplaces: [] }),
+  "plugin/installed": () => ({ marketplaces: [] }),
   "skills/list": () => ({ data: [] }),
+  "hooks/list": () => ({ data: [] }),
   "mcpServerStatus/list": () => ({ data: [] }),
   "app/list": () => ({ data: [] }),
   "app/installed": () => ({ apps: [] }),
@@ -535,6 +539,238 @@ describe("provider extensions inventory", () => {
       assert.equal(posthog[0]?.remoteMarketplaceName, undefined);
       assert.equal(remoteOnly?.remoteMarketplaceName, "openai-curated-remote");
     }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, spawnerLayer)));
+  });
+
+  // The full list runs to thousands of remote plugins on a real account; only Browse needs it.
+  it.effect("reads only installed Codex plugins until the store is asked for", () => {
+    const marketplacePath = `${process.cwd()}/.codex/plugins/team/marketplace.json`;
+    const pluginListParams: unknown[] = [];
+    const peer = makeCodexAppServerPeer({
+      ...codexInventoryPeerHandlers,
+      "plugin/installed": () => ({
+        marketplaces: [
+          {
+            name: "openai-curated-remote",
+            plugins: [
+              {
+                id: "github@openai-curated-remote",
+                name: "github",
+                authPolicy: "ON_USE",
+                enabled: true,
+                installed: true,
+                installPolicy: "AVAILABLE",
+                source: { type: "remote" },
+                version: "1.0.0",
+              },
+            ],
+          },
+        ],
+      }),
+      "plugin/list": (params) => {
+        pluginListParams.push(params);
+        return {
+          marketplaces: [
+            {
+              name: "team",
+              path: marketplacePath,
+              plugins: [
+                {
+                  id: "lint@team",
+                  name: "lint",
+                  authPolicy: "ON_USE",
+                  enabled: true,
+                  installed: false,
+                  installPolicy: "AVAILABLE",
+                  source: { type: "local", path: `${process.cwd()}/lint` },
+                },
+              ],
+            },
+          ],
+        };
+      },
+    });
+    const spawnerLayer = Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, peer.spawner);
+
+    return Effect.gen(function* () {
+      invalidateCodexAppsCache();
+      const result = yield* readProviderExtensionsInventory({
+        request: {
+          cwd: process.cwd(),
+          includeMcpServers: false,
+          includeApps: false,
+          includePluginCatalog: false,
+        },
+        settings: makeSettings(),
+        providers: [],
+      });
+      const codex = result.providers.find(
+        (provider) => provider.instanceId === ProviderInstanceId.make("codex"),
+      );
+
+      assert.equal(codex?.status, "ready");
+      assert.equal(codex?.pluginCatalogStatus, "deferred");
+      assert.deepEqual(
+        codex?.plugins.map((plugin) => plugin.id),
+        ["github@openai-curated-remote"],
+      );
+      // The local catalog still names every marketplace; the full store is never listed.
+      assert.deepEqual(
+        pluginListParams.map(
+          (params) =>
+            (params as { readonly marketplaceKinds?: ReadonlyArray<string> }).marketplaceKinds,
+        ),
+        [["local"]],
+      );
+      assert.deepEqual(
+        codex?.marketplaces.map((marketplace) => ({
+          name: marketplace.name,
+          pluginCount: marketplace.pluginCount,
+          installedPluginCount: marketplace.installedPluginCount,
+        })),
+        [
+          { name: "openai-curated-remote", pluginCount: undefined, installedPluginCount: 1 },
+          { name: "team", pluginCount: 1, installedPluginCount: 0 },
+        ],
+      );
+    }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, spawnerLayer)));
+  });
+
+  it.effect("falls back to the full list on a Codex without plugin/installed", () => {
+    const { "plugin/installed": _missingOnOlderCodex, ...olderCodexHandlers } =
+      codexInventoryPeerHandlers;
+    const peer = makeCodexAppServerPeer({
+      ...olderCodexHandlers,
+      "plugin/list": (params) =>
+        (params as { readonly marketplaceKinds?: ReadonlyArray<string> }).marketplaceKinds
+          ? { marketplaces: [] }
+          : {
+              marketplaces: [
+                {
+                  name: "openai-curated-remote",
+                  plugins: [
+                    {
+                      id: "github@openai-curated-remote",
+                      name: "github",
+                      authPolicy: "ON_USE",
+                      enabled: true,
+                      installed: true,
+                      installPolicy: "AVAILABLE",
+                      source: { type: "remote" },
+                      version: "1.0.0",
+                    },
+                    {
+                      id: "linear@openai-curated-remote",
+                      name: "linear",
+                      authPolicy: "ON_USE",
+                      enabled: true,
+                      installed: false,
+                      installPolicy: "AVAILABLE",
+                      source: { type: "remote" },
+                      version: "1.0.0",
+                    },
+                  ],
+                },
+              ],
+            },
+    });
+    const spawnerLayer = Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, peer.spawner);
+
+    return Effect.gen(function* () {
+      invalidateCodexAppsCache();
+      const result = yield* readProviderExtensionsInventory({
+        request: {
+          cwd: process.cwd(),
+          includeMcpServers: false,
+          includeApps: false,
+          includePluginCatalog: false,
+        },
+        settings: makeSettings(),
+        providers: [],
+      });
+      const codex = result.providers.find(
+        (provider) => provider.instanceId === ProviderInstanceId.make("codex"),
+      );
+
+      // Remote installs are not in the local catalog, so dropping to it alone would lose them.
+      assert.equal(codex?.status, "ready");
+      assert.deepEqual(
+        codex?.plugins.map((plugin) => plugin.id),
+        ["github@openai-curated-remote"],
+      );
+    }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, spawnerLayer)));
+  });
+
+  it("lists hooks from Codex and from Claude's settings files", () => {
+    const codex = mapCodexHooks({
+      data: [
+        {
+          cwd: "/repo",
+          hooks: [
+            {
+              key: "user:pre-tool:0",
+              eventName: "preToolUse",
+              handlerType: "command",
+              command: "./scripts/check.sh",
+              matcher: "shell",
+              enabled: true,
+              trustStatus: "untrusted",
+              source: "user",
+              sourcePath: "/home/me/.codex/config.toml",
+              currentHash: "abc",
+              displayOrder: 0,
+              isManaged: false,
+              timeoutSec: 60,
+            },
+          ],
+          errors: [{ path: "/repo/.codex/config.toml", message: "unknown event" }],
+          warnings: [],
+        },
+      ],
+    });
+    assert.deepEqual(codex.hooks, [
+      {
+        key: "user:pre-tool:0",
+        event: "preToolUse",
+        handler: "command",
+        source: "user",
+        enabled: true,
+        trustStatus: "untrusted",
+        matcher: "shell",
+        command: "./scripts/check.sh",
+        sourcePath: "/home/me/.codex/config.toml",
+      },
+    ]);
+    assert.equal(codex.message, "/repo/.codex/config.toml: unknown event");
+
+    const claude = parseClaudeHooks(
+      {
+        hooks: {
+          PostToolUse: [
+            { matcher: "Edit|Write", hooks: [{ type: "command", command: "pnpm fmt" }] },
+          ],
+          // A handler type Threadlines does not model still shows up rather than vanishing.
+          Stop: [{ hooks: [{ type: "http", url: "https://example.com/stop" }] }],
+        },
+      },
+      { source: "project", sourcePath: "/repo/.claude/settings.json" },
+    );
+    assert.deepEqual(
+      claude.map((hook) => ({
+        event: hook.event,
+        handler: hook.handler,
+        matcher: hook.matcher,
+        command: hook.command,
+      })),
+      [
+        { event: "PostToolUse", handler: "command", matcher: "Edit|Write", command: "pnpm fmt" },
+        {
+          event: "Stop",
+          handler: "other",
+          matcher: undefined,
+          command: "https://example.com/stop",
+        },
+      ],
+    );
   });
 
   it("maps typed Codex plugin detail and sorts its component inventory", () => {
@@ -1104,6 +1340,44 @@ Per-component (rounded)
             pluginName: "supabase",
           },
         },
+      ],
+    );
+  });
+
+  it("reads Claude MCP statuses without their terminal glyphs", () => {
+    // Lines as Claude Code 2.1.283 prints them.
+    const servers = parseClaudeMcpList(
+      [
+        "Checking MCP server health…",
+        "",
+        "claude.ai Vercel: https://mcp.vercel.com - ✔ Connected",
+        "plugin:design:figma: https://mcp.figma.com/mcp (HTTP) - ! Needs authentication",
+        "plugin:design:asana: https://mcp.asana.com/v2/mcp (HTTP) - ✘ Failed to connect — Incompatible auth server: does not support dynamic client registration",
+        "plugin:design:gmail:  (HTTP) - - Not configured",
+      ].join("\n"),
+    );
+
+    assert.deepEqual(
+      servers.map((server) => ({
+        name: server.name,
+        status: server.status,
+        authStatus: server.authStatus,
+      })),
+      [
+        { name: "claude.ai Vercel", status: "Connected", authStatus: undefined },
+        {
+          name: "design:asana",
+          status:
+            "Failed to connect — Incompatible auth server: does not support dynamic client registration",
+          // A server that cannot be signed in to is broken, not waiting on a login.
+          authStatus: undefined,
+        },
+        {
+          name: "design:figma",
+          status: "Needs authentication",
+          authStatus: "Needs authentication",
+        },
+        { name: "design:gmail", status: "Not configured", authStatus: undefined },
       ],
     );
   });
@@ -1836,6 +2110,106 @@ Per-component (rounded)
       }).pipe(Effect.flip);
 
       assert.equal(error.message, "Skill is not in the current provider extensions inventory.");
+    }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, spawnerLayer)));
+  });
+
+  // The settings page and the composer load inventories for different projects and providers, and
+  // each load used to replace the whole list of readable skills.
+  it.effect("keeps a skill readable after an inventory load for another project", () => {
+    const spawnerLayer = Layer.succeed(
+      ChildProcessSpawner.ChildProcessSpawner,
+      ChildProcessSpawner.make((command) =>
+        Effect.succeed(
+          claudeInventoryProcessFor(
+            (command as unknown as { readonly args: ReadonlyArray<string> }).args,
+          ),
+        ),
+      ),
+    );
+
+    return Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const projectWithSkill = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "threadlines-skill-scope-a-",
+      });
+      const otherProject = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "threadlines-skill-scope-b-",
+      });
+      const claudeHome = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "threadlines-skill-scope-home-",
+      });
+      const skillPath = path.join(projectWithSkill, ".claude", "skills", "local", "SKILL.md");
+      const contents = "# Project skill\n";
+      yield* fileSystem.makeDirectory(path.dirname(skillPath), { recursive: true });
+      yield* fileSystem.writeFileString(skillPath, contents);
+      const settings = makeClaudeSkillSettings(claudeHome);
+
+      for (const cwd of [projectWithSkill, otherProject]) {
+        yield* readProviderExtensionsInventory({
+          request: { cwd, providerInstanceId: CLAUDE_SKILL_PROVIDER },
+          settings,
+          providers: [],
+        });
+      }
+      const result = yield* readProviderExtensionSkill({
+        request: {
+          cwd: projectWithSkill,
+          providerInstanceId: CLAUDE_SKILL_PROVIDER,
+          path: skillPath,
+        },
+        settings,
+      });
+
+      assert.deepEqual(result, { contents });
+    }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, spawnerLayer)));
+  });
+
+  it.effect("keeps Claude's first load to installed plugins and skips the MCP health check", () => {
+    const calls: Array<ReadonlyArray<string>> = [];
+    const spawnerLayer = Layer.succeed(
+      ChildProcessSpawner.ChildProcessSpawner,
+      ChildProcessSpawner.make((command) => {
+        const args = (command as unknown as { readonly args: ReadonlyArray<string> }).args;
+        calls.push(args);
+        return Effect.succeed(claudeInventoryProcessFor(args));
+      }),
+    );
+
+    return Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const cwd = yield* fileSystem.makeTempDirectoryScoped({ prefix: "threadlines-claude-mcp-" });
+      const claudeHome = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "threadlines-claude-mcp-home-",
+      });
+      const load = (includeSections: boolean) =>
+        readProviderExtensionsInventory({
+          request: {
+            cwd,
+            providerInstanceId: CLAUDE_SKILL_PROVIDER,
+            includeMcpServers: includeSections,
+            includePluginCatalog: includeSections,
+          },
+          settings: makeClaudeSkillSettings(claudeHome),
+          providers: [],
+        });
+      const isMcpList = (args: ReadonlyArray<string>) => args[0] === "mcp" && args[1] === "list";
+      const pluginListArgs = () =>
+        calls
+          .filter((args) => args[0] === "plugin" && args[1] === "list")
+          .map((args) => args.join(" "));
+
+      const deferred = yield* load(false);
+      assert.equal(deferred.providers[0]?.mcpServersStatus, "deferred");
+      assert.equal(deferred.providers[0]?.pluginCatalogStatus, "deferred");
+      assert.equal(calls.some(isMcpList), false);
+      assert.deepEqual(pluginListArgs(), ["plugin list --json"]);
+
+      const loaded = yield* load(true);
+      assert.equal(loaded.providers[0]?.mcpServersStatus, "ready");
+      assert.equal(loaded.providers[0]?.pluginCatalogStatus, "ready");
+      assert.equal(calls.some(isMcpList), true);
+      assert.deepEqual(pluginListArgs(), ["plugin list --json", "plugin list --available --json"]);
     }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, spawnerLayer)));
   });
 

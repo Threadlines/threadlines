@@ -59,6 +59,8 @@ import {
   type ProviderExtensionPluginUpdateResult,
   type ProviderExtensionsInventoryInput,
   type ProviderExtensionsInventoryResult,
+  type ProviderExtensionHook,
+  type ProviderExtensionHookHandler,
   type ProviderExtensionProviderInventory,
   type ProviderExtensionSkill,
   type ProviderExtensionSkillCreateInput,
@@ -609,6 +611,102 @@ function mergeCodexPluginCatalogResponses(
     ...(featuredPluginIds.length > 0 ? { featuredPluginIds } : {}),
     ...(marketplaceLoadErrors.length > 0 ? { marketplaceLoadErrors } : {}),
   };
+}
+
+/**
+ * The inventory without the plugin store: `plugin/installed` answers in a fraction of a second
+ * with only what is installed, where the full list runs to thousands of remote entries. Codex has
+ * no marketplace list of its own, so the local catalog (cheap, already on disk) still names every
+ * marketplace, including ones with nothing installed yet. Remote marketplaces only show up through
+ * what was installed from them, so their size is unknown here.
+ */
+export function mapCodexInstalledPluginInventory(
+  installed: CodexSchema.V2PluginListResponse,
+  local: CodexSchema.V2PluginListResponse | undefined,
+): {
+  readonly plugins: ProviderExtensionPlugin[];
+  readonly marketplaces: ProviderExtensionMarketplace[];
+  readonly loadErrorMessage: string | undefined;
+} {
+  // Filtered because the fallback for older Codex builds passes the full list here.
+  const installedInventory = mapCodexPluginInventory(installed);
+  const plugins = installedInventory.plugins.filter((plugin) => plugin.installed === true);
+  const marketplaceKey = (marketplace: ProviderExtensionMarketplace) =>
+    `${marketplace.name}\u0000${marketplace.path ?? ""}`;
+  const installedCounts = new Map(
+    installedInventory.marketplaces.map(
+      (marketplace) => [marketplaceKey(marketplace), marketplace.installedPluginCount] as const,
+    ),
+  );
+  const localMarketplaces = local ? mapCodexPluginInventory(local).marketplaces : [];
+  const localKeys = new Set(localMarketplaces.map(marketplaceKey));
+  const marketplaces = [
+    ...localMarketplaces.map((marketplace) => ({
+      ...marketplace,
+      installedPluginCount: installedCounts.get(marketplaceKey(marketplace)) ?? 0,
+    })),
+    ...installedInventory.marketplaces
+      .filter((marketplace) => !localKeys.has(marketplaceKey(marketplace)))
+      .map(({ pluginCount: _unknownSize, ...marketplace }) => marketplace),
+  ].toSorted((left, right) => left.name.localeCompare(right.name));
+  const loadErrors = [
+    ...(installed.marketplaceLoadErrors ?? []),
+    ...(local?.marketplaceLoadErrors ?? []),
+  ].filter(
+    (error, index, errors) =>
+      errors.findIndex(
+        (candidate) =>
+          candidate.marketplacePath === error.marketplacePath &&
+          candidate.message === error.message,
+      ) === index,
+  );
+  return {
+    plugins,
+    marketplaces,
+    loadErrorMessage: codexMarketplaceLoadErrorMessage({
+      marketplaces: [],
+      marketplaceLoadErrors: loadErrors,
+    }),
+  };
+}
+
+export function mapCodexHooks(response: CodexSchema.V2HooksListResponse): {
+  readonly hooks: ProviderExtensionHook[];
+  readonly message: string | undefined;
+} {
+  const byKey = new Map<string, ProviderExtensionHook>();
+  const problems: string[] = [];
+  for (const entry of response.data) {
+    for (const hook of entry.hooks) {
+      const key = requiredText(hook.key);
+      if (!key || byKey.has(key)) continue;
+      const command =
+        hook.handlerType === "command"
+          ? optionalText(hook.command)
+          : hook.handlerType === "mcpTool"
+            ? optionalText(`${hook.server}/${hook.tool}`)
+            : undefined;
+      const matcher = optionalText(hook.matcher ?? null);
+      const pluginId = optionalText(hook.pluginId ?? null);
+      const sourcePath = optionalText(hook.sourcePath);
+      byKey.set(key, {
+        key,
+        event: hook.eventName,
+        handler: hook.handlerType,
+        source: hook.source,
+        enabled: hook.enabled,
+        trustStatus: hook.trustStatus,
+        ...(matcher ? { matcher } : {}),
+        ...(command ? { command } : {}),
+        ...(sourcePath ? { sourcePath } : {}),
+        ...(pluginId ? { pluginId } : {}),
+      });
+    }
+    for (const error of entry.errors) problems.push(`${error.path}: ${error.message}`);
+    problems.push(...entry.warnings);
+  }
+  const message = problems.length > 0 ? sanitizeErrorMessage(problems.join(" ")) : undefined;
+  return { hooks: [...byKey.values()], message };
 }
 
 export function mapCodexPlugins(
@@ -1228,16 +1326,56 @@ type ClaudeProviderExtensionActionContext = {
 };
 
 const providerExtensionOperations = new Map<string, ProviderExtensionOperationStatusResult>();
-let currentProviderExtensionPluginIconPaths = new Set<string>();
-let currentProviderExtensionSkillPaths = new Set<string>();
 const isProviderExtensionsError = Schema.is(ProviderExtensionsError);
 
+/**
+ * Skill files and plugin icons the server itself reported, which are the only ones it will read,
+ * serve, or delete on request. Each inventory load replaces just its own entry (provider, cwd, and
+ * whether the store was included), so a filtered load, another client, or the composer's skill
+ * lookup cannot revoke paths that a view loaded earlier is still showing.
+ */
+const MAX_REPORTED_EXTENSION_PATH_SCOPES = 32;
+const reportedExtensionPaths = new Map<
+  string,
+  { readonly skillPaths: Set<string>; readonly pluginIconPaths: Set<string> }
+>();
+
+function recordReportedExtensionPaths(
+  scope: string,
+  providers: ReadonlyArray<ProviderExtensionProviderInventory>,
+): void {
+  for (const provider of providers) {
+    const key = JSON.stringify([String(provider.instanceId), scope]);
+    reportedExtensionPaths.delete(key);
+    reportedExtensionPaths.set(key, {
+      skillPaths: new Set(provider.skills.flatMap((skill) => (skill.path ? [skill.path] : []))),
+      pluginIconPaths: new Set(
+        provider.plugins.flatMap((plugin) => (plugin.iconPath ? [plugin.iconPath] : [])),
+      ),
+    });
+  }
+  for (const key of reportedExtensionPaths.keys()) {
+    if (reportedExtensionPaths.size <= MAX_REPORTED_EXTENSION_PATH_SCOPES) break;
+    reportedExtensionPaths.delete(key);
+  }
+}
+
+function forgetReportedSkillPath(filePath: string): void {
+  for (const entry of reportedExtensionPaths.values()) entry.skillPaths.delete(filePath);
+}
+
 export function isCurrentProviderExtensionPluginIconPath(filePath: string): boolean {
-  return currentProviderExtensionPluginIconPaths.has(filePath);
+  for (const entry of reportedExtensionPaths.values()) {
+    if (entry.pluginIconPaths.has(filePath)) return true;
+  }
+  return false;
 }
 
 export function isCurrentProviderExtensionSkillPath(filePath: string): boolean {
-  return currentProviderExtensionSkillPaths.has(filePath);
+  for (const entry of reportedExtensionPaths.values()) {
+    if (entry.skillPaths.has(filePath)) return true;
+  }
+  return false;
 }
 
 function recordProviderExtensionOperation(
@@ -1501,11 +1639,13 @@ const readCodexAppServerInventory = Effect.fn("providerExtensions.readCodexAppSe
     readonly providerThreadId?: string | undefined;
     readonly includeMcpServers?: boolean | undefined;
     readonly includeApps?: boolean | undefined;
+    readonly includePluginCatalog?: boolean | undefined;
   }): Effect.fn.Return<
     Pick<
       ProviderExtensionProviderInventory,
       | "plugins"
       | "marketplaces"
+      | "pluginCatalogStatus"
       | "skills"
       | "mcpServers"
       | "mcpServersStatus"
@@ -1516,6 +1656,8 @@ const readCodexAppServerInventory = Effect.fn("providerExtensions.readCodexAppSe
       | "appsCatalogStatus"
       | "appsMessage"
       | "appsTruncated"
+      | "hooks"
+      | "hooksMessage"
       | "status"
       | "message"
     >,
@@ -1542,6 +1684,7 @@ const readCodexAppServerInventory = Effect.fn("providerExtensions.readCodexAppSe
       ...(layout.effectiveHomePath ? { CODEX_HOME: layout.effectiveHomePath } : {}),
     };
     const includeApps = input.includeApps ?? true;
+    const includePluginCatalog = input.includePluginCatalog ?? true;
     const appsCacheKey = codexAppsCacheKey({
       binaryPath: input.config.binaryPath,
       effectiveHomePath: layout.effectiveHomePath,
@@ -1655,12 +1798,18 @@ const readCodexAppServerInventory = Effect.fn("providerExtensions.readCodexAppSe
             )
           : Effect.succeed(Result.succeed<ProviderExtensionApp[]>(freshCachedApps?.apps ?? []));
 
+        // Without the store, `plugin/installed` stands in for the full list: 44 KB instead of 12 MB
+        // on a real account. The local catalog still runs either way; it names the marketplaces.
         const pluginsEffect = yield* Effect.cached(
           Effect.all(
             [
-              client
-                .request("plugin/list", { cwds: [input.cwd] })
-                .pipe(collectCodexRequest("plugins")),
+              includePluginCatalog
+                ? client
+                    .request("plugin/list", { cwds: [input.cwd] })
+                    .pipe(collectCodexRequest("plugins"))
+                : client
+                    .request("plugin/installed", { cwds: [input.cwd] })
+                    .pipe(collectCodexRequest("plugins")),
               client
                 .request("plugin/list", {
                   cwds: [input.cwd],
@@ -1670,20 +1819,48 @@ const readCodexAppServerInventory = Effect.fn("providerExtensions.readCodexAppSe
             ],
             { concurrency: 2 },
           ).pipe(
-            Effect.map(([primaryResult, localResult]) => {
+            Effect.flatMap(([primaryResult, localResult]) => {
+              const local = Result.isSuccess(localResult) ? localResult.success : undefined;
+              if (!includePluginCatalog) {
+                if (Result.isSuccess(primaryResult)) {
+                  return Effect.succeed(
+                    Result.succeed(mapCodexInstalledPluginInventory(primaryResult.success, local)),
+                  );
+                }
+                // An older Codex without `plugin/installed`, or a failed read: the full list still
+                // says what is installed, including from remote marketplaces the local catalog
+                // cannot see. Only when that fails too does the provider report the failure.
+                return client.request("plugin/list", { cwds: [input.cwd] }).pipe(
+                  collectCodexRequest("plugins"),
+                  Effect.map((fullResult) =>
+                    Result.isFailure(fullResult)
+                      ? Result.fail(primaryResult.failure)
+                      : Result.succeed(
+                          mapCodexInstalledPluginInventory(
+                            local
+                              ? mergeCodexPluginCatalogResponses(fullResult.success, local)
+                              : fullResult.success,
+                            local,
+                          ),
+                        ),
+                  ),
+                );
+              }
               let response: CodexSchema.V2PluginListResponse;
               if (Result.isFailure(primaryResult)) {
-                if (Result.isFailure(localResult)) return Result.fail(primaryResult.failure);
-                response = localResult.success;
+                if (!local) return Effect.succeed(Result.fail(primaryResult.failure));
+                response = local;
               } else {
-                response = Result.isSuccess(localResult)
-                  ? mergeCodexPluginCatalogResponses(primaryResult.success, localResult.success)
+                response = local
+                  ? mergeCodexPluginCatalogResponses(primaryResult.success, local)
                   : primaryResult.success;
               }
-              return Result.succeed({
-                ...mapCodexPluginInventory(response),
-                loadErrorMessage: codexMarketplaceLoadErrorMessage(response),
-              });
+              return Effect.succeed(
+                Result.succeed({
+                  ...mapCodexPluginInventory(response),
+                  loadErrorMessage: codexMarketplaceLoadErrorMessage(response),
+                }),
+              );
             }),
           ),
         );
@@ -1701,7 +1878,7 @@ const readCodexAppServerInventory = Effect.fn("providerExtensions.readCodexAppSe
 
         // The requests are independent JSON-RPC calls; serializing them just delays whichever
         // runs last and starts its timeout window late, so let them all go at once.
-        const [plugins, skills, mcpServerResponse, apps, installedApps] = yield* Effect.all(
+        const [plugins, skills, mcpServerResponse, apps, installedApps, hooks] = yield* Effect.all(
           [
             pluginsEffect,
             client.request("skills/list", { cwds: [input.cwd] }).pipe(
@@ -1711,8 +1888,11 @@ const readCodexAppServerInventory = Effect.fn("providerExtensions.readCodexAppSe
             mcpServersEffect,
             appsEffect,
             installedAppsEffect,
+            client
+              .request("hooks/list", { cwds: [input.cwd] })
+              .pipe(Effect.map(mapCodexHooks), collectCodexRequest("hooks")),
           ],
-          { concurrency: 5 },
+          { concurrency: 6 },
         );
         const mcpPluginOwnersExit = mcpPluginOwnersFiber.pollUnsafe();
         const mcpPluginOwners =
@@ -1722,7 +1902,7 @@ const readCodexAppServerInventory = Effect.fn("providerExtensions.readCodexAppSe
         const mcpServers = Result.isFailure(mcpServerResponse)
           ? Result.fail(mcpServerResponse.failure)
           : Result.succeed(mapCodexMcpServers(mcpServerResponse.success, mcpPluginOwners));
-        return { includeMcpServers, plugins, skills, mcpServers, apps, installedApps };
+        return { includeMcpServers, plugins, skills, mcpServers, apps, installedApps, hooks };
       }),
     ).pipe(
       Effect.result,
@@ -1816,6 +1996,11 @@ const readCodexAppServerInventory = Effect.fn("providerExtensions.readCodexAppSe
       ...(messages.length > 0 ? { message: messages.join(" ") } : {}),
       plugins,
       marketplaces,
+      pluginCatalogStatus: includePluginCatalog
+        ? Result.isSuccess(data.plugins)
+          ? "ready"
+          : "error"
+        : "deferred",
       skills,
       mcpServers: Result.isSuccess(data.mcpServers) ? data.mcpServers.success : [],
       mcpServersStatus,
@@ -1828,6 +2013,11 @@ const readCodexAppServerInventory = Effect.fn("providerExtensions.readCodexAppSe
       appsStatus,
       appsCatalogStatus,
       ...(appsMessage ? { appsMessage } : {}),
+      // An older Codex without `hooks/list` simply shows no hooks rather than an error.
+      ...(Result.isSuccess(data.hooks) ? { hooks: data.hooks.success.hooks } : {}),
+      ...(Result.isSuccess(data.hooks) && data.hooks.success.message
+        ? { hooksMessage: data.hooks.success.message }
+        : {}),
       ...(catalogApps.length === CODEX_EXTENSION_INVENTORY_PAGE_LIMIT
         ? { appsTruncated: true }
         : {}),
@@ -2377,8 +2567,13 @@ const readClaudeMarketplaceManifest = Effect.fn("providerExtensions.readClaudeMa
   },
 );
 
+/**
+ * `claude mcp list` prefixes each status with a terminal glyph ("✔ Connected", "! Needs
+ * authentication", "✘ Failed to connect", "⏸ Pending approval", "- Not configured"). The glyph is
+ * decoration for a terminal, and the settings page shows the words.
+ */
 function normalizeClaudeMcpStatus(value: string | undefined): string | undefined {
-  const normalized = optionalText(value?.replace(/^!+\s*/, ""));
+  const normalized = optionalText(value?.replace(/^(?:[\s!\-✔✓✘✗✖⏸⚠]|️)+/u, ""));
   if (!normalized) return undefined;
   return /^needs authentication$/i.test(normalized) ? "Needs authentication" : normalized;
 }
@@ -2454,7 +2649,10 @@ export function parseClaudeMcpList(
     const status = normalizeClaudeMcpStatus(match[3]);
     const transport = target.match(/\(([^)]+)\)\s*$/)?.[1]?.trim();
     const detail = optionalText(target.replace(/\s*\([^)]*\)\s*$/, ""));
-    const authStatus = status?.toLowerCase().includes("auth") ? status : undefined;
+    // "Failed to connect: Incompatible auth server" mentions auth but no login fixes it, so only
+    // a status that asks for sign-in counts.
+    const authStatus =
+      status && providerExtensionMcpNeedsAuthStatus({ status }) ? status : undefined;
     servers.push({
       name: parsedName.name,
       ...(parsedName.configuredName !== parsedName.name
@@ -2481,6 +2679,8 @@ function providerExtensionMcpNeedsAuthStatus(
         value.includes("not logged in") ||
         value.includes("not authenticated") ||
         value.includes("needs auth") ||
+        value.includes("auth required") ||
+        value.includes("authentication required") ||
         value.includes("login required") ||
         value.includes("expired"),
     );
@@ -2798,6 +2998,133 @@ const readClaudeEnabledPlugins = Effect.fn("providerExtensions.readClaudeEnabled
   },
 );
 
+const CLAUDE_HOOK_HANDLERS: Readonly<Record<string, ProviderExtensionHookHandler>> = {
+  command: "command",
+  prompt: "prompt",
+  agent: "agent",
+};
+
+/**
+ * The `hooks` block of a Claude settings file or a plugin's `hooks/hooks.json`: each event maps to
+ * matcher groups, and each group lists what runs. Handler types Threadlines does not model are kept
+ * as "other" rather than dropped, so the list never hides a hook that runs.
+ */
+export function parseClaudeHooks(
+  root: unknown,
+  origin: {
+    readonly source: string;
+    readonly sourcePath: string;
+    readonly pluginId?: string | undefined;
+  },
+): ProviderExtensionHook[] {
+  const hooksBlock =
+    root && typeof root === "object" && !Array.isArray(root)
+      ? (root as Record<string, unknown>).hooks
+      : undefined;
+  if (!hooksBlock || typeof hooksBlock !== "object" || Array.isArray(hooksBlock)) return [];
+  return Object.entries(hooksBlock as Record<string, unknown>).flatMap(([rawEvent, groups]) => {
+    const event = requiredText(rawEvent);
+    if (!event || !Array.isArray(groups)) return [];
+    return groups.flatMap((group, groupIndex) => {
+      if (!group || typeof group !== "object" || Array.isArray(group)) return [];
+      const groupRecord = group as Record<string, unknown>;
+      const matcher = stringField(groupRecord, "matcher");
+      const handlers = Array.isArray(groupRecord.hooks) ? groupRecord.hooks : [];
+      return handlers.flatMap((handler, handlerIndex) => {
+        if (!handler || typeof handler !== "object" || Array.isArray(handler)) return [];
+        const record = handler as Record<string, unknown>;
+        const command =
+          stringField(record, "command") ??
+          stringField(record, "prompt") ??
+          stringField(record, "url");
+        return [
+          {
+            key: `${origin.sourcePath}#${event}/${groupIndex}/${handlerIndex}`,
+            event,
+            handler: CLAUDE_HOOK_HANDLERS[stringField(record, "type") ?? ""] ?? "other",
+            source: origin.source,
+            sourcePath: origin.sourcePath,
+            ...(matcher && matcher !== "*" ? { matcher } : {}),
+            ...(command ? { command } : {}),
+            ...(origin.pluginId ? { pluginId: origin.pluginId } : {}),
+          } satisfies ProviderExtensionHook,
+        ];
+      });
+    });
+  });
+}
+
+/**
+ * Claude has no command that lists hooks, so they are read where Claude reads them: the user,
+ * project, and local settings files, and each enabled plugin's `hooks/hooks.json`.
+ */
+const readClaudeHooks = Effect.fn("providerExtensions.readClaudeHooks")(function* (input: {
+  readonly claudeHome: string;
+  readonly cwd: string;
+  readonly plugins: ReadonlyArray<ProviderExtensionPlugin>;
+}): Effect.fn.Return<ProviderExtensionHook[], never, FileSystem.FileSystem | Path.Path> {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const userSettings = path.join(input.claudeHome, ".claude", "settings.json");
+  const projectDirectory = path.resolve(input.cwd);
+  // The machine scope's cwd is the home directory, whose project file is the user file.
+  const isHome = normalizedPathKey(projectDirectory) === normalizedPathKey(input.claudeHome);
+  const sources = [
+    { source: "user", sourcePath: userSettings },
+    ...(isHome
+      ? []
+      : [
+          {
+            source: "project",
+            sourcePath: path.join(projectDirectory, ".claude", "settings.json"),
+          },
+          {
+            source: "local",
+            sourcePath: path.join(projectDirectory, ".claude", "settings.local.json"),
+          },
+        ]),
+    ...input.plugins.flatMap((plugin) => {
+      const installPath = optionalText(plugin.installPath);
+      if (plugin.installed !== true || plugin.enabled === false || !installPath) return [];
+      return [
+        {
+          source: "plugin",
+          sourcePath: path.join(installPath, "hooks", "hooks.json"),
+          pluginId: plugin.id,
+        },
+      ];
+    }),
+  ];
+  const roots = yield* Effect.forEach(
+    sources,
+    (origin) =>
+      fileSystem.readFileString(origin.sourcePath).pipe(
+        Effect.map((contents): unknown => {
+          try {
+            return JSON.parse(contents);
+          } catch {
+            return undefined;
+          }
+        }),
+        Effect.catch(() => Effect.succeed(undefined)),
+      ),
+    { concurrency: 8 },
+  );
+  // `disableAllHooks` in any settings file switches off every hook, not just that file's.
+  const allDisabled = roots.some(
+    (root, index) =>
+      sources[index]?.source !== "plugin" &&
+      root !== null &&
+      typeof root === "object" &&
+      (root as Record<string, unknown>).disableAllHooks === true,
+  );
+  const hooks = roots.flatMap((root, index) => {
+    const origin = sources[index];
+    return origin ? parseClaudeHooks(root, origin) : [];
+  });
+  return allDisabled ? hooks.map((hook) => ({ ...hook, enabled: false })) : hooks;
+});
+
 export function annotateClaudeSkillCapabilities(
   skills: ReadonlyArray<ProviderExtensionSkill>,
   input: {
@@ -2929,6 +3256,31 @@ function finalizeClaudeSkills(
   );
 }
 
+/**
+ * The child directories of `directory` in listing order, so capped walks stay deterministic. The
+ * entries are stat'ed concurrently: a serial stat per entry is what made a scan of a large home
+ * directory take most of a second.
+ */
+const listChildDirectories = Effect.fn("providerExtensions.listChildDirectories")(function* (
+  directory: string,
+  skip?: ReadonlySet<string>,
+): Effect.fn.Return<string[], never, FileSystem.FileSystem | Path.Path> {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const entries = yield* fileSystem
+    .readDirectory(directory)
+    .pipe(Effect.catch(() => Effect.succeed([])));
+  const children = entries
+    .filter((entry) => !skip?.has(entry))
+    .map((entry) => path.join(directory, entry));
+  const stats = yield* Effect.forEach(
+    children,
+    (child) => fileSystem.stat(child).pipe(Effect.catch(() => Effect.succeed(null))),
+    { concurrency: 16 },
+  );
+  return children.filter((_, index) => stats[index]?.type === "Directory");
+});
+
 const readSkillsFromRoot = Effect.fn("providerExtensions.readSkillsFromRoot")(function* (
   rootInput: ClaudeSkillRoot,
 ): Effect.fn.Return<DiscoveredClaudeSkill[], never, FileSystem.FileSystem | Path.Path> {
@@ -2945,7 +3297,10 @@ const readSkillsFromRoot = Effect.fn("providerExtensions.readSkillsFromRoot")(fu
     readonly size: number;
   }> = [];
 
-  const walk = (directory: string, depth: number): Effect.Effect<void, never> =>
+  const walk = (
+    directory: string,
+    depth: number,
+  ): Effect.Effect<void, never, FileSystem.FileSystem | Path.Path> =>
     Effect.gen(function* () {
       if (depth > MAX_SKILL_ROOT_SCAN_DEPTH) return;
       if (scannedDirectories >= MAX_SKILL_ROOT_SCAN_DIRECTORIES) return;
@@ -2960,17 +3315,8 @@ const readSkillsFromRoot = Effect.fn("providerExtensions.readSkillsFromRoot")(fu
         return;
       }
 
-      const entries = yield* fileSystem
-        .readDirectory(directory)
-        .pipe(Effect.catch(() => Effect.succeed([])));
-      for (const entry of entries) {
-        const child = path.join(directory, entry);
-        const childStat = yield* fileSystem
-          .stat(child)
-          .pipe(Effect.catch(() => Effect.succeed(null)));
-        if (childStat?.type === "Directory") {
-          yield* walk(child, depth + 1);
-        }
+      for (const child of yield* listChildDirectories(directory)) {
+        yield* walk(child, depth + 1);
       }
     });
 
@@ -3039,7 +3385,10 @@ const discoverNestedClaudeSkillRoots = Effect.fn(
   const roots: ClaudeSkillRoot[] = [];
   let scannedDirectories = 0;
 
-  const walk = (directory: string, depth: number): Effect.Effect<void, never> =>
+  const walk = (
+    directory: string,
+    depth: number,
+  ): Effect.Effect<void, never, FileSystem.FileSystem | Path.Path> =>
     Effect.gen(function* () {
       if (depth > MAX_CLAUDE_NESTED_SKILL_ROOT_SCAN_DEPTH) return;
       if (scannedDirectories >= MAX_CLAUDE_NESTED_SKILL_ROOT_SCAN_DIRECTORIES) return;
@@ -3062,18 +3411,11 @@ const discoverNestedClaudeSkillRoots = Effect.fn(
         });
       }
 
-      const entries = yield* fileSystem
-        .readDirectory(directory)
-        .pipe(Effect.catch(() => Effect.succeed([])));
-      for (const entry of entries) {
-        if (CLAUDE_NESTED_SKILL_ROOT_SKIP_DIRECTORIES.has(entry)) continue;
-        const child = path.join(directory, entry);
-        const childStat = yield* fileSystem
-          .stat(child)
-          .pipe(Effect.catch(() => Effect.succeed(null)));
-        if (childStat?.type === "Directory") {
-          yield* walk(child, depth + 1);
-        }
+      for (const child of yield* listChildDirectories(
+        directory,
+        CLAUDE_NESTED_SKILL_ROOT_SKIP_DIRECTORIES,
+      )) {
+        yield* walk(child, depth + 1);
       }
     });
 
@@ -3187,13 +3529,12 @@ const claudeWritableSkillRoots = Effect.fn("providerExtensions.claudeWritableSki
   },
 );
 
+/** Reads skills from the writable roots (see `claudeWritableSkillRoots`) plus each plugin's own. */
 const readClaudeSkills = Effect.fn("providerExtensions.readClaudeSkills")(function* (
-  claudeHome: string,
-  cwd: string,
-  plugins: ReadonlyArray<ProviderExtensionPlugin> = [],
+  writableRoots: ReadonlyArray<ClaudeSkillRoot>,
+  plugins: ReadonlyArray<ProviderExtensionPlugin>,
 ) {
   const path = yield* Path.Path;
-  const writableRoots = yield* claudeWritableSkillRoots(claudeHome, cwd);
   const skillRoots = uniqueClaudeSkillRoots(
     [...writableRoots, ...claudePluginSkillRoots(path, plugins)],
     path,
@@ -3486,63 +3827,76 @@ const readClaudeInventory = Effect.fn("providerExtensions.readClaudeInventory")(
   readonly config: ClaudeSettings;
   readonly cwd: string;
   readonly environment: NodeJS.ProcessEnv;
+  readonly includeMcpServers?: boolean | undefined;
+  readonly includePluginCatalog?: boolean | undefined;
 }) {
+  const includePluginCatalog = input.includePluginCatalog ?? true;
   const claudeEnvironment = yield* makeClaudeEnvironment(input.config, input.environment);
   const path = yield* Path.Path;
   const claudeHome = claudeEnvironment.HOME ?? process.env.HOME ?? process.env.USERPROFILE ?? "";
+  const resolvedClaudeHome = path.resolve(claudeHome);
+  // `claude mcp list` health-checks every configured server, which takes seconds, so it only runs
+  // when asked for, the same as Codex's MCP status.
+  const includeMcpServers = input.includeMcpServers ?? true;
 
-  const [pluginResult, marketplaceResult, mcpResult] = yield* Effect.all(
-    [
-      runClaudeCommand({
-        binaryPath: input.config.binaryPath,
-        args: ["plugin", "list", "--available", "--json"],
-        cwd: input.cwd,
-        env: claudeEnvironment,
-      }).pipe(
-        Effect.flatMap((result) =>
-          result.code === 0
-            ? Effect.succeed(result)
-            : Effect.fail(
-                new ProviderExtensionsError({
-                  message: claudeCommandFailureMessage({
-                    args: ["plugin", "list", "--available", "--json"],
-                    ...result,
+  // The skill-root scan does not depend on the CLI, so it runs alongside it rather than after.
+  const pluginListArgs = includePluginCatalog
+    ? ["plugin", "list", "--available", "--json"]
+    : ["plugin", "list", "--json"];
+  const [pluginResult, marketplaceResult, mcpResult, writableRoots, enabledPlugins] =
+    yield* Effect.all(
+      [
+        runClaudeCommand({
+          binaryPath: input.config.binaryPath,
+          args: pluginListArgs,
+          cwd: input.cwd,
+          env: claudeEnvironment,
+        }).pipe(
+          Effect.flatMap((result) =>
+            result.code === 0
+              ? Effect.succeed(result)
+              : Effect.fail(
+                  new ProviderExtensionsError({
+                    message: claudeCommandFailureMessage({ args: pluginListArgs, ...result }),
                   }),
-                }),
-              ),
+                ),
+          ),
+          Effect.map((result) => parseClaudePluginListEntries(result.stdout)),
+          Effect.result,
         ),
-        Effect.map((result) => parseClaudePluginListEntries(result.stdout)),
-        Effect.result,
-      ),
-      runClaudeCommand({
-        binaryPath: input.config.binaryPath,
-        args: ["plugin", "marketplace", "list", "--json"],
-        cwd: input.cwd,
-        env: claudeEnvironment,
-      }).pipe(
-        Effect.flatMap((result) =>
-          result.code === 0
-            ? Effect.succeed(result)
-            : Effect.fail(
-                new ProviderExtensionsError({
-                  message: claudeCommandFailureMessage({
-                    args: ["plugin", "marketplace", "list", "--json"],
-                    ...result,
+        runClaudeCommand({
+          binaryPath: input.config.binaryPath,
+          args: ["plugin", "marketplace", "list", "--json"],
+          cwd: input.cwd,
+          env: claudeEnvironment,
+        }).pipe(
+          Effect.flatMap((result) =>
+            result.code === 0
+              ? Effect.succeed(result)
+              : Effect.fail(
+                  new ProviderExtensionsError({
+                    message: claudeCommandFailureMessage({
+                      args: ["plugin", "marketplace", "list", "--json"],
+                      ...result,
+                    }),
                   }),
-                }),
-              ),
+                ),
+          ),
+          Effect.result,
         ),
-        Effect.result,
-      ),
-      runClaudeCommand({
-        binaryPath: input.config.binaryPath,
-        args: ["mcp", "list"],
-        cwd: input.cwd,
-        env: claudeEnvironment,
-      }).pipe(Effect.result),
-    ],
-    { concurrency: "unbounded" },
-  );
+        includeMcpServers
+          ? runClaudeCommand({
+              binaryPath: input.config.binaryPath,
+              args: ["mcp", "list"],
+              cwd: input.cwd,
+              env: claudeEnvironment,
+            }).pipe(Effect.result)
+          : Effect.succeed(undefined),
+        claudeWritableSkillRoots(resolvedClaudeHome, input.cwd),
+        readClaudeEnabledPlugins(resolvedClaudeHome),
+      ],
+      { concurrency: "unbounded" },
+    );
 
   const pluginEntries = Result.isSuccess(pluginResult) ? pluginResult.success : [];
   const describedPlugins = yield* describeInstalledClaudePlugins(
@@ -3570,19 +3924,28 @@ const readClaudeInventory = Effect.fn("providerExtensions.readClaudeInventory")(
     marketplaces,
     marketplaceManifests,
   );
-  const resolvedClaudeHome = path.resolve(claudeHome);
-  const skillsResult = yield* readClaudeSkills(resolvedClaudeHome, input.cwd, plugins).pipe(
-    Effect.result,
+  // Without the store, counting plugins per marketplace would count only installed ones; each
+  // manifest (already read for the icons above) knows the real size.
+  const countedMarketplaces = includePluginCatalog
+    ? marketplaces
+    : marketplaces.map(({ pluginCount: _installedOnly, ...marketplace }) => {
+        const offered = marketplaceManifests.get(marketplace.name)?.size;
+        return offered ? { ...marketplace, pluginCount: offered } : marketplace;
+      });
+  const [skillsResult, hooks] = yield* Effect.all(
+    [
+      readClaudeSkills(writableRoots, plugins).pipe(Effect.result),
+      readClaudeHooks({ claudeHome: resolvedClaudeHome, cwd: input.cwd, plugins }),
+    ],
+    { concurrency: "unbounded" },
   );
-  const messages = [
-    resultMessage(pluginResult),
-    resultMessage(mcpResult),
-    resultMessage(skillsResult),
-  ].filter((message): message is string => Boolean(message));
-  const [enabledPlugins, writableRoots] = yield* Effect.all([
-    readClaudeEnabledPlugins(resolvedClaudeHome),
-    claudeWritableSkillRoots(resolvedClaudeHome, input.cwd),
-  ]);
+  const messages = [resultMessage(pluginResult), resultMessage(skillsResult)].filter(
+    (message): message is string => Boolean(message),
+  );
+  // MCP failures report through their own section, as Codex's do, so a slow or broken server does
+  // not flag the whole provider as loaded with issues.
+  const mcpServersMessage =
+    mcpResult !== undefined && Result.isFailure(mcpResult) ? resultMessage(mcpResult) : undefined;
   const skills = Result.isSuccess(skillsResult)
     ? annotateClaudeSkillCapabilities(annotatePluginBackedSkills(skillsResult.success, plugins), {
         path,
@@ -3595,15 +3958,35 @@ const readClaudeInventory = Effect.fn("providerExtensions.readClaudeInventory")(
     status: messages.length > 0 ? "partial" : "ready",
     ...(messages.length > 0 ? { message: messages.join(" ") } : {}),
     plugins,
-    marketplaces,
+    marketplaces: countedMarketplaces,
+    pluginCatalogStatus: includePluginCatalog
+      ? Result.isSuccess(pluginResult)
+        ? "ready"
+        : "error"
+      : "deferred",
     skills,
-    mcpServers: Result.isSuccess(mcpResult)
-      ? parseClaudeMcpList(mcpResult.success.stdout, pluginEntries)
-      : [],
+    mcpServers:
+      mcpResult !== undefined && Result.isSuccess(mcpResult)
+        ? parseClaudeMcpList(mcpResult.success.stdout, pluginEntries)
+        : [],
+    mcpServersStatus:
+      mcpResult === undefined ? "deferred" : Result.isSuccess(mcpResult) ? "ready" : "error",
+    ...(mcpServersMessage ? { mcpServersMessage } : {}),
     apps: [],
+    hooks,
   } satisfies Pick<
     ProviderExtensionProviderInventory,
-    "plugins" | "marketplaces" | "skills" | "mcpServers" | "apps" | "status" | "message"
+    | "plugins"
+    | "marketplaces"
+    | "pluginCatalogStatus"
+    | "skills"
+    | "mcpServers"
+    | "mcpServersStatus"
+    | "mcpServersMessage"
+    | "apps"
+    | "hooks"
+    | "status"
+    | "message"
   >;
 });
 
@@ -3631,6 +4014,7 @@ const readProviderInventory = Effect.fn("providerExtensions.readProviderInventor
     readonly providerThreadId?: string | undefined;
     readonly includeMcpServers?: boolean | undefined;
     readonly includeApps?: boolean | undefined;
+    readonly includePluginCatalog?: boolean | undefined;
   }) {
     const processEnv = mergeProviderInstanceEnvironment(input.config.environment ?? []);
     const base = {
@@ -3673,6 +4057,9 @@ const readProviderInventory = Effect.fn("providerExtensions.readProviderInventor
           ? { includeMcpServers: input.includeMcpServers }
           : {}),
         ...(input.includeApps !== undefined ? { includeApps: input.includeApps } : {}),
+        ...(input.includePluginCatalog !== undefined
+          ? { includePluginCatalog: input.includePluginCatalog }
+          : {}),
       });
       return {
         ...base,
@@ -3710,6 +4097,12 @@ const readProviderInventory = Effect.fn("providerExtensions.readProviderInventor
         config: { ...decoded, enabled },
         cwd: input.cwd,
         environment: processEnv,
+        ...(input.includeMcpServers !== undefined
+          ? { includeMcpServers: input.includeMcpServers }
+          : {}),
+        ...(input.includePluginCatalog !== undefined
+          ? { includePluginCatalog: input.includePluginCatalog }
+          : {}),
       });
       return { ...base, ...inventory } satisfies ProviderExtensionProviderInventory;
     }
@@ -4223,6 +4616,7 @@ export const deleteProviderExtensionSkill = Effect.fn(
         }),
     ),
   );
+  forgetReportedSkillPath(skillPath);
   return { deleted: true };
 });
 
@@ -4990,6 +5384,7 @@ export const readProviderExtensionsInventory = Effect.fn(
             providerThreadId: scopedProviderThreadId,
             includeMcpServers: input.request.includeMcpServers,
             includeApps: input.request.includeApps,
+            includePluginCatalog: input.request.includePluginCatalog,
           }).pipe(
             Effect.catch((error: ProviderExtensionsError) =>
               Effect.succeed({
@@ -5014,18 +5409,11 @@ export const readProviderExtensionsInventory = Effect.fn(
     { concurrency: "unbounded" },
   );
 
-  const pluginIconPaths = new Set<string>();
-  const skillPaths = new Set<string>();
-  for (const provider of providers) {
-    for (const plugin of provider.plugins) {
-      if (plugin.iconPath) pluginIconPaths.add(plugin.iconPath);
-    }
-    for (const skill of provider.skills) {
-      if (skill.path) skillPaths.add(skill.path);
-    }
-  }
-  currentProviderExtensionPluginIconPaths = pluginIconPaths;
-  currentProviderExtensionSkillPaths = skillPaths;
+  recordReportedExtensionPaths(
+    // A store load reports icons an installed-only load does not, so they keep separate entries.
+    `${cwd}\u0000${input.request.includePluginCatalog === false ? "installed" : "catalog"}`,
+    providers,
+  );
 
   return {
     cwd,
