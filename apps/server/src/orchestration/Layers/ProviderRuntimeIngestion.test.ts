@@ -124,6 +124,7 @@ function createProviderServiceHarness() {
     realtimeAppendAudio: () => unsupported(),
     realtimeListVoices: () => unsupported(),
     releaseBackgroundCommands: () => Effect.void,
+    noteExtensionsChanged: () => Effect.void,
     readConversation: () => Effect.succeed(null),
     compactContext: () => unsupported(),
     setThreadGoal: () => unsupported(),

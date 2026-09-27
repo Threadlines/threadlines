@@ -396,6 +396,9 @@ interface ClaudeSessionContext {
   currentInteractionMode: ProviderInteractionMode | undefined;
   currentApiModelId: string | undefined;
   currentFlagSettings: ClaudeFlagSettingsSnapshot;
+  /** Plugins or skills changed from Settings since this session last loaded them. The CLI only
+   *  reads them at launch, so the next turn reloads them first. */
+  extensionsStale?: boolean;
   readonly currentFallbackModelIds: ReadonlyArray<string>;
   resumeSessionId: string | undefined;
   readonly pendingApprovals: Map<ApprovalRequestId, PendingApproval>;
@@ -502,6 +505,9 @@ interface ClaudeQueryRuntime extends AsyncIterable<SDKMessage> {
     readonly ultracode?: boolean | null;
   }) => Promise<void>;
   readonly getContextUsage?: () => Promise<SDKControlGetContextUsageResponse>;
+  /** Optional: absent on CLIs that predate in-session plugin and skill reloads. */
+  readonly reloadPlugins?: () => Promise<unknown>;
+  readonly reloadSkills?: () => Promise<unknown>;
   readonly rewindFiles?: (
     userMessageId: string,
     options?: { readonly dryRun?: boolean },
@@ -7318,6 +7324,39 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       }
     }
 
+    // Plugin and skill changes from Settings reach a running CLI only through a reload. It runs
+    // here, before the next message, rather than when they changed: a reload changes the tool
+    // list, which costs the conversation its prompt cache once, and a session nobody writes to
+    // again should not pay for that. Best-effort, like the option changes above.
+    if (context.extensionsStale) {
+      // Cleared before reloading so a change noted mid-reload marks the session again; a failed
+      // reload marks it again too, so the next turn retries.
+      context.extensionsStale = false;
+      const reloads = [
+        context.query.reloadPlugins?.bind(context.query),
+        context.query.reloadSkills?.bind(context.query),
+      ].filter((reload) => reload !== undefined);
+      for (const reload of reloads) {
+        yield* Effect.tryPromise({
+          try: () => reload(),
+          catch: (cause) => toRequestError(input.threadId, "turn/reloadExtensions", cause),
+        }).pipe(
+          Effect.catch((error: { readonly message: string }) =>
+            Effect.sync(() => {
+              context.extensionsStale = true;
+            }).pipe(
+              Effect.andThen(
+                Effect.logWarning("claude adapter failed to reload plugins and skills in-session", {
+                  threadId: input.threadId,
+                  error: error.message,
+                }),
+              ),
+            ),
+          ),
+        );
+      }
+    }
+
     // Apply interaction mode by switching the SDK's permission mode.
     // "plan" maps directly to the SDK's "plan" permission mode;
     // "default" restores the session's original permission mode.
@@ -7470,6 +7509,12 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     const context = yield* requireSession(threadId);
     yield* releaseBackgroundCommands(context);
   });
+
+  // Marks every live session; each reloads before its next turn (see sendTurn).
+  const noteExtensionsChanged: NonNullable<ClaudeAdapterShape["noteExtensionsChanged"]> = () =>
+    Effect.sync(() => {
+      for (const context of sessions.values()) context.extensionsStale = true;
+    });
 
   const compactContext: NonNullable<ClaudeAdapterShape["compactContext"]> = Effect.fn(
     "compactContext",
@@ -7822,6 +7867,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     steerTurn,
     interruptTurn,
     releaseBackgroundCommands: releaseBackgroundCommandsForThread,
+    noteExtensionsChanged,
     compactContext,
     readThread,
     readSubagentTranscript,

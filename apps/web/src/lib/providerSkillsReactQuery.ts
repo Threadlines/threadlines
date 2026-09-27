@@ -38,11 +38,13 @@ export function providerSkillsQueryOptions(input: {
       if (!api.providers) {
         throw new Error("This environment does not support project skill discovery.");
       }
+      // Skills only: the plugin store alone is megabytes on a real Codex account.
       const inventory = await api.providers.getExtensions({
         cwd: input.cwd,
         providerInstanceId: input.providerInstanceId,
         includeMcpServers: false,
         includeApps: false,
+        includePluginCatalog: false,
       });
       const provider = inventory.providers.find(
         (candidate) => candidate.instanceId === input.providerInstanceId,

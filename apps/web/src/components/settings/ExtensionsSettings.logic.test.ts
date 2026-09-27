@@ -1,4 +1,9 @@
-import type { EnvironmentId } from "@threadlines/contracts";
+import {
+  type EnvironmentId,
+  ProviderDriverKind,
+  type ProviderExtensionProviderInventory,
+  ProviderInstanceId,
+} from "@threadlines/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
@@ -21,6 +26,7 @@ import {
   isLikelyLocalPath,
   isProviderCoverageMissing,
   makeExtensionInventoryCacheKey,
+  mergeRefreshedProviders,
   formatSkillDisplayName,
   formatTokenCount,
   groupExtensionSkills,
@@ -122,6 +128,53 @@ describe("ExtensionsSettings logic", () => {
     expect(buckets[1]?.autoExpand).toBe(true);
     expect(buckets[1]?.total).toBe(2);
     expect(buckets[1]?.matching.map((skill) => skill.id)).toEqual(["a"]);
+  });
+
+  it("folds a one-provider reload into the page without blanking connections it skipped", () => {
+    const provider = (
+      instanceId: string,
+      overrides: Partial<ProviderExtensionProviderInventory> = {},
+    ): ProviderExtensionProviderInventory => ({
+      instanceId: ProviderInstanceId.make(instanceId),
+      driver: ProviderDriverKind.make(instanceId),
+      status: "ready",
+      plugins: [],
+      marketplaces: [],
+      skills: [],
+      mcpServers: [],
+      apps: [],
+      ...overrides,
+    });
+    const inventory = (providers: ReadonlyArray<ProviderExtensionProviderInventory>) => ({
+      generatedAt: "2026-09-27T00:00:00.000Z",
+      providers,
+      instructionFiles: [],
+    });
+    const connection = { name: "github", status: "Connected" };
+    const current = inventory([
+      provider("codex", { mcpServers: [connection], mcpServersStatus: "ready" }),
+      provider("claudeAgent", { mcpServers: [connection], mcpServersStatus: "ready" }),
+    ]);
+
+    // A skill toggle reloads Codex alone and skips the MCP check it could not have affected.
+    const merged = mergeRefreshedProviders(
+      current,
+      inventory([
+        provider("codex", {
+          skills: [{ name: "review", path: "/skills/review/SKILL.md", enabled: false }],
+          mcpServersStatus: "deferred",
+        }),
+      ]),
+    );
+
+    expect(merged.providers.map((entry) => String(entry.instanceId))).toEqual([
+      "codex",
+      "claudeAgent",
+    ]);
+    expect(merged.providers[0]?.skills[0]?.enabled).toBe(false);
+    expect(merged.providers[0]?.mcpServers).toEqual([connection]);
+    expect(merged.providers[0]?.mcpServersStatus).toBe("ready");
+    expect(merged.providers[1]).toBe(current.providers[1]);
   });
 
   it("knows when the loaded inventory cannot answer for the selected provider", () => {

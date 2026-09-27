@@ -7,6 +7,7 @@ import type {
   ProviderExtensionPluginDetail,
   ProviderExtensionProviderInventory,
   ProviderExtensionSkill,
+  ProviderExtensionsInventoryResult,
 } from "@threadlines/contracts";
 
 import type { ThreadSortInput } from "../../lib/threadSort";
@@ -206,6 +207,44 @@ export function isProviderCoverageMissing(input: {
 }): boolean {
   if (!input.providerInstanceId || !input.hasInventory || input.hasError) return false;
   return !input.inventoryProviderInstanceIds.includes(input.providerInstanceId);
+}
+
+/**
+ * Folds a reload of some providers into the inventory on screen. A change to one provider reloads
+ * just that one, and a reload that skipped the MCP check keeps the connections already shown,
+ * since the change could not have touched them.
+ */
+export function mergeRefreshedProviders(
+  current: ProviderExtensionsInventoryResult | null,
+  refreshed: ProviderExtensionsInventoryResult,
+): ProviderExtensionsInventoryResult {
+  if (!current) return refreshed;
+  const refreshedById = new Map(
+    refreshed.providers.map((provider) => [String(provider.instanceId), provider]),
+  );
+  const providers = current.providers.map((previous) => {
+    const next = refreshedById.get(String(previous.instanceId));
+    if (!next) return previous;
+    refreshedById.delete(String(previous.instanceId));
+    const keepConnections =
+      next.mcpServersStatus === "deferred" &&
+      previous.mcpServersStatus !== undefined &&
+      previous.mcpServersStatus !== "deferred";
+    if (!keepConnections) return next;
+    const { mcpServersMessage: _message, mcpServersTruncated: _truncated, ...rest } = next;
+    return {
+      ...rest,
+      mcpServers: previous.mcpServers,
+      mcpServersStatus: previous.mcpServersStatus,
+      ...(previous.mcpServersMessage !== undefined
+        ? { mcpServersMessage: previous.mcpServersMessage }
+        : {}),
+      ...(previous.mcpServersTruncated !== undefined
+        ? { mcpServersTruncated: previous.mcpServersTruncated }
+        : {}),
+    };
+  });
+  return { ...refreshed, providers: [...providers, ...refreshedById.values()] };
 }
 
 export type ExtensionBrowserLoadState = "ready" | "loading" | "error";

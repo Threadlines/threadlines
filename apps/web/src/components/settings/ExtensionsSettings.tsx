@@ -22,6 +22,7 @@ import {
   SearchIcon,
   TerminalIcon,
   Trash2Icon,
+  WebhookIcon,
   WrenchIcon,
 } from "lucide-react";
 import { useNavigate, useSearch } from "@tanstack/react-router";
@@ -30,6 +31,7 @@ import type {
   EnvironmentApi,
   EnvironmentId,
   ProviderExtensionApp,
+  ProviderExtensionHook,
   ProviderExtensionMcpServer,
   ProviderExtensionMcpTool,
   ProviderExtensionPlugin,
@@ -98,6 +100,7 @@ import {
   groupPluginComponents,
   isLikelyLocalPath,
   isProviderCoverageMissing,
+  mergeRefreshedProviders,
   makeExtensionInventoryCacheKey,
   type ExtensionScopeGroup,
   type ExtensionScopeMachineInput,
@@ -158,7 +161,12 @@ import { cn } from "../../lib/utils";
 const EXTENSION_SECTION_PREVIEW_LIMIT = 10;
 const EXTENSION_BROWSER_PAGE_SIZE = 80;
 const EXTENSION_INVENTORY_CACHE_MAX_ENTRIES = 5;
-const EXTENSION_INVENTORY_CACHE_TTL_MS = 10 * 60 * 1_000;
+// Every visit reloads, so an old list is only on screen until the new one lands. That beats the
+// loading placeholders, which is what a short expiry brought back after ten minutes.
+const EXTENSION_INVENTORY_CACHE_TTL_MS = 24 * 60 * 60 * 1_000;
+// Coming straight back to the same view (a tab switch, a provider chip clicked twice) reuses a
+// load from seconds ago instead of starting every provider process again.
+const EXTENSION_INVENTORY_REUSE_MS = 15_000;
 const EXTENSIONS_CODEX_DRIVER = ProviderDriverKind.make("codex");
 const EXTENSIONS_CLAUDE_DRIVER = ProviderDriverKind.make("claudeAgent");
 type ExtensionSectionKey = "plugins" | "skills" | "mcpServers" | "apps";
@@ -877,24 +885,6 @@ function ExtensionItemBadges({
   );
 }
 
-function extensionAuthIssueDetail(item: ExtensionItem): string {
-  if (item.kind === "mcp") {
-    return (
-      optionalDetail([item.server.authStatus, item.server.status, item.server.detail]) ??
-      "MCP authentication needs attention."
-    );
-  }
-
-  if (item.kind === "plugin") {
-    return (
-      optionalDetail([item.plugin.authPolicy, item.plugin.availability]) ??
-      "Plugin authentication needs attention."
-    );
-  }
-
-  return `${extensionKindLabel(item.kind)} authentication needs attention.`;
-}
-
 function extensionOpenPath(item: ExtensionItem): string | null {
   if (item.kind === "skill") return item.skill.path;
   if (item.kind === "plugin" && isLikelyLocalPath(item.plugin.installPath)) {
@@ -1496,6 +1486,20 @@ function PluginComponents({
   );
 }
 
+/** What an action changed, so the page reloads just that provider (see refreshAfterMutation). */
+interface ExtensionInventoryChange {
+  readonly providerInstanceId: string;
+  /** Plugins can bring MCP servers with them; skills cannot. */
+  readonly affectsConnections: boolean;
+}
+
+function inventoryChangeFor(
+  item: ExtensionItem,
+  affectsConnections: boolean,
+): ExtensionInventoryChange {
+  return { providerInstanceId: String(item.provider.instanceId), affectsConnections };
+}
+
 function ExtensionDetailDialog({
   item,
   onClose,
@@ -1516,7 +1520,7 @@ function ExtensionDetailDialog({
   /** Named in the delete confirmation so it is clear which machine loses the folder. */
   machineLabel: string;
   providerThreadId: string;
-  onInventoryMutated: () => Promise<void>;
+  onInventoryMutated: (change: ExtensionInventoryChange) => Promise<void>;
   lastAction?: ExtensionActionHistoryEntry | undefined;
   onActionHistoryChange: (itemKey: string, entry: ExtensionActionHistoryEntry) => void;
 }) {
@@ -1733,7 +1737,7 @@ function ExtensionDetailDialog({
               title: "OAuth completed",
               description: item.server.name,
             });
-            await onInventoryMutated();
+            await onInventoryMutated(inventoryChangeFor(item, true));
             return status.message ?? status.status;
           }
           const message = status.error
@@ -1750,7 +1754,7 @@ function ExtensionDetailDialog({
     if (!item) return;
     void runDialogAction("Reload MCP", async () => {
       await providersApi().reloadExtensionMcpServers(actionBaseInput(item, cwd));
-      await onInventoryMutated();
+      await onInventoryMutated(inventoryChangeFor(item, true));
       return "MCP servers reloaded.";
     });
   }, [cwd, item, onInventoryMutated, providersApi, runDialogAction]);
@@ -1764,7 +1768,7 @@ function ExtensionDetailDialog({
         path: item.skill.path,
         enabled: nextEnabled,
       });
-      await onInventoryMutated();
+      await onInventoryMutated(inventoryChangeFor(item, false));
       return `Skill ${result.effectiveEnabled ? "enabled" : "disabled"}.`;
     });
   }, [cwd, item, onInventoryMutated, providersApi, runDialogAction]);
@@ -1781,7 +1785,7 @@ function ExtensionDetailDialog({
         ...actionBaseInput(item, cwd),
         path: item.skill.path,
       });
-      await onInventoryMutated();
+      await onInventoryMutated(inventoryChangeFor(item, false));
       // The item this dialog is bound to no longer exists, so there is nothing left to show.
       onClose();
       return "Skill deleted.";
@@ -1795,7 +1799,7 @@ function ExtensionDetailDialog({
         ...actionBaseInput(item, cwd),
         ...pluginSelectorInput(item.plugin),
       });
-      await onInventoryMutated();
+      await onInventoryMutated(inventoryChangeFor(item, true));
       return formatJson(result);
     });
   }, [cwd, item, onInventoryMutated, providersApi, runDialogAction]);
@@ -1810,7 +1814,7 @@ function ExtensionDetailDialog({
         pluginId: item.plugin.id,
         ...(item.plugin.scope ? { scope: item.plugin.scope } : {}),
       });
-      await onInventoryMutated();
+      await onInventoryMutated(inventoryChangeFor(item, true));
       return "Plugin uninstalled.";
     });
   }, [cwd, item, onInventoryMutated, providersApi, runDialogAction]);
@@ -1825,7 +1829,7 @@ function ExtensionDetailDialog({
         ...(item.plugin.scope ? { scope: item.plugin.scope } : {}),
         enabled: nextEnabled,
       });
-      await onInventoryMutated();
+      await onInventoryMutated(inventoryChangeFor(item, true));
       return `Plugin ${result.effectiveEnabled ? "enabled" : "disabled"}.`;
     });
   }, [cwd, item, onInventoryMutated, providersApi, runDialogAction]);
@@ -1838,8 +1842,10 @@ function ExtensionDetailDialog({
         pluginId: item.plugin.id,
         ...(item.plugin.scope ? { scope: item.plugin.scope } : {}),
       });
-      await onInventoryMutated();
-      return "Plugin updated. Restart active Claude sessions to apply the new plugin bundle.";
+      await onInventoryMutated(inventoryChangeFor(item, true));
+      return item.provider.driver === EXTENSIONS_CLAUDE_DRIVER
+        ? "Plugin updated. Open Claude chats pick it up with their next message."
+        : "Plugin updated.";
     });
   }, [cwd, item, onInventoryMutated, providersApi, runDialogAction]);
 
@@ -1864,7 +1870,7 @@ function ExtensionDetailDialog({
         ...(managedClaudePlugin.scope ? { scope: managedClaudePlugin.scope } : {}),
         enabled: nextEnabled,
       });
-      await onInventoryMutated();
+      await onInventoryMutated(inventoryChangeFor(item, true));
       return `Plugin ${result.effectiveEnabled ? "enabled" : "disabled"}.`;
     });
   }, [cwd, item, managedClaudePlugin, onInventoryMutated, providersApi, runDialogAction]);
@@ -1881,7 +1887,7 @@ function ExtensionDetailDialog({
         pluginId: managedClaudePlugin.id,
         ...(managedClaudePlugin.scope ? { scope: managedClaudePlugin.scope } : {}),
       });
-      await onInventoryMutated();
+      await onInventoryMutated(inventoryChangeFor(item, true));
       return "Plugin uninstalled.";
     });
   }, [cwd, item, managedClaudePlugin, onInventoryMutated, providersApi, runDialogAction]);
@@ -3104,6 +3110,88 @@ function NeedsAttention({
   );
 }
 
+interface ExtensionHookRow {
+  readonly provider: ProviderExtensionProviderInventory;
+  readonly hook: ProviderExtensionHook;
+}
+
+const HOOK_SOURCE_LABELS: Readonly<Record<string, string>> = {
+  user: "User settings",
+  project: "Project settings",
+  local: "Local settings",
+  system: "System",
+  sessionFlags: "Session",
+};
+
+function hookSourceLabel(hook: ProviderExtensionHook): string {
+  if (hook.source === "plugin") {
+    const plugin = hook.pluginId?.split("@")[0];
+    return plugin ? `${plugin} plugin` : "Plugin";
+  }
+  return (
+    HOOK_SOURCE_LABELS[hook.source] ??
+    (/managed|mdm|cloud/i.test(hook.source) ? "Managed" : hook.source)
+  );
+}
+
+/** Why a listed hook will not run, if it will not. */
+function hookInactiveLabel(hook: ProviderExtensionHook): string | null {
+  if (hook.enabled === false) return "Off";
+  if (hook.trustStatus === "untrusted") return "Not trusted";
+  if (hook.trustStatus === "modified") return "Changed since trusted";
+  return null;
+}
+
+/**
+ * Hooks are provider config rather than something Threadlines installs, so the list is read-only:
+ * what fires it, what it runs, and which file it lives in (on hover).
+ */
+function HooksList({ rows }: { rows: ReadonlyArray<ExtensionHookRow> }) {
+  if (rows.length === 0) {
+    return <div className="py-2 text-xs text-muted-foreground">No hooks match the search.</div>;
+  }
+  return (
+    <div>
+      <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 border-b border-border/50 pb-1.5 text-[11px] font-semibold uppercase text-muted-foreground/70 sm:grid-cols-[12rem_minmax(0,1fr)_10rem]">
+        <span>Event</span>
+        <span className="hidden sm:block">Runs</span>
+        <span>Set in</span>
+      </div>
+      {rows.map(({ provider, hook }) => {
+        const inactive = hookInactiveLabel(hook);
+        return (
+          <div
+            key={`${provider.instanceId}:${hook.key}`}
+            className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 border-t border-border/40 py-2 first:border-t-0 sm:grid-cols-[12rem_minmax(0,1fr)_10rem]"
+            title={hook.sourcePath}
+          >
+            <span className="min-w-0">
+              <span className="block truncate font-mono text-xs text-foreground">{hook.event}</span>
+              {hook.matcher ? (
+                <span className="block truncate text-[11px] text-muted-foreground/70">
+                  {hook.matcher}
+                </span>
+              ) : null}
+            </span>
+            <span className="hidden min-w-0 truncate font-mono text-[11px] text-muted-foreground sm:block">
+              {hook.command ?? hook.handler}
+            </span>
+            <span className="flex min-w-0 items-center gap-1.5 text-xs text-foreground/90">
+              <ProviderNameGlyph driver={String(provider.driver)} />
+              <span className="truncate">{hookSourceLabel(hook)}</span>
+              {inactive ? (
+                <Badge size="sm" variant="outline">
+                  {inactive}
+                </Badge>
+              ) : null}
+            </span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 /**
  * One table over every provider's MCP servers. The origin column is the point: a connection that
  * arrived with a plugin should say so and lead back to it, rather than looking hand-configured.
@@ -3212,7 +3300,7 @@ function MarketplacesBlock({
 }: {
   provider: ProviderExtensionProviderInventory;
   cwd: string;
-  onMutated: () => Promise<void>;
+  onMutated: (change: ExtensionInventoryChange) => Promise<void>;
 }) {
   const [busy, setBusy] = useState<string | null>(null);
   const providersApi = useScopedProvidersApi();
@@ -3229,7 +3317,11 @@ function MarketplacesBlock({
           title: label,
           description: message ?? "Done.",
         });
-        await onMutated();
+        // Removing or refreshing a marketplace can change installed plugins, and with them MCP.
+        await onMutated({
+          providerInstanceId: String(provider.instanceId),
+          affectsConnections: true,
+        });
       } catch (error) {
         toastManager.add(
           stackedThreadToast({
@@ -3242,7 +3334,7 @@ function MarketplacesBlock({
         setBusy(null);
       }
     },
-    [onMutated],
+    [onMutated, provider.instanceId],
   );
 
   const baseInput = {
@@ -3981,7 +4073,7 @@ function NewSkillDialog({
   providers: ReadonlyArray<ProviderExtensionProviderInventory>;
   cwd: string;
   onClose: () => void;
-  onCreated: () => Promise<void>;
+  onCreated: (change: ExtensionInventoryChange) => Promise<void>;
 }) {
   const providersApi = useScopedProvidersApi();
   const [name, setName] = useState("");
@@ -4014,7 +4106,7 @@ function NewSkillDialog({
         name: trimmedName,
         ...(description.trim() ? { description: description.trim() } : {}),
       });
-      await onCreated();
+      await onCreated({ providerInstanceId, affectsConnections: false });
       toastManager.add({
         type: "success",
         title: "Skill created",
@@ -4487,25 +4579,35 @@ export function ExtensionsSettingsPanel() {
     Record<string, ExtensionActionHistoryEntry>
   >({});
   const [isLoading, setIsLoading] = useState(false);
+  // The request key of the last load this panel applied, as opposed to one read from the cache.
+  const [appliedInventoryKey, setAppliedInventoryKey] = useState<string | null>(null);
   const [mcpLoadingProviderId, setMcpLoadingProviderId] = useState<string | null>(null);
   const [appsLoadingProviderId, setAppsLoadingProviderId] = useState<string | null>(null);
+  const [pluginCatalogLoadingProviderId, setPluginCatalogLoadingProviderId] = useState<
+    string | null
+  >(null);
   const [lastInventoryLoadMs, setLastInventoryLoadMs] = useState<number | null>(
     () => initialCachedInventory?.loadDurationMs ?? null,
   );
   const [error, setError] = useState<string | null>(null);
   const mcpInventoryRequestedRef = useRef(initialMcpInventoryRequested);
   const appsInventoryRequestedRef = useRef(initialAppsInventoryRequested);
+  // Not restored from the cache: the store costs seconds, so each visit starts without it and
+  // only Browse brings it back.
+  const pluginCatalogRequestedRef = useRef(false);
 
   const clearInventory = useCallback((options?: { readonly loading?: boolean }) => {
     refreshRequestRef.current += 1;
     mcpInventoryRequestedRef.current = false;
     appsInventoryRequestedRef.current = false;
+    pluginCatalogRequestedRef.current = false;
     setInventory(null);
     setLastInventoryLoadMs(null);
     setError(null);
     setSelectedItem(null);
     setMcpLoadingProviderId(null);
     setAppsLoadingProviderId(null);
+    setPluginCatalogLoadingProviderId(null);
     setIsLoading(options?.loading ?? false);
   }, []);
 
@@ -4515,6 +4617,7 @@ export function ExtensionsSettingsPanel() {
     setSelectedItem(null);
     setMcpLoadingProviderId(null);
     setAppsLoadingProviderId(null);
+    setPluginCatalogLoadingProviderId(null);
   }, []);
 
   // The resolved scope is what gets remembered, so a pick that lapsed does not
@@ -4592,12 +4695,28 @@ export function ExtensionsSettingsPanel() {
     setError(null);
   }, [clearInventory, inventoryRequestKey]);
 
+  // A one-provider reload lands on whatever inventory is on screen by the time it answers, and a
+  // view showing an error always reloads rather than reusing a recent answer. Both are read from
+  // async callbacks, after this has run.
+  const inventoryRef = useRef(inventory);
+  const errorRef = useRef(error);
+  useEffect(() => {
+    inventoryRef.current = inventory;
+    errorRef.current = error;
+  }, [error, inventory]);
+
   const refresh = useCallback(
     async (options?: {
       readonly invalidateCache?: boolean;
       readonly includeMcpServers?: boolean;
       readonly includeApps?: boolean;
-    }) => {
+      readonly includePluginCatalog?: boolean;
+      // Section loads (connections, apps, the store) show their own progress, so the page-wide
+      // "Loading" label and load time stay with the load that brought the page.
+      readonly background?: boolean;
+      // A change to one provider reloads only that one and merges it into the page.
+      readonly onlyProviderInstanceId?: string;
+    }): Promise<boolean> => {
       const requestId = refreshRequestRef.current + 1;
       refreshRequestRef.current = requestId;
       const requestKey = inventoryRequestKey;
@@ -4605,6 +4724,10 @@ export function ExtensionsSettingsPanel() {
       const requestEnvironmentId = scopeEnvironmentId;
       const includeMcpServers = options?.includeMcpServers ?? mcpInventoryRequestedRef.current;
       const includeApps = options?.includeApps ?? appsInventoryRequestedRef.current;
+      const includePluginCatalog =
+        options?.includePluginCatalog ?? pluginCatalogRequestedRef.current;
+      const onlyProviderInstanceId = options?.onlyProviderInstanceId;
+      const requestProviderInstanceId = onlyProviderInstanceId ?? providerInstanceId;
       // A machine scope has no cwd and is still a request; nothing to ask means no
       // scope resolved yet, or a machine this client cannot currently reach.
       const providersApi = readScopedProvidersApi(requestEnvironmentId);
@@ -4613,10 +4736,10 @@ export function ExtensionsSettingsPanel() {
         setLastInventoryLoadMs(null);
         setError(null);
         setIsLoading(false);
-        return;
+        return false;
       }
 
-      setIsLoading(true);
+      if (!options?.background) setIsLoading(true);
       setError(null);
       if (includeMcpServers) {
         mcpInventoryRequestedRef.current = true;
@@ -4624,38 +4747,46 @@ export function ExtensionsSettingsPanel() {
       if (includeApps) {
         appsInventoryRequestedRef.current = true;
       }
+      if (includePluginCatalog) {
+        pluginCatalogRequestedRef.current = true;
+      }
       if (options?.invalidateCache && requestKey) {
         extensionInventoryCache.delete(requestKey);
       }
       const startedMs = performance.now();
       try {
-        const result = await providersApi.getExtensions({
+        const response = await providersApi.getExtensions({
           // No cwd is the machine-wide request: the server answers with the
           // user-level inventory rather than any one project's.
           ...(requestCwd ? { cwd: requestCwd } : {}),
           // An empty filter means "every configured provider"; the server already fans out when
           // no instance id is supplied.
-          ...(providerInstanceId
-            ? { providerInstanceId: providerInstanceId as ProviderInstanceId }
+          ...(requestProviderInstanceId
+            ? { providerInstanceId: requestProviderInstanceId as ProviderInstanceId }
             : {}),
           ...(effectiveProviderThreadId ? { providerThreadId: effectiveProviderThreadId } : {}),
           includeMcpServers,
           includeApps,
+          includePluginCatalog,
         });
         const loadDurationMs = performance.now() - startedMs;
-        // A response is correct for the key it was issued under no matter what the user switched
-        // to while it was in flight, so it is always worth keeping. Dropping it made switching
-        // back to a provider a cold miss, which is what showed "No plugins installed" on return.
+        const isCurrent =
+          refreshRequestRef.current === requestId && inventoryRequestKeyRef.current === requestKey;
+        // A one-provider reload only means something merged into the page it was issued from.
+        if (onlyProviderInstanceId && !isCurrent) return false;
+        const result = onlyProviderInstanceId
+          ? mergeRefreshedProviders(inventoryRef.current, response)
+          : response;
+        // A full response is correct for the key it was issued under no matter what the user
+        // switched to while it was in flight, so it is always worth keeping. Dropping it made
+        // switching back to a provider a cold miss, which showed "No plugins installed" on return.
         if (requestKey) {
           extensionInventoryCache.set(requestKey, result, loadDurationMs);
         }
-        if (
-          refreshRequestRef.current === requestId &&
-          inventoryRequestKeyRef.current === requestKey
-        ) {
+        if (isCurrent) {
           // An unfiltered load is the only one that sees every provider, so it is
           // the only one allowed to redraw a remote machine's chips.
-          if (!providerInstanceId && requestEnvironmentId) {
+          if (!requestProviderInstanceId && requestEnvironmentId) {
             setRemoteProviders({
               environmentId: requestEnvironmentId,
               options: result.providers.map((provider) => ({
@@ -4666,11 +4797,13 @@ export function ExtensionsSettingsPanel() {
             });
           }
           setInventory(result);
+          setAppliedInventoryKey(requestKey);
           setSelectedItem((current) =>
             current ? findRefreshedExtensionItem(current, result) : current,
           );
-          setLastInventoryLoadMs(loadDurationMs);
+          if (!options?.background) setLastInventoryLoadMs(loadDurationMs);
         }
+        return isCurrent;
       } catch (refreshError) {
         if (
           refreshRequestRef.current === requestId &&
@@ -4681,6 +4814,7 @@ export function ExtensionsSettingsPanel() {
           );
           setLastInventoryLoadMs(null);
         }
+        return false;
       } finally {
         if (
           refreshRequestRef.current === requestId &&
@@ -4703,9 +4837,24 @@ export function ExtensionsSettingsPanel() {
 
   useEffect(() => {
     const loadDelayMs = manualProviderThreadId.trim().length > 0 ? 350 : 0;
-    const timeoutId = window.setTimeout(() => void refresh(), loadDelayMs);
+    const timeoutId = window.setTimeout(() => {
+      const recent = inventoryRequestKey ? extensionInventoryCache.peek(inventoryRequestKey) : null;
+      if (
+        recent &&
+        errorRef.current === null &&
+        Date.now() - recent.cachedAtMs < EXTENSION_INVENTORY_REUSE_MS
+      ) {
+        // Counts as this view's load, so deferred sections still fill in behind it. A load still
+        // running for the previous view can no longer land here or clear its own spinner.
+        refreshRequestRef.current += 1;
+        setIsLoading(false);
+        setAppliedInventoryKey(inventoryRequestKey);
+        return;
+      }
+      void refresh();
+    }, loadDelayMs);
     return () => window.clearTimeout(timeoutId);
-  }, [manualProviderThreadId, refresh]);
+  }, [inventoryRequestKey, manualProviderThreadId, refresh]);
 
   const hasInventory = inventory !== null;
   // The loaded inventory predates the current provider chip, so it cannot answer for it yet.
@@ -4730,15 +4879,26 @@ export function ExtensionsSettingsPanel() {
     },
     [],
   );
-  const refreshAfterMutation = useCallback(() => refresh({ invalidateCache: true }), [refresh]);
+  // A change that names its provider reloads only that one. One that cannot touch connections (a
+  // skill) skips the MCP check and keeps the connections already on screen.
+  const refreshAfterMutation = useCallback(
+    async (change?: ExtensionInventoryChange) => {
+      await refresh({
+        invalidateCache: true,
+        ...(change ? { onlyProviderInstanceId: change.providerInstanceId } : {}),
+        ...(change && !change.affectsConnections ? { includeMcpServers: false } : {}),
+      });
+    },
+    [refresh],
+  );
   const loadMcpServers = useCallback(
     async (provider: ProviderExtensionProviderInventory) => {
       const providerId = String(provider.instanceId);
-      if (mcpLoadingProviderId === providerId) return;
+      if (mcpLoadingProviderId === providerId) return false;
       setMcpLoadingProviderId(providerId);
       mcpInventoryRequestedRef.current = true;
       try {
-        await refresh({ includeMcpServers: true, invalidateCache: true });
+        return await refresh({ includeMcpServers: true, invalidateCache: true, background: true });
       } finally {
         setMcpLoadingProviderId((current) => (current === providerId ? null : current));
       }
@@ -4752,12 +4912,26 @@ export function ExtensionsSettingsPanel() {
       setAppsLoadingProviderId(providerId);
       appsInventoryRequestedRef.current = true;
       try {
-        await refresh({ includeApps: true, invalidateCache: true });
+        await refresh({ includeApps: true, invalidateCache: true, background: true });
       } finally {
         setAppsLoadingProviderId((current) => (current === providerId ? null : current));
       }
     },
     [appsLoadingProviderId, refresh],
+  );
+  const loadPluginCatalog = useCallback(
+    async (provider: ProviderExtensionProviderInventory) => {
+      const providerId = String(provider.instanceId);
+      if (pluginCatalogLoadingProviderId === providerId) return;
+      setPluginCatalogLoadingProviderId(providerId);
+      pluginCatalogRequestedRef.current = true;
+      try {
+        await refresh({ includePluginCatalog: true, invalidateCache: true, background: true });
+      } finally {
+        setPluginCatalogLoadingProviderId((current) => (current === providerId ? null : current));
+      }
+    },
+    [pluginCatalogLoadingProviderId, refresh],
   );
 
   const providerScopedInventory = useMemo(
@@ -5025,12 +5199,79 @@ export function ExtensionsSettingsPanel() {
   const mcpAuthCheckFailed = providerScopedInventory.some(
     (provider) => provider.mcpServersStatus === "error",
   );
+  // Why a check failed, since the retry button alone does not say.
+  const mcpFailureMessages = providerScopedInventory.flatMap((provider) =>
+    provider.mcpServersStatus === "error" && provider.mcpServersMessage
+      ? [`${providerTitle(provider)}: ${provider.mcpServersMessage}`]
+      : [],
+  );
+  const allHookRows = useMemo(
+    () =>
+      providerScopedInventory.flatMap((provider) =>
+        (provider.hooks ?? []).map((hook): ExtensionHookRow => ({ provider, hook })),
+      ),
+    [providerScopedInventory],
+  );
+  const searchedHookRows = useMemo(() => {
+    const query = deferredPageQuery.trim().toLowerCase();
+    if (!query) return allHookRows;
+    return allHookRows.filter(({ hook }) =>
+      [hook.event, hook.matcher, hook.command, hookSourceLabel(hook)].some((value) =>
+        value?.toLowerCase().includes(query),
+      ),
+    );
+  }, [allHookRows, deferredPageQuery]);
+  const hookMessages = providerScopedInventory.flatMap((provider) =>
+    provider.hooksMessage ? [`${providerTitle(provider)}: ${provider.hooksMessage}`] : [],
+  );
+  // The MCP health checks take seconds, so the first load skips them and plugins and skills show
+  // right away. Connections then fill in on their own, once per scope, after that load lands (a
+  // cached inventory is about to be refreshed anyway). A failed check waits for the retry button.
+  const mcpDeferredProvider = providerScopedInventory.find(
+    (provider) => provider.mcpServersStatus === "deferred",
+  );
+  const autoMcpRequestKeyRef = useRef<string | null>(null);
+  const [autoMcpRetry, setAutoMcpRetry] = useState(0);
+  useEffect(() => {
+    if (tab !== "plugins" || isLoading || error !== null || !mcpDeferredProvider) return;
+    if (appliedInventoryKey !== inventoryRequestKey) return;
+    if (autoMcpRequestKeyRef.current === inventoryRequestKey) return;
+    const requestKey = inventoryRequestKey;
+    autoMcpRequestKeyRef.current = requestKey;
+    void loadMcpServers(mcpDeferredProvider).then((applied) => {
+      // A change reloaded first and superseded the check, so connections are still unchecked.
+      // Clear the once-per-scope mark and nudge the effect to run it again.
+      if (applied || autoMcpRequestKeyRef.current !== requestKey) return;
+      autoMcpRequestKeyRef.current = null;
+      setAutoMcpRetry((count) => count + 1);
+    });
+  }, [
+    appliedInventoryKey,
+    autoMcpRetry,
+    error,
+    inventoryRequestKey,
+    isLoading,
+    loadMcpServers,
+    mcpDeferredProvider,
+    tab,
+  ]);
 
+  // The store is only loaded behind Browse, the same way the apps directory is.
+  const pluginCatalogProvider = providerScopedInventory.find(
+    (provider) =>
+      provider.pluginCatalogStatus === "deferred" || provider.pluginCatalogStatus === "error",
+  );
+  const pluginCatalogPending = providerScopedInventory.some(
+    (provider) => provider.pluginCatalogStatus === "deferred",
+  );
   const catalogSection = useMemo((): ExtensionSectionConfig => {
     const installed = searchedInstalledPlugins;
     const browseItems = sortExtensionItems(
       filterExtensionItems(allPluginItems, deferredPageQuery),
       "recommended",
+    );
+    const catalogFailed = providerScopedInventory.some(
+      (provider) => provider.pluginCatalogStatus === "error",
     );
     return {
       key: "plugins",
@@ -5042,16 +5283,34 @@ export function ExtensionsSettingsPanel() {
       browseItems,
       totalCount: installed.length,
       emptyLabel: "No plugins installed.",
+      loadLabel: catalogFailed ? "Retry catalog" : undefined,
+      isLoading: pluginCatalogLoadingProviderId !== null,
+      loadFailed: catalogFailed,
+      ...(pluginCatalogProvider
+        ? { onLoad: () => void loadPluginCatalog(pluginCatalogProvider) }
+        : {}),
     };
-  }, [allPluginItems, deferredPageQuery, searchedInstalledPlugins]);
+  }, [
+    allPluginItems,
+    deferredPageQuery,
+    loadPluginCatalog,
+    pluginCatalogLoadingProviderId,
+    pluginCatalogProvider,
+    providerScopedInventory,
+    searchedInstalledPlugins,
+  ]);
+  // Opening Browse is the moment the store is wanted, so it starts the fetch and the dialog shows
+  // its own loading state over the installed plugins already on screen.
+  const browseCatalog = useCallback(() => {
+    setIsBrowsingCatalog(true);
+    if (pluginCatalogPending && pluginCatalogProvider)
+      void loadPluginCatalog(pluginCatalogProvider);
+  }, [loadPluginCatalog, pluginCatalogPending, pluginCatalogProvider]);
 
+  // Only what the first load knows. Connections that need sign-in arrive seconds later with the MCP
+  // check, and listing them here pushed the page down under the reader; the Connections list
+  // already leads with them, badged.
   const attentionEntries = useMemo((): ReadonlyArray<ExtensionAttentionEntry> => {
-    const connectionIssues = allMcpItems.filter(extensionItemNeedsAuth).map((item) => ({
-      key: `mcp:${item.provider.instanceId}:${item.id}`,
-      title: item.title,
-      detail: extensionAuthIssueDetail(item),
-      item,
-    }));
     const providerIssues = providerScopedInventory.flatMap((provider) =>
       provider.status === "error" || provider.status === "partial"
         ? [
@@ -5076,8 +5335,8 @@ export function ExtensionsSettingsPanel() {
           : [],
       ),
     );
-    return [...connectionIssues, ...providerIssues, ...marketplaceIssues];
-  }, [allMcpItems, providerScopedInventory]);
+    return [...providerIssues, ...marketplaceIssues];
+  }, [providerScopedInventory]);
 
   return (
     <ExtensionsScopeContext.Provider value={scopeContextValue}>
@@ -5180,8 +5439,10 @@ export function ExtensionsSettingsPanel() {
                 <Button
                   size="xs"
                   variant="outline"
-                  disabled={allPluginItems.length === 0}
-                  onClick={() => setIsBrowsingCatalog(true)}
+                  // Only installed plugins arrive up front, so an empty list is no reason to
+                  // hide the store.
+                  disabled={providerScopedInventory.length === 0}
+                  onClick={browseCatalog}
                 >
                   <SearchIcon className="size-3.5" />
                   Browse catalog
@@ -5394,12 +5655,41 @@ export function ExtensionsSettingsPanel() {
                   <ConnectionsTable
                     items={searchedConnections}
                     environmentId={selectedEnvironmentId}
-                    isLoading={isLoading}
+                    // A deferred provider is about to be checked, so "none configured" would lie.
+                    isLoading={
+                      isLoading ||
+                      mcpLoadingProviderId !== null ||
+                      mcpDeferredProvider !== undefined
+                    }
                     onSelect={setSelectedItem}
                   />
                 )}
+                {mcpFailureMessages.map((message) => (
+                  <div key={message} className="mt-1 text-[11px] text-muted-foreground/70">
+                    {message}
+                  </div>
+                ))}
               </div>
             </SettingsSection>
+
+            {/* Only shown when a provider has hooks: most setups have none, and an empty
+                section for config Threadlines cannot edit would be noise. */}
+            {allHookRows.length > 0 || hookMessages.length > 0 ? (
+              <SettingsSection
+                title="Hooks"
+                description="Commands Codex and Claude run on their own at set points, like before a tool runs. They live in each provider's config files."
+                icon={<WebhookIcon className="size-3.5" />}
+              >
+                <div className="px-4 py-3.5 sm:px-5">
+                  <HooksList rows={searchedHookRows} />
+                  {hookMessages.map((message) => (
+                    <div key={message} className="mt-1 text-[11px] text-muted-foreground/70">
+                      {message}
+                    </div>
+                  ))}
+                </div>
+              </SettingsSection>
+            ) : null}
 
             <SettingsSection title="Advanced" icon={<PlugIcon className="size-3.5" />}>
               {marketplaceSummary ? (

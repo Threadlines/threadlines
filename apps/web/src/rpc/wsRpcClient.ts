@@ -726,11 +726,20 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
         transport.request((client) =>
           client[WS_METHODS.serverStopBackgroundRun](input).pipe(Effect.withTracerEnabled(false)),
         ),
+      // Pure read. A plain request lost to a dropped socket left the plugins page empty with no
+      // error until it remounted. With MCP and apps included the server may legitimately take
+      // most of a minute, so one attempt gets that long.
       getProviderExtensions: (input) =>
-        transport.request((client) =>
-          client[WS_METHODS.serverGetProviderExtensions](input).pipe(
-            Effect.withTracerEnabled(false),
-          ),
+        transport.requestWithReconnectRetry(
+          (client) =>
+            client[WS_METHODS.serverGetProviderExtensions](input).pipe(
+              Effect.withTracerEnabled(false),
+            ),
+          {
+            label: WS_METHODS.serverGetProviderExtensions,
+            attemptTimeoutMs: 60_000,
+            totalBudgetMs: 120_000,
+          },
         ),
       startProviderExtensionMcpOAuth: (input) =>
         transport.request((client) =>

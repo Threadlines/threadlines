@@ -123,6 +123,14 @@ export interface ProviderServiceShape {
   }) => Effect.Effect<void, ProviderServiceError>;
 
   /**
+   * One provider instance's plugins or skills changed from Settings; tells its live sessions (see
+   * ProviderAdapter.noteExtensionsChanged). Does nothing for drivers that notice on their own.
+   */
+  readonly noteExtensionsChanged: (input: {
+    readonly providerInstanceId: ProviderInstanceId;
+  }) => Effect.Effect<void>;
+
+  /**
    * The native conversation one session key continues: its provider instance
    * and the provider's own thread or session id. From the live runtime when
    * there is one, else from the persisted binding. Null when there is none.
