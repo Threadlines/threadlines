@@ -308,18 +308,20 @@ PR 1; they did not.
 Inputs name an agent by participant id or by an unambiguous name ("astra 2",
 "Reviewer"). Results always give ids and display names.
 
-| Tool            | Who can call it                        | What it does                                                    |
-| --------------- | -------------------------------------- | --------------------------------------------------------------- |
-| `room_agents`   | any room runtime                       | who is here and what they are doing                             |
-| `room_ask`      | the slot holder, in a turn             | another agent answers read-only, with room context              |
-| `room_review`   | the slot holder, in a turn             | another agent reviews read-only, fresh, with no room context    |
-| `room_hand_off` | the slot holder, in a turn             | another agent takes the next working turn; its reply comes back |
-| `room_history`  | main runtimes and `room_ask` answerers | earlier room messages                                           |
-| `room_diff`     | main runtimes, answerers and reviewers | fixed git views of the checkout                                 |
+| Tool            | Who can call it                        | What it does                                                          |
+| --------------- | -------------------------------------- | --------------------------------------------------------------------- |
+| `room_agents`   | main room runtimes                     | who is here, what they are doing, and whether each has the room tools |
+| `room_ask`      | the slot holder, in a turn             | another agent answers read-only, with room context                    |
+| `room_review`   | the slot holder, in a turn             | another agent reviews read-only, fresh, with no room context          |
+| `room_hand_off` | the slot holder, in a turn             | another agent takes the next working turn; its reply comes back       |
+| `room_history`  | main runtimes and `room_ask` answerers | earlier room messages                                                 |
+| `room_diff`     | main runtimes, answerers and reviewers | fixed git views of the checkout                                       |
 
 - `room_agents()`: each agent's key, display name ("GPT-6-Astra 2
   (Reviewer)"), model, status (working, answering or idle), whether it can
-  answer on the side (Codex and Claude can), and which one is you.
+  answer on the side (Codex and Claude can), whether it has the room tools
+  (`attached`, `unavailable` where its provider cannot reach them, or
+  `next_turn`), and which one is you.
 - `room_ask({ agent, question })`:
   - Description: "Ask another agent in this room a question. It sees the room
     conversation and answers read-only. Its answer comes back to you here."
@@ -461,7 +463,10 @@ answer?, answerMessageId?, sideTurnId? }`. The answer is bounded; the full
     tools allowed under the side runtime's approval policy.
   - The side credential's scope carries the side turn and its kind, so a
     review's credential cannot call `room_history` even if the tool is listed.
-- **Timeouts**: ask and review calls have a 10-minute Threadlines deadline.
+- **Timeouts**: ask and review calls have a 10-minute Threadlines deadline,
+  55 seconds for a Cursor or fx caller (their MCP clients stop waiting at 60
+  and cannot be told otherwise). A call that runs out is recorded as a
+  timeout, then its side answer is stopped.
   Codex otherwise stops waiting at 60s, so the endpoint gets
   `tool_timeout_sec = 660`. Claude's server entry gets `timeout: 660000`.
 - **Credentials**: the registry records, per token, `{ threadId, sessionKey,
