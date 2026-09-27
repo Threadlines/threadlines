@@ -286,13 +286,13 @@ function ThreadElapsedLabel({ startedAt }: { startedAt: string }) {
 }
 
 /**
- * The dot between parts of a row's status ("working · 4m"). Set in the UI
- * font, whose space and dot are about half as wide as the mono ones, so the
- * status stays tight; the text still reads " · ".
+ * The dot between parts of a row's status ("working · 4m"): thin spaces in
+ * the UI font, under half the width of a mono " · ", so the status stays
+ * tight.
  */
 function MetaSeparator() {
   // `whitespace-pre` keeps the spaces where the status is a flex row (rooms).
-  return <span className="font-sans whitespace-pre opacity-60">{" · "}</span>;
+  return <span className="font-sans whitespace-pre opacity-60">{"\u2009·\u2009"}</span>;
 }
 
 /**
@@ -503,8 +503,8 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
   const roomAgentRole = isAnswering ? thread.roomSideRole : thread.roomSlotRole;
   const showBranch = thread.branch !== null && !hasStatusLabel;
   // A room's live status also names the agent, which needs the width: the
-  // project keeps only its icon, and the name is what truncates, never the
-  // state or the clock.
+  // project name yields first, then the agent's name, never the state or
+  // the clock.
   const namesRoomAgent =
     roomAgentSelection != null &&
     !jumpLabel &&
@@ -641,8 +641,21 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
                 className="size-3 shrink-0"
               />
             ) : null}
-            {projectLabel && !namesRoomAgent ? (
-              <span className="min-w-0 truncate text-muted-foreground/60">{projectLabel}</span>
+            {projectLabel ? (
+              <span
+                className={cn(
+                  "min-w-0 truncate text-muted-foreground/60",
+                  // Takes only the width the status leaves (no basis of its
+                  // own), so it is gone before the agent's name gives up a
+                  // pixel. Its gap goes with it: the spacing before the name
+                  // is inside it, so a name shrunk to nothing leaves no double
+                  // gap.
+                  namesRoomAgent &&
+                    "-ml-1.5 flex-1 before:inline-block before:w-1.5 before:content-['']",
+                )}
+              >
+                {projectLabel}
+              </span>
             ) : null}
             {showBranch ? (
               <span className="flex min-w-0 items-center gap-1">

@@ -6985,7 +6985,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
       await vi.waitFor(
         () => {
           // A duration, never the relative formatter's "just now".
-          expect(meta.textContent).toMatch(/^working · \d+[smh]/);
+          expect(meta.textContent).toMatch(/^working\s·\s\d+[smh]/);
         },
         { timeout: 8_000, interval: 16 },
       );
@@ -7002,9 +7002,9 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
-  it("names a room's working agent and keeps its state and clock whole at the default width", async () => {
+  it("keeps a room's working agent, state and clock whole at the default width", async () => {
     const agentId = "7a0b1c2d-3e4f-4a5b-8c6d-7e8f9a0b1c2d" as ThreadParticipantId;
-    const startedAt = new Date(Date.now() - 65 * 60_000).toISOString();
+    const startedAt = new Date(Date.now() - 12.5 * 60_000).toISOString();
     const base = createSnapshotForTargetUser({
       targetMessageId: "msg-user-room-working" as MessageId,
       targetText: "room working target",
@@ -7019,15 +7019,15 @@ describe("ChatView timeline estimator parity (full app)", () => {
           thread.id === THREAD_ID
             ? {
                 ...thread,
-                // An added agent, at work for over an hour, whose model name
-                // is too long for the row.
+                // An added agent, at work for over twelve minutes: the
+                // widest clock a turn shows before its first hour.
                 participants: [
                   {
                     id: agentId,
                     handle: "agent-2",
                     modelSelection: {
                       instanceId: ProviderInstanceId.make("codex"),
-                      model: "a-model-with-a-deliberately-long-name",
+                      model: "Opus 5.5",
                     },
                     joinedAt: NOW_ISO,
                     leftAt: null,
@@ -7059,22 +7059,25 @@ describe("ChatView timeline estimator parity (full app)", () => {
       );
       await vi.waitFor(
         () => {
-          expect(meta.textContent).toMatch(/^a-model-.* · working · 1h \d+m$/);
+          expect(meta.textContent).toMatch(/^Opus 5\.5\s·\sworking\s·\s12m \d+s$/);
         },
         { timeout: 8_000, interval: 16 },
       );
       const [name, , state, , clock] = [...meta.children] as HTMLElement[];
-      // The name is what gives way; the state and the clock are whole and in
-      // the row.
-      expect(name!.scrollWidth).toBeGreaterThan(name!.clientWidth);
-      for (const part of [state!, clock!]) {
-        expect(part.scrollWidth).toBeLessThanOrEqual(part.clientWidth + 1);
+      // The agent's name, the state and the clock are whole (not a pixel
+      // short, which already shows an ellipsis) and in the row.
+      for (const part of [name!, state!, clock!]) {
+        expect(part.scrollWidth).toBeLessThanOrEqual(part.clientWidth);
         expect(part.getBoundingClientRect().right).toBeLessThanOrEqual(
           line.getBoundingClientRect().right + 0.5,
         );
       }
-      // The project keeps only its icon.
-      expect(line.textContent).not.toContain("Project");
+      // The project name stays in the row; it is what gave way.
+      const project = [...line.querySelectorAll<HTMLElement>("span")].find(
+        (element) => element.textContent === "Project",
+      );
+      expect(project).toBeDefined();
+      expect(project!.scrollWidth).toBeGreaterThan(project!.clientWidth);
     } finally {
       await mounted.cleanup();
     }
