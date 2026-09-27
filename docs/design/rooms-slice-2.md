@@ -609,30 +609,27 @@ checkpoint mistaken for the final one, a timeout that does not stop a late
 capture from publishing (including one that starts after the timeout, or
 moves the ref before any check), and a wait that blocks Stop.
 
-- **Final means final**: the checkpoint reactor marks a turn's capture
-  finished (`completesTurn: true` captured, or skipped with a reason) as a
-  durable event. An early diff checkpoint never counts.
-- **The next agent waits off the worker**: when the slot passes to another
-  agent and the previous turn's capture is not finished, the next turn's send
-  is parked, like a message waiting on a side answer, and released when the
-  capture finishes. The reactor's per-thread worker keeps running, so Stop,
-  side answers and other control events are handled meanwhile.
-- **Stop cancels the parked send**: the next agent is never sent its turn
-  after Stop.
-- **A timeout is a real skip**: after a bounded wait (10s), the previous
-  turn is **closed for capture**, durably and for good, and the send is
-  released.
-- **Snapshot, then guarded publish**: today a capture writes the tree, makes
-  the commit and moves the checkpoint ref in one step. It is split: the
-  snapshot (write-tree, commit-tree) touches no ref, and a separate publish
-  step moves the ref and emits the events. Both the capture's start and its
-  publish check that the turn is not closed. A capture that starts after the
-  turn closed is refused; a snapshot taken while the next agent may already
-  be writing (closed mid-capture) is never published. Validity is bound to the turn, not to a counter sampled at start.
-- **Closing and publishing never interleave**: each thread has one capture
-  lock. The publish step holds it from its check through `update-ref` and the
-  events; closing a turn takes the same lock. So a turn cannot close between
-  a passed check and the ref moving.
+- **Final means final**: the checkpoint reactor opens a room turn when it
+  starts and finishes it when its completion capture is done, skipped, or not
+  needed (an aborted turn). An early diff checkpoint never finishes it.
+- **Every capture runs under its thread's lock** and refuses a turn that is
+  closed. That covers early diff captures too.
+- **The next agent waits off the worker**: a turn for another agent is parked
+  in its own fiber until the open turn is finished, and the reactor's
+  per-thread worker keeps running, so Stop, side answers and other control
+  events are handled meanwhile.
+- **Stop cancels the parked send**: the final hold check before sending (see
+  "Stop during preparation") drops it.
+- **Closing is final and serialized**: after the wait (10s at most), the
+  handover closes the previous turn under the same lock. If a capture is
+  running, closing waits for it, and that capture read the checkout before the
+  next agent was let in. A capture that has not started by then is refused.
+  So the previous turn's checkpoint reflects only its own work, or does not
+  exist. This replaces rev 6's snapshot-then-guarded-publish split: holding the
+  lock for the whole capture gives the same guarantee without changing the git
+  layer.
+- **In memory**: captures and provider turns do not outlive the server
+  process, so nothing needs to survive a restart.
 - **Only on handovers**: a turn for the same agent, or a room with one agent,
   never waits.
 
