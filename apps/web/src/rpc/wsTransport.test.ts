@@ -1672,6 +1672,52 @@ describe("WsTransport.requestWithReconnectRetry", () => {
     await transport.dispose();
   });
 
+  it("re-sends a request lost to a heartbeat timeout without waiting out its attempt", async () => {
+    // The attempt timeout is two minutes out; only the heartbeat can free the
+    // request in time. Timers advance with real time plus the jumps below.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const transport = createTransport("ws://localhost:3020");
+    await waitFor(() => {
+      expect(sockets).toHaveLength(1);
+    });
+    const firstSocket = getSocket();
+    firstSocket.open();
+
+    const requestPromise = transport.requestWithReconnectRetry(
+      (client) => client[WS_METHODS.serverUpsertKeybinding](KEYBINDING_INPUT),
+      { label: "test.request", attemptTimeoutMs: 120_000, totalBudgetMs: 180_000 },
+    );
+    await waitFor(() => {
+      expect(firstSocket.sent).toHaveLength(1);
+    });
+
+    // No pong ever comes back, so the protocol drops the first socket.
+    await vi.advanceTimersByTimeAsync(11_000);
+    await waitFor(() => {
+      openConnectingSockets();
+      expect(sockets.length).toBeGreaterThan(1);
+    });
+    const secondSocket = getSocket();
+    await vi.advanceTimersByTimeAsync(1_000);
+    let resent: { id: string } | undefined;
+    await waitFor(() => {
+      resent = secondSocket.sent
+        .map((raw) => JSON.parse(raw) as { id: string; tag?: string })
+        .find((message) => message.tag === WS_METHODS.serverUpsertKeybinding);
+      expect(resent).toBeDefined();
+    });
+
+    secondSocket.serverMessage(
+      JSON.stringify({
+        _tag: "Exit",
+        requestId: resent?.id,
+        exit: { _tag: "Success", value: KEYBINDING_RESULT },
+      }),
+    );
+    await expect(requestPromise).resolves.toEqual(KEYBINDING_RESULT);
+    await transport.dispose();
+  }, 5_000);
+
   it("fails with a retries-exhausted error once the budget runs out", async () => {
     const transport = createTransport("ws://localhost:3020");
     await waitFor(() => {

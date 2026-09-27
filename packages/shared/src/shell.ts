@@ -1,7 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeOS from "node:os";
 import { execFileSync } from "node:child_process";
-import { accessSync, constants, statSync } from "node:fs";
+import { accessSync, constants, readdirSync, statSync } from "node:fs";
 import { join as joinHostPath, posix as PosixPath, win32 as WindowsPath } from "node:path";
 
 const PATH_CAPTURE_START = "__THREADLINES_PATH_START__";
@@ -26,6 +26,12 @@ export interface CommandAvailabilityOptions {
 export interface CommandFileSystem {
   readonly isFile: (filePath: string) => boolean;
   readonly canAccess: (filePath: string, mode: number) => boolean;
+  /**
+   * Entry names in a directory; throws when it cannot be read. Lets Windows
+   * lookups skip PATHEXT candidates a directory does not hold. Without it,
+   * every candidate is probed.
+   */
+  readonly listDirectory?: (directoryPath: string) => ReadonlyArray<string>;
 }
 
 const defaultCommandFileSystem: CommandFileSystem = {
@@ -34,6 +40,7 @@ const defaultCommandFileSystem: CommandFileSystem = {
     accessSync(filePath, mode);
     return true;
   },
+  listDirectory: (directoryPath) => readdirSync(directoryPath),
 };
 
 export interface WindowsEnvironmentProbeOptions {
@@ -417,46 +424,90 @@ function isExecutableFile(
   }
 }
 
-export function resolveCommandPath(
-  command: string,
+/** Lowercased entry names, or null when the directory could not be listed. */
+function readDirectoryNames(
+  listDirectory: NonNullable<CommandFileSystem["listDirectory"]>,
+  directoryPath: string,
+): ReadonlySet<string> | null {
+  try {
+    return new Set(listDirectory(directoryPath).map((name) => name.toLowerCase()));
+  } catch (error) {
+    // A missing directory holds nothing. Any other failure (access denied)
+    // falls back to probing each candidate, as if there were no listing.
+    const code = (error as NodeJS.ErrnoException | null)?.code;
+    return code === "ENOENT" || code === "ENOTDIR" ? new Set() : null;
+  }
+}
+
+/** Resolves a command name or path to its executable, or null. */
+export type CommandPathResolver = (command: string) => string | null;
+
+/**
+ * Makes a resolver for several lookups against one PATH, read when it is made.
+ *
+ * On Windows each PATH directory is listed once, and only the PATHEXT
+ * candidates it actually holds are probed. Probing every candidate in every
+ * directory costs tens of thousands of stat calls for a list of editors, over
+ * a second of blocked event loop.
+ */
+export function makeCommandPathResolver(
   options: CommandAvailabilityOptions = {},
-): string | null {
+): CommandPathResolver {
   const platform = options.platform ?? process.platform;
   const env = options.env ?? process.env;
   const fileSystem = options.fileSystem ?? defaultCommandFileSystem;
   const windowsPathExtensions = platform === "win32" ? resolveWindowsPathExtensions(env) : [];
-  const commandCandidates = resolveCommandCandidates(command, platform, windowsPathExtensions);
   // The default filesystem always uses the host's path syntax. Platform overrides are
   // also used by cross-platform callers and tests against real host temp directories.
   // An injected filesystem models the target platform instead (for example, Windows
   // App Execution Alias probing), so its candidate paths use the target path syntax.
   const joinPath = options.fileSystem ? pathForPlatform(platform).join : joinHostPath;
-
-  if (command.includes("/") || command.includes("\\")) {
-    for (const candidate of commandCandidates) {
-      if (isExecutableFile(candidate, platform, windowsPathExtensions, fileSystem)) {
-        return candidate;
-      }
-    }
-    return null;
-  }
-
-  const pathValue = resolvePathEnvironmentVariable(env);
-  if (pathValue.length === 0) return null;
-  const pathEntries = pathValue
+  const pathEntries = resolvePathEnvironmentVariable(env)
     .split(pathDelimiterForPlatform(platform))
     .map((entry) => stripWrappingQuotes(entry.trim()))
     .filter((entry) => entry.length > 0);
+  const listDirectory = platform === "win32" ? fileSystem.listDirectory : undefined;
+  const directoryNames = new Map<string, ReadonlySet<string> | null>();
+  const mayHold = (directoryPath: string, name: string): boolean => {
+    if (!listDirectory) return true;
+    let names = directoryNames.get(directoryPath);
+    if (names === undefined) {
+      names = readDirectoryNames(listDirectory, directoryPath);
+      directoryNames.set(directoryPath, names);
+    }
+    return names === null || names.has(name.toLowerCase());
+  };
 
-  for (const pathEntry of pathEntries) {
-    for (const candidate of commandCandidates) {
-      const candidatePath = joinPath(pathEntry, candidate);
-      if (isExecutableFile(candidatePath, platform, windowsPathExtensions, fileSystem)) {
-        return candidatePath;
+  return (command) => {
+    const commandCandidates = resolveCommandCandidates(command, platform, windowsPathExtensions);
+
+    if (command.includes("/") || command.includes("\\")) {
+      for (const candidate of commandCandidates) {
+        if (isExecutableFile(candidate, platform, windowsPathExtensions, fileSystem)) {
+          return candidate;
+        }
+      }
+      return null;
+    }
+
+    for (const pathEntry of pathEntries) {
+      for (const candidate of commandCandidates) {
+        if (!mayHold(pathEntry, candidate)) continue;
+        const candidatePath = joinPath(pathEntry, candidate);
+        if (isExecutableFile(candidatePath, platform, windowsPathExtensions, fileSystem)) {
+          return candidatePath;
+        }
       }
     }
-  }
-  return null;
+    return null;
+  };
+}
+
+export function resolveCommandPath(
+  command: string,
+  options: CommandAvailabilityOptions = {},
+): string | null {
+  return makeCommandPathResolver(options)(command);
 }
 
 export function isCommandAvailable(

@@ -184,14 +184,26 @@ export class WsTransport {
     const client = await session.clientPromise;
     const timeoutMs = resolveRequestTimeoutMs(options);
     const effect = Effect.suspend(() => execute(client));
+    return this.runOnSession(
+      session,
+      timeoutMs === null ? effect : withAttemptTimeout(effect, timeoutMs, "request"),
+    );
+  }
+
+  /**
+   * Runs one unary request on a session. A heartbeat timeout on that session
+   * fails it with TransportRequestLostError, since its answer can no longer
+   * arrive.
+   */
+  private async runOnSession<TSuccess>(
+    session: TransportSession,
+    effect: Effect.Effect<TSuccess, Error, never>,
+  ): Promise<TSuccess> {
     const controller = new AbortController();
     const abort = () => controller.abort();
     session.pendingRequests.add(abort);
     try {
-      return await session.runtime.runPromise(
-        timeoutMs === null ? effect : withAttemptTimeout(effect, timeoutMs, "request"),
-        { signal: controller.signal },
-      );
+      return await session.runtime.runPromise(effect, { signal: controller.signal });
     } catch (error) {
       throw controller.signal.aborted ? new TransportRequestLostError() : error;
     } finally {
@@ -221,7 +233,8 @@ export class WsTransport {
       const session = this.session;
       try {
         const client = await session.clientPromise;
-        return await session.runtime.runPromise(
+        return await this.runOnSession(
+          session,
           withAttemptTimeout(
             Effect.suspend(() => execute(client)),
             attemptTimeoutMs,
@@ -237,7 +250,14 @@ export class WsTransport {
         if (elapsedMs + retryDelayMs >= totalBudgetMs) {
           throw new TransportRequestRetriesExhaustedError(label, elapsedMs, error);
         }
-        if (session === this.session && !this.isHeartbeatFresh(REQUEST_RETRY_HEARTBEAT_FRESH_MS)) {
+        // A lost attempt means the protocol is already opening a replacement
+        // socket; swapping the session on top would resubscribe every stream
+        // a second time.
+        if (
+          !(error instanceof TransportRequestLostError) &&
+          session === this.session &&
+          !this.isHeartbeatFresh(REQUEST_RETRY_HEARTBEAT_FRESH_MS)
+        ) {
           recordStreamDiagnostic(STREAM_DIAGNOSTIC_NAMES.transportReconnect, "zombie-socket", {
             "rpc.reconnect.trigger": "zombie-socket",
             "rpc.request.label": label,

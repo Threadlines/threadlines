@@ -13,7 +13,11 @@ import {
   type LaunchEditorInput,
 } from "@threadlines/contracts";
 import { hideWindowsConsole } from "@threadlines/shared/childProcess";
-import { isCommandAvailable, type CommandAvailabilityOptions } from "@threadlines/shared/shell";
+import {
+  isCommandAvailable,
+  makeCommandPathResolver,
+  type CommandPathResolver,
+} from "@threadlines/shared/shell";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Encoding from "effect/Encoding";
@@ -117,10 +121,10 @@ function resolveEditorArgs(
 
 function resolveAvailableCommand(
   commands: ReadonlyArray<string>,
-  options: CommandAvailabilityOptions = {},
+  resolveCommand: CommandPathResolver,
 ): Option.Option<string> {
   for (const command of commands) {
-    if (isCommandAvailable(command, options)) {
+    if (resolveCommand(command) !== null) {
       return Option.some(command);
     }
   }
@@ -316,19 +320,14 @@ export function resolveAvailableEditors(
   platform: NodeJS.Platform = process.platform,
   env: NodeJS.ProcessEnv = process.env,
 ): ReadonlyArray<EditorId> {
+  // Runs on every server config load; one resolver lists each PATH directory
+  // once for the whole editor list.
+  const resolveCommand = makeCommandPathResolver({ platform, env });
   const available: EditorId[] = [];
 
   for (const editor of EDITORS) {
-    if (editor.commands === null) {
-      const command = fileManagerCommandForPlatform(platform);
-      if (isCommandAvailable(command, { platform, env })) {
-        available.push(editor.id);
-      }
-      continue;
-    }
-
-    const command = resolveAvailableCommand(editor.commands, { platform, env });
-    if (Option.isSome(command)) {
+    const commands = editor.commands ?? [fileManagerCommandForPlatform(platform)];
+    if (Option.isSome(resolveAvailableCommand(commands, resolveCommand))) {
       available.push(editor.id);
     }
   }
@@ -381,7 +380,7 @@ export const resolveEditorLaunch = Effect.fn("resolveEditorLaunch")(function* (
 
   if (editorDef.commands) {
     const command = Option.getOrElse(
-      resolveAvailableCommand(editorDef.commands, { platform, env }),
+      resolveAvailableCommand(editorDef.commands, makeCommandPathResolver({ platform, env })),
       () => editorDef.commands[0],
     );
     return {
