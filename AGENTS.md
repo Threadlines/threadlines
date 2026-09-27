@@ -11,9 +11,11 @@ Threadlines is a minimal web GUI for using coding agents. A Node WebSocket serve
 
 ## A note from Will
 
-Threadlines is built largely by directing agents, so the quality bar lives with you. Verify your own work, run the gates, and flag risky changes loudly instead of assuming review will catch them. When you report finished work, keep it plain and short (see Reporting Results to the User).
+Threadlines is built largely by directing agents, so the quality bar lives with you. Run the gates, and flag risky changes loudly instead of assuming review will catch them. Whoever you report to, claim only what you actually checked, and say when something is a guess. When you report finished work, keep it plain and short (see Reporting Results to the User).
 
-I like simple systems. Don't add machinery because it looks impressive. Fight scope creep. A small, boring, correct change beats a clever one. Treat this file as good defaults, not hard rules: the developer's direct requests override anything here, and the core architecture (event-sourced orchestration, provider drivers, schema-only contracts) is established. Bold ideas are welcome when they meaningfully benefit the project — propose them, and get agreement before implementing anything sweeping or cross-cutting.
+I want Threadlines to be impressive, not just tidy. When you solve a problem, pick the design that's actually best, even if it's ambitious or unusual, as long as it stays correct and you can say what the extra complexity buys. Complexity that buys nothing is still a cost. Big ideas outside the task are welcome too: pitch them in your report, and get agreement before building anything sweeping or cross-cutting that nobody asked for. The core architecture (event-sourced orchestration, provider drivers, schema-only contracts) is established.
+
+Treat this file as good defaults, except the five ways to hurt yourself below, which are hard rules. The developer's direct requests override anything here, hard rules included: do what they asked and name the conflict in your report. Direct means they asked for that specific thing, not that you inferred they'd be fine with it. If a rule fights the task and nobody asked for the exception, say so and get sign-off before breaking it.
 
 ## A small glossary
 
@@ -21,6 +23,7 @@ Use this language when communicating:
 
 - **you** means the agent reading this file and changing Threadlines.
 - **we, us, and maintainers** mean Will and the other people building Threadlines. These are who you are talking to now.
+- **developer** means the maintainer directing your current task.
 - **user** means a person using Threadlines to direct coding agents.
 - **agent** means the coding agent a user runs inside Threadlines. Depending on context, that may also include you.
 - **provider** means the agent runtime Threadlines talks to: Codex and Claude (native drivers), plus fx and Cursor (experimental, both ACP descriptors on the shared `apps/server/src/provider/acp/` core). An OpenCode driver exists but is not supported.
@@ -32,15 +35,17 @@ Use this language when communicating:
 - **turn** means one user-to-agent cycle, including follow-up work such as checkpointing.
 - **Threadlines home** means the base data directory, `~/.threadlines` by default (`THREADLINES_HOME` overrides it). Live state sits in its `userdata` subfolder; dev-mode state sits in `dev`.
 
-## The three ways to hurt yourself
+## The five ways to hurt yourself
 
 1. **Killing by pattern.** Never kill a process you found by matching a name or path (`taskkill /IM node.exe`, `Get-Process node | Stop-Process`). This machine runs several agent sessions and dev servers at once, and your own process tree matches those patterns too. Kill only a PID you captured when you spawned the process.
 2. **Writing to the live install.** `~/.threadlines/userdata` is Will's real Threadlines data, often in use while you work. Reading and copying from it are fine. Never start a server against it, never write to it, never clean it up.
 3. **Running heavy suites in parallel.** Browser tests and full typecheck saturate this machine when two sessions run them at once, and the result is spurious timeouts, not real failures. Before starting one, check for a running vitest/tsc and wait if another session's suite is active.
+4. **Getting around a "no".** When a permission prompt, sandbox, or hook denies an action, stop and say what blocked you. Don't reword or split the command to slip past it, switch to other credentials or connections, borrow tokens from config files, the keychain, or running processes, or edit the guard itself. Never tell a check or another agent that the developer approved something they didn't. (A failing test or gate is different: fix what your change broke.)
+5. **Destroying work.** Uncommitted changes, yours or another session's, may be the only copy, and every worktree of this repo shares one git stash. Edits and deletions the task needs are fine. Don't throw away other uncommitted work, including your own earlier changes, with reset, clean, or checkout; don't pop a stash entry you didn't create, drop data, or rewrite history unless the developer asked for it.
 
 ## Hit every surface
 
-The most common defect is a change that works on the path you tested and is missing everywhere else. Before calling a change done, walk this list:
+The most common defect is a change that works on the path you tested and is missing everywhere else. Before calling a change done, walk this list to find every place the requested behavior has to reach. It is not a license to widen the task: include what the requested behavior needs, and leave unrelated bugs, cleanups, and doc edits for a follow-up you mention in your report.
 
 - **Entry points.** A behavior reachable from the chat view is usually also reachable from Settings, the command palette, and a keybinding. Fixing one is not fixing the feature.
 - **Clients.** Web and desktop (desktop wraps the web app in Electron and manages a local server). Reusable client logic belongs in `packages/client-runtime`.
@@ -50,7 +55,8 @@ The most common defect is a change that works on the path you tested and is miss
 
 ## Task Completion Requirements
 
-- All of `vp fmt`, `vp lint`, and `vp run typecheck` must pass before considering tasks completed. `vp` (vite-plus) is the repo toolchain — use it for all repo tasks.
+- Finish the whole requested change before your final report. Reading code, editing inside your checkout, and running the checks below need no sign-off; stop early only for a decision that belongs to the developer. When the developer asks a question or thinks out loud rather than asking for a change, your assessment is the deliverable.
+- All of `vp fmt`, `vp lint`, and `vp run typecheck` must pass before considering a code change complete. `vp` (vite-plus) is the repo toolchain — use it for all repo tasks.
 - Run the tests covering the code you changed: `vp run --cache '@threadlines/server#test' <filename substring>` (same pattern for the other packages; the filter matches file names, not repo-relative paths). Reserve `vp run test` (full Vitest suite) for broad or cross-package changes.
 - Web UI changes also need the browser suite: `vp run --cache '@threadlines/web#test:browser'`. It is not part of `vp run test`, and CI runs it — green unit tests alone do not mean a green branch.
 - Pass `--cache` only to pure check/test commands as shown above. vp fingerprints the files a task reads and its arguments, so an unchanged re-run replays instantly instead of re-executing — but never add it to side-effecting scripts (`deploy`, `clean`, `dist:*`, `release:*`), where a cache replay would silently skip the real action.
@@ -66,7 +72,7 @@ Tests must earn their maintenance cost. When adding or changing tests:
 - One focused test that would catch a real regression beats five that mirror the code.
 - Tests are good! Endless smoke tests, "regression tests" for feature deletions, and tests added for the sake of having tests are much less good. Tests should be focused, not slop.
 - Not every change needs a new test. Add one for new observable behavior or a regression you actually hit. Deletions, renames, and refactors update existing tests; they don't add new ones. Never write a test that asserts something no longer exists — the code being gone and the suite staying green is the proof.
-- Never loosen an existing test's expectation to make your change pass. A failing test is a signal about your change. If the expectation is truly outdated, fix it and say so loudly in your report.
+- Never loosen an existing test's expectation to make your change pass. The same goes for lint rules, type errors, CI workflows, and git hooks: don't disable, suppress, or skip them (`--no-verify`) to get green. A failing check is a signal about your change. If the expectation is truly outdated, fix it and say so loudly in your report.
 
 ## Reporting Results to the User
 
@@ -77,8 +83,9 @@ Talk to the user like they're 5: small words, short sentences, short paragraphs.
 1. What the problem was — one or two sentences.
 2. Why it was happening — one or two sentences.
 3. How the change fixes it — one or two sentences.
+4. How you know it works — which checks and tests you ran, and anything you couldn't check.
 
-If a technical term is unavoidable, explain it in a few words right after. No walls of text.
+Cover the whole task, not just the last step. If a technical term is unavoidable, explain it in a few words right after. No walls of text.
 
 ## Pull requests
 
@@ -140,10 +147,8 @@ Threadlines is dense and flat. When building or changing any user-facing surface
 - Complexity belongs at the driver boundary. Orchestration stays pure, UI stays dumb.
 - Typesafety is useful — take advantage of it. Inferred types over annotations; `any` is the enemy.
 - Comments describe how a thing is used: concise notes above functions and classes, not line-by-line narration. When you change code, keep its comments in sync.
-- Be careful with destructive actions (deleting files, dropping data, rewriting history) that the developer did not explicitly request.
 - No continuously repainting animations; they peg the GPU on high-refresh displays.
 - A migration that rewrites existing rows must be timed against a database with real history (hundreds of thousands of events) before it merges. In-memory tests cannot tell a two-second backfill from one that takes hours on a user's install.
-- If a rule here fights the task in front of you, say so loudly and get sign-off before breaking it.
 
 ## Reference Repos
 
