@@ -13,7 +13,7 @@ import { describe, expect, it } from "vitest";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import * as PreviewAutomationBroker from "../preview/PreviewAutomationBroker.ts";
-import { ProviderInstanceRegistry } from "../provider/Services/ProviderInstanceRegistry.ts";
+import { ProviderRegistry } from "../provider/Services/ProviderRegistry.ts";
 import { GitVcsDriver } from "../vcs/GitVcsDriver.ts";
 import * as McpHttpServer from "./McpHttpServer.ts";
 import { normalizeMcpHttpResponse } from "./McpHttpServer.ts";
@@ -157,9 +157,7 @@ const RoomServerStubs = Layer.mergeAll(
   Layer.succeed(ProjectionSnapshotQuery, {
     getThreadDetailById: () => Effect.succeed(Option.some(ROOM_THREAD)),
   } as never),
-  Layer.succeed(ProviderInstanceRegistry, {
-    getInstance: () => Effect.succeed(undefined),
-  } as never),
+  Layer.succeed(ProviderRegistry, { getProviders: Effect.succeed([]) } as never),
   Layer.succeed(GitVcsDriver, {} as never),
   PreviewAutomationBroker.layer,
 );

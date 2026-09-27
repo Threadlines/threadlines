@@ -515,37 +515,39 @@ export function makeRoomToolHandlers(deps: RoomToolDeps) {
             ? yield* deps.driverKindOf(caller.modelSelection.instanceId)
             : undefined,
         );
-
-        let reviewInput: RoomReviewInput | undefined;
-        if (kind === "review") {
-          const cwd = yield* checkoutOf(arrival.room.thread);
-          if (cwd === undefined) {
-            return {
-              ...base,
-              outcome: "failed",
-              detail: "This room has no checkout to review.",
-            } satisfies RoomAnswerResult;
-          }
-          const captured = yield* roomGit
-            .captureReviewBasis(cwd, input.basis ?? "uncommitted")
-            .pipe(Effect.result);
-          if (captured._tag === "Failure") {
-            return {
-              ...base,
-              outcome: captured.failure.outcome,
-              detail: `The review's basis could not be captured: ${captured.failure.message}`,
-            } satisfies RoomAnswerResult;
-          }
-          reviewInput = captured.success;
-        }
-
-        // Listening before the request exists, so its settle cannot slip by.
-        const events = yield* deps.engine.subscribeDomainEvents;
         const requestId = RoomAgentRequestId.make(randomUUID());
         const sideTurnId = SideTurnId.make(randomUUID());
         const ids = { ...base, requestId, sideTurnId };
         let submitted = false;
-        const submitAndWait = Effect.gen(function* () {
+
+        // Everything from here, a review's capture included, runs inside the
+        // deadline and stops if the last waiter leaves before it is sent.
+        const work = Effect.gen(function* () {
+          let reviewInput: RoomReviewInput | undefined;
+          if (kind === "review") {
+            const cwd = yield* checkoutOf(arrival.room.thread);
+            if (cwd === undefined) {
+              return {
+                ...base,
+                outcome: "failed",
+                detail: "This room has no checkout to review.",
+              } satisfies RoomAnswerResult;
+            }
+            const captured = yield* roomGit
+              .captureReviewBasis(cwd, input.basis ?? "uncommitted")
+              .pipe(Effect.result);
+            if (captured._tag === "Failure") {
+              return {
+                ...base,
+                outcome: captured.failure.outcome,
+                detail: `The review's basis could not be captured: ${captured.failure.message}`,
+              } satisfies RoomAnswerResult;
+            }
+            reviewInput = captured.success;
+          }
+
+          // Listening before the request exists, so its settle cannot slip by.
+          const events = yield* deps.engine.subscribeDomainEvents;
           const rejected = yield* submitCommand({
             scope,
             kind,
@@ -581,7 +583,7 @@ export function makeRoomToolHandlers(deps: RoomToolDeps) {
           return yield* answerResult(scope, ids, sideTurnId, settled.value);
         });
         const outcome = yield* Effect.raceFirst(
-          submitAndWait,
+          work,
           Effect.raceFirst(
             Effect.sleep(deadline).pipe(Effect.as("timeout" as const)),
             input.abandoned.pipe(Effect.as("abandoned" as const)),

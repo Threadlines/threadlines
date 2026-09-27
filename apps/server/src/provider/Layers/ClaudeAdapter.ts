@@ -6994,12 +6994,22 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         ...(flagSettings.fastMode ? { fastMode: true } : {}),
         ...(flagSettings.ultracode ? { ultracode: true } : {}),
       };
+      // Agents treat `git worktree remove` as ordinary post-merge tidying. Here
+      // it deletes the session's own working directory, so a session running in
+      // a Threadlines-managed worktree is told once, up front, not to.
+      const runsInManagedWorktree = input.cwd
+        ? yield* isLinkedWorktreeCheckout(input.cwd).pipe(
+            Effect.provideService(FileSystem.FileSystem, fileSystem),
+          )
+        : false;
       // The browser the user has open, offered as tools. Over HTTP rather than
       // as an in-process server so Claude and Codex reach the same endpoint,
       // and with a credential that names the thread, because the tools take no
       // thread argument and must not. In a room the same credential reaches
       // the room tools. A side answer never gets the browser, and gets a
-      // credential only for the room's read tools. It dies with the runtime.
+      // credential only for the room's read tools. It dies with the runtime,
+      // and is minted only once nothing is left to wait on before the query
+      // starts, so a start that is cancelled cannot strand it.
       const roomTools = input.roomTools === true;
       const credential =
         !lockdown || roomTools
@@ -7018,14 +7028,6 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         credential !== undefined && roomTools
           ? claudeRoomMcpServer({ port: serverConfig.port, credential: credential.token })
           : undefined;
-      // Agents treat `git worktree remove` as ordinary post-merge tidying. Here
-      // it deletes the session's own working directory, so a session running in
-      // a Threadlines-managed worktree is told once, up front, not to.
-      const runsInManagedWorktree = input.cwd
-        ? yield* isLinkedWorktreeCheckout(input.cwd).pipe(
-            Effect.provideService(FileSystem.FileSystem, fileSystem),
-          )
-        : false;
       const normalQueryOptions: ClaudeQueryOptions = {
         ...(input.cwd ? { cwd: input.cwd } : {}),
         mcpServers: {
@@ -7179,8 +7181,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         Effect.catch((error) =>
           withMissingCheckoutDetail(error, input.cwd).pipe(Effect.flatMap(Effect.fail)),
         ),
-        // No runtime came of it: its credential goes too.
-        Effect.tapError(() => revokeCredential),
+        // No runtime came of it, failed or cancelled: its credential goes too.
+        Effect.onExit((exit) => (Exit.isSuccess(exit) ? Effect.void : revokeCredential)),
       );
 
       const session: ProviderSession = {

@@ -72,9 +72,10 @@ export function makeRoomRequestRegistry(scope: Scope.Scope): RoomRequestRegistry
           over: false,
         };
         open.set(key, request);
+        // However it ends, the server shutting down included, it leaves the
+        // registry and its waiters hear how.
         yield* Effect.interruptible(run(Deferred.await(request.abandoned))).pipe(
-          Effect.exit,
-          Effect.flatMap((exit) =>
+          Effect.onExit((exit) =>
             Effect.sync(() => {
               request.over = true;
               if (open.get(key) === request) open.delete(key);

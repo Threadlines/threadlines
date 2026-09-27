@@ -15,7 +15,10 @@ import {
   ThreadParticipantId,
   TurnId,
 } from "@threadlines/contracts";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Scope from "effect/Scope";
+import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as PubSub from "effect/PubSub";
 import * as Stream from "effect/Stream";
@@ -116,6 +119,8 @@ const settledEvent = (payload: Record<string, unknown>) =>
  */
 const makeRoom = (options: {
   readonly thread?: OrchestrationThread;
+  /** Held until this completes: a slow review capture. */
+  readonly captureGate?: Deferred.Deferred<void>;
   readonly onSubmit?: (
     command: Extract<OrchestrationCommand, { type: "thread.agent-request.submit" }>,
   ) => { readonly events?: ReadonlyArray<OrchestrationEvent>; readonly answer?: string } | "reject";
@@ -179,9 +184,14 @@ const makeRoom = (options: {
             stderrTruncated: false,
           }),
         workingTreeDiff: () =>
-          Effect.succeed({
-            diff: "diff --git a/a.ts b/a.ts\n+one\ndiff --git a/b.ts b/b.ts\n+two\n",
-          }),
+          (options.captureGate !== undefined
+            ? Deferred.await(options.captureGate)
+            : Effect.void
+          ).pipe(
+            Effect.as({
+              diff: "diff --git a/a.ts b/a.ts\n+one\ndiff --git a/b.ts b/b.ts\n+two\n",
+            }),
+          ),
       },
       requests: makeRoomRequestRegistry(scope),
     });
@@ -424,6 +434,39 @@ describe("room_review", () => {
       // The reviewer's own credential reads the checkout, never the room.
       const history = yield* room.handlers.room_history(sideCaller("review"), {});
       expect(history.outcome).toBe("refused");
+    }),
+  );
+});
+
+describe("request lifecycle", () => {
+  it.effect("sends nothing when the caller leaves while a review is still being captured", () =>
+    Effect.gen(function* () {
+      const captureGate = yield* Deferred.make<void>();
+      const room = yield* makeRoom({ captureGate, onSubmit: () => ({}) });
+      const waiter = yield* Effect.forkChild(
+        room.handlers.room_review(mainCaller(), { agent: "Opus 5.5", request: "Check it." }),
+      );
+      yield* until(() => false);
+      yield* Fiber.interrupt(waiter);
+      yield* Deferred.succeed(captureGate, undefined);
+      yield* until(() => false);
+
+      // Nothing was asked for, so none of the room's requests is spent.
+      expect(room.dispatched).toEqual([]);
+    }),
+  );
+
+  it.effect("ends open requests and their waiters when the server shuts down", () =>
+    Effect.gen(function* () {
+      const scope = yield* Scope.make();
+      const requests = makeRoomRequestRegistry(scope);
+      const waiter = yield* Effect.forkChild(requests.join("key", () => Effect.never));
+      yield* until(() => false);
+      expect(yield* requests.openCount).toBe(1);
+
+      yield* Scope.close(scope, Exit.void);
+      yield* Fiber.await(waiter);
+      expect(yield* requests.openCount).toBe(0);
     }),
   );
 });

@@ -21,7 +21,7 @@ import { HttpRouter, HttpServerRequest, type HttpServerResponse } from "effect/u
 
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
-import { ProviderInstanceRegistry } from "../provider/Services/ProviderInstanceRegistry.ts";
+import { ProviderRegistry } from "../provider/Services/ProviderRegistry.ts";
 import { GitVcsDriver } from "../vcs/GitVcsDriver.ts";
 import {
   MCP_ROOM_ROUTE_PATH,
@@ -63,7 +63,7 @@ const RoomToolHandlersLive = RoomToolkit.toLayer(
   Effect.gen(function* () {
     const engine = yield* OrchestrationEngineService;
     const snapshots = yield* ProjectionSnapshotQuery;
-    const instances = yield* ProviderInstanceRegistry;
+    const providers = yield* ProviderRegistry;
     const git = yield* GitVcsDriver;
     // Requests outlive the HTTP calls waiting on them; they end with the server.
     const requests = makeRoomRequestRegistry(yield* Effect.scope);
@@ -78,18 +78,20 @@ const RoomToolHandlersLive = RoomToolkit.toLayer(
           Effect.map((project) => Option.getOrUndefined(project)?.workspaceRoot),
           Effect.orDie,
         ),
+      // The provider snapshots: each instance's driver and model names.
       driverKindOf: (instanceId) =>
-        instances.getInstance(instanceId).pipe(Effect.map((instance) => instance?.driverKind)),
+        providers.getProviders.pipe(
+          Effect.map((all) => all.find((provider) => provider.instanceId === instanceId)?.driver),
+        ),
       modelNameOf: (selection) =>
-        Effect.gen(function* () {
-          const instance = yield* instances.getInstance(selection.instanceId);
-          if (instance === undefined) {
-            return selection.model;
-          }
-          const snapshot = yield* instance.snapshot.getSnapshot;
-          const model = snapshot.models.find((candidate) => candidate.slug === selection.model);
-          return model?.shortName ?? model?.name ?? selection.model;
-        }),
+        providers.getProviders.pipe(
+          Effect.map((all) => {
+            const model = all
+              .find((provider) => provider.instanceId === selection.instanceId)
+              ?.models.find((candidate) => candidate.slug === selection.model);
+            return model?.shortName ?? model?.name ?? selection.model;
+          }),
+        ),
       git,
       requests,
     });

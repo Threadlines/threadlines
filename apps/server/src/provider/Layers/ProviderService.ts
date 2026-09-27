@@ -202,14 +202,20 @@ function readPersistedModelSelection(
   return isModelSelection(raw) ? raw : undefined;
 }
 
-/** Whether the runtime was started with the room tools (ProviderSession.roomTools). */
-function readPersistedRoomTools(runtimePayload: ProviderRuntimeBinding["runtimePayload"]): boolean {
+/**
+ * Whether the runtime was asked for the room tools. Reported either way
+ * (ProviderSession.roomTools is true or false once asked), so a recovered
+ * runtime is asked again and answers again, even one that could not take them.
+ */
+function readPersistedRoomToolsRequest(
+  runtimePayload: ProviderRuntimeBinding["runtimePayload"],
+): boolean {
   return (
     runtimePayload !== null &&
     typeof runtimePayload === "object" &&
     !Array.isArray(runtimePayload) &&
     "roomTools" in runtimePayload &&
-    runtimePayload.roomTools === true
+    typeof runtimePayload.roomTools === "boolean"
   );
 }
 
@@ -570,7 +576,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         ...(persistedCwd ? { cwd: persistedCwd } : {}),
         ...(persistedModelSelection ? { modelSelection: persistedModelSelection } : {}),
         ...(hasResumeCursor ? { resumeCursor: input.binding.resumeCursor } : {}),
-        ...(readPersistedRoomTools(input.binding.runtimePayload) ? { roomTools: true } : {}),
+        ...(readPersistedRoomToolsRequest(input.binding.runtimePayload) ? { roomTools: true } : {}),
         runtimeMode: input.binding.runtimeMode ?? "full-access",
       });
       if (resumed.provider !== adapter.provider) {
