@@ -10,6 +10,7 @@ import {
   type OrchestrationCommand,
   type OrchestrationReadModel,
   type OrchestrationThread,
+  EMPTY_AGENT_REQUEST_STATE,
 } from "@threadlines/contracts";
 import * as Effect from "effect/Effect";
 import * as Path from "effect/Path";
@@ -263,6 +264,7 @@ function makeThread(input: {
     pullRequestAutoFix: false,
     pullRequestAutoMerge: null,
     linkedPullRequests: [],
+    agentRequests: EMPTY_AGENT_REQUEST_STATE,
     participants: [],
     doneOverride: null,
     lastSeenAt: null,

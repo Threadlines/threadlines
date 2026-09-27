@@ -22,6 +22,7 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { retainThreadActivities } from "@threadlines/shared/threadActivityRetention";
 import { applyRoomAgentUpdate } from "@threadlines/shared/threadParticipants";
+import { agentRequestStateOn } from "@threadlines/shared/roomAgentRequests";
 
 import { toProjectorDecodeError, type OrchestrationProjectorDecodeError } from "./Errors.ts";
 import {
@@ -48,6 +49,11 @@ import {
   ThreadParticipantRemovedPayload,
   ThreadParticipantUpdatedPayload,
   ThreadRoomContextRecordedPayload,
+  ThreadAgentRequestSubmittedPayload,
+  ThreadAgentRequestUpdatedPayload,
+  ThreadAgentRequestSettledPayload,
+  ThreadAgentRequestsHeldPayload,
+  ThreadAgentRequestsResetPayload,
   ThreadSideTurnInterruptRequestedPayload,
   ThreadSideTurnRunningPayload,
   ThreadSideTurnSettledPayload,
@@ -105,6 +111,24 @@ function updateSideTurnStatus(
     ...model,
     threads: updateThread(model.threads, threadId, {
       sideTurn: { ...sideTurn, status: next(sideTurn.status) },
+    }),
+  };
+}
+
+/** Apply a change to one thread's room request state. */
+function updateAgentRequests(
+  base: OrchestrationReadModel,
+  threadId: ThreadId,
+  change: (state: OrchestrationThread["agentRequests"]) => OrchestrationThread["agentRequests"],
+): OrchestrationReadModel {
+  const thread = base.threads.find((entry) => entry.id === threadId);
+  if (thread === undefined) {
+    return base;
+  }
+  return {
+    ...base,
+    threads: updateThread(base.threads, threadId, {
+      agentRequests: change(thread.agentRequests),
     }),
   };
 }
@@ -626,6 +650,89 @@ export function projectEvent(
         }),
       );
 
+    case "thread.agent-request-submitted":
+      return decodeForEvent(
+        ThreadAgentRequestSubmittedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) =>
+          updateAgentRequests(nextBase, payload.threadId, (state) =>
+            agentRequestStateOn.submitted(state, payload.request),
+          ),
+        ),
+      );
+
+    case "thread.agent-request-updated":
+      return decodeForEvent(
+        ThreadAgentRequestUpdatedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) =>
+          updateAgentRequests(nextBase, payload.threadId, (state) =>
+            agentRequestStateOn.updated(state, payload.requestId, payload.status),
+          ),
+        ),
+      );
+
+    case "thread.agent-request-settled":
+      return decodeForEvent(
+        ThreadAgentRequestSettledPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => {
+          const next = updateAgentRequests(nextBase, payload.threadId, (state) =>
+            agentRequestStateOn.settled(state, payload.requestId),
+          );
+          const thread = next.threads.find((entry) => entry.id === payload.threadId);
+          if (thread === undefined) {
+            return next;
+          }
+          // The outcome stays on the request's message after the request is gone.
+          return {
+            ...next,
+            threads: updateThread(next.threads, payload.threadId, {
+              messages: thread.messages.map((message) =>
+                message.id === payload.requestMessageId
+                  ? { ...message, requestOutcome: payload.outcome }
+                  : message,
+              ),
+            }),
+          };
+        }),
+      );
+
+    case "thread.agent-requests-held":
+      return decodeForEvent(
+        ThreadAgentRequestsHeldPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) =>
+          updateAgentRequests(nextBase, payload.threadId, (state) =>
+            agentRequestStateOn.held(state, payload.chainEpoch),
+          ),
+        ),
+      );
+
+    case "thread.agent-requests-reset":
+      return decodeForEvent(
+        ThreadAgentRequestsResetPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) =>
+          updateAgentRequests(nextBase, payload.threadId, agentRequestStateOn.reset),
+        ),
+      );
+
     case "thread.participant-removed":
       return decodeForEvent(
         ThreadParticipantRemovedPayload,
@@ -778,6 +885,10 @@ export function projectEvent(
               ? { participantId: payload.participantId }
               : {}),
             ...(payload.sideTurnId !== undefined ? { sideTurnId: payload.sideTurnId } : {}),
+            ...(payload.fromAgent !== undefined ? { fromAgent: payload.fromAgent } : {}),
+            ...(payload.requestId !== undefined ? { requestId: payload.requestId } : {}),
+            ...(payload.requestKind !== undefined ? { requestKind: payload.requestKind } : {}),
+            ...(payload.reviewInput !== undefined ? { reviewInput: payload.reviewInput } : {}),
             turnId: payload.turnId,
             streaming: payload.streaming,
             createdAt: payload.createdAt,

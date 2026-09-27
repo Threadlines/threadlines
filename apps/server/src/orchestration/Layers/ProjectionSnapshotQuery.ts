@@ -37,6 +37,13 @@ import {
   ProjectId,
   ThreadId,
   ThreadParticipantId,
+  EMPTY_AGENT_REQUEST_STATE,
+  OrchestrationAgentRequestState,
+  RoomAgentMessageKind,
+  RoomAgentRef,
+  RoomAgentRequestId,
+  RoomAgentRequestOutcome,
+  RoomReviewInput,
 } from "@threadlines/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -104,6 +111,11 @@ const ProjectionThreadMessageDbRowSchema = ProjectionThreadMessage.mapFields(
     skills: Schema.NullOr(Schema.fromJsonString(ChatSkillReferenceList)),
     participantId: Schema.NullOr(ThreadParticipantId),
     sideTurnId: Schema.NullOr(SideTurnId),
+    fromAgent: Schema.NullOr(Schema.fromJsonString(RoomAgentRef)),
+    requestId: Schema.NullOr(RoomAgentRequestId),
+    requestKind: Schema.NullOr(RoomAgentMessageKind),
+    requestOutcome: Schema.NullOr(RoomAgentRequestOutcome),
+    reviewInput: Schema.NullOr(Schema.fromJsonString(RoomReviewInput)),
   }),
 );
 const ProjectionThreadProposedPlanDbRowSchema = ProjectionThreadProposedPlan.mapFields(
@@ -119,6 +131,9 @@ const ProjectionThreadDbRowSchema = ProjectionThread.mapFields(
     sideTurn: Schema.optional(Schema.NullOr(Schema.fromJsonString(OrchestrationSideTurn))),
     roomContext: Schema.optional(
       Schema.fromJsonString(Schema.Record(Schema.String, OrchestrationRoomContextCursor)),
+    ),
+    agentRequests: Schema.optional(
+      Schema.NullOr(Schema.fromJsonString(OrchestrationAgentRequestState)),
     ),
   }),
 );
@@ -360,6 +375,11 @@ function mapThreadMessageRow(
     ...(row.skills !== null ? { skills: row.skills } : {}),
     ...(row.participantId !== null ? { participantId: row.participantId } : {}),
     ...(row.sideTurnId !== null ? { sideTurnId: row.sideTurnId } : {}),
+    ...(row.fromAgent !== null ? { fromAgent: row.fromAgent } : {}),
+    ...(row.requestId !== null ? { requestId: row.requestId } : {}),
+    ...(row.requestKind !== null ? { requestKind: row.requestKind } : {}),
+    ...(row.requestOutcome !== null ? { requestOutcome: row.requestOutcome } : {}),
+    ...(row.reviewInput !== null ? { reviewInput: row.reviewInput } : {}),
     turnId: row.turnId,
     streaming: row.isStreaming === 1,
     createdAt: row.createdAt,
@@ -576,6 +596,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           side_turn AS "sideTurn",
           agent_role AS "agentRole",
           room_context AS "roomContext",
+          agent_requests AS "agentRequests",
           done_override AS "doneOverride",
           done_override_at AS "doneOverrideAt",
           last_seen_at AS "lastSeenAt",
@@ -622,6 +643,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           side_turn AS "sideTurn",
           agent_role AS "agentRole",
           room_context AS "roomContext",
+          agent_requests AS "agentRequests",
           done_override AS "doneOverride",
           done_override_at AS "doneOverrideAt",
           last_seen_at AS "lastSeenAt",
@@ -670,6 +692,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           side_turn AS "sideTurn",
           agent_role AS "agentRole",
           room_context AS "roomContext",
+          agent_requests AS "agentRequests",
           done_override AS "doneOverride",
           done_override_at AS "doneOverrideAt",
           last_seen_at AS "lastSeenAt",
@@ -702,6 +725,11 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           skills_json AS "skills",
           participant_id AS "participantId",
           side_turn_id AS "sideTurnId",
+          from_agent AS "fromAgent",
+          request_id AS "requestId",
+          request_kind AS "requestKind",
+          request_outcome AS "requestOutcome",
+          review_input AS "reviewInput",
           is_streaming AS "isStreaming",
           created_at AS "createdAt",
           updated_at AS "updatedAt"
@@ -742,6 +770,11 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           skills_json AS "skills",
           participant_id AS "participantId",
           side_turn_id AS "sideTurnId",
+          from_agent AS "fromAgent",
+          request_id AS "requestId",
+          request_kind AS "requestKind",
+          request_outcome AS "requestOutcome",
+          review_input AS "reviewInput",
           is_streaming AS "isStreaming",
           created_at AS "createdAt",
           updated_at AS "updatedAt"
@@ -1334,6 +1367,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           side_turn AS "sideTurn",
           agent_role AS "agentRole",
           room_context AS "roomContext",
+          agent_requests AS "agentRequests",
           done_override AS "doneOverride",
           done_override_at AS "doneOverrideAt",
           last_seen_at AS "lastSeenAt",
@@ -1367,6 +1401,11 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           skills_json AS "skills",
           participant_id AS "participantId",
           side_turn_id AS "sideTurnId",
+          from_agent AS "fromAgent",
+          request_id AS "requestId",
+          request_kind AS "requestKind",
+          request_outcome AS "requestOutcome",
+          review_input AS "reviewInput",
           is_streaming AS "isStreaming",
           created_at AS "createdAt",
           updated_at AS "updatedAt"
@@ -1918,6 +1957,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                 linkedPullRequests: row.linkedPullRequests ?? [],
                 queuedFollowUps: row.queuedFollowUps ?? [],
                 participants: row.participants ?? [],
+                agentRequests: row.agentRequests ?? EMPTY_AGENT_REQUEST_STATE,
                 ...(row.sideTurn ? { sideTurn: row.sideTurn } : {}),
                 ...(row.agentRole ? { agentRole: row.agentRole } : {}),
                 ...(row.roomContext && Object.keys(row.roomContext).length > 0
@@ -2174,6 +2214,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   linkedPullRequests: row.linkedPullRequests ?? [],
                   queuedFollowUps: row.queuedFollowUps ?? [],
                   participants: row.participants ?? [],
+                  agentRequests: row.agentRequests ?? EMPTY_AGENT_REQUEST_STATE,
                   ...(row.sideTurn ? { sideTurn: row.sideTurn } : {}),
                   ...(row.agentRole ? { agentRole: row.agentRole } : {}),
                   ...(row.roomContext && Object.keys(row.roomContext).length > 0
@@ -2887,6 +2928,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         linkedPullRequests: threadRow.value.linkedPullRequests ?? [],
         queuedFollowUps: threadRow.value.queuedFollowUps ?? [],
         participants: threadRow.value.participants ?? [],
+        agentRequests: threadRow.value.agentRequests ?? EMPTY_AGENT_REQUEST_STATE,
         ...(threadRow.value.sideTurn ? { sideTurn: threadRow.value.sideTurn } : {}),
         ...(threadRow.value.agentRole ? { agentRole: threadRow.value.agentRole } : {}),
         ...(threadRow.value.roomContext && Object.keys(threadRow.value.roomContext).length > 0

@@ -8,6 +8,7 @@ import {
   TurnId,
   type OrchestrationCommand,
   type OrchestrationReadModel,
+  EMPTY_AGENT_REQUEST_STATE,
 } from "@threadlines/contracts";
 import * as Effect from "effect/Effect";
 import { describe, expect, it } from "vite-plus/test";
@@ -50,6 +51,7 @@ const readModelAfterProviderDelivery: OrchestrationReadModel = {
       pullRequestAutoFix: false,
       pullRequestAutoMerge: null,
       linkedPullRequests: [],
+      agentRequests: EMPTY_AGENT_REQUEST_STATE,
       participants: [],
       doneOverride: null,
       lastSeenAt: null,

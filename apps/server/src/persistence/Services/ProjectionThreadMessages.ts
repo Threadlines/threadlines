@@ -17,6 +17,11 @@ import {
   ThreadParticipantId,
   TurnId,
   IsoDateTime,
+  RoomAgentMessageKind,
+  RoomAgentRef,
+  RoomAgentRequestId,
+  RoomAgentRequestOutcome,
+  RoomReviewInput,
 } from "@threadlines/contracts";
 import * as Schema from "effect/Schema";
 import * as Context from "effect/Context";
@@ -38,6 +43,15 @@ export const ProjectionThreadMessage = Schema.Struct({
   participantId: Schema.optional(Schema.NullOr(ThreadParticipantId)),
   /** See OrchestrationMessage.sideTurnId. Set when the row is created, never updated. */
   sideTurnId: Schema.optional(SideTurnId),
+  /**
+   * Room tools; see OrchestrationMessage.fromAgent and the fields after it.
+   * Written with the message and kept by later writes that leave them out.
+   */
+  fromAgent: Schema.optional(RoomAgentRef),
+  requestId: Schema.optional(RoomAgentRequestId),
+  requestKind: Schema.optional(RoomAgentMessageKind),
+  requestOutcome: Schema.optional(RoomAgentRequestOutcome),
+  reviewInput: Schema.optional(RoomReviewInput),
   isStreaming: Schema.Boolean,
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,

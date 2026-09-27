@@ -1,7 +1,9 @@
 import { compareTranscriptOrder } from "@threadlines/shared/transcriptOrder";
 import { applyRoomAgentUpdate } from "@threadlines/shared/threadParticipants";
+import { agentRequestStateOn } from "@threadlines/shared/roomAgentRequests";
 import {
   ApprovalRequestId,
+  EMPTY_AGENT_REQUEST_STATE,
   type ChatAttachment,
   type OrchestrationEvent,
   type OrchestrationSubagent,
@@ -782,6 +784,32 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           return;
         }
 
+        case "thread.agent-request-submitted":
+        case "thread.agent-request-updated":
+        case "thread.agent-request-settled":
+        case "thread.agent-requests-held":
+        case "thread.agent-requests-reset": {
+          const existingRow = yield* projectionThreadRepository.getById({
+            threadId: event.payload.threadId,
+          });
+          if (Option.isNone(existingRow)) {
+            return;
+          }
+          const state = existingRow.value.agentRequests ?? EMPTY_AGENT_REQUEST_STATE;
+          const agentRequests =
+            event.type === "thread.agent-request-submitted"
+              ? agentRequestStateOn.submitted(state, event.payload.request)
+              : event.type === "thread.agent-request-updated"
+                ? agentRequestStateOn.updated(state, event.payload.requestId, event.payload.status)
+                : event.type === "thread.agent-request-settled"
+                  ? agentRequestStateOn.settled(state, event.payload.requestId)
+                  : event.type === "thread.agent-requests-held"
+                    ? agentRequestStateOn.held(state, event.payload.chainEpoch)
+                    : agentRequestStateOn.reset(state);
+          yield* projectionThreadRepository.upsert({ ...existingRow.value, agentRequests });
+          return;
+        }
+
         case "thread.room-context-recorded": {
           const existingRow = yield* projectionThreadRepository.getById({
             threadId: event.payload.threadId,
@@ -1205,6 +1233,20 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
       "applyThreadMessagesProjection",
     )(function* (event, attachmentSideEffects) {
       switch (event.type) {
+        // A room request's outcome stays on its message after the request is gone.
+        case "thread.agent-request-settled": {
+          const message = yield* projectionThreadMessageRepository.getByMessageId({
+            messageId: event.payload.requestMessageId,
+          });
+          if (Option.isSome(message)) {
+            yield* projectionThreadMessageRepository.upsert({
+              ...message.value,
+              requestOutcome: event.payload.outcome,
+            });
+          }
+          return;
+        }
+
         case "thread.message-sent": {
           const existingMessage = yield* projectionThreadMessageRepository.getByMessageId({
             messageId: event.payload.messageId,
@@ -1243,6 +1285,18 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
               : {}),
             ...(event.payload.sideTurnId !== undefined
               ? { sideTurnId: event.payload.sideTurnId }
+              : {}),
+            ...(event.payload.fromAgent !== undefined
+              ? { fromAgent: event.payload.fromAgent }
+              : {}),
+            ...(event.payload.requestId !== undefined
+              ? { requestId: event.payload.requestId }
+              : {}),
+            ...(event.payload.requestKind !== undefined
+              ? { requestKind: event.payload.requestKind }
+              : {}),
+            ...(event.payload.reviewInput !== undefined
+              ? { reviewInput: event.payload.reviewInput }
               : {}),
             isStreaming: event.payload.streaming,
             createdAt: previousMessage?.createdAt ?? event.payload.createdAt,

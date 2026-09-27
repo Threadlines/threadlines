@@ -25,6 +25,7 @@ import {
   WS_METHODS,
   WsRpcGroup,
   EditorId,
+  EMPTY_AGENT_REQUEST_STATE,
 } from "@threadlines/contracts";
 import { assert, it } from "@effect/vitest";
 import { assertFailure, assertInclude, assertTrue } from "@effect/vitest/utils";
@@ -195,6 +196,7 @@ const makeDefaultOrchestrationReadModel = () => {
         pullRequestAutoFix: false,
         pullRequestAutoMerge: null,
         linkedPullRequests: [],
+        agentRequests: EMPTY_AGENT_REQUEST_STATE,
         participants: [],
         doneOverride: null,
         lastSeenAt: null,
@@ -3776,6 +3778,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
             pullRequestAutoFix: false,
             pullRequestAutoMerge: null,
             linkedPullRequests: [],
+            agentRequests: EMPTY_AGENT_REQUEST_STATE,
             participants: [],
             doneOverride: null,
             lastSeenAt: null,

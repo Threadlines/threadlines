@@ -103,3 +103,47 @@ export function agentRequestRefusal(
 /** Whether agents have used all their requests until the user writes. */
 export const agentRequestLimitReached = (state: OrchestrationAgentRequestState): boolean =>
   state.requestsSinceUser >= ROOM_AGENT_REQUEST_LIMIT;
+
+/**
+ * How each room-request event changes a thread's request state. The server's
+ * projector and the web store both apply events through these, so the two
+ * never disagree.
+ */
+export const agentRequestStateOn = {
+  submitted: (
+    state: OrchestrationAgentRequestState,
+    request: OrchestrationAgentRequestState["open"][number],
+  ): OrchestrationAgentRequestState => ({
+    ...state,
+    open: [...state.open.filter((entry) => entry.requestId !== request.requestId), request],
+    requestsSinceUser: state.requestsSinceUser + 1,
+  }),
+  updated: (
+    state: OrchestrationAgentRequestState,
+    requestId: OrchestrationAgentRequestState["open"][number]["requestId"],
+    status: OrchestrationAgentRequestState["open"][number]["status"],
+  ): OrchestrationAgentRequestState => ({
+    ...state,
+    open: state.open.map((entry) => (entry.requestId === requestId ? { ...entry, status } : entry)),
+  }),
+  settled: (
+    state: OrchestrationAgentRequestState,
+    requestId: OrchestrationAgentRequestState["open"][number]["requestId"],
+  ): OrchestrationAgentRequestState => ({
+    ...state,
+    open: state.open.filter((entry) => entry.requestId !== requestId),
+  }),
+  held: (
+    state: OrchestrationAgentRequestState,
+    chainEpoch: number,
+  ): OrchestrationAgentRequestState => ({
+    ...state,
+    hold: true,
+    chainEpoch,
+  }),
+  reset: (state: OrchestrationAgentRequestState): OrchestrationAgentRequestState => ({
+    ...state,
+    hold: false,
+    requestsSinceUser: 0,
+  }),
+};

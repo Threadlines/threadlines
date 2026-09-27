@@ -8,6 +8,7 @@ import {
   TurnId,
   type OrchestrationEvent,
   ProviderInstanceId,
+  EMPTY_AGENT_REQUEST_STATE,
 } from "@threadlines/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
@@ -153,6 +154,7 @@ describe("OrchestrationEngine", () => {
           pullRequestAutoFix: false,
           pullRequestAutoMerge: null,
           linkedPullRequests: [],
+          agentRequests: EMPTY_AGENT_REQUEST_STATE,
           participants: [],
           doneOverride: null,
           lastSeenAt: null,

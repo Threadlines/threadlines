@@ -23,6 +23,17 @@ import {
 
 import { OrchestrationCommandInvariantError } from "./Errors.ts";
 import {
+  type AgentRequestDecision,
+  cancelAgentRequestsForLeaving,
+  decideAgentChainStop,
+  decideAgentRequestQueue,
+  decideAgentRequestSettle,
+  decideAgentRequestSubmit,
+  hasOpenAgentRequests,
+  resetAgentRequestsForUser,
+  settleAgentRequestForSideTurn,
+} from "./agentRequestDecisions.ts";
+import {
   findProjectById,
   listThreadsByProjectId,
   requireNonNegativeInteger,
@@ -87,6 +98,13 @@ function requireSideTurnOpen(
       detail: `Side answer '${command.sideTurnId}' on thread '${thread.id}' is over.`,
     }),
   );
+}
+
+/** Plan an agent-request decision's events, or refuse the command with its reason. */
+function planAgentRequestDecision(commandType: string, decision: AgentRequestDecision) {
+  return "refusal" in decision
+    ? Effect.fail(new OrchestrationCommandInvariantError({ commandType, detail: decision.refusal }))
+    : Effect.succeed(decision);
 }
 
 type DecideOrchestrationCommandResult =
@@ -814,7 +832,22 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             command.modelSelection ?? participant?.modelSelection ?? thread.modelSelection,
         },
       };
-      return [messageSent, started];
+      // The user wrote: agents may make requests again.
+      return [
+        messageSent,
+        started,
+        ...resetAgentRequestsForUser(
+          thread,
+          () =>
+            withEventBase({
+              aggregateKind: "thread",
+              aggregateId: command.threadId,
+              occurredAt: command.createdAt,
+              commandId: command.commandId,
+            }),
+          command.createdAt,
+        ),
+      ];
     }
 
     case "thread.side-turn.interrupt":
@@ -927,9 +960,20 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
               },
             ]
           : [];
+      // An agent's ask or review settles with its answer, in the same step.
+      const settleRequest = settleAgentRequestForSideTurn(
+        thread,
+        sideTurn,
+        command.outcome,
+        answer !== undefined,
+        eventBase,
+        command.createdAt,
+        command.error,
+      );
       return [
         ...closeAnswer,
         ...recordOutcome,
+        ...settleRequest,
         {
           ...base,
           type: "thread.side-turn-settled",
@@ -945,6 +989,31 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           },
         },
       ];
+    }
+
+    case "thread.agent-request.submit":
+    case "thread.agent-request.queue":
+    case "thread.agent-request.settle": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const base = () =>
+        withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        });
+      return yield* planAgentRequestDecision(
+        command.type,
+        command.type === "thread.agent-request.submit"
+          ? decideAgentRequestSubmit(thread, command, base)
+          : command.type === "thread.agent-request.queue"
+            ? decideAgentRequestQueue(thread, command, base)
+            : decideAgentRequestSettle(thread, command, base),
+      );
     }
 
     case "thread.room-context.record": {
@@ -992,8 +1061,37 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         );
       }
       // The thread's own agent keeps its model options with the thread.
-      if (command.modelOptions !== undefined && participant === null) {
-        return yield* refuse("The thread's own agent takes its options from the composer.");
+      if (
+        (command.modelOptions !== undefined || command.modelSelection !== undefined) &&
+        participant === null
+      ) {
+        return yield* refuse("The thread's own agent takes its model from the composer.");
+      }
+      // A new model takes effect at the agent's next turn, so it waits until
+      // the agent has nothing in flight.
+      if (command.modelSelection !== undefined && participant !== null) {
+        const session = thread.session;
+        const holdsSlot = session !== null && sessionSlotParticipantId(session) === participant.id;
+        if (
+          holdsSlot &&
+          (session.status === "running" ||
+            session.status === "starting" ||
+            (session.awaitedBackgroundTaskCount ?? session.pendingBackgroundTaskCount ?? 0) > 0)
+        ) {
+          return yield* refuse(
+            `${participant.handle} is working. Change its model once it is done.`,
+          );
+        }
+        if (thread.sideTurn?.participantId === participant.id) {
+          return yield* refuse(
+            `${participant.handle} is answering. Change its model once it is done.`,
+          );
+        }
+        if (hasOpenAgentRequests(thread, participant.id)) {
+          return yield* refuse(
+            `${participant.handle} has a request from another agent in progress. Change its model once it is done.`,
+          );
+        }
       }
       return {
         ...withEventBase({
@@ -1007,15 +1105,17 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           threadId: command.threadId,
           participantId: command.participantId,
           ...(command.role !== undefined ? { role: command.role } : {}),
-          ...(command.modelOptions !== undefined && participant !== null
-            ? {
-                modelSelection: {
-                  instanceId: participant.modelSelection.instanceId,
-                  model: participant.modelSelection.model,
-                  ...(command.modelOptions.length > 0 ? { options: command.modelOptions } : {}),
-                },
-              }
-            : {}),
+          ...(command.modelSelection !== undefined && participant !== null
+            ? { modelSelection: command.modelSelection }
+            : command.modelOptions !== undefined && participant !== null
+              ? {
+                  modelSelection: {
+                    instanceId: participant.modelSelection.instanceId,
+                    model: participant.modelSelection.model,
+                    ...(command.modelOptions.length > 0 ? { options: command.modelOptions } : {}),
+                  },
+                }
+              : {}),
           updatedAt: command.createdAt,
         },
       };
@@ -1053,7 +1153,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           detail: `${participant.handle} is answering. Stop its answer before removing it.`,
         });
       }
-      return {
+      const removed: PlannedOrchestrationEvent = {
         ...withEventBase({
           aggregateKind: "thread",
           aggregateId: command.threadId,
@@ -1067,6 +1167,17 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           updatedAt: command.createdAt,
         },
       };
+      const removeBase = () =>
+        withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        });
+      return [
+        ...cancelAgentRequestsForLeaving(thread, participant.id, removeBase, command.createdAt),
+        removed,
+      ];
     }
 
     case "thread.meta.update": {
@@ -1463,6 +1574,19 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         ...(titleSeedEvent ? [titleSeedEvent] : []),
         ...(startingSessionEvent ? [startingSessionEvent] : []),
         turnStartRequestedEvent,
+        // The user wrote: agents may make requests again. (A queued message
+        // sent later drops this; it counted when the user queued it.)
+        ...resetAgentRequestsForUser(
+          targetThread,
+          () =>
+            withEventBase({
+              aggregateKind: "thread",
+              aggregateId: command.threadId,
+              occurredAt: command.createdAt,
+              commandId: command.commandId,
+            }),
+          command.createdAt,
+        ),
       ];
     }
 
@@ -1605,53 +1729,63 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             detail: `Message '${command.message.messageId}' was already sent on thread '${command.threadId}'.`,
           });
         }
-        return {
-          ...withEventBase({
+        const userBase = () =>
+          withEventBase({
             aggregateKind: "thread",
             aggregateId: command.threadId,
             occurredAt: command.createdAt,
             commandId: command.commandId,
-          }),
-          type: "thread.follow-up-queued",
-          payload: {
-            threadId: command.threadId,
-            followUp: {
-              messageId: command.message.messageId,
-              text: command.message.text,
-              attachments: command.message.attachments,
-              ...(command.message.skills !== undefined ? { skills: command.message.skills } : {}),
-              ...(command.modelSelection !== undefined
-                ? { modelSelection: command.modelSelection }
-                : {}),
-              ...(addressedAgentId !== null ? { participantId: addressedAgentId } : {}),
-              runtimeMode: command.runtimeMode ?? targetThread.runtimeMode,
-              interactionMode: command.interactionMode ?? targetThread.interactionMode,
-              createdAt: command.createdAt,
+          });
+        return [
+          ...resetAgentRequestsForUser(targetThread, userBase, command.createdAt),
+          {
+            ...userBase(),
+            type: "thread.follow-up-queued",
+            payload: {
+              threadId: command.threadId,
+              followUp: {
+                messageId: command.message.messageId,
+                text: command.message.text,
+                attachments: command.message.attachments,
+                ...(command.message.skills !== undefined ? { skills: command.message.skills } : {}),
+                ...(command.modelSelection !== undefined
+                  ? { modelSelection: command.modelSelection }
+                  : {}),
+                ...(addressedAgentId !== null ? { participantId: addressedAgentId } : {}),
+                runtimeMode: command.runtimeMode ?? targetThread.runtimeMode,
+                interactionMode: command.interactionMode ?? targetThread.interactionMode,
+                createdAt: command.createdAt,
+              },
             },
           },
-        };
+        ];
       }
-      return {
-        ...withEventBase({
+      const steerBase = () =>
+        withEventBase({
           aggregateKind: "thread",
           aggregateId: command.threadId,
           occurredAt: command.createdAt,
           commandId: command.commandId,
-        }),
-        type: "thread.follow-up-submitted",
-        payload: {
-          threadId: command.threadId,
-          turnId: command.turnId,
-          messageId: command.message.messageId,
-          role: "user",
-          text: command.message.text,
-          attachments: command.message.attachments,
-          ...(command.message.skills !== undefined ? { skills: command.message.skills } : {}),
-          // Steering goes to the agent at work.
-          ...(addressedAgentId !== null ? { participantId: addressedAgentId } : {}),
-          createdAt: command.createdAt,
+        });
+      return [
+        ...resetAgentRequestsForUser(targetThread, steerBase, command.createdAt),
+        {
+          ...steerBase(),
+          type: "thread.follow-up-submitted",
+          payload: {
+            threadId: command.threadId,
+            turnId: command.turnId,
+            messageId: command.message.messageId,
+            role: "user",
+            text: command.message.text,
+            attachments: command.message.attachments,
+            ...(command.message.skills !== undefined ? { skills: command.message.skills } : {}),
+            // Steering goes to the agent at work.
+            ...(addressedAgentId !== null ? { participantId: addressedAgentId } : {}),
+            createdAt: command.createdAt,
+          },
         },
-      };
+      ];
     }
 
     case "thread.follow-up.unqueue": {
@@ -1702,13 +1836,15 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           detail: `Message '${command.messageId}' is not queued on thread '${command.threadId}'.`,
         });
       }
-      const unqueuedEvent: PlannedOrchestrationEvent = {
-        ...withEventBase({
+      const sendBase = () =>
+        withEventBase({
           aggregateKind: "thread",
           aggregateId: command.threadId,
           occurredAt: command.createdAt,
           commandId: command.commandId,
-        }),
+        });
+      const unqueuedEvent: PlannedOrchestrationEvent = {
+        ...sendBase(),
         type: "thread.follow-up-unqueued",
         payload: {
           threadId: command.threadId,
@@ -1717,6 +1853,27 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           createdAt: command.createdAt,
         },
       };
+      // A message an agent queued (a hand-off or a routed reply) goes only to
+      // the agent it was for. If that agent left, it is taken back and its
+      // request cancelled, never handed to another agent.
+      const fromAgent = queued.fromAgent;
+      const queuedParticipantPresent =
+        queued.participantId === undefined ||
+        queued.participantId === null ||
+        activeParticipants(targetThread).some((entry) => entry.id === queued.participantId);
+      if (fromAgent !== undefined && !queuedParticipantPresent) {
+        return [
+          { ...unqueuedEvent, payload: { ...unqueuedEvent.payload, reason: "cancelled" } },
+          ...(queued.participantId !== undefined && queued.participantId !== null
+            ? cancelAgentRequestsForLeaving(
+                targetThread,
+                queued.participantId,
+                sendBase,
+                command.createdAt,
+              ).filter((event) => event.type === "thread.agent-request-settled")
+            : []),
+        ];
+      }
       // The turn runs with the settings the message was queued with, applied
       // the same way a normal send applies them before its turn starts. The
       // message is stamped now, not when it was queued, so it lands after the
@@ -1773,29 +1930,87 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           },
         ],
       });
-      return [unqueuedEvent, ...turnEvents];
+      if (fromAgent === undefined) {
+        // It counted as the user writing when it was queued.
+        return [
+          unqueuedEvent,
+          ...turnEvents.filter((event) => event.type !== "thread.agent-requests-reset"),
+        ];
+      }
+      // The agent's message was written when it was queued; sending it keeps
+      // who wrote it, and a hand-off's request is now running.
+      const existing = targetThread.messages.find((message) => message.id === queued.messageId);
+      const request = targetThread.agentRequests.open.find(
+        (entry) => entry.requestId === queued.requestId,
+      );
+      return [
+        unqueuedEvent,
+        ...turnEvents
+          .filter((event) => event.type !== "thread.agent-requests-reset")
+          .map((event) =>
+            event.type === "thread.message-sent" &&
+            (event.payload as { readonly messageId?: unknown }).messageId === queued.messageId
+              ? {
+                  ...event,
+                  payload: {
+                    ...event.payload,
+                    // It keeps its place: it was written when it was queued.
+                    ...(existing !== undefined ? { createdAt: existing.createdAt } : {}),
+                    fromAgent,
+                    ...(queued.requestId !== undefined ? { requestId: queued.requestId } : {}),
+                    ...(existing?.requestKind !== undefined
+                      ? { requestKind: existing.requestKind }
+                      : {}),
+                  },
+                }
+              : event,
+          ),
+        ...(request !== undefined &&
+        request.kind === "hand_off" &&
+        request.status === "queued" &&
+        request.requestMessageId === queued.messageId
+          ? [
+              {
+                ...sendBase(),
+                type: "thread.agent-request-updated" as const,
+                payload: {
+                  threadId: command.threadId,
+                  requestId: request.requestId,
+                  status: "running" as const,
+                  updatedAt: command.createdAt,
+                },
+              },
+            ]
+          : []),
+      ];
     }
 
     case "thread.turn.interrupt": {
-      yield* requireThread({
+      const thread = yield* requireThread({
         readModel,
         command,
         threadId: command.threadId,
       });
-      return {
-        ...withEventBase({
+      const base = () =>
+        withEventBase({
           aggregateKind: "thread",
           aggregateId: command.threadId,
           occurredAt: command.createdAt,
           commandId: command.commandId,
-        }),
-        type: "thread.turn-interrupt-requested",
-        payload: {
-          threadId: command.threadId,
-          ...(command.turnId !== undefined ? { turnId: command.turnId } : {}),
-          createdAt: command.createdAt,
+        });
+      return [
+        {
+          ...base(),
+          type: "thread.turn-interrupt-requested",
+          payload: {
+            threadId: command.threadId,
+            ...(command.turnId !== undefined ? { turnId: command.turnId } : {}),
+            createdAt: command.createdAt,
+          },
         },
-      };
+        // In a room, Stop also ends the agents' chain of requests.
+        ...decideAgentChainStop(thread, base, command.createdAt),
+      ];
     }
 
     case "thread.realtime.start": {

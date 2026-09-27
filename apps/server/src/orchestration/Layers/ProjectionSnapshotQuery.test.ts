@@ -6,6 +6,7 @@ import {
   ThreadId,
   TurnId,
   ProviderInstanceId,
+  EMPTY_AGENT_REQUEST_STATE,
 } from "@threadlines/contracts";
 import { MAX_THREAD_ACTIVITIES, MAX_THREAD_MESSAGES } from "@threadlines/shared/threadLimits";
 import { assert, it } from "@effect/vitest";
@@ -381,6 +382,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           pullRequestAutoMerge: null,
           linkedPullRequests: [],
           queuedFollowUps: [],
+          agentRequests: EMPTY_AGENT_REQUEST_STATE,
           participants: [],
           doneOverride: null,
           lastSeenAt: null,
