@@ -354,6 +354,36 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain("Deleted .tmp-scratch");
   });
 
+  it("shows the newest lines of a long open stretch and folds the earlier ones above them", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const markup = renderTimeline(
+      <MessagesTimeline
+        {...buildProps()}
+        {...OPEN_STRETCH}
+        timelineEntries={Array.from({ length: 6 }, (_, index) => ({
+          id: `entry-${index}`,
+          kind: "work" as const,
+          createdAt: `2026-03-17T19:12:2${index}.000Z`,
+          entry: {
+            id: `work-${index}`,
+            createdAt: `2026-03-17T19:12:2${index}.000Z`,
+            label: "Ran command",
+            tone: "tool" as const,
+            requestKind: "command" as const,
+            executionState: "completed" as const,
+            command: `rm -rf .scratch-${index}`,
+          },
+        }))}
+      />,
+    );
+
+    expect(markup.match(/data-activity-line="true"/gu)).toHaveLength(4);
+    expect(markup).toContain('data-activity-earlier="true"');
+    expect(markup).toContain("Ran 2 commands");
+    expect(markup).not.toContain("Deleted .scratch-0");
+    expect(markup).toContain("Deleted .scratch-5");
+  });
+
   it("folds a finished stretch into one line that says what it did", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
     const markup = renderTimeline(
