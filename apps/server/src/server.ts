@@ -55,6 +55,7 @@ import { ThreadDiffStatBaselineReactorLive } from "./orchestration/Layers/Thread
 import { SleepInhibitorLive } from "./power/Layers/SleepInhibitor.ts";
 import { StorageMaintenanceDaemonLive } from "./persistence/Layers/StorageMaintenance.ts";
 import * as McpHttpServer from "./mcp/McpHttpServer.ts";
+import * as McpRoomServer from "./mcp/McpRoomServer.ts";
 import { DictationLive } from "./dictation/DictationService.ts";
 import * as PreviewAutomationBroker from "./preview/PreviewAutomationBroker.ts";
 import { ProviderAuthSessionsLive } from "./provider/auth/ProviderAuthSessions.ts";
@@ -421,6 +422,7 @@ const RuntimeServicesLive = Layer.mergeAll(
 
 export const makeRoutesLayer = Layer.mergeAll(
   McpHttpServer.layer,
+  McpRoomServer.layer,
   authBearerBootstrapRouteLayer,
   authBootstrapRouteLayer,
   authClientsRevokeOthersRouteLayer,

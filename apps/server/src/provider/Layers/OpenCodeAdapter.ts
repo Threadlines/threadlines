@@ -1024,6 +1024,9 @@ export function makeOpenCodeAdapter(
             issue: "This provider cannot answer on the side while another agent works.",
           });
         }
+        // Room tools are not offered here; a request for them is answered
+        // plainly, so the room does not keep restarting this agent for them.
+        const roomToolsReport = input.roomTools === true ? { roomTools: false } : {};
         const binaryPath = openCodeSettings.binaryPath;
         const serverUrl = openCodeSettings.serverUrl;
         const serverPassword = openCodeSettings.serverPassword;
@@ -1090,7 +1093,7 @@ export function makeOpenCodeAdapter(
             }),
           ).pipe(Effect.ignore);
           yield* Scope.close(started.sessionScope, Exit.void).pipe(Effect.ignore);
-          return raceWinner.session;
+          return { ...raceWinner.session, ...roomToolsReport };
         }
 
         const createdAt = yield* nowIso;
@@ -1102,6 +1105,7 @@ export function makeOpenCodeAdapter(
           cwd: directory,
           ...(input.modelSelection ? { model: input.modelSelection.model } : {}),
           threadId: input.threadId,
+          ...roomToolsReport,
           createdAt,
           updatedAt: createdAt,
         };

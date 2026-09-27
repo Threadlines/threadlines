@@ -24,7 +24,9 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 
+import { ROOM_MCP_SERVER_NAME } from "../mcp/roomToolAccess.ts";
 import { expandHomePath } from "../pathExpansion.ts";
+import { CODEX_BROWSER_TOKEN_ENV_VAR, CODEX_ROOM_TOOL_TIMEOUT_SEC } from "./codexAppServerArgs.ts";
 
 const SIDE_HOME_PREFIX = "threadlines-side-";
 
@@ -237,21 +239,56 @@ export const findCodexRollout = (home: string, providerThreadId: string) =>
     return walk(path.join(home, "sessions"));
   });
 
+/** The room endpoint a side runtime may reach, and the tools it is listed. */
+export interface CodexSideAnswerRoomServer {
+  readonly url: string;
+  readonly tools: ReadonlyArray<string>;
+}
+
 /**
  * Config for a side-answer runtime. The same values are also passed as `-c`
  * flags at spawn (see `codexSideAnswerAppServerArgs`), so neither alone has to
- * be trusted.
+ * be trusted. Memories are off: a side answer neither reads nor writes them. A
+ * review also loads no project instruction files (`project_doc_max_bytes = 0`).
+ * With the room endpoint, it is the only MCP server, listed with only the read
+ * tools its kind allows, and they run without approval (the runtime's policy
+ * is `never`, which would refuse them).
  */
-export const CODEX_SIDE_ANSWER_CONFIG = [
-  `approval_policy = "never"`,
-  `sandbox_mode = "read-only"`,
-  "",
-  "[features]",
-  "hooks = false",
-  "apps = false",
-  "default_mode_request_user_input = false",
-  "",
-].join("\n");
+export function codexSideAnswerConfig(input: {
+  readonly kind: "ask" | "review";
+  readonly room?: CodexSideAnswerRoomServer | undefined;
+}): string {
+  return [
+    `approval_policy = "never"`,
+    `sandbox_mode = "read-only"`,
+    ...(input.kind === "review" ? ["project_doc_max_bytes = 0"] : []),
+    "",
+    "[features]",
+    "hooks = false",
+    "apps = false",
+    "default_mode_request_user_input = false",
+    "memories = false",
+    "",
+    "[memories]",
+    "generate_memories = false",
+    "use_memories = false",
+    "",
+    ...(input.room !== undefined
+      ? [
+          `[mcp_servers.${ROOM_MCP_SERVER_NAME}]`,
+          `url = ${JSON.stringify(input.room.url)}`,
+          `bearer_token_env_var = ${JSON.stringify(CODEX_BROWSER_TOKEN_ENV_VAR)}`,
+          `tool_timeout_sec = ${CODEX_ROOM_TOOL_TIMEOUT_SEC}`,
+          `default_tools_approval_mode = "approve"`,
+          `enabled_tools = [${input.room.tools.map((tool) => JSON.stringify(tool)).join(", ")}]`,
+          "",
+        ]
+      : []),
+  ].join("\n");
+}
+
+/** A side answer's config with no room endpoint. */
+export const CODEX_SIDE_ANSWER_CONFIG = codexSideAnswerConfig({ kind: "ask" });
 
 export interface CodexSideAnswerHome {
   readonly homePath: string;
@@ -268,6 +305,9 @@ export interface CodexSideAnswerHome {
 export const prepareCodexSideAnswerHome = (input: {
   readonly signInHome: string;
   readonly sourceProviderThreadId?: string;
+  /** Absent: `ask`. */
+  readonly kind?: "ask" | "review";
+  readonly room?: CodexSideAnswerRoomServer;
 }) =>
   Effect.gen(function* () {
     const homePath = yield* Effect.tryPromise({
@@ -276,7 +316,11 @@ export const prepareCodexSideAnswerHome = (input: {
         new CodexSideAnswerHomeError(`Could not make a Codex side-answer home: ${String(cause)}`),
     });
     yield* Effect.tryPromise({
-      try: () => fs.writeFile(path.join(homePath, "config.toml"), CODEX_SIDE_ANSWER_CONFIG),
+      try: () =>
+        fs.writeFile(
+          path.join(homePath, "config.toml"),
+          codexSideAnswerConfig({ kind: input.kind ?? "ask", room: input.room }),
+        ),
       catch: (cause) =>
         new CodexSideAnswerHomeError(`Could not write the side-answer config: ${String(cause)}`),
     }).pipe(Effect.tapError(() => removeCodexSideAnswerHome(homePath)));

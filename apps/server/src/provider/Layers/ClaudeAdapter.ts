@@ -9,6 +9,7 @@
 import {
   type CanUseTool,
   type HookCallback,
+  type McpHttpServerConfig,
   query,
   type Options as ClaudeQueryOptions,
   type PermissionMode,
@@ -104,8 +105,19 @@ import { countStructuredPatchStats, type FileChangeStat } from "@threadlines/sha
 
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
-import { BROWSER_MCP_SERVER_NAME, mcpEndpointUrl } from "../../mcp/McpHttpServer.ts";
+import {
+  BROWSER_MCP_SERVER_NAME,
+  mcpEndpointUrl,
+  mcpRoomEndpointUrl,
+} from "../../mcp/McpHttpServer.ts";
 import { mcpSessionRegistry } from "../../mcp/McpSessionRegistry.ts";
+import {
+  claudeRoomToolId,
+  ROOM_MCP_SERVER_NAME,
+  ROOM_TOOL_NAMES,
+  roomSideKindOf,
+  roomToolsFor,
+} from "../../mcp/roomToolAccess.ts";
 import { makeClaudeEnvironment } from "../Drivers/ClaudeHome.ts";
 import {
   ensureClaudeSessionTranscript,
@@ -486,6 +498,8 @@ interface ClaudeSessionContext {
   pendingContextSeedText: string | undefined;
   sessionPersistenceDisabledWarningEmitted: boolean;
   stopped: boolean;
+  /** This runtime's MCP credential (McpSessionRegistry), revoked when it stops. */
+  readonly mcpCredentialGeneration: number | undefined;
 }
 
 interface ClaudeQueryRuntime extends AsyncIterable<SDKMessage> {
@@ -581,19 +595,50 @@ export const SIDE_ANSWER_CLAUDE_TOOLS: ReadonlyArray<string> = [
   "WebSearch",
 ];
 
-const denySideAnswerTool: HookCallback = async (hookInput) => {
-  const toolName = (hookInput as { readonly tool_name?: unknown }).tool_name;
-  const allowed = typeof toolName === "string" && SIDE_ANSWER_CLAUDE_TOOLS.includes(toolName);
-  return {
-    hookSpecificOutput: {
-      hookEventName: "PreToolUse",
-      permissionDecision: allowed ? "allow" : "deny",
-      permissionDecisionReason: allowed
-        ? "Reading is allowed in a side answer."
-        : "A side answer is read-only: it cannot change files, run commands, or ask anyone.",
-    },
+/** Allows exactly `allowedTools` by name and denies every other tool, known or not. */
+const sideAnswerToolGuard =
+  (allowedTools: ReadonlyArray<string>): HookCallback =>
+  async (hookInput) => {
+    const toolName = (hookInput as { readonly tool_name?: unknown }).tool_name;
+    const allowed = typeof toolName === "string" && allowedTools.includes(toolName);
+    return {
+      hookSpecificOutput: {
+        hookEventName: "PreToolUse",
+        permissionDecision: allowed ? "allow" : "deny",
+        permissionDecisionReason: allowed
+          ? "Reading is allowed in a side answer."
+          : "A side answer is read-only: it cannot change files, run commands, or ask anyone.",
+      },
+    };
   };
-};
+
+/**
+ * How long Claude waits on one room tool call. An ask or review waits up to
+ * ten minutes for its answer, so a little more than that, and the Threadlines
+ * deadline always answers first.
+ */
+export const CLAUDE_ROOM_TOOL_TIMEOUT_MS = 660_000;
+
+/** The room tools' server entry, with this runtime's credential. */
+export const claudeRoomMcpServer = (input: {
+  readonly port: number;
+  readonly credential: string;
+}): McpHttpServerConfig => ({
+  type: "http",
+  url: mcpRoomEndpointUrl(input.port),
+  headers: { Authorization: `Bearer ${input.credential}` },
+  timeout: CLAUDE_ROOM_TOOL_TIMEOUT_MS,
+  // Listed in the prompt, not deferred behind tool search: an agent that
+  // cannot see `room_ask` does not know it can ask anyone.
+  alwaysLoad: true,
+});
+
+/** A locked-down side runtime's room endpoint and the room tools it may call. */
+export interface ClaudeSideRoomTools {
+  readonly server: McpHttpServerConfig;
+  /** Claude tool ids (`mcp__threadlines_room__room_diff`). */
+  readonly toolIds: ReadonlyArray<string>;
+}
 
 /**
  * A room's side answer (ProviderSessionStartInput.lockdown): built from an
@@ -603,15 +648,19 @@ const denySideAnswerTool: HookCallback = async (hookInput) => {
  * model may do.
  *
  * Its settings, hooks, plugins and MCP servers never load: no setting sources,
- * and a strict MCP config naming none, which also keeps the account's
- * claude.ai connectors out. Its only built-in tools read; a hook denies every
- * other tool by name, known or not, and nothing prompts. It forks the
- * answering agent's conversation under a fresh id and writes no transcript of
- * its own, so the original is never touched and nothing is left to clean up.
+ * and a strict MCP config naming at most the room endpoint, which also keeps
+ * the account's claude.ai connectors out. Its only built-in tools read, plus
+ * the room read tools its kind allows; a hook denies every other tool by
+ * name, known or not, and nothing prompts. Auto-memory is off: it neither
+ * reads nor writes the user's memory. It forks the answering agent's
+ * conversation under a fresh id (a review never does) and writes no
+ * transcript of its own, so the original is never touched and nothing is
+ * left to clean up.
  */
 export function lockDownClaudeQueryOptions(
   base: ClaudeQueryOptions,
   fork: { readonly resume: string | undefined; readonly forkSessionId: string | undefined },
+  room?: ClaudeSideRoomTools,
 ): ClaudeQueryOptions {
   // A settings file path would load that file; only the inline flags pass.
   const inline = typeof base.settings === "object" ? base.settings : undefined;
@@ -620,7 +669,9 @@ export function lockDownClaudeQueryOptions(
   const settings = {
     ...(alwaysThinkingEnabled !== undefined ? { alwaysThinkingEnabled } : {}),
     ...(fastMode !== undefined ? { fastMode } : {}),
+    autoMemoryEnabled: false,
   };
+  const allowedTools = [...SIDE_ANSWER_CLAUDE_TOOLS, ...(room?.toolIds ?? [])];
   return {
     ...(base.cwd !== undefined ? { cwd: base.cwd } : {}),
     ...(base.additionalDirectories !== undefined
@@ -632,15 +683,17 @@ export function lockDownClaudeQueryOptions(
     ...(base.pathToClaudeCodeExecutable !== undefined
       ? { pathToClaudeCodeExecutable: base.pathToClaudeCodeExecutable }
       : {}),
-    ...(base.env !== undefined ? { env: base.env } : {}),
-    ...(Object.keys(settings).length > 0 ? { settings } : {}),
+    // The setting and the switch both: the switch wins over any setting.
+    env: { ...(base.env ?? process.env), CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1" },
+    settings,
     extraArgs: { "thinking-display": "summarized" },
     includePartialMessages: true,
     systemPrompt: { type: "preset", preset: "claude_code", append: FILE_LINK_INSTRUCTIONS },
-    mcpServers: {},
+    mcpServers: room !== undefined ? { [ROOM_MCP_SERVER_NAME]: room.server } : {},
     strictMcpConfig: true,
     settingSources: [],
     tools: [...SIDE_ANSWER_CLAUDE_TOOLS],
+    ...(room !== undefined ? { allowedTools: [...room.toolIds] } : {}),
     permissionMode: "default",
     promptSuggestions: false,
     enableFileCheckpointing: false,
@@ -651,7 +704,7 @@ export function lockDownClaudeQueryOptions(
       behavior: "deny",
       message: `A side answer is read-only (${toolName}).`,
     }),
-    hooks: { PreToolUse: [{ hooks: [denySideAnswerTool] }] },
+    hooks: { PreToolUse: [{ hooks: [sideAnswerToolGuard(allowedTools)] }] },
   };
 }
 
@@ -6253,6 +6306,10 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     if (context.stopped) return;
 
     context.stopped = true;
+    // First, so nothing this runtime left running can use its tools again.
+    if (context.mcpCredentialGeneration !== undefined) {
+      yield* mcpSessionRegistry.revoke(context.session.threadId, context.mcpCredentialGeneration);
+    }
 
     for (const [requestId, pending] of context.pendingApprovals) {
       yield* Deferred.succeed(pending.decision, "cancel");
@@ -6408,10 +6465,14 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       const startedAt = yield* nowIso;
       // A room's side answer (see ProviderSessionStartInput.lockdown) forks
       // the answering agent's conversation, or starts fresh without one. It
-      // never resumes a session of its own.
-      const lockdown = input.lockdown === "side-answer";
+      // never resumes a session of its own. An independent review always
+      // starts fresh.
+      const sideKind = roomSideKindOf(input.lockdown);
+      const lockdown = sideKind !== undefined;
       const requestedResumeState = lockdown
-        ? input.forkFrom !== undefined && isUuid(input.forkFrom.providerThreadId)
+        ? sideKind === "ask" &&
+          input.forkFrom !== undefined &&
+          isUuid(input.forkFrom.providerThreadId)
           ? { resume: input.forkFrom.providerThreadId }
           : undefined
         : readClaudeResumeState(input.resumeCursor);
@@ -6936,8 +6997,27 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       // The browser the user has open, offered as tools. Over HTTP rather than
       // as an in-process server so Claude and Codex reach the same endpoint,
       // and with a credential that names the thread, because the tools take no
-      // thread argument and must not.
-      const browserCredential = lockdown ? "" : yield* mcpSessionRegistry.credentialFor(threadId);
+      // thread argument and must not. In a room the same credential reaches
+      // the room tools. A side answer never gets the browser, and gets a
+      // credential only for the room's read tools. It dies with the runtime.
+      const roomTools = input.roomTools === true;
+      const credential =
+        !lockdown || roomTools
+          ? yield* mcpSessionRegistry.credentialFor({
+              sessionKey: threadId,
+              browser: !lockdown,
+              room: roomTools,
+              sideKind,
+            })
+          : undefined;
+      const revokeCredential =
+        credential !== undefined
+          ? mcpSessionRegistry.revoke(threadId, credential.generation)
+          : Effect.void;
+      const roomServer =
+        credential !== undefined && roomTools
+          ? claudeRoomMcpServer({ port: serverConfig.port, credential: credential.token })
+          : undefined;
       // Agents treat `git worktree remove` as ordinary post-merge tidying. Here
       // it deletes the session's own working directory, so a session running in
       // a Threadlines-managed worktree is told once, up front, not to.
@@ -6952,7 +7032,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           [BROWSER_MCP_SERVER_NAME]: {
             type: "http",
             url: mcpEndpointUrl(serverConfig.port),
-            headers: { Authorization: `Bearer ${browserCredential}` },
+            headers: { Authorization: `Bearer ${credential?.token ?? ""}` },
             // In the prompt rather than deferred behind tool search. Deferred,
             // the model sees eighteen tool names and none of the sentences in
             // browserTools.ts, and reaches for whichever browser has a blurb in
@@ -6971,6 +7051,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
               }),
             ),
           ),
+          ...(roomServer !== undefined ? { [ROOM_MCP_SERVER_NAME]: roomServer } : {}),
         },
         ...(apiModelId ? { model: apiModelId } : {}),
         pathToClaudeCodeExecutable: claudeBinaryPath,
@@ -6987,7 +7068,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         // SDK 0.3.233 dropped the todo/task tools from the default tool
         // surface on newer models; the plan timeline reads them, so keep
         // them enabled explicitly. Marking a command as long-running changes
-        // only what the thread shows, so it never asks for approval.
+        // only what the thread shows, so it never asks for approval. Nor do
+        // the room tools: the decider says who may make a request, and a
+        // prompt would put a question to the user mid-way through a turn.
         allowedTools: [
           "TodoWrite",
           "TaskCreate",
@@ -6995,6 +7078,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           "TaskUpdate",
           "TaskList",
           MARK_LONG_RUNNING_TOOL_ID,
+          ...(roomServer !== undefined ? ROOM_TOOL_NAMES.map(claudeRoomToolId) : []),
         ],
         ...(effectiveEffort
           ? {
@@ -7037,10 +7121,16 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         extraArgs,
       };
       const queryOptions: ClaudeQueryOptions = lockdown
-        ? lockDownClaudeQueryOptions(normalQueryOptions, {
-            resume: existingResumeSessionId,
-            forkSessionId: newSessionId,
-          })
+        ? lockDownClaudeQueryOptions(
+            normalQueryOptions,
+            {
+              resume: existingResumeSessionId,
+              forkSessionId: newSessionId,
+            },
+            roomServer !== undefined
+              ? { server: roomServer, toolIds: roomToolsFor(sideKind).map(claudeRoomToolId) }
+              : undefined,
+          )
         : normalQueryOptions;
 
       yield* Effect.annotateCurrentSpan({
@@ -7089,12 +7179,16 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         Effect.catch((error) =>
           withMissingCheckoutDetail(error, input.cwd).pipe(Effect.flatMap(Effect.fail)),
         ),
+        // No runtime came of it: its credential goes too.
+        Effect.tapError(() => revokeCredential),
       );
 
       const session: ProviderSession = {
         threadId,
         provider: PROVIDER,
         providerInstanceId: boundInstanceId,
+        // Requested, it is always attached: Claude takes HTTP MCP servers.
+        ...(roomTools ? { roomTools: true } : {}),
         status: "ready",
         runtimeMode: input.runtimeMode,
         ...(input.cwd ? { cwd: input.cwd } : {}),
@@ -7159,6 +7253,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             : undefined,
         sessionPersistenceDisabledWarningEmitted: false,
         stopped: false,
+        mcpCredentialGeneration: credential?.generation,
       };
       yield* Ref.set(contextRef, context);
       sessions.set(threadId, context);

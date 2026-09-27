@@ -35,11 +35,14 @@ import { McpInvocationContext } from "./McpInvocationContext.ts";
 import { mcpSessionRegistry } from "./McpSessionRegistry.ts";
 import { PreviewAutomationBroker } from "../preview/PreviewAutomationBroker.ts";
 
-/** Where the endpoint lives, shared with whoever has to tell a provider about it. */
 /** How the tools are namespaced to a provider, so `browser_click` arrives as
  *  something the user can recognise in the transcript. */
 export const BROWSER_MCP_SERVER_NAME = "threadlines_browser";
+/** Where the endpoint lives, shared with whoever has to tell a provider about it. */
 export const MCP_ROUTE_PATH = "/mcp";
+/** The room tools' endpoint (McpRoomServer): its own server, so its tools are
+ *  never listed to a runtime outside a room. */
+export const MCP_ROOM_ROUTE_PATH = "/mcp/room";
 
 /**
  * What a provider needs to be told to reach the browser tools.
@@ -50,6 +53,11 @@ export const MCP_ROUTE_PATH = "/mcp";
  */
 export function mcpEndpointUrl(port: number): string {
   return `http://127.0.0.1:${port}${MCP_ROUTE_PATH}`;
+}
+
+/** The room tools' address, on loopback for the same reason. */
+export function mcpRoomEndpointUrl(port: number): string {
+  return `http://127.0.0.1:${port}${MCP_ROOM_ROUTE_PATH}`;
 }
 
 /**
@@ -75,7 +83,8 @@ export function codexBrowserThreadConfig(input: {
   };
 }
 
-const unauthorized = HttpServerResponse.jsonUnsafe(
+/** What an endpoint answers a request whose credential does not reach it. */
+export const unauthorizedMcpResponse = HttpServerResponse.jsonUnsafe(
   {
     error: "invalid_credential",
     message: "A thread-scoped bearer credential is required.",
@@ -85,6 +94,12 @@ const unauthorized = HttpServerResponse.jsonUnsafe(
     headers: { "cache-control": "no-store", "www-authenticate": "Bearer" },
   },
 );
+
+/** The bearer credential a request carries, or "" without one. */
+export const readBearerToken = (request: HttpServerRequest.HttpServerRequest): string => {
+  const header = request.headers.authorization ?? "";
+  return header.startsWith("Bearer ") ? header.slice("Bearer ".length).trim() : "";
+};
 
 /**
  * An empty 200 turned into a 202.
@@ -118,11 +133,11 @@ const authenticate = Effect.succeed(
     >,
   ) {
     const request = yield* HttpServerRequest.HttpServerRequest;
-    const header = request.headers.authorization ?? "";
-    const token = header.startsWith("Bearer ") ? header.slice("Bearer ".length).trim() : "";
-    const scope = yield* mcpSessionRegistry.resolve(token);
-    if (scope === null) {
-      return unauthorized;
+    const scope = yield* mcpSessionRegistry.resolve(readBearerToken(request));
+    // A side runtime's credential is valid, just not here: it never drives
+    // the browser, whatever the runtime was told about.
+    if (scope === null || !scope.browser) {
+      return unauthorizedMcpResponse;
     }
     return yield* handler.pipe(
       Effect.provideService(McpInvocationContext, {

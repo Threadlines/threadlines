@@ -182,6 +182,8 @@ function toRuntimePayloadFromSession(
     model: session.model ?? null,
     activeTurnId: session.activeTurnId ?? null,
     lastError: session.lastError ?? null,
+    // Kept so a recovered runtime gets the room tools it was started with.
+    ...(session.roomTools !== undefined ? { roomTools: session.roomTools } : {}),
     ...(extra?.modelSelection !== undefined ? { modelSelection: extra.modelSelection } : {}),
     ...(extra?.lastRuntimeEvent !== undefined ? { lastRuntimeEvent: extra.lastRuntimeEvent } : {}),
     ...(extra?.lastRuntimeEventAt !== undefined
@@ -198,6 +200,17 @@ function readPersistedModelSelection(
   }
   const raw = "modelSelection" in runtimePayload ? runtimePayload.modelSelection : undefined;
   return isModelSelection(raw) ? raw : undefined;
+}
+
+/** Whether the runtime was started with the room tools (ProviderSession.roomTools). */
+function readPersistedRoomTools(runtimePayload: ProviderRuntimeBinding["runtimePayload"]): boolean {
+  return (
+    runtimePayload !== null &&
+    typeof runtimePayload === "object" &&
+    !Array.isArray(runtimePayload) &&
+    "roomTools" in runtimePayload &&
+    runtimePayload.roomTools === true
+  );
 }
 
 function readPersistedCwd(
@@ -557,6 +570,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         ...(persistedCwd ? { cwd: persistedCwd } : {}),
         ...(persistedModelSelection ? { modelSelection: persistedModelSelection } : {}),
         ...(hasResumeCursor ? { resumeCursor: input.binding.resumeCursor } : {}),
+        ...(readPersistedRoomTools(input.binding.runtimePayload) ? { roomTools: true } : {}),
         runtimeMode: input.binding.runtimeMode ?? "full-access",
       });
       if (resumed.provider !== adapter.provider) {

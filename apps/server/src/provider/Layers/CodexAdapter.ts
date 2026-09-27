@@ -89,6 +89,8 @@ import {
 } from "../codexSideAnswerHome.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
 import { initializeCodexAppServerClient, makeCodexAppServerClient } from "./CodexProvider.ts";
+import { mcpRoomEndpointUrl } from "../../mcp/McpHttpServer.ts";
+import { roomSideKindOf, roomToolsFor } from "../../mcp/roomToolAccess.ts";
 const isCodexAppServerProcessExitedError = Schema.is(CodexErrors.CodexAppServerProcessExitedError);
 const isCodexAppServerTransportError = Schema.is(CodexErrors.CodexAppServerTransportError);
 const isCodexSessionRuntimeThreadIdMissingError = Schema.is(
@@ -2973,9 +2975,12 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           instanceId: boundInstanceId,
         });
         // A room's side answer runs in a home of its own, continuing a copy of
-        // the answering agent's conversation; see codexSideAnswerHome.ts.
+        // the answering agent's conversation; see codexSideAnswerHome.ts. An
+        // independent review never continues one: it starts fresh.
+        const sideKind = roomSideKindOf(input.lockdown);
+        const sideForkFrom = sideKind === "ask" ? input.forkFrom : undefined;
         const sideAnswer =
-          input.lockdown === "side-answer"
+          sideKind !== undefined
             ? yield* Effect.gen(function* () {
                 if (!sweptSideAnswerHomes) {
                   sweptSideAnswerHomes = true;
@@ -2993,11 +2998,20 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
                   });
                 const home = yield* prepareCodexSideAnswerHome({
                   signInHome,
-                  ...(input.forkFrom !== undefined
-                    ? { sourceProviderThreadId: input.forkFrom.providerThreadId }
+                  kind: sideKind,
+                  ...(sideForkFrom !== undefined
+                    ? { sourceProviderThreadId: sideForkFrom.providerThreadId }
+                    : {}),
+                  ...(input.roomTools === true
+                    ? {
+                        room: {
+                          url: mcpRoomEndpointUrl(serverConfig.port),
+                          tools: roomToolsFor(sideKind),
+                        },
+                      }
                     : {}),
                 });
-                return { signIn, home };
+                return { kind: sideKind, signIn, home };
               }).pipe(
                 Effect.mapError(
                   (cause) =>
@@ -3021,11 +3035,12 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
             ? {
                 homePath: sideAnswer.home.homePath,
                 lockdown: {
+                  kind: sideAnswer.kind,
                   signIn: sideAnswer.signIn,
-                  ...(sideAnswer.home.rolloutPath !== undefined && input.forkFrom !== undefined
+                  ...(sideAnswer.home.rolloutPath !== undefined && sideForkFrom !== undefined
                     ? {
                         rolloutPath: sideAnswer.home.rolloutPath,
-                        sourceProviderThreadId: input.forkFrom.providerThreadId,
+                        sourceProviderThreadId: sideForkFrom.providerThreadId,
                       }
                     : {}),
                 },
@@ -3038,6 +3053,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
                 ...(input.forkFrom !== undefined ? { forkFrom: input.forkFrom } : {}),
               }),
           ...(input.resumePolicy === "required" ? { resumeRequired: true } : {}),
+          ...(input.roomTools === true ? { roomTools: true } : {}),
           runtimeMode: input.runtimeMode,
           ...(input.modelSelection?.instanceId === boundInstanceId
             ? { model: input.modelSelection.model }
@@ -3194,7 +3210,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
               ? renderThreadContextSeed(input.contextSeed)
               : undefined,
           stopped: false,
-          lockdown: input.lockdown === "side-answer",
+          lockdown: input.lockdown !== undefined,
         });
         sessionScopeTransferred = true;
 

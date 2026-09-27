@@ -42,6 +42,7 @@ import { attachmentRelativePath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { ProviderAdapterValidationError } from "../Errors.ts";
+import { mcpSessionRegistry } from "../../mcp/McpSessionRegistry.ts";
 import type { ClaudeAdapterShape } from "../Services/ClaudeAdapter.ts";
 import { claudeProjectDirectoryName } from "../Drivers/ClaudeSessionTranscripts.ts";
 import {
@@ -3780,7 +3781,8 @@ describe("ClaudeAdapterLive", () => {
       { resume: "30d8aa06-ed90-469b-b864-3c4e5801581e", forkSessionId: "fork-id" },
     );
     assert.deepEqual(locked.extraArgs, { "thinking-display": "summarized" });
-    assert.deepEqual(locked.settings, { alwaysThinkingEnabled: true });
+    // Auto-memory off: a side answer neither reads nor writes the user's memory.
+    assert.deepEqual(locked.settings, { alwaysThinkingEnabled: true, autoMemoryEnabled: false });
     assert.deepEqual(locked.mcpServers, {});
     assert.equal(locked.strictMcpConfig, true);
     assert.deepEqual(locked.settingSources, []);
@@ -7855,6 +7857,104 @@ describe("ClaudeAdapterLive", () => {
         .pipe(Effect.exit);
       assert.equal(Exit.isFailure(started), true);
       assert.equal(harness.getLastCreateQueryInput(), undefined);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect(
+    "attaches the room tools to a room's working agent, on a credential its stop revokes",
+    () => {
+      const harness = makeHarness();
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        const plain = yield* adapter.startSession({
+          threadId: ThreadId.make("thread-claude-plain"),
+          provider: ProviderDriverKind.make("claudeAgent"),
+          runtimeMode: "full-access",
+        });
+        // Not asked for: nothing is said either way.
+        assert.equal(plain.roomTools, undefined);
+
+        const session = yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          runtimeMode: "full-access",
+          roomTools: true,
+        });
+        assert.equal(session.roomTools, true);
+        const options = harness.getLastCreateQueryInput()!.options;
+        const room = options.mcpServers?.["threadlines_room"] as
+          | {
+              readonly url: string;
+              readonly headers: Record<string, string>;
+              readonly timeout: number;
+            }
+          | undefined;
+        assert.match(room!.url, /\/mcp\/room$/);
+        assert.equal(room!.timeout, 660_000);
+        assert.include(options.allowedTools ?? [], "mcp__threadlines_room__room_ask");
+        const token = room!.headers.Authorization!.replace("Bearer ", "");
+        assert.equal((yield* mcpSessionRegistry.resolve(token))?.roomTools.size, 6);
+
+        yield* adapter.stopSession(THREAD_ID);
+        assert.equal(yield* mcpSessionRegistry.resolve(token), null);
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    },
+  );
+
+  it.effect("starts an independent review fresh, reading only the checkout, with no memory", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const session = yield* adapter.startSession({
+        threadId: RESUME_THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        lockdown: "side-review",
+        roomTools: true,
+        // Offered a conversation anyway: a review never forks one.
+        forkFrom: { providerThreadId: "0f0e0d0c-0b0a-4908-8706-050403020100" },
+        runtimeMode: "full-access",
+      });
+      assert.equal(session.roomTools, true);
+      const options = harness.getLastCreateQueryInput()!.options;
+      assert.equal(options.resume, undefined);
+      assert.equal(options.forkSession, undefined);
+      assert.deepEqual(Object.keys(options.mcpServers ?? {}), ["threadlines_room"]);
+      assert.equal(options.strictMcpConfig, true);
+      assert.deepEqual(options.allowedTools, ["mcp__threadlines_room__room_diff"]);
+      assert.equal(options.env?.CLAUDE_CODE_DISABLE_AUTO_MEMORY, "1");
+      assert.equal((options.settings as { autoMemoryEnabled?: boolean }).autoMemoryEnabled, false);
+
+      const hook = options.hooks?.PreToolUse?.[0]?.hooks[0];
+      const decide = async (toolName: string) => {
+        const output = await hook!({ tool_name: toolName } as never, undefined, {
+          signal: new AbortController().signal,
+        });
+        return (output as { hookSpecificOutput: { permissionDecision: string } }).hookSpecificOutput
+          .permissionDecision;
+      };
+      assert.equal(
+        yield* Effect.promise(() => decide("mcp__threadlines_room__room_diff")),
+        "allow",
+      );
+      assert.equal(
+        yield* Effect.promise(() => decide("mcp__threadlines_room__room_history")),
+        "deny",
+      );
+
+      const room = options.mcpServers?.["threadlines_room"] as {
+        readonly headers: Record<string, string>;
+      };
+      const scope = yield* mcpSessionRegistry.resolve(
+        room.headers.Authorization!.replace("Bearer ", ""),
+      );
+      assert.equal(scope?.browser, false);
+      assert.deepEqual([...(scope?.roomTools ?? [])], ["room_diff"]);
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),

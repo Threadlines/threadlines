@@ -64,6 +64,28 @@ describe("codex side-answer home", () => {
     expect(fs.existsSync(home.homePath)).toBe(false);
   });
 
+  it("gives a review no project docs, no memories, and only the room tools it may call", async () => {
+    const signInHome = fakeSignInHome();
+    const home = await Effect.runPromise(
+      prepareCodexSideAnswerHome({
+        signInHome,
+        kind: "review",
+        room: { url: "http://127.0.0.1:4321/mcp/room", tools: ["room_diff"] },
+      }),
+    );
+    scratch.push(home.homePath);
+    const config = fs.readFileSync(path.join(home.homePath, "config.toml"), "utf8");
+
+    // Top-level keys, before any table, or TOML files them under that table.
+    const topLevel = config.slice(0, config.indexOf("["));
+    expect(topLevel).toContain("project_doc_max_bytes = 0");
+    expect(config).toContain("[memories]\ngenerate_memories = false\nuse_memories = false");
+    expect(config.match(/^\[mcp_servers\.[^\]]+\]$/gm)).toEqual(["[mcp_servers.threadlines_room]"]);
+    expect(config).toContain('enabled_tools = ["room_diff"]');
+    expect(config).toContain('default_tools_approval_mode = "approve"');
+    expect(CODEX_SIDE_ANSWER_CONFIG).not.toContain("project_doc_max_bytes");
+  });
+
   it("never deletes a folder that is not one of its own homes", async () => {
     const signInHome = fakeSignInHome();
     expect(await Effect.runPromise(removeCodexSideAnswerHome(signInHome))).toBe(false);

@@ -9,6 +9,7 @@ import { assert, it } from "@effect/vitest";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import { mcpSessionRegistry } from "../../mcp/McpSessionRegistry.ts";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
@@ -370,13 +371,13 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
     }),
   );
 
-  it.effect("offers the browser panel tools only to agents that speak HTTP MCP", () =>
+  it.effect("offers the browser and room tools only to agents that speak HTTP MCP", () =>
     Effect.gen(function* () {
       const adapter = yield* CursorAdapter;
       const serverSettings = yield* ServerSettingsService;
-      const sessionNewServers = (advertiseHttpMcp: boolean) =>
+      const sessionNewServers = (advertiseHttpMcp: boolean, roomTools = false) =>
         Effect.gen(function* () {
-          const threadId = ThreadId.make(`acp-browser-mcp-${advertiseHttpMcp}`);
+          const threadId = ThreadId.make(`acp-browser-mcp-${advertiseHttpMcp}-${roomTools}`);
           const tempDir = yield* Effect.promise(() =>
             mkdtemp(path.join(os.tmpdir(), "cursor-acp-")),
           );
@@ -392,22 +393,25 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
           yield* serverSettings.updateSettings({
             providers: { cursor: { binaryPath: wrapperPath } },
           });
-          yield* adapter.startSession({
+          const session = yield* adapter.startSession({
             threadId,
             provider: ProviderDriverKind.make("cursor"),
             cwd: process.cwd(),
             runtimeMode: "full-access",
             modelSelection: { instanceId: ProviderInstanceId.make("cursor"), model: "default" },
+            ...(roomTools ? { roomTools: true } : {}),
           });
           yield* adapter.stopSession(threadId);
           const requests = yield* Effect.promise(() => readJsonLines(requestLogPath));
           const sessionNew = requests.find((entry) => entry.method === "session/new");
-          return (sessionNew?.params as { readonly mcpServers?: ReadonlyArray<unknown> })
+          const servers = (sessionNew?.params as { readonly mcpServers?: ReadonlyArray<unknown> })
             ?.mcpServers;
+          return Object.assign(servers ?? [], { roomTools: session.roomTools });
         });
 
       const offered = yield* sessionNewServers(true);
       assert.lengthOf(offered ?? [], 1);
+      assert.equal(offered.roomTools, undefined);
       assert.deepInclude(offered?.[0] as object, { type: "http", name: "threadlines_browser" });
       const server = offered?.[0] as {
         readonly url: string;
@@ -417,7 +421,24 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
       assert.match(server.headers[0]?.value ?? "", /^Bearer \S+/);
 
       // ACP forbids handing HTTP servers to an agent that did not advertise them.
-      assert.deepEqual(yield* sessionNewServers(false), []);
+      assert.deepEqual([...(yield* sessionNewServers(false))], []);
+
+      // In a room the room endpoint rides the same credential, which dies
+      // with the session; an agent that cannot take it says so.
+      const inRoom = yield* sessionNewServers(true, true);
+      assert.deepEqual(
+        inRoom.map((entry) => (entry as { readonly name: string }).name),
+        ["threadlines_browser", "threadlines_room"],
+      );
+      assert.equal(inRoom.roomTools, true);
+      const roomServer = inRoom[1] as {
+        readonly url: string;
+        readonly headers: ReadonlyArray<{ readonly value: string }>;
+      };
+      assert.match(roomServer.url, /\/mcp\/room$/);
+      const token = roomServer.headers[0]!.value.replace("Bearer ", "");
+      assert.equal(yield* mcpSessionRegistry.resolve(token), null);
+      assert.equal((yield* sessionNewServers(false, true)).roomTools, false);
     }),
   );
 

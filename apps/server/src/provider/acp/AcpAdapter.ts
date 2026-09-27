@@ -50,8 +50,13 @@ import type * as EffectAcpSchema from "effect-acp/schema";
 
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
-import { BROWSER_MCP_SERVER_NAME, mcpEndpointUrl } from "../../mcp/McpHttpServer.ts";
+import {
+  BROWSER_MCP_SERVER_NAME,
+  mcpEndpointUrl,
+  mcpRoomEndpointUrl,
+} from "../../mcp/McpHttpServer.ts";
 import { mcpSessionRegistry } from "../../mcp/McpSessionRegistry.ts";
+import { ROOM_MCP_SERVER_NAME } from "../../mcp/roomToolAccess.ts";
 import {
   type ProviderAdapterError,
   ProviderAdapterProcessError,
@@ -568,22 +573,48 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
             : settings;
           // The browser the user has open, offered as tools: the same HTTP
           // endpoint Codex and Claude use, with a credential naming the thread
-          // because the tools take no thread argument.
+          // because the tools take no thread argument. In a room, the room
+          // tools too, on the same credential. Neither when the agent cannot
+          // reach this machine's loopback (fx under WSL). The credential dies
+          // with the session's scope.
+          const reachesHost = descriptor.reachesHostLoopback?.(process.platform) !== false;
+          const roomToolsRequested = input.roomTools === true;
+          const credential = reachesHost
+            ? yield* mcpSessionRegistry.credentialFor({
+                sessionKey: input.threadId,
+                browser: true,
+                room: roomToolsRequested,
+              })
+            : undefined;
+          if (credential !== undefined) {
+            yield* Scope.addFinalizer(
+              sessionScope,
+              mcpSessionRegistry.revoke(input.threadId, credential.generation),
+            );
+          }
+          const authorization = [
+            { name: "Authorization", value: `Bearer ${credential?.token ?? ""}` },
+          ];
           const mcpServers: Array<EffectAcpSchema.McpServer> =
-            descriptor.reachesHostLoopback?.(process.platform) === false
+            credential === undefined
               ? []
               : [
                   {
                     type: "http",
                     name: BROWSER_MCP_SERVER_NAME,
                     url: mcpEndpointUrl(serverConfig.port),
-                    headers: [
-                      {
-                        name: "Authorization",
-                        value: `Bearer ${yield* mcpSessionRegistry.credentialFor(input.threadId)}`,
-                      },
-                    ],
+                    headers: authorization,
                   },
+                  ...(roomToolsRequested
+                    ? [
+                        {
+                          type: "http" as const,
+                          name: ROOM_MCP_SERVER_NAME,
+                          url: mcpRoomEndpointUrl(serverConfig.port),
+                          headers: authorization,
+                        },
+                      ]
+                    : []),
                 ];
 
           const acp = yield* makeAcpProviderRuntime(descriptor, {
@@ -759,6 +790,12 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
           });
 
           const now = yield* nowIso;
+          // ACP passes an HTTP server only to an agent that says it speaks
+          // HTTP MCP (see supportedMcpServers); without that, it has no room
+          // tools, and says so.
+          const roomToolsAttached =
+            credential !== undefined &&
+            started.initializeResult.agentCapabilities?.mcpCapabilities?.http === true;
           const session: ProviderSession = {
             provider: PROVIDER,
             providerInstanceId: boundInstanceId,
@@ -768,6 +805,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
             model: boundModelSelection?.model,
             threadId: input.threadId,
             resumeCursor: { schemaVersion: ACP_RESUME_VERSION, sessionId: started.sessionId },
+            ...(roomToolsRequested ? { roomTools: roomToolsAttached } : {}),
             createdAt: now,
             updatedAt: now,
           };
