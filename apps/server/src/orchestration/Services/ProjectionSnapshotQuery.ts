@@ -15,9 +15,11 @@ import type {
   OrchestrationReadModel,
   OrchestrationShellSnapshot,
   OrchestrationThread,
+  OrchestrationThreadActivity,
   OrchestrationThreadShell,
   ProjectId,
   ThreadId,
+  TurnId,
 } from "@threadlines/contracts";
 import * as Context from "effect/Context";
 import type * as Option from "effect/Option";
@@ -223,6 +225,16 @@ export interface ProjectionSnapshotQueryShape {
   readonly getThreadDetailById: (
     threadId: ThreadId,
   ) => Effect.Effect<Option.Option<OrchestrationThread>, ProjectionRepositoryError>;
+
+  /**
+   * Read every activity of one turn, in thread order. Thread detail keeps only
+   * the newest `MAX_THREAD_ACTIVITIES` rows; this is how a client reads the
+   * steps of an older turn that fell out of that window.
+   */
+  readonly getTurnActivities: (input: {
+    readonly threadId: ThreadId;
+    readonly turnId: TurnId;
+  }) => Effect.Effect<ReadonlyArray<OrchestrationThreadActivity>, ProjectionRepositoryError>;
 }
 
 /**

@@ -1,12 +1,14 @@
 /**
  * Which activities a thread keeps once its log outgrows the recent window.
  *
- * Clients only ever see the newest `MAX_THREAD_ACTIVITIES` per thread, plus
- * a few older rows that still drive UI state: open approvals and questions
- * (so their prompts stay answerable) and the latest plan update (so the task
- * list in the activity popover survives a long, chatty turn). The server
- * projector, the snapshot SQL queries, and the web store all apply this same
- * rule; if they disagree, a reload shows different state than the live feed.
+ * The live thread feed carries only the newest `MAX_THREAD_ACTIVITIES` per
+ * thread, plus a few older rows that still drive UI state: open approvals and
+ * questions (so their prompts stay answerable) and the latest plan update (so
+ * the task list in the activity popover survives a long, chatty turn). The
+ * server projector, the snapshot SQL queries, and the web store all apply this
+ * same rule; if they disagree, a reload shows different state than the live
+ * feed. The chat reads older turns' steps separately, one turn at a time
+ * (`orchestration.getTurnActivities`).
  */
 import {
   APPROVAL_ACTIVITY_KINDS,

@@ -137,6 +137,7 @@ export function createEnvironmentApi(rpcClient: WsRpcClient): EnvironmentApi {
       getFullThreadDiff: rpcClient.orchestration.getFullThreadDiff,
       getRevertPlan: rpcClient.orchestration.getRevertPlan,
       searchThreads: rpcClient.orchestration.searchThreads,
+      getTurnActivities: rpcClient.orchestration.getTurnActivities,
       getArchivedShellSnapshot: rpcClient.orchestration.getArchivedShellSnapshot,
       subscribeShell: (callback, options) =>
         rpcClient.orchestration.subscribeShell(callback, options),

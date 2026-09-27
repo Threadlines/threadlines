@@ -293,6 +293,7 @@ describe("ProviderSessionReaper", () => {
                   }),
             );
           },
+          getTurnActivities: () => Effect.succeed([]),
           getThreadDetailById: () => Effect.die("unused"),
         }),
       ),

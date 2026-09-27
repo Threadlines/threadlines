@@ -54,6 +54,7 @@ function fakeSnapshotQuery(thread: OrchestrationThread | null): ProjectionSnapsh
     listThreadDiffStatBaselines: unusedProjectionQueryMethod,
     listThreadTurnOverlapsSince: unusedProjectionQueryMethod,
     getThreadShellById: unusedProjectionQueryMethod,
+    getTurnActivities: () => Effect.succeed([]),
     getThreadDetailById: () =>
       Effect.succeed(thread === null ? Option.none() : Option.some(thread)),
   };
@@ -76,6 +77,7 @@ function failingSnapshotQuery(): ProjectionSnapshotQueryShape {
     listThreadDiffStatBaselines: unusedProjectionQueryMethod,
     listThreadTurnOverlapsSince: unusedProjectionQueryMethod,
     getThreadShellById: unusedProjectionQueryMethod,
+    getTurnActivities: () => Effect.succeed([]),
     getThreadDetailById: () =>
       Effect.fail(
         new PersistenceSqlError({

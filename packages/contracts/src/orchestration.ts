@@ -33,6 +33,7 @@ export const ORCHESTRATION_WS_METHODS = {
   getFullThreadDiff: "orchestration.getFullThreadDiff",
   getRevertPlan: "orchestration.getRevertPlan",
   searchThreads: "orchestration.searchThreads",
+  getTurnActivities: "orchestration.getTurnActivities",
   replayEvents: "orchestration.replayEvents",
   getArchivedShellSnapshot: "orchestration.getArchivedShellSnapshot",
   subscribeShell: "orchestration.subscribeShell",
@@ -3256,6 +3257,23 @@ export const OrchestrationThreadSearchResult = Schema.Struct({
 });
 export type OrchestrationThreadSearchResult = typeof OrchestrationThreadSearchResult.Type;
 
+/**
+ * One finished turn's activity, in thread order. The thread detail stream
+ * carries only the newest `MAX_THREAD_ACTIVITIES` rows, so a long thread's
+ * older turns arrive without their steps; the chat asks for them turn by turn
+ * as the reader scrolls back to them.
+ */
+export const OrchestrationGetTurnActivitiesInput = Schema.Struct({
+  threadId: ThreadId,
+  turnId: TurnId,
+});
+export type OrchestrationGetTurnActivitiesInput = typeof OrchestrationGetTurnActivitiesInput.Type;
+
+export const OrchestrationGetTurnActivitiesResult = Schema.Struct({
+  activities: Schema.Array(OrchestrationThreadActivity),
+});
+export type OrchestrationGetTurnActivitiesResult = typeof OrchestrationGetTurnActivitiesResult.Type;
+
 export const OrchestrationReplayEventsInput = Schema.Struct({
   fromSequenceExclusive: NonNegativeInt,
 });
@@ -3284,6 +3302,10 @@ export const OrchestrationRpcSchemas = {
   searchThreads: {
     input: OrchestrationThreadSearchInput,
     output: OrchestrationThreadSearchResult,
+  },
+  getTurnActivities: {
+    input: OrchestrationGetTurnActivitiesInput,
+    output: OrchestrationGetTurnActivitiesResult,
   },
   replayEvents: {
     input: OrchestrationReplayEventsInput,
@@ -3345,6 +3367,14 @@ export class OrchestrationGetRevertPlanError extends Schema.TaggedError<Orchestr
 
 export class OrchestrationThreadSearchError extends Schema.TaggedError<OrchestrationThreadSearchError>()(
   "OrchestrationThreadSearchError",
+  {
+    message: TrimmedNonEmptyString,
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {}
+
+export class OrchestrationGetTurnActivitiesError extends Schema.TaggedError<OrchestrationGetTurnActivitiesError>()(
+  "OrchestrationGetTurnActivitiesError",
   {
     message: TrimmedNonEmptyString,
     cause: Schema.optional(Schema.Defect()),

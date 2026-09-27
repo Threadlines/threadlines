@@ -27,7 +27,11 @@ import {
   type TouchEvent as ReactTouchEvent,
   type WheelEvent as ReactWheelEvent,
 } from "react";
-import { LegendList, type LegendListRef } from "@legendapp/list/react";
+import {
+  LegendList,
+  type LegendListRef,
+  type OnViewableItemsChangedInfo,
+} from "@legendapp/list/react";
 import { useQueries } from "@tanstack/react-query";
 import { isProviderAuthErrorMessage } from "@threadlines/shared/providerAuth";
 import {
@@ -93,6 +97,7 @@ import {
   resolveAssistantMessageCopyState,
   shouldCollapseUserMessage,
   stretchDurationMs,
+  timelineRowTurnIds,
   type StableMessagesTimelineRowsState,
   type TrayPlacement,
   type TurnSummary,
@@ -607,6 +612,13 @@ function revealTimelineSearchMatch(
 
 const EMPTY_SIDE_ANSWERS: ReadonlyArray<SideAnswerView> = [];
 const EMPTY_AGENT_REQUESTS: ReadonlyArray<OrchestrationAgentRequest> = [];
+/** Rows past either edge of the screen whose turns count as in view, so an
+ *  older turn's steps are on their way before the reader reaches it. */
+const VISIBLE_TURN_MARGIN_ROWS = 8;
+/** How long the list rests before its visible turns are reported. Opening a
+ *  thread passes its top on the way to the end, and a fast scroll passes turns
+ *  the reader never stops on; neither should fetch steps. */
+const VISIBLE_TURN_SETTLE_MS = 150;
 
 interface MessagesTimelineProps {
   emptyState?: ReactNode;
@@ -654,6 +666,9 @@ interface MessagesTimelineProps {
   mcpAuthReconnectStatusByServerName?: ReadonlyMap<string, McpAuthReconnectStatus>;
   onRunMcpAuthReconnect?: (action: McpAuthReconnectAction) => void;
   onIsAtEndChange: (isAtEnd: boolean) => void;
+  /** The turns on screen and a few rows past either edge, reported as the
+   *  reader scrolls; the chat fetches older turns' steps from it. */
+  onVisibleTurnIdsChange?: ((turnIds: ReadonlyArray<TurnId>) => void) | undefined;
   searchTarget?:
     | {
         readonly messageId: MessageId;
@@ -722,6 +737,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   mcpAuthReconnectStatusByServerName = EMPTY_MCP_AUTH_RECONNECT_STATUS,
   onRunMcpAuthReconnect,
   onIsAtEndChange,
+  onVisibleTurnIdsChange,
   searchTarget = null,
   planScrollTarget = null,
   proposedPlanState = null,
@@ -765,6 +781,39 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     ],
   );
   const rows = useStableRows(rawRows);
+  // Read by the list's viewability callback, which the list keeps across renders.
+  const visibleTurnReportRef = useRef({ rows, onVisibleTurnIdsChange });
+  useEffect(() => {
+    visibleTurnReportRef.current = { rows, onVisibleTurnIdsChange };
+  }, [onVisibleTurnIdsChange, rows]);
+  const visibleTurnTimerRef = useRef<number | null>(null);
+  useEffect(
+    () => () => {
+      if (visibleTurnTimerRef.current !== null) {
+        window.clearTimeout(visibleTurnTimerRef.current);
+      }
+    },
+    [],
+  );
+  const handleViewableItemsChanged = useCallback(
+    ({ viewableItems }: OnViewableItemsChangedInfo<MessagesTimelineRow>) => {
+      if (viewableItems.length === 0) {
+        return;
+      }
+      const indexes = viewableItems.map((item) => item.index);
+      const start = Math.min(...indexes) - VISIBLE_TURN_MARGIN_ROWS;
+      const end = Math.max(...indexes) + VISIBLE_TURN_MARGIN_ROWS;
+      if (visibleTurnTimerRef.current !== null) {
+        window.clearTimeout(visibleTurnTimerRef.current);
+      }
+      visibleTurnTimerRef.current = window.setTimeout(() => {
+        visibleTurnTimerRef.current = null;
+        const { rows: currentRows, onVisibleTurnIdsChange: report } = visibleTurnReportRef.current;
+        report?.(timelineRowTurnIds(currentRows, start, end));
+      }, VISIBLE_TURN_SETTLE_MS);
+    },
+    [],
+  );
   const anchorOwnsLiveAgents = rows.some((row) => row.kind === "working");
   // In a room, an agent message gets an author line when the speaker changes:
   // after the user spoke, or after a different agent. A message an agent wrote
@@ -1667,6 +1716,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
               !autoStickToBottom && !stickToBottomRequestPending ? HOLD_READING_POSITION : false
             }
             onScroll={handleScroll}
+            {...(onVisibleTurnIdsChange
+              ? { onViewableItemsChanged: handleViewableItemsChanged }
+              : {})}
             onWheelCapture={handleWheelCapture}
             onPointerDownCapture={handlePointerDownCapture}
             onTouchStartCapture={handleTouchStartCapture}

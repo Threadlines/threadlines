@@ -286,6 +286,7 @@ function makeSnapshotQuery(input: {
       Effect.sync(() =>
         Option.fromUndefinedOr(input.readThreads().find((thread) => thread.id === threadId)),
       ),
+    getTurnActivities: () => Effect.succeed([]),
     getThreadDetailById: () => Effect.succeed(Option.none()),
   };
 }

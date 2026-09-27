@@ -192,6 +192,8 @@ import type {
   OrchestrationGetFullThreadDiffResult,
   OrchestrationGetRevertPlanInput,
   OrchestrationGetRevertPlanResult,
+  OrchestrationGetTurnActivitiesInput,
+  OrchestrationGetTurnActivitiesResult,
   OrchestrationThreadSearchInput,
   OrchestrationThreadSearchResult,
   OrchestrationGetTurnDiffInput,
@@ -1434,6 +1436,9 @@ export interface EnvironmentApi {
     searchThreads: (
       input: OrchestrationThreadSearchInput,
     ) => Promise<OrchestrationThreadSearchResult>;
+    getTurnActivities: (
+      input: OrchestrationGetTurnActivitiesInput,
+    ) => Promise<OrchestrationGetTurnActivitiesResult>;
     getArchivedShellSnapshot: () => Promise<OrchestrationShellSnapshot>;
     subscribeShell: (
       callback: (event: OrchestrationShellStreamItem) => void,
