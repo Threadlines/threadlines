@@ -7101,8 +7101,10 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
-  it("keeps a room's working agent, state and clock whole at the default width", async () => {
+  /** A room row whose added agent has been at work for twelve and a half minutes. */
+  async function mountRoomWorkingRow(agent: { readonly model: string; readonly role?: string }) {
     const agentId = "7a0b1c2d-3e4f-4a5b-8c6d-7e8f9a0b1c2d" as ThreadParticipantId;
+    // The widest clock a turn shows before its first hour ("12m 30s").
     const startedAt = new Date(Date.now() - 12.5 * 60_000).toISOString();
     const base = createSnapshotForTargetUser({
       targetMessageId: "msg-user-room-working" as MessageId,
@@ -7118,16 +7120,15 @@ describe("ChatView timeline estimator parity (full app)", () => {
           thread.id === THREAD_ID
             ? {
                 ...thread,
-                // An added agent, at work for over twelve minutes: the
-                // widest clock a turn shows before its first hour.
                 participants: [
                   {
                     id: agentId,
                     handle: "agent-2",
                     modelSelection: {
                       instanceId: ProviderInstanceId.make("codex"),
-                      model: "Opus 5.5",
+                      model: agent.model,
                     },
+                    ...(agent.role !== undefined ? { role: agent.role } : {}),
                     joinedAt: NOW_ISO,
                     leftAt: null,
                   },
@@ -7146,7 +7147,6 @@ describe("ChatView timeline estimator parity (full app)", () => {
         ),
       },
     });
-
     try {
       const line = await waitForElement(
         () => document.querySelector<HTMLElement>(`[data-testid="thread-detail-${THREAD_ID}"]`),
@@ -7158,25 +7158,64 @@ describe("ChatView timeline estimator parity (full app)", () => {
       );
       await vi.waitFor(
         () => {
-          expect(meta.textContent).toMatch(/^Opus 5\.5\s·\sworking\s·\s12m \d+s$/);
+          expect(meta.textContent).toMatch(/.\s·\sworking\s·\s12m \d+s$/);
         },
         { timeout: 8_000, interval: 16 },
       );
       const [name, , state, , clock] = [...meta.children] as HTMLElement[];
-      // The agent's name, the state and the clock are whole (not a pixel
-      // short, which already shows an ellipsis) and in the row.
-      for (const part of [name!, state!, clock!]) {
-        expect(part.scrollWidth).toBeLessThanOrEqual(part.clientWidth);
+      const project = [...line.querySelectorAll<HTMLElement>("span")].find(
+        (element) => element.textContent === "Project",
+      );
+      return { mounted, line, name: name!, state: state!, clock: clock!, project };
+    } catch (error) {
+      await mounted.cleanup();
+      throw error;
+    }
+  }
+
+  /** Whether an element shows its whole text: the laid-out text, fractions
+   *  included, fits its box (a fraction over already draws an ellipsis). */
+  const showsWholeText = (element: HTMLElement) => {
+    const range = document.createRange();
+    range.selectNodeContents(element);
+    return range.getBoundingClientRect().width <= element.getBoundingClientRect().width + 0.01;
+  };
+
+  it("keeps a room's working agent, state and clock whole at the default width", async () => {
+    const { mounted, line, name, state, clock, project } = await mountRoomWorkingRow({
+      model: "Opus 5.5",
+    });
+    try {
+      for (const part of [name, state, clock]) {
+        expect(showsWholeText(part)).toBe(true);
         expect(part.getBoundingClientRect().right).toBeLessThanOrEqual(
           line.getBoundingClientRect().right + 0.5,
         );
       }
       // The project name stays in the row; it is what gave way.
-      const project = [...line.querySelectorAll<HTMLElement>("span")].find(
-        (element) => element.textContent === "Project",
-      );
       expect(project).toBeDefined();
-      expect(project!.scrollWidth).toBeGreaterThan(project!.clientWidth);
+      expect(showsWholeText(project!)).toBe(false);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("shortens a long agent name only once the project name is gone", async () => {
+    const { mounted, line, name, state, clock, project } = await mountRoomWorkingRow({
+      model: "Opus 5.5",
+      // Custom names go up to 32 characters.
+      role: "Reviewer with a very long name",
+    });
+    try {
+      expect(name.textContent).toBe("Reviewer with a very long name");
+      expect(showsWholeText(name)).toBe(false);
+      expect(project!.getBoundingClientRect().width).toBeLessThan(0.5);
+      for (const part of [state, clock]) {
+        expect(showsWholeText(part)).toBe(true);
+        expect(part.getBoundingClientRect().right).toBeLessThanOrEqual(
+          line.getBoundingClientRect().right + 0.5,
+        );
+      }
     } finally {
       await mounted.cleanup();
     }

@@ -244,6 +244,33 @@ describe("buildRoomCatchUp", () => {
     expect(note).toContain("handing this turn to you on the user's behalf");
   });
 
+  it("does not repeat a hand-off's reply in the note above it", () => {
+    const messages = [
+      message("u1", "user", "fix retry, then hand the tests to astra"),
+      message("a1", "assistant", "Handing the tests to astra."),
+      message("h1", "user", "Write the retry tests.", astraId, {
+        fromAgent: { participantId: null },
+        requestKind: "hand_off",
+      }),
+      message("x1", "assistant", "Writing the tests now.", astraId),
+      message("x2", "assistant", "Added retry.test.ts; all 4 tests pass.", astraId),
+    ];
+    const reply = message("reply-1", "user", "Added retry.test.ts; all 4 tests pass.", null, {
+      fromAgent: { participantId: astraId },
+      requestKind: "reply",
+    });
+    const note = buildRoomCatchUp({
+      thread: thread([...messages, reply]),
+      participantId: null,
+      messageId: reply.id,
+      ...main,
+    })?.note;
+    expect(note).toContain("reply to the work you handed it");
+    // Its progress notes are context; its last words are the message itself.
+    expect(note).toContain("Writing the tests now.");
+    expect(note).not.toContain("all 4 tests pass");
+  });
+
   it("frames a side answer an agent asked for as that agent's request", () => {
     const question = message("q1", "user", "Is the backoff right?", astraId, {
       fromAgent: { participantId: null },
