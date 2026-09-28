@@ -111,7 +111,7 @@ export const RoomAgentPicker = memo(function RoomAgentPicker(props: {
     return () => cancelAnimationFrame(frame);
   }, [addAgentRequested]);
   const present = activeParticipants({ participants: props.participants });
-  const inRoom = props.participants.length > 0;
+  const inRoom = present.length > 0;
 
   const entryFor = (instanceId: ProviderInstanceId) =>
     props.instanceEntries.find((entry) => entry.instanceId === instanceId);

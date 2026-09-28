@@ -49,10 +49,15 @@ export type ContextWindowSnapshot = NullableContextWindowUsage & {
 
 export function deriveLatestContextWindowSnapshot(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
+  /** In a room, only readings from the agent being looked at count. */
+  belongsTo?: (activity: OrchestrationThreadActivity) => boolean,
 ): ContextWindowSnapshot | null {
   for (let index = activities.length - 1; index >= 0; index -= 1) {
     const activity = activities[index];
     if (!activity || activity.kind !== "context-window.updated") {
+      continue;
+    }
+    if (belongsTo !== undefined && !belongsTo(activity)) {
       continue;
     }
 

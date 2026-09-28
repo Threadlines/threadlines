@@ -53,6 +53,7 @@ import { readEnvironmentApi } from "../environmentApi";
 import { getPickerModelName } from "./chat/providerIconUtils";
 import {
   buildRoomAgentLabels,
+  hasRoomHistory,
   isRoom,
   isRoomWaitChosen,
   ownAgentSession,
@@ -2424,12 +2425,13 @@ export default function ChatView(props: ChatViewProps) {
     }
     return byMessageId;
   }, [activeThread?.messages, turnDiffSummaries]);
-  const threadIsRoom = isRoom(activeThread);
+  const threadHasRoomHistory = hasRoomHistory(activeThread);
   const revertTurnCountByUserMessageId = useMemo(() => {
     const byUserMessageId = new Map<MessageId, number>();
-    // Rooms have no revert: rewinding one agent cannot take back what the
-    // others already read. The server refuses it too.
-    if (threadIsRoom) {
+    // Rooms have no revert, even once their added agents left: rewinding one
+    // agent cannot take back what the others already read. The server
+    // refuses it too.
+    if (threadHasRoomHistory) {
       return byUserMessageId;
     }
     for (let index = 0; index < timelineEntries.length; index += 1) {
@@ -2465,7 +2467,7 @@ export default function ChatView(props: ChatViewProps) {
     inferredCheckpointTurnCountByTurnId,
     timelineEntries,
     turnDiffSummaryByAssistantMessageId,
-    threadIsRoom,
+    threadHasRoomHistory,
   ]);
 
   const gitCwd = activeProject

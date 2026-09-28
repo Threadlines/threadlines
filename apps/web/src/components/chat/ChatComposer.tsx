@@ -156,12 +156,16 @@ import { scopedThreadKey } from "@threadlines/client-runtime";
 import {
   buildRoomAgentLabels,
   canAnswerOnTheSide,
+  hasRoomHistory,
+  isRoom,
   isRoomWaitChosen,
   matchRoomAgents,
   ownAgentSession,
   resolveRoomDelivery,
   resolveRoomRecipient,
+  roomActivityAgent,
   roomAgentKey,
+  roomTurnOwners,
   useRoomAgentOptions,
   useRoomRecipientStore,
 } from "../../rooms";
@@ -1029,37 +1033,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     }),
     [composerSkills, projectSkillsQuery.data, selectedProvider],
   );
-  // Account-level usage (5h/weekly windows) for the instance the composer
-  // is targeting — surfaced in the context window meter's hover card.
-  const selectedProviderAccountUsage = useMemo(
-    () => deriveProviderAccountUsagePresentationForProvider(selectedProviderStatus),
-    [selectedProviderStatus],
-  );
   const {
     isConsumingRateLimitResetCredit,
     requestRateLimitResetCredit,
     rateLimitResetCreditDialog,
   } = useProviderRateLimitResetCredit();
-  const selectedProviderResetCredits =
-    selectedProviderStatus?.accountUsage?.rateLimitResetCredits ?? null;
-  const canResetSelectedProviderUsage = canRequestProviderRateLimitResetCredit(
-    selectedProviderStatus,
-    selectedProviderResetCredits?.availableCount,
-  );
-  const requestSelectedProviderUsageReset = useCallback(() => {
-    if (!canResetSelectedProviderUsage || !selectedProviderResetCredits) return;
-    requestRateLimitResetCredit({
-      instanceId: selectedInstanceId,
-      providerLabel: selectedProviderDisplayName,
-      resetCredits: selectedProviderResetCredits,
-    });
-  }, [
-    canResetSelectedProviderUsage,
-    requestRateLimitResetCredit,
-    selectedInstanceId,
-    selectedProviderDisplayName,
-    selectedProviderResetCredits,
-  ]);
   const selectedProviderModels = useMemo<ReadonlyArray<ServerProvider["models"][number]>>(
     () => selectedProviderEntry?.models ?? [],
     [selectedProviderEntry],
@@ -1197,7 +1175,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   // The agents "@" offers in a room, first in the menu above files. Picking
   // one sends the message to it, like the agent picker.
   const roomMentionAgents = useMemo(() => {
-    if (roomAgentLabels === null || activeThread === undefined) {
+    // Only while another agent is in the thread: with all of them gone, "@"
+    // is for files again.
+    if (roomAgentLabels === null || activeThread === undefined || !isRoom(activeThread)) {
       return [];
     }
     const answeringId = activeThread.sideTurn?.participantId;
@@ -1234,10 +1214,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   // ------------------------------------------------------------------
   // Context window
   // ------------------------------------------------------------------
-  const activeContextWindow = useMemo(
-    () => deriveLatestContextWindowSnapshot(activeThreadActivities ?? []),
-    [activeThreadActivities],
-  );
+  // See meterAgentId below: in a room it follows the agent being addressed.
 
   // ------------------------------------------------------------------
   // Composer-local state
@@ -1665,6 +1642,65 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       : null;
   const showRoomAgentTraits =
     roomAgentTraitsProps !== null && shouldRenderTraitsControls(roomAgentTraitsProps);
+
+  // The context window meter and its usage card describe the agent the next
+  // message goes to: in a room, an added agent's own context, its window, and
+  // its provider's plan usage.
+  const meterAgentId = addressedRoomAgent?.id ?? null;
+  const meterThreadHasRoomHistory = hasRoomHistory(activeThread);
+  const meterMessages = activeThread?.messages;
+  const activeContextWindow = useMemo(() => {
+    if (!meterThreadHasRoomHistory) {
+      return deriveLatestContextWindowSnapshot(activeThreadActivities ?? []);
+    }
+    const turnOwners = roomTurnOwners(meterMessages ?? []);
+    return deriveLatestContextWindowSnapshot(
+      activeThreadActivities ?? [],
+      (activity) => roomActivityAgent(activity, turnOwners) === meterAgentId,
+    );
+  }, [activeThreadActivities, meterAgentId, meterMessages, meterThreadHasRoomHistory]);
+  const meterContextWindowLabel = roomAgentTraitsProps
+    ? getComposerProviderState({
+        provider: roomAgentTraitsProps.provider,
+        model: roomAgentTraitsProps.model,
+        models: roomAgentTraitsProps.models,
+        prompt,
+        modelOptions: roomAgentTraitsProps.modelOptions,
+      }).contextWindowLabel
+    : composerProviderState.contextWindowLabel;
+  const meterProviderStatus = addressedRoomAgentEntry
+    ? (addressedRoomAgentEntry.snapshot ?? null)
+    : selectedProviderStatus;
+  const meterInstanceId = addressedRoomAgent?.modelSelection.instanceId ?? selectedInstanceId;
+  const meterProviderLabel = addressedRoomAgentEntry?.displayName ?? selectedProviderDisplayName;
+  // Account-level usage (5h/weekly windows) for that agent's provider.
+  const meterProviderAccountUsage = useMemo(
+    () => deriveProviderAccountUsagePresentationForProvider(meterProviderStatus),
+    [meterProviderStatus],
+  );
+  const meterProviderResetCredits =
+    meterProviderStatus?.accountUsage?.rateLimitResetCredits ?? null;
+  const canResetMeterProviderUsage = canRequestProviderRateLimitResetCredit(
+    meterProviderStatus,
+    meterProviderResetCredits?.availableCount,
+  );
+  const requestMeterProviderUsageReset = useCallback(() => {
+    if (!canResetMeterProviderUsage || !meterProviderResetCredits) return;
+    requestRateLimitResetCredit({
+      instanceId: meterInstanceId,
+      providerLabel: meterProviderLabel,
+      resetCredits: meterProviderResetCredits,
+    });
+  }, [
+    canResetMeterProviderUsage,
+    meterInstanceId,
+    meterProviderLabel,
+    meterProviderResetCredits,
+    requestRateLimitResetCredit,
+  ]);
+  // Compacting works on the agent holding the thread; the meter offers it
+  // only while it shows that agent.
+  const meterShowsSlotHolder = meterAgentId === (activeThread?.session?.participantId ?? null);
   const collapsedComposerPrimaryActionDisabled =
     isSendBusy || isConnecting || !composerSendState.hasSendableContent;
   const followUpDelivery = useSettings((settings) => settings.followUpDelivery);
@@ -4003,8 +4039,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     <ComposerFooterPrimaryActions
                       compact={isComposerPrimaryActionsCompact}
                       activeContextWindow={activeContextWindow}
-                      providerAccountUsage={selectedProviderAccountUsage}
-                      contextWindowLabel={composerProviderState.contextWindowLabel}
+                      providerAccountUsage={meterProviderAccountUsage}
+                      contextWindowLabel={meterContextWindowLabel}
                       isRunning={hasActiveTurn}
                       showPlanFollowUpPrompt={
                         pendingUserInputs.length === 0 && showPlanFollowUpPrompt
@@ -4028,15 +4064,17 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                       onInterrupt={handleInterruptPrimaryAction}
                       onImplementPlanInNewThread={handleImplementPlanInNewThreadPrimaryAction}
                       onResetAccountUsage={
-                        canResetSelectedProviderUsage
-                          ? requestSelectedProviderUsageReset
-                          : undefined
+                        canResetMeterProviderUsage ? requestMeterProviderUsageReset : undefined
                       }
                       accountUsageResetInFlight={isConsumingRateLimitResetCredit}
-                      onCompactContext={onCompactContext}
-                      contextCompactDisabled={contextCompactDisabled}
-                      contextCompactInFlight={contextCompactInFlight}
-                      contextCompactDisabledReason={contextCompactDisabledReason}
+                      onCompactContext={meterShowsSlotHolder ? onCompactContext : undefined}
+                      contextCompactDisabled={
+                        meterShowsSlotHolder ? contextCompactDisabled : undefined
+                      }
+                      contextCompactInFlight={meterShowsSlotHolder ? contextCompactInFlight : false}
+                      contextCompactDisabledReason={
+                        meterShowsSlotHolder ? contextCompactDisabledReason : undefined
+                      }
                     />
                   </div>
                 </div>

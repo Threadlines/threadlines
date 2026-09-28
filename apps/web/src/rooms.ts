@@ -12,6 +12,7 @@ import type {
   ModelSelection,
   OrchestrationAgentRequestStatus,
   OrchestrationSideTurn,
+  OrchestrationThreadActivity,
   OrchestrationThreadParticipant,
   ProviderOptionSelection,
   RoomReviewBasis,
@@ -32,8 +33,21 @@ interface RoomThreadLike {
 
 const participantsOf = (thread: RoomThreadLike) => ({ participants: thread.participants ?? [] });
 
-/** True once an agent has been added to the thread. */
+/**
+ * A room right now: another agent is in the thread besides its own. The room
+ * icon, the Rooms filter, the agent picker and sending to an agent follow
+ * this, so a thread whose added agents all left reads as a plain thread.
+ */
 export function isRoom(thread: RoomThreadLike | null | undefined): boolean {
+  return thread != null && activeParticipants(participantsOf(thread)).length > 0;
+}
+
+/**
+ * An agent was ever added, even if all have left: their messages keep their
+ * authors, and revert stays off (the server refuses it, since the thread's
+ * own conversation never held the other agents' turns).
+ */
+export function hasRoomHistory(thread: RoomThreadLike | null | undefined): boolean {
   return (thread?.participants?.length ?? 0) > 0;
 }
 
@@ -198,6 +212,34 @@ export interface RoomAgentLabel {
 export const roomAgentDisplayName = (modelName: string, role: string | null | undefined) =>
   role ? `${modelName} (${role})` : modelName;
 
+/** Which agent's turn each turn was, from its messages; see roomActivityAgent. */
+export function roomTurnOwners(
+  messages: ReadonlyArray<Pick<ChatMessage, "role" | "turnId" | "participantId">>,
+): ReadonlyMap<TurnId, ThreadParticipantId | null> {
+  const owners = new Map<TurnId, ThreadParticipantId | null>();
+  for (const message of messages) {
+    if (message.role === "assistant" && message.turnId != null) {
+      owners.set(message.turnId, message.participantId ?? null);
+    }
+  }
+  return owners;
+}
+
+/**
+ * Which agent an activity came from in a room: the added agent it names, or
+ * the thread's own agent (null), which names nobody. Activities recorded
+ * before added agents' were named go by the agent whose turn it was.
+ */
+export function roomActivityAgent(
+  activity: Pick<OrchestrationThreadActivity, "participantId" | "turnId">,
+  turnOwners: ReadonlyMap<TurnId, ThreadParticipantId | null>,
+): ThreadParticipantId | null {
+  if (activity.participantId != null) {
+    return activity.participantId;
+  }
+  return activity.turnId == null ? null : (turnOwners.get(activity.turnId) ?? null);
+}
+
 /** Map key for an agent; the thread's own agent has no participant id. */
 export const roomAgentKey = (participantId: ThreadParticipantId | null | undefined): string =>
   participantId ?? "primary";
@@ -220,7 +262,7 @@ export function buildRoomAgentLabels(
     entry: ProviderInstanceEntry,
   ) => string,
 ): ReadonlyMap<string, RoomAgentLabel> | null {
-  if (!isRoom(thread)) {
+  if (!hasRoomHistory(thread)) {
     return null;
   }
   const agents = [

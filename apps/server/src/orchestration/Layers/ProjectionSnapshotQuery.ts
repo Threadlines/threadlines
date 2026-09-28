@@ -432,28 +432,32 @@ function isResolvableContextWindowActivity(activity: OrchestrationThreadActivity
 
 /**
  * Context-window activities are state snapshots rather than timeline entries.
- * Keep the latest usable value per turn so initial thread snapshots do not
- * repeatedly send superseded token telemetry. Retaining one value per turn
- * preserves the meter when a later turn is reverted, while malformed rows
- * remain visible and cannot shadow the last value the web client can resolve.
+ * Keep the latest usable value per turn, and per agent in a room, so initial
+ * thread snapshots do not repeatedly send superseded token telemetry.
+ * Retaining one value per turn preserves the meter when a later turn is
+ * reverted; keeping one per agent keeps each room agent's meter when their
+ * readings share no turn. Malformed rows remain visible and cannot shadow the
+ * last value the web client can resolve.
  */
 function dropStaleContextWindowActivities(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
 ): ReadonlyArray<OrchestrationThreadActivity> {
-  const latestIndexByTurn = new Map<string | null, number>();
+  const readingKey = (activity: OrchestrationThreadActivity) =>
+    `${activity.participantId ?? ""}\u0000${activity.turnId ?? ""}`;
+  const latestIndexByKey = new Map<string, number>();
   for (let index = 0; index < activities.length; index += 1) {
     const activity = activities[index];
     if (activity !== undefined && isResolvableContextWindowActivity(activity)) {
-      latestIndexByTurn.set(activity.turnId, index);
+      latestIndexByKey.set(readingKey(activity), index);
     }
   }
-  if (latestIndexByTurn.size === 0) {
+  if (latestIndexByKey.size === 0) {
     return activities;
   }
   return activities.filter(
     (activity, index) =>
       !isResolvableContextWindowActivity(activity) ||
-      latestIndexByTurn.get(activity.turnId) === index,
+      latestIndexByKey.get(readingKey(activity)) === index,
   );
 }
 
