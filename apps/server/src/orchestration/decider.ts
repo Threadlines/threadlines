@@ -22,11 +22,14 @@ import {
   sessionSlotParticipantId,
 } from "@threadlines/shared/threadParticipants";
 
+import { isTurnAside } from "@threadlines/shared/transcriptRevert";
+
 import { OrchestrationCommandInvariantError } from "./Errors.ts";
 import {
   type AgentRequestDecision,
   cancelAgentRequestsForLeaving,
   decideAgentChainStop,
+  decideAgentInviteRespond,
   decideAgentRequestQueue,
   decideAgentRequestSettle,
   decideAgentRequestSubmit,
@@ -977,7 +980,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         thread,
         sideTurn,
         command.outcome,
-        answer !== undefined,
+        answer,
         eventBase,
         command.createdAt,
         command.error,
@@ -1005,7 +1008,8 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
 
     case "thread.agent-request.submit":
     case "thread.agent-request.queue":
-    case "thread.agent-request.settle": {
+    case "thread.agent-request.settle":
+    case "thread.agent-invite.respond": {
       const thread = yield* requireThread({
         readModel,
         command,
@@ -1024,7 +1028,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           ? decideAgentRequestSubmit(thread, command, base)
           : command.type === "thread.agent-request.queue"
             ? decideAgentRequestQueue(thread, command, base)
-            : decideAgentRequestSettle(thread, command, base),
+            : command.type === "thread.agent-invite.respond"
+              ? decideAgentInviteRespond(thread, command, base)
+              : decideAgentRequestSettle(thread, command, base),
       );
     }
 
@@ -1099,14 +1105,12 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             `${participant.handle} is answering. Change its model once it is done.`,
           );
         }
-        if (
-          command.handle !== undefined &&
-          activeParticipants(thread).some(
-            (entry) =>
-              entry.id !== participant.id &&
-              entry.handle.toLowerCase() === command.handle!.toLowerCase(),
-          )
-        ) {
+        // A guest's name counts as taken: it keeps it if the user adds it.
+        const namesake =
+          command.handle === undefined
+            ? undefined
+            : findActiveParticipantByHandle(thread, command.handle);
+        if (namesake !== undefined && namesake.id !== participant.id) {
           return yield* refuse(`Another agent here is already called ${command.handle}.`);
         }
         if (hasOpenAgentRequests(thread, participant.id)) {
@@ -1636,9 +1640,10 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           detail: `Thread '${command.threadId}' already has a turn in flight and cannot retry.`,
         });
       }
-      const providerAuthRetryUserMessageIndex = findProviderAuthRetryUserMessageIndex(
-        targetThread.messages,
-      );
+      // What agents did beside a turn (an invite, an invited review) is never
+      // the turn's own message, so it is never what a retry sends again.
+      const turnMessages = targetThread.messages.filter((message) => !isTurnAside(message));
+      const providerAuthRetryUserMessageIndex = findProviderAuthRetryUserMessageIndex(turnMessages);
       if (!session || (session.lastError === null && providerAuthRetryUserMessageIndex === null)) {
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
@@ -1647,8 +1652,8 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       }
       const lastUserMessage =
         providerAuthRetryUserMessageIndex === null
-          ? targetThread.messages.findLast((message) => message.role === "user")
-          : targetThread.messages[providerAuthRetryUserMessageIndex];
+          ? turnMessages.findLast((message) => message.role === "user")
+          : turnMessages[providerAuthRetryUserMessageIndex];
       if (!lastUserMessage) {
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
@@ -1929,7 +1934,11 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
                 queued.participantId,
                 sendBase,
                 command.createdAt,
-              ).filter((event) => event.type === "thread.agent-request-settled")
+              ).filter(
+                (event) =>
+                  event.type === "thread.agent-request-settled" ||
+                  event.type === "thread.side-turn-interrupt-requested",
+              )
             : []),
         ];
       }
@@ -2232,6 +2241,17 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
           detail: "Revert is off in rooms: the other agents have already seen this work.",
+        });
+      }
+      // An invited agent's review, or its answer on the way back, would land
+      // after the revert and talk about work that is gone.
+      if (
+        thread.agentRequests.open.length > 0 ||
+        (thread.queuedFollowUps ?? []).some((queued) => queued.fromAgent !== undefined)
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Finish or decline the agent's request first.",
         });
       }
       return {

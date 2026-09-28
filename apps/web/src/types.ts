@@ -35,6 +35,7 @@ import type {
   RoomAgentRef,
   RoomAgentRequestId,
   RoomAgentRequestOutcome,
+  RoomAgentInvite,
   RoomReviewInput,
   RuntimeMode,
 } from "@threadlines/contracts";
@@ -95,6 +96,8 @@ export interface ChatMessage {
   requestError?: string | undefined;
   /** See OrchestrationMessage.reviewInput. */
   reviewInput?: RoomReviewInput | undefined;
+  /** See OrchestrationMessage.invite. */
+  invite?: RoomAgentInvite | undefined;
   turnId?: TurnId | null;
   createdAt: string;
   completedAt?: string | undefined;

@@ -120,6 +120,7 @@ import {
   roomDeliveryLabels,
 } from "./ComposerPrimaryActions";
 import { useSettings, useUpdateSettings } from "../../hooks/useSettings";
+import { ComposerAgentInvitePanel } from "./ComposerAgentInvitePanel";
 import { ComposerPendingApprovalPanel } from "./ComposerPendingApprovalPanel";
 import { ComposerPendingUserInputPanel } from "./ComposerPendingUserInputPanel";
 import { ComposerGoalBar, type ComposerGoalSetInput } from "./ComposerGoalBar";
@@ -161,6 +162,7 @@ import {
   isRoomWaitChosen,
   matchRoomAgents,
   ownAgentSession,
+  pendingRoomInvite,
   resolveRoomDelivery,
   resolveRoomRecipient,
   roomActivityAgent,
@@ -170,7 +172,8 @@ import {
   useRoomRecipientStore,
 } from "../../rooms";
 import { getPickerModelName } from "./providerIconUtils";
-import { activeParticipants } from "@threadlines/shared/threadParticipants";
+import { awaitingInvite } from "@threadlines/shared/roomAgentRequests";
+import { activeParticipants, hasAgentRecords } from "@threadlines/shared/threadParticipants";
 import { shouldRenderTraitsControls, TraitsMenuContent, TraitsPicker } from "./TraitsPicker";
 import {
   canRequestProviderRateLimitResetCredit,
@@ -1153,7 +1156,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   // use: the one picked here, which the thread takes on when it is sent.
   const roomAgentLabels = useMemo(
     () =>
-      showRoomAgentPicker && activeThread
+      showRoomAgentPicker && activeThread && hasRoomHistory(activeThread)
         ? buildRoomAgentLabels(
             {
               modelSelection: selectedModelSelection,
@@ -1171,6 +1174,26 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       providerInstanceEntries,
       showRoomAgentPicker,
     ],
+  );
+  // An agent's invite waiting for the user, with every agent it names. Shown
+  // whether or not this device shows rooms: the thread waits on it either way.
+  const pendingInvite = useMemo(
+    () =>
+      activeThread?.agentRequests && awaitingInvite(activeThread.agentRequests) !== undefined
+        ? pendingRoomInvite(
+            activeThread,
+            buildRoomAgentLabels(
+              {
+                modelSelection: activeThread.modelSelection,
+                participants: activeThread.participants,
+                agentRole: activeThread.agentRole,
+              },
+              providerInstanceEntries,
+              (model, entry) => getPickerModelName(model, entry.driverKind),
+            ),
+          )
+        : null,
+    [activeThread, providerInstanceEntries],
   );
   // The agents "@" offers in a room, first in the menu above files. Picking
   // one sends the message to it, like the agent picker.
@@ -1647,10 +1670,14 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   // message goes to: in a room, an added agent's own context, its window, and
   // its provider's plan usage.
   const meterAgentId = addressedRoomAgent?.id ?? null;
-  const meterThreadHasRoomHistory = hasRoomHistory(activeThread);
+  // Any other agent that took part, a guest brought in for one review
+  // included, leaves readings of its own that are not this agent's.
+  const meterThreadHasOtherAgents = hasAgentRecords({
+    participants: activeThread?.participants ?? [],
+  });
   const meterMessages = activeThread?.messages;
   const activeContextWindow = useMemo(() => {
-    if (!meterThreadHasRoomHistory) {
+    if (!meterThreadHasOtherAgents) {
       return deriveLatestContextWindowSnapshot(activeThreadActivities ?? []);
     }
     const turnOwners = roomTurnOwners(meterMessages ?? []);
@@ -1658,7 +1685,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       activeThreadActivities ?? [],
       (activity) => roomActivityAgent(activity, turnOwners) === meterAgentId,
     );
-  }, [activeThreadActivities, meterAgentId, meterMessages, meterThreadHasRoomHistory]);
+  }, [activeThreadActivities, meterAgentId, meterMessages, meterThreadHasOtherAgents]);
   const meterContextWindowLabel = roomAgentTraitsProps
     ? getComposerProviderState({
         provider: roomAgentTraitsProps.provider,
@@ -3502,6 +3529,14 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   onCustomAnswerChange={onChangeActivePendingUserInputCustomAnswer}
                   isUnavailable={environmentUnavailable !== null}
                   isAgentRunning={hasActiveTurn}
+                />
+              </div>
+            ) : pendingInvite !== null ? (
+              <div className="rounded-t-[19px] border-b border-border/65 bg-muted/20">
+                <ComposerAgentInvitePanel
+                  key={pendingInvite.requestId}
+                  threadRef={routeThreadRef}
+                  invite={pendingInvite}
                 />
               </div>
             ) : showPlanFollowUpPrompt && activeProposedPlan ? (

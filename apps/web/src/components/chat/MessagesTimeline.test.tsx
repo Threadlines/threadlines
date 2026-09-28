@@ -1813,7 +1813,14 @@ describe("MessagesTimeline", () => {
     const roomAgents = new Map([
       [
         "primary",
-        { name: "Opus 5.5", modelName: "Opus 5.5", role: null, left: false, entry: undefined },
+        {
+          name: "Opus 5.5",
+          modelName: "Opus 5.5",
+          role: null,
+          left: false,
+          guest: false,
+          entry: undefined,
+        },
       ],
       [
         "agent-astra",
@@ -1822,6 +1829,7 @@ describe("MessagesTimeline", () => {
           modelName: "GPT-6 Astra 2",
           role: null,
           left: true,
+          guest: false,
           entry: undefined,
         },
       ],

@@ -2426,26 +2426,50 @@ export default function ChatView(props: ChatViewProps) {
     return byMessageId;
   }, [activeThread?.messages, turnDiffSummaries]);
   const threadHasRoomHistory = hasRoomHistory(activeThread);
+  // An agent's invite still open, or its review on the way back, would land
+  // after a revert and talk about work that is gone; the server refuses it.
+  const agentRequestsInFlight =
+    (activeThread?.agentRequests?.open.length ?? 0) > 0 ||
+    (activeThread?.queuedFollowUps ?? []).some((queued) => queued.fromAgent !== undefined);
   const revertTurnCountByUserMessageId = useMemo(() => {
     const byUserMessageId = new Map<MessageId, number>();
     // Rooms have no revert, even once their added agents left: rewinding one
     // agent cannot take back what the others already read. The server
     // refuses it too.
-    if (threadHasRoomHistory) {
+    if (threadHasRoomHistory || agentRequestsInFlight) {
       return byUserMessageId;
     }
+    // Only the user's own messages offer a revert, never what agents wrote
+    // (an invite, its review, the review's way back).
+    const isUserWritten = (message: {
+      readonly fromAgent?: unknown;
+      readonly sideTurnId?: unknown;
+    }) => message.fromAgent === undefined && message.sideTurnId === undefined;
     for (let index = 0; index < timelineEntries.length; index += 1) {
       const entry = timelineEntries[index];
-      if (!entry || entry.kind !== "message" || entry.message.role !== "user") {
+      if (
+        !entry ||
+        entry.kind !== "message" ||
+        entry.message.role !== "user" ||
+        !isUserWritten(entry.message)
+      ) {
         continue;
       }
 
       for (let nextIndex = index + 1; nextIndex < timelineEntries.length; nextIndex += 1) {
         const nextEntry = timelineEntries[nextIndex];
-        if (!nextEntry || nextEntry.kind !== "message") {
+        if (
+          !nextEntry ||
+          nextEntry.kind !== "message" ||
+          nextEntry.message.sideTurnId !== undefined
+        ) {
           continue;
         }
         if (nextEntry.message.role === "user") {
+          // An invite is made mid-turn; anything else starts the next turn.
+          if (nextEntry.message.requestKind === "invite") {
+            continue;
+          }
           break;
         }
         const summary = turnDiffSummaryByAssistantMessageId.get(nextEntry.message.id);
@@ -2468,6 +2492,7 @@ export default function ChatView(props: ChatViewProps) {
     timelineEntries,
     turnDiffSummaryByAssistantMessageId,
     threadHasRoomHistory,
+    agentRequestsInFlight,
   ]);
 
   const gitCwd = activeProject

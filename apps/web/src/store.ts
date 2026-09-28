@@ -70,7 +70,14 @@ import {
   roomSlotRole,
 } from "./rooms";
 import { applyRoomAgentUpdate } from "@threadlines/shared/threadParticipants";
-import { agentRequestStateOn, isUserWrittenMessage } from "@threadlines/shared/roomAgentRequests";
+import {
+  agentRequestStateOn,
+  awaitingInvite,
+  isUserWrittenMessage,
+  withInviteChoice,
+  withUnqueuedAgentMessage,
+} from "@threadlines/shared/roomAgentRequests";
+import { retainMessagesAfterRevert } from "@threadlines/shared/transcriptRevert";
 const isProviderDriverKindValue = Schema.is(ProviderDriverKind);
 
 export interface EnvironmentState {
@@ -253,6 +260,7 @@ function mapMessage(environmentId: EnvironmentId, message: OrchestrationMessage)
     ...(message.requestOutcome ? { requestOutcome: message.requestOutcome } : {}),
     ...(message.requestError ? { requestError: message.requestError } : {}),
     ...(message.reviewInput ? { reviewInput: message.reviewInput } : {}),
+    ...(message.invite ? { invite: message.invite } : {}),
   };
 }
 
@@ -527,9 +535,12 @@ function toSidebarThreadSummary(
     hasPendingApprovals: hasActivityEvidence
       ? derivePendingApprovals(thread.activities).length > 0
       : (previous?.hasPendingApprovals ?? false),
-    hasPendingUserInput: hasActivityEvidence
-      ? pendingUserInputs.length > 0
-      : (previous?.hasPendingUserInput ?? false),
+    // An agent's invite waiting for the user needs them the same way.
+    hasPendingUserInput:
+      (hasActivityEvidence
+        ? pendingUserInputs.length > 0
+        : (previous?.hasPendingUserInput ?? false)) ||
+      (thread.agentRequests !== undefined && awaitingInvite(thread.agentRequests) !== undefined),
     hasBlockingUserInput: hasActivityEvidence
       ? pendingUserInputs.some(isBlockingUserInput)
       : (previous?.hasBlockingUserInput ?? previous?.hasPendingUserInput ?? false),
@@ -1311,6 +1322,7 @@ function upsertThreadMessage(
     ...(message.requestId !== undefined ? { requestId: message.requestId } : {}),
     ...(message.requestKind !== undefined ? { requestKind: message.requestKind } : {}),
     ...(message.reviewInput !== undefined ? { reviewInput: message.reviewInput } : {}),
+    ...(message.invite !== undefined ? { invite: message.invite } : {}),
   };
   const nextMessages = messages.slice();
   nextMessages[existingIndex] = nextMessage;
@@ -1394,64 +1406,14 @@ function retainThreadMessagesAfterRevert(
   retainedTurnIds: ReadonlySet<string>,
   turnCount: number,
 ): ChatMessage[] {
-  const retainedMessageIds = new Set<string>();
-  for (const message of messages) {
-    if (message.role === "system") {
-      retainedMessageIds.add(message.id);
-      continue;
-    }
-    if (
-      message.turnId !== undefined &&
-      message.turnId !== null &&
-      retainedTurnIds.has(message.turnId)
-    ) {
-      retainedMessageIds.add(message.id);
-    }
-  }
-
-  const retainedUserCount = messages.filter(
-    (message) => message.role === "user" && retainedMessageIds.has(message.id),
-  ).length;
-  const missingUserCount = Math.max(0, turnCount - retainedUserCount);
-  if (missingUserCount > 0) {
-    const fallbackUserMessages = messages
-      .filter(
-        (message) =>
-          message.role === "user" &&
-          !retainedMessageIds.has(message.id) &&
-          (message.turnId === undefined ||
-            message.turnId === null ||
-            retainedTurnIds.has(message.turnId)),
-      )
-      .toSorted(compareTranscriptOrder)
-      .slice(0, missingUserCount);
-    for (const message of fallbackUserMessages) {
-      retainedMessageIds.add(message.id);
-    }
-  }
-
-  const retainedAssistantCount = messages.filter(
-    (message) => message.role === "assistant" && retainedMessageIds.has(message.id),
-  ).length;
-  const missingAssistantCount = Math.max(0, turnCount - retainedAssistantCount);
-  if (missingAssistantCount > 0) {
-    const fallbackAssistantMessages = messages
-      .filter(
-        (message) =>
-          message.role === "assistant" &&
-          !retainedMessageIds.has(message.id) &&
-          (message.turnId === undefined ||
-            message.turnId === null ||
-            retainedTurnIds.has(message.turnId)),
-      )
-      .toSorted(compareTranscriptOrder)
-      .slice(0, missingAssistantCount);
-    for (const message of fallbackAssistantMessages) {
-      retainedMessageIds.add(message.id);
-    }
-  }
-
-  return messages.filter((message) => retainedMessageIds.has(message.id));
+  return [
+    ...retainMessagesAfterRevert({
+      messages,
+      idOf: (message) => message.id,
+      retainedTurnIds,
+      turnCount,
+    }),
+  ];
 }
 
 function retainThreadActivitiesAfterRevert(
@@ -1908,6 +1870,9 @@ function applyEnvironmentOrchestrationEvent(
         queuedFollowUps: (thread.queuedFollowUps ?? []).filter(
           (queued) => queued.messageId !== event.payload.messageId,
         ),
+        messages: thread.messages.some((message) => message.id === event.payload.messageId)
+          ? thread.messages.map((message) => withUnqueuedAgentMessage(message, event.payload))
+          : thread.messages,
       }));
 
     // Neither event moves `updatedAt`: filing or reading a thread is not work
@@ -2122,6 +2087,7 @@ function applyEnvironmentOrchestrationEvent(
           ...(event.payload.reviewInput !== undefined
             ? { reviewInput: event.payload.reviewInput }
             : {}),
+          ...(event.payload.invite !== undefined ? { invite: event.payload.invite } : {}),
           turnId: event.payload.turnId,
           streaming: event.payload.streaming,
           createdAt: event.payload.createdAt,
@@ -2441,16 +2407,30 @@ function applyEnvironmentOrchestrationEvent(
         agentRequestStateOn.submitted(current, event.payload.request),
       );
 
-    case "thread.agent-request-updated":
-      return updateAgentRequestState(state, event.payload.threadId, (current) =>
+    case "thread.agent-request-updated": {
+      const next = updateAgentRequestState(state, event.payload.threadId, (current) =>
         agentRequestStateOn.updated(current, event.payload.requestId, event.payload.status),
       );
+      const inviteChoice = event.payload.inviteChoice;
+      if (inviteChoice === undefined) {
+        return next;
+      }
+      // The user's answer to an invite stays on its request message.
+      return updateThreadState(next, event.payload.threadId, (thread) => ({
+        ...thread,
+        messages: thread.messages.map((message) => {
+          if (message.id !== inviteChoice.requestMessageId) return message;
+          const invite = withInviteChoice(message.invite, inviteChoice);
+          return invite === undefined ? message : { ...message, invite };
+        }),
+      }));
+    }
 
     // Over: the request leaves the open set and its message keeps the outcome.
     case "thread.agent-request-settled":
       return updateThreadState(
         updateAgentRequestState(state, event.payload.threadId, (current) =>
-          agentRequestStateOn.settled(current, event.payload.requestId),
+          agentRequestStateOn.settled(current, event.payload.requestId, event.payload.outcome),
         ),
         event.payload.threadId,
         (thread) => {

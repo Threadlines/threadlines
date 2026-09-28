@@ -130,6 +130,36 @@ const retryCommand: Extract<OrchestrationCommand, { type: "thread.turn.retry" }>
 };
 
 describe("decider turn retry", () => {
+  it("retries the turn's own message, not an invite the agent made during it", async () => {
+    const thread = makeThread();
+    const decided = await Effect.runPromise(
+      decideOrchestrationCommand({
+        command: retryCommand,
+        readModel: makeReadModel({
+          ...thread,
+          messages: [
+            ...thread.messages,
+            {
+              id: MessageId.make("message-invite"),
+              role: "user",
+              text: "Check the retry math.",
+              fromAgent: { participantId: null },
+              requestKind: "invite",
+              turnId: null,
+              streaming: false,
+              createdAt: "2026-01-01T00:00:03.500Z",
+              updatedAt: "2026-01-01T00:00:03.500Z",
+            },
+          ],
+        }),
+      }),
+    );
+    const events = Array.isArray(decided) ? decided : [decided];
+    expect(
+      events.find((event) => event.type === "thread.turn-start-requested")?.payload,
+    ).toMatchObject({ messageId: MessageId.make("message-user-2") });
+  });
+
   it("re-requests the last user message without appending a new one", async () => {
     const decided = await Effect.runPromise(
       decideOrchestrationCommand({

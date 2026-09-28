@@ -43,6 +43,7 @@ import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { ProviderAdapterValidationError } from "../Errors.ts";
 import { mcpSessionRegistry } from "../../mcp/McpSessionRegistry.ts";
+import { ROOM_TOOL_NAMES } from "../../mcp/roomToolAccess.ts";
 import type { ClaudeAdapterShape } from "../Services/ClaudeAdapter.ts";
 import { claudeProjectDirectoryName } from "../Drivers/ClaudeSessionTranscripts.ts";
 import {
@@ -7896,7 +7897,10 @@ describe("ClaudeAdapterLive", () => {
         assert.equal(room!.timeout, 660_000);
         assert.include(options.allowedTools ?? [], "mcp__threadlines_room__room_ask");
         const token = room!.headers.Authorization!.replace("Bearer ", "");
-        assert.equal((yield* mcpSessionRegistry.resolve(token))?.roomTools.size, 6);
+        assert.equal(
+          (yield* mcpSessionRegistry.resolve(token))?.roomTools.size,
+          ROOM_TOOL_NAMES.length,
+        );
 
         yield* adapter.stopSession(THREAD_ID);
         assert.equal(yield* mcpSessionRegistry.resolve(token), null);

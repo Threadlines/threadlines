@@ -13,6 +13,7 @@ import {
   RoomAgentMessageKind,
   RoomAgentRef,
   RoomAgentRequestId,
+  RoomAgentInvite,
   RoomAgentRequestOutcome,
   RoomReviewInput,
   ThreadParticipantId,
@@ -43,6 +44,7 @@ const ProjectionThreadMessageDbRowSchema = ProjectionThreadMessage.mapFields(
     requestOutcome: Schema.NullOr(RoomAgentRequestOutcome),
     requestError: Schema.NullOr(TrimmedNonEmptyString),
     reviewInput: Schema.NullOr(Schema.fromJsonString(RoomReviewInput)),
+    invite: Schema.NullOr(Schema.fromJsonString(RoomAgentInvite)),
   }),
 );
 
@@ -69,6 +71,7 @@ function toProjectionThreadMessage(
     ...(row.requestOutcome !== null ? { requestOutcome: row.requestOutcome } : {}),
     ...(row.requestError !== null ? { requestError: row.requestError } : {}),
     ...(row.reviewInput !== null ? { reviewInput: row.reviewInput } : {}),
+    ...(row.invite !== null ? { invite: row.invite } : {}),
   };
 }
 
@@ -99,6 +102,7 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
           request_outcome,
           request_error,
           review_input,
+          invite,
           is_streaming,
           created_at,
           updated_at
@@ -134,6 +138,7 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
           ${row.requestOutcome ?? null},
           ${row.requestError ?? null},
           ${row.reviewInput !== undefined ? JSON.stringify(row.reviewInput) : null},
+          ${row.invite !== undefined ? JSON.stringify(row.invite) : null},
           ${row.isStreaming ? 1 : 0},
           ${row.createdAt},
           ${row.updatedAt}
@@ -164,6 +169,7 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
           ),
           request_error = COALESCE(excluded.request_error, projection_thread_messages.request_error),
           review_input = COALESCE(excluded.review_input, projection_thread_messages.review_input),
+          invite = COALESCE(excluded.invite, projection_thread_messages.invite),
           is_streaming = excluded.is_streaming,
           created_at = excluded.created_at,
           updated_at = excluded.updated_at
@@ -193,6 +199,7 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
           request_outcome AS "requestOutcome",
           request_error AS "requestError",
           review_input AS "reviewInput",
+          invite,
           is_streaming AS "isStreaming",
           created_at AS "createdAt",
           updated_at AS "updatedAt"
@@ -224,6 +231,7 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
           request_outcome AS "requestOutcome",
           request_error AS "requestError",
           review_input AS "reviewInput",
+          invite,
           is_streaming AS "isStreaming",
           created_at AS "createdAt",
           updated_at AS "updatedAt"

@@ -9,7 +9,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Equal from "effect/Equal";
 import * as Option from "effect/Option";
-import { sessionSlotParticipantId } from "@threadlines/shared/threadParticipants";
+import { isRoomThread, sessionSlotParticipantId } from "@threadlines/shared/threadParticipants";
 
 import type { OrchestrationEngineShape } from "../orchestration/Services/OrchestrationEngine.ts";
 import type { ProjectionSnapshotQueryShape } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
@@ -151,7 +151,7 @@ export function startProviderReviewForThread(
     // In a room the thread's own agent may be parked in an earlier checkout or
     // access mode while another agent worked. A review must run where the
     // thread is now, so a mismatched runtime is stopped and started fresh.
-    if ((threadShell.participants?.length ?? 0) > 0) {
+    if (isRoomThread({ participants: threadShell.participants ?? [] })) {
       const parked = (yield* services.providerService.listSessions()).find(
         (session) => session.threadId === input.threadId,
       );

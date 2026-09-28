@@ -18,7 +18,9 @@ import {
 import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import { isTurnAside } from "@threadlines/shared/transcriptRevert";
 import {
+  isRoomThread,
   participantSessionKey,
   sessionKeyThreadId,
   sessionSlotParticipantId,
@@ -132,12 +134,16 @@ function targetUserMessageIdForCheckpointRewind(input: {
       readonly role: string;
       readonly createdAt: string;
       readonly eventSequence?: number | undefined;
+      readonly sideTurnId?: string | undefined;
+      readonly requestKind?: string | undefined;
+      readonly requestOutcome?: string | undefined;
     }>;
   };
   readonly targetTurnCount: number;
 }): MessageId | undefined {
+  // An invite or an invited review sits beside a turn and never starts one.
   const userMessages = input.thread.messages
-    .filter((message) => message.role === "user")
+    .filter((message) => message.role === "user" && !isTurnAside(message))
     .toSorted(compareTranscriptOrder);
 
   // Native provider file checkpointing rewinds to the state at a user message.
@@ -399,7 +405,7 @@ const make = Effect.gen(function* () {
   const roomSlotHolder = (threadId: ThreadId) =>
     projectionSnapshotQuery.getThreadShellById(threadId).pipe(
       Effect.map((thread) =>
-        Option.isSome(thread) && thread.value.participants.length > 0
+        Option.isSome(thread) && isRoomThread(thread.value)
           ? { holderId: sessionSlotParticipantId(thread.value.session) }
           : undefined,
       ),

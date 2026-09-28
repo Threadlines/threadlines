@@ -137,6 +137,46 @@ export const RoomDiffResult = Schema.Struct({
 });
 export type RoomDiffResult = typeof RoomDiffResult.Type;
 
+export const RoomAvailableAgentsResult = Schema.Struct({
+  outcome: Schema.Literals(["ok", "refused"]),
+  detail: Schema.optional(Schema.String),
+  /** `ask`: the user decides each invite; `auto`: invites start without asking. */
+  invites: Schema.optional(Schema.Literals(["ask", "auto"])),
+  providers: Schema.Array(
+    Schema.Struct({
+      provider: Schema.String,
+      name: Schema.String,
+      /** How it is paid for: "Codex · ChatGPT Pro Subscription". */
+      billing: Schema.String,
+      /** Billed per use (an API key) rather than by a plan's limits. */
+      perUse: Schema.Boolean,
+      models: Schema.Array(
+        Schema.Struct({
+          /** Pass as room_invite's `agent`. */
+          key: Schema.String,
+          name: Schema.String,
+          /** Already in this thread: ask it with room_review instead. */
+          inThread: Schema.Boolean,
+        }),
+      ),
+    }),
+  ),
+});
+export type RoomAvailableAgentsResult = typeof RoomAvailableAgentsResult.Type;
+
+export const RoomInviteResult = Schema.Struct({
+  /**
+   * `asked_user`: the user decides; `started`: the review is running
+   * (invites need no approval here). Either way its review comes back to you
+   * as a message after your turn, if it runs.
+   */
+  outcome: Schema.Literals(["asked_user", "started", "failed", "busy", "limit", "refused"]),
+  detail: Schema.optional(Schema.String),
+  agent: Schema.optional(AgentLabel),
+  requestId: Schema.optional(Schema.String),
+});
+export type RoomInviteResult = typeof RoomInviteResult.Type;
+
 export const RoomReviewBasisParameter = Schema.Union([
   Schema.Literal("uncommitted"),
   Schema.Struct({
@@ -236,6 +276,38 @@ export const RoomDiffTool = readsRoom(
   }).annotate(Tool.Title, "Read the checkout's changes"),
 );
 
+export const RoomAvailableAgentsTool = readsRoom(
+  Tool.make("room_available_agents", {
+    description:
+      "Other agents the user could bring into this thread, for room_invite: each signed-in Codex and Claude provider, how it is paid for, and its models, with the ones already in this thread marked.",
+    success: RoomAvailableAgentsResult,
+    dependencies,
+  }).annotate(Tool.Title, "List agents that could be brought in"),
+);
+
+export const RoomInviteTool = asksAgent(
+  Tool.make("room_invite", {
+    description:
+      "Ask the user to bring another agent into this thread for an independent review of your work, a second opinion from a different model. Use it when a review would really help (a risky change, a hard bug, a call the user should not take on one model's word), not for routine work. The reviewer starts fresh: it sees none of this conversation, only your request and the code. Put the goal, the user's requirements and what to check in `request`; leave out your own conclusions. `reason` is one short sentence the user sees when deciding. `suggestion`: `review` (default) for a one-off review, or `teammate` to suggest it joins the thread for good. `basis` is what it reviews: the uncommitted changes (default) or { base } for base..HEAD, captured now. Returns at once. Keep working or end your turn; do not wait. If the review runs, it comes back to you as a message. If the user says no, you will not hear back; do not ask again unless the user asks you to.",
+    parameters: Schema.Struct({
+      agent: Schema.String.annotate({
+        description:
+          'The model: its key from room_available_agents, or an unambiguous name ("GPT-6 Astra").',
+      }),
+      request: Schema.String.annotate({
+        description: "The goal, the user's requirements, and what to check.",
+      }),
+      reason: Schema.String.annotate({
+        description: "Why a second opinion helps here, in one short sentence, for the user.",
+      }),
+      suggestion: Schema.optional(Schema.Literals(["review", "teammate"])),
+      basis: Schema.optional(RoomReviewBasisParameter),
+    }),
+    success: RoomInviteResult,
+    dependencies,
+  }).annotate(Tool.Title, "Ask the user to bring in another agent"),
+);
+
 export const RoomToolkit = Toolkit.make(
   RoomAgentsTool,
   RoomAskTool,
@@ -243,4 +315,6 @@ export const RoomToolkit = Toolkit.make(
   RoomHandOffTool,
   RoomHistoryTool,
   RoomDiffTool,
+  RoomAvailableAgentsTool,
+  RoomInviteTool,
 );

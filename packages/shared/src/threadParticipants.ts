@@ -134,26 +134,59 @@ interface ParticipantListHolder {
   readonly participants: ReadonlyArray<OrchestrationThreadParticipant>;
 }
 
-/** A thread becomes a room once an agent is added, and stays one after it leaves. */
+/**
+ * A thread becomes a room once an agent is added, and stays one after it
+ * leaves. A guest (an invited one-off reviewer) never makes it one.
+ */
 export function isRoomThread(thread: ParticipantListHolder): boolean {
+  return thread.participants.some((participant) => participant.guest !== true);
+}
+
+/**
+ * Whether any other agent ever took part, guests included: what author
+ * labels, Stop and restart recovery of agent requests go by.
+ */
+export function hasAgentRecords(thread: ParticipantListHolder): boolean {
   return thread.participants.length > 0;
 }
 
-/** Agents currently in the thread, besides its own agent. */
+/** Agents currently in the thread, besides its own agent. Guests never are. */
 export function activeParticipants(
   thread: ParticipantListHolder,
 ): ReadonlyArray<OrchestrationThreadParticipant> {
   return thread.participants.filter((participant) => participant.leftAt === null);
 }
 
-/** Case-insensitive handle lookup among agents currently in the thread. */
+/**
+ * The name for an agent joining a room: its model's name, numbered when an
+ * agent with that name is already here ("GPT-6 Astra 2"). The web's room
+ * labels apply the same rule, so the stored name and the shown one agree.
+ */
+export function nextRoomAgentName(modelName: string, taken: ReadonlyArray<string>): string {
+  const takenLower = new Set(taken.map((name) => name.toLowerCase()));
+  if (!takenLower.has(modelName.toLowerCase())) {
+    return modelName;
+  }
+  let index = 2;
+  while (takenLower.has(`${modelName} ${index}`.toLowerCase())) {
+    index += 1;
+  }
+  return `${modelName} ${index}`;
+}
+
+/**
+ * Case-insensitive handle lookup among agents currently in the thread, and
+ * guests: a guest keeps its name for when the user adds it to the thread.
+ */
 export function findActiveParticipantByHandle(
   thread: ParticipantListHolder,
   handle: string,
 ): OrchestrationThreadParticipant | undefined {
   const wanted = handle.trim().toLowerCase();
-  return activeParticipants(thread).find(
-    (participant) => participant.handle.toLowerCase() === wanted,
+  return thread.participants.find(
+    (participant) =>
+      (participant.leftAt === null || participant.guest === true) &&
+      participant.handle.toLowerCase() === wanted,
   );
 }
 
@@ -163,6 +196,11 @@ export function sessionSlotParticipantId(
 ): ThreadParticipantId | null {
   return session?.participantId ?? null;
 }
+
+const joinedGuest = (entry: OrchestrationThreadParticipant): OrchestrationThreadParticipant => {
+  const { guest: _guest, ...member } = entry;
+  return { ...member, leftAt: null };
+};
 
 /**
  * Apply a `thread.participant-updated` event to a room's agents: a name for
@@ -180,6 +218,8 @@ export function applyRoomAgentUpdate(
     readonly modelSelection?: ModelSelection | undefined;
     /** The agent's name for its new model, with a model change. */
     readonly handle?: string | undefined;
+    /** A guest joins the thread as a member. */
+    readonly joined?: true | undefined;
   },
 ): {
   readonly participants: OrchestrationThreadParticipant[];
@@ -201,7 +241,7 @@ export function applyRoomAgentUpdate(
       entry.id !== update.participantId
         ? entry
         : {
-            ...withRole(entry),
+            ...withRole(update.joined === true ? joinedGuest(entry) : entry),
             ...(update.modelSelection !== undefined
               ? { modelSelection: update.modelSelection }
               : {}),

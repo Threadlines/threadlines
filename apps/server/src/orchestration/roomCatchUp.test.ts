@@ -2,6 +2,7 @@ import {
   CheckpointRef,
   MessageId,
   ProviderInstanceId,
+  RoomAgentRequestId,
   SideTurnId,
   ThreadParticipantId,
   TurnId,
@@ -69,6 +70,50 @@ describe("buildRoomCatchUp", () => {
         messageId: MessageId.make("u2"),
         ...main,
       }),
+    ).toBeUndefined();
+  });
+
+  it("frames an invited review for the agent that asked, and nothing else, outside a room", () => {
+    const guest = { ...astra, leftAt: at, guest: true };
+    const requestId = RoomAgentRequestId.make("invite-1");
+    const sideTurnId = SideTurnId.make("side-invite");
+    const fromPrimary = { fromAgent: { participantId: null }, requestId };
+    const messages = [
+      message("u1", "user", "fix the retry"),
+      message("a1", "assistant", "Fixed it."),
+      message("i1", "user", "Check the retry.", astraId, {
+        ...fromPrimary,
+        requestKind: "invite",
+      }),
+      message("r1", "user", "Check the retry.", astraId, {
+        ...fromPrimary,
+        requestKind: "review",
+        sideTurnId,
+      }),
+      message("s1", "assistant", "The backoff never caps.", astraId, { sideTurnId }),
+      message("reply", "user", "The backoff never caps.", null, {
+        fromAgent: { participantId: astraId },
+        requestId,
+        requestKind: "reply",
+      }),
+    ];
+    const catchUp = buildRoomCatchUp({
+      thread: thread(messages, { participants: [guest] }),
+      participantId: null,
+      messageId: MessageId.make("reply"),
+      ...main,
+    });
+    expect(catchUp?.note).toBe(
+      "The message below is GPT-6 Astra (gpt-6-astra)'s independent review, which you asked for. It saw none of this conversation, only your request and the changes.",
+    );
+    // The user's own messages carry no note at all.
+    expect(
+      buildRoomCatchUp({
+        thread: thread([...messages, message("u2", "user", "thanks")], { participants: [guest] }),
+        participantId: null,
+        messageId: MessageId.make("u2"),
+        ...main,
+      })?.note,
     ).toBeUndefined();
   });
 

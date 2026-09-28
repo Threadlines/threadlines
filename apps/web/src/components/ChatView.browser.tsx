@@ -20,6 +20,7 @@ import {
   type ServerConfig,
   type ServerLifecycleWelcomePayload,
   type ServerProvider,
+  type RoomAgentRequestId,
   type SideTurnId,
   type ThreadId,
   type ThreadParticipantId,
@@ -7418,6 +7419,118 @@ describe("ChatView timeline estimator parity (full app)", () => {
       // The choice outlives the view; later tests start from the thread's own agent.
       useRoomRecipientStore.getState().choose(THREAD_REF, null);
       updateSettings({ roomsEnabled: false });
+      await mounted.cleanup();
+    }
+  });
+
+  it("asks the user about an agent's invite above the message box, and sends the answer", async () => {
+    const guestId = "5c4d3e2f-1a0b-4c9d-8e7f-6a5b4c3d2e1f" as ThreadParticipantId;
+    const requestId = "invite-request-1" as RoomAgentRequestId;
+    const inviteMessageId = "msg-invite-1" as MessageId;
+    const base = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-invite" as MessageId,
+      targetText: "invite target",
+    });
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...base,
+        threads: base.threads.map((thread) =>
+          thread.id === THREAD_ID
+            ? {
+                ...thread,
+                participants: [
+                  {
+                    id: guestId,
+                    handle: "GPT-6 Astra",
+                    modelSelection: {
+                      instanceId: ProviderInstanceId.make("codex"),
+                      model: "gpt-6-astra",
+                    },
+                    joinedAt: NOW_ISO,
+                    leftAt: NOW_ISO,
+                    guest: true,
+                  },
+                ],
+                messages: [
+                  ...thread.messages,
+                  {
+                    id: inviteMessageId,
+                    role: "user" as const,
+                    text: "Check the retry math.",
+                    participantId: guestId,
+                    fromAgent: { participantId: null },
+                    requestId,
+                    requestKind: "invite" as const,
+                    invite: {
+                      reason: "A second model should check the backoff.",
+                      suggestion: "review" as const,
+                      billing: {
+                        instanceId: ProviderInstanceId.make("codex"),
+                        label: "Codex · ChatGPT Pro",
+                        perUse: false,
+                      },
+                    },
+                    turnId: null,
+                    streaming: false,
+                    createdAt: isoAt(300),
+                    updatedAt: isoAt(300),
+                  },
+                ],
+                agentRequests: {
+                  ...EMPTY_AGENT_REQUEST_STATE,
+                  requestsSinceUser: 1,
+                  open: [
+                    {
+                      requestId,
+                      kind: "invite" as const,
+                      from: { participantId: null },
+                      to: { participantId: guestId },
+                      callerTurnId: "turn-invite" as TurnId,
+                      chainEpoch: 0,
+                      status: "awaiting_user" as const,
+                      requestMessageId: inviteMessageId,
+                      sideTurnId: "0d9e8f7a-6b5c-4d3e-8f1a-2b3c4d5e6f01" as SideTurnId,
+                      createdAt: isoAt(300),
+                    },
+                  ],
+                },
+              }
+            : thread,
+        ),
+      },
+    });
+
+    try {
+      const panel = await waitForElement(
+        () => document.querySelector<HTMLElement>('[data-testid="agent-invite-panel"]'),
+        "Unable to find the invite card.",
+      );
+      expect(panel.textContent).toContain("A second model should check the backoff.");
+      expect(panel.textContent).toContain("Codex · ChatGPT Pro");
+      // Not a room yet: saying yes to a teammate is said to end revert.
+      expect(panel.textContent).toContain("revert turns off for good");
+      expect(
+        document.querySelector('[data-room-agent-message="invite"] [data-room-invite-status]')
+          ?.textContent,
+      ).toBe("wants a review, waiting for you");
+
+      const reviewOnly = [...panel.querySelectorAll<HTMLButtonElement>("button")].find(
+        (button) => button.textContent === "Review only",
+      );
+      reviewOnly?.click();
+      await vi.waitFor(
+        () =>
+          expect(
+            wsRequests.find(
+              (request) =>
+                request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+                (request as { type?: string }).type === "thread.agent-invite.respond",
+            ),
+          ).toMatchObject({ requestId, choice: "review" }),
+        { timeout: 8_000, interval: 16 },
+      );
+    } finally {
       await mounted.cleanup();
     }
   });

@@ -1,6 +1,12 @@
 import { compareTranscriptOrder } from "@threadlines/shared/transcriptOrder";
 import { applyRoomAgentUpdate } from "@threadlines/shared/threadParticipants";
-import { agentRequestStateOn, isUserWrittenMessage } from "@threadlines/shared/roomAgentRequests";
+import {
+  agentRequestStateOn,
+  isUserWrittenMessage,
+  withInviteChoice,
+  withUnqueuedAgentMessage,
+} from "@threadlines/shared/roomAgentRequests";
+import { retainMessagesAfterRevert } from "@threadlines/shared/transcriptRevert";
 import {
   ApprovalRequestId,
   EMPTY_AGENT_REQUEST_STATE,
@@ -204,62 +210,13 @@ function retainProjectionMessagesAfterRevert(
       retainedMessageIds.add(turn.assistantMessageId);
     }
   }
-
-  for (const message of messages) {
-    if (message.role === "system") {
-      retainedMessageIds.add(message.messageId);
-      continue;
-    }
-    if (message.turnId !== null && retainedTurnIds.has(message.turnId)) {
-      retainedMessageIds.add(message.messageId);
-    }
-  }
-
-  const retainedUserCount = messages.filter(
-    (message) => message.role === "user" && retainedMessageIds.has(message.messageId),
-  ).length;
-  const missingUserCount = Math.max(0, turnCount - retainedUserCount);
-  if (missingUserCount > 0) {
-    const fallbackUserMessages = messages
-      .filter(
-        (message) =>
-          message.role === "user" &&
-          !retainedMessageIds.has(message.messageId) &&
-          (message.turnId === null || retainedTurnIds.has(message.turnId)),
-      )
-      .toSorted(
-        (left, right) =>
-          compareTranscriptOrder(left, right) || left.messageId.localeCompare(right.messageId),
-      )
-      .slice(0, missingUserCount);
-    for (const message of fallbackUserMessages) {
-      retainedMessageIds.add(message.messageId);
-    }
-  }
-
-  const retainedAssistantCount = messages.filter(
-    (message) => message.role === "assistant" && retainedMessageIds.has(message.messageId),
-  ).length;
-  const missingAssistantCount = Math.max(0, turnCount - retainedAssistantCount);
-  if (missingAssistantCount > 0) {
-    const fallbackAssistantMessages = messages
-      .filter(
-        (message) =>
-          message.role === "assistant" &&
-          !retainedMessageIds.has(message.messageId) &&
-          (message.turnId === null || retainedTurnIds.has(message.turnId)),
-      )
-      .toSorted(
-        (left, right) =>
-          compareTranscriptOrder(left, right) || left.messageId.localeCompare(right.messageId),
-      )
-      .slice(0, missingAssistantCount);
-    for (const message of fallbackAssistantMessages) {
-      retainedMessageIds.add(message.messageId);
-    }
-  }
-
-  return messages.filter((message) => retainedMessageIds.has(message.messageId));
+  return retainMessagesAfterRevert({
+    messages,
+    idOf: (message) => message.messageId,
+    retainedTurnIds,
+    retainedMessageIds,
+    turnCount,
+  });
 }
 
 function retainProjectionActivitiesAfterRevert(
@@ -802,7 +759,11 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
               : event.type === "thread.agent-request-updated"
                 ? agentRequestStateOn.updated(state, event.payload.requestId, event.payload.status)
                 : event.type === "thread.agent-request-settled"
-                  ? agentRequestStateOn.settled(state, event.payload.requestId)
+                  ? agentRequestStateOn.settled(
+                      state,
+                      event.payload.requestId,
+                      event.payload.outcome,
+                    )
                   : event.type === "thread.agent-requests-held"
                     ? agentRequestStateOn.held(state, event.payload.chainEpoch)
                     : agentRequestStateOn.reset(state);
@@ -1233,6 +1194,47 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
       "applyThreadMessagesProjection",
     )(function* (event, attachmentSideEffects) {
       switch (event.type) {
+        // An agent's message taken back before it was sent stays, marked.
+        case "thread.follow-up-unqueued": {
+          if (event.payload.reason !== "cancelled") {
+            return;
+          }
+          const message = yield* projectionThreadMessageRepository.getByMessageId({
+            messageId: event.payload.messageId,
+          });
+          if (Option.isSome(message)) {
+            const marked = withUnqueuedAgentMessage(
+              { ...message.value, id: message.value.messageId },
+              event.payload,
+            );
+            if (marked.requestOutcome !== message.value.requestOutcome) {
+              yield* projectionThreadMessageRepository.upsert({
+                ...message.value,
+                requestOutcome: marked.requestOutcome,
+              });
+            }
+          }
+          return;
+        }
+
+        // The user's answer to an invite stays on its request message.
+        case "thread.agent-request-updated": {
+          const inviteChoice = event.payload.inviteChoice;
+          if (inviteChoice === undefined) {
+            return;
+          }
+          const message = yield* projectionThreadMessageRepository.getByMessageId({
+            messageId: inviteChoice.requestMessageId,
+          });
+          if (Option.isSome(message)) {
+            const invite = withInviteChoice(message.value.invite, inviteChoice);
+            if (invite !== undefined) {
+              yield* projectionThreadMessageRepository.upsert({ ...message.value, invite });
+            }
+          }
+          return;
+        }
+
         // A room request's outcome stays on its message after the request is gone.
         case "thread.agent-request-settled": {
           const message = yield* projectionThreadMessageRepository.getByMessageId({
@@ -1299,6 +1301,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             ...(event.payload.reviewInput !== undefined
               ? { reviewInput: event.payload.reviewInput }
               : {}),
+            ...(event.payload.invite !== undefined ? { invite: event.payload.invite } : {}),
             isStreaming: event.payload.streaming,
             createdAt: previousMessage?.createdAt ?? event.payload.createdAt,
             updatedAt: event.payload.updatedAt,

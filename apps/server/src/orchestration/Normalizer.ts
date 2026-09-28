@@ -19,6 +19,7 @@ import {
   splitSeedEntriesByBudget,
   withContextSeedPreamble,
 } from "@threadlines/shared/contextSeed";
+import { agentInvitesMode } from "@threadlines/shared/roomAgentRequests";
 import { formatForkSourceExcerpt, truncate } from "@threadlines/shared/String";
 
 import { createAttachmentId, resolveAttachmentPath } from "../attachmentStore.ts";
@@ -29,6 +30,9 @@ import {
 } from "@threadlines/shared/fileAttachments";
 import { parseBase64DataUrl } from "../imageMime.ts";
 import { WorkspacePaths } from "../workspace/Services/WorkspacePaths.ts";
+import { ProviderRegistry } from "../provider/Services/ProviderRegistry.ts";
+import { ServerSettingsService } from "../serverSettings.ts";
+import { inviteAnswerRefusal } from "./agentInvites.ts";
 import { ProjectionSnapshotQuery } from "./Services/ProjectionSnapshotQuery.ts";
 
 const FORK_CONTEXT_SOURCE_EXCERPT_CHARS = 2_000;
@@ -148,6 +152,42 @@ export const normalizeDispatchCommand = (command: ClientOrchestrationCommand) =>
         );
         return copiedAttachment;
       });
+
+    // The decider rules on the thread; whether the invited agent can still be
+    // paid for the way the user was shown is checked here. A CLI-only server
+    // has no providers or settings, and no agents to bring in.
+    if (command.type === "thread.agent-invite.respond") {
+      if (command.choice === "decline") {
+        return command;
+      }
+      // Bringing an agent in is only allowed once all of this is known: an
+      // answer that cannot be checked is refused, never waved through.
+      const cannotCheck = new OrchestrationDispatchCommandError({
+        message: "Could not check the invited agent's provider. Try again.",
+      });
+      const thread = yield* (yield* ProjectionSnapshotQuery)
+        .getThreadDetailById(command.threadId)
+        .pipe(Effect.mapError(() => cannotCheck));
+      const registry = yield* Effect.serviceOption(ProviderRegistry);
+      const settingsService = yield* Effect.serviceOption(ServerSettingsService);
+      if (Option.isNone(thread) || Option.isNone(registry) || Option.isNone(settingsService)) {
+        return yield* cannotCheck;
+      }
+      const settings = yield* settingsService.value.getSettings.pipe(
+        Effect.mapError(() => cannotCheck),
+      );
+      const refusal = inviteAnswerRefusal({
+        thread: thread.value,
+        requestId: command.requestId,
+        choice: command.choice,
+        mode: agentInvitesMode(settings),
+        providers: yield* registry.value.getProviders,
+      });
+      if (refusal !== null) {
+        return yield* new OrchestrationDispatchCommandError({ message: refusal });
+      }
+      return command;
+    }
 
     if (command.type === "thread.fork") {
       const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;

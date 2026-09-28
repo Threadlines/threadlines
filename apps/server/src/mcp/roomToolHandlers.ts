@@ -15,6 +15,7 @@
  * request's own lifecycle (roomRequests.ts), never inside a reactor.
  */
 import {
+  type AgentInvitesMode,
   CommandId,
   MessageId,
   type ModelSelection,
@@ -25,14 +26,21 @@ import {
   type ProviderInstanceId,
   RoomAgentRequestId,
   type RoomAgentRequestKind,
+  type RoomAgentRequestOutcome,
   type RoomReviewInput,
+  type ServerProvider,
   SideTurnId,
   type ThreadId,
+  ThreadParticipantId,
   type TurnId,
 } from "@threadlines/contracts";
-import { participantSessionKey } from "@threadlines/shared/threadParticipants";
+import {
+  activeParticipants,
+  nextRoomAgentName,
+  participantSessionKey,
+} from "@threadlines/shared/threadParticipants";
 import { resolveThreadWorkingCwd } from "@threadlines/shared/threadCwd";
-import { agentRequestRefusal } from "@threadlines/shared/roomAgentRequests";
+import { agentInviteRefusal, agentRequestRefusal } from "@threadlines/shared/roomAgentRequests";
 import { randomUUID } from "node:crypto";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
@@ -40,10 +48,16 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 
+import {
+  inviteBilling,
+  inviteProviderName,
+  isInvitableProvider,
+} from "../orchestration/agentInvites.ts";
 import type { OrchestrationEngineShape } from "../orchestration/Services/OrchestrationEngine.ts";
 import type { GitVcsDriverShape } from "../vcs/GitVcsDriver.ts";
 import type { McpInvocationScope } from "./McpSessionRegistry.ts";
 import {
+  normalizeAgentName,
   type RoomAgentEntry,
   resolveRoomAgent,
   roomAgentEntries,
@@ -61,9 +75,11 @@ import type { RoomToolName } from "./roomToolAccess.ts";
 import type {
   RoomAgentsResult,
   RoomAnswerResult,
+  RoomAvailableAgentsResult,
   RoomDiffResult,
   RoomHandOffResult,
   RoomHistoryResult,
+  RoomInviteResult,
 } from "./roomTools.ts";
 
 /** Drivers that can answer on the side (they have side runtimes). */
@@ -139,6 +155,10 @@ export interface RoomToolDeps {
   readonly roomToolsOf: (sessionKey: ThreadId) => Effect.Effect<boolean | undefined>;
   /** A model's name as the model picker shows it. */
   readonly modelNameOf: (selection: ModelSelection) => Effect.Effect<string>;
+  /** The provider snapshots: who could be invited, and how each is paid for. */
+  readonly providers: Effect.Effect<ReadonlyArray<ServerProvider>>;
+  /** Whether agents may bring in other agents, read live at every call. */
+  readonly invitesMode: Effect.Effect<AgentInvitesMode>;
   readonly git: Pick<GitVcsDriverShape, "execute" | "workingTreeDiff">;
   readonly requests: RoomRequestRegistry;
 }
@@ -170,7 +190,7 @@ type Settled =
     }
   | {
       readonly via: "request";
-      readonly outcome: "answered" | "failed" | "stopped" | "timeout" | "cancelled";
+      readonly outcome: RoomAgentRequestOutcome;
       readonly error?: string | undefined;
     };
 
@@ -213,7 +233,9 @@ export function makeRoomToolHandlers(deps: RoomToolDeps) {
   const notAllowed = (tool: RoomToolName) =>
     tool === "room_history"
       ? "An independent review does not see the room's conversation."
-      : "Only the agent working in this room can ask another agent.";
+      : tool === "room_available_agents" || tool === "room_invite"
+        ? "Only the agent working in this thread can bring in another agent."
+        : "Only the agent working in this room can ask another agent.";
 
   const canAnswerOnTheSide = (entry: RoomAgentEntry) =>
     deps
@@ -376,7 +398,7 @@ export function makeRoomToolHandlers(deps: RoomToolDeps) {
       if (room === undefined) {
         return { refused: "This thread is gone." };
       }
-      if (room.thread.participants.length === 0) {
+      if (activeParticipants(room.thread).length === 0) {
         return { refused: "This thread has no other agents." };
       }
       const resolved = resolveRoomAgent(room.entries, agent);
@@ -761,6 +783,280 @@ export function makeRoomToolHandlers(deps: RoomToolDeps) {
       );
     });
 
+  // ---------------------------------------------------------------------------
+  // Invites (docs/design/rooms-agent-invites.md)
+  // ---------------------------------------------------------------------------
+
+  const INVITES_OFF = "Bringing in other agents is turned off in Settings.";
+
+  interface InviteCandidate {
+    readonly key: string;
+    readonly provider: ServerProvider;
+    readonly modelSelection: ModelSelection;
+    /** As the model picker shows it: "GPT-6 Astra". */
+    readonly name: string;
+  }
+
+  const inviteCandidates = (providers: ReadonlyArray<ServerProvider>) =>
+    providers.filter(isInvitableProvider).flatMap((provider) =>
+      provider.models
+        .filter((model) => model.isHidden !== true)
+        .map((model): InviteCandidate => ({
+          key: `${provider.instanceId}/${model.slug}`,
+          provider,
+          modelSelection: { instanceId: provider.instanceId, model: model.slug },
+          name: model.shortName ?? model.name,
+        })),
+    );
+
+  const sameModel = (left: ModelSelection, right: ModelSelection) =>
+    left.instanceId === right.instanceId && left.model === right.model;
+
+  /** The model an invite names: a key wins outright; a name must fit one model. */
+  const resolveInviteCandidate = (
+    candidates: ReadonlyArray<InviteCandidate>,
+    input: string,
+  ): InviteCandidate | { readonly refused: string } => {
+    const trimmed = input.trim();
+    const byKey = candidates.find(
+      (candidate) => candidate.key.toLowerCase() === trimmed.toLowerCase(),
+    );
+    if (byKey !== undefined) {
+      return byKey;
+    }
+    const wanted = normalizeAgentName(trimmed);
+    const matches = candidates.filter((candidate) =>
+      [
+        candidate.name,
+        candidate.modelSelection.model,
+        `${inviteProviderName(candidate.provider)} ${candidate.name}`,
+      ].some((name) => normalizeAgentName(name) === wanted),
+    );
+    if (matches.length === 1) {
+      return matches[0]!;
+    }
+    const listed = (matches.length > 1 ? matches : candidates)
+      .map((candidate) => `${candidate.name} (${candidate.key})`)
+      .join(", ");
+    return {
+      refused:
+        matches.length > 1
+          ? `"${trimmed}" fits more than one model: ${listed}. Use the key.`
+          : wanted.length === 0
+            ? `Name a model. Available: ${listed}.`
+            : `No available model is called "${trimmed}". Available: ${listed}.`,
+    };
+  };
+
+  const roomAvailableAgents = (
+    scope: McpInvocationScope,
+  ): Effect.Effect<RoomAvailableAgentsResult> =>
+    Effect.gen(function* () {
+      const none = { providers: [] };
+      if (!scope.roomTools.has("room_available_agents") || scope.side !== undefined) {
+        return { ...refused(notAllowed("room_available_agents")), ...none };
+      }
+      const mode = yield* deps.invitesMode;
+      if (mode === "off") {
+        return { ...refused(INVITES_OFF), ...none };
+      }
+      const room = yield* loadRoom(scope);
+      if (room === undefined) {
+        return { ...refused("This thread is gone."), ...none };
+      }
+      const present = room.entries.filter((entry) => entry.present);
+      const providers = (yield* deps.providers).filter(isInvitableProvider);
+      return {
+        outcome: "ok",
+        invites: mode,
+        providers: providers.map((provider) => {
+          const billing = inviteBilling(provider);
+          return {
+            provider: provider.instanceId,
+            name: inviteProviderName(provider),
+            billing: billing.label,
+            perUse: billing.perUse,
+            models: inviteCandidates([provider]).map((candidate) => ({
+              key: candidate.key,
+              name: candidate.name,
+              inThread: present.some((entry) =>
+                sameModel(entry.modelSelection, candidate.modelSelection),
+              ),
+            })),
+          };
+        }),
+      } satisfies RoomAvailableAgentsResult;
+    });
+
+  const REASON_CHAR_LIMIT = 300;
+
+  const roomInvite = (
+    scope: McpInvocationScope,
+    input: {
+      readonly agent: string;
+      readonly request: string;
+      readonly reason: string;
+      readonly suggestion?: "review" | "teammate" | undefined;
+      readonly basis?: RoomReviewBasisRequest | undefined;
+    },
+  ): Effect.Effect<RoomInviteResult> =>
+    Effect.gen(function* () {
+      if (!scope.roomTools.has("room_invite") || scope.side !== undefined) {
+        return refused(notAllowed("room_invite")) satisfies RoomInviteResult;
+      }
+      const text = input.request.trim();
+      const reason = input.reason.trim().slice(0, REASON_CHAR_LIMIT).trim();
+      if (text.length === 0) {
+        return refused("Say what the reviewer should check.") satisfies RoomInviteResult;
+      }
+      if (reason.length === 0) {
+        return refused("Give the user a short reason.") satisfies RoomInviteResult;
+      }
+      const mode = yield* deps.invitesMode;
+      if (mode === "off") {
+        return refused(INVITES_OFF) satisfies RoomInviteResult;
+      }
+      const room = yield* loadRoom(scope);
+      if (room === undefined) {
+        return refused("This thread is gone.") satisfies RoomInviteResult;
+      }
+      const target = resolveInviteCandidate(inviteCandidates(yield* deps.providers), input.agent);
+      if ("refused" in target) {
+        return refused(target.refused) satisfies RoomInviteResult;
+      }
+      const alreadyHere = room.entries.find(
+        (entry) =>
+          entry.present &&
+          entry.participantId !== null &&
+          sameModel(entry.modelSelection, target.modelSelection),
+      );
+      if (alreadyHere !== undefined) {
+        return refused(
+          `${alreadyHere.name} is already in this thread. Ask it with room_review.`,
+        ) satisfies RoomInviteResult;
+      }
+      const callerTurnId = room.thread.session?.activeTurnId ?? null;
+      if (callerTurnId === null) {
+        return refused("Invites can only be made during your own turn.") satisfies RoomInviteResult;
+      }
+      const suggestion = input.suggestion ?? "review";
+      const chainEpoch = room.thread.agentRequests.chainEpoch;
+      const rules = {
+        from: { participantId: scope.participantId },
+        callerTurnId,
+        chainEpoch,
+        startsNow: mode === "auto",
+      };
+      const refusal = agentInviteRefusal(room.thread, rules);
+      if (refusal !== null) {
+        return { outcome: refusal.outcome, detail: refusal.detail } satisfies RoomInviteResult;
+      }
+      const basisKey =
+        input.basis === undefined || input.basis === "uncommitted"
+          ? "uncommitted"
+          : `base:${input.basis.base}`;
+      const key = [scope.threadId, callerTurnId, "invite", target.key, text, basisKey].join(
+        "\u0000",
+      );
+      return yield* deps.requests.join(key, () =>
+        Effect.gen(function* () {
+          const cwd = yield* checkoutOf(room.thread);
+          if (cwd === undefined) {
+            return {
+              outcome: "failed",
+              detail: "This thread has no checkout to review.",
+            } satisfies RoomInviteResult;
+          }
+          const captured = yield* roomGit
+            .captureReviewBasis(cwd, input.basis ?? "uncommitted")
+            .pipe(Effect.result);
+          if (captured._tag === "Failure") {
+            return {
+              outcome: captured.failure.outcome,
+              detail: `The review's basis could not be captured: ${captured.failure.message}`,
+            } satisfies RoomInviteResult;
+          }
+          // The capture takes a while: the setting or the provider's sign-in
+          // may have changed since the call arrived, and what is sent must
+          // match what the user will be shown.
+          const modeNow = yield* deps.invitesMode;
+          if (modeNow === "off") {
+            return refused(INVITES_OFF) satisfies RoomInviteResult;
+          }
+          // Stop, or the turn ending, while the changes were captured.
+          const threadNow = yield* deps.readThread(scope.threadId);
+          const refusalNow =
+            threadNow === undefined
+              ? { outcome: "refused" as const, detail: "This thread is gone." }
+              : agentInviteRefusal(threadNow, { ...rules, startsNow: modeNow === "auto" });
+          if (refusalNow !== null) {
+            return {
+              outcome: refusalNow.outcome,
+              detail: refusalNow.detail,
+            } satisfies RoomInviteResult;
+          }
+          const providerNow = (yield* deps.providers).find(
+            (entry) => entry.instanceId === target.provider.instanceId,
+          );
+          if (
+            providerNow === undefined ||
+            !inviteCandidates([providerNow]).some((candidate) => candidate.key === target.key)
+          ) {
+            return refused(
+              `${target.name} is not available any more: its provider is off or signed out.`,
+            ) satisfies RoomInviteResult;
+          }
+          // Named the way the chat names it: the model, numbered after every
+          // agent this thread ever had.
+          const handle = nextRoomAgentName(
+            target.name,
+            room.entries.map((entry) => entry.modelName),
+          );
+          const requestId = RoomAgentRequestId.make(randomUUID());
+          const agent = { key: target.key, name: handle };
+          const rejected = yield* deps.engine
+            .dispatch({
+              type: "thread.agent-request.submit",
+              commandId: CommandId.make(`server:room-invite:${requestId}`),
+              threadId: scope.threadId,
+              requestId,
+              kind: "invite",
+              from: rules.from,
+              to: { participantId: ThreadParticipantId.make(randomUUID()) },
+              callerTurnId,
+              chainEpoch,
+              message: { messageId: MessageId.make(randomUUID()), text },
+              sideTurnId: SideTurnId.make(randomUUID()),
+              reviewInput: captured.success,
+              invite: {
+                guest: { handle, modelSelection: target.modelSelection },
+                reason,
+                suggestion,
+                billing: inviteBilling(providerNow),
+                ...(modeNow === "auto" ? { autoChoice: suggestion } : {}),
+              },
+              createdAt: yield* nowIso,
+            })
+            .pipe(
+              Effect.as(undefined),
+              Effect.catch((error) => Effect.succeed(dispatchDetail(error))),
+            );
+          if (rejected !== undefined) {
+            return { outcome: "failed", detail: rejected, agent } satisfies RoomInviteResult;
+          }
+          return {
+            outcome: modeNow === "auto" ? "started" : "asked_user",
+            detail:
+              modeNow === "auto"
+                ? `${handle} is reviewing${suggestion === "teammate" ? " and joined the thread" : ""}. Its review comes back to you as a message.`
+                : "The user will decide. If they agree, the review comes back to you as a message; if not, you will not hear back. Do not ask again unless the user asks you to.",
+            agent,
+            requestId,
+          } satisfies RoomInviteResult;
+        }),
+      );
+    });
+
   return {
     room_agents: roomAgents,
     room_history: roomHistory,
@@ -785,6 +1081,8 @@ export function makeRoomToolHandlers(deps: RoomToolDeps) {
         basis: input.basis,
       }),
     room_hand_off: roomHandOff,
+    room_available_agents: roomAvailableAgents,
+    room_invite: roomInvite,
   };
 }
 
