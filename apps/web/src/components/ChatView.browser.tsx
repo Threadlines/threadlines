@@ -20,6 +20,7 @@ import {
   type ServerConfig,
   type ServerLifecycleWelcomePayload,
   type ServerProvider,
+  type SideTurnId,
   type ThreadId,
   type ThreadParticipantId,
   type TurnId,
@@ -7101,8 +7102,10 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
-  it("keeps a room's working agent, state and clock whole at the default width", async () => {
+  /** A room row whose added agent has been at work for twelve and a half minutes. */
+  async function mountRoomWorkingRow(agent: { readonly model: string; readonly role?: string }) {
     const agentId = "7a0b1c2d-3e4f-4a5b-8c6d-7e8f9a0b1c2d" as ThreadParticipantId;
+    // The widest clock a turn shows before its first hour ("12m 30s").
     const startedAt = new Date(Date.now() - 12.5 * 60_000).toISOString();
     const base = createSnapshotForTargetUser({
       targetMessageId: "msg-user-room-working" as MessageId,
@@ -7118,16 +7121,15 @@ describe("ChatView timeline estimator parity (full app)", () => {
           thread.id === THREAD_ID
             ? {
                 ...thread,
-                // An added agent, at work for over twelve minutes: the
-                // widest clock a turn shows before its first hour.
                 participants: [
                   {
                     id: agentId,
                     handle: "agent-2",
                     modelSelection: {
                       instanceId: ProviderInstanceId.make("codex"),
-                      model: "Opus 5.5",
+                      model: agent.model,
                     },
+                    ...(agent.role !== undefined ? { role: agent.role } : {}),
                     joinedAt: NOW_ISO,
                     leftAt: null,
                   },
@@ -7146,7 +7148,6 @@ describe("ChatView timeline estimator parity (full app)", () => {
         ),
       },
     });
-
     try {
       const line = await waitForElement(
         () => document.querySelector<HTMLElement>(`[data-testid="thread-detail-${THREAD_ID}"]`),
@@ -7158,26 +7159,241 @@ describe("ChatView timeline estimator parity (full app)", () => {
       );
       await vi.waitFor(
         () => {
-          expect(meta.textContent).toMatch(/^Opus 5\.5\s·\sworking\s·\s12m \d+s$/);
+          expect(meta.textContent).toMatch(/.\s·\sworking\s·\s12m \d+s$/);
         },
         { timeout: 8_000, interval: 16 },
       );
       const [name, , state, , clock] = [...meta.children] as HTMLElement[];
-      // The agent's name, the state and the clock are whole (not a pixel
-      // short, which already shows an ellipsis) and in the row.
-      for (const part of [name!, state!, clock!]) {
-        expect(part.scrollWidth).toBeLessThanOrEqual(part.clientWidth);
+      const project = [...line.querySelectorAll<HTMLElement>("span")].find(
+        (element) => element.textContent === "Project",
+      );
+      return { mounted, line, name: name!, state: state!, clock: clock!, project };
+    } catch (error) {
+      await mounted.cleanup();
+      throw error;
+    }
+  }
+
+  /** Whether an element shows its whole text: the laid-out text, fractions
+   *  included, fits its box (a fraction over already draws an ellipsis). */
+  const showsWholeText = (element: HTMLElement) => {
+    const range = document.createRange();
+    range.selectNodeContents(element);
+    return range.getBoundingClientRect().width <= element.getBoundingClientRect().width + 0.01;
+  };
+
+  it("keeps a room's working agent, state and clock whole at the default width", async () => {
+    const { mounted, line, name, state, clock, project } = await mountRoomWorkingRow({
+      model: "Opus 5.5",
+    });
+    try {
+      for (const part of [name, state, clock]) {
+        expect(showsWholeText(part)).toBe(true);
         expect(part.getBoundingClientRect().right).toBeLessThanOrEqual(
           line.getBoundingClientRect().right + 0.5,
         );
       }
       // The project name stays in the row; it is what gave way.
-      const project = [...line.querySelectorAll<HTMLElement>("span")].find(
-        (element) => element.textContent === "Project",
-      );
       expect(project).toBeDefined();
-      expect(project!.scrollWidth).toBeGreaterThan(project!.clientWidth);
+      expect(showsWholeText(project!)).toBe(false);
     } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("shortens a long agent name only once the project name is gone", async () => {
+    const { mounted, line, name, state, clock, project } = await mountRoomWorkingRow({
+      model: "Opus 5.5",
+      // Custom names go up to 32 characters.
+      role: "Reviewer with a very long name",
+    });
+    try {
+      expect(name.textContent).toBe("Reviewer with a very long name");
+      expect(showsWholeText(name)).toBe(false);
+      expect(project!.getBoundingClientRect().width).toBeLessThan(0.5);
+      for (const part of [state, clock]) {
+        expect(showsWholeText(part)).toBe(true);
+        expect(part.getBoundingClientRect().right).toBeLessThanOrEqual(
+          line.getBoundingClientRect().right + 0.5,
+        );
+      }
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("follows a side answer's links between its question and where it was posted", async () => {
+    const agentId = "7a0b1c2d-3e4f-4a5b-8c6d-7e8f9a0b1c2d" as ThreadParticipantId;
+    const sideTurnId = "side-reveal" as SideTurnId;
+    const base = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-side-reveal" as MessageId,
+      targetText: "side reveal target",
+    });
+    // Asked early, answered after the rest of the thread went on: the answer
+    // is posted far below its question.
+    const question = {
+      id: "side-question-reveal" as MessageId,
+      role: "user" as const,
+      text: "Is the lock released on every path?",
+      participantId: agentId,
+      sideTurnId,
+      turnId: null,
+      streaming: false,
+      createdAt: isoAt(10),
+      updatedAt: isoAt(10),
+    };
+    const answer = {
+      id: "side-answer-reveal" as MessageId,
+      role: "assistant" as const,
+      text: "Yes, except when the write fails.",
+      participantId: agentId,
+      sideTurnId,
+      turnId: null,
+      streaming: false,
+      createdAt: isoAt(118),
+      updatedAt: isoAt(120),
+    };
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...base,
+        threads: base.threads.map((thread) =>
+          thread.id === THREAD_ID
+            ? {
+                ...thread,
+                participants: [
+                  {
+                    id: agentId,
+                    handle: "agent-2",
+                    modelSelection: {
+                      instanceId: ProviderInstanceId.make("codex"),
+                      model: "gpt-6-astra",
+                    },
+                    joinedAt: NOW_ISO,
+                    leftAt: null,
+                  },
+                ],
+                messages: [...thread.messages, question, answer].toSorted((a, b) =>
+                  a.createdAt.localeCompare(b.createdAt),
+                ),
+              }
+            : thread,
+        ),
+      },
+    });
+
+    try {
+      const list = await waitForElement(
+        () => document.querySelector<HTMLElement>('[data-chat-messages-list="true"]'),
+        "Unable to find the message list.",
+      );
+      // Where a followed link puts its row: a fifth of the way down the list,
+      // or as far as the list goes when the row is near its end.
+      const expectRevealed = async (messageId: string) => {
+        await vi.waitFor(
+          () => {
+            const row = document.querySelector<HTMLElement>(`[data-message-id="${messageId}"]`);
+            expect(row).not.toBeNull();
+            const listRect = list.getBoundingClientRect();
+            const top = row!.getBoundingClientRect().top;
+            const atEnd = list.scrollTop + list.clientHeight >= list.scrollHeight - 2;
+            if (atEnd) {
+              expect(top).toBeGreaterThanOrEqual(listRect.top);
+              expect(top).toBeLessThan(listRect.bottom - 40);
+            } else {
+              expect(Math.abs(top - (listRect.top + listRect.height * 0.2))).toBeLessThan(12);
+            }
+          },
+          { timeout: 8_000, interval: 50 },
+        );
+      };
+
+      // Up from the answer, which the list opens at, to its question...
+      const back = await waitForElement(
+        () =>
+          [...document.querySelectorAll<HTMLButtonElement>("button")].find((button) =>
+            button.textContent?.includes("Is the lock released"),
+          ) ?? null,
+        "Unable to find the answer's link back to its question.",
+      );
+      back.click();
+      await expectRevealed("side-question-reveal");
+
+      // ...and down again from the line under the question.
+      const below = await waitForElement(
+        () =>
+          document.querySelector<HTMLButtonElement>(
+            '[data-side-answer-status="answered-below"] button',
+          ),
+        "Unable to find the line leading to the answer.",
+      );
+      expect(below.textContent).toContain("answer is below");
+      below.click();
+      await expectRevealed("side-answer-reveal");
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("names a room's own agent by the model picked for its next message", async () => {
+    updateSettings({ roomsEnabled: true });
+    const base = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-room-model" as MessageId,
+      targetText: "room model target",
+    });
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...base,
+        threads: base.threads.map((thread) =>
+          thread.id === THREAD_ID
+            ? {
+                ...thread,
+                participants: [
+                  {
+                    id: "7a0b1c2d-3e4f-4a5b-8c6d-7e8f9a0b1c2d" as ThreadParticipantId,
+                    handle: "agent-2",
+                    modelSelection: {
+                      instanceId: ProviderInstanceId.make("codex"),
+                      model: "gpt-6-astra",
+                    },
+                    joinedAt: NOW_ISO,
+                    leftAt: null,
+                  },
+                ],
+              }
+            : thread,
+        ),
+      },
+    });
+
+    try {
+      // The thread still carries its first model ("gpt-5"), which this
+      // provider does not offer: the composer's model picker shows the one
+      // the next message will use, and the room names the agent the same.
+      const modelPicker = await waitForElement(
+        () => document.querySelector<HTMLButtonElement>('[data-chat-provider-model-picker="true"]'),
+        "Unable to find the composer's model picker.",
+      );
+      const pickedName = modelPicker.textContent?.trim() ?? "";
+      expect(pickedName).not.toBe("");
+      expect(pickedName).not.toContain("gpt-5 ");
+      const picker = await waitForElement(
+        () => document.querySelector<HTMLButtonElement>('[data-chat-room-agent-picker="true"]'),
+        "Unable to find the room's agent picker.",
+      );
+      picker.click();
+      await vi.waitFor(
+        () => {
+          const main = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find(
+            (option) => option.textContent?.includes("main"),
+          );
+          expect(main?.textContent?.replace("main", "").trim()).toBe(pickedName);
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+    } finally {
+      updateSettings({ roomsEnabled: false });
       await mounted.cleanup();
     }
   });

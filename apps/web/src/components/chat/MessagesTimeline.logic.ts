@@ -23,6 +23,14 @@ import {
   liveActivityLabel,
   liveThoughtText,
 } from "./activitySteps";
+import {
+  breaksWithin,
+  isSideRow,
+  placeSideExchanges,
+  planSideExchanges,
+  sideExchangeBreaks,
+  type SideAnswerView,
+} from "./sideAnswers";
 
 /** What a finished turn's footer says under its last message. */
 export interface TurnSummary {
@@ -69,6 +77,9 @@ export type MessagesTimelineRow = TimelineRowPlacement &
         kind: "work";
         id: string;
         createdAt: string;
+        /** A side answer's steps (sideAnswers.ts); absent for the working
+         *  agent's own. */
+        sideTurnId?: SideTurnId | undefined;
         groupedEntries: WorkLogEntry[];
         /** Agent lifecycle entries this group swallowed. Never rendered and never
          *  counted, but kept so the group still exists on a turn that did nothing
@@ -116,6 +127,9 @@ export type MessagesTimelineRow = TimelineRowPlacement &
         revertTurnCount?: number | undefined;
         /** A side answer to an independent review: the request, for its tag. */
         sideReview?: ChatMessage | undefined;
+        /** A side answer posted below the work that went on after its
+         *  question: the question, to link back to. */
+        sideReplyTo?: ChatMessage | undefined;
       }
     | {
         kind: "proposed-plan";
@@ -155,8 +169,17 @@ export type MessagesTimelineRow = TimelineRowPlacement &
         review: boolean;
         /** The question, or an agent's request with how it ended. */
         question: ChatMessage;
-        state: "answering" | "stopping" | "failed" | "stopped";
+        /** The answer, once there is one: `answered-below` links to it. */
+        answerMessageId: MessageId | null;
+        /** `answered-below`: under a question whose answer was posted further
+         *  down, where it was done. `answered`: its answer is right under it,
+         *  opened by the reader to watch it. */
+        state: "answering" | "stopping" | "failed" | "stopped" | "answered-below" | "answered";
         error: string | null;
+        /** Answering while the working agent goes on: one line that opens to
+         *  show the answer being written. */
+        compact: boolean;
+        expanded: boolean;
       }
   );
 
@@ -307,12 +330,24 @@ export function deriveMessagesTimelineRows(input: {
   activeTurnStartedAt: string | null;
   turnDiffSummaryByAssistantMessageId: ReadonlyMap<MessageId, TurnDiffSummary>;
   revertTurnCountByUserMessageId: ReadonlyMap<MessageId, number>;
+  /** Side answers in a room (sideAnswers.ts), placed among the rows. */
+  sideAnswers?: ReadonlyArray<SideAnswerView> | undefined;
+  /** Side answers whose one-line status was opened to watch the answer. */
+  expandedSideTurnIds?: ReadonlySet<SideTurnId> | undefined;
 }): MessagesTimelineRow[] {
   const nextRows: MessagesTimelineRow[] = [];
   const visibleTimelineEntries = hoistTrailingTurnWorkAboveResponse(
     deriveVisibleTimelineEntries(input),
     input.isWorking ? (input.activeTurnId ?? null) : null,
   );
+  const sidePlans =
+    (input.sideAnswers?.length ?? 0) === 0
+      ? []
+      : planSideExchanges({
+          views: input.sideAnswers ?? [],
+          expanded: input.expandedSideTurnIds ?? NO_EXPANDED_SIDE_ANSWERS,
+        });
+  const sideBreaks = sideExchangeBreaks(sidePlans);
   // Turn-request markers are hidden once a turn settles, so read them from
   // the full entry list rather than the visible one.
   const turnRequestedAts = input.timelineEntries
@@ -367,6 +402,17 @@ export function deriveMessagesTimelineRows(input: {
       while (cursor < visibleTimelineEntries.length) {
         const nextEntry = visibleTimelineEntries[cursor];
         if (!nextEntry || nextEntry.kind !== "work") break;
+        // A side exchange goes between these two steps.
+        if (
+          sideBreaks.length > 0 &&
+          breaksWithin(
+            sideBreaks,
+            Date.parse(visibleTimelineEntries[cursor - 1]!.createdAt),
+            Date.parse(nextEntry.createdAt),
+          )
+        ) {
+          break;
+        }
         collect(nextEntry);
         cursor += 1;
       }
@@ -531,8 +577,13 @@ export function deriveMessagesTimelineRows(input: {
     });
   }
 
-  return placeRows(foldFinishedStretches(rows, input.isWorking), input.isWorking);
+  return placeRows(
+    placeSideExchanges(foldFinishedStretches(rows, input.isWorking), sidePlans),
+    input.isWorking,
+  );
 }
+
+const NO_EXPANDED_SIDE_ANSWERS: ReadonlySet<SideTurnId> = new Set();
 
 /** How long a stretch of work took: its first step's start to its last
  *  finished step's end. Null while nothing in it has finished. */
@@ -599,6 +650,10 @@ function isAgentRow(row: MessagesTimelineRow): boolean {
  *  its answer. A finished turn's answer, your messages, and plans sit on the
  *  page; the working row belongs to the tray only while the turn runs. */
 function belongsInTray(row: MessagesTimelineRow, isWorking: boolean): boolean {
+  // A side exchange sits between the working agent's trays, never in one.
+  if (isSideRow(row)) {
+    return false;
+  }
   switch (row.kind) {
     case "work":
     case "subagent-result":
@@ -672,17 +727,25 @@ function placeRows(
               : "middle";
     }
   }
-  // The nearest row above that draws something.
+  // The nearest row above that draws something. A side exchange is placed by
+  // sideAnswers.ts and, around the working agent's rows, reads like the page.
+  const agentsOwn = (row: MessagesTimelineRow) => isAgentRow(row) && !isSideRow(row);
   let above: MessagesTimelineRow | undefined;
   return rows.map((row, index) => {
+    if (isSideRow(row)) {
+      if (visible[index]) {
+        above = row;
+      }
+      return row;
+    }
     const padTop =
       row.kind === "message" && row.message.role === "assistant"
         ? true
-        : isAgentRow(row)
+        : agentsOwn(row)
           ? above === undefined ||
-            !isAgentRow(above) ||
+            !agentsOwn(above) ||
             (above.kind === "message" && above.turnSummary !== null)
-          : above !== undefined && isAgentRow(above);
+          : above !== undefined && agentsOwn(above);
     if (visible[index]) {
       above = row;
     }
@@ -1363,7 +1426,10 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
         a.error === bs.error &&
         a.participantId === bs.participantId &&
         a.review === bs.review &&
-        a.question === bs.question
+        a.question === bs.question &&
+        a.answerMessageId === bs.answerMessageId &&
+        a.compact === bs.compact &&
+        a.expanded === bs.expanded
       );
     }
 
@@ -1397,7 +1463,8 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
         a.assistantModelFallback === bm.assistantModelFallback &&
         a.assistantTurnDiffSummary === bm.assistantTurnDiffSummary &&
         a.revertTurnCount === bm.revertTurnCount &&
-        a.sideReview === bm.sideReview
+        a.sideReview === bm.sideReview &&
+        a.sideReplyTo === bm.sideReplyTo
       );
     }
   }
@@ -1473,6 +1540,8 @@ function estimateRowContentHeight(row: MessagesTimelineRow, width: number): numb
           !row.assistantTurnInProgress && (row.assistantTurnDiffSummary?.files.length ?? 0) > 0;
         return (
           8 +
+          // A side answer's author line, and its link back when posted below.
+          (row.message.sideTurnId !== undefined ? 20 : 0) +
           estimateTextLines(row.message.text, column - 8) * TEXT_LINE_PX +
           (row.turnSummary ? 38 : 0) +
           // The turn's changes, a card whose header wraps on a phone.

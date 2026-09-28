@@ -64,7 +64,7 @@ interface AgentRow {
 
 export const RoomAgentPicker = memo(function RoomAgentPicker(props: {
   threadRef: ScopedThreadRef;
-  /** The thread's own agent. */
+  /** The thread's own agent's model: the one its next message will use. */
   primaryModelSelection: ModelSelection;
   /** The user's name for the thread's own agent, if any. */
   primaryRole?: string | undefined;

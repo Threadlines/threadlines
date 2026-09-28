@@ -679,13 +679,26 @@ moves the ref before any check), and a wait that blocks Stop.
     and offers the choice to wait or queue. A read-only question never
     silently turns into an editing turn.
 - **Timeline**:
-  - A side exchange is its own block: the question "to GPT-6 Astra · on the
-    side", then the answer with its author line ("GPT-6 Astra on the side")
-    and its read-only steps in its own small tray. The block sits where it was
-    asked, moved past any tray it would split, so a live tray stays whole.
+  - The chat reads in the order things happened, and nothing moves once it
+    is on the page (web `components/chat/sideAnswers.ts`). A side exchange
+    goes where it was asked and closes the working agent's tray there; the
+    agent's later work opens a new tray below it, with one footer at the
+    turn's end.
+  - An agent's own ask or review waits for its answer, so it is one block
+    right after the step that asked: the question, the answer with its author
+    line and its read-only steps in their own small tray.
+  - The user's side question keeps one line under it: "GPT-6 Astra ·
+    answering · 12s" with Stop while the working agent goes on (it opens to
+    show the answer being written), then "GPT-6 Astra's answer is below". The
+    finished answer is posted at the time it was done, below whatever went on
+    meanwhile, with a link back to its question. Opened to watch it, the
+    answer stays under its question instead, and the line reads "GPT-6 Astra
+    answered" (folding it posts the answer below). Its place depends only on
+    the exchange and whether the reader opened it, never on what else is
+    loaded or whether an agent is working, so steps that become readable
+    later or load as the reader scrolls back cannot re-lay it out.
   - Side messages are left out of the main turn's spans, trays, settle and
     hoist logic, and are never the "last user message" boundary.
-  - While answering: a "GPT-6 Astra · answering" row with its own Stop.
 - **Agent picker**: shows who is working and who is answering. Neither can be
   removed.
 - **Sidebar, taskbar, and quit/update protection**: count a running side

@@ -27,6 +27,8 @@ import type {
   ThreadParticipantId,
 } from "@threadlines/contracts";
 
+import { handOffReplyText } from "./agentRequestDecisions.ts";
+
 /** Messages an agent joining late gets verbatim. */
 export const ROOM_JOIN_MESSAGE_COUNT = 8;
 const MESSAGE_CHAR_LIMIT = 2_000;
@@ -109,6 +111,20 @@ export function buildRoomCatchUp(input: RoomCatchUpInput): RoomCatchUp | undefin
       message.text.trim().length > 0,
   );
   const ownerOf = (message: OrchestrationMessage) => message.participantId ?? null;
+  // A hand-off's reply arrives as the message below the note. The target's
+  // last words it was taken from are not repeated in the note.
+  const current = thread.messages.find((message) => message.id === input.messageId);
+  const currentFrom = current?.fromAgent;
+  const replySource =
+    current?.requestKind === "reply" && currentFrom !== undefined
+      ? history.findLast(
+          (message) =>
+            message.role === "assistant" &&
+            message.sideTurnId === undefined &&
+            ownerOf(message) === currentFrom.participantId &&
+            handOffReplyText(message.text) === current.text,
+        )
+      : undefined;
   // Already in the agent's own conversation: its working turns and what was
   // said to it there. Side answers, even its own, ran in disposable forks.
   const inConversation = (message: OrchestrationMessage) =>
@@ -122,6 +138,7 @@ export function buildRoomCatchUp(input: RoomCatchUpInput): RoomCatchUp | undefin
     const { throughSequence, partialMessageIds } = input.cursor;
     missed = history.filter(
       (message) =>
+        message !== replySource &&
         !inConversation(message) &&
         (sequenceOf(message) > throughSequence || partialMessageIds.includes(message.id)),
     );
@@ -137,7 +154,7 @@ export function buildRoomCatchUp(input: RoomCatchUpInput): RoomCatchUp | undefin
     const candidates = joining
       ? history.slice(-ROOM_JOIN_MESSAGE_COUNT)
       : history.slice(lastOwnIndex + 1);
-    missed = candidates.filter((message) => !inConversation(message));
+    missed = candidates.filter((message) => message !== replySource && !inConversation(message));
     leftOut = joining ? history.length - candidates.length : 0;
   }
 
@@ -147,8 +164,6 @@ export function buildRoomCatchUp(input: RoomCatchUpInput): RoomCatchUp | undefin
   };
   // A turn another agent handed over, or a hand-off's reply, always says
   // where it came from, even with nothing else to tell.
-  const current = thread.messages.find((message) => message.id === input.messageId);
-  const currentFrom = current?.fromAgent;
   if (missed.length === 0 && input.lane === "main" && currentFrom === undefined) {
     return { note: undefined, cursor };
   }
