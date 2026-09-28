@@ -20,6 +20,7 @@ import {
   type ServerConfig,
   type ServerLifecycleWelcomePayload,
   type ServerProvider,
+  type SideTurnId,
   type ThreadId,
   type ThreadParticipantId,
   type TurnId,
@@ -7216,6 +7217,119 @@ describe("ChatView timeline estimator parity (full app)", () => {
           line.getBoundingClientRect().right + 0.5,
         );
       }
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("follows a side answer's links between its question and where it was posted", async () => {
+    const agentId = "7a0b1c2d-3e4f-4a5b-8c6d-7e8f9a0b1c2d" as ThreadParticipantId;
+    const sideTurnId = "side-reveal" as SideTurnId;
+    const base = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-side-reveal" as MessageId,
+      targetText: "side reveal target",
+    });
+    // Asked early, answered after the rest of the thread went on: the answer
+    // is posted far below its question.
+    const question = {
+      id: "side-question-reveal" as MessageId,
+      role: "user" as const,
+      text: "Is the lock released on every path?",
+      participantId: agentId,
+      sideTurnId,
+      turnId: null,
+      streaming: false,
+      createdAt: isoAt(10),
+      updatedAt: isoAt(10),
+    };
+    const answer = {
+      id: "side-answer-reveal" as MessageId,
+      role: "assistant" as const,
+      text: "Yes, except when the write fails.",
+      participantId: agentId,
+      sideTurnId,
+      turnId: null,
+      streaming: false,
+      createdAt: isoAt(118),
+      updatedAt: isoAt(120),
+    };
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...base,
+        threads: base.threads.map((thread) =>
+          thread.id === THREAD_ID
+            ? {
+                ...thread,
+                participants: [
+                  {
+                    id: agentId,
+                    handle: "agent-2",
+                    modelSelection: {
+                      instanceId: ProviderInstanceId.make("codex"),
+                      model: "gpt-6-astra",
+                    },
+                    joinedAt: NOW_ISO,
+                    leftAt: null,
+                  },
+                ],
+                messages: [...thread.messages, question, answer].toSorted((a, b) =>
+                  a.createdAt.localeCompare(b.createdAt),
+                ),
+              }
+            : thread,
+        ),
+      },
+    });
+
+    try {
+      const list = await waitForElement(
+        () => document.querySelector<HTMLElement>('[data-chat-messages-list="true"]'),
+        "Unable to find the message list.",
+      );
+      // Where a followed link puts its row: a fifth of the way down the list,
+      // or as far as the list goes when the row is near its end.
+      const expectRevealed = async (messageId: string) => {
+        await vi.waitFor(
+          () => {
+            const row = document.querySelector<HTMLElement>(`[data-message-id="${messageId}"]`);
+            expect(row).not.toBeNull();
+            const listRect = list.getBoundingClientRect();
+            const top = row!.getBoundingClientRect().top;
+            const atEnd = list.scrollTop + list.clientHeight >= list.scrollHeight - 2;
+            if (atEnd) {
+              expect(top).toBeGreaterThanOrEqual(listRect.top);
+              expect(top).toBeLessThan(listRect.bottom - 40);
+            } else {
+              expect(Math.abs(top - (listRect.top + listRect.height * 0.2))).toBeLessThan(12);
+            }
+          },
+          { timeout: 8_000, interval: 50 },
+        );
+      };
+
+      // Up from the answer, which the list opens at, to its question...
+      const back = await waitForElement(
+        () =>
+          [...document.querySelectorAll<HTMLButtonElement>("button")].find((button) =>
+            button.textContent?.includes("Is the lock released"),
+          ) ?? null,
+        "Unable to find the answer's link back to its question.",
+      );
+      back.click();
+      await expectRevealed("side-question-reveal");
+
+      // ...and down again from the line under the question.
+      const below = await waitForElement(
+        () =>
+          document.querySelector<HTMLButtonElement>(
+            '[data-side-answer-status="answered-below"] button',
+          ),
+        "Unable to find the line leading to the answer.",
+      );
+      expect(below.textContent).toContain("answer is below");
+      below.click();
+      await expectRevealed("side-answer-reveal");
     } finally {
       await mounted.cleanup();
     }

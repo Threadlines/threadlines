@@ -58,6 +58,8 @@ import { environmentRequiresRpcAssetTransport } from "../../environments/runtime
 import { summarizeTurnDiffStats } from "../../lib/turnDiffTree";
 import ChatMarkdown from "../ChatMarkdown";
 import {
+  ArrowDownIcon,
+  ArrowUpIcon,
   BotIcon,
   CheckIcon,
   ChevronRightIcon,
@@ -160,7 +162,7 @@ import { formatTranscriptHighlightContextPreview } from "~/lib/transcriptHighlig
 import { ProviderInstanceIcon } from "./ProviderInstanceIcon";
 import { describeRoomAgentMessage, type RoomAgentLabel, roomAgentKey } from "../../rooms";
 import { RoomReviewTag } from "./RoomReviewTag";
-import { placeSideAnswerRows, type SideAnswerView } from "./sideAnswers";
+import { type SideAnswerView } from "./sideAnswers";
 
 // ---------------------------------------------------------------------------
 // Context — shared state consumed by every row component via Context.
@@ -193,6 +195,10 @@ interface TimelineRowSharedState {
   onContinueInNewThread?: (messageId: MessageId) => void;
   /** Stops a side answer; absent where side answers cannot be asked. */
   onStopSideAnswer?: ((sideTurnId: SideTurnId) => void) | undefined;
+  /** Opens or closes a side answer's one-line status to watch it written. */
+  onToggleSideAnswer: (sideTurnId: SideTurnId) => void;
+  /** Scrolls to a message: a side answer posted below, or its question. */
+  onRevealMessage: (messageId: MessageId) => void;
   /** Shows a sent message's picked element again in the preview; absent
    *  outside the desktop app. */
   onRevealPickedElement?: ((context: PickedElementContextDraft) => void) | undefined;
@@ -580,6 +586,31 @@ function findFirstTimelineSearchMatchRect(messageRow: HTMLElement, query: string
   return null;
 }
 
+/** Where a followed link puts its row: a fifth of the way down the list. */
+const REVEAL_VIEW_POSITION = 0.2;
+/** Tries to reach a followed link's row while the list moves under it. */
+const REVEAL_ATTEMPTS = 3;
+
+/** Puts a drawn row at REVEAL_VIEW_POSITION, correcting a scroll that aimed by
+ *  guessed row heights. */
+function settleRevealedRow(list: LegendListRef | null, row: HTMLElement): void {
+  const scrollableNode = list?.getScrollableNode?.();
+  if (!list || !scrollableNode) {
+    return;
+  }
+  const viewportRect = scrollableNode.getBoundingClientRect();
+  const targetTop = viewportRect.top + viewportRect.height * REVEAL_VIEW_POSITION;
+  const rowTop = row.getBoundingClientRect().top;
+  if (Math.abs(rowTop - targetTop) < 4) {
+    return;
+  }
+  const currentOffset = finiteScrollMetric(scrollableNode.scrollTop) ?? 0;
+  void list.scrollToOffset({
+    offset: Math.max(0, currentOffset + rowTop - targetTop),
+    animated: false,
+  });
+}
+
 function revealTimelineSearchMatch(
   list: LegendListRef | null,
   messageRow: HTMLElement,
@@ -611,6 +642,7 @@ function revealTimelineSearchMatch(
 // ---------------------------------------------------------------------------
 
 const EMPTY_SIDE_ANSWERS: ReadonlyArray<SideAnswerView> = [];
+const NO_EXPANDED_SIDE_ANSWERS: ReadonlySet<SideTurnId> = new Set();
 const EMPTY_AGENT_REQUESTS: ReadonlyArray<OrchestrationAgentRequest> = [];
 /** Rows past either edge of the screen whose turns count as in view, so an
  *  older turn's steps are on their way before the reader reaches it. */
@@ -749,25 +781,36 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       (turnAgents?.subagents ?? []).filter((item) => isActiveSubagentStatus(item.status)).length,
     [turnAgents?.subagents],
   );
+  const [expandedSideTurnIds, setExpandedSideTurnIds] =
+    useState<ReadonlySet<SideTurnId>>(NO_EXPANDED_SIDE_ANSWERS);
+  const onToggleSideAnswer = useCallback((sideTurnId: SideTurnId) => {
+    setExpandedSideTurnIds((current) => {
+      const next = new Set(current);
+      if (!next.delete(sideTurnId)) {
+        next.add(sideTurnId);
+      }
+      return next;
+    });
+  }, []);
   const rawRows = useMemo(
     () =>
-      placeSideAnswerRows(
-        deriveMessagesTimelineRows({
-          timelineEntries,
-          isWorking,
-          liveAgentCount,
-          isWaitingOnBackgroundTasks,
-          activeStatusLabel,
-          activeTurnInProgress,
-          activeTurnId: activeTurnId ?? null,
-          activeTurnStartedAt,
-          turnDiffSummaryByAssistantMessageId,
-          revertTurnCountByUserMessageId,
-        }),
+      deriveMessagesTimelineRows({
+        timelineEntries,
+        isWorking,
+        liveAgentCount,
+        isWaitingOnBackgroundTasks,
+        activeStatusLabel,
+        activeTurnInProgress,
+        activeTurnId: activeTurnId ?? null,
+        activeTurnStartedAt,
+        turnDiffSummaryByAssistantMessageId,
+        revertTurnCountByUserMessageId,
         sideAnswers,
-      ),
+        expandedSideTurnIds,
+      }),
     [
       sideAnswers,
+      expandedSideTurnIds,
       timelineEntries,
       isWorking,
       liveAgentCount,
@@ -1090,6 +1133,51 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     planScrollTargetRowIndex,
     setAutoStickToBottomState,
   ]);
+
+  // Read when a link is followed, so following one does not redraw every row
+  // whenever the rows change.
+  const rowsForRevealRef = useRef(rows);
+  useEffect(() => {
+    rowsForRevealRef.current = rows;
+  }, [rows]);
+  const onRevealMessage = useCallback(
+    (messageId: MessageId) => {
+      clearUserScrollLockTimer();
+      setAutoStickToBottomState(false);
+      onIsAtEndChange(false);
+      const prefersReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      // The list aims by guessed heights for rows it has not drawn, and older
+      // steps loading on the way can move the row: once there, the row is put
+      // where it was meant to go, or found again and aimed at anew.
+      const attempt = (remaining: number) => {
+        const index = rowsForRevealRef.current.findIndex(
+          (row) => row.kind === "message" && row.message.id === messageId,
+        );
+        if (index < 0) {
+          return;
+        }
+        void listRef.current
+          ?.scrollToIndex({
+            index,
+            animated: !prefersReducedMotion && remaining === REVEAL_ATTEMPTS,
+            viewPosition: REVEAL_VIEW_POSITION,
+          })
+          .then(() => {
+            window.requestAnimationFrame(() => {
+              const container = timelineContainerRef.current;
+              const row = container ? findRenderedTimelineMessageRow(container, messageId) : null;
+              if (row) {
+                settleRevealedRow(listRef.current, row);
+              } else if (remaining > 1) {
+                attempt(remaining - 1);
+              }
+            });
+          });
+      };
+      attempt(REVEAL_ATTEMPTS);
+    },
+    [clearUserScrollLockTimer, listRef, onIsAtEndChange, setAutoStickToBottomState],
+  );
 
   const stickToBottomNow = useCallback(() => {
     clearUserScrollLockTimer();
@@ -1583,6 +1671,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       onRevertUserMessage,
       ...(onContinueInNewThread ? { onContinueInNewThread } : {}),
       ...(onStopSideAnswer ? { onStopSideAnswer } : {}),
+      onToggleSideAnswer,
+      onRevealMessage,
       ...(onRevealPickedElement ? { onRevealPickedElement } : {}),
       onImageExpand,
       onPreviewFile,
@@ -1617,6 +1707,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       onRevertUserMessage,
       onContinueInNewThread,
       onStopSideAnswer,
+      onToggleSideAnswer,
+      onRevealMessage,
       onRevealPickedElement,
       onImageExpand,
       onPreviewFile,
@@ -2751,6 +2843,7 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
               label={ctx.roomAgents.get(roomAgentKey(row.message.participantId))}
               onTheSide={row.message.sideTurnId !== undefined}
               review={row.sideReview}
+              replyTo={row.sideReplyTo}
             />
           ) : null}
           {authReconnect ? (
@@ -3140,17 +3233,79 @@ function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "workin
  * stopped, or failed.
  */
 function SideStatusTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "side-status" }> }) {
-  const { roomAgents, onStopSideAnswer, timestampFormat } = use(TimelineRowCtx);
+  const { roomAgents, onStopSideAnswer, onToggleSideAnswer, onRevealMessage, timestampFormat } =
+    use(TimelineRowCtx);
   const name = roomAgents?.get(roomAgentKey(row.participantId))?.name ?? "The agent";
+  if (row.state === "answered") {
+    // Opened to watch it, the answer stayed under its question; folding it
+    // posts it where it was done instead.
+    return (
+      <div className="py-1" data-side-answer-status={row.state}>
+        <button
+          type="button"
+          aria-expanded
+          className="inline-flex max-w-full cursor-pointer items-center gap-1 pl-1 text-xs leading-4 text-muted-foreground/70 transition-colors hover:text-foreground"
+          onClick={() => onToggleSideAnswer(row.sideTurnId)}
+        >
+          <span className="min-w-0 truncate">
+            {name} {row.review ? "reviewed" : "answered"}
+          </span>
+          <ChevronRightIcon aria-hidden className="size-3 shrink-0 rotate-90" />
+        </button>
+      </div>
+    );
+  }
+  if (row.state === "answered-below") {
+    // The working agent went on while this was answered: the answer was
+    // posted where the chat had got to, and this line leads to it.
+    const answerMessageId = row.answerMessageId;
+    return (
+      <div className="py-1" data-side-answer-status={row.state}>
+        <button
+          type="button"
+          disabled={answerMessageId === null}
+          className="inline-flex max-w-full cursor-pointer items-center gap-1 pl-1 text-xs leading-4 text-muted-foreground/70 transition-colors hover:text-foreground disabled:cursor-default"
+          onClick={() => {
+            if (answerMessageId !== null) onRevealMessage(answerMessageId);
+          }}
+        >
+          <ArrowDownIcon aria-hidden className="size-3 shrink-0" />
+          <span className="min-w-0 truncate">
+            {name}&rsquo;s {row.review ? "review" : "answer"} is below
+          </span>
+        </button>
+      </div>
+    );
+  }
   if (row.state === "answering" || row.state === "stopping") {
     const stopping = row.state === "stopping";
+    const doing = stopping ? "stopping" : row.review ? "reviewing independently" : "answering";
     return (
       <div className="py-1" data-side-answer-status={row.state}>
         <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 pl-1 text-xs leading-4 text-muted-foreground/70">
           <WorkingAnchorDots state="working" className="relative -top-px -mr-0.5 shrink-0" />
-          <span className="min-w-0 truncate">
-            {name} · {stopping ? "stopping" : row.review ? "reviewing independently" : "answering"}
-          </span>
+          {row.compact ? (
+            // The working agent goes on meanwhile: one line, which opens to
+            // show the answer being written.
+            <button
+              type="button"
+              aria-expanded={row.expanded}
+              className="inline-flex min-w-0 cursor-pointer items-center gap-1 transition-colors hover:text-foreground"
+              onClick={() => onToggleSideAnswer(row.sideTurnId)}
+            >
+              <span className="min-w-0 truncate">
+                {name} · {doing} · <WorkingTimer createdAt={row.question.createdAt} />
+              </span>
+              <ChevronRightIcon
+                aria-hidden
+                className={cn("size-3 shrink-0", row.expanded && "rotate-90")}
+              />
+            </button>
+          ) : (
+            <span className="min-w-0 truncate">
+              {name} · {doing}
+            </span>
+          )}
           {row.review ? (
             <>
               <span className="shrink-0 text-muted-foreground/35">·</span>
@@ -3159,7 +3314,7 @@ function SideStatusTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "sid
           ) : null}
           {!stopping && onStopSideAnswer ? (
             <>
-              <span className="shrink-0 text-muted-foreground/35">·</span>
+              {row.compact ? null : <span className="shrink-0 text-muted-foreground/35">·</span>}
               <button
                 type="button"
                 className="shrink-0 text-muted-foreground transition-colors hover:text-foreground"
@@ -4497,14 +4652,18 @@ function RoomAuthorLine({
   label,
   onTheSide = false,
   review,
+  replyTo,
 }: {
   label: RoomAgentLabel | undefined;
   /** A read-only answer given while another agent worked. */
   onTheSide?: boolean;
   /** An independent review's answer: the request, for its tag. */
   review?: ChatMessage | undefined;
+  /** A side answer posted below the work that went on after its question:
+   *  the question, to go back to. */
+  replyTo?: ChatMessage | undefined;
 }) {
-  const { timestampFormat } = use(TimelineRowCtx);
+  const { timestampFormat, onRevealMessage } = use(TimelineRowCtx);
   if (!label) {
     return (
       <div className="mb-1 font-mono text-[10.5px] text-muted-foreground">an agent that left</div>
@@ -4528,6 +4687,24 @@ function RoomAuthorLine({
       ) : onTheSide ? (
         <span className="text-muted-foreground">on the side</span>
       ) : null}
+      {replyTo ? (
+        <button
+          type="button"
+          className="inline-flex min-w-0 max-w-full cursor-pointer items-center gap-1 text-muted-foreground transition-colors hover:text-foreground"
+          onClick={() => onRevealMessage(replyTo.id)}
+        >
+          <ArrowUpIcon aria-hidden className="size-3 shrink-0" />
+          <span className="min-w-0 truncate">
+            {review ? "for the review asked above" : `answering “${questionSnippet(replyTo.text)}”`}
+          </span>
+        </button>
+      ) : null}
     </div>
   );
+}
+
+/** A question's first words, for a link back to it. */
+function questionSnippet(text: string): string {
+  const line = text.trim().replace(/\s+/g, " ");
+  return line.length > 48 ? `${line.slice(0, 47).trimEnd()}…` : line;
 }

@@ -8,14 +8,10 @@ import {
 } from "@threadlines/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
+import type { WorkLogEntry } from "../../session-logic";
 import type { ChatMessage } from "../../types";
-import type { MessagesTimelineRow } from "./MessagesTimeline.logic";
-import {
-  deriveSideAnswers,
-  placeSideAnswerRows,
-  sideAnswerRows,
-  type SideAnswerView,
-} from "./sideAnswers";
+import { deriveMessagesTimelineRows, type MessagesTimelineRow } from "./MessagesTimeline.logic";
+import { deriveSideAnswers, sideExchangeRows, type SideAnswerView } from "./sideAnswers";
 
 const astra = ThreadParticipantId.make("agent-astra");
 
@@ -120,73 +116,228 @@ describe("deriveSideAnswers", () => {
       askedBy: { participantId: null },
       state: "answered",
     });
-    const answerRow = sideAnswerRows(view!).find((row) => row.id === view!.answer?.id);
+    const answerRow = sideExchangeRows({
+      view: view!,
+      askedAtMs: 0,
+      publishedAtMs: null,
+      compact: false,
+      expanded: false,
+    }).asked.find((row) => row.id === view!.answer?.id);
     expect(answerRow).toMatchObject({ kind: "message", sideReview: request });
   });
 });
 
-describe("placeSideAnswerRows", () => {
-  const row = (
-    id: string,
-    createdAt: string | null,
-    tray: MessagesTimelineRow["tray"],
-  ): MessagesTimelineRow => ({
-    kind: "working",
+describe("side exchanges in the timeline", () => {
+  const at = (seconds: number) => `2026-01-01T00:00:${String(seconds).padStart(2, "0")}Z`;
+  const userEntry = {
+    id: "user-entry",
+    kind: "message" as const,
+    createdAt: at(0),
+    message: {
+      id: MessageId.make("user"),
+      role: "user" as const,
+      text: "Fix the lock, then have Astra look at it.",
+      createdAt: at(0),
+      streaming: false,
+    },
+  };
+  const step = (id: string, seconds: number) => ({
     id,
-    createdAt,
-    label: "Working",
-    thought: null,
-    tray,
-    padTop: false,
+    kind: "work" as const,
+    createdAt: at(seconds),
+    entry: {
+      id,
+      createdAt: at(seconds),
+      label: "Read file",
+      tone: "tool" as const,
+      itemType: "dynamic_tool_call" as const,
+      toolTitle: "Read file",
+      detail: "src/lock.ts",
+      turnId: "turn-1" as never,
+    } satisfies WorkLogEntry,
   });
   const sideTurnId = SideTurnId.make("side-1");
-  const view: SideAnswerView = {
-    sideTurnId,
-    participantId: astra,
-    kind: "ask",
-    askedBy: null,
-    question: question(sideTurnId, "2026-01-01T00:00:05Z"),
-    answer: answer(sideTurnId, "2026-01-01T00:00:08Z"),
-    steps: [],
-    state: "answered",
-    error: null,
+  const exchange = (
+    overrides: Partial<SideAnswerView> & { readonly answeredAt?: number },
+  ): SideAnswerView => {
+    const { answeredAt, ...rest } = overrides;
+    return {
+      sideTurnId,
+      participantId: astra,
+      kind: "ask",
+      askedBy: null,
+      question: question(sideTurnId, at(5)),
+      answer:
+        answeredAt === undefined
+          ? null
+          : { ...answer(sideTurnId, at(answeredAt - 1)), completedAt: at(answeredAt) },
+      steps: [],
+      state: answeredAt === undefined ? "answering" : "answered",
+      error: null,
+      ...rest,
+    };
   };
-  const ids = (rows: ReadonlyArray<MessagesTimelineRow>) => rows.map((entry) => entry.id);
+  const derive = (
+    entries: Parameters<typeof deriveMessagesTimelineRows>[0]["timelineEntries"],
+    sideAnswers: ReadonlyArray<SideAnswerView>,
+    options: { readonly working?: boolean; readonly expanded?: boolean } = {},
+  ) =>
+    deriveMessagesTimelineRows({
+      timelineEntries: entries,
+      isWorking: options.working ?? true,
+      activeTurnInProgress: options.working ?? true,
+      activeTurnId: "turn-1" as never,
+      activeTurnStartedAt: at(0),
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+      sideAnswers,
+      expandedSideTurnIds: new Set(options.expanded ? [sideTurnId] : []),
+    });
+  const layout = (rows: ReadonlyArray<MessagesTimelineRow>) =>
+    rows.map((row) =>
+      row.kind === "side-status"
+        ? `${row.id} ${row.state}${row.compact ? " compact" : ""}`
+        : row.id,
+    );
+  const trays = (rows: ReadonlyArray<MessagesTimelineRow>) => rows.map((row) => row.tray);
 
-  it("keeps a live tray whole: a question asked mid-turn lands after it", () => {
-    const live = [
-      row("user", "2026-01-01T00:00:00Z", null),
-      row("note", "2026-01-01T00:00:02Z", "first"),
-      row("steps", "2026-01-01T00:00:06Z", "middle"),
-      // The working row carries the turn's start time.
-      row("working", "2026-01-01T00:00:00Z", "last"),
-    ];
-    expect(ids(placeSideAnswerRows(live, [view]))).toEqual([
-      "user",
-      "note",
-      "steps",
-      "working",
-      view.question.id,
-      view.answer!.id,
+  it("puts an agent's review right after the step that asked, and its later work below", () => {
+    const rows = derive(
+      [userEntry, step("read", 2), step("review-call", 4), step("edit", 10)],
+      [exchange({ askedBy: { participantId: null }, answeredAt: 8 })],
+    );
+    // The agent waited for the review, so it reads as one block.
+    expect(layout(rows)).toEqual([
+      "user-entry",
+      "read",
+      "question-side-1",
+      "side-answer:side-1",
+      "edit",
+      "working-indicator-row",
+    ]);
+    // It closes the agent's tray; the work after it opens a new one.
+    expect(trays(rows)).toEqual([null, "single", null, null, "first", "last"]);
+  });
+
+  it("answers a side question on one line while the agent works, then posts the answer below", () => {
+    const entries = [userEntry, step("read", 2), step("edit", 10)];
+    const live = derive(entries, [exchange({})]);
+    expect(layout(live)).toEqual([
+      "user-entry",
+      "read",
+      "question-side-1",
+      "side-status:side-1 answering compact",
+      "edit",
+      "working-indicator-row",
+    ]);
+    // Opened, the line shows the answer being written right under it.
+    const streaming = { ...answer(sideTurnId, at(9)), streaming: true };
+    expect(layout(derive(entries, [exchange({ answer: streaming })], { expanded: true }))).toEqual([
+      "user-entry",
+      "read",
+      "question-side-1",
+      "side-status:side-1 answering compact",
+      "side-answer:side-1",
+      "edit",
+      "working-indicator-row",
+    ]);
+
+    // Done after the agent went on: the line stays, and the answer is posted
+    // where the chat had got to, linked to its question.
+    const done = derive([...entries, step("test", 14)], [exchange({ answeredAt: 12 })]);
+    expect(layout(done)).toEqual([
+      "user-entry",
+      "read",
+      "question-side-1",
+      "side-status:side-1 answered-below",
+      "edit",
+      "side-answer:side-1",
+      "test",
+      "working-indicator-row",
+    ]);
+    expect(done.find((row) => row.id === "side-answer:side-1")).toMatchObject({
+      sideReplyTo: { id: "question-side-1" },
+    });
+  });
+
+  it("keeps a side question on its one line even once the agent at work stops", () => {
+    // Whether an agent is working can change while the answer is written;
+    // the line must not open by itself when it does.
+    const rows = derive([userEntry, step("read", 2)], [exchange({})], { working: false });
+    expect(layout(rows)).toEqual([
+      "user-entry",
+      "read",
+      "question-side-1",
+      "side-status:side-1 answering compact",
     ]);
   });
 
-  it("sits where it was asked once the turn has ended, before the later answer", () => {
-    const settled = [
-      row("user", "2026-01-01T00:00:00Z", null),
-      row("note", "2026-01-01T00:00:02Z", "first"),
-      row("steps", "2026-01-01T00:00:06Z", "last"),
-      row("answer", "2026-01-01T00:00:20Z", null),
-      row("next-user", "2026-01-01T00:00:30Z", null),
-    ];
-    expect(ids(placeSideAnswerRows(settled, [view]))).toEqual([
-      "user",
-      "note",
-      "steps",
-      view.question.id,
-      view.answer!.id,
-      "answer",
-      "next-user",
+  it("keeps an answer the reader watched under its question when it is done", () => {
+    const rows = derive(
+      [userEntry, step("read", 2), step("edit", 10), step("test", 14)],
+      [exchange({ answeredAt: 12 })],
+      { expanded: true },
+    );
+    expect(layout(rows)).toEqual([
+      "user-entry",
+      "read",
+      "question-side-1",
+      "side-status:side-1 answered compact",
+      "side-answer:side-1",
+      // The agent's later steps, one group below it.
+      "edit",
+      "working-indicator-row",
+    ]);
+  });
+
+  it("lays out an answered side question the same way whatever else was said meanwhile", () => {
+    // Nothing between the question and its answer: the answer still follows
+    // the question's line, so steps that show up later cannot re-lay it out.
+    const rows = derive(
+      [userEntry, step("read", 2), step("edit", 10)],
+      [exchange({ answeredAt: 8 })],
+    );
+    expect(layout(rows)).toEqual([
+      "user-entry",
+      "read",
+      "question-side-1",
+      "side-status:side-1 answered-below",
+      "side-answer:side-1",
+      "edit",
+      "working-indicator-row",
+    ]);
+  });
+
+  it("stays below the answer it followed when the turn settles and lifts its last steps", () => {
+    const response = {
+      id: "response-entry",
+      kind: "message" as const,
+      createdAt: at(10),
+      message: {
+        id: MessageId.make("response"),
+        role: "assistant" as const,
+        text: "Fixed the lock.",
+        turnId: "turn-1" as never,
+        createdAt: at(10),
+        completedAt: at(11),
+        streaming: false,
+      },
+    };
+    // A step recorded after the answer; a settled turn shows it above it.
+    const rows = derive(
+      [userEntry, response, step("checkpoint", 21)],
+      [exchange({ answeredAt: 13, question: question(sideTurnId, at(12)) })],
+      {
+        working: false,
+      },
+    );
+    expect(layout(rows)).toEqual([
+      "user-entry",
+      "checkpoint",
+      "response-entry",
+      "question-side-1",
+      "side-status:side-1 answered-below",
+      "side-answer:side-1",
     ]);
   });
 });
