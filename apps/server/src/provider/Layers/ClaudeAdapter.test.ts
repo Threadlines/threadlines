@@ -1295,6 +1295,58 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  // Claude Code 2.1.284 runs Ultracode at any effort, so the switch rides
+  // alongside the chosen level and turns off without moving it.
+  it.effect("sends the Ultracode switch alongside the chosen effort", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        modelSelection: createModelSelection(
+          ProviderInstanceId.make("claudeAgent"),
+          "claude-opus-5-5",
+          [
+            { id: "effort", value: "medium" },
+            { id: "ultracode", value: true },
+          ],
+        ),
+        runtimeMode: "full-access",
+      });
+
+      const createInput = harness.getLastCreateQueryInput();
+      assert.equal(createInput?.options.effort, "medium");
+      assert.deepEqual(createInput?.options.settings, { ultracode: true });
+
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "hello",
+        modelSelection: createModelSelection(
+          ProviderInstanceId.make("claudeAgent"),
+          "claude-opus-5-5",
+          [
+            { id: "effort", value: "medium" },
+            { id: "ultracode", value: false },
+          ],
+        ),
+        attachments: [],
+      });
+
+      assert.deepEqual(harness.query.applyFlagSettingsCalls, [
+        {
+          effortLevel: "medium",
+          alwaysThinkingEnabled: null,
+          fastMode: null,
+          ultracode: null,
+        },
+      ]);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("ignores claude fast mode for non-opus models", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {

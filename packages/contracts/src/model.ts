@@ -238,7 +238,12 @@ export const MODEL_SLUG_ALIASES_BY_PROVIDER: Partial<
     "opus-4.6": "claude-opus-4-6",
     "claude-opus-4.6": "claude-opus-4-6",
     "claude-opus-4-6-20251117": "claude-opus-4-6",
+    // Claude Code resolves bare `sonnet` per account (Sonnet 5.5 on the
+    // Anthropic API, still Sonnet 5 on claude.ai plans as of 2.1.284).
     sonnet: "claude-sonnet-5",
+    "sonnet-5.5": "claude-sonnet-5-5",
+    "claude-sonnet-5.5": "claude-sonnet-5-5",
+    "claude-sonnet-5-5[1m]": "claude-sonnet-5-5",
     "sonnet-5": "claude-sonnet-5",
     "sonnet-4.6": "claude-sonnet-4-6",
     "claude-sonnet-4.6": "claude-sonnet-4-6",

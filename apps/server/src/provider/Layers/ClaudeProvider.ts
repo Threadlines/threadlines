@@ -74,6 +74,10 @@ const CLAUDE_AUTO_MODE_UNSUPPORTED_SLUGS: ReadonlySet<string> = new Set([
 export function claudeModelSupportsAutoRuntimeMode(modelSlug: string | null | undefined): boolean {
   return modelSlug ? !CLAUDE_AUTO_MODE_UNSUPPORTED_SLUGS.has(modelSlug) : true;
 }
+const MINIMUM_CLAUDE_SONNET_5_5_VERSION = "2.1.284";
+// Claude Code 2.1.284 made Ultracode its own setting that works at any effort
+// level. Older CLIs only know it as an effort level that forces Extra High.
+const MINIMUM_CLAUDE_ULTRACODE_SWITCH_VERSION = "2.1.284";
 const MINIMUM_CLAUDE_OPUS_5_5_VERSION = "2.1.280";
 const MINIMUM_CLAUDE_FABLE_5_1_VERSION = "2.1.257";
 const MINIMUM_CLAUDE_FABLE_5_VERSION = "2.1.170";
@@ -82,6 +86,8 @@ const MINIMUM_CLAUDE_OPUS_5_VERSION = "2.1.219";
 const MINIMUM_CLAUDE_OPUS_4_8_VERSION = "2.1.154";
 const MINIMUM_CLAUDE_OPUS_4_7_VERSION = "2.1.111";
 const CLAUDE_FABLE_5_DESCRIPTION = "Most capable for the hardest and longest-running tasks.";
+const CLAUDE_ULTRACODE_DESCRIPTION =
+  "Runs big tasks as workflows of many agents. Uses more of your limit.";
 const CLAUDE_FAST_MODE_DESCRIPTION =
   "Faster responses, higher cost. Usage credits, not subscription usage.";
 
@@ -92,7 +98,6 @@ const CLAUDE_EFFORT_OPTIONS = {
     { value: "high", label: "High", isDefault: true },
     { value: "xhigh", label: "Extra High" },
     { value: "max", label: "Max" },
-    { value: "ultracode", label: "Ultracode" },
   ],
   fable5: [
     { value: "low", label: "Low" },
@@ -100,7 +105,14 @@ const CLAUDE_EFFORT_OPTIONS = {
     { value: "high", label: "High", isDefault: true },
     { value: "xhigh", label: "Extra High" },
     { value: "max", label: "Max" },
-    { value: "ultracode", label: "Ultracode" },
+  ],
+  // Claude Code runs Sonnet 5.5 at medium effort unless told otherwise.
+  sonnet55: [
+    { value: "low", label: "Low" },
+    { value: "medium", label: "Medium", isDefault: true },
+    { value: "high", label: "High" },
+    { value: "xhigh", label: "Extra High" },
+    { value: "max", label: "Max" },
   ],
   sonnet5: [
     { value: "low", label: "Low" },
@@ -108,7 +120,6 @@ const CLAUDE_EFFORT_OPTIONS = {
     { value: "high", label: "High", isDefault: true },
     { value: "xhigh", label: "Extra High" },
     { value: "max", label: "Max" },
-    { value: "ultracode", label: "Ultracode" },
   ],
   opus55: [
     { value: "low", label: "Low" },
@@ -130,7 +141,6 @@ const CLAUDE_EFFORT_OPTIONS = {
     { value: "high", label: "High", isDefault: true },
     { value: "xhigh", label: "Extra High" },
     { value: "max", label: "Max" },
-    { value: "ultracode", label: "Ultracode" },
   ],
   opus47: [
     { value: "low", label: "Low" },
@@ -159,6 +169,14 @@ const CLAUDE_EFFORT_OPTIONS = {
   ],
 } as const;
 
+// Ultracode runs on any model with Extra High effort; Claude Code reports it
+// unavailable elsewhere.
+const CLAUDE_ULTRACODE_OPTION = buildBooleanOptionDescriptor({
+  id: "ultracode",
+  label: "Ultracode",
+  description: CLAUDE_ULTRACODE_DESCRIPTION,
+});
+
 const BUILT_IN_MODEL_DEFINITIONS: ReadonlyArray<ServerProviderModel> = [
   {
     slug: "claude-fable-5-1",
@@ -172,6 +190,7 @@ const BUILT_IN_MODEL_DEFINITIONS: ReadonlyArray<ServerProviderModel> = [
           label: "Reasoning",
           options: CLAUDE_EFFORT_OPTIONS.fable51,
         }),
+        CLAUDE_ULTRACODE_OPTION,
       ],
     }),
   },
@@ -187,6 +206,22 @@ const BUILT_IN_MODEL_DEFINITIONS: ReadonlyArray<ServerProviderModel> = [
           label: "Reasoning",
           options: CLAUDE_EFFORT_OPTIONS.fable5,
         }),
+        CLAUDE_ULTRACODE_OPTION,
+      ],
+    }),
+  },
+  {
+    slug: "claude-sonnet-5-5",
+    name: "Claude Sonnet 5.5",
+    isCustom: false,
+    capabilities: createModelCapabilities({
+      optionDescriptors: [
+        buildSelectOptionDescriptor({
+          id: "effort",
+          label: "Reasoning",
+          options: CLAUDE_EFFORT_OPTIONS.sonnet55,
+        }),
+        CLAUDE_ULTRACODE_OPTION,
       ],
     }),
   },
@@ -201,6 +236,7 @@ const BUILT_IN_MODEL_DEFINITIONS: ReadonlyArray<ServerProviderModel> = [
           label: "Reasoning",
           options: CLAUDE_EFFORT_OPTIONS.sonnet5,
         }),
+        CLAUDE_ULTRACODE_OPTION,
       ],
     }),
   },
@@ -215,6 +251,7 @@ const BUILT_IN_MODEL_DEFINITIONS: ReadonlyArray<ServerProviderModel> = [
           label: "Reasoning",
           options: CLAUDE_EFFORT_OPTIONS.opus55,
         }),
+        CLAUDE_ULTRACODE_OPTION,
         buildBooleanOptionDescriptor({
           id: "fastMode",
           label: "Fast Mode",
@@ -234,6 +271,7 @@ const BUILT_IN_MODEL_DEFINITIONS: ReadonlyArray<ServerProviderModel> = [
           label: "Reasoning",
           options: CLAUDE_EFFORT_OPTIONS.opus5,
         }),
+        CLAUDE_ULTRACODE_OPTION,
         buildBooleanOptionDescriptor({
           id: "fastMode",
           label: "Fast Mode",
@@ -253,6 +291,7 @@ const BUILT_IN_MODEL_DEFINITIONS: ReadonlyArray<ServerProviderModel> = [
           label: "Reasoning",
           options: CLAUDE_EFFORT_OPTIONS.opus48,
         }),
+        CLAUDE_ULTRACODE_OPTION,
         buildBooleanOptionDescriptor({
           id: "fastMode",
           label: "Fast Mode",
@@ -280,6 +319,7 @@ const BUILT_IN_MODEL_DEFINITIONS: ReadonlyArray<ServerProviderModel> = [
           label: "Reasoning",
           options: CLAUDE_EFFORT_OPTIONS.opus47,
         }),
+        CLAUDE_ULTRACODE_OPTION,
         buildBooleanOptionDescriptor({
           id: "fastMode",
           label: "Fast Mode",
@@ -401,6 +441,10 @@ function supportsClaudeFable51(version: string | null | undefined): boolean {
   return version ? compareSemverVersions(version, MINIMUM_CLAUDE_FABLE_5_1_VERSION) >= 0 : false;
 }
 
+function supportsClaudeSonnet55(version: string | null | undefined): boolean {
+  return version ? compareSemverVersions(version, MINIMUM_CLAUDE_SONNET_5_5_VERSION) >= 0 : false;
+}
+
 function supportsClaudeSonnet5(version: string | null | undefined): boolean {
   return version ? compareSemverVersions(version, MINIMUM_CLAUDE_SONNET_5_VERSION) >= 0 : false;
 }
@@ -436,6 +480,56 @@ function withoutFastModeDescriptor(model: ServerProviderModel): ServerProviderMo
   };
 }
 
+function supportsClaudeUltracodeSwitch(version: string | null | undefined): boolean {
+  return version
+    ? compareSemverVersions(version, MINIMUM_CLAUDE_ULTRACODE_SWITCH_VERSION) >= 0
+    : false;
+}
+
+/**
+ * The Ultracode switch as an older CLI understands it: the last effort level,
+ * which runs Extra High with Ultracode on. Saved selections move between the
+ * two shapes in `getProviderOptionDescriptors`.
+ */
+function ultracodeCapabilitiesForVersion(
+  capabilities: ModelCapabilities,
+  version: string | null | undefined,
+): ModelCapabilities {
+  const descriptors = capabilities.optionDescriptors;
+  if (
+    supportsClaudeUltracodeSwitch(version) ||
+    !descriptors?.some((descriptor) => descriptor.id === "ultracode")
+  ) {
+    return capabilities;
+  }
+  return {
+    ...capabilities,
+    optionDescriptors: descriptors.flatMap((descriptor) => {
+      if (descriptor.id === "ultracode") {
+        return [];
+      }
+      if (descriptor.type === "select" && descriptor.id === "effort") {
+        return [
+          {
+            ...descriptor,
+            options: [...descriptor.options, { id: "ultracode", label: "Ultracode" }],
+          },
+        ];
+      }
+      return [descriptor];
+    }),
+  };
+}
+
+function withUltracodeShapeForVersion(
+  model: ServerProviderModel,
+  version: string | null | undefined,
+): ServerProviderModel {
+  return model.capabilities
+    ? { ...model, capabilities: ultracodeCapabilitiesForVersion(model.capabilities, version) }
+    : model;
+}
+
 function getBuiltInClaudeModelsForVersion(
   version: string | null | undefined,
 ): ReadonlyArray<ServerProviderModel> {
@@ -445,6 +539,9 @@ function getBuiltInClaudeModelsForVersion(
     }
     if (model.slug === "claude-fable-5") {
       return supportsClaudeFable5(version);
+    }
+    if (model.slug === "claude-sonnet-5-5") {
+      return supportsClaudeSonnet55(version);
     }
     if (model.slug === "claude-sonnet-5") {
       return supportsClaudeSonnet5(version);
@@ -463,9 +560,12 @@ function getBuiltInClaudeModelsForVersion(
     }
     return true;
   }).map((model) =>
-    model.slug === "claude-opus-4-7" && !claudeOpus47SupportsFastMode(version)
-      ? withoutFastModeDescriptor(model)
-      : model,
+    withUltracodeShapeForVersion(
+      model.slug === "claude-opus-4-7" && !claudeOpus47SupportsFastMode(version)
+        ? withoutFastModeDescriptor(model)
+        : model,
+      version,
+    ),
   );
 }
 
@@ -529,6 +629,13 @@ function formatClaudeUpgradeMessage(version: string | null): string | undefined 
       minimumVersion: MINIMUM_CLAUDE_OPUS_5_5_VERSION,
     });
   }
+  if (!supportsClaudeSonnet55(version)) {
+    return formatClaudeModelUpgradeMessage({
+      version,
+      modelName: "Claude Sonnet 5.5",
+      minimumVersion: MINIMUM_CLAUDE_SONNET_5_5_VERSION,
+    });
+  }
   return undefined;
 }
 
@@ -540,25 +647,13 @@ export function getClaudeModelCapabilities(model: string | null | undefined): Mo
   );
 }
 
-export function resolveClaudeEffort(
-  caps: ModelCapabilities,
-  raw: string | null | undefined,
-): string | undefined {
-  const descriptors = getProviderOptionDescriptors({
-    caps,
-    ...(raw ? { selections: [{ id: "effort", value: raw }] } : {}),
-  });
-  const effortDescriptor = descriptors.find((descriptor) => descriptor.id === "effort");
-  const value = getProviderOptionCurrentValue(effortDescriptor);
-  return typeof value === "string" ? value : undefined;
-}
-
 /**
  * Normalize a resolved Claude effort value into one suitable for the Claude
  * CLI's `--effort` flag.
  *
- * `"ultracode"` is a Claude Code setting that pairs with `xhigh` effort.
- * Returns `undefined` when no flag should be passed.
+ * `"ultracode"` is the effort level Claude Code before 2.1.284 offered for
+ * Ultracode, which runs at `xhigh`. Returns `undefined` when no flag should
+ * be passed.
  */
 export function normalizeClaudeCliEffort(effort: string | null | undefined): string | undefined {
   if (!effort) {
@@ -763,6 +858,7 @@ const CLAUDE_NATIVE_1M_MODEL_SLUGS: ReadonlySet<string> = new Set([
   "claude-fable-5",
   "claude-opus-5-5",
   "claude-opus-5",
+  "claude-sonnet-5-5",
   "claude-sonnet-5",
 ]);
 
@@ -820,6 +916,9 @@ function claudeDiscoveredModelCapabilities(model: ClaudeModelInfo): ModelCapabil
       }),
     );
   }
+  if (effortLevels.includes("xhigh")) {
+    optionDescriptors.push(CLAUDE_ULTRACODE_OPTION);
+  }
   if (model.supportsFastMode === true) {
     optionDescriptors.push(
       buildBooleanOptionDescriptor({
@@ -836,6 +935,7 @@ function claudeDiscoveredModelCapabilities(model: ClaudeModelInfo): ModelCapabil
 function mergeClaudeDiscoveredModels(
   discoveredModels: ReadonlyArray<ClaudeModelInfo>,
   curatedModels: ReadonlyArray<ServerProviderModel>,
+  version: string | null,
 ): {
   readonly models: ReadonlyArray<ServerProviderModel>;
   readonly hasLiveModels: boolean;
@@ -857,7 +957,7 @@ function mergeClaudeDiscoveredModels(
     const capabilities =
       curated?.capabilities ??
       existing?.capabilities ??
-      claudeDiscoveredModelCapabilities(discovered);
+      ultracodeCapabilitiesForVersion(claudeDiscoveredModelCapabilities(discovered), version);
     const supportedRuntimeModes =
       curated?.supportedRuntimeModes ??
       existing?.supportedRuntimeModes ??
@@ -1268,7 +1368,7 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
     ? yield* resolveCapabilities(claudeSettings).pipe(Effect.orElseSucceed(() => undefined))
     : undefined;
   const discoveredCatalog = capabilities
-    ? mergeClaudeDiscoveredModels(capabilities.models, versionedBuiltInModels)
+    ? mergeClaudeDiscoveredModels(capabilities.models, versionedBuiltInModels, parsedVersion)
     : { models: versionedBuiltInModels, hasLiveModels: false };
   const models = providerModelsFromSettings(
     discoveredCatalog.models,

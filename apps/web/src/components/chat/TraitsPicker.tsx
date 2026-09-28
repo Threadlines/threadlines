@@ -11,8 +11,9 @@ import {
   getProviderOptionCurrentLabel,
   getProviderOptionCurrentValue,
   getProviderOptionDescriptors,
+  getPromotedChoiceReplacement,
 } from "@threadlines/shared/model";
-import { memo, useCallback, useState } from "react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
 import type { VariantProps } from "class-variance-authority";
 import { ChevronDownIcon, SlidersHorizontalIcon, ZapIcon } from "lucide-react";
 import { Button, buttonVariants } from "../ui/button";
@@ -193,17 +194,59 @@ function isFastModeControl(control: TraitSwitchControl): boolean {
   return control.type === "serviceTier" || control.descriptor.id === "fastMode";
 }
 
+/**
+ * Leaves out options by id, whether they are their own control or a choice
+ * inside a select. Older Claude CLIs offer Ultracode as an effort choice, so
+ * omitting "ultracode" has to cover both shapes.
+ */
+function omitOptions(
+  descriptors: ReadonlyArray<ProviderOptionDescriptor>,
+  omitOptionIds: ReadonlyArray<string> | undefined,
+): ReadonlyArray<ProviderOptionDescriptor> {
+  if (!omitOptionIds || omitOptionIds.length === 0) {
+    return descriptors;
+  }
+  return descriptors.flatMap((descriptor): ReadonlyArray<ProviderOptionDescriptor> => {
+    if (omitOptionIds.includes(descriptor.id)) {
+      return [];
+    }
+    if (descriptor.type !== "select") {
+      return [descriptor];
+    }
+    const { currentValue, ...rest } = descriptor;
+    const options = descriptor.options.filter((option) => !omitOptionIds.includes(option.id));
+    // A saved "ultracode" effort keeps the Extra High it stood for.
+    const keptValue =
+      currentValue && omitOptionIds.includes(currentValue)
+        ? getPromotedChoiceReplacement(descriptor.id, currentValue)
+        : currentValue;
+    return [
+      {
+        ...rest,
+        options,
+        ...(keptValue && options.some((option) => option.id === keptValue)
+          ? { currentValue: keptValue }
+          : {}),
+      },
+    ];
+  });
+}
+
 function getSelectedTraits(
   provider: ProviderDriverKind,
   models: ReadonlyArray<ServerProviderModel>,
   model: string | null | undefined,
   modelOptions: ProviderOptions | null | undefined,
+  omitOptionIds?: ReadonlyArray<string>,
 ) {
   const caps = getProviderModelCapabilities(models, model, provider);
-  const descriptors = getProviderOptionDescriptors({
-    caps,
-    selections: modelOptions,
-  });
+  const descriptors = omitOptions(
+    getProviderOptionDescriptors({
+      caps,
+      selections: modelOptions,
+    }),
+    omitOptionIds,
+  );
   const selectDescriptors = getRenderedSelectDescriptors(descriptors);
   const booleanDescriptors = descriptors.filter(
     (descriptor): descriptor is BooleanProviderOptionDescriptor => descriptor.type === "boolean",
@@ -223,8 +266,12 @@ function getSelectedTraits(
       .find((toggle) => toggle !== null) ?? null;
   const thinkingDescriptor =
     booleanDescriptors.find((descriptor) => descriptor.id === "thinking") ?? null;
+  const ultracodeDescriptor =
+    booleanDescriptors.find((descriptor) => descriptor.id === "ultracode") ?? null;
 
   const effort = getDescriptorStringValue(primarySelectDescriptor);
+  // Older Claude CLIs offer Ultracode as the last effort level instead.
+  const ultracodeEnabled = effort === "ultracode" || ultracodeDescriptor?.currentValue === true;
   const thinkingEnabled =
     typeof thinkingDescriptor?.currentValue === "boolean" ? thinkingDescriptor.currentValue : null;
   const fastModeEnabled =
@@ -247,6 +294,7 @@ function getSelectedTraits(
     serviceTierToggle,
     thinkingDescriptor,
     effort,
+    ultracodeEnabled,
     thinkingEnabled,
     fastModeEnabled,
     contextWindow,
@@ -260,8 +308,15 @@ function getTraitsSectionVisibility(input: {
   models: ReadonlyArray<ServerProviderModel>;
   model: string | null | undefined;
   modelOptions: ProviderOptions | null | undefined;
+  omitOptionIds?: ReadonlyArray<string> | undefined;
 }) {
-  const selected = getSelectedTraits(input.provider, input.models, input.model, input.modelOptions);
+  const selected = getSelectedTraits(
+    input.provider,
+    input.models,
+    input.model,
+    input.modelOptions,
+    input.omitOptionIds,
+  );
 
   const showEffort = selected.primarySelectDescriptor !== null;
   const showThinking = selected.thinkingDescriptor !== null;
@@ -285,6 +340,7 @@ export function shouldRenderTraitsControls(input: {
   models: ReadonlyArray<ServerProviderModel>;
   model: string | null | undefined;
   modelOptions: ProviderOptions | null | undefined;
+  omitOptionIds?: ReadonlyArray<string> | undefined;
 }): boolean {
   return getTraitsSectionVisibility(input).hasAnyControls;
 }
@@ -298,6 +354,10 @@ export interface TraitsMenuContentProps {
   triggerVariant?: VariantProps<typeof buttonVariants>["variant"];
   triggerClassName?: string;
   iconOnly?: boolean;
+  /** Options to leave out of the menu, such as Ultracode where it makes no sense. */
+  omitOptionIds?: ReadonlyArray<string>;
+  /** Claude is working on this thread; an active Ultracode glints while it does. */
+  working?: boolean;
 }
 
 export const TraitsMenuContent = memo(function TraitsMenuContentImpl({
@@ -306,6 +366,7 @@ export const TraitsMenuContent = memo(function TraitsMenuContentImpl({
   models,
   model,
   modelOptions,
+  omitOptionIds,
   ...persistence
 }: TraitsMenuContentProps & TraitsPersistence) {
   const setProviderModelOptions = useComposerDraftStore((store) => store.setProviderModelOptions);
@@ -332,6 +393,7 @@ export const TraitsMenuContent = memo(function TraitsMenuContentImpl({
     models,
     model,
     modelOptions,
+    omitOptionIds,
   });
   const switchControls = getTraitSwitchControls(descriptors);
   const updateDescriptors = (nextDescriptors: ReadonlyArray<ProviderOptionDescriptor>) => {
@@ -396,32 +458,82 @@ export const TraitsMenuContent = memo(function TraitsMenuContentImpl({
           {selectDescriptors.length > 0 ? <MenuDivider /> : null}
           <MenuGroup>
             {/* Toggles stay open on click so several can be adjusted in one visit. */}
-            {switchControls.map((control) => (
-              <MenuCheckboxItem
-                key={control.descriptor.id}
-                variant="switch"
-                checked={control.checked}
-                title={control.description}
-                closeOnClick={false}
-                onCheckedChange={(checked) => {
-                  updateDescriptors(
-                    replaceDescriptorCurrentValue(
-                      descriptors,
-                      control.descriptor.id,
-                      control.nextValue(checked === true),
-                    ),
-                  );
-                }}
-              >
-                {control.label}
-              </MenuCheckboxItem>
-            ))}
+            {switchControls.map((control) => {
+              const ultracodeOn = control.descriptor.id === "ultracode" && control.checked;
+              return (
+                <MenuCheckboxItem
+                  key={control.descriptor.id}
+                  variant="switch"
+                  checked={control.checked}
+                  title={control.description}
+                  closeOnClick={false}
+                  className={cn(ultracodeOn && "ultracode-menu-option")}
+                  onCheckedChange={(checked) => {
+                    updateDescriptors(
+                      replaceDescriptorCurrentValue(
+                        descriptors,
+                        control.descriptor.id,
+                        control.nextValue(checked === true),
+                      ),
+                    );
+                  }}
+                >
+                  <span className={cn(ultracodeOn && "ultracode-trait-label")}>
+                    {control.label}
+                  </span>
+                </MenuCheckboxItem>
+              );
+            })}
           </MenuGroup>
         </div>
       ) : null}
     </>
   );
 });
+
+const ULTRACODE_GLINT_INTERVAL_MS = 2000;
+const ULTRACODE_GLINT_KEYFRAMES: Keyframe[] = [
+  { transform: "translateX(-120%)", opacity: 0 },
+  { opacity: 1, offset: 0.15 },
+  { opacity: 1, offset: 0.85 },
+  { transform: "translateX(120%)", opacity: 0 },
+];
+const ULTRACODE_GLINT_TIMING: KeyframeAnimationOptions = {
+  duration: 900,
+  easing: "cubic-bezier(0.4, 0, 0.2, 1)",
+};
+
+/**
+ * Sends a band of light across the Ultracode trigger: once when Ultracode
+ * turns on, then every 2s while Claude works. A timer starts each pass, so
+ * the trigger is still between passes and nothing moves while Claude is
+ * idle, the window is hidden, or the system asks for less motion.
+ */
+function useUltracodeGlint(active: boolean, working: boolean) {
+  const bandRef = useRef<HTMLSpanElement>(null);
+  const wasActive = useRef(active);
+  useEffect(() => {
+    const turnedOn = active && !wasActive.current;
+    wasActive.current = active;
+    if (!active || (!turnedOn && !working)) {
+      return;
+    }
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+    let current: Animation | undefined;
+    const pass = () => {
+      if (document.hidden || reducedMotion.matches) return;
+      current?.cancel();
+      current = bandRef.current?.animate(ULTRACODE_GLINT_KEYFRAMES, ULTRACODE_GLINT_TIMING);
+    };
+    pass();
+    const interval = working ? window.setInterval(pass, ULTRACODE_GLINT_INTERVAL_MS) : undefined;
+    return () => {
+      window.clearInterval(interval);
+      current?.cancel();
+    };
+  }, [active, working]);
+  return bandRef;
+}
 
 export const TraitsPicker = memo(function TraitsPicker({
   provider,
@@ -432,23 +544,24 @@ export const TraitsPicker = memo(function TraitsPicker({
   triggerVariant,
   triggerClassName,
   iconOnly = false,
+  omitOptionIds,
+  working = false,
   ...persistence
 }: TraitsMenuContentProps & TraitsPersistence) {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
-  const { descriptors } = getTraitsSectionVisibility({
+  const {
+    descriptors,
+    hasAnyControls,
+    ultracodeEnabled: ultracodeActive,
+  } = getTraitsSectionVisibility({
     provider,
     models,
     model,
     modelOptions,
+    omitOptionIds,
   });
-  if (
-    !shouldRenderTraitsControls({
-      provider,
-      models,
-      model,
-      modelOptions,
-    })
-  ) {
+  const ultracodeGlintRef = useUltracodeGlint(ultracodeActive, working);
+  if (!hasAnyControls) {
     return null;
   }
 
@@ -461,14 +574,21 @@ export const TraitsPicker = memo(function TraitsPicker({
   const activeFastModeControl = switchControls.find(
     (control) => isFastModeControl(control) && control.checked,
   );
-  const primaryTraitValue = getDescriptorStringValue(primarySelectDescriptor);
-  const ultracodeActive = primaryTraitValue === "ultracode";
   const primaryTriggerLabel = primarySelectDescriptor
     ? getProviderOptionCurrentLabel(primarySelectDescriptor)
     : firstSwitchControl
       ? getSwitchControlLabel(firstSwitchControl)
       : null;
-  const renderedTraitCount = selectDescriptors.length + switchControls.length;
+  // Older CLIs name the level "Ultracode"; otherwise the level comes first.
+  const triggerSummary =
+    ultracodeActive && primaryTriggerLabel && primaryTriggerLabel !== "Ultracode"
+      ? `${primaryTriggerLabel}, Ultracode`
+      : primaryTriggerLabel;
+  // Ultracode shows through the trigger's own look, so its switch never
+  // adds to the count.
+  const renderedTraitCount =
+    selectDescriptors.length +
+    switchControls.filter((control) => control.descriptor.id !== "ultracode").length;
   const fastModeRepresentedByPrimaryLabel =
     primarySelectDescriptor === null && activeFastModeControl === firstSwitchControl;
   const representedTraitCount =
@@ -487,10 +607,8 @@ export const TraitsPicker = memo(function TraitsPicker({
           <Button
             size={iconOnly ? "icon-sm" : "sm"}
             variant={triggerVariant ?? "ghost"}
-            aria-label={
-              iconOnly ? `Reasoning settings: ${primaryTriggerLabel ?? "Options"}` : undefined
-            }
-            tooltip={iconOnly ? (primaryTriggerLabel ?? "Reasoning settings") : undefined}
+            aria-label={iconOnly ? `Reasoning settings: ${triggerSummary ?? "Options"}` : undefined}
+            tooltip={iconOnly ? (triggerSummary ?? "Reasoning settings") : undefined}
             className={cn(
               "text-muted-foreground/70 hover:text-foreground/80 [&_svg]:mx-0",
               iconOnly
@@ -502,7 +620,12 @@ export const TraitsPicker = memo(function TraitsPicker({
           />
         }
       >
-        <span className="flex min-w-0 w-full items-center justify-center gap-1.5 overflow-hidden">
+        {ultracodeActive ? (
+          <span aria-hidden="true" className="ultracode-glint">
+            <span ref={ultracodeGlintRef} className="ultracode-glint-band" />
+          </span>
+        ) : null}
+        <span className="relative z-[1] flex min-w-0 w-full items-center justify-center gap-1.5 overflow-hidden">
           <SlidersHorizontalIcon
             aria-hidden="true"
             className={cn(
@@ -514,6 +637,9 @@ export const TraitsPicker = memo(function TraitsPicker({
             <span className={cn("min-w-0 truncate", ultracodeActive && "ultracode-trait-label")}>
               {primaryTriggerLabel}
             </span>
+          ) : null}
+          {!iconOnly && ultracodeActive && primaryTriggerLabel !== "Ultracode" ? (
+            <span className="sr-only">Ultracode on</span>
           ) : null}
           {!iconOnly && activeFastModeControl ? (
             <>
@@ -538,6 +664,7 @@ export const TraitsPicker = memo(function TraitsPicker({
           models={models}
           model={model}
           modelOptions={modelOptions}
+          {...(omitOptionIds ? { omitOptionIds } : {})}
           {...persistence}
         />
       </MenuPopup>

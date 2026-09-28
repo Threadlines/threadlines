@@ -14,6 +14,7 @@ import { ProviderModelPicker } from "../chat/ProviderModelPicker";
 import { TraitsPicker } from "../chat/TraitsPicker";
 
 const DEFAULT_DRIVER_KIND = ProviderDriverKind.make("codex");
+const TEXT_GENERATION_OMITTED_OPTIONS = ["ultracode"] as const;
 
 /** Instances a text generation model can be chosen from, in display order. */
 export function textGenerationInstanceEntries(
@@ -83,6 +84,8 @@ export function TextGenerationModelControl({
         }
         model={selection.model}
         modelOptions={selection.options}
+        // Commit messages and titles never run Ultracode's agent workflows.
+        omitOptionIds={TEXT_GENERATION_OMITTED_OPTIONS}
         triggerVariant="outline"
         triggerClassName="min-w-0 max-w-none shrink-0 text-foreground/90 hover:text-foreground"
         onModelOptionsChange={(nextOptions) => {
