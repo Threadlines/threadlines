@@ -27,7 +27,7 @@ import { useThreadSelectionStore } from "../../threadSelectionStore";
 import { useRelativeTimeTick } from "../../hooks/useRelativeTimeTick";
 import { formatRelativeTimeLabel, formatWorkingDurationLabel } from "../../timestampFormat";
 import { getPickerModelName, PROVIDER_ICON_BY_PROVIDER } from "../chat/providerIconUtils";
-import { roomAgentDisplayName } from "../../rooms";
+import { isRoom, roomAgentDisplayName } from "../../rooms";
 import { useServerProviders } from "../../rpc/serverState";
 import { prStatusIndicator, terminalStatusFromRunningIds } from "../ThreadStatusIndicators";
 import {
@@ -758,7 +758,7 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
               // No tooltip on the title: the hover card already carries the
               // full one, and two popups racing the same hover is the bug.
               <>
-                {(thread.participants?.length ?? 0) > 0 ? (
+                {isRoom(thread) ? (
                   <UsersRoundIcon
                     aria-label="Room"
                     className="size-3 shrink-0 text-muted-foreground/70"

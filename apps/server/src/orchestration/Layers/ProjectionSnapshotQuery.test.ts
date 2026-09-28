@@ -1424,6 +1424,46 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
             '2026-04-01T00:00:07.000Z'
           )
       `;
+      // In a room, two agents' readings outside any turn: each keeps its own.
+      yield* sql`
+        INSERT INTO projection_thread_activities (
+          activity_id,
+          thread_id,
+          turn_id,
+          participant_id,
+          tone,
+          kind,
+          summary,
+          payload_json,
+          sequence,
+          created_at
+        )
+        VALUES
+          (
+            'context-own-idle',
+            'thread-activity-cap',
+            NULL,
+            NULL,
+            'info',
+            'context-window.updated',
+            'Own agent context',
+            '{"usedTokens":400,"maxTokens":1000}',
+            7,
+            '2026-04-01T00:00:08.000Z'
+          ),
+          (
+            'context-astra-idle',
+            'thread-activity-cap',
+            NULL,
+            'agent-astra',
+            'info',
+            'context-window.updated',
+            'Astra context',
+            '{"usedTokens":500,"maxTokens":1000}',
+            8,
+            '2026-04-01T00:00:09.000Z'
+          )
+      `;
 
       const compactedSnapshot = yield* snapshotQuery.getSnapshot();
       const compactedThreadDetail = yield* snapshotQuery.getThreadDetailById(
@@ -1435,6 +1475,8 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         "context-latest-b",
         "context-malformed-a",
         "context-zero-b",
+        "context-own-idle",
+        "context-astra-idle",
       ].map(asEventId);
 
       assert.deepEqual(

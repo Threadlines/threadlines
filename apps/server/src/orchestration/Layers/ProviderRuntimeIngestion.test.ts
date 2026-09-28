@@ -5971,6 +5971,64 @@ describe("ProviderRuntimeIngestion", () => {
     ]);
   });
 
+  it("says which room agent reported a context window", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    const threadId = asThreadId("thread-1");
+    const astraId = ThreadParticipantId.make("7a0b1c2d-3e4f-4a5b-8c6d-7e8f9a0b1c2d");
+    const dispatch = (command: Parameters<typeof harness.engine.dispatch>[0]) =>
+      Effect.runPromise(harness.engine.dispatch(command));
+    await dispatch({
+      type: "thread.participant.add",
+      commandId: CommandId.make("cmd-usage-add-astra"),
+      threadId,
+      participant: {
+        id: astraId,
+        handle: "GPT-6 Astra",
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6-astra" },
+      },
+      createdAt: now,
+    });
+    await dispatch({
+      type: "thread.session.set",
+      commandId: CommandId.make("cmd-usage-astra-working"),
+      threadId,
+      session: {
+        threadId,
+        status: "running",
+        providerName: "codex",
+        runtimeMode: "approval-required",
+        participantId: astraId,
+        activeTurnId: asTurnId("turn-astra"),
+        updatedAt: now,
+        lastError: null,
+      },
+      createdAt: now,
+    });
+    harness.emit({
+      type: "thread.token-usage.updated",
+      eventId: asEventId("evt-astra-token-usage"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId,
+      turnId: asTurnId("turn-astra"),
+      participantId: astraId,
+      payload: { usage: { usedTokens: 4200, maxTokens: 258_000 } },
+    } as never);
+
+    const thread = await waitForThread(harness.readModel, (entry) =>
+      entry.activities.some(
+        (activity: ProviderRuntimeTestActivity) => activity.kind === "context-window.updated",
+      ),
+    );
+    // Astra's own context, told apart from the thread's own agent's.
+    expect(
+      thread.activities.find(
+        (activity: ProviderRuntimeTestActivity) => activity.kind === "context-window.updated",
+      ),
+    ).toMatchObject({ participantId: astraId, payload: { usedTokens: 4200 } });
+  });
+
   it("projects context window updates into normalized thread activities", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";

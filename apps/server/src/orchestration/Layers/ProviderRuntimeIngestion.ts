@@ -3717,7 +3717,13 @@ const make = Effect.gen(function* () {
           type: "thread.activity.append",
           commandId: providerCommandId(event, "thread-activity-append"),
           threadId: thread.id,
-          activity,
+          // In a room, an added agent's activity names it, so what it reports
+          // (its context window, say) is told apart from the thread's own
+          // agent's, which name nobody.
+          activity:
+            event.participantId != null && activity.participantId === undefined
+              ? { ...activity, participantId: event.participantId }
+              : activity,
           createdAt: activity.createdAt,
         }),
       ).pipe(Effect.asVoid);

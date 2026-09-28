@@ -56,6 +56,7 @@ import { useCommandPaletteStore } from "../commandPaletteStore";
 import { updateSettings } from "../hooks/useSettings";
 import { CLIENT_SETTINGS_STORAGE_KEY } from "../clientPersistenceStorage";
 import { useComposerDraftStore, DraftId } from "../composerDraftStore";
+import { useRoomRecipientStore } from "../rooms";
 import {
   makeBrowserTab,
   registerPreviewWebview,
@@ -7331,6 +7332,92 @@ describe("ChatView timeline estimator parity (full app)", () => {
       below.click();
       await expectRevealed("side-answer-reveal");
     } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("shows the context window of the room agent a message is going to", async () => {
+    updateSettings({ roomsEnabled: true });
+    const astraId = "7a0b1c2d-3e4f-4a5b-8c6d-7e8f9a0b1c2d" as ThreadParticipantId;
+    const base = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-room-context" as MessageId,
+      targetText: "room context target",
+    });
+    const reading = (
+      id: string,
+      usedTokens: number,
+      at: number,
+      participantId?: ThreadParticipantId,
+    ) => ({
+      id: EventId.make(id),
+      tone: "info" as const,
+      kind: "context-window.updated",
+      summary: "Context window updated",
+      payload: { usedTokens, maxTokens: 128_000 },
+      turnId: `turn-${id}` as TurnId,
+      ...(participantId !== undefined ? { participantId } : {}),
+      createdAt: isoAt(at),
+    });
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...base,
+        threads: base.threads.map((thread) =>
+          thread.id === THREAD_ID
+            ? {
+                ...thread,
+                participants: [
+                  {
+                    id: astraId,
+                    handle: "agent-2",
+                    modelSelection: {
+                      instanceId: ProviderInstanceId.make("codex"),
+                      model: "gpt-6-astra",
+                    },
+                    joinedAt: NOW_ISO,
+                    leftAt: null,
+                  },
+                ],
+                // The thread's own agent's reading, then astra's, the latest.
+                activities: [reading("own", 32_000, 200), reading("astra", 64_000, 210, astraId)],
+              }
+            : thread,
+        ),
+      },
+    });
+
+    try {
+      const meterLabel = () =>
+        document
+          .querySelector<HTMLElement>('button[aria-label^="Context window"]')
+          ?.getAttribute("aria-label") ?? "";
+      await vi.waitFor(() => expect(meterLabel()).toMatch(/^Context window 25(\.0)?% used/), {
+        timeout: 8_000,
+        interval: 16,
+      });
+
+      // Sending to astra: the meter shows astra's own context.
+      const picker = await waitForElement(
+        () => document.querySelector<HTMLButtonElement>('[data-chat-room-agent-picker="true"]'),
+        "Unable to find the room's agent picker.",
+      );
+      picker.click();
+      const astraOption = await waitForElement(
+        () =>
+          [...document.querySelectorAll<HTMLElement>('[role="option"]')].find((option) =>
+            option.textContent?.includes("gpt-6-astra"),
+          ) ?? null,
+        "Unable to find astra in the agent picker.",
+      );
+      astraOption.click();
+      await vi.waitFor(() => expect(meterLabel()).toMatch(/^Context window 50(\.0)?% used/), {
+        timeout: 8_000,
+        interval: 16,
+      });
+    } finally {
+      // The choice outlives the view; later tests start from the thread's own agent.
+      useRoomRecipientStore.getState().choose(THREAD_REF, null);
+      updateSettings({ roomsEnabled: false });
       await mounted.cleanup();
     }
   });

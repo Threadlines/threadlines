@@ -13,11 +13,15 @@ import {
   buildRoomAgentLabels,
   describeRoomAgentMessage,
   describeRoomReviewBasis,
+  hasRoomHistory,
+  isRoom,
   isRoomWaitChosen,
   matchRoomAgents,
   resolveRoomDelivery,
   resolveRoomRecipient,
+  roomActivityAgent,
   roomAgentKey,
+  roomTurnOwners,
   useRoomRecipientStore,
 } from "./rooms";
 
@@ -41,6 +45,37 @@ describe("rooms", () => {
       session: null,
     };
     expect(resolveRoomRecipient(left, astraId)).toBeNull();
+  });
+
+  it("reads as a plain thread once its added agents all left, keeping their names", () => {
+    const left = {
+      modelSelection: { instanceId: ProviderInstanceId.make("claudeAgent"), model: "opus-9" },
+      participants: [{ ...astra, leftAt: "2026-01-02T00:00:00.000Z" }],
+    };
+    expect(isRoom({ participants: [astra] })).toBe(true);
+    // No room icon, filter, picker or "@" agents any more...
+    expect(isRoom(left)).toBe(false);
+    // ...but what the agent wrote still says who wrote it, and revert stays off.
+    expect(hasRoomHistory(left)).toBe(true);
+    expect(
+      buildRoomAgentLabels(left, [], (model) => model.name)?.get(roomAgentKey(astraId)),
+    ).toMatchObject({
+      name: "gpt-6-astra",
+      left: true,
+    });
+  });
+
+  it("tells which agent a reading came from, older unnamed ones by their turn", () => {
+    const owners = roomTurnOwners([
+      { role: "assistant", turnId: TurnId.make("turn-own"), participantId: undefined },
+      { role: "assistant", turnId: TurnId.make("turn-astra"), participantId: astraId },
+    ]);
+    // Named: an added agent's reading says whose it is.
+    expect(roomActivityAgent({ participantId: astraId, turnId: null }, owners)).toBe(astraId);
+    // Unnamed: the thread's own agent's, unless its turn was another agent's.
+    expect(roomActivityAgent({ turnId: TurnId.make("turn-own") }, owners)).toBeNull();
+    expect(roomActivityAgent({ turnId: TurnId.make("turn-astra") }, owners)).toBe(astraId);
+    expect(roomActivityAgent({ turnId: null }, owners)).toBeNull();
   });
 
   it("names every agent by its model and numbers agents on the same model", () => {
