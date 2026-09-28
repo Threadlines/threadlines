@@ -7335,6 +7335,69 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
+  it("names a room's own agent by the model picked for its next message", async () => {
+    updateSettings({ roomsEnabled: true });
+    const base = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-room-model" as MessageId,
+      targetText: "room model target",
+    });
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...base,
+        threads: base.threads.map((thread) =>
+          thread.id === THREAD_ID
+            ? {
+                ...thread,
+                participants: [
+                  {
+                    id: "7a0b1c2d-3e4f-4a5b-8c6d-7e8f9a0b1c2d" as ThreadParticipantId,
+                    handle: "agent-2",
+                    modelSelection: {
+                      instanceId: ProviderInstanceId.make("codex"),
+                      model: "gpt-6-astra",
+                    },
+                    joinedAt: NOW_ISO,
+                    leftAt: null,
+                  },
+                ],
+              }
+            : thread,
+        ),
+      },
+    });
+
+    try {
+      // The thread still carries its first model ("gpt-5"), which this
+      // provider does not offer: the composer's model picker shows the one
+      // the next message will use, and the room names the agent the same.
+      const modelPicker = await waitForElement(
+        () => document.querySelector<HTMLButtonElement>('[data-chat-provider-model-picker="true"]'),
+        "Unable to find the composer's model picker.",
+      );
+      const pickedName = modelPicker.textContent?.trim() ?? "";
+      expect(pickedName).not.toBe("");
+      expect(pickedName).not.toContain("gpt-5 ");
+      const picker = await waitForElement(
+        () => document.querySelector<HTMLButtonElement>('[data-chat-room-agent-picker="true"]'),
+        "Unable to find the room's agent picker.",
+      );
+      picker.click();
+      await vi.waitFor(
+        () => {
+          const main = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find(
+            (option) => option.textContent?.includes("main"),
+          );
+          expect(main?.textContent?.replace("main", "").trim()).toBe(pickedName);
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+    } finally {
+      updateSettings({ roomsEnabled: false });
+      await mounted.cleanup();
+    }
+  });
+
   it("reveals the folded tail in increments and folds it back", async () => {
     const extraThreadIds = Array.from(
       { length: 17 },

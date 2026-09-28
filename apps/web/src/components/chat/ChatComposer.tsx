@@ -1170,13 +1170,15 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     activeThread?.session?.orchestrationStatus === "starting"
       ? (activeThread.session.participantId ?? null)
       : undefined;
-  // Every agent in a room by the name the model picker shows; null outside rooms.
+  // Every agent in a room by the name the model picker shows; null outside
+  // rooms. The thread's own agent is named by the model its next message will
+  // use: the one picked here, which the thread takes on when it is sent.
   const roomAgentLabels = useMemo(
     () =>
       showRoomAgentPicker && activeThread
         ? buildRoomAgentLabels(
             {
-              modelSelection: activeThread.modelSelection,
+              modelSelection: selectedModelSelection,
               participants: activeThread.participants,
               agentRole: activeThread.agentRole,
             },
@@ -1185,7 +1187,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           )
         : null,
     [
-      activeThread?.modelSelection,
+      selectedModelSelection,
       activeThread?.participants,
       activeThread?.agentRole,
       providerInstanceEntries,
@@ -3816,7 +3818,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     {showRoomAgentPicker && activeThread ? (
                       <RoomAgentPicker
                         threadRef={routeThreadRef}
-                        primaryModelSelection={activeThread.modelSelection}
+                        primaryModelSelection={selectedModelSelection}
                         primaryRole={activeThread.agentRole}
                         participants={activeThread.participants ?? []}
                         recipientId={roomRecipientId}
