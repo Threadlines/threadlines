@@ -60,8 +60,7 @@ import {
   type UserInputQuestion,
 } from "@threadlines/contracts";
 import {
-  getModelSelectionBooleanOptionValue,
-  getModelSelectionStringOptionValue,
+  getProviderOptionCurrentValue,
   getProviderOptionDescriptors,
 } from "@threadlines/shared/model";
 import {
@@ -148,7 +147,6 @@ import {
   isClaudeUltracodeEffort,
   normalizeClaudeCliEffort,
   resolveClaudeApiModelId,
-  resolveClaudeEffort,
 } from "./ClaudeProvider.ts";
 import {
   ProviderAdapterProcessError,
@@ -781,25 +779,22 @@ function deriveClaudeFlagSettings(
   modelSelection: ModelSelection | undefined,
   capabilities: ModelCapabilities,
 ): ClaudeFlagSettingsSnapshot {
-  const descriptors = getProviderOptionDescriptors({ caps: capabilities });
-  const rawEffort = getModelSelectionStringOptionValue(modelSelection, "effort");
-  const effort = resolveClaudeEffort(capabilities, rawEffort) ?? null;
-  const fastModeSupported = descriptors.some(
-    (descriptor) => descriptor.type === "boolean" && descriptor.id === "fastMode",
-  );
-  const thinkingSupported = descriptors.some(
-    (descriptor) => descriptor.type === "boolean" && descriptor.id === "thinking",
-  );
-  const fastMode =
-    getModelSelectionBooleanOptionValue(modelSelection, "fastMode") === true && fastModeSupported;
-  const thinking = thinkingSupported
-    ? getModelSelectionBooleanOptionValue(modelSelection, "thinking")
-    : undefined;
+  // Resolving every option together lets a selection saved with the old
+  // "ultracode" effort level land as Extra High plus the Ultracode switch.
+  const descriptors = getProviderOptionDescriptors({
+    caps: capabilities,
+    selections: modelSelection?.options,
+  });
+  const currentValue = (id: string) =>
+    getProviderOptionCurrentValue(descriptors.find((descriptor) => descriptor.id === id));
+  const effortValue = currentValue("effort");
+  const effort = typeof effortValue === "string" ? effortValue : null;
+  const thinking = currentValue("thinking");
   return {
     effortLevel: getEffectiveClaudeAgentEffort(effort),
     alwaysThinkingEnabled: typeof thinking === "boolean" ? thinking : null,
-    fastMode,
-    ultracode: isClaudeUltracodeEffort(effort),
+    fastMode: currentValue("fastMode") === true,
+    ultracode: isClaudeUltracodeEffort(effort) || currentValue("ultracode") === true,
   };
 }
 

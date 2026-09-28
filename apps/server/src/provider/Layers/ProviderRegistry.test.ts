@@ -3111,7 +3111,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
           );
           const fable51 = status.models.find((model) => model.slug === "claude-fable-5-1");
           if (!fable51?.capabilities) {
-            assert.fail("Expected Claude Fable 5.1 capabilities for Claude Code v2.1.280.");
+            assert.fail("Expected Claude Fable 5.1 capabilities for Claude Code v2.1.284.");
           }
           assert.strictEqual(fable51.name, "Claude Fable 5.1");
           const effortDescriptor = fable51.capabilities.optionDescriptors?.find(
@@ -3125,7 +3125,6 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
               { id: "high", label: "High", isDefault: true },
               { id: "xhigh", label: "Extra High" },
               { id: "max", label: "Max" },
-              { id: "ultracode", label: "Ultracode" },
             ],
           );
           assert.strictEqual(
@@ -3139,7 +3138,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
           Effect.provide(
             mockSpawnerLayer((args) => {
               const joined = args.join(" ");
-              if (joined === "--version") return { stdout: "2.1.280\n", stderr: "", code: 0 };
+              if (joined === "--version") return { stdout: "2.1.284\n", stderr: "", code: 0 };
               if (joined === "auth status")
                 return { stdout: '{"loggedIn":true}\n', stderr: "", code: 0 };
               throw new Error(`Unexpected args: ${joined}`);
@@ -3170,6 +3169,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
               { id: "high", label: "High", isDefault: true },
               { id: "xhigh", label: "Extra High" },
               { id: "max", label: "Max" },
+              { id: "ultracode", label: "Ultracode" },
             ],
           );
           assert.strictEqual(
@@ -3184,12 +3184,71 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
             ),
             false,
           );
-          assert.strictEqual(status.message, undefined);
+          assert.strictEqual(
+            status.message,
+            "Claude Code v2.1.280 is too old for Claude Sonnet 5.5. Upgrade to v2.1.284 or newer to access it.",
+          );
         }).pipe(
           Effect.provide(
             mockSpawnerLayer((args) => {
               const joined = args.join(" ");
               if (joined === "--version") return { stdout: "2.1.280\n", stderr: "", code: 0 };
+              if (joined === "auth status")
+                return { stdout: '{"loggedIn":true}\n', stderr: "", code: 0 };
+              throw new Error(`Unexpected args: ${joined}`);
+            }),
+          ),
+        ),
+      );
+
+      it.effect("includes Claude Sonnet 5.5 with launch capabilities on supported versions", () =>
+        Effect.gen(function* () {
+          const status = yield* checkClaudeProviderStatus(
+            defaultClaudeSettings,
+            claudeCapabilities(),
+          );
+          const sonnet55 = status.models.find((model) => model.slug === "claude-sonnet-5-5");
+          if (!sonnet55?.capabilities) {
+            assert.fail("Expected Claude Sonnet 5.5 capabilities for Claude Code v2.1.284.");
+          }
+          assert.strictEqual(sonnet55.name, "Claude Sonnet 5.5");
+          const effortDescriptor = sonnet55.capabilities.optionDescriptors?.find(
+            (descriptor) => descriptor.type === "select" && descriptor.id === "effort",
+          );
+          assert.deepStrictEqual(
+            effortDescriptor?.type === "select" ? effortDescriptor.options : undefined,
+            [
+              { id: "low", label: "Low" },
+              { id: "medium", label: "Medium", isDefault: true },
+              { id: "high", label: "High" },
+              { id: "xhigh", label: "Extra High" },
+              { id: "max", label: "Max" },
+            ],
+          );
+          // From Claude Code 2.1.284 Ultracode is its own switch, not a level.
+          assert.deepStrictEqual(
+            sonnet55.capabilities.optionDescriptors?.find(
+              (descriptor) => descriptor.id === "ultracode",
+            ),
+            {
+              id: "ultracode",
+              label: "Ultracode",
+              type: "boolean",
+              description: "Runs big tasks as workflows of many agents. Uses more of your limit.",
+            },
+          );
+          assert.strictEqual(
+            sonnet55.capabilities.optionDescriptors?.some(
+              (descriptor) => descriptor.id === "contextWindow" || descriptor.id === "fastMode",
+            ),
+            false,
+          );
+          assert.strictEqual(status.message, undefined);
+        }).pipe(
+          Effect.provide(
+            mockSpawnerLayer((args) => {
+              const joined = args.join(" ");
+              if (joined === "--version") return { stdout: "2.1.284\n", stderr: "", code: 0 };
               if (joined === "auth status")
                 return { stdout: '{"loggedIn":true}\n', stderr: "", code: 0 };
               throw new Error(`Unexpected args: ${joined}`);
@@ -3267,6 +3326,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
                 { id: "high", label: "High", isDefault: true },
                 { id: "xhigh", label: "Extra High" },
                 { id: "max", label: "Max" },
+                { id: "ultracode", label: "Ultracode" },
               ],
             );
             assert.deepStrictEqual(
@@ -3728,6 +3788,37 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
             mockSpawnerLayer((args) => {
               const joined = args.join(" ");
               if (joined === "--version") return { stdout: "2.1.279\n", stderr: "", code: 0 };
+              if (joined === "auth status")
+                return { stdout: '{"loggedIn":true}\n', stderr: "", code: 0 };
+              throw new Error(`Unexpected args: ${joined}`);
+            }),
+          ),
+        ),
+      );
+
+      it.effect("hides Claude Sonnet 5.5 before the Claude Code version that exposes it", () =>
+        Effect.gen(function* () {
+          const status = yield* checkClaudeProviderStatus(
+            defaultClaudeSettings,
+            claudeCapabilities(),
+          );
+          assert.strictEqual(
+            status.models.some((model) => model.slug === "claude-sonnet-5-5"),
+            false,
+          );
+          assert.strictEqual(
+            status.models.some((model) => model.slug === "claude-sonnet-5"),
+            true,
+          );
+          assert.strictEqual(
+            status.message,
+            "Claude Code v2.1.283 is too old for Claude Sonnet 5.5. Upgrade to v2.1.284 or newer to access it.",
+          );
+        }).pipe(
+          Effect.provide(
+            mockSpawnerLayer((args) => {
+              const joined = args.join(" ");
+              if (joined === "--version") return { stdout: "2.1.283\n", stderr: "", code: 0 };
               if (joined === "auth status")
                 return { stdout: '{"loggedIn":true}\n', stderr: "", code: 0 };
               throw new Error(`Unexpected args: ${joined}`);

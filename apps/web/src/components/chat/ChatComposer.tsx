@@ -1615,6 +1615,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     models: selectedProviderModels,
     modelOptions: composerModelOptions?.[selectedInstanceId],
     iconOnly: composerFooterTier !== "full",
+    // In a room, only while the thread's own agent is the one working.
+    working: hasActiveTurn && roomWorkingId == null,
   });
   // An added agent keeps its own reasoning and the like. Picking them here
   // holds them until the next turn for that agent, which carries them.
@@ -1636,6 +1638,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           models: addressedRoomAgentEntry.models,
           model: addressedRoomAgent.modelSelection.model,
           modelOptions: pendingRoomAgentOptions ?? addressedRoomAgent.modelSelection.options,
+          working: roomWorkingId != null && roomWorkingId === addressedRoomAgent.id,
           onModelOptionsChange: (next: ReadonlyArray<ProviderOptionSelection> | undefined) =>
             pickRoomAgentOptions(routeThreadRef, addressedRoomAgent.id, next ?? []),
         }

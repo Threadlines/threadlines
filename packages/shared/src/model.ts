@@ -168,11 +168,89 @@ function withDescriptorCurrentValue(
   };
 }
 
+/**
+ * Select choices that later became switches of their own. A selection saved
+ * with the old choice turns the switch on and picks `impliedChoice` in the
+ * select, so it keeps behaving as it did. When a model still offers only the
+ * old choice, a switched-on selection maps back to it.
+ *
+ * Claude Code 2.1.284 moved Ultracode out of the effort levels. Before that,
+ * effort "ultracode" meant Extra High plus Ultracode, and older CLIs still
+ * work that way.
+ */
+const PROMOTED_SELECT_CHOICES = [
+  { selectId: "effort", choiceId: "ultracode", switchId: "ultracode", impliedChoice: "xhigh" },
+] as const;
+
+/** The choice a retired select choice stands for, such as Extra High for "ultracode". */
+export function getPromotedChoiceReplacement(
+  selectId: string,
+  choiceId: string,
+): string | undefined {
+  return PROMOTED_SELECT_CHOICES.find(
+    (rule) => rule.selectId === selectId && rule.choiceId === choiceId,
+  )?.impliedChoice;
+}
+
+function withSelection(
+  selections: ReadonlyArray<ProviderOptionSelection>,
+  id: string,
+  value: string | boolean,
+): ReadonlyArray<ProviderOptionSelection> {
+  return [...selections.filter((selection) => selection.id !== id), { id, value }];
+}
+
+function migratePromotedSelectChoices(
+  caps: ModelCapabilities,
+  selections: ReadonlyArray<ProviderOptionSelection> | null | undefined,
+): ReadonlyArray<ProviderOptionSelection> | null | undefined {
+  if (!selections || selections.length === 0) {
+    return selections;
+  }
+  const descriptors = caps.optionDescriptors ?? [];
+  let next = selections;
+  for (const rule of PROMOTED_SELECT_CHOICES) {
+    const select = descriptors.find(
+      (descriptor) => descriptor.type === "select" && descriptor.id === rule.selectId,
+    );
+    if (select?.type !== "select") {
+      continue;
+    }
+    const offersChoice = select.options.some((option) => option.id === rule.choiceId);
+    const offersSwitch = descriptors.some(
+      (descriptor) => descriptor.type === "boolean" && descriptor.id === rule.switchId,
+    );
+    if (
+      !offersChoice &&
+      offersSwitch &&
+      getRawSelectionValueById(next, rule.selectId) === rule.choiceId
+    ) {
+      next = withSelection(
+        withSelection(next, rule.selectId, rule.impliedChoice),
+        rule.switchId,
+        true,
+      );
+    } else if (
+      offersChoice &&
+      !offersSwitch &&
+      getRawSelectionValueById(next, rule.switchId) === true
+    ) {
+      next = withSelection(
+        next.filter((selection) => selection.id !== rule.switchId),
+        rule.selectId,
+        rule.choiceId,
+      );
+    }
+  }
+  return next;
+}
+
 export function getProviderOptionDescriptors(input: {
   caps: ModelCapabilities;
   selections?: ReadonlyArray<ProviderOptionSelection> | null | undefined;
 }): ReadonlyArray<ProviderOptionDescriptor> {
-  const { caps, selections } = input;
+  const { caps } = input;
+  const selections = migratePromotedSelectChoices(caps, input.selections);
   const baseDescriptors = (caps.optionDescriptors ?? []).map(cloneDescriptor);
 
   return baseDescriptors.map((descriptor) =>

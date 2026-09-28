@@ -33,15 +33,13 @@ import {
   toJsonSchemaObject,
 } from "./TextGenerationUtils.ts";
 import {
-  getModelSelectionStringOptionValue,
+  getProviderOptionCurrentValue,
   getProviderOptionDescriptors,
 } from "@threadlines/shared/model";
 import {
   getClaudeModelCapabilities,
-  isClaudeUltracodeEffort,
   normalizeClaudeCliEffort,
   resolveClaudeApiModelId,
-  resolveClaudeEffort,
 } from "../provider/Layers/ClaudeProvider.ts";
 import { makeClaudeEnvironment } from "../provider/Drivers/ClaudeHome.ts";
 import { planCliSpawn } from "../cliSpawn.ts";
@@ -133,10 +131,12 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
       selections: modelSelection.options,
     });
     const findDescriptor = (id: string) => descriptors.find((descriptor) => descriptor.id === id);
-    const rawEffortSelection = getModelSelectionStringOptionValue(modelSelection, "effort");
-    const resolvedEffort = resolveClaudeEffort(caps, rawEffortSelection);
-    const cliEffort = normalizeClaudeCliEffort(resolvedEffort);
-    const ultracode = isClaudeUltracodeEffort(resolvedEffort);
+    const resolvedEffort = getProviderOptionCurrentValue(findDescriptor("effort"));
+    // Commit messages and titles never run Ultracode; a saved Ultracode
+    // choice keeps only its Extra High effort here.
+    const cliEffort = normalizeClaudeCliEffort(
+      typeof resolvedEffort === "string" ? resolvedEffort : undefined,
+    );
     const thinkingDescriptor = findDescriptor("thinking");
     const fastModeDescriptor = findDescriptor("fastMode");
     const thinking =
@@ -146,16 +146,15 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
     const settings = {
       ...(typeof thinking === "boolean" ? { alwaysThinkingEnabled: thinking } : {}),
       ...(fastMode ? { fastMode: true } : {}),
-      ...(ultracode ? { ultracode: true } : {}),
+      // The word "ultracode" in a prompt starts agent workflows, and these
+      // prompts carry diffs and commit text that may contain it.
+      workflowKeywordTriggerEnabled: false,
     };
-    const settingsJson =
-      Object.keys(settings).length > 0
-        ? yield* encodeJsonForOperation(
-            operation,
-            settings,
-            "Failed to encode Claude CLI settings.",
-          )
-        : undefined;
+    const settingsJson = yield* encodeJsonForOperation(
+      operation,
+      settings,
+      "Failed to encode Claude CLI settings.",
+    );
 
     const runClaudeCommand = Effect.fn("runClaudeJson.runClaudeCommand")(function* () {
       const claudeBinary = claudeSettings.binaryPath || "claude";
@@ -173,7 +172,8 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
           "--model",
           resolveClaudeApiModelId(modelSelection),
           ...(cliEffort ? ["--effort", cliEffort] : []),
-          ...(settingsJson ? ["--settings", settingsJson] : []),
+          "--settings",
+          settingsJson,
           "--dangerously-skip-permissions",
         ],
         claudeEnvironment,

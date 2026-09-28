@@ -1863,6 +1863,50 @@ label:has(> select#reasoning-effort) select {
   background-image: linear-gradient(90deg, rgba(82, 82, 88, 0.06), rgba(168, 85, 247, 0.08));
 }
 
+/* The Ultracode switch turns violet when on. */
+.ultracode-menu-option > [data-checked] {
+  background-color: #7c3aed;
+}
+
+/* Ultracode glint: a band that crosses the trigger while Claude works.
+   useUltracodeGlint moves the band with transform and opacity only, one pass
+   at a time. Light mode carries the violet behind the text, since white light
+   has nothing to show against there; dark mode passes white light over it. */
+.ultracode-glint {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  border-radius: inherit;
+  pointer-events: none;
+}
+
+.ultracode-glint-band {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  transform: translateX(-120%);
+  background: linear-gradient(
+    100deg,
+    transparent 22%,
+    rgba(124, 58, 237, 0.26) 50%,
+    transparent 78%
+  );
+}
+
+.dark .ultracode-glint {
+  z-index: 2;
+}
+
+.dark .ultracode-glint-band {
+  background: linear-gradient(
+    100deg,
+    transparent 28%,
+    rgba(222, 206, 255, 0.34) 50%,
+    transparent 72%
+  );
+}
+
 /* Native selection and the kept transcript-note highlight overlay (painted
    while the highlight-note popover holds focus, see MessagesTimeline) share
    one token so they always look identical. */

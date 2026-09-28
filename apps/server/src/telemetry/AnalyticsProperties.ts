@@ -71,6 +71,7 @@ const KNOWN_SAFE_MODELS = new Set([
   "claude-sonnet-4-5",
   "claude-sonnet-4-6",
   "claude-sonnet-5",
+  "claude-sonnet-5-5",
 ]);
 
 const SAFE_PUBLIC_MODEL_PATTERNS = [

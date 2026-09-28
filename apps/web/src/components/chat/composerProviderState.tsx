@@ -47,6 +47,8 @@ type TraitsRenderInput = {
   models: ReadonlyArray<ServerProviderModel>;
   modelOptions: ReadonlyArray<ProviderOptionSelection> | undefined;
   iconOnly?: boolean;
+  /** Claude is working on this thread, which lets an active Ultracode glint. */
+  working?: boolean;
 };
 
 export function getComposerProviderState(input: ComposerProviderStateInput): ComposerProviderState {
@@ -75,7 +77,17 @@ function renderTraitsControl(
   Component: typeof TraitsMenuContent | typeof TraitsPicker,
   input: TraitsRenderInput,
 ): ReactNode {
-  const { provider, instanceId, threadRef, draftId, model, models, modelOptions, iconOnly } = input;
+  const {
+    provider,
+    instanceId,
+    threadRef,
+    draftId,
+    model,
+    models,
+    modelOptions,
+    iconOnly,
+    working,
+  } = input;
   const hasTarget = threadRef !== undefined || draftId !== undefined;
   if (!hasTarget || !shouldRenderTraitsControls({ provider, models, model, modelOptions })) {
     return null;
@@ -90,6 +102,7 @@ function renderTraitsControl(
       model={model}
       modelOptions={modelOptions}
       {...(iconOnly !== undefined ? { iconOnly } : {})}
+      {...(working !== undefined ? { working } : {})}
     />
   );
 }

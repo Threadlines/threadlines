@@ -170,6 +170,8 @@ async function mountTraitsPicker(props: {
   models: ReadonlyArray<ServerProviderModel>;
   modelOptions?: ReadonlyArray<ProviderOptionSelection>;
   iconOnly?: boolean;
+  working?: boolean;
+  omitOptionIds?: ReadonlyArray<string>;
 }) {
   const host = document.createElement("div");
   document.body.append(host);
@@ -181,6 +183,8 @@ async function mountTraitsPicker(props: {
       model={props.model}
       modelOptions={props.modelOptions}
       {...(props.iconOnly !== undefined ? { iconOnly: props.iconOnly } : {})}
+      {...(props.working !== undefined ? { working: props.working } : {})}
+      {...(props.omitOptionIds ? { omitOptionIds: props.omitOptionIds } : {})}
       onModelOptionsChange={(nextOptions) => {
         changes.push(nextOptions);
       }}
@@ -197,6 +201,34 @@ async function mountTraitsPicker(props: {
     [Symbol.asyncDispose]: cleanup,
     changes,
     cleanup,
+  };
+}
+
+function ultracodeModelProps(modelOptions: ReadonlyArray<ProviderOptionSelection>) {
+  const model = "claude-opus-5-5";
+  return {
+    provider: ProviderDriverKind.make("claudeAgent"),
+    model,
+    modelOptions,
+    models: [
+      {
+        slug: model,
+        name: "Claude Opus 5.5",
+        isCustom: false,
+        capabilities: createModelCapabilities({
+          optionDescriptors: [
+            selectDescriptor("effort", "Reasoning", [
+              { id: "low", label: "Low" },
+              { id: "medium", label: "Medium" },
+              { id: "high", label: "High", isDefault: true },
+              { id: "xhigh", label: "Extra High" },
+              { id: "max", label: "Max" },
+            ]),
+            booleanDescriptor("ultracode", "Ultracode"),
+          ],
+        }),
+      },
+    ],
   };
 }
 
@@ -311,6 +343,80 @@ describe("CompactComposerControlsMenu", () => {
     const zapIcon = triggerElement.querySelector("svg.lucide-zap");
     expect(zapIcon).not.toBeNull();
     expect(zapIcon?.getAttribute("class") ?? "").toContain("text-primary-readable");
+  });
+
+  it("keeps a saved Ultracode level running as Extra High with its own switch", async () => {
+    await using mounted = await mountTraitsPicker(
+      ultracodeModelProps([{ id: "effort", value: "ultracode" }]),
+    );
+
+    const trigger = page.getByRole("button", { name: /Extra High/ });
+    await expect.element(trigger).toBeInTheDocument();
+    const triggerElement = trigger.element();
+    expect(triggerElement.className).toContain("ultracode-trait-trigger");
+    expect(triggerElement.textContent ?? "").toContain("Ultracode on");
+    expect(triggerElement.textContent ?? "").not.toContain("+1");
+
+    await trigger.click();
+    const ultracodeToggle = page.getByRole("menuitemcheckbox", { name: "Ultracode" });
+    await expect.element(ultracodeToggle).toHaveAttribute("aria-checked", "true");
+    await expect
+      .element(page.getByRole("menuitemradio", { name: "Ultracode" }))
+      .not.toBeInTheDocument();
+
+    await ultracodeToggle.click();
+    await vi.waitFor(() => {
+      expect(mounted.changes.at(-1)).toEqual([
+        { id: "effort", value: "xhigh" },
+        { id: "ultracode", value: false },
+      ]);
+    });
+  });
+
+  it("keeps Extra High when a menu leaves out an older CLI's Ultracode level", async () => {
+    const props = ultracodeModelProps([{ id: "effort", value: "ultracode" }]);
+    const legacyModels = props.models.map((model) => ({
+      ...model,
+      capabilities: createModelCapabilities({
+        optionDescriptors: [
+          selectDescriptor("effort", "Reasoning", [
+            { id: "high", label: "High", isDefault: true },
+            { id: "xhigh", label: "Extra High" },
+            { id: "ultracode", label: "Ultracode" },
+          ]),
+        ],
+      }),
+    }));
+    await using _ = await mountTraitsPicker({
+      ...props,
+      models: legacyModels,
+      omitOptionIds: ["ultracode"],
+    });
+
+    const trigger = page.getByRole("button", { name: /Extra High/ });
+    await expect.element(trigger).toBeInTheDocument();
+    expect(trigger.element().className).not.toContain("ultracode-trait-trigger");
+    await trigger.click();
+    await expect
+      .element(page.getByRole("menuitemradio", { name: "Ultracode" }))
+      .not.toBeInTheDocument();
+  });
+
+  it("glints the Ultracode trigger only while Claude works", async () => {
+    const options = [
+      { id: "effort", value: "medium" },
+      { id: "ultracode", value: true },
+    ];
+    const idle = await mountTraitsPicker(ultracodeModelProps(options));
+    const idleBand = document.querySelector(".ultracode-glint-band");
+    expect(idleBand).not.toBeNull();
+    expect(idleBand?.getAnimations()).toHaveLength(0);
+    await idle.cleanup();
+
+    await using _ = await mountTraitsPicker({ ...ultracodeModelProps(options), working: true });
+    await vi.waitFor(() => {
+      expect(document.querySelector(".ultracode-glint-band")?.getAnimations().length).toBe(1);
+    });
   });
 
   it("shrinks the reasoning trigger to its icon while preserving its menu", async () => {

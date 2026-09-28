@@ -100,6 +100,8 @@ describe("normalizeModelSlug", () => {
     expect(normalizeModelSlug("claude-fable-5-1[1m]", claude)).toBe("claude-fable-5-1");
     expect(normalizeModelSlug("fable-5", claude)).toBe("claude-fable-5");
     expect(normalizeModelSlug("sonnet", claude)).toBe("claude-sonnet-5");
+    expect(normalizeModelSlug("sonnet-5.5", claude)).toBe("claude-sonnet-5-5");
+    expect(normalizeModelSlug("claude-sonnet-5-5[1m]", claude)).toBe("claude-sonnet-5-5");
     expect(normalizeModelSlug("sonnet-5", claude)).toBe("claude-sonnet-5");
     expect(normalizeModelSlug("sonnet-4.6", claude)).toBe("claude-sonnet-4-6");
     expect(normalizeModelSlug("opus", claude)).toBe("claude-opus-5-5");
@@ -205,6 +207,54 @@ describe("descriptor helpers", () => {
         currentValue: "200k",
       },
     ]);
+  });
+
+  it("carries Ultracode between the old effort choice and its own switch", () => {
+    const effortOptions = [
+      { id: "high", label: "High", isDefault: true },
+      { id: "xhigh", label: "Extra High" },
+    ];
+    const switchCaps = createModelCapabilities({
+      optionDescriptors: [
+        { id: "effort", label: "Reasoning", type: "select", options: effortOptions },
+        { id: "ultracode", label: "Ultracode", type: "boolean" },
+      ],
+    });
+    const legacyCaps = createModelCapabilities({
+      optionDescriptors: [
+        {
+          id: "effort",
+          label: "Reasoning",
+          type: "select",
+          options: [...effortOptions, { id: "ultracode", label: "Ultracode" }],
+        },
+      ],
+    });
+
+    // A thread saved before the split keeps Extra High plus Ultracode.
+    expect(
+      buildProviderOptionSelectionsFromDescriptors(
+        getProviderOptionDescriptors({
+          caps: switchCaps,
+          selections: [{ id: "effort", value: "ultracode" }],
+        }),
+      ),
+    ).toEqual([
+      { id: "effort", value: "xhigh" },
+      { id: "ultracode", value: true },
+    ]);
+    // An older CLI only knows the effort choice.
+    expect(
+      buildProviderOptionSelectionsFromDescriptors(
+        getProviderOptionDescriptors({
+          caps: legacyCaps,
+          selections: [
+            { id: "effort", value: "high" },
+            { id: "ultracode", value: true },
+          ],
+        }),
+      ),
+    ).toEqual([{ id: "effort", value: "ultracode" }]);
   });
 
   it("builds wire-format option selections from descriptors", () => {

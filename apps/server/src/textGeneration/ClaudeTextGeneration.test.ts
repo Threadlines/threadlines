@@ -255,8 +255,8 @@ it.layer(ClaudeTextGenerationTestLayer)("ClaudeTextGeneration", (it) => {
         }),
         argsMustContain:
           process.platform === "win32"
-            ? "--settings {alwaysThinkingEnabled:false}"
-            : '--settings {"alwaysThinkingEnabled":false}',
+            ? "--settings {alwaysThinkingEnabled:false,workflowKeywordTriggerEnabled:false}"
+            : '--settings {"alwaysThinkingEnabled":false,"workflowKeywordTriggerEnabled":false}',
         argsMustNotContain: "--effort",
       },
       (textGeneration) =>
@@ -290,8 +290,8 @@ it.layer(ClaudeTextGenerationTestLayer)("ClaudeTextGeneration", (it) => {
         }),
         argsMustContain:
           process.platform === "win32"
-            ? "--effort max --settings {fastMode:true}"
-            : '--effort max --settings {"fastMode":true}',
+            ? "--effort max --settings {fastMode:true,workflowKeywordTriggerEnabled:false}"
+            : '--effort max --settings {"fastMode":true,"workflowKeywordTriggerEnabled":false}',
       },
       (textGeneration) =>
         Effect.gen(function* () {
@@ -315,7 +315,10 @@ it.layer(ClaudeTextGenerationTestLayer)("ClaudeTextGeneration", (it) => {
     ),
   );
 
-  it.effect("forwards Claude ultracode as xhigh effort and CLI settings", () =>
+  // Ultracode runs whole workflows of agents, which a commit message or PR
+  // title never needs. A thread saved on the old "ultracode" level keeps its
+  // Extra High effort here, and the word in a diff cannot start workflows.
+  it.effect("runs a saved Claude ultracode choice at xhigh without ultracode", () =>
     withFakeClaudeEnv(
       {
         output: JSON.stringify({
@@ -326,8 +329,9 @@ it.layer(ClaudeTextGenerationTestLayer)("ClaudeTextGeneration", (it) => {
         }),
         argsMustContain:
           process.platform === "win32"
-            ? "--effort xhigh --settings {ultracode:true}"
-            : '--effort xhigh --settings {"ultracode":true}',
+            ? "--effort xhigh --settings {workflowKeywordTriggerEnabled:false}"
+            : '--effort xhigh --settings {"workflowKeywordTriggerEnabled":false}',
+        argsMustNotContain: "ultracode",
       },
       (textGeneration) =>
         Effect.gen(function* () {
