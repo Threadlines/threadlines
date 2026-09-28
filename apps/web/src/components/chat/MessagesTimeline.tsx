@@ -167,6 +167,7 @@ import {
   describeRoomInvite,
   type RoomAgentLabel,
   roomAgentKey,
+  roomTurnOwners,
 } from "../../rooms";
 import { RoomReviewTag } from "./RoomReviewTag";
 import { type SideAnswerView } from "./sideAnswers";
@@ -182,6 +183,10 @@ interface TimelineRowSharedState {
   timestampFormat: TimestampFormat;
   /** Room agents by `roomAgentKey`; null outside rooms. */
   roomAgents: ReadonlyMap<string, RoomAgentLabel> | null;
+  /** The agent holding the thread: whose turn the working row is. */
+  workingParticipantId: ThreadParticipantId | null;
+  /** Which agent each turn was, by its answers (rooms.ts roomTurnOwners). */
+  roomTurnOwners: ReadonlyMap<TurnId, ThreadParticipantId | null>;
   /** Agent messages that start a new speaker's stretch and carry an author line. */
   roomAuthorLineMessageIds: ReadonlySet<MessageId>;
   /** Room requests still open, by their request message. */
@@ -683,6 +688,8 @@ interface MessagesTimelineProps {
   revertTurnCountByUserMessageId: Map<MessageId, number>;
   /** Room agents by `roomAgentKey`; null or absent outside rooms. */
   roomAgents?: ReadonlyMap<string, RoomAgentLabel> | null;
+  /** See TimelineRowSharedState.workingParticipantId. */
+  workingParticipantId?: ThreadParticipantId | null;
   /** Requests room agents made of each other that are not over yet. */
   openAgentRequests?: ReadonlyArray<OrchestrationAgentRequest>;
   onRevertUserMessage: (messageId: MessageId) => void;
@@ -757,6 +764,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   onOpenTurnDiff,
   revertTurnCountByUserMessageId,
   roomAgents = null,
+  workingParticipantId = null,
   openAgentRequests = EMPTY_AGENT_REQUESTS,
   onRevertUserMessage,
   onContinueInNewThread,
@@ -900,6 +908,10 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     }
     return ids;
   }, [roomAgents, rows]);
+  const turnOwners = useMemo(
+    () => roomTurnOwners(rows.flatMap((row) => (row.kind === "message" ? [row.message] : []))),
+    [rows],
+  );
   const inviteRequestIds = useMemo(() => {
     const ids = new Set<RoomAgentRequestId>();
     for (const row of rows) {
@@ -1681,6 +1693,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     () => ({
       timestampFormat,
       roomAgents,
+      workingParticipantId,
+      roomTurnOwners: turnOwners,
       roomAuthorLineMessageIds,
       openAgentRequestByMessageId,
       inviteRequestIds,
@@ -1718,6 +1732,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     [
       timestampFormat,
       roomAgents,
+      workingParticipantId,
+      turnOwners,
       roomAuthorLineMessageIds,
       openAgentRequestByMessageId,
       inviteRequestIds,
@@ -3272,7 +3288,7 @@ function SubagentReceiptTimelineRow({
  *  the state the turn is in ("Thinking", "Waiting for approval"). While the
  *  agent thinks out loud, its newest thought sits under the word. */
 function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "working" }> }) {
-  const { turnAgents, onOpenAgentsPanel } = use(TimelineRowCtx);
+  const { turnAgents, onOpenAgentsPanel, roomAgents, workingParticipantId } = use(TimelineRowCtx);
   const liveSubagents = turnAgents?.subagents ?? [];
   const agentSummary = summarizeTurnAgents(liveSubagents);
   const liveAgentRoster = formatLiveAgentStatusRows(liveSubagents);
@@ -3287,6 +3303,9 @@ function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "workin
     // below keeps the word centered when it is the tray's only line.
     <div className="py-1" data-turn-working-anchor="true">
       <div className="min-w-0 pl-1">
+        {row.namesAgent && roomAgents !== null ? (
+          <RoomAuthorLine label={roomAgents.get(roomAgentKey(workingParticipantId))} />
+        ) : null}
         <p className="flex min-w-0 items-center gap-1.5 text-xs leading-4 text-muted-foreground/70">
           <span className="flex min-w-0 items-center gap-1 tabular-nums">
             <span
@@ -3513,8 +3532,15 @@ const WorkGroupSection = memo(function WorkGroupSection({
 }: {
   row: Extract<MessagesTimelineRow, { kind: "work" }>;
 }) {
-  const { workspaceRoot, turnDiffSummaryByTurnId, onOpenAgentsPanel, anchorOwnsLiveAgents } =
-    use(TimelineRowCtx);
+  const {
+    workspaceRoot,
+    turnDiffSummaryByTurnId,
+    onOpenAgentsPanel,
+    anchorOwnsLiveAgents,
+    roomAgents,
+    roomTurnOwners: turnOwners,
+    workingParticipantId,
+  } = use(TimelineRowCtx);
   const { isWorking } = use(TimelineRowActivityCtx);
   const groupedEntries = useMemo(
     () => coalesceFileChangeWorkEntries(row.groupedEntries, turnDiffSummaryByTurnId, workspaceRoot),
@@ -3556,8 +3582,21 @@ const WorkGroupSection = memo(function WorkGroupSection({
     return null;
   }
 
+  // Whose steps these are: the agent whose turn they belong to, or while
+  // that turn has written nothing yet, the one at work.
+  const turnId = row.groupedEntries.find((entry) => entry.turnId != null)?.turnId ?? null;
+  const author =
+    row.namesAgent && roomAgents !== null
+      ? roomAgents.get(
+          roomAgentKey(
+            (turnId !== null ? turnOwners.get(turnId) : undefined) ?? workingParticipantId,
+          ),
+        )
+      : undefined;
+
   return (
     <div className="min-w-0 px-1 pt-0.5" data-work-group="true">
+      {author ? <RoomAuthorLine label={author} /> : null}
       {showTracker && turnAgentTracker.summary ? (
         <div
           className="flex min-w-0 items-center gap-[7px] text-xs leading-5 text-muted-foreground/60"

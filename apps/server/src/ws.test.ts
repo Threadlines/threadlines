@@ -2,6 +2,7 @@ import {
   CommandId,
   EventId,
   MessageId,
+  RoomAgentRequestId,
   ThreadId,
   TurnId,
   type OrchestrationEvent,
@@ -53,6 +54,17 @@ describe("isThreadDetailEvent", () => {
       text: "steer the active turn",
       attachments: [],
       createdAt: "2026-01-01T00:00:00.000Z",
+    });
+
+    expect(isThreadDetailEvent(event)).toBe(true);
+  });
+
+  it("streams agents' requests, which only an open thread's detail carries", () => {
+    const event = makeThreadEvent("thread.agent-request-updated", {
+      threadId: ThreadId.make("thread-1"),
+      requestId: RoomAgentRequestId.make("request-1"),
+      status: "running",
+      updatedAt: "2026-01-01T00:00:00.000Z",
     });
 
     expect(isThreadDetailEvent(event)).toBe(true);

@@ -761,6 +761,33 @@ describe("room_available_agents and room_invite", () => {
     }),
   );
 
+  it.effect("invites a model the thread had as a guest back under the same guest", () =>
+    Effect.gen(function* () {
+      const guest = {
+        id: REVIEWER,
+        handle: "Opus 5.5",
+        modelSelection: { instanceId: CLAUDE, model: "claude-opus-5-5" },
+        joinedAt: AT,
+        leftAt: AT,
+        guest: true,
+      };
+      const room = yield* makeRoom({
+        thread: makeThread({ participants: [guest] }),
+        providers: PROVIDERS,
+      });
+      const result = yield* room.handlers.room_invite(mainCaller(), {
+        agent: "Opus 5.5",
+        request: "Check the retry math again.",
+        reason: "A second look.",
+      });
+      expect(result).toMatchObject({ outcome: "asked_user", agent: { name: "Opus 5.5" } });
+      expect(submits(room.dispatched)[0]).toMatchObject({
+        to: { participantId: REVIEWER },
+        invite: { guest: { handle: "Opus 5.5" } },
+      });
+    }),
+  );
+
   it.effect("starts at once without asking, and refuses everything when turned off", () =>
     Effect.gen(function* () {
       const auto = yield* makeRoom({ thread: plain, providers: PROVIDERS, invitesMode: "auto" });

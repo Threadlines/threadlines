@@ -238,10 +238,20 @@ function decideAgentInviteSubmit(
   if (guestId === null || !isValidParticipantId(guestId)) {
     return refuse("An invite brings in a new agent, named by a UUID.");
   }
-  if (thread.participants.some((participant) => participant.id === guestId)) {
-    return refuse(`Agent '${guestId}' was already brought into this thread.`);
+  // The same model invited again reviews as the guest it was before, under
+  // the same name; a fresh review all the same.
+  const earlierGuest = thread.participants.find((participant) => participant.id === guestId);
+  if (
+    earlierGuest !== undefined &&
+    (earlierGuest.guest !== true ||
+      earlierGuest.handle !== invite.guest.handle ||
+      earlierGuest.modelSelection.instanceId !== invite.guest.modelSelection.instanceId ||
+      earlierGuest.modelSelection.model !== invite.guest.modelSelection.model)
+  ) {
+    return refuse(`Agent '${guestId}' is already in this thread.`);
   }
-  if (findActiveParticipantByHandle(thread, invite.guest.handle) !== undefined) {
+  const namesake = findActiveParticipantByHandle(thread, invite.guest.handle);
+  if (namesake !== undefined && namesake.id !== guestId) {
     return refuse(`An agent called ${invite.guest.handle} is already in this thread.`);
   }
   if (findOpenRequest(thread, command.requestId) !== undefined) {
@@ -266,7 +276,7 @@ function decideAgentInviteSubmit(
   if (command.reviewInput === undefined) {
     return refuse("An invite carries the changes its review is of.");
   }
-  const guest: OrchestrationThreadParticipant = {
+  const guest: OrchestrationThreadParticipant = earlierGuest ?? {
     id: guestId,
     handle: invite.guest.handle,
     modelSelection: invite.guest.modelSelection,
@@ -287,11 +297,15 @@ function decideAgentInviteSubmit(
     createdAt: command.createdAt,
   };
   const recorded: ReadonlyArray<PlannedEvent> = [
-    {
-      ...base(),
-      type: "thread.participant-added",
-      payload: { threadId: thread.id, participant: guest, updatedAt: command.createdAt },
-    },
+    ...(earlierGuest === undefined
+      ? [
+          {
+            ...base(),
+            type: "thread.participant-added" as const,
+            payload: { threadId: thread.id, participant: guest, updatedAt: command.createdAt },
+          },
+        ]
+      : []),
     {
       ...base(),
       type: "thread.message-sent",

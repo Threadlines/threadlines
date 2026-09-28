@@ -183,10 +183,22 @@ export function isThreadDetailEvent(event: OrchestrationEvent): event is Extract
       | "thread.session-set"
       | "thread.realtime-start-requested"
       | "thread.realtime-stop-requested"
-      | "thread.realtime-state-set";
+      | "thread.realtime-state-set"
+      | "thread.agent-request-submitted"
+      | "thread.agent-request-updated"
+      | "thread.agent-request-settled"
+      | "thread.agent-requests-held"
+      | "thread.agent-requests-reset";
   }
 > {
   return (
+    // Agent requests live only on the thread's detail, never on its shell,
+    // so their events have to come this way for an open thread to see them.
+    event.type === "thread.agent-request-submitted" ||
+    event.type === "thread.agent-request-updated" ||
+    event.type === "thread.agent-request-settled" ||
+    event.type === "thread.agent-requests-held" ||
+    event.type === "thread.agent-requests-reset" ||
     event.type === "thread.message-sent" ||
     event.type === "thread.follow-up-submitted" ||
     event.type === "thread.follow-up-accepted" ||

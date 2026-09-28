@@ -1161,6 +1161,36 @@ describe("decider rooms", () => {
         expect(plain.map((event) => event.type)).toEqual(["thread.turn-interrupt-requested"]);
       });
 
+      it("brings the same model back as the same guest, under the same name", async () => {
+        let model = plainThread();
+        const first = invite({ autoChoice: "review" });
+        model = await apply(model, await decideEvents(first, model));
+        // Its review is over; the side answer slot is free again.
+        model = { ...model, threads: [{ ...threadOf(model), sideTurn: null }] };
+        const again = invite({ autoChoice: "review" });
+        const events = await decideEvents(again, model);
+        expect(events.some((event) => event.type === "thread.participant-added")).toBe(false);
+        model = await apply(model, events);
+        expect(threadOf(model).participants).toMatchObject([{ id: guestId, guest: true }]);
+        // Another agent cannot take over the guest's record.
+        expect(
+          Exit.isFailure(
+            await decide(
+              invite({
+                guest: {
+                  handle: "GPT-6 Sol",
+                  modelSelection: {
+                    instanceId: ProviderInstanceId.make("codex"),
+                    model: "gpt-6-sol",
+                  },
+                },
+              }),
+              { ...model, threads: [{ ...threadOf(model), sideTurn: null }] },
+            ),
+          ),
+        ).toBe(true);
+      });
+
       it("starts the review at once without asking", async () => {
         const model = plainThread();
         const events = await decideEvents(invite({ autoChoice: "review" }), model);

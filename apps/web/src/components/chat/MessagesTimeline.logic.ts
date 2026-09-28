@@ -108,6 +108,8 @@ export type MessagesTimelineRow = TimelineRowPlacement &
         /** The agent has written since this stretch, or its exchange is over:
          *  the stretch reads as one line that opens into its steps. */
         folded: boolean;
+        /** See the working row's `namesAgent`. */
+        namesAgent?: boolean;
       }
     | {
         kind: "message";
@@ -156,6 +158,12 @@ export type MessagesTimelineRow = TimelineRowPlacement &
         label: string;
         /** What the agent is thinking right now, in its own summary's words. */
         thought: string | null;
+        /**
+         * A side exchange sits right above it (another agent answering or
+         * reviewing), so it says which agent's work it is. Set by placeRows
+         * on the first of the working agent's rows after the exchange.
+         */
+        namesAgent?: boolean;
       }
     | {
         /** A side answer's state line: answering (with Stop), or how it ended
@@ -746,8 +754,19 @@ function placeRows(
             !agentsOwn(above) ||
             (above.kind === "message" && above.turnSummary !== null)
           : above !== undefined && agentsOwn(above);
+    // Under another agent's side exchange, the working agent's next steps
+    // (or its working row) would read as a second agent at work, so the
+    // first of them names the agent.
+    const namesAgent =
+      (row.kind === "working" || row.kind === "work") && above !== undefined && isSideRow(above);
     if (visible[index]) {
       above = row;
+    }
+    if (
+      (row.kind === "working" || row.kind === "work") &&
+      (row.namesAgent ?? false) !== namesAgent
+    ) {
+      return { ...row, tray: tray[index] ?? null, padTop, namesAgent };
     }
     return row.tray === tray[index] && row.padTop === padTop
       ? row

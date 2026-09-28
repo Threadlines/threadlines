@@ -95,13 +95,13 @@ export const ComposerAgentInvitePanel = memo(function ComposerAgentInvitePanel(p
           {invite.billing.label}
           {invite.billing.perUse ? " · billed per use" : ""}
         </p>
-      </div>
-      <div className="mt-3 flex flex-wrap items-center justify-end gap-x-2 gap-y-1.5">
         {invite.joinsRoom ? (
-          <span className="mr-auto text-xs text-muted-foreground">
+          <p className="text-xs text-muted-foreground">
             Add to thread makes this a room, and revert turns off for good.
-          </span>
+          </p>
         ) : null}
+      </div>
+      <div className="mt-3 flex flex-wrap items-center justify-end gap-2">
         {choices.map(({ choice, label }, index) => (
           <Button
             key={choice}

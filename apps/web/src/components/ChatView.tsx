@@ -7124,6 +7124,7 @@ export default function ChatView(props: ChatViewProps) {
               onOpenTurnDiff={onOpenTurnDiff}
               revertTurnCountByUserMessageId={revertTurnCountByUserMessageId}
               roomAgents={roomAgentLabels}
+              workingParticipantId={activeThread.session?.participantId ?? null}
               {...(activeThread.agentRequests
                 ? { openAgentRequests: activeThread.agentRequests.open }
                 : {})}

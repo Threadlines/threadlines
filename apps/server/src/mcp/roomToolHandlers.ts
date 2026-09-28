@@ -1006,12 +1006,20 @@ export function makeRoomToolHandlers(deps: RoomToolDeps) {
               `${target.name} is not available any more: its provider is off or signed out.`,
             ) satisfies RoomInviteResult;
           }
-          // Named the way the chat names it: the model, numbered after every
-          // agent this thread ever had.
-          const handle = nextRoomAgentName(
-            target.name,
-            room.entries.map((entry) => entry.modelName),
+          // The same model invited before comes back as that guest, under its
+          // name. A new one is named the way the chat names it: the model,
+          // numbered after every agent this thread ever had.
+          const earlierGuest = room.thread.participants.find(
+            (participant) =>
+              participant.guest === true &&
+              sameModel(participant.modelSelection, target.modelSelection),
           );
+          const handle =
+            earlierGuest?.handle ??
+            nextRoomAgentName(
+              target.name,
+              room.entries.map((entry) => entry.modelName),
+            );
           const requestId = RoomAgentRequestId.make(randomUUID());
           const agent = { key: target.key, name: handle };
           const rejected = yield* deps.engine
@@ -1022,7 +1030,7 @@ export function makeRoomToolHandlers(deps: RoomToolDeps) {
               requestId,
               kind: "invite",
               from: rules.from,
-              to: { participantId: ThreadParticipantId.make(randomUUID()) },
+              to: { participantId: earlierGuest?.id ?? ThreadParticipantId.make(randomUUID()) },
               callerTurnId,
               chainEpoch,
               message: { messageId: MessageId.make(randomUUID()), text },
