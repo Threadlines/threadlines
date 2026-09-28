@@ -9,7 +9,7 @@ import {
   DEFAULT_GIT_TEXT_GENERATION_OPTIONS,
   ProviderOptionSelections,
 } from "./model.ts";
-import { FollowUpDelivery, ModelSelection } from "./orchestration.ts";
+import { AgentInvitesMode, FollowUpDelivery, ModelSelection } from "./orchestration.ts";
 import { ProviderInstanceConfig, ProviderInstanceId } from "./providerInstance.ts";
 
 // ── Client Settings (local-only) ───────────────────────────────
@@ -561,6 +561,12 @@ export const ServerSettings = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed({})),
   ),
   observability: ObservabilitySettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
+  /**
+   * Whether the thread's agents may bring in other agents (AgentInvitesMode).
+   * Absent: never chosen, which means off; a client with Rooms on sets `ask`
+   * once, and never overwrites a choice.
+   */
+  agentInvites: Schema.optional(AgentInvitesMode),
 });
 export type ServerSettings = typeof ServerSettings.Type;
 
@@ -676,6 +682,12 @@ export const ServerSettingsPatch = Schema.Struct({
   // patches risk leaving driver-specific config in a half-merged state.
   // The web UI sends a fully-formed map every time it edits this field.
   providerInstances: Schema.optionalKey(Schema.Record(ProviderInstanceId, ProviderInstanceConfig)),
+  agentInvites: Schema.optionalKey(AgentInvitesMode),
+  /**
+   * Sets `agentInvites` only if it was never chosen, in the same write, so a
+   * device picking the default cannot overwrite another device's choice.
+   */
+  agentInvitesDefault: Schema.optionalKey(AgentInvitesMode),
 });
 export type ServerSettingsPatch = typeof ServerSettingsPatch.Type;
 

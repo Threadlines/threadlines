@@ -412,16 +412,25 @@ export type OrchestrationProjectCatalogSnapshot = typeof OrchestrationProjectCat
 /**
  * Room tools: requests one room agent makes of another (docs/design/rooms-slice-2.md,
  * Part B). `ask` and `review` are answered read-only on the side; `hand_off`
- * gives the target the next working turn, and its reply comes back.
+ * gives the target the next working turn, and its reply comes back. `invite`
+ * asks the user to bring in an agent the thread does not have, for a review
+ * (docs/design/rooms-agent-invites.md); its review's answer comes back as a
+ * reply.
  */
-export const RoomAgentRequestKind = Schema.Literals(["ask", "review", "hand_off"]);
+export const RoomAgentRequestKind = Schema.Literals(["ask", "review", "hand_off", "invite"]);
 export type RoomAgentRequestKind = typeof RoomAgentRequestKind.Type;
 
 /**
  * What a message is in a room request: the request itself, or the routed
  * reply to a hand-off.
  */
-export const RoomAgentMessageKind = Schema.Literals(["ask", "review", "hand_off", "reply"]);
+export const RoomAgentMessageKind = Schema.Literals([
+  "ask",
+  "review",
+  "hand_off",
+  "invite",
+  "reply",
+]);
 export type RoomAgentMessageKind = typeof RoomAgentMessageKind.Type;
 
 /** How a room request ended. */
@@ -431,6 +440,8 @@ export const RoomAgentRequestOutcome = Schema.Literals([
   "stopped",
   "timeout",
   "cancelled",
+  /** An invite the user said no to. */
+  "declined",
 ]);
 export type RoomAgentRequestOutcome = typeof RoomAgentRequestOutcome.Type;
 
@@ -465,6 +476,47 @@ export const RoomReviewInput = Schema.Struct({
 });
 export type RoomReviewInput = typeof RoomReviewInput.Type;
 
+/**
+ * What the user can answer an agent's invite with: `review`, a one-off
+ * independent review by a guest that never joins; `teammate`, the agent joins
+ * the thread (it becomes a room) and does the review; `decline`, nothing runs
+ * and the thread's agents cannot invite again until the user writes.
+ */
+export const RoomAgentInviteChoice = Schema.Literals(["review", "teammate", "decline"]);
+export type RoomAgentInviteChoice = typeof RoomAgentInviteChoice.Type;
+
+/** How an invited agent is paid for, as shown when the user was asked. */
+export const RoomAgentInviteBilling = Schema.Struct({
+  instanceId: ProviderInstanceId,
+  /** "Codex · ChatGPT Pro", "Claude · API key". */
+  label: TrimmedNonEmptyString,
+  /** Billed per use (an API key) rather than by a plan's limits. */
+  perUse: Schema.Boolean,
+});
+export type RoomAgentInviteBilling = typeof RoomAgentInviteBilling.Type;
+
+/**
+ * An agent's invite, kept on its request message: why it asked, what it
+ * suggested, who pays, and once decided, what was chosen and whether that
+ * happened without asking the user (the "without asking" setting).
+ */
+export const RoomAgentInvite = Schema.Struct({
+  reason: TrimmedNonEmptyString,
+  suggestion: Schema.Literals(["review", "teammate"]),
+  billing: RoomAgentInviteBilling,
+  choice: Schema.optional(RoomAgentInviteChoice),
+  automatic: Schema.optional(Schema.Boolean),
+});
+export type RoomAgentInvite = typeof RoomAgentInvite.Type;
+
+/**
+ * Whether the thread's agents may bring in other agents (see RoomAgentInvite):
+ * `off`, `ask` the user each time, or `auto`, without asking. A server
+ * setting: the tools and the approval live on the server.
+ */
+export const AgentInvitesMode = Schema.Literals(["off", "ask", "auto"]);
+export type AgentInvitesMode = typeof AgentInvitesMode.Type;
+
 export const OrchestrationMessageRole = Schema.Literals(["user", "assistant", "system"]);
 export type OrchestrationMessageRole = typeof OrchestrationMessageRole.Type;
 
@@ -498,6 +550,8 @@ export const OrchestrationMessage = Schema.Struct({
   requestError: Schema.optional(TrimmedNonEmptyString),
   /** An independent review's captured input. See RoomReviewInput. */
   reviewInput: Schema.optional(RoomReviewInput),
+  /** An invite request: see RoomAgentInvite. */
+  invite: Schema.optional(RoomAgentInvite),
   turnId: Schema.NullOr(TurnId),
   streaming: Schema.Boolean,
   createdAt: IsoDateTime,
@@ -921,6 +975,12 @@ export const OrchestrationThreadParticipant = Schema.Struct({
    * earlier messages keep their author; its handle is free to reuse.
    */
   leftAt: Schema.NullOr(IsoDateTime).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
+  /**
+   * A guest: an agent brought in by an invite for one independent review,
+   * never a member (`leftAt` is set when it is recorded). It keeps its
+   * review's author, and never makes the thread a room.
+   */
+  guest: Schema.optional(Schema.Boolean),
 });
 export type OrchestrationThreadParticipant = typeof OrchestrationThreadParticipant.Type;
 
@@ -956,10 +1016,16 @@ export type OrchestrationSideTurn = typeof OrchestrationSideTurn.Type;
  * An open room request: made, not yet over. A hand-off is `pending` until
  * the turn that made it completes, `queued` once its turn for the target is
  * in the queue, and `running` once that turn is sent. Asks and reviews are
- * `running` from the start. A settled request leaves the open set; its
- * outcome stays on its request message.
+ * `running` from the start. An invite is `awaiting_user` until the user
+ * answers it, then `running` while its review runs. A settled request leaves
+ * the open set; its outcome stays on its request message.
  */
-export const OrchestrationAgentRequestStatus = Schema.Literals(["pending", "queued", "running"]);
+export const OrchestrationAgentRequestStatus = Schema.Literals([
+  "pending",
+  "queued",
+  "running",
+  "awaiting_user",
+]);
 export type OrchestrationAgentRequestStatus = typeof OrchestrationAgentRequestStatus.Type;
 
 export const OrchestrationAgentRequest = Schema.Struct({
@@ -973,7 +1039,7 @@ export const OrchestrationAgentRequest = Schema.Struct({
   chainEpoch: NonNegativeInt,
   status: OrchestrationAgentRequestStatus,
   requestMessageId: MessageId,
-  /** Asks and reviews: the side turn answering it. */
+  /** Asks, reviews and invites: the side turn answering it. */
   sideTurnId: Schema.optional(SideTurnId),
   createdAt: IsoDateTime,
 });
@@ -989,13 +1055,15 @@ export const ROOM_AGENT_REQUEST_LIMIT = 3;
  * Room tools state on a thread. `hold` is set by Stop and cleared by the
  * user's next submission; `chainEpoch` is raised by Stop, and no request
  * from an older epoch survives it; `requestsSinceUser` counts requests
- * toward ROOM_AGENT_REQUEST_LIMIT.
+ * toward ROOM_AGENT_REQUEST_LIMIT; `invitesPaused` is set when the user
+ * declines an invite, and cleared, like `hold`, when the user next writes.
  */
 export const OrchestrationAgentRequestState = Schema.Struct({
   open: Schema.Array(OrchestrationAgentRequest),
   hold: Schema.Boolean,
   chainEpoch: NonNegativeInt,
   requestsSinceUser: NonNegativeInt,
+  invitesPaused: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
 });
 export type OrchestrationAgentRequestState = typeof OrchestrationAgentRequestState.Type;
 
@@ -1004,6 +1072,7 @@ export const EMPTY_AGENT_REQUEST_STATE: OrchestrationAgentRequestState = {
   hold: false,
   chainEpoch: 0,
   requestsSinceUser: 0,
+  invitesPaused: false,
 };
 
 export const OrchestrationSideTurnOutcome = Schema.Literals(["completed", "failed", "interrupted"]);
@@ -1821,6 +1890,20 @@ const ThreadUserInputRespondCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+/**
+ * The user's answer to an agent's invite (RoomAgentInviteChoice). The server
+ * checks the invited agent's provider is still signed in and paid for the
+ * way the user was shown before it is applied.
+ */
+const ThreadAgentInviteRespondCommand = Schema.Struct({
+  type: Schema.Literal("thread.agent-invite.respond"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  requestId: RoomAgentRequestId,
+  choice: RoomAgentInviteChoice,
+  createdAt: IsoDateTime,
+});
+
 const ThreadCheckpointRevertCommand = Schema.Struct({
   type: Schema.Literal("thread.checkpoint.revert"),
   commandId: CommandId,
@@ -1909,6 +1992,7 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ThreadContextCompactRequestCommand,
   ThreadApprovalRespondCommand,
   ThreadUserInputRespondCommand,
+  ThreadAgentInviteRespondCommand,
   ThreadCheckpointRevertCommand,
   ThreadSessionStopCommand,
   ThreadGoalSetCommand,
@@ -1951,6 +2035,7 @@ export const ClientOrchestrationCommand = Schema.Union([
   ThreadContextCompactRequestCommand,
   ThreadApprovalRespondCommand,
   ThreadUserInputRespondCommand,
+  ThreadAgentInviteRespondCommand,
   ThreadCheckpointRevertCommand,
   ThreadSessionStopCommand,
   ThreadGoalSetCommand,
@@ -2211,10 +2296,27 @@ const ThreadAgentRequestSubmitCommand = Schema.Struct({
     messageId: MessageId,
     text: Schema.String,
   }),
-  /** Asks and reviews: the side turn that answers. */
+  /** Asks, reviews and invites: the side turn that answers. */
   sideTurnId: Schema.optional(SideTurnId),
-  /** Reviews: what the reviewer gets besides the request. */
+  /** Reviews and invites: what the reviewer gets besides the request. */
   reviewInput: Schema.optional(RoomReviewInput),
+  /**
+   * Invites: the agent asked for, recorded as a guest in the same step (its
+   * id is `to`), and the invite as the user sees it. With `autoChoice` (the
+   * "without asking" setting) it is decided at once instead of waiting.
+   */
+  invite: Schema.optional(
+    Schema.Struct({
+      guest: Schema.Struct({
+        handle: TrimmedNonEmptyString,
+        modelSelection: ModelSelection,
+      }),
+      reason: TrimmedNonEmptyString,
+      suggestion: Schema.Literals(["review", "teammate"]),
+      billing: RoomAgentInviteBilling,
+      autoChoice: Schema.optional(Schema.Literals(["review", "teammate"])),
+    }),
+  ),
   createdAt: IsoDateTime,
 });
 
@@ -2460,6 +2562,8 @@ export const ThreadParticipantUpdatedPayload = Schema.Struct({
   modelSelection: Schema.optional(ModelSelection),
   /** An added agent's new name, with a model change. Absent: unchanged. */
   handle: Schema.optional(TrimmedNonEmptyString),
+  /** A guest the user added to the thread: it becomes a member. */
+  joined: Schema.optional(Schema.Literal(true)),
   updatedAt: IsoDateTime,
 });
 
@@ -2510,9 +2614,18 @@ export const ThreadAgentRequestUpdatedPayload = Schema.Struct({
   threadId: ThreadId,
   requestId: RoomAgentRequestId,
   status: OrchestrationAgentRequestStatus,
+  /** An invite the user answered: recorded on its request message. */
+  inviteChoice: Schema.optional(
+    Schema.Struct({
+      requestMessageId: MessageId,
+      choice: RoomAgentInviteChoice,
+      automatic: Schema.Boolean,
+    }),
+  ),
   updatedAt: IsoDateTime,
 });
 
+/** A `declined` invite also pauses invites until the user writes. */
 export const ThreadAgentRequestSettledPayload = Schema.Struct({
   threadId: ThreadId,
   requestId: RoomAgentRequestId,
@@ -2529,7 +2642,7 @@ export const ThreadAgentRequestsHeldPayload = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
-/** The user wrote: the hold comes off and the count starts over. */
+/** The user wrote: the hold comes off, invites resume and the count starts over. */
 export const ThreadAgentRequestsResetPayload = Schema.Struct({
   threadId: ThreadId,
   createdAt: IsoDateTime,
@@ -2581,6 +2694,7 @@ export const ThreadMessageSentPayload = Schema.Struct({
   requestId: Schema.optional(RoomAgentRequestId),
   requestKind: Schema.optional(RoomAgentMessageKind),
   reviewInput: Schema.optional(RoomReviewInput),
+  invite: Schema.optional(RoomAgentInvite),
   turnId: Schema.NullOr(TurnId),
   streaming: Schema.Boolean,
   /** Missing means legacy behavior for events written before assistant

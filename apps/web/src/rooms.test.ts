@@ -47,6 +47,20 @@ describe("rooms", () => {
     expect(resolveRoomRecipient(left, astraId)).toBeNull();
   });
 
+  it("keeps a thread plain when an agent was only brought in for one review", () => {
+    const guestOnly = {
+      modelSelection: { instanceId: ProviderInstanceId.make("claudeAgent"), model: "opus-9" },
+      participants: [{ ...astra, leftAt: "2026-01-02T00:00:00.000Z", guest: true }],
+    };
+    expect(isRoom(guestOnly)).toBe(false);
+    // Revert stays on...
+    expect(hasRoomHistory(guestOnly)).toBe(false);
+    // ...and its review still says who wrote it.
+    expect(
+      buildRoomAgentLabels(guestOnly, [], (model) => model.name)?.get(roomAgentKey(astraId)),
+    ).toMatchObject({ name: "gpt-6-astra", guest: true });
+  });
+
   it("reads as a plain thread once its added agents all left, keeping their names", () => {
     const left = {
       modelSelection: { instanceId: ProviderInstanceId.make("claudeAgent"), model: "opus-9" },

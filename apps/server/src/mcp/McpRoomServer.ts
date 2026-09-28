@@ -12,6 +12,7 @@
  * reaches this endpoint only if it carries room tools, and each handler still
  * checks that its caller may use that tool.
  */
+import { agentInvitesMode } from "@threadlines/shared/roomAgentRequests";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -23,6 +24,7 @@ import { OrchestrationEngineService } from "../orchestration/Services/Orchestrat
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { ProviderRegistry } from "../provider/Services/ProviderRegistry.ts";
 import { ProviderService } from "../provider/Services/ProviderService.ts";
+import { ServerSettingsService } from "../serverSettings.ts";
 import { GitVcsDriver } from "../vcs/GitVcsDriver.ts";
 import {
   MCP_ROOM_ROUTE_PATH,
@@ -67,6 +69,7 @@ const RoomToolHandlersLive = RoomToolkit.toLayer(
     const providers = yield* ProviderRegistry;
     const providerService = yield* ProviderService;
     const git = yield* GitVcsDriver;
+    const settings = yield* ServerSettingsService;
     // Requests outlive the HTTP calls waiting on them; they end with the server.
     const requests = makeRoomRequestRegistry(yield* Effect.scope);
     const handlers = makeRoomToolHandlers({
@@ -101,6 +104,11 @@ const RoomToolHandlersLive = RoomToolkit.toLayer(
             return model?.shortName ?? model?.name ?? selection.model;
           }),
         ),
+      providers: providers.getProviders,
+      invitesMode: settings.getSettings.pipe(
+        Effect.map(agentInvitesMode),
+        Effect.orElseSucceed(() => "off" as const),
+      ),
       git,
       requests,
     });
@@ -114,6 +122,8 @@ const RoomToolHandlersLive = RoomToolkit.toLayer(
       room_review: (input) => Effect.flatMap(caller, (scope) => handlers.room_review(scope, input)),
       room_hand_off: (input) =>
         Effect.flatMap(caller, (scope) => handlers.room_hand_off(scope, input)),
+      room_available_agents: () => Effect.flatMap(caller, handlers.room_available_agents),
+      room_invite: (input) => Effect.flatMap(caller, (scope) => handlers.room_invite(scope, input)),
     };
   }),
 );

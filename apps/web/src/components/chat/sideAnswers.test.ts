@@ -219,6 +219,29 @@ describe("side exchanges in the timeline", () => {
     expect(trays(rows)).toEqual([null, "single", null, null, "first", "last"]);
   });
 
+  it("names the working agent's rows that come right after another agent's review", () => {
+    const working = (rows: ReadonlyArray<MessagesTimelineRow>) =>
+      rows.find((row) => row.kind === "working");
+    const reviewing = derive(
+      [userEntry, step("read", 2), step("review-call", 4)],
+      [exchange({ kind: "review", askedBy: { participantId: null } })],
+    );
+    expect(layout(reviewing).slice(-2)).toEqual([
+      "side-status:side-1 answering",
+      "working-indicator-row",
+    ]);
+    expect(working(reviewing)).toMatchObject({ namesAgent: true });
+    // Its own steps below the review: the first of them names it, and the
+    // working row under those steps is plainly the same agent's.
+    const after = derive(
+      [userEntry, step("read", 2), step("review-call", 4), step("edit", 10)],
+      [exchange({ askedBy: { participantId: null }, answeredAt: 8 })],
+    );
+    expect(after.find((row) => row.id === "edit")).toMatchObject({ namesAgent: true });
+    expect(after.find((row) => row.id === "read")).not.toMatchObject({ namesAgent: true });
+    expect(working(after)).not.toMatchObject({ namesAgent: true });
+  });
+
   it("answers a side question on one line while the agent works, then posts the answer below", () => {
     const entries = [userEntry, step("read", 2), step("edit", 10)];
     const live = derive(entries, [exchange({})]);

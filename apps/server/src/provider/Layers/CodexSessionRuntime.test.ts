@@ -21,6 +21,7 @@ import {
 import { FILE_LINK_INSTRUCTIONS } from "../fileLinkInstructions.ts";
 import { CODEX_BROWSER_TOKEN_ENV_VAR } from "../codexAppServerArgs.ts";
 import { mcpSessionRegistry } from "../../mcp/McpSessionRegistry.ts";
+import { ROOM_TOOL_NAMES } from "../../mcp/roomToolAccess.ts";
 import {
   buildPermissionsApprovalResponse,
   buildTurnStartParams,
@@ -1425,7 +1426,7 @@ describe("Codex room tools", () => {
         );
         const scope = yield* mcpSessionRegistry.resolve(token);
         assert.equal(scope?.browser, true);
-        assert.equal(scope?.roomTools.size, 6);
+        assert.equal(scope?.roomTools.size, ROOM_TOOL_NAMES.length);
 
         yield* runtime.start();
         assert.equal((yield* runtime.getSession).roomTools, true);

@@ -11,6 +11,10 @@
       "types": "./src/transcriptOrder.ts",
       "import": "./src/transcriptOrder.ts"
     },
+    "./transcriptRevert": {
+      "types": "./src/transcriptRevert.ts",
+      "import": "./src/transcriptRevert.ts"
+    },
     "./model": {
       "types": "./src/model.ts",
       "import": "./src/model.ts"

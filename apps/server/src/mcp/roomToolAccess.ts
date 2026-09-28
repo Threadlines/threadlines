@@ -19,6 +19,8 @@ export const ROOM_TOOL_NAMES = [
   "room_hand_off",
   "room_history",
   "room_diff",
+  "room_available_agents",
+  "room_invite",
 ] as const;
 export type RoomToolName = (typeof ROOM_TOOL_NAMES)[number];
 

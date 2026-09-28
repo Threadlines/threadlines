@@ -15,6 +15,7 @@ import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSna
 import * as PreviewAutomationBroker from "../preview/PreviewAutomationBroker.ts";
 import { ProviderRegistry } from "../provider/Services/ProviderRegistry.ts";
 import { ProviderService } from "../provider/Services/ProviderService.ts";
+import { ServerSettingsService } from "../serverSettings.ts";
 import { GitVcsDriver } from "../vcs/GitVcsDriver.ts";
 import * as McpHttpServer from "./McpHttpServer.ts";
 import { normalizeMcpHttpResponse } from "./McpHttpServer.ts";
@@ -161,6 +162,7 @@ const RoomServerStubs = Layer.mergeAll(
   Layer.succeed(ProviderRegistry, { getProviders: Effect.succeed([]) } as never),
   Layer.succeed(ProviderService, { listSessions: () => Effect.succeed([]) } as never),
   Layer.succeed(GitVcsDriver, {} as never),
+  ServerSettingsService.layerTest(),
   PreviewAutomationBroker.layer,
 );
 

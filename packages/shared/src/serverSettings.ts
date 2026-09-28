@@ -82,7 +82,7 @@ export function applyServerSettingsPatch(
   const selectionPatch = patch.textGenerationModelSelection;
   const backupSelectionPatch = patch.textGenerationBackupModelSelection;
   const writerSelectionPatch = patch.sourceControlWriterModelSelection;
-  const { automaticGitFetchInterval, ...patchForMerge } = patch;
+  const { automaticGitFetchInterval, agentInvitesDefault, ...patchForMerge } = patch;
   const next = deepMerge(current, patchForMerge);
   let nextWithReplacements = {
     ...next,
@@ -90,6 +90,9 @@ export function applyServerSettingsPatch(
       ? { providerInstances: patch.providerInstances }
       : {}),
     ...(automaticGitFetchInterval !== undefined ? { automaticGitFetchInterval } : {}),
+    ...(agentInvitesDefault !== undefined && next.agentInvites === undefined
+      ? { agentInvites: agentInvitesDefault }
+      : {}),
   };
 
   const applyModelSelectionPatch = (

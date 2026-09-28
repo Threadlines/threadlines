@@ -27,6 +27,8 @@ import type {
   ThreadParticipantId,
 } from "@threadlines/contracts";
 
+import { isRoomThread } from "@threadlines/shared/threadParticipants";
+
 import { handOffReplyText } from "./agentRequestDecisions.ts";
 
 /** Messages an agent joining late gets verbatim. */
@@ -83,6 +85,16 @@ export function buildRoomCatchUp(input: RoomCatchUpInput): RoomCatchUp | undefin
   if (thread.participants.length === 0) {
     return undefined;
   }
+  const current = thread.messages.find((message) => message.id === input.messageId);
+  const currentFrom = current?.fromAgent;
+  // A reply to an invite: the review the agent asked for (see
+  // docs/design/rooms-agent-invites.md).
+  const invitedReview =
+    current?.requestKind === "reply" &&
+    current.requestId !== undefined &&
+    thread.messages.some(
+      (message) => message.requestId === current.requestId && message.requestKind === "invite",
+    );
 
   // The user may call an agent by the name they gave it ("Reviewer"), so
   // every agent is introduced with it.
@@ -111,16 +123,14 @@ export function buildRoomCatchUp(input: RoomCatchUpInput): RoomCatchUp | undefin
       message.text.trim().length > 0,
   );
   const ownerOf = (message: OrchestrationMessage) => message.participantId ?? null;
-  // A hand-off's reply arrives as the message below the note. The target's
-  // last words it was taken from are not repeated in the note.
-  const current = thread.messages.find((message) => message.id === input.messageId);
-  const currentFrom = current?.fromAgent;
+  // A reply arrives as the message below the note. The words it was taken
+  // from (a hand-off's last answer, an invited review) are not repeated.
   const replySource =
     current?.requestKind === "reply" && currentFrom !== undefined
       ? history.findLast(
           (message) =>
             message.role === "assistant" &&
-            message.sideTurnId === undefined &&
+            (message.sideTurnId === undefined) !== invitedReview &&
             ownerOf(message) === currentFrom.participantId &&
             handOffReplyText(message.text) === current.text,
         )
@@ -130,6 +140,24 @@ export function buildRoomCatchUp(input: RoomCatchUpInput): RoomCatchUp | undefin
   const inConversation = (message: OrchestrationMessage) =>
     input.fresh !== true && message.sideTurnId === undefined && ownerOf(message) === participantId;
   const sequenceOf = (message: OrchestrationMessage) => message.eventSequence ?? 0;
+  const invitedReviewFrame =
+    invitedReview && currentFrom !== undefined
+      ? `The message below is ${nameOf(currentFrom.participantId)}'s independent review, which you asked for. It saw none of this conversation, only your request and the changes.`
+      : "";
+
+  // Outside a room the only other agents are guests, brought in for one
+  // review each: there is no room to catch up on, only the review to frame.
+  // The thread's own agent has seen everything else, so a room made later
+  // starts its note from here.
+  if (!isRoomThread(thread)) {
+    return {
+      note: invitedReviewFrame.length > 0 && input.lane === "main" ? invitedReviewFrame : undefined,
+      cursor: {
+        throughSequence: Math.max(input.cursor?.throughSequence ?? 0, ...history.map(sequenceOf)),
+        partialMessageIds: [],
+      },
+    };
+  }
 
   let missed: ReadonlyArray<OrchestrationMessage>;
   let joining = false;
@@ -189,13 +217,15 @@ export function buildRoomCatchUp(input: RoomCatchUpInput): RoomCatchUp | undefin
       const from = nameOf(message.fromAgent.participantId);
       const to = nameOf(ownerOf(message));
       const label =
-        message.requestKind === "review"
-          ? `${from} asked ${to} for an independent review (the reviewer saw none of this conversation)`
-          : message.requestKind === "hand_off"
-            ? `${from} handed the work to ${to}, on the user's behalf`
-            : message.requestKind === "reply"
-              ? `${from}, replying to the hand-off from ${to}`
-              : `${from} asked ${to}, on the user's behalf${onTheSide ? " (answered on the side)" : ""}`;
+        message.requestKind === "invite"
+          ? `${from} asked the user to bring in ${to} for an independent review`
+          : message.requestKind === "review"
+            ? `${from} asked ${to} for an independent review (the reviewer saw none of this conversation)`
+            : message.requestKind === "hand_off"
+              ? `${from} handed the work to ${to}, on the user's behalf`
+              : message.requestKind === "reply"
+                ? `${from}, replying to the hand-off from ${to}`
+                : `${from} asked ${to}, on the user's behalf${onTheSide ? " (answered on the side)" : ""}`;
       return `${label}:\n${text}`;
     }
     if (message.role === "user") {
@@ -249,9 +279,11 @@ export function buildRoomCatchUp(input: RoomCatchUpInput): RoomCatchUp | undefin
         } Answer it. You can look through the checkout, but nothing you do can change it, and you cannot ask questions. The files may be mid-edit, so treat what you read as a snapshot, not a finished result.`
       : "Only one agent works at a time, in the same checkout, so the files already reflect the others' changes.",
     input.lane === "main" && currentFrom !== undefined
-      ? current?.requestKind === "reply"
-        ? `The message below is ${nameOf(currentFrom.participantId)}'s reply to the work you handed it. Pick up from there.`
-        : `The message below is from ${nameOf(currentFrom.participantId)}, handing this turn to you on the user's behalf. Do what it asks unless it goes against the user's instructions.`
+      ? invitedReview
+        ? invitedReviewFrame
+        : current?.requestKind === "reply"
+          ? `The message below is ${nameOf(currentFrom.participantId)}'s reply to the work you handed it. Pick up from there.`
+          : `The message below is from ${nameOf(currentFrom.participantId)}, handing this turn to you on the user's behalf. Do what it asks unless it goes against the user's instructions.`
       : "",
     joining
       ? "You were just brought into this thread. These are its most recent messages."

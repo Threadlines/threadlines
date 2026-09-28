@@ -22,7 +22,12 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { retainThreadActivities } from "@threadlines/shared/threadActivityRetention";
 import { applyRoomAgentUpdate } from "@threadlines/shared/threadParticipants";
-import { agentRequestStateOn } from "@threadlines/shared/roomAgentRequests";
+import {
+  agentRequestStateOn,
+  withInviteChoice,
+  withUnqueuedAgentMessage,
+} from "@threadlines/shared/roomAgentRequests";
+import { retainMessagesAfterRevert } from "@threadlines/shared/transcriptRevert";
 
 import { toProjectorDecodeError, type OrchestrationProjectorDecodeError } from "./Errors.ts";
 import {
@@ -157,56 +162,12 @@ function retainThreadMessagesAfterRevert(
   retainedTurnIds: ReadonlySet<string>,
   turnCount: number,
 ): ReadonlyArray<OrchestrationMessage> {
-  const retainedMessageIds = new Set<string>();
-  for (const message of messages) {
-    if (message.role === "system") {
-      retainedMessageIds.add(message.id);
-      continue;
-    }
-    if (message.turnId !== null && retainedTurnIds.has(message.turnId)) {
-      retainedMessageIds.add(message.id);
-    }
-  }
-
-  const retainedUserCount = messages.filter(
-    (message) => message.role === "user" && retainedMessageIds.has(message.id),
-  ).length;
-  const missingUserCount = Math.max(0, turnCount - retainedUserCount);
-  if (missingUserCount > 0) {
-    const fallbackUserMessages = messages
-      .filter(
-        (message) =>
-          message.role === "user" &&
-          !retainedMessageIds.has(message.id) &&
-          (message.turnId === null || retainedTurnIds.has(message.turnId)),
-      )
-      .toSorted(compareTranscriptOrder)
-      .slice(0, missingUserCount);
-    for (const message of fallbackUserMessages) {
-      retainedMessageIds.add(message.id);
-    }
-  }
-
-  const retainedAssistantCount = messages.filter(
-    (message) => message.role === "assistant" && retainedMessageIds.has(message.id),
-  ).length;
-  const missingAssistantCount = Math.max(0, turnCount - retainedAssistantCount);
-  if (missingAssistantCount > 0) {
-    const fallbackAssistantMessages = messages
-      .filter(
-        (message) =>
-          message.role === "assistant" &&
-          !retainedMessageIds.has(message.id) &&
-          (message.turnId === null || retainedTurnIds.has(message.turnId)),
-      )
-      .toSorted(compareTranscriptOrder)
-      .slice(0, missingAssistantCount);
-    for (const message of fallbackAssistantMessages) {
-      retainedMessageIds.add(message.id);
-    }
-  }
-
-  return messages.filter((message) => retainedMessageIds.has(message.id));
+  return retainMessagesAfterRevert({
+    messages,
+    idOf: (message) => message.id,
+    retainedTurnIds,
+    turnCount,
+  });
 }
 
 function retainThreadActivitiesAfterRevert(
@@ -671,11 +632,27 @@ export function projectEvent(
         event.type,
         "payload",
       ).pipe(
-        Effect.map((payload) =>
-          updateAgentRequests(nextBase, payload.threadId, (state) =>
+        Effect.map((payload) => {
+          const next = updateAgentRequests(nextBase, payload.threadId, (state) =>
             agentRequestStateOn.updated(state, payload.requestId, payload.status),
-          ),
-        ),
+          );
+          const inviteChoice = payload.inviteChoice;
+          const thread = next.threads.find((entry) => entry.id === payload.threadId);
+          if (inviteChoice === undefined || thread === undefined) {
+            return next;
+          }
+          // The user's answer to an invite stays on its request message.
+          return {
+            ...next,
+            threads: updateThread(next.threads, payload.threadId, {
+              messages: thread.messages.map((message) => {
+                if (message.id !== inviteChoice.requestMessageId) return message;
+                const invite = withInviteChoice(message.invite, inviteChoice);
+                return invite === undefined ? message : { ...message, invite };
+              }),
+            }),
+          };
+        }),
       );
 
     case "thread.agent-request-settled":
@@ -687,7 +664,7 @@ export function projectEvent(
       ).pipe(
         Effect.map((payload) => {
           const next = updateAgentRequests(nextBase, payload.threadId, (state) =>
-            agentRequestStateOn.settled(state, payload.requestId),
+            agentRequestStateOn.settled(state, payload.requestId, payload.outcome),
           );
           const thread = next.threads.find((entry) => entry.id === payload.threadId);
           if (thread === undefined) {
@@ -893,6 +870,7 @@ export function projectEvent(
             ...(payload.requestId !== undefined ? { requestId: payload.requestId } : {}),
             ...(payload.requestKind !== undefined ? { requestKind: payload.requestKind } : {}),
             ...(payload.reviewInput !== undefined ? { reviewInput: payload.reviewInput } : {}),
+            ...(payload.invite !== undefined ? { invite: payload.invite } : {}),
             turnId: payload.turnId,
             streaming: payload.streaming,
             createdAt: payload.createdAt,
@@ -1039,6 +1017,9 @@ export function projectEvent(
             threads: updateThread(nextBase.threads, payload.threadId, {
               queuedFollowUps: (thread.queuedFollowUps ?? []).filter(
                 (queued) => queued.messageId !== payload.messageId,
+              ),
+              messages: thread.messages.map((message) =>
+                withUnqueuedAgentMessage(message, payload),
               ),
             }),
           };

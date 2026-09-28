@@ -896,5 +896,316 @@ describe("decider rooms", () => {
       busy = await apply(busy, await decideEvents(request("hand_off"), busy));
       expect(Exit.isFailure(await decide(change, busy))).toBe(true);
     });
+
+    describe("invites", () => {
+      const guestId = ThreadParticipantId.make("5c4d3e2f-1a0b-4c9d-8e7f-6a5b4c3d2e1f");
+      const plainThread = () => readModel({ participants: [], session: working() });
+      function invite(
+        overrides: Partial<
+          NonNullable<
+            Extract<OrchestrationCommand, { type: "thread.agent-request.submit" }>["invite"]
+          >
+        > = {},
+      ) {
+        return {
+          ...request("review"),
+          kind: "invite" as const,
+          to: { participantId: guestId },
+          invite: {
+            guest: {
+              handle: "GPT-6 Astra",
+              modelSelection: {
+                instanceId: ProviderInstanceId.make("codex"),
+                model: "gpt-6-astra",
+              },
+            },
+            reason: "A second model should check the retry math.",
+            suggestion: "review" as const,
+            billing: {
+              instanceId: ProviderInstanceId.make("codex"),
+              label: "Codex · ChatGPT Pro",
+              perUse: false,
+            },
+            ...overrides,
+          },
+        };
+      }
+      const respond = (
+        requestId: RoomAgentRequestId,
+        choice: "review" | "teammate" | "decline",
+      ): OrchestrationCommand => ({
+        type: "thread.agent-invite.respond",
+        commandId: CommandId.make(`cmd-respond-${choice}`),
+        threadId,
+        requestId,
+        choice,
+        createdAt: now,
+      });
+      const revert: OrchestrationCommand = {
+        type: "thread.checkpoint.revert",
+        commandId: CommandId.make("cmd-revert"),
+        threadId,
+        turnCount: 0,
+        createdAt: now,
+      };
+      /** The guest's review finished with this text. */
+      const answered = async (model: OrchestrationReadModel, text: string) => {
+        const thread = threadOf(model);
+        const sideTurn = thread.sideTurn!;
+        const withAnswer: OrchestrationReadModel = {
+          ...model,
+          threads: [
+            {
+              ...thread,
+              messages: [
+                ...thread.messages,
+                {
+                  id: MessageId.make(`side-answer:${sideTurn.sideTurnId}`),
+                  role: "assistant",
+                  text,
+                  participantId: sideTurn.participantId,
+                  sideTurnId: sideTurn.sideTurnId,
+                  turnId: null,
+                  streaming: false,
+                  createdAt: now,
+                  updatedAt: now,
+                },
+              ],
+            },
+          ],
+        };
+        return apply(
+          withAnswer,
+          await decideEvents(
+            {
+              type: "thread.side-turn.settle",
+              commandId: CommandId.make("cmd-review-done"),
+              threadId,
+              sideTurnId: sideTurn.sideTurnId,
+              outcome: "completed",
+              createdAt: now,
+            },
+            withAnswer,
+          ),
+        );
+      };
+
+      it("asks the user, and a review only leaves the thread a plain one whose agent gets the review back", async () => {
+        let model = plainThread();
+        const ask = invite();
+        model = await apply(model, await decideEvents(ask, model));
+        let thread = threadOf(model);
+        expect(thread.agentRequests.open).toMatchObject([
+          { kind: "invite", status: "awaiting_user" },
+        ]);
+        expect(thread.participants).toMatchObject([{ id: guestId, guest: true }]);
+        expect(thread.sideTurn ?? null).toBeNull();
+        // Nothing may be rewound while the user still has to answer.
+        expect(Exit.isFailure(await decide(revert, model))).toBe(true);
+
+        // The caller's turn ends; the invite still waits for the user.
+        model = { ...model, threads: [{ ...thread, session: session() }] };
+        model = await apply(model, await decideEvents(respond(ask.requestId, "review"), model));
+        thread = threadOf(model);
+        expect(thread.sideTurn).toMatchObject({
+          participantId: guestId,
+          kind: "review",
+          askedBy: { participantId: null },
+        });
+        expect(
+          thread.messages.find((message) => message.id === ask.message.messageId),
+        ).toMatchObject({ invite: { choice: "review", automatic: false } });
+        // The review is its own message, like any independent review.
+        expect(
+          thread.messages.find((message) => message.id === thread.sideTurn?.messageId),
+        ).toMatchObject({
+          requestKind: "review",
+          sideTurnId: thread.sideTurn?.sideTurnId,
+          reviewInput: ask.reviewInput,
+        });
+
+        model = await answered(model, "The backoff never caps.");
+        thread = threadOf(model);
+        expect(thread.agentRequests.open).toEqual([]);
+        expect(thread.queuedFollowUps).toMatchObject([
+          {
+            text: "The backoff never caps.",
+            fromAgent: { participantId: guestId },
+            requestId: ask.requestId,
+          },
+        ]);
+        // Still a plain thread: the guest never joined.
+        expect(thread.participants).toMatchObject([{ id: guestId, guest: true }]);
+        expect(Exit.isFailure(await decide(revert, model))).toBe(true);
+        const withoutReply = { ...model, threads: [{ ...thread, queuedFollowUps: [] }] };
+        expect(Exit.isSuccess(await decide(revert, withoutReply))).toBe(true);
+
+        // Stop takes the reply back: it stays in the chat, marked, and is
+        // never taken for a turn's message.
+        model = await apply(
+          model,
+          await decideEvents(
+            {
+              type: "thread.turn.interrupt",
+              commandId: CommandId.make("cmd-stop-reply"),
+              threadId,
+              createdAt: now,
+            },
+            model,
+          ),
+        );
+        thread = threadOf(model);
+        expect(thread.queuedFollowUps).toEqual([]);
+        expect(thread.messages.find((message) => message.requestKind === "reply")).toMatchObject({
+          requestOutcome: "cancelled",
+        });
+      });
+
+      it("adds the agent to the thread, which makes it a room", async () => {
+        let model = plainThread();
+        const ask = invite({ suggestion: "teammate" });
+        model = await apply(model, await decideEvents(ask, model));
+        model = await apply(model, await decideEvents(respond(ask.requestId, "teammate"), model));
+        const thread = threadOf(model);
+        expect(thread.participants).toMatchObject([{ id: guestId, leftAt: null }]);
+        expect(thread.participants[0]?.guest).toBeUndefined();
+        expect(Exit.isFailure(await decide(revert, model))).toBe(true);
+      });
+
+      it("hears no more invites after not now, until the user writes", async () => {
+        let model = plainThread();
+        const ask = invite();
+        model = await apply(model, await decideEvents(ask, model));
+        model = await apply(model, await decideEvents(respond(ask.requestId, "decline"), model));
+        const thread = threadOf(model);
+        expect(thread.agentRequests).toMatchObject({ open: [], invitesPaused: true });
+        expect(thread.sideTurn ?? null).toBeNull();
+        expect(
+          thread.messages.find((message) => message.id === ask.message.messageId)?.requestOutcome,
+        ).toBe("declined");
+        const again = invite();
+        expect(
+          Exit.isFailure(
+            await decide(
+              {
+                ...again,
+                to: {
+                  participantId: ThreadParticipantId.make("6d5e4f3a-2b1c-4d0e-9f8a-7b6c5d4e3f2a"),
+                },
+              },
+              model,
+            ),
+          ),
+        ).toBe(true);
+
+        const userTurn = await decideEvents(
+          turnStart(null),
+          readModel({ ...thread, session: session() }),
+        );
+        model = await apply(
+          model,
+          userTurn.filter((event) => event.type === "thread.agent-requests-reset"),
+        );
+        expect(threadOf(model).agentRequests.invitesPaused).toBe(false);
+      });
+
+      it("takes a waiting invite back on Stop", async () => {
+        let model = plainThread();
+        const ask = invite();
+        model = await apply(model, await decideEvents(ask, model));
+        const stopped = await decideEvents(
+          {
+            type: "thread.turn.interrupt",
+            commandId: CommandId.make("cmd-stop-invite"),
+            threadId,
+            turnId: callerTurn,
+            createdAt: now,
+          },
+          model,
+        );
+        model = await apply(model, stopped);
+        expect(threadOf(model).agentRequests).toMatchObject({ open: [], hold: true });
+        expect(Exit.isFailure(await decide(respond(ask.requestId, "review"), model))).toBe(true);
+      });
+
+      it("still ends the chain on Stop once the review is over, so its reply cannot slip out", async () => {
+        const guest = {
+          ...astra,
+          id: guestId,
+          leftAt: now,
+          guest: true,
+        };
+        const stopped = await decideEvents(
+          {
+            type: "thread.turn.interrupt",
+            commandId: CommandId.make("cmd-stop-guest"),
+            threadId,
+            createdAt: now,
+          },
+          readModel({ participants: [guest], session: working() }),
+        );
+        expect(stopped.map((event) => event.type)).toEqual([
+          "thread.turn-interrupt-requested",
+          "thread.agent-requests-held",
+        ]);
+        // A thread no agent was ever brought into is left as it was.
+        const plain = await decideEvents(
+          {
+            type: "thread.turn.interrupt",
+            commandId: CommandId.make("cmd-stop-plain"),
+            threadId,
+            createdAt: now,
+          },
+          plainThread(),
+        );
+        expect(plain.map((event) => event.type)).toEqual(["thread.turn-interrupt-requested"]);
+      });
+
+      it("brings the same model back as the same guest, under the same name", async () => {
+        let model = plainThread();
+        const first = invite({ autoChoice: "review" });
+        model = await apply(model, await decideEvents(first, model));
+        // Its review is over; the side answer slot is free again.
+        model = { ...model, threads: [{ ...threadOf(model), sideTurn: null }] };
+        const again = invite({ autoChoice: "review" });
+        const events = await decideEvents(again, model);
+        expect(events.some((event) => event.type === "thread.participant-added")).toBe(false);
+        model = await apply(model, events);
+        expect(threadOf(model).participants).toMatchObject([{ id: guestId, guest: true }]);
+        // Another agent cannot take over the guest's record.
+        expect(
+          Exit.isFailure(
+            await decide(
+              invite({
+                guest: {
+                  handle: "GPT-6 Sol",
+                  modelSelection: {
+                    instanceId: ProviderInstanceId.make("codex"),
+                    model: "gpt-6-sol",
+                  },
+                },
+              }),
+              { ...model, threads: [{ ...threadOf(model), sideTurn: null }] },
+            ),
+          ),
+        ).toBe(true);
+      });
+
+      it("starts the review at once without asking", async () => {
+        const model = plainThread();
+        const events = await decideEvents(invite({ autoChoice: "review" }), model);
+        expect(events.map((event) => event.type)).toEqual([
+          "thread.participant-added",
+          "thread.message-sent",
+          "thread.agent-request-submitted",
+          "thread.message-sent",
+          "thread.side-turn-started",
+        ]);
+        expect(events[1]?.payload).toMatchObject({
+          invite: { choice: "review", automatic: true },
+        });
+        expect(events[2]?.payload).toMatchObject({ request: { status: "running" } });
+      });
+    });
   });
 });

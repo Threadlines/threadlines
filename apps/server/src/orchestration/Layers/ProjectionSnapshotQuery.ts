@@ -43,6 +43,7 @@ import {
   RoomAgentRef,
   RoomAgentRequestId,
   RoomAgentRequestOutcome,
+  RoomAgentInvite,
   RoomReviewInput,
   TrimmedNonEmptyString,
 } from "@threadlines/contracts";
@@ -54,6 +55,7 @@ import * as Struct from "effect/Struct";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as SqlSchema from "effect/unstable/sql/SqlSchema";
 import type * as Statement from "effect/unstable/sql/Statement";
+import { awaitingInvite } from "@threadlines/shared/roomAgentRequests";
 import { MAX_THREAD_ACTIVITIES, MAX_THREAD_MESSAGES } from "@threadlines/shared/threadLimits";
 import { retainThreadActivities } from "@threadlines/shared/threadActivityRetention";
 
@@ -104,6 +106,10 @@ const ProjectionProjectCatalogDbRowSchema = Schema.Struct({
   updatedAt: ProjectionProject.fields.updatedAt,
   deletedAt: ProjectionProject.fields.deletedAt,
 });
+/** An agent's invite waits for the user: the thread needs them, like a question. */
+const hasAwaitingInvite = (state: OrchestrationAgentRequestState | null | undefined) =>
+  state != null && awaitingInvite(state) !== undefined;
+
 const ProjectionThreadMessageDbRowSchema = ProjectionThreadMessage.mapFields(
   Struct.assign({
     isStreaming: Schema.Number,
@@ -118,6 +124,7 @@ const ProjectionThreadMessageDbRowSchema = ProjectionThreadMessage.mapFields(
     requestOutcome: Schema.NullOr(RoomAgentRequestOutcome),
     requestError: Schema.NullOr(TrimmedNonEmptyString),
     reviewInput: Schema.NullOr(Schema.fromJsonString(RoomReviewInput)),
+    invite: Schema.NullOr(Schema.fromJsonString(RoomAgentInvite)),
   }),
 );
 const ProjectionThreadProposedPlanDbRowSchema = ProjectionThreadProposedPlan.mapFields(
@@ -387,6 +394,7 @@ function mapThreadMessageRow(
     ...(row.requestOutcome !== null ? { requestOutcome: row.requestOutcome } : {}),
     ...(row.requestError !== null ? { requestError: row.requestError } : {}),
     ...(row.reviewInput !== null ? { reviewInput: row.reviewInput } : {}),
+    ...(row.invite !== null ? { invite: row.invite } : {}),
     turnId: row.turnId,
     streaming: row.isStreaming === 1,
     createdAt: row.createdAt,
@@ -742,6 +750,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           request_outcome AS "requestOutcome",
           request_error AS "requestError",
           review_input AS "reviewInput",
+          invite,
           is_streaming AS "isStreaming",
           created_at AS "createdAt",
           updated_at AS "updatedAt"
@@ -788,6 +797,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           request_outcome AS "requestOutcome",
           request_error AS "requestError",
           review_input AS "reviewInput",
+          invite,
           is_streaming AS "isStreaming",
           created_at AS "createdAt",
           updated_at AS "updatedAt"
@@ -1420,6 +1430,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           request_outcome AS "requestOutcome",
           request_error AS "requestError",
           review_input AS "reviewInput",
+          invite,
           is_streaming AS "isStreaming",
           created_at AS "createdAt",
           updated_at AS "updatedAt"
@@ -2423,7 +2434,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                     session: sessionByThread.get(row.threadId) ?? null,
                     latestUserMessageAt: row.latestUserMessageAt,
                     hasPendingApprovals: row.pendingApprovalCount > 0,
-                    hasPendingUserInput: row.pendingUserInputCount > 0,
+                    hasPendingUserInput:
+                      row.pendingUserInputCount > 0 || hasAwaitingInvite(row.agentRequests),
                     hasBlockingUserInput: row.blockingUserInputCount > 0,
                     hasActionableProposedPlan: row.hasActionableProposedPlan > 0,
                     cumulativeDiffStat: mapThreadDiffStat(diffStatByThread.get(row.threadId)),
@@ -2581,7 +2593,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   session: sessionByThread.get(row.threadId) ?? null,
                   latestUserMessageAt: row.latestUserMessageAt,
                   hasPendingApprovals: row.pendingApprovalCount > 0,
-                  hasPendingUserInput: row.pendingUserInputCount > 0,
+                  hasPendingUserInput:
+                    row.pendingUserInputCount > 0 || hasAwaitingInvite(row.agentRequests),
                   hasBlockingUserInput: row.blockingUserInputCount > 0,
                   hasActionableProposedPlan: row.hasActionableProposedPlan > 0,
                   cumulativeDiffStat: mapThreadDiffStat(diffStatByThread.get(row.threadId)),
@@ -2858,7 +2871,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         session: Option.isSome(sessionRow) ? mapSessionRow(sessionRow.value) : null,
         latestUserMessageAt: threadRow.value.latestUserMessageAt,
         hasPendingApprovals: threadRow.value.pendingApprovalCount > 0,
-        hasPendingUserInput: threadRow.value.pendingUserInputCount > 0,
+        hasPendingUserInput:
+          threadRow.value.pendingUserInputCount > 0 ||
+          hasAwaitingInvite(threadRow.value.agentRequests),
         hasBlockingUserInput: threadRow.value.blockingUserInputCount > 0,
         hasActionableProposedPlan: threadRow.value.hasActionableProposedPlan > 0,
         cumulativeDiffStat: mapThreadDiffStat(Option.getOrUndefined(diffStatRow)),

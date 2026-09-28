@@ -11,6 +11,7 @@ import { Link } from "@tanstack/react-router";
 import { formatTokens, formatUsd } from "@threadlines/shared/usageFormat";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  type AgentInvitesMode,
   AUTO_ARCHIVE_INACTIVE_THREADS_DAY_OPTIONS,
   type AutoArchiveInactiveThreadsDays,
   defaultInstanceIdForDriver,
@@ -22,6 +23,7 @@ import {
   type UsageWindowDays,
 } from "@threadlines/contracts";
 import { scopeThreadRef } from "@threadlines/client-runtime";
+import { agentInvitesMode } from "@threadlines/shared/roomAgentRequests";
 import { DEFAULT_UNIFIED_SETTINGS } from "@threadlines/contracts/settings";
 import * as Duration from "effect/Duration";
 import * as Equal from "effect/Equal";
@@ -592,6 +594,51 @@ function DefaultThreadEnvModeRow() {
   );
 }
 
+const AGENT_INVITES_LABELS: Record<AgentInvitesMode, string> = {
+  off: "Off",
+  ask: "Ask me first",
+  auto: "Without asking",
+};
+
+/**
+ * Whether the thread's agent may bring in another agent for a review
+ * (docs/design/rooms-agent-invites.md). A setting of this computer's server:
+ * the agents ask through it.
+ */
+function AgentInvitesRow() {
+  const mode = useSettings((settings) => agentInvitesMode(settings));
+  const { updateSettings } = useUpdateSettings();
+  return (
+    <SettingsRow
+      title="Agents bringing in other agents"
+      description={
+        mode === "auto"
+          ? "The thread's agent can bring in another model to review its work, and you are not asked. That can spend another provider's quota, and one it adds as a teammate turns revert off for good."
+          : "The thread's agent can ask to bring in another model to review its work. You decide each time: a one-off review, adding it to the thread, or not now."
+      }
+      control={
+        <Select
+          value={mode}
+          onValueChange={(value) => {
+            if (value === "off" || value === "ask" || value === "auto") {
+              updateSettings({ agentInvites: value });
+            }
+          }}
+        >
+          <SelectTrigger className="w-full sm:w-44" aria-label="Agents bringing in other agents">
+            <SelectValue>{AGENT_INVITES_LABELS[mode]}</SelectValue>
+          </SelectTrigger>
+          <SelectPopup align="end" alignItemWithTrigger={false}>
+            <SelectItem value="off">{AGENT_INVITES_LABELS.off}</SelectItem>
+            <SelectItem value="ask">{AGENT_INVITES_LABELS.ask}</SelectItem>
+            <SelectItem value="auto">{AGENT_INVITES_LABELS.auto}</SelectItem>
+          </SelectPopup>
+        </Select>
+      }
+    />
+  );
+}
+
 function UsageAnalyticsRow() {
   const settings = useSettings();
   const { updateSettings } = useUpdateSettings();
@@ -1078,6 +1125,8 @@ export function GeneralSettingsPanel({ surface = "full" }: { surface?: "full" | 
             />
           }
         />
+        {/* Shown with Rooms off too: it is this computer's, and may be on from another device. */}
+        <AgentInvitesRow />
       </SettingsSection>
 
       <SettingsSection title="About">

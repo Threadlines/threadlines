@@ -1,5 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 import {
+  type AgentInvitesMode,
   EMPTY_AGENT_REQUEST_STATE,
   MessageId,
   type OrchestrationCommand,
@@ -10,6 +11,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   RoomAgentRequestId,
+  type ServerProvider,
   SideTurnId,
   ThreadId,
   ThreadParticipantId,
@@ -124,6 +126,8 @@ const makeRoom = (options: {
   readonly onSubmit?: (
     command: Extract<OrchestrationCommand, { type: "thread.agent-request.submit" }>,
   ) => { readonly events?: ReadonlyArray<OrchestrationEvent>; readonly answer?: string } | "reject";
+  readonly providers?: ReadonlyArray<ServerProvider>;
+  readonly invitesMode?: AgentInvitesMode;
 }) =>
   Effect.gen(function* () {
     let thread = options.thread ?? makeThread();
@@ -175,6 +179,8 @@ const makeRoom = (options: {
         ),
       modelNameOf: (selection) =>
         Effect.succeed(selection.model === "gpt-6-astra" ? "GPT-6 Astra" : selection.model),
+      providers: Effect.succeed(options.providers ?? []),
+      invitesMode: Effect.succeed(options.invitesMode ?? "ask"),
       git: {
         // Only ever asked to resolve HEAD here.
         execute: () =>
@@ -672,6 +678,137 @@ describe("room_agents and room_history", () => {
         ["GPT-6 Astra", undefined, "agent"],
       ]);
       expect(older.before).toBeNull();
+    }),
+  );
+});
+
+describe("room_available_agents and room_invite", () => {
+  const provider = (
+    instanceId: ProviderInstanceId,
+    driver: string,
+    auth: ServerProvider["auth"],
+    models: ReadonlyArray<{ slug: string; shortName: string }>,
+  ) =>
+    ({
+      instanceId,
+      driver,
+      enabled: true,
+      installed: true,
+      status: "ready",
+      auth,
+      models: models.map((model) => ({ ...model, name: model.shortName, isCustom: false })),
+    }) as unknown as ServerProvider;
+  const PROVIDERS = [
+    provider(CODEX, "codex", { status: "authenticated", type: "chatgpt", label: "ChatGPT Pro" }, [
+      { slug: "gpt-6-astra", shortName: "GPT-6 Astra" },
+    ]),
+    provider(CLAUDE, "claudeAgent", { status: "authenticated", type: "apiKey", label: "API Key" }, [
+      { slug: "claude-opus-5-5", shortName: "Opus 5.5" },
+    ]),
+    // Signed out, and a driver that cannot review: neither is offered.
+    provider(ProviderInstanceId.make("claude-work"), "claudeAgent", { status: "unauthenticated" }, [
+      { slug: "claude-fable-5-1", shortName: "Fable 5.1" },
+    ]),
+    provider(CURSOR, "cursor", { status: "authenticated" }, [
+      { slug: "composer-2", shortName: "Composer" },
+    ]),
+  ];
+  const plain = makeThread({ participants: [] });
+
+  it.effect("offers signed-in Codex and Claude models, and asks the user for one", () =>
+    Effect.gen(function* () {
+      const room = yield* makeRoom({ thread: plain, providers: PROVIDERS });
+      const available = yield* room.handlers.room_available_agents(mainCaller());
+      expect(available).toMatchObject({
+        outcome: "ok",
+        invites: "ask",
+        providers: [
+          {
+            billing: "Codex · ChatGPT Pro",
+            perUse: false,
+            models: [{ key: "codex/gpt-6-astra", inThread: true }],
+          },
+          {
+            billing: "Claude · API Key",
+            perUse: true,
+            models: [{ key: "claudeAgent/claude-opus-5-5", name: "Opus 5.5", inThread: false }],
+          },
+        ],
+      });
+
+      const result = yield* room.handlers.room_invite(mainCaller(), {
+        agent: "opus 5.5",
+        request: "Check the retry math.",
+        reason: "A second model should check this.",
+      });
+      expect(result).toMatchObject({ outcome: "asked_user", agent: { name: "Opus 5.5" } });
+      const [submit] = submits(room.dispatched);
+      expect(submit).toMatchObject({
+        kind: "invite",
+        callerTurnId: TURN,
+        message: { text: "Check the retry math." },
+        reviewInput: { basis: { kind: "uncommitted", files: 2 } },
+        invite: {
+          guest: {
+            handle: "Opus 5.5",
+            modelSelection: { instanceId: CLAUDE, model: "claude-opus-5-5" },
+          },
+          suggestion: "review",
+          billing: { perUse: true },
+        },
+      });
+      expect(submit?.invite?.autoChoice).toBeUndefined();
+    }),
+  );
+
+  it.effect("invites a model the thread had as a guest back under the same guest", () =>
+    Effect.gen(function* () {
+      const guest = {
+        id: REVIEWER,
+        handle: "Opus 5.5",
+        modelSelection: { instanceId: CLAUDE, model: "claude-opus-5-5" },
+        joinedAt: AT,
+        leftAt: AT,
+        guest: true,
+      };
+      const room = yield* makeRoom({
+        thread: makeThread({ participants: [guest] }),
+        providers: PROVIDERS,
+      });
+      const result = yield* room.handlers.room_invite(mainCaller(), {
+        agent: "Opus 5.5",
+        request: "Check the retry math again.",
+        reason: "A second look.",
+      });
+      expect(result).toMatchObject({ outcome: "asked_user", agent: { name: "Opus 5.5" } });
+      expect(submits(room.dispatched)[0]).toMatchObject({
+        to: { participantId: REVIEWER },
+        invite: { guest: { handle: "Opus 5.5" } },
+      });
+    }),
+  );
+
+  it.effect("starts at once without asking, and refuses everything when turned off", () =>
+    Effect.gen(function* () {
+      const auto = yield* makeRoom({ thread: plain, providers: PROVIDERS, invitesMode: "auto" });
+      const started = yield* auto.handlers.room_invite(mainCaller(), {
+        agent: "claudeAgent/claude-opus-5-5",
+        request: "Check the retry math.",
+        reason: "A second model should check this.",
+        suggestion: "teammate",
+      });
+      expect(started.outcome).toBe("started");
+      expect(submits(auto.dispatched)[0]?.invite?.autoChoice).toBe("teammate");
+
+      const off = yield* makeRoom({ thread: plain, providers: PROVIDERS, invitesMode: "off" });
+      expect((yield* off.handlers.room_available_agents(mainCaller())).outcome).toBe("refused");
+      const refused = yield* off.handlers.room_invite(mainCaller(), {
+        agent: "Opus 5.5",
+        request: "Check the retry math.",
+        reason: "A second model should check this.",
+      });
+      expect(refused.outcome).toBe("refused");
+      expect(off.dispatched).toEqual([]);
     }),
   );
 });

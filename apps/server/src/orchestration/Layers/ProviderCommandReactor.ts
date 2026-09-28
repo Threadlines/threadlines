@@ -36,7 +36,10 @@ import {
   type TurnId,
 } from "@threadlines/contracts";
 import { withContextSeedPreamble } from "@threadlines/shared/contextSeed";
+import { agentInvitesMode } from "@threadlines/shared/roomAgentRequests";
 import {
+  hasAgentRecords,
+  isRoomThread,
   participantSessionKey,
   sessionSlotParticipantId,
   sideSessionKey,
@@ -890,6 +893,13 @@ const make = Effect.gen(function* () {
     const projectedSession =
       sessionSlotParticipantId(thread.session) === participantId ? thread.session : null;
     const baseModelSelection = participant?.modelSelection ?? thread.modelSelection;
+    // A room agent's runtime carries the room tools, and so does any thread's
+    // own agent while agents may bring in others (it invites through them).
+    const roomToolsWanted =
+      hasAgentRecords(thread) ||
+      agentInvitesMode(
+        yield* serverSettingsService.getSettings.pipe(Effect.orElseSucceed(() => undefined)),
+      ) !== "off";
 
     const desiredRuntimeMode = thread.runtimeMode;
     const requestedModelSelection = options?.modelSelection;
@@ -1052,8 +1062,7 @@ const make = Effect.gen(function* () {
           ...(input?.resumeCursor !== undefined ? { resumeCursor: input.resumeCursor } : {}),
           ...(input?.contextSeed !== undefined ? { contextSeed: input.contextSeed } : {}),
           ...(input?.forkFrom !== undefined ? { forkFrom: input.forkFrom } : {}),
-          // A room agent's runtime carries the room tools.
-          ...(thread.participants.length > 0 ? { roomTools: true } : {}),
+          ...(roomToolsWanted ? { roomTools: true } : {}),
           runtimeMode: desiredRuntimeMode,
         })
         .pipe(
@@ -1169,7 +1178,7 @@ const make = Effect.gen(function* () {
     if (existingSessionThreadId) {
       // In a room the slot is re-stamped on every handover, so it can not
       // vouch for the mode this agent's runtime actually started in.
-      const inRoom = thread.participants.length > 0;
+      const inRoom = isRoomThread(thread);
       const runtimeModeChanged =
         thread.runtimeMode !==
         (inRoom
@@ -1206,10 +1215,11 @@ const make = Effect.gen(function* () {
           ? bindSessionToThread(activeSession)
           : Effect.void;
 
-      // A runtime started before its thread became a room has no room tools.
-      // It gets them by restarting with resume, once; an adapter that could
-      // not attach them reports false, and restarting again would not help.
-      const roomToolsMissing = inRoom && activeSession?.roomTools === undefined;
+      // A runtime started before its thread became a room, or before invites
+      // were turned on, has no room tools. It gets them by restarting with
+      // resume, once; an adapter that could not attach them reports false,
+      // and restarting again would not help.
+      const roomToolsMissing = roomToolsWanted && activeSession?.roomTools === undefined;
 
       if (
         !runtimeModeChanged &&
@@ -1394,11 +1404,7 @@ const make = Effect.gen(function* () {
     let forkFrom: ProviderSessionForkFrom | undefined;
     // A room's history is spread across several agents' transcripts; no one
     // provider thread holds it, so room forks always take the context seed.
-    if (
-      forkContext !== undefined &&
-      sourceThread !== undefined &&
-      sourceThread.participants.length === 0
-    ) {
+    if (forkContext !== undefined && sourceThread !== undefined && !isRoomThread(sourceThread)) {
       const desiredInstanceId = (input.modelSelection ?? thread.modelSelection).instanceId;
       const sourceSession = sourceThread.session;
       const sourceProviderThreadId = sourceSession?.providerThreadId ?? null;
@@ -2911,7 +2917,7 @@ const make = Effect.gen(function* () {
     const session = thread.session;
     const holderId = sessionSlotParticipantId(session);
     if (
-      thread.participants.length === 0 ||
+      !isRoomThread(thread) ||
       session === null ||
       (next.participantId ?? null) === holderId ||
       (session.awaitedBackgroundTaskCount ?? session.pendingBackgroundTaskCount ?? 0) === 0
@@ -3011,9 +3017,12 @@ const make = Effect.gen(function* () {
           .pipe(ignoreRace("move a hand-off on"));
         continue;
       }
+      // An ask or review answers a call still waiting in that turn; with the
+      // turn over, nobody is waiting. An invite's review comes back as a
+      // message instead, so it outlives the turn that asked.
       const sideTurn = thread.sideTurn ?? null;
       if (
-        request.kind !== "hand_off" &&
+        (request.kind === "ask" || request.kind === "review") &&
         sideTurn !== null &&
         sideTurn.sideTurnId === request.sideTurnId &&
         sideTurn.status !== "cancelling"
@@ -3177,7 +3186,7 @@ const make = Effect.gen(function* () {
     }
     if (
       !turnFinished &&
-      (thread.participants.length === 0 ||
+      (!isRoomThread(thread) ||
         (next.participantId ?? null) === sessionSlotParticipantId(thread.session))
     ) {
       return;
@@ -3855,7 +3864,12 @@ const make = Effect.gen(function* () {
           .pipe(Effect.orElseSucceed(() => []))
       : [];
     for (const request of thread.agentRequests.open) {
-      if (request.kind === "hand_off" && request.status === "queued") {
+      // Nothing of these was in flight: a queued hand-off waits in the queue,
+      // and an invite waits for the user, who can still answer it.
+      if (
+        (request.kind === "hand_off" && request.status === "queued") ||
+        request.status === "awaiting_user"
+      ) {
         continue;
       }
       const ownTurn =
@@ -3911,6 +3925,37 @@ const make = Effect.gen(function* () {
     }
   });
 
+  /**
+   * Invites turned off in Settings: the ones still waiting for the user are
+   * taken back, so no card offers what the setting now refuses.
+   */
+  const cancelAwaitingInvites = Effect.fn("cancelAwaitingInvites")(function* () {
+    const snapshot = yield* projectionSnapshotQuery.getShellSnapshot();
+    for (const shell of snapshot.threads) {
+      // Every invite records its agent as a guest when it is made.
+      if (!shell.participants.some((participant) => participant.guest === true)) {
+        continue;
+      }
+      const thread = yield* resolveThread(shell.id);
+      for (const request of thread?.agentRequests.open ?? []) {
+        if (request.kind !== "invite" || request.status !== "awaiting_user") {
+          continue;
+        }
+        yield* orchestrationEngine
+          .dispatch({
+            type: "thread.agent-request.settle",
+            commandId: serverCommandId("agent-invite-turned-off"),
+            threadId: shell.id,
+            requestId: request.requestId,
+            outcome: "cancelled",
+            error: "Bringing in other agents was turned off in Settings.",
+            createdAt: yield* nowIso,
+          })
+          .pipe(Effect.ignore);
+      }
+    }
+  });
+
   const closeRoomRequestsFromPreviousProcess = Effect.fn("closeRoomRequestsFromPreviousProcess")(
     function* () {
       const snapshot = yield* projectionSnapshotQuery.getShellSnapshot();
@@ -3935,12 +3980,16 @@ const make = Effect.gen(function* () {
     function* () {
       const snapshot = yield* projectionSnapshotQuery.getShellSnapshot();
       for (const thread of snapshot.threads) {
-        // Side runtimes lived in the previous process too.
+        // Side runtimes lived in the previous process too. One answering an
+        // agent's request fails it with the reason, like other requests the
+        // restart cut off; the user's own side answer just stopped.
         if (thread.sideTurn) {
+          const forAgent = thread.sideTurn.requestId !== undefined;
           yield* settleSideTurn({
             threadId: thread.id,
             sideTurnId: thread.sideTurn.sideTurnId,
-            outcome: "interrupted",
+            outcome: forAgent ? "failed" : "interrupted",
+            ...(forAgent ? { error: "The server restarted before this finished." } : {}),
             createdAt: yield* nowIso,
           });
         }
@@ -4050,7 +4099,39 @@ const make = Effect.gen(function* () {
         ),
       ),
     );
+    // Invites waiting for the user survive a restart, unless they were
+    // turned off meanwhile.
+    const invitesModeAtStart = agentInvitesMode(
+      yield* serverSettingsService.getSettings.pipe(Effect.orElseSucceed(() => undefined)),
+    );
+    if (invitesModeAtStart === "off") {
+      yield* cancelAwaitingInvites().pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("provider command reactor could not take back invites", {
+            cause: Cause.pretty(cause),
+          }),
+        ),
+      );
+    }
     yield* Effect.forkScoped(Stream.runForEach(domainEvents, processEvent));
+
+    yield* Effect.forkScoped(
+      Stream.runForEach(
+        serverSettingsService.streamChanges.pipe(
+          Stream.map(agentInvitesMode),
+          Stream.changes,
+          Stream.filter((mode) => mode === "off"),
+        ),
+        () =>
+          cancelAwaitingInvites().pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning("provider command reactor could not take back invites", {
+                cause: Cause.pretty(cause),
+              }),
+            ),
+          ),
+      ),
+    );
 
     // A checkout deleted between turns is reported the moment the watcher
     // confirms it, so the thread shows its way out immediately instead of

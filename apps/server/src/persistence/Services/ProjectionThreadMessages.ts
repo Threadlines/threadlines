@@ -21,6 +21,7 @@ import {
   RoomAgentRef,
   RoomAgentRequestId,
   RoomAgentRequestOutcome,
+  RoomAgentInvite,
   RoomReviewInput,
   TrimmedNonEmptyString,
 } from "@threadlines/contracts";
@@ -54,6 +55,7 @@ export const ProjectionThreadMessage = Schema.Struct({
   requestOutcome: Schema.optional(RoomAgentRequestOutcome),
   requestError: Schema.optional(TrimmedNonEmptyString),
   reviewInput: Schema.optional(RoomReviewInput),
+  invite: Schema.optional(RoomAgentInvite),
   isStreaming: Schema.Boolean,
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,

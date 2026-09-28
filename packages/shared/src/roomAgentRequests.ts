@@ -5,11 +5,15 @@
  * precise outcome instead of a bare command rejection.
  */
 import {
+  type AgentInvitesMode,
   type OrchestrationAgentRequestState,
   type OrchestrationSideTurn,
   type OrchestrationThreadParticipant,
+  type RoomAgentInvite,
+  type RoomAgentInviteChoice,
   type RoomAgentRef,
   type RoomAgentRequestKind,
+  type RoomAgentRequestOutcome,
   ROOM_AGENT_REQUEST_LIMIT,
   type ThreadParticipantId,
   type TurnId,
@@ -100,6 +104,114 @@ export function agentRequestRefusal(
   return null;
 }
 
+export interface AgentInviteInput {
+  readonly from: RoomAgentRef;
+  readonly callerTurnId: TurnId;
+  readonly chainEpoch: number;
+  /** The agent is brought in and its review starts at once ("without asking"). */
+  readonly startsNow: boolean;
+}
+
+/**
+ * Why an invite is refused, or null. The same holder, turn, Stop and limit
+ * rules as other requests; besides those, a declined invite silences invites
+ * until the user writes, and only one invite waits for the user at a time.
+ */
+export function agentInviteRefusal(
+  thread: AgentRequestThread & { readonly voiceActive?: boolean | undefined },
+  input: AgentInviteInput,
+): AgentRequestRefusal | null {
+  const holder = thread.session?.participantId ?? null;
+  if ((input.from.participantId ?? null) !== holder) {
+    return {
+      outcome: "refused",
+      detail: "Only the agent working in this thread can invite another agent.",
+    };
+  }
+  if (thread.session?.activeTurnId !== input.callerTurnId) {
+    return { outcome: "refused", detail: "Invites can only be made during your own turn." };
+  }
+  const state = thread.agentRequests;
+  if (state.hold) {
+    return {
+      outcome: "refused",
+      detail: "The user stopped the agents. Wait for the user before inviting another agent.",
+    };
+  }
+  if (input.chainEpoch !== state.chainEpoch) {
+    return { outcome: "refused", detail: "The user stopped this request." };
+  }
+  if (state.invitesPaused) {
+    return {
+      outcome: "refused",
+      detail: "The user said not now to an invite. Do not ask again unless the user asks you to.",
+    };
+  }
+  if (state.open.some((request) => request.status === "awaiting_user")) {
+    return {
+      outcome: "refused",
+      detail: "An invite is already waiting for the user. Wait for the user's answer.",
+    };
+  }
+  if (state.requestsSinceUser >= ROOM_AGENT_REQUEST_LIMIT) {
+    return {
+      outcome: "limit",
+      detail: `Agents have made ${ROOM_AGENT_REQUEST_LIMIT} requests since the user last wrote. Wait for the user.`,
+    };
+  }
+  if (thread.voiceActive === true) {
+    return { outcome: "refused", detail: "Voice is on. Agents cannot invite others while it is." };
+  }
+  if (input.startsNow && (thread.sideTurn ?? null) !== null) {
+    return {
+      outcome: "busy",
+      detail: "Another agent is already answering on the side. Try again once it finishes.",
+    };
+  }
+  return null;
+}
+
+/**
+ * Why the user's answer to an invite cannot be applied now, or null. Checked
+ * when the user answers, since the thread may have moved on while they
+ * thought it over.
+ */
+export function agentInviteAcceptRefusal(
+  thread: AgentRequestThread & { readonly voiceActive?: boolean | undefined },
+  request: OrchestrationAgentRequestState["open"][number],
+): string | null {
+  if (request.chainEpoch !== thread.agentRequests.chainEpoch) {
+    return "The agents were stopped since this was asked.";
+  }
+  if (thread.voiceActive === true) {
+    return "Stop voice before bringing in another agent.";
+  }
+  if ((thread.sideTurn ?? null) !== null) {
+    return "Another agent is answering on the side. Try again once it finishes.";
+  }
+  const caller = request.from.participantId ?? null;
+  if (
+    caller !== null &&
+    !activeParticipants({ participants: thread.participants ?? [] }).some(
+      (participant) => participant.id === caller,
+    )
+  ) {
+    return "The agent that asked has left the thread.";
+  }
+  return null;
+}
+
+/** Whether agents may bring in other agents; never chosen means off. */
+export const agentInvitesMode = (
+  settings: { readonly agentInvites?: AgentInvitesMode | undefined } | undefined,
+): AgentInvitesMode => settings?.agentInvites ?? "off";
+
+/** The invite waiting for the user's answer, if any. */
+export const awaitingInvite = (
+  state: OrchestrationAgentRequestState,
+): OrchestrationAgentRequestState["open"][number] | undefined =>
+  state.open.find((request) => request.kind === "invite" && request.status === "awaiting_user");
+
 /** Whether agents have used all their requests until the user writes. */
 export const agentRequestLimitReached = (state: OrchestrationAgentRequestState): boolean =>
   state.requestsSinceUser >= ROOM_AGENT_REQUEST_LIMIT;
@@ -138,9 +250,14 @@ export const agentRequestStateOn = {
   settled: (
     state: OrchestrationAgentRequestState,
     requestId: OrchestrationAgentRequestState["open"][number]["requestId"],
+    outcome: RoomAgentRequestOutcome,
   ): OrchestrationAgentRequestState =>
     state.open.some((entry) => entry.requestId === requestId)
-      ? { ...state, open: state.open.filter((entry) => entry.requestId !== requestId) }
+      ? {
+          ...state,
+          open: state.open.filter((entry) => entry.requestId !== requestId),
+          ...(outcome === "declined" ? { invitesPaused: true } : {}),
+        }
       : state,
   held: (
     state: OrchestrationAgentRequestState,
@@ -148,10 +265,44 @@ export const agentRequestStateOn = {
   ): OrchestrationAgentRequestState =>
     state.hold && state.chainEpoch === chainEpoch ? state : { ...state, hold: true, chainEpoch },
   reset: (state: OrchestrationAgentRequestState): OrchestrationAgentRequestState =>
-    !state.hold && state.requestsSinceUser === 0
+    !state.hold && state.requestsSinceUser === 0 && !state.invitesPaused
       ? state
-      : { ...state, hold: false, requestsSinceUser: 0 },
+      : { ...state, hold: false, requestsSinceUser: 0, invitesPaused: false },
 };
+
+/**
+ * An invite's record once the user answered it (or the setting answered for
+ * them). The projections and the web store all apply it through this.
+ */
+export const withInviteChoice = (
+  invite: RoomAgentInvite | undefined,
+  answer: { readonly choice: RoomAgentInviteChoice; readonly automatic: boolean },
+): RoomAgentInvite | undefined =>
+  invite === undefined
+    ? undefined
+    : { ...invite, choice: answer.choice, automatic: answer.automatic };
+
+/**
+ * A message an agent queued (a reply) that was taken back before it was
+ * sent: it stays in the chat, marked cancelled, and never started a turn.
+ * The projections and the web store all apply it through this.
+ */
+export const withUnqueuedAgentMessage = <
+  Message extends {
+    readonly id: string;
+    readonly fromAgent?: unknown;
+    readonly requestOutcome?: RoomAgentRequestOutcome | undefined;
+  },
+>(
+  message: Message,
+  unqueued: { readonly messageId: string; readonly reason: "sent" | "cancelled" },
+): Message =>
+  unqueued.reason === "cancelled" &&
+  message.id === unqueued.messageId &&
+  message.fromAgent !== undefined &&
+  message.requestOutcome === undefined
+    ? { ...message, requestOutcome: "cancelled" }
+    : message;
 
 /**
  * Whether the user wrote a message. In a room, an agent can write a user-role

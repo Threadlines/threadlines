@@ -19,7 +19,7 @@ import {
   ThreadParticipantId,
 } from "@threadlines/contracts";
 import { scopedThreadKey } from "@threadlines/client-runtime";
-import { activeParticipants } from "@threadlines/shared/threadParticipants";
+import { activeParticipants, nextRoomAgentName } from "@threadlines/shared/threadParticipants";
 import {
   ArrowLeftRightIcon,
   ChevronDownIcon,
@@ -35,7 +35,6 @@ import { cn, newCommandId, randomUUID } from "~/lib/utils";
 import type { ProviderInstanceEntry } from "../../providerInstances";
 import {
   buildRoomAgentLabels,
-  nextRoomAgentName,
   roomAgentKey,
   roomModelName,
   useRoomRecipientStore,

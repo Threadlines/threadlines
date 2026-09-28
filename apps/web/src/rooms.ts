@@ -10,17 +10,26 @@
 import { scopedThreadKey } from "@threadlines/client-runtime";
 import type {
   ModelSelection,
+  OrchestrationAgentRequestState,
   OrchestrationAgentRequestStatus,
   OrchestrationSideTurn,
   OrchestrationThreadActivity,
   OrchestrationThreadParticipant,
   ProviderOptionSelection,
+  RoomAgentInviteBilling,
+  RoomAgentRequestId,
   RoomReviewBasis,
   ScopedThreadRef,
   ThreadParticipantId,
   TurnId,
 } from "@threadlines/contracts";
-import { activeParticipants } from "@threadlines/shared/threadParticipants";
+import {
+  activeParticipants,
+  hasAgentRecords,
+  isRoomThread,
+  nextRoomAgentName,
+} from "@threadlines/shared/threadParticipants";
+import { awaitingInvite } from "@threadlines/shared/roomAgentRequests";
 import { create } from "zustand";
 
 import type { ProviderInstanceEntry } from "./providerInstances";
@@ -45,10 +54,11 @@ export function isRoom(thread: RoomThreadLike | null | undefined): boolean {
 /**
  * An agent was ever added, even if all have left: their messages keep their
  * authors, and revert stays off (the server refuses it, since the thread's
- * own conversation never held the other agents' turns).
+ * own conversation never held the other agents' turns). An agent brought in
+ * for one review (a guest) does not count.
  */
 export function hasRoomHistory(thread: RoomThreadLike | null | undefined): boolean {
-  return (thread?.participants?.length ?? 0) > 0;
+  return thread != null && isRoomThread(participantsOf(thread));
 }
 
 /**
@@ -65,23 +75,6 @@ export function resolveRoomRecipient(
   }
   const holder = thread.session?.participantId ?? null;
   return holder !== null && present.has(holder) ? holder : null;
-}
-
-/**
- * The name for an agent joining a room: its model's name, numbered when an
- * agent with that name is already here ("GPT-6 Astra 2"). The same rule
- * `buildRoomAgentLabels` applies, so the stored name and the shown one agree.
- */
-export function nextRoomAgentName(modelName: string, taken: ReadonlyArray<string>): string {
-  const takenLower = new Set(taken.map((name) => name.toLowerCase()));
-  if (!takenLower.has(modelName.toLowerCase())) {
-    return modelName;
-  }
-  let index = 2;
-  while (takenLower.has(`${modelName} ${index}`.toLowerCase())) {
-    index += 1;
-  }
-  return `${modelName} ${index}`;
 }
 
 interface RoomRecipientState {
@@ -205,6 +198,8 @@ export interface RoomAgentLabel {
   readonly role: string | null;
   /** It has left the room. */
   readonly left: boolean;
+  /** Brought in for one review by an agent's invite; never a member. */
+  readonly guest: boolean;
   readonly entry: ProviderInstanceEntry | undefined;
 }
 
@@ -245,10 +240,11 @@ export const roomAgentKey = (participantId: ThreadParticipantId | null | undefin
   participantId ?? "primary";
 
 /**
- * Labels for every agent that ever took part in a room, including ones that
- * left, so their earlier messages keep a name. Each is named by its model;
- * agents on the same model are numbered in the order they joined, the
- * thread's own agent first. Null outside rooms.
+ * Labels for every agent that ever took part in a thread, including ones that
+ * left and guests brought in for one review, so their messages keep a name.
+ * Each is named by its model; agents on the same model are numbered in the
+ * order they joined, the thread's own agent first. Null while the thread's
+ * own agent is its only one.
  */
 export function buildRoomAgentLabels(
   thread: RoomThreadLike & {
@@ -262,7 +258,7 @@ export function buildRoomAgentLabels(
     entry: ProviderInstanceEntry,
   ) => string,
 ): ReadonlyMap<string, RoomAgentLabel> | null {
-  if (!hasRoomHistory(thread)) {
+  if (!hasAgentRecords(participantsOf(thread))) {
     return null;
   }
   const agents = [
@@ -271,12 +267,14 @@ export function buildRoomAgentLabels(
       selection: thread.modelSelection,
       role: thread.agentRole ?? null,
       left: false,
+      guest: false,
     },
     ...(thread.participants ?? []).map((participant) => ({
       key: roomAgentKey(participant.id),
       selection: participant.modelSelection,
       role: participant.role ?? null,
       left: participant.leftAt !== null,
+      guest: participant.guest === true,
     })),
   ];
   const labels = new Map<string, RoomAgentLabel>();
@@ -292,6 +290,7 @@ export function buildRoomAgentLabels(
       modelName,
       role: agent.role,
       left: agent.left,
+      guest: agent.guest,
       entry: entries.find((candidate) => candidate.instanceId === agent.selection.instanceId),
     });
   }
@@ -524,7 +523,9 @@ export function describeRoomAgentMessage(input: {
   const reason = message.requestError !== undefined ? ` ${message.requestError}` : "";
   const outcomeNote =
     message.requestKind === "reply"
-      ? null
+      ? message.requestOutcome === "cancelled"
+        ? `Stopped before ${to} got it.`
+        : null
       : message.requestOutcome === "stopped"
         ? `Stopped before ${to} answered.`
         : message.requestOutcome === "timeout"
@@ -537,6 +538,100 @@ export function describeRoomAgentMessage(input: {
                 : `Cancelled before ${to} answered.${reason}`
               : null;
   return { from, to, kind, review: message.requestKind === "review", outcomeNote };
+}
+
+/** An agent's invite waiting for the user, as the card above the message box shows it. */
+export interface PendingRoomInvite {
+  readonly requestId: RoomAgentRequestId;
+  readonly fromName: string;
+  readonly toName: string;
+  readonly reason: string;
+  /** What the invited agent will be asked. */
+  readonly requestText: string;
+  readonly billing: RoomAgentInviteBilling;
+  readonly suggestion: "review" | "teammate";
+  /** Adding it makes the thread a room for the first time (revert turns off). */
+  readonly joinsRoom: boolean;
+}
+
+/** The invite waiting for the user in this thread, if any. */
+export function pendingRoomInvite(
+  thread: RoomThreadLike & {
+    readonly agentRequests?: OrchestrationAgentRequestState | undefined;
+    readonly messages: ReadonlyArray<ChatMessage>;
+  },
+  labels: ReadonlyMap<string, RoomAgentLabel> | null,
+): PendingRoomInvite | null {
+  const request = thread.agentRequests ? awaitingInvite(thread.agentRequests) : undefined;
+  const message =
+    request === undefined
+      ? undefined
+      : thread.messages.find((entry) => entry.id === request.requestMessageId);
+  if (request === undefined || message?.invite === undefined) {
+    return null;
+  }
+  const nameOf = (participantId: ThreadParticipantId | null | undefined) =>
+    labels?.get(roomAgentKey(participantId))?.name ?? "An agent";
+  return {
+    requestId: request.requestId,
+    fromName: nameOf(request.from.participantId),
+    toName: nameOf(request.to.participantId),
+    reason: message.invite.reason,
+    requestText: message.text,
+    billing: message.invite.billing,
+    suggestion: message.invite.suggestion,
+    joinsRoom: !hasRoomHistory(thread),
+  };
+}
+
+/** What an invite's line in the chat says about it. */
+export interface RoomInviteDescription {
+  readonly from: string;
+  readonly to: string;
+  /** "waiting for you", "review only", "added to the thread", "not now". */
+  readonly status: string;
+  /** How it ended without its review, when it did. */
+  readonly outcomeNote: string | null;
+}
+
+/** Describes an agent's invite message (requestKind `invite`). */
+export function describeRoomInvite(input: {
+  readonly message: Pick<
+    ChatMessage,
+    "fromAgent" | "participantId" | "invite" | "requestOutcome" | "requestError"
+  >;
+  readonly labels: ReadonlyMap<string, RoomAgentLabel> | null;
+  readonly openStatus: OrchestrationAgentRequestStatus | null;
+}): RoomInviteDescription {
+  const { message } = input;
+  const nameOf = (participantId: ThreadParticipantId | null | undefined) =>
+    input.labels?.get(roomAgentKey(participantId))?.name ?? "an agent";
+  const from = nameOf(message.fromAgent?.participantId);
+  const to = nameOf(message.participantId);
+  const choice = message.invite?.choice;
+  const withoutAsking = message.invite?.automatic === true ? ", without asking" : "";
+  const status =
+    input.openStatus === "awaiting_user"
+      ? "wants a review, waiting for you"
+      : choice === "review"
+        ? `review only${withoutAsking}`
+        : choice === "teammate"
+          ? `added to the thread${withoutAsking}`
+          : message.requestOutcome === "declined"
+            ? "not now"
+            : "wants a review";
+  const reason = message.requestError !== undefined ? ` ${message.requestError}` : "";
+  const outcomeNote =
+    message.requestOutcome === "stopped"
+      ? `Stopped before ${to} answered.`
+      : message.requestOutcome === "timeout"
+        ? `Timed out before ${to} answered.`
+        : message.requestOutcome === "failed"
+          ? `${to} couldn't review.${reason}`
+          : message.requestOutcome === "cancelled"
+            ? `Cancelled.${reason}`
+            : null;
+  return { from, to, status, outcomeNote };
 }
 
 const shortRevision = (revision: string) =>
