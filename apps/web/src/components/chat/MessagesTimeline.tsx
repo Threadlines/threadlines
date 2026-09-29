@@ -174,6 +174,7 @@ import {
 } from "../../rooms";
 import { RoomReviewTag } from "./RoomReviewTag";
 import { type SideAnswerView } from "./sideAnswers";
+import { detailEntranceRef, rowEntranceRef } from "./timelineEntrance";
 
 // ---------------------------------------------------------------------------
 // Context — shared state consumed by every row component via Context.
@@ -3109,8 +3110,11 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
     <>
       {/* Mid-turn responses settle in with the same fade the activity rows use,
           so a non-streamed message doesn't pop in fully formed. Settled rows
-          skip it — the class re-animates on virtualization remounts. */}
-      <div className={cn("min-w-0 px-1 py-0.5", row.assistantTurnInProgress && "work-row-enter")}>
+          skip it: it replays when virtualization remounts a row. */}
+      <div
+        ref={row.assistantTurnInProgress ? rowEntranceRef : undefined}
+        className="min-w-0 px-1 py-0.5"
+      >
         <div
           className={cn(
             "group/assistant-message block w-full max-w-full align-top [&_.chat-markdown]:transition-colors [&_.chat-markdown]:duration-300",
@@ -3402,7 +3406,7 @@ function SubagentReceiptTimelineRow({
   return (
     // The receipt lands mid-turn the moment its agent finishes; the fade makes
     // that arrival read as an event rather than a row that was always there.
-    <div className="work-row-enter min-w-0" data-subagent-receipt-row="true">
+    <div ref={rowEntranceRef} className="min-w-0" data-subagent-receipt-row="true">
       {interactive ? (
         <button
           type="button"
@@ -3501,7 +3505,8 @@ function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "workin
             the whole thought is a hover away. */}
         {row.thought ? (
           <p
-            className="work-meta-enter truncate pl-[19px] text-[11px] leading-4 text-muted-foreground/55"
+            ref={detailEntranceRef}
+            className="truncate pl-[19px] text-[11px] leading-4 text-muted-foreground/55"
             title={row.thought}
             data-turn-working-thought="true"
           >
@@ -3866,7 +3871,7 @@ function LiveAgentRoster({ roster }: { roster: LiveAgentStatusRoster }) {
   }
 
   return (
-    <div className="work-meta-enter ml-1 min-w-0" data-turn-live-agent-roster="true">
+    <div ref={detailEntranceRef} className="ml-1 min-w-0" data-turn-live-agent-roster="true">
       {roster.rows.map((row) => (
         <button
           key={row.id}

@@ -90,6 +90,7 @@ vi.mock("@legendapp/list/react", async () => {
 });
 
 import { MessagesTimeline } from "./MessagesTimeline";
+import { TIMELINE_ENTRANCE_ANIMATION_ID } from "./timelineEntrance";
 
 const MESSAGE_CREATED_AT = "2026-04-13T12:00:00.000Z";
 
@@ -1048,7 +1049,7 @@ describe("MessagesTimeline", () => {
       await Promise.all(
         document
           .getAnimations()
-          .filter((animation) => (animation as CSSAnimation).animationName === "work-row-enter")
+          .filter((animation) => animation.id === TIMELINE_ENTRANCE_ANIMATION_ID)
           .map((animation) => animation.finished),
       );
       const noteTop = note.element().getBoundingClientRect().top;
