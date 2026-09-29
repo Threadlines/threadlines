@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vite-plus/test";
-import { EventId, type OrchestrationThreadActivity, TurnId } from "@threadlines/contracts";
+import {
+  EventId,
+  type OrchestrationThreadActivity,
+  ThreadParticipantId,
+  TurnId,
+} from "@threadlines/contracts";
 
 import {
   deriveLatestPromptSuggestion,
@@ -80,6 +85,7 @@ describe("selectPromptSuggestion", () => {
       isSuggestionProvider: true,
       composerIsEmpty: true,
       phase: "ready",
+      sideAnswerInProgress: false,
       isSendBusy: false,
       hasComposerApproval: false,
       pendingUserInputCount: 0,
@@ -102,12 +108,37 @@ describe("selectPromptSuggestion", () => {
     expect(selectPromptSuggestion(makeInput({ isSuggestionProvider: false }))).toBeNull();
   });
 
+  it("in a room, shows only the suggestion of the agent the next message goes to", () => {
+    const activities = [
+      makeActivity("activity-own", "prompt-suggestion.updated", { suggestion: "Add tests." }),
+      {
+        ...makeActivity("activity-other", "prompt-suggestion.updated", {
+          suggestion: "Make a PR.",
+        }),
+        participantId: ThreadParticipantId.make("agent-2"),
+      },
+    ];
+    const fromAgent = (participantId: string | null) => (activity: OrchestrationThreadActivity) =>
+      (activity.participantId ?? null) === participantId;
+
+    expect(
+      selectPromptSuggestion(makeInput({ activities, isFromRecipient: fromAgent("agent-2") })),
+    ).toBe("Make a PR.");
+    expect(
+      selectPromptSuggestion(makeInput({ activities, isFromRecipient: fromAgent(null) })),
+    ).toBe("Add tests.");
+    expect(
+      selectPromptSuggestion(makeInput({ activities, isFromRecipient: fromAgent("agent-3") })),
+    ).toBeNull();
+  });
+
   it("hides the suggestion while the composer has text", () => {
     expect(selectPromptSuggestion(makeInput({ composerIsEmpty: false }))).toBeNull();
   });
 
   it.each([
     ["running phase", { phase: "running" } as const],
+    ["a side answer in a room", { sideAnswerInProgress: true }],
     ["send in flight", { isSendBusy: true }],
     ["pending approval", { hasComposerApproval: true }],
     ["pending user input", { pendingUserInputCount: 1 }],

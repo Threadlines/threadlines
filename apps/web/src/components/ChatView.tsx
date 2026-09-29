@@ -7183,26 +7183,6 @@ export default function ChatView(props: ChatViewProps) {
             )}
           >
             <div className="relative isolate">
-              <ComposerFollowUpQueue
-                steering={queuedSteeringMessages}
-                queued={queuedFollowUps}
-                paused={!isWorking && !waitingOnBackgroundTasks}
-                attachmentOnlyPrompt={ATTACHMENT_ONLY_BOOTSTRAP_PROMPT}
-                roomAgents={roomAgentLabels}
-                onEdit={(followUp) => void returnQueuedFollowUpsToComposer([followUp])}
-                onRemove={removeQueuedFollowUp}
-              />
-              {roomAgentLabels !== null &&
-              activeThread.agentRequests &&
-              agentRequestLimitReached(activeThread.agentRequests) ? (
-                <p
-                  className="mx-auto mb-1.5 max-w-4xl px-3 text-xs text-muted-foreground"
-                  data-room-agent-limit="true"
-                >
-                  Agents are waiting for you ({activeThread.agentRequests.requestsSinceUser}{" "}
-                  requests used)
-                </p>
-              ) : null}
               <div className="relative z-10">
                 <ChatComposer
                   composerRef={composerRef}
@@ -7247,6 +7227,30 @@ export default function ChatView(props: ChatViewProps) {
                   activeThreadActivities={activeThread ? threadActivities : undefined}
                   notices={composerNotices}
                   pullRequests={composerPullRequests}
+                  stackedAbove={
+                    <>
+                      <ComposerFollowUpQueue
+                        steering={queuedSteeringMessages}
+                        queued={queuedFollowUps}
+                        paused={!isWorking && !waitingOnBackgroundTasks}
+                        attachmentOnlyPrompt={ATTACHMENT_ONLY_BOOTSTRAP_PROMPT}
+                        roomAgents={roomAgentLabels}
+                        onEdit={(followUp) => void returnQueuedFollowUpsToComposer([followUp])}
+                        onRemove={removeQueuedFollowUp}
+                      />
+                      {roomAgentLabels !== null &&
+                      activeThread.agentRequests &&
+                      agentRequestLimitReached(activeThread.agentRequests) ? (
+                        <p
+                          className="mb-1.5 px-3 text-xs text-muted-foreground"
+                          data-room-agent-limit="true"
+                        >
+                          Agents are waiting for you ({activeThread.agentRequests.requestsSinceUser}{" "}
+                          requests used)
+                        </p>
+                      ) : null}
+                    </>
+                  }
                   resolvedTheme={resolvedTheme}
                   settings={settings}
                   keybindings={keybindings}
