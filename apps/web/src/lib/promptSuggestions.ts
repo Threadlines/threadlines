@@ -21,6 +21,8 @@ export function deriveLatestPromptSuggestion(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
   options?: {
     readonly turnId?: TurnId | null | undefined;
+    /** Only suggestions this accepts; see `isFromRecipient`. */
+    readonly accept?: ((activity: OrchestrationThreadActivity) => boolean) | undefined;
   },
 ): string | null {
   for (let index = activities.length - 1; index >= 0; index -= 1) {
@@ -29,6 +31,9 @@ export function deriveLatestPromptSuggestion(
       continue;
     }
     if (options?.turnId !== undefined && activity.turnId !== options.turnId) {
+      continue;
+    }
+    if (options?.accept !== undefined && !options.accept(activity)) {
       continue;
     }
 
@@ -42,18 +47,29 @@ export function deriveLatestPromptSuggestion(
 }
 
 export interface PromptSuggestionSelectionInput {
-  /** Suggestions are a Claude-only affordance; gate other providers out. */
+  /**
+   * Suggestions are a Claude-only affordance: the agent the next message goes
+   * to (in a room, the one the composer addresses) must be a Claude agent.
+   */
   readonly isSuggestionProvider: boolean;
+  /**
+   * In a room, whether a suggestion came from the agent the next message goes
+   * to. A suggestion is that agent's guess at what you'd say to it, so another
+   * agent's never shows. Absent: every suggestion is the thread's own agent's.
+   */
+  readonly isFromRecipient?: ((activity: OrchestrationThreadActivity) => boolean) | undefined;
   readonly composerIsEmpty: boolean;
   readonly phase: SessionPhase;
+  /**
+   * In a room, an agent answering on the side. It counts as work in progress
+   * like a running turn, and its answer lands where the suggestion floats.
+   */
+  readonly sideAnswerInProgress: boolean;
   readonly isSendBusy: boolean;
   readonly hasComposerApproval: boolean;
   readonly pendingUserInputCount: number;
   readonly showPlanFollowUpPrompt: boolean;
-  /**
-   * Messages waiting above the composer. The next message is already
-   * decided, and the list sits where the suggestion would.
-   */
+  /** Messages waiting above the composer: the next message is already decided. */
   readonly queuedMessageCount: number;
   readonly latestTurn: Pick<OrchestrationLatestTurn, "turnId" | "state"> | null;
   /**
@@ -81,6 +97,7 @@ export function selectPromptSuggestion(input: PromptSuggestionSelectionInput): s
   }
   if (
     input.phase === "running" ||
+    input.sideAnswerInProgress ||
     input.isSendBusy ||
     input.hasComposerApproval ||
     input.pendingUserInputCount > 0 ||
@@ -100,5 +117,8 @@ export function selectPromptSuggestion(input: PromptSuggestionSelectionInput): s
     return null;
   }
 
-  return deriveLatestPromptSuggestion(input.activities, { turnId: latestTurn.turnId });
+  return deriveLatestPromptSuggestion(input.activities, {
+    turnId: latestTurn.turnId,
+    accept: input.isFromRecipient,
+  });
 }

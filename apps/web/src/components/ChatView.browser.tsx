@@ -11190,6 +11190,86 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
+  it("floats a room's prompt suggestion above the lines on the message box, for its own agent only", async () => {
+    updateSettings({ roomsEnabled: true });
+    const fableId = "3c2b1a09-8f7e-4d6c-9b5a-4f3e2d1c0b9a" as ThreadParticipantId;
+    const base = createSnapshotWithPromptSuggestion("Make a PR for this");
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...base,
+        threads: base.threads.map((thread) =>
+          thread.id === THREAD_ID
+            ? {
+                ...thread,
+                participants: [
+                  {
+                    id: fableId,
+                    handle: "Fable",
+                    modelSelection: {
+                      instanceId: ProviderInstanceId.make("claudeAgent"),
+                      model: "claude-fable-5-1",
+                    },
+                    joinedAt: NOW_ISO,
+                    leftAt: null,
+                  },
+                ],
+                // The agents used up their requests to each other, so the
+                // "waiting for you" line sits on the message box.
+                agentRequests: { ...EMPTY_AGENT_REQUEST_STATE, requestsSinceUser: 3 },
+              }
+            : thread,
+        ),
+      },
+      configureFixture: (nextFixture) => {
+        nextFixture.serverConfig = {
+          ...nextFixture.serverConfig,
+          providers: [...nextFixture.serverConfig.providers, CLAUDE_TEST_PROVIDER],
+        };
+      },
+    });
+
+    try {
+      const chip = await waitForElement(
+        () => document.querySelector<HTMLElement>('[data-prompt-suggestion="true"]'),
+        "Unable to find the prompt suggestion chip.",
+      );
+      const limitNote = await waitForElement(
+        () => document.querySelector<HTMLElement>('[data-room-agent-limit="true"]'),
+        "Unable to find the room's agent limit line.",
+      );
+      // The suggestion floats clear above the line instead of drawing over it.
+      expect(chip.getBoundingClientRect().bottom).toBeLessThanOrEqual(
+        limitNote.getBoundingClientRect().top,
+      );
+
+      // The suggestion is the thread's own agent's guess at what you'd say to
+      // it; sending to the other agent hides it.
+      const picker = await waitForElement(
+        () => document.querySelector<HTMLButtonElement>('[data-chat-room-agent-picker="true"]'),
+        "Unable to find the room's agent picker.",
+      );
+      picker.click();
+      const fableOption = await waitForElement(
+        () =>
+          [...document.querySelectorAll<HTMLElement>('[role="option"]')].find((option) =>
+            /fable/i.test(option.textContent ?? ""),
+          ) ?? null,
+        "Unable to find the other Claude agent in the agent picker.",
+      );
+      fableOption.click();
+      await waitForElement(
+        () => (document.querySelector('[data-prompt-suggestion="true"]') ? null : document.body),
+        "The thread's own agent's suggestion stayed up while addressing the other agent.",
+      );
+    } finally {
+      // The choice outlives the view; later tests start from the thread's own agent.
+      useRoomRecipientStore.getState().choose(THREAD_REF, null);
+      updateSettings({ roomsEnabled: false });
+      await mounted.cleanup();
+    }
+  });
+
   it("keeps the slash-command menu visible above the composer", async () => {
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,

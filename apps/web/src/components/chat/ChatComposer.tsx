@@ -4,6 +4,7 @@ import type {
   EnvironmentId,
   FollowUpDelivery,
   ModelSelection,
+  OrchestrationThreadActivity,
   OrchestrationThreadGoal,
   ProjectEntry,
   ProviderApprovalDecision,
@@ -26,6 +27,7 @@ import {
 import { createModelSelection, normalizeModelSlug } from "@threadlines/shared/model";
 import {
   memo,
+  type ReactNode,
   useCallback,
   useEffect,
   useImperativeHandle,
@@ -612,6 +614,14 @@ export interface ChatComposerProps {
    */
   pullRequests: ReadonlyArray<ComposerPullRequest>;
 
+  /**
+   * Lines that sit on top of the message box: queued messages, a room's
+   * notices. They render inside the composer above the input, so the
+   * floating prompt suggestion always clears them instead of drawing over
+   * them.
+   */
+  stackedAbove?: ReactNode;
+
   // Misc
   resolvedTheme: "light" | "dark";
   settings: UnifiedSettings;
@@ -710,6 +720,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     activeThreadActivities,
     notices,
     pullRequests,
+    stackedAbove,
     resolvedTheme,
     settings,
     keybindings,
@@ -1237,7 +1248,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   // ------------------------------------------------------------------
   // Context window
   // ------------------------------------------------------------------
-  // See meterAgentId below: in a room it follows the agent being addressed.
+  // See recipientAgentId below: in a room it follows the agent being addressed.
 
   // ------------------------------------------------------------------
   // Composer-local state
@@ -1518,42 +1529,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   // connecting / starting (before it registers as the latest turn).
   const [dismissedSuggestionTurnId, setDismissedSuggestionTurnId] = useState<TurnId | null>(null);
   const queuedFollowUpCount = activeThread?.queuedFollowUps?.length ?? 0;
-  const latestPromptSuggestion = useMemo(
-    () =>
-      selectPromptSuggestion({
-        isSuggestionProvider: selectedProvider === CLAUDE_AGENT_PROVIDER,
-        composerIsEmpty: prompt.trim().length === 0,
-        phase,
-        isSendBusy,
-        hasComposerApproval: isComposerApprovalState,
-        pendingUserInputCount: pendingUserInputs.length,
-        showPlanFollowUpPrompt,
-        queuedMessageCount: queuedFollowUpCount,
-        latestTurn: activeThread?.latestTurn ?? null,
-        dismissedTurnId: dismissedSuggestionTurnId,
-        activities: activeThreadActivities ?? [],
-      }),
-    [
-      activeThread?.latestTurn,
-      activeThreadActivities,
-      dismissedSuggestionTurnId,
-      isComposerApprovalState,
-      isSendBusy,
-      pendingUserInputs.length,
-      phase,
-      prompt,
-      queuedFollowUpCount,
-      selectedProvider,
-      showPlanFollowUpPrompt,
-    ],
-  );
-  const latestPromptSuggestionDisplayText = latestPromptSuggestion
-    ? formatPromptSuggestionDisplayText(latestPromptSuggestion)
-    : null;
-  const promptSuggestionOverflow = useHorizontalOverflow(
-    latestPromptSuggestionDisplayText ?? "",
-    latestPromptSuggestionDisplayText !== null,
-  );
 
   const composerFooterHasWideActions = showPlanFollowUpPrompt;
   const composerFooterActionLayoutKey = useMemo(() => {
@@ -1669,26 +1644,73 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const showRoomAgentTraits =
     roomAgentTraitsProps !== null && shouldRenderTraitsControls(roomAgentTraitsProps);
 
-  // The context window meter and its usage card describe the agent the next
-  // message goes to: in a room, an added agent's own context, its window, and
-  // its provider's plan usage.
-  const meterAgentId = addressedRoomAgent?.id ?? null;
+  // The context window meter, its usage card, and the prompt suggestion
+  // describe the agent the next message goes to: in a room, an added agent's
+  // own context, its window, its provider's plan usage, and its suggestion.
+  const recipientAgentId = addressedRoomAgent?.id ?? null;
   // Any other agent that took part, a guest brought in for one review
-  // included, leaves readings of its own that are not this agent's.
-  const meterThreadHasOtherAgents = hasAgentRecords({
+  // included, leaves records of its own that are not this agent's.
+  const threadHasOtherAgents = hasAgentRecords({
     participants: activeThread?.participants ?? [],
   });
-  const meterMessages = activeThread?.messages;
-  const activeContextWindow = useMemo(() => {
-    if (!meterThreadHasOtherAgents) {
-      return deriveLatestContextWindowSnapshot(activeThreadActivities ?? []);
+  const threadMessages = activeThread?.messages;
+  // Undefined while the thread's own agent is the only one: every record is its own.
+  const isFromRecipientAgent = useMemo(() => {
+    if (!threadHasOtherAgents) {
+      return undefined;
     }
-    const turnOwners = roomTurnOwners(meterMessages ?? []);
-    return deriveLatestContextWindowSnapshot(
-      activeThreadActivities ?? [],
-      (activity) => roomActivityAgent(activity, turnOwners) === meterAgentId,
-    );
-  }, [activeThreadActivities, meterAgentId, meterMessages, meterThreadHasOtherAgents]);
+    const turnOwners = roomTurnOwners(threadMessages ?? []);
+    return (activity: OrchestrationThreadActivity) =>
+      roomActivityAgent(activity, turnOwners) === recipientAgentId;
+  }, [recipientAgentId, threadHasOtherAgents, threadMessages]);
+  const activeContextWindow = useMemo(
+    () => deriveLatestContextWindowSnapshot(activeThreadActivities ?? [], isFromRecipientAgent),
+    [activeThreadActivities, isFromRecipientAgent],
+  );
+  const sideAnswerInProgress = (activeThread?.sideTurn ?? null) !== null;
+  const recipientDriverKind = addressedRoomAgent
+    ? addressedRoomAgentEntry?.driverKind
+    : selectedProvider;
+  const latestPromptSuggestion = useMemo(
+    () =>
+      selectPromptSuggestion({
+        isSuggestionProvider: recipientDriverKind === CLAUDE_AGENT_PROVIDER,
+        isFromRecipient: isFromRecipientAgent,
+        composerIsEmpty: prompt.trim().length === 0,
+        phase,
+        sideAnswerInProgress,
+        isSendBusy,
+        hasComposerApproval: isComposerApprovalState,
+        pendingUserInputCount: pendingUserInputs.length,
+        showPlanFollowUpPrompt,
+        queuedMessageCount: queuedFollowUpCount,
+        latestTurn: activeThread?.latestTurn ?? null,
+        dismissedTurnId: dismissedSuggestionTurnId,
+        activities: activeThreadActivities ?? [],
+      }),
+    [
+      activeThread?.latestTurn,
+      activeThreadActivities,
+      dismissedSuggestionTurnId,
+      isComposerApprovalState,
+      isFromRecipientAgent,
+      isSendBusy,
+      pendingUserInputs.length,
+      phase,
+      prompt,
+      queuedFollowUpCount,
+      recipientDriverKind,
+      showPlanFollowUpPrompt,
+      sideAnswerInProgress,
+    ],
+  );
+  const latestPromptSuggestionDisplayText = latestPromptSuggestion
+    ? formatPromptSuggestionDisplayText(latestPromptSuggestion)
+    : null;
+  const promptSuggestionOverflow = useHorizontalOverflow(
+    latestPromptSuggestionDisplayText ?? "",
+    latestPromptSuggestionDisplayText !== null,
+  );
   const meterContextWindowLabel = roomAgentTraitsProps
     ? getComposerProviderState({
         provider: roomAgentTraitsProps.provider,
@@ -1730,7 +1752,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   ]);
   // Compacting works on the agent holding the thread; the meter offers it
   // only while it shows that agent.
-  const meterShowsSlotHolder = meterAgentId === (activeThread?.session?.participantId ?? null);
+  const meterShowsSlotHolder = recipientAgentId === (activeThread?.session?.participantId ?? null);
   const collapsedComposerPrimaryActionDisabled =
     isSendBusy || isConnecting || !composerSendState.hasSendableContent;
   const followUpDelivery = useSettings((settings) => settings.followUpDelivery);
@@ -3388,7 +3410,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           It is bare text rather than a chip: no border, fill, or shadow, so it reads as
           a quiet hint instead of a second card stacked on the composer. Width is capped
           below half the composer so it never reaches the centered scroll-to-bottom
-          button that shares this band. */}
+          button that shares this band. The lines stacked on the composer
+          (`stackedAbove`) render inside this form, so it floats above them too. */}
       {latestPromptSuggestion && latestPromptSuggestionDisplayText && !isComposerCollapsedMobile ? (
         <div className="absolute inset-x-0 bottom-full z-20 mb-1.5 flex px-2">
           <Tooltip>
@@ -3442,6 +3465,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           </Tooltip>
         </div>
       ) : null}
+      {/* Clipped sideways so a long line never widens the form, whose scroll
+          width the right panel's resize check reads. */}
+      <div className="min-w-0 overflow-x-clip">{stackedAbove}</div>
       {!isComposerCollapsedMobile && goalBarVisible ? (
         <div className="mx-auto w-[calc(100%-5rem)] overflow-hidden rounded-t-xl border border-b-0 border-border/55 bg-card/60 shadow-black/5 shadow-sm">
           <ComposerGoalBar
