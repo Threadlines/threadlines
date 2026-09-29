@@ -3,6 +3,8 @@ import "../../index.css";
 import {
   EnvironmentId,
   type OrchestrationThreadActivity,
+  SideTurnId,
+  ThreadParticipantId,
   type TurnId,
 } from "@threadlines/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -54,6 +56,39 @@ function dispatchTouch(
 
 function nextFrame() {
   return new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+}
+
+/**
+ * Calls `read` once per frame, after that frame is drawn: a task posted from a
+ * frame's callbacks runs after the frame paints and, in Chromium, before work
+ * queued while painting it. Sampling in the frame callback itself would miss a
+ * bounce that a late correction undoes before the next frame. Returns a stop.
+ */
+function readAfterEachPaint(read: () => void): () => void {
+  const channel = new MessageChannel();
+  channel.port1.addEventListener("message", read);
+  channel.port1.start();
+  let frame = requestAnimationFrame(function post() {
+    channel.port2.postMessage(null);
+    frame = requestAnimationFrame(post);
+  });
+  return () => {
+    cancelAnimationFrame(frame);
+    channel.port1.close();
+  };
+}
+
+/** The largest step down between consecutive positions. */
+function largestDrop(positions: ReadonlyArray<number>): number {
+  return Math.max(...positions.slice(1).map((top, index) => top - positions[index]!));
+}
+
+function assistantBodyTop(messageId: string): number {
+  return (
+    document
+      .querySelector(`[data-message-id="${messageId}"] [data-assistant-message-body="true"]`)
+      ?.getBoundingClientRect().top ?? Number.NaN
+  );
 }
 
 function buildProps() {
@@ -569,6 +604,257 @@ describe("MessagesTimeline with the real virtual list", () => {
       });
     } finally {
       restorePaddingAccessor?.();
+      await screen.unmount();
+    }
+  });
+
+  // In a room, another agent can answer above the one working at the bottom.
+  // Both write at once, and the answer's steps land above its text. While the
+  // list follows the bottom, nothing that grows above the tail may push the
+  // text below it down, even for a frame.
+  it("keeps both agents' text from bouncing while they write at once", async () => {
+    const props = buildProps();
+    const astraId = ThreadParticipantId.make("agent-astra");
+    const agent = (name: string) => ({
+      name,
+      modelName: name,
+      role: null,
+      left: false,
+      guest: false,
+      reasoning: "High",
+      entry: undefined,
+    });
+    const roomAgents = new Map([
+      ["primary", agent("Opus 5.5")],
+      ["agent-astra", agent("GPT-6 Astra")],
+    ]);
+    const at = (second: number) => `2026-04-13T12:00:${String(second).padStart(2, "0")}.000Z`;
+    const sentence =
+      "This is a plain streamed sentence with enough words to wrap onto another line. ";
+    const history: TimelineEntry[] = Array.from({ length: 6 }, (_, index) => {
+      const message: ChatMessage = {
+        id: `message-history-${index}` as ChatMessage["id"],
+        role: index % 2 === 0 ? "user" : "assistant",
+        text: `Earlier message ${index + 1}, with enough text that the thread scrolls.`,
+        streaming: false,
+        createdAt: `2026-04-13T11:59:${String(index).padStart(2, "0")}.000Z`,
+      };
+      return { id: message.id, kind: "message", createdAt: message.createdAt, message };
+    });
+    const readStep = (id: string, second: number): WorkLogEntry => ({
+      id,
+      createdAt: at(second),
+      completedAt: at(second + 1),
+      label: "Read file",
+      detail: `apps/web/src/${id}.ts`,
+      tone: "tool",
+      executionState: "completed",
+      activityKind: "tool.completed",
+    });
+    const workingStep = (id: string, second: number): TimelineEntry => {
+      const entry = { ...readStep(id, second), turnId: ACTIVE_TURN_ID };
+      return { id, kind: "work", createdAt: entry.createdAt, entry };
+    };
+    const sideTurnId = SideTurnId.make("side-ask");
+    const question: ChatMessage = {
+      id: "side-question" as ChatMessage["id"],
+      role: "user",
+      text: "Does the lock get released on every path?",
+      participantId: astraId,
+      sideTurnId,
+      fromAgent: { participantId: null },
+      requestKind: "ask",
+      streaming: false,
+      createdAt: at(7),
+    };
+    const answer: ChatMessage = {
+      id: "side-answer" as ChatMessage["id"],
+      role: "assistant",
+      text: sentence,
+      participantId: astraId,
+      sideTurnId,
+      streaming: true,
+      createdAt: at(8),
+    };
+    const reply: ChatMessage = {
+      id: "working-reply" as ChatMessage["id"],
+      role: "assistant",
+      turnId: ACTIVE_TURN_ID,
+      text: sentence.repeat(4),
+      streaming: true,
+      createdAt: at(12),
+    };
+    const renderList = (live: {
+      reply: string;
+      answer: string;
+      steps: ReadonlyArray<WorkLogEntry>;
+    }) => (
+      <div style={{ height: 500, width: 700 }}>
+        <MessagesTimeline
+          {...props}
+          roomAgents={roomAgents}
+          sideAnswers={[
+            {
+              sideTurnId,
+              participantId: astraId,
+              kind: "ask",
+              askedBy: { participantId: null },
+              question,
+              answer: { ...answer, text: live.answer },
+              steps: live.steps,
+              state: "answering",
+              error: null,
+            },
+          ]}
+          timelineEntries={[
+            ...history,
+            workingStep("asked-step", 6),
+            workingStep("later-step", 10),
+            {
+              id: reply.id,
+              kind: "message",
+              createdAt: reply.createdAt,
+              message: { ...reply, text: live.reply },
+            },
+          ]}
+        />
+      </div>
+    );
+    const live = { reply: reply.text, answer: answer.text, steps: [] as WorkLogEntry[] };
+    const screen = await renderTimeline(renderList(live));
+    const tops = { answer: [] as number[], reply: [] as number[] };
+    let stopReading = () => {};
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      stopReading = readAfterEachPaint(() => {
+        tops.answer.push(assistantBodyTop(answer.id));
+        tops.reply.push(assistantBodyTop(reply.id));
+      });
+      for (let chunk = 0; chunk < 30; chunk++) {
+        live.answer += sentence.slice(0, 30);
+        if (chunk % 2 === 0) {
+          live.reply += sentence.slice(0, 40);
+        }
+        if (chunk % 6 === 0) {
+          live.steps = [...live.steps, readStep(`side-step-${chunk}`, 8)];
+        }
+        await screen.rerender(renderList(live));
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      stopReading();
+
+      expect(tops.reply.length).toBeGreaterThan(10);
+      expect(tops.reply.every(Number.isFinite)).toBe(true);
+      expect(tops.answer.every(Number.isFinite)).toBe(true);
+      expect(
+        largestDrop(tops.reply),
+        "the working agent's text must not bounce down",
+      ).toBeLessThanOrEqual(1);
+      expect(
+        largestDrop(tops.answer),
+        "the answering agent's text must not bounce down",
+      ).toBeLessThanOrEqual(1);
+      const list = document.querySelector<HTMLElement>('[data-chat-messages-list="true"]')!;
+      expect(list.scrollHeight - list.clientHeight - list.scrollTop).toBeLessThanOrEqual(1);
+    } finally {
+      stopReading();
+      await screen.unmount();
+    }
+  });
+
+  // Half-written markdown can render taller than it ends up (a bare `- `, a
+  // code fence before its first line, a link before its `)`), and the list
+  // measures a streamed update before the text still waiting to be revealed
+  // is hidden. While the list follows the bottom, neither may pull the text
+  // down.
+  it("keeps streamed markdown from bouncing as its blocks arrive", async () => {
+    const props = buildProps();
+    const script = [
+      "Here is what happens when a job fails, step by step, with the parts that matter most.",
+      "",
+      "- The job leaves the queue before the lock is taken, so a stuck lock loses it too.",
+      "- A failure logs the error and returns early, which leaves the lock held for good.",
+      "- Retries run one attempt fewer than asked, because the loop stops before the last.",
+      "",
+      "```ts",
+      "for (let attempt = 1; attempt <= attempts; attempt++) {",
+      "  await fn();",
+      "}",
+      "```",
+      "",
+      "See [the retry loop](/tmp/project/src/retry.ts:4) and [the drain loop](/tmp/project/src/queue.ts:19) for where each starts.",
+      "",
+      "1. Release the lock in a finally block, so a failure can never leak it.",
+      "2. Keep failed jobs on a list instead of dropping them on the floor.",
+      "",
+      "",
+    ]
+      .join("\n")
+      .repeat(3);
+    const history: TimelineEntry[] = Array.from({ length: 6 }, (_, index) => {
+      const message: ChatMessage = {
+        id: `message-history-${index}` as ChatMessage["id"],
+        role: index % 2 === 0 ? "user" : "assistant",
+        text: `Earlier message ${index + 1}, with enough text that the thread scrolls.`,
+        streaming: false,
+        createdAt: `2026-04-13T11:59:${String(index).padStart(2, "0")}.000Z`,
+      };
+      return { id: message.id, kind: "message", createdAt: message.createdAt, message };
+    });
+    const reply: ChatMessage = {
+      id: "streaming-markdown" as ChatMessage["id"],
+      role: "assistant",
+      turnId: ACTIVE_TURN_ID,
+      text: "",
+      streaming: true,
+      createdAt: props.activeTurnStartedAt,
+    };
+    const renderList = (text: string) => (
+      <div style={{ height: 500, width: 700 }}>
+        <MessagesTimeline
+          {...props}
+          timelineEntries={[
+            ...history,
+            {
+              id: reply.id,
+              kind: "message",
+              createdAt: reply.createdAt,
+              message: { ...reply, text },
+            },
+          ]}
+        />
+      </div>
+    );
+    const screen = await renderTimeline(renderList(""));
+    // Runs of frames the list spent pinned to its bottom, with the reply's top
+    // in each.
+    const pinnedRuns: number[][] = [[]];
+    let stopReading = () => {};
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      const list = document.querySelector<HTMLElement>('[data-chat-messages-list="true"]')!;
+      stopReading = readAfterEachPaint(() => {
+        const top = assistantBodyTop(reply.id);
+        const pinned = list.scrollHeight - list.clientHeight - list.scrollTop <= 1;
+        if (pinned && Number.isFinite(top)) pinnedRuns.at(-1)!.push(top);
+        else if (pinnedRuns.at(-1)!.length > 0) pinnedRuns.push([]);
+      });
+      for (let length = 9; length <= script.length; length += 9) {
+        await screen.rerender(renderList(script.slice(0, length)));
+        await nextFrame();
+      }
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      stopReading();
+
+      expect(pinnedRuns.flat().length).toBeGreaterThan(50);
+      expect(
+        Math.max(...pinnedRuns.filter((run) => run.length > 1).map(largestDrop)),
+        "streamed blocks must not pull the text down",
+      ).toBeLessThanOrEqual(1);
+      expect(list.scrollHeight - list.clientHeight - list.scrollTop).toBeLessThanOrEqual(1);
+    } finally {
+      stopReading();
       await screen.unmount();
     }
   });

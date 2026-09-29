@@ -34,6 +34,15 @@ export function useStreamingTextReveal(
     maskRef.current?.sync();
   }, [streaming]);
 
+  // Mask each commit of a live message, and the final one that starts its
+  // drain, before anything above it measures the new text. The chat's virtual
+  // list reads a row's height in the same commit, ahead of the observer's
+  // microtask, and would record the unrevealed tail: one line too tall, taken
+  // back a moment later, which drops the text below.
+  useLayoutEffect(() => {
+    if (streaming || revealing) maskRef.current?.sync();
+  });
+
   return { revealing };
 }
 

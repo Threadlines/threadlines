@@ -139,6 +139,7 @@ import { useUiStateStore } from "~/uiStateStore";
 import { type TimestampFormat } from "@threadlines/contracts/settings";
 import { formatTimestamp } from "../../timestampFormat";
 import { useSettings } from "../../hooks/useSettings";
+import { useStreamingHeightFloor } from "../../hooks/useStreamingHeightFloor";
 import { useStreamingTextReveal } from "../../hooks/useStreamingTextReveal";
 import { findSearchTextHighlightSpans } from "../../lib/searchTextHighlight";
 
@@ -1162,6 +1163,41 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     setAutoStickToBottomState,
   ]);
 
+  const enableAutoStickIfAtEnd = useCallback(() => {
+    // A touch owns the list until it comes to rest: a finger that pauses is
+    // still mid-gesture, and a glide that passes the bottom is still moving.
+    // Re-arming then would yank the list under the touch; `settleTouchScroll`
+    // re-checks once the list is still.
+    if (
+      touchStartYRef.current !== null ||
+      touchScrollActiveRef.current ||
+      !isTimelineListAtEnd(listRef.current)
+    ) {
+      return;
+    }
+    setAutoStickToBottomState(true);
+    onIsAtEndChange(true);
+  }, [listRef, onIsAtEndChange, setAutoStickToBottomState]);
+
+  const scheduleStickReArmCheck = useCallback(() => {
+    clearUserScrollLockTimer();
+    userScrollLockTimerRef.current = window.setTimeout(() => {
+      userScrollLockTimerRef.current = null;
+      enableAutoStickIfAtEnd();
+    }, USER_SCROLL_STICK_LOCK_MS);
+  }, [clearUserScrollLockTimer, enableAutoStickIfAtEnd]);
+
+  const markUserScrollIntent = useCallback(
+    (options?: { notifyAwayFromEnd?: boolean }) => {
+      setAutoStickToBottomState(false);
+      if (options?.notifyAwayFromEnd) {
+        onIsAtEndChange(false);
+      }
+      scheduleStickReArmCheck();
+    },
+    [onIsAtEndChange, scheduleStickReArmCheck, setAutoStickToBottomState],
+  );
+
   const planScrollTargetRowIndex = useMemo(
     () =>
       planScrollTarget
@@ -1177,24 +1213,14 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     if (!planScrollTarget || planScrollTargetRowIndex < 0 || !legendListReady) {
       return;
     }
-    clearUserScrollLockTimer();
-    setAutoStickToBottomState(false);
-    onIsAtEndChange(false);
+    markUserScrollIntent({ notifyAwayFromEnd: true });
     const prefersReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     void listRef.current?.scrollToIndex({
       index: planScrollTargetRowIndex,
       animated: !prefersReducedMotion,
       viewPosition: 0.2,
     });
-  }, [
-    clearUserScrollLockTimer,
-    legendListReady,
-    listRef,
-    onIsAtEndChange,
-    planScrollTarget,
-    planScrollTargetRowIndex,
-    setAutoStickToBottomState,
-  ]);
+  }, [legendListReady, listRef, markUserScrollIntent, planScrollTarget, planScrollTargetRowIndex]);
 
   // Read when a link is followed, so following one does not redraw every row
   // whenever the rows change.
@@ -1204,9 +1230,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   }, [rows]);
   const onRevealMessage = useCallback(
     (messageId: MessageId) => {
-      clearUserScrollLockTimer();
-      setAutoStickToBottomState(false);
-      onIsAtEndChange(false);
+      // Like the reader's own scroll: the first steps of the scroll can still
+      // be near the end, and must not turn following back on under it.
+      markUserScrollIntent({ notifyAwayFromEnd: true });
       const prefersReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
       // The list aims by guessed heights for rows it has not drawn, and older
       // steps loading on the way can move the row: once there, the row is put
@@ -1238,7 +1264,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       };
       attempt(REVEAL_ATTEMPTS);
     },
-    [clearUserScrollLockTimer, listRef, onIsAtEndChange, setAutoStickToBottomState],
+    [listRef, markUserScrollIntent],
   );
 
   const stickToBottomNow = useCallback(() => {
@@ -1247,30 +1273,6 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     onIsAtEndChange(true);
     void listRef.current?.scrollToEnd?.({ animated: false });
   }, [clearUserScrollLockTimer, listRef, onIsAtEndChange, setAutoStickToBottomState]);
-
-  const enableAutoStickIfAtEnd = useCallback(() => {
-    // A touch owns the list until it comes to rest: a finger that pauses is
-    // still mid-gesture, and a glide that passes the bottom is still moving.
-    // Re-arming then would yank the list under the touch; `settleTouchScroll`
-    // re-checks once the list is still.
-    if (
-      touchStartYRef.current !== null ||
-      touchScrollActiveRef.current ||
-      !isTimelineListAtEnd(listRef.current)
-    ) {
-      return;
-    }
-    setAutoStickToBottomState(true);
-    onIsAtEndChange(true);
-  }, [listRef, onIsAtEndChange, setAutoStickToBottomState]);
-
-  const scheduleStickReArmCheck = useCallback(() => {
-    clearUserScrollLockTimer();
-    userScrollLockTimerRef.current = window.setTimeout(() => {
-      userScrollLockTimerRef.current = null;
-      enableAutoStickIfAtEnd();
-    }, USER_SCROLL_STICK_LOCK_MS);
-  }, [clearUserScrollLockTimer, enableAutoStickIfAtEnd]);
 
   const clearTouchSettleTimer = useCallback(() => {
     if (touchSettleTimerRef.current === null) {
@@ -1309,17 +1311,6 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       Math.max(0, Math.min(TOUCH_SCROLL_SETTLE_MS, untilCap)),
     );
   }, [clearTouchSettleTimer, settleTouchScroll]);
-
-  const markUserScrollIntent = useCallback(
-    (options?: { notifyAwayFromEnd?: boolean }) => {
-      setAutoStickToBottomState(false);
-      if (options?.notifyAwayFromEnd) {
-        onIsAtEndChange(false);
-      }
-      scheduleStickReArmCheck();
-    },
-    [onIsAtEndChange, scheduleStickReArmCheck, setAutoStickToBottomState],
-  );
 
   const stickToBottomRequestPending =
     stickToBottomRequestKey !== lastHandledStickToBottomRequestKeyRef.current;
@@ -1703,6 +1694,43 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       void listRef.current?.scrollToEnd?.({ animated: false });
     });
   }, [hasRows, listRef, rows, stickToBottomRequestPending]);
+
+  // While following, pin the bottom in the same frame the list moves its rows.
+  // A row that grows measures after layout; the list then moves the rows below
+  // it at once but only scrolls to the end on the next frame. When the row
+  // that grew sits above the tail (another agent's answer in a room, a step
+  // finishing above the reply), the text under it would drop a line for one
+  // frame and snap back. The list's position writes are DOM mutations, and
+  // their observer runs before that frame paints. The scroll is written
+  // directly: the list's scrollToEnd queues a render and lands after paint.
+  useEffect(() => {
+    const content = timelineContainerRef.current?.querySelector(".legend-list-content-container");
+    if (!legendListReady || !content || searchTargetRowIndex >= 0) {
+      return;
+    }
+    const observer = new MutationObserver(() => {
+      if (
+        !autoStickToBottomRef.current ||
+        touchStartYRef.current !== null ||
+        touchScrollActiveRef.current
+      ) {
+        return;
+      }
+      // Like the list's own follow, only while its last scroll left it at the
+      // end; anything else that moved it (a followed link, find in page) wins.
+      const state = listRef.current?.getState?.();
+      const node = listRef.current?.getScrollableNode?.();
+      if (!state?.isWithinMaintainScrollAtEndThreshold || !(node instanceof HTMLElement)) {
+        return;
+      }
+      const end = state.contentLength - node.clientHeight;
+      if (end - node.scrollTop > 1) {
+        node.scrollTop = end;
+      }
+    });
+    observer.observe(content, { attributes: true, attributeFilter: ["style"], subtree: true });
+    return () => observer.disconnect();
+  }, [legendListEpoch, legendListReady, listRef, routeThreadKey, searchTargetRowIndex]);
 
   useEffect(() => {
     return () => {
@@ -3058,8 +3086,15 @@ function FallbackAssistantResponseContainer({
 function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
   const ctx = use(TimelineRowCtx);
   const messageText = row.message.text || (row.message.streaming ? "" : "(empty response)");
+  const { isWorking } = use(TimelineRowActivityCtx);
+  const streaming = Boolean(row.message.streaming);
   const revealRef = useRef<HTMLDivElement>(null);
-  useStreamingTextReveal(revealRef, Boolean(row.message.streaming));
+  const { revealing } = useStreamingTextReveal(revealRef, streaming);
+  // Still being written, or its last characters still landing. A main-turn
+  // message left marked streaming by an agent that stopped mid-reply is not
+  // being written; a side answer settles its own message when it ends.
+  const writing = streaming && (isWorking || row.message.sideTurnId !== undefined);
+  useStreamingHeightFloor(revealRef, writing || (!streaming && revealing));
   const authReconnect =
     ctx.providerAuthReconnect && isProviderAuthErrorMessage(messageText)
       ? ctx.providerAuthReconnect
