@@ -13,8 +13,10 @@ import {
   type OrchestrationThreadActivity,
   type OrchestrationThreadDiffStat,
   type OrchestrationProposedPlanId,
+  ProviderApprovalDecision,
   ProviderDriverKind,
   ProviderInstanceId,
+  ProviderRequestKind,
   type ThreadForkContextPayload,
   ThreadForkSeedOutcomeActivityKind,
   type ThreadForkSeedOutcomePayload,
@@ -30,6 +32,7 @@ import {
 } from "@threadlines/shared/diffStats";
 import {
   APPROVAL_ACTIVITY_KINDS,
+  approvalRequestKindFromRequestType,
   collectOpenPendingRequests,
   USER_INPUT_ACTIVITY_KINDS,
 } from "@threadlines/shared/pendingRequests";
@@ -230,8 +233,10 @@ interface BrowserReceipt {
 
 export interface PendingApproval {
   requestId: ApprovalRequestId;
-  requestKind: "command" | "file-read" | "file-change" | "permissions";
+  requestKind: ProviderRequestKind;
   createdAt: string;
+  /** The answers the provider accepts. Absent: all of them. */
+  availableDecisions?: ReadonlyArray<ProviderApprovalDecision>;
   environmentId?: string;
   /** Provider tool being approved (e.g. "Bash", "Agent"). Claude only. */
   toolName?: string;
@@ -618,22 +623,14 @@ export function deriveActiveStatusLabel(input: {
   return "Working";
 }
 
-function requestKindFromRequestType(requestType: unknown): PendingApproval["requestKind"] | null {
-  switch (requestType) {
-    case "command_execution_approval":
-    case "exec_command_approval":
-    case "dynamic_tool_call":
-      return "command";
-    case "file_read_approval":
-      return "file-read";
-    case "file_change_approval":
-    case "apply_patch_approval":
-      return "file-change";
-    case "permissions_approval":
-      return "permissions";
-    default:
-      return null;
-  }
+const isProviderRequestKind = Schema.is(ProviderRequestKind);
+const isProviderApprovalDecision = Schema.is(ProviderApprovalDecision);
+
+/** The approval kind an activity carries, or derives from its request type. */
+function readApprovalRequestKind(payload: Record<string, unknown> | null) {
+  return isProviderRequestKind(payload?.requestKind)
+    ? payload.requestKind
+    : approvalRequestKindFromRequestType(payload?.requestType);
 }
 
 export function derivePendingApprovals(
@@ -648,19 +645,13 @@ export function derivePendingApprovals(
         activity.payload && typeof activity.payload === "object"
           ? (activity.payload as Record<string, unknown>)
           : null;
-      const requestKind =
-        payload &&
-        (payload.requestKind === "command" ||
-          payload.requestKind === "file-read" ||
-          payload.requestKind === "file-change" ||
-          payload.requestKind === "permissions")
-          ? payload.requestKind
-          : payload
-            ? requestKindFromRequestType(payload.requestType)
-            : null;
+      const requestKind = readApprovalRequestKind(payload);
       if (!requestKind) {
         return [];
       }
+      const availableDecisions = Array.isArray(payload?.availableDecisions)
+        ? payload.availableDecisions.filter(isProviderApprovalDecision)
+        : undefined;
       const detail = payload && typeof payload.detail === "string" ? payload.detail : undefined;
       const toolName =
         payload && typeof payload.toolName === "string" ? payload.toolName : undefined;
@@ -674,6 +665,7 @@ export function derivePendingApprovals(
           ...(environmentId ? { environmentId } : {}),
           ...(toolName ? { toolName } : {}),
           ...(detail ? { detail } : {}),
+          ...(availableDecisions && availableDecisions.length > 0 ? { availableDecisions } : {}),
         },
       ];
     });
@@ -5059,15 +5051,7 @@ function extractWorkLogItemType(
 function extractWorkLogRequestKind(
   payload: Record<string, unknown> | null,
 ): WorkLogEntry["requestKind"] | undefined {
-  if (
-    payload?.requestKind === "command" ||
-    payload?.requestKind === "file-read" ||
-    payload?.requestKind === "file-change" ||
-    payload?.requestKind === "permissions"
-  ) {
-    return payload.requestKind;
-  }
-  return requestKindFromRequestType(payload?.requestType) ?? undefined;
+  return readApprovalRequestKind(payload) ?? undefined;
 }
 
 function pushChangedFile(target: string[], seen: Set<string>, value: unknown) {

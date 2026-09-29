@@ -19,6 +19,8 @@ function approvalHeading(approval: PendingApproval): string {
       return "File-read approval requested";
     case "file-change":
       return "File-change approval requested";
+    case "terminal-input":
+      return "Terminal input approval requested";
     default:
       return "Permissions approval requested";
   }
@@ -28,9 +30,11 @@ export const ComposerPendingApprovalPanel = memo(function ComposerPendingApprova
   approval,
   pendingCount,
 }: ComposerPendingApprovalPanelProps) {
-  const isShellCommand =
-    approval.requestKind === "command" &&
-    (!approval.toolName || SHELL_TOOL_NAMES.has(approval.toolName.toLowerCase()));
+  // Shell commands and the text typed into a terminal render as code.
+  const showsCode =
+    approval.requestKind === "terminal-input" ||
+    (approval.requestKind === "command" &&
+      (!approval.toolName || SHELL_TOOL_NAMES.has(approval.toolName.toLowerCase())));
 
   return (
     <div className="px-4 py-3.5 sm:px-5 sm:py-4">
@@ -43,7 +47,7 @@ export const ComposerPendingApprovalPanel = memo(function ComposerPendingApprova
           ) : null}
         </div>
         {approval.detail ? (
-          isShellCommand ? (
+          showsCode ? (
             <pre
               data-testid="pending-approval-detail"
               className="max-h-40 overflow-y-auto whitespace-pre-wrap break-all font-mono text-sm text-foreground"

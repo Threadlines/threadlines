@@ -1356,54 +1356,69 @@ describe("openCodexThread", () => {
 });
 
 describe("rollbackCodexThread", () => {
-  type RollbackMethod = "thread/read" | "thread/fork" | "thread/start" | "thread/rollback";
+  type FakeMethod = "thread/read" | "thread/turns/list" | "thread/fork" | "thread/start";
 
-  const threadWithTurns = (
-    threadId: string,
-    turnIds: ReadonlyArray<string>,
-    status: "completed" | "inProgress" = "completed",
-  ) =>
-    ({
-      thread: { id: threadId, turns: turnIds.map((id) => ({ id, items: [], status })) },
-    }) as unknown as CodexRpc.ClientRequestResponsesByMethod["thread/read"];
-
-  const makeRollbackClient = (input: {
+  /** A Codex app-server with stored threads. `thread/turns/list` returns one
+   *  turn per page so every read exercises paging. */
+  const makeFakeCodex = (input: {
     readonly histories: Record<string, ReadonlyArray<string>>;
+    /** Null: an older app-server that doesn't report a history mode. */
+    readonly historyMode?: "legacy" | "paginated" | null;
     readonly sourceStatus?: "completed" | "inProgress";
     readonly forkError?: CodexErrors.CodexAppServerRequestError;
     readonly forkedReadError?: CodexErrors.CodexAppServerRequestError;
   }) => {
-    const calls: Array<{ method: RollbackMethod; payload: unknown }> = [];
+    const calls: Array<{ method: FakeMethod; payload: Record<string, unknown> }> = [];
+    const turnsOf = (threadId: string) =>
+      (input.histories[threadId] ?? []).map((id) => ({
+        id,
+        items: [],
+        status: threadId === "source-thread" ? (input.sourceStatus ?? "completed") : "completed",
+      }));
     const client = {
-      request: <M extends RollbackMethod>(
+      request: <M extends FakeMethod>(
         method: M,
         payload: CodexRpc.ClientRequestParamsByMethod[M],
       ) => {
-        calls.push({ method, payload });
-        const { threadId } = payload as { readonly threadId?: string };
+        const params = payload as Record<string, unknown>;
+        calls.push({ method, payload: params });
+        const threadId = String(params.threadId ?? "");
         if (method === "thread/fork" && input.forkError !== undefined) {
           return Effect.fail(input.forkError);
         }
         if (threadId === "forked-thread" && input.forkedReadError !== undefined) {
           return Effect.fail(input.forkedReadError);
         }
+        const turns = turnsOf(threadId);
         const response =
           method === "thread/fork"
             ? makeThreadOpenResponse("forked-thread")
             : method === "thread/start"
               ? makeThreadOpenResponse("fresh-thread")
-              : threadWithTurns(
-                  threadId ?? "",
-                  method === "thread/rollback" ? [] : (input.histories[threadId ?? ""] ?? []),
-                  threadId === "source-thread" ? input.sourceStatus : "completed",
-                );
-        return Effect.succeed(response as CodexRpc.ClientRequestResponsesByMethod[M]);
+              : method === "thread/turns/list"
+                ? (() => {
+                    const index = Number(params.cursor ?? 0);
+                    return {
+                      data: turns.slice(index, index + 1),
+                      nextCursor: index + 1 < turns.length ? String(index + 1) : null,
+                    };
+                  })()
+                : {
+                    thread: {
+                      id: threadId,
+                      ...(input.historyMode === null
+                        ? {}
+                        : { historyMode: input.historyMode ?? "paginated" }),
+                      turns: params.includeTurns === true ? turns : [],
+                    },
+                  };
+        return Effect.succeed(response as unknown as CodexRpc.ClientRequestResponsesByMethod[M]);
       },
     };
     return { client, calls };
   };
 
-  const rollback = (client: ReturnType<typeof makeRollbackClient>["client"], numTurns: number) =>
+  const rollback = (client: ReturnType<typeof makeFakeCodex>["client"], numTurns: number) =>
     Effect.runPromise(
       rollbackCodexThread({
         client,
@@ -1416,24 +1431,21 @@ describe("rollbackCodexThread", () => {
         serviceTier: undefined,
       }).pipe(Effect.result),
     );
+  const forkPayload = (calls: ReturnType<typeof makeFakeCodex>["calls"]) =>
+    calls.find((call) => call.method === "thread/fork")?.payload;
 
   it("undoes every turn by forking before the first turn instead of the removed thread/rollback", async () => {
-    const { client, calls } = makeRollbackClient({
+    const { client, calls } = makeFakeCodex({
       histories: { "source-thread": ["turn-1", "turn-2"], "forked-thread": [] },
     });
 
     const result = await rollback(client, 2);
 
-    assert.equal(result._tag, "Success");
     assert.equal(
       result._tag === "Success" && result.success.replacementProviderThreadId,
       "forked-thread",
     );
-    assert.deepStrictEqual(
-      calls.map((call) => call.method),
-      ["thread/read", "thread/fork", "thread/read"],
-    );
-    assert.deepStrictEqual(calls[1]?.payload, {
+    assert.deepStrictEqual(forkPayload(calls), {
       threadId: "source-thread",
       excludeTurns: true,
       beforeTurnId: "turn-1",
@@ -1446,7 +1458,7 @@ describe("rollbackCodexThread", () => {
   });
 
   it("keeps earlier turns by forking through the last surviving turn", async () => {
-    const { client, calls } = makeRollbackClient({
+    const { client, calls } = makeFakeCodex({
       histories: {
         "source-thread": ["turn-1", "turn-2", "turn-3"],
         "forked-thread": ["turn-1", "turn-2"],
@@ -1459,14 +1471,51 @@ describe("rollbackCodexThread", () => {
       result._tag === "Success" && result.success.snapshot.turns.map((turn) => turn.id),
       ["turn-1", "turn-2"],
     );
-    const forkPayload = calls[1]?.payload as Record<string, unknown>;
-    assert.equal(forkPayload.lastTurnId, "turn-2");
-    assert.equal("beforeTurnId" in forkPayload, false);
+    assert.equal(forkPayload(calls)?.lastTurnId, "turn-2");
+    assert.equal(forkPayload(calls)?.beforeTurnId, undefined);
+  });
+
+  it("never asks Codex for the deprecated full history of a paginated thread", async () => {
+    const paginated = makeFakeCodex({
+      histories: { "source-thread": ["turn-1", "turn-2", "turn-3"], "forked-thread": ["turn-1"] },
+    });
+    await rollback(paginated.client, 2);
+    assert.equal(
+      paginated.calls.some((call) => call.payload.includeTurns === true),
+      false,
+    );
+    assert.deepStrictEqual(
+      paginated.calls
+        .filter((call) => call.method === "thread/turns/list")
+        .map((call) => [call.payload.threadId, call.payload.sortDirection, call.payload.itemsView]),
+      [
+        ["source-thread", "asc", "notLoaded"],
+        ["source-thread", "asc", "notLoaded"],
+        ["source-thread", "asc", "notLoaded"],
+        ["forked-thread", "asc", "full"],
+      ],
+    );
+
+    for (const historyMode of ["legacy", null] as const) {
+      const legacy = makeFakeCodex({
+        historyMode,
+        histories: { "source-thread": ["turn-1", "turn-2", "turn-3"], "forked-thread": ["turn-1"] },
+      });
+      const result = await rollback(legacy.client, 2);
+      assert.equal(
+        legacy.calls.some((call) => call.method === "thread/turns/list"),
+        false,
+      );
+      assert.deepStrictEqual(
+        result._tag === "Success" && result.success.snapshot.turns.map((turn) => turn.id),
+        ["turn-1"],
+      );
+    }
   });
 
   it("starts a fresh thread when every turn is undone and Codex can't cut before the first", async () => {
     // Legacy rollouts with generated turn ids have no boundary to cut at.
-    const { client, calls } = makeRollbackClient({
+    const { client, calls } = makeFakeCodex({
       histories: { "source-thread": ["turn-1", "turn-2"] },
       forkError: CodexErrors.CodexAppServerRequestError.invalidRequest(
         "beforeTurnId 'turn-1' is not a persisted canonical turn in the source thread",
@@ -1480,32 +1529,28 @@ describe("rollbackCodexThread", () => {
       "fresh-thread",
     );
     assert.deepStrictEqual(result._tag === "Success" && result.success.snapshot.turns, []);
-    assert.deepStrictEqual(
-      calls.map((call) => call.method),
-      ["thread/read", "thread/fork", "thread/start"],
-    );
+    assert.equal(calls.at(-1)?.method, "thread/start");
   });
 
   it("never adopts a fork that still holds the undone turns", async () => {
     // An app-server that ignores an unknown boundary copies everything.
-    const { client, calls } = makeRollbackClient({
-      histories: { "source-thread": ["turn-1", "turn-2"], "forked-thread": ["turn-1", "turn-2"] },
-    });
+    const histories = {
+      "source-thread": ["turn-1", "turn-2"],
+      "forked-thread": ["turn-1", "turn-2"],
+    };
 
-    const result = await rollback(client, 2);
-
+    const undoAll = await rollback(makeFakeCodex({ histories }).client, 2);
     assert.equal(
-      result._tag === "Success" && result.success.replacementProviderThreadId,
+      undoAll._tag === "Success" && undoAll.success.replacementProviderThreadId,
       "fresh-thread",
     );
-    assert.deepStrictEqual(
-      calls.map((call) => call.method),
-      ["thread/read", "thread/fork", "thread/read", "thread/start"],
-    );
+
+    const partial = await rollback(makeFakeCodex({ histories }).client, 1);
+    assert.equal(partial._tag, "Failure");
   });
 
   it("surfaces a failed read of the fork instead of starting fresh", async () => {
-    const { client, calls } = makeRollbackClient({
+    const { client, calls } = makeFakeCodex({
       histories: { "source-thread": ["turn-1", "turn-2"] },
       forkedReadError: CodexErrors.CodexAppServerRequestError.invalidRequest("thread not loaded"),
     });
@@ -1513,14 +1558,14 @@ describe("rollbackCodexThread", () => {
     const result = await rollback(client, 2);
 
     assert.equal(result._tag, "Failure");
-    assert.deepStrictEqual(
-      calls.map((call) => call.method),
-      ["thread/read", "thread/fork", "thread/read"],
+    assert.equal(
+      calls.some((call) => call.method === "thread/start"),
+      false,
     );
   });
 
   it("refuses to revert while a turn is still running", async () => {
-    const { client, calls } = makeRollbackClient({
+    const { client, calls } = makeFakeCodex({
       histories: { "source-thread": ["turn-1", "turn-2"] },
       sourceStatus: "inProgress",
     });
@@ -1528,9 +1573,9 @@ describe("rollbackCodexThread", () => {
     const result = await rollback(client, 1);
 
     assert.equal(result._tag, "Failure");
-    assert.deepStrictEqual(
-      calls.map((call) => call.method),
-      ["thread/read"],
+    assert.equal(
+      calls.some((call) => call.method === "thread/fork"),
+      false,
     );
   });
 });

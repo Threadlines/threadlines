@@ -730,6 +730,34 @@ describe("derivePendingApprovals", () => {
     ]);
   });
 
+  it("keeps a terminal-input approval and the answers the provider accepts", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "approval-open-terminal-input",
+        createdAt: "2026-09-29T00:00:01.000Z",
+        kind: "approval.requested",
+        summary: "Terminal input approval requested",
+        tone: "approval",
+        payload: {
+          requestId: "req-terminal-input",
+          requestType: "terminal_input_approval",
+          detail: '"npm test\\n"',
+          availableDecisions: ["accept", "cancel", "applyNetworkPolicyAmendment"],
+        },
+      }),
+    ];
+
+    expect(derivePendingApprovals(activities)).toEqual([
+      {
+        requestId: "req-terminal-input",
+        requestKind: "terminal-input",
+        createdAt: "2026-09-29T00:00:01.000Z",
+        detail: '"npm test\\n"',
+        availableDecisions: ["accept", "cancel"],
+      },
+    ]);
+  });
+
   it("keeps Codex permission approvals with environment identity", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({

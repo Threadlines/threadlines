@@ -166,7 +166,7 @@ function codexUserInputText(
         case "text":
           return part.text;
         case "image":
-          return `[Image attachment: ${part.url}]`;
+          return `[Image attachment: ${"url" in part ? part.url : part.fileId}]`;
         case "localImage":
           return `[Image attachment: ${part.path}]`;
         case "audio":
@@ -1176,6 +1176,8 @@ function toRequestTypeFromKind(kind: ProviderRequestKind | undefined): Canonical
   switch (kind) {
     case "command":
       return "command_execution_approval";
+    case "terminal-input":
+      return "terminal_input_approval";
     case "file-read":
       return "file_read_approval";
     case "file-change":
@@ -1185,6 +1187,84 @@ function toRequestTypeFromKind(kind: ProviderRequestKind | undefined): Canonical
     default:
       return "unknown";
   }
+}
+
+/** Splits a POSIX shell-quoted command line into its words, or undefined
+ *  when a quote is left open. */
+function splitShellWords(command: string): string[] | undefined {
+  const words: string[] = [];
+  let word = "";
+  let inWord = false;
+  let index = 0;
+  while (index < command.length) {
+    const char = command[index]!;
+    if (char === "'") {
+      const end = command.indexOf("'", index + 1);
+      if (end < 0) return undefined;
+      word += command.slice(index + 1, end);
+      inWord = true;
+      index = end + 1;
+    } else if (char === '"') {
+      inWord = true;
+      index += 1;
+      while (index < command.length && command[index] !== '"') {
+        const next = command[index + 1];
+        if (command[index] === "\\" && next !== undefined && '$`"\\\n'.includes(next)) {
+          word += next;
+          index += 2;
+        } else {
+          word += command[index];
+          index += 1;
+        }
+      }
+      if (index >= command.length) return undefined;
+      index += 1;
+    } else if (char === "\\") {
+      word += command[index + 1] ?? "";
+      inWord = true;
+      index += 2;
+    } else if (char === " " || char === "\t" || char === "\n") {
+      if (inWord) words.push(word);
+      word = "";
+      inWord = false;
+      index += 1;
+    } else {
+      word += char;
+      inWord = true;
+      index += 1;
+    }
+  }
+  if (inWord) words.push(word);
+  return words;
+}
+
+/** Codex asks to type into a running terminal with the shell-quoted command
+ *  `write_stdin --session-id <id> <input>`. Returns the input quoted and
+ *  escaped, as Codex's own approval prompt shows it, so a bare Enter or
+ *  Ctrl-C stays visible. */
+export function describeCodexTerminalInput(command: string): string | undefined {
+  const words = splitShellWords(command);
+  const input = words?.[0] === "write_stdin" && words.length >= 4 ? words.at(-1) : undefined;
+  return input === undefined ? undefined : JSON.stringify(input);
+}
+
+const PROVIDER_APPROVAL_DECISIONS: ReadonlySet<string> = new Set<ProviderApprovalDecision>([
+  "accept",
+  "acceptForSession",
+  "decline",
+  "cancel",
+]);
+
+/** The answers Codex offers that Threadlines can send. Amendment decisions
+ *  (exec-policy and network rules) have no control here, so they drop out. */
+function supportedApprovalDecisions(
+  decisions: ReadonlyArray<unknown> | null | undefined,
+): ReadonlyArray<ProviderApprovalDecision> | undefined {
+  const supported = decisions?.filter(
+    (decision): decision is ProviderApprovalDecision =>
+      typeof decision === "string" && PROVIDER_APPROVAL_DECISIONS.has(decision),
+  );
+  return supported !== undefined && supported.length > 0 ? supported : undefined;
 }
 
 function readPayloadEnvironmentId(payload: unknown): string | undefined {
@@ -1494,14 +1574,21 @@ export function mapToRuntimeEvents(
       ];
     }
 
+    const commandApproval =
+      event.method === "item/commandExecution/requestApproval"
+        ? readPayload(
+            EffectCodexSchema.ServerRequest__CommandExecutionRequestApprovalParams,
+            event.payload,
+          )
+        : undefined;
     const detail = (() => {
       switch (event.method) {
         case "item/commandExecution/requestApproval": {
-          const payload = readPayload(
-            EffectCodexSchema.ServerRequest__CommandExecutionRequestApprovalParams,
-            event.payload,
-          );
-          return payload?.command ?? payload?.reason ?? undefined;
+          const terminalInput =
+            commandApproval?.kind === "writeStdin" && commandApproval.command
+              ? describeCodexTerminalInput(commandApproval.command)
+              : undefined;
+          return terminalInput ?? commandApproval?.command ?? commandApproval?.reason ?? undefined;
         }
         case "item/fileChange/requestApproval": {
           const payload = readPayload(
@@ -1543,15 +1630,20 @@ export function mapToRuntimeEvents(
       }
     })();
     const environmentId = readPayloadEnvironmentId(event.payload);
+    const availableDecisions = supportedApprovalDecisions(commandApproval?.availableDecisions);
 
     return [
       {
         ...runtimeEventBase(event, canonicalThreadId),
         type: "request.opened",
         payload: {
-          requestType: toRequestTypeFromMethod(event.method),
+          requestType:
+            event.requestKind === "terminal-input"
+              ? "terminal_input_approval"
+              : toRequestTypeFromMethod(event.method),
           ...(environmentId ? { environmentId } : {}),
           ...(detail ? { detail } : {}),
+          ...(availableDecisions ? { availableDecisions } : {}),
           ...(event.payload !== undefined ? { args: event.payload } : {}),
         },
       },

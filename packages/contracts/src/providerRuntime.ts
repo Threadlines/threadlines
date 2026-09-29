@@ -16,7 +16,7 @@ import {
   TurnId,
 } from "./baseSchemas.ts";
 import { ProviderInstanceId, ProviderDriverKind } from "./providerInstance.ts";
-import { OrchestrationSubagentStatus } from "./orchestration.ts";
+import { OrchestrationSubagentStatus, ProviderApprovalDecision } from "./orchestration.ts";
 
 const TrimmedNonEmptyStringSchema = TrimmedNonEmptyString;
 const UnknownRecordSchema = Schema.Record(Schema.String, Schema.Unknown);
@@ -140,6 +140,7 @@ export type CanonicalItemType = typeof CanonicalItemType.Type;
 
 export const CanonicalRequestType = Schema.Literals([
   "command_execution_approval",
+  "terminal_input_approval",
   "file_read_approval",
   "file_change_approval",
   "apply_patch_approval",
@@ -574,6 +575,8 @@ const RequestOpenedPayload = Schema.Struct({
   requestType: CanonicalRequestType,
   environmentId: Schema.optional(TrimmedNonEmptyStringSchema),
   detail: Schema.optional(TrimmedNonEmptyStringSchema),
+  /** The answers the provider accepts for this approval. Absent: all of them. */
+  availableDecisions: Schema.optional(Schema.Array(ProviderApprovalDecision)),
   args: Schema.optional(Schema.Unknown),
 });
 export type RequestOpenedPayload = typeof RequestOpenedPayload.Type;
