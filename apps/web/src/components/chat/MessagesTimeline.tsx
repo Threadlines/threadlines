@@ -72,6 +72,7 @@ import {
   LoaderIcon,
   LogInIcon,
   RefreshCwIcon,
+  ReplyIcon,
   PencilIcon,
   SplitIcon,
   SquarePenIcon,
@@ -103,6 +104,7 @@ import {
   stretchDurationMs,
   timelineRowTurnIds,
   type StableMessagesTimelineRowsState,
+  type TimelineRoom,
   type TrayPlacement,
   type TurnSummary,
   type MessagesTimelineRow,
@@ -189,6 +191,11 @@ interface TimelineRowSharedState {
   roomTurnOwners: ReadonlyMap<TurnId, ThreadParticipantId | null>;
   /** Agent messages that start a new speaker's stretch and carry an author line. */
   roomAuthorLineMessageIds: ReadonlySet<MessageId>;
+  /** A room with more than one agent: rows hang on agents' lines (RoomLine)
+   *  in a lane at the left, instead of sitting in trays. */
+  roomLines: boolean;
+  /** A side answer's review or question, for the name its steps carry. */
+  sideAnswerContext: ReadonlyMap<SideTurnId, { review?: ChatMessage; replyTo?: ChatMessage }>;
   /** Room requests still open, by their request message. */
   openAgentRequestByMessageId: ReadonlyMap<MessageId, OrchestrationAgentRequest>;
   /** Requests that are agents' invites: their replies read as one line. */
@@ -809,6 +816,16 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       return next;
     });
   }, []);
+  // A room with teammates draws each agent's line instead of trays. A guest
+  // brought in for one review leaves the thread as it was.
+  const room = useMemo<TimelineRoom | null>(
+    () =>
+      roomAgents !== null &&
+      [...roomAgents].some(([key, label]) => key !== roomAgentKey(null) && !label.guest)
+        ? { workingParticipantId }
+        : null,
+    [roomAgents, workingParticipantId],
+  );
   const rawRows = useMemo(
     () =>
       deriveMessagesTimelineRows({
@@ -824,8 +841,10 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         revertTurnCountByUserMessageId,
         sideAnswers,
         expandedSideTurnIds,
+        room,
       }),
     [
+      room,
       sideAnswers,
       expandedSideTurnIds,
       timelineEntries,
@@ -875,39 +894,43 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     [],
   );
   const anchorOwnsLiveAgents = rows.some((row) => row.kind === "working");
-  // In a room, an agent message gets an author line when the speaker changes:
-  // after the user spoke, or after a different agent. A message an agent wrote
-  // to another names its writer, so it counts as that agent speaking. A side
-  // answer always names who answered. Outside a room (only a guest brought in
-  // for a review), only the guest's answers do: the thread's own agent is the
-  // one speaking everywhere else.
+  // Which agent messages carry an author line. In a room, the ones that head
+  // their agent's stretch or side answer (RoomLine.heads); a hand-off or a
+  // reply names its writer in its own header. Outside a room (only a guest
+  // brought in for a review), only the guest's answers do: the thread's own
+  // agent is the one speaking everywhere else.
   const roomAuthorLineMessageIds = useMemo(() => {
     const ids = new Set<MessageId>();
     if (roomAgents === null) {
       return ids;
     }
-    const withTeammates = [...roomAgents].some(
-      ([key, label]) => key !== roomAgentKey(null) && !label.guest,
-    );
-    let lastAuthor: string | null = null;
     for (const row of rows) {
-      if (row.kind !== "message") continue;
-      if (row.message.role === "user") {
-        lastAuthor =
-          row.message.fromAgent === undefined
-            ? null
-            : roomAgentKey(row.message.fromAgent.participantId);
-        continue;
-      }
-      if (row.message.role !== "assistant") continue;
-      const author = roomAgentKey(row.message.participantId);
-      if ((withTeammates && author !== lastAuthor) || row.message.sideTurnId !== undefined) {
+      if (
+        row.kind === "message" &&
+        row.message.role === "assistant" &&
+        (row.roomLine !== undefined ? row.roomLine.heads : row.message.sideTurnId !== undefined)
+      ) {
         ids.add(row.message.id);
       }
-      lastAuthor = author;
     }
     return ids;
   }, [roomAgents, rows]);
+  // What a side answer's name says when its steps carry it: the review it
+  // answers, or the question it links back to.
+  const sideAnswerContext = useMemo(() => {
+    const context = new Map<SideTurnId, { review?: ChatMessage; replyTo?: ChatMessage }>();
+    for (const row of rows) {
+      if (row.kind === "message" && row.message.sideTurnId !== undefined) {
+        if (row.sideReview !== undefined || row.sideReplyTo !== undefined) {
+          context.set(row.message.sideTurnId, {
+            ...(row.sideReview !== undefined ? { review: row.sideReview } : {}),
+            ...(row.sideReplyTo !== undefined ? { replyTo: row.sideReplyTo } : {}),
+          });
+        }
+      }
+    }
+    return context;
+  }, [rows]);
   const turnOwners = useMemo(
     () => roomTurnOwners(rows.flatMap((row) => (row.kind === "message" ? [row.message] : []))),
     [rows],
@@ -1696,6 +1719,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       workingParticipantId,
       roomTurnOwners: turnOwners,
       roomAuthorLineMessageIds,
+      roomLines: room !== null,
+      sideAnswerContext,
       openAgentRequestByMessageId,
       inviteRequestIds,
       routeThreadKey,
@@ -1735,6 +1760,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       workingParticipantId,
       turnOwners,
       roomAuthorLineMessageIds,
+      room,
+      sideAnswerContext,
       openAgentRequestByMessageId,
       inviteRequestIds,
       routeThreadKey,
@@ -2254,7 +2281,11 @@ function rowBottomPadding(row: TimelineRow): string {
   switch (row.kind) {
     case "message":
       if (row.message.role !== "assistant") {
-        return "pb-4";
+        // A question one agent asks another inside its own stretch keeps its
+        // answer close under it.
+        return row.message.fromAgent !== undefined && row.roomLine?.placement === "through"
+          ? "pb-1"
+          : "pb-4";
       }
       return row.turnSummary === null ? "pb-1" : "pb-2";
     case "work":
@@ -2264,6 +2295,25 @@ function rowBottomPadding(row: TimelineRow): string {
     default:
       return "pb-4";
   }
+}
+
+/**
+ * Where a row's piece of its agent's line starts and bends, measured from the
+ * row's top: the line leaves from under the logo in the row's author line, and
+ * bends into the row's first line of text. Each follows the row's own top
+ * padding (pt-2 for padTop, then its section's).
+ */
+function roomLineOffsets(row: TimelineRow): CSSProperties {
+  const padTop = row.padTop ? 8 : 0;
+  // The section's top padding, then the middle of its first line.
+  const [sectionTop, firstLine] =
+    row.kind === "working" ? [4, 8] : row.kind === "message" ? [2, 13] : [2, 10];
+  return {
+    // Below the logo: the author line's 16px, less the logo's 1px inset.
+    ["--room-line-top" as string]: `${padTop + sectionTop + 18}px`,
+    // The bend's 7px box ends on the first line's middle.
+    ["--room-hook-top" as string]: `${padTop + sectionTop + firstLine - 6}px`,
+  };
 }
 
 const TRAY_CORNERS = {
@@ -2277,16 +2327,22 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
   const ctx = use(TimelineRowCtx);
   const isActiveSearchTarget =
     row.kind === "message" && row.message.id === ctx.activeSearchTargetMessageId;
+  const roomLine = row.roomLine;
   return (
     <div
       // A row whose section renders nothing (e.g. an all-anchor work group
       // with no resolvable tracker) must not leave a phantom padded gap.
+      // In a room every row keeps the lane at the left, where agents' logos
+      // and lines are drawn (index.css, [data-room-line]).
       className={cn(
         rowBottomPadding(row),
         row.padTop && "pt-2",
+        ctx.roomLines && (roomLine?.nested ? "pl-10" : "pl-5"),
         "[&:not(:has(*))]:p-0",
         isActiveSearchTarget && "thread-search-target-pulse",
       )}
+      data-room-line={roomLine?.placement}
+      style={roomLine ? roomLineOffsets(row) : undefined}
       data-timeline-row-id={row.id}
       data-timeline-row-kind={row.kind}
       data-message-id={row.kind === "message" ? row.message.id : undefined}
@@ -2575,6 +2631,80 @@ function AgentMessageTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "m
   if (description === null) {
     return null;
   }
+  const roomLine = row.roomLine;
+  // How the request ended, under its text: indented with the text when it
+  // is quoted. A side request's ending shows at the end of its block instead.
+  const outcome = (quoted: boolean) =>
+    description.outcomeNote !== null && message.sideTurnId === undefined ? (
+      <p
+        className={cn("mt-1 text-xs leading-4 text-muted-foreground/70", quoted && "pl-3")}
+        data-room-request-outcome={message.requestOutcome}
+      >
+        {description.outcomeNote}
+      </p>
+    ) : null;
+  // A hand-off's reply is the answer right above it: one line says where
+  // it went instead of the same words again.
+  if (roomLine?.echoesAnswer) {
+    return (
+      <div
+        className="min-w-0 px-1"
+        data-room-agent-message="reply-echo"
+        title={formatTimestamp(message.createdAt, ctx.timestampFormat)}
+      >
+        <p className="flex min-w-0 items-center gap-1 text-xs leading-5 text-muted-foreground/70">
+          <ReplyIcon aria-hidden className="size-3 shrink-0" />
+          <span className="min-w-0 truncate">Sent to {description.to} as its reply</span>
+        </p>
+        {outcome(false)}
+      </div>
+    );
+  }
+  const body = (
+    <CollapsibleUserMessageBody
+      text={message.text}
+      terminalContexts={NO_TERMINAL_CONTEXTS}
+      transcriptHighlights={NO_TRANSCRIPT_HIGHLIGHTS}
+      pickedElements={NO_PICKED_ELEMENTS}
+      drawings={NO_DRAWINGS}
+      skills={ctx.skills}
+      // Spoken to another agent, a hand-off reads close to an answer; a
+      // question asked on the side reads like the asker's notes.
+      bodyClassName={
+        roomLine?.placement === "single" ? "text-foreground/80" : "text-muted-foreground"
+      }
+      forceExpanded={ctx.searchTargetMessageId === message.id}
+      searchHighlightQuery={
+        ctx.activeSearchTargetMessageId === message.id ? ctx.searchTargetQuery : undefined
+      }
+    />
+  );
+  // In a room, a hand-off or a reply is its writer speaking: its logo and
+  // name head it, like any stretch of that agent's.
+  if (roomLine?.placement === "single") {
+    return (
+      <div
+        className="group min-w-0 px-1 py-0.5"
+        data-room-agent-message={message.requestKind ?? "message"}
+        title={formatTimestamp(message.createdAt, ctx.timestampFormat)}
+      >
+        <RoomAuthorLine label={ctx.roomAgents?.get(roomAgentKey(roomLine.agent))} inLane>
+          <span className="min-w-0 truncate text-muted-foreground">→ {description.to}</span>
+          {description.kind ? (
+            <>
+              <span className="shrink-0 text-muted-foreground/50">·</span>
+              <span className="shrink-0 text-muted-foreground">{description.kind}</span>
+            </>
+          ) : null}
+        </RoomAuthorLine>
+        {body}
+        {outcome(false)}
+      </div>
+    );
+  }
+  // Asked from inside the asking agent's own stretch: its line says who asked.
+  const fromOwnStretch =
+    ctx.roomLines && roomLine !== undefined && roomLine.agent === message.fromAgent?.participantId;
   return (
     <div
       className="group min-w-0 px-1 py-0.5"
@@ -2582,7 +2712,9 @@ function AgentMessageTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "m
       title={formatTimestamp(message.createdAt, ctx.timestampFormat)}
     >
       <div className="mb-1 flex min-h-5 min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 font-mono text-[10.5px] text-muted-foreground">
-        <span className="min-w-0 truncate">{`${description.from} → ${description.to}`}</span>
+        <span className="min-w-0 truncate">
+          {fromOwnStretch ? `to ${description.to}` : `${description.from} → ${description.to}`}
+        </span>
         {description.kind ? (
           <>
             <span className="shrink-0 text-muted-foreground/50">·</span>
@@ -2607,30 +2739,9 @@ function AgentMessageTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "m
           </div>
         ) : null}
       </div>
-      <div className="border-l border-border pl-3">
-        <CollapsibleUserMessageBody
-          text={message.text}
-          terminalContexts={NO_TERMINAL_CONTEXTS}
-          transcriptHighlights={NO_TRANSCRIPT_HIGHLIGHTS}
-          pickedElements={NO_PICKED_ELEMENTS}
-          drawings={NO_DRAWINGS}
-          skills={ctx.skills}
-          bodyClassName="text-muted-foreground"
-          forceExpanded={ctx.searchTargetMessageId === message.id}
-          searchHighlightQuery={
-            ctx.activeSearchTargetMessageId === message.id ? ctx.searchTargetQuery : undefined
-          }
-        />
-      </div>
-      {/* A side request's ending shows at the end of its side block instead. */}
-      {description.outcomeNote !== null && message.sideTurnId === undefined ? (
-        <p
-          className="mt-1 pl-3 text-xs leading-4 text-muted-foreground/70"
-          data-room-request-outcome={message.requestOutcome}
-        >
-          {description.outcomeNote}
-        </p>
-      ) : null}
+      {/* Inside the asker's stretch its line already sets the question off. */}
+      {fromOwnStretch ? body : <div className="border-l border-border pl-3">{body}</div>}
+      {outcome(!fromOwnStretch)}
     </div>
   );
 }
@@ -2981,6 +3092,7 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
               onTheSide={row.message.sideTurnId !== undefined}
               review={row.sideReview}
               replyTo={row.sideReplyTo}
+              inLane={ctx.roomLines && row.roomLine?.nested !== true}
             />
           ) : null}
           {authReconnect ? (
@@ -3303,7 +3415,11 @@ function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "workin
     // below keeps the word centered when it is the tray's only line.
     <div className="py-1" data-turn-working-anchor="true">
       <div className="min-w-0 pl-1">
-        {row.namesAgent && roomAgents !== null ? (
+        {roomAgents !== null && row.roomLine !== undefined ? (
+          row.roomLine.heads ? (
+            <RoomAuthorLine label={roomAgents.get(roomAgentKey(row.roomLine.agent))} inLane />
+          ) : null
+        ) : row.namesAgent && roomAgents !== null ? (
           <RoomAuthorLine label={roomAgents.get(roomAgentKey(workingParticipantId))} />
         ) : null}
         <p className="flex min-w-0 items-center gap-1.5 text-xs leading-4 text-muted-foreground/70">
@@ -3373,14 +3489,26 @@ function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "workin
  * stopped, or failed.
  */
 function SideStatusTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "side-status" }> }) {
-  const { roomAgents, onStopSideAnswer, onToggleSideAnswer, onRevealMessage, timestampFormat } =
-    use(TimelineRowCtx);
+  const {
+    roomAgents,
+    roomLines,
+    onStopSideAnswer,
+    onToggleSideAnswer,
+    onRevealMessage,
+    timestampFormat,
+  } = use(TimelineRowCtx);
   const name = roomAgents?.get(roomAgentKey(row.participantId))?.name ?? "The agent";
+  // In a room the line under your side question sits under it, at the right:
+  // the working agent's line runs on at the left.
+  const underYourQuestion = roomLines && row.question.fromAgent === undefined;
   if (row.state === "answered") {
     // Opened to watch it, the answer stayed under its question; folding it
     // posts it where it was done instead.
     return (
-      <div className="py-1" data-side-answer-status={row.state}>
+      <div
+        className={cn("py-1", underYourQuestion && "flex justify-end")}
+        data-side-answer-status={row.state}
+      >
         <button
           type="button"
           aria-expanded
@@ -3400,7 +3528,10 @@ function SideStatusTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "sid
     // posted where the chat had got to, and this line leads to it.
     const answerMessageId = row.answerMessageId;
     return (
-      <div className="py-1" data-side-answer-status={row.state}>
+      <div
+        className={cn("py-1", underYourQuestion && "flex justify-end")}
+        data-side-answer-status={row.state}
+      >
         <button
           type="button"
           disabled={answerMessageId === null}
@@ -3422,7 +3553,12 @@ function SideStatusTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "sid
     const doing = stopping ? "stopping" : row.review ? "reviewing independently" : "answering";
     return (
       <div className="py-1" data-side-answer-status={row.state}>
-        <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 pl-1 text-xs leading-4 text-muted-foreground/70">
+        <div
+          className={cn(
+            "flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 pl-1 text-xs leading-4 text-muted-foreground/70",
+            underYourQuestion && "justify-end",
+          )}
+        >
           <WorkingAnchorDots state="working" className="relative -top-px -mr-0.5 shrink-0" />
           {row.compact ? (
             // The working agent goes on meanwhile: one line, which opens to
@@ -3540,6 +3676,7 @@ const WorkGroupSection = memo(function WorkGroupSection({
     roomAgents,
     roomTurnOwners: turnOwners,
     workingParticipantId,
+    sideAnswerContext,
   } = use(TimelineRowCtx);
   const { isWorking } = use(TimelineRowActivityCtx);
   const groupedEntries = useMemo(
@@ -3586,17 +3723,37 @@ const WorkGroupSection = memo(function WorkGroupSection({
   // that turn has written nothing yet, the one at work.
   const turnId = row.groupedEntries.find((entry) => entry.turnId != null)?.turnId ?? null;
   const author =
-    row.namesAgent && roomAgents !== null
-      ? roomAgents.get(
-          roomAgentKey(
-            (turnId !== null ? turnOwners.get(turnId) : undefined) ?? workingParticipantId,
-          ),
-        )
-      : undefined;
+    roomAgents === null
+      ? undefined
+      : row.roomLine !== undefined
+        ? row.roomLine.heads
+          ? roomAgents.get(roomAgentKey(row.roomLine.agent))
+          : undefined
+        : row.namesAgent
+          ? roomAgents.get(
+              roomAgentKey(
+                (turnId !== null ? turnOwners.get(turnId) : undefined) ?? workingParticipantId,
+              ),
+            )
+          : undefined;
 
   return (
     <div className="min-w-0 px-1 pt-0.5" data-work-group="true">
-      {author ? <RoomAuthorLine label={author} /> : null}
+      {author ? (
+        <RoomAuthorLine
+          label={author}
+          inLane={row.roomLine !== undefined && !row.roomLine.nested}
+          onTheSide={row.sideTurnId !== undefined}
+          review={
+            row.sideTurnId !== undefined ? sideAnswerContext.get(row.sideTurnId)?.review : undefined
+          }
+          replyTo={
+            row.sideTurnId !== undefined
+              ? sideAnswerContext.get(row.sideTurnId)?.replyTo
+              : undefined
+          }
+        />
+      ) : null}
       {showTracker && turnAgentTracker.summary ? (
         <div
           className="flex min-w-0 items-center gap-[7px] text-xs leading-5 text-muted-foreground/60"
@@ -4813,8 +4970,15 @@ function RoomAuthorLine({
   onTheSide = false,
   review,
   replyTo,
+  inLane = false,
+  children,
 }: {
   label: RoomAgentLabel | undefined;
+  /** The logo sits in the lane to the left, on its agent's line, and the
+   *  name lines up with the text below. */
+  inLane?: boolean;
+  /** More about the message after the name: who it went to, and why. */
+  children?: ReactNode;
   /** A read-only answer given while another agent worked. */
   onTheSide?: boolean;
   /** An independent review's answer: the request, for its tag. */
@@ -4830,18 +4994,37 @@ function RoomAuthorLine({
     );
   }
   return (
-    <div className="mb-1 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs">
+    <div
+      className={cn(
+        "mb-1 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs",
+        inLane && "relative",
+      )}
+    >
       {label.entry ? (
         <ProviderInstanceIcon
           driverKind={label.entry.driverKind}
           displayName={label.entry.displayName}
           accentColor={label.entry.accentColor}
           showBadge={false}
-          className="size-3.5"
+          // In the lane: centered on the line, 24px left of the text (the
+          // lane's 20px and the section's 4px), 1px down to center on the name.
+          className={cn("size-3.5", inLane && "absolute top-px -left-6")}
           iconClassName="size-3.5"
         />
       ) : null}
       <span className="font-medium text-foreground">{label.name}</span>
+      {label.reasoning ? (
+        <>
+          <span className="text-muted-foreground/50">·</span>
+          <span className="text-muted-foreground" data-room-agent-reasoning>
+            {label.reasoning}
+          </span>
+        </>
+      ) : null}
+      {children}
+      {(review || onTheSide) && label.reasoning ? (
+        <span className="text-muted-foreground/50">·</span>
+      ) : null}
       {review ? (
         <RoomReviewTag request={review} timestampFormat={timestampFormat} />
       ) : onTheSide ? (

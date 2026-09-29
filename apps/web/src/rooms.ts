@@ -30,9 +30,14 @@ import {
   nextRoomAgentName,
 } from "@threadlines/shared/threadParticipants";
 import { awaitingInvite } from "@threadlines/shared/roomAgentRequests";
+import {
+  getProviderOptionCurrentLabel,
+  getProviderOptionDescriptors,
+} from "@threadlines/shared/model";
 import { create } from "zustand";
 
 import type { ProviderInstanceEntry } from "./providerInstances";
+import { getProviderModelCapabilities } from "./providerModels";
 import type { ChatMessage } from "./types";
 
 interface RoomThreadLike {
@@ -200,6 +205,9 @@ export interface RoomAgentLabel {
   readonly left: boolean;
   /** Brought in for one review by an agent's invite; never a member. */
   readonly guest: boolean;
+  /** How hard its model reasons, as the model picker names it ("High");
+   *  null for a model without the setting. The chat shows it by the name. */
+  readonly reasoning: string | null;
   readonly entry: ProviderInstanceEntry | undefined;
 }
 
@@ -285,16 +293,41 @@ export function buildRoomAgentLabels(
       named,
     );
     named.push(modelName);
+    const entry = entries.find((candidate) => candidate.instanceId === agent.selection.instanceId);
     labels.set(agent.key, {
       name: roomAgentDisplayName(modelName, agent.role),
       modelName,
       role: agent.role,
       left: agent.left,
       guest: agent.guest,
-      entry: entries.find((candidate) => candidate.instanceId === agent.selection.instanceId),
+      reasoning: entry ? roomReasoningLabel(agent.selection, entry) : null,
+      entry,
     });
   }
   return labels;
+}
+
+/** The option each provider keeps its reasoning level in. */
+const REASONING_OPTION_IDS: ReadonlySet<string> = new Set([
+  "reasoningEffort",
+  "effort",
+  "reasoning",
+]);
+
+/**
+ * A model's reasoning level as the model picker names it ("High"), from the
+ * selection's own choice or the model's default. Null when the model has no
+ * such setting, or the provider does not list the model.
+ */
+export function roomReasoningLabel(
+  selection: ModelSelection,
+  entry: ProviderInstanceEntry,
+): string | null {
+  const caps = getProviderModelCapabilities(entry.models, selection.model, entry.driverKind);
+  const descriptor = getProviderOptionDescriptors({ caps, selections: selection.options }).find(
+    (candidate) => candidate.type === "select" && REASONING_OPTION_IDS.has(candidate.id),
+  );
+  return getProviderOptionCurrentLabel(descriptor) ?? null;
 }
 
 /** A model's name as the model picker shows it, or its id when unknown here. */

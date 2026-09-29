@@ -1819,6 +1819,7 @@ describe("MessagesTimeline", () => {
           role: null,
           left: false,
           guest: false,
+          reasoning: "High",
           entry: undefined,
         },
       ],
@@ -1830,6 +1831,7 @@ describe("MessagesTimeline", () => {
           role: null,
           left: true,
           guest: false,
+          reasoning: "Extra High",
           entry: undefined,
         },
       ],
@@ -1879,6 +1881,8 @@ describe("MessagesTimeline", () => {
       expect(markup).toContain("Opus 5.5 → GPT-6 Astra 2");
       // On the request and on the answer's author line.
       expect(markup.split("Independent review · no room context")).toHaveLength(3);
+      // The answer names how hard the reviewer reasoned.
+      expect(markup).toContain(">Extra High</span>");
       // Never read as the user's own message.
       expect(markup).not.toContain("to GPT-6 Astra 2");
     });
@@ -1910,7 +1914,9 @@ describe("MessagesTimeline", () => {
         />,
       );
 
-      expect(markup).toContain("Opus 5.5 → GPT-6 Astra 2");
+      // In a room the hand-off reads as its writer speaking: name, then to whom.
+      expect(markup).toContain(">Opus 5.5</span>");
+      expect(markup).toContain("→ GPT-6 Astra 2");
       expect(markup).toContain("handed off");
       expect(markup).toContain("Cancelled: GPT-6 Astra 2 left the room.");
     });

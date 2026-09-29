@@ -6,6 +6,7 @@ import {
   ThreadParticipantId,
   TurnId,
 } from "@threadlines/contracts";
+import { createModelCapabilities } from "@threadlines/shared/model";
 import { describe, expect, it } from "vite-plus/test";
 
 import type { ProviderInstanceEntry } from "./providerInstances";
@@ -112,6 +113,68 @@ describe("rooms", () => {
     expect(labels?.get(roomAgentKey(null))?.name).toBe("opus-9");
     expect(labels?.get(roomAgentKey(astraId))?.name).toBe("GPT-6 Astra");
     expect(labels?.get(roomAgentKey(secondAstraId))?.name).toBe("GPT-6 Astra 2");
+  });
+
+  it("names how hard each agent's model reasons, as the model picker does", () => {
+    const entries = [
+      {
+        instanceId: ProviderInstanceId.make("codex"),
+        driverKind: "codex",
+        models: [
+          {
+            slug: "gpt-6-astra",
+            name: "GPT-6 Astra",
+            capabilities: createModelCapabilities({
+              optionDescriptors: [
+                {
+                  id: "reasoningEffort",
+                  label: "Reasoning",
+                  type: "select",
+                  options: [
+                    { id: "high", label: "High", isDefault: true },
+                    { id: "xhigh", label: "Extra high" },
+                  ],
+                },
+              ],
+            }),
+          },
+          {
+            slug: "gpt-plain",
+            name: "GPT Plain",
+            capabilities: createModelCapabilities({ optionDescriptors: [] }),
+          },
+        ],
+      },
+    ] as unknown as ReadonlyArray<ProviderInstanceEntry>;
+    const chosenId = ThreadParticipantId.make("agent-chosen");
+    const plainId = ThreadParticipantId.make("agent-plain");
+    const labels = buildRoomAgentLabels(
+      {
+        // No choice made: the model's default.
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6-astra" },
+        participants: [
+          {
+            ...astra,
+            id: chosenId,
+            modelSelection: {
+              instanceId: ProviderInstanceId.make("codex"),
+              model: "gpt-6-astra",
+              options: [{ id: "reasoningEffort", value: "xhigh" }],
+            },
+          },
+          {
+            ...astra,
+            id: plainId,
+            modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-plain" },
+          },
+        ],
+      },
+      entries,
+      (model) => model.name,
+    );
+    expect(labels?.get(roomAgentKey(null))?.reasoning).toBe("High");
+    expect(labels?.get(roomAgentKey(chosenId))?.reasoning).toBe("Extra high");
+    expect(labels?.get(roomAgentKey(plainId))?.reasoning).toBeNull();
   });
 
   it("keeps the model's name first when the user names an agent", () => {
