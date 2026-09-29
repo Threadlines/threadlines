@@ -180,7 +180,12 @@ describe("side exchanges in the timeline", () => {
   const derive = (
     entries: Parameters<typeof deriveMessagesTimelineRows>[0]["timelineEntries"],
     sideAnswers: ReadonlyArray<SideAnswerView>,
-    options: { readonly working?: boolean; readonly expanded?: boolean } = {},
+    options: {
+      readonly working?: boolean;
+      readonly expanded?: boolean;
+      /** A room; the id names the agent at work (default: the thread's own). */
+      readonly room?: true | ThreadParticipantId;
+    } = {},
   ) =>
     deriveMessagesTimelineRows({
       timelineEntries: entries,
@@ -192,6 +197,10 @@ describe("side exchanges in the timeline", () => {
       revertTurnCountByUserMessageId: new Map(),
       sideAnswers,
       expandedSideTurnIds: new Set(options.expanded ? [sideTurnId] : []),
+      room:
+        options.room === undefined
+          ? null
+          : { workingParticipantId: options.room === true ? null : options.room },
     });
   const layout = (rows: ReadonlyArray<MessagesTimelineRow>) =>
     rows.map((row) =>
@@ -362,5 +371,224 @@ describe("side exchanges in the timeline", () => {
       "side-status:side-1 answered-below",
       "side-answer:side-1",
     ]);
+  });
+
+  describe("in a room", () => {
+    const lines = (rows: ReadonlyArray<MessagesTimelineRow>) =>
+      rows.map((row) =>
+        row.roomLine
+          ? [
+              row.roomLine.placement,
+              row.roomLine.agent ?? "own",
+              ...(row.roomLine.heads ? ["named"] : []),
+              ...(row.roomLine.nested ? ["nested"] : []),
+              ...(row.roomLine.echoesAnswer ? ["echo"] : []),
+            ].join(" ")
+          : null,
+      );
+
+    it("hangs the working agent's stretch on one line through a side exchange, named once", () => {
+      const rows = derive(
+        [userEntry, step("read", 2), step("review-call", 4), step("edit", 10)],
+        [exchange({ askedBy: { participantId: null }, answeredAt: 8 })],
+        { room: true },
+      );
+      expect(layout(rows)).toEqual([
+        "user-entry",
+        "read",
+        "question-side-1",
+        "side-answer:side-1",
+        "edit",
+        "working-indicator-row",
+      ]);
+      // The question stays on the asker's line; the answer is set in under
+      // it, named by who answered.
+      expect(lines(rows)).toEqual([
+        null,
+        "start own named",
+        "through own",
+        "through agent-astra named nested",
+        "through own",
+        "end own",
+      ]);
+      // A line instead of trays, and no second name after the exchange.
+      expect(trays(rows)).toEqual([null, null, null, null, null, null]);
+      expect(rows.find((row) => row.id === "edit")).not.toMatchObject({ namesAgent: true });
+    });
+
+    it("starts a line where the speaker changes, and a hand-off's repeated reply is one line", () => {
+      const message = (
+        id: string,
+        seconds: number,
+        fields: Partial<ChatMessage> & Pick<ChatMessage, "role" | "text">,
+      ) => ({
+        id: `${id}-entry`,
+        kind: "message" as const,
+        createdAt: at(seconds),
+        message: {
+          id: MessageId.make(id),
+          createdAt: at(seconds),
+          completedAt: at(seconds),
+          streaming: false,
+          ...fields,
+        },
+      });
+      const astraStep = { ...step("astra-read", 5) };
+      astraStep.entry = { ...astraStep.entry, turnId: "turn-2" as never };
+      const reply = "The lock is released on every path now.";
+      const rows = derive(
+        [
+          userEntry,
+          step("read", 2),
+          message("opus-answer", 3, {
+            role: "assistant",
+            text: "Fixed the lock.",
+            turnId: "turn-1" as never,
+          }),
+          message("hand-off", 4, {
+            role: "user",
+            text: "Check every path releases it.",
+            participantId: astra,
+            fromAgent: { participantId: null },
+            requestKind: "hand_off",
+            requestOutcome: "answered",
+          }),
+          astraStep,
+          message("astra-answer", 6, {
+            role: "assistant",
+            text: reply,
+            participantId: astra,
+            turnId: "turn-2" as never,
+          }),
+          message("reply", 7, {
+            role: "user",
+            text: reply,
+            fromAgent: { participantId: astra },
+            requestKind: "reply",
+          }),
+        ],
+        [],
+        { working: false, room: true },
+      );
+      expect(lines(rows)).toEqual([
+        null,
+        "start own named",
+        "end own",
+        // A hand-off is its writer speaking.
+        "single own named",
+        "start agent-astra named",
+        "end agent-astra",
+        "single agent-astra named echo",
+      ]);
+    });
+
+    it("keeps the thread's own agent's finished work its own while another agent works", () => {
+      const response = {
+        id: "response-entry",
+        kind: "message" as const,
+        createdAt: at(3),
+        message: {
+          id: MessageId.make("response"),
+          role: "assistant" as const,
+          text: "Fixed the lock.",
+          turnId: "turn-1" as never,
+          createdAt: at(3),
+          completedAt: at(3),
+          streaming: false,
+        },
+      };
+      const toAstra = {
+        ...userEntry,
+        id: "to-astra-entry",
+        createdAt: at(4),
+        message: { ...userEntry.message, id: MessageId.make("to-astra"), createdAt: at(4) },
+      };
+      const astraStep = { ...step("astra-read", 5) };
+      astraStep.entry = { ...astraStep.entry, turnId: "turn-2" as never };
+      const rows = derive([userEntry, step("read", 2), response, toAstra, astraStep], [], {
+        room: astra,
+        working: true,
+      });
+      expect(layout(rows)).toEqual([
+        "user-entry",
+        "read",
+        "response-entry",
+        "to-astra-entry",
+        "astra-read",
+        "working-indicator-row",
+      ]);
+      // Astra is at work; the earlier turn is still the thread's own agent's.
+      expect(lines(rows)).toEqual([
+        null,
+        "start own named",
+        "end own",
+        null,
+        "start agent-astra named",
+        "end agent-astra",
+      ]);
+    });
+
+    it("names a side answer posted after the stretch at its first step", () => {
+      const response = {
+        id: "response-entry",
+        kind: "message" as const,
+        createdAt: at(10),
+        message: {
+          id: MessageId.make("response"),
+          role: "assistant" as const,
+          text: "Fixed the lock.",
+          turnId: "turn-1" as never,
+          createdAt: at(10),
+          completedAt: at(11),
+          streaming: false,
+        },
+      };
+      const sideStep = { ...step("side-read", 12).entry, turnId: null };
+      const rows = derive(
+        [userEntry, step("read", 2), response],
+        [exchange({ answeredAt: 13, steps: [sideStep] })],
+        { working: false, room: true },
+      );
+      expect(layout(rows)).toEqual([
+        "user-entry",
+        "read",
+        "question-side-1",
+        "side-status:side-1 answered-below",
+        "response-entry",
+        "side-steps:side-1",
+        "side-answer:side-1",
+      ]);
+      expect(lines(rows)).toEqual([
+        null,
+        "start own named",
+        "through own",
+        "through own",
+        "end own",
+        // Its own stretch: named at its steps, bending into its answer.
+        "start agent-astra named",
+        "end agent-astra",
+      ]);
+    });
+
+    it("keeps an exchange on the asker's line when its turn stopped right after asking", () => {
+      // Asked through a room tool: the question says who asked.
+      const asked = {
+        ...question(sideTurnId, at(5)),
+        fromAgent: { participantId: null },
+        requestKind: "ask" as const,
+      };
+      const rows = derive(
+        [userEntry, step("read", 2), step("review-call", 4)],
+        [exchange({ askedBy: { participantId: null }, question: asked, answeredAt: 8 })],
+        { working: false, room: true },
+      );
+      expect(layout(rows)).toEqual(["user-entry", "read", "question-side-1", "side-answer:side-1"]);
+      expect(lines(rows)).toEqual([
+        null,
+        "start own named",
+        "through own",
+        "through agent-astra named nested",
+      ]);
+    });
   });
 });

@@ -214,6 +214,8 @@
      window frame, so it reads as a shade on the page rather than a card. Light
      mode's pale canvas needs more of the frame than dark does. */
   --work-tray: color-mix(in oklab, var(--app-chrome-background) 65%, var(--background));
+  /* The thin line an agent's stretch hangs on in a room (MessagesTimeline). */
+  --room-line: --alpha(var(--color-black) / 17%);
   --sidebar: var(--rail);
   --sidebar-foreground: var(--foreground);
   --sidebar-border: var(--border);
@@ -304,6 +306,7 @@
     --card-foreground: var(--foreground);
     --rail: oklch(0.26 0 0);
     --work-tray: color-mix(in oklab, var(--app-chrome-background) 40%, var(--background));
+    --room-line: --alpha(var(--color-white) / 20%);
     --sidebar: var(--rail);
     --sidebar-foreground: var(--foreground);
     --sidebar-border: var(--border);
@@ -1103,6 +1106,47 @@ label:has(> select#reasoning-effort) select {
 
 .work-row-enter {
   animation: work-row-enter 180ms ease-out;
+}
+
+/* A room agent's line (MessagesTimeline RoomLine). Each row draws its own
+   piece, 7px into the lane: from under the logo (start), past the row
+   (through), or down into a bend at its first line (end). The offsets come
+   from the row (roomLineOffsets). Pseudo-elements, so a row that draws
+   nothing stays empty. */
+[data-room-line] {
+  position: relative;
+}
+[data-room-line="start"]::before,
+[data-room-line="through"]::before,
+[data-room-line="end"]::before {
+  content: "";
+  position: absolute;
+  left: 7px;
+  width: 1px;
+  background: var(--room-line);
+}
+[data-room-line="start"]::before {
+  top: var(--room-line-top);
+  bottom: 0;
+}
+[data-room-line="through"]::before {
+  top: 0;
+  bottom: 0;
+}
+[data-room-line="end"]::before {
+  top: 0;
+  height: var(--room-hook-top);
+}
+[data-room-line="end"]::after {
+  content: "";
+  position: absolute;
+  left: 7px;
+  top: var(--room-hook-top);
+  width: 8px;
+  height: 7px;
+  border-left: 1px solid var(--room-line);
+  border-bottom: 1px solid var(--room-line);
+  border-bottom-left-radius: 6px;
 }
 
 @keyframes work-meta-enter {
