@@ -1093,21 +1093,6 @@ label:has(> select#reasoning-effort) select {
   animation: diff-panel-enter 150ms ease-out;
 }
 
-/* Live work log: rows settle in with a short rise, and the bits that arrive
-   after the row exists (final duration, preview, diff stat) fade in rather
-   than popping. From-only keyframes finish at each element's own opacity, so
-   dimmed spine rows land on their dim level, not full strength. */
-@keyframes work-row-enter {
-  from {
-    opacity: 0;
-    transform: translateY(3px);
-  }
-}
-
-.work-row-enter {
-  animation: work-row-enter 180ms ease-out;
-}
-
 /* A room agent's line (MessagesTimeline RoomLine). Each row draws its own
    piece, 7px into the lane: from under the logo (start), past the row
    (through), or down into a bend at its first line (end). The offsets come
@@ -1147,16 +1132,6 @@ label:has(> select#reasoning-effort) select {
   border-left: 1px solid var(--room-line);
   border-bottom: 1px solid var(--room-line);
   border-bottom-left-radius: 6px;
-}
-
-@keyframes work-meta-enter {
-  from {
-    opacity: 0;
-  }
-}
-
-.work-meta-enter {
-  animation: work-meta-enter 240ms ease-out;
 }
 
 /* The working anchor's status word: a soft sheen sweeps through it, then
@@ -1803,8 +1778,6 @@ label:has(> select#reasoning-effort) select {
   .diff-file-flash,
   .diff-panel-loading,
   .diff-panel-enter,
-  .work-row-enter,
-  .work-meta-enter,
   .terminal-context-attachment-updated {
     animation: none;
   }

@@ -859,6 +859,70 @@ describe("MessagesTimeline with the real virtual list", () => {
     }
   });
 
+  // A live reply fades and rises in as it arrives. The list re-sorts its row
+  // elements in the DOM once positions settle, moving them with insertBefore,
+  // and a reply already on screen must not play that entrance again: blink out
+  // and rise 3px in the middle of a sentence.
+  it("plays a streaming reply's entrance once, not again when the list re-sorts its rows", async () => {
+    const props = buildProps();
+    const reply: ChatMessage = {
+      id: "streaming-reply" as ChatMessage["id"],
+      role: "assistant",
+      turnId: ACTIVE_TURN_ID,
+      text: "Reading the queue before touching the lock.",
+      streaming: true,
+      createdAt: props.activeTurnStartedAt,
+    };
+    // The reply's opacity and top after every painted frame. The first frame
+    // of an animation always draws its start, however slow the machine, so
+    // reading each frame cannot miss an entrance.
+    const frames: { opacity: number; top: number }[] = [];
+    const stopReading = readAfterEachPaint(() => {
+      const row = document.querySelector(`[data-message-id="${reply.id}"]`);
+      const body = row?.querySelector('[data-assistant-message-body="true"]');
+      if (!row || !body) return;
+      let opacity = 1;
+      for (let node: Element | null = body; node && node !== row.parentElement;) {
+        opacity *= Number(getComputedStyle(node).opacity);
+        node = node.parentElement;
+      }
+      frames.push({ opacity, top: body.getBoundingClientRect().top });
+    });
+    const screen = await renderTimeline(
+      <div style={{ height: 500, width: 700 }}>
+        <MessagesTimeline
+          {...props}
+          timelineEntries={[
+            { id: reply.id, kind: "message", createdAt: reply.createdAt, message: reply },
+          ]}
+        />
+      </div>,
+    );
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      expect(frames[0]!.opacity, "the reply fades in as it arrives").toBeLessThan(1);
+      const settled = frames.at(-1)!;
+      expect(settled.opacity).toBe(1);
+
+      const moved = frames.length;
+      const row = document.querySelector(`[data-message-id="${reply.id}"]`)!;
+      const container = row.parentElement!;
+      container.parentElement!.insertBefore(container, container.parentElement!.firstChild);
+      for (let frame = 0; frame < 3; frame++) await nextFrame();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const afterMove = frames.slice(moved);
+      expect(afterMove.length).toBeGreaterThan(0);
+      for (const frame of afterMove) {
+        expect(frame.opacity, "the reply must not blink out").toBe(1);
+        expect(frame.top, "the reply must not drop").toBe(settled.top);
+      }
+    } finally {
+      stopReading();
+      await screen.unmount();
+    }
+  });
+
   it("removes stale end space when a live working anchor settles", async () => {
     const turnId = "turn-settles" as TurnId;
     const userMessage: ChatMessage = {
