@@ -54,6 +54,42 @@ export function pullRequestChecksInMotion(
   );
 }
 
+/** What a read's checks are still waiting on; see `pullRequestChecksWait`. */
+export type PullRequestChecksWait = "push" | "checks";
+
+/**
+ * What a read of an open pull request is still waiting on the host for, where
+ * its checks cannot be taken at their word yet. `push`: the read names another
+ * head commit than the one the branch was pushed at, so its checks are an
+ * older commit's (or the host has moved on without this checkout). `checks`:
+ * the commit is fresh and the host has reported none of its checks, which
+ * right after a push means "not queued yet" rather than "none". Null once the
+ * read can be believed.
+ *
+ * `pushedHead` is what the checkout's upstream branch is at, or null where it
+ * does not know. `readAt` is when the read was taken, so the answer belongs to
+ * the read and does not drift while it sits on screen.
+ */
+export function pullRequestChecksWait(
+  detail: Pick<PullRequestDetail, "state" | "headSha" | "checks" | "checksState" | "updatedAt">,
+  pushedHead: string | null,
+  readAt: number,
+): PullRequestChecksWait | null {
+  if (detail.state !== "open") {
+    return null;
+  }
+  if (pushedHead !== null && detail.headSha !== undefined && detail.headSha !== pushedHead) {
+    return "push";
+  }
+  const updatedAt = Date.parse(detail.updatedAt);
+  const noChecksYet =
+    detail.checks.length === 0 &&
+    detail.checksState === undefined &&
+    Number.isFinite(updatedAt) &&
+    readAt - updatedAt < PULL_REQUEST_FRESH_PUSH_WATCH_MS;
+  return noChecksYet ? "checks" : null;
+}
+
 /**
  * Whether a pull request on screen should keep re-reading itself: while its
  * checks are in motion, and while the host is landing it on its own. In a merge

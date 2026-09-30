@@ -423,6 +423,8 @@ export const PullRequestDetail = Schema.Struct({
   deletions: NonNegativeInt,
   changedFiles: NonNegativeInt,
   headBranch: TrimmedNonEmptyString,
+  /** The commit the host has at the head branch, which its checks ran on. Absent where the host does not say. */
+  headSha: Schema.optionalKey(TrimmedNonEmptyString),
   baseBranch: TrimmedNonEmptyString,
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
@@ -487,6 +489,11 @@ export const PullRequestDetailInput = Schema.Struct({
   ...PullRequestRef.fields,
   /** Drops the cached read before running. */
   force: Schema.optionalKey(Schema.Boolean),
+  /**
+   * The commit the caller knows the head branch was pushed at. A cached read
+   * of any other head commit is dropped and read again; nothing else is.
+   */
+  expectedHeadSha: Schema.optionalKey(TrimmedNonEmptyString),
 });
 export type PullRequestDetailInput = typeof PullRequestDetailInput.Type;
 

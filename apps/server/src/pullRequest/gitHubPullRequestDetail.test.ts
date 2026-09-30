@@ -125,6 +125,11 @@ describe("decodeGitHubPullRequestDetailJson", () => {
     assert.equal(detail.mergedAt, "2026-08-31T12:00:00Z");
     assert.equal(detail.closedAt, "2026-08-31T12:00:00Z");
   });
+
+  it("names the head commit the checks ran on, and leaves it out on a CLI that does not say", () => {
+    assert.equal(decodeDetail({ headRefOid: "747e626" }).headSha, "747e626");
+    assert.equal("headSha" in decodeDetail({}), false);
+  });
 });
 
 describe("decodeGitHubPullRequestActivityJson", () => {

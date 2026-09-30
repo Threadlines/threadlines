@@ -30,13 +30,14 @@ import {
   pullRequestActionMutationOptions,
   pullRequestQueryKeys,
   usePullRequestDetail,
+  type PullRequestDetailRead,
 } from "../../lib/pullRequestsReactQuery";
 import { cn } from "../../lib/utils";
 import {
   PullRequestHoverCard,
   type PullRequestHoverCardPayload,
 } from "../pull-requests/PullRequestHoverCard";
-import { CHECK_TONES } from "../pull-requests/pullRequestPresentation";
+import { CHECK_TONES, pullRequestHostName } from "../pull-requests/pullRequestPresentation";
 import {
   pullRequestBadgeTone,
   resolveDefaultMergeMethod,
@@ -51,6 +52,8 @@ import {
   composerAutoFixOffered,
   composerAutoMergeControl,
   composerPullRequestCheckBuckets,
+  composerPullRequestChecksFootnote,
+  composerPullRequestChecksNotice,
   composerPullRequestRow,
   pullRequestChecksUrl,
   type ComposerPullRequestChipTone,
@@ -71,6 +74,12 @@ export interface ComposerPullRequest {
   readonly reference: PullRequestRef;
   /** What the sidebar badge and the tab already resolved, until the row's own read lands. */
   readonly pullRequest: ThreadPullRequest;
+  /**
+   * The commit the thread's checkout last saw this pull request's branch
+   * pushed at, so the row can tell a read from before the push. Null for a
+   * linked pull request, or where the checkout does not know.
+   */
+  readonly pushedHead: string | null;
   /** The thread's project, which is the pull request's too. */
   readonly projectTitle: string | null;
   /** Opens this pull request in the Pull request tab. */
@@ -112,7 +121,9 @@ const CHIP_TONE_CLASS: Readonly<
   Record<ComposerPullRequestChipTone, { readonly chip: string; readonly dot: string }>
 > = {
   unknown: { chip: "", dot: "border-[1.5px] border-muted-foreground/70" },
-  pending: { chip: "", dot: "border-[1.5px] border-muted-foreground/70" },
+  // The popover's "In progress" colour, still: a chip on screen for the whole
+  // run should not pulse the way the popover's icon does.
+  pending: { chip: "", dot: "bg-amber-600/90 dark:bg-amber-400/80" },
   success: { chip: "", dot: "bg-success" },
   failure: { chip: "", dot: "bg-destructive" },
   none: { chip: "text-muted-foreground", dot: "border-[1.5px] border-muted-foreground/70" },
@@ -131,15 +142,18 @@ export function ComposerPullRequestRow({
 }) {
   // The same read the Pull request tab makes, on the same key, so one poll
   // serves both while checks run.
-  const detail = usePullRequestDetail({
+  const read = usePullRequestDetail({
     environmentId: pullRequest.environmentId,
     reference: pullRequest.reference,
+    pushedHead: pullRequest.pushedHead,
   });
   const row = composerPullRequestRow({
     pullRequest: pullRequest.pullRequest,
     projectTitle: pullRequest.projectTitle,
-    detail,
+    detail: read.detail,
     threadAutoMerge: pullRequest.autoMerge !== null,
+    waitingFor: read.waitingFor,
+    detailCurrent: read.lastKnown === null,
   });
   const tone = pullRequestBadgeTone(row.state, row.isDraft, row.autoMergeEnabled);
   const hoverCardPayload: PullRequestHoverCardPayload = {
@@ -208,7 +222,7 @@ export function ComposerPullRequestRow({
       ) : null}
       <ComposerPullRequestChecksChip
         pullRequest={pullRequest}
-        detail={detail}
+        read={read}
         chip={row.chip}
         checksUrl={pullRequestChecksUrl(row.url)}
       />
@@ -309,12 +323,12 @@ function ComposerPullRequestQueueFailure({
 
 function ComposerPullRequestChecksChip({
   pullRequest,
-  detail,
+  read,
   chip,
   checksUrl,
 }: {
   readonly pullRequest: ComposerPullRequest;
-  readonly detail: PullRequestDetail | undefined;
+  readonly read: PullRequestDetailRead;
   readonly chip: ReturnType<typeof composerPullRequestRow>["chip"];
   readonly checksUrl: string;
 }) {
@@ -345,7 +359,8 @@ function ComposerPullRequestChecksChip({
             aria-label="Checks"
             className={cn(chipClass, "cursor-pointer transition-colors hover:bg-accent focus-ring")}
           >
-            <ChipDot className={toneClass.dot} />
+            {/* Dimmed while it is the last known state rather than a current read. */}
+            <ChipDot className={cn(toneClass.dot, read.lastKnown !== null && "opacity-50")} />
             {chip.label}
             <ChevronDownIcon aria-hidden className="size-3 text-muted-foreground" />
           </button>
@@ -359,7 +374,7 @@ function ComposerPullRequestChecksChip({
       >
         <ComposerPullRequestChecksPopover
           pullRequest={pullRequest}
-          detail={detail}
+          read={read}
           checksUrl={checksUrl}
           onOpenExternal={() => setOpen(false)}
         />
@@ -370,17 +385,28 @@ function ComposerPullRequestChecksChip({
 
 function ComposerPullRequestChecksPopover({
   pullRequest,
-  detail,
+  read,
   checksUrl,
   onOpenExternal,
 }: {
   readonly pullRequest: ComposerPullRequest;
-  /** The row's read of this pull request; absent until it lands. */
-  readonly detail: PullRequestDetail | undefined;
+  /** The row's read of this pull request. */
+  readonly read: PullRequestDetailRead;
   readonly checksUrl: string;
   readonly onOpenExternal: () => void;
 }) {
+  const { detail } = read;
+  const notice = composerPullRequestChecksNotice({
+    detail,
+    failed: read.error !== null,
+    waitingFor: read.waitingFor,
+    hostName: pullRequestHostName(detail?.provider ?? "unknown"),
+  });
   const buckets = composerPullRequestCheckBuckets(detail?.checks ?? []);
+  const footnote = composerPullRequestChecksFootnote({
+    lastKnown: read.lastKnown,
+    countsShown: notice === null,
+  });
 
   return (
     <div className="w-full py-2 text-xs">
@@ -392,7 +418,9 @@ function ComposerPullRequestChecksPopover({
           onOpen={onOpenExternal}
         />
       </div>
-      {buckets.length === 0 ? (
+      {notice !== null ? (
+        <p className="px-3 py-1 text-muted-foreground">{notice}</p>
+      ) : buckets.length === 0 ? (
         <p className="px-3 py-1 text-muted-foreground">No checks on this pull request</p>
       ) : (
         buckets.map((bucket) => {
@@ -409,6 +437,9 @@ function ComposerPullRequestChecksPopover({
           );
         })
       )}
+      {footnote !== null ? (
+        <p className="px-3 pt-1 text-[11px] text-muted-foreground">{footnote}</p>
+      ) : null}
       <div className="my-1.5 border-border border-t" />
       {detail ? (
         <ComposerPullRequestAutoMergeSection

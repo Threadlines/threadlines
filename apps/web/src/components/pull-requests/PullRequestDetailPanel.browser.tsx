@@ -13,7 +13,7 @@ import {
   type PullRequestReviewThread,
   type ScopedThreadRef,
 } from "@threadlines/contracts";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, onlineManager } from "@tanstack/react-query";
 import {
   RouterProvider,
   createMemoryHistory,
@@ -185,6 +185,7 @@ async function renderComposerPullRequest(
           environmentId: ENVIRONMENT_ID,
           reference: REFERENCE,
           pullRequest: { ...DETAIL, autoMergeEnabled: false, settledAt: null, diffStat: null },
+          pushedHead: null,
           projectTitle: DETAIL.projectTitle,
           onOpen,
           onDismiss: vi.fn(),
@@ -384,6 +385,181 @@ describe("Composer pull request merge controls", () => {
       await expect.element(chip, { timeout: 5_000 }).toHaveTextContent("CI");
     } finally {
       await rendered.cleanup();
+    }
+  });
+
+  /** What was read before the push: the previous commit, all green. */
+  const BEFORE_PUSH: PullRequestDetail = {
+    ...DETAIL,
+    headSha: "4f1c2d9",
+    checks: [{ name: "build", status: "success", description: null, url: null }],
+    checksState: "success",
+  };
+  /** The host once it has the pushed commit, whose checks have just started. */
+  const AFTER_PUSH: PullRequestDetail = {
+    ...BEFORE_PUSH,
+    headSha: "c3d4e5f",
+    checks: [{ name: "build", status: "pending", description: null, url: null }],
+    checksState: "pending",
+  };
+
+  /** The thread's own row, its checkout having pushed `pushedHead` (by default, since the last read). */
+  async function renderPushedRow(queryClient: QueryClient, pushedHead = "c3d4e5f") {
+    const router = createTestRouter(
+      <QueryClientProvider client={queryClient}>
+        <ComposerPullRequestRow
+          divided={false}
+          pullRequest={{
+            environmentId: ENVIRONMENT_ID,
+            reference: REFERENCE,
+            pullRequest: { ...DETAIL, autoMergeEnabled: false, settledAt: null, diffStat: null },
+            pushedHead,
+            projectTitle: DETAIL.projectTitle,
+            onOpen: vi.fn(),
+            onDismiss: vi.fn(),
+            autoFix: null,
+            autoMerge: null,
+            onAutoMergeChange: vi.fn(),
+            agentWorking: false,
+            unpushedCommits: 0,
+            wrapUpOnSettled: false,
+            onWrapUpOnSettledChange: vi.fn(),
+          }}
+        />
+      </QueryClientProvider>,
+    );
+    const screen = await render(<RouterProvider router={router} />);
+    await page.getByRole("button", { name: "Checks", exact: true }).click();
+    return screen;
+  }
+
+  it("waits for the host to see a push instead of showing the last commit's checks", async () => {
+    let hostCaughtUp = () => {};
+    const caughtUp = new Promise<void>((resolve) => {
+      hostCaughtUp = resolve;
+    });
+    const readDetail = vi.fn(async () => {
+      await caughtUp;
+      return AFTER_PUSH;
+    });
+    __setEnvironmentApiOverrideForTests(ENVIRONMENT_ID, {
+      pullRequests: { detail: readDetail },
+    } as unknown as EnvironmentApi);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    queryClient.setQueryData(
+      pullRequestQueryKeys.detail(ENVIRONMENT_ID, PROJECT_ID, REFERENCE.number),
+      BEFORE_PUSH,
+    );
+    const screen = await renderPushedRow(queryClient);
+    try {
+      await expect
+        .element(page.getByText("Waiting for GitHub to see the latest push"), { timeout: 5_000 })
+        .toBeVisible();
+      expect(page.getByText("Passed").query()).toBeNull();
+      // The read past the server's cache names the commit it is waiting for.
+      await vi.waitFor(() =>
+        expect(readDetail).toHaveBeenCalledWith(
+          expect.objectContaining({ number: REFERENCE.number, expectedHeadSha: "c3d4e5f" }),
+        ),
+      );
+
+      hostCaughtUp();
+      await expect.element(page.getByText("In progress"), { timeout: 5_000 }).toBeVisible();
+      expect(page.getByText("Waiting for GitHub to see the latest push").query()).toBeNull();
+    } finally {
+      await screen.unmount();
+      queryClient.clear();
+    }
+  });
+
+  it("says a remembered result is being read again, and when that read fails", async () => {
+    let failRead = () => {};
+    const readFails = new Promise<never>((_resolve, reject) => {
+      failRead = () => reject(new Error("gh: network unreachable"));
+    });
+    __setEnvironmentApiOverrideForTests(ENVIRONMENT_ID, {
+      pullRequests: { detail: () => readFails },
+    } as unknown as EnvironmentApi);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    // Read a minute before the thread was opened again.
+    queryClient.setQueryData(
+      pullRequestQueryKeys.detail(ENVIRONMENT_ID, PROJECT_ID, REFERENCE.number),
+      BEFORE_PUSH,
+      { updatedAt: Date.now() - 60_000 },
+    );
+    const screen = await renderPushedRow(queryClient, "4f1c2d9");
+    try {
+      await expect.element(page.getByText("Refreshing…"), { timeout: 5_000 }).toBeVisible();
+      await expect.element(page.getByText("Passed")).toBeVisible();
+
+      failRead();
+      await expect
+        .element(page.getByText("Couldn't refresh. Showing the last result."), { timeout: 5_000 })
+        .toBeVisible();
+      await expect.element(page.getByText("Passed")).toBeVisible();
+      expect(page.getByText("Refreshing…").query()).toBeNull();
+    } finally {
+      await screen.unmount();
+      queryClient.clear();
+    }
+  });
+
+  it("does not pass a remembered result off as current while offline", async () => {
+    const readDetail = vi.fn(async () => BEFORE_PUSH);
+    __setEnvironmentApiOverrideForTests(ENVIRONMENT_ID, {
+      pullRequests: { detail: readDetail },
+    } as unknown as EnvironmentApi);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    queryClient.setQueryData(
+      pullRequestQueryKeys.detail(ENVIRONMENT_ID, PROJECT_ID, REFERENCE.number),
+      BEFORE_PUSH,
+      { updatedAt: Date.now() - 60_000 },
+    );
+    // The re-read is held back until the network returns, not attempted.
+    onlineManager.setOnline(false);
+    const screen = await renderPushedRow(queryClient, "4f1c2d9");
+    try {
+      await expect
+        .element(page.getByText("Couldn't refresh. Showing the last result."), { timeout: 5_000 })
+        .toBeVisible();
+      expect(readDetail).not.toHaveBeenCalled();
+    } finally {
+      onlineManager.setOnline(true);
+      await screen.unmount();
+      queryClient.clear();
+    }
+  });
+
+  it("does not spend its follow-up on a read sent before the push", async () => {
+    const readDetail = vi.fn(async () => AFTER_PUSH);
+    __setEnvironmentApiOverrideForTests(ENVIRONMENT_ID, {
+      pullRequests: { detail: readDetail },
+    } as unknown as EnvironmentApi);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const queryKey = pullRequestQueryKeys.detail(ENVIRONMENT_ID, PROJECT_ID, REFERENCE.number);
+    // A minute-old read, and a poll still out from before the push that will
+    // answer with the old commit.
+    queryClient.setQueryData(queryKey, BEFORE_PUSH, { updatedAt: Date.now() - 60_000 });
+    let answerStaleRead = () => {};
+    const staleRead = new Promise<PullRequestDetail>((resolve) => {
+      answerStaleRead = () => resolve(BEFORE_PUSH);
+    });
+    void queryClient.fetchQuery({ queryKey, queryFn: () => staleRead, staleTime: 0 });
+    const screen = await renderPushedRow(queryClient);
+    try {
+      await expect
+        .element(page.getByText("Waiting for GitHub to see the latest push"), { timeout: 5_000 })
+        .toBeVisible();
+      expect(readDetail).not.toHaveBeenCalled();
+
+      answerStaleRead();
+      await expect.element(page.getByText("In progress"), { timeout: 5_000 }).toBeVisible();
+      expect(readDetail).toHaveBeenCalledWith(
+        expect.objectContaining({ expectedHeadSha: "c3d4e5f" }),
+      );
+    } finally {
+      await screen.unmount();
+      queryClient.clear();
     }
   });
 });

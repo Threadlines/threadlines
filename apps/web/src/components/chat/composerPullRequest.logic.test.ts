@@ -10,6 +10,8 @@ import {
   composerAutoFixOffered,
   composerAutoMergeControl,
   composerPullRequestCheckBuckets,
+  composerPullRequestChecksFootnote,
+  composerPullRequestChecksNotice,
   composerPullRequestChip,
   composerPullRequestRow,
 } from "./composerPullRequest.logic";
@@ -97,6 +99,8 @@ describe("composerPullRequestRow", () => {
       projectTitle: "threadlines",
       detail: undefined,
       threadAutoMerge: false,
+      waitingFor: null,
+      detailCurrent: true,
     });
 
     expect(row.number).toBe(234);
@@ -117,10 +121,29 @@ describe("composerPullRequestRow", () => {
       projectTitle: null,
       detail: undefined,
       threadAutoMerge: false,
+      waitingFor: null,
+      detailCurrent: true,
     });
     expect(row.headBranch).toBeNull();
     expect(row.projectTitle).toBeNull();
     expect(row.diffStat).toBeNull();
+  });
+
+  it("does not let a remembered read undo a merge the listing has seen since", () => {
+    const remembered = detail({ state: "open" });
+    const row = (detailCurrent: boolean) =>
+      composerPullRequestRow({
+        pullRequest: { ...THREAD_PULL_REQUEST, state: "merged" },
+        projectTitle: null,
+        detail: remembered,
+        threadAutoMerge: false,
+        waitingFor: null,
+        detailCurrent,
+      });
+    expect(row(false).state).toBe("merged");
+    expect(row(false).chip).toEqual({ label: "Merged", tone: "merged", interactive: false });
+    // A read of its own is the fresher word, whatever the listing still says.
+    expect(row(true).state).toBe("open");
   });
 
   it("takes the branch, project, size and state from the detail once it lands", () => {
@@ -131,6 +154,8 @@ describe("composerPullRequestRow", () => {
       // shows up on the detail first and the row has to follow it.
       detail: detail({ state: "merged", checks: [check("success", "build")] }),
       threadAutoMerge: false,
+      waitingFor: null,
+      detailCurrent: true,
     });
 
     expect(row.state).toBe("merged");
@@ -148,6 +173,7 @@ describe("composerPullRequestChip", () => {
         state: "open",
         detail: detail({ checksState: "failure" }),
         armed: false,
+        waitingFor: null,
       }),
     ).toEqual({ label: "CI", tone: "failure", interactive: true });
   });
@@ -158,6 +184,7 @@ describe("composerPullRequestChip", () => {
         state: "open",
         detail: detail({ checksState: "success", mergeQueue: { position: 2 } }),
         armed: true,
+        waitingFor: null,
       }),
     ).toEqual({ label: "Queued", tone: "queued", interactive: true });
   });
@@ -175,12 +202,16 @@ describe("composerPullRequestChip", () => {
       },
     });
     // Its own checks are green, which is exactly why the chip must not say only that.
-    expect(composerPullRequestChip({ state: "open", detail: givenBack, armed: false })).toEqual({
+    expect(
+      composerPullRequestChip({ state: "open", detail: givenBack, armed: false, waitingFor: null }),
+    ).toEqual({
       label: "Queue failed",
       tone: "failure",
       interactive: true,
     });
-    expect(composerPullRequestChip({ state: "open", detail: givenBack, armed: true })).toEqual({
+    expect(
+      composerPullRequestChip({ state: "open", detail: givenBack, armed: true, waitingFor: null }),
+    ).toEqual({
       label: "CI",
       tone: "success",
       interactive: true,
@@ -188,11 +219,27 @@ describe("composerPullRequestChip", () => {
   });
 
   it("says so when the host reported no checks at all", () => {
-    expect(composerPullRequestChip({ state: "open", detail: detail(), armed: false })).toEqual({
+    expect(
+      composerPullRequestChip({ state: "open", detail: detail(), armed: false, waitingFor: null }),
+    ).toEqual({
       label: "No checks",
       tone: "none",
       interactive: true,
     });
+  });
+
+  it("says nothing about checks the host has yet to bring up to the latest push", () => {
+    // The last commit's green, or no checks queued yet, is not this commit's verdict.
+    for (const waitingFor of ["push", "checks"] as const) {
+      expect(
+        composerPullRequestChip({
+          state: "open",
+          detail: detail({ checksState: "success" }),
+          armed: false,
+          waitingFor,
+        }),
+      ).toEqual({ label: "CI", tone: "unknown", interactive: true });
+    }
   });
 
   it("states the outcome for a settled pull request and stops being a control", () => {
@@ -201,8 +248,51 @@ describe("composerPullRequestChip", () => {
         state: "closed",
         detail: detail({ state: "closed" }),
         armed: false,
+        waitingFor: null,
       }),
     ).toEqual({ label: "Closed", tone: "closed", interactive: false });
+  });
+});
+
+describe("composerPullRequestChecksNotice", () => {
+  const notice = (input: Partial<Parameters<typeof composerPullRequestChecksNotice>[0]>) =>
+    composerPullRequestChecksNotice({
+      detail: detail(),
+      failed: false,
+      waitingFor: null,
+      hostName: "GitHub",
+      ...input,
+    });
+
+  it("never claims there are no checks before it has read any", () => {
+    expect(notice({ detail: undefined })).toBe("Loading checks…");
+    expect(notice({ detail: undefined, failed: true })).toBe(
+      "Couldn't load checks. Trying again shortly.",
+    );
+  });
+
+  it("says what the host has yet to catch up with, and steps aside once it has", () => {
+    expect(notice({ waitingFor: "push" })).toBe("Waiting for GitHub to see the latest push");
+    expect(notice({ waitingFor: "checks" })).toBe("Waiting for checks to start");
+    expect(notice({})).toBeNull();
+    // A later read failing leaves the counts it had on screen.
+    expect(notice({ failed: true })).toBeNull();
+  });
+});
+
+describe("composerPullRequestChecksFootnote", () => {
+  it("says when what is shown is the last known state, and says nothing once it is current", () => {
+    expect(composerPullRequestChecksFootnote({ lastKnown: "refreshing", countsShown: true })).toBe(
+      "Refreshing…",
+    );
+    expect(
+      composerPullRequestChecksFootnote({ lastKnown: "refresh-failed", countsShown: true }),
+    ).toBe("Couldn't refresh. Showing the last result.");
+    // With a notice in place of the counts there is no result on screen to point at.
+    expect(
+      composerPullRequestChecksFootnote({ lastKnown: "refresh-failed", countsShown: false }),
+    ).toBe("Couldn't refresh. Trying again shortly.");
+    expect(composerPullRequestChecksFootnote({ lastKnown: null, countsShown: true })).toBeNull();
   });
 });
 

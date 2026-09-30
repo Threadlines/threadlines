@@ -671,6 +671,11 @@ function ChatThreadRouteView() {
     ? getThreadInFlightStatus(serverThread) !== null || serverThread.latestTurn?.state === "running"
     : false;
   const threadUnpushedCommits = pullRequestGitStatus.data?.aheadCount ?? 0;
+  // Where the checkout last saw its branch pushed, so the row can tell a read
+  // of its pull request from before the push. Only for the pull request on
+  // the branch the checkout is standing on: any other has another upstream.
+  const threadCheckoutBranch = pullRequestGitStatus.data?.refName ?? null;
+  const threadPushedHead = pullRequestGitStatus.data?.upstreamHeadSha ?? null;
   const threadPullRequestAutoFix = serverThread?.pullRequestAutoFix ?? false;
   const threadPullRequestAutoMerge = serverThread?.pullRequestAutoMerge ?? null;
   const composerPullRequests = useMemo<ReadonlyArray<ComposerPullRequest>>(() => {
@@ -696,6 +701,10 @@ function ChatThreadRouteView() {
         environmentId: threadRef.environmentId,
         reference,
         pullRequest,
+        pushedHead:
+          own && pullRequest.headBranch !== null && pullRequest.headBranch === threadCheckoutBranch
+            ? threadPushedHead
+            : null,
         projectTitle: activeProjectTitle,
         onOpen: () => openPullRequestTab(reference.number),
         onDismiss: () => dismissComposerPullRequest(dismissalKey),
@@ -734,10 +743,12 @@ function ChatThreadRouteView() {
     dismissedComposerPullRequests,
     openPullRequestTab,
     threadAgentWorking,
+    threadCheckoutBranch,
     threadLinkedPullRequests,
     threadPullRequestAutoFix,
     threadPullRequestAutoMerge,
     threadPullRequests,
+    threadPushedHead,
     threadRef,
     threadUnpushedCommits,
     threadWrapUpOnSettled,

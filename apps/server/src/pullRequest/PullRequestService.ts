@@ -455,6 +455,7 @@ function toDetail(input: {
     deletions: row.deletions,
     changedFiles: row.changedFiles,
     headBranch: row.headBranch,
+    ...(row.headSha === undefined ? {} : { headSha: row.headSha }),
     baseBranch: row.baseBranch,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
@@ -892,6 +893,8 @@ export const make = Effect.fn("makePullRequestService")(function* () {
     readonly force: boolean;
     /** What else a forced read drops, for a read that folds in another cache. */
     readonly alsoInvalidate?: (target: PullRequestTarget) => Effect.Effect<void>;
+    /** A cached read the caller already knows is out of date, dropped and read again. */
+    readonly outdated?: (cached: A) => boolean;
   }) =>
     resolveReference(input.operation, input.reference).pipe(
       Effect.flatMap((target) => {
@@ -900,12 +903,15 @@ export const make = Effect.fn("makePullRequestService")(function* () {
           repository: target.repository,
           number: input.reference.number,
         });
+        const outdated = input.outdated;
         return (
           input.force
             ? Cache.invalidate(input.cache, key).pipe(
                 Effect.andThen(input.alsoInvalidate?.(target) ?? Effect.void),
               )
-            : Effect.void
+            : outdated
+              ? Cache.invalidateWhen(input.cache, key, outdated).pipe(Effect.asVoid)
+              : Effect.void
         ).pipe(Effect.andThen(Cache.get(input.cache, key)));
       }),
     );
@@ -953,13 +959,23 @@ export const make = Effect.fn("makePullRequestService")(function* () {
       }),
     );
 
-  /** A forced detail read is also how the repository's settings are refreshed. */
+  /**
+   * A forced detail read is also how the repository's settings are refreshed.
+   * A caller that knows the branch was just pushed names the commit, and a
+   * cached read of another head is read again without touching anything else.
+   */
   const readDetail = (input: PullRequestDetailInput) =>
     cachedRead({
       operation: "detail",
       cache: detailCache,
       reference: input,
       force: input.force === true,
+      ...(input.expectedHeadSha === undefined
+        ? {}
+        : {
+            outdated: (cached: PullRequestDetail) =>
+              cached.headSha !== undefined && cached.headSha !== input.expectedHeadSha,
+          }),
       alsoInvalidate: (target) =>
         Cache.invalidate(
           repositoryCache,

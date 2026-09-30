@@ -19,9 +19,13 @@ import {
   resolvePullRequestAutoMergeStep,
   type PullRequestAutoMergeStep,
 } from "@threadlines/shared/pullRequestAutoMerge";
-import { pullRequestArmedToMerge } from "@threadlines/shared/pullRequestPolling";
+import {
+  pullRequestArmedToMerge,
+  type PullRequestChecksWait,
+} from "@threadlines/shared/pullRequestPolling";
 
 import {
+  pullRequestDetailOutranksListing,
   summarizePullRequestChecks,
   resolveMergeWhenReadyBlock,
   resolvePullRequestAutoMergeBlock,
@@ -33,8 +37,9 @@ import {
  * own rollup, and `failure` is also the merge queue's own run failing;
  * `queued` is a merge queue, which moves on its own and outranks whatever the
  * checks say; `none` is a pull request with no checks at all, and `unknown` is
- * the moment before the detail arrives. `merged` and `closed` state a fact
- * about the pull request rather than its checks.
+ * the moment before the detail arrives, or before the host has caught up with
+ * a push. `merged` and `closed` state a fact about the pull request rather
+ * than its checks.
  */
 export type ComposerPullRequestChipTone =
   | "unknown"
@@ -79,6 +84,52 @@ export interface ComposerPullRequestRowModel {
 }
 
 /**
+ * What the checks popover says in place of the counts while it has none it can
+ * stand behind: the first read on its way or failed, or a read the host has yet
+ * to bring up to the latest push. Null when the counts can be shown.
+ */
+export function composerPullRequestChecksNotice(input: {
+  readonly detail: PullRequestDetail | undefined;
+  readonly failed: boolean;
+  readonly waitingFor: PullRequestChecksWait | null;
+  /** The host by name, as "Waiting for GitHub" reads it. */
+  readonly hostName: string;
+}): string | null {
+  if (input.detail === undefined) {
+    return input.failed ? "Couldn't load checks. Trying again shortly." : "Loading checks…";
+  }
+  switch (input.waitingFor) {
+    case "push":
+      return `Waiting for ${input.hostName} to see the latest push`;
+    case "checks":
+      return "Waiting for checks to start";
+    case null:
+      return null;
+  }
+}
+
+/**
+ * The line under the checks while what the popover shows is the last known
+ * state rather than a current one. Null while it is current.
+ */
+export function composerPullRequestChecksFootnote(input: {
+  readonly lastKnown: "refreshing" | "refresh-failed" | null;
+  /** The counts are on screen, rather than a notice in their place. */
+  readonly countsShown: boolean;
+}): string | null {
+  switch (input.lastKnown) {
+    case "refreshing":
+      return "Refreshing…";
+    case "refresh-failed":
+      return input.countsShown
+        ? "Couldn't refresh. Showing the last result."
+        : "Couldn't refresh. Trying again shortly.";
+    case null:
+      return null;
+  }
+}
+
+/**
  * The buckets worth a row of their own, worst first: what is still running,
  * what failed, what passed, and what the host skipped. A bucket nobody is in
  * is left out rather than printed as a zero.
@@ -104,13 +155,17 @@ export function composerPullRequestCheckBuckets(
  * so until something is set to queue it again: its own checks can all be
  * green while it goes nowhere. Otherwise it is the check rollup, which reads
  * as "CI" whichever way it is going -- the dot carries that -- and as "No
- * checks" only where the host reported none at all.
+ * checks" only where the host reported none at all. While the host has yet to
+ * catch up with a push, the checks it reports are an older commit's or not
+ * queued yet, so the chip says nothing about them.
  */
 export function composerPullRequestChip(input: {
   readonly state: PullRequestState;
   readonly detail: PullRequestDetail | undefined;
   /** It lands on its own: armed on the host or by this thread, or already queued. */
   readonly armed: boolean;
+  /** What the detail's checks are still waiting on the host for; null when they can be believed. */
+  readonly waitingFor: PullRequestChecksWait | null;
 }): ComposerPullRequestChip {
   if (input.state === "merged") {
     return { label: "Merged", tone: "merged", interactive: false };
@@ -127,6 +182,9 @@ export function composerPullRequestChip(input: {
   }
   if (detail.mergeQueue?.removal !== undefined && !input.armed) {
     return { label: "Queue failed", tone: "failure", interactive: true };
+  }
+  if (input.waitingFor !== null) {
+    return { label: "CI", tone: "unknown", interactive: true };
   }
   if (detail.checksState === undefined && detail.checks.length === 0) {
     return { label: "No checks", tone: "none", interactive: true };
@@ -151,18 +209,31 @@ export function composerPullRequestRow(input: {
   readonly detail: PullRequestDetail | undefined;
   /** This thread asked the server to merge it once its checks pass. */
   readonly threadAutoMerge: boolean;
+  /** What the detail's checks are still waiting on the host for; null when they can be believed. */
+  readonly waitingFor: PullRequestChecksWait | null;
+  /** The detail is a current read, not one remembered from earlier or left by a failed re-read. */
+  readonly detailCurrent: boolean;
 }): ComposerPullRequestRowModel {
   const { pullRequest, detail } = input;
-  // The detail is the fresher read of the two: it is re-read while checks run,
-  // while the listing behind the thread's resolution polls far more slowly.
-  const state = detail?.state ?? pullRequest.state;
+  // The detail is usually the fresher read of the two: it is re-read while
+  // checks run, while the listing behind the thread's resolution polls far
+  // more slowly. A remembered one does not outrank a listing that has seen
+  // the pull request merge or close since.
+  const stateSource = pullRequestDetailOutranksListing({
+    listedState: pullRequest.state,
+    detail,
+    detailCurrent: input.detailCurrent,
+  })
+    ? detail
+    : undefined;
+  const state = stateSource?.state ?? pullRequest.state;
   const autoMergeEnabled =
     input.threadAutoMerge ||
-    (detail ? pullRequestArmedToMerge(detail) : pullRequest.autoMergeEnabled);
+    (stateSource ? pullRequestArmedToMerge(stateSource) : pullRequest.autoMergeEnabled);
   return {
     number: pullRequest.number,
     state,
-    isDraft: detail?.isDraft ?? pullRequest.isDraft,
+    isDraft: stateSource?.isDraft ?? pullRequest.isDraft,
     autoMergeEnabled,
     title: detail?.title ?? pullRequest.title,
     url: detail?.url ?? pullRequest.url,
@@ -171,7 +242,12 @@ export function composerPullRequestRow(input: {
     diffStat: detail
       ? { additions: detail.additions, deletions: detail.deletions }
       : pullRequest.diffStat,
-    chip: composerPullRequestChip({ state, detail, armed: autoMergeEnabled }),
+    chip: composerPullRequestChip({
+      state,
+      detail,
+      armed: autoMergeEnabled,
+      waitingFor: input.waitingFor,
+    }),
   };
 }
 
