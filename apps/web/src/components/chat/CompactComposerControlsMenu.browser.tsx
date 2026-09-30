@@ -36,7 +36,7 @@ const TEST_RUNTIME_MODE_OPTIONS: ReadonlyArray<RuntimeModeOption> = (
 function selectDescriptor(
   id: string,
   label: string,
-  options: ReadonlyArray<{ id: string; label: string; isDefault?: boolean }>,
+  options: ReadonlyArray<{ id: string; label: string; description?: string; isDefault?: boolean }>,
 ) {
   return {
     id,
@@ -303,6 +303,45 @@ describe("CompactComposerControlsMenu", () => {
     await vi.waitFor(() => {
       expect(mounted.changes.at(-1)).toContainEqual({ id: "serviceTier", value: "priority" });
     });
+  });
+
+  it("says what each speed costs when a model offers three of them", async () => {
+    const provider = ProviderDriverKind.make("codex");
+    const model = "gpt-6-astra";
+    await using _mounted = await mountTraitsPicker({
+      provider,
+      model,
+      models: [
+        {
+          slug: model,
+          name: "GPT-6-Astra",
+          isCustom: false,
+          capabilities: createModelCapabilities({
+            optionDescriptors: [
+              selectDescriptor("reasoningEffort", "Reasoning", [
+                { id: "low", label: "Low", description: "Faster, lighter reasoning." },
+                { id: "medium", label: "Medium", isDefault: true },
+              ]),
+              selectDescriptor("serviceTier", "Speed", [
+                { id: "default", label: "Standard", isDefault: true },
+                { id: "priority", label: "Fast", description: "2x speed, increased usage" },
+                { id: "ultrafast", label: "Ultrafast", description: "8x speed, increased usage" },
+              ]),
+            ],
+          }),
+        },
+      ],
+    });
+
+    await page.getByRole("button", { name: /Medium/ }).click();
+
+    await expect
+      .element(page.getByRole("menuitemradio", { name: /Ultrafast/ }))
+      .toHaveTextContent("8x speed, increased usage");
+    await expect
+      .element(page.getByRole("menuitemradio", { name: /Fast/ }).first())
+      .toHaveTextContent("2x speed, increased usage");
+    expect(document.body.textContent ?? "").not.toContain("Faster, lighter reasoning.");
   });
 
   it("shows active fast mode as a compact accent zap in the traits trigger", async () => {

@@ -25,6 +25,7 @@ import { Button } from "../ui/button";
 import { InfoPopover } from "../ui/info-popover";
 import { Input } from "../ui/input";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { modelMetaLabel } from "~/modelRetirement";
 
 /**
  * Placeholder text for the "add a custom model" input, keyed by driver
@@ -348,13 +349,15 @@ export function ProviderModelsSection({
           if (model.upgrade || model.upgradeInfo) {
             capLabels.push("Upgrade available");
           }
+          const metaLabel = modelMetaLabel(model);
           const hasDetails =
             capLabels.length > 0 ||
             model.description !== undefined ||
             model.availabilityMessage !== undefined ||
-            model.metaLabel !== undefined ||
+            metaLabel !== undefined ||
             model.name !== model.slug;
-          const upgradeCopy = model.upgradeInfo?.upgradeCopy ?? model.upgrade;
+          const upgradeCopy =
+            model.upgradeInfo?.upgradeCopy ?? model.upgradeInfo?.migrationMarkdown ?? model.upgrade;
 
           return (
             <div
@@ -378,19 +381,17 @@ export function ProviderModelsSection({
                     {model.promoLabel}
                   </Badge>
                 ) : null}
-                {model.metaLabel ? (
+                {metaLabel ? (
                   <span className="hidden shrink-0 font-mono text-[10px] text-muted-foreground/70 sm:inline">
-                    {model.metaLabel}
+                    {metaLabel}
                   </span>
                 ) : null}
                 {hasDetails ? (
                   <InfoPopover label={`Details for ${model.name}`} side="top">
                     <div className="space-y-1">
                       <code className="block text-[11px] text-foreground">{model.slug}</code>
-                      {model.metaLabel ? (
-                        <p className="font-mono text-[10px] text-muted-foreground">
-                          {model.metaLabel}
-                        </p>
+                      {metaLabel ? (
+                        <p className="font-mono text-[10px] text-muted-foreground">{metaLabel}</p>
                       ) : null}
                       {model.description ? (
                         <p className="text-[11px] leading-snug text-muted-foreground">

@@ -1,7 +1,7 @@
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
-import { TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { IsoDateTime, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { ProviderDriverKind } from "./providerInstance.ts";
 
 export const ProviderOptionDescriptorType = Schema.Literals(["select", "boolean"]);
@@ -59,6 +59,8 @@ export const ModelUpgradeInfo = Schema.Struct({
   modelLink: Schema.optional(TrimmedNonEmptyString),
   upgradeCopy: Schema.optional(TrimmedNonEmptyString),
   migrationMarkdown: Schema.optional(TrimmedNonEmptyString),
+  /** When the provider stops serving this model. */
+  retiresAt: Schema.optional(IsoDateTime),
 });
 export type ModelUpgradeInfo = typeof ModelUpgradeInfo.Type;
 

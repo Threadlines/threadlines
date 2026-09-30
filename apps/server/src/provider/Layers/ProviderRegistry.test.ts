@@ -398,6 +398,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
                 modelLink: "https://example.test/models/gpt-5.6",
                 upgradeCopy: "Try the newer Codex model.",
                 migrationMarkdown: "No prompt changes required.",
+                retirementAt: 1_792_004_400,
               },
             },
           ],
@@ -417,6 +418,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
               modelLink: "https://example.test/models/gpt-5.6",
               upgradeCopy: "Try the newer Codex model.",
               migrationMarkdown: "No prompt changes required.",
+              retiresAt: "2026-10-14T19:00:00.000Z",
             },
             capabilities: {
               inputModalities: ["text"],

@@ -128,6 +128,7 @@ import { ComposerPendingUserInputPanel } from "./ComposerPendingUserInputPanel";
 import { ComposerGoalBar, type ComposerGoalSetInput } from "./ComposerGoalBar";
 import { ComposerPlanFollowUpBanner } from "./ComposerPlanFollowUpBanner";
 import { type ComposerNotice, selectComposerNotices } from "./composerNotices";
+import { useModelRetirementNotice } from "./modelRetirementNotice";
 import { ComposerDock, hasComposerDockContent } from "./ComposerDock";
 import { NO_COMPOSER_PULL_REQUESTS, type ComposerPullRequest } from "./ComposerPullRequestRow";
 import { ComposerPendingDrawingContexts } from "./ComposerPendingDrawingContexts";
@@ -2696,7 +2697,16 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         onDismiss: dictation.clearError,
       }
     : null;
-  const dockedNotices = selectComposerNotices([...notices, dictationNotice]);
+  const modelRetirementNotice = useModelRetirementNotice({
+    // A room message to another agent isn't sent with this model, and the
+    // picker that could change it is hidden, so neither is the notice.
+    model: addressingRoomAgent
+      ? null
+      : (selectedProviderModels.find((candidate) => candidate.slug === selectedModel) ?? null),
+    pickable: modelOptionsByInstance.get(selectedInstanceId) ?? [],
+    onSwitch: (slug) => onProviderModelSelect(selectedInstanceId, slug),
+  });
+  const dockedNotices = selectComposerNotices([...notices, dictationNotice, modelRetirementNotice]);
 
   const readComposerSnapshot = useCallback((): {
     value: string;

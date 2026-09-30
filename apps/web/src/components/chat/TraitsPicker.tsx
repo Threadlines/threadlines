@@ -425,24 +425,37 @@ export const TraitsMenuContent = memo(function TraitsMenuContentImpl({
             >
               {descriptor.options.map((option) => {
                 const isUltracodeOption = option.id === "ultracode";
+                // Speeds differ in what they cost (e.g. "8x speed, increased
+                // usage"), so each one says so; other lists stay one line.
+                const costNote = descriptor.id === "serviceTier" ? option.description : undefined;
                 return (
                   <MenuRadioItem
                     key={option.id}
                     value={option.id}
                     className={cn(isUltracodeOption && "ultracode-menu-option")}
                   >
-                    <span className="flex min-w-0 items-center gap-2">
-                      <span
-                        className={cn(
-                          "min-w-0 truncate",
-                          isUltracodeOption && "ultracode-trait-label",
-                        )}
-                      >
-                        {option.label}
+                    <span className="flex min-w-0 flex-col">
+                      <span className="flex min-w-0 items-center gap-2">
+                        <span
+                          className={cn(
+                            "min-w-0 truncate",
+                            isUltracodeOption && "ultracode-trait-label",
+                          )}
+                        >
+                          {option.label}
+                        </span>
+                        {option.isDefault ? (
+                          <span className="shrink-0 text-[10px] text-muted-foreground/60">
+                            default
+                          </span>
+                        ) : null}
                       </span>
-                      {option.isDefault ? (
-                        <span className="shrink-0 text-[10px] text-muted-foreground/60">
-                          default
+                      {costNote ? (
+                        <span
+                          className="truncate text-[10px] text-muted-foreground/70"
+                          title={costNote}
+                        >
+                          {costNote}
                         </span>
                       ) : null}
                     </span>
