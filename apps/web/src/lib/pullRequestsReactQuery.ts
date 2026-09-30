@@ -15,7 +15,9 @@ import type {
 import type { PullRequestDetail } from "@threadlines/contracts";
 import {
   PULL_REQUEST_CHECKS_POLL_INTERVAL_MS,
+  pullRequestChecksWait,
   shouldPollPullRequestDetail,
+  type PullRequestChecksWait,
 } from "@threadlines/shared/pullRequestPolling";
 import {
   keepPreviousData,
@@ -23,9 +25,10 @@ import {
   queryOptions,
   useQueries,
   useQuery,
+  useQueryClient,
   type QueryClient,
 } from "@tanstack/react-query";
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { resolveEnvironmentOptionLabel } from "~/components/BranchToolbar.logic";
 import {
@@ -83,6 +86,11 @@ export interface PullRequestReadInput {
   readonly reference: PullRequestRef;
   /** Drops the server's cached read as well as this one. Refresh only. */
   readonly force?: boolean;
+  /**
+   * The commit the head branch is known to have been pushed at. The server
+   * reads again past a cached read of any other commit. Detail only.
+   */
+  readonly expectedHeadSha?: string | null;
 }
 
 function readPayload(input: PullRequestReadInput) {
@@ -97,18 +105,60 @@ export function pullRequestDetailQueryOptions(input: PullRequestReadInput) {
       input.reference.number,
     ),
     queryFn: () =>
-      ensureEnvironmentApi(input.environmentId).pullRequests.detail(readPayload(input)),
+      ensureEnvironmentApi(input.environmentId).pullRequests.detail({
+        ...readPayload(input),
+        ...(input.expectedHeadSha ? { expectedHeadSha: input.expectedHeadSha } : {}),
+      }),
     staleTime: PULL_REQUEST_READ_STALE_TIME_MS,
-    refetchOnWindowFocus: false,
-    // Kept current while there is something to wait for. The rest of the time
-    // it is a document the user reads, and the panel's own Refresh is the one
-    // thing that re-runs `gh`.
+    // Kept current while there is something to wait for, and read again on
+    // coming back to the app then too. The rest of the time it is a document
+    // the user reads, and the panel's own Refresh is the one thing that re-runs
+    // `gh`. A first read that failed has nothing to show, so it is tried again
+    // at the same pace rather than left blank until the surface remounts.
+    refetchOnWindowFocus: (query) => detailWorthRereading(query.state),
     refetchInterval: (query) =>
-      query.state.data !== undefined && shouldPollPullRequestDetail(query.state.data, Date.now())
-        ? PULL_REQUEST_CHECKS_POLL_INTERVAL_MS
-        : false,
+      detailWorthRereading(query.state) ? PULL_REQUEST_CHECKS_POLL_INTERVAL_MS : false,
     refetchIntervalInBackground: false,
   });
+}
+
+function detailWorthRereading(state: {
+  readonly data: PullRequestDetail | undefined;
+  readonly status: "pending" | "error" | "success";
+}): boolean {
+  return state.data === undefined
+    ? state.status === "error"
+    : shouldPollPullRequestDetail(state.data, Date.now());
+}
+
+/** One pull request's detail as a surface that shows its checks reads it. */
+export interface PullRequestDetailRead {
+  readonly detail: PullRequestDetail | undefined;
+  /** The last read failed; `detail`, if any, is from before. */
+  readonly error: Error | null;
+  /**
+   * What the checks in `detail` are still waiting on the host for, while the
+   * follow-up reads last; null once they can be believed, or once the
+   * follow-up reads run out and the read is shown for what it says.
+   */
+  readonly waitingFor: PullRequestChecksWait | null;
+}
+
+/**
+ * When each follow-up read is due while a read's checks are waiting on the
+ * host, from the moment the wait is first seen: at once, then quick while the
+ * host is expected any moment, then spaced out. Two minutes in all, the time a
+ * push is given to show its checks. Timed from that moment rather than from
+ * each answer, so the pull request's own polling cannot keep pushing them back.
+ */
+const CHECKS_WAIT_FOLLOW_UP_AT_MS = [0, 2_000, 6_000, 14_000, 30_000, 60_000, 90_000, 120_000];
+
+/** One wait on the host: which one, when it was first seen, and the follow-ups sent for it. */
+interface ChecksWaitFollowUp {
+  readonly key: string;
+  readonly startedAt: number;
+  readonly sent: number;
+  readonly lastSentAt: number;
 }
 
 /**
@@ -116,19 +166,99 @@ export function pullRequestDetailQueryOptions(input: PullRequestReadInput) {
  * tab reads: one poll serves the tab, the composer's row and anything else on
  * screen. Idle until there is something to address, which is why the key it
  * would rest on names nothing real.
+ *
+ * With `pushedHead`, the commit the checkout last saw its branch pushed at, a
+ * push is followed: a read that names another commit, or the new commit before
+ * any of its checks, is read again on a fixed schedule, past the server's
+ * cache for an older commit, until the host catches up or the schedule runs
+ * out. Each pair of pushed and read commits gets one schedule, so a new push
+ * starts another and a host that never catches up is not chased forever.
  */
 export function usePullRequestDetail(input: {
   readonly environmentId: EnvironmentId | null;
   readonly reference: PullRequestRef | null;
-}): PullRequestDetail | undefined {
+  readonly pushedHead?: string | null;
+}): PullRequestDetailRead {
+  const queryClient = useQueryClient();
   const enabled = input.environmentId !== null && input.reference !== null;
-  return useQuery({
-    ...pullRequestDetailQueryOptions({
-      environmentId: input.environmentId ?? IDLE_ENVIRONMENT_ID,
-      reference: input.reference ?? IDLE_PULL_REQUEST_REF,
-    }),
+  const pushedHead = input.pushedHead ?? null;
+  const environmentId = input.environmentId ?? IDLE_ENVIRONMENT_ID;
+  const reference = input.reference ?? IDLE_PULL_REQUEST_REF;
+  const query = useQuery({
+    ...pullRequestDetailQueryOptions({ environmentId, reference, expectedHeadSha: pushedHead }),
     enabled,
-  }).data;
+  });
+  const detail = query.data;
+  const fetching = query.fetchStatus === "fetching";
+  const answeredAt = Math.max(query.dataUpdatedAt, query.errorUpdatedAt);
+  const wait =
+    enabled && detail !== undefined
+      ? pullRequestChecksWait(detail, pushedHead, query.dataUpdatedAt)
+      : null;
+  const followUpKey = wait === null ? null : `${wait}:${pushedHead ?? ""}:${detail?.headSha ?? ""}`;
+  const [followUp, setFollowUp] = useState<ChecksWaitFollowUp | null>(null);
+  const episode = followUp !== null && followUp.key === followUpKey ? followUp : null;
+  const sent = episode?.sent ?? 0;
+  const startedAt = episode?.startedAt ?? null;
+  // Still waiting while follow-ups are due, and while the last one is out
+  // with no answer yet; after that the read is shown for what it says.
+  const followingUp =
+    followUpKey !== null &&
+    (sent < CHECKS_WAIT_FOLLOW_UP_AT_MS.length ||
+      (fetching && answeredAt < (episode?.lastSentAt ?? 0)));
+
+  // One read at a time: a follow-up that joined a read already in flight,
+  // perhaps one sent before the push, would spend itself on that read's
+  // answer. Keyed on values, not the reference object, so a re-render does
+  // not restart the wait.
+  const { projectId, repository, number } = reference;
+  useEffect(() => {
+    if (followUpKey === null || fetching || sent >= CHECKS_WAIT_FOLLOW_UP_AT_MS.length) {
+      return;
+    }
+    const dueAt = startedAt === null ? 0 : startedAt + (CHECKS_WAIT_FOLLOW_UP_AT_MS[sent] ?? 0);
+    const timer = window.setTimeout(
+      () => {
+        const options = pullRequestDetailQueryOptions({
+          environmentId,
+          reference: { projectId, repository, number },
+          expectedHeadSha: pushedHead,
+        });
+        // Another surface's read started in the meantime; this one waits for
+        // it to answer and is armed again then.
+        if (queryClient.getQueryState(options.queryKey)?.fetchStatus === "fetching") {
+          return;
+        }
+        const now = Date.now();
+        setFollowUp({
+          key: followUpKey,
+          startedAt: startedAt ?? now,
+          sent: sent + 1,
+          lastSentAt: now,
+        });
+        void queryClient.fetchQuery({ ...options, staleTime: 0 }).catch(() => undefined);
+      },
+      Math.max(0, dueAt - Date.now()),
+    );
+    return () => window.clearTimeout(timer);
+  }, [
+    environmentId,
+    projectId,
+    repository,
+    number,
+    pushedHead,
+    followUpKey,
+    startedAt,
+    sent,
+    fetching,
+    queryClient,
+  ]);
+
+  return {
+    detail,
+    error: query.error,
+    waitingFor: followingUp ? wait : null,
+  };
 }
 
 /** The key an idle read rests on. Never fetched, and names no real project. */

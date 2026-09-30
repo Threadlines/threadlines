@@ -131,6 +131,7 @@ const NON_REPOSITORY_REMOTE_STATUS_DETAILS = Object.freeze<GitVcsDriver.GitRemot
   branch: null,
   upstreamRef: null,
   hasUpstream: false,
+  upstreamHeadSha: null,
   aheadCount: 0,
   behindCount: 0,
   aheadOfDefaultCount: 0,
@@ -1866,8 +1867,18 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     const upstreamRef = upstream?.upstreamRef ?? null;
     let aheadCount = 0;
     let behindCount = 0;
+    let upstreamHeadSha: string | null = null;
 
     if (upstreamRef) {
+      const upstreamHead = yield* executeGit(
+        "GitVcsDriver.statusDetailsRemote.upstreamHead",
+        cwd,
+        ["rev-parse", "--verify", "--quiet", `${upstreamRef}^{commit}`],
+        { allowNonZeroExit: true },
+      );
+      const upstreamHeadValue = upstreamHead.stdout.trim();
+      upstreamHeadSha =
+        upstreamHead.exitCode === 0 && upstreamHeadValue.length > 0 ? upstreamHeadValue : null;
       const divergence = yield* executeGit(
         "GitVcsDriver.statusDetailsRemote.divergence",
         cwd,
@@ -1909,6 +1920,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       branch,
       upstreamRef,
       hasUpstream: upstreamRef !== null,
+      upstreamHeadSha,
       aheadCount,
       behindCount,
       aheadOfDefaultCount,

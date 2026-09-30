@@ -508,6 +508,12 @@ const VcsStatusRemoteShape = {
   aheadCount: NonNegativeInt,
   behindCount: NonNegativeInt,
   aheadOfDefaultCount: Schema.optional(NonNegativeInt),
+  /**
+   * The commit the upstream (remote-tracking) branch is at: what was last
+   * pushed or fetched. Moves exactly when the remote branch does, unlike HEAD.
+   * Null without an upstream; absent on statuses from servers that predate it.
+   */
+  upstreamHeadSha: Schema.optional(Schema.NullOr(TrimmedNonEmptyStringSchema)),
   pr: Schema.NullOr(VcsStatusChangeRequest),
 };
 

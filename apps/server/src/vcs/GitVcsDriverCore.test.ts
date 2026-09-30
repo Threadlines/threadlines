@@ -570,6 +570,10 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
         assert.equal(status.hasUpstream, true);
         assert.equal(status.aheadCount, 1);
         assert.equal(status.behindCount, 1);
+        // Where the remote branch is, which is the peer's push, not local HEAD.
+        const peerHead = (yield* git(peer, ["rev-parse", "HEAD"])).trim();
+        assert.equal(status.upstreamHeadSha, peerHead);
+        assert.notEqual(status.upstreamHeadSha, (yield* git(cwd, ["rev-parse", "HEAD"])).trim());
       }),
     );
 

@@ -105,6 +105,8 @@ export interface GitRemoteStatusDetails {
   branch: string | null;
   upstreamRef: string | null;
   hasUpstream: boolean;
+  /** The commit the upstream branch is at; null without one. */
+  upstreamHeadSha: string | null;
   aheadCount: number;
   behindCount: number;
   aheadOfDefaultCount: number;

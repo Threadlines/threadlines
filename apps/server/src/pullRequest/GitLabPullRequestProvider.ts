@@ -402,6 +402,7 @@ export const make = Effect.fn("makeGitLabPullRequestProvider")(function* () {
             baseComparison:
               row.behindBy === null ? "unknown" : row.behindBy > 0 ? "behind" : "up-to-date",
             ...(approvals.length > 0 ? { reviewDecision: "approved" as const } : {}),
+            ...(row.diffRefs === null ? {} : { headSha: row.diffRefs.headSha }),
           };
         }),
       ),

@@ -122,6 +122,8 @@ export interface ProviderChangeRequestDetail extends ProviderChangeRequest {
   readonly closedAt: string | null;
   readonly reviewers: ReadonlyArray<PullRequestReviewer>;
   readonly checks: ReadonlyArray<PullRequestCheck>;
+  /** The commit at the head branch, which the checks ran on. Absent where the host does not say. */
+  readonly headSha?: string;
   /** Absent where the host does not say whether its rules would take a merge. */
   readonly mergeGate?: PullRequestMergeGate;
   /**

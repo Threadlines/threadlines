@@ -46,6 +46,8 @@ export const GITHUB_PULL_REQUEST_DETAIL_FIELDS = [
   // Qualifies the head branch as `owner:branch`, which is the only name a
   // branch on a fork has in the base repository.
   "headRepositoryOwner",
+  // The commit the checks ran on, so a reader can tell a read from before a push.
+  "headRefOid",
 ] as const;
 
 /** `gh pr view --json` fields for the conversation below the header. */
@@ -97,6 +99,8 @@ export interface GitHubPullRequestDetailRow extends GitHubPullRequestListRow {
   readonly mergeGate?: PullRequestMergeGate;
   /** Qualifies the head branch when it lives on a fork. */
   readonly headRepositoryOwnerLogin: string | null;
+  /** Absent on a CLI too old to report it. */
+  readonly headSha?: string;
 }
 
 /** The conversation half of a `gh pr view` read, before GraphQL decorates it. */
@@ -147,6 +151,7 @@ const GitHubPullRequestDetailRowSchema = Schema.Struct({
   headRepositoryOwner: Schema.optional(
     Schema.NullOr(Schema.Struct({ login: Schema.optional(Schema.NullOr(Schema.String)) })),
   ),
+  headRefOid: Schema.optional(Schema.NullOr(Schema.String)),
 });
 
 const GitHubPullRequestActivitySchema = Schema.Struct({
@@ -396,6 +401,7 @@ export function decodeGitHubPullRequestDetailJson(
   const row = payload.success;
   const base = normalizeGitHubPullRequestListRow(row);
   const mergeGate = normalizeMergeGate(row.mergeStateStatus);
+  const headSha = nonEmptyText(row.headRefOid);
   return Result.succeed({
     ...base,
     body: row.body ?? "",
@@ -413,6 +419,7 @@ export function decodeGitHubPullRequestDetailJson(
     checks: normalizeChecks(row.statusCheckRollup),
     ...(mergeGate === undefined ? {} : { mergeGate }),
     headRepositoryOwnerLogin: nonEmptyText(row.headRepositoryOwner?.login),
+    ...(headSha === null ? {} : { headSha }),
   });
 }
 

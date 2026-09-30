@@ -225,9 +225,14 @@ const repositoryJson = (input?: {
     allow_auto_merge: input?.autoMerge ?? true,
   });
 
-const detailJson = (input?: { readonly author?: string; readonly isDraft?: boolean }) =>
+const detailJson = (input?: {
+  readonly author?: string;
+  readonly isDraft?: boolean;
+  readonly headRefOid?: string;
+}) =>
   JSON.stringify({
     ...pullRequestRow({ number: 12, author: input?.author ?? "hubot" }),
+    ...(input?.headRefOid === undefined ? {} : { headRefOid: input.headRefOid }),
     isDraft: input?.isDraft ?? false,
     body: "Reads one pull request.",
     changedFiles: 3,
@@ -872,6 +877,31 @@ describe("PullRequestService pull request reads", () => {
       // The author may close and rewrite their own pull request without any
       // rights over the repository it is aimed at.
       assert.deepStrictEqual(mine.viewer, { canWrite: false, canReview: false, canManage: true });
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("reads again past a cached read of another commit than the one pushed", () =>
+    Effect.gen(function* () {
+      onlyGitHubProject();
+      let head = "9e0b7a1";
+      hostAnswers({ detail: () => detailJson({ headRefOid: head }) });
+
+      const service = yield* PullRequestService.PullRequestService;
+      assert.equal((yield* service.detail(reference)).headSha, "9e0b7a1");
+
+      // The branch is pushed while the read of the commit before sits cached.
+      head = "c3d4e5f";
+      const pushed = yield* service.detail({ ...reference, expectedHeadSha: "c3d4e5f" });
+      assert.equal(pushed.headSha, "c3d4e5f");
+      // A read of the commit the caller expects is served from the cache, and
+      // the repository's settings were never dropped along the way.
+      yield* service.detail({ ...reference, expectedHeadSha: "c3d4e5f" });
+      expect(prCalls("view")).toHaveLength(2);
+      expect(
+        mockExecute.mock.calls.filter(
+          ([input]) => input.args[0] === "api" && input.args[1] !== "graphql",
+        ),
+      ).toHaveLength(1);
     }).pipe(Effect.provide(layer)),
   );
 

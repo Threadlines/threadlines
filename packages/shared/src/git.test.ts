@@ -330,6 +330,7 @@ describe("applyGitStatusStreamEvent", () => {
       hasPrimaryRemote: true,
       isDefaultRef: false,
       refName: "feature/demo",
+      headSha: "4f1c2d9",
       hasWorkingTreeChanges: true,
       workingTree: {
         files: [{ path: "src/demo.ts", insertions: 1, deletions: 0 }],
@@ -346,6 +347,7 @@ describe("applyGitStatusStreamEvent", () => {
       hasUpstream: true,
       aheadCount: 2,
       behindCount: 1,
+      upstreamHeadSha: "9e0b7a1",
       pr: null,
     };
 
@@ -354,8 +356,41 @@ describe("applyGitStatusStreamEvent", () => {
       hasUpstream: true,
       aheadCount: 2,
       behindCount: 1,
+      upstreamHeadSha: "9e0b7a1",
       pr: null,
     });
+  });
+
+  it("keeps the upstream commit when applying a local update", () => {
+    const current: VcsStatusResult = {
+      isRepo: true,
+      hasPrimaryRemote: true,
+      isDefaultRef: false,
+      refName: "feature/demo",
+      headSha: "9e0b7a1",
+      hasWorkingTreeChanges: false,
+      workingTree: { files: [], insertions: 0, deletions: 0 },
+      hasUpstream: true,
+      aheadCount: 0,
+      behindCount: 0,
+      upstreamHeadSha: "9e0b7a1",
+      pr: null,
+    };
+
+    const updated = applyGitStatusStreamEvent(current, {
+      _tag: "localUpdated",
+      local: {
+        isRepo: true,
+        hasPrimaryRemote: true,
+        isDefaultRef: false,
+        refName: "feature/demo",
+        headSha: "c3d4e5f",
+        hasWorkingTreeChanges: false,
+        workingTree: { files: [], insertions: 0, deletions: 0 },
+      },
+    });
+    expect(updated.headSha).toBe("c3d4e5f");
+    expect(updated.upstreamHeadSha).toBe("9e0b7a1");
   });
 
   // A deleted checkout's status must not flip back to a plain "not a repo" the

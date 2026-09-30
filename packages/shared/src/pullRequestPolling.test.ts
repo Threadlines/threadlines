@@ -4,6 +4,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   pullRequestArmedToMerge,
   pullRequestChecksInMotion,
+  pullRequestChecksWait,
   shouldPollPullRequestDetail,
 } from "./pullRequestPolling.ts";
 
@@ -81,5 +82,40 @@ describe("shouldPollPullRequestDetail", () => {
     expect(shouldPollPullRequestDetail({ ...armed, mergeGate: "blocked" as const }, now)).toBe(
       false,
     );
+  });
+});
+
+describe("pullRequestChecksWait", () => {
+  const readAt = Date.parse("2026-09-04T12:00:00.000Z");
+  const passed = [{ name: "CI", status: "success" as const, description: null, url: null }];
+  const open = {
+    state: "open" as const,
+    headSha: "9e0b7a1",
+    checks: passed,
+    updatedAt: "2026-09-04T11:00:00.000Z",
+  };
+
+  it("waits while the read names another commit than the one just pushed", () => {
+    expect(pullRequestChecksWait(open, "c3d4e5f", readAt)).toBe("push");
+    expect(pullRequestChecksWait(open, "9e0b7a1", readAt)).toBeNull();
+    // Nothing to compare: a checkout that does not know, or a host that does not say.
+    expect(pullRequestChecksWait(open, null, readAt)).toBeNull();
+    const { headSha: _headSha, ...unsaid } = open;
+    expect(pullRequestChecksWait(unsaid, "c3d4e5f", readAt)).toBeNull();
+  });
+
+  it("reads no checks right after a push as not queued yet, and later as none", () => {
+    const justPushed = { ...open, checks: [], updatedAt: "2026-09-04T11:59:30.000Z" };
+    expect(pullRequestChecksWait(justPushed, "9e0b7a1", readAt)).toBe("checks");
+    expect(
+      pullRequestChecksWait({ ...justPushed, checksState: "success" }, null, readAt),
+    ).toBeNull();
+    expect(
+      pullRequestChecksWait({ ...justPushed, updatedAt: open.updatedAt }, null, readAt),
+    ).toBeNull();
+  });
+
+  it("has nothing to wait for once the pull request is settled", () => {
+    expect(pullRequestChecksWait({ ...open, state: "merged" }, "c3d4e5f", readAt)).toBeNull();
   });
 });

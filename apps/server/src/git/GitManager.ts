@@ -997,6 +997,7 @@ export const makeGitManager = Effect.fn("makeGitManager")(function* () {
       aheadCount: details.aheadCount,
       behindCount: details.behindCount,
       aheadOfDefaultCount: details.aheadOfDefaultCount,
+      upstreamHeadSha: details.upstreamHeadSha,
       pr,
     } satisfies VcsStatusRemoteResult;
   });
