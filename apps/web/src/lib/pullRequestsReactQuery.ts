@@ -62,6 +62,13 @@ export const PULL_REQUEST_SETTLED_REFETCH_INTERVAL_MS = 600_000;
 /** The header and the conversation move at the same pace as the server's caches. */
 const PULL_REQUEST_READ_STALE_TIME_MS = 15_000;
 
+/**
+ * How long a pull request nobody has on screen stays remembered, so coming
+ * back to a thread shows its last known checks at once while they are read
+ * again, rather than an empty state for the length of a host round trip.
+ */
+const PULL_REQUEST_DETAIL_GC_TIME_MS = 30 * 60_000;
+
 /** A patch is the same until someone pushes, and it is the costliest read. */
 const PULL_REQUEST_DIFF_STALE_TIME_MS = 60_000;
 const PULL_REQUEST_DIFF_GC_TIME_MS = 300_000;
@@ -110,11 +117,12 @@ export function pullRequestDetailQueryOptions(input: PullRequestReadInput) {
         ...(input.expectedHeadSha ? { expectedHeadSha: input.expectedHeadSha } : {}),
       }),
     staleTime: PULL_REQUEST_READ_STALE_TIME_MS,
+    gcTime: PULL_REQUEST_DETAIL_GC_TIME_MS,
     // Kept current while there is something to wait for, and read again on
     // coming back to the app then too. The rest of the time it is a document
     // the user reads, and the panel's own Refresh is the one thing that re-runs
-    // `gh`. A first read that failed has nothing to show, so it is tried again
-    // at the same pace rather than left blank until the surface remounts.
+    // `gh`. A read that failed is tried again at the same pace, whether or not
+    // an earlier one is on screen: that one may no longer be true.
     refetchOnWindowFocus: (query) => detailWorthRereading(query.state),
     refetchInterval: (query) =>
       detailWorthRereading(query.state) ? PULL_REQUEST_CHECKS_POLL_INTERVAL_MS : false,
@@ -126,16 +134,26 @@ function detailWorthRereading(state: {
   readonly data: PullRequestDetail | undefined;
   readonly status: "pending" | "error" | "success";
 }): boolean {
-  return state.data === undefined
-    ? state.status === "error"
-    : shouldPollPullRequestDetail(state.data, Date.now());
+  return (
+    state.status === "error" ||
+    (state.data !== undefined && shouldPollPullRequestDetail(state.data, Date.now()))
+  );
 }
+
+/**
+ * Why a read on screen is the last known state rather than a current one:
+ * remembered from before the surface opened and being read again, or the
+ * latest re-read failed.
+ */
+export type PullRequestDetailLastKnown = "refreshing" | "refresh-failed";
 
 /** One pull request's detail as a surface that shows its checks reads it. */
 export interface PullRequestDetailRead {
   readonly detail: PullRequestDetail | undefined;
   /** The last read failed; `detail`, if any, is from before. */
   readonly error: Error | null;
+  /** Null while `detail` is a current read. */
+  readonly lastKnown: PullRequestDetailLastKnown | null;
   /**
    * What the checks in `detail` are still waiting on the host for, while the
    * follow-up reads last; null once they can be believed, or once the
@@ -191,6 +209,18 @@ export function usePullRequestDetail(input: {
   const detail = query.data;
   const fetching = query.fetchStatus === "fetching";
   const answeredAt = Math.max(query.dataUpdatedAt, query.errorUpdatedAt);
+  // A read from before this surface opened (or switched to this pull request)
+  // is only the last known state until a read of its own lands, which a stale
+  // one is already on its way to do. Any attempt that failed, or one held
+  // back while offline, leaves what is on screen unconfirmed.
+  const lastKnown: PullRequestDetailLastKnown | null =
+    detail === undefined
+      ? null
+      : query.status === "error" || query.failureCount > 0 || query.fetchStatus === "paused"
+        ? "refresh-failed"
+        : fetching && !query.isFetchedAfterMount
+          ? "refreshing"
+          : null;
   const wait =
     enabled && detail !== undefined
       ? pullRequestChecksWait(detail, pushedHead, query.dataUpdatedAt)
@@ -257,6 +287,7 @@ export function usePullRequestDetail(input: {
   return {
     detail,
     error: query.error,
+    lastKnown,
     waitingFor: followingUp ? wait : null,
   };
 }

@@ -687,6 +687,22 @@ export function pullRequestFromGitStatus(
 }
 
 /**
+ * Whether a surface takes a pull request's state from its detail read rather
+ * than from what a listing or the checkout said. The detail is usually the
+ * fresher of the two, except one remembered from earlier and not yet read
+ * again: that does not outrank a listing saying the pull request has since
+ * merged or closed.
+ */
+export function pullRequestDetailOutranksListing(input: {
+  readonly listedState: PullRequestState;
+  readonly detail: Pick<PullRequestDetail, "state"> | undefined;
+  /** The detail was read since the surface opened, or is fresh enough not to need it. */
+  readonly detailCurrent: boolean;
+}): boolean {
+  return input.detail !== undefined && (input.detailCurrent || input.listedState === "open");
+}
+
+/**
  * Which pull request a thread is working on: the checkout's own status first,
  * then the open listing, then the merged and closed ones. The listings cover a
  * thread whose checkout is standing somewhere else, or whose status has not

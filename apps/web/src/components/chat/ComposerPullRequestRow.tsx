@@ -52,6 +52,7 @@ import {
   composerAutoFixOffered,
   composerAutoMergeControl,
   composerPullRequestCheckBuckets,
+  composerPullRequestChecksFootnote,
   composerPullRequestChecksNotice,
   composerPullRequestRow,
   pullRequestChecksUrl,
@@ -152,6 +153,7 @@ export function ComposerPullRequestRow({
     detail: read.detail,
     threadAutoMerge: pullRequest.autoMerge !== null,
     waitingFor: read.waitingFor,
+    detailCurrent: read.lastKnown === null,
   });
   const tone = pullRequestBadgeTone(row.state, row.isDraft, row.autoMergeEnabled);
   const hoverCardPayload: PullRequestHoverCardPayload = {
@@ -357,7 +359,8 @@ function ComposerPullRequestChecksChip({
             aria-label="Checks"
             className={cn(chipClass, "cursor-pointer transition-colors hover:bg-accent focus-ring")}
           >
-            <ChipDot className={toneClass.dot} />
+            {/* Dimmed while it is the last known state rather than a current read. */}
+            <ChipDot className={cn(toneClass.dot, read.lastKnown !== null && "opacity-50")} />
             {chip.label}
             <ChevronDownIcon aria-hidden className="size-3 text-muted-foreground" />
           </button>
@@ -400,6 +403,10 @@ function ComposerPullRequestChecksPopover({
     hostName: pullRequestHostName(detail?.provider ?? "unknown"),
   });
   const buckets = composerPullRequestCheckBuckets(detail?.checks ?? []);
+  const footnote = composerPullRequestChecksFootnote({
+    lastKnown: read.lastKnown,
+    countsShown: notice === null,
+  });
 
   return (
     <div className="w-full py-2 text-xs">
@@ -430,6 +437,9 @@ function ComposerPullRequestChecksPopover({
           );
         })
       )}
+      {footnote !== null ? (
+        <p className="px-3 pt-1 text-[11px] text-muted-foreground">{footnote}</p>
+      ) : null}
       <div className="my-1.5 border-border border-t" />
       {detail ? (
         <ComposerPullRequestAutoMergeSection

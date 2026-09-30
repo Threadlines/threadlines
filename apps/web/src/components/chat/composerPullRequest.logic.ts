@@ -25,6 +25,7 @@ import {
 } from "@threadlines/shared/pullRequestPolling";
 
 import {
+  pullRequestDetailOutranksListing,
   summarizePullRequestChecks,
   resolveMergeWhenReadyBlock,
   resolvePullRequestAutoMergeBlock,
@@ -102,6 +103,27 @@ export function composerPullRequestChecksNotice(input: {
       return `Waiting for ${input.hostName} to see the latest push`;
     case "checks":
       return "Waiting for checks to start";
+    case null:
+      return null;
+  }
+}
+
+/**
+ * The line under the checks while what the popover shows is the last known
+ * state rather than a current one. Null while it is current.
+ */
+export function composerPullRequestChecksFootnote(input: {
+  readonly lastKnown: "refreshing" | "refresh-failed" | null;
+  /** The counts are on screen, rather than a notice in their place. */
+  readonly countsShown: boolean;
+}): string | null {
+  switch (input.lastKnown) {
+    case "refreshing":
+      return "Refreshing…";
+    case "refresh-failed":
+      return input.countsShown
+        ? "Couldn't refresh. Showing the last result."
+        : "Couldn't refresh. Trying again shortly.";
     case null:
       return null;
   }
@@ -189,18 +211,29 @@ export function composerPullRequestRow(input: {
   readonly threadAutoMerge: boolean;
   /** What the detail's checks are still waiting on the host for; null when they can be believed. */
   readonly waitingFor: PullRequestChecksWait | null;
+  /** The detail is a current read, not one remembered from earlier or left by a failed re-read. */
+  readonly detailCurrent: boolean;
 }): ComposerPullRequestRowModel {
   const { pullRequest, detail } = input;
-  // The detail is the fresher read of the two: it is re-read while checks run,
-  // while the listing behind the thread's resolution polls far more slowly.
-  const state = detail?.state ?? pullRequest.state;
+  // The detail is usually the fresher read of the two: it is re-read while
+  // checks run, while the listing behind the thread's resolution polls far
+  // more slowly. A remembered one does not outrank a listing that has seen
+  // the pull request merge or close since.
+  const stateSource = pullRequestDetailOutranksListing({
+    listedState: pullRequest.state,
+    detail,
+    detailCurrent: input.detailCurrent,
+  })
+    ? detail
+    : undefined;
+  const state = stateSource?.state ?? pullRequest.state;
   const autoMergeEnabled =
     input.threadAutoMerge ||
-    (detail ? pullRequestArmedToMerge(detail) : pullRequest.autoMergeEnabled);
+    (stateSource ? pullRequestArmedToMerge(stateSource) : pullRequest.autoMergeEnabled);
   return {
     number: pullRequest.number,
     state,
-    isDraft: detail?.isDraft ?? pullRequest.isDraft,
+    isDraft: stateSource?.isDraft ?? pullRequest.isDraft,
     autoMergeEnabled,
     title: detail?.title ?? pullRequest.title,
     url: detail?.url ?? pullRequest.url,

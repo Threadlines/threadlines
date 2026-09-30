@@ -38,6 +38,7 @@ import { PullRequestActorAvatar } from "./pullRequestPresentation";
 import {
   projectRepository,
   pullRequestBadgeTone,
+  pullRequestDetailOutranksListing,
   type ThreadPullRequest,
 } from "./pullRequests.logic";
 
@@ -229,11 +230,21 @@ function PullRequestHoverCardContent({
   isDraft,
   autoMergeEnabled,
 }: PullRequestHoverCardPayload) {
-  const detail = useQuery(pullRequestDetailQueryOptions({ environmentId, reference })).data;
+  const query = useQuery(pullRequestDetailQueryOptions({ environmentId, reference }));
+  const detail = query.data;
+  // A read remembered from earlier does not outrank the caller's word that
+  // the pull request has merged or closed since, until it is read again.
+  const stateSource = pullRequestDetailOutranksListing({
+    listedState: state,
+    detail,
+    detailCurrent: query.status === "success" && (query.isFetchedAfterMount || !query.isStale),
+  })
+    ? detail
+    : undefined;
   const tone = pullRequestBadgeTone(
-    detail?.state ?? state,
-    detail?.isDraft ?? isDraft,
-    detail ? pullRequestArmedToMerge(detail) : autoMergeEnabled,
+    stateSource?.state ?? state,
+    stateSource?.isDraft ?? isDraft,
+    stateSource ? pullRequestArmedToMerge(stateSource) : autoMergeEnabled,
   );
   const settledAt = detail ? (detail.mergedAt ?? detail.closedAt) : null;
   const timestamp = detail ? formatRelativeTimeLabel(settledAt ?? detail.updatedAt) : null;

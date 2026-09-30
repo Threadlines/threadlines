@@ -13,7 +13,7 @@ import {
   type PullRequestReviewThread,
   type ScopedThreadRef,
 } from "@threadlines/contracts";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, onlineManager } from "@tanstack/react-query";
 import {
   RouterProvider,
   createMemoryHistory,
@@ -403,8 +403,8 @@ describe("Composer pull request merge controls", () => {
     checksState: "pending",
   };
 
-  /** The thread's own row, its checkout having pushed `c3d4e5f` since the last read. */
-  async function renderPushedRow(queryClient: QueryClient) {
+  /** The thread's own row, its checkout having pushed `pushedHead` (by default, since the last read). */
+  async function renderPushedRow(queryClient: QueryClient, pushedHead = "c3d4e5f") {
     const router = createTestRouter(
       <QueryClientProvider client={queryClient}>
         <ComposerPullRequestRow
@@ -413,7 +413,7 @@ describe("Composer pull request merge controls", () => {
             environmentId: ENVIRONMENT_ID,
             reference: REFERENCE,
             pullRequest: { ...DETAIL, autoMergeEnabled: false, settledAt: null, diffStat: null },
-            pushedHead: "c3d4e5f",
+            pushedHead,
             projectTitle: DETAIL.projectTitle,
             onOpen: vi.fn(),
             onDismiss: vi.fn(),
@@ -467,6 +467,64 @@ describe("Composer pull request merge controls", () => {
       await expect.element(page.getByText("In progress"), { timeout: 5_000 }).toBeVisible();
       expect(page.getByText("Waiting for GitHub to see the latest push").query()).toBeNull();
     } finally {
+      await screen.unmount();
+      queryClient.clear();
+    }
+  });
+
+  it("says a remembered result is being read again, and when that read fails", async () => {
+    let failRead = () => {};
+    const readFails = new Promise<never>((_resolve, reject) => {
+      failRead = () => reject(new Error("gh: network unreachable"));
+    });
+    __setEnvironmentApiOverrideForTests(ENVIRONMENT_ID, {
+      pullRequests: { detail: () => readFails },
+    } as unknown as EnvironmentApi);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    // Read a minute before the thread was opened again.
+    queryClient.setQueryData(
+      pullRequestQueryKeys.detail(ENVIRONMENT_ID, PROJECT_ID, REFERENCE.number),
+      BEFORE_PUSH,
+      { updatedAt: Date.now() - 60_000 },
+    );
+    const screen = await renderPushedRow(queryClient, "4f1c2d9");
+    try {
+      await expect.element(page.getByText("Refreshing…"), { timeout: 5_000 }).toBeVisible();
+      await expect.element(page.getByText("Passed")).toBeVisible();
+
+      failRead();
+      await expect
+        .element(page.getByText("Couldn't refresh. Showing the last result."), { timeout: 5_000 })
+        .toBeVisible();
+      await expect.element(page.getByText("Passed")).toBeVisible();
+      expect(page.getByText("Refreshing…").query()).toBeNull();
+    } finally {
+      await screen.unmount();
+      queryClient.clear();
+    }
+  });
+
+  it("does not pass a remembered result off as current while offline", async () => {
+    const readDetail = vi.fn(async () => BEFORE_PUSH);
+    __setEnvironmentApiOverrideForTests(ENVIRONMENT_ID, {
+      pullRequests: { detail: readDetail },
+    } as unknown as EnvironmentApi);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    queryClient.setQueryData(
+      pullRequestQueryKeys.detail(ENVIRONMENT_ID, PROJECT_ID, REFERENCE.number),
+      BEFORE_PUSH,
+      { updatedAt: Date.now() - 60_000 },
+    );
+    // The re-read is held back until the network returns, not attempted.
+    onlineManager.setOnline(false);
+    const screen = await renderPushedRow(queryClient, "4f1c2d9");
+    try {
+      await expect
+        .element(page.getByText("Couldn't refresh. Showing the last result."), { timeout: 5_000 })
+        .toBeVisible();
+      expect(readDetail).not.toHaveBeenCalled();
+    } finally {
+      onlineManager.setOnline(true);
       await screen.unmount();
       queryClient.clear();
     }

@@ -10,6 +10,7 @@ import {
   composerAutoFixOffered,
   composerAutoMergeControl,
   composerPullRequestCheckBuckets,
+  composerPullRequestChecksFootnote,
   composerPullRequestChecksNotice,
   composerPullRequestChip,
   composerPullRequestRow,
@@ -99,6 +100,7 @@ describe("composerPullRequestRow", () => {
       detail: undefined,
       threadAutoMerge: false,
       waitingFor: null,
+      detailCurrent: true,
     });
 
     expect(row.number).toBe(234);
@@ -120,10 +122,28 @@ describe("composerPullRequestRow", () => {
       detail: undefined,
       threadAutoMerge: false,
       waitingFor: null,
+      detailCurrent: true,
     });
     expect(row.headBranch).toBeNull();
     expect(row.projectTitle).toBeNull();
     expect(row.diffStat).toBeNull();
+  });
+
+  it("does not let a remembered read undo a merge the listing has seen since", () => {
+    const remembered = detail({ state: "open" });
+    const row = (detailCurrent: boolean) =>
+      composerPullRequestRow({
+        pullRequest: { ...THREAD_PULL_REQUEST, state: "merged" },
+        projectTitle: null,
+        detail: remembered,
+        threadAutoMerge: false,
+        waitingFor: null,
+        detailCurrent,
+      });
+    expect(row(false).state).toBe("merged");
+    expect(row(false).chip).toEqual({ label: "Merged", tone: "merged", interactive: false });
+    // A read of its own is the fresher word, whatever the listing still says.
+    expect(row(true).state).toBe("open");
   });
 
   it("takes the branch, project, size and state from the detail once it lands", () => {
@@ -135,6 +155,7 @@ describe("composerPullRequestRow", () => {
       detail: detail({ state: "merged", checks: [check("success", "build")] }),
       threadAutoMerge: false,
       waitingFor: null,
+      detailCurrent: true,
     });
 
     expect(row.state).toBe("merged");
@@ -256,6 +277,22 @@ describe("composerPullRequestChecksNotice", () => {
     expect(notice({})).toBeNull();
     // A later read failing leaves the counts it had on screen.
     expect(notice({ failed: true })).toBeNull();
+  });
+});
+
+describe("composerPullRequestChecksFootnote", () => {
+  it("says when what is shown is the last known state, and says nothing once it is current", () => {
+    expect(composerPullRequestChecksFootnote({ lastKnown: "refreshing", countsShown: true })).toBe(
+      "Refreshing…",
+    );
+    expect(
+      composerPullRequestChecksFootnote({ lastKnown: "refresh-failed", countsShown: true }),
+    ).toBe("Couldn't refresh. Showing the last result.");
+    // With a notice in place of the counts there is no result on screen to point at.
+    expect(
+      composerPullRequestChecksFootnote({ lastKnown: "refresh-failed", countsShown: false }),
+    ).toBe("Couldn't refresh. Trying again shortly.");
+    expect(composerPullRequestChecksFootnote({ lastKnown: null, countsShown: true })).toBeNull();
   });
 });
 
