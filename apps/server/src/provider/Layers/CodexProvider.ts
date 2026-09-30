@@ -519,6 +519,11 @@ function mapCodexModelUpgradeInfo(
   if (modelLink) mapped.modelLink = modelLink;
   if (upgradeCopy) mapped.upgradeCopy = upgradeCopy;
   if (migrationMarkdown) mapped.migrationMarkdown = migrationMarkdown;
+  // Codex reports the retirement as Unix seconds.
+  const retirementAt = upgradeInfo?.retirementAt;
+  if (typeof retirementAt === "number" && Number.isFinite(retirementAt) && retirementAt > 0) {
+    mapped.retiresAt = new Date(retirementAt * 1000).toISOString();
+  }
   return mapped;
 }
 

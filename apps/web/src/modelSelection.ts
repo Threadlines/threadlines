@@ -14,6 +14,7 @@ import {
   resolveSelectableModel,
 } from "@threadlines/shared/model";
 import { getComposerProviderState } from "./components/chat/composerProviderState";
+import { modelMetaLabel } from "./modelRetirement";
 import { UnifiedSettings } from "@threadlines/contracts/settings";
 import {
   getDefaultServerModel,
@@ -87,7 +88,8 @@ function toAppModelOption(model: ServerProvider["models"][number]): AppModelOpti
   };
   if (model.shortName) option.shortName = model.shortName;
   if (model.subProvider) option.subProvider = model.subProvider;
-  if (model.metaLabel) option.metaLabel = model.metaLabel;
+  const metaLabel = modelMetaLabel(model);
+  if (metaLabel) option.metaLabel = metaLabel;
   if (model.promoLabel) option.promoLabel = model.promoLabel;
   if (model.isDefault !== undefined) option.isDefault = model.isDefault;
   return option;
