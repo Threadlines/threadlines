@@ -219,10 +219,17 @@ describe("deriveMessagesTimelineRows", () => {
       revertTurnCountByUserMessageId: new Map(),
     });
 
-    // While the turn runs, the working row sits in the turn's tray.
+    // Alone, the working row names its agent, with no line below it.
     expect(rows).toEqual([
       {
-        tray: "single",
+        agentLine: {
+          placement: "single",
+          agent: null,
+          turnId: null,
+          heads: true,
+          nested: null,
+          echoesAnswer: false,
+        },
         padTop: true,
         kind: "working",
         id: "working-indicator-row",
@@ -245,7 +252,14 @@ describe("deriveMessagesTimelineRows", () => {
 
     expect(rows).toEqual([
       {
-        tray: null,
+        agentLine: {
+          placement: "single",
+          agent: null,
+          turnId: null,
+          heads: true,
+          nested: null,
+          echoesAnswer: false,
+        },
         padTop: true,
         kind: "working",
         id: "working-indicator-row",
@@ -269,7 +283,14 @@ describe("deriveMessagesTimelineRows", () => {
 
     expect(rows).toEqual([
       {
-        tray: null,
+        agentLine: {
+          placement: "single",
+          agent: null,
+          turnId: null,
+          heads: true,
+          nested: null,
+          echoesAnswer: false,
+        },
         padTop: true,
         kind: "working",
         id: "working-indicator-row",
@@ -996,7 +1017,7 @@ describe("finished turns and the live step", () => {
     });
   });
 
-  it("puts a turn's work in a tray and its answer on the page, without moving a thing", () => {
+  it("hangs a turn's work on one line that bends into its answer, without moving a thing", () => {
     const live = derive(settledTurn, {
       isWorking: true,
       activeTurnInProgress: true,
@@ -1005,24 +1026,38 @@ describe("finished turns and the live step", () => {
     });
     const settled = derive(settledTurn);
     const placement = (rows: ReturnType<typeof derive>) =>
-      rows.map((row) => [row.kind, row.tray, row.padTop]);
+      rows.map((row) => [row.kind, row.agentLine?.placement ?? null, row.padTop]);
 
-    // While it works, everything after your message is in the tray, down to
-    // the working row.
+    // While it works, everything after your message hangs on the agent's
+    // line, named at the first row, down into the working row.
     expect(placement(live)).toEqual([
       ["message", null, false],
-      ["message", "first", true],
-      ["work", "middle", false],
-      ["message", "middle", true],
-      ["working", "last", false],
+      ["message", "start", true],
+      ["work", "through", false],
+      ["message", "through", true],
+      ["working", "end", false],
     ]);
-    // When it ends the answer leaves the tray; only the placement changes,
+    // When it ends the line bends into the answer; only the line's end moves,
     // never the room above a row.
     expect(placement(settled)).toEqual([
       ["message", null, false],
-      ["message", "first", true],
-      ["work", "last", false],
-      ["message", null, true],
+      ["message", "start", true],
+      ["work", "through", false],
+      ["message", "end", true],
+    ]);
+  });
+
+  it("names a stretch by its turn even when its first steps name none", () => {
+    // Reasoning can arrive without a turn id; the stretch is still the turn's.
+    const rows = derive([
+      userEntry("user-1", "2026-01-01T00:00:00Z"),
+      workEntry("thinking", "2026-01-01T00:00:02Z", { turnId: null }),
+      assistantEntry("answer", "2026-01-01T00:00:10Z", "2026-01-01T00:00:11Z", "turn-7"),
+    ]);
+    expect(rows.map((row) => [row.agentLine?.placement, row.agentLine?.turnId])).toEqual([
+      [undefined, undefined],
+      ["start", "turn-7"],
+      ["end", "turn-7"],
     ]);
   });
 
@@ -1069,7 +1104,7 @@ describe("finished turns and the live step", () => {
     ]);
   });
 
-  it("keeps the room above the tray's first line when the group above it draws nothing", () => {
+  it("keeps the room above the agent's first line when the group above it draws nothing", () => {
     // Right after you send, the turn request (and then a step still running)
     // sit in a group that draws nothing, so the working row is the first line.
     const turnRequest = workEntry("request", "2026-01-01T00:00:01Z", {
@@ -1085,7 +1120,11 @@ describe("finished turns and the live step", () => {
         activeTurnId: "turn-1" as never,
         activeTurnStartedAt: "2026-01-01T00:00:00Z",
       });
-      expect(rows.at(-1)).toMatchObject({ kind: "working", tray: "single", padTop: true });
+      expect(rows.at(-1)).toMatchObject({
+        kind: "working",
+        padTop: true,
+        agentLine: { placement: "single", heads: true },
+      });
     }
   });
 

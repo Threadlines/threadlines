@@ -183,8 +183,8 @@ describe("side exchanges in the timeline", () => {
     options: {
       readonly working?: boolean;
       readonly expanded?: boolean;
-      /** A room; the id names the agent at work (default: the thread's own). */
-      readonly room?: true | ThreadParticipantId;
+      /** The agent at work (default: the thread's own). */
+      readonly agent?: ThreadParticipantId;
     } = {},
   ) =>
     deriveMessagesTimelineRows({
@@ -197,10 +197,7 @@ describe("side exchanges in the timeline", () => {
       revertTurnCountByUserMessageId: new Map(),
       sideAnswers,
       expandedSideTurnIds: new Set(options.expanded ? [sideTurnId] : []),
-      room:
-        options.room === undefined
-          ? null
-          : { workingParticipantId: options.room === true ? null : options.room },
+      workingParticipantId: options.agent ?? null,
     });
   const layout = (rows: ReadonlyArray<MessagesTimelineRow>) =>
     rows.map((row) =>
@@ -208,7 +205,6 @@ describe("side exchanges in the timeline", () => {
         ? `${row.id} ${row.state}${row.compact ? " compact" : ""}`
         : row.id,
     );
-  const trays = (rows: ReadonlyArray<MessagesTimelineRow>) => rows.map((row) => row.tray);
 
   it("puts an agent's review right after the step that asked, and its later work below", () => {
     const rows = derive(
@@ -224,31 +220,6 @@ describe("side exchanges in the timeline", () => {
       "edit",
       "working-indicator-row",
     ]);
-    // It closes the agent's tray; the work after it opens a new one.
-    expect(trays(rows)).toEqual([null, "single", null, null, "first", "last"]);
-  });
-
-  it("names the working agent's rows that come right after another agent's review", () => {
-    const working = (rows: ReadonlyArray<MessagesTimelineRow>) =>
-      rows.find((row) => row.kind === "working");
-    const reviewing = derive(
-      [userEntry, step("read", 2), step("review-call", 4)],
-      [exchange({ kind: "review", askedBy: { participantId: null } })],
-    );
-    expect(layout(reviewing).slice(-2)).toEqual([
-      "side-status:side-1 answering",
-      "working-indicator-row",
-    ]);
-    expect(working(reviewing)).toMatchObject({ namesAgent: true });
-    // Its own steps below the review: the first of them names it, and the
-    // working row under those steps is plainly the same agent's.
-    const after = derive(
-      [userEntry, step("read", 2), step("review-call", 4), step("edit", 10)],
-      [exchange({ askedBy: { participantId: null }, answeredAt: 8 })],
-    );
-    expect(after.find((row) => row.id === "edit")).toMatchObject({ namesAgent: true });
-    expect(after.find((row) => row.id === "read")).not.toMatchObject({ namesAgent: true });
-    expect(working(after)).not.toMatchObject({ namesAgent: true });
   });
 
   it("answers a side question on one line while the agent works, then posts the answer below", () => {
@@ -373,16 +344,16 @@ describe("side exchanges in the timeline", () => {
     ]);
   });
 
-  describe("in a room", () => {
+  describe("on agents' lines", () => {
     const lines = (rows: ReadonlyArray<MessagesTimelineRow>) =>
       rows.map((row) =>
-        row.roomLine
+        row.agentLine
           ? [
-              row.roomLine.placement,
-              row.roomLine.agent ?? "own",
-              ...(row.roomLine.heads ? ["named"] : []),
-              ...(row.roomLine.nested ? ["nested"] : []),
-              ...(row.roomLine.echoesAnswer ? ["echo"] : []),
+              row.agentLine.placement,
+              row.agentLine.agent ?? "own",
+              ...(row.agentLine.heads ? ["named"] : []),
+              ...(row.agentLine.nested ? [`nested-${row.agentLine.nested}`] : []),
+              ...(row.agentLine.echoesAnswer ? ["echo"] : []),
             ].join(" ")
           : null,
       );
@@ -391,7 +362,6 @@ describe("side exchanges in the timeline", () => {
       const rows = derive(
         [userEntry, step("read", 2), step("review-call", 4), step("edit", 10)],
         [exchange({ askedBy: { participantId: null }, answeredAt: 8 })],
-        { room: true },
       );
       expect(layout(rows)).toEqual([
         "user-entry",
@@ -407,13 +377,59 @@ describe("side exchanges in the timeline", () => {
         null,
         "start own named",
         "through own",
-        "through agent-astra named nested",
+        "through agent-astra named nested-single",
         "through own",
         "end own",
       ]);
-      // A line instead of trays, and no second name after the exchange.
-      expect(trays(rows)).toEqual([null, null, null, null, null, null]);
-      expect(rows.find((row) => row.id === "edit")).not.toMatchObject({ namesAgent: true });
+    });
+
+    it("hangs another agent answering inside the stretch on a line of its own", () => {
+      const sideStep = { ...step("side-read", 6).entry, turnId: null };
+      const streaming = { ...answer(sideTurnId, at(7)), streaming: true };
+      // Asked through a room tool: the question says who asked.
+      const question = {
+        ...exchange({}).question,
+        fromAgent: { participantId: null },
+        requestKind: "ask" as const,
+      };
+      const asked = [
+        exchange({
+          askedBy: { participantId: null },
+          question,
+          steps: [sideStep],
+          answer: streaming,
+        }),
+      ];
+      const entries = [userEntry, step("read", 2), step("ask-call", 4)];
+      expect(layout(derive(entries, asked))).toEqual([
+        "user-entry",
+        "read",
+        "question-side-1",
+        "side-steps:side-1",
+        "side-answer:side-1",
+        "side-status:side-1 answering",
+        "working-indicator-row",
+      ]);
+      // Set in under the question, from its name down into the line that
+      // says it is answering, while the working agent's line runs past.
+      expect(lines(derive(entries, asked))).toEqual([
+        null,
+        "start own named",
+        "through own",
+        "through agent-astra named nested-start",
+        "through agent-astra nested-through",
+        "through own nested-end",
+        "end own",
+      ]);
+      // Done, its line bends into its answer instead.
+      const answered = [
+        exchange({ askedBy: { participantId: null }, question, steps: [sideStep], answeredAt: 8 }),
+      ];
+      expect(lines(derive(entries, answered)).slice(3)).toEqual([
+        "through agent-astra named nested-start",
+        "through agent-astra nested-end",
+        "end own",
+      ]);
     });
 
     it("starts a line where the speaker changes, and a hand-off's repeated reply is one line", () => {
@@ -468,7 +484,7 @@ describe("side exchanges in the timeline", () => {
           }),
         ],
         [],
-        { working: false, room: true },
+        { working: false },
       );
       expect(lines(rows)).toEqual([
         null,
@@ -506,7 +522,7 @@ describe("side exchanges in the timeline", () => {
       const astraStep = { ...step("astra-read", 5) };
       astraStep.entry = { ...astraStep.entry, turnId: "turn-2" as never };
       const rows = derive([userEntry, step("read", 2), response, toAstra, astraStep], [], {
-        room: astra,
+        agent: astra,
         working: true,
       });
       expect(layout(rows)).toEqual([
@@ -547,7 +563,7 @@ describe("side exchanges in the timeline", () => {
       const rows = derive(
         [userEntry, step("read", 2), response],
         [exchange({ answeredAt: 13, steps: [sideStep] })],
-        { working: false, room: true },
+        { working: false },
       );
       expect(layout(rows)).toEqual([
         "user-entry",
@@ -580,14 +596,14 @@ describe("side exchanges in the timeline", () => {
       const rows = derive(
         [userEntry, step("read", 2), step("review-call", 4)],
         [exchange({ askedBy: { participantId: null }, question: asked, answeredAt: 8 })],
-        { working: false, room: true },
+        { working: false },
       );
       expect(layout(rows)).toEqual(["user-entry", "read", "question-side-1", "side-answer:side-1"]);
       expect(lines(rows)).toEqual([
         null,
         "start own named",
         "through own",
-        "through agent-astra named nested",
+        "through agent-astra named nested-single",
       ]);
     });
   });

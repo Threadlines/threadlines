@@ -11,6 +11,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import type { ProviderInstanceEntry } from "./providerInstances";
 import {
+  buildOwnAgentLabels,
   buildRoomAgentLabels,
   describeRoomAgentMessage,
   describeRoomReviewBasis,
@@ -36,6 +37,39 @@ const astra = {
 };
 
 describe("rooms", () => {
+  it("names the thread's own agent by each turn's model, oldest record for older turns", () => {
+    const opus = { instanceId: ProviderInstanceId.make("claudeAgent"), model: "claude-opus-5-5" };
+    const name = (model: { readonly name: string }) => model.name;
+    const labels = buildOwnAgentLabels(
+      { modelSelection: astra.modelSelection },
+      {
+        byTurn: new Map([
+          [TurnId.make("turn-2"), opus],
+          [TurnId.make("turn-3"), astra.modelSelection],
+        ]),
+        latest: astra.modelSelection,
+      },
+      [],
+      name,
+    );
+    expect(labels.byTurn.get(TurnId.make("turn-2"))?.name).toBe("claude-opus-5-5");
+    // Records fall out of the window from the oldest end, so a turn with none
+    // is older than the oldest record.
+    expect(labels.unrecorded.name).toBe("claude-opus-5-5");
+    expect(labels.latest.name).toBe("gpt-6-astra");
+    // Nothing sent yet: the thread's own model.
+    const fresh = buildOwnAgentLabels(
+      { modelSelection: opus },
+      { byTurn: new Map(), latest: null },
+      [],
+      name,
+    );
+    expect([fresh.unrecorded.name, fresh.latest.name]).toEqual([
+      "claude-opus-5-5",
+      "claude-opus-5-5",
+    ]);
+  });
+
   it("addresses the agent that worked last unless the user chose another", () => {
     const thread = { participants: [astra], session: { participantId: astraId } };
     expect(resolveRoomRecipient(thread, undefined)).toBe(astraId);

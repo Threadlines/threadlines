@@ -23,6 +23,7 @@ import {
   deriveThreadSubagentHistory,
   deriveForkContextEntries,
   deriveTimelineEntries,
+  deriveTurnDispatchedModelSelections,
   deriveWorkLogEntries,
   findLatestProposedPlan,
   findSidebarProposedPlan,
@@ -54,6 +55,52 @@ function makeActivity(overrides: {
     ...(overrides.eventSequence !== undefined ? { eventSequence: overrides.eventSequence } : {}),
   };
 }
+
+describe("deriveTurnDispatchedModelSelections", () => {
+  const opus = { instanceId: "claudeAgent", model: "claude-opus-5-5", options: [] };
+  const astra = {
+    instanceId: "codex",
+    model: "gpt-6-astra",
+    options: [{ id: "reasoningEffort", value: "medium" }],
+  };
+  let second = 0;
+  const at = () => `2026-09-29T12:00:${String((second += 1)).padStart(2, "0")}.000Z`;
+  const sent = (modelSelection?: object) =>
+    makeActivity({
+      createdAt: at(),
+      kind: "provider.turn.preparing",
+      tone: "info",
+      payload: { phase: "preparing", ...(modelSelection ? { modelSelection } : {}) },
+    });
+  const step = (turnId: string) => makeActivity({ createdAt: at(), turnId });
+
+  it("gives each turn the model it was sent with, even after a switch", () => {
+    const { byTurn, latest } = deriveTurnDispatchedModelSelections([
+      // A turn whose send fell out of the activity window.
+      step("turn-0"),
+      sent(opus),
+      step("turn-1"),
+      sent(astra),
+      // Late steps of earlier turns must not take the new send.
+      step("turn-1"),
+      step("turn-0"),
+      step("turn-2"),
+      // Another agent's send in a room, or a side answer's, is not the
+      // thread's own agent's.
+      { ...sent(opus), participantId: "agent-astra" as never },
+      { ...sent(opus), sideTurnId: "side-1" as never },
+      step("turn-2"),
+      // A send that recorded nothing ran on the thread's model: the last sent.
+      sent(),
+      step("turn-3"),
+    ]);
+    expect(Object.fromEntries([...byTurn].map(([turnId, value]) => [turnId, value.model]))).toEqual(
+      { "turn-1": "claude-opus-5-5", "turn-2": "gpt-6-astra", "turn-3": "gpt-6-astra" },
+    );
+    expect(byTurn.get(TurnId.make("turn-2"))?.options).toEqual(astra.options);
+    expect(latest?.model).toBe("gpt-6-astra");
+  });
+});
 
 describe("deriveActiveModelFallbackState", () => {
   it("returns the latest model fallback for the running turn", () => {

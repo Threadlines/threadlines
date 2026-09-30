@@ -1033,10 +1033,20 @@ describe("MessagesTimeline", () => {
 
   it("renders a finished subagent as a compact receipt and drops live commentary", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
+    const opus = {
+      name: "Opus 5.5",
+      modelName: "Opus 5.5",
+      role: null,
+      left: false,
+      guest: false,
+      reasoning: "High",
+      entry: undefined,
+    };
     const markup = renderTimeline(
       <MessagesTimeline
         {...buildProps()}
         onOpenAgentsPanel={vi.fn()}
+        ownAgentLabels={{ byTurn: new Map(), unrecorded: opus, latest: opus }}
         timelineEntries={[
           {
             id: "subagent-live:turn-1:agent-1",
@@ -1080,6 +1090,11 @@ describe("MessagesTimeline", () => {
 
     expect(markup).toContain('data-subagent-receipt-row="true"');
     expect(markup).toContain('data-subagent-receipt-open="true"');
+    // A turn that delegated before writing starts its line at the receipt,
+    // which names the agent.
+    expect(markup.indexOf(">Opus 5.5</span>")).toBeGreaterThan(
+      markup.indexOf('data-subagent-receipt-row="true"'),
+    );
     expect(markup).toContain("Heisenberg");
     expect(markup).toContain("Findings");
     expect(markup).toContain("Subagent");
@@ -1663,11 +1678,68 @@ describe("MessagesTimeline", () => {
     expect(footerAt).toBeGreaterThan(answerAt);
     expect(markup).toContain("Worked for 1m 15s");
     expect(markup).toContain('data-turn-footer-checks="passed"');
-    // The note and its step sit in the turn's work tray; the answer is on the
-    // page below it.
-    expect(markup.match(/data-tray="(?:first|last)"/gu)).toHaveLength(2);
-    const answerRoot = markup.lastIndexOf('data-timeline-root="true"', answerAt);
-    expect(markup.slice(answerRoot, answerAt)).not.toContain("data-tray");
+    // The note starts the agent's line, and the line bends into the answer.
+    expect(markup.match(/data-agent-line="[a-z]+"/gu)).toEqual([
+      'data-agent-line="start"',
+      'data-agent-line="through"',
+      'data-agent-line="end"',
+    ]);
+    expect(markup.lastIndexOf('data-agent-line="end"', answerAt)).toBeGreaterThan(noteAt);
+  });
+
+  it("names each turn's stretch by the model it ran on", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const label = (name: string, reasoning: string) => ({
+      name,
+      modelName: name,
+      role: null,
+      left: false,
+      guest: false,
+      reasoning,
+      entry: undefined,
+    });
+    const message = (id: string, role: "user" | "assistant", text: string, second: number) => ({
+      id: `${id}-entry`,
+      kind: "message" as const,
+      createdAt: `2026-03-17T19:12:${String(second).padStart(2, "0")}.000Z`,
+      message: {
+        id: MessageId.make(id),
+        role,
+        text,
+        turnId: role === "assistant" ? TurnId.make(`turn-${id}`) : null,
+        createdAt: `2026-03-17T19:12:${String(second).padStart(2, "0")}.000Z`,
+        streaming: false,
+      },
+    });
+    const astra = label("GPT-6 Astra", "Medium");
+    const markup = renderTimeline(
+      <MessagesTimeline
+        {...buildProps()}
+        ownAgentLabels={{
+          byTurn: new Map([[TurnId.make("turn-first"), label("Opus 5.5", "High")]]),
+          unrecorded: astra,
+          latest: astra,
+        }}
+        timelineEntries={[
+          message("ask", "user", "Why does it freeze?", 0),
+          message("first", "assistant", "It never listens for updates.", 10),
+          message("again", "user", "Double-check with another model.", 20),
+          message("second", "assistant", "Confirmed.", 30),
+        ]}
+      />,
+    );
+
+    // Switching models partway leaves the first answer under the model that
+    // wrote it.
+    const opusAt = markup.indexOf(">Opus 5.5</span>");
+    const firstAt = markup.indexOf("It never listens for updates.");
+    const astraAt = markup.indexOf(">GPT-6 Astra</span>");
+    expect(opusAt).toBeGreaterThan(-1);
+    expect(firstAt).toBeGreaterThan(opusAt);
+    expect(astraAt).toBeGreaterThan(firstAt);
+    expect(markup.indexOf("Confirmed.")).toBeGreaterThan(astraAt);
+    expect(markup).toContain(">High</span>");
+    expect(markup).toContain(">Medium</span>");
   });
 
   it("keeps the footer and the fade off notes while the agent works", async () => {
