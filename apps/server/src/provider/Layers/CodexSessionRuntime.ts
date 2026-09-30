@@ -854,9 +854,21 @@ interface CodexThreadOpenClient {
   ) => Effect.Effect<CodexRpc.ClientRequestResponsesByMethod[M], CodexErrors.CodexAppServerError>;
 }
 
-function codexRequestTimeoutError(operation: string): CodexErrors.CodexAppServerRequestError {
+const CODEX_REQUEST_TIMEOUT_PREFIX = "Timed out waiting for Codex App Server to ";
+
+export function codexRequestTimeoutError(
+  operation: string,
+): CodexErrors.CodexAppServerRequestError {
   return CodexErrors.CodexAppServerRequestError.internalError(
-    `Timed out waiting for Codex App Server to ${operation}.`,
+    `${CODEX_REQUEST_TIMEOUT_PREFIX}${operation}.`,
+  );
+}
+
+/** A request we gave up waiting on, which the app-server may still finish. */
+function isCodexRequestTimeoutError(error: unknown): boolean {
+  return (
+    error instanceof CodexErrors.CodexAppServerRequestError &&
+    error.errorMessage.startsWith(CODEX_REQUEST_TIMEOUT_PREFIX)
   );
 }
 
@@ -1066,7 +1078,12 @@ export const readCodexThreadTurns = (input: {
     return { thread, turns };
   });
 
-type CodexRollbackMethod = CodexThreadTurnsMethod | "thread/fork" | "thread/start";
+type CodexRollbackMethod =
+  | CodexThreadTurnsMethod
+  | "thread/revert"
+  | "thread/resume"
+  | "thread/fork"
+  | "thread/start";
 
 interface CodexRollbackClient {
   readonly request: <M extends CodexRollbackMethod>(
@@ -1076,6 +1093,8 @@ interface CodexRollbackClient {
 }
 
 export interface CodexThreadRollbackResult {
+  /** The surviving turns. Their items are empty in one corner: Codex
+   *  confirmed a revert and the read-back after it failed. */
   readonly snapshot: CodexThreadSnapshot;
   /** Set when the surviving history now lives in a new provider thread (a
    *  fork, or a fresh thread when nothing survives) that the session must
@@ -1090,10 +1109,16 @@ const isForkBoundaryRejectedError = (error: unknown): boolean =>
   error instanceof CodexErrors.CodexAppServerRequestError && error.code === -32600;
 
 /**
- * Undoes the last `numTurns` turns of a Codex thread by forking the history
- * that survives into a new provider thread (Codex removed the in-place
- * `thread/rollback` in 0.159). Keeping some turns forks through the last
- * survivor (`lastTurnId`); undoing every turn forks before the first turn
+ * Undoes the last `numTurns` turns of a Codex thread.
+ *
+ * Paginated threads (every new thread since Codex 0.159) are reverted in
+ * place with `thread/revert`: the same provider thread keeps its goal and
+ * settings, and no copy piles up in the user's Codex session list.
+ *
+ * Legacy threads, and any revert that fails or keeps the undone turns, fork
+ * the surviving history into a new provider thread instead (Codex removed the
+ * in-place `thread/rollback` in 0.159). Keeping some turns forks through the
+ * last survivor (`lastTurnId`); undoing every turn forks before the first turn
  * (`beforeTurnId`), and falls back to a fresh thread, which is the same empty
  * conversation, when Codex can't cut there. Forks carry the thread's goal
  * without restarting it; the user's next turn picks it back up. The
@@ -1102,7 +1127,7 @@ const isForkBoundaryRejectedError = (error: unknown): boolean =>
  *
  * A fork that still holds the first undone turn (an app-server that ignores
  * an unknown boundary copies everything) is never adopted, and a running turn
- * is refused rather than forked, since the source would keep working.
+ * is refused rather than reverted or forked, since it would keep working.
  */
 export const rollbackCodexThread = (input: {
   readonly client: CodexRollbackClient;
@@ -1166,6 +1191,72 @@ export const rollbackCodexThread = (input: {
               `This Codex version can't revert part of a conversation (${reason}). Update Codex and try again.`,
             ),
           );
+
+    if (current.thread.historyMode === "paginated") {
+      const reverted = yield* withCodexRequestTimeout(
+        "revert a Codex thread",
+        client.request("thread/revert", {
+          threadId: providerThreadId,
+          beforeTurnId: firstUndoneTurn.id,
+        }),
+      ).pipe(Effect.result);
+      // Codex commits the new history before it reloads the thread, so even a
+      // failed or timed-out revert may have landed: read back before deciding.
+      const readBack = yield* withCodexRequestTimeout(
+        "read back a reverted Codex thread",
+        readCodexThreadTurns({ client, threadId: providerThreadId, itemsView: "full" }),
+      ).pipe(Effect.result);
+      if (
+        Result.isSuccess(readBack) &&
+        !readBack.success.turns.some((turn) => turn.id === firstUndoneTurn.id)
+      ) {
+        if (Result.isFailure(reverted)) {
+          // It landed but the reload failed, which leaves the thread unloaded
+          // and the next turn with nothing to run on: load it again.
+          const { threadSource: _threadSource, ...resumeParams } = buildThreadStartParams({
+            cwd: input.cwd,
+            runtimeMode: input.runtimeMode,
+            model: input.model,
+            serviceTier: input.serviceTier,
+          });
+          yield* withCodexRequestTimeout(
+            "reload a reverted Codex thread",
+            client.request("thread/resume", {
+              threadId: providerThreadId,
+              excludeTurns: true,
+              ...resumeParams,
+            }),
+          );
+        }
+        return { snapshot: threadSnapshot(providerThreadId, readBack.success.turns) };
+      }
+      if (Result.isFailure(readBack)) {
+        if (Result.isFailure(reverted)) {
+          // Neither answer says what the thread holds now; forking could cut
+          // at turns that are already gone.
+          return yield* Effect.fail(reverted.failure);
+        }
+        yield* Effect.logWarning("codex thread revert succeeded but its read-back failed", {
+          threadId: input.threadId,
+          providerThreadId,
+          cause: readBack.failure.message,
+        });
+        return {
+          snapshot: threadSnapshot(providerThreadId, current.turns.slice(0, survivingTurnCount)),
+        };
+      }
+      if (Result.isFailure(reverted) && isCodexRequestTimeoutError(reverted.failure)) {
+        // The revert may still land; a fork now would race it.
+        return yield* Effect.fail(reverted.failure);
+      }
+      yield* Effect.logWarning("codex thread revert fell back to a fork", {
+        threadId: input.threadId,
+        providerThreadId,
+        reason: Result.isFailure(reverted)
+          ? reverted.failure.message
+          : "the revert kept the undone turns",
+      });
+    }
 
     const fork = yield* withCodexRequestTimeout(
       "fork a Codex thread to roll back",
