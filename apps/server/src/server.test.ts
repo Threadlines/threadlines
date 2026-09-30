@@ -22,6 +22,7 @@ import {
   ProviderInstanceId,
   ResolvedKeybindingRule,
   ThreadId,
+  ThreadParticipantId,
   WS_METHODS,
   WsRpcGroup,
   EditorId,
@@ -143,6 +144,14 @@ import * as Data from "effect/Data";
 const defaultProjectId = ProjectId.make("project-default");
 const defaultThreadId = ThreadId.make("thread-default");
 const defaultDesktopBootstrapToken = "test-desktop-bootstrap-token";
+const bootstrapAgent = {
+  id: ThreadParticipantId.make("7a0b1c2d-3e4f-4a5b-8c6d-7e8f9a0b1c2d"),
+  handle: "GPT-6-Astra",
+  modelSelection: {
+    instanceId: ProviderInstanceId.make("codex"),
+    model: "gpt-6-astra",
+  },
+};
 const defaultModelSelection = {
   instanceId: ProviderInstanceId.make("codex"),
   model: "gpt-5-codex",
@@ -4570,6 +4579,9 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
                   interactionMode: "default",
                   branch: "main",
                   worktreePath: null,
+                  // Set up as a room before its first message.
+                  participants: [bootstrapAgent],
+                  agentRole: "Builder",
                   createdAt,
                 },
                 prepareWorktree: {
@@ -4595,6 +4607,13 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
             "thread.turn.start",
           ],
         );
+        // The thread is created with its agents in the same command.
+        const createCommand = dispatchedCommands[0];
+        assertTrue(createCommand?.type === "thread.create");
+        if (createCommand?.type === "thread.create") {
+          assert.deepEqual(createCommand.participants, [bootstrapAgent]);
+          assert.equal(createCommand.agentRole, "Builder");
+        }
         assert.deepEqual(createWorktree.mock.calls[0]?.[0], {
           cwd: "/tmp/project",
           refName: "main",

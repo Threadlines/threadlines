@@ -194,6 +194,20 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
    * is one of them: picking an agent to add has no active model to follow.
    */
   openOnFavorites?: boolean;
+  /**
+   * Below the model list, inside the card: the thread's agents in a room
+   * (RoomAgentsSection).
+   */
+  footer?: ReactNode;
+  /**
+   * What picking a model does, when it is not "use this model": "Add" while
+   * adding an agent, "Switch GPT-6 Astra to this" for an added agent. The
+   * pointed-at row says it, and the number shortcuts are off, so an agent is
+   * never moved by a stray key.
+   */
+  rowAction?: { readonly kind: "add" | "switch"; readonly label: string } | null;
+  /** Why no model can be picked right now; rows dim and say it on hover. */
+  rowsDisabledReason?: string | null;
   onInstanceModelChange: (instanceId: ProviderInstanceId, model: string) => void;
 }) {
   const {
@@ -531,8 +545,12 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
     );
   };
 
+  const rowsDisabled = Boolean(props.rowsDisabledReason);
   const handleModelSelect = useCallback(
     (modelSlug: string, instanceId: ProviderInstanceId) => {
+      if (rowsDisabled) {
+        return;
+      }
       const options = modelOptionsByInstance.get(instanceId);
       if (!options) {
         return;
@@ -549,7 +567,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
         onInstanceModelChange(instanceId, resolvedModel);
       }
     },
-    [entryByInstanceId, modelOptionsByInstance, onInstanceModelChange],
+    [entryByInstanceId, modelOptionsByInstance, onInstanceModelChange, rowsDisabled],
   );
 
   const toggleFavorite = useCallback(
@@ -599,11 +617,15 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
     props.activeInstanceId,
     instanceEntries,
   ]);
+  const jumpShortcutsOff = props.rowAction != null || rowsDisabled;
   const modelJumpCommandByKey = useMemo(() => {
     const mapping = new Map<
       string,
       NonNullable<ReturnType<typeof modelPickerJumpCommandForIndex>>
     >();
+    if (jumpShortcutsOff) {
+      return mapping;
+    }
     for (const [visibleModelIndex, model] of orderedModels.entries()) {
       const jumpCommand = modelPickerJumpCommandForIndex(visibleModelIndex);
       if (!jumpCommand) {
@@ -612,7 +634,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
       mapping.set(`${model.instanceId}:${model.slug}`, jumpCommand);
     }
     return mapping;
-  }, [orderedModels]);
+  }, [jumpShortcutsOff, orderedModels]);
   const modelJumpModelKeys = useMemo(
     () => [...modelJumpCommandByKey.keys()],
     [modelJumpCommandByKey],
@@ -697,6 +719,8 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
         useProviderScopedLabel
         useTriggerLabel={lockedToSingleInstance}
         jumpLabel={modelJumpLabelByKey.get(modelKey) ?? null}
+        action={props.rowAction ?? null}
+        disabledReason={props.rowsDisabledReason ?? null}
         onToggleFavorite={() => toggleFavorite(model.instanceId, model.slug)}
       />
     );
@@ -866,7 +890,10 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
                 switches never move the popup — longer lists (Claude's 8
                 models, broad searches) scroll behind it. It still shrinks
                 with the card's --available-height clamp on short windows. */}
-            <div className="model-picker-list flex h-40 min-h-0 w-full shrink flex-col overflow-y-auto overscroll-contain">
+            <div
+              className="model-picker-list flex h-40 min-h-0 w-full shrink flex-col overflow-y-auto overscroll-contain"
+              title={props.rowsDisabledReason ?? undefined}
+            >
               <ComboboxListVirtualized className="w-full px-1.5 py-1">
                 {isSearching
                   ? (() => {
@@ -920,6 +947,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
             </div>
           </div>
         </Combobox>
+        {props.footer}
       </div>
     </TooltipProvider>
   );

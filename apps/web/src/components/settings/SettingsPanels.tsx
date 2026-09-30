@@ -121,6 +121,7 @@ import {
 } from "./TextGenerationModelControl";
 import { useServerObservability, useServerProviders } from "../../rpc/serverState";
 import { newCommandId } from "../../lib/utils";
+import { roomsEnabledFor } from "../../hooks/useRoomsEnabled";
 
 const THEME_OPTIONS = [
   {
@@ -406,7 +407,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       ...(settings.confirmThreadDelete !== DEFAULT_UNIFIED_SETTINGS.confirmThreadDelete
         ? ["Delete confirmation"]
         : []),
-      ...(settings.roomsEnabled !== DEFAULT_UNIFIED_SETTINGS.roomsEnabled ? ["Rooms"] : []),
+      ...(roomsEnabledFor(settings, settings.roomsEnabled) ? ["Rooms"] : []),
       ...(isGitWritingModelDirty ? ["Git writing model"] : []),
       ...(isGitWritingBackupModelDirty ? ["Backup git writing model"] : []),
       ...(isSourceControlWritingStyleDirty ? ["Source control writing style"] : []),
@@ -421,6 +422,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.chatChangedFilesDefaultExpanded,
       settings.confirmThreadArchive,
       settings.confirmThreadDelete,
+      settings.enableRooms,
       settings.roomsEnabled,
       settings.addProjectBaseDirectory,
       settings.defaultThreadEnvMode,
@@ -466,7 +468,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       addProjectBaseDirectory: DEFAULT_UNIFIED_SETTINGS.addProjectBaseDirectory,
       confirmThreadArchive: DEFAULT_UNIFIED_SETTINGS.confirmThreadArchive,
       confirmThreadDelete: DEFAULT_UNIFIED_SETTINGS.confirmThreadDelete,
-      roomsEnabled: DEFAULT_UNIFIED_SETTINGS.roomsEnabled,
+      enableRooms: false,
       textGenerationModelSelection: DEFAULT_UNIFIED_SETTINGS.textGenerationModelSelection,
       textGenerationBackupModelSelection:
         DEFAULT_UNIFIED_SETTINGS.textGenerationBackupModelSelection,
@@ -1106,21 +1108,19 @@ export function GeneralSettingsPanel({ surface = "full" }: { surface?: "full" | 
         />
         <SettingsRow
           title="Rooms (preview)"
-          description="Add more agents to a thread and pick who each message goes to. One agent works at a time, and the others can still answer questions. Rooms have no revert."
+          description="Add more agents to a thread and pick who each message goes to. One agent works at a time, and the others can still answer questions. Rooms have no revert. Every device connected to this computer follows this switch."
           resetAction={
-            settings.roomsEnabled !== DEFAULT_UNIFIED_SETTINGS.roomsEnabled ? (
+            roomsEnabledFor(settings, settings.roomsEnabled) ? (
               <SettingResetButton
                 label="rooms"
-                onClick={() =>
-                  updateSettings({ roomsEnabled: DEFAULT_UNIFIED_SETTINGS.roomsEnabled })
-                }
+                onClick={() => updateSettings({ enableRooms: false })}
               />
             ) : null
           }
           control={
             <Switch
-              checked={settings.roomsEnabled}
-              onCheckedChange={(checked) => updateSettings({ roomsEnabled: Boolean(checked) })}
+              checked={roomsEnabledFor(settings, settings.roomsEnabled)}
+              onCheckedChange={(checked) => updateSettings({ enableRooms: Boolean(checked) })}
               aria-label="Enable rooms"
             />
           }

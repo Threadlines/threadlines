@@ -65,6 +65,7 @@ import {
 } from "../environments/runtime";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
 import { useSettings } from "../hooks/useSettings";
+import { useRoomsEnabled } from "../hooks/useRoomsEnabled";
 import { readLocalApi } from "../localApi";
 import { closeRightPanelSearchParams } from "../diffRouteSearch";
 import {
@@ -541,6 +542,9 @@ function OpenCommandPaletteDialog() {
           project.id === activeThread.projectId,
       ) ?? null)
     : null;
+  const activeThreadRoomsEnabled = useRoomsEnabled(
+    activeThread?.environmentId ?? activeDraftThread?.environmentId,
+  );
   const activeThreadHasBranch = (activeThread?.branch ?? null) !== null;
   const activeThreadGitStatus = useGitStatus({
     environmentId: activeThreadHasBranch ? (activeThread?.environmentId ?? null) : null,
@@ -1700,15 +1704,20 @@ function OpenCommandPaletteDialog() {
     });
   }
 
-  // Where the composer's agent picker is: a server thread, with rooms on, and
-  // no approval holding the composer's toolbar. It opens the picker's model
-  // list, the same as its "Add agent" row.
-  if (
-    settings.roomsEnabled &&
-    activeThread &&
-    derivePendingApprovals(activeThread.activities).length === 0
-  ) {
-    const threadRef = scopeThreadRef(activeThread.environmentId, activeThread.id);
+  // Where the composer's model picker lists agents: a thread (a new one
+  // included), with rooms on, and no approval holding the composer's toolbar.
+  // It opens the picker ready to add one, the same as its "Add agent" row.
+  const addAgentThreadRef = !activeThreadRoomsEnabled
+    ? null
+    : activeThread
+      ? derivePendingApprovals(activeThread.activities).length === 0
+        ? scopeThreadRef(activeThread.environmentId, activeThread.id)
+        : null
+      : activeDraftThread
+        ? scopeThreadRef(activeDraftThread.environmentId, activeDraftThread.threadId)
+        : null;
+  if (addAgentThreadRef !== null) {
+    const threadRef = addAgentThreadRef;
     actionItems.push({
       kind: "action",
       value: "action:add-room-agent",

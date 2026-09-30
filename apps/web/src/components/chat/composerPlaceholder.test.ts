@@ -36,7 +36,8 @@ describe("buildDefaultComposerPlaceholder", () => {
         canReferenceFiles: true,
         canInvokeSkills: false,
         canMentionAgents: true,
+        recipientName: "GPT-6-Astra (Reviewer)",
       }),
-    ).toBe("Ask anything · @ agents or files, / commands");
+    ).toBe("Message GPT-6-Astra (Reviewer) · @ agents or files, / commands");
   });
 });

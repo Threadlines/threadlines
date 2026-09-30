@@ -13,6 +13,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   ThreadId,
+  ThreadParticipantId,
   type ModelSelection,
   type ProviderOptionSelection,
 } from "@threadlines/contracts";
@@ -1090,6 +1091,57 @@ describe("composerDraftStore project draft thread mapping", () => {
       branch: "feature/x",
       envMode: "worktree",
     });
+  });
+
+  // A new thread set up as a room keeps its agents until the first message
+  // creates the thread with them.
+  it("keeps a draft's agents across a reload, and not across projects or a send", () => {
+    const store = useComposerDraftStore.getState();
+    store.setProjectDraftThreadId(projectRef, draftId, { threadId });
+    const room = {
+      agents: [
+        {
+          id: ThreadParticipantId.make("7a0b1c2d-3e4f-4a5b-8c6d-7e8f9a0b1c2d"),
+          handle: "GPT-6-Astra",
+          role: "Reviewer",
+          modelSelection: { instanceId: CODEX_INSTANCE, model: "gpt-6-astra" },
+        },
+      ],
+      agentRole: "Builder",
+    };
+    store.setDraftRoom(draftId, room);
+
+    const persistApi = useComposerDraftStore.persist as unknown as {
+      getOptions: () => {
+        partialize: (state: ReturnType<typeof useComposerDraftStore.getState>) => unknown;
+        merge: (
+          persistedState: unknown,
+          currentState: ReturnType<typeof useComposerDraftStore.getState>,
+        ) => ReturnType<typeof useComposerDraftStore.getState>;
+      };
+    };
+    const persisted = JSON.parse(
+      JSON.stringify(persistApi.getOptions().partialize(useComposerDraftStore.getState())),
+    );
+    resetComposerDraftStore();
+    useComposerDraftStore.setState(
+      persistApi.getOptions().merge(persisted, useComposerDraftStore.getState()),
+    );
+    expect(useComposerDraftStore.getState().getDraftThread(draftId)?.room).toEqual(room);
+
+    // Once it is being sent, the server thread owns its agents.
+    useComposerDraftStore.getState().markDraftThreadPromoting(draftId);
+    useComposerDraftStore.getState().setDraftRoom(draftId, null);
+    expect(useComposerDraftStore.getState().getDraftThread(draftId)?.room).toEqual(room);
+
+    // Another project: its agents' models belonged to the first one.
+    resetComposerDraftStore();
+    useComposerDraftStore.getState().setProjectDraftThreadId(projectRef, draftId, { threadId });
+    useComposerDraftStore.getState().setDraftRoom(draftId, room);
+    useComposerDraftStore
+      .getState()
+      .setDraftThreadContext(draftId, { projectRef: otherProjectRef });
+    expect(useComposerDraftStore.getState().getDraftThread(draftId)?.room).toBeUndefined();
   });
 
   it("stores and reads project draft thread ids via actions", () => {

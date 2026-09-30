@@ -15,7 +15,7 @@ import { useEffect, useEffectEvent, useRef } from "react";
 import { QueryClient, useQueryClient } from "@tanstack/react-query";
 
 import { APP_DISPLAY_NAME } from "../branding";
-import { AgentInvitesDefault } from "../components/AgentInvitesDefault";
+import { RoomsSettingsDefaults } from "../components/RoomsSettingsDefaults";
 import { AppSidebarLayout } from "../components/AppSidebarLayout";
 import { CommandPalette } from "../components/CommandPalette";
 import { DesktopUpdateInstallDialog } from "../components/desktop/DesktopUpdateInstallDialog";
@@ -150,7 +150,7 @@ function RootRouteView() {
       <AnchoredToastProvider>
         {primaryEnvironmentAuthenticated ? <AuthenticatedTracingBootstrap /> : null}
         {primaryEnvironmentAuthenticated ? <ServerStateBootstrap /> : null}
-        {primaryEnvironmentAuthenticated ? <AgentInvitesDefault /> : null}
+        {primaryEnvironmentAuthenticated ? <RoomsSettingsDefaults /> : null}
         <EnvironmentConnectionManagerBootstrap />
         <DesktopTaskbarStatusSync />
         <SshPasswordPromptDialog />

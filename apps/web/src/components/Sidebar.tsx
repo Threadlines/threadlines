@@ -139,6 +139,7 @@ import { SidebarUpdatePill } from "./sidebar/SidebarUpdatePill";
 import { SidebarUsageMeter } from "./sidebar/SidebarUsageMeter";
 import { SidebarVersionTag } from "./sidebar/SidebarVersionTag";
 import { readEnvironmentApi } from "../environmentApi";
+import { useRoomsEnabled } from "~/hooks/useRoomsEnabled";
 import { useSettings } from "~/hooks/useSettings";
 import { useServerKeybindings } from "../rpc/serverState";
 import { resolveElectronSidebarWordmarkLayout } from "../desktopChrome";
@@ -470,7 +471,7 @@ export default function Sidebar() {
   const isOnChats = pathname.startsWith("/chats");
   const projectGroupingSettings = useSettings(selectProjectGroupingSettings);
   const wrapUpOnPullRequestSettled = useSettings((s) => s.wrapUpThreadsOnPullRequestSettled);
-  const roomsEnabled = useSettings<boolean>((settings) => settings.roomsEnabled);
+  const roomsEnabled = useRoomsEnabled();
   // The Rooms row narrows what the inbox shows, never what the wrap-up rules
   // read, so it can not change which threads get filed away.
   const [roomsOnly, setRoomsOnly] = useState(false);

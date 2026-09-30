@@ -10,10 +10,12 @@ import {
   ProviderInteractionMode,
   ProviderDriverKind,
   ProviderOptionSelection,
+  RoomAgentRole,
   RuntimeMode,
   type ServerProvider,
   type ScopedProjectRef,
   type ScopedThreadRef,
+  ThreadCreateParticipant,
   ThreadId,
 } from "@threadlines/contracts";
 import {
@@ -26,6 +28,7 @@ import {
 } from "@threadlines/client-runtime";
 import * as Schema from "effect/Schema";
 import * as Equal from "effect/Equal";
+import * as Option from "effect/Option";
 import { DeepMutable } from "effect/Types";
 import { createModelSelection, normalizeModelSlug } from "@threadlines/shared/model";
 import { useMemo } from "react";
@@ -267,6 +270,18 @@ type LegacyPersistedComposerDraftStoreState = PersistedComposerDraftStoreState &
   LegacyStickyModelFields &
   LegacyV2StoreFields;
 
+/**
+ * A draft set up as a room before its first message: the agents added to it,
+ * in the order they joined, and the user's name for its own agent. The first
+ * send creates the thread with all of it (thread.create participants).
+ */
+const DraftRoomSchema = Schema.Struct({
+  agents: Schema.Array(ThreadCreateParticipant),
+  agentRole: Schema.optionalKey(RoomAgentRole),
+});
+export type DraftRoom = typeof DraftRoomSchema.Type;
+const decodeDraftRoom = Schema.decodeUnknownOption(DraftRoomSchema);
+
 const PersistedDraftThreadState = Schema.Struct({
   threadId: ThreadId,
   environmentId: Schema.String,
@@ -278,6 +293,7 @@ const PersistedDraftThreadState = Schema.Struct({
   branch: Schema.NullOr(Schema.String),
   worktreePath: Schema.NullOr(Schema.String),
   envMode: DraftThreadEnvModeSchema,
+  room: Schema.optionalKey(DraftRoomSchema),
   promotedTo: Schema.optionalKey(
     Schema.NullOr(
       Schema.Struct({
@@ -380,6 +396,12 @@ export interface DraftSessionState {
   branch: string | null;
   worktreePath: string | null;
   envMode: DraftThreadEnvMode;
+  /**
+   * Agents added before the first message; absent while it has none. Part of
+   * the draft's setup, like its model: kept as long as the draft is, but it
+   * does not make an empty draft count as work in progress.
+   */
+  room?: DraftRoom;
   promotedTo?: ScopedThreadRef | null;
 }
 
@@ -490,6 +512,11 @@ interface ComposerDraftStoreState {
     projectRef: ScopedProjectRef,
     threadRef: ComposerThreadTarget,
   ) => void;
+  /**
+   * Sets the agents a draft starts with, or clears them (null). Ignored once
+   * the draft is being sent: the server thread owns them from then on.
+   */
+  setDraftRoom: (threadRef: ComposerThreadTarget, room: DraftRoom | null) => void;
   /** Marks a draft session as being promoted to a real server thread. */
   markDraftThreadPromoting: (threadRef: ComposerThreadTarget, promotedTo?: ScopedThreadRef) => void;
   /** Removes draft-session metadata after promotion is complete. */
@@ -1498,6 +1525,12 @@ function isKnownMissingCheckout(target: {
   return getGitStatusSnapshot(target).data?.pathMissing === true;
 }
 
+/** A persisted draft room, or nothing when it is missing or does not decode. */
+function normalizeDraftRoom(raw: unknown): { room?: DraftRoom } {
+  const decoded = decodeDraftRoom(raw);
+  return Option.isSome(decoded) ? { room: decoded.value } : {};
+}
+
 function createDraftThreadState(
   projectRef: ScopedProjectRef,
   threadId: ThreadId,
@@ -1562,6 +1595,8 @@ function createDraftThreadState(
           projectChanged || droppedMissingCheckout
           ? "local"
           : (existingThread?.envMode ?? "local")),
+    // Its agents' models belong to the computer it was set up on.
+    ...(existingThread?.room !== undefined && !projectChanged ? { room: existingThread.room } : {}),
     promotedTo: null,
   };
 }
@@ -1593,6 +1628,7 @@ function draftThreadsEqual(left: DraftThreadState | undefined, right: DraftThrea
     left.branch === right.branch &&
     left.worktreePath === right.worktreePath &&
     left.envMode === right.envMode &&
+    left.room === right.room &&
     scopedThreadRefsEqual(left.promotedTo, right.promotedTo)
   );
 }
@@ -1734,6 +1770,7 @@ function normalizePersistedDraftThreads(
         branch: typeof branch === "string" ? branch : null,
         worktreePath: normalizedWorktreePath,
         envMode: normalizeDraftThreadEnvMode(candidateDraftThread.envMode, normalizedWorktreePath),
+        ...normalizeDraftRoom(candidateDraftThread.room),
         promotedTo,
       };
     }
@@ -2402,6 +2439,7 @@ function toHydratedDraftThreadState(
     branch: persistedDraftThread.branch,
     worktreePath: persistedDraftThread.worktreePath,
     envMode: persistedDraftThread.envMode,
+    ...(persistedDraftThread.room !== undefined ? { room: persistedDraftThread.room } : {}),
     promotedTo: persistedDraftThread.promotedTo
       ? scopeThreadRef(
           persistedDraftThread.promotedTo.environmentId as EnvironmentId,
@@ -2719,6 +2757,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
                   : projectChanged
                     ? "local"
                     : (existing.envMode ?? "local")),
+              ...(existing.room !== undefined && !projectChanged ? { room: existing.room } : {}),
               promotedTo: existing.promotedTo ?? null,
             };
             const isUnchanged =
@@ -2731,6 +2770,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
               nextDraftThread.branch === existing.branch &&
               nextDraftThread.worktreePath === existing.worktreePath &&
               nextDraftThread.envMode === existing.envMode &&
+              nextDraftThread.room === existing.room &&
               scopedThreadRefsEqual(nextDraftThread.promotedTo, existing.promotedTo);
             if (isUnchanged) {
               return state;
@@ -2791,6 +2831,26 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
               return state;
             }
             return removeDraftThreadReferences(state, threadKey);
+          });
+        },
+        setDraftRoom: (threadRef, room) => {
+          const threadKey = resolveComposerDraftKey(get(), threadRef);
+          if (!threadKey) {
+            return;
+          }
+          set((state) => {
+            const existing = state.draftThreadsByThreadKey[threadKey];
+            if (!existing || isDraftThreadPromoting(existing)) {
+              return state;
+            }
+            const { room: _previous, ...rest } = existing;
+            const next: DraftThreadState =
+              room === null || (room.agents.length === 0 && room.agentRole === undefined)
+                ? rest
+                : { ...rest, room };
+            return {
+              draftThreadsByThreadKey: { ...state.draftThreadsByThreadKey, [threadKey]: next },
+            };
           });
         },
         markDraftThreadPromoting: (threadRef, promotedTo) => {
