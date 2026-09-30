@@ -5008,7 +5008,6 @@ describe("ChatView timeline estimator parity (full app)", () => {
   });
 
   it("names a new agent past a guest that reviewed on the same model", async () => {
-    updateSettings({ roomsEnabled: true });
     const base = createSnapshotForTargetUser({
       targetMessageId: "msg-user-guest-name" as MessageId,
       targetText: "guest name",
@@ -5079,7 +5078,6 @@ describe("ChatView timeline estimator parity (full app)", () => {
       );
     } finally {
       useRoomRecipientStore.getState().choose(THREAD_REF, null);
-      updateSettings({ roomsEnabled: false });
       await mounted.cleanup();
     }
   });
@@ -7501,7 +7499,6 @@ describe("ChatView timeline estimator parity (full app)", () => {
   });
 
   it("shows the context window of the room agent a message is going to", async () => {
-    updateSettings({ roomsEnabled: true });
     const astraId = "7a0b1c2d-3e4f-4a5b-8c6d-7e8f9a0b1c2d" as ThreadParticipantId;
     const base = createSnapshotForTargetUser({
       targetMessageId: "msg-user-room-context" as MessageId,
@@ -7590,7 +7587,6 @@ describe("ChatView timeline estimator parity (full app)", () => {
     } finally {
       // The choice outlives the view; later tests start from the thread's own agent.
       useRoomRecipientStore.getState().choose(THREAD_REF, null);
-      updateSettings({ roomsEnabled: false });
       await mounted.cleanup();
     }
   });
@@ -7708,7 +7704,6 @@ describe("ChatView timeline estimator parity (full app)", () => {
   });
 
   it("names a room's own agent by the model picked for its next message", async () => {
-    updateSettings({ roomsEnabled: true });
     const base = createSnapshotForTargetUser({
       targetMessageId: "msg-user-room-model" as MessageId,
       targetText: "room model target",
@@ -7759,7 +7754,6 @@ describe("ChatView timeline estimator parity (full app)", () => {
         { timeout: 8_000, interval: 16 },
       );
     } finally {
-      updateSettings({ roomsEnabled: false });
       await mounted.cleanup();
     }
   });
@@ -8721,7 +8715,6 @@ describe("ChatView timeline estimator parity (full app)", () => {
   });
 
   it("opens the model picker ready to add an agent from Add agent, and it stays open", async () => {
-    updateSettings({ roomsEnabled: true });
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
       snapshot: createSnapshotForTargetUser({
@@ -8750,7 +8743,6 @@ describe("ChatView timeline estimator parity (full app)", () => {
         .element(page.getByText("Pick a model for the new agent.", { exact: false }))
         .toBeInTheDocument();
     } finally {
-      updateSettings({ roomsEnabled: false });
       await mounted.cleanup();
     }
   });
@@ -11357,7 +11349,6 @@ describe("ChatView timeline estimator parity (full app)", () => {
   });
 
   it("floats a room's prompt suggestion above the lines on the message box, for its own agent only", async () => {
-    updateSettings({ roomsEnabled: true });
     const fableId = "3c2b1a09-8f7e-4d6c-9b5a-4f3e2d1c0b9a" as ThreadParticipantId;
     const base = createSnapshotWithPromptSuggestion("Make a PR for this");
     const mounted = await mountChatView({
@@ -11431,7 +11422,6 @@ describe("ChatView timeline estimator parity (full app)", () => {
     } finally {
       // The choice outlives the view; later tests start from the thread's own agent.
       useRoomRecipientStore.getState().choose(THREAD_REF, null);
-      updateSettings({ roomsEnabled: false });
       await mounted.cleanup();
     }
   });

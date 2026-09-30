@@ -1676,7 +1676,7 @@ export default function ChatView(props: ChatViewProps) {
       ? primaryServerConfig
       : (activeEnvRuntimeState?.serverConfig ?? primaryServerConfig);
   // Rooms follows the computer the thread lives on.
-  const roomsEnabled = roomsEnabledFor(serverConfig?.settings, settings.roomsEnabled);
+  const roomsEnabled = roomsEnabledFor(serverConfig?.settings);
   // Agents added before the first message: the thread is created with them.
   const draftRoom = draftThread?.room;
   const draftRoomCreateFields = useMemo(

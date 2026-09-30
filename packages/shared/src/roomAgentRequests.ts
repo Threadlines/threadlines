@@ -5,7 +5,6 @@
  * precise outcome instead of a bare command rejection.
  */
 import {
-  type AgentInvitesMode,
   type OrchestrationAgentRequestState,
   type OrchestrationSideTurn,
   type OrchestrationThreadParticipant,
@@ -200,11 +199,6 @@ export function agentInviteAcceptRefusal(
   }
   return null;
 }
-
-/** Whether agents may bring in other agents; never chosen means off. */
-export const agentInvitesMode = (
-  settings: { readonly agentInvites?: AgentInvitesMode | undefined } | undefined,
-): AgentInvitesMode => settings?.agentInvites ?? "off";
 
 /** The invite waiting for the user's answer, if any. */
 export const awaitingInvite = (

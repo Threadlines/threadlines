@@ -23,7 +23,7 @@ import {
   type UsageWindowDays,
 } from "@threadlines/contracts";
 import { scopeThreadRef } from "@threadlines/client-runtime";
-import { agentInvitesMode } from "@threadlines/shared/roomAgentRequests";
+import { agentInvitesChoice } from "@threadlines/shared/serverSettings";
 import { DEFAULT_UNIFIED_SETTINGS } from "@threadlines/contracts/settings";
 import * as Duration from "effect/Duration";
 import * as Equal from "effect/Equal";
@@ -407,7 +407,8 @@ export function useSettingsRestore(onRestored?: () => void) {
       ...(settings.confirmThreadDelete !== DEFAULT_UNIFIED_SETTINGS.confirmThreadDelete
         ? ["Delete confirmation"]
         : []),
-      ...(roomsEnabledFor(settings, settings.roomsEnabled) ? ["Rooms"] : []),
+      ...(!roomsEnabledFor(settings) ? ["Rooms"] : []),
+      ...(agentInvitesChoice(settings) !== "ask" ? ["Agents bringing in other agents"] : []),
       ...(isGitWritingModelDirty ? ["Git writing model"] : []),
       ...(isGitWritingBackupModelDirty ? ["Backup git writing model"] : []),
       ...(isSourceControlWritingStyleDirty ? ["Source control writing style"] : []),
@@ -423,7 +424,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.confirmThreadArchive,
       settings.confirmThreadDelete,
       settings.enableRooms,
-      settings.roomsEnabled,
+      settings.agentInvites,
       settings.addProjectBaseDirectory,
       settings.defaultThreadEnvMode,
       settings.diffChangesOnly,
@@ -468,7 +469,8 @@ export function useSettingsRestore(onRestored?: () => void) {
       addProjectBaseDirectory: DEFAULT_UNIFIED_SETTINGS.addProjectBaseDirectory,
       confirmThreadArchive: DEFAULT_UNIFIED_SETTINGS.confirmThreadArchive,
       confirmThreadDelete: DEFAULT_UNIFIED_SETTINGS.confirmThreadDelete,
-      enableRooms: false,
+      enableRooms: true,
+      agentInvites: "ask",
       textGenerationModelSelection: DEFAULT_UNIFIED_SETTINGS.textGenerationModelSelection,
       textGenerationBackupModelSelection:
         DEFAULT_UNIFIED_SETTINGS.textGenerationBackupModelSelection,
@@ -608,19 +610,33 @@ const AGENT_INVITES_LABELS: Record<AgentInvitesMode, string> = {
  * the agents ask through it.
  */
 function AgentInvitesRow() {
-  const mode = useSettings((settings) => agentInvitesMode(settings));
+  const mode = useSettings((settings) => agentInvitesChoice(settings));
+  const roomsOn = useSettings((settings) => roomsEnabledFor(settings));
   const { updateSettings } = useUpdateSettings();
   return (
     <SettingsRow
       title="Agents bringing in other agents"
       description={
-        mode === "auto"
-          ? "The thread's agent can bring in another model to review its work, and you are not asked. That can spend another provider's quota, and one it adds as a teammate turns revert off for good."
-          : "The thread's agent can ask to bring in another model to review its work. You decide each time: a one-off review, adding it to the thread, or not now."
+        !roomsOn
+          ? "Turn on Rooms to let the thread's agent bring in another model to review its work."
+          : mode === "auto"
+            ? "The thread's agent can bring in another model to review its work without asking you. That can spend another provider's quota, and one it adds as a teammate turns revert off for good."
+            : mode === "ask"
+              ? "The thread's agent can ask to bring in another model to review its work. You decide each time: a one-off review, adding it to the thread, or not now."
+              : "The thread's agent never brings in another model."
+      }
+      resetAction={
+        mode !== "ask" ? (
+          <SettingResetButton
+            label="agents bringing in other agents"
+            onClick={() => updateSettings({ agentInvites: "ask" })}
+          />
+        ) : null
       }
       control={
         <Select
           value={mode}
+          disabled={!roomsOn}
           onValueChange={(value) => {
             if (value === "off" || value === "ask" || value === "auto") {
               updateSettings({ agentInvites: value });
@@ -1107,25 +1123,24 @@ export function GeneralSettingsPanel({ surface = "full" }: { surface?: "full" | 
           }
         />
         <SettingsRow
-          title="Rooms (preview)"
-          description="Add more agents to a thread and pick who each message goes to. One agent works at a time, and the others can still answer questions. Rooms have no revert. Every device connected to this computer follows this switch."
+          title="Rooms"
+          description="Add other agents to a thread and pick who each message goes to. Rooms have no revert. Off keeps the model picker to one agent, on every device connected to this computer."
           resetAction={
-            roomsEnabledFor(settings, settings.roomsEnabled) ? (
+            !roomsEnabledFor(settings) ? (
               <SettingResetButton
                 label="rooms"
-                onClick={() => updateSettings({ enableRooms: false })}
+                onClick={() => updateSettings({ enableRooms: true })}
               />
             ) : null
           }
           control={
             <Switch
-              checked={roomsEnabledFor(settings, settings.roomsEnabled)}
+              checked={roomsEnabledFor(settings)}
               onCheckedChange={(checked) => updateSettings({ enableRooms: Boolean(checked) })}
               aria-label="Enable rooms"
             />
           }
         />
-        {/* Shown with Rooms off too: it is this computer's, and may be on from another device. */}
         <AgentInvitesRow />
       </SettingsSection>
 

@@ -24,6 +24,7 @@ import { setModelPickerOpen } from "../../modelPickerOpenState";
 import { useOnScreenKeyboardInset } from "~/hooks/useOnScreenKeyboardInset";
 import type { ProviderInstanceEntry } from "../../providerInstances";
 import { useRoomRecipientStore } from "../../rooms";
+import { THREAD_STATUS_DOT_CLASSES } from "../Sidebar.logic";
 import { toastManager } from "../ui/toast";
 import { RoomAgentsSection } from "./RoomAgentsSection";
 import type { RoomAgentRow, RoomAgents } from "./useRoomAgents";
@@ -366,7 +367,8 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
 
 /**
  * The model button in a room: who the next message goes to, in front, with
- * the other agents' icons faded behind it and an amber dot on one at work. On
+ * the other agents' icons faded behind it and a dot on one at work, blue like
+ * the sidebar's "working" (amber is for warnings). On
  * a narrow composer only the addressed agent's icon shows, and a named agent
  * goes by its name alone, like the sidebar.
  */
@@ -406,7 +408,12 @@ function RoomPickerTriggerContent(props: { room: RoomAgents; compact: boolean })
               />
             ) : null}
             {row.status !== null ? (
-              <span className="absolute -right-0.5 -bottom-0.5 size-1.5 rounded-full bg-warning" />
+              <span
+                className={cn(
+                  "absolute -right-0.5 -bottom-0.5 size-1.5 rounded-full",
+                  THREAD_STATUS_DOT_CLASSES.blue,
+                )}
+              />
             ) : null}
           </span>
         ))}

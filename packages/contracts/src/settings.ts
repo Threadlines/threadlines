@@ -70,12 +70,6 @@ export const ClientSettingsSchema = Schema.Struct({
   ),
   confirmThreadArchive: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   confirmThreadDelete: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
-  /**
-   * This device's Rooms switch from before the switch moved to the computer
-   * (ServerSettings.enableRooms). Read only while the computer has never
-   * chosen, and lifted onto it once (enableRoomsDefault).
-   */
-  roomsEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   /** File a thread under Wrapped once its pull request merges or closes. */
   wrapUpThreadsOnPullRequestSettled: Schema.Boolean.pipe(
     Schema.withDecodingDefault(Effect.succeed(true)),
@@ -564,18 +558,19 @@ export const ServerSettings = Schema.Struct({
   observability: ObservabilitySettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
   /**
    * Whether the thread's agents may bring in other agents (AgentInvitesMode).
-   * Absent: never chosen, which means off; a client with Rooms on sets `ask`
-   * once, and never overwrites a choice.
+   * Never chosen: `ask`, filled in when the file is read so every client sees
+   * it, an older one included. Off whenever Rooms is off; see agentInvitesMode
+   * in @threadlines/shared/serverSettings.
    */
-  agentInvites: Schema.optional(AgentInvitesMode),
+  agentInvites: AgentInvitesMode.pipe(Schema.withDecodingDefault(Effect.succeed("ask" as const))),
   /**
-   * Preview: add more agents to a thread (a room). Gates every entry point in
-   * the clients; the server accepts room commands either way. It lives with
-   * the computer so every device connected to it, a phone included, agrees.
-   * Absent: never chosen, which means a device falls back to its own old
-   * switch (ClientSettings.roomsEnabled).
+   * Rooms: more than one agent in a thread. Gates every entry point in the
+   * clients (agents in the model picker, the Rooms filter) and agents
+   * bringing in others; the server accepts room commands either way. It
+   * lives with the computer so every device connected to it, a phone
+   * included, agrees. Never chosen: on.
    */
-  enableRooms: Schema.optional(Schema.Boolean),
+  enableRooms: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
 });
 export type ServerSettings = typeof ServerSettings.Type;
 
@@ -692,17 +687,7 @@ export const ServerSettingsPatch = Schema.Struct({
   // The web UI sends a fully-formed map every time it edits this field.
   providerInstances: Schema.optionalKey(Schema.Record(ProviderInstanceId, ProviderInstanceConfig)),
   agentInvites: Schema.optionalKey(AgentInvitesMode),
-  /**
-   * Sets `agentInvites` only if it was never chosen, in the same write, so a
-   * device picking the default cannot overwrite another device's choice.
-   */
-  agentInvitesDefault: Schema.optionalKey(AgentInvitesMode),
   enableRooms: Schema.optionalKey(Schema.Boolean),
-  /**
-   * Sets `enableRooms` only if it was never chosen: how a device lifts its old
-   * per-device switch onto the computer without overwriting a choice.
-   */
-  enableRoomsDefault: Schema.optionalKey(Schema.Boolean),
 });
 export type ServerSettingsPatch = typeof ServerSettingsPatch.Type;
 
@@ -714,7 +699,6 @@ export const ClientSettingsPatch = Schema.Struct({
   chatChangedFilesDefaultExpanded: Schema.optionalKey(Schema.Boolean),
   confirmThreadArchive: Schema.optionalKey(Schema.Boolean),
   confirmThreadDelete: Schema.optionalKey(Schema.Boolean),
-  roomsEnabled: Schema.optionalKey(Schema.Boolean),
   wrapUpThreadsOnPullRequestSettled: Schema.optionalKey(Schema.Boolean),
   dictationHoldToRecord: Schema.optionalKey(Schema.Boolean),
   dictationMicrophoneDeviceId: Schema.optionalKey(Schema.NullOr(TrimmedNonEmptyString)),

@@ -6,7 +6,10 @@ import {
 import { describe, expect, it } from "vite-plus/test";
 import { createModelSelection } from "./model.ts";
 import {
+  agentInvitesChoice,
+  agentInvitesMode,
   applyServerSettingsPatch,
+  roomsEnabled,
   extractPersistedServerObservabilitySettings,
   normalizePersistedServerSettingString,
   parsePersistedServerObservabilitySettings,
@@ -229,13 +232,20 @@ describe("serverSettings helpers", () => {
     ).toBeNull();
   });
 
-  it("lifts a device's Rooms switch onto the computer only if it never chose", () => {
-    const lifted = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, { enableRoomsDefault: true });
-    expect(lifted.enableRooms).toBe(true);
+  it("has Rooms on and agents asking first until someone chooses, and no invites with Rooms off", () => {
+    expect(roomsEnabled(DEFAULT_SERVER_SETTINGS)).toBe(true);
+    expect(agentInvitesMode(DEFAULT_SERVER_SETTINGS)).toBe("ask");
 
-    const turnedOff = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, { enableRooms: false });
-    expect(applyServerSettingsPatch(turnedOff, { enableRoomsDefault: true }).enableRooms).toBe(
-      false,
+    const roomsOff = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, {
+      enableRooms: false,
+      agentInvites: "auto",
+    });
+    expect(roomsEnabled(roomsOff)).toBe(false);
+    expect(agentInvitesMode(roomsOff)).toBe("off");
+    // The choice is kept for when Rooms comes back on.
+    expect(agentInvitesChoice(roomsOff)).toBe("auto");
+    expect(agentInvitesMode(applyServerSettingsPatch(roomsOff, { enableRooms: true }))).toBe(
+      "auto",
     );
   });
 

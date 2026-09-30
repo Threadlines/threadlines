@@ -266,6 +266,8 @@ export const makeTestProviderAdapterHarness = (options?: MakeTestProviderAdapter
           threadId,
           cwd: input.cwd,
           resumeCursor: input.resumeCursor ?? { threadId: String(threadId), seed: sessionCount },
+          // Like the real adapters: a runtime asked for the room tools reports them.
+          ...(input.roomTools === true ? { roomTools: true } : {}),
           createdAt,
           updatedAt: createdAt,
         };

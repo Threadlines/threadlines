@@ -19,7 +19,7 @@ import {
   splitSeedEntriesByBudget,
   withContextSeedPreamble,
 } from "@threadlines/shared/contextSeed";
-import { agentInvitesMode } from "@threadlines/shared/roomAgentRequests";
+import { agentInvitesMode } from "@threadlines/shared/serverSettings";
 import { formatForkSourceExcerpt, truncate } from "@threadlines/shared/String";
 
 import { createAttachmentId, resolveAttachmentPath } from "../attachmentStore.ts";
