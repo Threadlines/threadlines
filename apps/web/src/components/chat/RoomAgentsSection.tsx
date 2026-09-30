@@ -137,7 +137,8 @@ export const RoomAgentsSection = memo(function RoomAgentsSection(props: {
                     main
                   </span>
                 ) : null}
-                <span className="ml-auto shrink-0 font-mono text-[10.5px] text-warning">
+                {/* "working" reads blue, like the sidebar; amber is for warnings. */}
+                <span className="ml-auto shrink-0 font-mono text-[10.5px] text-primary-readable">
                   {row.status}
                 </span>
                 {agents.editable && !isRenaming && !props.adding ? (
