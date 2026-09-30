@@ -7,6 +7,7 @@ import {
   McpElicitation,
   isToolLifecycleItemType,
   type MessageId,
+  ModelSelection,
   type OrchestrationLatestTurn,
   type OrchestrationSubagent,
   type OrchestrationThreadActivity,
@@ -1337,6 +1338,54 @@ function collectTurnModelSelections(
     }
   }
   return byTurnId;
+}
+
+const decodeModelSelection = Schema.decodeUnknownOption(ModelSelection);
+
+/**
+ * The model each turn of the thread's own agent was sent with, keyed by turn,
+ * and the newest one sent, which is the live turn's before the provider names
+ * it. `provider.turn.preparing` records the selection before the provider
+ * hands back a turn id, so it belongs to the first turn seen after it that was
+ * not seen before it: a late step of an older turn never takes it. A send that
+ * recorded no selection (a retry) is taken to run on the last one sent, which
+ * is what the server picks unless it restarted and the thread's saved model
+ * moved in between. Room agents' turns and side answers are not the thread's
+ * own agent's, so their activities are skipped. Bounded, like every
+ * activity-derived read, by the server's `MAX_THREAD_ACTIVITIES` window.
+ */
+export function deriveTurnDispatchedModelSelections(
+  activities: ReadonlyArray<OrchestrationThreadActivity>,
+): {
+  readonly byTurn: ReadonlyMap<TurnId, ModelSelection>;
+  readonly latest: ModelSelection | null;
+} {
+  const byTurn = new Map<TurnId, ModelSelection>();
+  const seen = new Set<TurnId>();
+  let latest: ModelSelection | null = null;
+  let pending: ModelSelection | null = null;
+  for (const activity of activities.toSorted(compareActivitiesByOrder)) {
+    if (activity.participantId != null || activity.sideTurnId !== undefined) {
+      continue;
+    }
+    const turnId = activity.turnId ?? null;
+    if (activity.kind === "provider.turn.preparing" && turnId === null) {
+      pending =
+        Option.getOrNull(decodeModelSelection(asRecord(activity.payload)?.modelSelection)) ??
+        latest;
+      latest = pending;
+      continue;
+    }
+    if (turnId === null || seen.has(turnId)) {
+      continue;
+    }
+    seen.add(turnId);
+    if (pending !== null) {
+      byTurn.set(turnId, pending);
+      pending = null;
+    }
+  }
+  return { byTurn, latest };
 }
 
 function subagentResultEventSequence(

@@ -104,8 +104,6 @@ import {
   stretchDurationMs,
   timelineRowTurnIds,
   type StableMessagesTimelineRowsState,
-  type TimelineRoom,
-  type TrayPlacement,
   type TurnSummary,
   type MessagesTimelineRow,
 } from "./MessagesTimeline.logic";
@@ -168,9 +166,9 @@ import { ProviderInstanceIcon } from "./ProviderInstanceIcon";
 import {
   describeRoomAgentMessage,
   describeRoomInvite,
+  type OwnAgentLabels,
   type RoomAgentLabel,
   roomAgentKey,
-  roomTurnOwners,
 } from "../../rooms";
 import { RoomReviewTag } from "./RoomReviewTag";
 import { type SideAnswerView } from "./sideAnswers";
@@ -187,15 +185,8 @@ interface TimelineRowSharedState {
   timestampFormat: TimestampFormat;
   /** Room agents by `roomAgentKey`; null outside rooms. */
   roomAgents: ReadonlyMap<string, RoomAgentLabel> | null;
-  /** The agent holding the thread: whose turn the working row is. */
-  workingParticipantId: ThreadParticipantId | null;
-  /** Which agent each turn was, by its answers (rooms.ts roomTurnOwners). */
-  roomTurnOwners: ReadonlyMap<TurnId, ThreadParticipantId | null>;
   /** Agent messages that start a new speaker's stretch and carry an author line. */
-  roomAuthorLineMessageIds: ReadonlySet<MessageId>;
-  /** A room with more than one agent: rows hang on agents' lines (RoomLine)
-   *  in a lane at the left, instead of sitting in trays. */
-  roomLines: boolean;
+  authorLineMessageIds: ReadonlySet<MessageId>;
   /** A side answer's review or question, for the name its steps carry. */
   sideAnswerContext: ReadonlyMap<SideTurnId, { review?: ChatMessage; replyTo?: ChatMessage }>;
   /** Room requests still open, by their request message. */
@@ -275,6 +266,18 @@ interface TimelineRowActivityState {
 
 const TimelineRowCtx = createContext<TimelineRowSharedState>(null!);
 const TimelineRowActivityCtx = createContext<TimelineRowActivityState>(null!);
+
+/**
+ * The name an author line gives an agent: `agent` is a room agent, or null for
+ * the thread's own; `turnId` is the turn the stretch belongs to, null for the
+ * live one. Its own context, since labels follow every model the thread's
+ * agent is sent with, and only author lines need to hear about it.
+ */
+type AgentLabelResolver = (
+  agent: ThreadParticipantId | null,
+  turnId: TurnId | null,
+) => RoomAgentLabel | undefined;
+const TimelineAgentLabelCtx = createContext<AgentLabelResolver>(() => undefined);
 const TIMELINE_LIST_HEADER = <div className="h-3 sm:h-4" />;
 const TIMELINE_LIST_FOOTER = <div className="h-3 sm:h-4" />;
 const EMPTY_TIMELINE_SKILLS: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">> = [];
@@ -697,7 +700,10 @@ interface MessagesTimelineProps {
   revertTurnCountByUserMessageId: Map<MessageId, number>;
   /** Room agents by `roomAgentKey`; null or absent outside rooms. */
   roomAgents?: ReadonlyMap<string, RoomAgentLabel> | null;
-  /** See TimelineRowSharedState.workingParticipantId. */
+  /** Outside a room, what the thread's own agent is called, turn by turn.
+   *  Absent: its stretches carry no name. */
+  ownAgentLabels?: OwnAgentLabels | null;
+  /** The agent holding the thread: whose turn the working row is. */
   workingParticipantId?: ThreadParticipantId | null;
   /** Requests room agents made of each other that are not over yet. */
   openAgentRequests?: ReadonlyArray<OrchestrationAgentRequest>;
@@ -773,6 +779,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   onOpenTurnDiff,
   revertTurnCountByUserMessageId,
   roomAgents = null,
+  ownAgentLabels = null,
   workingParticipantId = null,
   openAgentRequests = EMPTY_AGENT_REQUESTS,
   onRevertUserMessage,
@@ -818,15 +825,23 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       return next;
     });
   }, []);
-  // A room with teammates draws each agent's line instead of trays. A guest
-  // brought in for one review leaves the thread as it was.
-  const room = useMemo<TimelineRoom | null>(
+  // In a room with teammates each agent goes by its name there. Anywhere else
+  // (a guest brought in for one review included), the thread's own agent goes
+  // by the model each of its turns ran on.
+  const hasTeammates = useMemo(
     () =>
       roomAgents !== null &&
-      [...roomAgents].some(([key, label]) => key !== roomAgentKey(null) && !label.guest)
-        ? { workingParticipantId }
-        : null,
-    [roomAgents, workingParticipantId],
+      [...roomAgents].some(([key, label]) => key !== roomAgentKey(null) && !label.guest),
+    [roomAgents],
+  );
+  const resolveAgentLabel = useCallback<AgentLabelResolver>(
+    (agent, turnId) =>
+      agent === null && !hasTeammates && ownAgentLabels !== null
+        ? turnId === null
+          ? ownAgentLabels.latest
+          : (ownAgentLabels.byTurn.get(turnId) ?? ownAgentLabels.unrecorded)
+        : roomAgents?.get(roomAgentKey(agent)),
+    [hasTeammates, ownAgentLabels, roomAgents],
   );
   const rawRows = useMemo(
     () =>
@@ -843,10 +858,10 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         revertTurnCountByUserMessageId,
         sideAnswers,
         expandedSideTurnIds,
-        room,
+        workingParticipantId,
       }),
     [
-      room,
+      workingParticipantId,
       sideAnswers,
       expandedSideTurnIds,
       timelineEntries,
@@ -896,27 +911,22 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     [],
   );
   const anchorOwnsLiveAgents = rows.some((row) => row.kind === "working");
-  // Which agent messages carry an author line. In a room, the ones that head
-  // their agent's stretch or side answer (RoomLine.heads); a hand-off or a
-  // reply names its writer in its own header. Outside a room (only a guest
-  // brought in for a review), only the guest's answers do: the thread's own
-  // agent is the one speaking everywhere else.
-  const roomAuthorLineMessageIds = useMemo(() => {
+  // Which agent messages carry an author line: the ones that head their
+  // agent's stretch or side answer (AgentLine.heads). A hand-off or a reply
+  // names its writer in its own header.
+  const authorLineMessageIds = useMemo(() => {
     const ids = new Set<MessageId>();
-    if (roomAgents === null) {
-      return ids;
-    }
     for (const row of rows) {
       if (
         row.kind === "message" &&
         row.message.role === "assistant" &&
-        (row.roomLine !== undefined ? row.roomLine.heads : row.message.sideTurnId !== undefined)
+        (row.agentLine !== undefined ? row.agentLine.heads : row.message.sideTurnId !== undefined)
       ) {
         ids.add(row.message.id);
       }
     }
     return ids;
-  }, [roomAgents, rows]);
+  }, [rows]);
   // What a side answer's name says when its steps carry it: the review it
   // answers, or the question it links back to.
   const sideAnswerContext = useMemo(() => {
@@ -933,10 +943,6 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     }
     return context;
   }, [rows]);
-  const turnOwners = useMemo(
-    () => roomTurnOwners(rows.flatMap((row) => (row.kind === "message" ? [row.message] : []))),
-    [rows],
-  );
   const inviteRequestIds = useMemo(() => {
     const ids = new Set<RoomAgentRequestId>();
     for (const row of rows) {
@@ -1745,10 +1751,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     () => ({
       timestampFormat,
       roomAgents,
-      workingParticipantId,
-      roomTurnOwners: turnOwners,
-      roomAuthorLineMessageIds,
-      roomLines: room !== null,
+      authorLineMessageIds,
       sideAnswerContext,
       openAgentRequestByMessageId,
       inviteRequestIds,
@@ -1786,10 +1789,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     [
       timestampFormat,
       roomAgents,
-      workingParticipantId,
-      turnOwners,
-      roomAuthorLineMessageIds,
-      room,
+      authorLineMessageIds,
       sideAnswerContext,
       openAgentRequestByMessageId,
       inviteRequestIds,
@@ -1835,20 +1835,11 @@ export const MessagesTimeline = memo(function MessagesTimeline({
 
   // Stable renderItem — no closure deps. Row components read shared state
   // from TimelineRowCtx, which propagates through LegendList's memo.
-  // Each row paints its own piece of its turn's work tray, in the window
-  // frame's color, edge to edge of the column; the column keeps the rows'
-  // content in from those edges. The list clips every row to its own box, so
-  // the tray cannot be one element behind several rows.
   const renderItem = useCallback(
     ({ item }: { item: MessagesTimelineRow }) => (
       <div
-        className={cn(
-          "mx-auto w-full min-w-0 max-w-4xl overflow-x-clip px-2 transition-colors duration-300",
-          item.tray && "bg-work-tray",
-          item.tray && TRAY_CORNERS[item.tray],
-        )}
+        className="mx-auto w-full min-w-0 max-w-4xl overflow-x-clip px-2"
         data-timeline-root="true"
-        data-tray={item.tray ?? undefined}
       >
         <TimelineRowContent row={item} />
       </div>
@@ -1877,86 +1868,93 @@ export const MessagesTimeline = memo(function MessagesTimeline({
 
   return (
     <TimelineRowCtx value={sharedState}>
-      <TimelineRowActivityCtx value={activityState}>
-        <div
-          ref={timelineContainerRef}
-          className="relative h-full"
-          onMouseUpCapture={handleTranscriptSelectionEnd}
-          onKeyUpCapture={handleTranscriptSelectionEnd}
-        >
-          <LegendList<MessagesTimelineRow>
-            key={`${routeThreadKey}:${legendListEpoch}`}
-            ref={assignLegendListRef}
-            data={rows}
-            keyExtractor={keyExtractor}
-            renderItem={renderItem}
-            estimatedItemSize={90}
-            getEstimatedItemSize={getEstimatedItemSize}
-            initialScrollAtEnd={searchTargetRowIndex < 0}
-            {...(searchTargetRowIndex >= 0
-              ? { initialScrollIndex: { index: searchTargetRowIndex, viewPosition: 0.35 } }
-              : {})}
-            maintainScrollAtEnd={
-              searchTargetRowIndex < 0 &&
-              ((autoStickToBottom && !touchScrollActive) || stickToBottomRequestPending)
-                ? MAINTAIN_SCROLL_AT_END
-                : false
-            }
-            maintainScrollAtEndThreshold={TIMELINE_MAINTAIN_END_THRESHOLD_RATIO}
-            // Anchoring and bottom-following both adjust for streamed line wraps.
-            // Use anchoring only while reading above the tail to avoid overshoot.
-            maintainVisibleContentPosition={
-              !autoStickToBottom && !stickToBottomRequestPending ? HOLD_READING_POSITION : false
-            }
-            onScroll={handleScroll}
-            {...(onVisibleTurnIdsChange
-              ? { onViewableItemsChanged: handleViewableItemsChanged }
-              : {})}
-            onWheelCapture={handleWheelCapture}
-            onPointerDownCapture={handlePointerDownCapture}
-            onTouchStartCapture={handleTouchStartCapture}
-            onTouchMoveCapture={handleTouchMoveCapture}
-            onTouchEndCapture={handleTouchEndCapture}
-            onTouchCancelCapture={handleTouchEndCapture}
-            onKeyDownCapture={handleKeyDownCapture}
-            data-chat-messages-list="true"
-            className="h-full overflow-x-hidden overscroll-y-contain px-3 sm:px-5 [scrollbar-gutter:stable_both-edges]"
-            ListHeaderComponent={TIMELINE_LIST_HEADER}
-            ListFooterComponent={TIMELINE_LIST_FOOTER}
-          />
-          {/* Dissolve rows into the background at the viewport's bottom edge so
+      <TimelineAgentLabelCtx value={resolveAgentLabel}>
+        <TimelineRowActivityCtx value={activityState}>
+          <div
+            ref={timelineContainerRef}
+            className="relative h-full"
+            onMouseUpCapture={handleTranscriptSelectionEnd}
+            onKeyUpCapture={handleTranscriptSelectionEnd}
+          >
+            <LegendList<MessagesTimelineRow>
+              key={`${routeThreadKey}:${legendListEpoch}`}
+              ref={assignLegendListRef}
+              data={rows}
+              keyExtractor={keyExtractor}
+              renderItem={renderItem}
+              estimatedItemSize={90}
+              getEstimatedItemSize={getEstimatedItemSize}
+              initialScrollAtEnd={searchTargetRowIndex < 0}
+              {...(searchTargetRowIndex >= 0
+                ? { initialScrollIndex: { index: searchTargetRowIndex, viewPosition: 0.35 } }
+                : {})}
+              maintainScrollAtEnd={
+                searchTargetRowIndex < 0 &&
+                ((autoStickToBottom && !touchScrollActive) || stickToBottomRequestPending)
+                  ? MAINTAIN_SCROLL_AT_END
+                  : false
+              }
+              maintainScrollAtEndThreshold={TIMELINE_MAINTAIN_END_THRESHOLD_RATIO}
+              // Anchoring and bottom-following both adjust for streamed line wraps.
+              // Use anchoring only while reading above the tail to avoid overshoot.
+              maintainVisibleContentPosition={
+                !autoStickToBottom && !stickToBottomRequestPending ? HOLD_READING_POSITION : false
+              }
+              onScroll={handleScroll}
+              {...(onVisibleTurnIdsChange
+                ? { onViewableItemsChanged: handleViewableItemsChanged }
+                : {})}
+              onWheelCapture={handleWheelCapture}
+              onPointerDownCapture={handlePointerDownCapture}
+              onTouchStartCapture={handleTouchStartCapture}
+              onTouchMoveCapture={handleTouchMoveCapture}
+              onTouchEndCapture={handleTouchEndCapture}
+              onTouchCancelCapture={handleTouchEndCapture}
+              onKeyDownCapture={handleKeyDownCapture}
+              data-chat-messages-list="true"
+              className="h-full overflow-x-hidden overscroll-y-contain px-3 sm:px-5 [scrollbar-gutter:stable_both-edges]"
+              ListHeaderComponent={TIMELINE_LIST_HEADER}
+              ListFooterComponent={TIMELINE_LIST_FOOTER}
+            />
+            {/* Dissolve rows into the background at the viewport's bottom edge so
               scrolled-under content fades out instead of hard-clipping right
               above the composer. */}
-          <div
-            aria-hidden="true"
-            className="pointer-events-none absolute inset-x-0 bottom-0 h-6 bg-linear-to-t from-background to-transparent"
-          />
-          {transcriptNoteHighlightRects && transcriptNoteHighlightRects.length > 0 ? (
             <div
               aria-hidden="true"
-              className="pointer-events-none absolute inset-0 overflow-hidden"
-            >
-              {transcriptNoteHighlightRects.map((rect) => (
-                <div
-                  key={`${rect.top}:${rect.left}:${rect.width}`}
-                  className="transcript-note-highlight absolute"
-                  style={{ left: rect.left, top: rect.top, width: rect.width, height: rect.height }}
-                />
-              ))}
-            </div>
-          ) : null}
-          {transcriptSelection && onAddTranscriptHighlightContext ? (
-            <TranscriptSelectionPopover
-              state={transcriptSelection}
-              onCopyDismiss={dismissTranscriptSelection}
-              onOpenNote={openTranscriptSelectionNote}
-              onNoteChange={updateTranscriptSelectionNote}
-              onSubmitNote={submitTranscriptSelectionNote}
-              onCancel={dismissTranscriptSelection}
+              className="pointer-events-none absolute inset-x-0 bottom-0 h-6 bg-linear-to-t from-background to-transparent"
             />
-          ) : null}
-        </div>
-      </TimelineRowActivityCtx>
+            {transcriptNoteHighlightRects && transcriptNoteHighlightRects.length > 0 ? (
+              <div
+                aria-hidden="true"
+                className="pointer-events-none absolute inset-0 overflow-hidden"
+              >
+                {transcriptNoteHighlightRects.map((rect) => (
+                  <div
+                    key={`${rect.top}:${rect.left}:${rect.width}`}
+                    className="transcript-note-highlight absolute"
+                    style={{
+                      left: rect.left,
+                      top: rect.top,
+                      width: rect.width,
+                      height: rect.height,
+                    }}
+                  />
+                ))}
+              </div>
+            ) : null}
+            {transcriptSelection && onAddTranscriptHighlightContext ? (
+              <TranscriptSelectionPopover
+                state={transcriptSelection}
+                onCopyDismiss={dismissTranscriptSelection}
+                onOpenNote={openTranscriptSelectionNote}
+                onNoteChange={updateTranscriptSelectionNote}
+                onSubmitNote={submitTranscriptSelectionNote}
+                onCancel={dismissTranscriptSelection}
+              />
+            ) : null}
+          </div>
+        </TimelineRowActivityCtx>
+      </TimelineAgentLabelCtx>
     </TimelineRowCtx>
   );
 });
@@ -2302,9 +2300,8 @@ type TimelineImagePreviewItem = {
 
 /**
  * Room below a row. A note sits right on top of its steps. The agent's work
- * leaves half a gap inside its tray and the row after it adds the other half,
- * so the tray's edge falls in the middle of the gap. Your messages and plans
- * keep a full gap on the page.
+ * leaves half a gap and the row after it adds the other half. Your messages
+ * and plans keep a full gap.
  */
 function rowBottomPadding(row: TimelineRow): string {
   switch (row.kind) {
@@ -2312,7 +2309,7 @@ function rowBottomPadding(row: TimelineRow): string {
       if (row.message.role !== "assistant") {
         // A question one agent asks another inside its own stretch keeps its
         // answer close under it.
-        return row.message.fromAgent !== undefined && row.roomLine?.placement === "through"
+        return row.message.fromAgent !== undefined && row.agentLine?.placement === "through"
           ? "pb-1"
           : "pb-4";
       }
@@ -2332,46 +2329,52 @@ function rowBottomPadding(row: TimelineRow): string {
  * bends into the row's first line of text. Each follows the row's own top
  * padding (pt-2 for padTop, then its section's).
  */
-function roomLineOffsets(row: TimelineRow): CSSProperties {
+function agentLineOffsets(row: TimelineRow): CSSProperties {
   const padTop = row.padTop ? 8 : 0;
   // The section's top padding, then the middle of its first line.
   const [sectionTop, firstLine] =
-    row.kind === "working" ? [4, 8] : row.kind === "message" ? [2, 13] : [2, 10];
+    row.kind === "working"
+      ? [4, 8]
+      : row.kind === "side-status"
+        ? row.state === "failed" || row.state === "stopped"
+          ? [0, 8]
+          : [4, 8]
+        : row.kind === "message"
+          ? [2, 13]
+          : row.kind === "subagent-result"
+            ? // The tile's border and padding, then its 20px line.
+              [0, 15]
+            : [2, 10];
   return {
     // Below the logo: the author line's 16px, less the logo's 1px inset.
-    ["--room-line-top" as string]: `${padTop + sectionTop + 18}px`,
+    ["--agent-line-top" as string]: `${padTop + sectionTop + 18}px`,
     // The bend's 7px box ends on the first line's middle.
-    ["--room-hook-top" as string]: `${padTop + sectionTop + firstLine - 6}px`,
+    ["--agent-hook-top" as string]: `${padTop + sectionTop + firstLine - 6}px`,
   };
 }
-
-const TRAY_CORNERS = {
-  single: "rounded-xl",
-  first: "rounded-t-xl",
-  middle: "",
-  last: "rounded-b-xl",
-} as const satisfies Record<TrayPlacement, string>;
 
 const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: TimelineRow }) {
   const ctx = use(TimelineRowCtx);
   const isActiveSearchTarget =
     row.kind === "message" && row.message.id === ctx.activeSearchTargetMessageId;
-  const roomLine = row.roomLine;
+  const agentLine = row.agentLine;
   return (
     <div
       // A row whose section renders nothing (e.g. an all-anchor work group
       // with no resolvable tracker) must not leave a phantom padded gap.
-      // In a room every row keeps the lane at the left, where agents' logos
-      // and lines are drawn (index.css, [data-room-line]).
+      // Every row keeps the lane at the left, where agents' logos and lines
+      // are drawn (index.css, [data-agent-line]); a row set in under a side
+      // question keeps a second lane for its answering agent's own line.
       className={cn(
         rowBottomPadding(row),
         row.padTop && "pt-2",
-        ctx.roomLines && (roomLine?.nested ? "pl-10" : "pl-5"),
+        agentLine?.nested ? "pl-10" : "pl-5",
         "[&:not(:has(*))]:p-0",
         isActiveSearchTarget && "thread-search-target-pulse",
       )}
-      data-room-line={roomLine?.placement}
-      style={roomLine ? roomLineOffsets(row) : undefined}
+      data-agent-line={agentLine?.placement}
+      data-agent-nested-line={agentLine?.nested ?? undefined}
+      style={agentLine ? agentLineOffsets(row) : undefined}
       data-timeline-row-id={row.id}
       data-timeline-row-kind={row.kind}
       data-message-id={row.kind === "message" ? row.message.id : undefined}
@@ -2660,7 +2663,7 @@ function AgentMessageTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "m
   if (description === null) {
     return null;
   }
-  const roomLine = row.roomLine;
+  const agentLine = row.agentLine;
   // How the request ended, under its text: indented with the text when it
   // is quoted. A side request's ending shows at the end of its block instead.
   const outcome = (quoted: boolean) =>
@@ -2674,7 +2677,7 @@ function AgentMessageTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "m
     ) : null;
   // A hand-off's reply is the answer right above it: one line says where
   // it went instead of the same words again.
-  if (roomLine?.echoesAnswer) {
+  if (agentLine?.echoesAnswer) {
     return (
       <div
         className="min-w-0 px-1"
@@ -2700,7 +2703,7 @@ function AgentMessageTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "m
       // Spoken to another agent, a hand-off reads close to an answer; a
       // question asked on the side reads like the asker's notes.
       bodyClassName={
-        roomLine?.placement === "single" ? "text-foreground/80" : "text-muted-foreground"
+        agentLine?.placement === "single" ? "text-foreground/80" : "text-muted-foreground"
       }
       forceExpanded={ctx.searchTargetMessageId === message.id}
       searchHighlightQuery={
@@ -2710,14 +2713,14 @@ function AgentMessageTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "m
   );
   // In a room, a hand-off or a reply is its writer speaking: its logo and
   // name head it, like any stretch of that agent's.
-  if (roomLine?.placement === "single") {
+  if (agentLine?.placement === "single") {
     return (
       <div
         className="group min-w-0 px-1 py-0.5"
         data-room-agent-message={message.requestKind ?? "message"}
         title={formatTimestamp(message.createdAt, ctx.timestampFormat)}
       >
-        <RoomAuthorLine label={ctx.roomAgents?.get(roomAgentKey(roomLine.agent))} inLane>
+        <AgentAuthorLine agent={agentLine.agent} turnId={agentLine.turnId}>
           <span className="min-w-0 truncate text-muted-foreground">→ {description.to}</span>
           {description.kind ? (
             <>
@@ -2725,7 +2728,7 @@ function AgentMessageTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "m
               <span className="shrink-0 text-muted-foreground">{description.kind}</span>
             </>
           ) : null}
-        </RoomAuthorLine>
+        </AgentAuthorLine>
         {body}
         {outcome(false)}
       </div>
@@ -2733,7 +2736,7 @@ function AgentMessageTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "m
   }
   // Asked from inside the asking agent's own stretch: its line says who asked.
   const fromOwnStretch =
-    ctx.roomLines && roomLine !== undefined && roomLine.agent === message.fromAgent?.participantId;
+    agentLine !== undefined && agentLine.agent === message.fromAgent?.participantId;
   return (
     <div
       className="group min-w-0 px-1 py-0.5"
@@ -3100,10 +3103,10 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
     ctx.providerAuthReconnect && isProviderAuthErrorMessage(messageText)
       ? ctx.providerAuthReconnect
       : null;
-  // Notes carry the story while the agent works, in the turn's work tray. A
-  // finished turn's last message is its answer: it leaves the tray for the
-  // page at full strength and carries the turn's footer, while the notes
-  // before it fade to the steps' grey. A note's time stays one hover away.
+  // Notes carry the story while the agent works, on its line. A finished
+  // turn's last message is its answer: the line bends into it, it reads at
+  // full strength and carries the turn's footer, while the notes before it
+  // fade to the steps' grey. A note's time stays one hover away.
   const summary = row.turnSummary;
 
   return (
@@ -3125,13 +3128,13 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
           data-settled-note={row.settledNote ? "true" : undefined}
           title={summary ? undefined : formatTimestamp(row.message.createdAt, ctx.timestampFormat)}
         >
-          {ctx.roomAgents !== null && ctx.roomAuthorLineMessageIds.has(row.message.id) ? (
-            <RoomAuthorLine
-              label={ctx.roomAgents.get(roomAgentKey(row.message.participantId))}
+          {ctx.authorLineMessageIds.has(row.message.id) ? (
+            <AgentAuthorLine
+              agent={row.message.participantId ?? null}
+              turnId={row.agentLine?.turnId ?? row.message.turnId ?? null}
               onTheSide={row.message.sideTurnId !== undefined}
               review={row.sideReview}
               replyTo={row.sideReplyTo}
-              inLane={ctx.roomLines && row.roomLine?.nested !== true}
             />
           ) : null}
           {authReconnect ? (
@@ -3407,6 +3410,13 @@ function SubagentReceiptTimelineRow({
     // The receipt lands mid-turn the moment its agent finishes; the fade makes
     // that arrival read as an event rather than a row that was always there.
     <div ref={rowEntranceRef} className="min-w-0" data-subagent-receipt-row="true">
+      {/* Heading its agent's stretch (a turn that delegated before it wrote),
+          the receipt names the agent; px-1 lines the name up with the text. */}
+      {row.agentLine?.heads ? (
+        <div className="px-1">
+          <AgentAuthorLine agent={row.agentLine.agent} turnId={row.agentLine.turnId} />
+        </div>
+      ) : null}
       {interactive ? (
         <button
           type="button"
@@ -3439,7 +3449,7 @@ function SubagentReceiptTimelineRow({
  *  the state the turn is in ("Thinking", "Waiting for approval"). While the
  *  agent thinks out loud, its newest thought sits under the word. */
 function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "working" }> }) {
-  const { turnAgents, onOpenAgentsPanel, roomAgents, workingParticipantId } = use(TimelineRowCtx);
+  const { turnAgents, onOpenAgentsPanel } = use(TimelineRowCtx);
   const liveSubagents = turnAgents?.subagents ?? [];
   const agentSummary = summarizeTurnAgents(liveSubagents);
   const liveAgentRoster = formatLiveAgentStatusRows(liveSubagents);
@@ -3451,15 +3461,11 @@ function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "workin
     // The three dots are the anchor's whole "alive" signal. They sit in the
     // activity lines' icon column, so the word lines up with the steps above.
     // Amber means the agent stopped and needs the user. Even room above and
-    // below keeps the word centered when it is the tray's only line.
+    // below keeps the word centered on the line's bend.
     <div className="py-1" data-turn-working-anchor="true">
       <div className="min-w-0 pl-1">
-        {roomAgents !== null && row.roomLine !== undefined ? (
-          row.roomLine.heads ? (
-            <RoomAuthorLine label={roomAgents.get(roomAgentKey(row.roomLine.agent))} inLane />
-          ) : null
-        ) : row.namesAgent && roomAgents !== null ? (
-          <RoomAuthorLine label={roomAgents.get(roomAgentKey(workingParticipantId))} />
+        {row.agentLine?.heads ? (
+          <AgentAuthorLine agent={row.agentLine.agent} turnId={row.agentLine.turnId} />
         ) : null}
         <p className="flex min-w-0 items-center gap-1.5 text-xs leading-4 text-muted-foreground/70">
           <span className="flex min-w-0 items-center gap-1 tabular-nums">
@@ -3529,18 +3535,12 @@ function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "workin
  * stopped, or failed.
  */
 function SideStatusTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "side-status" }> }) {
-  const {
-    roomAgents,
-    roomLines,
-    onStopSideAnswer,
-    onToggleSideAnswer,
-    onRevealMessage,
-    timestampFormat,
-  } = use(TimelineRowCtx);
+  const { roomAgents, onStopSideAnswer, onToggleSideAnswer, onRevealMessage, timestampFormat } =
+    use(TimelineRowCtx);
   const name = roomAgents?.get(roomAgentKey(row.participantId))?.name ?? "The agent";
-  // In a room the line under your side question sits under it, at the right:
-  // the working agent's line runs on at the left.
-  const underYourQuestion = roomLines && row.question.fromAgent === undefined;
+  // The line under your side question sits under it, at the right: the
+  // working agent's line runs on at the left.
+  const underYourQuestion = row.question.fromAgent === undefined;
   if (row.state === "answered") {
     // Opened to watch it, the answer stayed under its question; folding it
     // posts it where it was done instead.
@@ -3713,9 +3713,6 @@ const WorkGroupSection = memo(function WorkGroupSection({
     turnDiffSummaryByTurnId,
     onOpenAgentsPanel,
     anchorOwnsLiveAgents,
-    roomAgents,
-    roomTurnOwners: turnOwners,
-    workingParticipantId,
     sideAnswerContext,
   } = use(TimelineRowCtx);
   const { isWorking } = use(TimelineRowActivityCtx);
@@ -3759,30 +3756,13 @@ const WorkGroupSection = memo(function WorkGroupSection({
     return null;
   }
 
-  // Whose steps these are: the agent whose turn they belong to, or while
-  // that turn has written nothing yet, the one at work.
-  const turnId = row.groupedEntries.find((entry) => entry.turnId != null)?.turnId ?? null;
-  const author =
-    roomAgents === null
-      ? undefined
-      : row.roomLine !== undefined
-        ? row.roomLine.heads
-          ? roomAgents.get(roomAgentKey(row.roomLine.agent))
-          : undefined
-        : row.namesAgent
-          ? roomAgents.get(
-              roomAgentKey(
-                (turnId !== null ? turnOwners.get(turnId) : undefined) ?? workingParticipantId,
-              ),
-            )
-          : undefined;
-
   return (
     <div className="min-w-0 px-1 pt-0.5" data-work-group="true">
-      {author ? (
-        <RoomAuthorLine
-          label={author}
-          inLane={row.roomLine !== undefined && !row.roomLine.nested}
+      {/* Heading its agent's stretch, the group names the agent. */}
+      {row.agentLine?.heads ? (
+        <AgentAuthorLine
+          agent={row.agentLine.agent}
+          turnId={row.agentLine.turnId}
           onTheSide={row.sideTurnId !== undefined}
           review={
             row.sideTurnId !== undefined ? sideAnswerContext.get(row.sideTurnId)?.review : undefined
@@ -5004,19 +4984,23 @@ const McpAuthReconnectCard = memo(function McpAuthReconnectCard({
   );
 });
 
-/** Who wrote this stretch of a room: provider icon, name, and the model it runs. */
-function RoomAuthorLine({
-  label,
+/**
+ * Who did this stretch of the chat: provider logo, name, and how hard its
+ * model reasons. The logo sits in the lane to the left, where its line starts,
+ * and the name lines up with the text below.
+ */
+function AgentAuthorLine({
+  agent,
+  turnId,
   onTheSide = false,
   review,
   replyTo,
-  inLane = false,
   children,
 }: {
-  label: RoomAgentLabel | undefined;
-  /** The logo sits in the lane to the left, on its agent's line, and the
-   *  name lines up with the text below. */
-  inLane?: boolean;
+  /** A room agent, or null for the thread's own. */
+  agent: ThreadParticipantId | null;
+  /** The turn the stretch belongs to; null for the live one. */
+  turnId: TurnId | null;
   /** More about the message after the name: who it went to, and why. */
   children?: ReactNode;
   /** A read-only answer given while another agent worked. */
@@ -5028,27 +5012,25 @@ function RoomAuthorLine({
   replyTo?: ChatMessage | undefined;
 }) {
   const { timestampFormat, onRevealMessage } = use(TimelineRowCtx);
+  const label = use(TimelineAgentLabelCtx)(agent, turnId);
   if (!label) {
-    return (
+    // The thread's own agent with no name to give (MessagesTimeline's
+    // ownAgentLabels absent) goes unnamed.
+    return agent === null ? null : (
       <div className="mb-1 font-mono text-[10.5px] text-muted-foreground">an agent that left</div>
     );
   }
   return (
-    <div
-      className={cn(
-        "mb-1 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs",
-        inLane && "relative",
-      )}
-    >
+    <div className="relative mb-1 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs">
       {label.entry ? (
         <ProviderInstanceIcon
           driverKind={label.entry.driverKind}
           displayName={label.entry.displayName}
           accentColor={label.entry.accentColor}
           showBadge={false}
-          // In the lane: centered on the line, 24px left of the text (the
-          // lane's 20px and the section's 4px), 1px down to center on the name.
-          className={cn("size-3.5", inLane && "absolute top-px -left-6")}
+          // Centered on the line, 24px left of the text (the lane's 20px and
+          // the section's 4px), 1px down to center on the name.
+          className="absolute top-px -left-6 size-3.5"
           iconClassName="size-3.5"
         />
       ) : null}

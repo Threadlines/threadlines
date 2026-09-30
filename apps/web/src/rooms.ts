@@ -293,18 +293,88 @@ export function buildRoomAgentLabels(
       named,
     );
     named.push(modelName);
-    const entry = entries.find((candidate) => candidate.instanceId === agent.selection.instanceId);
-    labels.set(agent.key, {
-      name: roomAgentDisplayName(modelName, agent.role),
-      modelName,
-      role: agent.role,
-      left: agent.left,
-      guest: agent.guest,
-      reasoning: entry ? roomReasoningLabel(agent.selection, entry) : null,
-      entry,
-    });
+    labels.set(agent.key, agentLabel({ ...agent, modelName }, entries));
   }
   return labels;
+}
+
+function agentLabel(
+  agent: {
+    readonly selection: ModelSelection;
+    readonly modelName: string;
+    readonly role: string | null;
+    readonly left: boolean;
+    readonly guest: boolean;
+  },
+  entries: ReadonlyArray<ProviderInstanceEntry>,
+): RoomAgentLabel {
+  const entry = entries.find((candidate) => candidate.instanceId === agent.selection.instanceId);
+  return {
+    name: roomAgentDisplayName(agent.modelName, agent.role),
+    modelName: agent.modelName,
+    role: agent.role,
+    left: agent.left,
+    guest: agent.guest,
+    reasoning: entry ? roomReasoningLabel(agent.selection, entry) : null,
+    entry,
+  };
+}
+
+/**
+ * How the chat names the thread's own agent outside a room: by the model each
+ * turn ran on, so switching models partway leaves earlier work under the model
+ * that did it.
+ */
+export interface OwnAgentLabels {
+  readonly byTurn: ReadonlyMap<TurnId, RoomAgentLabel>;
+  /** A turn with no record of its model. Records only fall out of the
+   *  activity window from the oldest end, so it takes the oldest record's. */
+  readonly unrecorded: RoomAgentLabel;
+  /** The live turn's, and work no turn names: the newest model sent, or the
+   *  thread's model before anything was sent. */
+  readonly latest: RoomAgentLabel;
+}
+
+export function buildOwnAgentLabels(
+  thread: { readonly modelSelection: ModelSelection; readonly agentRole?: string | undefined },
+  /** What each turn was sent with (deriveTurnDispatchedModelSelections). */
+  sent: {
+    readonly byTurn: ReadonlyMap<TurnId, ModelSelection>;
+    readonly latest: ModelSelection | null;
+  },
+  entries: ReadonlyArray<ProviderInstanceEntry>,
+  /** The name the model picker shows, so the two always match. */
+  modelDisplayName: (
+    model: ProviderInstanceEntry["models"][number],
+    entry: ProviderInstanceEntry,
+  ) => string,
+): OwnAgentLabels {
+  // Turns sent with the same settings share one label.
+  const bySelection = new Map<string, RoomAgentLabel>();
+  const labelOf = (selection: ModelSelection) => {
+    const key = JSON.stringify([selection.instanceId, selection.model, selection.options ?? []]);
+    let label = bySelection.get(key);
+    if (label === undefined) {
+      label = agentLabel(
+        {
+          selection,
+          modelName: roomModelName(selection, entries, modelDisplayName),
+          role: thread.agentRole ?? null,
+          left: false,
+          guest: false,
+        },
+        entries,
+      );
+      bySelection.set(key, label);
+    }
+    return label;
+  };
+  const byTurn = new Map<TurnId, RoomAgentLabel>();
+  for (const [turnId, selection] of sent.byTurn) {
+    byTurn.set(turnId, labelOf(selection));
+  }
+  const latest = labelOf(sent.latest ?? thread.modelSelection);
+  return { byTurn, unrecorded: byTurn.values().next().value ?? latest, latest };
 }
 
 /** The option each provider keeps its reasoning level in. */

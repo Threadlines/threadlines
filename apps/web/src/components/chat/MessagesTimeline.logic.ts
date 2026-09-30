@@ -47,57 +47,47 @@ export interface TurnSummary {
 }
 
 /**
- * Where a row sits in its turn's work tray: the recessed surface behind the
- * agent's notes and steps, so the answer below it lands on the page. A tray
- * spans consecutive rows, rounded at its first and last visible row.
+ * Where a row sits on its agent's line. Each agent's stretch of the chat (its
+ * notes and steps, down to its answer or its working line) hangs from its logo
+ * and name on one thin line. `start` carries the logo and name with the line
+ * running on below; `through` carries the line past, including side exchanges
+ * the agent worked through; `end` bends the line into the answer or working
+ * line; `single` is a stretch of one row: the logo and name, and no line.
  */
-export type TrayPlacement = "single" | "first" | "middle" | "last";
+export type AgentLinePlacement = "start" | "through" | "end" | "single";
 
-/**
- * Where a row sits on its agent's line in a room. In a room, each agent's
- * stretch of the chat (its notes and steps, down to its answer or its working
- * line) hangs from its logo and name on one thin line, instead of a tray.
- * `start` carries the logo and name with the line running on below;
- * `through` carries the line past, including side exchanges the agent worked
- * through; `end` bends the line into the answer or working line; `single`
- * is a stretch of one row: the logo and name, and no line.
- */
-export type RoomLinePlacement = "start" | "through" | "end" | "single";
-
-export interface RoomLine {
-  readonly placement: RoomLinePlacement;
+export interface AgentLine {
+  readonly placement: AgentLinePlacement;
   /** Whose words or work the row is: an added agent, or null for the
    *  thread's own. Inside a stretch, a side answer is its answerer's. */
   readonly agent: ThreadParticipantId | null;
+  /** The turn the stretch belongs to, from the first of its rows that names
+   *  one: the model that ran it names the thread's own agent. Null while none
+   *  does (the live turn before the provider names it), and for side answers. */
+  readonly turnId: TurnId | null;
   /** The row carries its agent's logo and name: the first row of a stretch,
    *  or of a side answer, or a message one agent wrote to another. */
   readonly heads: boolean;
   /** Another agent's side answer inside this stretch, set in under the
-   *  question the stretch's agent or the user asked. */
-  readonly nested: boolean;
+   *  question the stretch's agent or the user asked, on a line of its own
+   *  one lane in: the row's place on that line. Null for the stretch's own
+   *  rows, whose place is `placement`. */
+  readonly nested: AgentLinePlacement | null;
   /** A hand-off's reply whose words are the answer right above it. */
   readonly echoesAnswer: boolean;
 }
 
-/** A room with more than one agent: its chat draws each agent's line. */
-export interface TimelineRoom {
-  /** The agent holding the thread: it owns work no message names yet. */
-  readonly workingParticipantId: ThreadParticipantId | null;
-}
-
 export interface TimelineRowPlacement {
-  /** Null for rows on the page: your messages, answers, plans. */
-  readonly tray: TrayPlacement | null;
-  /** In a room, the row's place on its agent's line (see RoomLine). Absent
-   *  outside rooms, and for rows no agent's stretch holds. */
-  readonly roomLine?: RoomLine | undefined;
-  /** Room above the row, which is how an answer keeps page space above it once
-   *  it leaves the tray. Decided by what the row is and what sits above it,
-   *  never by the tray, so a turn ending moves nothing. */
+  /** The row's place on its agent's line (see AgentLine). Absent for rows no
+   *  agent's stretch holds: your messages, plans. */
+  readonly agentLine?: AgentLine | undefined;
+  /** Room above the row, which is how an answer keeps page space above the
+   *  work before it. Decided by what the row is and what sits above it, so a
+   *  turn ending moves nothing. */
   readonly padTop: boolean;
 }
 
-const UNPLACED: TimelineRowPlacement = { tray: null, padTop: false };
+const UNPLACED: TimelineRowPlacement = { padTop: false };
 
 /**
  * The user writing starts an exchange. A message one room agent wrote to
@@ -144,8 +134,6 @@ export type MessagesTimelineRow = TimelineRowPlacement &
         /** The agent has written since this stretch, or its exchange is over:
          *  the stretch reads as one line that opens into its steps. */
         folded: boolean;
-        /** See the working row's `namesAgent`. */
-        namesAgent?: boolean;
       }
     | {
         kind: "message";
@@ -194,12 +182,6 @@ export type MessagesTimelineRow = TimelineRowPlacement &
         label: string;
         /** What the agent is thinking right now, in its own summary's words. */
         thought: string | null;
-        /**
-         * A side exchange sits right above it (another agent answering or
-         * reviewing), so it says which agent's work it is. Set by placeRows
-         * on the first of the working agent's rows after the exchange.
-         */
-        namesAgent?: boolean;
       }
     | {
         /** A side answer's state line: answering (with Stop), or how it ended
@@ -378,9 +360,9 @@ export function deriveMessagesTimelineRows(input: {
   sideAnswers?: ReadonlyArray<SideAnswerView> | undefined;
   /** Side answers whose one-line status was opened to watch the answer. */
   expandedSideTurnIds?: ReadonlySet<SideTurnId> | undefined;
-  /** Set in a room with more than one agent: rows go on agents' lines instead
-   *  of trays. */
-  room?: TimelineRoom | null | undefined;
+  /** The agent holding the thread: it owns work no message names yet. Null
+   *  (the default) for the thread's own. */
+  workingParticipantId?: ThreadParticipantId | null | undefined;
 }): MessagesTimelineRow[] {
   const nextRows: MessagesTimelineRow[] = [];
   const visibleTimelineEntries = hoistTrailingTurnWorkAboveResponse(
@@ -627,7 +609,7 @@ export function deriveMessagesTimelineRows(input: {
   return placeRows(
     placeSideExchanges(foldFinishedStretches(rows, input.isWorking), sidePlans),
     input.isWorking,
-    input.room ?? null,
+    input.workingParticipantId ?? null,
   );
 }
 
@@ -694,31 +676,10 @@ function isAgentRow(row: MessagesTimelineRow): boolean {
   );
 }
 
-/** The agent's work in progress or on record: everything a turn does before
- *  its answer. A finished turn's answer, your messages, and plans sit on the
- *  page; the working row belongs to the tray only while the turn runs. */
-function belongsInTray(row: MessagesTimelineRow, isWorking: boolean): boolean {
-  // A side exchange sits between the working agent's trays, never in one.
-  if (isSideRow(row)) {
-    return false;
-  }
-  switch (row.kind) {
-    case "work":
-    case "subagent-result":
-      return true;
-    case "working":
-      return isWorking;
-    case "message":
-      return row.message.role === "assistant" && row.turnSummary === null;
-    default:
-      return false;
-  }
-}
-
 /** A step group with nothing to draw (only running steps, which the working
  *  row names, or agent plumbing whose tracker moved to the footer) takes no
- *  room, so it cannot carry the tray's rounded edge or set the room above the
- *  row after it. */
+ *  room, so it cannot end an agent's line or set the room above the row after
+ *  it. */
 function drawsNothing(row: MessagesTimelineRow, isWorking: boolean): boolean {
   if (row.kind !== "work") {
     return false;
@@ -735,10 +696,10 @@ function drawsNothing(row: MessagesTimelineRow, isWorking: boolean): boolean {
 }
 
 /**
- * Places each row: in a work tray or on the page, and with or without room
- * above it. Messages always keep that room, so whichever message turns out to
- * be the answer has page space above it when it leaves the tray. Other rows
- * keep it where the agent's work meets the page: the first step after your
+ * Places each row: on its agent's line (placeAgentLines), and with or without
+ * room above it. Messages always keep that room, so whichever message turns
+ * out to be the answer has space above it. Other rows keep it where the
+ * agent's work meets your side of the chat: the first step after your
  * message, or your next message after the agent's work. Rows that draw nothing
  * are skipped, so right after you send, the working row keeps its room even
  * with the turn request's empty group above it.
@@ -746,51 +707,21 @@ function drawsNothing(row: MessagesTimelineRow, isWorking: boolean): boolean {
 function placeRows(
   rows: ReadonlyArray<MessagesTimelineRow>,
   isWorking: boolean,
-  room: TimelineRoom | null,
+  workingParticipantId: ThreadParticipantId | null,
 ): MessagesTimelineRow[] {
-  const inTray = rows.map((row) => room === null && belongsInTray(row, isWorking));
   const visible = rows.map((row) => !drawsNothing(row, isWorking));
-  const tray: Array<TrayPlacement | null> = rows.map(() => null);
-  const roomLines = room === null ? null : placeRoomLines(rows, visible, room);
-  for (let start = 0; start < rows.length; start += 1) {
-    if (!inTray[start] || (start > 0 && inTray[start - 1])) {
-      continue;
-    }
-    let end = start;
-    while (end + 1 < rows.length && inTray[end + 1]) {
-      end += 1;
-    }
-    const first = visible.indexOf(true, start);
-    const last = visible.lastIndexOf(true, end);
-    if (first === -1 || first > end || last < start) {
-      continue;
-    }
-    // Rows past the visible ends take no room, so they stay off the edges.
-    for (let index = start; index <= end; index += 1) {
-      tray[index] =
-        first === last && index === first
-          ? "single"
-          : index === first
-            ? "first"
-            : index === last
-              ? "last"
-              : "middle";
-    }
-  }
+  const agentLines = placeAgentLines(rows, visible, workingParticipantId);
   // The nearest row above that draws something. A side exchange is placed by
-  // sideAnswers.ts and, around the working agent's rows, reads like the page.
+  // sideAnswers.ts and, around the working agent's rows, reads like your side.
   const agentsOwn = (row: MessagesTimelineRow) => isAgentRow(row) && !isSideRow(row);
   let above: MessagesTimelineRow | undefined;
   return rows.map((row, index) => {
-    const roomLine = roomLines?.[index];
+    const agentLine = agentLines[index];
     if (isSideRow(row)) {
       if (visible[index]) {
         above = row;
       }
-      // A side answer's steps keep their own small tray outside a room.
-      return roomLines === null
-        ? row
-        : withRoomLine(row.tray === null ? row : { ...row, tray: null }, roomLine);
+      return withAgentLine(row, agentLine);
     }
     const padTop =
       row.kind === "message" && row.message.role === "assistant"
@@ -800,43 +731,25 @@ function placeRows(
             !agentsOwn(above) ||
             (above.kind === "message" && above.turnSummary !== null)
           : above !== undefined && agentsOwn(above);
-    // Under another agent's side exchange, the working agent's next steps
-    // (or its working row) would read as a second agent at work, so the
-    // first of them names the agent. In a room, its line says whose they are.
-    const namesAgent =
-      roomLines === null &&
-      (row.kind === "working" || row.kind === "work") &&
-      above !== undefined &&
-      isSideRow(above);
     if (visible[index]) {
       above = row;
     }
-    if (
-      (row.kind === "working" || row.kind === "work") &&
-      (row.namesAgent ?? false) !== namesAgent
-    ) {
-      return withRoomLine({ ...row, tray: tray[index] ?? null, padTop, namesAgent }, roomLine);
-    }
-    return withRoomLine(
-      row.tray === tray[index] && row.padTop === padTop
-        ? row
-        : { ...row, tray: tray[index] ?? null, padTop },
-      roomLine,
-    );
+    return withAgentLine(row.padTop === padTop ? row : { ...row, padTop }, agentLine);
   });
 }
 
-function withRoomLine(row: MessagesTimelineRow, roomLine: RoomLine | undefined) {
-  return sameRoomLine(row.roomLine, roomLine) ? row : { ...row, roomLine };
+function withAgentLine(row: MessagesTimelineRow, agentLine: AgentLine | undefined) {
+  return sameAgentLine(row.agentLine, agentLine) ? row : { ...row, agentLine };
 }
 
-function sameRoomLine(a: RoomLine | undefined, b: RoomLine | undefined): boolean {
+function sameAgentLine(a: AgentLine | undefined, b: AgentLine | undefined): boolean {
   return (
     a === b ||
     (a !== undefined &&
       b !== undefined &&
       a.placement === b.placement &&
       a.agent === b.agent &&
+      a.turnId === b.turnId &&
       a.heads === b.heads &&
       a.nested === b.nested &&
       a.echoesAnswer === b.echoesAnswer)
@@ -844,7 +757,7 @@ function sameRoomLine(a: RoomLine | undefined, b: RoomLine | undefined): boolean
 }
 
 /**
- * Each agent's lines in a room. A stretch is one agent's own rows (notes,
+ * Each agent's lines. A stretch is one agent's own rows (notes,
  * steps, the working line, its answer) from where it starts, after your
  * message or another agent's, to its answer or working line. Side exchanges
  * between them stay on the line, the other agent's answer set in under the
@@ -853,14 +766,23 @@ function sameRoomLine(a: RoomLine | undefined, b: RoomLine | undefined): boolean
  * ended) is a stretch of its answerer's. A message one agent wrote to another
  * (a hand-off, a reply) is a stretch of its own for the agent that wrote it.
  */
-function placeRoomLines(
+function placeAgentLines(
   rows: ReadonlyArray<MessagesTimelineRow>,
   visible: ReadonlyArray<boolean>,
-  room: TimelineRoom,
-): Array<RoomLine | undefined> {
+  workingParticipantId: ThreadParticipantId | null,
+): Array<AgentLine | undefined> {
   const owners = roomTurnOwners(
     rows.flatMap((row) => (row.kind === "message" ? [row.message] : [])),
   );
+  // The turn a row of the agent's own names, if any.
+  const turnOf = (row: MessagesTimelineRow): TurnId | null =>
+    row.kind === "message"
+      ? (row.message.turnId ?? null)
+      : row.kind === "work"
+        ? (row.groupedEntries.find((entry) => entry.turnId != null)?.turnId ?? null)
+        : row.kind === "subagent-result"
+          ? (row.result.turnId ?? null)
+          : null;
   // The agent whose own row this is; undefined for rows that are not one
   // agent's own work (your messages, side exchanges, plans). A turn no
   // message names yet is the working agent's; null names the thread's own.
@@ -871,15 +793,10 @@ function placeRoomLines(
     if (row.kind === "message") {
       return row.message.participantId ?? null;
     }
-    const turnId =
-      row.kind === "work"
-        ? (row.groupedEntries.find((entry) => entry.turnId != null)?.turnId ?? null)
-        : row.kind === "subagent-result"
-          ? (row.result.turnId ?? null)
-          : null;
+    const turnId = turnOf(row);
     return turnId !== null && owners.has(turnId)
       ? (owners.get(turnId) ?? null)
-      : room.workingParticipantId;
+      : workingParticipantId;
   };
   const breaksStretch = (row: MessagesTimelineRow) =>
     row.kind === "fork-context" ||
@@ -926,15 +843,16 @@ function placeRoomLines(
         ? row.sideTurnId
         : undefined;
 
-  const lines: Array<RoomLine | undefined> = rows.map(() => undefined);
+  const lines: Array<AgentLine | undefined> = rows.map(() => undefined);
   let previousVisible: MessagesTimelineRow | undefined;
   for (const [index, row] of rows.entries()) {
     if (row.kind === "message" && row.message.fromAgent !== undefined && !isSideRow(row)) {
       lines[index] = {
         placement: "single",
         agent: row.message.fromAgent.participantId,
+        turnId: row.message.turnId ?? null,
         heads: true,
-        nested: false,
+        nested: null,
         echoesAnswer:
           row.message.requestKind === "reply" &&
           previousVisible?.kind === "message" &&
@@ -947,9 +865,57 @@ function placeRoomLines(
     }
   }
 
+  // Another agent answering inside a stretch hangs on a line of its own, one
+  // lane in: from its name down to the line that says it is answering, or to
+  // its answer once it is done. Rows that draw nothing stay off its ends.
+  const placeNested = (first: number, last: number, agent: ThreadParticipantId | null) => {
+    const placements = new Map<number, AgentLinePlacement>();
+    for (let index = first; index <= last; index += 1) {
+      const sideTurnId = isNestedSideRow(rows[index]!, agent)
+        ? sideTurnOf(rows[index]!)
+        : undefined;
+      if (sideTurnId === undefined) {
+        continue;
+      }
+      let end = index;
+      while (
+        end < last &&
+        isNestedSideRow(rows[end + 1]!, agent) &&
+        sideTurnOf(rows[end + 1]!) === sideTurnId
+      ) {
+        end += 1;
+      }
+      const shown: number[] = [];
+      for (let cursor = index; cursor <= end; cursor += 1) {
+        if (visible[cursor]) shown.push(cursor);
+      }
+      const top = shown[0] ?? end + 1;
+      const bottom = shown.at(-1) ?? index - 1;
+      for (let cursor = index; cursor <= end; cursor += 1) {
+        placements.set(
+          cursor,
+          top === bottom || cursor < top || cursor > bottom
+            ? "single"
+            : cursor === top
+              ? "start"
+              : cursor === bottom
+                ? "end"
+                : "through",
+        );
+      }
+      index = end;
+    }
+    return placements;
+  };
+
   // One agent's stretch from `first` to `last`. The line bends into the last
   // row when it is the agent's own, and stops under a side exchange it ends on.
   const placeStretch = (first: number, last: number, agent: ThreadParticipantId | null) => {
+    const nested = placeNested(first, last, agent);
+    let turnId: TurnId | null = null;
+    for (let index = first; index <= last && turnId === null; index += 1) {
+      turnId = isSideRow(rows[index]!) ? null : turnOf(rows[index]!);
+    }
     for (let index = first; index <= last; index += 1) {
       const row = rows[index]!;
       const sideTurnId = isSideRow(row) ? sideTurnOf(row) : undefined;
@@ -971,8 +937,9 @@ function placeRoomLines(
               : row.kind === "message" && row.message.fromAgent !== undefined
                 ? row.message.fromAgent.participantId
                 : agent,
+        turnId: sideTurnId === undefined ? turnId : null,
         heads: sideTurnId === undefined ? index === first : headsAnswer.has(index),
-        nested: isNestedSideRow(row, agent),
+        nested: nested.get(index) ?? null,
         echoesAnswer: false,
       };
     }
@@ -1055,8 +1022,9 @@ function placeRoomLines(
                 ? "end"
                 : "through",
         agent,
+        turnId: null,
         heads: index === first,
-        nested: false,
+        nested: null,
         echoesAnswer: false,
       };
     }
@@ -1731,9 +1699,8 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
   if (
     a.kind !== b.kind ||
     a.id !== b.id ||
-    a.tray !== b.tray ||
     a.padTop !== b.padTop ||
-    !sameRoomLine(a.roomLine, b.roomLine)
+    !sameAgentLine(a.agentLine, b.agentLine)
   ) {
     return false;
   }

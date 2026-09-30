@@ -52,6 +52,7 @@ import { usePrimaryEnvironmentId } from "../environments/primary";
 import { readEnvironmentApi } from "../environmentApi";
 import { getPickerModelName } from "./chat/providerIconUtils";
 import {
+  buildOwnAgentLabels,
   buildRoomAgentLabels,
   hasRoomHistory,
   isRoom,
@@ -95,6 +96,7 @@ import {
   deriveSubagentActivityState,
   findSidebarProposedPlan,
   findLatestProposedPlan,
+  deriveTurnDispatchedModelSelections,
   deriveWorkLogEntries,
   hasActionableProposedPlan,
   isLatestTurnSettled,
@@ -1847,6 +1849,22 @@ export default function ChatView(props: ChatViewProps) {
         ? allThreadActivities.filter((activity) => !isSideActivity(activity))
         : allThreadActivities,
     [allThreadActivities],
+  );
+  // What the chat calls the thread's own agent, turn by turn: the model each
+  // turn was sent with.
+  const activeModelSelection = activeThread?.modelSelection;
+  const activeAgentRole = activeThread?.agentRole;
+  const ownAgentLabels = useMemo(
+    () =>
+      activeModelSelection
+        ? buildOwnAgentLabels(
+            { modelSelection: activeModelSelection, agentRole: activeAgentRole },
+            deriveTurnDispatchedModelSelections(threadActivities),
+            providerInstanceEntries,
+            (model, entry) => getPickerModelName(model, entry.driverKind),
+          )
+        : null,
+    [activeAgentRole, activeModelSelection, providerInstanceEntries, threadActivities],
   );
   const activeTurnId = activeThread?.session?.activeTurnId ?? null;
   const workLogEntries = useMemo(
@@ -7124,6 +7142,7 @@ export default function ChatView(props: ChatViewProps) {
               onOpenTurnDiff={onOpenTurnDiff}
               revertTurnCountByUserMessageId={revertTurnCountByUserMessageId}
               roomAgents={roomAgentLabels}
+              ownAgentLabels={ownAgentLabels}
               workingParticipantId={activeThread.session?.participantId ?? null}
               {...(activeThread.agentRequests
                 ? { openAgentRequests: activeThread.agentRequests.open }

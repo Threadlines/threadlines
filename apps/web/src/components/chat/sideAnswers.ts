@@ -5,11 +5,11 @@
  *
  * The working turn's rows are derived without them: a side question is never
  * "the last user message", and a side answer's steps never join the working
- * turn's trays. The chat reads in the order things were said, and nothing
+ * turn's step groups. The chat reads in the order things were said, and nothing
  * moves once it is on the page:
  *
- * - An exchange goes where it was asked. It closes the working agent's tray
- *   there, and the agent's later work opens a new tray below it.
+ * - An exchange goes where it was asked, on the working agent's line: it
+ *   breaks the agent's steps there, and the agent's later work goes on below.
  * - The user's side question answers as one line under the question, which
  *   opens to show the answer being written. The finished answer is posted at
  *   the time it was done, below whatever went on meanwhile, linked to its
@@ -211,7 +211,6 @@ const messageRow = (
   assistantTurnInProgress: options.inProgress === true,
   ...(options.review !== undefined ? { sideReview: options.review } : {}),
   ...(options.replyTo !== undefined ? { sideReplyTo: options.replyTo } : {}),
-  tray: null,
   padTop: options.padTop,
 });
 
@@ -245,7 +244,6 @@ export function sideExchangeRows(plan: SideExchangePlan): {
             liveStartedAt: live ? view.question.createdAt : null,
             inActiveExchange: live,
             folded: !live,
-            tray: "single",
             padTop,
           },
         ];
@@ -270,7 +268,6 @@ export function sideExchangeRows(plan: SideExchangePlan): {
     error: view.error,
     compact,
     expanded: compact && expanded,
-    tray: null,
     padTop: false,
   });
   const lineId = `side-status:${view.sideTurnId}`;
@@ -341,7 +338,7 @@ export function sideExchangeRows(plan: SideExchangePlan): {
  * not carry an exchange up with them), and never below the working row, which
  * stays the turn's anchor at the tail. The working agent's step groups were
  * already broken at these times (sideExchangeBreaks), so a part lands between
- * two things the agent put on the page, closing its tray there.
+ * two things the agent put on the page.
  */
 export function placeSideExchanges(
   rows: ReadonlyArray<MessagesTimelineRow>,
