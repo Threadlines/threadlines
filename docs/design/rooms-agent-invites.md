@@ -35,7 +35,7 @@ they opted out of being asked.
 - The review's answer shows like a side answer and goes back to the agent
   that asked, as its next message.
 - Settings, under Rooms: "Agents bringing in other agents": Off, Ask me
-  first, or Without asking. Without asking applies the agent's own pick
+  first (the default), or Without asking. Without asking applies the agent's own pick
   (review only or teammate) at once; its description says that can spend
   another provider's quota and, for a teammate, turn revert off for good. The
   chat line still shows what happened and that no one was asked.
@@ -44,19 +44,23 @@ they opted out of being asked.
 
 ### Settings
 
-`roomsEnabled` stays a per-device client setting (it gates the room UI). The
-server needs its own switch for the invite tools, so a new server setting:
-`agentInvites: "off" | "ask" | "auto"`, optional in the schema: absent means
-never chosen and behaves as off. When a device has Rooms on and the server's
-value is absent, that client sends `agentInvitesDefault: "ask"`, which the
-server applies under its settings write lock only if nobody chose yet; an
-explicit choice (off included) is never overwritten, so a second device
-cannot undo it. Shown
-under the Rooms row. The server reads the live value at every invite call and
-every approval, not only when tools are attached; turning it off cancels
-invites awaiting the user ("Invites were turned off"), at once and again at
-startup, and refuses new ones. The tool reads the setting and the provider
-again after capturing the changes, right before it submits.
+Both switches live with the computer (server settings), so every device
+connected to it agrees, a phone included:
+
+- `enableRooms` (Rooms, out of preview since Sep 30 2026): absent means never
+  chosen, which is on. Off hides the room entry points in the clients (agents
+  in the model picker, the Rooms filter) and turns invites off.
+- `agentInvites: "off" | "ask" | "auto"`: absent means never chosen, which is
+  `ask`. Shown under the Rooms row, greyed out while Rooms is off; the choice
+  is kept for when Rooms comes back on.
+
+One rule, `agentInvitesMode` in `@threadlines/shared/serverSettings`, gives the
+mode in effect: the choice while Rooms is on, `off` otherwise. The server reads
+it live at every invite call and every approval, not only when tools are
+attached; when it turns off (either switch), invites awaiting the user are
+cancelled at once and again at startup, and new ones are refused. The tool
+reads the setting and the provider again after capturing the changes, right
+before it submits.
 
 ### Guest agents
 

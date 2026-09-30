@@ -12,7 +12,7 @@
  * reaches this endpoint only if it carries room tools, and each handler still
  * checks that its caller may use that tool.
  */
-import { agentInvitesMode } from "@threadlines/shared/roomAgentRequests";
+import { agentInvitesMode } from "@threadlines/shared/serverSettings";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";

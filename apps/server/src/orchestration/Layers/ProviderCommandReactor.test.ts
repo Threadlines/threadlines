@@ -25,6 +25,7 @@ import {
   EventId,
   MessageId,
   ProjectId,
+  type ServerSettingsPatch,
   ThreadId,
   ThreadParticipantId,
   TurnId,
@@ -184,6 +185,7 @@ describe("ProviderCommandReactor", () => {
     /** State left behind by a previous server process, seeded before the
      *  reactor starts. */
     readonly beforeStart?: (engine: OrchestrationEngineShape) => Effect.Effect<void, unknown>;
+    readonly serverSettings?: Parameters<typeof ServerSettingsService.layerTest>[0];
   }) {
     const now = "2026-01-01T00:00:00.000Z";
     const baseDir =
@@ -549,12 +551,13 @@ describe("ProviderCommandReactor", () => {
           generateThreadTitle,
         }),
       ),
-      Layer.provideMerge(ServerSettingsService.layerTest()),
+      Layer.provideMerge(ServerSettingsService.layerTest(input?.serverSettings)),
       Layer.provideMerge(ServerConfig.layerTest(process.cwd(), baseDir)),
       Layer.provideMerge(SqlitePersistenceMemory),
       Layer.provideMerge(NodeServices.layer),
     );
-    runtime = ManagedRuntime.make(layer);
+    const managedRuntime = ManagedRuntime.make(layer);
+    runtime = managedRuntime;
 
     const engine = await runtime.runPromise(Effect.service(OrchestrationEngineService));
     projectRestartStarting = (session) =>
@@ -615,8 +618,11 @@ describe("ProviderCommandReactor", () => {
       }),
     );
 
+    const serverSettings = await managedRuntime.runPromise(Effect.service(ServerSettingsService));
     return {
       engine,
+      updateServerSettings: (patch: ServerSettingsPatch) =>
+        Effect.runPromise(serverSettings.updateSettings(patch)),
       readModel: () => Effect.runPromise(snapshotQuery.getSnapshot()),
       startSession,
       sendTurn,
@@ -1555,7 +1561,8 @@ describe("ProviderCommandReactor", () => {
   });
 
   it("restarts the thread's own agent with resume once, to pick up the room tools", async () => {
-    const harness = await createHarness();
+    // Agents bringing in others off: only a room gives the agent room tools.
+    const harness = await createHarness({ serverSettings: { agentInvites: "off" } });
     const now = "2026-01-01T00:00:00.000Z";
     const threadId = ThreadId.make("thread-1");
     const dispatch = (command: Parameters<typeof harness.engine.dispatch>[0]) =>
@@ -1617,6 +1624,66 @@ describe("ProviderCommandReactor", () => {
     await startTurn("again");
     await waitFor(() => harness.sendTurn.mock.calls.length === 3);
     expect(harness.startSession.mock.calls.length).toBe(2);
+  });
+
+  it("picks up the room tools at the next turn, never in the middle of one", async () => {
+    const harness = await createHarness({ serverSettings: { agentInvites: "off" } });
+    const now = "2026-01-01T00:00:00.000Z";
+    const threadId = ThreadId.make("thread-1");
+    const dispatch = (command: Parameters<typeof harness.engine.dispatch>[0]) =>
+      Effect.runPromise(harness.engine.dispatch(command));
+    const sessionIs = (id: string, activeTurnId: TurnId | null) =>
+      dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make(`cmd-session-${id}`),
+        threadId,
+        session: {
+          threadId,
+          status: activeTurnId === null ? "ready" : "running",
+          providerName: "codex",
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          runtimeMode: "approval-required",
+          activeTurnId,
+          lastError: null,
+          updatedAt: now,
+        },
+        createdAt: now,
+      });
+    const startTurn = (id: string) =>
+      dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make(`cmd-${id}`),
+        threadId,
+        message: { messageId: asMessageId(id), role: "user", text: "work", attachments: [] },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      });
+
+    await startTurn("turn-1");
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    expect(harness.startSession.mock.calls[0]?.[1]).not.toHaveProperty("roomTools");
+    await sessionIs("running", asTurnId("turn-running"));
+
+    // Agents may now bring in others, and something that needs the session
+    // (a goal) arrives while the turn is still going: it is not cut short.
+    await harness.updateServerSettings({ agentInvites: "ask" });
+    await dispatch({
+      type: "thread.goal.set",
+      commandId: CommandId.make("cmd-goal-mid-turn"),
+      threadId,
+      objective: "Keep the suite green",
+      createdAt: now,
+    });
+    await waitFor(() => harness.setThreadGoal.mock.calls.length === 1);
+    expect(harness.startSession.mock.calls.length).toBe(1);
+
+    // The next turn picks the tools up.
+    await sessionIs("ready", null);
+    await startTurn("turn-2");
+    await waitFor(() => harness.sendTurn.mock.calls.length === 2);
+    expect(harness.startSession.mock.calls.length).toBe(2);
+    expect(harness.startSession.mock.calls[1]?.[1]).toMatchObject({ roomTools: true });
   });
 
   it("answers on the side in a locked-down fork, without touching the agent at work", async () => {

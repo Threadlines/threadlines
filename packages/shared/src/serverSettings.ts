@@ -1,4 +1,8 @@
-import { ServerSettings, type ServerSettingsPatch } from "@threadlines/contracts";
+import {
+  type AgentInvitesMode,
+  ServerSettings,
+  type ServerSettingsPatch,
+} from "@threadlines/contracts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { deepMerge } from "./Struct.ts";
@@ -82,8 +86,7 @@ export function applyServerSettingsPatch(
   const selectionPatch = patch.textGenerationModelSelection;
   const backupSelectionPatch = patch.textGenerationBackupModelSelection;
   const writerSelectionPatch = patch.sourceControlWriterModelSelection;
-  const { automaticGitFetchInterval, agentInvitesDefault, enableRoomsDefault, ...patchForMerge } =
-    patch;
+  const { automaticGitFetchInterval, ...patchForMerge } = patch;
   const next = deepMerge(current, patchForMerge);
   let nextWithReplacements = {
     ...next,
@@ -91,12 +94,6 @@ export function applyServerSettingsPatch(
       ? { providerInstances: patch.providerInstances }
       : {}),
     ...(automaticGitFetchInterval !== undefined ? { automaticGitFetchInterval } : {}),
-    ...(agentInvitesDefault !== undefined && next.agentInvites === undefined
-      ? { agentInvites: agentInvitesDefault }
-      : {}),
-    ...(enableRoomsDefault !== undefined && next.enableRooms === undefined
-      ? { enableRooms: enableRoomsDefault }
-      : {}),
   };
 
   const applyModelSelectionPatch = (
@@ -165,3 +162,23 @@ export function applyServerSettingsPatch(
 
   return nextWithReplacements;
 }
+
+type RoomsSettings =
+  | Pick<Partial<ServerSettings>, "enableRooms" | "agentInvites">
+  | null
+  | undefined;
+
+/** Whether Rooms is on for a computer. Never chosen: on. */
+export const roomsEnabled = (settings: RoomsSettings): boolean => settings?.enableRooms !== false;
+
+/** What the user chose for agents bringing in other agents. Never chosen: ask first. */
+export const agentInvitesChoice = (settings: RoomsSettings): AgentInvitesMode =>
+  settings?.agentInvites ?? "ask";
+
+/**
+ * Whether the thread's agents may bring in other agents right now: the
+ * user's choice while Rooms is on, and never with Rooms off. The server's
+ * tools, the answer check and the settings page all read this one rule.
+ */
+export const agentInvitesMode = (settings: RoomsSettings): AgentInvitesMode =>
+  roomsEnabled(settings) ? agentInvitesChoice(settings) : "off";

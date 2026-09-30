@@ -36,7 +36,7 @@ import {
   type TurnId,
 } from "@threadlines/contracts";
 import { withContextSeedPreamble } from "@threadlines/shared/contextSeed";
-import { agentInvitesMode } from "@threadlines/shared/roomAgentRequests";
+import { agentInvitesMode } from "@threadlines/shared/serverSettings";
 import {
   hasAgentRecords,
   isRoomThread,
@@ -1246,11 +1246,14 @@ const make = Effect.gen(function* () {
       );
       const restartRequiredBeyondCwd =
         runtimeModeChanged || instanceChanged || shouldRestartForModelChange;
-      // Picking up room tools can wait the same way.
+      // Picking up room tools can wait the same way, and also for a turn in
+      // flight: a goal or access change can get here mid-turn, and restarting
+      // then would cut the turn short. The next turn picks them up.
+      const turnInFlight = (projectedSession?.activeTurnId ?? null) !== null;
       if (
         (cwdChanged || roomToolsMissing) &&
         !restartRequiredBeyondCwd &&
-        pendingBackgroundTaskCount > 0
+        (pendingBackgroundTaskCount > 0 || (roomToolsMissing && !cwdChanged && turnInFlight))
       ) {
         const currentCwd = activeSession?.cwd ?? projectedSession?.checkoutCwd ?? null;
         if (cwdChanged && currentCwd && effectiveCwd) {
