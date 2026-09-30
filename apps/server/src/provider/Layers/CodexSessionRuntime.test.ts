@@ -26,6 +26,7 @@ import {
   buildPermissionsApprovalResponse,
   buildTurnStartParams,
   classifyCodexStderrLine,
+  codexRequestTimeoutError,
   enrichCollabAgentToolPayload,
   isNativeThreadForkUnsupportedError,
   isRecoverableThreadResumeError,
@@ -1356,7 +1357,13 @@ describe("openCodexThread", () => {
 });
 
 describe("rollbackCodexThread", () => {
-  type FakeMethod = "thread/read" | "thread/turns/list" | "thread/fork" | "thread/start";
+  type FakeMethod =
+    | "thread/read"
+    | "thread/turns/list"
+    | "thread/revert"
+    | "thread/resume"
+    | "thread/fork"
+    | "thread/start";
 
   /** A Codex app-server with stored threads. `thread/turns/list` returns one
    *  turn per page so every read exercises paging. */
@@ -1367,10 +1374,22 @@ describe("rollbackCodexThread", () => {
     readonly sourceStatus?: "completed" | "inProgress";
     readonly forkError?: CodexErrors.CodexAppServerRequestError;
     readonly forkedReadError?: CodexErrors.CodexAppServerRequestError;
+    /** A revert that fails before it changes anything. */
+    readonly revertError?: CodexErrors.CodexAppServerRequestError;
+    /** A revert that commits the new history, then fails (e.g. on reload). */
+    readonly revertAppliesThenFails?: CodexErrors.CodexAppServerRequestError;
+    /** A revert that reports success but leaves the history as it was. */
+    readonly revertKeepsTurns?: boolean;
+    /** Reads of the source thread after a revert was attempted fail. */
+    readonly readBackError?: CodexErrors.CodexAppServerRequestError;
   }) => {
+    let revertAttempted = false;
     const calls: Array<{ method: FakeMethod; payload: Record<string, unknown> }> = [];
+    const histories = Object.fromEntries(
+      Object.entries(input.histories).map(([threadId, turnIds]) => [threadId, [...turnIds]]),
+    );
     const turnsOf = (threadId: string) =>
-      (input.histories[threadId] ?? []).map((id) => ({
+      (histories[threadId] ?? []).map((id) => ({
         id,
         items: [],
         status: threadId === "source-thread" ? (input.sourceStatus ?? "completed") : "completed",
@@ -1389,29 +1408,65 @@ describe("rollbackCodexThread", () => {
         if (threadId === "forked-thread" && input.forkedReadError !== undefined) {
           return Effect.fail(input.forkedReadError);
         }
+        if (method === "thread/revert") {
+          revertAttempted = true;
+          if (input.revertError !== undefined) {
+            return Effect.fail(input.revertError);
+          }
+          const kept = histories[threadId] ?? [];
+          if (!input.revertKeepsTurns) {
+            histories[threadId] = kept.slice(0, kept.indexOf(String(params.beforeTurnId)));
+          }
+          if (input.revertAppliesThenFails !== undefined) {
+            return Effect.fail(input.revertAppliesThenFails);
+          }
+        }
+        if (
+          revertAttempted &&
+          threadId === "source-thread" &&
+          input.readBackError !== undefined &&
+          (method === "thread/read" || method === "thread/turns/list")
+        ) {
+          return Effect.fail(input.readBackError);
+        }
+        // Like Codex, a fork can only cut at a turn the source still has.
+        const boundary = params.beforeTurnId ?? params.lastTurnId;
+        if (
+          method === "thread/fork" &&
+          boundary !== undefined &&
+          !(histories["source-thread"] ?? []).includes(String(boundary))
+        ) {
+          return Effect.fail(
+            CodexErrors.CodexAppServerRequestError.invalidRequest(
+              `'${String(boundary)}' was not found in the source thread`,
+            ),
+          );
+        }
         const turns = turnsOf(threadId);
         const response =
           method === "thread/fork"
             ? makeThreadOpenResponse("forked-thread")
-            : method === "thread/start"
-              ? makeThreadOpenResponse("fresh-thread")
-              : method === "thread/turns/list"
-                ? (() => {
-                    const index = Number(params.cursor ?? 0);
-                    return {
-                      data: turns.slice(index, index + 1),
-                      nextCursor: index + 1 < turns.length ? String(index + 1) : null,
+            : method === "thread/resume"
+              ? makeThreadOpenResponse(threadId)
+              : method === "thread/start"
+                ? makeThreadOpenResponse("fresh-thread")
+                : method === "thread/turns/list"
+                  ? (() => {
+                      const index = Number(params.cursor ?? 0);
+                      return {
+                        data: turns.slice(index, index + 1),
+                        nextCursor: index + 1 < turns.length ? String(index + 1) : null,
+                      };
+                    })()
+                  : {
+                      thread: {
+                        id: threadId,
+                        ...(input.historyMode === null
+                          ? {}
+                          : { historyMode: input.historyMode ?? "paginated" }),
+                        turns: params.includeTurns === true ? turns : [],
+                      },
                     };
-                  })()
-                : {
-                    thread: {
-                      id: threadId,
-                      ...(input.historyMode === null
-                        ? {}
-                        : { historyMode: input.historyMode ?? "paginated" }),
-                      turns: params.includeTurns === true ? turns : [],
-                    },
-                  };
         return Effect.succeed(response as unknown as CodexRpc.ClientRequestResponsesByMethod[M]);
       },
     };
@@ -1434,8 +1489,123 @@ describe("rollbackCodexThread", () => {
   const forkPayload = (calls: ReturnType<typeof makeFakeCodex>["calls"]) =>
     calls.find((call) => call.method === "thread/fork")?.payload;
 
-  it("undoes every turn by forking before the first turn instead of the removed thread/rollback", async () => {
+  it("reverts a paginated thread in place instead of leaving a forked copy", async () => {
+    for (const [numTurns, survivors] of [
+      [1, ["turn-1", "turn-2"]],
+      [3, []],
+    ] as const) {
+      const { client, calls } = makeFakeCodex({
+        histories: { "source-thread": ["turn-1", "turn-2", "turn-3"] },
+      });
+
+      const result = await rollback(client, numTurns);
+
+      assert.equal(
+        result._tag === "Success" && result.success.replacementProviderThreadId,
+        undefined,
+      );
+      assert.deepStrictEqual(
+        result._tag === "Success" && result.success.snapshot.turns.map((turn) => turn.id),
+        survivors,
+      );
+      assert.deepStrictEqual(calls.find((call) => call.method === "thread/revert")?.payload, {
+        threadId: "source-thread",
+        beforeTurnId: numTurns === 1 ? "turn-3" : "turn-1",
+      });
+      assert.equal(
+        calls.some((call) => call.method === "thread/fork" || call.method === "thread/start"),
+        false,
+      );
+    }
+  });
+
+  it("falls back to a fork when the revert fails or keeps the undone turns", async () => {
+    for (const failure of [
+      { revertError: CodexErrors.CodexAppServerRequestError.internalError("failed to shut down") },
+      { revertKeepsTurns: true },
+    ]) {
+      const { client } = makeFakeCodex({
+        ...failure,
+        histories: { "source-thread": ["turn-1", "turn-2"], "forked-thread": ["turn-1"] },
+      });
+
+      const result = await rollback(client, 1);
+
+      assert.equal(
+        result._tag === "Success" && result.success.replacementProviderThreadId,
+        "forked-thread",
+      );
+    }
+  });
+
+  it("keeps a revert Codex applied, even when its answer is an error or its read-back fails", async () => {
+    const appliedThenFailed = makeFakeCodex({
+      histories: { "source-thread": ["turn-1", "turn-2"] },
+      revertAppliesThenFails:
+        CodexErrors.CodexAppServerRequestError.internalError("failed to reload thread"),
+    });
+    const undoAll = await rollback(appliedThenFailed.client, 2);
+    assert.equal(
+      undoAll._tag === "Success" && undoAll.success.replacementProviderThreadId,
+      undefined,
+    );
+    assert.deepStrictEqual(undoAll._tag === "Success" && undoAll.success.snapshot.turns, []);
+
+    const unreadable = makeFakeCodex({
+      histories: { "source-thread": ["turn-1", "turn-2", "turn-3"] },
+      readBackError: CodexErrors.CodexAppServerRequestError.internalError("read failed"),
+    });
+    const partial = await rollback(unreadable.client, 1);
+    assert.deepStrictEqual(
+      partial._tag === "Success" && partial.success.snapshot.turns.map((turn) => turn.id),
+      ["turn-1", "turn-2"],
+    );
+
+    for (const { calls } of [appliedThenFailed, unreadable]) {
+      assert.equal(
+        calls.some((call) => call.method === "thread/fork" || call.method === "thread/start"),
+        false,
+      );
+    }
+    // The failed reload left the thread unloaded, so it is loaded again.
+    assert.deepStrictEqual(
+      appliedThenFailed.calls
+        .filter((call) => call.method === "thread/resume")
+        .map((call) => [call.payload.threadId, call.payload.excludeTurns]),
+      [["source-thread", true]],
+    );
+    assert.equal(
+      unreadable.calls.some((call) => call.method === "thread/resume"),
+      false,
+    );
+  });
+
+  it("refuses to guess when a revert timed out or can't be read back", async () => {
+    for (const failure of [
+      { revertError: codexRequestTimeoutError("revert a Codex thread") },
+      {
+        revertError: CodexErrors.CodexAppServerRequestError.internalError("failed to shut down"),
+        readBackError: CodexErrors.CodexAppServerRequestError.internalError("read failed"),
+      },
+    ]) {
+      const { client, calls } = makeFakeCodex({
+        ...failure,
+        histories: { "source-thread": ["turn-1", "turn-2"], "forked-thread": ["turn-1"] },
+      });
+
+      const result = await rollback(client, 1);
+
+      assert.equal(result._tag, "Failure");
+      assert.equal(
+        calls.some((call) => call.method === "thread/fork" || call.method === "thread/start"),
+        false,
+      );
+    }
+  });
+
+  it("undoes every turn of a legacy thread by forking before the first turn", async () => {
     const { client, calls } = makeFakeCodex({
+      historyMode: "legacy",
       histories: { "source-thread": ["turn-1", "turn-2"], "forked-thread": [] },
     });
 
@@ -1457,8 +1627,9 @@ describe("rollbackCodexThread", () => {
     });
   });
 
-  it("keeps earlier turns by forking through the last surviving turn", async () => {
+  it("keeps earlier turns of a legacy thread by forking through the last surviving turn", async () => {
     const { client, calls } = makeFakeCodex({
+      historyMode: "legacy",
       histories: {
         "source-thread": ["turn-1", "turn-2", "turn-3"],
         "forked-thread": ["turn-1", "turn-2"],
@@ -1492,7 +1663,7 @@ describe("rollbackCodexThread", () => {
         ["source-thread", "asc", "notLoaded"],
         ["source-thread", "asc", "notLoaded"],
         ["source-thread", "asc", "notLoaded"],
-        ["forked-thread", "asc", "full"],
+        ["source-thread", "asc", "full"],
       ],
     );
 
@@ -1516,6 +1687,7 @@ describe("rollbackCodexThread", () => {
   it("starts a fresh thread when every turn is undone and Codex can't cut before the first", async () => {
     // Legacy rollouts with generated turn ids have no boundary to cut at.
     const { client, calls } = makeFakeCodex({
+      historyMode: "legacy",
       histories: { "source-thread": ["turn-1", "turn-2"] },
       forkError: CodexErrors.CodexAppServerRequestError.invalidRequest(
         "beforeTurnId 'turn-1' is not a persisted canonical turn in the source thread",
@@ -1539,18 +1711,19 @@ describe("rollbackCodexThread", () => {
       "forked-thread": ["turn-1", "turn-2"],
     };
 
-    const undoAll = await rollback(makeFakeCodex({ histories }).client, 2);
+    const undoAll = await rollback(makeFakeCodex({ historyMode: "legacy", histories }).client, 2);
     assert.equal(
       undoAll._tag === "Success" && undoAll.success.replacementProviderThreadId,
       "fresh-thread",
     );
 
-    const partial = await rollback(makeFakeCodex({ histories }).client, 1);
+    const partial = await rollback(makeFakeCodex({ historyMode: "legacy", histories }).client, 1);
     assert.equal(partial._tag, "Failure");
   });
 
   it("surfaces a failed read of the fork instead of starting fresh", async () => {
     const { client, calls } = makeFakeCodex({
+      historyMode: "legacy",
       histories: { "source-thread": ["turn-1", "turn-2"] },
       forkedReadError: CodexErrors.CodexAppServerRequestError.invalidRequest("thread not loaded"),
     });
