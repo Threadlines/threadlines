@@ -183,9 +183,10 @@ const formatSchemaIssue = SchemaIssue.makeFormatterDefault();
 
 export type CodexResumeCursor = typeof CodexResumeCursorSchema.Type;
 type CodexServiceTier = NonNullable<EffectCodexSchema.V2ThreadStartParams["serviceTier"]>;
-type CodexThreadItem =
-  | EffectCodexSchema.V2ThreadReadResponse["thread"]["turns"][number]["items"][number]
-  | EffectCodexSchema.V2ThreadRollbackResponse["thread"]["turns"][number]["items"][number];
+type CodexThreadTurn =
+  | EffectCodexSchema.V2ThreadReadResponse["thread"]["turns"][number]
+  | EffectCodexSchema.V2ThreadTurnsListResponse["data"][number];
+type CodexThreadItem = CodexThreadTurn["items"][number];
 
 export interface CodexSessionRuntimeOptions {
   readonly threadId: ThreadId;
@@ -817,7 +818,7 @@ function isLoggedToolRouterExitCode(target: string | undefined, message: string)
 
 /** True when the app-server predates `thread/fork` + `lastTurnId` (JSON-RPC
  *  method-not-found / invalid-params from Codex binaries older than 0.143),
- *  so callers can fall back to the deprecated `thread/rollback`. */
+ *  so callers can fall back to a stabler boundary or a fresh thread. */
 export function isNativeThreadForkUnsupportedError(error: unknown): boolean {
   return (
     error instanceof CodexErrors.CodexAppServerRequestError &&
@@ -1014,7 +1015,58 @@ export const openCodexThread = (input: {
   );
 };
 
-type CodexRollbackMethod = "thread/read" | "thread/fork" | "thread/start" | "thread/rollback";
+type CodexThreadTurnsMethod = "thread/read" | "thread/turns/list";
+
+interface CodexThreadTurnsClient {
+  readonly request: <M extends CodexThreadTurnsMethod>(
+    method: M,
+    payload: CodexRpc.ClientRequestParamsByMethod[M],
+  ) => Effect.Effect<CodexRpc.ClientRequestResponsesByMethod[M], CodexErrors.CodexAppServerError>;
+}
+
+/**
+ * Reads a Codex thread and every one of its turns. Paginated threads (the
+ * default for new threads since Codex 0.159) are paged through
+ * `thread/turns/list`: Codex deprecates full-history `thread/read` for them
+ * and answers each one with a deprecation notice that would land in the
+ * user's chat. Legacy threads keep the single full read.
+ */
+export const readCodexThreadTurns = (input: {
+  readonly client: CodexThreadTurnsClient;
+  readonly threadId: string;
+  /** "notLoaded" when only turn ids and statuses are needed. */
+  readonly itemsView: "notLoaded" | "full";
+}): Effect.Effect<
+  {
+    readonly thread: EffectCodexSchema.V2ThreadReadResponse["thread"];
+    readonly turns: ReadonlyArray<CodexThreadTurn>;
+  },
+  CodexErrors.CodexAppServerError
+> =>
+  Effect.gen(function* () {
+    const { client, threadId } = input;
+    const { thread } = yield* client.request("thread/read", { threadId, includeTurns: false });
+    if (thread.historyMode !== "paginated") {
+      const full = yield* client.request("thread/read", { threadId, includeTurns: true });
+      return { thread: full.thread, turns: full.thread.turns };
+    }
+    const turns: Array<CodexThreadTurn> = [];
+    let cursor: string | undefined;
+    do {
+      const page = yield* client.request("thread/turns/list", {
+        threadId,
+        sortDirection: "asc",
+        itemsView: input.itemsView,
+        ...(cursor !== undefined ? { cursor } : {}),
+      });
+      turns.push(...page.data);
+      const nextCursor = page.nextCursor?.trim() || undefined;
+      cursor = nextCursor === cursor ? undefined : nextCursor;
+    } while (cursor !== undefined);
+    return { thread, turns };
+  });
+
+type CodexRollbackMethod = CodexThreadTurnsMethod | "thread/fork" | "thread/start";
 
 interface CodexRollbackClient {
   readonly request: <M extends CodexRollbackMethod>(
@@ -1039,19 +1091,18 @@ const isForkBoundaryRejectedError = (error: unknown): boolean =>
 
 /**
  * Undoes the last `numTurns` turns of a Codex thread by forking the history
- * that survives into a new provider thread. Keeping some turns forks through
- * the last survivor (`lastTurnId`); undoing every turn forks before the first
- * turn (`beforeTurnId`), and falls back to a fresh thread, which is the same
- * empty conversation, when Codex can't cut there. Forks carry the thread's
- * goal without restarting it; the user's next turn picks it back up. The
+ * that survives into a new provider thread (Codex removed the in-place
+ * `thread/rollback` in 0.159). Keeping some turns forks through the last
+ * survivor (`lastTurnId`); undoing every turn forks before the first turn
+ * (`beforeTurnId`), and falls back to a fresh thread, which is the same empty
+ * conversation, when Codex can't cut there. Forks carry the thread's goal
+ * without restarting it; the user's next turn picks it back up. The
  * fresh-thread fallback does not: it only serves legacy rollouts and old
  * app-servers, both older than goals.
  *
- * Codex 0.159 removed the in-place `thread/rollback`. It remains only for
- * partial undo on app-servers that predate fork cut points, including ones
- * that ignore an unknown boundary and copy the whole thread: a fork that
- * still holds the first undone turn is never adopted as the undo. A running
- * turn is refused rather than forked, since the source would keep working.
+ * A fork that still holds the first undone turn (an app-server that ignores
+ * an unknown boundary copies everything) is never adopted, and a running turn
+ * is refused rather than forked, since the source would keep working.
  */
 export const rollbackCodexThread = (input: {
   readonly client: CodexRollbackClient;
@@ -1065,19 +1116,12 @@ export const rollbackCodexThread = (input: {
 }): Effect.Effect<CodexThreadRollbackResult, CodexErrors.CodexAppServerError> =>
   Effect.gen(function* () {
     const { client, providerThreadId, numTurns } = input;
-    const logFallback = (fallback: string, reason: string) =>
-      Effect.logWarning(`codex thread rollback fell back to ${fallback}`, {
+    const freshThread = (reason: string) =>
+      Effect.logWarning("codex thread rollback fell back to a fresh thread", {
         threadId: input.threadId,
         providerThreadId,
         reason,
-      });
-    const legacyRollback = (reason: string) =>
-      logFallback("deprecated thread/rollback", reason).pipe(
-        Effect.andThen(client.request("thread/rollback", { threadId: providerThreadId, numTurns })),
-        Effect.map((response) => ({ snapshot: parseThreadSnapshot(response) })),
-      );
-    const freshThread = (reason: string) =>
-      logFallback("a fresh thread", reason).pipe(
+      }).pipe(
         Effect.andThen(
           withCodexRequestTimeout(
             "start a Codex thread to roll back",
@@ -1093,28 +1137,35 @@ export const rollbackCodexThread = (input: {
           ),
         ),
         Effect.map((started): CodexThreadRollbackResult => ({
-          snapshot: { threadId: started.thread.id, turns: [] },
+          snapshot: threadSnapshot(started.thread.id, []),
           replacementProviderThreadId: started.thread.id,
         })),
       );
 
-    const currentResponse = yield* client.request("thread/read", {
+    const current = yield* readCodexThreadTurns({
+      client,
       threadId: providerThreadId,
-      includeTurns: true,
+      itemsView: "notLoaded",
     });
-    if (currentResponse.thread.turns.some((turn) => turn.status === "inProgress")) {
+    if (current.turns.some((turn) => turn.status === "inProgress")) {
       return yield* CodexErrors.CodexAppServerRequestError.invalidRequest(
         "Stop the running turn before reverting this conversation.",
       );
     }
-    const current = parseThreadSnapshot(currentResponse);
     const survivingTurnCount = Math.max(current.turns.length - numTurns, 0);
     const firstUndoneTurn = current.turns[survivingTurnCount];
     if (firstUndoneTurn === undefined) {
-      return { snapshot: current };
+      return { snapshot: threadSnapshot(providerThreadId, current.turns) };
     }
     const lastSurvivingTurn = current.turns[survivingTurnCount - 1];
-    const fallback = lastSurvivingTurn === undefined ? freshThread : legacyRollback;
+    const cannotCut = (reason: string) =>
+      lastSurvivingTurn === undefined
+        ? freshThread(reason)
+        : Effect.fail(
+            CodexErrors.CodexAppServerRequestError.invalidRequest(
+              `This Codex version can't revert part of a conversation (${reason}). Update Codex and try again.`,
+            ),
+          );
 
     const fork = yield* withCodexRequestTimeout(
       "fork a Codex thread to roll back",
@@ -1135,19 +1186,21 @@ export const rollbackCodexThread = (input: {
       const canFallBack =
         isNativeThreadForkUnsupportedError(fork.failure) ||
         (lastSurvivingTurn === undefined && isForkBoundaryRejectedError(fork.failure));
-      return yield* canFallBack ? fallback(fork.failure.message) : Effect.fail(fork.failure);
+      return yield* canFallBack ? cannotCut(fork.failure.message) : Effect.fail(fork.failure);
     }
     const replacementProviderThreadId = fork.success.thread.id;
-    const snapshot = parseThreadSnapshot(
-      yield* client.request("thread/read", {
-        threadId: replacementProviderThreadId,
-        includeTurns: true,
-      }),
-    );
-    if (snapshot.turns.some((turn) => turn.id === firstUndoneTurn.id)) {
-      return yield* fallback("the forked thread kept the undone turns");
+    const forked = yield* readCodexThreadTurns({
+      client,
+      threadId: replacementProviderThreadId,
+      itemsView: "full",
+    });
+    if (forked.turns.some((turn) => turn.id === firstUndoneTurn.id)) {
+      return yield* cannotCut("the fork kept the undone turns");
     }
-    return { snapshot, replacementProviderThreadId } satisfies CodexThreadRollbackResult;
+    return {
+      snapshot: threadSnapshot(replacementProviderThreadId, forked.turns),
+      replacementProviderThreadId,
+    } satisfies CodexThreadRollbackResult;
   });
 
 function readNotificationThreadId(notification: CodexServerNotification): string | undefined {
@@ -1680,15 +1733,13 @@ function updateSession(
   });
 }
 
-function parseThreadSnapshot(
-  response: EffectCodexSchema.V2ThreadReadResponse | EffectCodexSchema.V2ThreadRollbackResponse,
+function threadSnapshot(
+  threadId: string,
+  turns: ReadonlyArray<CodexThreadTurn>,
 ): CodexThreadSnapshot {
   return {
-    threadId: response.thread.id,
-    turns: response.thread.turns.map((turn) => ({
-      id: TurnId.make(turn.id),
-      items: turn.items,
-    })),
+    threadId,
+    turns: turns.map((turn) => ({ id: TurnId.make(turn.id), items: turn.items })),
   };
 }
 
@@ -2155,13 +2206,15 @@ export const makeCodexSessionRuntime = (
           const turnId = TurnId.make(payload.turnId);
           const itemId = ProviderItemId.make(payload.itemId);
           const decision = yield* Deferred.make<ProviderApprovalDecision>();
+          // Typing into a terminal that is already running is its own ask.
+          const requestKind = payload.kind === "writeStdin" ? "terminal-input" : "command";
 
           yield* Ref.update(pendingApprovalsRef, (current) => {
             const next = new Map(current);
             next.set(requestId, {
               requestId,
               jsonRpcId: String(metadata.id),
-              requestKind: "command",
+              requestKind,
               turnId,
               itemId,
               decision,
@@ -2172,7 +2225,7 @@ export const makeCodexSessionRuntime = (
             const next = new Map(current);
             next.set(String(metadata.id), {
               requestId,
-              requestKind: "command",
+              requestKind,
               turnId,
               itemId,
             });
@@ -2184,7 +2237,7 @@ export const makeCodexSessionRuntime = (
             threadId: options.threadId,
             method: "item/commandExecution/requestApproval",
             requestId,
-            requestKind: "command",
+            requestKind,
             ...(turnId ? { turnId } : {}),
             ...(itemId ? { itemId } : {}),
             payload,
@@ -2895,19 +2948,17 @@ export const makeCodexSessionRuntime = (
       readProviderThreadId,
       readThread: Effect.gen(function* () {
         const providerThreadId = yield* readProviderThreadId;
-        const response = yield* client.request("thread/read", {
+        const { turns } = yield* readCodexThreadTurns({
+          client,
           threadId: providerThreadId,
-          includeTurns: true,
+          itemsView: "full",
         });
-        return parseThreadSnapshot(response);
+        return threadSnapshot(providerThreadId, turns);
       }),
       readStoredThread: (providerThreadId) =>
-        client
-          .request("thread/read", {
-            threadId: providerThreadId,
-            includeTurns: true,
-          })
-          .pipe(Effect.map((response) => response.thread)),
+        readCodexThreadTurns({ client, threadId: providerThreadId, itemsView: "full" }).pipe(
+          Effect.map(({ thread, turns }) => ({ ...thread, turns: [...turns] })),
+        ),
       readStoredThreadMetadata: (providerThreadId) =>
         client
           .request("thread/read", {

@@ -13,6 +13,8 @@
  * can never succeed.
  */
 
+import type { ProviderRequestKind } from "@threadlines/contracts";
+
 export interface PendingRequestActivityKinds {
   readonly requested: string;
   readonly resolved: string;
@@ -143,4 +145,28 @@ export function countPendingUserInputs(
     );
   }).length;
   return { pendingUserInputCount: requests.length, blockingUserInputCount };
+}
+
+/** The kind an approval shows as, from its provider request type. Null for
+ *  requests that are not approvals (questions, auth refreshes, ...). */
+export function approvalRequestKindFromRequestType(
+  requestType: unknown,
+): ProviderRequestKind | null {
+  switch (requestType) {
+    case "command_execution_approval":
+    case "exec_command_approval":
+    case "dynamic_tool_call":
+      return "command";
+    case "terminal_input_approval":
+      return "terminal-input";
+    case "file_read_approval":
+      return "file-read";
+    case "file_change_approval":
+    case "apply_patch_approval":
+      return "file-change";
+    case "permissions_approval":
+      return "permissions";
+    default:
+      return null;
+  }
 }

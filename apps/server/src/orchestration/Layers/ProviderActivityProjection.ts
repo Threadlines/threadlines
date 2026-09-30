@@ -14,6 +14,7 @@ import {
   MAX_THREAD_ACTIVITY_PAYLOAD_OBJECT_KEYS,
   MAX_THREAD_ACTIVITY_PAYLOAD_TEXT_LENGTH,
 } from "@threadlines/shared/threadLimits";
+import { approvalRequestKindFromRequestType } from "@threadlines/shared/pendingRequests";
 
 type ContentDeltaEvent = Extract<ProviderRuntimeEvent, { type: "content.delta" }>;
 type ContentStreamKind = ContentDeltaEvent["payload"]["streamKind"];
@@ -299,26 +300,6 @@ function projectContextCompactionActivity(
       },
     }),
   ];
-}
-
-function requestKindFromCanonicalRequestType(
-  requestType: string | undefined,
-): "command" | "file-read" | "file-change" | "permissions" | undefined {
-  switch (requestType) {
-    case "command_execution_approval":
-    case "exec_command_approval":
-    case "dynamic_tool_call":
-      return "command";
-    case "file_read_approval":
-      return "file-read";
-    case "file_change_approval":
-    case "apply_patch_approval":
-      return "file-change";
-    case "permissions_approval":
-      return "permissions";
-    default:
-      return undefined;
-  }
 }
 
 function maybeSequence(event: ProviderRuntimeEvent): { sequence: number } | Record<string, never> {
@@ -645,7 +626,7 @@ export function projectRuntimeEventToActivities(
       if (event.payload.requestType === "tool_user_input") {
         return [];
       }
-      const requestKind = requestKindFromCanonicalRequestType(event.payload.requestType);
+      const requestKind = approvalRequestKindFromRequestType(event.payload.requestType);
       const toolName = approvalToolName(event.payload.args);
       return [
         baseActivity(event, {
@@ -661,13 +642,18 @@ export function projectRuntimeEventToActivities(
                   ? "File-change approval requested"
                   : requestKind === "permissions"
                     ? "Permissions approval requested"
-                    : "Approval requested",
+                    : requestKind === "terminal-input"
+                      ? "Terminal input approval requested"
+                      : "Approval requested",
           payload: {
             requestId: toApprovalRequestId(event.requestId),
             ...(requestKind ? { requestKind } : {}),
             requestType: event.payload.requestType,
             ...(event.payload.environmentId ? { environmentId: event.payload.environmentId } : {}),
             ...(toolName ? { toolName } : {}),
+            ...(event.payload.availableDecisions
+              ? { availableDecisions: event.payload.availableDecisions }
+              : {}),
             // The approval panel shows this as the thing being approved, so
             // keep more of it than a one-line activity detail.
             ...(event.payload.detail
@@ -682,7 +668,7 @@ export function projectRuntimeEventToActivities(
       if (event.payload.requestType === "tool_user_input") {
         return [];
       }
-      const requestKind = requestKindFromCanonicalRequestType(event.payload.requestType);
+      const requestKind = approvalRequestKindFromRequestType(event.payload.requestType);
       return [
         baseActivity(event, {
           id: event.eventId,

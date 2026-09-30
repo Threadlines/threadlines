@@ -56,7 +56,7 @@ import {
   type CodexThreadGoal,
   type CodexThreadSnapshot,
 } from "./CodexSessionRuntime.ts";
-import { makeCodexAdapter } from "./CodexAdapter.ts";
+import { describeCodexTerminalInput, makeCodexAdapter } from "./CodexAdapter.ts";
 const decodeCodexSettings = Schema.decodeSync(CodexSettings);
 
 it.effect("discovers compatible root Codex conversations without exposing subagents", () => {
@@ -2317,6 +2317,58 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
       assert.equal(firstEvent.value.payload.detail, "Requesting network access");
     }),
   );
+
+  it.effect("shows Codex terminal-input approvals with the typed text and Codex's answers", () =>
+    Effect.gen(function* () {
+      const { adapter, runtime } = yield* startLifecycleRuntime();
+      const firstEventFiber = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
+
+      yield* runtime.emit({
+        id: asEventId("evt-terminal-input-request"),
+        kind: "request",
+        provider: ProviderDriverKind.make("codex"),
+        threadId: asThreadId("thread-1"),
+        createdAt: "2026-09-29T00:00:00.000Z",
+        method: "item/commandExecution/requestApproval",
+        requestKind: "terminal-input",
+        requestId: ApprovalRequestId.make("req-terminal-input-1"),
+        payload: {
+          kind: "writeStdin",
+          // shlex-joined `write_stdin --session-id 42 "it's ok\n"`
+          command: `write_stdin --session-id 42 "it's ok\n"`,
+          availableDecisions: ["accept", "cancel"],
+          itemId: "item-command-1",
+          startedAtMs: 1_800_000_000_000,
+          threadId: "provider-thread-1",
+          turnId: "turn-1",
+        },
+      });
+      const firstEvent = yield* Fiber.join(firstEventFiber);
+
+      assert.equal(firstEvent._tag === "Some" && firstEvent.value.type, "request.opened");
+      if (firstEvent._tag !== "Some" || firstEvent.value.type !== "request.opened") {
+        return;
+      }
+      assert.equal(firstEvent.value.payload.requestType, "terminal_input_approval");
+      assert.equal(firstEvent.value.payload.detail, JSON.stringify("it's ok\n"));
+      assert.deepStrictEqual(firstEvent.value.payload.availableDecisions, ["accept", "cancel"]);
+    }),
+  );
+
+  it("reads the typed text out of every quoting style Codex's shlex join produces", () => {
+    const cases: ReadonlyArray<readonly [string, string | undefined]> = [
+      ["write_stdin --session-id 42 y", '"y"'],
+      ["write_stdin --session-id 42 '\n'", '"\\n"'],
+      ["write_stdin --session-id 42 'it'\"'\"'s here'", `"it's here"`],
+      ['write_stdin --session-id 42 "say \\"hi\\" \\$HOME"', '"say \\"hi\\" $HOME"'],
+      ["write_stdin --session-id 42 ''", '""'],
+      ["npm test", undefined],
+      ["write_stdin --session-id 42 'unterminated", undefined],
+    ];
+    for (const [command, expected] of cases) {
+      assert.equal(describeCodexTerminalInput(command), expected, command);
+    }
+  });
 
   it.effect("preserves request type when mapping serverRequest/resolved", () =>
     Effect.gen(function* () {
