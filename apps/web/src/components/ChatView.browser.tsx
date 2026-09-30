@@ -1136,6 +1136,24 @@ function withProjectScripts(
   };
 }
 
+/** The test computer's Codex, listing models the model picker can show. */
+function withCodexModels(nextFixture: TestFixture): void {
+  nextFixture.serverConfig = {
+    ...nextFixture.serverConfig,
+    providers: [
+      {
+        ...nextFixture.serverConfig.providers[0]!,
+        models: ["gpt-5.6-sol", "gpt-6-astra"].map((slug) => ({
+          slug,
+          name: slug,
+          isCustom: false,
+          capabilities: createModelCapabilities({ optionDescriptors: [] }),
+        })),
+      },
+    ],
+  };
+}
+
 function setDraftThreadWithoutWorktree(): void {
   useComposerDraftStore.setState({
     draftThreadsByThreadKey: {
@@ -4921,6 +4939,151 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
+  it("starts a new thread as a room from the model picker when the computer has Rooms on", async () => {
+    setDraftThreadWithoutWorktree();
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createDraftOnlySnapshot(),
+      // This device never turned Rooms on (a phone through phone link); the
+      // computer it talks to did.
+      configureFixture: (nextFixture) => {
+        withCodexModels(nextFixture);
+        nextFixture.serverConfig = {
+          ...nextFixture.serverConfig,
+          settings: { ...nextFixture.serverConfig.settings, enableRooms: true },
+        };
+      },
+      resolveRpc: (body) =>
+        body._tag === ORCHESTRATION_WS_METHODS.dispatchCommand
+          ? { sequence: fixture.snapshot.snapshotSequence + 1 }
+          : undefined,
+    });
+
+    try {
+      const picker = await waitForElement(
+        () => document.querySelector<HTMLButtonElement>('[data-chat-provider-model-picker="true"]'),
+        "Unable to find the composer's model picker.",
+      );
+      picker.click();
+      const addAgent = await waitForElement(
+        () => document.querySelector<HTMLButtonElement>('[data-room-add-agent="true"]'),
+        "The model picker should offer Add agent before the first message.",
+      );
+      addAgent.click();
+      const model = await waitForElement(
+        () => document.querySelector<HTMLElement>('.model-picker-list [role="option"]'),
+        "Unable to find a model to add.",
+      );
+      model.click();
+      const agents = () =>
+        useComposerDraftStore.getState().draftThreadsByThreadKey[THREAD_KEY]?.room?.agents ?? [];
+      await vi.waitFor(() => expect(agents()).toHaveLength(1), { timeout: 8_000, interval: 16 });
+      const agentId = agents()[0]!.id;
+
+      // The first message creates the thread with its agent, and goes to it.
+      useComposerDraftStore.getState().setPrompt(THREAD_REF, "Review the plan");
+      await waitForLayout();
+      const sendButton = await waitForSendButton();
+      sendButton.click();
+      await vi.waitFor(
+        () => {
+          const turnStart = wsRequests.find(
+            (request) =>
+              request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+              request.type === "thread.turn.start",
+          );
+          expect(turnStart).toMatchObject({
+            participantId: agentId,
+            bootstrap: {
+              createThread: { participants: [expect.objectContaining({ id: agentId })] },
+            },
+          });
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+    } finally {
+      useRoomRecipientStore.getState().choose(THREAD_REF, null);
+      await mounted.cleanup();
+    }
+  });
+
+  it("names a new agent past a guest that reviewed on the same model", async () => {
+    updateSettings({ roomsEnabled: true });
+    const base = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-guest-name" as MessageId,
+      targetText: "guest name",
+    });
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      configureFixture: withCodexModels,
+      snapshot: {
+        ...base,
+        threads: base.threads.map((thread) =>
+          thread.id === THREAD_ID
+            ? {
+                ...thread,
+                // Brought in once for a review: never a member, but the
+                // server keeps its name taken.
+                participants: [
+                  {
+                    id: "7a0b1c2d-3e4f-4a5b-8c6d-7e8f9a0b1c2d" as ThreadParticipantId,
+                    handle: "gpt-6-astra",
+                    modelSelection: {
+                      instanceId: ProviderInstanceId.make("codex"),
+                      model: "gpt-6-astra",
+                    },
+                    joinedAt: NOW_ISO,
+                    leftAt: NOW_ISO,
+                    guest: true,
+                  },
+                ],
+              }
+            : thread,
+        ),
+      },
+      resolveRpc: (body) =>
+        body._tag === ORCHESTRATION_WS_METHODS.dispatchCommand
+          ? { sequence: fixture.snapshot.snapshotSequence + 1 }
+          : undefined,
+    });
+
+    try {
+      const picker = await waitForElement(
+        () => document.querySelector<HTMLButtonElement>('[data-chat-provider-model-picker="true"]'),
+        "Unable to find the composer's model picker.",
+      );
+      picker.click();
+      const addAgent = await waitForElement(
+        () => document.querySelector<HTMLButtonElement>('[data-room-add-agent="true"]'),
+        "Unable to find Add agent.",
+      );
+      addAgent.click();
+      const astra = await waitForElement(
+        () =>
+          [...document.querySelectorAll<HTMLElement>('.model-picker-list [role="option"]')].find(
+            (option) => option.textContent?.includes("gpt-6-astra"),
+          ) ?? null,
+        "Unable to find gpt-6-astra to add.",
+      );
+      astra.click();
+      await vi.waitFor(
+        () => {
+          const added = wsRequests.find(
+            (request) =>
+              request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+              request.type === "thread.participant.add",
+          ) as { participant?: { handle?: string } } | undefined;
+          expect(added?.participant?.handle).toBe("gpt-6-astra 2");
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+    } finally {
+      useRoomRecipientStore.getState().choose(THREAD_REF, null);
+      updateSettings({ roomsEnabled: false });
+      await mounted.cleanup();
+    }
+  });
+
   it("uses the live Codex default when bootstrapping an unpinned local draft", async () => {
     setDraftThreadWithoutWorktree();
     const snapshot = createDraftOnlySnapshot();
@@ -7361,6 +7524,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
     });
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
+      configureFixture: withCodexModels,
       snapshot: {
         ...base,
         threads: base.threads.map((thread) =>
@@ -7399,22 +7563,30 @@ describe("ChatView timeline estimator parity (full app)", () => {
 
       // Sending to astra: the meter shows astra's own context.
       const picker = await waitForElement(
-        () => document.querySelector<HTMLButtonElement>('[data-chat-room-agent-picker="true"]'),
-        "Unable to find the room's agent picker.",
+        () => document.querySelector<HTMLButtonElement>('[data-chat-provider-model-picker="true"]'),
+        "Unable to find the composer's model picker.",
       );
       picker.click();
       const astraOption = await waitForElement(
         () =>
-          [...document.querySelectorAll<HTMLElement>('[role="option"]')].find((option) =>
+          [...document.querySelectorAll<HTMLElement>("[data-room-agent-row]")].find((option) =>
             option.textContent?.includes("gpt-6-astra"),
           ) ?? null,
-        "Unable to find astra in the agent picker.",
+        "Unable to find astra among the model picker's agents.",
       );
       astraOption.click();
       await vi.waitFor(() => expect(meterLabel()).toMatch(/^Context window 50(\.0)?% used/), {
         timeout: 8_000,
         interval: 16,
       });
+      // The model list now belongs to astra: a pick moves it, so it says so,
+      // and no number shortcut can move it by accident.
+      picker.click();
+      await waitForElement(
+        () => document.querySelector('[data-model-row-action="switch"]'),
+        "The model list should offer to switch the added agent's model.",
+      );
+      expect(document.querySelector(".model-picker-list kbd")).toBeNull();
     } finally {
       // The choice outlives the view; later tests start from the thread's own agent.
       useRoomRecipientStore.getState().choose(THREAD_REF, null);
@@ -7578,16 +7750,10 @@ describe("ChatView timeline estimator parity (full app)", () => {
       const pickedName = modelPicker.textContent?.trim() ?? "";
       expect(pickedName).not.toBe("");
       expect(pickedName).not.toContain("gpt-5 ");
-      const picker = await waitForElement(
-        () => document.querySelector<HTMLButtonElement>('[data-chat-room-agent-picker="true"]'),
-        "Unable to find the room's agent picker.",
-      );
-      picker.click();
+      modelPicker.click();
       await vi.waitFor(
         () => {
-          const main = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find(
-            (option) => option.textContent?.includes("main"),
-          );
+          const main = document.querySelector<HTMLElement>('[data-room-agent-row="primary"]');
           expect(main?.textContent?.replace("main", "").trim()).toBe(pickedName);
         },
         { timeout: 8_000, interval: 16 },
@@ -8554,7 +8720,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
-  it("opens the agent picker's model list from Add agent, and it stays open", async () => {
+  it("opens the model picker ready to add an agent from Add agent, and it stays open", async () => {
     updateSettings({ roomsEnabled: true });
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
@@ -8574,14 +8740,14 @@ describe("ChatView timeline estimator parity (full app)", () => {
       // must open after that, not lose focus to it and close.
       await waitForElement(
         () => document.querySelector(".model-picker-list"),
-        "The agent picker's model list should open from the command palette.",
+        "The model picker should open from the command palette.",
       );
       // Long enough for a closing popover's exit to finish.
       await new Promise((resolve) => setTimeout(resolve, 600));
       expect(document.querySelector('[data-testid="command-palette"]')).toBeNull();
       expect(document.querySelector(".model-picker-list")).not.toBeNull();
       await expect
-        .element(page.getByText("Pick a model to add to this thread.", { exact: false }))
+        .element(page.getByText("Pick a model for the new agent.", { exact: false }))
         .toBeInTheDocument();
     } finally {
       updateSettings({ roomsEnabled: false });
@@ -11246,16 +11412,16 @@ describe("ChatView timeline estimator parity (full app)", () => {
       // The suggestion is the thread's own agent's guess at what you'd say to
       // it; sending to the other agent hides it.
       const picker = await waitForElement(
-        () => document.querySelector<HTMLButtonElement>('[data-chat-room-agent-picker="true"]'),
-        "Unable to find the room's agent picker.",
+        () => document.querySelector<HTMLButtonElement>('[data-chat-provider-model-picker="true"]'),
+        "Unable to find the composer's model picker.",
       );
       picker.click();
       const fableOption = await waitForElement(
         () =>
-          [...document.querySelectorAll<HTMLElement>('[role="option"]')].find((option) =>
+          [...document.querySelectorAll<HTMLElement>("[data-room-agent-row]")].find((option) =>
             /fable/i.test(option.textContent ?? ""),
           ) ?? null,
-        "Unable to find the other Claude agent in the agent picker.",
+        "Unable to find the other Claude agent among the model picker's agents.",
       );
       fableOption.click();
       await waitForElement(

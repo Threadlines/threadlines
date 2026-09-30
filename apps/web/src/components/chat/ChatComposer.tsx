@@ -153,8 +153,7 @@ import { Button } from "../ui/button";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { toastManager } from "../ui/toast";
-import { RoomAgentPicker } from "./RoomAgentPicker";
-import { pickRoomAgentOptions } from "./roomAgentActions";
+import { useRoomAgents } from "./useRoomAgents";
 import { scopedThreadKey } from "@threadlines/client-runtime";
 import {
   buildRoomAgentLabels,
@@ -235,6 +234,8 @@ const CODEX_AGENT_PROVIDER = ProviderDriverKind.make("codex");
 const CLAUDE_AGENT_PROVIDER = ProviderDriverKind.make("claudeAgent");
 const EMPTY_PROJECT_ENTRIES: ProjectEntry[] = [];
 const EMPTY_PROVIDER_SKILLS: ServerProvider["skills"] = [];
+/** A thread with no agents besides its own, while there is no thread yet. */
+const NO_ROOM_THREAD = {};
 const COMPOSER_FLOATING_LAYER_SELECTOR = [
   '[data-slot="popover-popup"]',
   '[data-slot="menu-popup"]',
@@ -559,8 +560,9 @@ export interface ChatComposerProps {
   activeThreadId: ThreadId | null;
   activeThreadEnvironmentId: EnvironmentId | undefined;
   activeThread: Thread | undefined;
-  isServerThread: boolean;
   isLocalDraftThread: boolean;
+  /** The thread exists on the server, even while its route is still the draft's. */
+  serverThreadExists: boolean;
 
   // Session phase
   phase: SessionPhase;
@@ -625,6 +627,8 @@ export interface ChatComposerProps {
   // Misc
   resolvedTheme: "light" | "dark";
   settings: UnifiedSettings;
+  /** Rooms for the computer this thread lives on (useRoomsEnabled). */
+  roomsEnabled: boolean;
   keybindings: ResolvedKeybindingsConfig;
   terminalOpen: boolean;
   gitCwd: string | null;
@@ -695,8 +699,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     activeThreadId,
     activeThreadEnvironmentId: _activeThreadEnvironmentId,
     activeThread,
-    isServerThread,
-    isLocalDraftThread: _isLocalDraftThread,
+    isLocalDraftThread,
+    serverThreadExists,
     phase,
     isConnecting,
     isSendBusy,
@@ -723,6 +727,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     stackedAbove,
     resolvedTheme,
     settings,
+    roomsEnabled,
     keybindings,
     terminalOpen,
     gitCwd,
@@ -1135,9 +1140,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     [activeThread?.latestTurn, activeThreadActivities],
   );
 
-  // Rooms: which agent the next message goes to. Only saved threads can hold
-  // more than one agent; a draft has nothing to add one to yet.
-  const showRoomAgentPicker = settings.roomsEnabled && isServerThread && activeThread !== undefined;
+  // Rooms: which agent the next message goes to, picked in the model picker.
+  // A new thread can take agents too; its first message brings them along.
+  const roomsShown = roomsEnabled && activeThread !== undefined;
   const chosenRoomRecipientId = useRoomRecipientStore(
     (state) => state.chosen[scopedThreadKey(routeThreadRef)],
   );
@@ -1156,7 +1161,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   );
   // An added agent keeps the model and reasoning it joined with; the model and
   // reasoning controls belong to the thread's own agent.
-  const addressingRoomAgent = showRoomAgentPicker && roomRecipientId !== null;
+  const addressingRoomAgent = roomsShown && roomRecipientId !== null;
   const roomWorkingId =
     activeThread?.session?.orchestrationStatus === "running" ||
     activeThread?.session?.orchestrationStatus === "starting"
@@ -1167,7 +1172,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   // use: the one picked here, which the thread takes on when it is sent.
   const roomAgentLabels = useMemo(
     () =>
-      showRoomAgentPicker && activeThread && hasRoomHistory(activeThread)
+      roomsShown && activeThread && hasRoomHistory(activeThread)
         ? buildRoomAgentLabels(
             {
               modelSelection: selectedModelSelection,
@@ -1183,9 +1188,21 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       activeThread?.participants,
       activeThread?.agentRole,
       providerInstanceEntries,
-      showRoomAgentPicker,
+      roomsShown,
     ],
   );
+  const roomAgents = useRoomAgents({
+    threadRef: routeThreadRef,
+    // Until the thread exists on the server, its agents live in its draft;
+    // while its first message is on its way, they wait.
+    draftTarget: isLocalDraftThread && !serverThreadExists ? composerDraftTarget : null,
+    frozen: isLocalDraftThread && isSendBusy,
+    thread: activeThread ?? NO_ROOM_THREAD,
+    primaryModelSelection: selectedModelSelection,
+    instanceEntries: providerInstanceEntries,
+    workingId: roomWorkingId,
+    answeringId: activeThread?.sideTurn?.participantId,
+  });
   // An agent's invite waiting for the user, with every agent it names. Shown
   // whether or not this device shows rooms: the thread waits on it either way.
   const pendingInvite = useMemo(
@@ -1588,8 +1605,16 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         canReferenceFiles: canReferenceWorkspaceFiles,
         canInvokeSkills: composerSkills.some((skill) => skill.enabled),
         canMentionAgents: roomMentionAgents.length > 0,
+        recipientName: roomsShown && roomAgents.inRoom ? roomAgents.recipient.name : undefined,
       }),
-    [canReferenceWorkspaceFiles, composerSkills, roomMentionAgents.length],
+    [
+      canReferenceWorkspaceFiles,
+      composerSkills,
+      roomAgents.inRoom,
+      roomAgents.recipient.name,
+      roomMentionAgents.length,
+      roomsShown,
+    ],
   );
 
   // ------------------------------------------------------------------
@@ -1638,7 +1663,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           modelOptions: pendingRoomAgentOptions ?? addressedRoomAgent.modelSelection.options,
           working: roomWorkingId != null && roomWorkingId === addressedRoomAgent.id,
           onModelOptionsChange: (next: ReadonlyArray<ProviderOptionSelection> | undefined) =>
-            pickRoomAgentOptions(routeThreadRef, addressedRoomAgent.id, next ?? []),
+            roomAgents.pickOptions(addressedRoomAgent.id, next ?? []),
         }
       : null;
   const showRoomAgentTraits =
@@ -3915,50 +3940,32 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                       "min-w-0",
                     )}
                   >
-                    {showRoomAgentPicker && activeThread ? (
-                      <RoomAgentPicker
-                        threadRef={routeThreadRef}
-                        primaryModelSelection={selectedModelSelection}
-                        primaryRole={activeThread.agentRole}
-                        participants={activeThread.participants ?? []}
-                        recipientId={roomRecipientId}
-                        workingId={roomWorkingId}
-                        answeringId={activeThread.sideTurn?.participantId}
-                        instanceEntries={providerInstanceEntries}
-                        modelOptionsByInstance={modelOptionsByInstance}
-                        keybindings={keybindings}
-                        terminalOpen={terminalOpen}
-                        compact={isComposerFooterCompact}
-                      />
-                    ) : null}
-                    {addressingRoomAgent ? null : (
-                      <ProviderModelPicker
-                        compact={isComposerFooterCompact}
-                        // Sits tight against the agent picker, which already
-                        // pads the gap between them.
-                        {...(showRoomAgentPicker ? { triggerClassName: "sm:pl-1.5" } : {})}
-                        activeInstanceId={selectedInstanceId}
-                        model={selectedModelForPickerWithCustomFallback}
-                        lockedProvider={lockedProvider}
-                        lockedContinuationGroupKey={lockedContinuationGroupKey}
-                        instanceEntries={providerInstanceEntries}
-                        keybindings={keybindings}
-                        modelOptionsByInstance={modelOptionsByInstance}
-                        terminalOpen={terminalOpen}
-                        side="top"
-                        open={isComposerModelPickerOpen}
-                        {...(composerProviderState.modelPickerIconClassName
-                          ? {
-                              activeProviderIconClassName:
-                                composerProviderState.modelPickerIconClassName,
-                            }
-                          : {})}
-                        onOpenChange={(open) => {
-                          setIsComposerModelPickerOpen(open);
-                        }}
-                        onInstanceModelChange={onProviderModelSelect}
-                      />
-                    )}
+                    <ProviderModelPicker
+                      compact={isComposerFooterCompact}
+                      // In a room the button names who the message goes to,
+                      // and the card lists the agents under the models.
+                      room={roomsShown ? roomAgents : null}
+                      activeInstanceId={selectedInstanceId}
+                      model={selectedModelForPickerWithCustomFallback}
+                      lockedProvider={lockedProvider}
+                      lockedContinuationGroupKey={lockedContinuationGroupKey}
+                      instanceEntries={providerInstanceEntries}
+                      keybindings={keybindings}
+                      modelOptionsByInstance={modelOptionsByInstance}
+                      terminalOpen={terminalOpen}
+                      side="top"
+                      open={isComposerModelPickerOpen}
+                      {...(composerProviderState.modelPickerIconClassName
+                        ? {
+                            activeProviderIconClassName:
+                              composerProviderState.modelPickerIconClassName,
+                          }
+                        : {})}
+                      onOpenChange={(open) => {
+                        setIsComposerModelPickerOpen(open);
+                      }}
+                      onInstanceModelChange={onProviderModelSelect}
+                    />
                     {activeModelFallback && activeFallbackModelDisplayName ? (
                       <Tooltip>
                         <TooltipTrigger

@@ -1,6 +1,6 @@
 import { type ProviderDriverKind, type ProviderInstanceId } from "@threadlines/contracts";
 import { memo } from "react";
-import { StarIcon } from "lucide-react";
+import { ArrowLeftRightIcon, PlusIcon, StarIcon } from "lucide-react";
 import {
   getDisplayModelName,
   getProviderScopedDisplayModelLabel,
@@ -33,6 +33,10 @@ export const ModelListRow = memo(function ModelListRow(props: {
   useProviderScopedLabel?: boolean;
   useTriggerLabel?: boolean;
   jumpLabel?: string | null;
+  /** What picking it does when that is not "use this model" (ModelPickerContent rowAction). */
+  action?: { readonly kind: "add" | "switch"; readonly label: string } | null;
+  /** Set while no model can be picked; the list says why on hover. */
+  disabledReason?: string | null;
   onToggleFavorite: () => void;
 }) {
   const ProviderIcon = PROVIDER_ICON_BY_PROVIDER[props.driverKind] ?? null;
@@ -55,6 +59,7 @@ export const ModelListRow = memo(function ModelListRow(props: {
       hideIndicator
       index={props.index}
       value={`${props.instanceId}:${props.model.slug}`}
+      disabled={props.disabledReason != null}
       contentClassName="flex w-full min-w-0"
       className={cn(
         "group relative w-full cursor-pointer rounded pl-3 pr-3 transition-colors",
@@ -83,6 +88,19 @@ export const ModelListRow = memo(function ModelListRow(props: {
             ) : null}
           </div>
           <span className="flex min-w-0 shrink items-center gap-1.5">
+            {props.action ? (
+              <span
+                data-model-row-action={props.action.kind}
+                className="hidden min-w-0 shrink items-center gap-1 rounded-sm bg-foreground/10 py-px ps-1 pe-1.5 text-[11px] font-medium text-foreground group-hover:flex group-data-highlighted:flex group-data-selected:hidden!"
+              >
+                {props.action.kind === "add" ? (
+                  <PlusIcon aria-hidden="true" className="size-3" />
+                ) : (
+                  <ArrowLeftRightIcon aria-hidden="true" className="size-3" />
+                )}
+                <span className="min-w-0 truncate">{props.action.label}</span>
+              </span>
+            ) : null}
             {props.model.metaLabel ? (
               <span
                 className="min-w-0 truncate font-mono text-[10px] font-normal text-muted-foreground/60"
@@ -103,6 +121,8 @@ export const ModelListRow = memo(function ModelListRow(props: {
                       props.isFavorite
                         ? "opacity-100 text-yellow-500/80 hover:text-yellow-500"
                         : "opacity-0 text-muted-foreground/50 hover:text-foreground group-hover:opacity-100 group-data-highlighted:opacity-100 pointer-coarse:opacity-100",
+                      // The pointed-at row names its action instead.
+                      props.action && "group-hover:hidden group-data-highlighted:hidden",
                     )}
                     onClick={(event) => {
                       event.stopPropagation();

@@ -285,13 +285,36 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
-      return {
-        ...withEventBase({
+      // A thread set up as a room before its first message starts with its
+      // agents: all of them are checked before any is recorded.
+      const startingAgents = command.participants ?? [];
+      const seenIds = new Set<string>();
+      const seenHandles = new Set<string>();
+      for (const agent of startingAgents) {
+        const refuse = (detail: string) =>
+          new OrchestrationCommandInvariantError({ commandType: command.type, detail });
+        if (!isValidParticipantId(agent.id)) {
+          return yield* refuse(`Agent id '${agent.id}' must be a UUID.`);
+        }
+        if (seenIds.has(agent.id)) {
+          return yield* refuse(`Agent '${agent.id}' is listed twice.`);
+        }
+        const handleKey = agent.handle.trim().toLowerCase();
+        if (seenHandles.has(handleKey)) {
+          return yield* refuse(`Two agents are called ${agent.handle}.`);
+        }
+        seenIds.add(agent.id);
+        seenHandles.add(handleKey);
+      }
+      const threadBase = () =>
+        withEventBase({
           aggregateKind: "thread",
           aggregateId: command.threadId,
           occurredAt: command.createdAt,
           commandId: command.commandId,
-        }),
+        });
+      const createdEvent: PlannedOrchestrationEvent = {
+        ...threadBase(),
         type: "thread.created",
         payload: {
           threadId: command.threadId,
@@ -306,6 +329,41 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           updatedAt: command.createdAt,
         },
       };
+      if (startingAgents.length === 0 && command.agentRole === undefined) {
+        return createdEvent;
+      }
+      const ownAgentNamedEvents: Array<PlannedOrchestrationEvent> =
+        command.agentRole === undefined
+          ? []
+          : [
+              {
+                ...threadBase(),
+                type: "thread.participant-updated",
+                payload: {
+                  threadId: command.threadId,
+                  participantId: null,
+                  role: command.agentRole,
+                  updatedAt: command.createdAt,
+                },
+              },
+            ];
+      const agentAddedEvents = startingAgents.map((agent): PlannedOrchestrationEvent => ({
+        ...threadBase(),
+        type: "thread.participant-added",
+        payload: {
+          threadId: command.threadId,
+          participant: {
+            id: agent.id,
+            handle: agent.handle,
+            ...(agent.role !== undefined ? { role: agent.role } : {}),
+            modelSelection: agent.modelSelection,
+            joinedAt: command.createdAt,
+            leftAt: null,
+          },
+          updatedAt: command.createdAt,
+        },
+      }));
+      return [createdEvent, ...ownAgentNamedEvents, ...agentAddedEvents];
     }
 
     case "thread.fork": {

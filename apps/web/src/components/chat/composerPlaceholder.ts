@@ -3,6 +3,11 @@ export function buildDefaultComposerPlaceholder(input: {
   canInvokeSkills: boolean;
   /** In a room, "@" also picks the agent a message goes to. */
   canMentionAgents?: boolean;
+  /**
+   * In a room, the agent the message goes to. The hint names it, since the
+   * model button has little room for its name on a phone.
+   */
+  recipientName?: string | undefined;
 }): string {
   const capabilities: string[] = [];
   if (input.canMentionAgents && input.canReferenceFiles) {
@@ -16,5 +21,6 @@ export function buildDefaultComposerPlaceholder(input: {
     capabilities.push("$ invoke skills");
   }
   capabilities.push("/ commands");
-  return `Ask anything · ${capabilities.join(", ")}`;
+  const lead = input.recipientName ? `Message ${input.recipientName}` : "Ask anything";
+  return `${lead} · ${capabilities.join(", ")}`;
 }

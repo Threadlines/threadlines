@@ -176,6 +176,7 @@ import {
 import { newCommandId, newMessageId, newThreadId } from "~/lib/utils";
 import { formatProviderDriverKindLabel, resolveSelectableProvider } from "../providerModels";
 import { useSettings, useUpdateSettings } from "../hooks/useSettings";
+import { roomsEnabledFor } from "../hooks/useRoomsEnabled";
 import {
   type AppModelOption,
   getAppModelOptionsForInstance,
@@ -1674,6 +1675,20 @@ export default function ChatView(props: ChatViewProps) {
     primaryEnvironmentId && activeThread?.environmentId === primaryEnvironmentId
       ? primaryServerConfig
       : (activeEnvRuntimeState?.serverConfig ?? primaryServerConfig);
+  // Rooms follows the computer the thread lives on.
+  const roomsEnabled = roomsEnabledFor(serverConfig?.settings, settings.roomsEnabled);
+  // Agents added before the first message: the thread is created with them.
+  const draftRoom = draftThread?.room;
+  const draftRoomCreateFields = useMemo(
+    () =>
+      roomsEnabled && draftRoom
+        ? {
+            ...(draftRoom.agents.length > 0 ? { participants: draftRoom.agents } : {}),
+            ...(draftRoom.agentRole !== undefined ? { agentRole: draftRoom.agentRole } : {}),
+          }
+        : {},
+    [draftRoom, roomsEnabled],
+  );
   const versionMismatch = resolveServerConfigVersionMismatch(serverConfig);
   const versionMismatchDismissKey =
     versionMismatch && activeThread
@@ -4685,7 +4700,7 @@ export default function ChatView(props: ChatViewProps) {
       // so it can not wait in the queue while the agent holding the thread
       // is still waiting on background work. It stays in the box instead.
       const planRoomSend = resolveRoomSend({
-        enabled: settings.roomsEnabled && isServerThread,
+        enabled: roomsEnabled,
         thread: activeThread,
         threadRef: scopeThreadRef(environmentId, activeThread.id),
       });
@@ -4776,7 +4791,7 @@ export default function ChatView(props: ChatViewProps) {
     // queue (resolveRoomDelivery).
     const roomThreadRef = scopeThreadRef(environmentId, activeThread.id);
     const roomSend = resolveRoomSend({
-      enabled: settings.roomsEnabled && isServerThread,
+      enabled: roomsEnabled,
       thread: activeThread,
       threadRef: roomThreadRef,
     });
@@ -5145,6 +5160,7 @@ export default function ChatView(props: ChatViewProps) {
                       interactionMode,
                       branch: activeThreadBranch,
                       worktreePath: activeThread.worktreePath,
+                      ...draftRoomCreateFields,
                       createdAt: activeThread.createdAt,
                     },
                   }
@@ -5607,6 +5623,7 @@ export default function ChatView(props: ChatViewProps) {
             interactionMode: "default",
             branch: activeThreadBranch,
             worktreePath: activeThread.worktreePath,
+            ...draftRoomCreateFields,
             createdAt: new Date().toISOString(),
           });
         } else {
@@ -5642,6 +5659,7 @@ export default function ChatView(props: ChatViewProps) {
       activeThread,
       activeProject,
       activeThreadBranch,
+      draftRoomCreateFields,
       environmentId,
       isServerThread,
       persistThreadSettingsForNextTurn,
@@ -6135,7 +6153,7 @@ export default function ChatView(props: ChatViewProps) {
       // In a room, plan feedback and implementation go where a typed message
       // would: usually the agent that wrote the plan, since it worked last.
       const roomSend = resolveRoomSend({
-        enabled: settings.roomsEnabled && isServerThread,
+        enabled: roomsEnabled,
         thread: activeThread,
         threadRef: scopeThreadRef(activeThread.environmentId, activeThread.id),
       });
@@ -6248,7 +6266,7 @@ export default function ChatView(props: ChatViewProps) {
       setComposerDraftInteractionMode,
       setThreadError,
       environmentId,
-      settings.roomsEnabled,
+      roomsEnabled,
     ],
   );
 
@@ -7213,8 +7231,8 @@ export default function ChatView(props: ChatViewProps) {
                   activeThreadId={activeThreadId}
                   activeThreadEnvironmentId={activeThread?.environmentId}
                   activeThread={activeThread}
-                  isServerThread={isServerThread}
                   isLocalDraftThread={isLocalDraftThread}
+                  serverThreadExists={serverThread !== undefined}
                   phase={phase}
                   isConnecting={isConnecting}
                   isSendBusy={isSendBusy}
@@ -7272,6 +7290,7 @@ export default function ChatView(props: ChatViewProps) {
                   }
                   resolvedTheme={resolvedTheme}
                   settings={settings}
+                  roomsEnabled={roomsEnabled}
                   keybindings={keybindings}
                   terminalOpen={Boolean(terminalState.terminalOpen)}
                   gitCwd={gitCwd}

@@ -1424,6 +1424,28 @@ const ProjectDeleteCommand = Schema.Struct({
   force: Schema.optional(Schema.Boolean),
 });
 
+/**
+ * An agent a new thread starts with besides its own: a thread set up as a
+ * room before its first message.
+ */
+export const ThreadCreateParticipant = Schema.Struct({
+  id: ThreadParticipantId,
+  handle: TrimmedNonEmptyString,
+  role: Schema.optional(RoomAgentRole),
+  modelSelection: ModelSelection,
+});
+export type ThreadCreateParticipant = typeof ThreadCreateParticipant.Type;
+
+/**
+ * The room a new thread starts as, created with the thread in one step so a
+ * failure can never leave half of it: its added agents, and the user's name
+ * for its own agent.
+ */
+const ThreadCreateRoomFields = {
+  participants: Schema.optional(Schema.Array(ThreadCreateParticipant)),
+  agentRole: Schema.optional(RoomAgentRole),
+};
+
 const ThreadCreateCommand = Schema.Struct({
   type: Schema.Literal("thread.create"),
   commandId: CommandId,
@@ -1437,6 +1459,7 @@ const ThreadCreateCommand = Schema.Struct({
   ),
   branch: Schema.NullOr(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
+  ...ThreadCreateRoomFields,
   createdAt: IsoDateTime,
 });
 
@@ -1673,6 +1696,7 @@ export const ThreadBootstrapCreateThread = Schema.Struct({
   interactionMode: ProviderInteractionMode,
   branch: Schema.NullOr(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
+  ...ThreadCreateRoomFields,
   createdAt: IsoDateTime,
 });
 export type ThreadBootstrapCreateThread = typeof ThreadBootstrapCreateThread.Type;

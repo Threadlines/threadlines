@@ -71,8 +71,9 @@ export const ClientSettingsSchema = Schema.Struct({
   confirmThreadArchive: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   confirmThreadDelete: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   /**
-   * Preview: add more agents to a thread (a room). Gates every entry point in
-   * the client; the server accepts room commands either way.
+   * This device's Rooms switch from before the switch moved to the computer
+   * (ServerSettings.enableRooms). Read only while the computer has never
+   * chosen, and lifted onto it once (enableRoomsDefault).
    */
   roomsEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   /** File a thread under Wrapped once its pull request merges or closes. */
@@ -567,6 +568,14 @@ export const ServerSettings = Schema.Struct({
    * once, and never overwrites a choice.
    */
   agentInvites: Schema.optional(AgentInvitesMode),
+  /**
+   * Preview: add more agents to a thread (a room). Gates every entry point in
+   * the clients; the server accepts room commands either way. It lives with
+   * the computer so every device connected to it, a phone included, agrees.
+   * Absent: never chosen, which means a device falls back to its own old
+   * switch (ClientSettings.roomsEnabled).
+   */
+  enableRooms: Schema.optional(Schema.Boolean),
 });
 export type ServerSettings = typeof ServerSettings.Type;
 
@@ -688,6 +697,12 @@ export const ServerSettingsPatch = Schema.Struct({
    * device picking the default cannot overwrite another device's choice.
    */
   agentInvitesDefault: Schema.optionalKey(AgentInvitesMode),
+  enableRooms: Schema.optionalKey(Schema.Boolean),
+  /**
+   * Sets `enableRooms` only if it was never chosen: how a device lifts its old
+   * per-device switch onto the computer without overwriting a choice.
+   */
+  enableRoomsDefault: Schema.optionalKey(Schema.Boolean),
 });
 export type ServerSettingsPatch = typeof ServerSettingsPatch.Type;
 

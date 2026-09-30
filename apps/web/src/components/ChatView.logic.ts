@@ -151,6 +151,20 @@ export function buildLocalDraftThread(
     activities: [],
     subagents: [],
     proposedPlans: [],
+    // Agents added before the first message make the draft a room already,
+    // so it picks who a message goes to like any room.
+    ...(draftThread.room
+      ? {
+          participants: draftThread.room.agents.map((agent) => ({
+            ...agent,
+            joinedAt: draftThread.createdAt,
+            leftAt: null,
+          })),
+          ...(draftThread.room.agentRole !== undefined
+            ? { agentRole: draftThread.room.agentRole }
+            : {}),
+        }
+      : {}),
   };
 }
 
@@ -194,6 +208,13 @@ export function mergeLocalDraftThreadWithServerThread(
     turnDiffSummaries: serverThread.turnDiffSummaries,
     activities: serverThread.activities,
     subagents: serverThread.subagents ?? [],
+    // Once the thread exists, its room is the server's.
+    participants: serverThread.participants ?? [],
+    agentRole: serverThread.agentRole,
+    sideTurn: serverThread.sideTurn ?? null,
+    ...(serverThread.agentRequests !== undefined
+      ? { agentRequests: serverThread.agentRequests }
+      : {}),
   };
 }
 

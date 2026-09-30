@@ -1,6 +1,7 @@
 import {
   CommandId,
   DEFAULT_PROVIDER_INTERACTION_MODE,
+  EventId,
   MessageId,
   ProjectId,
   ProviderInstanceId,
@@ -22,7 +23,7 @@ import * as Exit from "effect/Exit";
 import { describe, expect, it } from "vite-plus/test";
 
 import { decideOrchestrationCommand } from "./decider.ts";
-import { projectEvent } from "./projector.ts";
+import { createEmptyReadModel, projectEvent } from "./projector.ts";
 
 const now = "2026-01-01T00:00:00.000Z";
 const threadId = ThreadId.make("thread-room");
@@ -157,6 +158,84 @@ describe("decider rooms", () => {
       readModel(),
     );
     expect(Exit.isFailure(duplicate)).toBe(true);
+  });
+
+  it("starts a new thread as a room in one step, or not at all", async () => {
+    const projectId = ProjectId.make("project-new-room");
+    const seeded = await Effect.runPromise(
+      projectEvent(createEmptyReadModel(now), {
+        sequence: 1,
+        eventId: EventId.make("evt-project"),
+        aggregateKind: "project",
+        aggregateId: projectId,
+        type: "project.created",
+        occurredAt: now,
+        commandId: CommandId.make("cmd-project"),
+        causationEventId: null,
+        correlationId: CommandId.make("cmd-project"),
+        metadata: {},
+        payload: {
+          projectId,
+          kind: "workspace",
+          title: "New room",
+          workspaceRoot: "/repos/new-room",
+          defaultModelSelection: null,
+          scripts: [],
+          createdAt: now,
+          updatedAt: now,
+        },
+      }),
+    );
+    const create = (
+      participants: ReadonlyArray<{ readonly id: string; readonly handle: string }>,
+    ): OrchestrationCommand => ({
+      type: "thread.create",
+      commandId: CommandId.make("cmd-create-room"),
+      threadId: ThreadId.make("thread-new-room"),
+      projectId,
+      title: "New room",
+      modelSelection: { instanceId: ProviderInstanceId.make("claudeAgent"), model: "opus-5-5" },
+      runtimeMode: "full-access",
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+      branch: null,
+      worktreePath: null,
+      agentRole: "Builder",
+      participants: participants.map((agent) => ({
+        id: ThreadParticipantId.make(agent.id),
+        handle: agent.handle,
+        role: "Reviewer",
+        modelSelection: astra.modelSelection,
+      })),
+      createdAt: now,
+    });
+
+    const events = await decideEvents(create([{ id: astraId, handle: "GPT-6-Astra" }]), seeded);
+    let projected = seeded;
+    for (const [index, event] of events.entries()) {
+      projected = await Effect.runPromise(
+        projectEvent(projected, { ...event, sequence: index + 2 } as OrchestrationEvent),
+      );
+    }
+    const thread = projected.threads.find((entry) => entry.id === "thread-new-room");
+    expect(thread?.agentRole).toBe("Builder");
+    expect(thread?.participants).toEqual([
+      expect.objectContaining({
+        id: astraId,
+        handle: "GPT-6-Astra",
+        role: "Reviewer",
+        leftAt: null,
+      }),
+    ]);
+
+    // Two agents with one name: nothing is created.
+    const clash = await decide(
+      create([
+        { id: astraId, handle: "GPT-6-Astra" },
+        { id: "2c3d4e5f-6a7b-4c8d-9e0f-1a2b3c4d5e6f", handle: "gpt-6-astra" },
+      ]),
+      seeded,
+    );
+    expect(Exit.isFailure(clash)).toBe(true);
   });
 
   it("hands the session slot to the addressed agent", async () => {

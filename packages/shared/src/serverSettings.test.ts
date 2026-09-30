@@ -229,6 +229,16 @@ describe("serverSettings helpers", () => {
     ).toBeNull();
   });
 
+  it("lifts a device's Rooms switch onto the computer only if it never chose", () => {
+    const lifted = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, { enableRoomsDefault: true });
+    expect(lifted.enableRooms).toBe(true);
+
+    const turnedOff = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, { enableRooms: false });
+    expect(applyServerSettingsPatch(turnedOff, { enableRoomsDefault: true }).enableRooms).toBe(
+      false,
+    );
+  });
+
   it("merges source control writing style field by field", () => {
     const current = {
       ...DEFAULT_SERVER_SETTINGS,
