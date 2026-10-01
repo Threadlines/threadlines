@@ -717,7 +717,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           const current = existingRow.value.sideTurn ?? null;
           const nextSideTurn =
             event.type === "thread.side-turn-started"
-              ? event.payload.sideTurn
+              ? { ...event.payload.sideTurn, modelSelection: event.payload.modelSelection }
               : current === null || current.sideTurnId !== event.payload.sideTurnId
                 ? current
                 : event.type === "thread.side-turn-settled"
@@ -783,6 +783,23 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             roomContext: {
               ...existingRow.value.roomContext,
               [event.payload.agentKey]: event.payload.cursor,
+            },
+          });
+          return;
+        }
+
+        case "thread.sent-model-recorded": {
+          const existingRow = yield* projectionThreadRepository.getById({
+            threadId: event.payload.threadId,
+          });
+          if (Option.isNone(existingRow)) {
+            return;
+          }
+          yield* projectionThreadRepository.upsert({
+            ...existingRow.value,
+            sentModels: {
+              ...existingRow.value.sentModels,
+              [event.payload.agentKey]: event.payload.modelSelection,
             },
           });
           return;
@@ -1302,6 +1319,9 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
               ? { reviewInput: event.payload.reviewInput }
               : {}),
             ...(event.payload.invite !== undefined ? { invite: event.payload.invite } : {}),
+            ...(event.payload.agentModels !== undefined
+              ? { agentModels: event.payload.agentModels }
+              : {}),
             isStreaming: event.payload.streaming,
             createdAt: previousMessage?.createdAt ?? event.payload.createdAt,
             updatedAt: event.payload.updatedAt,
@@ -1332,6 +1352,9 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             ...(nextSkills !== undefined ? { skills: [...nextSkills] } : {}),
             ...(event.payload.participantId !== undefined
               ? { participantId: event.payload.participantId }
+              : {}),
+            ...(event.payload.agentModels !== undefined
+              ? { agentModels: event.payload.agentModels }
               : {}),
             isStreaming: false,
             createdAt: previousMessage?.createdAt ?? event.payload.createdAt,

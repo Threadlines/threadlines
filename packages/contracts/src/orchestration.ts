@@ -452,6 +452,22 @@ export const RoomAgentRef = Schema.Struct({
 });
 export type RoomAgentRef = typeof RoomAgentRef.Type;
 
+/**
+ * An agent as it was when a message was written, so the chat keeps naming it
+ * that way after its model or options change.
+ */
+export const MessageAgentModel = Schema.Struct({
+  /** Its model, options (reasoning and the like) included. */
+  modelSelection: ModelSelection,
+  /**
+   * Its place among the agents then on that model, in the order they joined,
+   * the thread's own agent first: 1 goes by the model's name alone, 2 is
+   * "GPT-6 Astra 2".
+   */
+  nameIndex: PositiveInt,
+});
+export type MessageAgentModel = typeof MessageAgentModel.Type;
+
 /** What an independent review was given besides its request. */
 export const RoomReviewBasis = Schema.Struct({
   /** `uncommitted`: the checkout's changes; `range`: `base..head`. */
@@ -553,6 +569,14 @@ export const OrchestrationMessage = Schema.Struct({
   reviewInput: Schema.optional(RoomReviewInput),
   /** An invite request: see RoomAgentInvite. */
   invite: Schema.optional(RoomAgentInvite),
+  /**
+   * The agents the message names, as they were when it was written, keyed by
+   * agent (`primary` or a participant id): an assistant message's author, the
+   * agent a user message went to, and an agent's request's asker. Set by the
+   * write that creates the message and never changed. Absent on messages
+   * recorded before it was kept.
+   */
+  agentModels: Schema.optional(Schema.Record(Schema.String, MessageAgentModel)),
   turnId: Schema.NullOr(TurnId),
   streaming: Schema.Boolean,
   createdAt: IsoDateTime,
@@ -1010,6 +1034,11 @@ export const OrchestrationSideTurn = Schema.Struct({
   askedBy: Schema.optional(RoomAgentRef),
   /** The room request this answers, when an agent asked. */
   requestId: Schema.optional(RoomAgentRequestId),
+  /**
+   * The model the answer runs with, options included, from
+   * `thread.side-turn-started`. Absent on answers started before it was kept.
+   */
+  modelSelection: Schema.optional(ModelSelection),
 });
 export type OrchestrationSideTurn = typeof OrchestrationSideTurn.Type;
 
@@ -1170,6 +1199,12 @@ export const OrchestrationThread = Schema.Struct({
    * told. Absent: nothing yet.
    */
   roomContext: Schema.optional(Schema.Record(Schema.String, OrchestrationRoomContextCursor)),
+  /**
+   * Per agent (`primary` or a participant id), the model its last turn was
+   * sent with, options included: what its messages are stamped with (see
+   * OrchestrationMessage.agentModels). Absent: nothing recorded yet.
+   */
+  sentModels: Schema.optional(Schema.Record(Schema.String, ModelSelection)),
   /** See OrchestrationThreadShell.doneOverride. */
   doneOverride: Schema.NullOr(OrchestrationThreadDoneOverride).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
@@ -2301,6 +2336,16 @@ const ThreadRoomContextRecordCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+/** Record the model an agent's turn is being sent with; see OrchestrationThread.sentModels. */
+const ThreadSentModelRecordCommand = Schema.Struct({
+  type: Schema.Literal("thread.sent-model.record"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  agentKey: TrimmedNonEmptyString,
+  modelSelection: ModelSelection,
+  createdAt: IsoDateTime,
+});
+
 /**
  * Room tools: an agent's request of another agent, made through the room MCP
  * server. The decider checks the caller holds the slot with this turn in
@@ -2395,6 +2440,7 @@ const InternalOrchestrationCommand = Schema.Union([
   ThreadSideTurnMarkRunningCommand,
   ThreadSideTurnSettleCommand,
   ThreadRoomContextRecordCommand,
+  ThreadSentModelRecordCommand,
   ThreadAgentRequestSubmitCommand,
   ThreadAgentRequestQueueCommand,
   ThreadAgentRequestSettleCommand,
@@ -2431,6 +2477,7 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.side-turn-running",
   "thread.side-turn-settled",
   "thread.room-context-recorded",
+  "thread.sent-model-recorded",
   "thread.agent-request-submitted",
   "thread.agent-request-updated",
   "thread.agent-request-settled",
@@ -2680,6 +2727,13 @@ export const ThreadRoomContextRecordedPayload = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+export const ThreadSentModelRecordedPayload = Schema.Struct({
+  threadId: ThreadId,
+  agentKey: TrimmedNonEmptyString,
+  modelSelection: ModelSelection,
+  createdAt: IsoDateTime,
+});
+
 export const ThreadMetaUpdatedPayload = Schema.Struct({
   threadId: ThreadId,
   title: Schema.optional(TrimmedNonEmptyString),
@@ -2720,6 +2774,8 @@ export const ThreadMessageSentPayload = Schema.Struct({
   requestKind: Schema.optional(RoomAgentMessageKind),
   reviewInput: Schema.optional(RoomReviewInput),
   invite: Schema.optional(RoomAgentInvite),
+  /** See OrchestrationMessage.agentModels. Only the write that creates the message counts. */
+  agentModels: Schema.optional(Schema.Record(Schema.String, MessageAgentModel)),
   turnId: Schema.NullOr(TurnId),
   streaming: Schema.Boolean,
   /** Missing means legacy behavior for events written before assistant
@@ -2770,6 +2826,8 @@ export const ThreadFollowUpSubmittedPayload = Schema.Struct({
   skills: Schema.optional(ChatSkillReferenceList),
   /** In a room, the agent being steered: the one holding the session slot. */
   participantId: Schema.optional(Schema.NullOr(ThreadParticipantId)),
+  /** See OrchestrationMessage.agentModels. */
+  agentModels: Schema.optional(Schema.Record(Schema.String, MessageAgentModel)),
   createdAt: IsoDateTime,
 });
 
@@ -3042,6 +3100,11 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.room-context-recorded"),
     payload: ThreadRoomContextRecordedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.sent-model-recorded"),
+    payload: ThreadSentModelRecordedPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,

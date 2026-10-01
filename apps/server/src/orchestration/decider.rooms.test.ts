@@ -799,6 +799,15 @@ describe("decider rooms", () => {
       const handOff = request("hand_off");
       model = await apply(model, await decideEvents(handOff, model));
       expect(threadOf(model).agentRequests.open[0]).toMatchObject({ status: "pending" });
+      // It names both agents as they were when it was written.
+      const handOffStamps = {
+        primary: { modelSelection: threadOf(model).modelSelection, nameIndex: 1 },
+        [astraId]: { modelSelection: astra.modelSelection, nameIndex: 1 },
+      };
+      expect(
+        threadOf(model).messages.find((message) => message.id === handOff.message.messageId)
+          ?.agentModels,
+      ).toEqual(handOffStamps);
       expect(threadOf(model).agentRequests.requestsSinceUser).toBe(1);
 
       // The calling turn completed (the reactor's call): the target's turn joins the queue.
@@ -843,7 +852,15 @@ describe("decider rooms", () => {
         createdAt: now,
       });
       expect(sent.some((event) => event.type === "thread.agent-requests-reset")).toBe(false);
+      // Sending it later does not restamp it.
+      expect(
+        sent.find((event) => event.type === "thread.message-sent")?.payload,
+      ).not.toHaveProperty("agentModels");
       model = await apply(model, sent);
+      expect(
+        threadOf(model).messages.find((message) => message.id === handOff.message.messageId)
+          ?.agentModels,
+      ).toEqual(handOffStamps);
       expect(threadOf(model).agentRequests.open[0]).toMatchObject({ status: "running" });
 
       const settle = {
@@ -957,6 +974,88 @@ describe("decider rooms", () => {
       ]);
       model = await apply(model, stopped);
       expect(threadOf(model).agentRequests).toMatchObject({ hold: true, chainEpoch: 1, open: [] });
+    });
+
+    it("stamps each message with the model it was written with, whatever changes after", async () => {
+      const high = { ...astra.modelSelection, options: [{ id: "reasoningEffort", value: "high" }] };
+      const low = { ...astra.modelSelection, options: [{ id: "reasoningEffort", value: "low" }] };
+      const astra2Id = ThreadParticipantId.make("8b1c2d3e-4f5a-4b6c-9d7e-8f9a0b1c2d3e");
+      let model = readModel({
+        participants: [astra, { ...astra, id: astra2Id, handle: "astra 2" }],
+        session: session({ participantId: astraId, status: "running", activeTurnId: callerTurn }),
+      });
+      // The reactor records the model astra's turn went out with, then the
+      // user turns its reasoning down while it works.
+      model = await apply(
+        model,
+        await decideEvents(
+          {
+            type: "thread.sent-model.record",
+            commandId: CommandId.make("cmd-sent-model"),
+            threadId,
+            agentKey: astraId,
+            modelSelection: high,
+            createdAt: now,
+          },
+          model,
+        ),
+      );
+      model = await apply(
+        model,
+        await decideEvents(
+          {
+            type: "thread.participant.update",
+            commandId: CommandId.make("cmd-lower-reasoning"),
+            threadId,
+            participantId: astraId,
+            modelOptions: low.options,
+            createdAt: now,
+          },
+          model,
+        ),
+      );
+
+      const delta = (
+        messageId: string,
+        participantId: ThreadParticipantId,
+        text: string,
+      ): OrchestrationCommand => ({
+        type: "thread.message.assistant.delta",
+        commandId: CommandId.make(`cmd-${messageId}-${text.length}`),
+        threadId,
+        messageId: MessageId.make(messageId),
+        participantId,
+        delta: text,
+        turnId: callerTurn,
+        createdAt: now,
+      });
+      const first = await decideEvents(delta("assistant-a", astraId, "Looking"), model);
+      expect(first[0]?.payload).toMatchObject({
+        agentModels: { [astraId]: { modelSelection: high, nameIndex: 1 } },
+      });
+      model = await apply(model, first);
+      // Later words of the same message leave its stamp alone.
+      const more = await decideEvents(delta("assistant-a", astraId, " closer"), model);
+      expect(more[0]?.payload).not.toHaveProperty("agentModels");
+      model = await apply(model, more);
+      expect(
+        threadOf(model).messages.find((message) => message.id === "assistant-a"),
+      ).toMatchObject({
+        text: "Looking closer",
+        agentModels: { [astraId]: { modelSelection: high, nameIndex: 1 } },
+      });
+
+      // A second agent on the same model is numbered after the first.
+      const second = await decideEvents(delta("assistant-b", astra2Id, "Here"), model);
+      expect(second[0]?.payload).toMatchObject({
+        agentModels: { [astra2Id]: { modelSelection: astra.modelSelection, nameIndex: 2 } },
+      });
+
+      // A message to an agent names it as the turn was asked.
+      const asked = await decideEvents({ ...turnStart(astraId), modelSelection: low }, readModel());
+      expect(asked.find((event) => event.type === "thread.message-sent")?.payload).toMatchObject({
+        agentModels: { [astraId]: { modelSelection: low, nameIndex: 1 } },
+      });
     });
 
     it("changes an added agent's model only when it has nothing in flight", async () => {

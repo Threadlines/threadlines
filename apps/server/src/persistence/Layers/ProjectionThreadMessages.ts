@@ -9,6 +9,7 @@ import {
   SideTurnId,
   ChatAttachmentListLenient,
   ChatSkillReferenceList,
+  MessageAgentModel,
   NonNegativeInt,
   RoomAgentMessageKind,
   RoomAgentRef,
@@ -45,6 +46,9 @@ const ProjectionThreadMessageDbRowSchema = ProjectionThreadMessage.mapFields(
     requestError: Schema.NullOr(TrimmedNonEmptyString),
     reviewInput: Schema.NullOr(Schema.fromJsonString(RoomReviewInput)),
     invite: Schema.NullOr(Schema.fromJsonString(RoomAgentInvite)),
+    agentModels: Schema.NullOr(
+      Schema.fromJsonString(Schema.Record(Schema.String, MessageAgentModel)),
+    ),
   }),
 );
 
@@ -72,6 +76,7 @@ function toProjectionThreadMessage(
     ...(row.requestError !== null ? { requestError: row.requestError } : {}),
     ...(row.reviewInput !== null ? { reviewInput: row.reviewInput } : {}),
     ...(row.invite !== null ? { invite: row.invite } : {}),
+    ...(row.agentModels !== null ? { agentModels: row.agentModels } : {}),
   };
 }
 
@@ -103,6 +108,7 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
           request_error,
           review_input,
           invite,
+          agent_models,
           is_streaming,
           created_at,
           updated_at
@@ -139,6 +145,7 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
           ${row.requestError ?? null},
           ${row.reviewInput !== undefined ? JSON.stringify(row.reviewInput) : null},
           ${row.invite !== undefined ? JSON.stringify(row.invite) : null},
+          ${row.agentModels !== undefined ? JSON.stringify(row.agentModels) : null},
           ${row.isStreaming ? 1 : 0},
           ${row.createdAt},
           ${row.updatedAt}
@@ -170,6 +177,8 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
           request_error = COALESCE(excluded.request_error, projection_thread_messages.request_error),
           review_input = COALESCE(excluded.review_input, projection_thread_messages.review_input),
           invite = COALESCE(excluded.invite, projection_thread_messages.invite),
+          -- The model stamps belong to the write that created the message.
+          agent_models = COALESCE(projection_thread_messages.agent_models, excluded.agent_models),
           is_streaming = excluded.is_streaming,
           created_at = excluded.created_at,
           updated_at = excluded.updated_at
@@ -200,6 +209,7 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
           request_error AS "requestError",
           review_input AS "reviewInput",
           invite,
+          agent_models AS "agentModels",
           is_streaming AS "isStreaming",
           created_at AS "createdAt",
           updated_at AS "updatedAt"
@@ -232,6 +242,7 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
           request_error AS "requestError",
           review_input AS "reviewInput",
           invite,
+          agent_models AS "agentModels",
           is_streaming AS "isStreaming",
           created_at AS "createdAt",
           updated_at AS "updatedAt"

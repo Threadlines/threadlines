@@ -190,6 +190,14 @@ export function findActiveParticipantByHandle(
   );
 }
 
+/**
+ * Key for one agent in per-agent records (`roomContext`, `sentModels`, a
+ * message's `agentModels`): its participant id, or `primary` for the thread's
+ * own agent.
+ */
+export const roomAgentKey = (participantId: ThreadParticipantId | null | undefined): string =>
+  participantId ?? "primary";
+
 /** The agent holding the thread's session slot. Null: the thread's own agent. */
 export function sessionSlotParticipantId(
   session: { readonly participantId?: ThreadParticipantId | null | undefined } | null,

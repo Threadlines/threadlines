@@ -41,6 +41,7 @@ import {
   hasAgentRecords,
   isRoomThread,
   participantSessionKey,
+  roomAgentKey,
   sessionSlotParticipantId,
   sideSessionKey,
 } from "@threadlines/shared/threadParticipants";
@@ -81,9 +82,6 @@ import { ensureGeneralChatThreadScratchCwd } from "../generalChats.ts";
 import { buildIndependentReviewPrompt } from "../roomReviewPrompt.ts";
 import { buildRoomCatchUp } from "../roomCatchUp.ts";
 
-/** Key for one agent in `OrchestrationThread.roomContext`. */
-const roomAgentContextKey = (participantId: ThreadParticipantId | null): string =>
-  participantId ?? "primary";
 import { pauseActiveThreadGoalForStop } from "../threadGoalLifecycle.ts";
 import { canReplaceThreadTitle } from "../threadTitle.ts";
 import { formatUserInputReply, readRequestedUserInput } from "../userInput.ts";
@@ -1448,7 +1446,7 @@ const make = Effect.gen(function* () {
     // conversation was last caught up. Built now, from the thread as it stands
     // when the turn is sent; the cursor is only kept for the conversation it
     // was delivered to.
-    const agentKey = roomAgentContextKey(input.participantId);
+    const agentKey = roomAgentKey(input.participantId);
     const conversationId = activeSession?.providerThreadId ?? null;
     const storedCursor = thread.roomContext?.[agentKey] ?? null;
     const roomCatchUp = buildRoomCatchUp({
@@ -1586,6 +1584,34 @@ const make = Effect.gen(function* () {
           }),
         ),
       );
+
+  /**
+   * Record the model an agent's turn is sent with, before the turn goes out,
+   * so everything the turn writes is stamped with it (messageAgentModels).
+   */
+  const recordSentModel = (
+    threadId: ThreadId,
+    participantId: ThreadParticipantId | null,
+    modelSelection: ModelSelection,
+  ) =>
+    nowIso.pipe(
+      Effect.flatMap((createdAt) =>
+        orchestrationEngine.dispatch({
+          type: "thread.sent-model.record",
+          commandId: serverCommandId("sent-model-record"),
+          threadId,
+          agentKey: roomAgentKey(participantId),
+          modelSelection,
+          createdAt,
+        }),
+      ),
+      Effect.catchCause((cause) =>
+        Effect.logWarning("provider command reactor could not record the sent model", {
+          threadId,
+          cause: Cause.pretty(cause),
+        }),
+      ),
+    );
 
   const capturePreTurnCheckpointForTurnStart = Effect.fn("capturePreTurnCheckpointForTurnStart")(
     function* (input: { readonly threadId: ThreadId }) {
@@ -2035,6 +2061,13 @@ const make = Effect.gen(function* () {
       }
 
       const { request: turnRequest, roomContext } = sendTurnRequest.value;
+      if (turnRequest.modelSelection !== undefined) {
+        yield* recordSentModel(
+          event.payload.threadId,
+          event.payload.participantId ?? null,
+          turnRequest.modelSelection,
+        );
+      }
       yield* providerService.sendTurn(turnRequest).pipe(
         Effect.flatMap((turn) =>
           markProviderTurnAccepted({
@@ -3456,7 +3489,7 @@ const make = Effect.gen(function* () {
             ),
       ),
     );
-    const storedCursor = thread.roomContext?.[roomAgentContextKey(sideTurn.participantId)] ?? null;
+    const storedCursor = thread.roomContext?.[roomAgentKey(sideTurn.participantId)] ?? null;
     const catchUp = isReview
       ? undefined
       : buildRoomCatchUp({

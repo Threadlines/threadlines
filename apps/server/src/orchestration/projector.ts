@@ -54,6 +54,7 @@ import {
   ThreadParticipantRemovedPayload,
   ThreadParticipantUpdatedPayload,
   ThreadRoomContextRecordedPayload,
+  ThreadSentModelRecordedPayload,
   ThreadAgentRequestSubmittedPayload,
   ThreadAgentRequestUpdatedPayload,
   ThreadAgentRequestSettledPayload,
@@ -144,6 +145,18 @@ function updateThread(
   patch: ThreadPatch,
 ): OrchestrationThread[] {
   return threads.map((thread) => (thread.id === threadId ? { ...thread, ...patch } : thread));
+}
+
+/**
+ * A message's model stamps come from the write that created it: a later write
+ * only fills them in when it has none. The SQL projection keeps the same rule.
+ */
+function keptAgentModels(
+  existing: Pick<OrchestrationMessage, "agentModels">,
+  incoming: Pick<OrchestrationMessage, "agentModels">,
+): Pick<OrchestrationMessage, "agentModels"> {
+  const agentModels = existing.agentModels ?? incoming.agentModels;
+  return agentModels !== undefined ? { agentModels } : {};
 }
 
 function decodeForEvent<A>(
@@ -536,7 +549,7 @@ export function projectEvent(
         Effect.map((payload) => ({
           ...nextBase,
           threads: updateThread(nextBase.threads, payload.threadId, {
-            sideTurn: payload.sideTurn,
+            sideTurn: { ...payload.sideTurn, modelSelection: payload.modelSelection },
             updatedAt: event.occurredAt,
           }),
         })),
@@ -606,6 +619,30 @@ export function projectEvent(
             ...nextBase,
             threads: updateThread(nextBase.threads, payload.threadId, {
               roomContext: { ...(thread.roomContext ?? {}), [payload.agentKey]: payload.cursor },
+            }),
+          };
+        }),
+      );
+
+    case "thread.sent-model-recorded":
+      return decodeForEvent(
+        ThreadSentModelRecordedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => {
+          const thread = nextBase.threads.find((entry) => entry.id === payload.threadId);
+          if (thread === undefined) {
+            return nextBase;
+          }
+          return {
+            ...nextBase,
+            threads: updateThread(nextBase.threads, payload.threadId, {
+              sentModels: {
+                ...(thread.sentModels ?? {}),
+                [payload.agentKey]: payload.modelSelection,
+              },
             }),
           };
         }),
@@ -871,6 +908,7 @@ export function projectEvent(
             ...(payload.requestKind !== undefined ? { requestKind: payload.requestKind } : {}),
             ...(payload.reviewInput !== undefined ? { reviewInput: payload.reviewInput } : {}),
             ...(payload.invite !== undefined ? { invite: payload.invite } : {}),
+            ...(payload.agentModels !== undefined ? { agentModels: payload.agentModels } : {}),
             turnId: payload.turnId,
             streaming: payload.streaming,
             createdAt: payload.createdAt,
@@ -898,6 +936,7 @@ export function projectEvent(
                       ? { attachments: message.attachments }
                       : {}),
                     ...(message.skills !== undefined ? { skills: message.skills } : {}),
+                    ...keptAgentModels(entry, message),
                   }
                 : entry,
             )
@@ -953,6 +992,7 @@ export function projectEvent(
             ...(payload.participantId !== undefined
               ? { participantId: payload.participantId }
               : {}),
+            ...(payload.agentModels !== undefined ? { agentModels: payload.agentModels } : {}),
             turnId: payload.turnId,
             streaming: false,
             createdAt: payload.createdAt,
@@ -965,7 +1005,13 @@ export function projectEvent(
         const existingMessage = thread.messages.find((entry) => entry.id === message.id);
         const messages = existingMessage
           ? thread.messages.map((entry) =>
-              entry.id === message.id ? { ...message, eventSequence: entry.eventSequence } : entry,
+              entry.id === message.id
+                ? {
+                    ...message,
+                    eventSequence: entry.eventSequence,
+                    ...keptAgentModels(entry, message),
+                  }
+                : entry,
             )
           : [...thread.messages, message];
 

@@ -35,6 +35,7 @@ import type {
   RoomAgentRef,
   RoomAgentRequestId,
   RoomAgentRequestOutcome,
+  MessageAgentModel,
   RoomAgentInvite,
   RoomReviewInput,
   RuntimeMode,
@@ -98,6 +99,8 @@ export interface ChatMessage {
   reviewInput?: RoomReviewInput | undefined;
   /** See OrchestrationMessage.invite. */
   invite?: RoomAgentInvite | undefined;
+  /** See OrchestrationMessage.agentModels: the agents it names, as they were. */
+  agentModels?: Readonly<Record<string, MessageAgentModel>> | undefined;
   turnId?: TurnId | null;
   createdAt: string;
   completedAt?: string | undefined;

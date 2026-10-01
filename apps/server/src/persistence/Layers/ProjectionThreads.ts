@@ -37,6 +37,7 @@ const ProjectionThreadDbRow = ProjectionThread.mapFields(
     roomContext: Schema.fromJsonString(
       Schema.Record(Schema.String, OrchestrationRoomContextCursor),
     ),
+    sentModels: Schema.fromJsonString(Schema.Record(Schema.String, ModelSelection)),
   }),
 );
 type ProjectionThreadDbRow = typeof ProjectionThreadDbRow.Type;
@@ -74,6 +75,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           participants,
           side_turn,
           room_context,
+          sent_models,
           agent_role,
           agent_requests,
           done_override,
@@ -112,6 +114,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           ${JSON.stringify(row.participants ?? [])},
           ${row.sideTurn ? JSON.stringify(row.sideTurn) : null},
           ${JSON.stringify(row.roomContext ?? {})},
+          ${JSON.stringify(row.sentModels ?? {})},
           ${row.agentRole ?? null},
           ${row.agentRequests ? JSON.stringify(row.agentRequests) : null},
           ${row.doneOverride ?? null},
@@ -150,6 +153,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           participants = excluded.participants,
           side_turn = excluded.side_turn,
           room_context = excluded.room_context,
+          sent_models = excluded.sent_models,
           agent_role = excluded.agent_role,
           agent_requests = excluded.agent_requests,
           done_override = excluded.done_override,
@@ -195,6 +199,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           participants AS "participants",
           side_turn AS "sideTurn",
           room_context AS "roomContext",
+          sent_models AS "sentModels",
           agent_role AS "agentRole",
           agent_requests AS "agentRequests",
           done_override AS "doneOverride",
@@ -242,6 +247,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           participants AS "participants",
           side_turn AS "sideTurn",
           room_context AS "roomContext",
+          sent_models AS "sentModels",
           agent_role AS "agentRole",
           agent_requests AS "agentRequests",
           done_override AS "doneOverride",

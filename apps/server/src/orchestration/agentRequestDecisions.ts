@@ -29,6 +29,7 @@ import {
   isRoomThread,
   isValidParticipantId,
 } from "@threadlines/shared/threadParticipants";
+import { currentAgentModel, messageAgentModels, sentAgentModel } from "./messageAgentModels.ts";
 
 type PlannedEvent = Omit<OrchestrationEvent, "sequence">;
 type EventBase = () => Omit<OrchestrationEvent, "sequence" | "type" | "payload">;
@@ -145,6 +146,16 @@ export function decideAgentRequestSubmit(
       fromAgent: command.from,
       requestId: command.requestId,
       requestKind: command.kind,
+      agentModels: messageAgentModels(thread, [
+        {
+          participantId: command.from.participantId,
+          modelSelection: sentAgentModel(thread, command.from.participantId),
+        },
+        {
+          participantId: command.to.participantId,
+          modelSelection: currentAgentModel(thread, command.to.participantId),
+        },
+      ]),
       ...(command.reviewInput !== undefined ? { reviewInput: command.reviewInput } : {}),
       turnId: null,
       streaming: false,
@@ -319,6 +330,13 @@ function decideAgentInviteSubmit(
         fromAgent: command.from,
         requestId: command.requestId,
         requestKind: "invite",
+        agentModels: messageAgentModels(thread, [
+          {
+            participantId: command.from.participantId,
+            modelSelection: sentAgentModel(thread, command.from.participantId),
+          },
+          { participantId: guestId, modelSelection: guest.modelSelection },
+        ]),
         reviewInput: command.reviewInput,
         invite: {
           reason: invite.reason,
@@ -491,6 +509,13 @@ function inviteAcceptedEvents(input: {
         fromAgent: request.from,
         requestId: request.requestId,
         requestKind: "review",
+        agentModels: messageAgentModels(thread, [
+          {
+            participantId: request.from.participantId,
+            modelSelection: sentAgentModel(thread, request.from.participantId),
+          },
+          { participantId: guest.id, modelSelection: guest.modelSelection },
+        ]),
         reviewInput: input.reviewInput,
         turnId: null,
         streaming: false,
@@ -642,6 +667,16 @@ function replyEvents(
         fromAgent: request.to,
         requestId: request.requestId,
         requestKind: "reply",
+        agentModels: messageAgentModels(thread, [
+          {
+            participantId: request.to.participantId,
+            modelSelection: sentAgentModel(thread, request.to.participantId),
+          },
+          {
+            participantId: request.from.participantId,
+            modelSelection: currentAgentModel(thread, request.from.participantId),
+          },
+        ]),
         turnId: null,
         streaming: false,
         createdAt,

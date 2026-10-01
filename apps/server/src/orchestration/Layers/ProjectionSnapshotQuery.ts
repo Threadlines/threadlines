@@ -26,6 +26,7 @@ import {
   type OrchestrationThreadDoneOverride,
   type OrchestrationThreadShell,
   type ThreadEffectiveCwdSource,
+  MessageAgentModel,
   ModelSelection,
   OrchestrationThreadGoal,
   OrchestrationQueuedFollowUp,
@@ -125,6 +126,9 @@ const ProjectionThreadMessageDbRowSchema = ProjectionThreadMessage.mapFields(
     requestError: Schema.NullOr(TrimmedNonEmptyString),
     reviewInput: Schema.NullOr(Schema.fromJsonString(RoomReviewInput)),
     invite: Schema.NullOr(Schema.fromJsonString(RoomAgentInvite)),
+    agentModels: Schema.NullOr(
+      Schema.fromJsonString(Schema.Record(Schema.String, MessageAgentModel)),
+    ),
   }),
 );
 const ProjectionThreadProposedPlanDbRowSchema = ProjectionThreadProposedPlan.mapFields(
@@ -140,6 +144,9 @@ const ProjectionThreadDbRowSchema = ProjectionThread.mapFields(
     sideTurn: Schema.optional(Schema.NullOr(Schema.fromJsonString(OrchestrationSideTurn))),
     roomContext: Schema.optional(
       Schema.fromJsonString(Schema.Record(Schema.String, OrchestrationRoomContextCursor)),
+    ),
+    sentModels: Schema.optional(
+      Schema.fromJsonString(Schema.Record(Schema.String, ModelSelection)),
     ),
     agentRequests: Schema.optional(
       Schema.NullOr(Schema.fromJsonString(OrchestrationAgentRequestState)),
@@ -395,6 +402,7 @@ function mapThreadMessageRow(
     ...(row.requestError !== null ? { requestError: row.requestError } : {}),
     ...(row.reviewInput !== null ? { reviewInput: row.reviewInput } : {}),
     ...(row.invite !== null ? { invite: row.invite } : {}),
+    ...(row.agentModels !== null ? { agentModels: row.agentModels } : {}),
     turnId: row.turnId,
     streaming: row.isStreaming === 1,
     createdAt: row.createdAt,
@@ -615,6 +623,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           side_turn AS "sideTurn",
           agent_role AS "agentRole",
           room_context AS "roomContext",
+          sent_models AS "sentModels",
           agent_requests AS "agentRequests",
           done_override AS "doneOverride",
           done_override_at AS "doneOverrideAt",
@@ -662,6 +671,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           side_turn AS "sideTurn",
           agent_role AS "agentRole",
           room_context AS "roomContext",
+          sent_models AS "sentModels",
           agent_requests AS "agentRequests",
           done_override AS "doneOverride",
           done_override_at AS "doneOverrideAt",
@@ -711,6 +721,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           side_turn AS "sideTurn",
           agent_role AS "agentRole",
           room_context AS "roomContext",
+          sent_models AS "sentModels",
           agent_requests AS "agentRequests",
           done_override AS "doneOverride",
           done_override_at AS "doneOverrideAt",
@@ -751,6 +762,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           request_error AS "requestError",
           review_input AS "reviewInput",
           invite,
+          agent_models AS "agentModels",
           is_streaming AS "isStreaming",
           created_at AS "createdAt",
           updated_at AS "updatedAt"
@@ -798,6 +810,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           request_error AS "requestError",
           review_input AS "reviewInput",
           invite,
+          agent_models AS "agentModels",
           is_streaming AS "isStreaming",
           created_at AS "createdAt",
           updated_at AS "updatedAt"
@@ -1390,6 +1403,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           side_turn AS "sideTurn",
           agent_role AS "agentRole",
           room_context AS "roomContext",
+          sent_models AS "sentModels",
           agent_requests AS "agentRequests",
           done_override AS "doneOverride",
           done_override_at AS "doneOverrideAt",
@@ -1431,6 +1445,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           request_error AS "requestError",
           review_input AS "reviewInput",
           invite,
+          agent_models AS "agentModels",
           is_streaming AS "isStreaming",
           created_at AS "createdAt",
           updated_at AS "updatedAt"
@@ -2017,6 +2032,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                 ...(row.roomContext && Object.keys(row.roomContext).length > 0
                   ? { roomContext: row.roomContext }
                   : {}),
+                ...(row.sentModels && Object.keys(row.sentModels).length > 0
+                  ? { sentModels: row.sentModels }
+                  : {}),
                 doneOverride: mapThreadDoneOverride(row),
                 lastSeenAt: row.lastSeenAt ?? null,
                 deletedAt: row.deletedAt,
@@ -2273,6 +2291,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   ...(row.agentRole ? { agentRole: row.agentRole } : {}),
                   ...(row.roomContext && Object.keys(row.roomContext).length > 0
                     ? { roomContext: row.roomContext }
+                    : {}),
+                  ...(row.sentModels && Object.keys(row.sentModels).length > 0
+                    ? { sentModels: row.sentModels }
                     : {}),
                   doneOverride: mapThreadDoneOverride(row),
                   lastSeenAt: row.lastSeenAt ?? null,
@@ -3002,6 +3023,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         ...(threadRow.value.agentRole ? { agentRole: threadRow.value.agentRole } : {}),
         ...(threadRow.value.roomContext && Object.keys(threadRow.value.roomContext).length > 0
           ? { roomContext: threadRow.value.roomContext }
+          : {}),
+        ...(threadRow.value.sentModels && Object.keys(threadRow.value.sentModels).length > 0
+          ? { sentModels: threadRow.value.sentModels }
           : {}),
         doneOverride: mapThreadDoneOverride(threadRow.value),
         lastSeenAt: threadRow.value.lastSeenAt ?? null,

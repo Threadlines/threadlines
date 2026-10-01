@@ -54,6 +54,7 @@ import { getPickerModelName } from "./chat/providerIconUtils";
 import {
   buildOwnAgentLabels,
   buildRoomAgentLabels,
+  createAgentModelLabeler,
   hasRoomHistory,
   isRoom,
   isRoomWaitChosen,
@@ -1800,6 +1801,19 @@ export default function ChatView(props: ChatViewProps) {
           )
         : null,
     [activeThread, providerInstanceEntries],
+  );
+  // Names each agent on a message the way the message recorded it. Kept across
+  // streamed words: only the agents' names and the providers change it.
+  const labelParticipants = activeThread?.participants;
+  const labelAgentRole = activeThread?.agentRole;
+  const agentModelLabeler = useMemo(
+    () =>
+      createAgentModelLabeler(
+        { participants: labelParticipants, agentRole: labelAgentRole },
+        providerInstanceEntries,
+        (model, entry) => getPickerModelName(model, entry.driverKind),
+      ),
+    [labelAgentRole, labelParticipants, providerInstanceEntries],
   );
   const modelOptionsByInstance = useMemo(() => {
     const out = new Map<ProviderInstanceId, ReturnType<typeof getAppModelOptionsForInstance>>();
@@ -7160,6 +7174,7 @@ export default function ChatView(props: ChatViewProps) {
               onOpenTurnDiff={onOpenTurnDiff}
               revertTurnCountByUserMessageId={revertTurnCountByUserMessageId}
               roomAgents={roomAgentLabels}
+              agentModelLabeler={agentModelLabeler}
               ownAgentLabels={ownAgentLabels}
               workingParticipantId={activeThread.session?.participantId ?? null}
               {...(activeThread.agentRequests
