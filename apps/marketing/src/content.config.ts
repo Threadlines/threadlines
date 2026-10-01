@@ -38,6 +38,14 @@ const changelog = defineCollection({
       .max(6)
       .default([]),
     social: z.string().min(1).max(280),
+    /** An optional video for the release, shown under the summary (files in public/). */
+    video: z
+      .object({
+        src: z.string().startsWith("/"),
+        poster: z.string().startsWith("/"),
+        label: z.string().min(1).max(200),
+      })
+      .optional(),
   }),
 });
 

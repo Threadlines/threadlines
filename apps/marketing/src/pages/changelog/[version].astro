@@ -15,7 +15,8 @@ interface Props {
 }
 
 const { entry } = Astro.props;
-const { version, date, title, summary, githubRelease, highlights, alsoImproved } = entry.data;
+const { version, date, title, summary, githubRelease, highlights, alsoImproved, video } =
+  entry.data;
 const canonicalPath = `/changelog/${entry.id}`;
 const structuredData = {
   "@context": "https://schema.org",
@@ -46,6 +47,24 @@ const structuredData = {
         <h1 class="display">{title}</h1>
         <p>{summary}</p>
       </header>
+
+      {
+        video && (
+          <video
+            class="release-video"
+            controls
+            muted
+            playsinline
+            preload="metadata"
+            poster={video.poster}
+            width="1920"
+            height="1080"
+            aria-label={video.label}
+          >
+            <source src={video.src} type="video/mp4" />
+          </video>
+        )
+      }
 
       <div class="highlights">
         {
@@ -137,6 +156,16 @@ const structuredData = {
     font-size: 16px;
     line-height: 1.6;
     text-wrap: pretty;
+  }
+
+  .release-video {
+    display: block;
+    width: 100%;
+    height: auto;
+    margin-top: 24px;
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    background: var(--surface);
   }
 
   .highlights {
