@@ -1,0 +1,4 @@
+node_modules/
+out/
+# Raw takes from ../source (about 8 MB together). Record them again rather than committing them.
+public/*.mp4
