@@ -468,7 +468,9 @@ async function mountApp(): Promise<{ cleanup: () => Promise<void> }> {
   host.style.inset = "0";
   host.style.width = "100vw";
   host.style.height = "100vh";
-  host.style.display = "grid";
+  // Block, like the app's #root. A grid host would stretch the app to its
+  // narrowest unbreakable content and hide layouts that overflow their pane.
+  host.style.display = "block";
   host.style.overflow = "hidden";
   document.body.append(host);
 

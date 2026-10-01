@@ -3,6 +3,7 @@ import { type CSSProperties, type ReactNode, useCallback } from "react";
 import { isElectron } from "../env";
 import { cn } from "../lib/utils";
 import {
+  COMPOSER_COMPACT_MIN_LEFT_CONTROLS_WIDTH_PX,
   RIGHT_PANEL_INLINE_DEFAULT_WIDTH,
   RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY,
   RIGHT_PANEL_INLINE_SIDEBAR_MAX_WIDTH,
@@ -11,11 +12,13 @@ import {
   normalizeRightPanelStoredWidth,
   useRightPanelInsetVarRef,
 } from "../rightPanelLayout";
+import {
+  COMPOSER_FOOTER_RESERVE_ATTRIBUTE,
+  measureComposerFooterReserve,
+} from "./composerFooterLayout";
 import { Sidebar, SidebarProvider, SidebarRail } from "./ui/sidebar";
 
 export { RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY };
-
-const COMPOSER_COMPACT_MIN_LEFT_CONTROLS_WIDTH_PX = 208;
 
 export function ChatRightPanelInlineSidebar(props: {
   open: boolean;
@@ -59,17 +62,21 @@ export function ChatRightPanelInlineSidebar(props: {
       const composerFooter = composerForm.querySelector<HTMLElement>(
         "[data-chat-composer-footer='true']",
       );
-      const composerRightActions = composerForm.querySelector<HTMLElement>(
-        "[data-chat-composer-actions='right']",
+      // Room for the composer's fixed right-hand buttons. While a question or
+      // an approval replaces the footer, keep what the footer last needed (it
+      // comes back) or the question's answer buttons, whichever is wider;
+      // otherwise the floor fell to the bare left reserve and squeezed both.
+      const questionActions = composerForm.querySelector<HTMLElement>(
+        "[data-chat-composer-question-actions='true']",
       );
-      const composerRightActionsWidth = composerRightActions?.getBoundingClientRect().width ?? 0;
-      const composerFooterGap = composerFooter
-        ? Number.parseFloat(window.getComputedStyle(composerFooter).columnGap) ||
-          Number.parseFloat(window.getComputedStyle(composerFooter).gap) ||
-          0
-        : 0;
+      const composerRightReserve = composerFooter
+        ? measureComposerFooterReserve(composerFooter)
+        : Math.max(
+            Number(composerForm.getAttribute(COMPOSER_FOOTER_RESERVE_ATTRIBUTE)) || 0,
+            questionActions?.getBoundingClientRect().width ?? 0,
+          );
       const minimumComposerWidth =
-        COMPOSER_COMPACT_MIN_LEFT_CONTROLS_WIDTH_PX + composerRightActionsWidth + composerFooterGap;
+        COMPOSER_COMPACT_MIN_LEFT_CONTROLS_WIDTH_PX + composerRightReserve;
       const hasComposerOverflow = composerForm.scrollWidth > composerForm.clientWidth + 0.5;
       const overflowsViewport = formRect.width > viewportContentWidth + 0.5;
       const violatesMinimumComposerWidth = composerForm.clientWidth + 0.5 < minimumComposerWidth;

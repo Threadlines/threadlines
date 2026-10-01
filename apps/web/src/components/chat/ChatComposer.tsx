@@ -95,10 +95,12 @@ import type {
   TranscriptHighlightContextSelection,
 } from "../../lib/transcriptHighlightContext";
 import {
+  COMPOSER_FOOTER_RESERVE_ATTRIBUTE,
   type ComposerFooterTier,
   INITIAL_COMPOSER_FOOTER_TIER_STATE,
   isComposerFooterOverflowing,
   measureComposerFooterOverflow,
+  measureComposerFooterReserve,
   resetComposerFooterTierWidths,
   resolveComposerFooterTier,
   shouldUseCompactComposerPrimaryActions,
@@ -2481,6 +2483,25 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     setComposerFooterTier(next.tier);
   }, [composerFooterContentKey]);
 
+  // Keeps the footer's reserve stamped on the form while the footer shows,
+  // whenever its right-hand buttons change width (send/stop, dictation, a
+  // plan's Implement pair). The right panel's drag limit reads it while a
+  // question or an approval replaces the footer.
+  const observeComposerFooterReserve = useCallback((rightActions: HTMLDivElement | null) => {
+    if (!rightActions || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => {
+      const footer = rightActions.parentElement;
+      const composerForm = composerFormRef.current;
+      if (!footer || !composerForm || rightActions.clientWidth === 0) return;
+      composerForm.setAttribute(
+        COMPOSER_FOOTER_RESERVE_ATTRIBUTE,
+        String(Math.ceil(measureComposerFooterReserve(footer))),
+      );
+    });
+    observer.observe(rightActions);
+    return () => observer.disconnect();
+  }, []);
+
   // Re-measure after every tier change: the narrower tier may still overflow,
   // and a roomier one may fit again.
   useLayoutEffect(() => {
@@ -4076,6 +4097,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
 
                   {/* Right side: stash + add attachments + send / stop button */}
                   <div
+                    ref={observeComposerFooterReserve}
                     data-chat-composer-actions="right"
                     data-chat-composer-primary-actions-compact={
                       isComposerPrimaryActionsCompact ? "true" : "false"
