@@ -83,7 +83,14 @@ import { AppAtomRegistryProvider } from "../rpc/atomRegistry";
 import { getServerConfig } from "../rpc/serverState";
 import { getRouter } from "../router";
 import { deriveLogicalProjectKeyFromSettings } from "../logicalProject";
-import { RIGHT_PANEL_RAIL_WIDTH } from "../rightPanelLayout";
+import {
+  COMPOSER_COMPACT_MIN_LEFT_CONTROLS_WIDTH_PX,
+  RIGHT_PANEL_RAIL_WIDTH,
+} from "../rightPanelLayout";
+import {
+  COMPOSER_FOOTER_RESERVE_ATTRIBUTE,
+  measureComposerFooterReserve,
+} from "./composerFooterLayout";
 import { resetRightPanelTabsForTests } from "../rightPanelTabs";
 import { selectBootstrapCompleteForActiveEnvironment, useStore } from "../store";
 import { useTerminalStateStore } from "../terminalStateStore";
@@ -196,12 +203,23 @@ const PHONE_VIEWPORT: ViewportSpec = {
   textTolerancePx: 56,
   attachmentTolerancePx: 56,
 };
+/**
+ * About the narrowest the right panel's drag limit lets a desktop composer
+ * with the usual footer get (208px plus the footer's right-hand buttons).
+ * Wider right-hand buttons, like a plan's Implement pair, raise that floor.
+ */
+const NARROW_DESKTOP_COMPOSER_WIDTH = 400;
 
 interface MountedChatView {
   [Symbol.asyncDispose]: () => Promise<void>;
   cleanup: () => Promise<void>;
   setViewport: (viewport: ViewportSpec) => Promise<void>;
   setContainerSize: (viewport: Pick<ViewportSpec, "width" | "height">) => Promise<void>;
+  /**
+   * Narrows the app until the composer is `width` px wide, keeping the
+   * viewport (and so the desktop layout): what panels beside the chat do.
+   */
+  setComposerWidth: (width: number) => Promise<void>;
   router: ReturnType<typeof getRouter>;
 }
 
@@ -2227,6 +2245,49 @@ async function expectQuestionActionsContained(): Promise<void> {
   );
 }
 
+/**
+ * Drags the inline right panel's handle left a step per frame, far past where
+ * the composer runs out of room, so its drag limit decides where it stops.
+ * Fails unless the panel actually grew.
+ */
+async function dragRightPanelFarWider(): Promise<void> {
+  const rail = await waitForElement(
+    () =>
+      document.querySelector<HTMLElement>(
+        '[data-slot="sidebar"][data-side="right"] [data-slot="sidebar-rail"]',
+      ),
+    "Unable to find the right panel's resize handle.",
+  );
+  const panel = rail.closest<HTMLElement>('[data-slot="sidebar"]')!;
+  const startWidth = panel.getBoundingClientRect().width;
+  const railRect = rail.getBoundingClientRect();
+  const clientY = railRect.top + railRect.height / 2;
+  let clientX = railRect.left + railRect.width / 2;
+  const pointer = (type: "pointerdown" | "pointermove" | "pointerup") =>
+    rail.dispatchEvent(
+      new PointerEvent(type, {
+        bubbles: true,
+        cancelable: true,
+        pointerId: 1,
+        pointerType: "mouse",
+        isPrimary: true,
+        button: 0,
+        buttons: type === "pointerup" ? 0 : 1,
+        clientX,
+        clientY,
+      }),
+    );
+  pointer("pointerdown");
+  for (let step = 0; step < 120; step += 1) {
+    clientX -= 8;
+    pointer("pointermove");
+    await nextFrame();
+  }
+  pointer("pointerup");
+  await waitForLayout();
+  expect(panel.getBoundingClientRect().width).toBeGreaterThan(startWidth + 100);
+}
+
 async function waitForInteractionModeButton(
   expectedLabel: "Build" | "Plan",
 ): Promise<HTMLButtonElement> {
@@ -2436,7 +2497,9 @@ async function mountChatView(options: {
   host.style.left = "0";
   host.style.width = "100vw";
   host.style.height = "100vh";
-  host.style.display = "grid";
+  // Block, like the app's #root. A grid host would stretch the app to its
+  // narrowest unbreakable content and hide layouts that overflow their pane.
+  host.style.display = "block";
   host.style.overflow = "hidden";
   document.body.append(host);
 
@@ -2481,6 +2544,21 @@ async function mountChatView(options: {
       host.style.width = `${viewport.width}px`;
       host.style.height = `${viewport.height}px`;
       await waitForLayout();
+    },
+    setComposerWidth: async (width) => {
+      // Sized through the composer's parent, the room it is offered: the
+      // composer itself stops growing at its cap (max-w-4xl), so its own
+      // width says nothing about how far the host is from the target.
+      for (let pass = 0; pass < 3; pass += 1) {
+        const form = document.querySelector<HTMLElement>('[data-chat-composer-form="true"]');
+        const room = form?.parentElement;
+        if (!form || !room) throw new Error("Unable to find the composer to resize.");
+        if (Math.abs(form.getBoundingClientRect().width - width) < 0.5) return;
+        const excess = room.getBoundingClientRect().width - width;
+        host.style.width = `${host.getBoundingClientRect().width - excess}px`;
+        await waitForLayout();
+      }
+      throw new Error(`Unable to make the composer ${width}px wide.`);
     },
     router,
   };
@@ -10574,7 +10652,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
       await waitForButtonByText("Previous");
       await waitForButtonByText("Submit answers");
 
-      await mounted.setContainerSize(COMPACT_FOOTER_VIEWPORT);
+      await mounted.setComposerWidth(NARROW_DESKTOP_COMPOSER_WIDTH);
       await expectQuestionActionsContained();
       expect(document.querySelector('[data-chat-composer-footer="true"]')).toBeNull();
     } finally {
@@ -10582,20 +10660,136 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
-  // Real phone viewports (touch-size buttons) and extra-narrow desktop side
-  // panes. The stash bookmark used to hide in the overflow menu below the
-  // compact breakpoint; now it stays in the row, so the row must still fit
-  // without the bookmark shoving the overflow trigger off-screen or squeezing
-  // the model picker down to nothing. One test per viewport: the full app
-  // only mounts cleanly once per test.
+  it("stops dragging the right panel wider while a waiting question's buttons still fit", async () => {
+    const mounted = await mountChatView({
+      viewport: WIDE_FOOTER_VIEWPORT,
+      snapshot: createSnapshotWithPendingUserInput(),
+      initialPath: `/${LOCAL_ENVIRONMENT_ID}/${THREAD_ID}?sourceControl=1`,
+    });
+
+    try {
+      // The second question shows both Previous and Submit answers.
+      (await waitForButtonContainingText("Tight")).click();
+      (await waitForButtonByText("Next question")).click();
+      await waitForButtonByText("Submit answers");
+      // As when a thread opens with the question already waiting: no footer
+      // has shown, so only the question's buttons say how much room to keep.
+      const form = document.querySelector<HTMLElement>('[data-chat-composer-form="true"]')!;
+      form.removeAttribute(COMPOSER_FOOTER_RESERVE_ATTRIBUTE);
+      await dragRightPanelFarWider();
+
+      const questionActions = document.querySelector<HTMLElement>(
+        '[data-chat-composer-question-actions="true"]',
+      )!;
+      expect(form.clientWidth).toBeGreaterThanOrEqual(
+        COMPOSER_COMPACT_MIN_LEFT_CONTROLS_WIDTH_PX +
+          questionActions.getBoundingClientRect().width -
+          0.5,
+      );
+      await expectQuestionActionsContained();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("keeps room for the footer while an approval hides it and the right panel is dragged", async () => {
+    const mounted = await mountChatView({
+      viewport: WIDE_FOOTER_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-approval-drag" as MessageId,
+        targetText: "approval drag target",
+        sessionStatus: "running",
+        sessionActiveTurnId: "turn-approval-drag" as TurnId,
+      }),
+      initialPath: `/${LOCAL_ENVIRONMENT_ID}/${THREAD_ID}?sourceControl=1`,
+    });
+
+    try {
+      const footer = await waitForElement(
+        findVisibleComposerFooter,
+        "Unable to find composer footer.",
+      );
+      const footerReserve = measureComposerFooterReserve(footer);
+      const appendActivity = (sequence: number, kind: string) =>
+        rpcHarness.emitStreamValue(ORCHESTRATION_WS_METHODS.subscribeThread, {
+          kind: "event",
+          event: {
+            sequence: fixture.snapshot.snapshotSequence + sequence,
+            eventId: EventId.make(`evt-approval-drag-${sequence}`),
+            aggregateKind: "thread",
+            aggregateId: THREAD_ID,
+            occurredAt: NOW_ISO,
+            commandId: null,
+            causationEventId: null,
+            correlationId: null,
+            metadata: {},
+            type: "thread.activity-appended",
+            payload: {
+              threadId: THREAD_ID,
+              activity: {
+                id: EventId.make(`activity-approval-drag-${sequence}`),
+                kind,
+                tone: "info",
+                summary: kind,
+                payload: {
+                  requestId: "req-approval-drag",
+                  requestKind: "command",
+                  detail: "git status",
+                },
+                turnId: "turn-approval-drag" as TurnId,
+                createdAt: isoAt(sequence),
+              },
+            },
+          },
+        });
+
+      // An approval arrives and replaces the footer; the panel is dragged.
+      appendActivity(1, "approval.requested");
+      await expect.element(page.getByText("Command approval requested")).toBeVisible();
+      expect(document.querySelector('[data-chat-composer-footer="true"]')).toBeNull();
+      await dragRightPanelFarWider();
+      const form = document.querySelector<HTMLElement>('[data-chat-composer-form="true"]')!;
+      expect(form.clientWidth).toBeGreaterThanOrEqual(
+        COMPOSER_COMPACT_MIN_LEFT_CONTROLS_WIDTH_PX + footerReserve - 1,
+      );
+
+      // Once it's answered the footer comes back, and it still fits.
+      appendActivity(2, "approval.resolved");
+      const returned = await waitForElement(
+        findVisibleComposerFooter,
+        "The footer should come back once the approval is answered.",
+      );
+      const leftActions = returned.querySelector<HTMLElement>(
+        '[data-chat-composer-actions="left"]',
+      )!;
+      await vi.waitFor(
+        () => {
+          expect(returned.scrollWidth).toBeLessThanOrEqual(returned.clientWidth + 1);
+          expect(leftActions.scrollWidth).toBeLessThanOrEqual(leftActions.clientWidth + 1);
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+      await expectComposerActionsContained();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  // Real phone viewports (touch-size buttons) and desktop composers squeezed
+  // by panels beside the chat. The stash bookmark used to hide in the
+  // overflow menu below the compact breakpoint; now it stays in the row, so
+  // the row must still fit without the bookmark shoving the overflow trigger
+  // off-screen or squeezing the model picker down to nothing. 300px is about
+  // the narrowest desktop composer the row supports. One test per viewport:
+  // the full app only mounts cleanly once per test.
   it.each([
-    { name: "phone", viewport: PHONE_VIEWPORT, width: PHONE_VIEWPORT.width },
-    { name: "small phone", viewport: { ...PHONE_VIEWPORT, width: 360 }, width: 360 },
-    { name: "narrow pane", viewport: WIDE_FOOTER_VIEWPORT, width: 320 },
-    { name: "extra-narrow pane", viewport: WIDE_FOOTER_VIEWPORT, width: 250 },
+    { name: "phone", viewport: PHONE_VIEWPORT, composerWidth: null },
+    { name: "small phone", viewport: { ...PHONE_VIEWPORT, width: 360 }, composerWidth: null },
+    { name: "narrow pane", viewport: WIDE_FOOTER_VIEWPORT, composerWidth: 320 },
+    { name: "extra-narrow pane", viewport: WIDE_FOOTER_VIEWPORT, composerWidth: 300 },
   ])(
     "keeps one composer row with the stash bookmark and overflow menu both visible ($name)",
-    async ({ viewport, width }) => {
+    async ({ viewport, composerWidth }) => {
       const mounted = await mountChatView({
         viewport,
         // The shared fixture snapshot does not render at phone viewports in
@@ -10610,10 +10804,9 @@ describe("ChatView timeline estimator parity (full app)", () => {
       });
 
       try {
-        await mounted.setContainerSize({
-          width,
-          height: viewport.height,
-        });
+        if (composerWidth !== null) {
+          await mounted.setComposerWidth(composerWidth);
+        }
 
         const footer = await waitForElement(
           findVisibleComposerFooter,
@@ -11140,10 +11333,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
         "Unable to find implementation actions trigger.",
       );
 
-      await mounted.setContainerSize({
-        width: 440,
-        height: WIDE_FOOTER_VIEWPORT.height,
-      });
+      await mounted.setComposerWidth(NARROW_DESKTOP_COMPOSER_WIDTH);
       await expectComposerActionsContained();
 
       const implementButton = await waitForButtonByTextWithin(footer, "Implement");

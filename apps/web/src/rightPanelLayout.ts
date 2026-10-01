@@ -25,6 +25,10 @@ export const RIGHT_PANEL_INLINE_DEFAULT_WIDTH = `${
   RIGHT_PANEL_RAIL_WIDTH + (isElectron ? RIGHT_PANEL_INLINE_ELECTRON_RESIZE_EDGE_INSET_WIDTH : 0)
 }px`;
 export const RIGHT_PANEL_INLINE_SIDEBAR_MAX_WIDTH = 256 * 16;
+// Dragging the panel wider stops before the composer is narrower than this
+// plus its fixed right-hand buttons: the room its model picker (or a waiting
+// question's answer field) keeps on the left.
+export const COMPOSER_COMPACT_MIN_LEFT_CONTROLS_WIDTH_PX = 208;
 
 // Both right-panel sheets start below the chat header (measured into
 // --chat-header-bottom, which already accounts for any titlebar) so the

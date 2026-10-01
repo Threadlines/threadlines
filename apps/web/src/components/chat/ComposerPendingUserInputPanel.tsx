@@ -324,7 +324,10 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
             rows={1}
             className="field-sizing-content max-h-32 min-w-0 flex-1 resize-none bg-transparent py-1 text-[13px] leading-snug text-foreground placeholder:text-muted-foreground/60 focus:outline-none disabled:opacity-50"
           />
-          <div className="flex shrink-0 items-center gap-1">
+          <div
+            data-chat-composer-question-actions="true"
+            className="flex shrink-0 items-center gap-1"
+          >
             {questionIndex > 0 ? (
               <Button
                 type="button"
