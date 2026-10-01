@@ -9,6 +9,7 @@ import {
   type OrchestrationThread,
   SIDE_ANSWER_OUTCOME_ACTIVITY_KIND,
   type SideTurnId,
+  type ThreadParticipantId,
 } from "@threadlines/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -21,6 +22,12 @@ import {
   isValidParticipantId,
   sessionSlotParticipantId,
 } from "@threadlines/shared/threadParticipants";
+import {
+  assistantMessageModel,
+  currentAgentModel,
+  messageAgentModels,
+  sentAgentModel,
+} from "./messageAgentModels.ts";
 
 import { isTurnAside } from "@threadlines/shared/transcriptRevert";
 
@@ -102,6 +109,36 @@ function requireSideTurnOpen(
       detail: `Side answer '${command.sideTurnId}' on thread '${thread.id}' is over.`,
     }),
   );
+}
+
+/** Whether a message is not recorded yet. Recent ones sit at the end. */
+function isNewMessage(thread: Pick<OrchestrationThread, "messages">, messageId: MessageId) {
+  return thread.messages.findLast((message) => message.id === messageId) === undefined;
+}
+
+/**
+ * An assistant message's model stamp, on the write that creates it only: its
+ * later deltas leave it alone, so they stay small.
+ */
+function assistantMessageStamp(
+  thread: Pick<
+    OrchestrationThread,
+    "messages" | "modelSelection" | "participants" | "sentModels" | "sideTurn"
+  >,
+  messageId: MessageId,
+  author: ThreadParticipantId | null,
+  sideTurnId: SideTurnId | undefined,
+) {
+  return isNewMessage(thread, messageId)
+    ? {
+        agentModels: messageAgentModels(thread, [
+          {
+            participantId: author,
+            modelSelection: assistantMessageModel(thread, author, sideTurnId),
+          },
+        ]),
+      }
+    : {};
 }
 
 /** One event, after any extra ones it brings; a lone event stays a lone event. */
@@ -865,6 +902,8 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         occurredAt: command.createdAt,
         commandId: command.commandId,
       });
+      const answerModel =
+        command.modelSelection ?? currentAgentModel(thread, command.participantId);
       const messageSent: PlannedOrchestrationEvent = {
         ...base,
         type: "thread.message-sent",
@@ -877,6 +916,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           ...(command.message.skills !== undefined ? { skills: command.message.skills } : {}),
           participantId: command.participantId,
           sideTurnId: command.sideTurnId,
+          agentModels: messageAgentModels(thread, [
+            { participantId: command.participantId, modelSelection: answerModel },
+          ]),
           turnId: null,
           streaming: false,
           createdAt: command.createdAt,
@@ -901,8 +943,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             status: "starting",
             startedAt: command.createdAt,
           },
-          modelSelection:
-            command.modelSelection ?? participant?.modelSelection ?? thread.modelSelection,
+          modelSelection: answerModel,
         },
       };
       // The user wrote: agents may make requests again.
@@ -1110,6 +1151,29 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           threadId: command.threadId,
           agentKey: command.agentKey,
           cursor: command.cursor,
+          createdAt: command.createdAt,
+        },
+      };
+    }
+
+    case "thread.sent-model.record": {
+      yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.sent-model-recorded",
+        payload: {
+          threadId: command.threadId,
+          agentKey: command.agentKey,
+          modelSelection: command.modelSelection,
           createdAt: command.createdAt,
         },
       };
@@ -1552,6 +1616,20 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           attachments: command.message.attachments,
           ...(command.message.skills !== undefined ? { skills: command.message.skills } : {}),
           ...(participantId !== null ? { participantId } : {}),
+          // Named as the turn is sent (recordTurnModel). A queued message an
+          // agent wrote is already recorded, with its own stamps; sending it
+          // must not restamp it.
+          ...(isNewMessage(targetThread, command.message.messageId)
+            ? {
+                agentModels: messageAgentModels(targetThread, [
+                  {
+                    participantId,
+                    modelSelection:
+                      command.modelSelection ?? sentAgentModel(targetThread, participantId),
+                  },
+                ]),
+              }
+            : {}),
           turnId: null,
           streaming: false,
           createdAt: command.createdAt,
@@ -2621,6 +2699,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           role: "assistant",
           text: command.delta,
           ...(authorId !== null ? { participantId: authorId } : {}),
+          ...assistantMessageStamp(thread, command.messageId, authorId, command.sideTurnId),
           // A side answer is never part of a main turn.
           ...(command.sideTurnId !== undefined ? { sideTurnId: command.sideTurnId } : {}),
           turnId: command.sideTurnId !== undefined ? null : (command.turnId ?? null),
@@ -2656,6 +2735,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           role: "assistant",
           text: "",
           ...(authorId !== null ? { participantId: authorId } : {}),
+          ...assistantMessageStamp(thread, command.messageId, authorId, command.sideTurnId),
           ...(command.sideTurnId !== undefined ? { sideTurnId: command.sideTurnId } : {}),
           turnId: command.sideTurnId !== undefined ? null : (command.turnId ?? null),
           streaming: false,
@@ -2693,6 +2773,16 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           attachments: command.message.attachments,
           ...(command.message.skills !== undefined ? { skills: command.message.skills } : {}),
           ...(steeredAgentId !== null ? { participantId: steeredAgentId } : {}),
+          ...(isNewMessage(acceptingThread, command.message.messageId)
+            ? {
+                agentModels: messageAgentModels(acceptingThread, [
+                  {
+                    participantId: steeredAgentId,
+                    modelSelection: sentAgentModel(acceptingThread, steeredAgentId),
+                  },
+                ]),
+              }
+            : {}),
           createdAt: command.createdAt,
         },
       };

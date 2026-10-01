@@ -1016,6 +1016,10 @@ function coalesceOrchestrationUiEvents(
         payload: {
           ...event.payload,
           attachments: event.payload.attachments ?? previous.payload.attachments,
+          // Only the write that created the message carries its stamps.
+          ...(previous.payload.agentModels !== undefined
+            ? { agentModels: previous.payload.agentModels }
+            : {}),
           createdAt: previous.payload.createdAt,
           text:
             !event.payload.streaming && event.payload.text.length > 0

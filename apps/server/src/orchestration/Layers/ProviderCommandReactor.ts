@@ -41,6 +41,7 @@ import {
   hasAgentRecords,
   isRoomThread,
   participantSessionKey,
+  roomAgentKey,
   sessionSlotParticipantId,
   sideSessionKey,
 } from "@threadlines/shared/threadParticipants";
@@ -59,6 +60,7 @@ import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Equal from "effect/Equal";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Scope from "effect/Scope";
@@ -81,9 +83,6 @@ import { ensureGeneralChatThreadScratchCwd } from "../generalChats.ts";
 import { buildIndependentReviewPrompt } from "../roomReviewPrompt.ts";
 import { buildRoomCatchUp } from "../roomCatchUp.ts";
 
-/** Key for one agent in `OrchestrationThread.roomContext`. */
-const roomAgentContextKey = (participantId: ThreadParticipantId | null): string =>
-  participantId ?? "primary";
 import { pauseActiveThreadGoalForStop } from "../threadGoalLifecycle.ts";
 import { canReplaceThreadTitle } from "../threadTitle.ts";
 import { formatUserInputReply, readRequestedUserInput } from "../userInput.ts";
@@ -1448,7 +1447,7 @@ const make = Effect.gen(function* () {
     // conversation was last caught up. Built now, from the thread as it stands
     // when the turn is sent; the cursor is only kept for the conversation it
     // was delivered to.
-    const agentKey = roomAgentContextKey(input.participantId);
+    const agentKey = roomAgentKey(input.participantId);
     const conversationId = activeSession?.providerThreadId ?? null;
     const storedCursor = thread.roomContext?.[agentKey] ?? null;
     const roomCatchUp = buildRoomCatchUp({
@@ -1560,6 +1559,8 @@ const make = Effect.gen(function* () {
         roomCatchUp !== undefined && conversationId !== null
           ? { agentKey, cursor: { conversationId, ...roomCatchUp.cursor } }
           : undefined,
+      // The model the turn request recorded for this agent (recordTurnModel).
+      recordedModel: thread.sentModels?.[agentKey],
     };
   });
 
@@ -1586,6 +1587,35 @@ const make = Effect.gen(function* () {
           }),
         ),
       );
+
+  /**
+   * Correct the model recorded for an agent's turn to the one that goes out,
+   * before the turn can write anything: its messages are stamped with it
+   * (messageAgentModels).
+   */
+  const recordSentModel = (
+    threadId: ThreadId,
+    participantId: ThreadParticipantId | null,
+    modelSelection: ModelSelection,
+  ) =>
+    nowIso.pipe(
+      Effect.flatMap((createdAt) =>
+        orchestrationEngine.dispatch({
+          type: "thread.sent-model.record",
+          commandId: serverCommandId("sent-model-record"),
+          threadId,
+          agentKey: roomAgentKey(participantId),
+          modelSelection,
+          createdAt,
+        }),
+      ),
+      Effect.catchCause((cause) =>
+        Effect.logWarning("provider command reactor could not record the sent model", {
+          threadId,
+          cause: Cause.pretty(cause),
+        }),
+      ),
+    );
 
   const capturePreTurnCheckpointForTurnStart = Effect.fn("capturePreTurnCheckpointForTurnStart")(
     function* (input: { readonly threadId: ThreadId }) {
@@ -2034,7 +2064,22 @@ const make = Effect.gen(function* () {
         return;
       }
 
-      const { request: turnRequest, roomContext } = sendTurnRequest.value;
+      const { request: turnRequest, roomContext, recordedModel } = sendTurnRequest.value;
+      // The turn request already recorded the model it expected to go out.
+      // Only a turn that goes out on another one (settings moved while no
+      // explicit model was asked for, or the live session is on a different
+      // model) pays for a second write, so a normal send stays as short as
+      // it was.
+      if (
+        turnRequest.modelSelection !== undefined &&
+        !Equal.equals(turnRequest.modelSelection, recordedModel)
+      ) {
+        yield* recordSentModel(
+          event.payload.threadId,
+          event.payload.participantId ?? null,
+          turnRequest.modelSelection,
+        );
+      }
       yield* providerService.sendTurn(turnRequest).pipe(
         Effect.flatMap((turn) =>
           markProviderTurnAccepted({
@@ -3456,7 +3501,7 @@ const make = Effect.gen(function* () {
             ),
       ),
     );
-    const storedCursor = thread.roomContext?.[roomAgentContextKey(sideTurn.participantId)] ?? null;
+    const storedCursor = thread.roomContext?.[roomAgentKey(sideTurn.participantId)] ?? null;
     const catchUp = isReview
       ? undefined
       : buildRoomCatchUp({

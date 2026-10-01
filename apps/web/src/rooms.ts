@@ -9,6 +9,7 @@
  */
 import { scopedThreadKey } from "@threadlines/client-runtime";
 import type {
+  MessageAgentModel,
   ModelSelection,
   OrchestrationAgentRequestState,
   OrchestrationAgentRequestStatus,
@@ -28,6 +29,7 @@ import {
   hasAgentRecords,
   isRoomThread,
   nextRoomAgentName,
+  roomAgentKey,
 } from "@threadlines/shared/threadParticipants";
 import { awaitingInvite } from "@threadlines/shared/roomAgentRequests";
 import {
@@ -243,9 +245,7 @@ export function roomActivityAgent(
   return activity.turnId == null ? null : (turnOwners.get(activity.turnId) ?? null);
 }
 
-/** Map key for an agent; the thread's own agent has no participant id. */
-export const roomAgentKey = (participantId: ThreadParticipantId | null | undefined): string =>
-  participantId ?? "primary";
+export { roomAgentKey };
 
 /**
  * Labels for every agent that ever took part in a thread, including ones that
@@ -318,6 +318,82 @@ function agentLabel(
     reasoning: entry ? roomReasoningLabel(agent.selection, entry) : null,
     entry,
   };
+}
+
+/**
+ * Names an agent the way a message recorded it (OrchestrationMessage.agentModels):
+ * by the model, number and reasoning it had then, under the name the user
+ * gives it now. Each stamp keeps one label, so a message's label does not
+ * change identity between renders.
+ */
+export type AgentModelLabeler = (
+  participantId: ThreadParticipantId | null,
+  asWritten: MessageAgentModel,
+) => RoomAgentLabel;
+
+export function createAgentModelLabeler(
+  thread: RoomThreadLike & { readonly agentRole?: string | undefined },
+  entries: ReadonlyArray<ProviderInstanceEntry>,
+  /** The name the model picker shows, so the two always match. */
+  modelDisplayName: (
+    model: ProviderInstanceEntry["models"][number],
+    entry: ProviderInstanceEntry,
+  ) => string,
+): AgentModelLabeler {
+  const labels = new WeakMap<MessageAgentModel, Map<string, RoomAgentLabel>>();
+  return (participantId, asWritten) => {
+    const key = roomAgentKey(participantId);
+    let byAgent = labels.get(asWritten);
+    if (byAgent === undefined) {
+      byAgent = new Map();
+      labels.set(asWritten, byAgent);
+    }
+    const known = byAgent.get(key);
+    if (known !== undefined) {
+      return known;
+    }
+    const participant =
+      participantId === null
+        ? undefined
+        : thread.participants?.find((entry) => entry.id === participantId);
+    const modelName = roomModelName(asWritten.modelSelection, entries, modelDisplayName);
+    const label = agentLabel(
+      {
+        selection: asWritten.modelSelection,
+        modelName: asWritten.nameIndex > 1 ? `${modelName} ${asWritten.nameIndex}` : modelName,
+        role: (participantId === null ? thread.agentRole : participant?.role) ?? null,
+        left: participant !== undefined && participant.leftAt !== null,
+        guest: participant?.guest === true,
+      },
+      entries,
+    );
+    byAgent.set(key, label);
+    return label;
+  };
+}
+
+/**
+ * The labels for one message's lines: the room's, with each agent the
+ * message names as it was when the message was written. The room's own map
+ * when the message names nobody that way.
+ */
+export function messageAgentLabels(
+  labels: ReadonlyMap<string, RoomAgentLabel> | null,
+  message: Pick<ChatMessage, "agentModels">,
+  labeler: AgentModelLabeler | null,
+): ReadonlyMap<string, RoomAgentLabel> | null {
+  const stamps = message.agentModels;
+  if (labels === null || stamps === undefined || labeler === null) {
+    return labels;
+  }
+  const overlaid = new Map(labels);
+  for (const [key, asWritten] of Object.entries(stamps)) {
+    overlaid.set(
+      key,
+      labeler(key === roomAgentKey(null) ? null : (key as ThreadParticipantId), asWritten),
+    );
+  }
+  return overlaid;
 }
 
 /**

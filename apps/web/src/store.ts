@@ -261,6 +261,7 @@ function mapMessage(environmentId: EnvironmentId, message: OrchestrationMessage)
     ...(message.requestError ? { requestError: message.requestError } : {}),
     ...(message.reviewInput ? { reviewInput: message.reviewInput } : {}),
     ...(message.invite ? { invite: message.invite } : {}),
+    ...(message.agentModels ? { agentModels: message.agentModels } : {}),
   };
 }
 
@@ -1323,6 +1324,11 @@ function upsertThreadMessage(
     ...(message.requestKind !== undefined ? { requestKind: message.requestKind } : {}),
     ...(message.reviewInput !== undefined ? { reviewInput: message.reviewInput } : {}),
     ...(message.invite !== undefined ? { invite: message.invite } : {}),
+    // The write that created the message stamps it; an optimistic copy has
+    // none, so the server's first write fills it in.
+    ...(existingMessage.agentModels === undefined && message.agentModels !== undefined
+      ? { agentModels: message.agentModels }
+      : {}),
   };
   const nextMessages = messages.slice();
   nextMessages[existingIndex] = nextMessage;
@@ -2026,6 +2032,9 @@ function applyEnvironmentOrchestrationEvent(
           ...(event.payload.participantId !== undefined
             ? { participantId: event.payload.participantId }
             : {}),
+          ...(event.payload.agentModels !== undefined
+            ? { agentModels: event.payload.agentModels }
+            : {}),
           turnId: event.payload.turnId,
           streaming: false,
           createdAt: event.payload.createdAt,
@@ -2088,6 +2097,9 @@ function applyEnvironmentOrchestrationEvent(
             ? { reviewInput: event.payload.reviewInput }
             : {}),
           ...(event.payload.invite !== undefined ? { invite: event.payload.invite } : {}),
+          ...(event.payload.agentModels !== undefined
+            ? { agentModels: event.payload.agentModels }
+            : {}),
           turnId: event.payload.turnId,
           streaming: event.payload.streaming,
           createdAt: event.payload.createdAt,

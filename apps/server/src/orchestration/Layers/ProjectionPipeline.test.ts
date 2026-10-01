@@ -2632,6 +2632,31 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
       `;
       assert.equal(JSON.parse(threads[0]?.participants ?? "[]")[0]?.handle, "astra");
 
+      // Both messages name astra as it was: the model the turn went to.
+      const astraAsAsked = {
+        [astraId]: {
+          modelSelection: { instanceId: "codex", model: "gpt-6-astra" },
+          nameIndex: 1,
+        },
+      };
+      const stampsOf = () =>
+        sql<{ readonly messageId: string; readonly agentModels: string | null }>`
+          SELECT message_id AS "messageId", agent_models AS "agentModels"
+          FROM projection_thread_messages
+          WHERE thread_id = ${threadId}
+          ORDER BY message_id ASC
+        `.pipe(
+          Effect.map((rows) =>
+            Object.fromEntries(
+              rows.map((row) => [row.messageId, JSON.parse(row.agentModels ?? "null")]),
+            ),
+          ),
+        );
+      assert.deepEqual(yield* stampsOf(), {
+        "message-room-reply": astraAsAsked,
+        "message-room-user": astraAsAsked,
+      });
+
       // Named and given a reasoning level, both kept on the rows; the thread's
       // own agent keeps its name on the thread.
       for (const [commandId, participantId, change] of [
@@ -2664,6 +2689,18 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
         { id: "reasoningEffort", value: "high" },
       ]);
       assert.equal(named[0]?.agentRole, "Researcher");
+      // The reasoning picked since does not reach what astra already wrote,
+      // even as more of it streams in.
+      yield* engine.dispatch({
+        type: "thread.message.assistant.delta",
+        commandId: CommandId.make("cmd-room-reply-more"),
+        threadId,
+        messageId: MessageId.make("message-room-reply"),
+        delta: " Ship it.",
+        turnId: TurnId.make("turn-room"),
+        createdAt: "2026-01-01T00:00:03.600Z",
+      });
+      assert.deepEqual((yield* stampsOf())["message-room-reply"], astraAsAsked);
 
       // While astra works, the user asks the thread's own agent on the side.
       const sideTurnId = SideTurnId.make("0d9e8f7a-6b5c-4d3e-8f1a-2b3c4d5e6f70");
@@ -2691,12 +2728,17 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
           SELECT side_turn AS "sideTurn" FROM projection_threads WHERE thread_id = ${threadId}
         `;
       const answering = yield* sideTurnRow();
+      const ownModel = { instanceId: "claudeAgent", model: "fable-5-1" };
       assert.deepEqual(JSON.parse(answering[0]?.sideTurn ?? "null"), {
         sideTurnId,
         participantId: null,
         messageId: "message-room-side",
         status: "starting",
         startedAt: "2026-01-01T00:00:04.000Z",
+        modelSelection: ownModel,
+      });
+      assert.deepEqual((yield* stampsOf())["message-room-side-answer"], {
+        primary: { modelSelection: ownModel, nameIndex: 1 },
       });
       const sideMessages = yield* sql<{
         readonly messageId: string;

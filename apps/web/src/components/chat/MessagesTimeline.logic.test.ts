@@ -229,6 +229,7 @@ describe("deriveMessagesTimelineRows", () => {
           heads: true,
           nested: null,
           echoesAnswer: false,
+          asWritten: null,
         },
         padTop: true,
         kind: "working",
@@ -259,6 +260,7 @@ describe("deriveMessagesTimelineRows", () => {
           heads: true,
           nested: null,
           echoesAnswer: false,
+          asWritten: null,
         },
         padTop: true,
         kind: "working",
@@ -290,6 +292,7 @@ describe("deriveMessagesTimelineRows", () => {
           heads: true,
           nested: null,
           echoesAnswer: false,
+          asWritten: null,
         },
         padTop: true,
         kind: "working",
@@ -1058,6 +1061,36 @@ describe("finished turns and the live step", () => {
       [undefined, undefined],
       ["start", "turn-7"],
       ["end", "turn-7"],
+    ]);
+  });
+
+  it("names a whole stretch the way its first stamped message recorded its agent", () => {
+    const sol = { instanceId: "codex" as never, model: "gpt-6.1-sol" };
+    const asHigh = {
+      modelSelection: { ...sol, options: [{ id: "reasoningEffort", value: "high" }] },
+      nameIndex: 1,
+    };
+    const asLow = {
+      modelSelection: { ...sol, options: [{ id: "reasoningEffort", value: "low" }] },
+      nameIndex: 1,
+    };
+    const stamped = (entry: ReturnType<typeof assistantEntry>, asWritten: typeof asHigh) => ({
+      ...entry,
+      message: { ...entry.message, agentModels: { primary: asWritten } },
+    });
+    const rows = derive([
+      userEntry("user-1", "2026-01-01T00:00:00Z"),
+      workEntry("read", "2026-01-01T00:00:01Z"),
+      stamped(assistantEntry("note", "2026-01-01T00:00:02Z", "2026-01-01T00:00:03Z"), asHigh),
+      stamped(assistantEntry("answer", "2026-01-01T00:00:10Z", "2026-01-01T00:00:11Z"), asLow),
+    ]);
+    // The steps before the first stamp take it too, and a later stamp in the
+    // same stretch does not rename it.
+    expect(rows.map((row) => row.agentLine?.asWritten ?? null)).toEqual([
+      null,
+      asHigh,
+      asHigh,
+      asHigh,
     ]);
   });
 

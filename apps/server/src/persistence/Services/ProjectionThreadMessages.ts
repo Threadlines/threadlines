@@ -17,6 +17,7 @@ import {
   ThreadParticipantId,
   TurnId,
   IsoDateTime,
+  MessageAgentModel,
   RoomAgentMessageKind,
   RoomAgentRef,
   RoomAgentRequestId,
@@ -56,6 +57,11 @@ export const ProjectionThreadMessage = Schema.Struct({
   requestError: Schema.optional(TrimmedNonEmptyString),
   reviewInput: Schema.optional(RoomReviewInput),
   invite: Schema.optional(RoomAgentInvite),
+  /**
+   * See OrchestrationMessage.agentModels. Written by the write that creates
+   * the row; a later write only fills it in when it is empty.
+   */
+  agentModels: Schema.optional(Schema.Record(Schema.String, MessageAgentModel)),
   isStreaming: Schema.Boolean,
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,

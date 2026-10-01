@@ -172,6 +172,8 @@ describe("startProviderReviewForThread", () => {
       "thread.create",
       "thread.message.user.record",
       "thread.session.set",
+      // What the review's words are stamped with.
+      "thread.sent-model.record",
       "thread.session.set",
     ]);
     const reviewMessage = commands.find((command) => command.type === "thread.message.user.record");
@@ -457,6 +459,7 @@ describe("startProviderReviewForThread", () => {
     expect(commands.map((command) => command.type)).toEqual([
       "thread.message.user.record",
       "thread.session.set",
+      "thread.sent-model.record",
       "thread.session.set",
     ]);
     const errorCommand = commands.at(-1);

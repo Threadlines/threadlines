@@ -1,5 +1,5 @@
 import { compareTranscriptOrder } from "@threadlines/shared/transcriptOrder";
-import { applyRoomAgentUpdate } from "@threadlines/shared/threadParticipants";
+import { applyRoomAgentUpdate, recordTurnModel } from "@threadlines/shared/threadParticipants";
 import {
   agentRequestStateOn,
   isUserWrittenMessage,
@@ -717,7 +717,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           const current = existingRow.value.sideTurn ?? null;
           const nextSideTurn =
             event.type === "thread.side-turn-started"
-              ? event.payload.sideTurn
+              ? { ...event.payload.sideTurn, modelSelection: event.payload.modelSelection }
               : current === null || current.sideTurnId !== event.payload.sideTurnId
                 ? current
                 : event.type === "thread.side-turn-settled"
@@ -788,6 +788,23 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           return;
         }
 
+        case "thread.sent-model-recorded": {
+          const existingRow = yield* projectionThreadRepository.getById({
+            threadId: event.payload.threadId,
+          });
+          if (Option.isNone(existingRow)) {
+            return;
+          }
+          yield* projectionThreadRepository.upsert({
+            ...existingRow.value,
+            sentModels: {
+              ...existingRow.value.sentModels,
+              [event.payload.agentKey]: event.payload.modelSelection,
+            },
+          });
+          return;
+        }
+
         case "thread.participant-removed": {
           const existingRow = yield* projectionThreadRepository.getById({
             threadId: event.payload.threadId,
@@ -809,22 +826,30 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
 
         // A room agent's model follows the composer, like the thread's own
         // agent's, but it is kept on the participant.
+        // Every turn request also records the model the turn is sent with.
         case "thread.turn-start-requested": {
           const participantId = event.payload.participantId ?? null;
           const modelSelection = event.payload.modelSelection;
-          if (participantId === null || modelSelection === undefined) {
-            return;
-          }
           const existingRow = yield* projectionThreadRepository.getById({
             threadId: event.payload.threadId,
           });
           if (Option.isNone(existingRow)) {
             return;
           }
+          const existingParticipants = existingRow.value.participants ?? [];
+          const participants =
+            participantId === null || modelSelection === undefined
+              ? existingParticipants
+              : existingParticipants.map((entry) =>
+                  entry.id === participantId ? { ...entry, modelSelection } : entry,
+                );
           yield* projectionThreadRepository.upsert({
             ...existingRow.value,
-            participants: (existingRow.value.participants ?? []).map((entry) =>
-              entry.id === participantId ? { ...entry, modelSelection } : entry,
+            participants,
+            sentModels: recordTurnModel(
+              { ...existingRow.value, participants },
+              participantId,
+              modelSelection,
             ),
           });
           return;
@@ -1302,6 +1327,9 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
               ? { reviewInput: event.payload.reviewInput }
               : {}),
             ...(event.payload.invite !== undefined ? { invite: event.payload.invite } : {}),
+            ...(event.payload.agentModels !== undefined
+              ? { agentModels: event.payload.agentModels }
+              : {}),
             isStreaming: event.payload.streaming,
             createdAt: previousMessage?.createdAt ?? event.payload.createdAt,
             updatedAt: event.payload.updatedAt,
@@ -1332,6 +1360,9 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             ...(nextSkills !== undefined ? { skills: [...nextSkills] } : {}),
             ...(event.payload.participantId !== undefined
               ? { participantId: event.payload.participantId }
+              : {}),
+            ...(event.payload.agentModels !== undefined
+              ? { agentModels: event.payload.agentModels }
               : {}),
             isStreaming: false,
             createdAt: previousMessage?.createdAt ?? event.payload.createdAt,

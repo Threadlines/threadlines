@@ -105,6 +105,12 @@ export const ProjectionThread = Schema.Struct({
    */
   roomContext: Schema.optional(Schema.Record(Schema.String, OrchestrationRoomContextCursor)),
   /**
+   * Per agent, the model its last turn was sent with; see
+   * `OrchestrationThread.sentModels`. Optional so rows written before
+   * migration 063 decode; absent reads as nothing recorded yet.
+   */
+  sentModels: Schema.optional(Schema.Record(Schema.String, ModelSelection)),
+  /**
    * The user's name for the thread's own agent; see
    * `OrchestrationThreadShell.agentRole`. Optional so rows written before
    * migration 060 decode.

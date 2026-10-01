@@ -1,5 +1,6 @@
 import {
   type EnvironmentId,
+  type MessageAgentModel,
   type MessageId,
   type OrchestrationAgentRequest,
   type ProviderDriverKind,
@@ -164,8 +165,10 @@ import type {
 import { formatTranscriptHighlightContextPreview } from "~/lib/transcriptHighlightContext";
 import { ProviderInstanceIcon } from "./ProviderInstanceIcon";
 import {
+  type AgentModelLabeler,
   describeRoomAgentMessage,
   describeRoomInvite,
+  messageAgentLabels,
   type OwnAgentLabels,
   type RoomAgentLabel,
   roomAgentKey,
@@ -185,6 +188,8 @@ interface TimelineRowSharedState {
   timestampFormat: TimestampFormat;
   /** Room agents by `roomAgentKey`; null outside rooms. */
   roomAgents: ReadonlyMap<string, RoomAgentLabel> | null;
+  /** Names an agent the way a message recorded it; null when unavailable. */
+  agentModelLabeler: AgentModelLabeler | null;
   /** Agent messages that start a new speaker's stretch and carry an author line. */
   authorLineMessageIds: ReadonlySet<MessageId>;
   /** A side answer's review or question, for the name its steps carry. */
@@ -270,12 +275,14 @@ const TimelineRowActivityCtx = createContext<TimelineRowActivityState>(null!);
 /**
  * The name an author line gives an agent: `agent` is a room agent, or null for
  * the thread's own; `turnId` is the turn the stretch belongs to, null for the
- * live one. Its own context, since labels follow every model the thread's
- * agent is sent with, and only author lines need to hear about it.
+ * live one; `asWritten` is how the agent was when it wrote there (AgentLine),
+ * which wins when known. Its own context, since labels follow every model the
+ * thread's agent is sent with, and only author lines need to hear about it.
  */
 type AgentLabelResolver = (
   agent: ThreadParticipantId | null,
   turnId: TurnId | null,
+  asWritten: MessageAgentModel | null,
 ) => RoomAgentLabel | undefined;
 const TimelineAgentLabelCtx = createContext<AgentLabelResolver>(() => undefined);
 const TIMELINE_LIST_HEADER = <div className="h-3 sm:h-4" />;
@@ -700,6 +707,9 @@ interface MessagesTimelineProps {
   revertTurnCountByUserMessageId: Map<MessageId, number>;
   /** Room agents by `roomAgentKey`; null or absent outside rooms. */
   roomAgents?: ReadonlyMap<string, RoomAgentLabel> | null;
+  /** Names an agent the way a message recorded it (OrchestrationMessage.agentModels).
+   *  Absent: every line names agents as they are now. */
+  agentModelLabeler?: AgentModelLabeler | null;
   /** Outside a room, what the thread's own agent is called, turn by turn.
    *  Absent: its stretches carry no name. */
   ownAgentLabels?: OwnAgentLabels | null;
@@ -779,6 +789,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   onOpenTurnDiff,
   revertTurnCountByUserMessageId,
   roomAgents = null,
+  agentModelLabeler = null,
   ownAgentLabels = null,
   workingParticipantId = null,
   openAgentRequests = EMPTY_AGENT_REQUESTS,
@@ -835,13 +846,15 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     [roomAgents],
   );
   const resolveAgentLabel = useCallback<AgentLabelResolver>(
-    (agent, turnId) =>
-      agent === null && !hasTeammates && ownAgentLabels !== null
-        ? turnId === null
-          ? ownAgentLabels.latest
-          : (ownAgentLabels.byTurn.get(turnId) ?? ownAgentLabels.unrecorded)
-        : roomAgents?.get(roomAgentKey(agent)),
-    [hasTeammates, ownAgentLabels, roomAgents],
+    (agent, turnId, asWritten) =>
+      asWritten !== null && agentModelLabeler !== null
+        ? agentModelLabeler(agent, asWritten)
+        : agent === null && !hasTeammates && ownAgentLabels !== null
+          ? turnId === null
+            ? ownAgentLabels.latest
+            : (ownAgentLabels.byTurn.get(turnId) ?? ownAgentLabels.unrecorded)
+          : roomAgents?.get(roomAgentKey(agent)),
+    [agentModelLabeler, hasTeammates, ownAgentLabels, roomAgents],
   );
   const rawRows = useMemo(
     () =>
@@ -1751,6 +1764,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     () => ({
       timestampFormat,
       roomAgents,
+      agentModelLabeler,
       authorLineMessageIds,
       sideAnswerContext,
       openAgentRequestByMessageId,
@@ -1789,6 +1803,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     [
       timestampFormat,
       roomAgents,
+      agentModelLabeler,
       authorLineMessageIds,
       sideAnswerContext,
       openAgentRequestByMessageId,
@@ -2582,7 +2597,9 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
   const onTheSide = row.message.sideTurnId !== undefined;
   const addressee =
     ctx.roomAgents !== null && (row.message.participantId || onTheSide)
-      ? ctx.roomAgents.get(roomAgentKey(row.message.participantId))
+      ? messageAgentLabels(ctx.roomAgents, row.message, ctx.agentModelLabeler)?.get(
+          roomAgentKey(row.message.participantId),
+        )
       : undefined;
 
   return (
@@ -2657,7 +2674,7 @@ function AgentMessageTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "m
   const { message } = row;
   const description = describeRoomAgentMessage({
     message,
-    labels: ctx.roomAgents,
+    labels: messageAgentLabels(ctx.roomAgents, message, ctx.agentModelLabeler),
     openStatus: ctx.openAgentRequestByMessageId.get(message.id)?.status ?? null,
   });
   if (description === null) {
@@ -2720,7 +2737,11 @@ function AgentMessageTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "m
         data-room-agent-message={message.requestKind ?? "message"}
         title={formatTimestamp(message.createdAt, ctx.timestampFormat)}
       >
-        <AgentAuthorLine agent={agentLine.agent} turnId={agentLine.turnId}>
+        <AgentAuthorLine
+          agent={agentLine.agent}
+          turnId={agentLine.turnId}
+          asWritten={agentLine.asWritten}
+        >
           <span className="min-w-0 truncate text-muted-foreground">→ {description.to}</span>
           {description.kind ? (
             <>
@@ -2789,7 +2810,7 @@ function InviteMessageTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "
   const [showRequest, setShowRequest] = useState(false);
   const description = describeRoomInvite({
     message,
-    labels: ctx.roomAgents,
+    labels: messageAgentLabels(ctx.roomAgents, message, ctx.agentModelLabeler),
     openStatus: ctx.openAgentRequestByMessageId.get(message.id)?.status ?? null,
   });
   return (
@@ -2849,8 +2870,9 @@ function InviteMessageTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "
 function InviteReplyTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
   const ctx = use(TimelineRowCtx);
   const { message } = row;
+  const labels = messageAgentLabels(ctx.roomAgents, message, ctx.agentModelLabeler);
   const nameOf = (participantId: ThreadParticipantId | null | undefined) =>
-    ctx.roomAgents?.get(roomAgentKey(participantId))?.name ?? "an agent";
+    labels?.get(roomAgentKey(participantId))?.name ?? "an agent";
   return (
     <p
       className="min-w-0 truncate px-1 font-mono text-[10.5px] text-muted-foreground"
@@ -3132,6 +3154,11 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
             <AgentAuthorLine
               agent={row.message.participantId ?? null}
               turnId={row.agentLine?.turnId ?? row.message.turnId ?? null}
+              asWritten={
+                row.agentLine?.asWritten ??
+                row.message.agentModels?.[roomAgentKey(row.message.participantId)] ??
+                null
+              }
               onTheSide={row.message.sideTurnId !== undefined}
               review={row.sideReview}
               replyTo={row.sideReplyTo}
@@ -3414,7 +3441,11 @@ function SubagentReceiptTimelineRow({
           the receipt names the agent; px-1 lines the name up with the text. */}
       {row.agentLine?.heads ? (
         <div className="px-1">
-          <AgentAuthorLine agent={row.agentLine.agent} turnId={row.agentLine.turnId} />
+          <AgentAuthorLine
+            agent={row.agentLine.agent}
+            turnId={row.agentLine.turnId}
+            asWritten={row.agentLine.asWritten}
+          />
         </div>
       ) : null}
       {interactive ? (
@@ -3465,7 +3496,11 @@ function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "workin
     <div className="py-1" data-turn-working-anchor="true">
       <div className="min-w-0 pl-1">
         {row.agentLine?.heads ? (
-          <AgentAuthorLine agent={row.agentLine.agent} turnId={row.agentLine.turnId} />
+          <AgentAuthorLine
+            agent={row.agentLine.agent}
+            turnId={row.agentLine.turnId}
+            asWritten={row.agentLine.asWritten}
+          />
         ) : null}
         <p className="flex min-w-0 items-center gap-1.5 text-xs leading-4 text-muted-foreground/70">
           <span className="flex min-w-0 items-center gap-1 tabular-nums">
@@ -3535,9 +3570,17 @@ function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "workin
  * stopped, or failed.
  */
 function SideStatusTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "side-status" }> }) {
-  const { roomAgents, onStopSideAnswer, onToggleSideAnswer, onRevealMessage, timestampFormat } =
-    use(TimelineRowCtx);
-  const name = roomAgents?.get(roomAgentKey(row.participantId))?.name ?? "The agent";
+  const {
+    roomAgents,
+    agentModelLabeler,
+    onStopSideAnswer,
+    onToggleSideAnswer,
+    onRevealMessage,
+    timestampFormat,
+  } = use(TimelineRowCtx);
+  // The question names its answerer as it was asked.
+  const labels = messageAgentLabels(roomAgents, row.question, agentModelLabeler);
+  const name = labels?.get(roomAgentKey(row.participantId))?.name ?? "The agent";
   // The line under your side question sits under it, at the right: the
   // working agent's line runs on at the left.
   const underYourQuestion = row.question.fromAgent === undefined;
@@ -3651,7 +3694,7 @@ function SideStatusTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "sid
       ? null
       : (describeRoomAgentMessage({
           message: row.question,
-          labels: roomAgents,
+          labels,
           openStatus: null,
         })?.outcomeNote ?? null);
   return (
@@ -3763,6 +3806,7 @@ const WorkGroupSection = memo(function WorkGroupSection({
         <AgentAuthorLine
           agent={row.agentLine.agent}
           turnId={row.agentLine.turnId}
+          asWritten={row.agentLine.asWritten}
           onTheSide={row.sideTurnId !== undefined}
           review={
             row.sideTurnId !== undefined ? sideAnswerContext.get(row.sideTurnId)?.review : undefined
@@ -4992,6 +5036,7 @@ const McpAuthReconnectCard = memo(function McpAuthReconnectCard({
 function AgentAuthorLine({
   agent,
   turnId,
+  asWritten,
   onTheSide = false,
   review,
   replyTo,
@@ -5001,6 +5046,8 @@ function AgentAuthorLine({
   agent: ThreadParticipantId | null;
   /** The turn the stretch belongs to; null for the live one. */
   turnId: TurnId | null;
+  /** How the agent was when it wrote here; null when nothing says. */
+  asWritten: MessageAgentModel | null;
   /** More about the message after the name: who it went to, and why. */
   children?: ReactNode;
   /** A read-only answer given while another agent worked. */
@@ -5012,7 +5059,7 @@ function AgentAuthorLine({
   replyTo?: ChatMessage | undefined;
 }) {
   const { timestampFormat, onRevealMessage } = use(TimelineRowCtx);
-  const label = use(TimelineAgentLabelCtx)(agent, turnId);
+  const label = use(TimelineAgentLabelCtx)(agent, turnId, asWritten);
   if (!label) {
     // The thread's own agent with no name to give (MessagesTimeline's
     // ownAgentLabels absent) goes unnamed.

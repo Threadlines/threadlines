@@ -13,6 +13,7 @@ import type { ProviderInstanceEntry } from "./providerInstances";
 import {
   buildOwnAgentLabels,
   buildRoomAgentLabels,
+  createAgentModelLabeler,
   describeRoomAgentMessage,
   describeRoomReviewBasis,
   hasRoomHistory,
@@ -235,6 +236,51 @@ describe("rooms", () => {
       modelName: "GPT-6 Astra 2",
       role: "Reviewer",
     });
+  });
+
+  it("names an agent on a message the way the message recorded it, under its name today", () => {
+    const reasoning = createModelCapabilities({
+      optionDescriptors: [
+        {
+          id: "reasoningEffort",
+          label: "Reasoning",
+          type: "select",
+          options: [
+            { id: "high", label: "High", isDefault: true },
+            { id: "low", label: "Low" },
+          ],
+        },
+      ],
+    });
+    const entries = [
+      {
+        instanceId: ProviderInstanceId.make("codex"),
+        driverKind: "codex",
+        models: [
+          { slug: "gpt-6-astra", name: "GPT-6 Astra", capabilities: reasoning },
+          { slug: "gpt-6.1-sol", name: "GPT-6.1-Sol", capabilities: reasoning },
+        ],
+      },
+    ] as unknown as ReadonlyArray<ProviderInstanceEntry>;
+    // Astra was the second Sol, on low, when it wrote; it has since moved to
+    // Astra, and the user named it.
+    const thread = { participants: [{ ...astra, role: "Reviewer" }] };
+    const labeler = createAgentModelLabeler(thread, entries, (model) => model.name);
+    const asWritten = {
+      modelSelection: {
+        instanceId: ProviderInstanceId.make("codex"),
+        model: "gpt-6.1-sol",
+        options: [{ id: "reasoningEffort", value: "low" }],
+      },
+      nameIndex: 2,
+    };
+    expect(labeler(astraId, asWritten)).toMatchObject({
+      name: "GPT-6.1-Sol 2 (Reviewer)",
+      modelName: "GPT-6.1-Sol 2",
+      reasoning: "Low",
+    });
+    // One label per stamp, so a row's label keeps its identity.
+    expect(labeler(astraId, asWritten)).toBe(labeler(astraId, asWritten));
   });
 
   it("asks another agent now while one works, and queues when asked to or when it cannot", () => {

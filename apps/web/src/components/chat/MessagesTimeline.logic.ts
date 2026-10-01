@@ -8,8 +8,9 @@ import {
 } from "../../session-logic";
 import { isUserWrittenMessage } from "@threadlines/shared/roomAgentRequests";
 import { type ChatMessage, type ProposedPlan, type TurnDiffSummary } from "../../types";
-import { roomTurnOwners } from "../../rooms";
+import { roomAgentKey, roomTurnOwners } from "../../rooms";
 import {
+  type MessageAgentModel,
   type MessageId,
   type SideTurnId,
   type ThreadParticipantId,
@@ -75,6 +76,11 @@ export interface AgentLine {
   readonly nested: AgentLinePlacement | null;
   /** A hand-off's reply whose words are the answer right above it. */
   readonly echoesAnswer: boolean;
+  /** The agent as it was when it wrote here (OrchestrationMessage.agentModels),
+   *  which its name follows: the first stamp among a stretch's own messages,
+   *  a side answer's, or the message's own for one agent writing to another.
+   *  Null when nothing it wrote here carries one. */
+  readonly asWritten: MessageAgentModel | null;
 }
 
 export interface TimelineRowPlacement {
@@ -752,7 +758,8 @@ function sameAgentLine(a: AgentLine | undefined, b: AgentLine | undefined): bool
       a.turnId === b.turnId &&
       a.heads === b.heads &&
       a.nested === b.nested &&
-      a.echoesAnswer === b.echoesAnswer)
+      a.echoesAnswer === b.echoesAnswer &&
+      a.asWritten === b.asWritten)
   );
 }
 
@@ -805,12 +812,18 @@ function placeAgentLines(
       (startsExchange(row.message) || row.message.fromAgent !== undefined));
   const isAnswer = (row: MessagesTimelineRow) => row.kind === "message" && row.turnSummary !== null;
 
-  // Side exchanges: who answers each, and who asked (undefined: the user).
+  // Side exchanges: who answers each, how it was when it answered, and who
+  // asked (undefined: the user).
   const answerer = new Map<SideTurnId, ThreadParticipantId | null>();
+  const answeredAs = new Map<SideTurnId, MessageAgentModel>();
   const asker = new Map<SideTurnId, ThreadParticipantId | null | undefined>();
   for (const row of rows) {
     if (row.kind === "message" && row.message.sideTurnId !== undefined) {
       answerer.set(row.message.sideTurnId, row.message.participantId ?? null);
+      const stamp = authorStamp(row.message);
+      if (stamp !== null) {
+        answeredAs.set(row.message.sideTurnId, stamp);
+      }
       if (row.message.role === "user") {
         asker.set(row.message.sideTurnId, row.message.fromAgent?.participantId);
       }
@@ -858,6 +871,7 @@ function placeAgentLines(
           previousVisible?.kind === "message" &&
           previousVisible.message.role === "assistant" &&
           previousVisible.message.text.trim() === row.message.text.trim(),
+        asWritten: askerStamp(row.message),
       };
     }
     if (visible[index]) {
@@ -916,6 +930,19 @@ function placeAgentLines(
     for (let index = first; index <= last && turnId === null; index += 1) {
       turnId = isSideRow(rows[index]!) ? null : turnOf(rows[index]!);
     }
+    // The first stamp holds even if a late write of an older turn lands in it.
+    let stretchStamp: MessageAgentModel | null = null;
+    for (let index = first; index <= last && stretchStamp === null; index += 1) {
+      const row = rows[index]!;
+      if (
+        row.kind === "message" &&
+        !isSideRow(row) &&
+        row.message.role === "assistant" &&
+        (row.message.participantId ?? null) === agent
+      ) {
+        stretchStamp = authorStamp(row.message);
+      }
+    }
     for (let index = first; index <= last; index += 1) {
       const row = rows[index]!;
       const sideTurnId = isSideRow(row) ? sideTurnOf(row) : undefined;
@@ -941,6 +968,14 @@ function placeAgentLines(
         heads: sideTurnId === undefined ? index === first : headsAnswer.has(index),
         nested: nested.get(index) ?? null,
         echoesAnswer: false,
+        asWritten:
+          sideTurnId === undefined
+            ? stretchStamp
+            : answering
+              ? (answeredAs.get(sideTurnId) ?? null)
+              : row.kind === "message" && row.message.fromAgent !== undefined
+                ? askerStamp(row.message)
+                : stretchStamp,
       };
     }
   };
@@ -1026,11 +1061,24 @@ function placeAgentLines(
         heads: index === first,
         nested: null,
         echoesAnswer: false,
+        asWritten: answeredAs.get(sideTurnId) ?? null,
       };
     }
     first = last;
   }
   return lines;
+}
+
+/** How an assistant message's author was when it wrote the message. */
+function authorStamp(message: ChatMessage): MessageAgentModel | null {
+  return message.agentModels?.[roomAgentKey(message.participantId)] ?? null;
+}
+
+/** How the agent that wrote a request was when it wrote it. */
+function askerStamp(message: ChatMessage): MessageAgentModel | null {
+  return message.fromAgent === undefined
+    ? null
+    : (message.agentModels?.[roomAgentKey(message.fromAgent.participantId)] ?? null);
 }
 
 /** Another agent's part of a side exchange: its answer, its steps, and how

@@ -190,6 +190,41 @@ export function findActiveParticipantByHandle(
   );
 }
 
+/**
+ * Key for one agent in per-agent records (`roomContext`, `sentModels`, a
+ * message's `agentModels`): its participant id, or `primary` for the thread's
+ * own agent.
+ */
+export const roomAgentKey = (participantId: ThreadParticipantId | null | undefined): string =>
+  participantId ?? "primary";
+
+/**
+ * `sentModels` after a turn is asked of an agent: the model asked for, else
+ * the one its turns were last sent with, else its own setting. The reactor
+ * sends the turn with what is recorded here, and the turn's messages are
+ * stamped with it. The in-memory projector and the SQL projection both use
+ * this, so they agree.
+ */
+export function recordTurnModel(
+  room: {
+    readonly modelSelection: ModelSelection;
+    readonly participants: ReadonlyArray<OrchestrationThreadParticipant>;
+    readonly sentModels?: Readonly<Record<string, ModelSelection>> | undefined;
+  },
+  participantId: ThreadParticipantId | null,
+  requested: ModelSelection | undefined,
+): Record<string, ModelSelection> {
+  const key = roomAgentKey(participantId);
+  const own =
+    participantId === null
+      ? undefined
+      : room.participants.find((entry) => entry.id === participantId)?.modelSelection;
+  return {
+    ...room.sentModels,
+    [key]: requested ?? room.sentModels?.[key] ?? own ?? room.modelSelection,
+  };
+}
+
 /** The agent holding the thread's session slot. Null: the thread's own agent. */
 export function sessionSlotParticipantId(
   session: { readonly participantId?: ThreadParticipantId | null | undefined } | null,

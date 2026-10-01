@@ -9,7 +9,11 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Equal from "effect/Equal";
 import * as Option from "effect/Option";
-import { isRoomThread, sessionSlotParticipantId } from "@threadlines/shared/threadParticipants";
+import {
+  isRoomThread,
+  roomAgentKey,
+  sessionSlotParticipantId,
+} from "@threadlines/shared/threadParticipants";
 
 import type { OrchestrationEngineShape } from "../orchestration/Services/OrchestrationEngine.ts";
 import type { ProjectionSnapshotQueryShape } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
@@ -189,6 +193,26 @@ export function startProviderReviewForThread(
       },
       createdAt: reviewRequestedAt,
     });
+
+    // The review is a turn of the thread's own agent: what it writes is
+    // stamped with the model it runs on (messageAgentModels), like any turn.
+    yield* services.orchestrationEngine
+      .dispatch({
+        type: "thread.sent-model.record",
+        commandId: CommandId.make(`server:provider-review:sent-model:${crypto.randomUUID()}`),
+        threadId: input.threadId,
+        agentKey: roomAgentKey(null),
+        modelSelection: effectiveModelSelection,
+        createdAt: reviewRequestedAt,
+      })
+      .pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("failed to record the provider review's model", {
+            threadId: input.threadId,
+            cause,
+          }),
+        ),
+      );
 
     const review = yield* services.providerService
       .startReview({
