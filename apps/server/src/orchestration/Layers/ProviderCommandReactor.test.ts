@@ -2092,6 +2092,13 @@ describe("ProviderCommandReactor", () => {
       }),
     );
     await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    // The reactor records the sent turn as running a moment after the send;
+    // wait for that, or its late write would land on the session set below.
+    await waitFor(async () => {
+      const running = await harness.readModel();
+      const session = running.threads.find((thread) => thread.id === threadId)?.session;
+      return session?.status === "running" && session.activeTurnId === asTurnId("turn-1");
+    });
 
     await Effect.runPromise(
       harness.engine.dispatch({
@@ -2131,6 +2138,49 @@ describe("ProviderCommandReactor", () => {
     )?.messageId;
     expect(retryProviderMessageId).toBeDefined();
     expect(retryProviderMessageId).not.toBe(messageId);
+    await harness.drain();
+  });
+
+  it("records the model a turn goes out on when it is not the one its request recorded", async () => {
+    const harness = await createHarness();
+    const threadId = ThreadId.make("thread-1");
+    const now = "2026-01-01T00:00:00.000Z";
+
+    // As after a restart with the model changed since: the last turn is on
+    // record as another model, and nothing in memory remembers it.
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.sent-model.record",
+        commandId: CommandId.make("cmd-earlier-sent-model"),
+        threadId,
+        agentKey: "primary",
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6-astra" },
+        createdAt: now,
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-no-model"),
+        threadId,
+        message: {
+          messageId: asMessageId("user-message-no-model"),
+          role: "user",
+          text: "carry on",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    const sent = harness.sendTurn.mock.calls[0]?.[0] as { modelSelection?: ModelSelection };
+    expect(sent.modelSelection).toMatchObject({ model: "gpt-5-codex" });
+    // Corrected before the send, so the turn's messages are stamped with it.
+    const thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+    expect(thread?.sentModels?.primary).toEqual(sent.modelSelection);
     await harness.drain();
   });
 
@@ -4003,6 +4053,13 @@ describe("ProviderCommandReactor", () => {
       }),
     );
     await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    // The reactor records the sent turn as running a moment after the send;
+    // wait for that, or its late write would land on the session set below.
+    await waitFor(async () => {
+      const running = await harness.readModel();
+      const session = running.threads.find((thread) => thread.id === threadId)?.session;
+      return session?.status === "running" && session.activeTurnId === asTurnId("turn-1");
+    });
     const snapshot = await harness.readModel();
     const session = snapshot.threads.find((thread) => thread.id === threadId)?.session;
     if (!session) throw new Error("expected a projected session for thread-1");
@@ -4067,6 +4124,13 @@ describe("ProviderCommandReactor", () => {
       }),
     );
     await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    // The reactor records the sent turn as running a moment after the send;
+    // wait for that, or its late write would land on the session set below.
+    await waitFor(async () => {
+      const running = await harness.readModel();
+      const session = running.threads.find((thread) => thread.id === threadId)?.session;
+      return session?.status === "running" && session.activeTurnId === asTurnId("turn-1");
+    });
 
     const snapshot = await harness.readModel();
     const session = snapshot.threads.find((thread) => thread.id === threadId)?.session;

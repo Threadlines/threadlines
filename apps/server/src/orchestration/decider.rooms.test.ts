@@ -1056,6 +1056,8 @@ describe("decider rooms", () => {
       expect(asked.find((event) => event.type === "thread.message-sent")?.payload).toMatchObject({
         agentModels: { [astraId]: { modelSelection: low, nameIndex: 1 } },
       });
+      // Asking for the turn records what it is sent with.
+      expect(threadOf(await apply(readModel(), asked)).sentModels).toEqual({ [astraId]: low });
     });
 
     it("changes an added agent's model only when it has nothing in flight", async () => {

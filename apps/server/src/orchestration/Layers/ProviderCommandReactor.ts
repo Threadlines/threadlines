@@ -60,6 +60,7 @@ import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Equal from "effect/Equal";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Scope from "effect/Scope";
@@ -1558,6 +1559,8 @@ const make = Effect.gen(function* () {
         roomCatchUp !== undefined && conversationId !== null
           ? { agentKey, cursor: { conversationId, ...roomCatchUp.cursor } }
           : undefined,
+      // The model the turn request recorded for this agent (recordTurnModel).
+      recordedModel: thread.sentModels?.[agentKey],
     };
   });
 
@@ -1586,8 +1589,9 @@ const make = Effect.gen(function* () {
       );
 
   /**
-   * Record the model an agent's turn is sent with, before the turn goes out,
-   * so everything the turn writes is stamped with it (messageAgentModels).
+   * Correct the model recorded for an agent's turn to the one that goes out,
+   * before the turn can write anything: its messages are stamped with it
+   * (messageAgentModels).
    */
   const recordSentModel = (
     threadId: ThreadId,
@@ -2060,8 +2064,16 @@ const make = Effect.gen(function* () {
         return;
       }
 
-      const { request: turnRequest, roomContext } = sendTurnRequest.value;
-      if (turnRequest.modelSelection !== undefined) {
+      const { request: turnRequest, roomContext, recordedModel } = sendTurnRequest.value;
+      // The turn request already recorded the model it expected to go out.
+      // Only a turn that goes out on another one (settings moved while no
+      // explicit model was asked for, or the live session is on a different
+      // model) pays for a second write, so a normal send stays as short as
+      // it was.
+      if (
+        turnRequest.modelSelection !== undefined &&
+        !Equal.equals(turnRequest.modelSelection, recordedModel)
+      ) {
         yield* recordSentModel(
           event.payload.threadId,
           event.payload.participantId ?? null,

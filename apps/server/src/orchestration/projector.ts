@@ -21,7 +21,7 @@ import {
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { retainThreadActivities } from "@threadlines/shared/threadActivityRetention";
-import { applyRoomAgentUpdate } from "@threadlines/shared/threadParticipants";
+import { applyRoomAgentUpdate, recordTurnModel } from "@threadlines/shared/threadParticipants";
 import {
   agentRequestStateOn,
   withInviteChoice,
@@ -789,18 +789,25 @@ export function projectEvent(
         Effect.map((payload) => {
           const participantId = payload.participantId ?? null;
           const modelSelection = payload.modelSelection;
-          if (participantId === null || modelSelection === undefined) {
-            return nextBase;
-          }
           const thread = nextBase.threads.find((entry) => entry.id === payload.threadId);
           if (thread === undefined) {
             return nextBase;
           }
+          const participants =
+            participantId === null || modelSelection === undefined
+              ? thread.participants
+              : thread.participants.map((entry) =>
+                  entry.id === participantId ? { ...entry, modelSelection } : entry,
+                );
           return {
             ...nextBase,
             threads: updateThread(nextBase.threads, payload.threadId, {
-              participants: thread.participants.map((entry) =>
-                entry.id === participantId ? { ...entry, modelSelection } : entry,
+              participants,
+              // What the turn is sent with, and its messages stamped with.
+              sentModels: recordTurnModel(
+                { ...thread, participants },
+                participantId,
+                modelSelection,
               ),
             }),
           };

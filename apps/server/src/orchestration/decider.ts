@@ -1616,15 +1616,16 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           attachments: command.message.attachments,
           ...(command.message.skills !== undefined ? { skills: command.message.skills } : {}),
           ...(participantId !== null ? { participantId } : {}),
-          // Named as the turn is asked. A queued message an agent wrote is
-          // already recorded, with its own stamps; sending it must not restamp it.
+          // Named as the turn is sent (recordTurnModel). A queued message an
+          // agent wrote is already recorded, with its own stamps; sending it
+          // must not restamp it.
           ...(isNewMessage(targetThread, command.message.messageId)
             ? {
                 agentModels: messageAgentModels(targetThread, [
                   {
                     participantId,
                     modelSelection:
-                      command.modelSelection ?? currentAgentModel(targetThread, participantId),
+                      command.modelSelection ?? sentAgentModel(targetThread, participantId),
                   },
                 ]),
               }

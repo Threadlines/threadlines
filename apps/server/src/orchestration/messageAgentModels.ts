@@ -4,8 +4,9 @@
  * written, after its model or options change.
  *
  * Where each stamp's model comes from:
- * - an assistant message: the author's side answer's model, or the model the
- *   reactor recorded as it sent the author's last turn (`sentModels`);
+ * - an assistant message: the author's side answer's model, or the model
+ *   recorded when the author's last turn was asked for (`sentModels`, which
+ *   is what the reactor sends the turn with);
  * - a message to an agent: the model its turn is asked with, or the one it is
  *   working with when it is steered;
  * - an agent's request: the asker's last turn's model, and the model the

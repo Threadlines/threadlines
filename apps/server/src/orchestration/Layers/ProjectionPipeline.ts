@@ -1,5 +1,5 @@
 import { compareTranscriptOrder } from "@threadlines/shared/transcriptOrder";
-import { applyRoomAgentUpdate } from "@threadlines/shared/threadParticipants";
+import { applyRoomAgentUpdate, recordTurnModel } from "@threadlines/shared/threadParticipants";
 import {
   agentRequestStateOn,
   isUserWrittenMessage,
@@ -826,22 +826,30 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
 
         // A room agent's model follows the composer, like the thread's own
         // agent's, but it is kept on the participant.
+        // Every turn request also records the model the turn is sent with.
         case "thread.turn-start-requested": {
           const participantId = event.payload.participantId ?? null;
           const modelSelection = event.payload.modelSelection;
-          if (participantId === null || modelSelection === undefined) {
-            return;
-          }
           const existingRow = yield* projectionThreadRepository.getById({
             threadId: event.payload.threadId,
           });
           if (Option.isNone(existingRow)) {
             return;
           }
+          const existingParticipants = existingRow.value.participants ?? [];
+          const participants =
+            participantId === null || modelSelection === undefined
+              ? existingParticipants
+              : existingParticipants.map((entry) =>
+                  entry.id === participantId ? { ...entry, modelSelection } : entry,
+                );
           yield* projectionThreadRepository.upsert({
             ...existingRow.value,
-            participants: (existingRow.value.participants ?? []).map((entry) =>
-              entry.id === participantId ? { ...entry, modelSelection } : entry,
+            participants,
+            sentModels: recordTurnModel(
+              { ...existingRow.value, participants },
+              participantId,
+              modelSelection,
             ),
           });
           return;

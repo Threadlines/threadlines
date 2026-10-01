@@ -1201,7 +1201,8 @@ export const OrchestrationThread = Schema.Struct({
   roomContext: Schema.optional(Schema.Record(Schema.String, OrchestrationRoomContextCursor)),
   /**
    * Per agent (`primary` or a participant id), the model its last turn was
-   * sent with, options included: what its messages are stamped with (see
+   * sent with, options included, recorded as the turn is asked for: what the
+   * reactor sends and what the turn's messages are stamped with (see
    * OrchestrationMessage.agentModels). Absent: nothing recorded yet.
    */
   sentModels: Schema.optional(Schema.Record(Schema.String, ModelSelection)),
@@ -2336,7 +2337,11 @@ const ThreadRoomContextRecordCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
-/** Record the model an agent's turn is being sent with; see OrchestrationThread.sentModels. */
+/**
+ * Record the model a turn that is not asked for with `thread.turn.start` runs
+ * on (a native review); see OrchestrationThread.sentModels. A turn request
+ * records its own.
+ */
 const ThreadSentModelRecordCommand = Schema.Struct({
   type: Schema.Literal("thread.sent-model.record"),
   commandId: CommandId,
