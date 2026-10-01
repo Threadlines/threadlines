@@ -50,19 +50,20 @@ const structuredData = {
 
       {
         video && (
-          <video
-            class="release-video"
-            controls
-            muted
-            playsinline
-            preload="metadata"
-            poster={video.poster}
-            width="1920"
-            height="1080"
-            aria-label={video.label}
-          >
-            <source src={video.src} type="video/mp4" />
-          </video>
+          <figure class="release-video">
+            <video
+              controls
+              muted
+              playsinline
+              preload="metadata"
+              poster={video.poster}
+              width="1920"
+              height="1080"
+            >
+              <source src={video.src} type="video/mp4" />
+            </video>
+            <figcaption>{video.caption}</figcaption>
+          </figure>
         )
       }
 
@@ -159,13 +160,23 @@ const structuredData = {
   }
 
   .release-video {
+    margin: 24px 0 0;
+  }
+
+  .release-video video {
     display: block;
     width: 100%;
     height: auto;
-    margin-top: 24px;
     border: 1px solid var(--border);
     border-radius: 14px;
     background: var(--surface);
+  }
+
+  .release-video figcaption {
+    margin-top: 10px;
+    color: var(--fg-dim);
+    font-size: 13px;
+    line-height: 1.5;
   }
 
   .highlights {
