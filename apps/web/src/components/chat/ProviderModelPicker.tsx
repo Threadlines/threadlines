@@ -231,7 +231,13 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
             data-chat-provider-model-picker="true"
             className={cn(
               "min-w-0 justify-start overflow-hidden whitespace-nowrap px-2 text-muted-foreground/70 hover:text-foreground/80 [&_svg]:mx-0",
-              props.compact ? "max-w-42 shrink" : "max-w-48 shrink-0 sm:max-w-56 sm:px-3",
+              // A room's narrow button is wider by the faded icons, so the name
+              // keeps the room it has outside a room whenever the row allows.
+              props.compact
+                ? inRoom
+                  ? "max-w-48 shrink"
+                  : "max-w-42 shrink"
+                : "max-w-48 shrink-0 sm:max-w-56 sm:px-3",
               props.triggerClassName,
             )}
             disabled={props.disabled}
@@ -367,34 +373,52 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
 
 /**
  * The model button in a room: who the next message goes to, in front, with
- * the other agents' icons faded behind it and a dot on one at work, blue like
- * the sidebar's "working" (amber is for warnings). On
- * a narrow composer only the addressed agent's icon shows, and a named agent
- * goes by its name alone, like the sidebar.
+ * up to two other agents' icons faded behind it and a dot on one at work,
+ * blue like the sidebar's "working" (amber is for warnings). Agents at work
+ * take the faded spots first, so a dot is the last thing left out. Phones get
+ * the same stack. When the composer's left controls (the `composer-left`
+ * container in ChatComposer) get too narrow to keep about seven characters of
+ * the name, the faded icons drop out one at a time, the last one first (and
+ * all at once beside the model fallback chip). On a narrow composer a named
+ * agent goes by its name alone, like the sidebar.
  */
 function RoomPickerTriggerContent(props: { room: RoomAgents; compact: boolean }) {
   const { recipient, rows } = props.room;
-  const icons = props.compact
-    ? [recipient]
-    : [recipient, ...rows.filter((row) => row !== recipient).slice(0, 2)];
+  const others = rows.filter((row) => row !== recipient);
+  const icons = [
+    recipient,
+    ...[
+      ...others.filter((row) => row.status !== null),
+      ...others.filter((row) => row.status === null),
+    ].slice(0, 2),
+  ];
   const name = props.compact ? (recipient.role ?? recipient.modelName) : recipient.name;
   const busy = rows.filter((row) => row.status !== null);
   return (
     <span
       className={cn(
         "flex min-w-0 w-full box-border items-center gap-2 overflow-hidden",
-        props.compact ? "max-w-36 sm:pl-1" : undefined,
+        props.compact ? "max-w-42 sm:pl-1" : undefined,
       )}
     >
-      <span aria-hidden="true" className="flex shrink-0 items-center">
+      {/* Isolated so the dots sit above the icons overlapping them. */}
+      <span aria-hidden="true" className="isolate flex shrink-0 items-center">
         {icons.map((row, index) => (
           <span
             key={row.id ?? "primary"}
+            data-room-trigger-agent={row.id ?? "primary"}
             className={cn(
               "relative flex size-4 shrink-0 items-center justify-center",
-              // Faded behind the one in front, with a notch cut where it sits.
+              index > 0 && "-ms-[5px]",
+              // Each faded icon costs the name 11px; these widths (inside the
+              // row's padding) keep about seven characters of it: three icons
+              // on a 402px phone, two at 390px, one at 375px.
+              index === 1 && "@max-[163px]/composer-left:hidden",
+              index === 2 && "@max-[174px]/composer-left:hidden",
+              // The fallback chip takes that room on a narrow composer.
               index > 0 &&
-                "-ms-[5px] opacity-55 [mask-image:radial-gradient(circle_at_-3px_50%,transparent_9px,black_9.5px)]",
+                props.compact &&
+                "group-data-[model-fallback-chip=true]/composer-left:hidden",
             )}
           >
             {row.entry ? (
@@ -403,14 +427,21 @@ function RoomPickerTriggerContent(props: { room: RoomAgents; compact: boolean })
                 displayName={row.entry.displayName}
                 accentColor={row.entry.accentColor}
                 showBadge={false}
-                className="size-4"
+                // Faded behind the one in front, with a notch cut where it
+                // sits. Only the icon fades: the dot stays whole and bright.
+                className={cn(
+                  "size-4",
+                  index > 0 &&
+                    "opacity-55 [mask-image:radial-gradient(circle_at_-3px_50%,transparent_9px,black_9.5px)]",
+                )}
                 iconClassName="size-4"
               />
             ) : null}
             {row.status !== null ? (
               <span
+                data-room-trigger-working="true"
                 className={cn(
-                  "absolute -right-0.5 -bottom-0.5 size-1.5 rounded-full",
+                  "absolute -right-0.5 -bottom-0.5 z-10 size-1.5 rounded-full",
                   THREAD_STATUS_DOT_CLASSES.blue,
                 )}
               />
