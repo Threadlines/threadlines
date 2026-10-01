@@ -82,7 +82,7 @@ const playGlyphs = `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="tr
 
 <Layout
   title="Threadlines: a local workspace for coding agents"
-  description="Run Codex and Claude Code in one local workspace. Follow project threads, review pull requests and CI, preview your site, and inspect files and Git changes."
+  description="Run Codex and Claude Code in one local workspace, and bring them into the same thread. Follow project threads, review pull requests and CI, preview your site, and inspect Git changes."
   canonicalPath="/"
   structuredData={[appStructuredData]}
 >
@@ -148,11 +148,14 @@ const playGlyphs = `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="tr
           style="--pv-delay: 1.6s"></circle>
       </svg>
 
-      <h1 class="pv-display pv-rise" style="--pv-d: 0.25s">Run Codex and Claude.<br />Review the work in one place.</h1>
+      <a class="pv-new pv-rise" style="--pv-d: 0.15s" href="/changelog/v0.5.0"
+        ><span class="pv-new-tag">New in 0.5.0</span><span>Rooms</span><span aria-hidden="true">&rarr;</span></a
+      >
+      <h1 class="pv-display pv-rise" style="--pv-d: 0.25s">Your coding agents,<br />together in one thread.</h1>
       <p class="pv-sub pv-rise" style="--pv-d: 0.4s">
-        Threadlines is a local desktop workspace for Claude&nbsp;Code and Codex. Keep the
-        conversation, <span class="pv-accent">pull requests</span>, browser, and source control
-        together while your agents work.
+        Threadlines is a local desktop workspace for Claude&nbsp;Code and Codex.{" "}
+        <span class="pv-accent">Add another model</span> to a thread, let the agents ask each other
+        for help, and keep pull requests, the browser, and Git changes beside the chat.
       </p>
       <div class="pv-cta-row pv-rise" style="--pv-d: 0.55s">
         <a class="pv-cta pv-cta-primary" id="pv-download" href="/download"><span class="pv-cta-ico" id="pv-dl-mac"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12.152 6.896c-.948 0-2.415-1.078-3.96-1.04-2.04.027-3.91 1.183-4.961 3.014-2.117 3.675-.546 9.103 1.519 12.09 1.013 1.454 2.208 3.09 3.792 3.039 1.52-.065 2.09-.987 3.935-.987 1.831 0 2.35.987 3.96.948 1.637-.026 2.676-1.48 3.676-2.948 1.156-1.688 1.636-3.325 1.662-3.415-.039-.013-3.182-1.221-3.22-4.857-.026-3.04 2.48-4.494 2.597-4.559-1.429-2.09-3.623-2.324-4.39-2.376-2-.156-3.675 1.09-4.61 1.09zM15.53 3.83c.843-1.012 1.4-2.427 1.245-3.83-1.207.052-2.662.805-3.532 1.818-.78.896-1.454 2.338-1.273 3.714 1.338.104 2.715-.688 3.559-1.701"/></svg></span><span class="pv-cta-ico" id="pv-dl-win" hidden><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 3h8.5v8.5H3zM12.5 3H21v8.5h-8.5zM3 12.5h8.5V21H3zM12.5 12.5H21V21h-8.5z"/></svg></span><span id="pv-dl-label">Download for macOS</span></a>
@@ -176,30 +179,51 @@ const playGlyphs = `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="tr
           <svg viewBox="0 0 256 257" aria-hidden="true"><path fill="#d97757" d="m50.228 170.321 50.357-28.257.843-2.463-.843-1.361h-2.462l-8.426-.518-28.775-.778-24.952-1.037-24.175-1.296-6.092-1.297L0 125.796l.583-3.759 5.12-3.434 7.324.648 16.202 1.101 24.304 1.685 17.629 1.037 26.118 2.722h4.148l.583-1.685-1.426-1.037-1.101-1.037-25.147-17.045-27.22-18.017-14.258-10.37-7.713-5.25-3.888-4.925-1.685-10.758 7-7.713 9.397.649 2.398.648 9.527 7.323 20.35 15.75L94.817 91.9l3.889 3.24 1.555-1.102.195-.777-1.75-2.917-14.453-26.118-15.425-26.572-6.87-11.018-1.814-6.61c-.648-2.723-1.102-4.991-1.102-7.778l7.972-10.823L71.42 0 82.05 1.426l4.472 3.888 6.61 15.101 10.694 23.786 16.591 32.34 4.861 9.592 2.592 8.879.973 2.722h1.685v-1.556l1.36-18.211 2.528-22.36 2.463-28.776.843-8.1 4.018-9.722 7.971-5.25 6.222 2.981 5.12 7.324-.713 4.73-3.046 19.768-5.962 30.98-3.889 20.739h2.268l2.593-2.593 10.499-13.934 17.628-22.036 7.778-8.749 9.073-9.657 5.833-4.601h11.018l8.1 12.055-3.628 12.443-11.342 14.388-9.398 12.184-13.48 18.147-8.426 14.518.778 1.166 2.01-.194 30.46-6.481 16.462-2.982 19.637-3.37 8.88 4.148.971 4.213-3.5 8.62-20.998 5.184-24.628 4.926-36.682 8.685-.454.324.519.648 16.526 1.555 7.065.389h17.304l32.21 2.398 8.426 5.574 5.055 6.805-.843 5.184-12.962 6.611-17.498-4.148-40.83-9.721-14-3.5h-1.944v1.167l11.666 11.406 21.387 19.314 26.767 24.887 1.36 6.157-3.434 4.86-3.63-.518-23.526-17.693-9.073-7.972-20.545-17.304h-1.36v1.814l4.73 6.935 25.017 37.59 1.296 11.536-1.814 3.76-6.481 2.268-7.13-1.297-14.647-20.544-15.1-23.138-12.185-20.739-1.49.843-7.194 77.448-3.37 3.953-7.778 2.981-6.48-4.925-3.436-7.972 3.435-15.749 4.148-20.544 3.37-16.333 3.046-20.285 1.815-6.74-.13-.454-1.49.194-15.295 20.999-23.267 31.433-18.406 19.702-4.407 1.75-7.648-3.954.713-7.064 4.277-6.286 25.47-32.405 15.36-20.092 9.917-11.6-.065-1.686h-.583L44.07 198.125l-12.055 1.555-5.185-4.86.648-7.972 2.463-2.593 20.35-13.999-.064.065Z"/></svg>
           Claude Code
         </span>
+        <span class="pv-provider">
+          <svg viewBox="0 0 466.73 532.09" aria-hidden="true"><path fill="currentColor" d="M457.43,125.94L244.42,2.96c-6.84-3.95-15.28-3.95-22.12,0L9.3,125.94c-5.75,3.32-9.3,9.46-9.3,16.11v247.99c0,6.65,3.55,12.79,9.3,16.11l213.01,122.98c6.84,3.95,15.28,3.95,22.12,0l213.01-122.98c5.75-3.32,9.3-9.46,9.3-16.11v-247.99c0-6.65-3.55-12.79-9.3-16.11h-.01ZM444.05,151.99l-205.63,356.16c-1.39,2.4-5.06,1.42-5.06-1.36v-233.21c0-4.66-2.49-8.97-6.53-11.31L24.87,145.67c-2.4-1.39-1.42-5.06,1.36-5.06h411.26c5.84,0,9.49,6.33,6.57,11.39h-.01Z"/></svg>
+          Cursor
+        </span>
+        <span class="pv-provider">
+          <svg viewBox="166.241 0 155.861 156" preserveAspectRatio="xMidYMid" role="img" aria-label="fx"><path fill="currentColor" d="M237.89 0C243.18 0 249.38 1.42 253.03 3.07L255.09 4.01L250.08 18.63L247.68 17.75C244.9 16.72 241.94 15.8 238.49 15.8C234.98 15.8 232.79 16.56 231.08 18.32C229.23 20.23 227.63 23.64 226.23 29.76L226.23 29.76L226.23 29.76L225.14 34.85H241.67L260.43 34.95L260.69 34.95L260.84 35.17L278.85 61.63L296.74 34.95H320.87L291.68 76.74L322.1 119.75H299.33L299.18 119.55L241.14 40.48L239.35 49.4H222.07L205.69 127.21C203.93 135.71 201.19 142.84 196.78 147.87C192.27 153.01 186.2 155.75 178.34 155.75C174.18 155.75 170.75 155.11 167.91 154.11L166.24 153.52V137.18L166.9 137.4L169.53 138.28C172.18 139.16 174.41 139.8 177.14 139.8C178.53 139.8 179.7 139.53 180.73 138.98C181.76 138.43 182.68 137.6 183.52 136.44C185.3 133.99 186.72 130.13 187.9 124.67L203.76 49.4H189.87L191.76 39.44L192.04 39.35L206.82 34.47L208.15 28.64C210.52 18.21 213.77 10.94 218.71 6.32C223.74 1.61 230.13 0 237.89 0ZM273.99 99.08L260.07 120.25H234.54L261 82.02L273.99 99.08Z"/></svg>
+        </span>
       </div>
     </div>
     <figure class="pv-app-frame pv-rise" style="--pv-d: 0.95s">
       <div
-        class="pv-frame"
+        class="pv-frame pv-frame-hero"
       >
         <video
-          class="pv-video"
+          class="pv-video pv-hero-wide"
           muted
           playsinline
           loop
           preload="metadata"
-          poster="/Screenshots/stable-launch/workspace.webp"
+          poster="/Screenshots/rooms/rooms.webp"
           width="1600"
           height="934"
-          aria-label="A Threadlines demo showing the inbox, pull request checks, and code review. Recreated conversations in the current app."
+          aria-label="A Threadlines room. Opus 5.5 can't find why some customers are charged twice, so the user adds GPT-6-Astra. Astra finds the cause, Opus fixes it, and Astra checks the fix."
         >
-          <source src="/Screenshots/stable-launch/workspace.mp4" type="video/mp4" />
+          <source src="/Screenshots/rooms/rooms.mp4" type="video/mp4" />
         </video>
-        <button class="pv-expand" type="button" aria-label="Expand the workspace demo"><span>Expand</span></button>
+        <video
+          class="pv-video pv-hero-tall"
+          muted
+          playsinline
+          loop
+          preload="none"
+          poster="/Screenshots/rooms/rooms-tall.webp"
+          width="800"
+          height="1000"
+          aria-label="A Threadlines room. Opus 5.5 can't find why some customers are charged twice, so the user adds GPT-6-Astra. Astra finds the cause, Opus fixes it, and Astra checks the fix."
+        >
+          <source src="/Screenshots/rooms/rooms-tall.mp4" type="video/mp4" />
+        </video>
+        <button class="pv-expand" type="button" aria-label="Expand the Rooms demo"><span>Expand</span></button>
         <button class="pv-play" type="button" aria-label="Play video" set:html={playGlyphs} />
       </div>
       <figcaption>
-        A 30-second tour of the inbox, PR checks, and code review. Recreated conversations in the current app.
+        A 46-second demo: Opus and Astra track down a double-charge bug in one thread. A recreated
+        conversation in the current app.
       </figcaption>
     </figure>
   </section>
@@ -371,8 +395,12 @@ const playGlyphs = `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="tr
   const inView = new WeakSet<Element>();
   const manuallyPaused = new WeakSet<HTMLVideoElement>();
   const videos = [...document.querySelectorAll<HTMLVideoElement>("video.pv-video")];
+  // A tab's active pane, or the clip this screen width shows (the hero has a
+  // wide clip and a tall one for phones; the other is display: none).
+  const shown = (element: Element) => element.getClientRects().length > 0;
   const activeVideo = (frame: HTMLElement) =>
     frame.querySelector<HTMLVideoElement>("video.pv-active") ??
+    [...frame.querySelectorAll<HTMLVideoElement>("video")].find(shown) ??
     frame.querySelector<HTMLVideoElement>("video");
   const syncPlayButton = (video: HTMLVideoElement) => {
     const frame = video.closest<HTMLElement>(".pv-frame");
@@ -553,8 +581,10 @@ const playGlyphs = `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="tr
     trigger.addEventListener("click", () => {
       const frame = trigger.closest<HTMLElement>(".pv-frame");
       if (!frame) return;
-      const media = [...frame.querySelectorAll<HTMLImageElement | HTMLVideoElement>("img, video")];
+      const all = [...frame.querySelectorAll<HTMLImageElement | HTMLVideoElement>("img, video")];
       const set = frame.closest<HTMLElement>("[data-tabset]");
+      // Tabs keep every pane; elsewhere only the clip this screen shows.
+      const media = set ? all : all.filter(shown);
       lbOpen(media, set ? Number(set.dataset.current || 0) : 0);
     });
   }
@@ -688,6 +718,32 @@ const playGlyphs = `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="tr
     color: var(--fg-muted);
   }
   .pv-provider svg { width: 20px; height: 20px; }
+  .pv-frame .pv-hero-tall { display: none; }
+
+  .pv-new {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 18px;
+    padding: 5px 12px 5px 5px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--fg-muted);
+    text-decoration: none;
+    transition: color 0.2s ease, border-color 0.2s ease;
+  }
+  .pv-new:hover { color: var(--fg); border-color: var(--accent-bright); }
+  .pv-new-tag {
+    padding: 3px 9px;
+    border-radius: 999px;
+    background: var(--accent-bright);
+    color: var(--accent-contrast);
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    letter-spacing: 0.04em;
+  }
 
   .pv-app-frame { width: min(1400px, 94vw); margin: 32px auto 0; padding: 0; }
   .pv-app-frame figcaption { margin-top: 12px; font-size: 0.85rem; color: var(--fg-muted); }
@@ -829,15 +885,22 @@ const playGlyphs = `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="tr
   .pv-lightbox-prev { left: 12px; }
   .pv-lightbox-next { right: 12px; }
 
+  @media (max-width: 1080px) {
+    .pv-providers-label { flex-basis: 100%; }
+  }
   @media (max-width: 820px) {
     .pv-showcase,
     .pv-app-frame { width: calc(100vw - 32px); }
     .pv-grid { grid-template-columns: 1fr; gap: 16px; }
   }
+  @media (max-width: 640px) {
+    .pv-frame-hero { aspect-ratio: 800 / 1000; }
+    .pv-frame .pv-hero-wide { display: none; }
+    .pv-frame .pv-hero-tall { display: block; }
+  }
   @media (max-width: 520px) {
     .pv-wrap { padding: 0 16px; }
     .pv-providers { gap: 10px 16px; }
-    .pv-providers-label { flex-basis: 100%; }
     .pv-app-frame figcaption { padding: 0 8px; }
   }
   @media (prefers-reduced-motion: reduce) {
