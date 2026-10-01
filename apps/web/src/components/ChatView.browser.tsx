@@ -7758,6 +7758,132 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
+  it("stacks a room's agents on a phone's model button, and drops idle ones first as it narrows", async () => {
+    const agentIds = [
+      "7a0b1c2d-3e4f-4a5b-8c6d-7e8f9a0b1c2d",
+      "8b1c2d3e-4f5a-4b6c-9d7e-8f9a0b1c2d3e",
+      "9c2d3e4f-5a6b-4c7d-8e9f-0a1b2c3d4e5f",
+    ] as ThreadParticipantId[];
+    const workingId = agentIds[2]!;
+    const startedAt = new Date(Date.now() - 60_000).toISOString();
+    const base = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-room-phone" as MessageId,
+      targetText: "room phone target",
+      sessionStatus: "running",
+      sessionActiveTurnId: "turn-room-phone" as TurnId,
+    });
+    const mounted = await mountChatView({
+      viewport: { ...PHONE_VIEWPORT, width: 440 },
+      configureFixture: withCodexModels,
+      snapshot: {
+        ...base,
+        threads: base.threads.map((thread) =>
+          thread.id === THREAD_ID
+            ? {
+                ...thread,
+                participants: agentIds.map((id, index) => ({
+                  id,
+                  handle: `agent-${index + 2}`,
+                  modelSelection: {
+                    instanceId: ProviderInstanceId.make("codex"),
+                    model: index === 1 ? "gpt-5.6-sol" : "gpt-6-astra",
+                  },
+                  joinedAt: NOW_ISO,
+                  leftAt: null,
+                })),
+                // The last agent to join is the one at work.
+                session: thread.session ? { ...thread.session, participantId: workingId } : null,
+                latestTurn: {
+                  turnId: "turn-room-phone" as TurnId,
+                  state: "running" as const,
+                  requestedAt: startedAt,
+                  startedAt,
+                  completedAt: null,
+                  assistantMessageId: null,
+                },
+              }
+            : thread,
+        ),
+      },
+    });
+
+    const chosenBefore = useRoomRecipientStore.getState().chosen;
+    try {
+      // Writing to the thread's own agent while another works.
+      useRoomRecipientStore.getState().choose(THREAD_REF, null);
+      const footer = await waitForElement(
+        findVisibleComposerFooter,
+        "Unable to find composer footer.",
+      );
+      const leftActions = await waitForElement(
+        () => footer.querySelector<HTMLElement>('[data-chat-composer-actions="left"]'),
+        "Unable to find left composer actions.",
+      );
+      const modelButton = await waitForElement(
+        () =>
+          leftActions.querySelector<HTMLButtonElement>('[data-chat-provider-model-picker="true"]'),
+        "Unable to find the composer's model picker.",
+      );
+      const shownIcons = () =>
+        [...modelButton.querySelectorAll<HTMLElement>("[data-room-trigger-agent]")]
+          .filter((icon) => getComputedStyle(icon).display !== "none")
+          .map((icon) => icon.dataset.roomTriggerAgent);
+      const nameWidth = () =>
+        modelButton.querySelector<HTMLElement>("span.truncate")?.getBoundingClientRect().width ?? 0;
+      const expectRowFits = () => {
+        expect(footer.dataset.chatComposerFooterCompact).toBe("true");
+        expect(leftActions.scrollWidth).toBeLessThanOrEqual(leftActions.clientWidth + 1);
+        expect(footer.scrollWidth).toBeLessThanOrEqual(footer.clientWidth + 1);
+      };
+
+      // A big phone: the addressed agent in front, then the one at work with
+      // its dot, ahead of the idle agents that joined before it.
+      await vi.waitFor(
+        () => {
+          expectRowFits();
+          expect(shownIcons()).toEqual(["primary", workingId, agentIds[0]]);
+          const dot = modelButton.querySelector<HTMLElement>(
+            `[data-room-trigger-agent="${workingId}"] [data-room-trigger-working]`,
+          );
+          expect(dot).not.toBeNull();
+          // The dot is whole and bright though its icon is faded: nothing
+          // between it and the button fades or masks it.
+          for (let node: HTMLElement | null = dot; node && node !== modelButton;) {
+            expect(getComputedStyle(node).opacity).toBe("1");
+            expect(getComputedStyle(node).maskImage).toBe("none");
+            node = node.parentElement;
+          }
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+
+      // Narrower: the idle agent drops before the name gets short; the one at
+      // work stays.
+      await mounted.setViewport({ ...PHONE_VIEWPORT, width: 390 });
+      await vi.waitFor(
+        () => {
+          expectRowFits();
+          expect(shownIcons()).toEqual(["primary", workingId]);
+          expect(nameWidth()).toBeGreaterThan(48);
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+
+      await mounted.setViewport({ ...PHONE_VIEWPORT, width: 375 });
+      await vi.waitFor(
+        () => {
+          expectRowFits();
+          expect(shownIcons()).toEqual(["primary"]);
+          expect(nameWidth()).toBeGreaterThan(48);
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+    } finally {
+      useRoomRecipientStore.setState({ chosen: chosenBefore });
+      await mounted.cleanup();
+    }
+  });
+
   it("reveals the folded tail in increments and folds it back", async () => {
     const extraThreadIds = Array.from(
       { length: 17 },

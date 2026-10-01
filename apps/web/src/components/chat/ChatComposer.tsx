@@ -3947,9 +3947,17 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   <div
                     ref={composerFooterLeftActionsRef}
                     data-chat-composer-actions="left"
+                    data-model-fallback-chip={
+                      activeModelFallback && activeFallbackModelDisplayName ? "true" : undefined
+                    }
                     className={cn(
-                      "-m-1 flex flex-1 items-center gap-1 overflow-x-auto p-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden",
+                      "group/composer-left -m-1 flex flex-1 items-center gap-1 overflow-x-auto p-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden",
                       "min-w-0",
+                      // In a room the model button drops its faded agent icons
+                      // when this row, or the fallback chip in it, leaves too
+                      // little room for the name. Only rooms need the width
+                      // container, so other threads keep their layout as is.
+                      roomsShown && roomAgents.inRoom && "@container/composer-left",
                     )}
                   >
                     <ProviderModelPicker
