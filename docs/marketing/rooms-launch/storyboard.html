@@ -1,0 +1,515 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Rooms launch video: storyboard</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      :root {
+        --bg: #0b0b0d;
+        --surface: #151518;
+        --surface-2: #1c1c20;
+        --border: rgba(255, 255, 255, 0.08);
+        --border-strong: rgba(255, 255, 255, 0.14);
+        --fg: #fafafa;
+        --fg-muted: #a1a1aa;
+        --fg-dim: #71717a;
+        --accent: #7aa2ff;
+        --opus: #d97757;
+        --codex: #e4e4e7;
+        --font-mono: ui-monospace, "SF Mono", Menlo, monospace;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--fg);
+        font:
+          15px/1.5 -apple-system,
+          BlinkMacSystemFont,
+          "Inter",
+          sans-serif;
+      }
+      main {
+        max-width: 1120px;
+        margin: 0 auto;
+        padding: 32px 24px 64px;
+      }
+      h1 {
+        font-size: 28px;
+        margin: 0 0 4px;
+        letter-spacing: -0.01em;
+      }
+      h2 {
+        font-size: 19px;
+        margin: 0;
+      }
+      .meta,
+      .kicker,
+      .time {
+        font-family: var(--font-mono);
+        font-size: 12px;
+        letter-spacing: 0.06em;
+        color: var(--fg-dim);
+      }
+      .kicker {
+        color: var(--accent);
+        text-transform: uppercase;
+      }
+      .lede {
+        color: var(--fg-muted);
+        max-width: 760px;
+        margin: 8px 0 0;
+      }
+      ul.why {
+        margin: 12px 0 0;
+        padding-left: 18px;
+        color: var(--fg-muted);
+      }
+      ul.why li {
+        margin: 2px 0;
+      }
+      section.scene {
+        display: grid;
+        grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+        gap: 28px;
+        padding: 24px 0;
+        border-top: 1px solid var(--border);
+      }
+      section.scene:first-of-type {
+        margin-top: 24px;
+      }
+      .head {
+        grid-column: 1 / -1;
+        display: flex;
+        align-items: baseline;
+        gap: 14px;
+        flex-wrap: wrap;
+      }
+      .head .caption {
+        font-size: 19px;
+        font-weight: 600;
+      }
+      /* The mock screen: what the chat shows at the scene's key moment. */
+      .screen {
+        background: var(--surface);
+        border: 1px solid var(--border-strong);
+        border-radius: 12px;
+        padding: 18px 20px 14px;
+        font-size: 14px;
+      }
+      .screen.title-card {
+        display: grid;
+        place-items: center;
+        text-align: center;
+        min-height: 220px;
+      }
+      .title-card .big {
+        font-size: 34px;
+        font-weight: 700;
+      }
+      .title-card .line {
+        color: var(--fg-muted);
+      }
+      .title-card .tag {
+        font-family: var(--font-mono);
+        font-size: 12px;
+        letter-spacing: 0.14em;
+        color: var(--accent);
+        margin-top: 8px;
+      }
+      .you {
+        margin: 0 0 14px auto;
+        max-width: 80%;
+        background: var(--surface-2);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 9px 12px;
+      }
+      .to {
+        font-family: var(--font-mono);
+        font-size: 11px;
+        color: var(--fg-dim);
+        margin-bottom: 3px;
+      }
+      .you .to {
+        text-align: right;
+      }
+      .agent {
+        margin: 0 0 12px;
+      }
+      .who {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        font-weight: 600;
+        font-size: 13px;
+      }
+      .who .dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+      }
+      .who .effort {
+        font-weight: 400;
+        color: var(--fg-dim);
+      }
+      .said {
+        margin: 3px 0 0 15px;
+      }
+      .tool {
+        margin: 4px 0 0 15px;
+        color: var(--fg-dim);
+        font-size: 13px;
+      }
+      .nested {
+        margin: 8px 0 4px 15px;
+        padding-left: 12px;
+        border-left: 1px solid var(--border-strong);
+      }
+      .working {
+        color: var(--fg-dim);
+        font-size: 13px;
+        margin-left: 15px;
+      }
+      .action {
+        font-family: var(--font-mono);
+        font-size: 11.5px;
+        color: var(--accent);
+        border: 1px dashed rgba(122, 162, 255, 0.4);
+        border-radius: 8px;
+        padding: 6px 10px;
+        margin: 0 0 12px;
+      }
+      .label {
+        display: inline-block;
+        margin-left: 10px;
+        font-size: 12px;
+        border: 1px solid var(--border-strong);
+        border-radius: 999px;
+        padding: 1px 9px;
+        color: var(--fg);
+      }
+      /* Notes beside each screen. */
+      .notes ol {
+        margin: 0;
+        padding-left: 20px;
+      }
+      .notes li {
+        margin: 0 0 8px;
+      }
+      .notes .t {
+        font-family: var(--font-mono);
+        font-size: 12px;
+        color: var(--fg-dim);
+        margin-right: 6px;
+      }
+      .notes h3 {
+        font-size: 13px;
+        margin: 16px 0 4px;
+        color: var(--fg-muted);
+        font-weight: 600;
+      }
+      .notes p {
+        margin: 0;
+        color: var(--fg-muted);
+      }
+      .rules {
+        border-top: 1px solid var(--border);
+        margin-top: 8px;
+        padding-top: 20px;
+      }
+      .rules ul {
+        color: var(--fg-muted);
+        padding-left: 18px;
+      }
+      .alt {
+        border-top: 1px solid var(--border);
+        padding-top: 20px;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="meta">ROOMS LAUNCH VIDEO · STORYBOARD V2 · 0.5.0</div>
+      <h1>Charged twice</h1>
+      <p class="lede">
+        About 45 seconds, silent, in landscape, portrait and square. One real bug from start to
+        finish: some customers are charged twice at checkout. Opus 5.5 can't reproduce it, you add
+        GPT-6-Astra and ask them to work together, Astra finds the cause, Opus fixes it, and you ask
+        Astra to check the fix.
+      </p>
+      <ul class="why">
+        <li>
+          <strong>Why this story:</strong> people already do this by copying text between Claude
+          Code and Codex: ask a second model when one gets nowhere, then have it check the fix.
+          Rooms does both in one thread.
+        </li>
+        <li>
+          <strong>Why this bug:</strong> "charged twice" needs no code to understand, and the cause
+          fits in one short sentence.
+        </li>
+        <li>
+          <strong>Two ways of talking:</strong> in 02 an agent asks another agent; in 03 you talk to
+          Astra yourself.
+        </li>
+      </ul>
+
+      <!-- Intro -->
+      <section class="scene">
+        <div class="head">
+          <span class="time">0:00–0:03</span>
+          <span class="kicker">Intro</span>
+        </div>
+        <div class="screen title-card">
+          <div>
+            <div class="meta">Threadlines</div>
+            <div class="big">Rooms</div>
+            <div class="line">Your coding agents, working together in one thread.</div>
+            <div class="tag">NEW IN 0.5.0</div>
+          </div>
+        </div>
+        <div class="notes">
+          <ol>
+            <li><span class="t">0.0</span>The lockup and all three lines fade in together.</li>
+            <li><span class="t">0.5</span>Everything is readable and holds still.</li>
+            <li><span class="t">2.6</span>Fade into scene 1.</li>
+          </ol>
+          <h3>Change from the last cut</h3>
+          <p>
+            Last cut: 5.5 s with the glyph drawing first, which felt long. Now about 3 s, no
+            drawing, words on screen right away.
+          </p>
+        </div>
+      </section>
+
+      <!-- Scene 1 -->
+      <section class="scene">
+        <div class="head">
+          <span class="time">0:03–0:16</span>
+          <span class="kicker">01 · Add a model</span>
+          <span class="caption">Bring another model into the thread.</span>
+        </div>
+        <div class="screen">
+          <div class="you">Some customers get charged twice at checkout. Find out why.</div>
+          <div class="agent">
+            <div class="who">
+              <span class="dot" style="background: var(--opus)"></span>Opus 5.5
+              <span class="effort">· High</span>
+            </div>
+            <div class="tool">Read 4 files · ran the checkout tests</div>
+            <div class="said">
+              Double clicks are blocked and the checkout tests pass. I can't reproduce it yet.
+            </div>
+          </div>
+          <div class="action">model picker → Add agent → Codex → GPT-6-Astra</div>
+          <div class="action">
+            type "@opus" → Agents → Opus 5.5 (the message box points at Opus)
+          </div>
+          <div class="you">I added Astra. Work together to find the cause.</div>
+        </div>
+        <div class="notes">
+          <ol>
+            <li>
+              <span class="t">0:03</span>Opens on your request and Opus reporting what it checked.
+              Its last line holds 3 s.
+            </li>
+            <li>
+              <span class="t">0:07</span>You add GPT-6-Astra from the model picker. The camera
+              closes on the picker.
+            </li>
+            <li>
+              <span class="t">0:12</span>You type "@opus" and pick Opus 5.5. The camera holds on the
+              message box showing Opus as the recipient, so it doesn't read as a model switch. You
+              type the line and send.
+            </li>
+          </ol>
+          <h3>On screen</h3>
+          <p>Picker spotlight only. No labels.</p>
+          <h3>Real app behavior</h3>
+          <p>
+            Adding Astra points the message box at Astra, so "@opus" points it back. A message to
+            the thread's own agent has no "to" line. Opus's turn has ended, so it starts a new one.
+          </p>
+        </div>
+      </section>
+
+      <!-- Scene 2 -->
+      <section class="scene">
+        <div class="head">
+          <span class="time">0:16–0:31</span>
+          <span class="kicker">02 · Work together</span>
+          <span class="caption">Opus asks Astra. Astra finds the cause.</span>
+        </div>
+        <div class="screen">
+          <div class="agent">
+            <div class="who">
+              <span class="dot" style="background: var(--opus)"></span>Opus 5.5
+              <span class="effort">· High</span>
+            </div>
+            <div class="nested">
+              <div class="to">to GPT-6-Astra · question on the side</div>
+              <div>Checkout tests pass. What could still cause two charges?</div>
+              <div class="agent" style="margin-top: 8px">
+                <div class="who">
+                  <span class="dot" style="background: var(--codex)"></span>GPT-6-Astra
+                  <span class="effort">· on the side</span>
+                </div>
+                <div class="said">
+                  The payment succeeds, but its reply times out. The retry charges again.
+                </div>
+              </div>
+            </div>
+            <div class="tool">Ran a lost-reply test · 2 charges</div>
+            <div class="said">Reproduced it. I'll make retries reuse the original payment.</div>
+            <div class="tool">Edited payments/client.ts · tests passed</div>
+            <div class="said">The lost-reply test passes. One payment, one charge.</div>
+          </div>
+        </div>
+        <div class="notes">
+          <ol>
+            <li>
+              <span class="t">0:16</span>Opus asks Astra an open question. It doesn't hint at the
+              answer, so the idea is clearly Astra's.
+            </li>
+            <li>
+              <span class="t">0:19</span>Astra's answer lands and holds 4 s with the camera still.
+              This is the line the video is about.
+            </li>
+            <li>
+              <span class="t">0:24</span>Opus proves it first (a test that loses the reply shows 2
+              charges), then fixes it.
+            </li>
+            <li><span class="t">0:28</span>"One payment, one charge." holds 3 s.</li>
+          </ol>
+          <h3>On screen</h3>
+          <p>No labels. The tool rows show Opus working.</p>
+        </div>
+      </section>
+
+      <!-- Scene 3 -->
+      <section class="scene">
+        <div class="head">
+          <span class="time">0:31–0:42</span>
+          <span class="kicker">03 · Talk to any agent</span>
+          <span class="caption">Ask Astra to check the fix.</span>
+        </div>
+        <div class="screen">
+          <div class="action">type "@astra" → Agents → GPT-6-Astra</div>
+          <div class="you">
+            <div class="to">to GPT-6-Astra</div>
+            Check the fix. Does it cover a lost reply?
+          </div>
+          <div class="agent">
+            <div class="who">
+              <span class="dot" style="background: var(--codex)"></span>GPT-6-Astra
+              <span class="effort">· Medium</span>
+            </div>
+            <div class="tool">Read the change and the test</div>
+            <div class="said">
+              Yes. The test loses the first reply, and the retry still makes one charge.
+            </div>
+          </div>
+        </div>
+        <div class="notes">
+          <ol>
+            <li>
+              <span class="t">0:31</span>You point the message box at Astra and ask it directly.
+            </li>
+            <li>
+              <span class="t">0:34</span>Astra reads the change and the test, then answers. Holds 3
+              s.
+            </li>
+            <li>
+              <span class="t">0:39</span>The camera pulls back to the whole thread: your request,
+              both agents, the fix, the check.
+            </li>
+          </ol>
+          <h3>On screen</h3>
+          <p>No labels.</p>
+          <h3>Real app behavior</h3>
+          <p>
+            Nobody is working, so Astra gets its own turn. It only reads here, but it could edit if
+            asked.
+          </p>
+        </div>
+      </section>
+
+      <!-- Outro -->
+      <section class="scene">
+        <div class="head">
+          <span class="time">0:42–0:45</span>
+          <span class="kicker">End card</span>
+        </div>
+        <div class="screen title-card">
+          <div>
+            <div class="big">Rooms</div>
+            <div class="line">Claude, Codex and more, in one thread.</div>
+            <div class="tag">v0.5.0 · threadlines.dev</div>
+          </div>
+        </div>
+        <div class="notes">
+          <p>Same card, about 1 s shorter.</p>
+        </div>
+      </section>
+
+      <section class="alt">
+        <h2>What Astra and Sol said</h2>
+        <ul class="why">
+          <li>
+            <strong>Both:</strong> v1's lines were too long, and "the bank is slow" didn't explain
+            the double charge. The real cause is that the first payment goes through but its reply
+            is lost. Rewritten.
+          </li>
+          <li>
+            <strong>Both:</strong> end with you talking to Astra, not a third agent. Adding Sol
+            means another trip through the picker and another name to learn, and Sol fixing refunds
+            brought in a second bug before the first one had settled.
+          </li>
+          <li>
+            <strong>Both:</strong> Opus declared "That's it" too fast. Now it proves the cause with
+            a failing test before fixing it.
+          </li>
+          <li>
+            <strong>Astra:</strong> Opus's "I need another angle" read like a cue for the picker.
+            Opus now just reports what it checked. The "@opus" step could look like a second model
+            switch, so the camera holds on the message box showing Opus.
+          </li>
+          <li>
+            <strong>Where they disagreed:</strong> Astra wanted Opus to ask "Could a lost reply
+            cause a second charge?". Sol pointed out that hands Astra the answer. v2 uses Sol's open
+            question, so the idea is clearly Astra's.
+          </li>
+          <li>
+            <strong>Both:</strong> the timing added up to 47 s, and scene 2 was too crowded. v2 has
+            fewer lines and is about 45 s.
+          </li>
+        </ul>
+      </section>
+
+      <section class="alt">
+        <h2>Your call: a third agent?</h2>
+        <p class="lede">
+          Both reviewers would keep GPT-6.1-Sol out of this video and give it its own short clip:
+          Opus asks Sol to review the fix, and Sol catches something Opus then fixes. Adding Sol
+          here makes the video about 8 s longer and repeats the picker.
+        </p>
+      </section>
+
+      <section class="rules">
+        <h2>Rules for the edit</h2>
+        <ul>
+          <li>Every line is plain English, about 12 words or fewer.</li>
+          <li>
+            The key line holds 4 s and the others 3 s after they finish, with the camera still.
+          </li>
+          <li>Captions say the point of the scene in plain words.</li>
+          <li>Labels only where the chat can't say it, and never over text being read.</li>
+          <li>Every step is something the app really does.</li>
+        </ul>
+      </section>
+    </main>
+  </body>
+</html>

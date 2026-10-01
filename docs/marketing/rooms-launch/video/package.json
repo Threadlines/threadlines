@@ -1,0 +1,30 @@
+{
+  "name": "threadlines-rooms-launch-video",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Remotion edit for the Rooms launch video (landscape, portrait, square).",
+  "type": "module",
+  "scripts": {
+    "studio": "remotion studio",
+    "typecheck": "tsc --noEmit",
+    "render": "npm run render:landscape && npm run render:portrait && npm run render:square && npm run render:posters",
+    "render:landscape": "remotion render RoomsPromoLandscape out/rooms-promo-landscape.mp4",
+    "render:portrait": "remotion render RoomsPromoPortrait out/rooms-promo-portrait.mp4",
+    "render:square": "remotion render RoomsPromoSquare out/rooms-promo-square.mp4",
+    "render:x": "ffmpeg -v error -y -ss 1.8 -i out/rooms-promo-square.mp4 -vf tpad=start_duration=0.8:start_mode=clone -an -c:v libx264 -crf 18 -preset slow -pix_fmt yuv420p -movflags +faststart out/rooms-promo-x.mp4",
+    "render:site": "remotion render RoomsSiteClip out/rooms-site.mp4 --crf 23 && remotion still RoomsSitePoster out/rooms-site-poster.png && remotion render RoomsSiteClipTall out/rooms-site-tall.mp4 --crf 23 && remotion still RoomsSitePosterTall out/rooms-site-tall-poster.png",
+    "render:posters": "remotion still RoomsPosterLandscape out/rooms-promo-landscape-poster.png && remotion still RoomsPosterPortrait out/rooms-promo-portrait-poster.png && remotion still RoomsPosterSquare out/rooms-promo-square-poster.png"
+  },
+  "dependencies": {
+    "@remotion/cli": "4.0.530",
+    "@remotion/google-fonts": "4.0.530",
+    "@remotion/transitions": "4.0.530",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "remotion": "4.0.530"
+  },
+  "devDependencies": {
+    "@types/react": "19.3.0",
+    "typescript": "7.0.2"
+  }
+}
