@@ -620,10 +620,9 @@ export interface ChatComposerProps {
   pullRequests: ReadonlyArray<ComposerPullRequest>;
 
   /**
-   * Lines that sit on top of the message box: queued messages, a room's
-   * notices. They render inside the composer above the input, so the
-   * floating prompt suggestion always clears them instead of drawing over
-   * them.
+   * Lines that sit on top of the message box, such as queued messages. They
+   * render inside the composer above the input, so the floating prompt
+   * suggestion always clears them instead of drawing over them.
    */
   stackedAbove?: ReactNode;
 

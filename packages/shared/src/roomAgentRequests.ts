@@ -49,6 +49,15 @@ export interface AgentRequestRefusal {
   readonly detail: string;
 }
 
+/**
+ * The room shows no notice when agents reach the limit, so the calling
+ * agent's reply is where the user learns a request was not made.
+ */
+const LIMIT_REFUSAL: AgentRequestRefusal = {
+  outcome: "limit",
+  detail: `Agents have made ${ROOM_AGENT_REQUEST_LIMIT} requests since the user last wrote, so this one was not made. Say so in your reply, and wait for the user to write before asking again.`,
+};
+
 const sameAgent = (left: RoomAgentRef, right: RoomAgentRef) =>
   (left.participantId ?? null) === (right.participantId ?? null);
 
@@ -89,10 +98,7 @@ export function agentRequestRefusal(
     return { outcome: "refused", detail: "That agent is not in this room." };
   }
   if (state.requestsSinceUser >= ROOM_AGENT_REQUEST_LIMIT) {
-    return {
-      outcome: "limit",
-      detail: `Agents have made ${ROOM_AGENT_REQUEST_LIMIT} requests since the user last wrote. Wait for the user.`,
-    };
+    return LIMIT_REFUSAL;
   }
   if (input.kind !== "hand_off" && (thread.sideTurn ?? null) !== null) {
     return {
@@ -153,10 +159,7 @@ export function agentInviteRefusal(
     };
   }
   if (state.requestsSinceUser >= ROOM_AGENT_REQUEST_LIMIT) {
-    return {
-      outcome: "limit",
-      detail: `Agents have made ${ROOM_AGENT_REQUEST_LIMIT} requests since the user last wrote. Wait for the user.`,
-    };
+    return LIMIT_REFUSAL;
   }
   if (thread.voiceActive === true) {
     return { outcome: "refused", detail: "Voice is on. Agents cannot invite others while it is." };
@@ -205,10 +208,6 @@ export const awaitingInvite = (
   state: OrchestrationAgentRequestState,
 ): OrchestrationAgentRequestState["open"][number] | undefined =>
   state.open.find((request) => request.kind === "invite" && request.status === "awaiting_user");
-
-/** Whether agents have used all their requests until the user writes. */
-export const agentRequestLimitReached = (state: OrchestrationAgentRequestState): boolean =>
-  state.requestsSinceUser >= ROOM_AGENT_REQUEST_LIMIT;
 
 /**
  * How each room-request event changes a thread's request state. The server's

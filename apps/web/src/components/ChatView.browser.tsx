@@ -11790,7 +11790,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
-  it("floats a room's prompt suggestion above the lines on the message box, for its own agent only", async () => {
+  it("shows a room's prompt suggestion for its own agent only", async () => {
     const fableId = "3c2b1a09-8f7e-4d6c-9b5a-4f3e2d1c0b9a" as ThreadParticipantId;
     const base = createSnapshotWithPromptSuggestion("Make a PR for this");
     const mounted = await mountChatView({
@@ -11813,9 +11813,6 @@ describe("ChatView timeline estimator parity (full app)", () => {
                     leftAt: null,
                   },
                 ],
-                // The agents used up their requests to each other, so the
-                // "waiting for you" line sits on the message box.
-                agentRequests: { ...EMPTY_AGENT_REQUEST_STATE, requestsSinceUser: 3 },
               }
             : thread,
         ),
@@ -11829,17 +11826,9 @@ describe("ChatView timeline estimator parity (full app)", () => {
     });
 
     try {
-      const chip = await waitForElement(
+      await waitForElement(
         () => document.querySelector<HTMLElement>('[data-prompt-suggestion="true"]'),
         "Unable to find the prompt suggestion chip.",
-      );
-      const limitNote = await waitForElement(
-        () => document.querySelector<HTMLElement>('[data-room-agent-limit="true"]'),
-        "Unable to find the room's agent limit line.",
-      );
-      // The suggestion floats clear above the line instead of drawing over it.
-      expect(chip.getBoundingClientRect().bottom).toBeLessThanOrEqual(
-        limitNote.getBoundingClientRect().top,
       );
 
       // The suggestion is the thread's own agent's guess at what you'd say to

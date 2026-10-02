@@ -590,8 +590,10 @@ chainEpoch, status, requestMessageId, sideTurnId?, targetTurnId? }`. Status
     parallel calls cannot slip past it.
   - A routed reply never counts, so the return half of an accepted hand-off
     always arrives.
-  - A fourth request returns `limit`, and the room shows "Agents are waiting
-    for you (3 requests used)".
+  - A fourth request returns `limit` to the calling agent, which tells the
+    user in its reply. The room shows no notice of its own: reaching the
+    limit does not mean anyone is waiting, and a standing line for it read
+    as nagging in normal use.
   - The user's next submission (a message, a queued message or a side
     question) resets the count and lifts the hold.
 
@@ -609,8 +611,8 @@ chainEpoch, status, requestMessageId, sideTurnId?, targetTurnId? }`. Status
   - the request (the bubble's text);
   - the basis ("Uncommitted changes, 4 files, captured 10:32");
   - "No room conversation, no earlier session".
-- **Limit notice** as above. **Cancelled requests** show a quiet note ("Stopped
-  before GPT-6-Astra 2 answered").
+- **Cancelled requests** show a quiet note ("Stopped before GPT-6-Astra 2
+  answered").
 - Existing tokens only; tags use the mono meta style.
 
 ### Handover checkpoint barrier

@@ -37,7 +37,6 @@ import { isProviderAuthErrorMessage } from "@threadlines/shared/providerAuth";
 import { normalizeTerminalActivityCommand } from "@threadlines/shared/terminalCommandTracker";
 import { projectScriptCwd, projectScriptRuntimeEnv } from "@threadlines/shared/projectScripts";
 import { resolveThreadWorkingCwd } from "@threadlines/shared/threadCwd";
-import { agentRequestLimitReached } from "@threadlines/shared/roomAgentRequests";
 import { formatForkSourceExcerpt, truncate } from "@threadlines/shared/String";
 import { Debouncer } from "@tanstack/react-pacer";
 import * as Option from "effect/Option";
@@ -7280,28 +7279,15 @@ export default function ChatView(props: ChatViewProps) {
                   notices={composerNotices}
                   pullRequests={composerPullRequests}
                   stackedAbove={
-                    <>
-                      <ComposerFollowUpQueue
-                        steering={queuedSteeringMessages}
-                        queued={queuedFollowUps}
-                        paused={!isWorking && !waitingOnBackgroundTasks}
-                        attachmentOnlyPrompt={ATTACHMENT_ONLY_BOOTSTRAP_PROMPT}
-                        roomAgents={roomAgentLabels}
-                        onEdit={(followUp) => void returnQueuedFollowUpsToComposer([followUp])}
-                        onRemove={removeQueuedFollowUp}
-                      />
-                      {roomAgentLabels !== null &&
-                      activeThread.agentRequests &&
-                      agentRequestLimitReached(activeThread.agentRequests) ? (
-                        <p
-                          className="mb-1.5 px-3 text-xs text-muted-foreground"
-                          data-room-agent-limit="true"
-                        >
-                          Agents are waiting for you ({activeThread.agentRequests.requestsSinceUser}{" "}
-                          requests used)
-                        </p>
-                      ) : null}
-                    </>
+                    <ComposerFollowUpQueue
+                      steering={queuedSteeringMessages}
+                      queued={queuedFollowUps}
+                      paused={!isWorking && !waitingOnBackgroundTasks}
+                      attachmentOnlyPrompt={ATTACHMENT_ONLY_BOOTSTRAP_PROMPT}
+                      roomAgents={roomAgentLabels}
+                      onEdit={(followUp) => void returnQueuedFollowUpsToComposer([followUp])}
+                      onRemove={removeQueuedFollowUp}
+                    />
                   }
                   resolvedTheme={resolvedTheme}
                   settings={settings}
