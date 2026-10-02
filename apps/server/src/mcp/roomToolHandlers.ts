@@ -45,6 +45,7 @@ import { randomUUID } from "node:crypto";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 
@@ -85,7 +86,10 @@ import type {
 /** Drivers that can answer on the side (they have side runtimes). */
 const SIDE_ANSWER_DRIVERS: ReadonlySet<string> = new Set(["codex", "claudeAgent"]);
 
-/** The longest an ask or review waits for its answer. */
+/**
+ * The longest an ask's or review's call waits for its answer. One that takes
+ * longer goes on, and comes back to the caller as a message instead.
+ */
 export const ROOM_REQUEST_DEADLINE = Duration.minutes(10);
 
 /**
@@ -105,6 +109,12 @@ export const PROVIDER_TOOL_CALL_LIMIT: Readonly<Record<string, Duration.Duration
 
 /** Kept between the deadline and the provider's own limit, so ours answers first. */
 const PROVIDER_LIMIT_MARGIN = Duration.seconds(5);
+
+/**
+ * How long a call that ran out of time waits for a settle already on its way
+ * (the answer landed, or Stop came, as time ran out). Inside the margin.
+ */
+const DETACH_REFUSED_GRACE = Duration.seconds(3);
 
 /** How much of an answer comes back in the tool result; the rest is in the chat. */
 export const ROOM_ANSWER_CHAR_LIMIT = 24_000;
@@ -544,9 +554,31 @@ export function makeRoomToolHandlers(deps: RoomToolDeps) {
     });
 
   /**
+   * Switch an ask or review whose call ran out of time to answering by
+   * message. False when the decider refuses: it settled meanwhile, Stop came,
+   * or the caller's turn is over.
+   */
+  const detachRequest = (threadId: ThreadId, requestId: RoomAgentRequestId) =>
+    Effect.gen(function* () {
+      return yield* deps.engine
+        .dispatch({
+          type: "thread.agent-request.detach",
+          commandId: CommandId.make(`server:room-request-detach:${requestId}`),
+          threadId,
+          requestId,
+          createdAt: yield* nowIso,
+        })
+        .pipe(
+          Effect.as(true),
+          Effect.catch(() => Effect.succeed(false)),
+        );
+    });
+
+  /**
    * One ask or review, from the rules to its answer. Runs in the request
    * registry, so a dropped call does not end it; `abandoned` completes when
-   * every call waiting on it has gone.
+   * every call waiting on it has gone. An answer that outruns the call goes
+   * on, and comes back to the caller as a message (`continuing`).
    */
   const runAnswerRequest = (input: {
     readonly scope: McpInvocationScope;
@@ -586,9 +618,37 @@ export function makeRoomToolHandlers(deps: RoomToolDeps) {
         const ids = { ...base, requestId, sideTurnId };
         let submitted = false;
 
-        // Everything from here, a review's capture included, runs inside the
-        // deadline and stops if the last waiter leaves before it is sent.
-        const work = Effect.gen(function* () {
+        // One clock for the whole call, capture included. The call ends when
+        // it runs out, or when the last waiter leaves.
+        const clock = yield* Effect.forkScoped(Effect.sleep(deadline));
+        const callEnds = Effect.raceFirst(
+          Fiber.join(clock).pipe(Effect.as("timeout" as const)),
+          input.abandoned.pipe(Effect.as("abandoned" as const)),
+        );
+
+        // Listening before the request exists, so its settle cannot slip by,
+        // and apart from the call, so an answer that lands just as time runs
+        // out is still caught.
+        const events = yield* deps.engine.subscribeDomainEvents;
+        const listener = yield* Effect.forkScoped(
+          events.pipe(
+            Stream.map(settledBy(scope.threadId, requestId, sideTurnId)),
+            Stream.filter((value): value is Settled => value !== undefined),
+            Stream.runHead,
+          ),
+        );
+        const answered = (settled: Option.Option<Settled>) =>
+          Option.isNone(settled)
+            ? Effect.succeed({
+                ...ids,
+                outcome: "failed",
+                detail: "The server stopped before the answer came.",
+              } satisfies RoomAnswerResult)
+            : answerResult(scope, ids, sideTurnId, settled.value);
+
+        // A review's capture, then the request. A submit in flight finishes
+        // even when the call ends, so `submitted` is right once this returns.
+        const send = Effect.gen(function* () {
           let reviewInput: RoomReviewInput | undefined;
           if (kind === "review") {
             const cwd = yield* checkoutOf(arrival.room.thread);
@@ -611,9 +671,6 @@ export function makeRoomToolHandlers(deps: RoomToolDeps) {
             }
             reviewInput = captured.success;
           }
-
-          // Listening before the request exists, so its settle cannot slip by.
-          const events = yield* deps.engine.subscribeDomainEvents;
           const rejected = yield* submitCommand({
             scope,
             kind,
@@ -628,40 +685,52 @@ export function makeRoomToolHandlers(deps: RoomToolDeps) {
                 submitted = rejection === undefined;
               }),
             ),
-            // A submit in flight finishes, so `submitted` is true to the end.
             Effect.uninterruptible,
           );
-          if (rejected !== undefined) {
-            return { ...ids, outcome: "failed", detail: rejected } satisfies RoomAnswerResult;
+          return rejected !== undefined
+            ? ({ ...ids, outcome: "failed", detail: rejected } satisfies RoomAnswerResult)
+            : ("sent" as const);
+        });
+
+        const sent = yield* Effect.raceFirst(send, callEnds);
+        if (typeof sent === "object") {
+          return sent;
+        }
+        let ending: "timeout" | "abandoned";
+        if (sent === "sent") {
+          const waited = yield* Effect.raceFirst(Fiber.join(listener), callEnds);
+          if (typeof waited !== "string") {
+            return yield* answered(waited);
           }
-          const settled = yield* events.pipe(
-            Stream.map(settledBy(scope.threadId, requestId, sideTurnId)),
-            Stream.filter((value): value is Settled => value !== undefined),
-            Stream.runHead,
-          );
-          if (Option.isNone(settled)) {
+          ending = waited;
+        } else {
+          ending = sent;
+        }
+
+        // Out of time: the answer goes on and comes back as a message. If the
+        // decider refuses that, the request just settled or is being stopped,
+        // so its settle is a moment away.
+        if (submitted && ending === "timeout") {
+          if (yield* detachRequest(scope.threadId, requestId)) {
+            const what = kind === "review" ? "review" : "answer";
             return {
               ...ids,
-              outcome: "failed",
-              detail: "The server stopped before the answer came.",
+              outcome: "continuing",
+              detail: `${arrival.target.name} is still working on it. Its ${what} will come to you as a message when it is done, so carry on or end your turn. Do not ask again.`,
             } satisfies RoomAnswerResult;
           }
-          return yield* answerResult(scope, ids, sideTurnId, settled.value);
-        });
-        const outcome = yield* Effect.raceFirst(
-          work,
-          Effect.raceFirst(
-            Effect.sleep(deadline).pipe(Effect.as("timeout" as const)),
-            input.abandoned.pipe(Effect.as("abandoned" as const)),
-          ),
-        );
-        if (typeof outcome !== "string") {
-          return outcome;
+          const late = yield* Effect.raceFirst(
+            Fiber.join(listener),
+            Effect.sleep(DETACH_REFUSED_GRACE).pipe(Effect.as("late" as const)),
+          );
+          if (late !== "late") {
+            return yield* answered(late);
+          }
         }
-        // Out of time, or nobody is waiting any more: stop what was started.
-        // A timeout is recorded as one first, so the chat says so.
+        // Nobody is waiting any more: stop what was started. A timeout is
+        // recorded as one first, so the chat says so.
         if (submitted) {
-          if (outcome === "timeout") {
+          if (ending === "timeout") {
             yield* settleRequestEarly(
               scope.threadId,
               requestId,
@@ -671,7 +740,7 @@ export function makeRoomToolHandlers(deps: RoomToolDeps) {
           }
           yield* interruptSideTurn(scope.threadId, sideTurnId);
         }
-        return outcome === "timeout"
+        return ending === "timeout"
           ? ({
               ...ids,
               outcome: "timeout",

@@ -128,6 +128,8 @@ const makeRoom = (options: {
   ) => { readonly events?: ReadonlyArray<OrchestrationEvent>; readonly answer?: string } | "reject";
   readonly providers?: ReadonlyArray<ServerProvider>;
   readonly invitesMode?: AgentInvitesMode;
+  /** The decider refuses to let an answer outrun its call (it just settled). */
+  readonly refuseDetach?: boolean;
 }) =>
   Effect.gen(function* () {
     let thread = options.thread ?? makeThread();
@@ -139,6 +141,12 @@ const makeRoom = (options: {
         dispatch: (command) =>
           Effect.gen(function* () {
             dispatched.push(command);
+            if (command.type === "thread.agent-request.detach" && options.refuseDetach) {
+              return yield* new OrchestrationCommandInvariantError({
+                commandType: command.type,
+                detail: "It is not waiting on its call.",
+              });
+            }
             if (command.type === "thread.agent-request.submit" && options.onSubmit) {
               const reaction = options.onSubmit(command);
               if (reaction === "reject") {
@@ -391,7 +399,7 @@ describe("room_ask", () => {
     }),
   );
 
-  it.effect("stops the side turn at its deadline and says so", () =>
+  it.effect("lets an answer outrun its call, to come back as a message", () =>
     Effect.gen(function* () {
       const room = yield* makeRoom({ onSubmit: () => ({}) });
       const waiter = yield* Effect.forkChild(
@@ -399,6 +407,53 @@ describe("room_ask", () => {
       );
       yield* until(() => submits(room.dispatched).length > 0);
       yield* TestClock.adjust(Duration.minutes(10));
+      const result = yield* Fiber.join(waiter);
+
+      expect(result.outcome).toBe("continuing");
+      const [submit] = submits(room.dispatched);
+      expect(room.dispatched.at(-1)).toMatchObject({
+        type: "thread.agent-request.detach",
+        requestId: submit!.requestId,
+      });
+      // The answer goes on: nothing stops or closes it.
+      expect(
+        room.dispatched.some(
+          (c) =>
+            c.type === "thread.side-turn.interrupt" || c.type === "thread.agent-request.settle",
+        ),
+      ).toBe(false);
+    }),
+  );
+
+  it.effect("returns an answer that lands just as its time runs out", () =>
+    Effect.gen(function* () {
+      const room = yield* makeRoom({ onSubmit: () => ({}), refuseDetach: true });
+      const waiter = yield* Effect.forkChild(
+        room.handlers.room_ask(mainCaller(), { agent: "Opus 5.5", question: "Why?" }),
+      );
+      yield* until(() => submits(room.dispatched).length > 0);
+      const [submit] = submits(room.dispatched);
+      yield* TestClock.adjust(Duration.minutes(10));
+      yield* until(() => room.dispatched.some((c) => c.type === "thread.agent-request.detach"));
+      // Refused because the answer settled meanwhile; its settle arrives now.
+      yield* room.publish(settledEvent({ sideTurnId: submit!.sideTurnId, outcome: "completed" }));
+      const result = yield* Fiber.join(waiter);
+
+      expect(result.outcome).toBe("answered");
+      expect(room.dispatched.some((c) => c.type === "thread.side-turn.interrupt")).toBe(false);
+    }),
+  );
+
+  it.effect("stops the side turn when its time runs out and it cannot go on", () =>
+    Effect.gen(function* () {
+      const room = yield* makeRoom({ onSubmit: () => ({}), refuseDetach: true });
+      const waiter = yield* Effect.forkChild(
+        room.handlers.room_ask(mainCaller(), { agent: "Opus 5.5", question: "Why?" }),
+      );
+      yield* until(() => submits(room.dispatched).length > 0);
+      yield* TestClock.adjust(Duration.minutes(10));
+      yield* until(() => room.dispatched.some((c) => c.type === "thread.agent-request.detach"));
+      yield* TestClock.adjust(Duration.seconds(3));
       const result = yield* Fiber.join(waiter);
 
       expect(result.outcome).toBe("timeout");

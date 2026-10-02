@@ -2989,7 +2989,8 @@ const make = Effect.gen(function* () {
 
   /**
    * Room tools: the working agent's turn ended. Its asks and reviews still
-   * running are stopped (nobody is waiting for them now). A hand-off it made
+   * running are stopped (nobody is waiting for them now), except ones whose
+   * answer comes back as a message. A hand-off it made
    * takes effect only if the turn completed normally; after Stop or a failure
    * it is cancelled.
    */
@@ -3066,11 +3067,14 @@ const make = Effect.gen(function* () {
         continue;
       }
       // An ask or review answers a call still waiting in that turn; with the
-      // turn over, nobody is waiting. An invite's review comes back as a
-      // message instead, so it outlives the turn that asked.
+      // turn over, nobody is waiting. An invite's review, or an answer that
+      // outran its call, comes back as a message instead, so it outlives the
+      // turn that asked. (Detaching is refused once the turn is over, so this
+      // read cannot miss one.)
       const sideTurn = thread.sideTurn ?? null;
       if (
         (request.kind === "ask" || request.kind === "review") &&
+        request.replyAsMessage !== true &&
         sideTurn !== null &&
         sideTurn.sideTurnId === request.sideTurnId &&
         sideTurn.status !== "cancelling"
@@ -3379,6 +3383,7 @@ const make = Effect.gen(function* () {
     readonly sideTurnId: SideTurnId;
     readonly outcome: OrchestrationSideTurnOutcome;
     readonly error?: string;
+    readonly fromPreviousProcess?: boolean;
     readonly createdAt: string;
   }) =>
     orchestrationEngine
@@ -3389,6 +3394,7 @@ const make = Effect.gen(function* () {
         sideTurnId: input.sideTurnId,
         outcome: input.outcome,
         ...(input.error !== undefined ? { error: input.error.slice(0, 500) } : {}),
+        ...(input.fromPreviousProcess === true ? { fromPreviousProcess: true } : {}),
         createdAt: input.createdAt,
       })
       .pipe(
@@ -4038,6 +4044,7 @@ const make = Effect.gen(function* () {
             sideTurnId: thread.sideTurn.sideTurnId,
             outcome: forAgent ? "failed" : "interrupted",
             ...(forAgent ? { error: "The server restarted before this finished." } : {}),
+            fromPreviousProcess: true,
             createdAt: yield* nowIso,
           });
         }

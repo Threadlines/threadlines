@@ -671,7 +671,7 @@ export function projectEvent(
       ).pipe(
         Effect.map((payload) => {
           const next = updateAgentRequests(nextBase, payload.threadId, (state) =>
-            agentRequestStateOn.updated(state, payload.requestId, payload.status),
+            agentRequestStateOn.updated(state, payload),
           );
           const inviteChoice = payload.inviteChoice;
           const thread = next.threads.find((entry) => entry.id === payload.threadId);

@@ -976,6 +976,146 @@ describe("decider rooms", () => {
       expect(threadOf(model).agentRequests).toMatchObject({ hold: true, chainEpoch: 1, open: [] });
     });
 
+    // An ask or review whose call ran out of time, and its side answer ending.
+    const detach = (requestId: RoomAgentRequestId): OrchestrationCommand => ({
+      type: "thread.agent-request.detach",
+      commandId: CommandId.make(`cmd-detach-${requestId}`),
+      threadId,
+      requestId,
+      createdAt: now,
+    });
+    const settle = async (
+      model: OrchestrationReadModel,
+      outcome: "completed" | "failed" | "interrupted",
+      text: string,
+      fromPreviousProcess = false,
+    ) => {
+      const thread = threadOf(model);
+      const sideTurn = thread.sideTurn!;
+      const withAnswer: OrchestrationReadModel =
+        outcome === "completed"
+          ? readModel({
+              ...thread,
+              messages: [
+                ...thread.messages,
+                {
+                  id: MessageId.make(`side-answer:${sideTurn.sideTurnId}`),
+                  role: "assistant",
+                  text,
+                  participantId: sideTurn.participantId,
+                  sideTurnId: sideTurn.sideTurnId,
+                  turnId: null,
+                  streaming: false,
+                  createdAt: now,
+                  updatedAt: now,
+                },
+              ],
+            })
+          : model;
+      return apply(
+        withAnswer,
+        await decideEvents(
+          {
+            type: "thread.side-turn.settle",
+            commandId: CommandId.make(`cmd-settle-${sideTurn.sideTurnId}`),
+            threadId,
+            sideTurnId: sideTurn.sideTurnId,
+            outcome,
+            ...(outcome === "failed" ? { error: text } : {}),
+            ...(fromPreviousProcess ? { fromPreviousProcess } : {}),
+            createdAt: now,
+          },
+          withAnswer,
+        ),
+      );
+    };
+
+    it("sends an answer that outran its call back as a message, and says when none came", async () => {
+      let model = readModel({ session: working() });
+      const ask = request("ask");
+      model = await apply(model, await decideEvents(ask, model));
+      // Too late once the caller's turn is over: its end stops the answer.
+      const turnOver = readModel({ ...threadOf(model), session: session() });
+      expect(Exit.isFailure(await decide(detach(ask.requestId), turnOver))).toBe(true);
+
+      model = await apply(model, await decideEvents(detach(ask.requestId), model));
+      expect(threadOf(model).agentRequests.open).toMatchObject([
+        { requestId: ask.requestId, status: "running", replyAsMessage: true },
+      ]);
+      // The caller's turn ends meanwhile; the answer lands after.
+      model = await settle(
+        readModel({ ...threadOf(model), session: session() }),
+        "completed",
+        "The retry never backs off.",
+      );
+      let thread = threadOf(model);
+      expect(thread.agentRequests.open).toEqual([]);
+      expect(thread.queuedFollowUps).toMatchObject([
+        {
+          text: "The retry never backs off.",
+          fromAgent: { participantId: astraId },
+          requestId: ask.requestId,
+        },
+      ]);
+
+      // One that fails comes back too, so the caller is not left waiting.
+      model = readModel({ ...thread, session: working(), queuedFollowUps: [] });
+      const review = request("review");
+      model = await apply(model, await decideEvents(review, model));
+      model = await apply(model, await decideEvents(detach(review.requestId), model));
+      model = await settle(model, "failed", "it ran for 30 minutes and was stopped.");
+      thread = threadOf(model);
+      expect(thread.queuedFollowUps).toMatchObject([
+        {
+          text: "(No answer came: it ran for 30 minutes and was stopped.)",
+          requestId: review.requestId,
+        },
+      ]);
+    });
+
+    it("sends nothing back for a late answer asked to stop or cut off by a restart, but does for a crash", async () => {
+      const lateAsk = async (model: OrchestrationReadModel) => {
+        const ask = request("ask");
+        model = await apply(model, await decideEvents(ask, model));
+        return apply(model, await decideEvents(detach(ask.requestId), model));
+      };
+      const fresh = (model: OrchestrationReadModel) =>
+        readModel({
+          ...threadOf(model),
+          session: working(),
+          queuedFollowUps: [],
+          agentRequests: { ...threadOf(model).agentRequests, requestsSinceUser: 0 },
+        });
+
+      // The user stops it, and its answer lands before the stop does.
+      let model = await lateAsk(readModel({ session: working() }));
+      model = await apply(
+        model,
+        await decideEvents(
+          {
+            type: "thread.side-turn.interrupt",
+            commandId: CommandId.make("cmd-stop-late-ask"),
+            threadId,
+            sideTurnId: threadOf(model).sideTurn!.sideTurnId,
+            createdAt: now,
+          },
+          model,
+        ),
+      );
+      model = await settle(model, "completed", "Too late.");
+      expect(threadOf(model).queuedFollowUps ?? []).toEqual([]);
+
+      // The server restarted with it running.
+      model = await lateAsk(fresh(model));
+      model = await settle(model, "failed", "The server restarted before this finished.", true);
+      expect(threadOf(model).queuedFollowUps ?? []).toEqual([]);
+
+      // Its process died: nobody asked it to stop, so the caller hears.
+      model = await lateAsk(fresh(model));
+      model = await settle(model, "interrupted", "");
+      expect(threadOf(model).queuedFollowUps).toMatchObject([{ text: "(No answer came.)" }]);
+    });
+
     it("stamps each message with the model it was written with, whatever changes after", async () => {
       const high = { ...astra.modelSelection, options: [{ id: "reasoningEffort", value: "high" }] };
       const low = { ...astra.modelSelection, options: [{ id: "reasoningEffort", value: "low" }] };

@@ -215,9 +215,18 @@ export function decideAgentRequestSubmit(
 export const inviteReviewMessageId = (requestId: RoomAgentRequestId) =>
   MessageId.make(`invite-review:${requestId}`);
 
-/** The message an invite's review comes back to its caller as. */
-export const inviteReplyMessageId = (requestId: RoomAgentRequestId) =>
-  MessageId.make(`invite-reply:${requestId}`);
+/**
+ * The message a side answer comes back to its caller as: an invite's review,
+ * or an ask's or review's answer that outran its call.
+ */
+export const sideAnswerReplyMessageId = (
+  request: Pick<OrchestrationAgentRequest, "kind" | "requestId">,
+) => MessageId.make(`${request.kind}-reply:${request.requestId}`);
+
+/** What the caller gets when a side answer it was promised never came. */
+function missingAnswerReplyText(error: string | undefined): string {
+  return error === undefined ? "(No answer came.)" : `(No answer came: ${error})`;
+}
 
 /**
  * An agent asks the user to bring in an agent the thread does not have, for
@@ -596,6 +605,60 @@ export function decideAgentRequestQueue(
 }
 
 /**
+ * An ask's or review's call ran out of time. While the caller's turn that
+ * made it still runs, its answer goes on and comes back as a reply message
+ * instead. Once that turn is over, the turn's end has already stopped the
+ * answer (or is about to), so this is refused: the two cannot cross.
+ */
+export function decideAgentRequestDetach(
+  thread: OrchestrationThread,
+  command: CommandOf<"thread.agent-request.detach">,
+  base: EventBase,
+): AgentRequestDecision {
+  const request = findOpenRequest(thread, command.requestId);
+  if (
+    request === undefined ||
+    (request.kind !== "ask" && request.kind !== "review") ||
+    request.status !== "running" ||
+    request.replyAsMessage === true
+  ) {
+    return refuse(`Request '${command.requestId}' is not an ask or review waiting on its call.`);
+  }
+  const sideTurn = thread.sideTurn ?? null;
+  if (
+    sideTurn === null ||
+    sideTurn.requestId !== request.requestId ||
+    sideTurn.status === "cancelling"
+  ) {
+    return refuse("Its side answer is no longer running.");
+  }
+  const state = thread.agentRequests;
+  if (state.hold || request.chainEpoch !== state.chainEpoch) {
+    return refuse("The user stopped this request.");
+  }
+  if (
+    !isPresent(thread, request.from) ||
+    (thread.session?.participantId ?? null) !== (request.from.participantId ?? null) ||
+    thread.session?.activeTurnId !== request.callerTurnId
+  ) {
+    return refuse("The turn that made it is over.");
+  }
+  return [
+    {
+      ...base(),
+      type: "thread.agent-request-updated",
+      payload: {
+        threadId: thread.id,
+        requestId: request.requestId,
+        status: request.status,
+        replyAsMessage: true,
+        updatedAt: command.createdAt,
+      },
+    },
+  ];
+}
+
+/**
  * A hand-off is over. An answered one queues its target's reply back to the
  * caller in the same step, unless Stop came since or the caller left. The
  * reply's message id comes from the caller of this command, derived from the
@@ -716,6 +779,8 @@ export function settleAgentRequestForSideTurn(
   base: EventBase,
   settledAt: string,
   error?: string,
+  /** Left running by the previous server process: nobody is followed up. */
+  fromPreviousProcess = false,
 ): ReadonlyArray<PlannedEvent> {
   const request =
     sideTurn.requestId === undefined ? undefined : findOpenRequest(thread, sideTurn.requestId);
@@ -731,23 +796,26 @@ export function settleAgentRequestForSideTurn(
         ? "failed"
         : "stopped";
   const settled = settledEvent(base, thread, request, mapped, settledAt, error);
-  // An invite's caller did not wait on a tool call for this: the review
-  // comes back to it as its next message, like a hand-off's reply, unless
-  // Stop came since or it left.
-  const replyId = inviteReplyMessageId(request.requestId);
+  // Nobody waits on a call for an invite's review, or for an answer that
+  // outran its call: it comes back to the caller as its next message, like a
+  // hand-off's reply, unless Stop came since or it left. A failure (a crash
+  // included) comes back too, so a caller told to expect an answer is not
+  // left waiting for one. One asked to stop does not, even if its answer
+  // landed first, and neither does one a restart cut off.
+  const replyId = sideAnswerReplyMessageId(request);
   if (
-    request.kind !== "invite" ||
-    mapped !== "answered" ||
+    (request.kind !== "invite" && request.replyAsMessage !== true) ||
+    sideTurn.status === "cancelling" ||
+    fromPreviousProcess ||
     request.chainEpoch !== thread.agentRequests.chainEpoch ||
     !isPresent(thread, request.from) ||
     thread.messages.some((message) => message.id === replyId)
   ) {
     return [settled];
   }
-  return [
-    settled,
-    ...replyEvents(base, thread, request, replyId, handOffReplyText(answer?.text), settledAt),
-  ];
+  const text =
+    mapped === "answered" ? handOffReplyText(answer?.text) : missingAnswerReplyText(error);
+  return [settled, ...replyEvents(base, thread, request, replyId, text, settledAt)];
 }
 
 /**

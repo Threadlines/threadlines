@@ -229,17 +229,31 @@ export const agentRequestStateOn = {
         },
   updated: (
     state: OrchestrationAgentRequestState,
-    requestId: OrchestrationAgentRequestState["open"][number]["requestId"],
-    status: OrchestrationAgentRequestState["open"][number]["status"],
-  ): OrchestrationAgentRequestState =>
-    state.open.some((entry) => entry.requestId === requestId && entry.status !== status)
+    update: {
+      readonly requestId: OrchestrationAgentRequestState["open"][number]["requestId"];
+      readonly status: OrchestrationAgentRequestState["open"][number]["status"];
+      readonly replyAsMessage?: boolean | undefined;
+    },
+  ): OrchestrationAgentRequestState => {
+    const changes = (entry: OrchestrationAgentRequestState["open"][number]) =>
+      entry.requestId === update.requestId &&
+      (entry.status !== update.status ||
+        (update.replyAsMessage === true && entry.replyAsMessage !== true));
+    return state.open.some(changes)
       ? {
           ...state,
           open: state.open.map((entry) =>
-            entry.requestId === requestId ? { ...entry, status } : entry,
+            changes(entry)
+              ? {
+                  ...entry,
+                  status: update.status,
+                  ...(update.replyAsMessage === true ? { replyAsMessage: true } : {}),
+                }
+              : entry,
           ),
         }
-      : state,
+      : state;
+  },
   settled: (
     state: OrchestrationAgentRequestState,
     requestId: OrchestrationAgentRequestState["open"][number]["requestId"],
