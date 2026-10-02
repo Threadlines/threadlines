@@ -20,6 +20,7 @@ import * as ExternalLauncher from "./process/externalLauncher.ts";
 import { layerConfig as SqlitePersistenceLayerLive } from "./persistence/Layers/Sqlite.ts";
 import { ServerLifecycleEventsLive } from "./serverLifecycleEvents.ts";
 import { AnalyticsServiceLayerLive } from "./telemetry/Layers/AnalyticsService.ts";
+import { ProviderReadinessTelemetryLive } from "./telemetry/Layers/ProviderReadinessTelemetry.ts";
 import { ProviderSessionDirectoryLive } from "./provider/Layers/ProviderSessionDirectory.ts";
 import { ProviderSessionRuntimeRepositoryLive } from "./persistence/Layers/ProviderSessionRuntime.ts";
 import { ProviderAdapterRegistryLive } from "./provider/Layers/ProviderAdapterRegistry.ts";
@@ -412,7 +413,9 @@ const RuntimeDependenciesLive = RuntimeCoreDependenciesLive.pipe(
 );
 
 const RuntimeServicesLive = Layer.mergeAll(
-  ServerRuntimeStartupLive.pipe(Layer.provideMerge(RuntimeDependenciesLive)),
+  Layer.mergeAll(ServerRuntimeStartupLive, ProviderReadinessTelemetryLive).pipe(
+    Layer.provideMerge(RuntimeDependenciesLive),
+  ),
   ThreadSearchLive.pipe(Layer.provide(PersistenceLayerLive)),
   // Usage reads provider transcripts straight off disk, so it needs only
   // settings (for the resolved provider homes) plus the platform services and

@@ -5,7 +5,8 @@
  * The server owns regular usage analytics, but when the backend never boots
  * there is no server to report anything — so the shell sends one sanitized
  * event itself. It honors the same consent as the server (`settings.json`
- * `usageAnalyticsEnabled`, `THREADLINES_TELEMETRY_ENABLED` override), reuses
+ * `usageAnalyticsEnabled`, `THREADLINES_TELEMETRY_ENABLED` override, silence
+ * in throwaway runs), reuses
  * the same anonymous install id file, and never sends raw paths: everything
  * under the user's home directory is scrubbed to `~` before leaving the
  * machine.
@@ -19,9 +20,14 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http";
 import * as Crypto from "node:crypto";
+import * as NodeOS from "node:os";
 
 import { DEFAULT_SERVER_SETTINGS, ServerSettings } from "@threadlines/contracts";
 import { fromLenientJson } from "@threadlines/shared/schemaJson";
+import {
+  isThrowawayTelemetryRun,
+  parseTelemetryEnabledOverride,
+} from "@threadlines/shared/telemetryConsent";
 
 import * as DesktopEnvironment from "./DesktopEnvironment.ts";
 
@@ -102,17 +108,19 @@ const decodeServerSettingsJson = Schema.decodeUnknownOption(ServerSettingsJson);
 
 /**
  * Mirrors the server's telemetry consent: `THREADLINES_TELEMETRY_ENABLED`
- * wins when set, otherwise `usageAnalyticsEnabled` from settings.json decoded
+ * wins when set, a throwaway run (CI, or a data folder in the temp folder)
+ * sends nothing, otherwise `usageAnalyticsEnabled` from settings.json decoded
  * with the same lenient JSONC parser the server uses, defaulting to enabled
  * when the file is absent or undecodable.
  */
 export function resolveTelemetryConsent(input: {
   readonly envOverride: string | undefined;
+  readonly throwawayRun: boolean;
   readonly rawSettingsJson: string | undefined;
 }): boolean {
-  const override = input.envOverride?.trim().toLowerCase();
-  if (override === "false") return false;
-  if (override === "true") return true;
+  const override = parseTelemetryEnabledOverride(input.envOverride);
+  if (override !== undefined) return override;
+  if (input.throwawayRun) return false;
 
   if (input.rawSettingsJson === undefined) {
     return DEFAULT_SERVER_SETTINGS.usageAnalyticsEnabled;
@@ -162,8 +170,16 @@ const makeDesktopCrashReport = Effect.gen(function* () {
       const rawSettingsJson = yield* fileSystem
         .readFileString(environment.serverSettingsPath)
         .pipe(Effect.map(Option.some), Effect.orElseSucceed(Option.none<string>));
+      const realPathOrSelf = (path: string) =>
+        fileSystem.realPath(path).pipe(Effect.orElseSucceed(() => path));
+      const tempDir = NodeOS.tmpdir();
       const consented = resolveTelemetryConsent({
         envOverride: process.env.THREADLINES_TELEMETRY_ENABLED,
+        throwawayRun: isThrowawayTelemetryRun({
+          baseDirs: [environment.baseDir, yield* realPathOrSelf(environment.baseDir)],
+          tempDirs: [tempDir, yield* realPathOrSelf(tempDir)],
+          ciEnv: process.env.CI,
+        }),
         rawSettingsJson: Option.getOrUndefined(rawSettingsJson),
       });
       if (!consented) return;

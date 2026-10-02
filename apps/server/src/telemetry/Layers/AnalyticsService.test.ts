@@ -12,7 +12,12 @@ import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
 import { ServerConfig } from "../../config.ts";
 import { getTelemetryIdentifier } from "../Identify.ts";
 import { AnalyticsService } from "../Services/AnalyticsService.ts";
-import { AnalyticsServiceLayerLive } from "./AnalyticsService.ts";
+import { AnalyticsServiceLayerLive, makeAnalyticsServiceLayer } from "./AnalyticsService.ts";
+
+// The scratch data folders below live in the real temp folder, which marks a
+// throwaway run. Tests about the settings opt-out point the temp check at a
+// folder that holds nothing, so their installs count as real ones.
+const notTheTempDir = makeAnalyticsServiceLayer({ tempDir: "/threadlines-test-no-temp-dir" });
 
 interface RecordedBatchRequest {
   readonly path: string;
@@ -179,6 +184,41 @@ it.layer(NodeServices.layer)("AnalyticsService test", (it) => {
     }),
   );
 
+  it.effect("does not send telemetry from a data folder inside the temp folder", () =>
+    Effect.gen(function* () {
+      const capturedRequests: Array<RecordedBatchRequest> = [];
+      const serverConfigLayer = ServerConfig.layerTest(process.cwd(), {
+        prefix: "threadlines-telemetry-throwaway-",
+      });
+
+      const telemetryLayer = AnalyticsServiceLayerLive.pipe(Layer.provideMerge(serverConfigLayer));
+      const configLayer = ConfigProvider.layer(
+        ConfigProvider.fromUnknown({
+          THREADLINES_POSTHOG_KEY: "phc_test_key",
+          // "." keeps the batch URL relative so it resolves to the in-process
+          // test server; Config treats "" as unset since effect 4.0.0-beta.97.
+          THREADLINES_POSTHOG_HOST: ".",
+          THREADLINES_TELEMETRY_FLUSH_BATCH_SIZE: 1,
+        }),
+      );
+      const batchServerLayer = makeBatchServerLayer(capturedRequests);
+      const runtimeLayer = telemetryLayer.pipe(
+        Layer.provide(configLayer),
+        Layer.provideMerge(NodeHttpServer.layerTest),
+      );
+
+      yield* Effect.gen(function* () {
+        yield* Layer.launch(batchServerLayer).pipe(Effect.forkScoped);
+        const analytics = yield* AnalyticsService;
+
+        yield* analytics.record("test.flush.throwaway", { index: 0 });
+        yield* analytics.flush;
+      }).pipe(Effect.provide(runtimeLayer));
+
+      assert.equal(capturedRequests.length, 0);
+    }),
+  );
+
   it.effect("does not send telemetry when usage analytics are disabled in settings", () =>
     Effect.gen(function* () {
       const capturedRequests: Array<RecordedBatchRequest> = [];
@@ -186,7 +226,7 @@ it.layer(NodeServices.layer)("AnalyticsService test", (it) => {
         prefix: "threadlines-telemetry-disabled-",
       });
 
-      const telemetryLayer = AnalyticsServiceLayerLive.pipe(Layer.provideMerge(serverConfigLayer));
+      const telemetryLayer = notTheTempDir.pipe(Layer.provideMerge(serverConfigLayer));
       const configLayer = ConfigProvider.layer(
         ConfigProvider.fromUnknown({
           THREADLINES_POSTHOG_KEY: "phc_test_key",
@@ -227,7 +267,7 @@ it.layer(NodeServices.layer)("AnalyticsService test", (it) => {
         prefix: "threadlines-telemetry-settings-enabled-",
       });
 
-      const telemetryLayer = AnalyticsServiceLayerLive.pipe(Layer.provideMerge(serverConfigLayer));
+      const telemetryLayer = notTheTempDir.pipe(Layer.provideMerge(serverConfigLayer));
       const configLayer = ConfigProvider.layer(
         ConfigProvider.fromUnknown({
           THREADLINES_POSTHOG_KEY: "phc_test_key",

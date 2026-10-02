@@ -7,6 +7,8 @@
  * @module AnalyticsServiceLive
  */
 
+import * as OS from "node:os";
+
 import * as Config from "effect/Config";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -19,6 +21,7 @@ import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstab
 
 import { DEFAULT_SERVER_SETTINGS, ServerSettings } from "@threadlines/contracts";
 import { fromLenientJson } from "@threadlines/shared/schemaJson";
+import { isThrowawayTelemetryRun } from "@threadlines/shared/telemetryConsent";
 import { ServerConfig } from "../../config.ts";
 import { AnalyticsService, type AnalyticsServiceShape } from "../Services/AnalyticsService.ts";
 import { getTelemetryIdentifier } from "../Identify.ts";
@@ -58,6 +61,7 @@ const TelemetryEnvConfig = Config.all({
     bundledPosthogHost,
   ),
   enabledOverride: Config.boolean("THREADLINES_TELEMETRY_ENABLED").pipe(Config.option),
+  ci: Config.string("CI").pipe(Config.option),
   flushBatchSize: optionalTelemetryConfig(
     Config.number("THREADLINES_TELEMETRY_FLUSH_BATCH_SIZE"),
     20,
@@ -68,7 +72,7 @@ const TelemetryEnvConfig = Config.all({
   ),
 });
 
-const makeAnalyticsService = Effect.gen(function* () {
+const makeAnalyticsService = Effect.fnUntraced(function* (tempDir: string) {
   const telemetryConfig = yield* TelemetryEnvConfig;
   const httpClient = yield* HttpClient.HttpClient;
   const serverConfig = yield* ServerConfig;
@@ -80,6 +84,15 @@ const makeAnalyticsService = Effect.gen(function* () {
     Effect.provideService(ServerConfig, serverConfig),
     Effect.provideService(FileSystem.FileSystem, fileSystem),
   );
+
+  // Fixed for the life of the process, so worked out once.
+  const realPathOrSelf = (path: string) =>
+    fileSystem.realPath(path).pipe(Effect.orElseSucceed(() => path));
+  const throwawayRun = isThrowawayTelemetryRun({
+    baseDirs: [serverConfig.baseDir, yield* realPathOrSelf(serverConfig.baseDir)],
+    tempDirs: [tempDir, yield* realPathOrSelf(tempDir)],
+    ciEnv: Option.getOrUndefined(telemetryConfig.ci),
+  });
 
   const getIdentifier = Effect.gen(function* () {
     const cachedIdentifier = yield* Ref.get(identifierRef);
@@ -95,6 +108,9 @@ const makeAnalyticsService = Effect.gen(function* () {
   const isTelemetryEnabled = Effect.gen(function* () {
     if (Option.isSome(telemetryConfig.enabledOverride)) {
       return telemetryConfig.enabledOverride.value;
+    }
+    if (throwawayRun) {
+      return false;
     }
 
     const rawSettings = yield* fileSystem
@@ -227,4 +243,12 @@ const makeAnalyticsService = Effect.gen(function* () {
   } satisfies AnalyticsServiceShape;
 });
 
-export const AnalyticsServiceLayerLive = Layer.effect(AnalyticsService, makeAnalyticsService);
+/**
+ * `tempDir` is the system temp folder: a data folder inside it marks a
+ * throwaway run (see `isThrowawayTelemetryRun`). Tests pass their own so
+ * their scratch data folders can still exercise the settings opt-out.
+ */
+export const makeAnalyticsServiceLayer = (options: { readonly tempDir: string }) =>
+  Layer.effect(AnalyticsService, makeAnalyticsService(options.tempDir));
+
+export const AnalyticsServiceLayerLive = makeAnalyticsServiceLayer({ tempDir: OS.tmpdir() });

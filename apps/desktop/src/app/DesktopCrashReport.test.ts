@@ -52,19 +52,27 @@ describe("truncateTail", () => {
 
 describe("resolveTelemetryConsent", () => {
   it("defaults to enabled without settings", () => {
-    assert.isTrue(resolveTelemetryConsent({ envOverride: undefined, rawSettingsJson: undefined }));
+    assert.isTrue(
+      resolveTelemetryConsent({
+        envOverride: undefined,
+        throwawayRun: false,
+        rawSettingsJson: undefined,
+      }),
+    );
   });
 
   it("honors usageAnalyticsEnabled from settings", () => {
     assert.isFalse(
       resolveTelemetryConsent({
         envOverride: undefined,
+        throwawayRun: false,
         rawSettingsJson: JSON.stringify({ usageAnalyticsEnabled: false }),
       }),
     );
     assert.isTrue(
       resolveTelemetryConsent({
         envOverride: undefined,
+        throwawayRun: false,
         rawSettingsJson: JSON.stringify({ usageAnalyticsEnabled: true }),
       }),
     );
@@ -74,13 +82,32 @@ describe("resolveTelemetryConsent", () => {
     assert.isFalse(
       resolveTelemetryConsent({
         envOverride: "false",
+        throwawayRun: false,
         rawSettingsJson: JSON.stringify({ usageAnalyticsEnabled: true }),
       }),
     );
     assert.isTrue(
       resolveTelemetryConsent({
         envOverride: "true",
+        throwawayRun: false,
         rawSettingsJson: JSON.stringify({ usageAnalyticsEnabled: false }),
+      }),
+    );
+  });
+
+  it("sends nothing from a throwaway run unless the env override asks for it", () => {
+    assert.isFalse(
+      resolveTelemetryConsent({
+        envOverride: undefined,
+        throwawayRun: true,
+        rawSettingsJson: undefined,
+      }),
+    );
+    assert.isTrue(
+      resolveTelemetryConsent({
+        envOverride: "true",
+        throwawayRun: true,
+        rawSettingsJson: undefined,
       }),
     );
   });
@@ -89,6 +116,7 @@ describe("resolveTelemetryConsent", () => {
     assert.isFalse(
       resolveTelemetryConsent({
         envOverride: undefined,
+        throwawayRun: false,
         rawSettingsJson: `{
           // telemetry disabled by hand
           "usageAnalyticsEnabled": false,
@@ -98,6 +126,12 @@ describe("resolveTelemetryConsent", () => {
   });
 
   it("keeps the default when settings are unreadable", () => {
-    assert.isTrue(resolveTelemetryConsent({ envOverride: undefined, rawSettingsJson: "not json" }));
+    assert.isTrue(
+      resolveTelemetryConsent({
+        envOverride: undefined,
+        throwawayRun: false,
+        rawSettingsJson: "not json",
+      }),
+    );
   });
 });

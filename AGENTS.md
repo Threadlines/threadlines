@@ -59,6 +59,7 @@ The most common defect is a change that works on the path you tested and is miss
 - All of `vp fmt`, `vp lint`, and `vp run typecheck` must pass before considering a code change complete. `vp` (vite-plus) is the repo toolchain — use it for all repo tasks.
 - Run the tests covering the code you changed: `vp run --cache '@threadlines/server#test' <filename substring>` (same pattern for the other packages; the filter matches file names, not repo-relative paths). Reserve `vp run test` (full Vitest suite) for broad or cross-package changes.
 - Web UI changes also need the browser suite: `vp run --cache '@threadlines/web#test:browser'`. It is not part of `vp run test`, and CI runs it — green unit tests alone do not mean a green branch.
+- When you try a real nightly or release build with a fresh data folder, put that folder inside the system temp folder or set `THREADLINES_TELEMETRY_ENABLED=false`. Otherwise every run counts as a new user in PostHog (`docs/telemetry.md`).
 - Pass `--cache` only to pure check/test commands as shown above. vp fingerprints the files a task reads and its arguments, so an unchanged re-run replays instantly instead of re-executing — but never add it to side-effecting scripts (`deploy`, `clean`, `dist:*`, `release:*`), where a cache replay would silently skip the real action.
 - NEVER run `bun test`. The Bun toolchain is not used for repo tasks.
 

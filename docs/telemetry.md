@@ -11,6 +11,10 @@ Settings.
 Threadlines sends product and reliability events such as:
 
 - app/server startup heartbeat;
+- whether each coding agent (Codex, Claude, and the other supported agents) is
+  turned on, installed, and signed in (yes, no, or unknown), and whether its
+  startup check timed out. This is sent once the startup checks finish and
+  again when an answer changes;
 - provider session start, stop, and recovery;
 - turn sent, steered, interrupted, and compact-requested events;
 - selected model family and sanitized model slug for provider turns;
@@ -38,13 +42,28 @@ Threadlines does not send:
 - raw custom/private model names;
 - raw provider error messages or stack traces;
 - provider API keys, auth tokens, secrets, or environment variable values;
-- Codex, Claude, GitHub, or other third-party account identifiers.
+- Codex, Claude, GitHub, or other third-party account identifiers, including
+  the account name or email shown next to a signed-in agent.
 
 Threadlines does not add an IP address to the analytics payload. As with any
 HTTPS request, the receiving service can see the source IP at the transport
 layer. The Threadlines PostHog project is configured to discard client IP data
 after any transient GeoIP enrichment or bot detection, so it is not stored with
 events.
+
+## Test and CI Runs
+
+Threadlines sends nothing when it can tell a run is throwaway:
+
+- the `CI` environment variable is set to anything other than a false value
+  (`false`, `no`, `off`, `0`, `n`), as it is on GitHub Actions and most other
+  CI services;
+- its data folder (`THREADLINES_HOME` or `--base-dir`) is inside the system
+  temp folder, which is how smoke tests and test runs usually start fresh.
+
+`THREADLINES_TELEMETRY_ENABLED=true` overrides both. If you test a real
+Threadlines build with a fresh data folder somewhere else, set
+`THREADLINES_TELEMETRY_ENABLED=false` so the run doesn't count as an install.
 
 ## Anonymous Identifier
 
@@ -64,7 +83,8 @@ Environment variables:
 - `THREADLINES_POSTHOG_KEY`: PostHog project token.
 - `THREADLINES_POSTHOG_HOST`: PostHog host. Defaults to `https://us.i.posthog.com`.
 - `THREADLINES_TELEMETRY_ENABLED`: optional process-level override for local
-  development and testing. Set to `false` to disable telemetry for the process.
+  development and testing. Set to `false` to disable telemetry for the process,
+  or `true` to send it even from a CI or temp-folder run.
   Release builds also use `false` as a build-time kill switch and omit the
   bundled PostHog token; `true` permits bundling while the in-app opt-out remains
   authoritative at runtime.

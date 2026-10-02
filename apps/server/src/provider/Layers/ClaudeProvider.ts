@@ -1563,6 +1563,7 @@ export const makePendingClaudeProvider = (
         installed: false,
         version: null,
         status: "warning",
+        statusReason: "provider_probe_pending",
         auth: { status: "unknown" },
         message: "Claude provider status has not been checked in this session yet.",
       },
