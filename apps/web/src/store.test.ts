@@ -23,6 +23,7 @@ import {
   applyOrchestrationEvent,
   applyOrchestrationEvents,
   applyShellEvent,
+  onProjectRemoved,
   removeEnvironmentState,
   selectEnvironmentState,
   selectProjectsAcrossEnvironments,
@@ -36,6 +37,7 @@ import {
   selectRunningSidebarThreadsAcrossEnvironments,
   type AppState,
   type EnvironmentState,
+  useStore,
 } from "./store";
 import {
   DEFAULT_INTERACTION_MODE,
@@ -314,6 +316,43 @@ describe("environment state removal", () => {
     const next = removeEnvironmentState(state, remoteEnvironmentId);
 
     expect(next).toBe(state);
+  });
+});
+
+describe("project removal listeners", () => {
+  it("hears a project the environment deleted, and nothing else", () => {
+    const heard: string[] = [];
+    const stop = onProjectRemoved((_environmentId, projectId) => heard.push(projectId));
+    try {
+      // A project arriving or changing (as when two in one folder are merged)
+      // is not a deletion; only the deletion event is.
+      useStore.getState().applyShellEvent(
+        {
+          kind: "project-upserted",
+          sequence: 1,
+          project: {
+            id: ProjectId.make("project-kept"),
+            kind: "workspace",
+            title: "Kept",
+            workspaceRoot: "/tmp/kept",
+            defaultModelSelection: null,
+            scripts: [],
+            createdAt: "2026-10-01T00:00:00.000Z",
+            updatedAt: "2026-10-01T00:00:00.000Z",
+          },
+        },
+        localEnvironmentId,
+      );
+      useStore
+        .getState()
+        .applyShellEvent(
+          { kind: "project-removed", sequence: 2, projectId: ProjectId.make("project-gone") },
+          localEnvironmentId,
+        );
+    } finally {
+      stop();
+    }
+    expect(heard).toEqual(["project-gone"]);
   });
 });
 

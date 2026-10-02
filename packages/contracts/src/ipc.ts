@@ -204,7 +204,7 @@ import type {
   OrchestrationSubscribeThreadInput,
   OrchestrationThreadStreamItem,
 } from "./orchestration.ts";
-import { EnvironmentId, IsoDateTime, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { EnvironmentId, IsoDateTime, ProjectId, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { AuthBearerBootstrapResult, AuthSessionState, AuthWebSocketTokenResult } from "./auth.ts";
 import { AdvertisedEndpoint } from "./remoteAccess.ts";
 import { EditorId } from "./editor.ts";
@@ -475,6 +475,32 @@ export const DesktopPreviewNavigationBlockedSchema = Schema.Struct({
   fromHost: Schema.NullOr(Schema.String),
 });
 export type DesktopPreviewNavigationBlocked = typeof DesktopPreviewNavigationBlockedSchema.Type;
+
+/**
+ * The in-app browser keeps one profile per project: its own cookies, storage
+ * and cache. The desktop names the partition; the renderer only asks for it.
+ */
+export const DesktopPreviewProfileInputSchema = Schema.Struct({
+  environmentId: EnvironmentId,
+  projectId: ProjectId,
+});
+export type DesktopPreviewProfileInput = typeof DesktopPreviewProfileInputSchema.Type;
+
+/** A browser partition, as handed out by `previewProfilePartition`. */
+export const DesktopPreviewPartitionSchema = Schema.Struct({
+  partition: Schema.String,
+});
+export type DesktopPreviewPartition = typeof DesktopPreviewPartitionSchema.Type;
+
+/** One project's browser profile, as remembered by the desktop. */
+export const DesktopPreviewProfileSchema = Schema.Struct({
+  partition: Schema.String,
+  environmentId: EnvironmentId,
+  projectId: ProjectId,
+  /** When a tab last asked for this profile. */
+  lastUsedAt: IsoDateTime,
+});
+export type DesktopPreviewProfile = typeof DesktopPreviewProfileSchema.Type;
 
 /** Human input reached a guest page, so agent-owned cleanup must yield to the user. */
 export const DesktopPreviewUserControlSchema = Schema.Struct({
@@ -1056,8 +1082,16 @@ export interface DesktopBridge {
   onPreviewBrowserCommand?: (
     listener: (command: DesktopPreviewBrowserCommand) => void,
   ) => () => void;
-  previewClearBrowsingData?: () => Promise<void>;
-  previewClearCache?: () => Promise<void>;
+  /** The browser partition for a project's tabs. Remembers the profile so it can be cleared later. */
+  previewProfilePartition?: (input: DesktopPreviewProfileInput) => Promise<DesktopPreviewPartition>;
+  previewListProfiles?: () => Promise<readonly DesktopPreviewProfile[]>;
+  /** Clears everything a profile holds and stops remembering it. */
+  previewForgetProfile?: (input: DesktopPreviewPartition) => Promise<void>;
+  /** Clears cookies and site storage, then reloads the partition's open tabs. */
+  previewClearBrowsingData?: (input: DesktopPreviewPartition) => Promise<void>;
+  previewClearCache?: (input: DesktopPreviewPartition) => Promise<void>;
+  /** Clears every remembered profile, plus the profile all projects used to share. */
+  previewClearAllBrowsingData?: () => Promise<void>;
   setTheme: (theme: DesktopTheme) => Promise<void>;
   showContextMenu: <T extends string>(
     items: readonly ContextMenuItem<T>[],

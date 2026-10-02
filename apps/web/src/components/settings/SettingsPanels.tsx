@@ -740,6 +740,68 @@ function UsageAnalyticsRow() {
   );
 }
 
+/**
+ * Clears the built-in browser's data for every project at once, plus the
+ * profile all projects shared before each had its own. Desktop only, like the
+ * browser itself. The desktop reloads open tabs, so none stays signed in.
+ */
+function ClearBrowserDataRow() {
+  const [isClearing, setIsClearing] = useState(false);
+
+  const clearBrowserData = useCallback(async () => {
+    const clearAll = window.desktopBridge?.previewClearAllBrowsingData;
+    if (clearAll === undefined || isClearing) {
+      return;
+    }
+    const confirmed = await ensureLocalApi().dialogs.confirm(
+      [
+        "Clear all browser data?",
+        "You'll be signed out of every site in the built-in browser, in every project.",
+      ].join("\n"),
+    );
+    if (!confirmed) {
+      return;
+    }
+    setIsClearing(true);
+    try {
+      await clearAll();
+      toastManager.add({ type: "success", title: "Browser data cleared" });
+    } catch {
+      toastManager.add({
+        type: "error",
+        title: "Couldn't clear all browser data",
+        description: "Some projects may still be signed in. Try again.",
+      });
+    } finally {
+      setIsClearing(false);
+    }
+  }, [isClearing]);
+
+  return (
+    <SettingsRow
+      title="Clear all browser data"
+      description="Signs you out of sites in the built-in browser for every project."
+      control={
+        <Button
+          type="button"
+          variant="destructive-outline"
+          size="sm"
+          className="h-7 shrink-0 cursor-pointer gap-1.5 px-2.5"
+          disabled={isClearing}
+          onClick={() => void clearBrowserData()}
+        >
+          {isClearing ? (
+            <LoaderIcon className="size-3.5 animate-spin" />
+          ) : (
+            <Trash2Icon className="size-3.5" />
+          )}
+          <span>{isClearing ? "Clearing" : "Clear data"}</span>
+        </Button>
+      }
+    />
+  );
+}
+
 export function GeneralSettingsPanel({ surface = "full" }: { surface?: "full" | "phone" }) {
   const { theme, setTheme } = useTheme();
   const settings = useSettings();
@@ -1196,6 +1258,7 @@ export function GeneralSettingsPanel({ surface = "full" }: { surface?: "full" | 
         />
         <AgentInvitesRow />
         {isElectron ? <AgentBrowserSitesRow /> : null}
+        {isElectron && !isPhoneSurface ? <ClearBrowserDataRow /> : null}
       </SettingsSection>
 
       <SettingsSection title="About">

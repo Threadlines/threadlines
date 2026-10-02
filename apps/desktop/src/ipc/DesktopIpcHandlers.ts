@@ -58,9 +58,13 @@ import {
   previewEvaluate,
   previewLocalServers,
   previewMove,
+  previewClearAllBrowsingData,
   previewClearBrowsingData,
   previewClearCache,
+  previewForgetProfile,
+  previewListProfiles,
   previewOpenDevTools,
+  previewProfilePartition,
   previewScreenshot,
   previewCancelPick,
   previewPickElement,
@@ -127,6 +131,10 @@ export const installDesktopIpcHandlers = Effect.gen(function* () {
   yield* ipc.handle(previewSetNavigationPolicy);
   yield* ipc.handle(previewClearBrowsingData);
   yield* ipc.handle(previewClearCache);
+  yield* ipc.handle(previewClearAllBrowsingData);
+  yield* ipc.handle(previewProfilePartition);
+  yield* ipc.handle(previewListProfiles);
+  yield* ipc.handle(previewForgetProfile);
 
   yield* ipc.handle(getServerExposureState);
   yield* ipc.handle(setServerExposureMode);

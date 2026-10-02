@@ -17,6 +17,7 @@ import { QueryClient, useQueryClient } from "@tanstack/react-query";
 import { APP_DISPLAY_NAME } from "../branding";
 import { AppSidebarLayout } from "../components/AppSidebarLayout";
 import { CommandPalette } from "../components/CommandPalette";
+import { BrowserProfileReconciler } from "../components/desktop/BrowserProfileReconciler";
 import { DesktopUpdateInstallDialog } from "../components/desktop/DesktopUpdateInstallDialog";
 import { SshPasswordPromptDialog } from "../components/desktop/SshPasswordPromptDialog";
 import { QuitConfirmationDialog } from "../components/desktop/QuitConfirmationDialog";
@@ -35,6 +36,7 @@ import {
   toastManager,
 } from "../components/ui/toast";
 import { resolveAndPersistPreferredEditor } from "../editorPreferences";
+import { isElectron } from "../env";
 import { readLocalApi } from "../localApi";
 import { refreshSourceControlDiscoveryAfterReconnect } from "../lib/sourceControlDiscoveryState";
 import { useSettings } from "../hooks/useSettings";
@@ -151,6 +153,7 @@ function RootRouteView() {
         {primaryEnvironmentAuthenticated ? <ServerStateBootstrap /> : null}
         <EnvironmentConnectionManagerBootstrap />
         <DesktopTaskbarStatusSync />
+        {isElectron ? <BrowserProfileReconciler /> : null}
         <SshPasswordPromptDialog />
         <QuitConfirmationDialog />
         <DesktopUpdateInstallDialog />

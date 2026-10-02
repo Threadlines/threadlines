@@ -8,6 +8,9 @@ import {
   DesktopPreviewEvaluateInputSchema,
   DesktopPreviewMoveInputSchema,
   DesktopPreviewNavigationPolicyInputSchema,
+  DesktopPreviewPartitionSchema,
+  DesktopPreviewProfileInputSchema,
+  DesktopPreviewProfileSchema,
   DesktopPreviewScreenshotSchema,
   DesktopPreviewSnapshotSchema,
   DesktopPreviewTypeInputSchema,
@@ -28,6 +31,7 @@ import * as Schema from "effect/Schema";
 
 import * as LocalServers from "../../preview/LocalServers.ts";
 import * as PreviewAutomation from "../../preview/PreviewAutomation.ts";
+import * as PreviewProfiles from "../../preview/PreviewProfiles.ts";
 import * as PreviewSession from "../../preview/PreviewSession.ts";
 import * as IpcChannels from "../channels.ts";
 import { makeIpcMethod } from "../DesktopIpc.ts";
@@ -184,11 +188,11 @@ export const previewOpenDevTools = makeIpcMethod({
 
 export const previewClearBrowsingData = makeIpcMethod({
   channel: IpcChannels.PREVIEW_CLEAR_BROWSING_DATA_CHANNEL,
-  payload: Schema.Void,
+  payload: DesktopPreviewPartitionSchema,
   result: Schema.Void,
-  handler: Effect.fn("desktop.ipc.preview.clearBrowsingData")(function* () {
+  handler: Effect.fn("desktop.ipc.preview.clearBrowsingData")(function* (input) {
     const session = yield* PreviewSession.PreviewSession;
-    yield* session.clearBrowsingData();
+    yield* session.clearBrowsingData(input.partition);
   }),
 });
 
@@ -254,11 +258,51 @@ export const previewRevealElement = makeIpcMethod({
 
 export const previewClearCache = makeIpcMethod({
   channel: IpcChannels.PREVIEW_CLEAR_CACHE_CHANNEL,
+  payload: DesktopPreviewPartitionSchema,
+  result: Schema.Void,
+  handler: Effect.fn("desktop.ipc.preview.clearCache")(function* (input) {
+    const session = yield* PreviewSession.PreviewSession;
+    yield* session.clearCache(input.partition);
+  }),
+});
+
+export const previewClearAllBrowsingData = makeIpcMethod({
+  channel: IpcChannels.PREVIEW_CLEAR_ALL_BROWSING_DATA_CHANNEL,
   payload: Schema.Void,
   result: Schema.Void,
-  handler: Effect.fn("desktop.ipc.preview.clearCache")(function* () {
-    const session = yield* PreviewSession.PreviewSession;
-    yield* session.clearCache();
+  handler: Effect.fn("desktop.ipc.preview.clearAllBrowsingData")(function* () {
+    const profiles = yield* PreviewProfiles.PreviewProfiles;
+    yield* profiles.clearAll;
+  }),
+});
+
+export const previewProfilePartition = makeIpcMethod({
+  channel: IpcChannels.PREVIEW_PROFILE_PARTITION_CHANNEL,
+  payload: DesktopPreviewProfileInputSchema,
+  result: DesktopPreviewPartitionSchema,
+  handler: Effect.fn("desktop.ipc.preview.profilePartition")(function* (input) {
+    const profiles = yield* PreviewProfiles.PreviewProfiles;
+    return { partition: yield* profiles.partitionFor(input) };
+  }),
+});
+
+export const previewListProfiles = makeIpcMethod({
+  channel: IpcChannels.PREVIEW_LIST_PROFILES_CHANNEL,
+  payload: Schema.Void,
+  result: Schema.Array(DesktopPreviewProfileSchema),
+  handler: Effect.fn("desktop.ipc.preview.listProfiles")(function* () {
+    const profiles = yield* PreviewProfiles.PreviewProfiles;
+    return yield* profiles.list;
+  }),
+});
+
+export const previewForgetProfile = makeIpcMethod({
+  channel: IpcChannels.PREVIEW_FORGET_PROFILE_CHANNEL,
+  payload: DesktopPreviewPartitionSchema,
+  result: Schema.Void,
+  handler: Effect.fn("desktop.ipc.preview.forgetProfile")(function* (input) {
+    const profiles = yield* PreviewProfiles.PreviewProfiles;
+    yield* profiles.forget(input.partition);
   }),
 });
 
