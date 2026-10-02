@@ -316,7 +316,6 @@ import {
 import { useLocalStorage } from "~/hooks/useLocalStorage";
 import { selectThreadBrowserState, useBrowserPanelStore } from "../browserPanelStore";
 import { BrowserPanel } from "./browser/BrowserPanel";
-import { PreviewAutomationMount } from "./browser/PreviewAutomationMount";
 import { BrowserSplitHandle } from "./browser/BrowserSplitHandle";
 import { useComposerHandleContext } from "../composerHandleContext";
 import {
@@ -7432,21 +7431,6 @@ export default function ChatView(props: ChatViewProps) {
           ) : null}
         </div>
         {/* end chat column */}
-        {/* The agent's end of the browser is mounted with the thread, not with
-            the panel: a closed panel is a closed panel, not the absence of a
-            browser, and a request for the browser opens it. */}
-        {!isGeneralChatThread && routeThreadRef !== null ? (
-          // Mounted on the web build too: the host reads the desktop bridge at
-          // effect time and refuses to connect without one, so it costs nothing
-          // there and keeps working if the preload attaches late.
-          // The project is passed alongside the thread because a local draft
-          // thread has no shell to look it up from, and browser approvals are
-          // recorded per project.
-          <PreviewAutomationMount
-            threadRef={routeThreadRef}
-            projectId={activeThread?.projectId ?? null}
-          />
-        ) : null}
         {browserOpen && routeThreadRef !== null ? (
           <>
             {browserExpanded ? null : (

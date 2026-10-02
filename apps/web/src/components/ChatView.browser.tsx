@@ -15,6 +15,7 @@ import {
   type PreviewAutomationResponse,
   type OrchestrationReadModel,
   type ProjectId,
+  type ScopedThreadRef,
   ProviderDriverKind,
   ProviderInstanceId,
   type ServerConfig,
@@ -35,7 +36,7 @@ import { scopedThreadKey, scopeThreadRef } from "@threadlines/client-runtime";
 import { createModelCapabilities, createModelSelection } from "@threadlines/shared/model";
 import { MAX_THREAD_ACTIVITIES } from "@threadlines/shared/threadLimits";
 import { RouterProvider, createMemoryHistory } from "@tanstack/react-router";
-import { StrictMode } from "react";
+import { StrictMode, useEffect } from "react";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { HttpResponse, http, ws } from "msw";
@@ -64,7 +65,18 @@ import {
   resetPreviewWebviewsForTests,
   useBrowserPanelStore,
 } from "../browserPanelStore";
-import { PreviewAutomationMount } from "./browser/PreviewAutomationMount";
+import { connectEnvironmentBrowserHost } from "./browser/previewAutomationHost";
+import { closeThreadBrowser, useBrowserPageWatchers } from "./browser/BrowserHostLayer";
+import {
+  prepareThreadBrowser,
+  resetThreadBrowserAutomationForTests,
+  resolveThreadBrowserTarget,
+} from "./browser/threadBrowserAutomation";
+import {
+  resetBrowserLiveStoreForTests,
+  selectLivePageState,
+  useBrowserLiveStore,
+} from "../browserLiveStore";
 import { answerBrowserApproval } from "./browser/browserApprovalRequests";
 import {
   readPrimaryEnvironmentDescriptor,
@@ -125,6 +137,47 @@ const ARCHIVED_SECONDARY_THREAD_ID = "thread-secondary-project-archived" as Thre
 const PROJECT_ID = "project-1" as ProjectId;
 const SECOND_PROJECT_ID = "project-2" as ProjectId;
 const LOCAL_ENVIRONMENT_ID = EnvironmentId.make("environment-local");
+
+/**
+ * The app-wide browser host, for one thread on screen, without the layer's
+ * pages: the tests register stand-in webviews instead. Uses the per-thread
+ * connection an older server would get, which the mocks below answer.
+ */
+function BrowserHostHarness({
+  threadRef,
+  projectId = "project-browser-tests" as ProjectId,
+  clientHosts = false,
+  shown = true,
+}: {
+  threadRef: ScopedThreadRef;
+  projectId?: ProjectId;
+  /** Connect the way a current server is reached: one host for every thread. */
+  clientHosts?: boolean;
+  /** Whether the thread's panel is on screen. */
+  shown?: boolean;
+}) {
+  useBrowserPageWatchers();
+  useEffect(() => {
+    resetThreadBrowserAutomationForTests();
+    useBrowserLiveStore.getState().ensureLive(threadRef, projectId);
+    if (shown) useBrowserLiveStore.getState().setShown(threadRef);
+    const connection = connectEnvironmentBrowserHost({
+      environmentId: threadRef.environmentId,
+      machineLocal: true,
+      clientHosts,
+      resolveTarget: resolveThreadBrowserTarget,
+      prepare: prepareThreadBrowser,
+      onRelease: closeThreadBrowser,
+      onReconnect: () => {},
+      shownThread: { current: () => threadRef.threadId, subscribe: () => () => {} },
+    });
+    return () => {
+      connection.disconnect();
+      resetBrowserLiveStoreForTests();
+    };
+  }, [clientHosts, projectId, shown, threadRef]);
+  return null;
+}
 const REMOTE_ENVIRONMENT_ID = EnvironmentId.make("environment-remote");
 const THREAD_REF = scopeThreadRef(LOCAL_ENVIRONMENT_ID, THREAD_ID);
 const THREAD_KEY = scopedThreadKey(THREAD_REF);
@@ -7148,7 +7201,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
       },
     } as unknown as NonNullable<typeof window.desktopBridge>;
 
-    const screen = await render(<PreviewAutomationMount threadRef={THREAD_REF} />);
+    const screen = await render(<BrowserHostHarness threadRef={THREAD_REF} />);
 
     try {
       await vi.waitFor(
@@ -7305,7 +7358,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
       });
     }
 
-    const screen = await render(<PreviewAutomationMount threadRef={THREAD_REF} />);
+    const screen = await render(<BrowserHostHarness threadRef={THREAD_REF} />);
 
     try {
       await vi.waitFor(
@@ -7444,7 +7497,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
       useBrowserPanelStore.getState().pendingApprovalsByThreadKey[THREAD_KEY] ?? [];
 
     const screen = await render(
-      <PreviewAutomationMount threadRef={THREAD_REF} projectId={projectId} />,
+      <BrowserHostHarness threadRef={THREAD_REF} projectId={projectId} />,
     );
 
     try {
@@ -7497,6 +7550,141 @@ describe("ChatView timeline estimator parity (full app)", () => {
       resetPreviewWebviewsForTests();
       writePrimaryEnvironmentDescriptor(previousDescriptor);
       updateSettings({ agentBrowserApprovedDomains: {} });
+      useBrowserPanelStore.setState({
+        browserStateByThreadKey: {},
+        agentStateByThreadKey: {},
+        browserOwnershipByThreadKey: {},
+        pendingApprovalsByThreadKey: {},
+      });
+      Reflect.deleteProperty(window, "desktopBridge");
+      __resetEnvironmentApiOverridesForTests();
+    }
+  });
+
+  it("answers an agent in a thread nobody is looking at, painting the page it works on", async () => {
+    const tab = { ...makeBrowserTab(), url: "http://localhost:5173/" };
+    useBrowserPanelStore.setState({
+      browserStateByThreadKey: {
+        [THREAD_KEY]: { open: true, tabs: [tab], activeTabId: tab.id },
+      },
+      agentStateByThreadKey: {},
+      browserOwnershipByThreadKey: {},
+      pendingApprovalsByThreadKey: {},
+    });
+    let deliver: ((message: unknown) => void) | null = null;
+    const responses: PreviewAutomationResponse[] = [];
+    __setEnvironmentApiOverrideForTests(
+      LOCAL_ENVIRONMENT_ID,
+      createMockEnvironmentApi({
+        browse: (() =>
+          Promise.reject(new Error("not used"))) as EnvironmentApi["filesystem"]["browse"],
+        dispatchCommand: (() =>
+          Promise.reject(
+            new Error("not used"),
+          )) as EnvironmentApi["orchestration"]["dispatchCommand"],
+        previewAutomation: {
+          connectClient: (_input: unknown, listener: (message: unknown) => void) => {
+            deliver = listener;
+            return () => {
+              deliver = null;
+            };
+          },
+          respond: (response: PreviewAutomationResponse) => {
+            responses.push(response);
+            return Promise.resolve();
+          },
+          progress: () => Promise.resolve(),
+        } as unknown as EnvironmentApi["previewAutomation"],
+      }),
+    );
+    const clickedOn: number[] = [];
+    window.desktopBridge = {
+      previewStatus: () =>
+        Promise.resolve({ url: "http://localhost:5173/", title: "Preview", loading: false }),
+      previewClick: (input: { webContentsId: number }) => {
+        clickedOn.push(input.webContentsId);
+        return Promise.resolve({ x: 1, y: 1 });
+      },
+    } as unknown as NonNullable<typeof window.desktopBridge>;
+    registerPreviewWebview(THREAD_REF, tab.id, {
+      getWebContentsId: () => 42,
+      loadURL: () => Promise.resolve(),
+      getBoundingClientRect: () => ({ width: 900, height: 600 }) as DOMRect,
+    });
+
+    const screen = await render(
+      <BrowserHostHarness threadRef={THREAD_REF} clientHosts shown={false} />,
+    );
+
+    try {
+      await vi.waitFor(() => expect(deliver).not.toBeNull(), { timeout: 4_000, interval: 16 });
+      deliver!({
+        requestId: "req-background",
+        threadId: THREAD_ID,
+        agentId: "agent-background",
+        operation: "click",
+        input: { target: { ref: "e1" } },
+      });
+      await vi.waitFor(
+        () => {
+          expect(responses).toHaveLength(1);
+          expect(responses[0]?.error).toBeUndefined();
+        },
+        { timeout: 4_000, interval: 16 },
+      );
+      expect(clickedOn).toEqual([42]);
+      // Off screen, the page is painted while the agent uses it, so a
+      // screenshot of it can return.
+      expect(
+        selectLivePageState(useBrowserLiveStore.getState().pageStateByThreadKey, THREAD_REF, tab.id)
+          .drawn,
+      ).toBe(true);
+
+      // A visit waiting on the user's answer when the user opens this thread's
+      // browser on another computer: the question goes and nothing loads here.
+      const previousDescriptor = readPrimaryEnvironmentDescriptor();
+      writePrimaryEnvironmentDescriptor({
+        environmentId: LOCAL_ENVIRONMENT_ID,
+        label: "This computer",
+        platform: { os: "darwin", arch: "arm64" },
+        serverVersion: "0.0.0-test",
+        capabilities: { repositoryIdentity: true, browserApprovalWait: true },
+      });
+      deliver!({
+        requestId: "req-background-visit",
+        threadId: THREAD_ID,
+        agentId: "agent-background",
+        operation: "navigate",
+        input: { url: "https://example.com/" },
+      });
+      await vi.waitFor(
+        () =>
+          expect(
+            useBrowserPanelStore.getState().pendingApprovalsByThreadKey[THREAD_KEY] ?? [],
+          ).toHaveLength(1),
+        { timeout: 4_000, interval: 16 },
+      );
+
+      // The user opened this thread's browser on another computer: its pages
+      // here close, and its tabs stay.
+      deliver!({ _tag: "release", threadId: THREAD_ID });
+      await vi.waitFor(
+        () =>
+          expect(
+            useBrowserPanelStore.getState().pendingApprovalsByThreadKey[THREAD_KEY] ?? [],
+          ).toEqual([]),
+        { timeout: 4_000, interval: 16 },
+      );
+      // The broker already answered the agent; nothing more is sent from here.
+      expect(responses).toHaveLength(1);
+      writePrimaryEnvironmentDescriptor(previousDescriptor);
+      expect(useBrowserLiveStore.getState().liveByThreadKey[THREAD_KEY]).toBeUndefined();
+      expect(
+        useBrowserPanelStore.getState().browserStateByThreadKey[THREAD_KEY]?.tabs,
+      ).toHaveLength(1);
+    } finally {
+      screen.unmount();
+      resetPreviewWebviewsForTests();
       useBrowserPanelStore.setState({
         browserStateByThreadKey: {},
         agentStateByThreadKey: {},

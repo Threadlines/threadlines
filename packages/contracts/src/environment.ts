@@ -30,6 +30,12 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
    * refuse an unapproved site straight away instead.
    */
   browserApprovalWait: Schema.optionalKey(Schema.Boolean),
+  /**
+   * The server routes browser requests to one client-wide host per client
+   * (`PreviewAutomationClientHostSchema`), so a thread's browser works while
+   * nobody is looking at it. Older servers only reach the thread on screen.
+   */
+  browserClientHosts: Schema.optionalKey(Schema.Boolean),
 });
 export type ExecutionEnvironmentCapabilities = typeof ExecutionEnvironmentCapabilities.Type;
 

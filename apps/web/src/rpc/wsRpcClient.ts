@@ -108,6 +108,8 @@ export interface WsRpcClient {
     readonly connect: RpcInputStreamMethod<typeof WS_METHODS.previewAutomationConnect>;
     readonly respond: RpcUnaryMethod<typeof WS_METHODS.previewAutomationRespond>;
     readonly progress: RpcUnaryMethod<typeof WS_METHODS.previewAutomationProgress>;
+    readonly connectClient: RpcInputStreamMethod<typeof WS_METHODS.previewAutomationConnectClient>;
+    readonly claim: RpcUnaryMethod<typeof WS_METHODS.previewAutomationClaim>;
   };
   readonly projects: {
     readonly searchEntries: RpcUnaryMethod<typeof WS_METHODS.projectsSearchEntries>;
@@ -483,6 +485,17 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
         transport.request((client) => client[WS_METHODS.previewAutomationRespond](input)),
       progress: (input) =>
         transport.request((client) => client[WS_METHODS.previewAutomationProgress](input)),
+      connectClient: (input, listener, options) =>
+        transport.subscribe(
+          (client) => client[WS_METHODS.previewAutomationConnectClient](input),
+          listener,
+          {
+            tag: WS_METHODS.previewAutomationConnectClient,
+            ...options,
+          },
+        ),
+      claim: (input) =>
+        transport.request((client) => client[WS_METHODS.previewAutomationClaim](input)),
     },
     projects: {
       searchEntries: (input) =>

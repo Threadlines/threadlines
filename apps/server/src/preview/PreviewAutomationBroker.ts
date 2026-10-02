@@ -25,6 +25,8 @@ import {
   PreviewAutomationTimeoutError,
   PreviewAutomationUnsupportedError,
   type PreviewAutomationError,
+  type PreviewAutomationClaim,
+  type PreviewAutomationClientHost,
   type PreviewAutomationHost,
   type PreviewAutomationHostFeature,
   type PreviewAutomationHostMessage,
@@ -99,6 +101,20 @@ export class PreviewAutomationBroker extends Context.Service<
     readonly connect: (
       host: PreviewAutomationHost,
     ) => Effect.Effect<Stream.Stream<PreviewAutomationHostMessage>, never, Scope.Scope>;
+    /**
+     * Registers a client as the browser for every thread routed to it, for as
+     * long as the scope lasts. Requests carry their thread.
+     */
+    readonly connectClient: (
+      host: PreviewAutomationClientHost,
+    ) => Effect.Effect<Stream.Stream<PreviewAutomationHostMessage>, never, Scope.Scope>;
+    /**
+     * The user opened a thread's browser on this client, so its requests come
+     * here from now on. The client that had it is told to let it go, and any
+     * request still in flight there fails rather than landing on pages the
+     * user is no longer looking at.
+     */
+    readonly claim: (claim: PreviewAutomationClaim) => Effect.Effect<void>;
     readonly respond: (response: PreviewAutomationResponse) => Effect.Effect<void>;
     /**
      * A request is now waiting on the user. Its deadline moves to
@@ -125,6 +141,12 @@ interface HostConnection {
   readonly queue: Queue.Queue<PreviewAutomationHostMessage>;
 }
 
+interface ClientHostConnection extends HostConnection {
+  readonly machineLocal: boolean;
+  /** Connection order, newest highest: the tie-break between clients. */
+  readonly sequence: number;
+}
+
 interface PendingRequest {
   readonly threadId: ThreadId;
   readonly operation: PreviewAutomationOperation;
@@ -140,14 +162,28 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
   // one synchronous run with no yield inside it, so there is no interleaving to
   // protect against, and a ref would only add ceremony.
   const hosts = new Map<ThreadId, HostConnection>();
+  const clientHosts = new Map<string, ClientHostConnection>();
+  /** Which client holds each thread's browser. Kept until that client goes. */
+  const threadOwners = new Map<ThreadId, string>();
   const pending = new Map<string, PendingRequest>();
+  /**
+   * Claims from a client whose host has not registered yet: the panel's claim
+   * and the host's subscription travel separately, and either can land first.
+   * Bounded, since a host id that never registers would otherwise stay forever.
+   */
+  const earlyClaims = new Map<string, Set<ThreadId>>();
+  const MAX_EARLY_CLAIM_HOSTS = 64;
   let requestSequence = 0;
+  let clientSequence = 0;
 
-  /** Settles everything still waiting on a host that has gone. */
-  const failPendingForHost = (threadId: ThreadId, hostId: string) => {
+  /**
+   * Settles everything still waiting on a host that has gone: for one thread,
+   * or for every thread when a client-wide host leaves.
+   */
+  const failPendingForHost = (threadId: ThreadId | null, hostId: string) => {
     const orphaned: PendingRequest[] = [];
     for (const [requestId, entry] of pending) {
-      if (entry.threadId === threadId && entry.hostId === hostId) {
+      if ((threadId === null || entry.threadId === threadId) && entry.hostId === hostId) {
         pending.delete(requestId);
         orphaned.push(entry);
       }
@@ -200,6 +236,104 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
     return Stream.fromQueue(queue);
   });
 
+  const disconnectClient = (connection: ClientHostConnection) =>
+    Effect.suspend(() => {
+      if (clientHosts.get(connection.hostId) === connection) {
+        clientHosts.delete(connection.hostId);
+        for (const [threadId, owner] of threadOwners) {
+          if (owner === connection.hostId) threadOwners.delete(threadId);
+        }
+      }
+      return failPendingForHost(null, connection.hostId).pipe(
+        Effect.andThen(Queue.shutdown(connection.queue)),
+        Effect.asVoid,
+      );
+    });
+
+  const connectClient = Effect.fn("PreviewAutomationBroker.connectClient")(function* (
+    host: PreviewAutomationClientHost,
+  ) {
+    const queue = yield* Queue.unbounded<PreviewAutomationHostMessage>();
+    clientSequence += 1;
+    const connection: ClientHostConnection = {
+      hostId: host.hostId,
+      operations: new Set(host.operations),
+      features: new Set(host.features),
+      machineLocal: host.machineLocal,
+      sequence: clientSequence,
+      queue,
+    };
+    // The same id again is the same client reconnecting.
+    const displaced = clientHosts.get(host.hostId);
+    if (displaced !== undefined) {
+      yield* disconnectClient(displaced);
+    }
+    clientHosts.set(host.hostId, connection);
+    yield* Effect.addFinalizer(() => disconnectClient(connection));
+    const claimed = earlyClaims.get(host.hostId);
+    earlyClaims.delete(host.hostId);
+    for (const threadId of claimed ?? []) {
+      yield* claim({ hostId: host.hostId, threadId });
+    }
+    return Stream.fromQueue(queue);
+  });
+
+  const claim = Effect.fn("PreviewAutomationBroker.claim")(function* (
+    request: PreviewAutomationClaim,
+  ) {
+    if (!clientHosts.has(request.hostId)) {
+      if (!earlyClaims.has(request.hostId) && earlyClaims.size >= MAX_EARLY_CLAIM_HOSTS) {
+        const oldest = earlyClaims.keys().next().value;
+        if (oldest !== undefined) earlyClaims.delete(oldest);
+      }
+      earlyClaims.set(
+        request.hostId,
+        (earlyClaims.get(request.hostId) ?? new Set<ThreadId>()).add(request.threadId),
+      );
+      return;
+    }
+    const previous = threadOwners.get(request.threadId);
+    threadOwners.set(request.threadId, request.hostId);
+    const released = previous === undefined ? undefined : clientHosts.get(previous);
+    if (released === undefined || released.hostId === request.hostId) {
+      return;
+    }
+    yield* failPendingForHost(request.threadId, released.hostId);
+    yield* Queue.offer(released.queue, { _tag: "release", threadId: request.threadId });
+  });
+
+  /**
+   * The host for one call: a client showing the thread the old way, else the
+   * client that holds the thread's browser, else a new holder -- preferring
+   * the server's own machine, where `localhost` is the agent's localhost, then
+   * the newest client.
+   */
+  const resolveHost = (threadId: ThreadId): HostConnection | undefined => {
+    const legacy = hosts.get(threadId);
+    if (legacy !== undefined) {
+      return legacy;
+    }
+    const ownerId = threadOwners.get(threadId);
+    const owner = ownerId === undefined ? undefined : clientHosts.get(ownerId);
+    if (owner !== undefined) {
+      return owner;
+    }
+    let chosen: ClientHostConnection | undefined;
+    for (const candidate of clientHosts.values()) {
+      if (
+        chosen === undefined ||
+        (candidate.machineLocal && !chosen.machineLocal) ||
+        (candidate.machineLocal === chosen.machineLocal && candidate.sequence > chosen.sequence)
+      ) {
+        chosen = candidate;
+      }
+    }
+    if (chosen !== undefined) {
+      threadOwners.set(threadId, chosen.hostId);
+    }
+    return chosen;
+  };
+
   const respond = Effect.fn("PreviewAutomationBroker.respond")(function* (
     response: PreviewAutomationResponse,
   ) {
@@ -226,7 +360,7 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
   const invoke = Effect.fn("PreviewAutomationBroker.invoke")(function* (
     input: PreviewAutomationInvokeInput,
   ) {
-    const connection = hosts.get(input.threadId);
+    const connection = resolveHost(input.threadId);
     if (connection === undefined) {
       return yield* Effect.fail(
         new PreviewAutomationNoHostError({
@@ -292,6 +426,7 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
     );
     const result = yield* Queue.offer(connection.queue, {
       requestId,
+      threadId: input.threadId,
       agentId: input.agentId,
       operation: input.operation,
       input: input.input as PreviewAutomationRequest["input"],
@@ -328,10 +463,12 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
 
   const service: PreviewAutomationBrokerService = {
     connect,
+    connectClient,
+    claim,
     respond,
     progress,
     invoke,
-    hasHost: (threadId: ThreadId) => Effect.sync(() => hosts.has(threadId)),
+    hasHost: (threadId: ThreadId) => Effect.sync(() => hosts.has(threadId) || clientHosts.size > 0),
   };
   return service;
 });

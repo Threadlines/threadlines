@@ -1954,6 +1954,19 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
             previewAutomationBroker.respond(input),
             { "rpc.aggregate": "preview" },
           ),
+        [WS_METHODS.previewAutomationConnectClient]: (input) =>
+          // Scoped like the per-thread host: the socket going is the client going.
+          observeRpcStreamEffect(
+            WS_METHODS.previewAutomationConnectClient,
+            previewAutomationBroker.connectClient(input),
+            { "rpc.aggregate": "preview" },
+          ),
+        [WS_METHODS.previewAutomationClaim]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.previewAutomationClaim,
+            previewAutomationBroker.claim(input),
+            { "rpc.aggregate": "preview" },
+          ),
         [WS_METHODS.previewAutomationProgress]: (input) =>
           observeRpcEffect(
             WS_METHODS.previewAutomationProgress,

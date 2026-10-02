@@ -8,6 +8,8 @@ import {
   PreviewAutomationHostSchema,
   PreviewAutomationHostMessageSchema,
   PreviewAutomationProgressSchema,
+  PreviewAutomationClaimSchema,
+  PreviewAutomationClientHostSchema,
   PreviewAutomationResponseSchema,
 } from "./previewAutomation.ts";
 import {
@@ -442,6 +444,8 @@ export const WS_METHODS = {
   previewAutomationConnect: "previewAutomationConnect",
   previewAutomationRespond: "previewAutomationRespond",
   previewAutomationProgress: "previewAutomationProgress",
+  previewAutomationConnectClient: "previewAutomationConnectClient",
+  previewAutomationClaim: "previewAutomationClaim",
   subscribeVcsStatus: "subscribeVcsStatus",
   subscribeTerminalEvents: "subscribeTerminalEvents",
   subscribeServerConfig: "subscribeServerConfig",
@@ -902,6 +906,22 @@ export const WsPreviewAutomationConnectRpc = Rpc.make(WS_METHODS.previewAutomati
  *  it is a provider turn on the other side of the broker, not this client. */
 export const WsPreviewAutomationRespondRpc = Rpc.make(WS_METHODS.previewAutomationRespond, {
   payload: PreviewAutomationResponseSchema,
+  success: Schema.Void,
+});
+
+/** One client offering to be the browser for every thread it is routed. */
+export const WsPreviewAutomationConnectClientRpc = Rpc.make(
+  WS_METHODS.previewAutomationConnectClient,
+  {
+    payload: PreviewAutomationClientHostSchema,
+    success: PreviewAutomationHostMessageSchema,
+    stream: true,
+  },
+);
+
+/** The user opened a thread's browser on this client; its requests come here now. */
+export const WsPreviewAutomationClaimRpc = Rpc.make(WS_METHODS.previewAutomationClaim, {
+  payload: PreviewAutomationClaimSchema,
   success: Schema.Void,
 });
 
@@ -1458,6 +1478,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsPreviewAutomationConnectRpc,
   WsPreviewAutomationRespondRpc,
   WsPreviewAutomationProgressRpc,
+  WsPreviewAutomationConnectClientRpc,
+  WsPreviewAutomationClaimRpc,
   WsSubscribeVcsStatusRpc,
   WsVcsPullRpc,
   WsVcsListStashesRpc,
