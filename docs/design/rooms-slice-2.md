@@ -578,7 +578,7 @@ chainEpoch, status, requestMessageId, sideTurnId?, targetTurnId? }`. Status
   ask or review runs: the side turn is cancelled and settles as `stopped`,
   unless its answer already comes back as a message (below). Hand-offs
   outlive the caller's turn by design.
-- **Deadline**: after 10 minutes (less for a caller whose provider gives up
+- **Deadline**: after 25 minutes (less for a caller whose provider gives up
   on a tool call sooner, about a minute for Cursor and fx) the call returns
   `continuing` and the answer goes on. The server sends
   `thread.agent-request.detach`, which marks the request `replyAsMessage`;
@@ -743,7 +743,7 @@ moves the ref before any check), and a wait that blocks Stop.
         can wait several minutes without the turn failing. Same for Claude
         with `timeout`.
      2. fx and Cursor over ACP: how long a room tool call can wait. An ask or
-        review's deadline is the shorter of 10 minutes and that provider's
+        review's deadline is the shorter of 25 minutes and that provider's
         limit less a margin, so a caller always gets an outcome.
      3. A Codex side runtime can call the room read tools under its approval
         policy, and a Claude side runtime can call exactly the allowed ones.

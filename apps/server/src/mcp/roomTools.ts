@@ -214,7 +214,7 @@ export const RoomAgentsTool = readsRoom(
 export const RoomAskTool = asksAgent(
   Tool.make("room_ask", {
     description:
-      "Ask another agent in this room a question. It sees the room conversation and answers read-only. Its answer comes back to you here; one that takes longer than about ten minutes (one minute on some agents) returns `continuing` and comes to you later as a message instead. Only while you are working in this room; one side answer runs at a time.",
+      "Ask another agent in this room a question. It sees the room conversation and answers read-only. Its answer comes back to you here; one that takes longer than about 25 minutes (one minute on some agents) returns `continuing` and comes to you later as a message instead. Only while you are working in this room; one side answer runs at a time.",
     parameters: Schema.Struct({
       agent: AgentName,
       question: Schema.String.annotate({ description: "The question, as you would ask it." }),
@@ -227,7 +227,7 @@ export const RoomAskTool = asksAgent(
 export const RoomReviewTool = asksAgent(
   Tool.make("room_review", {
     description:
-      "Get an independent review from another agent. It starts fresh: it sees none of this room's conversation, only your request and the code. Put the goal, the user's requirements and what to check in the request. Leave out your own conclusions. `basis` is what it reviews: the uncommitted changes (default) or { base } for base..HEAD, captured now. Its review comes back to you here; one that takes longer than about ten minutes (one minute on some agents) returns `continuing` and comes to you later as a message instead.",
+      "Get an independent review from another agent. It starts fresh: it sees none of this room's conversation, only your request and the code. Put the goal, the user's requirements and what to check in the request. Leave out your own conclusions. `basis` is what it reviews: the uncommitted changes (default) or { base } for base..HEAD, captured now. Its review comes back to you here; one that takes longer than about 25 minutes (one minute on some agents) returns `continuing` and comes to you later as a message instead.",
     parameters: Schema.Struct({
       agent: AgentName,
       request: Schema.String.annotate({

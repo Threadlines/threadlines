@@ -1,4 +1,7 @@
+import * as Duration from "effect/Duration";
+
 import { planCliSpawn } from "../cliSpawn.ts";
+import { ROOM_TOOL_CALL_TIMEOUT } from "../mcp/roomToolTimeouts.ts";
 
 /**
  * Shared argv for spawning `codex app-server`.
@@ -62,11 +65,10 @@ export const CODEX_SIDE_ANSWER_APP_SERVER_ARGS: ReadonlyArray<string> = [
 export const CODEX_BROWSER_TOKEN_ENV_VAR = "THREADLINES_MCP_BEARER_TOKEN";
 
 /**
- * How long Codex waits on one room tool call. An ask or review waits up to
- * ten minutes for its answer (Codex's own default is 60s), so a little more
- * than that, and the Threadlines deadline always answers first.
+ * How long Codex waits on one room tool call (its own default is 60s); see
+ * roomToolTimeouts.ts.
  */
-export const CODEX_ROOM_TOOL_TIMEOUT_SEC = 660;
+export const CODEX_ROOM_TOOL_TIMEOUT_SEC = Duration.toSeconds(ROOM_TOOL_CALL_TIMEOUT);
 
 /** An MCP server over streamable HTTP, its credential from the environment. */
 const httpMcpServerArgs = (serverName: string, url: string): ReadonlyArray<string> => [

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Deferred from "effect/Deferred";
 import * as Stream from "effect/Stream";
@@ -21,6 +22,7 @@ import {
 import { FILE_LINK_INSTRUCTIONS } from "../fileLinkInstructions.ts";
 import { CODEX_BROWSER_TOKEN_ENV_VAR } from "../codexAppServerArgs.ts";
 import { mcpSessionRegistry } from "../../mcp/McpSessionRegistry.ts";
+import { ROOM_REQUEST_DEADLINE } from "../../mcp/roomToolTimeouts.ts";
 import { ROOM_TOOL_NAMES } from "../../mcp/roomToolAccess.ts";
 import {
   buildPermissionsApprovalResponse,
@@ -1819,7 +1821,11 @@ describe("Codex room tools", () => {
           roomTools: true,
         });
         assert.ok(args.includes("mcp_servers.threadlines_room.url=http://127.0.0.1:4321/mcp/room"));
-        assert.ok(args.includes("mcp_servers.threadlines_room.tool_timeout_sec=660"));
+        // Codex outwaits the room's own deadline, so the deadline answers first.
+        const toolTimeout = args.find((arg) =>
+          arg.startsWith("mcp_servers.threadlines_room.tool_timeout_sec="),
+        );
+        assert.ok(Number(toolTimeout?.split("=")[1]) > Duration.toSeconds(ROOM_REQUEST_DEADLINE));
         assert.ok(
           args.includes('mcp_servers.threadlines_room.default_tools_approval_mode="approve"'),
         );
