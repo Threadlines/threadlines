@@ -32,6 +32,7 @@ import type { McpInvocationScope } from "./McpSessionRegistry.ts";
 import { makeRoomRequestRegistry } from "./roomRequests.ts";
 import { type RoomToolName, roomToolsFor } from "./roomToolAccess.ts";
 import { makeRoomToolHandlers, sideAnswerMessageId } from "./roomToolHandlers.ts";
+import { ROOM_REQUEST_DEADLINE } from "./roomToolTimeouts.ts";
 
 const THREAD = ThreadId.make("0f8f5a52-4d0e-4c1b-9d56-1e7c1f9b7a01");
 const REVIEWER = ThreadParticipantId.make("6f1c9a3e-2b7d-4a55-8e0f-9c3d2b1a0e44");
@@ -406,7 +407,7 @@ describe("room_ask", () => {
         room.handlers.room_ask(mainCaller(), { agent: "Opus 5.5", question: "Why?" }),
       );
       yield* until(() => submits(room.dispatched).length > 0);
-      yield* TestClock.adjust(Duration.minutes(10));
+      yield* TestClock.adjust(ROOM_REQUEST_DEADLINE);
       const result = yield* Fiber.join(waiter);
 
       expect(result.outcome).toBe("continuing");
@@ -433,7 +434,7 @@ describe("room_ask", () => {
       );
       yield* until(() => submits(room.dispatched).length > 0);
       const [submit] = submits(room.dispatched);
-      yield* TestClock.adjust(Duration.minutes(10));
+      yield* TestClock.adjust(ROOM_REQUEST_DEADLINE);
       yield* until(() => room.dispatched.some((c) => c.type === "thread.agent-request.detach"));
       // Refused because the answer settled meanwhile; its settle arrives now.
       yield* room.publish(settledEvent({ sideTurnId: submit!.sideTurnId, outcome: "completed" }));
@@ -451,7 +452,7 @@ describe("room_ask", () => {
         room.handlers.room_ask(mainCaller(), { agent: "Opus 5.5", question: "Why?" }),
       );
       yield* until(() => submits(room.dispatched).length > 0);
-      yield* TestClock.adjust(Duration.minutes(10));
+      yield* TestClock.adjust(ROOM_REQUEST_DEADLINE);
       yield* until(() => room.dispatched.some((c) => c.type === "thread.agent-request.detach"));
       yield* TestClock.adjust(Duration.seconds(3));
       const result = yield* Fiber.join(waiter);

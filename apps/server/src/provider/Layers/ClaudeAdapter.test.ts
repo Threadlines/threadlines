@@ -28,6 +28,7 @@ import {
 import { createModelCapabilities, createModelSelection } from "@threadlines/shared/model";
 import { assert, describe, it } from "@effect/vitest";
 import * as Context from "effect/Context";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
@@ -43,6 +44,7 @@ import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { ProviderAdapterValidationError } from "../Errors.ts";
 import { mcpSessionRegistry } from "../../mcp/McpSessionRegistry.ts";
+import { ROOM_REQUEST_DEADLINE } from "../../mcp/roomToolTimeouts.ts";
 import { ROOM_TOOL_NAMES } from "../../mcp/roomToolAccess.ts";
 import type { ClaudeAdapterShape } from "../Services/ClaudeAdapter.ts";
 import { claudeProjectDirectoryName } from "../Drivers/ClaudeSessionTranscripts.ts";
@@ -7946,7 +7948,8 @@ describe("ClaudeAdapterLive", () => {
             }
           | undefined;
         assert.match(room!.url, /\/mcp\/room$/);
-        assert.equal(room!.timeout, 660_000);
+        // Claude outwaits the room's own deadline, so the deadline answers first.
+        assert.isAbove(room!.timeout, Duration.toMillis(ROOM_REQUEST_DEADLINE));
         assert.include(options.allowedTools ?? [], "mcp__threadlines_room__room_ask");
         const token = room!.headers.Authorization!.replace("Bearer ", "");
         assert.equal(

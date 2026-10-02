@@ -73,6 +73,7 @@ import {
 import { roomHistoryPage } from "./roomHistory.ts";
 import type { RoomRequestRegistry } from "./roomRequests.ts";
 import type { RoomToolName } from "./roomToolAccess.ts";
+import { ROOM_REQUEST_DEADLINE, ROOM_TOOL_CALL_TIMEOUT } from "./roomToolTimeouts.ts";
 import type {
   RoomAgentsResult,
   RoomAnswerResult,
@@ -87,22 +88,16 @@ import type {
 const SIDE_ANSWER_DRIVERS: ReadonlySet<string> = new Set(["codex", "claudeAgent"]);
 
 /**
- * The longest an ask's or review's call waits for its answer. One that takes
- * longer goes on, and comes back to the caller as a message instead.
- */
-export const ROOM_REQUEST_DEADLINE = Duration.minutes(10);
-
-/**
  * How long each provider waits on one tool call before giving up on it.
- * Codex and Claude are given 11 minutes when the room endpoint is attached
- * (codexAppServerArgs, ClaudeAdapter). Cursor's agent (2026.05) calls tools
+ * Codex and Claude are given ROOM_TOOL_CALL_TIMEOUT when the room endpoint is
+ * attached (roomToolTimeouts.ts). Cursor's agent (2026.05) calls tools
  * with the MCP SDK's default 60s and no way to raise it; fx waits its default
  * operation timeout, 60s, since ACP cannot pass one. A provider missing here
  * is assumed to wait at least the deadline.
  */
 export const PROVIDER_TOOL_CALL_LIMIT: Readonly<Record<string, Duration.Duration>> = {
-  codex: Duration.seconds(660),
-  claudeAgent: Duration.seconds(660),
+  codex: ROOM_TOOL_CALL_TIMEOUT,
+  claudeAgent: ROOM_TOOL_CALL_TIMEOUT,
   cursor: Duration.seconds(60),
   fx: Duration.seconds(60),
 };

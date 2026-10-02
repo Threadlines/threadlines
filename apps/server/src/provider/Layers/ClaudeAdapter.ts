@@ -110,6 +110,7 @@ import {
   mcpRoomEndpointUrl,
 } from "../../mcp/McpHttpServer.ts";
 import { mcpSessionRegistry } from "../../mcp/McpSessionRegistry.ts";
+import { ROOM_TOOL_CALL_TIMEOUT } from "../../mcp/roomToolTimeouts.ts";
 import {
   claudeRoomToolId,
   ROOM_MCP_SERVER_NAME,
@@ -610,12 +611,8 @@ const sideAnswerToolGuard =
     };
   };
 
-/**
- * How long Claude waits on one room tool call. An ask or review waits up to
- * ten minutes for its answer, so a little more than that, and the Threadlines
- * deadline always answers first.
- */
-export const CLAUDE_ROOM_TOOL_TIMEOUT_MS = 660_000;
+/** How long Claude waits on one room tool call; see roomToolTimeouts.ts. */
+export const CLAUDE_ROOM_TOOL_TIMEOUT_MS = Duration.toMillis(ROOM_TOOL_CALL_TIMEOUT);
 
 /** The room tools' server entry, with this runtime's credential. */
 export const claudeRoomMcpServer = (input: {
