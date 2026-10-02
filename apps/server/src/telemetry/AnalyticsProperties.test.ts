@@ -63,6 +63,55 @@ describe("AnalyticsProperties", () => {
     );
   });
 
+  it("categorizes the failures providers actually report", () => {
+    const cases = [
+      [
+        "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 3:19 AM.",
+        "rate_limit",
+      ],
+      [
+        "Your access token could not be refreshed because your refresh token was revoked. Please log out and sign in again.",
+        "auth",
+      ],
+      ["Selected model is at capacity. Please try a different model.", "overloaded"],
+      [
+        "Provider adapter process error (claudeAgent) for thread t1: Claude Code native binary not found at claude. Please ensure Claude Code is installed.",
+        "not_installed",
+      ],
+      ["'claude' is not recognized as an internal or external command", "not_installed"],
+      [
+        "Provider adapter process error (claudeAgent) for thread t1: Claude Code returned an error result: No conversation found with session ID: s1",
+        "session_lost",
+      ],
+      [
+        "Provider adapter process error (claudeAgent) for thread t1: Claude Code process exited with code 143",
+        "process_exit",
+      ],
+      ['Path "/Users/someone/project" does not exist', "missing_directory"],
+      ["Thread does not exist", "session_lost"],
+      ["The model `gpt-x` does not exist or you do not have access to it.", "model_unavailable"],
+      // Folder names are arbitrary words; only the provider's wording counts.
+      ['Path "/Users/someone/model" does not exist', "missing_directory"],
+      ['Path "/Users/someone/auth-login-fix" does not exist', "missing_directory"],
+      [
+        "Provider adapter process error (claudeAgent) for thread t1: This thread's folder no longer exists: /Users/someone/network-tools",
+        "missing_directory",
+      ],
+      ["Error: spawn /usr/local/bin/claude ENOENT", "not_installed"],
+    ] as const;
+    for (const [message, category] of cases) {
+      assert.strictEqual(
+        classifyProviderFailure({ errorClass: "provider_error", message }),
+        category,
+        message,
+      );
+    }
+    assert.strictEqual(
+      classifyProviderFailure({ errorClass: "provider_error", message: "Something odd happened" }),
+      "provider_error",
+    );
+  });
+
   it("categorizes model reroutes", () => {
     assert.deepStrictEqual(classifyModelRerouteReason("fallback:model-unavailable"), {
       reasonCategory: "model_unavailable",

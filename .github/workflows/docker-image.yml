@@ -92,9 +92,13 @@ jobs:
       - name: Boot smoke
         # A broken image must never publish: it has to come up, answer HTTP,
         # print a pairing URL, and carry working agent CLIs.
+        # Telemetry is off so each throwaway boot doesn't count as a new
+        # installation in PostHog. It has to be passed into the container.
         run: |
           set -euo pipefail
-          docker run -d --name smoke -p 3773:3773 threadlines-smoke:candidate
+          docker run -d --name smoke -p 3773:3773 \
+            -e THREADLINES_TELEMETRY_ENABLED=false \
+            threadlines-smoke:candidate
           for attempt in $(seq 1 30); do
             if curl -fsS http://127.0.0.1:3773/api/auth/session > /dev/null 2>&1; then
               break

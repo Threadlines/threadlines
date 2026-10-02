@@ -82,9 +82,12 @@ jobs:
       # would (fresh tree, registry-resolved transitive deps) and require it to
       # boot. Catches what the tarball grep cannot: dependency skew like the
       # 0.3.1 release, where a peer range resolved to a second copy of effect
-      # and the server exited 1 before printing anything.
+      # and the server exited 1 before printing anything. Telemetry is off so
+      # each throwaway boot doesn't count as a new installation in PostHog.
       - name: Smoke test packed artifact
         shell: bash
+        env:
+          THREADLINES_TELEMETRY_ENABLED: "false"
         run: |
           set -euo pipefail
           pack_dir="$GITHUB_WORKSPACE/release/npm-server"
