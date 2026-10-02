@@ -497,7 +497,12 @@ function removeAgentOwner(
   };
 }
 
-function shouldForceAgentTabActive(ownership: ThreadBrowserOwnership): boolean {
+/**
+ * Whether the agent's first tab may take the place of the blank one the panel
+ * opened with: only while the agent opened the panel and the user has not
+ * touched it, so a blank tab the user made is never swapped out from under them.
+ */
+function mayReplaceBlankTab(ownership: ThreadBrowserOwnership): boolean {
   return ownership.openedBy === "agent" && !ownership.userControlled;
 }
 
@@ -621,21 +626,20 @@ export const useBrowserPanelStore = create<BrowserPanelStoreState>()(
         set((state) => {
           const key = scopedThreadKey(threadRef);
           const ownership = state.browserOwnershipByThreadKey[key] ?? EMPTY_BROWSER_OWNERSHIP;
-          const forceActive = shouldForceAgentTabActive(ownership);
-          const activate = forceActive || input.background !== true;
+          const replacingBlank =
+            mayReplaceBlankTab(ownership) &&
+            isOnlyEmptyTab(state.browserStateByThreadKey[key] ?? DEFAULT_THREAD_STATE);
+          // A replaced blank tab leaves the agent's tab as the only one, so it
+          // is in front whatever was asked. Otherwise a background tab stays
+          // in the background: the user may be reading the one they have open.
+          const activate = replacingBlank || input.background !== true;
           return {
-            ...updateThread(state, threadRef, (current) => {
-              const replacingBlank = forceActive && isOnlyEmptyTab(current);
-              return {
-                ...current,
-                tabs: replacingBlank ? [tab] : [...current.tabs, tab],
-                activeTabId: activate ? tab.id : current.activeTabId,
-              };
-            }),
+            ...updateThread(state, threadRef, (current) => ({
+              ...current,
+              tabs: replacingBlank ? [tab] : [...current.tabs, tab],
+              activeTabId: activate ? tab.id : current.activeTabId,
+            })),
             ...updateOwnership(state, threadRef, (current) => {
-              const replacingBlank =
-                forceActive &&
-                isOnlyEmptyTab(state.browserStateByThreadKey[key] ?? DEFAULT_THREAD_STATE);
               const withoutReplaced = replacingBlank
                 ? removeAgentOwner(
                     current,

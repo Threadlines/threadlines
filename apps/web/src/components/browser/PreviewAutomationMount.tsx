@@ -43,6 +43,17 @@ function agentPinKey(threadRef: ScopedThreadRef, agentId: string): string {
   return `${scopedThreadKey(threadRef)}:${agentId}`;
 }
 
+/** How long `navigate` waits for the page to finish loading before answering. */
+const NAVIGATE_LOAD_WAIT_MS = 12_000;
+
+/**
+ * Operations that pick their own tab, or none, and so are unaffected by the
+ * agent's pinned tab having gone: listing tabs, opening one, choosing one.
+ */
+const OPERATIONS_WITHOUT_A_PINNED_TAB: ReadonlySet<PreviewAutomationRequest["operation"]> = new Set(
+  ["tabs", "openTab", "selectTab"],
+);
+
 /**
  * The agent's end of the browser, mounted with the thread rather than with the
  * panel.
@@ -175,12 +186,32 @@ export function PreviewAutomationMount({
       if (requestedTabId !== null && !browserState.tabs.some((tab) => tab.id === requestedTabId)) {
         throw new Error(`No browser tab exists with id ${requestedTabId}.`);
       }
-      const pinned = requestedTabId ?? agentTabPins.get(key) ?? null;
+      const previousPin = agentTabPins.get(key) ?? null;
+      // The agent's tab was closed under it, most likely by the user. The pin
+      // is kept pointing at the missing tab until the agent opens or chooses
+      // another, so every action until then is refused rather than landing on
+      // whatever tab is in front: a page the agent has never seen.
+      const pinLost =
+        previousPin !== null && !browserState.tabs.some((tab) => tab.id === previousPin);
+      if (
+        pinLost &&
+        requestedTabId === null &&
+        !OPERATIONS_WITHOUT_A_PINNED_TAB.has(request.operation)
+      ) {
+        setAgentTab(threadRef, null);
+        throw new Error(
+          "The tab you were working in was closed. Call browser_tabs to see what is open, then browser_select_tab or browser_open_tab to choose where to work.",
+        );
+      }
+      const pinned = requestedTabId ?? (pinLost ? null : previousPin);
       const tabId =
         pinned !== null && browserState.tabs.some((tab) => tab.id === pinned)
           ? pinned
           : activeTabId;
-      if (tabId !== "") agentTabPins.set(key, tabId);
+      // Listing tabs after losing one must not quietly adopt the user's tab.
+      if (tabId !== "" && (!pinLost || requestedTabId !== null)) {
+        agentTabPins.set(key, tabId);
+      }
       setAgentTab(threadRef, tabId === "" ? null : tabId);
       const webview = tabId === "" ? null : getPreviewWebview(threadRef, tabId);
 
@@ -337,7 +368,7 @@ export function PreviewAutomationMount({
             );
           }
           setTabUrl(threadRef, tabId, normalized);
-          await getPreviewWebview(threadRef, tabId)
+          const loaded = getPreviewWebview(threadRef, tabId)
             ?.loadURL(normalized)
             .catch((cause: unknown) => {
               // A page that immediately redirects aborts the load it interrupts,
@@ -346,6 +377,17 @@ export function PreviewAutomationMount({
                 throw cause;
               }
             });
+          // A load settles only when the whole page has, and one slow image can
+          // hold that for minutes. Past the wait the agent is answered with the
+          // page still loading, which it can wait on, instead of the tab's queue
+          // being held and the call timing out.
+          let gaveUp: ReturnType<typeof setTimeout> | undefined;
+          await Promise.race([
+            loaded,
+            new Promise<void>((resolve) => {
+              gaveUp = setTimeout(resolve, NAVIGATE_LOAD_WAIT_MS);
+            }),
+          ]).finally(() => clearTimeout(gaveUp));
         },
       };
     },

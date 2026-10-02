@@ -120,7 +120,7 @@ export class PreviewAutomationNoHostError extends Schema.TaggedError<PreviewAuto
   { threadId: ThreadId, operation: PreviewAutomationOperationSchema },
 ) {
   override get message(): string {
-    return `No Threadlines desktop window is showing this thread, so ${this.operation} has nothing to act on. The browser panel opens itself once the user views this thread in the desktop app; ask them to do that rather than using another browser.`;
+    return `No Threadlines desktop browser is connected for this thread right now, so ${this.operation} has nothing to act on. The browser panel opens itself once the user views this thread in the desktop app; ask them to do that rather than using another browser.`;
   }
 }
 
@@ -138,7 +138,7 @@ export class PreviewAutomationTimeoutError extends Schema.TaggedError<PreviewAut
   { operation: PreviewAutomationOperationSchema, timeoutMs: Schema.Finite },
 ) {
   override get message(): string {
-    return `The browser preview did not answer ${this.operation} within ${this.timeoutMs}ms.`;
+    return `The browser did not answer ${this.operation} within ${this.timeoutMs}ms. It may still have finished: check browser_status or browser_snapshot before trying it again.`;
   }
 }
 
@@ -187,12 +187,24 @@ export type PreviewAutomationError = typeof PreviewAutomationErrorSchema.Type;
 
 // --- The wire ---------------------------------------------------------------
 
+/**
+ * Protocol features beyond the original request/response, declared by the
+ * client so the server only sends what that client can read.
+ *
+ * - `cancel`: the client understands {@link PreviewAutomationCancelSchema} and
+ *   stops a request the server has given up on.
+ */
+export const PreviewAutomationHostFeatureSchema = Schema.Literals(["cancel"]);
+export type PreviewAutomationHostFeature = typeof PreviewAutomationHostFeatureSchema.Type;
+
 /** A client offering to service requests for one thread's browser panel. */
 export const PreviewAutomationHostSchema = Schema.Struct({
   threadId: ThreadId,
   /** Survives a reconnect under the same identity, so a refresh is not a new host. */
   hostId: Schema.String,
   operations: Schema.Array(PreviewAutomationOperationSchema),
+  /** Absent from older clients, which get none of the features. */
+  features: Schema.optionalKey(Schema.Array(PreviewAutomationHostFeatureSchema)),
 });
 export type PreviewAutomationHost = typeof PreviewAutomationHostSchema.Type;
 
@@ -205,6 +217,26 @@ export const PreviewAutomationRequestSchema = Schema.Struct({
   input: Schema.Json,
 });
 export type PreviewAutomationRequest = typeof PreviewAutomationRequestSchema.Type;
+
+/**
+ * The server has stopped waiting for a request: its deadline passed and the
+ * agent has already been told. A request still queued behind another on the
+ * same tab is dropped; one already running stops at its next checkpoint, so a
+ * timed-out action cannot land later as a surprise.
+ *
+ * Only sent to clients that declared the `cancel` feature.
+ */
+export const PreviewAutomationCancelSchema = Schema.TaggedStruct("cancel", {
+  requestId: Schema.String,
+});
+export type PreviewAutomationCancel = typeof PreviewAutomationCancelSchema.Type;
+
+/** Everything the server sends down a host's subscription. */
+export const PreviewAutomationHostMessageSchema = Schema.Union([
+  PreviewAutomationRequestSchema,
+  PreviewAutomationCancelSchema,
+]);
+export type PreviewAutomationHostMessage = typeof PreviewAutomationHostMessageSchema.Type;
 
 export const PreviewAutomationResponseSchema = Schema.Struct({
   requestId: Schema.String,

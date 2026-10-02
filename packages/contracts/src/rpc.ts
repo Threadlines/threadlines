@@ -6,7 +6,7 @@ import { ExternalLauncherError, LaunchEditorInput } from "./editor.ts";
 import { AuthAccessStreamEvent } from "./auth.ts";
 import {
   PreviewAutomationHostSchema,
-  PreviewAutomationRequestSchema,
+  PreviewAutomationHostMessageSchema,
   PreviewAutomationResponseSchema,
 } from "./previewAutomation.ts";
 import {
@@ -892,7 +892,7 @@ export const WsFilesystemBrowseRpc = Rpc.make(WS_METHODS.filesystemBrowse, {
  */
 export const WsPreviewAutomationConnectRpc = Rpc.make(WS_METHODS.previewAutomationConnect, {
   payload: PreviewAutomationHostSchema,
-  success: PreviewAutomationRequestSchema,
+  success: PreviewAutomationHostMessageSchema,
   stream: true,
 });
 

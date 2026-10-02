@@ -1,5 +1,6 @@
 import type {
   DesktopBridge,
+  PreviewAutomationHostFeature,
   PreviewAutomationOperation,
   PreviewAutomationRequest,
   PreviewAutomationResponse,
@@ -49,6 +50,56 @@ export const PREVIEW_AUTOMATION_HOST_OPERATIONS = [
   "resize",
   "setAppearance",
 ] as const satisfies ReadonlyArray<PreviewAutomationOperation>;
+
+/** Protocol features this build understands; see the contract for each. */
+export const PREVIEW_AUTOMATION_HOST_FEATURES = [
+  "cancel",
+] as const satisfies ReadonlyArray<PreviewAutomationHostFeature>;
+
+/**
+ * The server stopped waiting for this request. Thrown inside the handler to
+ * unwind it; never sent anywhere, since nobody is listening for the answer.
+ */
+class PreviewAutomationCancelled extends Error {
+  constructor() {
+    super("The browser request was cancelled.");
+  }
+}
+
+/** Read through a call: the answer changes across awaits, which narrowing misses. */
+function isCancelled(signal: AbortSignal | undefined): boolean {
+  return signal?.aborted === true;
+}
+
+function throwIfCancelled(signal: AbortSignal | undefined): void {
+  if (isCancelled(signal)) {
+    throw new PreviewAutomationCancelled();
+  }
+}
+
+/**
+ * Settles when the signal aborts; never, without one. The listener is removed
+ * by `dispose`, so a request that finishes normally leaves nothing behind.
+ */
+function whenCancelled(signal: AbortSignal | undefined): {
+  readonly promise: Promise<never>;
+  readonly dispose: () => void;
+} {
+  let dispose = () => {};
+  const promise = new Promise<never>((_resolve, reject) => {
+    if (signal === undefined) return;
+    if (signal.aborted) {
+      reject(new PreviewAutomationCancelled());
+      return;
+    }
+    const onAbort = () => reject(new PreviewAutomationCancelled());
+    signal.addEventListener("abort", onAbort, { once: true });
+    dispose = () => signal.removeEventListener("abort", onAbort);
+  });
+  // Observed here so an abort nothing is racing is not an unhandled rejection.
+  promise.catch(() => undefined);
+  return { promise, dispose };
+}
 
 export interface PreviewAutomationHostTarget {
   /** Stable browser tab identity used by the agent-facing contract. */
@@ -232,16 +283,31 @@ function nameTarget(candidate: unknown): string | null {
  * selector matched nothing so it can re-snapshot and try again, and a rejected
  * promise would instead leave the broker waiting out its timeout for something
  * we already know.
+ *
+ * Answers null for a request the server cancelled, which is not sent: the
+ * agent was already told it timed out. A cancelled request still waiting its
+ * turn on a tab never runs. One that has started is left to finish, holding
+ * its place in the tab's queue: the desktop cannot stop an action halfway, and
+ * letting the next one start alongside it would interleave two actions on one
+ * page. The desktop bounds every step, so a stuck action still gives way.
  */
 export function createPreviewAutomationHandler(
   bridge: DesktopBridge,
   resolveTarget: (request: PreviewAutomationRequest) => PreviewAutomationHostTarget,
   /** Makes a page exist before the target is read; see `prepare` on the hook. */
   prepare?: (request: PreviewAutomationRequest) => Promise<void>,
-): (request: PreviewAutomationRequest) => Promise<PreviewAutomationResponse> {
+): (
+  request: PreviewAutomationRequest,
+  signal?: AbortSignal,
+) => Promise<PreviewAutomationResponse | null> {
   let sequence = 0;
   const tabTails = new Map<number, Promise<void>>();
-  const serialize = async <T>(key: number | null, task: () => Promise<T>): Promise<T> => {
+  const serialize = async <T>(
+    key: number | null,
+    signal: AbortSignal | undefined,
+    task: () => Promise<T>,
+  ): Promise<T> => {
+    throwIfCancelled(signal);
     if (key === null) return task();
     const previous = tabTails.get(key) ?? Promise.resolve();
     let release = () => {};
@@ -250,19 +316,33 @@ export function createPreviewAutomationHandler(
     });
     const tail = previous.then(() => current);
     tabTails.set(key, tail);
-    await previous;
+    // Forgotten only once everything ahead of it has also finished. A request
+    // cancelled while queued releases its own turn at once, but the tab is not
+    // free until the one it was waiting on is done.
+    void tail.then(() => {
+      if (tabTails.get(key) === tail) tabTails.delete(key);
+    });
+    const cancelled = whenCancelled(signal);
     try {
+      // Only the wait for a turn is raced. Once started, the task runs out.
+      await Promise.race([previous, cancelled.promise]);
       return await task();
     } finally {
+      cancelled.dispose();
       release();
-      if (tabTails.get(key) === tail) tabTails.delete(key);
     }
   };
-  return async (request: PreviewAutomationRequest): Promise<PreviewAutomationResponse> => {
+  return async (
+    request: PreviewAutomationRequest,
+    signal?: AbortSignal,
+  ): Promise<PreviewAutomationResponse | null> => {
     if (prepare !== undefined) {
       // Never fatal: whatever state preparing leaves behind, the target below
       // describes it, and a target with no page has its own answer.
       await prepare(request).catch(() => undefined);
+    }
+    if (isCancelled(signal)) {
+      return null;
     }
     let target: PreviewAutomationHostTarget;
     try {
@@ -291,13 +371,15 @@ export function createPreviewAutomationHandler(
       });
     }
     try {
-      const result = await serialize(target.webContentsId, async () => {
+      const result = await serialize(target.webContentsId, signal, async () => {
         const controlled =
           target.webContentsId !== null && CONTROLLED_OPERATIONS.has(request.operation);
         const before =
           controlled && bridge.previewStatus !== undefined
             ? await bridge.previewStatus({ webContentsId: target.webContentsId as number })
             : null;
+        // The last moment to back out before the page is touched.
+        throwIfCancelled(signal);
         const dispatched = await dispatch(bridge, target, target.webContentsId, request);
         const after =
           controlled && bridge.previewStatus !== undefined
@@ -313,7 +395,7 @@ export function createPreviewAutomationHandler(
       });
       // The key is omitted rather than set to undefined: an operation with
       // nothing to report should send nothing, not a hole.
-      return settle(
+      const response = settle(
         result === undefined
           ? { requestId: request.requestId }
           : {
@@ -321,10 +403,13 @@ export function createPreviewAutomationHandler(
               result: result as Exclude<PreviewAutomationResponse["result"], undefined>,
             },
       );
+      // Cancelled while it ran: it finished, but nobody is waiting to hear.
+      return isCancelled(signal) ? null : response;
     } catch (cause) {
       // Settled on the way out too: an action that failed has still stopped,
       // and a line left saying "clicking" would claim it never did.
-      return settle({ requestId: request.requestId, error: describe(cause) });
+      const response = settle({ requestId: request.requestId, error: describe(cause) });
+      return cause instanceof PreviewAutomationCancelled ? null : response;
     }
   };
 }
@@ -558,25 +643,47 @@ export function usePreviewAutomationHost(input: {
     );
 
     const api = ensureEnvironmentApi(threadRef.environmentId);
-    return api.previewAutomation.connect(
+    // Requests still being worked on, so a cancel can reach the one it names.
+    const inFlight = new Map<string, AbortController>();
+    const disconnect = api.previewAutomation.connect(
       {
         threadId: threadRef.threadId,
         // Identifies this connection to the broker, so a reconnect displaces
         // its own earlier registration rather than racing it.
         hostId: `${threadRef.threadId}:${Math.random().toString(36).slice(2)}`,
         operations: PREVIEW_AUTOMATION_HOST_OPERATIONS,
+        features: PREVIEW_AUTOMATION_HOST_FEATURES,
       },
-      (request) => {
+      (message) => {
+        if ("_tag" in message) {
+          inFlight.get(message.requestId)?.abort();
+          return;
+        }
+        const request = message;
+        const controller = new AbortController();
+        inFlight.set(request.requestId, controller);
         // The handler promises never to reject, but a request that slips
         // through anyway must still answer: an unhandled rejection here is
         // twenty seconds of silence for the agent, with nothing logged.
-        void handle(request)
+        void handle(request, controller.signal)
           .catch((cause): PreviewAutomationResponse => ({
             requestId: request.requestId,
             error: describe(cause),
           }))
-          .then((response) => api.previewAutomation.respond(response));
+          .then((response) => {
+            inFlight.delete(request.requestId);
+            return response === null ? undefined : api.previewAutomation.respond(response);
+          })
+          // An answer that cannot be delivered means the connection is gone,
+          // and the broker has already failed the request for the agent.
+          .catch(() => undefined);
       },
     );
+    return () => {
+      // The broker has already failed these for the agent; stop the work too.
+      for (const controller of inFlight.values()) controller.abort();
+      inFlight.clear();
+      disconnect();
+    };
   }, [enabled, threadRef.environmentId, threadRef.threadId]);
 }

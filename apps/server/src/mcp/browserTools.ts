@@ -96,7 +96,7 @@ export const BrowserTabsTool = readsOnly(
 export const BrowserOpenTabTool = changesThePage(
   Tool.make("browser_open_tab", {
     description:
-      "Create a browser tab owned by this agent and pin future browser actions to it. Give a URL to load it immediately. If the agent had to open a closed browser panel, the new tab is shown even when background is true; otherwise background leaves the user's visible tab alone.",
+      "Create a browser tab owned by this agent and pin future browser actions to it. Give a URL to load it immediately. Set background true to leave the user's visible tab alone; the new tab is only brought to the front without it, or when it replaces the empty tab of a panel you opened.",
     parameters: PreviewAutomationOpenTabInputSchema,
     success: PreviewAutomationStatusSchema,
     failure: PreviewAutomationErrorSchema,

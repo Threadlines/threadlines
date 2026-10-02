@@ -36,7 +36,10 @@ import type {
   DesktopPreviewWaitForInput,
   PreviewAutomationTarget,
 } from "@threadlines/contracts";
-import { isBrowserHostApproved } from "@threadlines/shared/preview";
+import {
+  isBrowserHostApproved,
+  normalizePreviewWaitForTimeoutMs,
+} from "@threadlines/shared/preview";
 import { BrowserWindow, webContents, type WebContents } from "electron";
 
 import * as IpcChannels from "../ipc/channels.ts";
@@ -62,6 +65,7 @@ import {
   PICK_OVERLAY_TEARDOWN_SCRIPT,
 } from "./pickOverlayScript.ts";
 import * as Context from "effect/Context";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
@@ -72,6 +76,13 @@ const MAX_CONSOLE_ENTRIES = 200;
 const DRAG_MOVE_STEPS = 10;
 
 const MAX_NETWORK_FAILURES = 100;
+/** See `sendCommand`: comfortably inside the broker's twenty second deadline. */
+const CDP_COMMAND_TIMEOUT = "15 seconds";
+/**
+ * An agent's script may wait on purpose (a promise that settles after an
+ * animation, a fetch), so it gets nearly all of the broker's deadline.
+ */
+const AGENT_SCRIPT_TIMEOUT = "18 seconds";
 
 export class PreviewTargetMissingError extends Schema.TaggedError<PreviewTargetMissingError>()(
   "PreviewTargetMissingError",
@@ -345,11 +356,38 @@ export const make = Effect.sync(function PreviewAutomationMake() {
         : Effect.succeed(contents);
     });
 
-  const sendCommand = (contents: WebContents, method: string, params?: Record<string, unknown>) =>
+  /**
+   * One DevTools command, bounded.
+   *
+   * A page that has stopped answering -- a busy loop, a renderer that hung --
+   * would otherwise leave the call pending forever, and with it every action
+   * queued behind it on that tab. Nothing here legitimately waits this long:
+   * waits poll with short commands, and the element picker listens for events
+   * rather than holding a command open. The agent's own script is the one
+   * exception, and gets as long as its tool call can afford.
+   */
+  const sendCommand = (
+    contents: WebContents,
+    method: string,
+    params?: Record<string, unknown>,
+    timeout: Duration.Input = CDP_COMMAND_TIMEOUT,
+  ) =>
     Effect.tryPromise({
       try: () => contents.debugger.sendCommand(method, params ?? {}),
       catch: (cause) => new PreviewCommandError({ webContentsId: contents.id, method, cause }),
-    });
+    }).pipe(
+      Effect.timeoutOrElse({
+        duration: timeout,
+        orElse: () =>
+          Effect.fail(
+            new PreviewCommandError({
+              webContentsId: contents.id,
+              method,
+              cause: "the page did not answer in time",
+            }),
+          ),
+      }),
+    );
 
   const failCommand = (contents: WebContents, method: string, cause: string) =>
     Effect.fail(new PreviewCommandError({ webContentsId: contents.id, method, cause }));
@@ -1598,11 +1636,16 @@ export const make = Effect.sync(function PreviewAutomationMake() {
       input: DesktopPreviewEvaluateInput,
     ) {
       const contents = yield* resolveAttached(input.webContentsId);
-      const result = (yield* sendCommand(contents, "Runtime.evaluate", {
-        expression: input.expression,
-        returnByValue: true,
-        awaitPromise: true,
-      })) as {
+      const result = (yield* sendCommand(
+        contents,
+        "Runtime.evaluate",
+        {
+          expression: input.expression,
+          returnByValue: true,
+          awaitPromise: true,
+        },
+        AGENT_SCRIPT_TIMEOUT,
+      )) as {
         result?: { value?: unknown };
         exceptionDetails?: {
           text?: string;
@@ -1622,7 +1665,9 @@ export const make = Effect.sync(function PreviewAutomationMake() {
     }),
     waitFor: Effect.fn("PreviewAutomation.waitFor")(function* (input: DesktopPreviewWaitForInput) {
       const contents = yield* resolveAttached(input.webContentsId);
-      const timeoutMs = Math.max(0, input.timeoutMs ?? 10_000);
+      // The same number the broker built this call's deadline from, so the
+      // wait always gives up before the agent is told it timed out.
+      const timeoutMs = normalizePreviewWaitForTimeoutMs(input.timeoutMs);
       const startedAt = Date.now();
       let unmet: string[] = [];
 

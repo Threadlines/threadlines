@@ -179,3 +179,23 @@ export function withBrowserApproval(
   }
   return [...approved, key];
 }
+
+/** How long `browser_wait_for` waits when the agent does not say. */
+export const PREVIEW_WAIT_FOR_DEFAULT_MS = 10_000;
+/**
+ * The longest `browser_wait_for` may wait. The broker's deadline for the call
+ * is built on top of this, so a wait can never outlive the tool call that is
+ * waiting on it and keep the tab busy after the agent has moved on.
+ */
+export const PREVIEW_WAIT_FOR_MAX_MS = 60_000;
+
+/**
+ * The wait `browser_wait_for` actually performs. Both ends read it from here:
+ * the desktop to bound its polling, the broker to set the call's deadline.
+ */
+export function normalizePreviewWaitForTimeoutMs(timeoutMs: number | undefined): number {
+  if (timeoutMs === undefined || !Number.isFinite(timeoutMs)) {
+    return PREVIEW_WAIT_FOR_DEFAULT_MS;
+  }
+  return Math.min(PREVIEW_WAIT_FOR_MAX_MS, Math.max(0, Math.round(timeoutMs)));
+}

@@ -12,6 +12,10 @@
  * through, the page never answered, the answer is bigger than the conversation
  * can hold. Each one is a different sentence to the agent, because each one has
  * a different next move.
+ *
+ * A deadline that passes is also told to the client, when it can hear it: the
+ * agent has already been answered with a timeout, and the same action landing
+ * later would be a second, unasked-for answer to the page.
  */
 import {
   PreviewAutomationDisconnectedError,
@@ -21,6 +25,8 @@ import {
   PreviewAutomationUnsupportedError,
   type PreviewAutomationError,
   type PreviewAutomationHost,
+  type PreviewAutomationHostFeature,
+  type PreviewAutomationHostMessage,
   type PreviewAutomationOperation,
   type PreviewAutomationRequest,
   type PreviewAutomationResponse,
@@ -35,6 +41,7 @@ import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
+import { normalizePreviewWaitForTimeoutMs } from "@threadlines/shared/preview";
 
 /**
  * Long enough for a page that is still fetching, short enough that a wedged
@@ -48,6 +55,27 @@ export const PREVIEW_AUTOMATION_DEFAULT_TIMEOUT_MS = 20_000;
  * the request.
  */
 export const PREVIEW_AUTOMATION_RESULT_LIMIT_BYTES = 512_000;
+
+/**
+ * How long a call may take before the agent is told it timed out.
+ *
+ * A wait is the one operation whose length the agent chooses, so its deadline
+ * is the wait itself on top of the usual allowance -- otherwise a thirty second
+ * wait would be abandoned at twenty and keep the tab busy for ten more.
+ */
+export function previewAutomationDeadlineMs(
+  operation: PreviewAutomationOperation,
+  input: unknown,
+): number {
+  if (operation !== "waitFor") {
+    return PREVIEW_AUTOMATION_DEFAULT_TIMEOUT_MS;
+  }
+  const requested = (input as { timeoutMs?: unknown } | null | undefined)?.timeoutMs;
+  return (
+    PREVIEW_AUTOMATION_DEFAULT_TIMEOUT_MS +
+    normalizePreviewWaitForTimeoutMs(typeof requested === "number" ? requested : undefined)
+  );
+}
 
 export interface PreviewAutomationInvokeInput {
   readonly threadId: ThreadId;
@@ -67,7 +95,7 @@ export class PreviewAutomationBroker extends Context.Service<
      */
     readonly connect: (
       host: PreviewAutomationHost,
-    ) => Effect.Effect<Stream.Stream<PreviewAutomationRequest>, never, Scope.Scope>;
+    ) => Effect.Effect<Stream.Stream<PreviewAutomationHostMessage>, never, Scope.Scope>;
     readonly respond: (response: PreviewAutomationResponse) => Effect.Effect<void>;
     readonly invoke: (
       input: PreviewAutomationInvokeInput,
@@ -84,7 +112,8 @@ export type PreviewAutomationBrokerService = PreviewAutomationBroker["Service"];
 interface HostConnection {
   readonly hostId: string;
   readonly operations: ReadonlySet<PreviewAutomationOperation>;
-  readonly queue: Queue.Queue<PreviewAutomationRequest>;
+  readonly features: ReadonlySet<PreviewAutomationHostFeature>;
+  readonly queue: Queue.Queue<PreviewAutomationHostMessage>;
 }
 
 interface PendingRequest {
@@ -139,10 +168,11 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
   const connect = Effect.fn("PreviewAutomationBroker.connect")(function* (
     host: PreviewAutomationHost,
   ) {
-    const queue = yield* Queue.unbounded<PreviewAutomationRequest>();
+    const queue = yield* Queue.unbounded<PreviewAutomationHostMessage>();
     const connection: HostConnection = {
       hostId: host.hostId,
       operations: new Set(host.operations),
+      features: new Set(host.features ?? []),
       queue,
     };
 
@@ -211,7 +241,7 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
       deferred,
     });
 
-    const timeoutMs = input.timeoutMs ?? PREVIEW_AUTOMATION_DEFAULT_TIMEOUT_MS;
+    const timeoutMs = input.timeoutMs ?? previewAutomationDeadlineMs(input.operation, input.input);
     const result = yield* Queue.offer(connection.queue, {
       requestId,
       agentId: input.agentId,
@@ -222,7 +252,20 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
       Effect.timeoutOrElse({
         duration: Duration.millis(timeoutMs),
         orElse: () =>
-          Effect.fail(new PreviewAutomationTimeoutError({ operation: input.operation, timeoutMs })),
+          // Told to the client before the agent hears it timed out, so the
+          // request is already being dropped by the time the agent retries.
+          // A client that cannot read a cancel is never sent one; a host that
+          // has gone has a shut-down queue, and offering to it does nothing.
+          (connection.features.has("cancel")
+            ? Queue.offer(connection.queue, { _tag: "cancel", requestId })
+            : Effect.void
+          ).pipe(
+            Effect.andThen(
+              Effect.fail(
+                new PreviewAutomationTimeoutError({ operation: input.operation, timeoutMs }),
+              ),
+            ),
+          ),
       }),
       // Whatever settled it, this request is over. Left behind, its entry would
       // catch a late response meant for nobody and hold the deferred forever.
