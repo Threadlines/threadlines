@@ -1119,6 +1119,42 @@ describe("ProviderCommandReactor", () => {
     expect(sent?.input).not.toContain("review it");
   });
 
+  it("lets an answer that outran its call outlive the turn that asked for it", async () => {
+    const { harness, threadId, astraId, dispatch, settle, now } =
+      await startRoomWithMessageQueuedForAstra();
+    const requestId = RoomAgentRequestId.make("request-late-ask");
+    await dispatch({
+      type: "thread.agent-request.submit",
+      commandId: CommandId.make("cmd-late-ask"),
+      threadId,
+      requestId,
+      kind: "ask",
+      from: { participantId: null },
+      to: { participantId: astraId },
+      callerTurnId: asTurnId("turn-1"),
+      chainEpoch: 0,
+      message: { messageId: asMessageId("late-ask"), text: "Why does the retry loop?" },
+      sideTurnId: SideTurnId.make("0d9e8f7a-6b5c-4d3e-8f1a-2b3c4d5e6f72"),
+      createdAt: now,
+    });
+    await dispatch({
+      type: "thread.agent-request.detach",
+      commandId: CommandId.make("cmd-late-ask-detach"),
+      threadId,
+      requestId,
+      createdAt: now,
+    });
+
+    await settle(0, 0, "cmd-asker-completed");
+    await harness.drain();
+    const thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+    expect(thread?.agentRequests.open).toMatchObject([
+      { requestId, status: "running", replyAsMessage: true },
+    ]);
+    expect(thread?.sideTurn).toMatchObject({ requestId });
+    expect(thread?.sideTurn?.status).not.toBe("cancelling");
+  });
+
   it("queues a hand-off when the turn that made it completes, behind the user's own message", async () => {
     const { harness, threadId, astraId, dispatch, settle, now } =
       await startRoomWithMessageQueuedForAstra();

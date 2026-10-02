@@ -575,10 +575,23 @@ chainEpoch, status, requestMessageId, sideTurnId?, targetTurnId? }`. Status
     writes again.
   - Stopping a side answer the user started cancels only that side answer.
 - **The caller's turn ends** (completes, fails or is interrupted) while its
-  ask or review runs: the side turn is cancelled and settles as `stopped`.
-  Hand-offs outlive the caller's turn by design.
-- **Deadline**: after 10 minutes an ask or review is cancelled and returns
-  `timeout`.
+  ask or review runs: the side turn is cancelled and settles as `stopped`,
+  unless its answer already comes back as a message (below). Hand-offs
+  outlive the caller's turn by design.
+- **Deadline**: after 10 minutes (less for a caller whose provider gives up
+  on a tool call sooner, about a minute for Cursor and fx) the call returns
+  `continuing` and the answer goes on. The server sends
+  `thread.agent-request.detach`, which marks the request `replyAsMessage`;
+  when its side answer settles, the answer comes back to the caller as a
+  reply message queued as its next turn, the way an invite's review does.
+  A failure comes back too ("No answer came: ..."), so a caller told to
+  expect an answer is never left waiting; one the user stopped does not.
+  - Detach is refused once the caller's turn is over, so it cannot cross
+    the turn's end stopping the answer. Refused (the answer landed, or Stop
+    came, as time ran out), the call waits a moment for that settle, and
+    failing that returns `timeout` and stops the answer.
+  - The side runtime's own 30-minute ceiling still applies; Stop and the
+    caller leaving end it as for any open request.
 - **Dropped call**: if the HTTP server interrupts the handler when the client
   goes away, that waiter detaches; the request is cancelled only when its
   last waiter leaves. To verify at build time; if the handler is not

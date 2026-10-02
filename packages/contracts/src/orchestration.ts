@@ -1071,6 +1071,12 @@ export const OrchestrationAgentRequest = Schema.Struct({
   requestMessageId: MessageId,
   /** Asks, reviews and invites: the side turn answering it. */
   sideTurnId: Schema.optional(SideTurnId),
+  /**
+   * An ask or review whose caller stopped waiting for it (the call ran out of
+   * time): its answer comes back to the caller as a reply message, like an
+   * invite's review.
+   */
+  replyAsMessage: Schema.optional(Schema.Boolean),
   createdAt: IsoDateTime,
 });
 export type OrchestrationAgentRequest = typeof OrchestrationAgentRequest.Type;
@@ -2324,6 +2330,11 @@ const ThreadSideTurnSettleCommand = Schema.Struct({
   outcome: OrchestrationSideTurnOutcome,
   answerMessageId: Schema.optional(MessageId),
   error: Schema.optional(TrimmedNonEmptyString),
+  /**
+   * Left running by the server's previous process. Nothing after a restart
+   * picks up on its own, so no reply goes back to the agent that asked.
+   */
+  fromPreviousProcess: Schema.optional(Schema.Boolean),
   createdAt: IsoDateTime,
 });
 
@@ -2405,6 +2416,19 @@ const ThreadAgentRequestQueueCommand = Schema.Struct({
 });
 
 /**
+ * An ask's or review's call ran out of time while its caller's turn still
+ * runs: the answer goes on, and comes back to the caller as a reply message
+ * instead of into the call.
+ */
+const ThreadAgentRequestDetachCommand = Schema.Struct({
+  type: Schema.Literal("thread.agent-request.detach"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  requestId: RoomAgentRequestId,
+  createdAt: IsoDateTime,
+});
+
+/**
  * A room request is over. For an answered hand-off, `reply` is queued back
  * to the caller in the same step. Asks and reviews settle with their side
  * turn instead. A request no longer open is left alone.
@@ -2448,6 +2472,7 @@ const InternalOrchestrationCommand = Schema.Union([
   ThreadSentModelRecordCommand,
   ThreadAgentRequestSubmitCommand,
   ThreadAgentRequestQueueCommand,
+  ThreadAgentRequestDetachCommand,
   ThreadAgentRequestSettleCommand,
   ThreadRevertCompleteCommand,
   ThreadPullRequestLinkCommand,
@@ -2699,6 +2724,8 @@ export const ThreadAgentRequestUpdatedPayload = Schema.Struct({
       automatic: Schema.Boolean,
     }),
   ),
+  /** The caller stopped waiting: the answer comes back as a reply message. */
+  replyAsMessage: Schema.optional(Schema.Boolean),
   updatedAt: IsoDateTime,
 });
 

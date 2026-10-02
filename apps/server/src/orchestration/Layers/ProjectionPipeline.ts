@@ -757,7 +757,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             event.type === "thread.agent-request-submitted"
               ? agentRequestStateOn.submitted(state, event.payload.request)
               : event.type === "thread.agent-request-updated"
-                ? agentRequestStateOn.updated(state, event.payload.requestId, event.payload.status)
+                ? agentRequestStateOn.updated(state, event.payload)
                 : event.type === "thread.agent-request-settled"
                   ? agentRequestStateOn.settled(
                       state,

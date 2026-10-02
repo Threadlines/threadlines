@@ -2421,7 +2421,7 @@ function applyEnvironmentOrchestrationEvent(
 
     case "thread.agent-request-updated": {
       const next = updateAgentRequestState(state, event.payload.threadId, (current) =>
-        agentRequestStateOn.updated(current, event.payload.requestId, event.payload.status),
+        agentRequestStateOn.updated(current, event.payload),
       );
       const inviteChoice = event.payload.inviteChoice;
       if (inviteChoice === undefined) {

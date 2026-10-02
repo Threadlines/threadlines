@@ -196,8 +196,11 @@ interface TimelineRowSharedState {
   sideAnswerContext: ReadonlyMap<SideTurnId, { review?: ChatMessage; replyTo?: ChatMessage }>;
   /** Room requests still open, by their request message. */
   openAgentRequestByMessageId: ReadonlyMap<MessageId, OrchestrationAgentRequest>;
-  /** Requests that are agents' invites: their replies read as one line. */
-  inviteRequestIds: ReadonlySet<RoomAgentRequestId>;
+  /**
+   * Request messages of requests answered on the side (invites, and asks and
+   * reviews), by request: a reply to one reads as one line.
+   */
+  sideAnswerRequests: ReadonlyMap<RoomAgentRequestId, ChatMessage>;
   routeThreadKey: string;
   markdownCwd: string | undefined;
   resolvedTheme: "light" | "dark";
@@ -956,18 +959,20 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     }
     return context;
   }, [rows]);
-  const inviteRequestIds = useMemo(() => {
-    const ids = new Set<RoomAgentRequestId>();
+  const sideAnswerRequests = useMemo(() => {
+    const requests = new Map<RoomAgentRequestId, ChatMessage>();
     for (const row of rows) {
       if (
         row.kind === "message" &&
-        row.message.requestKind === "invite" &&
+        (row.message.requestKind === "invite" ||
+          row.message.requestKind === "ask" ||
+          row.message.requestKind === "review") &&
         row.message.requestId !== undefined
       ) {
-        ids.add(row.message.requestId);
+        requests.set(row.message.requestId, row.message);
       }
     }
-    return ids;
+    return requests;
   }, [rows]);
   const openAgentRequestByMessageId = useMemo(
     () => new Map(openAgentRequests.map((request) => [request.requestMessageId, request] as const)),
@@ -1768,7 +1773,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       authorLineMessageIds,
       sideAnswerContext,
       openAgentRequestByMessageId,
-      inviteRequestIds,
+      sideAnswerRequests,
       routeThreadKey,
       markdownCwd,
       resolvedTheme,
@@ -1807,7 +1812,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       authorLineMessageIds,
       sideAnswerContext,
       openAgentRequestByMessageId,
-      inviteRequestIds,
+      sideAnswerRequests,
       routeThreadKey,
       markdownCwd,
       resolvedTheme,
@@ -2404,8 +2409,8 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
           <InviteMessageTimelineRow row={row} />
         ) : row.message.requestKind === "reply" &&
           row.message.requestId !== undefined &&
-          ctx.inviteRequestIds.has(row.message.requestId) ? (
-          <InviteReplyTimelineRow row={row} />
+          ctx.sideAnswerRequests.has(row.message.requestId) ? (
+          <SideAnswerReplyTimelineRow row={row} />
         ) : (
           <AgentMessageTimelineRow row={row} />
         )
@@ -2864,24 +2869,32 @@ function InviteMessageTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "
 }
 
 /**
- * An invited agent's review, on its way to the agent that asked for it. The
- * review itself is right above, so this is one line.
+ * A side answer on its way to the agent that asked for it: an invited
+ * agent's review, or an answer that outran its call. The answer itself is in
+ * the chat already, so this is one line.
  */
-function InviteReplyTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
+function SideAnswerReplyTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
   const ctx = use(TimelineRowCtx);
   const { message } = row;
   const labels = messageAgentLabels(ctx.roomAgents, message, ctx.agentModelLabeler);
   const nameOf = (participantId: ThreadParticipantId | null | undefined) =>
     labels?.get(roomAgentKey(participantId))?.name ?? "an agent";
+  const from = nameOf(message.fromAgent?.participantId);
+  const to = nameOf(message.participantId);
+  const request =
+    message.requestId !== undefined ? ctx.sideAnswerRequests.get(message.requestId) : undefined;
+  const what = request?.requestKind === "ask" ? "answer" : "review";
   return (
     <p
       className="min-w-0 truncate px-1 font-mono text-[10.5px] text-muted-foreground"
-      data-room-agent-message="invite-reply"
+      data-room-agent-message="side-answer-reply"
       title={formatTimestamp(message.createdAt, ctx.timestampFormat)}
     >
       {message.requestOutcome === "cancelled"
-        ? `${nameOf(message.fromAgent?.participantId)}'s review was not sent to ${nameOf(message.participantId)}: stopped first`
-        : `Sent ${nameOf(message.fromAgent?.participantId)}'s review to ${nameOf(message.participantId)}`}
+        ? `${from}'s ${what} was not sent to ${to}: stopped first`
+        : request?.requestOutcome === "failed"
+          ? `Told ${to} that no ${what} came`
+          : `Sent ${from}'s ${what} to ${to}`}
     </p>
   );
 }
@@ -3573,6 +3586,7 @@ function SideStatusTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "sid
   const {
     roomAgents,
     agentModelLabeler,
+    openAgentRequestByMessageId,
     onStopSideAnswer,
     onToggleSideAnswer,
     onRevealMessage,
@@ -3634,6 +3648,11 @@ function SideStatusTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "sid
   if (row.state === "answering" || row.state === "stopping") {
     const stopping = row.state === "stopping";
     const doing = stopping ? "stopping" : row.review ? "reviewing independently" : "answering";
+    // Its caller stopped waiting: the answer goes to it as a message.
+    const goesTo =
+      !stopping && openAgentRequestByMessageId.get(row.question.id)?.replyAsMessage === true
+        ? (labels?.get(roomAgentKey(row.question.fromAgent?.participantId))?.name ?? null)
+        : null;
     return (
       <div className="py-1" data-side-answer-status={row.state}>
         <div
@@ -3653,7 +3672,9 @@ function SideStatusTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "sid
               onClick={() => onToggleSideAnswer(row.sideTurnId)}
             >
               <span className="min-w-0 truncate">
-                {name} · {doing} · <WorkingTimer createdAt={row.question.createdAt} />
+                {name} · {doing}
+                {goesTo !== null ? ` · goes to ${goesTo} when done` : null} ·{" "}
+                <WorkingTimer createdAt={row.question.createdAt} />
               </span>
               <ChevronRightIcon
                 aria-hidden
@@ -3663,6 +3684,7 @@ function SideStatusTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "sid
           ) : (
             <span className="min-w-0 truncate">
               {name} · {doing}
+              {goesTo !== null ? ` · goes to ${goesTo} when done` : null}
             </span>
           )}
           {row.review ? (

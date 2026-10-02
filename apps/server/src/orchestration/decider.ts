@@ -37,6 +37,7 @@ import {
   cancelAgentRequestsForLeaving,
   decideAgentChainStop,
   decideAgentInviteRespond,
+  decideAgentRequestDetach,
   decideAgentRequestQueue,
   decideAgentRequestSettle,
   decideAgentRequestSubmit,
@@ -1083,6 +1084,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         eventBase,
         command.createdAt,
         command.error,
+        command.fromPreviousProcess === true,
       );
       return [
         ...closeAnswer,
@@ -1107,6 +1109,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
 
     case "thread.agent-request.submit":
     case "thread.agent-request.queue":
+    case "thread.agent-request.detach":
     case "thread.agent-request.settle":
     case "thread.agent-invite.respond": {
       const thread = yield* requireThread({
@@ -1127,9 +1130,11 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           ? decideAgentRequestSubmit(thread, command, base)
           : command.type === "thread.agent-request.queue"
             ? decideAgentRequestQueue(thread, command, base)
-            : command.type === "thread.agent-invite.respond"
-              ? decideAgentInviteRespond(thread, command, base)
-              : decideAgentRequestSettle(thread, command, base),
+            : command.type === "thread.agent-request.detach"
+              ? decideAgentRequestDetach(thread, command, base)
+              : command.type === "thread.agent-invite.respond"
+                ? decideAgentInviteRespond(thread, command, base)
+                : decideAgentRequestSettle(thread, command, base),
       );
     }
 

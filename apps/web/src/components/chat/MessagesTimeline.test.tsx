@@ -2,6 +2,7 @@ import {
   EnvironmentId,
   MessageId,
   ProviderDriverKind,
+  RoomAgentRequestId,
   SideTurnId,
   ThreadParticipantId,
   TurnId,
@@ -11,6 +12,8 @@ import { createRef, type ReactElement, type ReactNode, type Ref } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeAll, describe, expect, it, vi } from "vite-plus/test";
 import type { LegendListRef } from "@legendapp/list/react";
+
+import type { ChatMessage } from "../../types";
 
 vi.mock("@legendapp/list/react", async () => {
   const legendListTestId = "legend-list";
@@ -1957,6 +1960,102 @@ describe("MessagesTimeline", () => {
       expect(markup).toContain(">Extra High</span>");
       // Never read as the user's own message.
       expect(markup).not.toContain("to GPT-6 Astra 2");
+    });
+
+    it("says where an answer that outran its call goes, then sends it there in one line", async () => {
+      const { MessagesTimeline } = await import("./MessagesTimeline");
+      const { deriveSideAnswers } = await import("./sideAnswers");
+      const sideTurnId = SideTurnId.make("side-late-ask");
+      const requestId = RoomAgentRequestId.make("request-late-ask");
+      const question: ChatMessage = {
+        id: MessageId.make("late-ask"),
+        role: "user",
+        text: "Why does the retry loop?",
+        participantId: astraId,
+        sideTurnId,
+        fromAgent: { participantId: null },
+        requestId,
+        requestKind: "ask",
+        createdAt: MESSAGE_CREATED_AT,
+        streaming: false,
+      };
+      const answering = renderTimeline(
+        <MessagesTimeline
+          {...buildProps()}
+          timelineEntries={[]}
+          sideAnswers={deriveSideAnswers({
+            messages: [question],
+            activities: [],
+            sideTurn: {
+              sideTurnId,
+              participantId: astraId,
+              messageId: question.id,
+              status: "running",
+              startedAt: MESSAGE_CREATED_AT,
+              kind: "ask",
+              askedBy: { participantId: null },
+              requestId,
+            },
+          })}
+          openAgentRequests={[
+            {
+              requestId,
+              kind: "ask",
+              from: { participantId: null },
+              to: { participantId: astraId },
+              callerTurnId: TurnId.make("turn-asker"),
+              chainEpoch: 0,
+              status: "running",
+              requestMessageId: question.id,
+              sideTurnId,
+              replyAsMessage: true,
+              createdAt: MESSAGE_CREATED_AT,
+            },
+          ]}
+          roomAgents={roomAgents}
+        />,
+      );
+      expect(answering).toContain("goes to Opus 5.5 when done");
+
+      const answer: ChatMessage = {
+        id: MessageId.make("late-answer"),
+        role: "assistant",
+        text: "The backoff never caps.",
+        participantId: astraId,
+        sideTurnId,
+        createdAt: "2026-03-17T19:13:28.000Z",
+        streaming: false,
+      };
+      const answered = renderTimeline(
+        <MessagesTimeline
+          {...buildProps()}
+          timelineEntries={[
+            {
+              id: "late-reply-entry",
+              kind: "message" as const,
+              createdAt: "2026-03-17T19:13:29.000Z",
+              message: {
+                id: MessageId.make("ask-reply:request-late-ask"),
+                role: "user" as const,
+                text: "The backoff never caps.",
+                fromAgent: { participantId: astraId },
+                requestId,
+                requestKind: "reply" as const,
+                createdAt: "2026-03-17T19:13:29.000Z",
+                streaming: false,
+              },
+            },
+          ]}
+          sideAnswers={deriveSideAnswers({
+            messages: [{ ...question, requestOutcome: "answered" }, answer],
+            activities: [],
+            sideTurn: null,
+          })}
+          roomAgents={roomAgents}
+        />,
+      );
+      expect(answered).not.toContain("when done");
+      expect(answered).toContain("Sent GPT-6 Astra 2&#x27;s answer to Opus 5.5");
     });
 
     it("says a hand-off ended without a reply under its message", async () => {
