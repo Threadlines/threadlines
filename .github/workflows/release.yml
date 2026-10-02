@@ -849,8 +849,12 @@ jobs:
       - name: List release assets
         run: ls -la release
 
+      # Telemetry is off so each throwaway boot doesn't count as a new
+      # installation in PostHog.
       - name: Boot AppImage and verify backend serves
         timeout-minutes: 3
+        env:
+          THREADLINES_TELEMETRY_ENABLED: "false"
         run: |
           set -euo pipefail
           command -v xvfb-run >/dev/null || (sudo apt-get update && sudo apt-get install -y xvfb)

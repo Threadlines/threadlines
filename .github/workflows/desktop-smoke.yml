@@ -47,8 +47,12 @@ jobs:
           spctl --assess --type execute -vv "$RUNNER_TEMP/Threadlines.app"
           xcrun stapler validate "$RUNNER_TEMP/Threadlines.app"
 
+      # Telemetry is off so each throwaway boot doesn't count as a new
+      # installation in PostHog.
       - name: Launch app and verify backend serves
         timeout-minutes: 3
+        env:
+          THREADLINES_TELEMETRY_ENABLED: "false"
         run: |
           export THREADLINES_HOME="$RUNNER_TEMP/threadlines-home"
           "$RUNNER_TEMP/Threadlines.app/Contents/MacOS/Threadlines" > "$RUNNER_TEMP/app.log" 2>&1 &

@@ -1,3 +1,5 @@
+import { isProviderAuthErrorMessage } from "@threadlines/shared/providerAuth";
+
 export type AnalyticsModelKind = "known" | "custom" | "unknown";
 export type AnalyticsModelFamily =
   | "gpt"
@@ -12,11 +14,16 @@ export type AnalyticsModelFamily =
 export type AnalyticsFailureCategory =
   | "auth"
   | "context_length"
+  | "missing_directory"
   | "model_unavailable"
   | "network"
+  | "not_installed"
+  | "overloaded"
   | "permission"
+  | "process_exit"
   | "provider_error"
   | "rate_limit"
+  | "session_lost"
   | "transport"
   | "validation"
   | "unknown";
@@ -156,6 +163,120 @@ export function analyticsModelProperties({
   };
 }
 
+/**
+ * Ordered so a provider's own wording wins over generic transport words: the
+ * first category with a matching pattern is the one reported. Patterns run
+ * against the lowercased message, and only the category leaves the machine.
+ */
+const FAILURE_CATEGORY_PATTERNS: ReadonlyArray<
+  readonly [AnalyticsFailureCategory, ReadonlyArray<string | RegExp>]
+> = [
+  [
+    "rate_limit",
+    [
+      "rate limit",
+      "ratelimit",
+      /\b429\b/,
+      "quota",
+      "usage limit",
+      "hit your limit",
+      "purchase more credits",
+    ],
+  ],
+  [
+    "auth",
+    [
+      "authentication",
+      "unauthorized",
+      "not authenticated",
+      "invalid api key",
+      "login",
+      "sign in again",
+      "log in again",
+      /\b401\b/,
+    ],
+  ],
+  [
+    "context_length",
+    ["context length", "context window", "maximum context", "too many tokens", "token limit"],
+  ],
+  ["overloaded", ["at capacity", "overloaded", /\b529\b/, /\b503\b/, "service unavailable"]],
+  [
+    "model_unavailable",
+    [
+      "model unavailable",
+      "model not available",
+      "model_not_found",
+      "unknown model",
+      "no such model",
+      /\bmodel\b.*\bdoes not exist\b/,
+    ],
+  ],
+  [
+    "not_installed",
+    [
+      "binary not found",
+      "command not found",
+      "not installed",
+      "is not recognized as an internal or external command",
+      /\bspawn\b.*\benoent\b/,
+    ],
+  ],
+  [
+    "session_lost",
+    [
+      "no conversation found",
+      "session not found",
+      "thread not found",
+      "thread does not exist",
+      "no such thread",
+      "unknown thread",
+      "missing thread",
+      "no rollout found",
+    ],
+  ],
+  [
+    "network",
+    [
+      "network",
+      "timeout",
+      "timed out",
+      "econn",
+      "enotfound",
+      "fetch failed",
+      "websocket",
+      "connection refused",
+      "connection reset",
+    ],
+  ],
+  [
+    "process_exit",
+    ["process exited", "exited with code", "exited unexpectedly", "sigterm", "sigkill"],
+  ],
+  ["missing_directory", ["does not exist", "no longer exists", "no such file or directory"]],
+  ["permission", ["permission", "not allowed", "access denied", "sandbox"]],
+  ["validation", ["invalid request", "validation"]],
+];
+
+/**
+ * Paths in an error name the user's folders, and folder names are arbitrary
+ * words ("auth-fix", "network-tools", "model"). Matching runs on the message
+ * with quoted paths and bare path tokens blanked out, so only the provider's
+ * own wording picks the category.
+ */
+const QUOTED_PATH_PATTERN = /"[^"]*[\\/][^"]*"|`[^`]*[\\/][^`]*`/g;
+const BARE_PATH_PATTERN = /(?<=^|[\s(:='])(?:[a-z]:)?~?\.{0,2}[\\/][^\s"'`)]*/g;
+
+function failureHaystack(input: {
+  readonly message?: string | null | undefined;
+  readonly reason?: string | null | undefined;
+}): string {
+  return `${input.message ?? ""} ${input.reason ?? ""}`
+    .toLowerCase()
+    .replace(QUOTED_PATH_PATTERN, " ")
+    .replace(BARE_PATH_PATTERN, " ");
+}
+
 export function classifyProviderFailure(input: {
   readonly errorClass?: string | undefined;
   readonly message?: string | null | undefined;
@@ -179,70 +300,21 @@ export function classifyProviderFailure(input: {
       break;
   }
 
-  const haystack = `${input.message ?? ""} ${input.reason ?? ""}`.toLowerCase();
+  const haystack = failureHaystack(input);
   if (!haystack.trim()) {
     return input.errorClass === "provider_error" ? "provider_error" : "unknown";
   }
-
-  if (
-    haystack.includes("rate limit") ||
-    haystack.includes("ratelimit") ||
-    haystack.includes("429") ||
-    haystack.includes("quota")
-  ) {
-    return "rate_limit";
-  }
-  if (
-    haystack.includes("authentication") ||
-    haystack.includes("unauthorized") ||
-    haystack.includes("not authenticated") ||
-    haystack.includes("invalid api key") ||
-    haystack.includes("login") ||
-    haystack.includes("401")
-  ) {
+  if (isProviderAuthErrorMessage(input.message)) {
     return "auth";
   }
-  if (
-    haystack.includes("context length") ||
-    haystack.includes("context window") ||
-    haystack.includes("maximum context") ||
-    haystack.includes("too many tokens") ||
-    haystack.includes("token limit")
-  ) {
-    return "context_length";
-  }
-  if (
-    haystack.includes("model unavailable") ||
-    haystack.includes("model not available") ||
-    haystack.includes("model_not_found") ||
-    haystack.includes("unknown model") ||
-    haystack.includes("no such model")
-  ) {
-    return "model_unavailable";
-  }
-  if (
-    haystack.includes("network") ||
-    haystack.includes("timeout") ||
-    haystack.includes("timed out") ||
-    haystack.includes("econn") ||
-    haystack.includes("enotfound") ||
-    haystack.includes("fetch failed") ||
-    haystack.includes("websocket") ||
-    haystack.includes("connection refused") ||
-    haystack.includes("connection reset")
-  ) {
-    return "network";
-  }
-  if (
-    haystack.includes("permission") ||
-    haystack.includes("not allowed") ||
-    haystack.includes("access denied") ||
-    haystack.includes("sandbox")
-  ) {
-    return "permission";
-  }
-  if (haystack.includes("invalid request") || haystack.includes("validation")) {
-    return "validation";
+
+  const match = FAILURE_CATEGORY_PATTERNS.find(([, patterns]) =>
+    patterns.some((pattern) =>
+      typeof pattern === "string" ? haystack.includes(pattern) : pattern.test(haystack),
+    ),
+  );
+  if (match) {
+    return match[0];
   }
 
   return input.errorClass === "provider_error" ? "provider_error" : "unknown";
