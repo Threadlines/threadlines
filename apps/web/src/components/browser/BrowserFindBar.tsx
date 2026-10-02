@@ -1,7 +1,7 @@
 import { ChevronDownIcon, ChevronUpIcon, XIcon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
-import type { PreviewWebview } from "./BrowserPanel";
+import type { PreviewWebview } from "./PreviewTabFrame";
 
 /** Electron's found-in-page DOM event, which plain Event typing does not know. */
 interface FoundInPageEvent extends Event {

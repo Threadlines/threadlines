@@ -33,6 +33,8 @@ import type {
   DesktopPreviewScreenshot,
   DesktopPreviewStatus,
   DesktopPreviewTypeInput,
+  DesktopPreviewLifecycleState,
+  DesktopPreviewMemory,
   DesktopPreviewWaitForInput,
   PreviewAutomationTarget,
 } from "@threadlines/contracts";
@@ -41,7 +43,7 @@ import {
   normalizePreviewWaitForTimeoutMs,
   type BrowserSiteAccess,
 } from "@threadlines/shared/preview";
-import { BrowserWindow, webContents, type WebContents } from "electron";
+import { app, BrowserWindow, webContents, type WebContents } from "electron";
 
 import * as IpcChannels from "../ipc/channels.ts";
 import { toCdpKeyDefinition, toCdpModifierBitmask } from "./keyEvents.ts";
@@ -70,6 +72,7 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
+import * as Semaphore from "effect/Semaphore";
 
 /** Enough to explain a failure without letting a chatty page grow unboundedly. */
 const MAX_CONSOLE_ENTRIES = 200;
@@ -191,6 +194,18 @@ export class PreviewAutomation extends Context.Service<
       webContentsId: number,
       colorScheme: "light" | "dark",
     ) => Effect.Effect<void, PreviewAutomationError>;
+    /**
+     * Sets how a page runs; see `DesktopPreviewLifecycleInputSchema`. Changes
+     * for one page apply in the order they were asked for, so a wake asked for
+     * after a freeze always lands last; and every other command makes a page
+     * active first, so nothing ever waits on a page that cannot answer.
+     */
+    readonly setLifecycle: (
+      webContentsId: number,
+      state: DesktopPreviewLifecycleState,
+    ) => Effect.Effect<void, PreviewAutomationError>;
+    /** Memory held by every browser page's process; see `DesktopPreviewMemorySchema`. */
+    readonly memory: Effect.Effect<DesktopPreviewMemory>;
     readonly screenshot: (
       webContentsId: number,
     ) => Effect.Effect<DesktopPreviewScreenshot, PreviewAutomationError>;
@@ -1012,6 +1027,7 @@ export const make = Effect.sync(function PreviewAutomationMake() {
     contents.debugger.on("message", onMessage);
     const onDestroyed = () => {
       attached.delete(webContentsId);
+      lifecycles.delete(webContentsId);
     };
     // Electron tells us when the attachment goes -- DevTools opening, the guest
     // crashing, someone calling detach. Dropping the record here is what lets
@@ -1045,10 +1061,12 @@ export const make = Effect.sync(function PreviewAutomationMake() {
     // elsewhere in the embedding window. Agent input pulls focus onto the
     // <webview> and the web client hands it straight back (browserFocusGuard);
     // without this, that hand-back would fire blur into the page and close
-    // the menus and dropdowns the agent just opened.
-    yield* sendCommand(contents, "Emulation.setFocusEmulationEnabled", { enabled: true }).pipe(
-      Effect.ignore,
-    );
+    // the menus and dropdowns the agent just opened. Not for a page set to
+    // run in the background: see `setLifecycle`.
+    const lifecycleState = lifecycles.get(webContentsId)?.state ?? "active";
+    yield* sendCommand(contents, "Emulation.setFocusEmulationEnabled", {
+      enabled: lifecycleState === "active",
+    }).pipe(Effect.ignore);
 
     return buildStatus(webContentsId, contents);
   });
@@ -1061,10 +1079,66 @@ export const make = Effect.sync(function PreviewAutomationMake() {
    * page is enough -- and the alternative is a browser that works until it
    * quietly does not. Attaching is cheap when it is already attached.
    */
+  /**
+   * How each page runs, with a one-at-a-time lock per page so a freeze and a
+   * wake asked for in quick succession land in that order.
+   *
+   * Focus emulation is what this turns on and off besides freezing. Chromium
+   * implements it by counting the page as captured, and a captured page is a
+   * visible one: it is never slowed when hidden, and a freeze is silently
+   * ignored. So a page sent to the background loses it, and gets it back when
+   * it is next shown or acted on.
+   */
+  const lifecycles = new Map<
+    number,
+    { state: DesktopPreviewLifecycleState; readonly lock: Semaphore.Semaphore }
+  >();
+  const lifecycleOf = (webContentsId: number) => {
+    let entry = lifecycles.get(webContentsId);
+    if (entry === undefined) {
+      entry = { state: "active", lock: Semaphore.makeUnsafe(1) };
+      lifecycles.set(webContentsId, entry);
+    }
+    return entry;
+  };
+
+  const setLifecycle = Effect.fn("PreviewAutomation.setLifecycle")(function* (
+    webContentsId: number,
+    state: DesktopPreviewLifecycleState,
+  ) {
+    yield* attach(webContentsId);
+    const contents = yield* resolve(webContentsId);
+    const entry = lifecycleOf(webContentsId);
+    yield* entry.lock.withPermits(1)(
+      Effect.gen(function* () {
+        const from = entry.state;
+        if (from === state) return;
+        if (from === "frozen") {
+          yield* sendCommand(contents, "Page.setWebLifecycleState", { state: "active" });
+        }
+        if ((from === "active") !== (state === "active")) {
+          yield* sendCommand(contents, "Emulation.setFocusEmulationEnabled", {
+            enabled: state === "active",
+          });
+        }
+        if (state === "frozen") {
+          yield* sendCommand(contents, "Page.setWebLifecycleState", { state: "frozen" });
+        }
+        entry.state = state;
+      }),
+    );
+  });
+
   const resolveAttached = Effect.fn("PreviewAutomation.resolveAttached")(function* (
     webContentsId: number,
   ) {
     yield* attach(webContentsId);
+    // A frozen page answers nothing, so a command for one would only time out,
+    // and one without focus emulation can lose its menus to a blur. The panel
+    // readies pages before acting on them; this is the backstop.
+    if ((lifecycles.get(webContentsId)?.state ?? "active") !== "active") {
+      yield* setLifecycle(webContentsId, "active");
+    }
     return yield* resolve(webContentsId);
   });
 
@@ -1436,6 +1510,27 @@ export const make = Effect.sync(function PreviewAutomationMake() {
       yield* sendCommand(contents, "Runtime.evaluate", {
         expression: PICK_OVERLAY_TEARDOWN_SCRIPT,
       }).pipe(Effect.ignore);
+    }),
+    setLifecycle,
+    memory: Effect.sync(() => {
+      // Every guest here is a browser page: the window refuses any other
+      // webview at attach.
+      const byProcess = new Map<number, number[]>();
+      for (const contents of webContents.getAllWebContents()) {
+        if (contents.isDestroyed() || contents.getType() !== "webview") continue;
+        const pid = contents.getOSProcessId();
+        const ids = byProcess.get(pid) ?? [];
+        ids.push(contents.id);
+        byProcess.set(pid, ids);
+      }
+      const metrics = app.getAppMetrics();
+      return {
+        processes: [...byProcess].map(([pid, webContentsIds]) => ({
+          pid,
+          workingSetKb: metrics.find((metric) => metric.pid === pid)?.memory.workingSetSize ?? 0,
+          webContentsIds,
+        })),
+      };
     }),
     setColorScheme: Effect.fn("PreviewAutomation.setColorScheme")(function* (
       webContentsId: number,

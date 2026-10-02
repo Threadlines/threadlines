@@ -129,6 +129,9 @@ contextBridge.exposeInMainWorld("desktopBridge", {
     ipcRenderer.invoke(IpcChannels.PREVIEW_OPEN_DEVTOOLS_CHANNEL, input),
   previewSetColorScheme: (input) =>
     ipcRenderer.invoke(IpcChannels.PREVIEW_SET_COLOR_SCHEME_CHANNEL, input),
+  previewSetLifecycle: (input) =>
+    ipcRenderer.invoke(IpcChannels.PREVIEW_SET_LIFECYCLE_CHANNEL, input),
+  previewMemory: () => ipcRenderer.invoke(IpcChannels.PREVIEW_MEMORY_CHANNEL),
   previewSetViewport: (input) =>
     ipcRenderer.invoke(IpcChannels.PREVIEW_SET_VIEWPORT_CHANNEL, input),
   previewSetNavigationPolicy: (input) =>

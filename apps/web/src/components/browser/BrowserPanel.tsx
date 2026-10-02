@@ -32,14 +32,25 @@ import {
   RotateCwIcon,
   XIcon,
 } from "lucide-react";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+} from "react";
+import { createPortal } from "react-dom";
+import { scopedThreadKey } from "@threadlines/client-runtime";
+import { IDLE_NAV_STATE, useBrowserLiveStore } from "../../browserLiveStore";
+import { BROWSER_SLOT_ANCHOR, claimThreadBrowser, closeThreadBrowser } from "./BrowserHostLayer";
+import type { PreviewWebview } from "./PreviewTabFrame";
 
 import {
   BROWSER_VIEWPORT_PRESETS,
   RESPONSIVE_VIEWPORT,
   callWhenReady,
   getPreviewWebview,
-  registerPreviewWebview,
   selectActiveTab,
   selectPendingBrowserApprovals,
   selectThreadAgentState,
@@ -79,54 +90,10 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { RotateDeviceIcon } from "../Icons";
 import { pushNavigationPolicy, useBrowserApprovals } from "./browserApprovals";
 import { answerBrowserApproval, type BrowserApprovalDecision } from "./browserApprovalRequests";
-import { installBrowserFocusGuard, noteBrowserUserIntent } from "./browserFocusGuard";
-import { resolveBrowserViewportLayout } from "./browserViewportLayout";
-import { AgentPointer, POINTER_RETIRE_MS, type AgentPointerPosition } from "./AgentPointer";
+import { noteBrowserUserIntent } from "./browserFocusGuard";
 import { completeUrl } from "./urlCompletion";
 import { type AgentActivity } from "./previewAutomationHost";
 import { hostOf, normalizePreviewUrl } from "./previewUrl";
-
-/**
- * Electron's <webview> is a custom element, so React needs to be told it exists.
- * It is deliberately the renderer's own element rather than a native view over
- * the window: that keeps it inside normal CSS layout, so dialogs, popovers and
- * the source control sheet stack above it without any bounds bookkeeping.
- */
-declare global {
-  // eslint-disable-next-line @typescript-eslint/no-namespace
-  namespace JSX {
-    interface IntrinsicElements {
-      webview: React.DetailedHTMLProps<React.HTMLAttributes<HTMLElement>, HTMLElement> & {
-        src?: string;
-        partition?: string;
-      };
-    }
-  }
-}
-
-export interface PreviewWebview extends HTMLElement {
-  getWebContentsId: () => number;
-  getURL: () => string;
-  getTitle: () => string;
-  canGoBack: () => boolean;
-  canGoForward: () => boolean;
-  goBack: () => void;
-  goForward: () => void;
-  reload: () => void;
-  reloadIgnoringCache: () => void;
-  setZoomFactor: (factor: number) => void;
-  loadURL: (url: string) => Promise<void>;
-  findInPage: (text: string, options?: { forward?: boolean; findNext?: boolean }) => number;
-  stopFindInPage: (action: "clearSelection" | "keepSelection" | "activateSelection") => void;
-}
-
-interface NavState {
-  canGoBack: boolean;
-  canGoForward: boolean;
-  loading: boolean;
-}
-
-const IDLE_NAV_STATE: NavState = { canGoBack: false, canGoForward: false, loading: false };
 
 export function BrowserPanel({
   threadRef,
@@ -203,34 +170,63 @@ export function BrowserPanel({
   const profile = useBrowserProfilePartition(threadRef.environmentId, projectId);
   const partition = profile.status === "ready" ? profile.partition : null;
 
-  // While the panel exists its webviews can pull focus out of whatever the
-  // user is typing into whenever agent input lands in a page; the guard
-  // notices and hands the focus back.
-  useEffect(() => installBrowserFocusGuard(), []);
   const guestColorScheme = appearance === "system" ? resolvedTheme : appearance;
 
   const activeTab = selectActiveTab(browserState);
   const activeTabId = activeTab?.id ?? "";
 
-  // One element per tab, so switching tabs keeps every page alive -- along with
-  // the CDP attachment collecting its console and network diagnostics. The
-  // elements live in the store: the automation host outlives this panel and
-  // needs to reach them when it is closed.
+  // The pages themselves live in the app-wide browser layer, which draws them
+  // over this panel's page area while it is on screen and keeps them running
+  // when it is not. The elements are in a registry for everything here that
+  // talks to a page.
   const webviewFor = useCallback(
     (tabId: string) => getPreviewWebview(threadRef, tabId) as PreviewWebview | null,
     [threadRef],
   );
-  const [navState, setNavState] = useState<NavState>(IDLE_NAV_STATE);
+  const navState = useBrowserLiveStore(
+    (store) => store.navStateByThreadKey[scopedThreadKey(threadRef)] ?? IDLE_NAV_STATE,
+  );
+  const overlayElement = useBrowserLiveStore((store) => store.overlayElement);
   const [addressDraft, setAddressDraft] = useState(activeTab?.url ?? "");
   const visitedUrls = useBrowserPanelStore((store) => store.visitedUrls);
   const activeUrl = activeTab?.url ?? null;
 
   // The address bar is an input the user types in, so it is only reset when the
-  // page moves or the tab changes -- never on every keystroke.
+  // page moves or the tab changes -- never on every keystroke. Back, forward
+  // and loading come from the page itself, which reports them as it comes on
+  // screen.
   useEffect(() => {
     setAddressDraft(activeUrl ?? "");
-    setNavState(IDLE_NAV_STATE);
   }, [activeUrl, activeTabId]);
+
+  /**
+   * This panel is the thread's browser on screen while it is mounted: its
+   * pages start if they were not running, the layer draws them here, and the
+   * environment routes the thread's agent requests to this client.
+   *
+   * Leaving the screen keeps them running -- a thread switch, Settings -- unless
+   * the panel was closed, which closes the pages too.
+   */
+  useEffect(() => {
+    if (projectId !== null) {
+      useBrowserLiveStore.getState().ensureLive(threadRef, projectId);
+    }
+    useBrowserLiveStore.getState().setShown(threadRef);
+    claimThreadBrowser(threadRef);
+    return () => {
+      const live = useBrowserLiveStore.getState();
+      if (live.shownThreadKey === scopedThreadKey(threadRef)) {
+        live.setShown(null);
+      }
+      const stillOpen = selectThreadBrowserState(
+        useBrowserPanelStore.getState().browserStateByThreadKey,
+        threadRef,
+      ).open;
+      if (!stillOpen) {
+        closeThreadBrowser(threadRef);
+      }
+    };
+  }, [projectId, threadRef]);
 
   // The agent's last touch on the page, shown over the webview so it is
   // visible working rather than silently changing things. Produced by the
@@ -241,7 +237,6 @@ export function BrowserPanel({
   const setAgentPoint = useBrowserPanelStore((store) => store.setAgentPoint);
   const setAgentTab = useBrowserPanelStore((store) => store.setAgentTab);
   const setAgentActivity = useBrowserPanelStore((store) => store.setAgentActivity);
-  const agentPoint = agentState.point as AgentPointerPosition | null;
   const agentTabId = agentState.tabId;
   const agentActivity = agentState.activity as AgentActivity | null;
 
@@ -285,33 +280,23 @@ export function BrowserPanel({
     }
   }, [agentTabId, browserState.tabs, setAgentActivity, setAgentPoint, setAgentTab, threadRef]);
 
-  /** Set while the mark is fading out, after the page it referred to has gone. */
-  const [agentPointRetiring, setAgentPointRetiring] = useState(false);
-  const agentPointRef = useRef<AgentPointerPosition | null>(null);
-  agentPointRef.current = agentPoint;
-
-  useEffect(() => {
-    // The mark is in viewport coordinates, so it stops meaning anything the
-    // moment the page under it changes: resting somewhere stale would point
-    // confidently at whatever now occupies that spot.
-    //
-    // It fades rather than blinking out, though. Clicking a link is the most
-    // common way to navigate, so cutting the mark on the same frame as the
-    // click means the one action you most want confirmed is the one that
-    // leaves nothing behind. Fading says "that happened, and then the page
-    // changed", which is what did happen.
-    if (agentPointRef.current === null) {
-      return;
-    }
-    setAgentPointRetiring(true);
-    const timer = window.setTimeout(() => {
-      setAgentPoint(threadRef, null);
-      setAgentPointRetiring(false);
-    }, POINTER_RETIRE_MS);
-    return () => window.clearTimeout(timer);
-  }, [activeUrl, setAgentPoint, threadRef]);
-
+  // The page area: the layer anchors the visible page to it, and pages kept
+  // running off screen keep its size.
   const viewportAreaRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const element = viewportAreaRef.current;
+    if (element === null) return;
+    const observer = new ResizeObserver(([entry]) => {
+      if (entry !== undefined && entry.contentRect.width > 0 && entry.contentRect.height > 0) {
+        useBrowserLiveStore.getState().setSlotSize({
+          width: Math.round(entry.contentRect.width),
+          height: Math.round(entry.contentRect.height),
+        });
+      }
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
 
   const addressRef = useRef<HTMLInputElement | null>(null);
   const deletingRef = useRef(false);
@@ -1219,7 +1204,12 @@ export function BrowserPanel({
           That element is not on this page any more.
         </div>
       )}
-      <div className="relative min-h-0 flex-1 overflow-hidden bg-background" ref={viewportAreaRef}>
+      <div
+        className="relative min-h-0 flex-1 overflow-hidden bg-background"
+        ref={viewportAreaRef}
+        style={{ anchorName: BROWSER_SLOT_ANCHOR } as CSSProperties}
+        data-testid="browser-slot"
+      >
         {!isElectron ? (
           <BrowserUnavailableNotice
             title="The browser preview needs the desktop app."
@@ -1235,44 +1225,26 @@ export function BrowserPanel({
             title="The browser couldn't load this project's profile."
             detail="Close the browser and open it again to retry."
           />
-        ) : partition === null ? null : (
-          <>
-            {activeTab !== null && activeTab.url === null ? (
-              <div className="absolute inset-0 z-10 overflow-auto bg-background px-3">
-                <LocalServerPicker
-                  onSelect={(port) => openAddress(activeTab.id, `http://localhost:${port}`)}
-                />
-              </div>
-            ) : null}
-            {browserState.tabs.map((tab) => (
-              <PreviewTabFrame
-                // Keyed by profile too: a webview cannot change partition once
-                // attached, so a thread that moves project gets fresh tabs.
-                key={`${partition}:${tab.id}`}
-                tab={tab}
-                threadRef={threadRef}
-                partition={partition}
-                isActive={tab.id === activeTabId}
-                viewport={tab.viewport}
-                zoomFactor={tab.zoomFactor}
-                colorScheme={guestColorScheme}
-                onResize={
-                  tab.id === activeTabId
-                    ? (next) => setTabViewport(threadRef, tab.id, next)
-                    : undefined
-                }
-                onNavState={setNavState}
-                agentPoint={tab.id === agentTabId ? agentPoint : null}
-                agentPointRetiring={agentPointRetiring}
-                register={(element) => {
-                  registerPreviewWebview(threadRef, tab.id, element);
-                }}
-              />
-            ))}
-            {findTarget === null ? null : (
-              <BrowserFindBar webview={findTarget} onClose={() => setFindTarget(null)} />
-            )}
-          </>
+        ) : partition === null || overlayElement === null ? null : (
+          // Drawn in the layer, over the page: anything rendered in this panel
+          // would sit underneath it.
+          createPortal(
+            <>
+              {activeTab !== null && activeTab.url === null ? (
+                <div className="pointer-events-auto absolute inset-0 z-10 overflow-auto bg-background px-3">
+                  <LocalServerPicker
+                    onSelect={(port) => openAddress(activeTab.id, `http://localhost:${port}`)}
+                  />
+                </div>
+              ) : null}
+              {findTarget === null ? null : (
+                <div className="pointer-events-auto">
+                  <BrowserFindBar webview={findTarget} onClose={() => setFindTarget(null)} />
+                </div>
+              )}
+            </>,
+            overlayElement,
+          )
         )}
       </div>
     </section>
@@ -1379,381 +1351,6 @@ function TabStripItem({
         </button>
       ) : null}
     </div>
-  );
-}
-
-/**
- * One tab's guest page. Kept mounted while inactive and hidden with
- * `visibility` rather than `display`, so the guest keeps its layout: a page
- * collapsed to zero size would report a meaningless viewport to a screenshot
- * or to an agent measuring an element.
- */
-function PreviewTabFrame({
-  tab,
-  threadRef,
-  partition,
-  isActive,
-  viewport,
-  zoomFactor,
-  colorScheme,
-  onResize,
-  onNavState,
-  register,
-  agentPoint,
-  agentPointRetiring,
-}: {
-  tab: BrowserTab;
-  threadRef: ScopedThreadRef;
-  /** The project's browser profile, as handed out by the desktop. */
-  partition: string;
-  isActive: boolean;
-  viewport: BrowserViewport;
-  zoomFactor: number;
-  colorScheme: "light" | "dark";
-  onResize?: ((viewport: BrowserViewport) => void) | undefined;
-  onNavState: (state: NavState) => void;
-  register: (element: PreviewWebview | null) => void;
-  /** The agent's last touch, drawn over this tab when it is the visible one. */
-  agentPoint: AgentPointerPosition | null;
-  /** Whether that touch is fading out, its page having been navigated away. */
-  agentPointRetiring: boolean;
-}) {
-  const elementRef = useRef<PreviewWebview | null>(null);
-  // Fixed at mount and never rewritten: navigation goes through `loadURL`, and
-  // a `src` that tracked the tab's URL would re-load pages React re-rendered.
-  // `about:blank` rather than no `src` because a webview with no `src` never
-  // attaches a guest at all, leaving a tab the agent can see but nothing --
-  // not even `navigate` -- can act on.
-  const [initialSrc] = useState(() => tab.url ?? "about:blank");
-  const setTabUrl = useBrowserPanelStore((store) => store.setTabUrl);
-  const setTabTitle = useBrowserPanelStore((store) => store.setTabTitle);
-  const setTabFavicon = useBrowserPanelStore((store) => store.setTabFavicon);
-  const isActiveRef = useRef(isActive);
-  isActiveRef.current = isActive;
-  const colorSchemeRef = useRef(colorScheme);
-  colorSchemeRef.current = colorScheme;
-  const zoomFactorRef = useRef(zoomFactor);
-  zoomFactorRef.current = zoomFactor;
-
-  useEffect(() => {
-    const webview = elementRef.current;
-    if (webview === null || !isElectron) {
-      return;
-    }
-    const id = callWhenReady(() => webview.getWebContentsId());
-    if (id !== null) {
-      void window.desktopBridge?.previewSetColorScheme?.({ webContentsId: id, colorScheme });
-    }
-  }, [colorScheme]);
-
-  useEffect(() => {
-    const webview = elementRef.current;
-    if (webview === null || !isElectron) {
-      return;
-    }
-    callWhenReady(() => webview.setZoomFactor(zoomFactor));
-  }, [zoomFactor]);
-
-  useEffect(() => {
-    const webview = elementRef.current;
-    if (webview === null || !isElectron) {
-      return;
-    }
-    const id = callWhenReady(() => webview.getWebContentsId());
-    if (id !== null) {
-      void window.desktopBridge?.previewSetViewport?.({
-        webContentsId: id,
-        width: viewport.width,
-        height: viewport.height,
-      });
-    }
-  }, [viewport.width, viewport.height]);
-
-  useEffect(() => {
-    const webview = elementRef.current;
-    if (webview === null || !isElectron) {
-      return;
-    }
-    let attachedId: number | null = null;
-    const onAttached = () => {
-      attachedId = webview.getWebContentsId();
-      // Re-announced now that the guest exists: registration happened at
-      // mount, before attach, and an agent waiting on this webview is waiting
-      // for the moment it can actually be driven.
-      registerPreviewWebview(threadRef, tab.id, webview);
-      callWhenReady(() => webview.setZoomFactor(zoomFactorRef.current));
-      void window.desktopBridge?.previewAttach?.({ webContentsId: attachedId }).then(() => {
-        // A page that respects prefers-color-scheme should follow the app
-        // rather than the OS: a dark app hosting a stubbornly light page is
-        // the jarring part, and it is the app the page is embedded in.
-        void window.desktopBridge?.previewSetColorScheme?.({
-          webContentsId: attachedId as number,
-          colorScheme: colorSchemeRef.current,
-        });
-      });
-    };
-    const publishNav = (loading: boolean) => {
-      // Only the visible tab drives the toolbar; a background tab finishing a
-      // load must not repaint controls that describe a different page.
-      if (isActiveRef.current) {
-        onNavState({
-          canGoBack: callWhenReady(() => webview.canGoBack()) ?? false,
-          canGoForward: callWhenReady(() => webview.canGoForward()) ?? false,
-          loading,
-        });
-      }
-    };
-    // Tracked so the favicon only resets when the page actually moved to a
-    // different site: a site without one would otherwise wear the previous
-    // site's icon forever, while clearing on every navigation would flash the
-    // globe on each same-site reload.
-    let lastHost: string | null = null;
-    const onNavigated = () => {
-      // Electron remembers zoom per origin inside the session, so a page
-      // visited at 125% comes back at 125% while our control still reads
-      // 100%. Reasserting on every navigation keeps the two from drifting.
-      callWhenReady(() => webview.setZoomFactor(zoomFactorRef.current));
-      const url = callWhenReady(() => webview.getURL());
-      // `about:blank` is the seed of an empty tab, not somewhere the user went:
-      // written back it would dismiss the new-tab view under a fake address.
-      if (url !== null && url !== "" && url !== "about:blank") {
-        setTabUrl(threadRef, tab.id, url);
-        const host = hostOf(url);
-        if (lastHost !== null && host !== lastHost) {
-          setTabFavicon(threadRef, tab.id, null);
-        }
-        lastHost = host;
-      }
-      publishNav(false);
-    };
-    const onTitle = () => setTabTitle(threadRef, tab.id, webview.getTitle());
-    const onFavicon = (event: Event) => {
-      const favicons = (event as Event & { favicons?: string[] }).favicons;
-      setTabFavicon(threadRef, tab.id, favicons?.[0] ?? null);
-    };
-    const onStart = () => publishNav(true);
-    const onStop = () => publishNav(false);
-
-    webview.addEventListener("did-attach", onAttached);
-    webview.addEventListener("did-navigate", onNavigated);
-    webview.addEventListener("did-navigate-in-page", onNavigated);
-    webview.addEventListener("page-title-updated", onTitle);
-    webview.addEventListener("page-favicon-updated", onFavicon);
-    webview.addEventListener("did-start-loading", onStart);
-    webview.addEventListener("did-stop-loading", onStop);
-    return () => {
-      webview.removeEventListener("did-attach", onAttached);
-      webview.removeEventListener("did-navigate", onNavigated);
-      webview.removeEventListener("did-navigate-in-page", onNavigated);
-      webview.removeEventListener("page-title-updated", onTitle);
-      webview.removeEventListener("page-favicon-updated", onFavicon);
-      webview.removeEventListener("did-start-loading", onStart);
-      webview.removeEventListener("did-stop-loading", onStop);
-      if (attachedId !== null) {
-        void window.desktopBridge?.previewDetach?.({ webContentsId: attachedId });
-      }
-    };
-  }, [onNavState, setTabFavicon, setTabTitle, setTabUrl, tab.id, threadRef]);
-
-  // The container is measured so the frame can be placed at computed
-  // coordinates: Electron positions the guest's surface from the element's own
-  // box, and a flex-centred element sits where its unscaled size says while
-  // painting somewhere else.
-  const canvasRef = useRef<HTMLDivElement | null>(null);
-  const [container, setContainer] = useState({ width: 0, height: 0 });
-  useEffect(() => {
-    const element = canvasRef.current;
-    if (element === null) {
-      return;
-    }
-    const observer = new ResizeObserver(([entry]) => {
-      if (entry !== undefined) {
-        setContainer({ width: entry.contentRect.width, height: entry.contentRect.height });
-      }
-    });
-    observer.observe(element);
-    return () => observer.disconnect();
-  }, []);
-
-  const layout = resolveBrowserViewportLayout({ container, viewport, zoomFactor });
-
-  return (
-    <div
-      ref={canvasRef}
-      className={cn("absolute inset-0 overflow-hidden", isActive ? "visible" : "invisible")}
-      data-testid={`browser-frame-${tab.id}`}
-      data-fit-scale={layout.scale}
-    >
-      <div
-        className="relative"
-        style={{ width: `${layout.canvasWidth}px`, height: `${layout.canvasHeight}px` }}
-      >
-        <webview
-          ref={(element) => {
-            elementRef.current = element as PreviewWebview | null;
-            register(element as PreviewWebview | null);
-          }}
-          {...(isActive ? { "data-testid": "browser-panel-webview" } : {})}
-          // `flex` is deliberate: Electron's webview uses its own display value
-          // to size the guest, and replacing it breaks painting.
-          className={cn("absolute flex bg-background", !layout.fills && "ring-1 ring-border")}
-          style={{
-            left: `${layout.x}px`,
-            top: `${layout.y}px`,
-            // Laid out unscaled and shrunk by a transform on the element, so
-            // the guest keeps the CSS viewport it was asked for.
-            width: `${layout.width / layout.scale}px`,
-            height: `${layout.height / layout.scale}px`,
-            ...(layout.scale < 1
-              ? { transform: `scale(${layout.scale})`, transformOrigin: "top left" }
-              : {}),
-          }}
-          partition={partition}
-          src={initialSrc}
-        />
-        {isActive ? (
-          // Positioned in the same frame as the guest, so a page pixel and a
-          // panel pixel mean the same thing to it.
-          <div
-            className="pointer-events-none absolute"
-            style={{ left: `${layout.x}px`, top: `${layout.y}px` }}
-          >
-            <AgentPointer
-              position={agentPoint}
-              scale={layout.scale}
-              retiring={agentPointRetiring}
-            />
-          </div>
-        ) : null}
-        {!layout.fills && isActive && onResize !== undefined ? (
-          <div
-            className="pointer-events-none absolute"
-            style={{
-              left: `${layout.x}px`,
-              top: `${layout.y}px`,
-              width: `${layout.width}px`,
-              height: `${layout.height}px`,
-            }}
-          >
-            <ViewportResizeHandle
-              edge="right"
-              viewport={viewport}
-              scale={layout.scale}
-              onResize={onResize}
-            />
-            <ViewportResizeHandle
-              edge="bottom"
-              viewport={viewport}
-              scale={layout.scale}
-              onResize={onResize}
-            />
-            <ViewportResizeHandle
-              edge="corner"
-              viewport={viewport}
-              scale={layout.scale}
-              onResize={onResize}
-            />
-          </div>
-        ) : null}
-      </div>
-    </div>
-  );
-}
-
-/**
- * Drag handles on the page's own edges.
- *
- * Resizing the device by dragging is the natural gesture, and it means finding
- * a breakpoint does not require resizing the whole app around it. A shield is
- * raised while dragging because the pointer crosses the guest, which is a
- * separate process and would otherwise swallow the events.
- */
-function ViewportResizeHandle({
-  edge,
-  viewport,
-  scale,
-  onResize,
-}: {
-  edge: "right" | "bottom" | "corner";
-  viewport: BrowserViewport;
-  /** Pointer travel is in screen pixels; the device is measured in its own. */
-  scale: number;
-  onResize: (viewport: BrowserViewport) => void;
-}) {
-  const [dragging, setDragging] = useState(false);
-  const originRef = useRef({ x: 0, y: 0, width: 0, height: 0 });
-
-  const onPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
-    event.preventDefault();
-    originRef.current = {
-      x: event.clientX,
-      y: event.clientY,
-      width: viewport.width ?? 0,
-      height: viewport.height ?? 0,
-    };
-    setDragging(true);
-    event.currentTarget.setPointerCapture(event.pointerId);
-  };
-
-  const onPointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
-    if (!dragging) {
-      return;
-    }
-    const origin = originRef.current;
-    const ratio = scale > 0 ? scale : 1;
-    const width =
-      edge === "bottom"
-        ? origin.width
-        : Math.max(160, origin.width + (event.clientX - origin.x) / ratio);
-    const height =
-      edge === "right"
-        ? origin.height
-        : Math.max(160, origin.height + (event.clientY - origin.y) / ratio);
-    onResize({ width: Math.round(width), height: Math.round(height) });
-  };
-
-  const endDrag = (event: React.PointerEvent<HTMLDivElement>) => {
-    setDragging(false);
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-      event.currentTarget.releasePointerCapture(event.pointerId);
-    }
-  };
-
-  const position =
-    edge === "right"
-      ? "-right-1.5 inset-y-0 w-3 cursor-col-resize"
-      : edge === "bottom"
-        ? "-bottom-1.5 inset-x-0 h-3 cursor-row-resize"
-        : "-bottom-1.5 -right-1.5 size-3 cursor-nwse-resize";
-
-  return (
-    <>
-      {/* pointer-events-auto throughout: these live inside the overlay that
-          sets pointer-events-none to stay out of the page's way, and the
-          value inherits -- without the override the handles are decoration. */}
-      {dragging ? <div className="pointer-events-auto fixed inset-0 z-40 cursor-inherit" /> : null}
-      <div
-        role="separator"
-        aria-label={`Resize ${edge === "corner" ? "viewport" : edge + " edge"}`}
-        data-testid={`browser-resize-${edge}`}
-        className={cn(
-          "pointer-events-auto absolute z-50 flex items-center justify-center",
-          position,
-        )}
-        onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={endDrag}
-        onPointerCancel={endDrag}
-      >
-        <span
-          className={cn(
-            "rounded-full bg-border transition-colors hover:bg-muted-foreground/60",
-            edge === "right" ? "h-8 w-1" : edge === "bottom" ? "h-1 w-8" : "size-2",
-            dragging && "bg-muted-foreground/70",
-          )}
-        />
-      </div>
-    </>
   );
 }
 

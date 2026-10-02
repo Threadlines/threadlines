@@ -34,6 +34,9 @@ export function createEnvironmentApi(rpcClient: WsRpcClient): EnvironmentApi {
       connect: (input, listener) => rpcClient.previewAutomation.connect(input, listener),
       respond: (response) => rpcClient.previewAutomation.respond(response),
       progress: (progress) => rpcClient.previewAutomation.progress(progress),
+      connectClient: (input, listener, options) =>
+        rpcClient.previewAutomation.connectClient(input, listener, options),
+      claim: (claim) => rpcClient.previewAutomation.claim(claim),
     },
     projects: {
       searchEntries: rpcClient.projects.searchEntries,

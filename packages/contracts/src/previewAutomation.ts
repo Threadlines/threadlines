@@ -120,7 +120,7 @@ export class PreviewAutomationNoHostError extends Schema.TaggedError<PreviewAuto
   { threadId: ThreadId, operation: PreviewAutomationOperationSchema },
 ) {
   override get message(): string {
-    return `No Threadlines desktop browser is connected for this thread right now, so ${this.operation} has nothing to act on. The browser panel opens itself once the user views this thread in the desktop app; ask them to do that rather than using another browser.`;
+    return `No Threadlines desktop browser is connected for this thread right now, so ${this.operation} has nothing to act on. The browser works while the Threadlines desktop app is open and connected (older servers also need the thread on screen); ask the user to open it rather than using another browser.`;
   }
 }
 
@@ -205,6 +205,31 @@ export type PreviewAutomationError = typeof PreviewAutomationErrorSchema.Type;
 export const PreviewAutomationHostFeatureSchema = Schema.Literals(["cancel"]);
 export type PreviewAutomationHostFeature = typeof PreviewAutomationHostFeatureSchema.Type;
 
+/**
+ * A client offering to be the browser for every thread of an environment.
+ *
+ * The server picks one client per thread and keeps it (a thread's tabs and
+ * logins live on one computer): the client that opened that thread's browser
+ * most recently, or else a client on the server's own machine -- where
+ * `localhost` means what the agent means by it -- or else the newest.
+ * Advertised by servers with `browserClientHosts`.
+ */
+export const PreviewAutomationClientHostSchema = Schema.Struct({
+  hostId: Schema.String,
+  operations: Schema.Array(PreviewAutomationOperationSchema),
+  features: Schema.Array(PreviewAutomationHostFeatureSchema),
+  /** The client runs on the same machine as the server. */
+  machineLocal: Schema.Boolean,
+});
+export type PreviewAutomationClientHost = typeof PreviewAutomationClientHostSchema.Type;
+
+/** The user opened this thread's browser on this client: route its requests here. */
+export const PreviewAutomationClaimSchema = Schema.Struct({
+  hostId: Schema.String,
+  threadId: ThreadId,
+});
+export type PreviewAutomationClaim = typeof PreviewAutomationClaimSchema.Type;
+
 /** A client offering to service requests for one thread's browser panel. */
 export const PreviewAutomationHostSchema = Schema.Struct({
   threadId: ThreadId,
@@ -218,6 +243,11 @@ export type PreviewAutomationHost = typeof PreviewAutomationHostSchema.Type;
 
 export const PreviewAutomationRequestSchema = Schema.Struct({
   requestId: Schema.String,
+  /**
+   * The thread whose browser this is for. Always set by servers that route to
+   * client-wide hosts; a per-thread host already knows, and older servers omit it.
+   */
+  threadId: Schema.optionalKey(ThreadId),
   /** Opaque identity minted with the provider runtime's browser credential. */
   agentId: Schema.String,
   operation: PreviewAutomationOperationSchema,
@@ -239,10 +269,21 @@ export const PreviewAutomationCancelSchema = Schema.TaggedStruct("cancel", {
 });
 export type PreviewAutomationCancel = typeof PreviewAutomationCancelSchema.Type;
 
+/**
+ * Another client took this thread's browser: the user opened it there. The
+ * client that held it closes its pages for the thread, since nothing will be
+ * routed to them any more. Only sent to client-wide hosts.
+ */
+export const PreviewAutomationReleaseSchema = Schema.TaggedStruct("release", {
+  threadId: ThreadId,
+});
+export type PreviewAutomationRelease = typeof PreviewAutomationReleaseSchema.Type;
+
 /** Everything the server sends down a host's subscription. */
 export const PreviewAutomationHostMessageSchema = Schema.Union([
   PreviewAutomationRequestSchema,
   PreviewAutomationCancelSchema,
+  PreviewAutomationReleaseSchema,
 ]);
 export type PreviewAutomationHostMessage = typeof PreviewAutomationHostMessageSchema.Type;
 

@@ -2,6 +2,8 @@ import {
   DesktopLocalServerSchema,
   DesktopPreviewClickInputSchema,
   DesktopPreviewColorSchemeInputSchema,
+  DesktopPreviewLifecycleInputSchema,
+  DesktopPreviewMemorySchema,
   DesktopPreviewDragInputSchema,
   DesktopPreviewDragResultSchema,
   DesktopPreviewViewportInputSchema,
@@ -203,6 +205,26 @@ export const previewSetColorScheme = makeIpcMethod({
   handler: Effect.fn("desktop.ipc.preview.setColorScheme")(function* (input) {
     const automation = yield* PreviewAutomation.PreviewAutomation;
     yield* automation.setColorScheme(input.webContentsId, input.colorScheme);
+  }),
+});
+
+export const previewSetLifecycle = makeIpcMethod({
+  channel: IpcChannels.PREVIEW_SET_LIFECYCLE_CHANNEL,
+  payload: DesktopPreviewLifecycleInputSchema,
+  result: Schema.Void,
+  handler: Effect.fn("desktop.ipc.preview.setLifecycle")(function* (input) {
+    const automation = yield* PreviewAutomation.PreviewAutomation;
+    yield* automation.setLifecycle(input.webContentsId, input.state);
+  }),
+});
+
+export const previewMemory = makeIpcMethod({
+  channel: IpcChannels.PREVIEW_MEMORY_CHANNEL,
+  payload: Schema.Void,
+  result: DesktopPreviewMemorySchema,
+  handler: Effect.fn("desktop.ipc.preview.memory")(function* () {
+    const automation = yield* PreviewAutomation.PreviewAutomation;
+    return yield* automation.memory;
   }),
 });
 

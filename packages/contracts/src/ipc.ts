@@ -181,6 +181,8 @@ import type {
   PreviewAutomationHost,
   PreviewAutomationHostMessage,
   PreviewAutomationProgress,
+  PreviewAutomationClaim,
+  PreviewAutomationClientHost,
   PreviewAutomationResponse,
 } from "./previewAutomation.ts";
 import type {
@@ -705,6 +707,45 @@ export const DesktopPreviewColorSchemeInputSchema = Schema.Struct({
 });
 export type DesktopPreviewColorSchemeInput = typeof DesktopPreviewColorSchemeInputSchema.Type;
 
+/**
+ * How a page runs.
+ *
+ * - `active`: normally, focus emulated (see the desktop's attach).
+ * - `background`: without focus emulation, so Chromium slows a hidden page as
+ *   it would a background tab. Focus emulation counts as being captured, and
+ *   a captured page is never slowed.
+ * - `frozen`: not at all -- no timers, no script, no painting -- while kept in
+ *   memory exactly as it was.
+ *
+ * Only pages nobody can see leave `active`: the panel steps down tabs that sit
+ * hidden and idle, and makes them active before anything touches them.
+ */
+export const DesktopPreviewLifecycleState = Schema.Literals(["active", "background", "frozen"]);
+export type DesktopPreviewLifecycleState = typeof DesktopPreviewLifecycleState.Type;
+
+export const DesktopPreviewLifecycleInputSchema = Schema.Struct({
+  webContentsId: Schema.Number,
+  state: DesktopPreviewLifecycleState,
+});
+export type DesktopPreviewLifecycleInput = typeof DesktopPreviewLifecycleInputSchema.Type;
+
+/**
+ * Memory held by the browser's page processes. Per process rather than per
+ * tab: Chromium may put several tabs in one process, and its memory cannot be
+ * split between them honestly.
+ */
+export const DesktopPreviewMemorySchema = Schema.Struct({
+  processes: Schema.Array(
+    Schema.Struct({
+      pid: Schema.Number,
+      /** Resident memory, in kilobytes. */
+      workingSetKb: Schema.Number,
+      webContentsIds: Schema.Array(Schema.Number),
+    }),
+  ),
+});
+export type DesktopPreviewMemory = typeof DesktopPreviewMemorySchema.Type;
+
 export const DesktopPreviewScreenshotSchema = Schema.Struct({
   dataUrl: Schema.String,
   width: Schema.Number,
@@ -1055,6 +1096,8 @@ export interface DesktopBridge {
   previewScreenshot?: (input: DesktopPreviewTarget) => Promise<DesktopPreviewScreenshot>;
   previewOpenDevTools?: (input: DesktopPreviewTarget) => Promise<void>;
   previewSetColorScheme?: (input: DesktopPreviewColorSchemeInput) => Promise<void>;
+  previewSetLifecycle?: (input: DesktopPreviewLifecycleInput) => Promise<void>;
+  previewMemory?: () => Promise<DesktopPreviewMemory>;
   /** Resolves empty when picking is cancelled or times out. Region picks
    *  resolve many elements at once; element picks resolve at most one. */
   previewPickElement?: (
@@ -1270,6 +1313,14 @@ export interface EnvironmentApi {
     respond: (response: PreviewAutomationResponse) => Promise<void>;
     /** Only for servers that advertise `browserApprovalWait`. */
     progress: (progress: PreviewAutomationProgress) => Promise<void>;
+    /** Only for servers that advertise `browserClientHosts`. */
+    connectClient: (
+      input: PreviewAutomationClientHost,
+      listener: (message: PreviewAutomationHostMessage) => void,
+      /** Called when the subscription is made again after the connection dropped. */
+      options?: { readonly onResubscribe?: () => void },
+    ) => () => void;
+    claim: (claim: PreviewAutomationClaim) => Promise<void>;
   };
   terminal: {
     open: (input: typeof TerminalOpenInput.Encoded) => Promise<TerminalSessionSnapshot>;

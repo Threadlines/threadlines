@@ -32,6 +32,8 @@ export function waitForBrowserApproval(
   threadRef: ScopedThreadRef,
   approval: Omit<PendingBrowserApproval, "id" | "waiting">,
   signal: AbortSignal | undefined,
+  /** Told the question as asked, so another surface can offer to answer it. */
+  onAsked?: (asked: PendingBrowserApproval) => void,
 ): Promise<BrowserApprovalDecision> {
   sequence += 1;
   const id = `approval-${sequence}`;
@@ -57,7 +59,9 @@ export function waitForBrowserApproval(
       finish();
       resolve(decision);
     });
-    store.enqueueBrowserApproval(threadRef, { ...approval, id, waiting: true });
+    const asked: PendingBrowserApproval = { ...approval, id, waiting: true };
+    store.enqueueBrowserApproval(threadRef, asked);
+    onAsked?.(asked);
     // The question can also be withdrawn without an answer -- its tab closed --
     // and then there is nothing left to wait for.
     unsubscribe = useBrowserPanelStore.subscribe((state) => {

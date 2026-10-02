@@ -17,6 +17,7 @@ import { QueryClient, useQueryClient } from "@tanstack/react-query";
 import { APP_DISPLAY_NAME } from "../branding";
 import { AppSidebarLayout } from "../components/AppSidebarLayout";
 import { CommandPalette } from "../components/CommandPalette";
+import { BrowserHostLayer } from "../components/browser/BrowserHostLayer";
 import { BrowserProfileReconciler } from "../components/desktop/BrowserProfileReconciler";
 import { DesktopUpdateInstallDialog } from "../components/desktop/DesktopUpdateInstallDialog";
 import { SshPasswordPromptDialog } from "../components/desktop/SshPasswordPromptDialog";
@@ -154,6 +155,7 @@ function RootRouteView() {
         <EnvironmentConnectionManagerBootstrap />
         <DesktopTaskbarStatusSync />
         {isElectron ? <BrowserProfileReconciler /> : null}
+        {isElectron ? <BrowserHostLayer /> : null}
         <SshPasswordPromptDialog />
         <QuitConfirmationDialog />
         <DesktopUpdateInstallDialog />

@@ -6,6 +6,8 @@ import {
   type PreviewAutomationRequest,
 } from "@threadlines/contracts";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import * as Scope from "effect/Scope";
 import * as Fiber from "effect/Fiber";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
@@ -57,6 +59,29 @@ const attachHost = Effect.fn(function* (
     }),
   );
   return { nextMessage, nextRequest };
+});
+
+/** A client-wide host in its own scope, so a test can make it leave. */
+const attachClient = Effect.fn(function* (
+  broker: PreviewAutomationBrokerService,
+  hostId: string,
+  machineLocal: boolean,
+) {
+  const scope = yield* Scope.make();
+  const messages = yield* broker
+    .connectClient({
+      hostId,
+      operations: ["click", "snapshot"],
+      features: ["cancel"],
+      machineLocal,
+    })
+    .pipe(Scope.provide(scope));
+  const pull = yield* Stream.toPull(messages).pipe(Scope.provide(scope));
+  const nextMessage = pull.pipe(
+    Effect.map((batch): PreviewAutomationHostMessage | undefined => batch[0]),
+    Effect.orDie,
+  );
+  return { nextMessage, leave: Scope.close(scope, Exit.void) };
 });
 
 describe("PreviewAutomationBroker", () => {
@@ -237,6 +262,94 @@ describe("PreviewAutomationBroker", () => {
         const failure = yield* Fiber.join(call).pipe(Effect.flip);
         assert.strictEqual(failure._tag, "PreviewAutomationTimeoutError");
         assert.include(failure.message, "did not answer in time");
+      }),
+    ),
+  );
+
+  it.effect(
+    "gives a thread nobody holds to the client on the server's machine, and keeps it there",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const broker = yield* make;
+          const local = yield* attachClient(broker, "mac", true);
+          // Newer, but on another computer: its localhost is not the agent's.
+          yield* attachClient(broker, "windows", false);
+
+          yield* broker
+            .invoke({ threadId, agentId, operation: "click", input: {} })
+            .pipe(Effect.forkChild);
+          const first = yield* local.nextMessage;
+          assert.deepInclude(first, { threadId, operation: "click" });
+
+          yield* attachClient(broker, "mac-2", true);
+          yield* broker
+            .invoke({ threadId, agentId, operation: "snapshot", input: {} })
+            .pipe(Effect.forkChild);
+          // The thread's tabs are on the first machine; a newer client does not take them.
+          assert.deepInclude(yield* local.nextMessage, { threadId, operation: "snapshot" });
+        }),
+      ),
+  );
+
+  it.effect("moves a thread to the client that opened its browser, and tells the old one", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const broker = yield* make;
+        const mac = yield* attachClient(broker, "mac", true);
+        const windows = yield* attachClient(broker, "windows", false);
+        const inFlight = yield* broker
+          .invoke({ threadId, agentId, operation: "click", input: {} })
+          .pipe(Effect.forkChild);
+        yield* mac.nextMessage;
+
+        yield* broker.claim({ hostId: "windows", threadId });
+
+        // The click was headed for pages the user is no longer looking at.
+        const failure = yield* Fiber.join(inFlight).pipe(Effect.flip);
+        assert.strictEqual(failure._tag, "PreviewAutomationDisconnectedError");
+        assert.deepStrictEqual(yield* mac.nextMessage, { _tag: "release", threadId });
+        yield* broker
+          .invoke({ threadId, agentId, operation: "snapshot", input: {} })
+          .pipe(Effect.forkChild);
+        assert.deepInclude(yield* windows.nextMessage, { threadId, operation: "snapshot" });
+      }),
+    ),
+  );
+
+  it.effect("keeps a claim that arrives before the client's host does", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const broker = yield* make;
+        yield* attachClient(broker, "mac", true);
+        // The panel's claim and the host's subscription travel separately.
+        yield* broker.claim({ hostId: "windows", threadId });
+        const windows = yield* attachClient(broker, "windows", false);
+
+        yield* broker
+          .invoke({ threadId, agentId, operation: "click", input: {} })
+          .pipe(Effect.forkChild);
+        assert.deepInclude(yield* windows.nextMessage, { threadId, operation: "click" });
+      }),
+    ),
+  );
+
+  it.effect("finds a thread a new home when the client holding it leaves", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const broker = yield* make;
+        const mac = yield* attachClient(broker, "mac", true);
+        const windows = yield* attachClient(broker, "windows", false);
+        yield* broker
+          .invoke({ threadId, agentId, operation: "click", input: {} })
+          .pipe(Effect.forkChild);
+        yield* mac.nextMessage;
+
+        yield* mac.leave;
+        yield* broker
+          .invoke({ threadId, agentId, operation: "snapshot", input: {} })
+          .pipe(Effect.forkChild);
+        assert.deepInclude(yield* windows.nextMessage, { threadId, operation: "snapshot" });
       }),
     ),
   );

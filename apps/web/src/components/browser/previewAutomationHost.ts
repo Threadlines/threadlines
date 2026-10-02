@@ -1,12 +1,15 @@
+import { scopeThreadRef } from "@threadlines/client-runtime";
 import type {
   DesktopBridge,
+  EnvironmentId,
   PreviewAutomationHostFeature,
+  PreviewAutomationHostMessage,
   PreviewAutomationOperation,
   PreviewAutomationRequest,
   PreviewAutomationResponse,
   ScopedThreadRef,
+  ThreadId,
 } from "@threadlines/contracts";
-import { useEffect, useRef } from "react";
 
 import { ensureEnvironmentApi } from "../../environmentApi";
 
@@ -165,6 +168,11 @@ export interface PreviewAutomationHostTarget {
   readonly onAgentActivity: (activity: AgentActivity) => void;
   /** The tab changed under the agent because the user acted while it was running. */
   readonly onUserTakeover?: (() => void) | undefined;
+  /**
+   * Readies the page for the agent's action -- awake, and painted if it is
+   * off screen -- and returns the call that marks the action finished.
+   */
+  readonly beginWork?: (() => Promise<() => void>) | undefined;
 }
 
 /**
@@ -383,7 +391,14 @@ export function createPreviewAutomationHandler(
             : null;
         // The last moment to back out before the page is touched.
         throwIfCancelled(signal);
-        const dispatched = await dispatch(bridge, target, target.webContentsId, request, signal);
+        const endWork = (await target.beginWork?.()) ?? (() => {});
+        const dispatched = await dispatch(
+          bridge,
+          target,
+          target.webContentsId,
+          request,
+          signal,
+        ).finally(endWork);
         const after =
           controlled && bridge.previewStatus !== undefined
             ? await bridge.previewStatus({ webContentsId: target.webContentsId as number })
@@ -607,88 +622,165 @@ function describe(cause: unknown): string {
 }
 
 /**
- * Keeps this client registered as the browser for a thread while the panel is
- * showing it.
+ * Makes this client the browser for one environment's threads, for as long as
+ * the returned call has not been made.
+ *
+ * With a server that routes to client-wide hosts, one subscription serves
+ * every thread: each request names its thread, and the server picks which
+ * client holds which thread (see `PreviewAutomationClientHostSchema`). An
+ * older server only reaches a thread a client is showing, one subscription
+ * per thread, so then this follows the thread on screen.
  *
  * Registration is the subscription: while it is open the agent's calls land
- * here, and when it closes -- panel dismissed, thread switched, socket dropped
- * -- the broker forgets the host and tells anything still waiting that the
- * browser went away. That is the whole lifecycle, and it is why there is no
- * unregister call to forget to make.
+ * here, and when it closes -- socket dropped, app closing -- the broker forgets
+ * the host and tells anything still waiting that the browser went away.
  */
-export function usePreviewAutomationHost(input: {
-  readonly threadRef: ScopedThreadRef;
-  readonly enabled: boolean;
-  readonly resolveTarget: (request: PreviewAutomationRequest) => PreviewAutomationHostTarget;
+export function connectEnvironmentBrowserHost(input: {
+  readonly environmentId: EnvironmentId;
+  /** The client runs on the server's machine, so its `localhost` is the agent's. */
+  readonly machineLocal: boolean;
+  /** Whether the server routes to client-wide hosts; read when connecting. */
+  readonly clientHosts: boolean;
+  readonly resolveTarget: (
+    threadRef: ScopedThreadRef,
+    request: PreviewAutomationRequest,
+  ) => PreviewAutomationHostTarget;
+  readonly prepare: (
+    threadRef: ScopedThreadRef,
+    request: PreviewAutomationRequest,
+  ) => Promise<void>;
+  /** Another client took this thread's browser. */
+  readonly onRelease: (threadRef: ScopedThreadRef) => void;
   /**
-   * Run before the target is resolved, to make one exist. This is where a
-   * closed panel is opened and waited for; it must settle within the broker's
-   * timeout, and it may settle without succeeding -- a target with no page is
-   * an answer the host already knows how to give.
+   * The connection came back after dropping. The server forgot which threads
+   * this client held; the caller claims back the one the user is looking at.
    */
-  readonly prepare?: (request: PreviewAutomationRequest) => Promise<void>;
-}): void {
-  const { threadRef, enabled } = input;
-  // Read through a ref so a re-render that changes which tab is active does not
-  // tear the subscription down and put it back up.
-  const target = useRef(input.resolveTarget);
-  target.current = input.resolveTarget;
-  const prepare = useRef(input.prepare);
-  prepare.current = input.prepare;
+  readonly onReconnect: () => void;
+  /** For an older server: the thread on screen in this environment, and its changes. */
+  readonly shownThread: {
+    readonly current: () => ThreadId | null;
+    readonly subscribe: (listener: () => void) => () => void;
+  };
+}): { readonly hostId: string; readonly disconnect: () => void } {
+  const bridge = window.desktopBridge;
+  const hostId = `client:${Math.random().toString(36).slice(2)}`;
+  if (bridge === undefined) {
+    return { hostId, disconnect: () => {} };
+  }
+  const api = ensureEnvironmentApi(input.environmentId);
+  // Requests still being worked on, so a cancel can reach the one it names and
+  // a release every one for its thread.
+  const inFlight = new Map<string, { controller: AbortController; threadId: ThreadId | null }>();
 
-  useEffect(() => {
-    const bridge = window.desktopBridge;
-    if (!enabled || bridge === undefined) {
-      return;
-    }
+  const listen = (fallbackThreadId: ThreadId | null) => {
     const handle = createPreviewAutomationHandler(
       bridge,
-      (request) => target.current(request),
-      (request) => (prepare.current === undefined ? Promise.resolve() : prepare.current(request)),
+      (request) => input.resolveTarget(threadRefOf(request, fallbackThreadId), request),
+      (request) => input.prepare(threadRefOf(request, fallbackThreadId), request),
     );
+    return (message: PreviewAutomationHostMessage) => {
+      if ("_tag" in message) {
+        if (message._tag === "cancel") {
+          inFlight.get(message.requestId)?.controller.abort();
+        } else {
+          // The server has already failed these for the agent; work still
+          // going here -- a question waiting on the user, a page loading --
+          // must stop, not land on pages nobody is routed to any more.
+          for (const entry of inFlight.values()) {
+            if (entry.threadId === message.threadId) entry.controller.abort();
+          }
+          input.onRelease(scopeThreadRef(input.environmentId, message.threadId));
+        }
+        return;
+      }
+      const request = message;
+      const controller = new AbortController();
+      inFlight.set(request.requestId, {
+        controller,
+        threadId: request.threadId ?? fallbackThreadId,
+      });
+      // The handler promises never to reject, but a request that slips
+      // through anyway must still answer: an unhandled rejection here is
+      // twenty seconds of silence for the agent, with nothing logged.
+      void handle(request, controller.signal)
+        .catch((cause): PreviewAutomationResponse => ({
+          requestId: request.requestId,
+          error: describe(cause),
+        }))
+        .then((response) => {
+          inFlight.delete(request.requestId);
+          return response === null ? undefined : api.previewAutomation.respond(response);
+        })
+        // An answer that cannot be delivered means the connection is gone,
+        // and the broker has already failed the request for the agent.
+        .catch(() => undefined);
+    };
+  };
+  const threadRefOf = (request: PreviewAutomationRequest, fallback: ThreadId | null) => {
+    const threadId = request.threadId ?? fallback;
+    if (threadId === null || threadId === undefined) {
+      throw new Error("The browser request did not say which thread it was for.");
+    }
+    return scopeThreadRef(input.environmentId, threadId);
+  };
+  const abortAll = () => {
+    // The broker has already failed these for the agent; stop the work too.
+    for (const entry of inFlight.values()) entry.controller.abort();
+    inFlight.clear();
+  };
 
-    const api = ensureEnvironmentApi(threadRef.environmentId);
-    // Requests still being worked on, so a cancel can reach the one it names.
-    const inFlight = new Map<string, AbortController>();
-    const disconnect = api.previewAutomation.connect(
+  if (input.clientHosts) {
+    const unsubscribe = api.previewAutomation.connectClient(
       {
-        threadId: threadRef.threadId,
-        // Identifies this connection to the broker, so a reconnect displaces
-        // its own earlier registration rather than racing it.
-        hostId: `${threadRef.threadId}:${Math.random().toString(36).slice(2)}`,
+        hostId,
         operations: PREVIEW_AUTOMATION_HOST_OPERATIONS,
         features: PREVIEW_AUTOMATION_HOST_FEATURES,
+        machineLocal: input.machineLocal,
       },
-      (message) => {
-        if ("_tag" in message) {
-          inFlight.get(message.requestId)?.abort();
-          return;
-        }
-        const request = message;
-        const controller = new AbortController();
-        inFlight.set(request.requestId, controller);
-        // The handler promises never to reject, but a request that slips
-        // through anyway must still answer: an unhandled rejection here is
-        // twenty seconds of silence for the agent, with nothing logged.
-        void handle(request, controller.signal)
-          .catch((cause): PreviewAutomationResponse => ({
-            requestId: request.requestId,
-            error: describe(cause),
-          }))
-          .then((response) => {
-            inFlight.delete(request.requestId);
-            return response === null ? undefined : api.previewAutomation.respond(response);
-          })
-          // An answer that cannot be delivered means the connection is gone,
-          // and the broker has already failed the request for the agent.
-          .catch(() => undefined);
-      },
+      listen(null),
+      { onResubscribe: input.onReconnect },
     );
-    return () => {
-      // The broker has already failed these for the agent; stop the work too.
-      for (const controller of inFlight.values()) controller.abort();
-      inFlight.clear();
-      disconnect();
+    return {
+      hostId,
+      disconnect: () => {
+        abortAll();
+        unsubscribe();
+      },
     };
-  }, [enabled, threadRef.environmentId, threadRef.threadId]);
+  }
+
+  // An older server: one registration for the thread on screen, moved as it changes.
+  let current: { threadId: ThreadId; unsubscribe: () => void } | null = null;
+  const follow = () => {
+    const threadId = input.shownThread.current();
+    if (current?.threadId === threadId) return;
+    abortAll();
+    current?.unsubscribe();
+    current =
+      threadId === null
+        ? null
+        : {
+            threadId,
+            unsubscribe: api.previewAutomation.connect(
+              {
+                threadId,
+                hostId: `${threadId}:${Math.random().toString(36).slice(2)}`,
+                operations: PREVIEW_AUTOMATION_HOST_OPERATIONS,
+                features: PREVIEW_AUTOMATION_HOST_FEATURES,
+              },
+              listen(threadId),
+            ),
+          };
+  };
+  follow();
+  const stopFollowing = input.shownThread.subscribe(follow);
+  return {
+    hostId,
+    disconnect: () => {
+      stopFollowing();
+      abortAll();
+      current?.unsubscribe();
+      current = null;
+    },
+  };
 }
