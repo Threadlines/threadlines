@@ -174,6 +174,9 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
           ...(cliEffort ? ["--effort", cliEffort] : []),
           "--settings",
           settingsJson,
+          // No MCP servers: generation needs no tools, and a run that exits
+          // mid OAuth refresh loses the server's rotated refresh token.
+          "--strict-mcp-config",
           "--dangerously-skip-permissions",
         ],
         claudeEnvironment,

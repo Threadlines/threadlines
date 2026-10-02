@@ -449,6 +449,30 @@ it.layer(ClaudeTextGenerationTestLayer)("ClaudeTextGeneration", (it) => {
     ),
   );
 
+  // A short run that loads the user's MCP servers can exit mid OAuth refresh
+  // and lose a server's rotated refresh token, signing the user out.
+  it.effect("runs Claude text generation without the user's MCP servers", () =>
+    withFakeClaudeEnv(
+      {
+        output: JSON.stringify({ structured_output: { title: "Fix reconnect" } }),
+        argsMustContain: "--strict-mcp-config",
+      },
+      (textGeneration) =>
+        Effect.gen(function* () {
+          const generated = yield* textGeneration.generateThreadTitle({
+            cwd: process.cwd(),
+            message: "Fix reconnect failures.",
+            modelSelection: {
+              instanceId: ProviderInstanceId.make("claudeAgent"),
+              model: "claude-sonnet-4-6",
+            },
+          });
+
+          expect(generated.title).toBe("Fix reconnect");
+        }),
+    ),
+  );
+
   it.effect("runs Claude text generation with the configured Claude HOME", () =>
     Effect.gen(function* () {
       const path = yield* Path.Path;

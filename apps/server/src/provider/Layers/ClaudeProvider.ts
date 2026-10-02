@@ -1067,6 +1067,12 @@ function waitForAbortSignal(signal: AbortSignal): Promise<void> {
  * account info and slash commands) but never starts an API request to
  * Anthropic. We read the init data and then abort the subprocess.
  *
+ * The probe loads no MCP servers. It runs every few minutes and is killed
+ * right after init, so a server it connected could be killed mid OAuth
+ * refresh: the server rotates the refresh token, the new one dies with the
+ * process, and the user has to sign in again. Init data doesn't depend on
+ * MCP (slash commands and skills come from settings and plugins).
+ *
  * This is used as a fallback when `claude auth status` does not include
  * subscription type information.
  */
@@ -1090,6 +1096,8 @@ const probeClaudeCapabilities = (
           pathToClaudeCodeExecutable: claudeSettings.binaryPath,
           abortController: abort,
           settingSources: ["user", "project", "local"],
+          mcpServers: {},
+          strictMcpConfig: true,
           allowedTools: [],
           env: claudeEnvironment,
           stderr: () => {},
@@ -1221,10 +1229,13 @@ export const refreshClaudeOAuthCredential = (
           persistSession: false,
           pathToClaudeCodeExecutable: claudeSettings.binaryPath,
           abortController: abort,
-          // No filesystem settings and no hooks: this run exists only to make
-          // the CLI renew its credential, not to act on the user's config.
+          // No filesystem settings, hooks, or MCP servers (claude.ai
+          // connectors load even without settings): this run exists only to
+          // make the CLI renew its credential, not to act on the user's config.
           settingSources: [],
           settings: { disableAllHooks: true },
+          mcpServers: {},
+          strictMcpConfig: true,
           allowedTools: [],
           maxTurns: 1,
           model: "haiku",
