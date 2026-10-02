@@ -16,7 +16,11 @@ import {
   TurnId,
 } from "./baseSchemas.ts";
 import { ProviderInstanceId, ProviderDriverKind } from "./providerInstance.ts";
-import { OrchestrationSubagentStatus, ProviderApprovalDecision } from "./orchestration.ts";
+import {
+  OrchestrationBackgroundTaskKind,
+  OrchestrationSubagentStatus,
+  ProviderApprovalDecision,
+} from "./orchestration.ts";
 
 const TrimmedNonEmptyStringSchema = TrimmedNonEmptyString;
 const UnknownRecordSchema = Schema.Record(Schema.String, Schema.Unknown);
@@ -706,6 +710,9 @@ const TaskSnapshotUpdatedPayload = Schema.Struct({
        *  counts as pending background work, which keeps its runtime alive,
        *  but the thread does not read as waiting on it. Absent means awaited. */
       awaited: Schema.optional(Schema.Boolean),
+      /** What the task is, for saying what the thread waits on. Absent reads
+       *  as "other". */
+      kind: Schema.optional(OrchestrationBackgroundTaskKind),
     }),
   ),
 });

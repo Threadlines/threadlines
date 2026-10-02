@@ -247,6 +247,9 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           provider_thread_id,
           runtime_mode,
           active_turn_id,
+          pending_background_task_count,
+          awaited_background_task_count,
+          awaited_background_tasks,
           last_error,
           updated_at
         )
@@ -258,6 +261,9 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           'provider-thread-1',
           'approval-required',
           'turn-1',
+          1,
+          1,
+          '[{"kind":"agent","description":"Review the diff"}]',
           NULL,
           '2026-02-24T00:00:07.000Z'
         )
@@ -442,8 +448,9 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
             runtimeMode: "approval-required",
             checkoutCwd: null,
             activeTurnId: asTurnId("turn-1"),
-            pendingBackgroundTaskCount: 0,
-            awaitedBackgroundTaskCount: 0,
+            pendingBackgroundTaskCount: 1,
+            awaitedBackgroundTaskCount: 1,
+            awaitedBackgroundTasks: [{ kind: "agent", description: "Review the diff" }],
             lastError: null,
             updatedAt: "2026-02-24T00:00:07.000Z",
           },
@@ -525,8 +532,9 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
             runtimeMode: "approval-required",
             checkoutCwd: null,
             activeTurnId: asTurnId("turn-1"),
-            pendingBackgroundTaskCount: 0,
-            awaitedBackgroundTaskCount: 0,
+            pendingBackgroundTaskCount: 1,
+            awaitedBackgroundTaskCount: 1,
+            awaitedBackgroundTasks: [{ kind: "agent", description: "Review the diff" }],
             lastError: null,
             updatedAt: "2026-02-24T00:00:07.000Z",
           },

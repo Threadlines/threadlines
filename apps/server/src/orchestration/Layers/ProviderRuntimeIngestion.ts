@@ -60,6 +60,12 @@ import {
   type ProviderActivityStreamSnapshot,
 } from "./ProviderActivityProjection.ts";
 import { handOffReplyText } from "../agentRequestDecisions.ts";
+import {
+  carriedBackgroundTasks,
+  NO_BACKGROUND_TASKS,
+  sameAwaitedBackgroundTasks,
+  toAwaitedBackgroundTask,
+} from "../sessionBackgroundTasks.ts";
 
 const providerTurnKey = (threadId: ThreadId, turnId: TurnId) => `${threadId}:${turnId}`;
 const providerCommandId = (event: ProviderRuntimeEvent, tag: string): CommandId =>
@@ -3127,16 +3133,9 @@ const make = Effect.gen(function* () {
               runtimeMode: thread.session?.runtimeMode ?? "full-access",
               checkoutCwd: thread.session?.checkoutCwd ?? null,
               activeTurnId: nextActiveTurnId,
-              pendingBackgroundTaskCount:
-                event.type === "session.started" || event.type === "session.exited"
-                  ? 0
-                  : (thread.session?.pendingBackgroundTaskCount ?? 0),
-              awaitedBackgroundTaskCount:
-                event.type === "session.started" || event.type === "session.exited"
-                  ? 0
-                  : (thread.session?.awaitedBackgroundTaskCount ??
-                    thread.session?.pendingBackgroundTaskCount ??
-                    0),
+              ...(event.type === "session.started" || event.type === "session.exited"
+                ? NO_BACKGROUND_TASKS
+                : carriedBackgroundTasks(thread.session)),
               lastError,
               updatedAt: sessionUpdatedAt,
             },
@@ -3185,12 +3184,15 @@ const make = Effect.gen(function* () {
         const nextPendingCount = pendingTasks.size;
         // A task meant to keep running (a dev server) still holds the runtime
         // open, but the thread is not waiting on it.
-        const nextAwaitedCount = [...pendingTasks.values()].filter(
-          (task) => task.awaited !== false,
-        ).length;
+        const nextAwaitedTasks = [...pendingTasks.values()]
+          .filter((task) => task.awaited !== false)
+          .map(toAwaitedBackgroundTask);
+        // Compared as a list, not a count: one agent finishing as a command
+        // starts changes what the thread waits on without changing how much.
         if (
           nextPendingCount !== (thread.session.pendingBackgroundTaskCount ?? 0) ||
-          nextAwaitedCount !== thread.session.awaitedBackgroundTaskCount
+          nextAwaitedTasks.length !== thread.session.awaitedBackgroundTaskCount ||
+          !sameAwaitedBackgroundTasks(nextAwaitedTasks, thread.session.awaitedBackgroundTasks ?? [])
         ) {
           yield* orchestrationEngine.dispatch({
             type: "thread.session.set",
@@ -3199,7 +3201,8 @@ const make = Effect.gen(function* () {
             session: {
               ...thread.session,
               pendingBackgroundTaskCount: nextPendingCount,
-              awaitedBackgroundTaskCount: nextAwaitedCount,
+              awaitedBackgroundTaskCount: nextAwaitedTasks.length,
+              awaitedBackgroundTasks: nextAwaitedTasks,
               updatedAt: now,
             },
             createdAt: now,
@@ -3239,8 +3242,10 @@ const make = Effect.gen(function* () {
             session: {
               ...thread.session,
               pendingBackgroundTaskCount: nextPendingCount,
-              // Edges carry no intent, so every task is awaited.
+              // Edges carry no intent, so every task is awaited, and no list:
+              // with nothing describing them, the wait stays unspecific.
               awaitedBackgroundTaskCount: nextPendingCount,
+              awaitedBackgroundTasks: [],
               updatedAt: now,
             },
             createdAt: now,
@@ -3633,11 +3638,7 @@ const make = Effect.gen(function* () {
                 : {}),
               runtimeMode: thread.session?.runtimeMode ?? "full-access",
               activeTurnId: eventTurnId ?? null,
-              pendingBackgroundTaskCount: thread.session?.pendingBackgroundTaskCount ?? 0,
-              awaitedBackgroundTaskCount:
-                thread.session?.awaitedBackgroundTaskCount ??
-                thread.session?.pendingBackgroundTaskCount ??
-                0,
+              ...carriedBackgroundTasks(thread.session),
               lastError: runtimeErrorMessage,
               updatedAt: now,
             },

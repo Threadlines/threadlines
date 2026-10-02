@@ -3,6 +3,7 @@ import {
   MessageId,
   ThreadId,
   TurnId,
+  type OrchestrationAwaitedBackgroundTask,
   type OrchestrationThreadActivity,
   type OrchestrationSubagent,
 } from "@threadlines/contracts";
@@ -28,6 +29,9 @@ import {
   findLatestProposedPlan,
   findSidebarProposedPlan,
   hasActionableProposedPlan,
+  describedAwaitedTasks,
+  formatAwaitedTasks,
+  formatBackgroundWaitWord,
   isLatestTurnSettled,
 } from "./session-logic";
 
@@ -4786,6 +4790,40 @@ describe("isLatestTurnSettled", () => {
         null,
       ),
     ).toBe(false);
+  });
+});
+
+describe("background wait wording", () => {
+  const session = (
+    awaitedBackgroundTasks: ReadonlyArray<OrchestrationAwaitedBackgroundTask>,
+    awaitedBackgroundTaskCount = awaitedBackgroundTasks.length,
+  ) => ({ awaitedBackgroundTaskCount, awaitedBackgroundTasks });
+
+  it("names agents in the row and every kind in a sentence, agents first", () => {
+    const tasks = describedAwaitedTasks(
+      session([
+        { kind: "command", description: "Watch CI" },
+        { kind: "agent", description: "Review the diff" },
+        { kind: "agent", description: "Research the fix" },
+      ]),
+    );
+    expect(tasks?.map((task) => task.kind)).toEqual(["agent", "agent", "command"]);
+    expect(formatBackgroundWaitWord(tasks)).toBe("2 agents");
+    expect(formatAwaitedTasks(tasks ?? [])).toBe("2 agents and 1 command");
+    expect(formatAwaitedTasks([{ kind: "workflow" }, { kind: "command" }, { kind: "other" }])).toBe(
+      "1 workflow, 1 command and 1 task",
+    );
+  });
+
+  it("keeps a plain wait for commands and for waits the server did not describe", () => {
+    expect(formatBackgroundWaitWord(describedAwaitedTasks(session([{ kind: "command" }])))).toBe(
+      "waiting",
+    );
+    // An older server, or a provider that only counts: the list does not
+    // account for every awaited task, so it describes nothing.
+    expect(describedAwaitedTasks(session([], 2))).toBeNull();
+    expect(describedAwaitedTasks(session([{ kind: "agent" }], 2))).toBeNull();
+    expect(formatBackgroundWaitWord(null)).toBe("waiting");
   });
 });
 

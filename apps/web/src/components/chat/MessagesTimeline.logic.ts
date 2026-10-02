@@ -1,5 +1,6 @@
 import * as Equal from "effect/Equal";
 import {
+  formatAwaitedTasks,
   type ModelFallbackState,
   type ForkContextEntry,
   type SubagentResultEntry,
@@ -12,6 +13,7 @@ import { roomAgentKey, roomTurnOwners } from "../../rooms";
 import {
   type MessageAgentModel,
   type MessageId,
+  type OrchestrationAwaitedBackgroundTask,
   type SideTurnId,
   type ThreadParticipantId,
   type TurnId,
@@ -356,6 +358,8 @@ export function deriveMessagesTimelineRows(input: {
   liveAgentCount?: number | undefined;
   /** The turn settled but provider background work will wake it again. */
   isWaitingOnBackgroundTasks?: boolean | undefined;
+  /** What that work is, when the server described it (describedAwaitedTasks). */
+  awaitedTasks?: ReadonlyArray<OrchestrationAwaitedBackgroundTask> | null | undefined;
   activeStatusLabel?: string | undefined;
   activeTurnInProgress?: boolean;
   activeTurnId?: TurnId | null;
@@ -591,23 +595,35 @@ export function deriveMessagesTimelineRows(input: {
   } else if (liveAgentCount > 0) {
     // The turn settled but agents it delegated to are still going: the anchor
     // stays as their tracker, without a turn timer, until the last one lands.
+    // The tracker beside the word already counts the agents, so when the turn
+    // also waits on something else (a test run), the word names that instead.
+    const waitingBesidesAgents =
+      input.isWaitingOnBackgroundTasks && input.awaitedTasks
+        ? formatAwaitedTasks(input.awaitedTasks, ["workflow", "command", "other"])
+        : null;
     rows.push({
       ...UNPLACED,
       kind: "working",
       id: "working-indicator-row",
       createdAt: null,
-      label: liveAgentCount === 1 ? "Agent working" : "Agents working",
+      label: waitingBesidesAgents
+        ? `Waiting on ${waitingBesidesAgents}`
+        : liveAgentCount === 1
+          ? "Agent working"
+          : "Agents working",
       thought: null,
     });
   } else if (input.isWaitingOnBackgroundTasks) {
-    // The turn settled but a background task (a command, a cron) will wake
-    // it: the anchor stays up as a plain wait, without a turn timer.
+    // The turn settled but a background task (a command, an agent) will wake
+    // it: the anchor stays up as a wait, without a turn timer, and says what
+    // it waits on when the server described it.
+    const waitingOn = input.awaitedTasks ? formatAwaitedTasks(input.awaitedTasks) : null;
     rows.push({
       ...UNPLACED,
       kind: "working",
       id: "working-indicator-row",
       createdAt: null,
-      label: "Waiting",
+      label: waitingOn ? `Waiting on ${waitingOn}` : "Waiting",
       thought: null,
     });
   }

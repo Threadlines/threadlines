@@ -2,6 +2,9 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as SqlSchema from "effect/unstable/sql/SqlSchema";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Schema from "effect/Schema";
+import * as Struct from "effect/Struct";
+import { OrchestrationAwaitedBackgroundTask } from "@threadlines/contracts";
 
 import { toPersistenceSqlError } from "../Errors.ts";
 
@@ -12,6 +15,12 @@ import {
   DeleteProjectionThreadSessionInput,
   GetProjectionThreadSessionInput,
 } from "../Services/ProjectionThreadSessions.ts";
+
+const ProjectionThreadSessionDbRow = ProjectionThreadSession.mapFields(
+  Struct.assign({
+    awaitedBackgroundTasks: Schema.fromJsonString(Schema.Array(OrchestrationAwaitedBackgroundTask)),
+  }),
+);
 
 const makeProjectionThreadSessionRepository = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -33,6 +42,7 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
           active_turn_id,
           pending_background_task_count,
           awaited_background_task_count,
+          awaited_background_tasks,
           last_error,
           updated_at
         )
@@ -56,6 +66,7 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
           ${row.activeTurnId},
           ${row.pendingBackgroundTaskCount},
           ${row.awaitedBackgroundTaskCount},
+          ${JSON.stringify(row.awaitedBackgroundTasks)},
           ${row.lastError},
           ${row.updatedAt}
         )
@@ -72,6 +83,7 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
           active_turn_id = excluded.active_turn_id,
           pending_background_task_count = excluded.pending_background_task_count,
           awaited_background_task_count = excluded.awaited_background_task_count,
+          awaited_background_tasks = excluded.awaited_background_tasks,
           last_error = excluded.last_error,
           updated_at = excluded.updated_at
       `,
@@ -79,7 +91,7 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
 
   const getProjectionThreadSessionRow = SqlSchema.findOneOption({
     Request: GetProjectionThreadSessionInput,
-    Result: ProjectionThreadSession,
+    Result: ProjectionThreadSessionDbRow,
     execute: ({ threadId }) =>
       sql`
         SELECT
@@ -95,6 +107,7 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
           active_turn_id AS "activeTurnId",
           pending_background_task_count AS "pendingBackgroundTaskCount",
           awaited_background_task_count AS "awaitedBackgroundTaskCount",
+          awaited_background_tasks AS "awaitedBackgroundTasks",
           last_error AS "lastError",
           updated_at AS "updatedAt"
         FROM projection_thread_sessions

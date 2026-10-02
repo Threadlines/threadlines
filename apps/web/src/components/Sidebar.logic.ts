@@ -33,7 +33,7 @@ export interface ThreadStatusPill {
     | "Pending Approval"
     | "Awaiting Input"
     | "Plan Ready"
-    | "Background"
+    | "Waiting"
     | "Answering"
     | "Failed";
   colorClass: string;
@@ -373,7 +373,7 @@ export function resolveThreadStatusPill(input: {
   // the thread back up on its own when they finish.
   if (isWaitingOnBackgroundTasks(thread.latestTurn, thread.session)) {
     return {
-      label: "Background",
+      label: "Waiting",
       colorClass: "text-cyan-600 dark:text-cyan-300/90",
       dotClass: THREAD_STATUS_DOT_CLASSES.cyan,
       pulse: true,

@@ -39,6 +39,7 @@ import {
 import { inboxStatusWord, type ThreadStatusPill } from "../Sidebar.logic";
 import { ProjectFavicon } from "../ProjectFavicon";
 import { ThreadHoverCard, useThreadHoverCardHandle } from "./ThreadHoverCard";
+import { describedAwaitedTasks, formatBackgroundWaitWord } from "../../session-logic";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 
 const ROW_ITEM_CLASS_NAME = "group/thread-row relative w-full";
@@ -476,11 +477,15 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
   const inFlightStartedAt = inFlightTurn
     ? (inFlightTurn.startedAt ?? inFlightTurn.requestedAt)
     : null;
-  // "Background" is a wait, not work: the turn has settled and a provider
+  // "Waiting" is a wait, not work: the turn has settled and a provider
   // task will start the thread back up on its own. Its clock anchors to the
   // turn's settle time -- the moment the waiting began. The pill only exists
   // while the latest turn is settled, so completedAt is always there.
-  const isWaitingOnTasks = status?.label === "Background";
+  const isWaitingOnTasks = status?.label === "Waiting";
+  // Agents still at work say so ("2 agents"); a command keeps "waiting".
+  const waitWord = isWaitingOnTasks
+    ? formatBackgroundWaitWord(describedAwaitedTasks(thread.session))
+    : null;
   const liveClockStartedAt = isInFlight
     ? inFlightStartedAt
     : isWaitingOnTasks
@@ -693,8 +698,8 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
                     <span className="shrink-0">
                       {isAnswering
                         ? "answering"
-                        : isWaitingOnTasks
-                          ? "waiting"
+                        : waitWord !== null
+                          ? waitWord
                           : status?.label === "Starting"
                             ? "starting"
                             : "working"}

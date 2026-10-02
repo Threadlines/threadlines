@@ -391,6 +391,8 @@ export interface DesktopTaskbarThreadSummary {
   environmentId: string;
   title: string;
   state: DesktopTaskbarThreadState;
+  /** For a waiting thread, what it waits on ("2 agents"), when known. */
+  waitingOn?: string;
 }
 
 export const DesktopTaskbarThreadSummarySchema = Schema.Struct({
@@ -398,6 +400,7 @@ export const DesktopTaskbarThreadSummarySchema = Schema.Struct({
   environmentId: Schema.String,
   title: Schema.String,
   state: DesktopTaskbarThreadStateSchema,
+  waitingOn: Schema.optionalKey(Schema.String),
 });
 
 export interface DesktopTaskbarStatusInput {

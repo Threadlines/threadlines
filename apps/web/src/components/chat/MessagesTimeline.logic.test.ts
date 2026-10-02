@@ -304,6 +304,46 @@ describe("deriveMessagesTimelineRows", () => {
     ]);
   });
 
+  it("says what a settled turn waits on when the server described it", () => {
+    const waitLabel = (input: {
+      liveAgentCount: number;
+      awaitedTasks: Parameters<typeof deriveMessagesTimelineRows>[0]["awaitedTasks"];
+    }) =>
+      deriveMessagesTimelineRows({
+        timelineEntries: [],
+        isWorking: false,
+        isWaitingOnBackgroundTasks: true,
+        activeTurnStartedAt: null,
+        turnDiffSummaryByAssistantMessageId: new Map(),
+        revertTurnCountByUserMessageId: new Map(),
+        ...input,
+      }).find((row) => row.kind === "working")?.label;
+
+    expect(
+      waitLabel({
+        liveAgentCount: 0,
+        awaitedTasks: [
+          { kind: "command", description: "Watch CI" },
+          { kind: "command", description: "Run the test suite" },
+        ],
+      }),
+    ).toBe("Waiting on 2 commands");
+    // The tracker beside the word counts the agents; the word names the rest.
+    expect(
+      waitLabel({
+        liveAgentCount: 2,
+        awaitedTasks: [
+          { kind: "agent" },
+          { kind: "agent" },
+          { kind: "command", description: "Watch CI" },
+        ],
+      }),
+    ).toBe("Waiting on 1 command");
+    expect(
+      waitLabel({ liveAgentCount: 2, awaitedTasks: [{ kind: "agent" }, { kind: "agent" }] }),
+    ).toBe("Agents working");
+  });
+
   it("only enables assistant copy for the terminal assistant message in a turn", () => {
     const rows = deriveMessagesTimelineRows({
       timelineEntries: [

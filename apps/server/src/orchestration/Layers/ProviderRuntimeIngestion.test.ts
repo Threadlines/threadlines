@@ -1345,7 +1345,7 @@ describe("ProviderRuntimeIngestion", () => {
       },
     });
 
-    await waitForThread(
+    const edgeCountedThread = await waitForThread(
       harness.readModel,
       (thread) =>
         thread.session?.pendingBackgroundTaskCount === 1 &&
@@ -1354,6 +1354,8 @@ describe("ProviderRuntimeIngestion", () => {
             activity.id === "evt-background-task-edge-before-snapshot",
         ),
     );
+    // An edge says nothing about what the task is, so the wait stays general.
+    expect(edgeCountedThread.session?.awaitedBackgroundTasks).toEqual([]);
 
     harness.emit({
       type: "task.snapshot.updated",
@@ -1364,13 +1366,33 @@ describe("ProviderRuntimeIngestion", () => {
       createdAt: now,
       payload: {
         tasks: [
-          { taskId: "background-task-snapshot-1", taskType: "local_agent" },
+          {
+            taskId: "background-task-snapshot-1",
+            taskType: "local_agent",
+            kind: "agent",
+            description: "Review the diff",
+          },
           // Defensive duplicate: snapshot semantics are a set even if a
           // provider accidentally repeats an id in its array.
-          { taskId: "background-task-snapshot-1", taskType: "local_agent" },
-          { taskId: "background-task-snapshot-2", taskType: "local_bash" },
+          {
+            taskId: "background-task-snapshot-1",
+            taskType: "local_agent",
+            kind: "agent",
+            description: "Review the diff",
+          },
+          {
+            taskId: "background-task-snapshot-2",
+            taskType: "local_bash",
+            kind: "command",
+            description: `Watch CI ${"until every check finishes ".repeat(8)}`,
+          },
           // Ambient housekeeping is listed but is not work the user waits on.
-          { taskId: "background-task-snapshot-ambient", taskType: "local_bash", ambient: true },
+          {
+            taskId: "background-task-snapshot-ambient",
+            taskType: "local_bash",
+            kind: "command",
+            ambient: true,
+          },
         ],
       },
     });
@@ -1380,6 +1402,77 @@ describe("ProviderRuntimeIngestion", () => {
       (thread) =>
         thread.session?.pendingBackgroundTaskCount === 2 &&
         thread.session.awaitedBackgroundTaskCount === 2,
+    );
+    const [awaitedAgent, awaitedCommand] = snapshotThread.session?.awaitedBackgroundTasks ?? [];
+    expect(awaitedAgent).toEqual({ kind: "agent", description: "Review the diff" });
+    // Descriptions are clipped to one sidebar line's worth.
+    expect(awaitedCommand?.kind).toBe("command");
+    expect(awaitedCommand?.description?.startsWith("Watch CI until every check")).toBe(true);
+    expect(awaitedCommand?.description?.endsWith("…")).toBe(true);
+    expect(awaitedCommand?.description?.length).toBeLessThanOrEqual(120);
+
+    // Same number of tasks, different work: the agent finished as a test run
+    // started. What the thread waits on changed, so the session follows.
+    harness.emit({
+      type: "task.snapshot.updated",
+      eventId: asEventId("evt-background-task-snapshot-swapped"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+      threadId: asThreadId("thread-1"),
+      createdAt: now,
+      payload: {
+        tasks: [
+          {
+            taskId: "background-task-snapshot-3",
+            taskType: "local_bash",
+            kind: "command",
+            description: "Run the test suite",
+          },
+          {
+            taskId: "background-task-snapshot-2",
+            taskType: "local_bash",
+            kind: "command",
+            description: "Watch CI",
+          },
+        ],
+      },
+    });
+
+    await waitForThread(
+      harness.readModel,
+      (thread) =>
+        thread.session?.awaitedBackgroundTaskCount === 2 &&
+        thread.session.awaitedBackgroundTasks?.every((task) => task.kind === "command") === true,
+    );
+
+    harness.emit({
+      type: "task.snapshot.updated",
+      eventId: asEventId("evt-background-task-snapshot-restored"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+      threadId: asThreadId("thread-1"),
+      createdAt: now,
+      payload: {
+        tasks: [
+          {
+            taskId: "background-task-snapshot-1",
+            taskType: "local_agent",
+            kind: "agent",
+            description: "Review the diff",
+          },
+          {
+            taskId: "background-task-snapshot-2",
+            taskType: "local_bash",
+            kind: "command",
+            description: "Watch CI",
+          },
+        ],
+      },
+    });
+
+    await waitForThread(
+      harness.readModel,
+      (thread) => thread.session?.awaitedBackgroundTasks?.[0]?.kind === "agent",
     );
     expect(
       snapshotThread.activities.some(
@@ -1425,18 +1518,32 @@ describe("ProviderRuntimeIngestion", () => {
       createdAt: now,
       payload: {
         tasks: [
-          { taskId: "background-task-snapshot-1", taskType: "local_agent" },
-          { taskId: "background-task-snapshot-2", taskType: "local_bash", awaited: false },
+          {
+            taskId: "background-task-snapshot-1",
+            taskType: "local_agent",
+            kind: "agent",
+            description: "Review the diff",
+          },
+          {
+            taskId: "background-task-snapshot-2",
+            taskType: "local_bash",
+            kind: "command",
+            description: "Watch CI",
+            awaited: false,
+          },
         ],
       },
     });
 
-    await waitForThread(
+    const releasedThread = await waitForThread(
       harness.readModel,
       (thread) =>
         thread.session?.pendingBackgroundTaskCount === 2 &&
         thread.session.awaitedBackgroundTaskCount === 1,
     );
+    expect(releasedThread.session?.awaitedBackgroundTasks).toEqual([
+      { kind: "agent", description: "Review the diff" },
+    ]);
 
     harness.emit({
       type: "task.snapshot.updated",
@@ -1448,12 +1555,13 @@ describe("ProviderRuntimeIngestion", () => {
       payload: { tasks: [] },
     });
 
-    await waitForThread(
+    const settledThread = await waitForThread(
       harness.readModel,
       (thread) =>
         thread.session?.pendingBackgroundTaskCount === 0 &&
         thread.session.awaitedBackgroundTaskCount === 0,
     );
+    expect(settledThread.session?.awaitedBackgroundTasks).toEqual([]);
 
     // A terminal edge arriving after the replace-all snapshot must not
     // decrement another task or hide its real completion status.

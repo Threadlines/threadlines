@@ -201,6 +201,9 @@ function mapSession(session: OrchestrationSession): ThreadSession {
     // An older server does not split the count: it awaited every task.
     awaitedBackgroundTaskCount:
       session.awaitedBackgroundTaskCount ?? session.pendingBackgroundTaskCount ?? 0,
+    ...(session.awaitedBackgroundTasks?.length
+      ? { awaitedBackgroundTasks: session.awaitedBackgroundTasks }
+      : {}),
     createdAt: session.updatedAt,
     updatedAt: session.updatedAt,
     ...(session.lastError ? { lastError: session.lastError } : {}),
@@ -588,12 +591,32 @@ function latestTurnsEqual(
   );
 }
 
+function awaitedBackgroundTasksEqual(
+  left: ThreadSession["awaitedBackgroundTasks"],
+  right: ThreadSession["awaitedBackgroundTasks"],
+): boolean {
+  if (left === right) return true;
+  const leftTasks = left ?? [];
+  const rightTasks = right ?? [];
+  return (
+    leftTasks.length === rightTasks.length &&
+    leftTasks.every(
+      (task, index) =>
+        task.kind === rightTasks[index]?.kind &&
+        task.description === rightTasks[index]?.description,
+    )
+  );
+}
+
 function threadSessionsEqual(
   left: ThreadSession | null | undefined,
   right: ThreadSession | null | undefined,
 ): boolean {
   if (left === right) return true;
   if (left == null || right == null) return false;
+  // The background-task fields count too: two updates can share a timestamp
+  // (a task relisted as an agent in the same millisecond), and the second
+  // must not be dropped as a repeat of the first.
   return (
     left.provider === right.provider &&
     left.status === right.status &&
@@ -602,7 +625,10 @@ function threadSessionsEqual(
     left.participantId === right.participantId &&
     left.createdAt === right.createdAt &&
     left.updatedAt === right.updatedAt &&
-    left.lastError === right.lastError
+    left.lastError === right.lastError &&
+    left.pendingBackgroundTaskCount === right.pendingBackgroundTaskCount &&
+    left.awaitedBackgroundTaskCount === right.awaitedBackgroundTaskCount &&
+    awaitedBackgroundTasksEqual(left.awaitedBackgroundTasks, right.awaitedBackgroundTasks)
   );
 }
 

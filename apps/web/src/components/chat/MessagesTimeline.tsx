@@ -3,6 +3,7 @@ import {
   type MessageAgentModel,
   type MessageId,
   type OrchestrationAgentRequest,
+  type OrchestrationAwaitedBackgroundTask,
   type ProviderDriverKind,
   PROVIDER_DISPLAY_NAMES,
   type RoomAgentRequestId,
@@ -691,9 +692,12 @@ const VISIBLE_TURN_SETTLE_MS = 150;
 interface MessagesTimelineProps {
   emptyState?: ReactNode;
   isWorking: boolean;
-  /** The turn settled but provider background work (a command, a cron) will
-   *  wake it again; the anchor stays up as "Waiting" until then. */
+  /** The turn settled but provider background work (a command, an agent)
+   *  will wake it again; the anchor stays up as "Waiting" until then. */
   isWaitingOnBackgroundTasks?: boolean | undefined;
+  /** What that work is, when the server described it. Keep it referentially
+   *  stable: it feeds the rows memo. */
+  awaitedTasks?: ReadonlyArray<OrchestrationAwaitedBackgroundTask> | null | undefined;
   activeStatusLabel?: string | undefined;
   activeTurnInProgress: boolean;
   activeTurnId?: TurnId | null;
@@ -778,6 +782,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   emptyState,
   isWorking,
   isWaitingOnBackgroundTasks = false,
+  awaitedTasks = null,
   activeStatusLabel,
   activeTurnInProgress,
   activeTurnId,
@@ -866,6 +871,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         isWorking,
         liveAgentCount,
         isWaitingOnBackgroundTasks,
+        awaitedTasks,
         activeStatusLabel,
         activeTurnInProgress,
         activeTurnId: activeTurnId ?? null,
@@ -884,6 +890,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       isWorking,
       liveAgentCount,
       isWaitingOnBackgroundTasks,
+      awaitedTasks,
       activeStatusLabel,
       activeTurnInProgress,
       activeTurnId,

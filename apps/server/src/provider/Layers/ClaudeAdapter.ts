@@ -34,6 +34,7 @@ import {
   MessageId,
   type ModelCapabilities,
   type ModelSelection,
+  type OrchestrationBackgroundTaskKind,
   type ProviderApprovalDecision,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -1592,6 +1593,23 @@ function completedTaskStatusFromClaudeStatus(
 function isClaudeAgentTaskType(value: string | undefined): boolean {
   const normalized = value?.trim().toLowerCase();
   return normalized === "local_agent" || normalized === "remote_agent";
+}
+
+/** What a background task is, for saying what the thread waits on. A `codex
+ *  exec` run is a shell command to the SDK but another agent to the user; an
+ *  agent team's teammate is an agent too, and a websocket Monitor watch runs
+ *  like any other command. */
+function claudeBackgroundTaskKind(
+  taskType: string | undefined,
+  isCodexExecRun: boolean,
+): OrchestrationBackgroundTaskKind {
+  const normalized = taskType?.trim().toLowerCase();
+  if (isCodexExecRun || isClaudeAgentTaskType(taskType) || normalized === "in_process_teammate") {
+    return "agent";
+  }
+  if (normalized === "local_workflow") return "workflow";
+  if (isClaudeCommandTaskType(taskType) || normalized === "monitor_ws") return "command";
+  return "other";
 }
 
 function describeClaudeTaskStatus(status: ClaudeTaskStatus | undefined): string {
@@ -4685,6 +4703,13 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       settled: false,
     };
     context.codexExecRuns.set(input.taskId, run);
+    // The task list usually reaches the snapshot before the task is known to
+    // be codex, so it may have gone out as a command, even one released by the
+    // user moving on. An agent is always awaited: republish it as one.
+    context.unawaitedBackgroundTaskIds.delete(input.taskId);
+    if (context.backgroundTasks.some((task) => task.taskId === input.taskId)) {
+      yield* publishBackgroundTasks(context);
+    }
 
     const objective = input.description ?? input.invocation.prompt;
     const { model, reasoningEffort } = input.invocation;
@@ -5335,8 +5360,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
 
   /**
    * Forwards the session's live background tasks, marking the ones the agent
-   * is not waiting on. Called on every snapshot from the SDK, and again when
-   * that marking changes between snapshots.
+   * is not waiting on and what each one is. Called on every snapshot from the
+   * SDK, and again when either changes between snapshots.
    */
   const publishBackgroundTasks = Effect.fn("publishBackgroundTasks")(function* (
     context: ClaudeSessionContext,
@@ -5353,9 +5378,11 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       providerRefs: nativeProviderRefs(context),
       ...(raw ? { raw } : {}),
       payload: {
-        tasks: context.backgroundTasks.map((task) =>
-          context.unawaitedBackgroundTaskIds.has(task.taskId) ? { ...task, awaited: false } : task,
-        ),
+        tasks: context.backgroundTasks.map((task) => ({
+          ...task,
+          kind: claudeBackgroundTaskKind(task.taskType, context.codexExecRuns.has(task.taskId)),
+          ...(context.unawaitedBackgroundTaskIds.has(task.taskId) ? { awaited: false } : {}),
+        })),
       },
     });
   });

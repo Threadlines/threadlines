@@ -71,6 +71,7 @@ import {
   toSafeThreadAttachmentSegment,
 } from "../../attachmentStore.ts";
 import { projectSubagentActivity } from "../subagentProjection.ts";
+import { carriedBackgroundTasks } from "../sessionBackgroundTasks.ts";
 
 export const ORCHESTRATION_PROJECTOR_NAMES = {
   projects: "projection.projects",
@@ -1585,12 +1586,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           ? { participantId: event.payload.session.participantId }
           : {}),
         activeTurnId: event.payload.session.activeTurnId,
-        pendingBackgroundTaskCount: event.payload.session.pendingBackgroundTaskCount ?? 0,
-        // Events written before the split awaited every pending task.
-        awaitedBackgroundTaskCount:
-          event.payload.session.awaitedBackgroundTaskCount ??
-          event.payload.session.pendingBackgroundTaskCount ??
-          0,
+        ...carriedBackgroundTasks(event.payload.session),
         lastError: event.payload.session.lastError,
         updatedAt: event.payload.session.updatedAt,
       });

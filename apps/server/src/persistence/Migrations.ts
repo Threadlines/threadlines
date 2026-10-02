@@ -82,6 +82,7 @@ import Migration0060 from "./Migrations/060_ProjectionRoomAgentRole.ts";
 import Migration0061 from "./Migrations/061_ProjectionRoomAgentRequests.ts";
 import Migration0062 from "./Migrations/062_ProjectionRoomAgentInvites.ts";
 import Migration0063 from "./Migrations/063_ProjectionMessageAgentModels.ts";
+import Migration0064 from "./Migrations/064_ProjectionThreadSessionAwaitedTasks.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -157,6 +158,7 @@ export const migrationEntries = [
   [61, "ProjectionRoomAgentRequests", Migration0061],
   [62, "ProjectionRoomAgentInvites", Migration0062],
   [63, "ProjectionMessageAgentModels", Migration0063],
+  [64, "ProjectionThreadSessionAwaitedTasks", Migration0064],
 ] as const;
 
 /** Highest id in the full registry, so the "n of total" count is the real total. */

@@ -683,7 +683,7 @@ describe("resolveThreadStatusPill", () => {
         },
       }),
     ).toMatchObject({
-      label: "Background",
+      label: "Waiting",
       dotClass: THREAD_STATUS_DOT_CLASSES.cyan,
       pulse: true,
     });

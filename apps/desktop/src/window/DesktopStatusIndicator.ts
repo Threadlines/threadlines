@@ -132,12 +132,12 @@ function createDefaultStatus(): DesktopTaskbarStatusInput {
   return { status: "idle", description: "No active agent sessions" };
 }
 
-function describeThreadMenuState(state: DesktopTaskbarThreadSummary["state"]): string {
-  switch (state) {
+function describeThreadMenuState(thread: DesktopTaskbarThreadSummary): string {
+  switch (thread.state) {
     case "running":
       return "running";
     case "waiting":
-      return "waiting on background tasks";
+      return `waiting on ${thread.waitingOn ?? "background tasks"}`;
     case "completed":
       return "completed";
   }
@@ -339,7 +339,7 @@ const make = Effect.gen(function* () {
       .map((thread) => ({
         label: truncateThreadMenuLabel(thread.title),
         icon: thread.state === "completed" ? images.menuCompleted : images.menuRunning,
-        toolTip: `${thread.title.trim()} — ${describeThreadMenuState(thread.state)}`,
+        toolTip: `${thread.title.trim()} — ${describeThreadMenuState(thread)}`,
         click: () =>
           runTrayEffect(
             "open-thread",

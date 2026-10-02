@@ -699,6 +699,27 @@ export const OrchestrationSessionStatus = Schema.Literals([
 ]);
 export type OrchestrationSessionStatus = typeof OrchestrationSessionStatus.Type;
 
+/**
+ * What a background task is, as far as saying what a thread waits on goes.
+ * The driver decides: only it knows that a shell command is really another
+ * agent (Claude running `codex exec`).
+ */
+export const OrchestrationBackgroundTaskKind = Schema.Literals([
+  "agent",
+  "workflow",
+  "command",
+  "other",
+]);
+export type OrchestrationBackgroundTaskKind = typeof OrchestrationBackgroundTaskKind.Type;
+
+/** One background task the agent is waiting on. */
+export const OrchestrationAwaitedBackgroundTask = Schema.Struct({
+  kind: OrchestrationBackgroundTaskKind,
+  /** The agent's own short description of the task, clipped. */
+  description: Schema.optional(TrimmedNonEmptyString),
+});
+export type OrchestrationAwaitedBackgroundTask = typeof OrchestrationAwaitedBackgroundTask.Type;
+
 export const OrchestrationSession = Schema.Struct({
   threadId: ThreadId,
   status: OrchestrationSessionStatus,
@@ -732,6 +753,10 @@ export const OrchestrationSession = Schema.Struct({
   // Non-zero after a turn settles is what the UI shows as waiting. Absent (an
   // older server) means every pending task is awaited.
   awaitedBackgroundTaskCount: Schema.optional(NonNegativeInt),
+  // The awaited tasks themselves, so the UI can say what the thread is waiting
+  // on. Only a provider that reports its full task list fills this, so it
+  // describes the wait only when it holds as many tasks as the count above.
+  awaitedBackgroundTasks: Schema.optional(Schema.Array(OrchestrationAwaitedBackgroundTask)),
   lastError: Schema.NullOr(TrimmedNonEmptyString),
   updatedAt: IsoDateTime,
 });

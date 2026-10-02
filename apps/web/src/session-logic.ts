@@ -8,6 +8,8 @@ import {
   isToolLifecycleItemType,
   type MessageId,
   ModelSelection,
+  type OrchestrationAwaitedBackgroundTask,
+  type OrchestrationBackgroundTaskKind,
   type OrchestrationLatestTurn,
   type OrchestrationSubagent,
   type OrchestrationThreadActivity,
@@ -500,7 +502,7 @@ export function isLatestTurnSettled(
 }
 
 type SessionBackgroundState = SessionLifecycleState &
-  Partial<Pick<ThreadSession, "awaitedBackgroundTaskCount">>;
+  Partial<Pick<ThreadSession, "awaitedBackgroundTaskCount" | "awaitedBackgroundTasks">>;
 
 /**
  * The turn has settled but provider tasks the agent is waiting on (background
@@ -514,6 +516,88 @@ export function isWaitingOnBackgroundTasks(
   session: SessionBackgroundState | null,
 ): boolean {
   return (session?.awaitedBackgroundTaskCount ?? 0) > 0 && isLatestTurnSettled(latestTurn, session);
+}
+
+/** The order a wait is told in: agents first, they are what users watch. */
+const BACKGROUND_TASK_KIND_ORDER: ReadonlyArray<OrchestrationBackgroundTaskKind> = [
+  "agent",
+  "workflow",
+  "command",
+  "other",
+];
+
+const BACKGROUND_TASK_NOUNS: Readonly<
+  Record<OrchestrationBackgroundTaskKind, readonly [singular: string, plural: string]>
+> = {
+  agent: ["agent", "agents"],
+  workflow: ["workflow", "workflows"],
+  command: ["command", "commands"],
+  other: ["task", "tasks"],
+};
+
+/**
+ * The tasks a session's agent is waiting on, agents first, when the server
+ * described every one of them. Null when it did not: an older server, or a
+ * provider that reports only how many there are. Says nothing about whether
+ * the thread is waiting; pair it with {@link isWaitingOnBackgroundTasks}.
+ */
+export function describedAwaitedTasks(
+  session: Pick<
+    SessionBackgroundState,
+    "awaitedBackgroundTaskCount" | "awaitedBackgroundTasks"
+  > | null,
+): ReadonlyArray<OrchestrationAwaitedBackgroundTask> | null {
+  const tasks = session?.awaitedBackgroundTasks ?? [];
+  const count = session?.awaitedBackgroundTaskCount ?? 0;
+  if (count === 0 || tasks.length !== count) return null;
+  return BACKGROUND_TASK_KIND_ORDER.flatMap((kind) => tasks.filter((task) => task.kind === kind));
+}
+
+function countAwaitedTasks(
+  tasks: ReadonlyArray<OrchestrationAwaitedBackgroundTask>,
+  kind: OrchestrationBackgroundTaskKind,
+): number {
+  return tasks.filter((task) => task.kind === kind).length;
+}
+
+function formatTaskCount(kind: OrchestrationBackgroundTaskKind, count: number): string {
+  const [singular, plural] = BACKGROUND_TASK_NOUNS[kind];
+  return `${count} ${count === 1 ? singular : plural}`;
+}
+
+/**
+ * What the tasks are, in words: "2 agents and 1 command". Only the given
+ * kinds are told, so a surface that already shows the agents can name the
+ * rest. Null when none of those kinds are there.
+ */
+export function formatAwaitedTasks(
+  tasks: ReadonlyArray<OrchestrationAwaitedBackgroundTask>,
+  kinds: ReadonlyArray<OrchestrationBackgroundTaskKind> = BACKGROUND_TASK_KIND_ORDER,
+): string | null {
+  const parts = BACKGROUND_TASK_KIND_ORDER.flatMap((kind) => {
+    const count = kinds.includes(kind) ? countAwaitedTasks(tasks, kind) : 0;
+    return count > 0 ? [formatTaskCount(kind, count)] : [];
+  });
+  if (parts.length === 0) return null;
+  const last = parts.at(-1);
+  return parts.length === 1 ? (last ?? null) : `${parts.slice(0, -1).join(", ")} and ${last}`;
+}
+
+/**
+ * The one word a waiting thread's row spends on its wait. Agents name
+ * themselves ("2 agents"), because a thread whose agents are still at work is
+ * not idle; a workflow is a script of agents, so it is next. A command, or a
+ * wait nobody described, stays "waiting".
+ */
+export function formatBackgroundWaitWord(
+  tasks: ReadonlyArray<OrchestrationAwaitedBackgroundTask> | null,
+): string {
+  if (tasks === null) return "waiting";
+  for (const kind of ["agent", "workflow"] as const) {
+    const count = countAwaitedTasks(tasks, kind);
+    if (count > 0) return formatTaskCount(kind, count);
+  }
+  return "waiting";
 }
 
 export function deriveActiveModelFallbackState(

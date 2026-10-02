@@ -1,9 +1,22 @@
 import { scopeProjectRef, scopeThreadRef } from "@threadlines/client-runtime";
-import { CloudIcon, GitBranchIcon, MonitorIcon } from "lucide-react";
+import type {
+  OrchestrationAwaitedBackgroundTask,
+  OrchestrationBackgroundTaskKind,
+} from "@threadlines/contracts";
+import {
+  BotIcon,
+  CircleDashedIcon,
+  CloudIcon,
+  GitBranchIcon,
+  MonitorIcon,
+  TerminalIcon,
+  WorkflowIcon,
+  type LucideIcon,
+} from "lucide-react";
 import { createContext, useContext, useMemo, useState, type ReactNode } from "react";
 
 import { PROVIDER_ICON_BY_PROVIDER } from "../chat/providerIconUtils";
-import { PROVIDER_OPTIONS } from "../../session-logic";
+import { describedAwaitedTasks, formatAwaitedTasks, PROVIDER_OPTIONS } from "../../session-logic";
 import {
   useSavedEnvironmentRegistryStore,
   useSavedEnvironmentRuntimeStore,
@@ -93,6 +106,54 @@ export function ThreadHoverCard({
   );
 }
 
+const AWAITED_TASK_ICONS: Readonly<Record<OrchestrationBackgroundTaskKind, LucideIcon>> = {
+  agent: BotIcon,
+  workflow: WorkflowIcon,
+  command: TerminalIcon,
+  other: CircleDashedIcon,
+};
+
+const AWAITED_TASK_FALLBACK_NAMES: Readonly<Record<OrchestrationBackgroundTaskKind, string>> = {
+  agent: "Agent",
+  workflow: "Workflow",
+  command: "Command",
+  other: "Background task",
+};
+
+/** The card has room for a few tasks; past that, a count says the rest. */
+const AWAITED_TASK_LINE_LIMIT = 4;
+
+/** One line per task a waiting thread waits on, in the agent's own words. */
+function AwaitedTaskLines({ tasks }: { tasks: ReadonlyArray<OrchestrationAwaitedBackgroundTask> }) {
+  const shown = tasks.slice(0, AWAITED_TASK_LINE_LIMIT);
+  const hiddenCount = tasks.length - shown.length;
+  // Descriptions repeat (two runs of the same suite), so a line's key counts
+  // the lines like it before it.
+  const seen = new Map<string, number>();
+  const lines = shown.map((task) => {
+    const name = task.description ?? AWAITED_TASK_FALLBACK_NAMES[task.kind];
+    const identity = `${task.kind}:${name}`;
+    const occurrence = seen.get(identity) ?? 0;
+    seen.set(identity, occurrence + 1);
+    return { key: `${identity}:${occurrence}`, kind: task.kind, name };
+  });
+  return (
+    <>
+      {lines.map((line) => {
+        const Icon = AWAITED_TASK_ICONS[line.kind];
+        return (
+          <HoverCardDetailRow key={line.key} icon={<Icon className="size-3.5" aria-hidden />}>
+            {line.name}
+          </HoverCardDetailRow>
+        );
+      })}
+      {hiddenCount > 0 ? (
+        <HoverCardDetailRow icon={null}>{`+${hiddenCount} more`}</HoverCardDetailRow>
+      ) : null}
+    </>
+  );
+}
+
 function ThreadHoverCardContent({ thread, status }: ThreadHoverCardPayload) {
   const projectRef = useMemo(
     () => scopeProjectRef(thread.environmentId, thread.projectId),
@@ -149,11 +210,28 @@ function ThreadHoverCardContent({ thread, status }: ThreadHoverCardPayload) {
   // pinned branch belongs to the thread, a checkout ref just happens to be
   // where its working copy sits right now.
   const isCheckoutRef = thread.branch === null && checkoutRef !== null;
+  // A waiting thread says what it waits on: the kinds in the status line, each
+  // task under it. A wait the server did not describe stays general.
+  const isWaiting = status?.label === "Waiting";
+  const awaitedTasks = isWaiting ? describedAwaitedTasks(thread.session) : null;
+  // A wrapped label breaks between the counts, never inside one ("1 command").
+  const waitLabel = isWaiting
+    ? `Waiting on ${(awaitedTasks && formatAwaitedTasks(awaitedTasks)) ?? "background tasks"}`.replace(
+        /(\d) /g,
+        "$1\u00a0",
+      )
+    : undefined;
 
   return (
     <>
       <HoverCardTitle>{thread.title}</HoverCardTitle>
-      <HoverCardStatusLine status={status} timestamp={formatRelativeTimeLabel(activityAt)} />
+      <HoverCardStatusLine
+        status={status}
+        label={waitLabel}
+        timestamp={formatRelativeTimeLabel(activityAt)}
+      >
+        {awaitedTasks ? <AwaitedTaskLines tasks={awaitedTasks} /> : null}
+      </HoverCardStatusLine>
       <HoverCardDetails>
         {project ? (
           <HoverCardDetailRow
