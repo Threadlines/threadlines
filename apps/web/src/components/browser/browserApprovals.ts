@@ -1,21 +1,32 @@
-import type { ProjectId, ScopedThreadRef } from "@threadlines/contracts";
-import { withBrowserApproval } from "@threadlines/shared/preview";
+import type { AgentBrowserSitePolicy, ProjectId, ScopedThreadRef } from "@threadlines/contracts";
+import {
+  resolveBrowserSiteAccess,
+  withBrowserApproval,
+  withoutBrowserApproval,
+  type BrowserSiteAccess,
+} from "@threadlines/shared/preview";
 import { useCallback, useMemo } from "react";
 
 import { getClientSettings, updateSettings, useSettings } from "../../hooks/useSettings";
 import { selectEnvironmentState, useStore, type AppState } from "../../store";
 
 /**
- * Which sites this thread's project has said yes to.
+ * Which sites this thread's project may reach without asking.
  *
  * Kept in one place because three surfaces need the same answer and would
- * otherwise each grow their own: the agent's `navigate` refuses on it, the main
+ * otherwise each grow their own: the agent's `navigate` checks it, the main
  * process is handed it to enforce page-initiated navigation against, and the
- * approval bar writes to it.
+ * approval bar and the panel's site menu write to it.
  *
- * Scoped to the project rather than the thread: the sites a piece of work needs
- * belong to the work, and re-approving the same docs site in every new thread
- * would train people to click Allow without reading it.
+ * Two layers. The site policy -- "Ask first" or "Any site" -- is the user's
+ * default with a per-project override. Under "Ask first", the approved list is
+ * what has been allowed so far. Both are scoped to the project rather than the
+ * thread: the sites a piece of work needs belong to the work, and re-approving
+ * the same docs site in every new thread would train people to click Allow
+ * without reading it.
+ *
+ * Kept on this computer, like the browser it governs: the pages, their logins
+ * and their permissions all live with the desktop app that runs them.
  */
 
 /** A stable identity for "nothing approved", so effects do not re-run on every read. */
@@ -24,29 +35,50 @@ const NO_APPROVALS: ReadonlyArray<string> = Object.freeze([]);
 export interface BrowserApprovals {
   /** Null only when no shell has arrived and the caller knew no project either. */
   readonly projectId: ProjectId | null;
-  readonly approvedDomains: ReadonlyArray<string>;
+  readonly access: BrowserSiteAccess;
+  /** The project's own choice, or null when it follows the default. */
+  readonly projectPolicy: AgentBrowserSitePolicy | null;
+  readonly defaultPolicy: AgentBrowserSitePolicy;
   /**
    * Records a host for this project. A private or already-covered host is a
-   * no-op. Returns the approvals in force afterwards, so a caller that is about
-   * to load a page can arm the guest before it rather than after the settings
+   * no-op. Returns the access in force afterwards, so a caller that is about to
+   * load a page can arm the guest before it rather than after the settings
    * round trip has made its way back through React.
    */
-  readonly approveHost: (hostname: string) => ReadonlyArray<string>;
+  readonly approveHost: (hostname: string) => BrowserSiteAccess;
+  /** Lets every site through for this project, or hands it back to the default. */
+  readonly setProjectPolicy: (policy: AgentBrowserSitePolicy | null) => BrowserSiteAccess;
+  readonly removeHost: (hostname: string) => void;
 }
 
 /**
- * Hands one guest the allowlist the main process holds it to.
+ * Hands one guest the access the main process holds it to.
  *
  * Safe to call redundantly, and safe outside Electron: without a bridge there
  * is no guest to arm.
  */
-export function pushNavigationPolicy(
-  webContentsId: number,
-  approvedDomains: ReadonlyArray<string>,
-): void {
+export function pushNavigationPolicy(webContentsId: number, access: BrowserSiteAccess): void {
   void window.desktopBridge
-    ?.previewSetNavigationPolicy?.({ webContentsId, approvedDomains: [...approvedDomains] })
+    ?.previewSetNavigationPolicy?.({
+      webContentsId,
+      approvedDomains: [...access.approvedHosts],
+      allowAll: access.allowAll,
+    })
     .catch(() => {});
+}
+
+/** The access a project has right now, read outside React. */
+export function readBrowserSiteAccess(projectId: ProjectId | null): BrowserSiteAccess {
+  const settings = getClientSettings();
+  return resolveBrowserSiteAccess({
+    defaultPolicy: settings.agentBrowserSitePolicy,
+    projectPolicy:
+      projectId === null ? undefined : settings.agentBrowserProjectSitePolicy[projectId],
+    approvedHosts:
+      projectId === null
+        ? NO_APPROVALS
+        : (settings.agentBrowserApprovedDomains[projectId] ?? NO_APPROVALS),
+  });
 }
 
 /**
@@ -60,15 +92,26 @@ export function pushNavigationPolicy(
 export function approveBrowserHostForProject(
   projectId: ProjectId,
   hostname: string,
-): ReadonlyArray<string> {
+): BrowserSiteAccess {
   const current = getClientSettings().agentBrowserApprovedDomains;
   const existing = current[projectId] ?? NO_APPROVALS;
   const next = withBrowserApproval(existing, hostname);
-  if (next === existing) {
-    return existing;
+  if (next !== existing) {
+    updateSettings({ agentBrowserApprovedDomains: { ...current, [projectId]: next } });
   }
-  updateSettings({ agentBrowserApprovedDomains: { ...current, [projectId]: next } });
-  return next;
+  return readBrowserSiteAccess(projectId);
+}
+
+/** Sets or clears a project's own site policy, outside React. */
+export function setBrowserSitePolicyForProject(
+  projectId: ProjectId,
+  policy: AgentBrowserSitePolicy | null,
+): BrowserSiteAccess {
+  const { [projectId]: _previous, ...others } = getClientSettings().agentBrowserProjectSitePolicy;
+  updateSettings({
+    agentBrowserProjectSitePolicy: policy === null ? others : { ...others, [projectId]: policy },
+  });
+  return readBrowserSiteAccess(projectId);
 }
 
 export function useBrowserApprovals(
@@ -99,13 +142,54 @@ export function useBrowserApprovals(
   // the draft window before it does.
   const projectId = shellProjectId ?? knownProjectId ?? null;
   const approvedByProject = useSettings((settings) => settings.agentBrowserApprovedDomains);
-  const approvedDomains =
+  const defaultPolicy = useSettings((settings) => settings.agentBrowserSitePolicy);
+  const policyByProject = useSettings((settings) => settings.agentBrowserProjectSitePolicy);
+  const approvedHosts =
     projectId === null ? NO_APPROVALS : (approvedByProject[projectId] ?? NO_APPROVALS);
+  const projectPolicy = projectId === null ? null : (policyByProject[projectId] ?? null);
+  const access = useMemo(
+    () =>
+      resolveBrowserSiteAccess({
+        defaultPolicy,
+        projectPolicy: projectPolicy ?? undefined,
+        approvedHosts,
+      }),
+    [approvedHosts, defaultPolicy, projectPolicy],
+  );
   const approveHost = useCallback(
-    (hostname: string): ReadonlyArray<string> =>
-      projectId === null ? NO_APPROVALS : approveBrowserHostForProject(projectId, hostname),
+    (hostname: string): BrowserSiteAccess =>
+      projectId === null
+        ? readBrowserSiteAccess(null)
+        : approveBrowserHostForProject(projectId, hostname),
+    [projectId],
+  );
+  const setProjectPolicy = useCallback(
+    (policy: AgentBrowserSitePolicy | null): BrowserSiteAccess =>
+      projectId === null
+        ? readBrowserSiteAccess(null)
+        : setBrowserSitePolicyForProject(projectId, policy),
+    [projectId],
+  );
+  const removeHost = useCallback(
+    (hostname: string) => {
+      if (projectId === null) return;
+      const current = getClientSettings().agentBrowserApprovedDomains;
+      const existing = current[projectId] ?? NO_APPROVALS;
+      const next = withoutBrowserApproval(existing, hostname);
+      if (next !== existing) {
+        updateSettings({ agentBrowserApprovedDomains: { ...current, [projectId]: next } });
+      }
+    },
     [projectId],
   );
 
-  return { projectId, approvedDomains, approveHost };
+  return {
+    projectId,
+    access,
+    projectPolicy,
+    defaultPolicy,
+    approveHost,
+    setProjectPolicy,
+    removeHost,
+  };
 }

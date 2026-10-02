@@ -24,6 +24,12 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   repositoryIdentity: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   /** Older servers omit the key; clients read an absent value as unsupported. */
   pullRequests: Schema.optionalKey(Schema.Boolean),
+  /**
+   * The server lets a browser request wait for the user's answer (see
+   * `PreviewAutomationProgressSchema`). Absent on older servers, whose clients
+   * refuse an unapproved site straight away instead.
+   */
+  browserApprovalWait: Schema.optionalKey(Schema.Boolean),
 });
 export type ExecutionEnvironmentCapabilities = typeof ExecutionEnvironmentCapabilities.Type;
 

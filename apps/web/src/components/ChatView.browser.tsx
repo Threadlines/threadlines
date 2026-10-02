@@ -65,6 +65,12 @@ import {
   useBrowserPanelStore,
 } from "../browserPanelStore";
 import { PreviewAutomationMount } from "./browser/PreviewAutomationMount";
+import { answerBrowserApproval } from "./browser/browserApprovalRequests";
+import {
+  readPrimaryEnvironmentDescriptor,
+  writePrimaryEnvironmentDescriptor,
+} from "../environments/primary";
+import { getClientSettings } from "../hooks/useSettings";
 import {
   __resetEnvironmentApiOverridesForTests,
   __setEnvironmentApiOverrideForTests,
@@ -7363,6 +7369,139 @@ describe("ChatView timeline estimator parity (full app)", () => {
         browserStateByThreadKey: {},
         agentStateByThreadKey: {},
         browserOwnershipByThreadKey: {},
+      });
+      Reflect.deleteProperty(window, "desktopBridge");
+      __resetEnvironmentApiOverridesForTests();
+    }
+  });
+
+  it("holds an agent's visit to a new site until the user answers, then carries on", async () => {
+    const tab = { ...makeBrowserTab(), url: "http://localhost:5173/" };
+    useBrowserPanelStore.setState({
+      browserStateByThreadKey: {
+        [THREAD_KEY]: { open: true, tabs: [tab], activeTabId: tab.id },
+      },
+      agentStateByThreadKey: {},
+      browserOwnershipByThreadKey: {},
+      pendingApprovalsByThreadKey: {},
+    });
+    const projectId = "project-browser-sites" as ProjectId;
+    const previousDescriptor = readPrimaryEnvironmentDescriptor();
+    // A server new enough to let a request wait on the user.
+    writePrimaryEnvironmentDescriptor({
+      environmentId: LOCAL_ENVIRONMENT_ID,
+      label: "This computer",
+      platform: { os: "darwin", arch: "arm64" },
+      serverVersion: "0.0.0-test",
+      capabilities: { repositoryIdentity: true, browserApprovalWait: true },
+    });
+
+    let deliver: ((request: PreviewAutomationRequest) => void) | null = null;
+    const responses: PreviewAutomationResponse[] = [];
+    const progress: unknown[] = [];
+    __setEnvironmentApiOverrideForTests(
+      LOCAL_ENVIRONMENT_ID,
+      createMockEnvironmentApi({
+        browse: (() =>
+          Promise.reject(new Error("not used"))) as EnvironmentApi["filesystem"]["browse"],
+        dispatchCommand: (() =>
+          Promise.reject(
+            new Error("not used"),
+          )) as EnvironmentApi["orchestration"]["dispatchCommand"],
+        previewAutomation: {
+          connect: (_input: unknown, listener: (request: PreviewAutomationRequest) => void) => {
+            deliver = listener;
+            return () => {
+              deliver = null;
+            };
+          },
+          respond: (response: PreviewAutomationResponse) => {
+            responses.push(response);
+            return Promise.resolve();
+          },
+          progress: (update: unknown) => {
+            progress.push(update);
+            return Promise.resolve();
+          },
+        } as unknown as EnvironmentApi["previewAutomation"],
+      }),
+    );
+    const loaded: string[] = [];
+    window.desktopBridge = {
+      previewStatus: () =>
+        Promise.resolve({ url: "https://example.com/", title: "Example", loading: false }),
+      previewSetNavigationPolicy: () => Promise.resolve(),
+    } as unknown as NonNullable<typeof window.desktopBridge>;
+    registerPreviewWebview(THREAD_REF, tab.id, {
+      getWebContentsId: () => 42,
+      loadURL: (url: string) => {
+        loaded.push(url);
+        return Promise.resolve();
+      },
+      getBoundingClientRect: () => ({ width: 900, height: 600 }) as DOMRect,
+    });
+    const pendingFor = () =>
+      useBrowserPanelStore.getState().pendingApprovalsByThreadKey[THREAD_KEY] ?? [];
+
+    const screen = await render(
+      <PreviewAutomationMount threadRef={THREAD_REF} projectId={projectId} />,
+    );
+
+    try {
+      await vi.waitFor(() => expect(deliver).not.toBeNull(), { timeout: 4_000, interval: 16 });
+
+      // Turned down: the agent hears no, and nothing loads.
+      deliver!({
+        requestId: "req-declined",
+        agentId: "agent-site-access",
+        operation: "navigate",
+        input: { url: "https://news.example.org/" },
+      } as unknown as PreviewAutomationRequest);
+      await vi.waitFor(() => expect(pendingFor()).toHaveLength(1), {
+        timeout: 4_000,
+        interval: 16,
+      });
+      expect(progress).toEqual([{ requestId: "req-declined", awaitingUser: true }]);
+      answerBrowserApproval(THREAD_REF, pendingFor()[0]!, "decline");
+      await vi.waitFor(() => expect(responses[0]?.error).toContain("chose not"), {
+        timeout: 4_000,
+        interval: 16,
+      });
+
+      // Allowed: the same request loads the page itself, once, and the site is
+      // remembered for the project.
+      deliver!({
+        requestId: "req-allowed",
+        agentId: "agent-site-access",
+        operation: "navigate",
+        input: { url: "https://example.com/" },
+      } as unknown as PreviewAutomationRequest);
+      await vi.waitFor(() => expect(pendingFor()).toHaveLength(1), {
+        timeout: 4_000,
+        interval: 16,
+      });
+      expect(loaded).toEqual([]);
+      answerBrowserApproval(THREAD_REF, pendingFor()[0]!, "allowSite");
+      await vi.waitFor(
+        () => {
+          expect(responses).toHaveLength(2);
+          expect(responses[1]?.error).toBeUndefined();
+        },
+        { timeout: 4_000, interval: 16 },
+      );
+      expect(loaded).toEqual(["https://example.com/"]);
+      expect(pendingFor()).toEqual([]);
+      expect(getClientSettings().agentBrowserApprovedDomains[projectId]).toEqual(["example.com"]);
+    } finally {
+      screen.unmount();
+      resetPreviewWebviewsForTests();
+      writePrimaryEnvironmentDescriptor(previousDescriptor);
+      updateSettings({ agentBrowserApprovedDomains: {} });
+      useBrowserPanelStore.setState({
+        browserStateByThreadKey: {},
+        agentStateByThreadKey: {},
+        browserOwnershipByThreadKey: {},
+        pendingApprovalsByThreadKey: {},
       });
       Reflect.deleteProperty(window, "desktopBridge");
       __resetEnvironmentApiOverridesForTests();

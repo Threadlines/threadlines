@@ -7,6 +7,7 @@ import { AuthAccessStreamEvent } from "./auth.ts";
 import {
   PreviewAutomationHostSchema,
   PreviewAutomationHostMessageSchema,
+  PreviewAutomationProgressSchema,
   PreviewAutomationResponseSchema,
 } from "./previewAutomation.ts";
 import {
@@ -440,6 +441,7 @@ export const WS_METHODS = {
   // Streaming subscriptions
   previewAutomationConnect: "previewAutomationConnect",
   previewAutomationRespond: "previewAutomationRespond",
+  previewAutomationProgress: "previewAutomationProgress",
   subscribeVcsStatus: "subscribeVcsStatus",
   subscribeTerminalEvents: "subscribeTerminalEvents",
   subscribeServerConfig: "subscribeServerConfig",
@@ -900,6 +902,12 @@ export const WsPreviewAutomationConnectRpc = Rpc.make(WS_METHODS.previewAutomati
  *  it is a provider turn on the other side of the broker, not this client. */
 export const WsPreviewAutomationRespondRpc = Rpc.make(WS_METHODS.previewAutomationRespond, {
   payload: PreviewAutomationResponseSchema,
+  success: Schema.Void,
+});
+
+/** A request is waiting on the user rather than the page. Fire and forget. */
+export const WsPreviewAutomationProgressRpc = Rpc.make(WS_METHODS.previewAutomationProgress, {
+  payload: PreviewAutomationProgressSchema,
   success: Schema.Void,
 });
 
@@ -1449,6 +1457,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsFilesystemBrowseRpc,
   WsPreviewAutomationConnectRpc,
   WsPreviewAutomationRespondRpc,
+  WsPreviewAutomationProgressRpc,
   WsSubscribeVcsStatusRpc,
   WsVcsPullRpc,
   WsVcsListStashesRpc,

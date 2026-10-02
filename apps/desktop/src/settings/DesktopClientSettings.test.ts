@@ -13,6 +13,8 @@ import * as DesktopClientSettings from "./DesktopClientSettings.ts";
 
 const clientSettings: ClientSettings = {
   agentBrowserApprovedDomains: {},
+  agentBrowserSitePolicy: "ask",
+  agentBrowserProjectSitePolicy: {},
   autoOpenPlanSidebar: false,
   chatChangedFilesDefaultExpanded: false,
   confirmThreadArchive: true,

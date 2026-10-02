@@ -18,6 +18,7 @@
  * later would be a second, unasked-for answer to the page.
  */
 import {
+  PREVIEW_AUTOMATION_USER_WAIT_MS,
   PreviewAutomationDisconnectedError,
   PreviewAutomationNoHostError,
   PreviewAutomationResultTooLargeError,
@@ -28,11 +29,13 @@ import {
   type PreviewAutomationHostFeature,
   type PreviewAutomationHostMessage,
   type PreviewAutomationOperation,
+  type PreviewAutomationProgress,
   type PreviewAutomationRequest,
   type PreviewAutomationResponse,
   type ThreadId,
 } from "@threadlines/contracts";
 import { PreviewAutomationExecutionError } from "@threadlines/contracts";
+import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
@@ -97,6 +100,12 @@ export class PreviewAutomationBroker extends Context.Service<
       host: PreviewAutomationHost,
     ) => Effect.Effect<Stream.Stream<PreviewAutomationHostMessage>, never, Scope.Scope>;
     readonly respond: (response: PreviewAutomationResponse) => Effect.Effect<void>;
+    /**
+     * A request is now waiting on the user. Its deadline moves to
+     * {@link PREVIEW_AUTOMATION_USER_WAIT_MS} from now -- once: a client that
+     * keeps saying so cannot hold a turn open indefinitely.
+     */
+    readonly progress: (progress: PreviewAutomationProgress) => Effect.Effect<void>;
     readonly invoke: (
       input: PreviewAutomationInvokeInput,
     ) => Effect.Effect<unknown, PreviewAutomationError>;
@@ -121,6 +130,9 @@ interface PendingRequest {
   readonly operation: PreviewAutomationOperation;
   readonly hostId: string;
   readonly deferred: Deferred.Deferred<unknown, PreviewAutomationError>;
+  /** When the agent is told it timed out. Moved once, by `progress`. */
+  deadlineAt: number;
+  awaitingUser: boolean;
 }
 
 export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
@@ -234,39 +246,57 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
     requestSequence += 1;
     const requestId = `${input.threadId}:${requestSequence}`;
     const deferred = yield* Deferred.make<unknown, PreviewAutomationError>();
-    pending.set(requestId, {
+    const startedAt = yield* Clock.currentTimeMillis;
+    const timeoutMs = input.timeoutMs ?? previewAutomationDeadlineMs(input.operation, input.input);
+    const entry: PendingRequest = {
       threadId: input.threadId,
       operation: input.operation,
       hostId: connection.hostId,
       deferred,
-    });
+      deadlineAt: startedAt + timeoutMs,
+      awaitingUser: false,
+    };
+    pending.set(requestId, entry);
 
-    const timeoutMs = input.timeoutMs ?? previewAutomationDeadlineMs(input.operation, input.input);
+    // Sleeps until the deadline, and again if `progress` moved it meanwhile.
+    const deadlinePassed = Effect.gen(function* () {
+      while (true) {
+        const remaining = entry.deadlineAt - (yield* Clock.currentTimeMillis);
+        if (remaining <= 0) return;
+        yield* Effect.sleep(Duration.millis(remaining));
+      }
+    });
+    const timedOut = deadlinePassed.pipe(
+      // Told to the client before the agent hears it timed out, so the
+      // request is already being dropped by the time the agent retries. A
+      // client that cannot read a cancel is never sent one; a host that has
+      // gone has a shut-down queue, and offering to it does nothing.
+      Effect.andThen(
+        connection.features.has("cancel")
+          ? Queue.offer(connection.queue, { _tag: "cancel", requestId })
+          : Effect.void,
+      ),
+      // Built when the time runs out, not now: by then the deadline may have
+      // moved, and the agent should hear which kind of wait it was.
+      Effect.andThen(
+        Effect.suspend(() =>
+          Effect.fail(
+            new PreviewAutomationTimeoutError({
+              operation: input.operation,
+              timeoutMs: entry.deadlineAt - startedAt,
+              ...(entry.awaitingUser ? { awaitedUser: true } : {}),
+            }),
+          ),
+        ),
+      ),
+    );
     const result = yield* Queue.offer(connection.queue, {
       requestId,
       agentId: input.agentId,
       operation: input.operation,
       input: input.input as PreviewAutomationRequest["input"],
     }).pipe(
-      Effect.andThen(Deferred.await(deferred)),
-      Effect.timeoutOrElse({
-        duration: Duration.millis(timeoutMs),
-        orElse: () =>
-          // Told to the client before the agent hears it timed out, so the
-          // request is already being dropped by the time the agent retries.
-          // A client that cannot read a cancel is never sent one; a host that
-          // has gone has a shut-down queue, and offering to it does nothing.
-          (connection.features.has("cancel")
-            ? Queue.offer(connection.queue, { _tag: "cancel", requestId })
-            : Effect.void
-          ).pipe(
-            Effect.andThen(
-              Effect.fail(
-                new PreviewAutomationTimeoutError({ operation: input.operation, timeoutMs }),
-              ),
-            ),
-          ),
-      }),
+      Effect.andThen(Effect.raceFirst(Deferred.await(deferred), timedOut)),
       // Whatever settled it, this request is over. Left behind, its entry would
       // catch a late response meant for nobody and hold the deferred forever.
       Effect.ensuring(Effect.sync(() => pending.delete(requestId))),
@@ -285,9 +315,21 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
     return result;
   });
 
+  const progress = Effect.fn("PreviewAutomationBroker.progress")(function* (
+    update: PreviewAutomationProgress,
+  ) {
+    const entry = pending.get(update.requestId);
+    if (entry === undefined || entry.awaitingUser) {
+      return;
+    }
+    entry.awaitingUser = true;
+    entry.deadlineAt = (yield* Clock.currentTimeMillis) + PREVIEW_AUTOMATION_USER_WAIT_MS;
+  });
+
   const service: PreviewAutomationBrokerService = {
     connect,
     respond,
+    progress,
     invoke,
     hasHost: (threadId: ThreadId) => Effect.sync(() => hosts.has(threadId)),
   };

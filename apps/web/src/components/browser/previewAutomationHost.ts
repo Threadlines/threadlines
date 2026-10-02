@@ -112,7 +112,7 @@ export interface PreviewAutomationHostTarget {
    * address belongs to the `<webview>` element, which only the renderer holds.
    * Everything else is a CDP command and goes over the bridge.
    */
-  readonly navigate: (url: string) => Promise<void>;
+  readonly navigate: (url: string, signal?: AbortSignal) => Promise<void>;
   /** How big the page is right now, in its own CSS pixels: the size it was
    *  given, or the panel's when it fills it. The panel is the only one that
    *  knows: the main process cannot see the element and this module should not
@@ -144,10 +144,13 @@ export interface PreviewAutomationHostTarget {
   /** Whether the panel is still visible after a tab lifecycle operation. */
   readonly panelOpen?: (() => boolean) | undefined;
   /** Create and resolve a tab for this agent session. */
-  readonly openTab?: (input: {
-    url?: string | undefined;
-    background?: boolean | undefined;
-  }) => Promise<PreviewAutomationHostTarget>;
+  readonly openTab?: (
+    input: {
+      url?: string | undefined;
+      background?: boolean | undefined;
+    },
+    signal?: AbortSignal,
+  ) => Promise<PreviewAutomationHostTarget>;
   /** Close a tab and return the listing that remains. */
   readonly closeTab?: (
     tabId: string | null,
@@ -380,7 +383,7 @@ export function createPreviewAutomationHandler(
             : null;
         // The last moment to back out before the page is touched.
         throwIfCancelled(signal);
-        const dispatched = await dispatch(bridge, target, target.webContentsId, request);
+        const dispatched = await dispatch(bridge, target, target.webContentsId, request, signal);
         const after =
           controlled && bridge.previewStatus !== undefined
             ? await bridge.previewStatus({ webContentsId: target.webContentsId as number })
@@ -419,6 +422,8 @@ async function dispatch(
   target: PreviewAutomationHostTarget,
   webContentsId: number | null,
   request: PreviewAutomationRequest,
+  /** Reaches the operations that can wait on the user, so a cancel stops the wait. */
+  signal: AbortSignal | undefined,
 ): Promise<unknown> {
   const input = (request.input ?? {}) as Record<string, never>;
   const callOn = <T>(
@@ -457,7 +462,7 @@ async function dispatch(
       };
     }
     case "navigate":
-      await target.navigate(String((input as { url?: unknown }).url ?? ""));
+      await target.navigate(String((input as { url?: unknown }).url ?? ""), signal);
       return toStatus(target.tabId ?? "", await call(bridge.previewStatus, {}), target.viewport());
     // Every action answers with where the page ended up. An action that
     // returned nothing failed MCP validation and was shown to the agent as an
@@ -487,7 +492,7 @@ async function dispatch(
       return { tabs: target.tabs(), panelOpen: target.panelOpen?.() ?? true };
     case "openTab": {
       if (target.openTab === undefined) throw new Error("This build cannot open browser tabs.");
-      const opened = await target.openTab(input);
+      const opened = await target.openTab(input, signal);
       if (opened.webContentsId === null) throw new Error("The new browser tab did not attach.");
       return toStatus(
         opened.tabId ?? "",

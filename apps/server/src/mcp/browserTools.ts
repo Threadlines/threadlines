@@ -96,7 +96,7 @@ export const BrowserTabsTool = readsOnly(
 export const BrowserOpenTabTool = changesThePage(
   Tool.make("browser_open_tab", {
     description:
-      "Create a browser tab owned by this agent and pin future browser actions to it. Give a URL to load it immediately. Set background true to leave the user's visible tab alone; the new tab is only brought to the front without it, or when it replaces the empty tab of a panel you opened.",
+      "Create a browser tab owned by this agent and pin future browser actions to it. Give a URL to load it immediately; a site that needs the user's OK waits for their answer, as browser_navigate does. Set background true to leave the user's visible tab alone; the new tab is only brought to the front without it, or when it replaces the empty tab of a panel you opened.",
     parameters: PreviewAutomationOpenTabInputSchema,
     success: PreviewAutomationStatusSchema,
     failure: PreviewAutomationErrorSchema,
@@ -129,7 +129,7 @@ export const BrowserSelectTabTool = changesThePage(
 export const BrowserNavigateTool = changesThePage(
   Tool.make("browser_navigate", {
     description:
-      "Go to a URL in the Threadlines browser panel the user is watching. This replaces what they are looking at, so navigate when you need to be somewhere else, not to reset state you can reach by clicking. Local and private addresses always work, but a site outside the project's approved list needs the user's approval: if this is refused for that reason, wait for them to allow it in the browser panel and then navigate again.",
+      "Go to a URL in the Threadlines browser panel. This replaces the page in your tab, so navigate when you need to be somewhere else, not to reset state you can reach by clicking. Local and private addresses always work. Other sites may need the user's OK first; when they do, this call waits for their answer (up to five minutes) and then loads the page, or tells you they said no.",
     parameters: PreviewAutomationNavigateInputSchema,
     success: PreviewAutomationStatusSchema,
     failure: PreviewAutomationErrorSchema,

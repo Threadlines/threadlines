@@ -1,7 +1,7 @@
 import { useCallback, useEffect } from "react";
 import { scopedThreadKey } from "@threadlines/client-runtime";
 import type { PreviewAutomationRequest, ProjectId, ScopedThreadRef } from "@threadlines/contracts";
-import { isBrowserHostApproved } from "@threadlines/shared/preview";
+import { isBrowserHostAllowed } from "@threadlines/shared/preview";
 
 import {
   PREVIEW_WEBVIEW_WAIT_MS,
@@ -13,7 +13,16 @@ import {
   waitForPreviewWebview,
   type PreviewWebviewHandle,
 } from "../../browserPanelStore";
-import { pushNavigationPolicy, useBrowserApprovals } from "./browserApprovals";
+import { ensureEnvironmentApi } from "../../environmentApi";
+import { readEnvironmentDescriptor } from "../../environments/runtime/catalog";
+import {
+  approveBrowserHostForProject,
+  pushNavigationPolicy,
+  readBrowserSiteAccess,
+  setBrowserSitePolicyForProject,
+  useBrowserApprovals,
+} from "./browserApprovals";
+import { nextBrowserApprovalId, waitForBrowserApproval } from "./browserApprovalRequests";
 import { normalizePreviewUrl } from "./previewUrl";
 import {
   usePreviewAutomationHost,
@@ -87,10 +96,8 @@ export function PreviewAutomationMount({
   const selectTab = useBrowserPanelStore((store) => store.selectTab);
   const setTabUrl = useBrowserPanelStore((store) => store.setTabUrl);
   const setTabViewport = useBrowserPanelStore((store) => store.setTabViewport);
-  const setPendingBrowserApproval = useBrowserPanelStore(
-    (store) => store.setPendingBrowserApproval,
-  );
-  const { approvedDomains } = useBrowserApprovals(threadRef, projectId);
+  const enqueueBrowserApproval = useBrowserPanelStore((store) => store.enqueueBrowserApproval);
+  const { access, projectId: approvalsProjectId } = useBrowserApprovals(threadRef, projectId);
 
   /** Every attached guest this thread owns, which is what a policy applies to. */
   const attachedGuests = useCallback((): ReadonlyArray<{
@@ -116,13 +123,13 @@ export function PreviewAutomationMount({
   useEffect(() => {
     const pushPolicy = () => {
       for (const guest of attachedGuests()) {
-        pushNavigationPolicy(guest.webContentsId, approvedDomains);
+        pushNavigationPolicy(guest.webContentsId, access);
       }
     };
     pushPolicy();
     // A tab that mounts or attaches later is a guest with no policy yet.
     return subscribePreviewWebviews(pushPolicy);
-  }, [approvedDomains, attachedGuests]);
+  }, [access, attachedGuests]);
 
   /**
    * A page that tried to take itself somewhere unapproved.
@@ -142,7 +149,10 @@ export function PreviewAutomationMount({
       if (guest === undefined) {
         return;
       }
-      setPendingBrowserApproval(threadRef, {
+      enqueueBrowserApproval(threadRef, {
+        id: nextBrowserApprovalId(),
+        // Nothing waits on a page's navigation: allowing it loads it again.
+        waiting: false,
         host: blocked.host,
         url: blocked.url,
         // A page navigated itself; the agent's own requests never get this far.
@@ -156,7 +166,7 @@ export function PreviewAutomationMount({
         setBrowserOpen(threadRef, true);
       }
     });
-  }, [attachedGuests, setBrowserOpen, setPendingBrowserApproval, threadRef]);
+  }, [attachedGuests, enqueueBrowserApproval, setBrowserOpen, threadRef]);
 
   useEffect(() => {
     const subscribe = window.desktopBridge?.onPreviewUserControl;
@@ -215,6 +225,110 @@ export function PreviewAutomationMount({
       setAgentTab(threadRef, tabId === "" ? null : tabId);
       const webview = tabId === "" ? null : getPreviewWebview(threadRef, tabId);
 
+      /**
+       * Lets an agent's navigation through, asking the user first when the
+       * project asks first and this site has not been allowed.
+       *
+       * The request waits for the answer -- the server is told so, and gives
+       * it minutes rather than seconds -- and carries on by itself once
+       * allowed. A server too old to wait gets the old behaviour: the question
+       * is left in the panel and the agent is told to try again later.
+       */
+      const ensureSiteAllowed = async (
+        host: string,
+        url: string,
+        forTabId: string,
+        signal: AbortSignal | undefined,
+      ): Promise<void> => {
+        if (isBrowserHostAllowed(host, readBrowserSiteAccess(approvalsProjectId))) {
+          return;
+        }
+        const question = {
+          host,
+          url,
+          source: "agent" as const,
+          fromHost: null,
+          tabId: forTabId,
+        };
+        const canWait =
+          readEnvironmentDescriptor(threadRef.environmentId)?.capabilities.browserApprovalWait ===
+          true;
+        if (!canWait) {
+          enqueueBrowserApproval(threadRef, {
+            ...question,
+            id: nextBrowserApprovalId(),
+            waiting: false,
+          });
+          throw new Error(
+            `${host} is outside this project's approved sites. The user has been asked to allow it in the browser panel; once they do, navigate again.`,
+          );
+        }
+        void ensureEnvironmentApi(threadRef.environmentId)
+          .previewAutomation.progress({ requestId: request.requestId, awaitingUser: true })
+          .catch(() => undefined);
+        const decision = await waitForBrowserApproval(threadRef, question, signal);
+        if (decision === "decline") {
+          throw new Error(
+            `The user chose not to let you visit ${host}. Carry on without it, or ask them about it in the conversation.`,
+          );
+        }
+        if (approvalsProjectId !== null) {
+          const granted =
+            decision === "allowAllSites"
+              ? setBrowserSitePolicyForProject(approvalsProjectId, "any")
+              : approveBrowserHostForProject(approvalsProjectId, host);
+          // Armed now rather than when the settings change reaches React, so a
+          // redirect on the page about to load is held to the new answer.
+          for (const guest of attachedGuests()) {
+            pushNavigationPolicy(guest.webContentsId, granted);
+          }
+        }
+      };
+
+      /**
+       * Loads an address the agent may visit into one of the thread's tabs --
+       * unless the request was cancelled while it waited to get here, since
+       * the agent has already been told it timed out.
+       */
+      const loadInTab = async (
+        forTabId: string,
+        url: string,
+        signal: AbortSignal | undefined,
+      ): Promise<void> => {
+        if (signal?.aborted === true) {
+          throw new Error("The browser request was cancelled before the page loaded.");
+        }
+        const current = useBrowserPanelStore.getState();
+        if (
+          !selectThreadBrowserState(current.browserStateByThreadKey, threadRef).tabs.some(
+            (tab) => tab.id === forTabId,
+          )
+        ) {
+          throw new Error(`The tab closed before ${url} could load.`);
+        }
+        setTabUrl(threadRef, forTabId, url);
+        const loaded = getPreviewWebview(threadRef, forTabId)
+          ?.loadURL(url)
+          .catch((cause: unknown) => {
+            // A page that immediately redirects aborts the load it interrupts,
+            // which is a successful navigation wearing an error.
+            if (!String(cause).includes("ERR_ABORTED")) {
+              throw cause;
+            }
+          });
+        // A load settles only when the whole page has, and one slow image can
+        // hold that for minutes. Past the wait the agent is answered with the
+        // page still loading, which it can wait on, instead of the tab's queue
+        // being held and the call timing out.
+        let gaveUp: ReturnType<typeof setTimeout> | undefined;
+        await Promise.race([
+          loaded,
+          new Promise<void>((resolve) => {
+            gaveUp = setTimeout(resolve, NAVIGATE_LOAD_WAIT_MS);
+          }),
+        ]).finally(() => clearTimeout(gaveUp));
+      };
+
       const waitForTab = async (nextTabId: string): Promise<PreviewAutomationHostTarget> => {
         await waitForPreviewWebview<PreviewWebviewHandle>({
           resolve: () => {
@@ -242,29 +356,25 @@ export function PreviewAutomationMount({
           const current = useBrowserPanelStore.getState();
           return selectThreadBrowserState(current.browserStateByThreadKey, threadRef).open;
         },
-        openTab: async (input) => {
+        openTab: async (input, signal) => {
           const normalized = input.url === undefined ? null : normalizePreviewUrl(input.url);
           if (input.url !== undefined && normalized === null) {
             throw new Error(`${JSON.stringify(input.url)} is not a URL this browser can open.`);
           }
           if (normalized !== null) {
             const host = new URL(normalized).hostname;
-            if (!isBrowserHostApproved(host, approvedDomains)) {
+            if (!isBrowserHostAllowed(host, readBrowserSiteAccess(approvalsProjectId))) {
+              // The tab opens empty while the user is asked, so the question
+              // has a tab to belong to and the agent has a tab to come back to.
               const openedId = openAgentTab(threadRef, request.agentId, {
                 background: input.background,
               });
               agentTabPins.set(key, openedId);
               setAgentTab(threadRef, openedId);
-              setPendingBrowserApproval(threadRef, {
-                host,
-                url: normalized,
-                source: "agent",
-                fromHost: null,
-                tabId: openedId,
-              });
-              throw new Error(
-                `${host} is outside this project's approved sites. The user has been asked to allow it in the browser panel.`,
-              );
+              await ensureSiteAllowed(host, normalized, openedId, signal);
+              await waitForTab(openedId);
+              await loadInTab(openedId, normalized, signal);
+              return waitForTab(openedId);
             }
           }
           const openedId = openAgentTab(threadRef, request.agentId, {
@@ -343,7 +453,7 @@ export function PreviewAutomationMount({
         },
         // The address belongs to the element, so this is the one operation the
         // main process cannot do on the agent's behalf.
-        navigate: async (url) => {
+        navigate: async (url, signal) => {
           const normalized = normalizePreviewUrl(url);
           if (normalized === null) {
             throw new Error(`${JSON.stringify(url)} is not a URL this browser can open.`);
@@ -351,56 +461,25 @@ export function PreviewAutomationMount({
           if (tabId === "") {
             throw new Error("The browser panel has no tab to navigate.");
           }
-          // Refused here rather than in the main process, because this is the one
-          // navigation we can stop before it happens and answer in words the
+          // Checked here rather than in the main process, because this is the
+          // one navigation we can stop before it happens and answer in words the
           // agent can act on. The user's own navigations do not come through here.
-          const host = new URL(normalized).hostname;
-          if (!isBrowserHostApproved(host, approvedDomains)) {
-            setPendingBrowserApproval(threadRef, {
-              host,
-              url: normalized,
-              source: "agent",
-              fromHost: null,
-              tabId,
-            });
-            throw new Error(
-              `${host} is outside this project's approved sites. The user has been asked to allow it in the browser panel; once they do, navigate again.`,
-            );
-          }
-          setTabUrl(threadRef, tabId, normalized);
-          const loaded = getPreviewWebview(threadRef, tabId)
-            ?.loadURL(normalized)
-            .catch((cause: unknown) => {
-              // A page that immediately redirects aborts the load it interrupts,
-              // which is a successful navigation wearing an error.
-              if (!String(cause).includes("ERR_ABORTED")) {
-                throw cause;
-              }
-            });
-          // A load settles only when the whole page has, and one slow image can
-          // hold that for minutes. Past the wait the agent is answered with the
-          // page still loading, which it can wait on, instead of the tab's queue
-          // being held and the call timing out.
-          let gaveUp: ReturnType<typeof setTimeout> | undefined;
-          await Promise.race([
-            loaded,
-            new Promise<void>((resolve) => {
-              gaveUp = setTimeout(resolve, NAVIGATE_LOAD_WAIT_MS);
-            }),
-          ]).finally(() => clearTimeout(gaveUp));
+          await ensureSiteAllowed(new URL(normalized).hostname, normalized, tabId, signal);
+          await loadInTab(tabId, normalized, signal);
         },
       };
     },
     [
-      approvedDomains,
+      approvalsProjectId,
+      attachedGuests,
       closeAgentTab,
+      enqueueBrowserApproval,
       markBrowserUserControlled,
       openAgentTab,
       selectTab,
       setAgentActivity,
       setAgentPoint,
       setAgentTab,
-      setPendingBrowserApproval,
       setTabUrl,
       setTabViewport,
       threadRef,

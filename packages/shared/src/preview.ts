@@ -199,3 +199,42 @@ export function normalizePreviewWaitForTimeoutMs(timeoutMs: number | undefined):
   }
   return Math.min(PREVIEW_WAIT_FOR_MAX_MS, Math.max(0, Math.round(timeoutMs)));
 }
+
+/**
+ * What one project's browser may reach without asking, on this computer.
+ *
+ * `allowAll` comes from the site policy ("Any site"); otherwise only private
+ * addresses and the approved list are reachable, and anything else is a
+ * question for the user.
+ */
+export interface BrowserSiteAccess {
+  readonly allowAll: boolean;
+  readonly approvedHosts: ReadonlyArray<string>;
+}
+
+/** The access a project has, from the user's default and its own override. */
+export function resolveBrowserSiteAccess(input: {
+  readonly defaultPolicy: "ask" | "any";
+  readonly projectPolicy: "ask" | "any" | undefined;
+  readonly approvedHosts: ReadonlyArray<string>;
+}): BrowserSiteAccess {
+  return {
+    allowAll: (input.projectPolicy ?? input.defaultPolicy) === "any",
+    approvedHosts: input.approvedHosts,
+  };
+}
+
+/** Whether the browser may go to this host without asking. */
+export function isBrowserHostAllowed(hostname: string, access: BrowserSiteAccess): boolean {
+  return access.allowAll || isBrowserHostApproved(hostname, access.approvedHosts);
+}
+
+/** The approval list without this host (or the same list, if it was not there). */
+export function withoutBrowserApproval(
+  approved: ReadonlyArray<string>,
+  hostname: string,
+): ReadonlyArray<string> {
+  const key = browserApprovalKey(hostname);
+  const next = approved.filter((entry) => browserApprovalKey(entry) !== key);
+  return next.length === approved.length ? approved : next;
+}

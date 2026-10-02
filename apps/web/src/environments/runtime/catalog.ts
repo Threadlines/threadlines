@@ -9,7 +9,7 @@ import type {
 import { create } from "zustand";
 
 import { ensureLocalApi } from "../../localApi";
-import { getPrimaryKnownEnvironment } from "../primary";
+import { getPrimaryKnownEnvironment, readPrimaryEnvironmentDescriptor } from "../primary";
 
 export interface SavedEnvironmentRecord {
   readonly environmentId: EnvironmentId;
@@ -376,4 +376,19 @@ export function getSavedEnvironmentRuntimeState(
 
 export function resetSavedEnvironmentRuntimeStoreForTests() {
   useSavedEnvironmentRuntimeStore.getState().reset();
+}
+
+/**
+ * What a connected environment's server says about itself, whether it is this
+ * device's or a saved computer's. Null until it has said. Read at the moment
+ * of use, so a capability check sees the server that is connected now.
+ */
+export function readEnvironmentDescriptor(
+  environmentId: EnvironmentId,
+): ExecutionEnvironmentDescriptor | null {
+  const primary = readPrimaryEnvironmentDescriptor();
+  if (primary?.environmentId === environmentId) {
+    return primary;
+  }
+  return useSavedEnvironmentRuntimeStore.getState().byId[environmentId]?.descriptor ?? null;
 }

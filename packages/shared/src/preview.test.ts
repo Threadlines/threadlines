@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 
 import {
   browserApprovalKey,
+  isBrowserHostAllowed,
   isBrowserHostApproved,
   isPrivateNetworkHost,
+  resolveBrowserSiteAccess,
   withBrowserApproval,
 } from "./preview.ts";
 
@@ -132,5 +134,23 @@ describe("withBrowserApproval", () => {
     ]);
     // Private hosts are always allowed and never need remembering.
     expect(withBrowserApproval(approved, "localhost")).toBe(approved);
+  });
+});
+
+describe("resolveBrowserSiteAccess", () => {
+  it("lets a project's own choice win over the default, either way", () => {
+    const access = (defaultPolicy: "ask" | "any", projectPolicy: "ask" | "any" | undefined) =>
+      resolveBrowserSiteAccess({
+        defaultPolicy,
+        projectPolicy,
+        approvedHosts: ["docs.example.com"],
+      });
+
+    expect(isBrowserHostAllowed("news.example.org", access("any", undefined))).toBe(true);
+    expect(isBrowserHostAllowed("news.example.org", access("any", "ask"))).toBe(false);
+    expect(isBrowserHostAllowed("news.example.org", access("ask", "any"))).toBe(true);
+    // Asking first still honours what was already allowed, and private hosts.
+    expect(isBrowserHostAllowed("docs.example.com", access("ask", undefined))).toBe(true);
+    expect(isBrowserHostAllowed("localhost", access("ask", "ask"))).toBe(true);
   });
 });

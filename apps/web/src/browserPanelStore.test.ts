@@ -1,4 +1,4 @@
-import { scopeThreadRef } from "@threadlines/client-runtime";
+import { scopeThreadRef, scopedThreadKey } from "@threadlines/client-runtime";
 import { EnvironmentId, ThreadId } from "@threadlines/contracts";
 import { beforeEach, describe, expect, it } from "vite-plus/test";
 
@@ -85,6 +85,27 @@ describe("background tabs", () => {
     expect(next.activeTabId).toBe(openedId);
     expect(next.tabs).toHaveLength(1);
     expect(next.tabs[0]?.url).toBe("http://localhost:5173/");
+  });
+
+  it("queues a second site question behind the first instead of replacing it", () => {
+    const store = useBrowserPanelStore.getState();
+    const question = {
+      waiting: false,
+      url: "https://example.com/",
+      source: "page" as const,
+      fromHost: "localhost",
+      tabId: "tab-1",
+    };
+    store.enqueueBrowserApproval(THREAD_REF, { ...question, id: "a", host: "example.com" });
+    store.enqueueBrowserApproval(THREAD_REF, { ...question, id: "b", host: "docs.example.org" });
+    // The same page trying the same site again asks once, not twice.
+    store.enqueueBrowserApproval(THREAD_REF, { ...question, id: "c", host: "example.com" });
+
+    const queued = () =>
+      useBrowserPanelStore.getState().pendingApprovalsByThreadKey[scopedThreadKey(THREAD_REF)];
+    expect(queued()?.map((entry) => entry.id)).toEqual(["c", "b"]);
+    store.removeBrowserApproval(THREAD_REF, "c");
+    expect(queued()?.map((entry) => entry.id)).toEqual(["b"]);
   });
 
   it("keeps a later background tab behind, even in a browser the agent opened", () => {
