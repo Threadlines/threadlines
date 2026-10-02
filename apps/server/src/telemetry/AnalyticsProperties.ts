@@ -1,3 +1,4 @@
+import { isProviderAvailable, type ServerProvider } from "@threadlines/contracts";
 import { isProviderAuthErrorMessage } from "@threadlines/shared/providerAuth";
 
 export type AnalyticsModelKind = "known" | "custom" | "unknown";
@@ -364,4 +365,84 @@ export function classifyProviderSessionStart(input: {
     return "resume";
   }
   return "same_provider_restart";
+}
+
+export type AnalyticsSignInState = "yes" | "no" | "unknown";
+
+/** Property prefixes for the drivers we report by name; others only count toward the totals. */
+const READINESS_DRIVER_KEYS: Readonly<Record<string, string>> = {
+  claudeAgent: "claude",
+  codex: "codex",
+  cursor: "cursor",
+  fx: "fx",
+};
+
+/** Same order of evidence the Settings status line uses. */
+function signInState(snapshot: ServerProvider): AnalyticsSignInState {
+  const chat = snapshot.auth.capabilities?.chat?.status;
+  if (chat === "verified" || chat === "configured") return "yes";
+  if (chat === "unavailable") return "no";
+  if (snapshot.auth.status === "authenticated") return "yes";
+  if (snapshot.auth.status === "unauthenticated") return "no";
+  return "unknown";
+}
+
+function mergeSignIn(states: ReadonlyArray<AnalyticsSignInState>): AnalyticsSignInState {
+  if (states.includes("yes")) return "yes";
+  if (states.includes("no")) return "no";
+  return "unknown";
+}
+
+/**
+ * Whether the provider checks have finished, so a readiness report describes
+ * the machine rather than the first moments after launch. A probe that timed
+ * out counts as finished: its retry reports again if the answer changes.
+ */
+export function providerChecksSettled(providers: ReadonlyArray<ServerProvider>): boolean {
+  return (
+    providers.length > 0 &&
+    providers.every((provider) => provider.statusReason !== "provider_probe_pending")
+  );
+}
+
+/**
+ * Answers about whether this machine can chat with an agent: per known
+ * driver whether it is turned on, installed, and signed in (yes, no, or
+ * unknown), plus totals across every driver. Account names, emails, and
+ * versions never leave.
+ */
+export function providerReadinessProperties(
+  providers: ReadonlyArray<ServerProvider>,
+): Record<string, string | boolean> {
+  const live = providers.filter((provider) => provider.enabled && isProviderAvailable(provider));
+  // A probe that is still running or timed out never verified anything, so
+  // it can't vouch for readiness even when its placeholder looks hopeful.
+  const isReady = (provider: ServerProvider) =>
+    provider.installed &&
+    provider.statusReason === undefined &&
+    signInState(provider) !== "no" &&
+    provider.status !== "error" &&
+    provider.status !== "disabled";
+
+  const properties: Record<string, string | boolean> = {
+    anyAgentInstalled: live.some((provider) => provider.installed),
+    anyAgentSignedIn: live.some(
+      (provider) => provider.installed && signInState(provider) === "yes",
+    ),
+    anyAgentReady: live.some(isReady),
+    anyAgentCheckTimedOut: live.some(
+      (provider) => provider.statusReason === "provider_probe_timeout",
+    ),
+  };
+  for (const [driver, key] of Object.entries(READINESS_DRIVER_KEYS)) {
+    const instances = providers.filter((provider) => provider.driver === driver);
+    if (instances.length === 0) continue;
+    const enabled = instances.filter((provider) => live.includes(provider));
+    properties[`${key}Enabled`] = enabled.length > 0;
+    properties[`${key}Installed`] = enabled.some((provider) => provider.installed);
+    properties[`${key}SignedIn`] = mergeSignIn(
+      enabled.filter((provider) => provider.installed).map(signInState),
+    );
+  }
+  return properties;
 }

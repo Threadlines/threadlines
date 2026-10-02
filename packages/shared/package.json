@@ -234,6 +234,10 @@
     "./threadParticipants": {
       "types": "./src/threadParticipants.ts",
       "import": "./src/threadParticipants.ts"
+    },
+    "./telemetryConsent": {
+      "types": "./src/telemetryConsent.ts",
+      "import": "./src/telemetryConsent.ts"
     }
   },
   "scripts": {

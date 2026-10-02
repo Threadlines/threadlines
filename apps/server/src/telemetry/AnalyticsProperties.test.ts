@@ -1,4 +1,9 @@
 import { assert, describe, it } from "@effect/vitest";
+import {
+  ProviderDriverKind,
+  ProviderInstanceId,
+  type ServerProvider,
+} from "@threadlines/contracts";
 
 import {
   analyticsModelProperties,
@@ -6,7 +11,27 @@ import {
   classifyModelRerouteReason,
   classifyProviderFailure,
   normalizeAnalyticsModel,
+  providerChecksSettled,
+  providerReadinessProperties,
 } from "./AnalyticsProperties.ts";
+
+const providerSnapshot = (
+  driver: string,
+  overrides: Partial<ServerProvider> = {},
+): ServerProvider => ({
+  instanceId: ProviderInstanceId.make(driver),
+  driver: ProviderDriverKind.make(driver),
+  enabled: true,
+  installed: true,
+  version: "1.0.0",
+  status: "ready",
+  auth: { status: "authenticated" },
+  checkedAt: "2026-10-02T00:00:00.000Z",
+  models: [],
+  slashCommands: [],
+  skills: [],
+  ...overrides,
+});
 
 describe("AnalyticsProperties", () => {
   it("keeps known public model slugs", () => {
@@ -109,6 +134,81 @@ describe("AnalyticsProperties", () => {
     assert.strictEqual(
       classifyProviderFailure({ errorClass: "provider_error", message: "Something odd happened" }),
       "provider_error",
+    );
+  });
+
+  it("summarizes whether an agent is ready without account details", () => {
+    const codexSignedIn = providerSnapshot("codex", {
+      auth: { status: "authenticated", email: "someone@example.com", label: "ChatGPT Pro" },
+    });
+    const claudeSignedOut = providerSnapshot("claudeAgent", {
+      status: "warning",
+      auth: { status: "unauthenticated" },
+    });
+    assert.deepStrictEqual(providerReadinessProperties([codexSignedIn, claudeSignedOut]), {
+      anyAgentInstalled: true,
+      anyAgentSignedIn: true,
+      anyAgentReady: true,
+      anyAgentCheckTimedOut: false,
+      claudeEnabled: true,
+      claudeInstalled: true,
+      claudeSignedIn: "no",
+      codexEnabled: true,
+      codexInstalled: true,
+      codexSignedIn: "yes",
+    });
+
+    // Nothing usable: Codex missing, Claude turned off in Settings.
+    assert.deepStrictEqual(
+      providerReadinessProperties([
+        providerSnapshot("codex", {
+          installed: false,
+          status: "error",
+          auth: { status: "unknown" },
+        }),
+        providerSnapshot("claudeAgent", { enabled: false }),
+      ]),
+      {
+        anyAgentInstalled: false,
+        anyAgentSignedIn: false,
+        anyAgentReady: false,
+        anyAgentCheckTimedOut: false,
+        claudeEnabled: false,
+        claudeInstalled: false,
+        claudeSignedIn: "unknown",
+        codexEnabled: true,
+        codexInstalled: false,
+        codexSignedIn: "unknown",
+      },
+    );
+  });
+
+  it("does not count an agent whose check timed out as ready", () => {
+    const properties = providerReadinessProperties([
+      providerSnapshot("codex", {
+        status: "warning",
+        statusReason: "provider_probe_timeout",
+        auth: { status: "unknown" },
+      }),
+    ]);
+    assert.strictEqual(properties.anyAgentInstalled, true);
+    assert.strictEqual(properties.anyAgentReady, false);
+    assert.strictEqual(properties.anyAgentCheckTimedOut, true);
+  });
+
+  it("waits for provider checks that are still running", () => {
+    assert.isFalse(providerChecksSettled([]));
+    assert.isFalse(
+      providerChecksSettled([
+        providerSnapshot("codex"),
+        providerSnapshot("claudeAgent", { statusReason: "provider_probe_pending" }),
+      ]),
+    );
+    assert.isTrue(
+      providerChecksSettled([
+        providerSnapshot("codex"),
+        providerSnapshot("claudeAgent", { statusReason: "provider_probe_timeout" }),
+      ]),
     );
   });
 

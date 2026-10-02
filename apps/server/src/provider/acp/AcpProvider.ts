@@ -97,6 +97,7 @@ export function buildInitialAcpProviderSnapshot<Settings extends AcpProviderSett
             installed: true,
             version: null,
             status: "warning",
+            statusReason: "provider_probe_pending",
             auth: { status: "unknown" },
             message: `Checking ${displayName} availability...`,
           }
