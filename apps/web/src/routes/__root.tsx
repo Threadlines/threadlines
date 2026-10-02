@@ -56,7 +56,11 @@ import {
   useServerConfigUpdatedSubscription,
   useServerWelcomeSubscription,
 } from "../rpc/serverState";
-import { isWaitingOnBackgroundTasks } from "../session-logic";
+import {
+  describedAwaitedTasks,
+  formatAwaitedTasks,
+  isWaitingOnBackgroundTasks,
+} from "../session-logic";
 import { type AppState, selectRunningSidebarThreadsAcrossEnvironments, useStore } from "../store";
 import { useUiStateStore } from "../uiStateStore";
 import { syncBrowserChromeTheme } from "../hooks/useTheme";
@@ -195,22 +199,31 @@ function taskbarThreadKey(
 }
 
 function selectRunningTaskbarThreads(state: AppState): DesktopTaskbarThreadSummary[] {
-  return selectRunningSidebarThreadsAcrossEnvironments(state).map((thread) => ({
-    threadId: thread.id,
-    environmentId: thread.environmentId,
-    title: thread.title,
-    state: isWaitingOnBackgroundTasks(thread.latestTurn, thread.session)
-      ? ("waiting" as const)
-      : ("running" as const),
-  }));
+  return selectRunningSidebarThreadsAcrossEnvironments(state).map((thread) => {
+    const summary = {
+      threadId: thread.id,
+      environmentId: thread.environmentId,
+      title: thread.title,
+    };
+    if (!isWaitingOnBackgroundTasks(thread.latestTurn, thread.session)) {
+      return { ...summary, state: "running" as const };
+    }
+    const awaitedTasks = describedAwaitedTasks(thread.session);
+    const waitingOn = awaitedTasks ? formatAwaitedTasks(awaitedTasks) : null;
+    return { ...summary, state: "waiting" as const, ...(waitingOn ? { waitingOn } : {}) };
+  });
 }
 
 function DesktopTaskbarStatusSync() {
   // Subscribe to a compact signature so re-renders happen only when the
-  // running set or a running thread's title changes.
+  // running set or what a running thread shows changes: its title, whether it
+  // works or waits, and what it waits on.
   const runningThreadsSignature = useStore((state) =>
     selectRunningTaskbarThreads(state)
-      .map((thread) => `${taskbarThreadKey(thread)}:${thread.title}`)
+      .map(
+        (thread) =>
+          `${taskbarThreadKey(thread)}:${thread.state}:${thread.waitingOn ?? ""}:${thread.title}`,
+      )
       .join("|"),
   );
   const hadRunningThreadRef = useRef(false);
@@ -228,7 +241,10 @@ function DesktopTaskbarStatusSync() {
     }
 
     const threadsKey = (input.threads ?? [])
-      .map((thread) => `${taskbarThreadKey(thread)}:${thread.state}:${thread.title}`)
+      .map(
+        (thread) =>
+          `${taskbarThreadKey(thread)}:${thread.state}:${thread.waitingOn ?? ""}:${thread.title}`,
+      )
       .join("|");
     const statusKey = `${input.status}:${input.description ?? ""}:${input.runningThreadCount ?? ""}:${input.completedThreadCount ?? ""}:${threadsKey}`;
     if (lastStatusKeyRef.current === statusKey) {

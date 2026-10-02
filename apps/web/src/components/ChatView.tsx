@@ -100,6 +100,7 @@ import {
   deriveWorkLogEntries,
   hasActionableProposedPlan,
   isLatestTurnSettled,
+  describedAwaitedTasks,
   isWaitingOnBackgroundTasks,
   type McpAuthReconnectAction,
   type ProviderAuthReconnectAction,
@@ -1404,11 +1405,18 @@ export default function ChatView(props: ChatViewProps) {
     });
   }, [activeThreadKey, existingOpenTerminalThreadKeys, terminalState.terminalOpen]);
   const latestTurnSettled = isLatestTurnSettled(activeLatestTurn, activeThread?.session ?? null);
-  // Same rule as the sidebar's "Background" pill: settled, but a provider
+  // Same rule as the sidebar's "Waiting" pill: settled, but a provider
   // task will start the thread back up on its own.
   const waitingOnBackgroundTasks = isWaitingOnBackgroundTasks(
     activeLatestTurn,
     activeThread?.session ?? null,
+  );
+  // What it waits on, for the timeline's anchor. Memoized on the session so
+  // the timeline's rows only rebuild when the wait itself changes.
+  const activeSession = activeThread?.session ?? null;
+  const awaitedTasks = useMemo(
+    () => (waitingOnBackgroundTasks ? describedAwaitedTasks(activeSession) : null),
+    [activeSession, waitingOnBackgroundTasks],
   );
   const activeProjectRef = activeThread
     ? scopeProjectRef(activeThread.environmentId, activeThread.projectId)
@@ -7156,6 +7164,7 @@ export default function ChatView(props: ChatViewProps) {
               emptyState={firstRunSetupEmptyState ?? draftTimelineEmptyState}
               isWorking={isWorking}
               isWaitingOnBackgroundTasks={waitingOnBackgroundTasks}
+              awaitedTasks={awaitedTasks}
               activeStatusLabel={activeStatusLabel}
               activeTurnInProgress={isWorking || !latestTurnSettled}
               activeTurnId={activeLatestTurn?.turnId ?? null}

@@ -5258,20 +5258,22 @@ describe("ClaudeAdapterLive", () => {
       harness.query.emit({
         type: "system",
         subtype: "background_tasks_changed",
+        // The CLI reports each task's raw type here, the same one its
+        // task_started edge carries.
         tasks: [
           {
             task_id: "task-snapshot-a",
-            task_type: "subagent",
+            task_type: "local_agent",
             description: "Review provider logic",
           },
           {
             task_id: "task-snapshot-b",
-            task_type: "shell",
+            task_type: "local_bash",
             description: "Watch CI",
           },
           {
             task_id: "task-snapshot-a",
-            task_type: "subagent",
+            task_type: "local_agent",
             description: "Review provider logic",
           },
         ],
@@ -5320,7 +5322,7 @@ describe("ClaudeAdapterLive", () => {
         tasks: [
           {
             task_id: "task-snapshot-b",
-            task_type: "shell",
+            task_type: "local_bash",
             description: "Watch CI",
           },
         ],
@@ -5383,6 +5385,11 @@ describe("ClaudeAdapterLive", () => {
         assert.deepEqual(
           snapshots[0].payload.tasks.map((task) => task.taskId),
           ["task-snapshot-a", "task-snapshot-b"],
+        );
+        // Each task says what it is, so the thread can say what it waits on.
+        assert.deepEqual(
+          snapshots[0].payload.tasks.map((task) => task.kind),
+          ["agent", "command"],
         );
       }
       if (snapshots[1]?.type === "task.snapshot.updated") {
@@ -9299,6 +9306,21 @@ describe("ClaudeAdapterLive codex exec promotion", () => {
         toolUseId: "tool-codex-exec",
         command: `codex exec -m gpt-5.6-sol "Review the adapter"`,
       });
+      // The task list reaches the adapter before the edge that identifies
+      // the run as codex.
+      fixture.harness.query.emit({
+        type: "system",
+        subtype: "background_tasks_changed",
+        tasks: [
+          {
+            task_id: "task-codex-exec",
+            task_type: "local_bash",
+            description: "Review the adapter",
+          },
+        ],
+        session_id: "sdk-session-codex-exec",
+        uuid: "task-codex-exec-listed",
+      } as unknown as SDKMessage);
       fixture.harness.query.emit({
         type: "system",
         subtype: "task_started",
@@ -9321,7 +9343,18 @@ describe("ClaudeAdapterLive codex exec promotion", () => {
       } as unknown as SDKMessage);
       emitMarkerTask(fixture.harness);
 
-      const metadata = subagentMetadata(Array.from(yield* Fiber.join(runtimeEventsFiber)));
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+      // Listed as a command, then relisted as the agent it turned out to be,
+      // so the thread reads as waiting on an agent.
+      assert.deepEqual(
+        runtimeEvents.flatMap((event) =>
+          event.type === "task.snapshot.updated"
+            ? [event.payload.tasks.map((task) => task.kind)]
+            : [],
+        ),
+        [["command"], ["agent"]],
+      );
+      const metadata = subagentMetadata(runtimeEvents);
       // Row first, identity second, settlement last.
       assert.deepEqual(metadata[0], {
         callId: "tool-codex-exec",
@@ -9356,6 +9389,72 @@ describe("ClaudeAdapterLive codex exec promotion", () => {
       assert.equal(transcript.agent?.agentType, "codex");
     }).pipe(Effect.provide(fixture.harness.layer), Effect.ensuring(Effect.sync(fixture.cleanup)));
   });
+
+  it.effect(
+    "waits on a codex exec run even when the user moved on before it was recognized",
+    () => {
+      const fixture = makeCodexExecHarness();
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        const events = yield* Queue.unbounded<ProviderRuntimeEvent>();
+        yield* adapter.streamEvents.pipe(
+          Stream.runForEach((event) => Queue.offer(events, event)),
+          Effect.forkChild,
+        );
+        /** What the next published task list says each task is, and whether it is awaited. */
+        const nextSnapshot = Effect.gen(function* () {
+          for (;;) {
+            const event = yield* Queue.take(events);
+            if (event.type === "task.snapshot.updated") {
+              return event.payload.tasks.map((task) => `${task.kind}:${task.awaited !== false}`);
+            }
+          }
+        });
+
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          cwd: fixture.cwd,
+          runtimeMode: "full-access",
+        });
+        emitBashToolUse(fixture.harness, {
+          toolUseId: "tool-codex-exec",
+          command: `codex exec "Review the adapter"`,
+        });
+        fixture.harness.query.emit({
+          type: "system",
+          subtype: "background_tasks_changed",
+          tasks: [
+            {
+              task_id: "task-codex-exec",
+              task_type: "local_bash",
+              description: "Review the adapter",
+            },
+          ],
+          session_id: "sdk-session-codex-exec",
+          uuid: "task-codex-exec-listed",
+        } as unknown as SDKMessage);
+        assert.deepEqual(yield* nextSnapshot, ["command:true"]);
+
+        // The user moves on while the run still looks like a plain command.
+        yield* adapter.sendTurn({ threadId: THREAD_ID, input: "next", attachments: [] });
+        assert.deepEqual(yield* nextSnapshot, ["command:false"]);
+
+        // Recognized as codex: an agent, and agents are always awaited.
+        fixture.harness.query.emit({
+          type: "system",
+          subtype: "task_started",
+          task_id: "task-codex-exec",
+          description: "Review the adapter",
+          task_type: "local_bash",
+          tool_use_id: "tool-codex-exec",
+          session_id: "sdk-session-codex-exec",
+          uuid: "task-codex-exec-started",
+        } as unknown as SDKMessage);
+        assert.deepEqual(yield* nextSnapshot, ["agent:true"]);
+      }).pipe(Effect.provide(fixture.harness.layer), Effect.ensuring(Effect.sync(fixture.cleanup)));
+    },
+  );
 
   it.effect("leaves ordinary background commands alone", () => {
     const fixture = makeCodexExecHarness();

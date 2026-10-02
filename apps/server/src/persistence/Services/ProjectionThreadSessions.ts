@@ -10,6 +10,7 @@ import {
   RuntimeMode,
   IsoDateTime,
   NonNegativeInt,
+  OrchestrationAwaitedBackgroundTask,
   OrchestrationSessionStatus,
   ProviderInstanceId,
   ThreadId,
@@ -40,6 +41,7 @@ export const ProjectionThreadSession = Schema.Struct({
   activeTurnId: Schema.NullOr(TurnId),
   pendingBackgroundTaskCount: NonNegativeInt,
   awaitedBackgroundTaskCount: NonNegativeInt,
+  awaitedBackgroundTasks: Schema.Array(OrchestrationAwaitedBackgroundTask),
   lastError: Schema.NullOr(Schema.String),
   updatedAt: IsoDateTime,
 });

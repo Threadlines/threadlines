@@ -24,25 +24,38 @@ export function HoverCardTitle({ children }: { children: ReactNode }) {
   );
 }
 
-/** Status on the left, when it last moved on the right, ruled off from the details. */
+/**
+ * Status on the left, when it last moved on the right, ruled off from the
+ * details. `label` says more than the status's own word when the card knows
+ * more; `children` sit under it, above the rule, for what the status is about.
+ */
 export function HoverCardStatusLine({
   status,
+  label,
   idleLabel = "Idle",
   timestamp,
+  children,
 }: {
   status: ThreadStatusPill | null;
+  label?: string | undefined;
   idleLabel?: string;
   timestamp: string | null;
+  children?: ReactNode;
 }) {
   return (
-    <div className="mb-1.5 flex items-center gap-2 border-b border-border/60 pb-1.5 text-xs leading-tight">
-      <ThreadStatusDot status={status} />
-      <span className="min-w-0 flex-1 truncate text-foreground/80">
-        {status ? status.label : idleLabel}
-      </span>
-      {timestamp ? (
-        <span className="shrink-0 tabular-nums text-muted-foreground/60">{timestamp}</span>
-      ) : null}
+    <div className="mb-1.5 border-b border-border/60 pb-1.5 text-xs leading-tight">
+      {/* A longer label ("Waiting on 1 agent and 1 command") wraps rather
+          than losing its end; the dot stays on the first line. */}
+      <div className="flex items-start gap-2">
+        <ThreadStatusDot status={status} className="mt-[3px] shrink-0" />
+        <span className="line-clamp-2 min-w-0 flex-1 text-foreground/80">
+          {label ?? (status ? status.label : idleLabel)}
+        </span>
+        {timestamp ? (
+          <span className="shrink-0 tabular-nums text-muted-foreground/60">{timestamp}</span>
+        ) : null}
+      </div>
+      {children ? <div className="mt-1 flex flex-col gap-1">{children}</div> : null}
     </div>
   );
 }

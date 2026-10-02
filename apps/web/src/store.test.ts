@@ -14,6 +14,7 @@ import {
   ThreadParticipantId,
   TurnId,
   type OrchestrationEvent,
+  type OrchestrationSession,
 } from "@threadlines/contracts";
 import { describe, expect, it } from "vite-plus/test";
 import { MAX_THREAD_ACTIVITIES } from "@threadlines/shared/threadLimits";
@@ -821,6 +822,76 @@ describe("incremental orchestration updates", () => {
       localEnvironmentStateOf(next).sidebarThreadSummaryById[ThreadId.make("thread-1")]
         ?.cumulativeDiffStat,
     ).toEqual({ additions: 12, deletions: 4 });
+  });
+
+  it("takes a new background wait even when it shares the previous update's timestamp", () => {
+    const upsert = (awaitedBackgroundTasks: OrchestrationSession["awaitedBackgroundTasks"]) =>
+      ({
+        kind: "thread-upserted",
+        sequence: 2,
+        thread: {
+          id: ThreadId.make("thread-1"),
+          projectId: ProjectId.make("project-1"),
+          title: "Thread",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("claudeAgent"),
+            model: "claude-opus-5-5",
+          },
+          runtimeMode: DEFAULT_COMPOSER_RUNTIME_MODE,
+          interactionMode: DEFAULT_INTERACTION_MODE,
+          branch: null,
+          worktreePath: null,
+          effectiveCwd: null,
+          goal: null,
+          latestTurn: null,
+          createdAt: "2026-02-13T00:00:00.000Z",
+          updatedAt: "2026-02-27T00:00:01.000Z",
+          archivedAt: null,
+          pinnedAt: null,
+          pullRequestAutoFix: false,
+          pullRequestAutoMerge: null,
+          linkedPullRequests: [],
+          participants: [],
+          doneOverride: null,
+          lastSeenAt: null,
+          session: {
+            threadId: ThreadId.make("thread-1"),
+            status: "ready",
+            providerName: "claudeAgent",
+            runtimeMode: DEFAULT_COMPOSER_RUNTIME_MODE,
+            activeTurnId: null,
+            pendingBackgroundTaskCount: 1,
+            awaitedBackgroundTaskCount: 1,
+            awaitedBackgroundTasks,
+            lastError: null,
+            updatedAt: "2026-02-27T00:00:01.000Z",
+          },
+          latestUserMessageAt: null,
+          hasPendingApprovals: false,
+          hasPendingUserInput: false,
+          hasActionableProposedPlan: false,
+          cumulativeDiffStat: null,
+          diffStatBaselineTurnCount: 0,
+        },
+      }) as const;
+
+    // A `codex exec` run goes out as a command, then is relisted as the agent
+    // it is within the same millisecond.
+    const listed = applyShellEvent(
+      makeState(makeThread()),
+      upsert([{ kind: "command", description: "Review the diff" }]),
+      localEnvironmentId,
+    );
+    const relisted = applyShellEvent(
+      listed,
+      upsert([{ kind: "agent", description: "Review the diff" }]),
+      localEnvironmentId,
+    );
+
+    expect(
+      localEnvironmentStateOf(relisted).sidebarThreadSummaryById[ThreadId.make("thread-1")]?.session
+        ?.awaitedBackgroundTasks,
+    ).toEqual([{ kind: "agent", description: "Review the diff" }]);
   });
 
   it("sums the thread's own turn diffs into the sidebar summary as turns land", () => {

@@ -43,7 +43,8 @@ const STATE_BY_LABEL: Readonly<Record<string, WorkingDotsState>> = {
  * either provider. Specific words keep their own motion.
  */
 export function workingDotsStateForLabel(label: string, liveAgentCount = 0): WorkingDotsState {
-  const state = STATE_BY_LABEL[label] ?? "working";
+  // A settled turn names what it waits on ("Waiting on 1 command").
+  const state = STATE_BY_LABEL[label] ?? (label.startsWith("Waiting on ") ? "waiting" : "working");
   return state === "working" && liveAgentCount > 0 ? "agents" : state;
 }
 

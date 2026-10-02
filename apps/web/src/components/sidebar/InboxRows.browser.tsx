@@ -1,6 +1,12 @@
 import "../../index.css";
 
-import { EnvironmentId, ProjectId, ThreadId } from "@threadlines/contracts";
+import {
+  EnvironmentId,
+  ProjectId,
+  ProviderDriverKind,
+  ThreadId,
+  TurnId,
+} from "@threadlines/contracts";
 import { page, userEvent } from "vite-plus/test/browser";
 import { describe, expect, it, vi } from "vite-plus/test";
 
@@ -26,6 +32,7 @@ import { render } from "vitest-browser-react";
 
 import type { ThreadPullRequest } from "../pull-requests/pullRequests.logic";
 import type { SidebarThreadSummary } from "../../types";
+import { resolveThreadStatusPill } from "../Sidebar.logic";
 import { InboxThreadRow } from "./InboxRows";
 import { ThreadHoverCardProvider } from "./ThreadHoverCard";
 
@@ -71,14 +78,15 @@ const OPEN_PULL_REQUEST: ThreadPullRequest = {
 function renderRow(
   listPullRequest: ThreadPullRequest | null,
   linkedPullRequests: readonly ThreadPullRequest[] = [],
+  thread: SidebarThreadSummary = THREAD,
 ) {
   const openPrLink = vi.fn();
   render(
     <ThreadHoverCardProvider>
       <ul>
         <InboxThreadRow
-          thread={THREAD}
-          status={null}
+          thread={thread}
+          status={resolveThreadStatusPill({ thread })}
           projectLabel={null}
           isActive={false}
           jumpLabel={null}
@@ -175,5 +183,45 @@ describe("InboxThreadRow pull request badge", () => {
 
     await expect.element(page.getByTestId(`thread-title-${THREAD_ID}`)).toBeVisible();
     expect(page.getByTestId("inbox-thread-pr-badge").elements()).toHaveLength(0);
+  });
+});
+
+describe("InboxThreadRow background wait", () => {
+  it("names the agents a settled thread waits on, and lists every task on hover", async () => {
+    const thread: SidebarThreadSummary = {
+      ...THREAD,
+      latestTurn: {
+        turnId: TurnId.make("turn-1"),
+        state: "completed",
+        requestedAt: "2026-09-01T09:00:00.000Z",
+        startedAt: "2026-09-01T09:00:01.000Z",
+        completedAt: "2026-09-01T09:05:00.000Z",
+        assistantMessageId: null,
+      },
+      session: {
+        provider: ProviderDriverKind.make("claudeAgent"),
+        status: "ready",
+        orchestrationStatus: "ready",
+        pendingBackgroundTaskCount: 3,
+        awaitedBackgroundTaskCount: 3,
+        awaitedBackgroundTasks: [
+          { kind: "command", description: "Watch CI run until completion" },
+          { kind: "agent", description: "Review the diff" },
+          { kind: "agent", description: "Research the flaky test" },
+        ],
+        createdAt: "2026-09-01T09:00:00.000Z",
+        updatedAt: "2026-09-01T09:05:00.000Z",
+      },
+    };
+    renderRow(null, [], thread);
+
+    await expect
+      .element(page.getByTestId(`thread-meta-${THREAD_ID}`))
+      .toHaveTextContent(/2 agents/);
+
+    await page.getByTestId(`thread-title-${THREAD_ID}`).hover();
+    const card = page.getByTestId("thread-hover-card");
+    await expect.element(card).toHaveTextContent(/Waiting on 2\sagents and 1\scommand/);
+    await expect.element(card).toHaveTextContent(/Watch CI run until completion/);
   });
 });

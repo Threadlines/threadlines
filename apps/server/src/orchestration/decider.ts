@@ -61,6 +61,7 @@ import {
 } from "./commandInvariants.ts";
 import { projectEvent } from "./projector.ts";
 import { canReplaceThreadTitle } from "./threadTitle.ts";
+import { carriedBackgroundTasks } from "./sessionBackgroundTasks.ts";
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 
@@ -1704,11 +1705,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
                   // Same reasoning: the live runtime still owns its background
                   // tasks. Dropping the count here would tell the reactor the
                   // session is free to be cycled into another checkout.
-                  pendingBackgroundTaskCount: priorSession?.pendingBackgroundTaskCount ?? 0,
-                  awaitedBackgroundTaskCount:
-                    priorSession?.awaitedBackgroundTaskCount ??
-                    priorSession?.pendingBackgroundTaskCount ??
-                    0,
+                  ...carriedBackgroundTasks(priorSession),
                   activeTurnId: null,
                   lastError: priorSession?.lastError ?? null,
                   updatedAt: command.createdAt,
@@ -1839,9 +1836,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             providerThreadId: session.providerThreadId ?? null,
             runtimeMode: targetThread.runtimeMode,
             checkoutCwd: session.checkoutCwd ?? null,
-            pendingBackgroundTaskCount: session.pendingBackgroundTaskCount ?? 0,
-            awaitedBackgroundTaskCount:
-              session.awaitedBackgroundTaskCount ?? session.pendingBackgroundTaskCount ?? 0,
+            ...carriedBackgroundTasks(session),
             activeTurnId: null,
             lastError: session.lastError,
             updatedAt: command.createdAt,

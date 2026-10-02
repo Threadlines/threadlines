@@ -5,6 +5,7 @@ import type {
   ChatSkillReference,
   EnvironmentId,
   ModelSelection,
+  OrchestrationAwaitedBackgroundTask,
   OrchestrationLatestTurn,
   OrchestrationProposedPlanId,
   RepositoryIdentity,
@@ -353,6 +354,8 @@ export interface ThreadSession {
   pendingBackgroundTaskCount?: number | undefined;
   /** The pending tasks the agent will wake up for. What the UI shows as waiting. */
   awaitedBackgroundTaskCount?: number | undefined;
+  /** What those tasks are, when the provider said; see describedAwaitedTasks. */
+  awaitedBackgroundTasks?: ReadonlyArray<OrchestrationAwaitedBackgroundTask> | undefined;
   createdAt: string;
   updatedAt: string;
   lastError?: string;

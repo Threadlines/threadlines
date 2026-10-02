@@ -115,6 +115,7 @@ import { checkoutPresence } from "../../vcs/CheckoutPresence.ts";
 import { GitWorkflowService } from "../../git/GitWorkflowService.ts";
 import { checkpointHandover, HandoverCaptureWait } from "../checkpointHandover.ts";
 import { handOffReplyText } from "../agentRequestDecisions.ts";
+import { NO_BACKGROUND_TASKS } from "../sessionBackgroundTasks.ts";
 const isProviderAdapterRequestError = Schema.is(ProviderAdapterRequestError);
 const isCheckoutMissingError = Schema.is(CheckoutMissingError);
 const isProviderDriverKind = Schema.is(ProviderDriverKind);
@@ -4066,8 +4067,7 @@ const make = Effect.gen(function* () {
               threadId: thread.id,
               session: {
                 ...session,
-                pendingBackgroundTaskCount: 0,
-                awaitedBackgroundTaskCount: 0,
+                ...NO_BACKGROUND_TASKS,
                 updatedAt,
               },
               createdAt: updatedAt,
@@ -4082,8 +4082,7 @@ const make = Effect.gen(function* () {
             ...session,
             status: "interrupted",
             activeTurnId: null,
-            pendingBackgroundTaskCount: 0,
-            awaitedBackgroundTaskCount: 0,
+            ...NO_BACKGROUND_TASKS,
             lastError: null,
             updatedAt: createdAt,
           },
