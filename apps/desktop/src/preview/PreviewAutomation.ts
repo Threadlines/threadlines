@@ -37,8 +37,9 @@ import type {
   PreviewAutomationTarget,
 } from "@threadlines/contracts";
 import {
-  isBrowserHostApproved,
+  isBrowserHostAllowed,
   normalizePreviewWaitForTimeoutMs,
+  type BrowserSiteAccess,
 } from "@threadlines/shared/preview";
 import { BrowserWindow, webContents, type WebContents } from "electron";
 
@@ -134,7 +135,7 @@ interface AttachedTab {
  * all. This one lives as long as the guest does.
  */
 interface NavigationGuard {
-  approvedDomains: ReadonlyArray<string>;
+  access: BrowserSiteAccess;
 }
 
 export class PreviewAutomation extends Context.Service<
@@ -151,7 +152,7 @@ export class PreviewAutomation extends Context.Service<
      */
     readonly setNavigationPolicy: (
       webContentsId: number,
-      approvedDomains: ReadonlyArray<string>,
+      access: BrowserSiteAccess,
     ) => Effect.Effect<void, PreviewAutomationError>;
     readonly status: (
       webContentsId: number,
@@ -317,7 +318,7 @@ export const make = Effect.sync(function PreviewAutomationMake() {
     if (existing !== undefined) {
       return existing;
     }
-    const guard: NavigationGuard = { approvedDomains: [] };
+    const guard: NavigationGuard = { access: { allowAll: false, approvedHosts: [] } };
     const refuse = (details: {
       readonly url: string;
       readonly isMainFrame: boolean;
@@ -329,7 +330,7 @@ export const make = Effect.sync(function PreviewAutomationMake() {
         return;
       }
       const blockedHost = navigationHost(details.url);
-      if (blockedHost === null || isBrowserHostApproved(blockedHost, guard.approvedDomains)) {
+      if (blockedHost === null || isBrowserHostAllowed(blockedHost, guard.access)) {
         return;
       }
       details.preventDefault();
@@ -1125,10 +1126,10 @@ export const make = Effect.sync(function PreviewAutomationMake() {
       }),
     setNavigationPolicy: Effect.fn("PreviewAutomation.setNavigationPolicy")(function* (
       webContentsId: number,
-      approvedDomains: ReadonlyArray<string>,
+      access: BrowserSiteAccess,
     ) {
       const contents = yield* resolve(webContentsId);
-      ensureNavigationGuard(contents).approvedDomains = approvedDomains;
+      ensureNavigationGuard(contents).access = access;
     }),
     status: Effect.fn("PreviewAutomation.status")(function* (webContentsId: number) {
       const contents = yield* resolveAttached(webContentsId);

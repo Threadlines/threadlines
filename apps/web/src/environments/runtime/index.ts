@@ -5,6 +5,7 @@ export {
   getSavedEnvironmentRuntimeState,
   hasSavedEnvironmentRegistryHydrated,
   listSavedEnvironmentRecords,
+  readEnvironmentDescriptor,
   readSavedEnvironmentBearerToken,
   resetSavedEnvironmentRegistryStoreForTests,
   resetSavedEnvironmentRuntimeStoreForTests,

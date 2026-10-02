@@ -268,7 +268,10 @@ export const previewSetNavigationPolicy = makeIpcMethod({
   result: Schema.Void,
   handler: Effect.fn("desktop.ipc.preview.setNavigationPolicy")(function* (input) {
     const automation = yield* PreviewAutomation.PreviewAutomation;
-    yield* automation.setNavigationPolicy(input.webContentsId, input.approvedDomains);
+    yield* automation.setNavigationPolicy(input.webContentsId, {
+      allowAll: input.allowAll === true,
+      approvedHosts: input.approvedDomains,
+    });
   }),
 });
 

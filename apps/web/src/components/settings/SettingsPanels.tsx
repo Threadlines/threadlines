@@ -407,6 +407,9 @@ export function useSettingsRestore(onRestored?: () => void) {
       ...(settings.confirmThreadDelete !== DEFAULT_UNIFIED_SETTINGS.confirmThreadDelete
         ? ["Delete confirmation"]
         : []),
+      ...(settings.agentBrowserSitePolicy !== DEFAULT_UNIFIED_SETTINGS.agentBrowserSitePolicy
+        ? ["Sites agents can visit"]
+        : []),
       ...(!roomsEnabledFor(settings) ? ["Rooms"] : []),
       ...(agentInvitesChoice(settings) !== "ask" ? ["Agents bringing in other agents"] : []),
       ...(isGitWritingModelDirty ? ["Git writing model"] : []),
@@ -426,6 +429,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.enableRooms,
       settings.agentInvites,
       settings.addProjectBaseDirectory,
+      settings.agentBrowserSitePolicy,
       settings.defaultThreadEnvMode,
       settings.diffChangesOnly,
       settings.diffIgnoreWhitespace,
@@ -469,6 +473,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       addProjectBaseDirectory: DEFAULT_UNIFIED_SETTINGS.addProjectBaseDirectory,
       confirmThreadArchive: DEFAULT_UNIFIED_SETTINGS.confirmThreadArchive,
       confirmThreadDelete: DEFAULT_UNIFIED_SETTINGS.confirmThreadDelete,
+      agentBrowserSitePolicy: DEFAULT_UNIFIED_SETTINGS.agentBrowserSitePolicy,
       enableRooms: true,
       agentInvites: "ask",
       textGenerationModelSelection: DEFAULT_UNIFIED_SETTINGS.textGenerationModelSelection,
@@ -591,6 +596,54 @@ function DefaultThreadEnvModeRow() {
           <SelectPopup align="end" alignItemWithTrigger={false}>
             <SelectItem value="local">Local</SelectItem>
             <SelectItem value="worktree">New worktree</SelectItem>
+          </SelectPopup>
+        </Select>
+      }
+    />
+  );
+}
+
+/**
+ * Where agents may take the built-in browser without asking. Kept on this
+ * computer with the browser it governs; each project can choose otherwise from
+ * the browser's own menu.
+ */
+function AgentBrowserSitesRow() {
+  const settings = useSettings();
+  const { updateSettings } = useUpdateSettings();
+  return (
+    <SettingsRow
+      title="Sites agents can visit"
+      description="Local addresses always open. For other sites, agents can ask you first or go anywhere. Each project can change this from the browser menu."
+      resetAction={
+        settings.agentBrowserSitePolicy !== DEFAULT_UNIFIED_SETTINGS.agentBrowserSitePolicy ? (
+          <SettingResetButton
+            label="sites agents can visit"
+            onClick={() =>
+              updateSettings({
+                agentBrowserSitePolicy: DEFAULT_UNIFIED_SETTINGS.agentBrowserSitePolicy,
+              })
+            }
+          />
+        ) : null
+      }
+      control={
+        <Select
+          value={settings.agentBrowserSitePolicy}
+          onValueChange={(value) => {
+            if (value === "ask" || value === "any") {
+              updateSettings({ agentBrowserSitePolicy: value });
+            }
+          }}
+        >
+          <SelectTrigger className="w-full sm:w-44" aria-label="Sites agents can visit">
+            <SelectValue>
+              {settings.agentBrowserSitePolicy === "any" ? "Any site" : "Ask first"}
+            </SelectValue>
+          </SelectTrigger>
+          <SelectPopup align="end" alignItemWithTrigger={false}>
+            <SelectItem value="ask">Ask first</SelectItem>
+            <SelectItem value="any">Any site</SelectItem>
           </SelectPopup>
         </Select>
       }
@@ -1142,6 +1195,7 @@ export function GeneralSettingsPanel({ surface = "full" }: { surface?: "full" | 
           }
         />
         <AgentInvitesRow />
+        {isElectron ? <AgentBrowserSitesRow /> : null}
       </SettingsSection>
 
       <SettingsSection title="About">

@@ -216,6 +216,31 @@ describe("PreviewAutomationBroker", () => {
     ),
   );
 
+  it.effect("waits for the user once a request says it is asking them, but only once", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const broker = yield* make;
+        const { nextRequest } = yield* attachHost(broker, { features: ["cancel"] });
+        const call = yield* broker
+          .invoke({ threadId, agentId, operation: "click", input: {} })
+          .pipe(Effect.forkChild);
+        const request = yield* nextRequest;
+
+        yield* broker.progress({ requestId: request.requestId, awaitingUser: true });
+        // Long past the usual twenty seconds, and still waiting.
+        yield* TestClock.adjust("4 minutes");
+        assert.isUndefined(call.pollUnsafe());
+        // Saying so again buys nothing more: five minutes from the first note.
+        yield* broker.progress({ requestId: request.requestId, awaitingUser: true });
+        yield* TestClock.adjust("90 seconds");
+
+        const failure = yield* Fiber.join(call).pipe(Effect.flip);
+        assert.strictEqual(failure._tag, "PreviewAutomationTimeoutError");
+        assert.include(failure.message, "did not answer in time");
+      }),
+    ),
+  );
+
   it.effect("settles calls in flight when the browser goes away", () =>
     Effect.scoped(
       Effect.gen(function* () {

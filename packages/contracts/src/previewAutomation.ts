@@ -135,9 +135,17 @@ export class PreviewAutomationUnsupportedError extends Schema.TaggedError<Previe
 
 export class PreviewAutomationTimeoutError extends Schema.TaggedError<PreviewAutomationTimeoutError>()(
   "PreviewAutomationTimeoutError",
-  { operation: PreviewAutomationOperationSchema, timeoutMs: Schema.Finite },
+  {
+    operation: PreviewAutomationOperationSchema,
+    timeoutMs: Schema.Finite,
+    /** Set when the time ran out waiting for the user to answer a question. */
+    awaitedUser: Schema.optionalKey(Schema.Boolean),
+  },
 ) {
   override get message(): string {
+    if (this.awaitedUser === true) {
+      return `The user did not answer in time, so ${this.operation} did not happen. Carry on without it, or ask them in the conversation.`;
+    }
     return `The browser did not answer ${this.operation} within ${this.timeoutMs}ms. It may still have finished: check browser_status or browser_snapshot before trying it again.`;
   }
 }
@@ -245,6 +253,23 @@ export const PreviewAutomationResponseSchema = Schema.Struct({
   error: Schema.optionalKey(Schema.String),
 });
 export type PreviewAutomationResponse = typeof PreviewAutomationResponseSchema.Type;
+
+/**
+ * A request that is now waiting on the user, not on the page: the browser has
+ * asked them something (may the agent visit this site?) and the request goes
+ * on once they answer. The server gives it {@link PREVIEW_AUTOMATION_USER_WAIT_MS}
+ * from the first such note, once; later notes do not extend it again.
+ *
+ * Only sent to servers whose environment advertises `browserApprovalWait`.
+ */
+export const PreviewAutomationProgressSchema = Schema.Struct({
+  requestId: Schema.String,
+  awaitingUser: Schema.Literal(true),
+});
+export type PreviewAutomationProgress = typeof PreviewAutomationProgressSchema.Type;
+
+/** How long a request may wait for the user once it says it is. */
+export const PREVIEW_AUTOMATION_USER_WAIT_MS = 5 * 60_000;
 
 // --- Operation inputs -------------------------------------------------------
 

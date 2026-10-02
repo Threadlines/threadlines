@@ -333,11 +333,21 @@ export const EMPTY_AGENT_STATE: ThreadBrowserAgentState = Object.freeze({
 /**
  * A site something tried to reach that this project has not approved.
  *
- * One at a time per thread, and deliberately not persisted: it is a question
- * being asked right now, and a question that survived a restart would be asked
- * about a page nobody is looking at any more.
+ * Queued per thread and shown one at a time, oldest first: two agents (or an
+ * agent and a page) can each be waiting on a different site, and a second
+ * question must not wipe out the first. Deliberately not persisted: it is a
+ * question being asked right now, and a question that survived a restart would
+ * be asked about a page nobody is looking at any more.
  */
 export interface PendingBrowserApproval {
+  /** Identifies this question among the thread's queue. */
+  readonly id: string;
+  /**
+   * An agent's request is waiting on the answer and will load the page itself
+   * once allowed, so answering only has to tell it. Without a waiter (a page's
+   * own navigation, or a server too old to wait), allowing loads the page here.
+   */
+  readonly waiting: boolean;
   readonly host: string;
   /** The address to load once allowed, so the answer is the page, not a retry. */
   readonly url: string;
@@ -350,10 +360,10 @@ export interface PendingBrowserApproval {
   /** The site whose page navigated, when the source is a page and it had one. */
   readonly fromHost: string | null;
   /**
-   * The tab the blocked navigation happened in, when it was a page's. Allowing
-   * it resumes there: the user may have been browsing that tab themselves, and
-   * their page appearing in the agent's tab would be the mix-up this exists to
-   * avoid. Null for the agent's own requests, which load into the agent's tab.
+   * The tab the blocked navigation happened in: the page's own tab, or the
+   * agent's for its requests. Allowing resumes there: the user may have been
+   * browsing that tab themselves, and their page appearing in the agent's tab
+   * would be the mix-up this exists to avoid.
    */
   readonly tabId: string | null;
 }
@@ -362,7 +372,7 @@ interface BrowserPanelStoreState {
   browserStateByThreadKey: Record<string, ThreadBrowserState>;
   agentStateByThreadKey: Record<string, ThreadBrowserAgentState>;
   browserOwnershipByThreadKey: Record<string, ThreadBrowserOwnership>;
-  pendingApprovalByThreadKey: Record<string, PendingBrowserApproval | null>;
+  pendingApprovalsByThreadKey: Record<string, ReadonlyArray<PendingBrowserApproval>>;
   splitChatFraction: number;
   /** Hides the chat so the page gets the whole centre; the split is remembered. */
   expanded: boolean;
@@ -422,10 +432,13 @@ interface BrowserPanelStoreState {
     threadRef: ScopedThreadRef,
     activity: ThreadBrowserAgentState["activity"],
   ) => void;
-  setPendingBrowserApproval: (
-    threadRef: ScopedThreadRef,
-    approval: PendingBrowserApproval | null,
-  ) => void;
+  /**
+   * Adds a question to the thread's queue. A page that keeps trying the same
+   * blocked site from the same tab replaces its earlier question rather than
+   * stacking copies of it.
+   */
+  enqueueBrowserApproval: (threadRef: ScopedThreadRef, approval: PendingBrowserApproval) => void;
+  removeBrowserApproval: (threadRef: ScopedThreadRef, approvalId: string) => void;
   setSplitChatFraction: (fraction: number) => void;
   toggleExpanded: () => void;
 }
@@ -506,6 +519,27 @@ function mayReplaceBlankTab(ownership: ThreadBrowserOwnership): boolean {
   return ownership.openedBy === "agent" && !ownership.userControlled;
 }
 
+/**
+ * The thread's questions without those about a tab that just closed: the
+ * navigation they ask about can no longer happen, and leaving one at the front
+ * of the queue would hold every question behind it. An agent waiting on one is
+ * told by `waitForBrowserApproval`, which watches for exactly this.
+ */
+function withoutApprovalsForTab(
+  state: BrowserPanelStoreState,
+  threadRef: ScopedThreadRef,
+  tabId: string,
+): Pick<BrowserPanelStoreState, "pendingApprovalsByThreadKey"> {
+  const key = scopedThreadKey(threadRef);
+  const queue = state.pendingApprovalsByThreadKey[key] ?? [];
+  if (!queue.some((entry) => entry.tabId === tabId)) {
+    return { pendingApprovalsByThreadKey: state.pendingApprovalsByThreadKey };
+  }
+  const { [key]: _removed, ...others } = state.pendingApprovalsByThreadKey;
+  const next = queue.filter((entry) => entry.tabId !== tabId);
+  return { pendingApprovalsByThreadKey: next.length === 0 ? others : { ...others, [key]: next } };
+}
+
 function isOnlyEmptyTab(state: ThreadBrowserState): boolean {
   return (
     state.tabs.length === 1 &&
@@ -520,7 +554,7 @@ export const useBrowserPanelStore = create<BrowserPanelStoreState>()(
       browserStateByThreadKey: {},
       agentStateByThreadKey: {},
       browserOwnershipByThreadKey: {},
-      pendingApprovalByThreadKey: {},
+      pendingApprovalsByThreadKey: {},
       splitChatFraction: DEFAULT_BROWSER_SPLIT_CHAT_FRACTION,
       expanded: false,
       deviceToolbarOpen: false,
@@ -620,6 +654,7 @@ export const useBrowserPanelStore = create<BrowserPanelStoreState>()(
             };
           }),
           ...updateOwnership(state, threadRef, (current) => removeAgentOwner(current, tabId)),
+          ...withoutApprovalsForTab(state, threadRef, tabId),
         })),
       openAgentTab: (threadRef, agentId, input) => {
         const tab = { ...makeBrowserTab(), url: input.url ?? null };
@@ -692,6 +727,7 @@ export const useBrowserPanelStore = create<BrowserPanelStoreState>()(
           result = { closed: true, panelOpen: !shouldClosePanel && browser.open };
           return {
             ...threadUpdate,
+            ...withoutApprovalsForTab(state, threadRef, tabId),
             ...updateOwnership(state, threadRef, (current) =>
               shouldClosePanel ? EMPTY_BROWSER_OWNERSHIP : removeAgentOwner(current, tabId),
             ),
@@ -755,13 +791,39 @@ export const useBrowserPanelStore = create<BrowserPanelStoreState>()(
         ),
       setAgentActivity: (threadRef, activity) =>
         set((state) => updateAgentState(state, threadRef, (current) => ({ ...current, activity }))),
-      setPendingBrowserApproval: (threadRef, approval) =>
-        set((state) => ({
-          pendingApprovalByThreadKey: {
-            ...state.pendingApprovalByThreadKey,
-            [scopedThreadKey(threadRef)]: approval,
-          },
-        })),
+      enqueueBrowserApproval: (threadRef, approval) =>
+        set((state) => {
+          const key = scopedThreadKey(threadRef);
+          const queue = state.pendingApprovalsByThreadKey[key] ?? [];
+          const repeat = queue.findIndex(
+            (entry) =>
+              !entry.waiting &&
+              !approval.waiting &&
+              entry.source === approval.source &&
+              entry.tabId === approval.tabId &&
+              entry.host === approval.host,
+          );
+          const next =
+            repeat === -1
+              ? [...queue, approval]
+              : queue.map((entry, index) => (index === repeat ? approval : entry));
+          return {
+            pendingApprovalsByThreadKey: { ...state.pendingApprovalsByThreadKey, [key]: next },
+          };
+        }),
+      removeBrowserApproval: (threadRef, approvalId) =>
+        set((state) => {
+          const key = scopedThreadKey(threadRef);
+          const queue = state.pendingApprovalsByThreadKey[key] ?? [];
+          if (!queue.some((entry) => entry.id === approvalId)) {
+            return state;
+          }
+          const next = queue.filter((entry) => entry.id !== approvalId);
+          const { [key]: _removed, ...others } = state.pendingApprovalsByThreadKey;
+          return {
+            pendingApprovalsByThreadKey: next.length === 0 ? others : { ...others, [key]: next },
+          };
+        }),
       setSplitChatFraction: (fraction) =>
         set(() => ({ splitChatFraction: clampBrowserSplitFraction(fraction) })),
       toggleExpanded: () => set((state) => ({ expanded: !state.expanded })),
@@ -815,14 +877,17 @@ export function selectThreadBrowserOwnership(
   return ownershipByThreadKey[scopedThreadKey(threadRef)] ?? EMPTY_BROWSER_OWNERSHIP;
 }
 
-export function selectPendingBrowserApproval(
-  pendingApprovalByThreadKey: Record<string, PendingBrowserApproval | null>,
+const NO_PENDING_APPROVALS: ReadonlyArray<PendingBrowserApproval> = Object.freeze([]);
+
+/** The thread's open questions, oldest first; the first is the one on screen. */
+export function selectPendingBrowserApprovals(
+  pendingApprovalsByThreadKey: Record<string, ReadonlyArray<PendingBrowserApproval>>,
   threadRef: ScopedThreadRef | null,
-): PendingBrowserApproval | null {
+): ReadonlyArray<PendingBrowserApproval> {
   if (threadRef === null) {
-    return null;
+    return NO_PENDING_APPROVALS;
   }
-  return pendingApprovalByThreadKey[scopedThreadKey(threadRef)] ?? null;
+  return pendingApprovalsByThreadKey[scopedThreadKey(threadRef)] ?? NO_PENDING_APPROVALS;
 }
 
 export function selectActiveTab(state: ThreadBrowserState): BrowserTab | null {

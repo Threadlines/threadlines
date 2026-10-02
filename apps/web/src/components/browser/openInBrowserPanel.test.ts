@@ -119,6 +119,7 @@ describe("openUrlInBrowserPanel", () => {
     expect(previewSetNavigationPolicy).toHaveBeenCalledWith({
       webContentsId: 42,
       approvedDomains: expect.arrayContaining(["example.com"]),
+      allowAll: false,
     });
     expect(order).toEqual(["policy", "load"]);
   });

@@ -114,7 +114,7 @@ export function openUrlInBrowserPanel(threadRef: ScopedThreadRef, rawUrl: string
     return false;
   }
 
-  const approvedDomains = approveBrowserHostForProject(project.projectId, hostOf(url));
+  const access = approveBrowserHostForProject(project.projectId, hostOf(url));
 
   const store = useBrowserPanelStore.getState();
   const panel = selectThreadBrowserState(store.browserStateByThreadKey, threadRef);
@@ -141,7 +141,7 @@ export function openUrlInBrowserPanel(threadRef: ScopedThreadRef, rawUrl: string
     // where the main-process navigation guard still sees the old allowlist.
     const webContentsId = callWhenReady(() => webview.getWebContentsId());
     if (webContentsId !== null) {
-      pushNavigationPolicy(webContentsId, approvedDomains);
+      pushNavigationPolicy(webContentsId, access);
     }
     callWhenReady(() => {
       void webview.loadURL(url).catch(() => {});

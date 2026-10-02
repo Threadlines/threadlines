@@ -180,6 +180,7 @@ import * as Schema from "effect/Schema";
 import type {
   PreviewAutomationHost,
   PreviewAutomationHostMessage,
+  PreviewAutomationProgress,
   PreviewAutomationResponse,
 } from "./previewAutomation.ts";
 import type {
@@ -455,6 +456,8 @@ export const DesktopPreviewNavigationPolicyInputSchema = Schema.Struct({
   webContentsId: Schema.Number,
   /** Approval keys, as produced by `browserApprovalKey` in shared/preview. */
   approvedDomains: Schema.Array(Schema.String),
+  /** The project lets agents go to any site; the list above is then unused. */
+  allowAll: Schema.optionalKey(Schema.Boolean),
 });
 export type DesktopPreviewNavigationPolicyInput =
   typeof DesktopPreviewNavigationPolicyInputSchema.Type;
@@ -1231,6 +1234,8 @@ export interface EnvironmentApi {
       listener: (message: PreviewAutomationHostMessage) => void,
     ) => () => void;
     respond: (response: PreviewAutomationResponse) => Promise<void>;
+    /** Only for servers that advertise `browserApprovalWait`. */
+    progress: (progress: PreviewAutomationProgress) => Promise<void>;
   };
   terminal: {
     open: (input: typeof TerminalOpenInput.Encoded) => Promise<TerminalSessionSnapshot>;

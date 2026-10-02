@@ -4,6 +4,7 @@ import {
   type PickedElementContextDraft,
 } from "../../lib/pickedElementContext";
 import type {
+  AgentBrowserSitePolicy,
   DesktopLocalServer,
   DesktopPreviewAnnotationMode,
   DesktopPreviewPickedElement,
@@ -41,7 +42,7 @@ import {
   getPreviewWebview,
   registerPreviewWebview,
   selectActiveTab,
-  selectPendingBrowserApproval,
+  selectPendingBrowserApprovals,
   selectThreadAgentState,
   selectThreadBrowserOwnership,
   selectThreadBrowserState,
@@ -60,12 +61,16 @@ import { copyTextToClipboard } from "../../lib/clipboard";
 import { cn } from "../../lib/utils";
 import {
   Menu,
+  MenuGroup,
   MenuGroupLabel,
   MenuItem,
   MenuPopup,
   MenuRadioGroup,
   MenuRadioItem,
   MenuSeparator,
+  MenuSub,
+  MenuSubPopup,
+  MenuSubTrigger,
   MenuTrigger,
 } from "../ui/menu";
 import { MINI_HORIZONTAL_SCROLLBAR_CLASS, ScrollArea } from "../ui/scroll-area";
@@ -73,6 +78,7 @@ import { toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { RotateDeviceIcon } from "../Icons";
 import { pushNavigationPolicy, useBrowserApprovals } from "./browserApprovals";
+import { answerBrowserApproval, type BrowserApprovalDecision } from "./browserApprovalRequests";
 import { installBrowserFocusGuard, noteBrowserUserIntent } from "./browserFocusGuard";
 import { resolveBrowserViewportLayout } from "./browserViewportLayout";
 import { AgentPointer, POINTER_RETIRE_MS, type AgentPointerPosition } from "./AgentPointer";
@@ -178,13 +184,19 @@ export function BrowserPanel({
   const appearance = useBrowserPanelStore((store) => store.appearance);
   const setAppearance = useBrowserPanelStore((store) => store.setAppearance);
   const setTabZoom = useBrowserPanelStore((store) => store.setTabZoom);
-  const pendingApproval = useBrowserPanelStore((store) =>
-    selectPendingBrowserApproval(store.pendingApprovalByThreadKey, threadRef),
+  const pendingApprovals = useBrowserPanelStore((store) =>
+    selectPendingBrowserApprovals(store.pendingApprovalsByThreadKey, threadRef),
   );
-  const setPendingBrowserApproval = useBrowserPanelStore(
-    (store) => store.setPendingBrowserApproval,
-  );
-  const { approveHost } = useBrowserApprovals(threadRef, projectId);
+  const pendingApproval = pendingApprovals[0] ?? null;
+  const {
+    approveHost,
+    setProjectPolicy,
+    removeHost,
+    projectPolicy,
+    defaultPolicy,
+    access,
+    projectId: approvalsProjectId,
+  } = useBrowserApprovals(threadRef, projectId);
   const { resolvedTheme } = useTheme();
 
   // While the panel exists its webviews can pull focus out of whatever the
@@ -374,36 +386,46 @@ export function BrowserPanel({
    * browsing that tab themselves, and their page landing in the agent's tab
    * would be the very mix-up this bar exists to avoid.
    */
-  const allowPendingApproval = useCallback(() => {
-    if (pendingApproval === null) {
-      return;
-    }
-    setPendingBrowserApproval(threadRef, null);
-    const blockedTabId =
-      pendingApproval.tabId !== null &&
-      browserState.tabs.some((tab) => tab.id === pendingApproval.tabId)
-        ? pendingApproval.tabId
-        : null;
-    const targetTabId =
-      blockedTabId ??
-      (agentTabId !== null && browserState.tabs.some((tab) => tab.id === agentTabId)
-        ? agentTabId
-        : activeTabId);
-    if (targetTabId === "") {
-      approveHost(pendingApproval.host);
-      return;
-    }
-    openAddress(targetTabId, pendingApproval.url);
-  }, [
-    activeTabId,
-    agentTabId,
-    approveHost,
-    browserState.tabs,
-    openAddress,
-    pendingApproval,
-    setPendingBrowserApproval,
-    threadRef,
-  ]);
+  const answerPendingApproval = useCallback(
+    (decision: BrowserApprovalDecision) => {
+      if (pendingApproval === null) {
+        return;
+      }
+      // An agent's request waiting on this question loads the page itself once
+      // told; loading it here as well would load it twice.
+      if (answerBrowserApproval(threadRef, pendingApproval, decision) === "done") {
+        return;
+      }
+      if (decision === "allowAllSites") {
+        setProjectPolicy("any");
+      }
+      const blockedTabId =
+        pendingApproval.tabId !== null &&
+        browserState.tabs.some((tab) => tab.id === pendingApproval.tabId)
+          ? pendingApproval.tabId
+          : null;
+      const targetTabId =
+        blockedTabId ??
+        (agentTabId !== null && browserState.tabs.some((tab) => tab.id === agentTabId)
+          ? agentTabId
+          : activeTabId);
+      if (targetTabId === "") {
+        approveHost(pendingApproval.host);
+        return;
+      }
+      openAddress(targetTabId, pendingApproval.url);
+    },
+    [
+      activeTabId,
+      agentTabId,
+      approveHost,
+      browserState.tabs,
+      openAddress,
+      pendingApproval,
+      setProjectPolicy,
+      threadRef,
+    ],
+  );
 
   /**
    * Which page tool is armed, or null when the pointer belongs to the page.
@@ -1037,6 +1059,45 @@ export function BrowserPanel({
                 </MenuRadioItem>
               ))}
             </MenuRadioGroup>
+            {approvalsProjectId === null ? null : (
+              <>
+                <MenuSeparator />
+                <MenuRadioGroup
+                  value={projectPolicy ?? "default"}
+                  onValueChange={(value) =>
+                    setProjectPolicy(value === "default" ? null : (value as AgentBrowserSitePolicy))
+                  }
+                >
+                  <MenuGroupLabel>Sites agents can visit here</MenuGroupLabel>
+                  <MenuRadioItem value="default" closeOnClick data-testid="browser-sites-default">
+                    {`Use default (${defaultPolicy === "any" ? "Any site" : "Ask first"})`}
+                  </MenuRadioItem>
+                  <MenuRadioItem value="ask" closeOnClick data-testid="browser-sites-ask">
+                    Ask first
+                  </MenuRadioItem>
+                  <MenuRadioItem value="any" closeOnClick data-testid="browser-sites-any">
+                    Any site
+                  </MenuRadioItem>
+                </MenuRadioGroup>
+                {access.allowAll || access.approvedHosts.length === 0 ? null : (
+                  <MenuSub>
+                    <MenuSubTrigger data-testid="browser-allowed-sites">
+                      Allowed sites
+                    </MenuSubTrigger>
+                    <MenuSubPopup className="max-w-64">
+                      <MenuGroup>
+                        <MenuGroupLabel>Click a site to remove it</MenuGroupLabel>
+                        {access.approvedHosts.map((host) => (
+                          <MenuItem key={host} onClick={() => removeHost(host)}>
+                            <span className="truncate">{host}</span>
+                          </MenuItem>
+                        ))}
+                      </MenuGroup>
+                    </MenuSubPopup>
+                  </MenuSub>
+                )}
+              </>
+            )}
             <MenuSeparator />
             <MenuItem
               disabled={activeUrl === null}
@@ -1106,8 +1167,12 @@ export function BrowserPanel({
           host={pendingApproval.host}
           source={pendingApproval.source}
           fromHost={pendingApproval.fromHost}
-          onAllow={allowPendingApproval}
-          onDismiss={() => setPendingBrowserApproval(threadRef, null)}
+          waitingCount={pendingApprovals.length - 1}
+          onAllow={() => answerPendingApproval("allowSite")}
+          onAllowAll={
+            approvalsProjectId === null ? undefined : () => answerPendingApproval("allowAllSites")
+          }
+          onDismiss={() => answerPendingApproval("decline")}
         />
       ) : agentTabId !== null && agentActivity !== null ? (
         <AgentActivityLine
@@ -1798,21 +1863,28 @@ function PageToolControl({
  * confusion between your browsing and the agent's this bar is meant to keep
  * straight.
  *
- * "for this project" is load-bearing: it says the click is remembered and says
- * how far it reaches, so allowing a docs site once does not quietly allow it
- * everywhere you work.
+ * Both answers are remembered for this project and reach no further, which the
+ * buttons' titles say: allowing a docs site once does not quietly allow it
+ * everywhere you work, and "Allow all sites" switches only this project to
+ * "Any site". An agent waiting on the answer carries on by itself.
  */
 export function AgentApprovalLine({
   host,
   source,
   fromHost,
+  waitingCount = 0,
   onAllow,
+  onAllowAll,
   onDismiss,
 }: {
   host: string;
   source: "agent" | "page";
   fromHost: string | null;
+  /** Further questions queued behind this one. */
+  waitingCount?: number;
   onAllow: () => void;
+  /** Absent when there is no project to remember the answer for. */
+  onAllowAll?: (() => void) | undefined;
   onDismiss: () => void;
 }) {
   const subject = source === "agent" ? "Agent" : (fromHost ?? "This page");
@@ -1825,14 +1897,31 @@ export function AgentApprovalLine({
       <span className="min-w-0 truncate">
         <span className="text-foreground">{subject}</span> wants to visit {host}
       </span>
+      {waitingCount > 0 ? (
+        <span className="shrink-0 text-muted-foreground/60" data-testid="browser-approval-more">
+          +{waitingCount} more
+        </span>
+      ) : null}
       <button
         type="button"
         data-testid="browser-approval-allow"
+        title="Remembered for this project"
         className="ms-auto shrink-0 text-amber-600/70 hover:text-amber-600 dark:text-amber-400/70 dark:hover:text-amber-400"
         onClick={onAllow}
       >
-        Allow for this project
+        Allow site
       </button>
+      {onAllowAll === undefined ? null : (
+        <button
+          type="button"
+          data-testid="browser-approval-allow-all"
+          title="Lets agents visit any site in this project"
+          className="shrink-0 text-amber-600/70 hover:text-amber-600 dark:text-amber-400/70 dark:hover:text-amber-400"
+          onClick={onAllowAll}
+        >
+          Allow all sites
+        </button>
+      )}
       <button
         type="button"
         data-testid="browser-approval-dismiss"

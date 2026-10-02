@@ -782,6 +782,8 @@ describe("wsApi", () => {
   it("reads and writes persistence through the desktop bridge when available", async () => {
     const clientSettings = {
       agentBrowserApprovedDomains: {},
+      agentBrowserSitePolicy: "ask" as const,
+      agentBrowserProjectSitePolicy: {},
       autoOpenPlanSidebar: false,
       chatChangedFilesDefaultExpanded: false,
       confirmThreadArchive: true,
@@ -855,6 +857,8 @@ describe("wsApi", () => {
     const api = createLocalApi(rpcClientMock as never);
     const clientSettings = {
       agentBrowserApprovedDomains: {},
+      agentBrowserSitePolicy: "ask" as const,
+      agentBrowserProjectSitePolicy: {},
       autoOpenPlanSidebar: false,
       chatChangedFilesDefaultExpanded: false,
       confirmThreadArchive: true,

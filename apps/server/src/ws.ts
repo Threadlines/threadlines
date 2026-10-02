@@ -1954,6 +1954,12 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
             previewAutomationBroker.respond(input),
             { "rpc.aggregate": "preview" },
           ),
+        [WS_METHODS.previewAutomationProgress]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.previewAutomationProgress,
+            previewAutomationBroker.progress(input),
+            { "rpc.aggregate": "preview" },
+          ),
         [WS_METHODS.subscribeVcsStatus]: (input) =>
           observeRpcStream(
             WS_METHODS.subscribeVcsStatus,

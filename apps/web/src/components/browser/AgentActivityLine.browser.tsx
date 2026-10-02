@@ -22,7 +22,7 @@ function seedBrowserPanel(viewport: { width: number | null; height: number | nul
     },
     agentStateByThreadKey: {},
     browserOwnershipByThreadKey: {},
-    pendingApprovalByThreadKey: {},
+    pendingApprovalsByThreadKey: {},
     deviceToolbarOpen: true,
   });
 }
@@ -32,7 +32,7 @@ function resetBrowserPanel() {
     browserStateByThreadKey: {},
     agentStateByThreadKey: {},
     browserOwnershipByThreadKey: {},
-    pendingApprovalByThreadKey: {},
+    pendingApprovalsByThreadKey: {},
     deviceToolbarOpen: false,
   });
 }

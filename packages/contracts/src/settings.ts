@@ -55,13 +55,30 @@ export const AutoArchiveInactiveThreadsDays = Schema.Union([
 export type AutoArchiveInactiveThreadsDays = typeof AutoArchiveInactiveThreadsDays.Type;
 export const DEFAULT_AUTO_ARCHIVE_INACTIVE_THREADS_DAYS: AutoArchiveInactiveThreadsDays = 0;
 
+/**
+ * Where agents may take the built-in browser without asking: `ask` stops at a
+ * site this project has not been allowed and asks the user; `any` goes
+ * anywhere. Private-network addresses are always reachable either way.
+ */
+export const AgentBrowserSitePolicy = Schema.Literals(["ask", "any"]);
+export type AgentBrowserSitePolicy = typeof AgentBrowserSitePolicy.Type;
+export const DEFAULT_AGENT_BROWSER_SITE_POLICY: AgentBrowserSitePolicy = "ask";
+
 export const ClientSettingsSchema = Schema.Struct({
-  // Sites the browser panel may be driven to, per project. Values are approval
-  // keys (lowercased host with a leading `www.` dropped) and cover subdomains.
+  // Sites the browser panel may be driven to, per project, while that project
+  // asks first. Values are approval keys: the exact lowercased host, with `www.`
+  // and the bare domain treated as one site and no other subdomains covered.
   // Private-network addresses are always reachable and are never recorded here,
   // so an empty list is the normal state for a project that only ever looks at
-  // its own dev server.
+  // its own dev server. Kept on this computer, like the browser it governs.
   agentBrowserApprovedDomains: Schema.Record(ProjectId, Schema.Array(TrimmedNonEmptyString)).pipe(
+    Schema.withDecodingDefault(Effect.succeed({})),
+  ),
+  agentBrowserSitePolicy: AgentBrowserSitePolicy.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_AGENT_BROWSER_SITE_POLICY)),
+  ),
+  // Projects that override the policy above. Absent means the project follows it.
+  agentBrowserProjectSitePolicy: Schema.Record(ProjectId, AgentBrowserSitePolicy).pipe(
     Schema.withDecodingDefault(Effect.succeed({})),
   ),
   autoOpenPlanSidebar: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
@@ -694,6 +711,10 @@ export type ServerSettingsPatch = typeof ServerSettingsPatch.Type;
 export const ClientSettingsPatch = Schema.Struct({
   agentBrowserApprovedDomains: Schema.optionalKey(
     Schema.Record(ProjectId, Schema.Array(TrimmedNonEmptyString)),
+  ),
+  agentBrowserSitePolicy: Schema.optionalKey(AgentBrowserSitePolicy),
+  agentBrowserProjectSitePolicy: Schema.optionalKey(
+    Schema.Record(ProjectId, AgentBrowserSitePolicy),
   ),
   autoOpenPlanSidebar: Schema.optionalKey(Schema.Boolean),
   chatChangedFilesDefaultExpanded: Schema.optionalKey(Schema.Boolean),
