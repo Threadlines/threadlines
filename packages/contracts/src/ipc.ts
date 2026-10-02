@@ -179,7 +179,7 @@ import * as Schema from "effect/Schema";
 
 import type {
   PreviewAutomationHost,
-  PreviewAutomationRequest,
+  PreviewAutomationHostMessage,
   PreviewAutomationResponse,
 } from "./previewAutomation.ts";
 import type {
@@ -1228,7 +1228,7 @@ export interface EnvironmentApi {
   previewAutomation: {
     connect: (
       input: PreviewAutomationHost,
-      listener: (request: PreviewAutomationRequest) => void,
+      listener: (message: PreviewAutomationHostMessage) => void,
     ) => () => void;
     respond: (response: PreviewAutomationResponse) => Promise<void>;
   };

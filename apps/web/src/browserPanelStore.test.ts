@@ -87,6 +87,23 @@ describe("background tabs", () => {
     expect(next.tabs[0]?.url).toBe("http://localhost:5173/");
   });
 
+  it("keeps a later background tab behind, even in a browser the agent opened", () => {
+    const store = useBrowserPanelStore.getState();
+    store.openBrowserForAgent(THREAD_REF, "agent-a");
+    const first = store.openAgentTab(THREAD_REF, "agent-a", { url: "http://localhost:5173/" });
+    const second = store.openAgentTab(THREAD_REF, "agent-a", {
+      url: "http://localhost:5173/settings",
+      background: true,
+    });
+
+    const next = selectThreadBrowserState(
+      useBrowserPanelStore.getState().browserStateByThreadKey,
+      THREAD_REF,
+    );
+    expect(next.activeTabId).toBe(first);
+    expect(next.tabs.map((tab) => tab.id)).toEqual([first, second]);
+  });
+
   it("keeps a user-opened browser focused while adding an agent background tab", () => {
     const store = useBrowserPanelStore.getState();
     store.setBrowserOpen(THREAD_REF, true);

@@ -1,7 +1,20 @@
 import type { DesktopBridge, PreviewAutomationRequest } from "@threadlines/contracts";
 import { describe, expect, it } from "vitest";
 
-import { createPreviewAutomationHandler, type AgentActivity } from "./previewAutomationHost";
+import {
+  createPreviewAutomationHandler as createHandler,
+  type AgentActivity,
+} from "./previewAutomationHost";
+
+/** The handler, for requests nobody cancels: those always get an answer. */
+const createPreviewAutomationHandler = (...args: Parameters<typeof createHandler>) => {
+  const handle = createHandler(...args);
+  return async (pending: PreviewAutomationRequest) => {
+    const response = await handle(pending);
+    if (response === null) throw new Error("an uncancelled request must be answered");
+    return response;
+  };
+};
 
 const request = (
   operation: PreviewAutomationRequest["operation"],
@@ -25,6 +38,62 @@ const handlerFor = (
   }));
 
 describe("createPreviewAutomationHandler", () => {
+  it("drops a cancelled request that has not started, and never runs two at once", async () => {
+    const clicked: string[] = [];
+    let running = 0;
+    let overlapped = false;
+    let releaseFirst = () => {};
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const handle = createHandler(
+      {
+        previewClick: async (input: { target: string }) => {
+          clicked.push(input.target);
+          running += 1;
+          if (running > 1) overlapped = true;
+          if (input.target === "first") await firstGate;
+          running -= 1;
+          return { x: 1, y: 1 };
+        },
+        previewStatus: () =>
+          Promise.resolve({ url: "http://x/", title: "X", loading: false, controlEpoch: 0 }),
+      } as unknown as DesktopBridge,
+      () => ({
+        webContentsId: 42,
+        navigate: () => Promise.resolve(),
+        viewport: () => ({ width: 800, height: 600 }),
+        setViewport: () => {},
+        onAgentPoint: () => {},
+        tabs: () => [],
+        selectTab: () => {},
+        onAgentActivity: () => {},
+      }),
+    );
+    const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+    const firstCancel = new AbortController();
+    const secondCancel = new AbortController();
+    const first = handle(request("click", { target: "first" }), firstCancel.signal);
+    const second = handle(request("click", { target: "second" }), secondCancel.signal);
+    await flush();
+
+    // Cancelled while still waiting its turn: it never reaches the page.
+    secondCancel.abort();
+    expect(await second).toBeNull();
+    // Arriving after that, the next request still waits for the one running.
+    const third = handle(request("click", { target: "third" }));
+    await flush();
+    expect(clicked).toEqual(["first"]);
+
+    // Cancelled while running: it finishes, unannounced, before the next starts.
+    firstCancel.abort();
+    releaseFirst();
+    expect(await first).toBeNull();
+    expect((await third)?.error).toBeUndefined();
+    expect(clicked).toEqual(["first", "third"]);
+    expect(overlapped).toBe(false);
+  });
+
   it("serializes actions that target the same browser tab", async () => {
     let calls = 0;
     let active = 0;
@@ -47,9 +116,10 @@ describe("createPreviewAutomationHandler", () => {
     });
 
     const first = handle(request("click", { target: { ref: "e1" } }));
-    await Promise.resolve();
     const second = handle(request("click", { target: { ref: "e2" } }));
-    await Promise.resolve();
+    // A full turn of the event loop: long enough for both to reach the page if
+    // nothing held the second back.
+    await new Promise((resolve) => setTimeout(resolve, 0));
     expect(calls).toBe(1);
     releaseFirst();
     await Promise.all([first, second]);

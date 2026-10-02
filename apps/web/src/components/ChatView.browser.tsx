@@ -7243,6 +7243,132 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
+  it("tells the agent its tab was closed instead of acting on the user's tab", async () => {
+    const userTab = { ...makeBrowserTab(), url: "http://localhost:5173/mine" };
+    const agentTab = { ...makeBrowserTab(), url: "http://localhost:5173/agent" };
+    useBrowserPanelStore.setState({
+      browserStateByThreadKey: {
+        [THREAD_KEY]: { open: true, tabs: [userTab, agentTab], activeTabId: userTab.id },
+      },
+      agentStateByThreadKey: {},
+      browserOwnershipByThreadKey: {},
+    });
+
+    let deliver: ((request: PreviewAutomationRequest) => void) | null = null;
+    const responses: PreviewAutomationResponse[] = [];
+    __setEnvironmentApiOverrideForTests(
+      LOCAL_ENVIRONMENT_ID,
+      createMockEnvironmentApi({
+        browse: (() =>
+          Promise.reject(new Error("not used"))) as EnvironmentApi["filesystem"]["browse"],
+        dispatchCommand: (() =>
+          Promise.reject(
+            new Error("not used"),
+          )) as EnvironmentApi["orchestration"]["dispatchCommand"],
+        previewAutomation: {
+          connect: (_input: unknown, listener: (request: PreviewAutomationRequest) => void) => {
+            deliver = listener;
+            return () => {
+              deliver = null;
+            };
+          },
+          respond: (response: PreviewAutomationResponse) => {
+            responses.push(response);
+            return Promise.resolve();
+          },
+        } as unknown as EnvironmentApi["previewAutomation"],
+      }),
+    );
+    const clickedOn: number[] = [];
+    window.desktopBridge = {
+      previewStatus: () =>
+        Promise.resolve({ url: "http://localhost:5173/", title: "Preview", loading: false }),
+      previewClick: (input: { webContentsId: number }) => {
+        clickedOn.push(input.webContentsId);
+        return Promise.resolve({ x: 1, y: 1 });
+      },
+    } as unknown as NonNullable<typeof window.desktopBridge>;
+    for (const [tab, webContentsId] of [
+      [userTab, 42],
+      [agentTab, 43],
+    ] as const) {
+      registerPreviewWebview(THREAD_REF, tab.id, {
+        getWebContentsId: () => webContentsId,
+        loadURL: () => Promise.resolve(),
+        getBoundingClientRect: () => ({ width: 900, height: 600 }) as DOMRect,
+      });
+    }
+
+    const screen = await render(<PreviewAutomationMount threadRef={THREAD_REF} />);
+
+    try {
+      await vi.waitFor(
+        () => {
+          expect(deliver, "the host should register with the broker").not.toBeNull();
+        },
+        { timeout: 4_000, interval: 16 },
+      );
+      deliver!({
+        requestId: "req-pin",
+        agentId: "agent-browser",
+        operation: "selectTab",
+        input: { tabId: agentTab.id, background: true },
+      } as unknown as PreviewAutomationRequest);
+      await vi.waitFor(() => expect(responses).toHaveLength(1), { timeout: 4_000, interval: 16 });
+
+      // The user closes the agent's tab between two of its calls.
+      useBrowserPanelStore.getState().closeTab(THREAD_REF, agentTab.id);
+      deliver!({
+        requestId: "req-click-after-close",
+        agentId: "agent-browser",
+        operation: "click",
+        input: { target: { ref: "e1" } },
+      } as unknown as PreviewAutomationRequest);
+
+      await vi.waitFor(
+        () => {
+          expect(responses).toHaveLength(2);
+          expect(responses[1]?.error).toContain("was closed");
+        },
+        { timeout: 4_000, interval: 16 },
+      );
+      // Looking at the tabs and trying again must not quietly adopt the
+      // user's tab either: only choosing or opening one does.
+      deliver!({
+        requestId: "req-tabs-after-close",
+        agentId: "agent-browser",
+        operation: "tabs",
+        input: {},
+      } as unknown as PreviewAutomationRequest);
+      await vi.waitFor(() => expect(responses).toHaveLength(3), { timeout: 4_000, interval: 16 });
+      deliver!({
+        requestId: "req-click-again",
+        agentId: "agent-browser",
+        operation: "click",
+        input: { target: { ref: "e1" } },
+      } as unknown as PreviewAutomationRequest);
+      await vi.waitFor(
+        () => {
+          expect(responses).toHaveLength(4);
+          expect(responses[3]?.error).toContain("was closed");
+        },
+        { timeout: 4_000, interval: 16 },
+      );
+      // Nothing reached the page the user still has open.
+      expect(clickedOn).toEqual([]);
+    } finally {
+      screen.unmount();
+      resetPreviewWebviewsForTests();
+      useBrowserPanelStore.setState({
+        browserStateByThreadKey: {},
+        agentStateByThreadKey: {},
+        browserOwnershipByThreadKey: {},
+      });
+      Reflect.deleteProperty(window, "desktopBridge");
+      __resetEnvironmentApiOverridesForTests();
+    }
+  });
+
   it("pins the search chrome above the scrolling list", async () => {
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
