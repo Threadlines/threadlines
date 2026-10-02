@@ -1,10 +1,10 @@
 import type { DesktopMenuActionPayload } from "@threadlines/contracts";
-import { PREVIEW_PARTITION } from "@threadlines/shared/preview";
 import { fromJsonStringPretty } from "@threadlines/shared/schemaJson";
 import * as Context from "effect/Context";
 import * as Data from "effect/Data";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -28,6 +28,8 @@ import * as ElectronTheme from "../electron/ElectronTheme.ts";
 import * as ElectronWindow from "../electron/ElectronWindow.ts";
 import * as IpcChannels from "../ipc/channels.ts";
 import * as DesktopServerExposure from "../backend/DesktopServerExposure.ts";
+import * as PreviewSession from "../preview/PreviewSession.ts";
+import { isPreviewPartition } from "../preview/previewPartitions.ts";
 
 const TITLEBAR_HEIGHT = 40;
 const TITLEBAR_COLOR = "#01000000"; // #00000000 does not work correctly on Linux
@@ -78,7 +80,8 @@ type DesktopWindowRuntimeServices =
   | ElectronSpelling.ElectronSpelling
   | ElectronTheme.ElectronTheme
   | ElectronWindow.ElectronWindow
-  | Path.Path;
+  | Path.Path
+  | PreviewSession.PreviewSession;
 
 export class DesktopWindowDevServerUrlMissingError extends Data.TaggedError(
   "DesktopWindowDevServerUrlMissingError",
@@ -390,8 +393,10 @@ const make = Effect.gen(function* () {
   const path = yield* Path.Path;
   const serverExposure = yield* DesktopServerExposure.DesktopServerExposure;
   const state = yield* DesktopState.DesktopState;
+  const previewSession = yield* PreviewSession.PreviewSession;
   const context = yield* Effect.context<DesktopWindowRuntimeServices>();
   const runPromise = Effect.runPromiseWith(context);
+  const runSyncExit = Effect.runSyncExitWith(context);
   let mainWindowCloseAllowed = false;
   const pendingQuitConfirmation = yield* Ref.make<Option.Option<Deferred.Deferred<boolean>>>(
     Option.none(),
@@ -466,7 +471,8 @@ const make = Effect.gen(function* () {
     }
 
     // Preview content is untrusted: no Node, no custom preload, and it must run
-    // in the preview partition rather than the app's own session.
+    // in a preview partition (one per project) rather than the app's own
+    // session.
     //
     // The partition is enforced, not assigned. Electron resolves the guest's
     // session from the element's `partition` attribute before this fires, so
@@ -474,13 +480,33 @@ const make = Effect.gen(function* () {
     // would inherit the default session -- sharing cookies with Threadlines.
     // Refusing the attach is the only way to make the renderer's attribute
     // load-bearing.
+    //
+    // The session is configured here too, synchronously: the guest is created
+    // from it as soon as this returns, and a session nobody configured yet
+    // would grant every permission and announce itself as Electron. If it
+    // cannot be configured, the guest does not attach.
     window.webContents.on("will-attach-webview", (event, webPreferences, params) => {
       delete webPreferences.preload;
       webPreferences.nodeIntegration = false;
       webPreferences.contextIsolation = true;
       webPreferences.sandbox = true;
-      if (params.partition !== PREVIEW_PARTITION) {
+      // The guest is created from the merged preferences, where a
+      // `webpreferences` attribute can name a partition of its own; the one
+      // checked must be the one used.
+      const partition = webPreferences.partition ?? params.partition;
+      if (!isPreviewPartition(partition) || partition !== params.partition) {
         event.preventDefault();
+        return;
+      }
+      const configured = runSyncExit(previewSession.getSession(partition));
+      if (Exit.isFailure(configured)) {
+        event.preventDefault();
+        void runPromise(
+          logWindowWarning("refused a preview tab whose session could not be configured", {
+            partition,
+            cause: String(configured.cause),
+          }),
+        );
       }
     });
 

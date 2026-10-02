@@ -12,7 +12,6 @@ import type {
   ProjectId,
   ScopedThreadRef,
 } from "@threadlines/contracts";
-import { PREVIEW_PARTITION } from "@threadlines/shared/preview";
 import {
   ArrowLeftIcon,
   ArrowRightIcon,
@@ -56,6 +55,7 @@ import { BrowserFindBar } from "./BrowserFindBar";
 import { BrowserPageErrorsButton } from "./BrowserPageErrors";
 import { distillPageErrors, type PageErrorItem } from "./pageErrors";
 import { isElectron } from "../../env";
+import { useBrowserProfilePartition } from "../../lib/browserProfiles";
 import { useTheme } from "../../hooks/useTheme";
 import { copyTextToClipboard } from "../../lib/clipboard";
 import { cn } from "../../lib/utils";
@@ -198,6 +198,10 @@ export function BrowserPanel({
     projectId: approvalsProjectId,
   } = useBrowserApprovals(threadRef, projectId);
   const { resolvedTheme } = useTheme();
+  // Each project browses in its own profile. Tabs are not rendered until it is
+  // known: a webview's partition is fixed when it attaches.
+  const profile = useBrowserProfilePartition(threadRef.environmentId, projectId);
+  const partition = profile.status === "ready" ? profile.partition : null;
 
   // While the panel exists its webviews can pull focus out of whatever the
   // user is typing into whenever agent input lands in a page; the guard
@@ -1133,23 +1137,38 @@ export function BrowserPanel({
               Open developer tools
             </MenuItem>
             <MenuSeparator />
+            {/* Both act on this project's profile only. */}
             <MenuItem
               data-testid="browser-clear-cache"
+              disabled={partition === null}
               onClick={() => {
-                void window.desktopBridge?.previewClearCache?.().then(() => {
-                  callWhenReady(() => webviewFor(activeTabId)?.reloadIgnoringCache());
-                });
+                if (partition === null) {
+                  return;
+                }
+                void window.desktopBridge
+                  ?.previewClearCache?.({ partition })
+                  .then(() => {
+                    callWhenReady(() => webviewFor(activeTabId)?.reloadIgnoringCache());
+                  })
+                  .catch(() => {
+                    toastManager.add({ type: "error", title: "Couldn't clear the cache" });
+                  });
               }}
             >
               Clear cache
             </MenuItem>
             <MenuItem
               data-testid="browser-clear-data"
+              disabled={partition === null}
               onClick={() => {
-                // Signing out of the preview is the point, so reload after: the
-                // page on screen would otherwise still look signed in.
-                void window.desktopBridge?.previewClearBrowsingData?.().then(() => {
-                  callWhenReady(() => webviewFor(activeTabId)?.reload());
+                if (partition === null) {
+                  return;
+                }
+                // Signing out of the preview is the point, so the desktop
+                // reloads every open tab of this project after clearing: a page
+                // would otherwise keep looking signed in from memory.
+                void window.desktopBridge?.previewClearBrowsingData?.({ partition }).catch(() => {
+                  toastManager.add({ type: "error", title: "Couldn't clear cookies and storage" });
                 });
               }}
             >
@@ -1202,8 +1221,21 @@ export function BrowserPanel({
       )}
       <div className="relative min-h-0 flex-1 overflow-hidden bg-background" ref={viewportAreaRef}>
         {!isElectron ? (
-          <BrowserUnavailableNotice />
-        ) : (
+          <BrowserUnavailableNotice
+            title="The browser preview needs the desktop app."
+            detail="It runs a real Chromium tab so pages can be inspected and driven, which a browser tab cannot host."
+          />
+        ) : profile.status === "no-project" ? (
+          <BrowserUnavailableNotice
+            title="The browser needs a project."
+            detail="Each project keeps its own sign-ins and site data."
+          />
+        ) : profile.status === "failed" ? (
+          <BrowserUnavailableNotice
+            title="The browser couldn't load this project's profile."
+            detail="Close the browser and open it again to retry."
+          />
+        ) : partition === null ? null : (
           <>
             {activeTab !== null && activeTab.url === null ? (
               <div className="absolute inset-0 z-10 overflow-auto bg-background px-3">
@@ -1214,9 +1246,12 @@ export function BrowserPanel({
             ) : null}
             {browserState.tabs.map((tab) => (
               <PreviewTabFrame
-                key={tab.id}
+                // Keyed by profile too: a webview cannot change partition once
+                // attached, so a thread that moves project gets fresh tabs.
+                key={`${partition}:${tab.id}`}
                 tab={tab}
                 threadRef={threadRef}
+                partition={partition}
                 isActive={tab.id === activeTabId}
                 viewport={tab.viewport}
                 zoomFactor={tab.zoomFactor}
@@ -1356,6 +1391,7 @@ function TabStripItem({
 function PreviewTabFrame({
   tab,
   threadRef,
+  partition,
   isActive,
   viewport,
   zoomFactor,
@@ -1368,6 +1404,8 @@ function PreviewTabFrame({
 }: {
   tab: BrowserTab;
   threadRef: ScopedThreadRef;
+  /** The project's browser profile, as handed out by the desktop. */
+  partition: string;
   isActive: boolean;
   viewport: BrowserViewport;
   zoomFactor: number;
@@ -1570,7 +1608,7 @@ function PreviewTabFrame({
               ? { transform: `scale(${layout.scale})`, transformOrigin: "top left" }
               : {}),
           }}
-          partition={PREVIEW_PARTITION}
+          partition={partition}
           src={initialSrc}
         />
         {isActive ? (
@@ -2105,19 +2143,20 @@ function LocalServerPicker({ onSelect }: { onSelect: (port: number) => void }) {
 }
 
 /**
+ * Why the panel has no page to show, in place of the tabs.
+ *
  * The preview is a Chromium <webview>, which only exists in the desktop app.
  * Rather than degrade to an iframe -- which cannot be driven, inspected, or
- * navigated cross-origin -- the web build says so plainly.
+ * navigated cross-origin -- the web build says so plainly. The desktop says so
+ * too when a thread has no project to give it a browser profile, rather than
+ * putting its pages in some other project's.
  */
-function BrowserUnavailableNotice() {
+function BrowserUnavailableNotice({ title, detail }: { title: string; detail: string }) {
   return (
     <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center">
       <ExternalLinkIcon className="size-5 text-muted-foreground/40" />
-      <p className="text-sm text-muted-foreground">The browser preview needs the desktop app.</p>
-      <p className="max-w-xs text-xs text-muted-foreground/70">
-        It runs a real Chromium tab so pages can be inspected and driven, which a browser tab cannot
-        host.
-      </p>
+      <p className="text-sm text-muted-foreground">{title}</p>
+      <p className="max-w-xs text-xs text-muted-foreground/70">{detail}</p>
     </div>
   );
 }

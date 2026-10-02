@@ -175,9 +175,16 @@ contextBridge.exposeInMainWorld("desktopBridge", {
     ipcRenderer.invoke(IpcChannels.PREVIEW_AWAIT_DRAWING_CHANNEL, input),
   previewRevealElement: (input) =>
     ipcRenderer.invoke(IpcChannels.PREVIEW_REVEAL_ELEMENT_CHANNEL, input),
-  previewClearBrowsingData: () =>
-    ipcRenderer.invoke(IpcChannels.PREVIEW_CLEAR_BROWSING_DATA_CHANNEL),
-  previewClearCache: () => ipcRenderer.invoke(IpcChannels.PREVIEW_CLEAR_CACHE_CHANNEL),
+  previewProfilePartition: (input) =>
+    ipcRenderer.invoke(IpcChannels.PREVIEW_PROFILE_PARTITION_CHANNEL, input),
+  previewListProfiles: () => ipcRenderer.invoke(IpcChannels.PREVIEW_LIST_PROFILES_CHANNEL),
+  previewForgetProfile: (input) =>
+    ipcRenderer.invoke(IpcChannels.PREVIEW_FORGET_PROFILE_CHANNEL, input),
+  previewClearBrowsingData: (input) =>
+    ipcRenderer.invoke(IpcChannels.PREVIEW_CLEAR_BROWSING_DATA_CHANNEL, input),
+  previewClearCache: (input) => ipcRenderer.invoke(IpcChannels.PREVIEW_CLEAR_CACHE_CHANNEL, input),
+  previewClearAllBrowsingData: () =>
+    ipcRenderer.invoke(IpcChannels.PREVIEW_CLEAR_ALL_BROWSING_DATA_CHANNEL),
   setTheme: (theme) => ipcRenderer.invoke(IpcChannels.SET_THEME_CHANNEL, theme),
   setTaskbarStatus: (input) => ipcRenderer.invoke(IpcChannels.SET_TASKBAR_STATUS_CHANNEL, input),
   onQuitConfirmationRequested: (listener) => {

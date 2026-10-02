@@ -2760,6 +2760,24 @@ export function applyOrchestrationEvent(
   );
 }
 
+const projectRemovedListeners = new Set<
+  (environmentId: EnvironmentId, projectId: ProjectId) => void
+>();
+
+/**
+ * Called when an environment says a project was deleted -- the event itself,
+ * not a project missing from a list, which also happens when two projects
+ * share a folder and one stands in for the other.
+ */
+export function onProjectRemoved(
+  listener: (environmentId: EnvironmentId, projectId: ProjectId) => void,
+): () => void {
+  projectRemovedListeners.add(listener);
+  return () => {
+    projectRemovedListeners.delete(listener);
+  };
+}
+
 export function applyShellEvent(
   state: AppState,
   event: OrchestrationShellStreamEvent,
@@ -2927,8 +2945,12 @@ export const useStore = create<AppStore>((set) => ({
     set((state) => applyOrchestrationEvent(state, event, environmentId)),
   applyOrchestrationEvents: (events, environmentId) =>
     set((state) => applyOrchestrationEvents(state, events, environmentId)),
-  applyShellEvent: (event, environmentId) =>
-    set((state) => applyShellEvent(state, event, environmentId)),
+  applyShellEvent: (event, environmentId) => {
+    set((state) => applyShellEvent(state, event, environmentId));
+    if (event.kind === "project-removed") {
+      for (const listener of projectRemovedListeners) listener(environmentId, event.projectId);
+    }
+  },
   setError: (threadId, error) => set((state) => setError(state, threadId, error)),
   setThreadBranch: (threadRef, branch, worktreePath) =>
     set((state) => setThreadBranch(state, threadRef, branch, worktreePath)),

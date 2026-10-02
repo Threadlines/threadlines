@@ -24,6 +24,8 @@ import * as ElectronSpelling from "../electron/ElectronSpelling.ts";
 import * as ElectronTheme from "../electron/ElectronTheme.ts";
 import * as ElectronWindow from "../electron/ElectronWindow.ts";
 import * as DesktopServerExposure from "../backend/DesktopServerExposure.ts";
+import * as PreviewSession from "../preview/PreviewSession.ts";
+import { previewProfilePartition } from "../preview/previewPartitions.ts";
 import * as DesktopWindow from "./DesktopWindow.ts";
 
 const environmentInput = {
@@ -209,6 +211,7 @@ function makeTestLayer(input: {
   readonly electronSpelling?: ElectronSpelling.ElectronSpellingShape;
   readonly appQuitCalls?: Ref.Ref<number>;
   readonly initialRunningThreadCount?: number;
+  readonly previewSession?: PreviewSession.PreviewSessionShape;
 }) {
   const desktopStateLayer =
     input.initialRunningThreadCount === undefined
@@ -289,6 +292,16 @@ function makeTestLayer(input: {
         ),
         electronThemeLayer,
         electronWindowLayer,
+        Layer.succeed(
+          PreviewSession.PreviewSession,
+          input.previewSession ?? {
+            getSession: () => Effect.succeed({} as Electron.Session),
+            clearCache: () => Effect.void,
+            clearBrowsingData: () => Effect.void,
+            clearAllData: () => Effect.void,
+            storedPartitions: Effect.succeed([]),
+          },
+        ),
       ),
     ),
   );
@@ -1049,6 +1062,85 @@ describe("DesktopWindow", () => {
 
         assert.equal(preventDefault.mock.calls.length, 0);
         assert.equal(openScreenClip.mock.calls.length, 0);
+      }).pipe(Effect.provide(layer));
+    }),
+  );
+
+  it.effect("attaches a browser tab only in a preview partition, configured first", () =>
+    Effect.gen(function* () {
+      const fakeWindow = makeFakeBrowserWindow();
+      const createCount = yield* Ref.make(0);
+      const mainWindow = yield* Ref.make<Option.Option<Electron.BrowserWindow>>(Option.none());
+      const brokenPartition = previewProfilePartition("environment-1", "project-broken");
+      const getSession = vi.fn((partition: string) =>
+        partition === brokenPartition
+          ? Effect.fail(new PreviewSession.PreviewSessionCreationError({ partition, cause: null }))
+          : Effect.succeed({} as Electron.Session),
+      );
+      const layer = makeTestLayer({
+        window: fakeWindow.window,
+        createCount,
+        mainWindow,
+        previewSession: {
+          getSession,
+          clearCache: () => Effect.void,
+          clearBrowsingData: () => Effect.void,
+          clearAllData: () => Effect.void,
+          storedPartitions: Effect.succeed([]),
+        },
+      });
+
+      yield* Effect.gen(function* () {
+        const desktopWindow = yield* DesktopWindow.DesktopWindow;
+        yield* desktopWindow.handleBackendReady;
+
+        const attach = (partition: string | undefined, preferredPartition?: string) => {
+          const preventDefault = vi.fn();
+          const webPreferences: Electron.WebPreferences = {
+            preload: "/tmp/evil-preload.js",
+            nodeIntegration: true,
+            contextIsolation: false,
+            sandbox: false,
+            ...(preferredPartition === undefined ? {} : { partition: preferredPartition }),
+          };
+          fakeWindow.emitWebContents(
+            "will-attach-webview",
+            { preventDefault },
+            webPreferences,
+            partition === undefined ? {} : { partition },
+          );
+          return { refused: preventDefault.mock.calls.length > 0, webPreferences };
+        };
+
+        const projectPartition = previewProfilePartition("environment-1", "project-1");
+        const project = attach(projectPartition);
+        assert.isFalse(project.refused);
+        assert.deepEqual(getSession.mock.calls, [[projectPartition]]);
+        assert.deepEqual(project.webPreferences, {
+          nodeIntegration: false,
+          contextIsolation: true,
+          sandbox: true,
+        });
+        assert.isFalse(attach("persist:threadlines-preview").refused);
+
+        // The app's own session, someone else's partition, or none at all.
+        getSession.mockClear();
+        for (const partition of [
+          undefined,
+          "",
+          "persist:threadlines",
+          "persist:threadlines-preview-not-a-hash",
+          `${projectPartition}0`,
+        ]) {
+          assert.isTrue(attach(partition).refused, `expected ${String(partition)} to be refused`);
+        }
+        // A `webpreferences` attribute naming another session behind an
+        // accepted `partition` attribute: the guest would be built from it.
+        assert.isTrue(attach(projectPartition, "persist:threadlines").refused);
+        assert.deepEqual(getSession.mock.calls, []);
+
+        // A session that cannot be configured would grant every permission.
+        assert.isTrue(attach(brokenPartition).refused);
       }).pipe(Effect.provide(layer));
     }),
   );
