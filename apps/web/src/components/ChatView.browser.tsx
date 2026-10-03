@@ -7184,7 +7184,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
         } as unknown as EnvironmentApi["previewAutomation"],
       }),
     );
-    let userControlListener: ((event: { webContentsId: number }) => void) | null = null;
+    let userControlListener: ((event: DesktopPreviewUserControl) => void) | null = null;
     window.desktopBridge = {
       previewStatus: (input: DesktopPreviewTarget) =>
         Promise.resolve({
@@ -7271,7 +7271,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
       const notifyUserControl = userControlListener as
         | ((event: DesktopPreviewUserControl) => void)
         | null;
-      notifyUserControl?.({ webContentsId: 43 });
+      notifyUserControl?.({ webContentsId: 43, input: "pointer" });
       deliver!({
         requestId: "req-auto-close-after-takeover",
         agentId: "agent-browser",

@@ -307,8 +307,8 @@ export const make = Effect.sync(function PreviewAutomationMake() {
     }
   };
 
-  const reportUserControl = (contents: WebContents) => {
-    const payload: DesktopPreviewUserControl = { webContentsId: contents.id };
+  const reportUserControl = (contents: WebContents, input: DesktopPreviewUserControl["input"]) => {
+    const payload: DesktopPreviewUserControl = { webContentsId: contents.id, input };
     const embedder = contents.hostWebContents;
     if (embedder !== null && !embedder.isDestroyed()) {
       embedder.send(IpcChannels.PREVIEW_USER_CONTROL_CHANNEL, payload);
@@ -927,7 +927,7 @@ export const make = Effect.sync(function PreviewAutomationMake() {
     const onBeforeInput = (_event: unknown, input: { type?: string }) => {
       if (input.type === "keyDown" && !consumeExpectedAgentInput("keyDown")) {
         tab.controlEpoch += 1;
-        reportUserControl(contents);
+        reportUserControl(contents, "keyboard");
       }
     };
     const onBeforeMouse = (_event: unknown, input: { type?: string }) => {
@@ -939,7 +939,7 @@ export const make = Effect.sync(function PreviewAutomationMake() {
             : null;
       if (kind !== null && !consumeExpectedAgentInput(kind)) {
         tab.controlEpoch += 1;
-        reportUserControl(contents);
+        reportUserControl(contents, kind === "mouseDown" ? "pointer" : "wheel");
       }
     };
     contents.on("before-input-event", onBeforeInput);
