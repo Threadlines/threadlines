@@ -507,9 +507,14 @@ export const DesktopPreviewProfileSchema = Schema.Struct({
 });
 export type DesktopPreviewProfile = typeof DesktopPreviewProfileSchema.Type;
 
-/** Human input reached a guest page, so agent-owned cleanup must yield to the user. */
+/**
+ * Human input reached a guest page, so agent-owned cleanup must yield to the user.
+ * `input` says which kind: only a pointer press can show the user chose the page
+ * over the app, since keys and wheel turns reach it only once it already has focus.
+ */
 export const DesktopPreviewUserControlSchema = Schema.Struct({
   webContentsId: Schema.Number,
+  input: Schema.Literals(["pointer", "keyboard", "wheel"]),
 });
 export type DesktopPreviewUserControl = typeof DesktopPreviewUserControlSchema.Type;
 

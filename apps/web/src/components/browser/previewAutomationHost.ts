@@ -12,6 +12,7 @@ import type {
 } from "@threadlines/contracts";
 
 import { ensureEnvironmentApi } from "../../environmentApi";
+import { holdFocusForAgent } from "./browserFocusGuard";
 
 /**
  * The end of the wire that can actually touch the page.
@@ -392,13 +393,19 @@ export function createPreviewAutomationHandler(
         // The last moment to back out before the page is touched.
         throwIfCancelled(signal);
         const endWork = (await target.beginWork?.()) ?? (() => {});
+        // Acting on a page can pull the user's focus into it; the guard puts
+        // it back without waiting while it knows the agent is the cause.
+        const releaseFocus = controlled ? holdFocusForAgent() : () => {};
         const dispatched = await dispatch(
           bridge,
           target,
           target.webContentsId,
           request,
           signal,
-        ).finally(endWork);
+        ).finally(() => {
+          releaseFocus();
+          endWork();
+        });
         const after =
           controlled && bridge.previewStatus !== undefined
             ? await bridge.previewStatus({ webContentsId: target.webContentsId as number })
