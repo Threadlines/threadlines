@@ -483,8 +483,8 @@ const make = Effect.gen(function* () {
     //
     // The session is configured here too, synchronously: the guest is created
     // from it as soon as this returns, and a session nobody configured yet
-    // would grant every permission and announce itself as Electron. If it
-    // cannot be configured, the guest does not attach.
+    // would grant every permission. If it cannot be configured, the guest
+    // does not attach.
     window.webContents.on("will-attach-webview", (event, webPreferences, params) => {
       delete webPreferences.preload;
       webPreferences.nodeIntegration = false;

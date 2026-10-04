@@ -14,8 +14,8 @@
  *
  * Each session is configured the first time it is asked for, synchronously, and
  * `will-attach-webview` asks before the guest is created. A guest therefore
- * never loads a page in a session without the user agent, permission handlers
- * and spellchecker below.
+ * never loads a page in a session without the permission handlers and
+ * spellchecker below.
  */
 
 import * as Effect from "effect/Effect";
@@ -80,16 +80,12 @@ export class PreviewSession extends Context.Service<PreviewSession, PreviewSessi
   "@threadlines/desktop/preview/PreviewSession",
 ) {}
 
+// The user agent is deliberately left as Electron's own. Claiming to be Chrome
+// is a lie bot checks catch: Cloudflare Turnstile compares the claim with what
+// the page can observe, and an Electron guest lacks pieces of real Chrome, so
+// a Chrome user agent failed its sign-in check (error 600010) where the honest
+// Electron one passed.
 function configurePreviewSession(previewSession: Electron.Session): void {
-  // Present as an ordinary Chrome build. Sites that sniff for Electron serve
-  // degraded or blocked experiences, which would make the preview disagree
-  // with the browser the user checks against.
-  previewSession.setUserAgent(
-    previewSession
-      .getUserAgent()
-      .replace(/Electron\/[\d.]+ /, "")
-      .replace(/\s*Threadlines\/[\d.]+/, ""),
-  );
   previewSession.setPermissionRequestHandler((_contents, permission, callback, details) => {
     callback(isPreviewPermissionAllowed(permission, details.requestingUrl));
   });
