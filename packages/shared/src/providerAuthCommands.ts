@@ -59,6 +59,8 @@ export interface ProviderAuthCommandInput {
   readonly binaryPath: string;
   readonly homePath: string;
   readonly shadowHomePath?: string;
+  /** Claude's `CLAUDE_CONFIG_DIR`, or the folder holding OpenCode's database. */
+  readonly accountFolder?: string;
   /** Host platform; fx has no Windows build and signs in through WSL there. */
   readonly platform?: string;
 }
@@ -91,24 +93,64 @@ function renderDisplayCommand(input: {
   return [...assignments, shellWord(input.file), ...input.args.map(shellWord)].join(" ");
 }
 
+/**
+ * Where a Claude instance's login lives: `HOME` for a `homePath`, and
+ * `CLAUDE_CONFIG_DIR` for an account folder (which keeps `HOME` intact).
+ */
+export function claudeAuthEnvironment(input: {
+  readonly homePath: string;
+  readonly accountFolder?: string | undefined;
+}): Readonly<Record<string, string>> {
+  const homePath = input.homePath.trim();
+  const accountFolder = input.accountFolder?.trim() ?? "";
+  return {
+    ...(homePath ? { HOME: homePath } : {}),
+    ...(accountFolder ? { CLAUDE_CONFIG_DIR: accountFolder } : {}),
+  };
+}
+
+/**
+ * OpenCode keeps its sign-ins (and sessions) in one database; an account
+ * folder gives the instance its own.
+ */
+export function openCodeAccountEnvironment(input: {
+  readonly accountFolder?: string | undefined;
+  readonly platform?: string | undefined;
+}): Readonly<Record<string, string>> {
+  const accountFolder = input.accountFolder?.trim().replace(/[\\/]+$/u, "") ?? "";
+  if (!accountFolder) return {};
+  // Clients building the copyable command may not know the server's platform;
+  // a Windows folder says so itself.
+  const windows =
+    input.platform === "win32" || (input.platform === undefined && accountFolder.includes("\\"));
+  const separator = windows ? "\\" : "/";
+  return { OPENCODE_DB: `${accountFolder}${separator}opencode.db` };
+}
+
 export function buildClaudeSetupTokenCommand(input: {
   readonly binaryPath: string;
   readonly homePath: string;
+  readonly accountFolder?: string | undefined;
 }): string {
   const binaryPath = input.binaryPath.trim() || "claude";
-  const homePath = input.homePath.trim();
-  const command = `${shellWord(binaryPath)} setup-token`;
-  return homePath ? `HOME=${shellWord(homePath)} ${command}` : command;
+  return renderDisplayCommand({
+    file: binaryPath,
+    args: ["setup-token"],
+    env: claudeAuthEnvironment(input),
+  });
 }
 
 export function buildClaudeAuthLoginCommand(input: {
   readonly binaryPath: string;
   readonly homePath: string;
+  readonly accountFolder?: string | undefined;
 }): string {
   const binaryPath = input.binaryPath.trim() || "claude";
-  const homePath = input.homePath.trim();
-  const command = `${shellWord(binaryPath)} auth login`;
-  return homePath ? `HOME=${shellWord(homePath)} ${command}` : command;
+  return renderDisplayCommand({
+    file: binaryPath,
+    args: ["auth", "login"],
+    env: claudeAuthEnvironment(input),
+  });
 }
 
 export function buildCodexLoginCommand(input: {
@@ -140,8 +182,16 @@ const OPENCODE_LOGIN_ARGS = ["auth", "login", "--standalone"] as const;
  * starting OpenCode's shared background service, which would outlive the
  * sign-in.
  */
-export function buildOpenCodeLoginCommand(input: { readonly binaryPath: string }): string {
-  return `${shellWord(input.binaryPath.trim() || "opencode")} ${OPENCODE_LOGIN_ARGS.join(" ")}`;
+export function buildOpenCodeLoginCommand(input: {
+  readonly binaryPath: string;
+  readonly accountFolder?: string | undefined;
+  readonly platform?: string | undefined;
+}): string {
+  return renderDisplayCommand({
+    file: input.binaryPath.trim() || "opencode",
+    args: [...OPENCODE_LOGIN_ARGS],
+    env: openCodeAccountEnvironment(input),
+  });
 }
 
 /**
@@ -170,7 +220,7 @@ export function buildProviderAuthCommand(
   }
 
   if (input.driver === CLAUDE_DRIVER_KIND) {
-    const env = homePath ? { HOME: homePath } : {};
+    const env = claudeAuthEnvironment({ homePath, accountFolder: input.accountFolder });
     const file = binaryPath || "claude";
     const args = input.flow === "claude-setup-token" ? ["setup-token"] : ["auth", "login"];
     return {
@@ -209,9 +259,41 @@ export function buildProviderAuthCommand(
     if (input.flow !== "login") return null;
     const file = binaryPath || "opencode";
     const args = [...OPENCODE_LOGIN_ARGS];
-    return { file, args, env: {}, display: renderDisplayCommand({ file, args, env: {} }) };
+    const env = openCodeAccountEnvironment(input);
+    return { file, args, env, display: renderDisplayCommand({ file, args, env }) };
   }
 
+  return null;
+}
+
+/**
+ * The command that signs an extra account out before its folder is deleted,
+ * so no login is left behind outside it (Claude's macOS keychain item, a
+ * Codex keyring entry). `null` where deleting the folder is the sign-out.
+ */
+export function buildProviderSignOutCommand(input: {
+  readonly driver: string;
+  readonly binaryPath: string;
+  readonly homePath: string;
+  readonly shadowHomePath?: string | undefined;
+  readonly accountFolder?: string | undefined;
+}): Omit<ProviderAuthCommand, "display"> | null {
+  const binaryPath = input.binaryPath.trim();
+  if (input.driver === CODEX_DRIVER_KIND) {
+    const authHomePath = input.shadowHomePath?.trim() || input.homePath.trim();
+    return {
+      file: binaryPath || "codex",
+      args: ["logout"],
+      env: authHomePath ? { CODEX_HOME: authHomePath } : {},
+    };
+  }
+  if (input.driver === CLAUDE_DRIVER_KIND) {
+    return {
+      file: binaryPath || "claude",
+      args: ["auth", "logout"],
+      env: claudeAuthEnvironment(input),
+    };
+  }
   return null;
 }
 

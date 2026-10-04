@@ -238,6 +238,8 @@ export interface WsRpcClient {
       typeof WS_METHODS.serverConsumeProviderRateLimitResetCredit
     >;
     readonly updateProvider: RpcUnaryMethod<typeof WS_METHODS.serverUpdateProvider>;
+    readonly addProviderAccount: RpcUnaryMethod<typeof WS_METHODS.serverAddProviderAccount>;
+    readonly removeProviderAccount: RpcUnaryMethod<typeof WS_METHODS.serverRemoveProviderAccount>;
     readonly resolveProviderUpdateBlockers: RpcUnaryMethod<
       typeof WS_METHODS.serverResolveProviderUpdateBlockers
     >;
@@ -703,6 +705,10 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
         ),
       updateProvider: (input) =>
         transport.request((client) => client[WS_METHODS.serverUpdateProvider](input)),
+      addProviderAccount: (input) =>
+        transport.request((client) => client[WS_METHODS.serverAddProviderAccount](input)),
+      removeProviderAccount: (input) =>
+        transport.request((client) => client[WS_METHODS.serverRemoveProviderAccount](input)),
       resolveProviderUpdateBlockers: (input) =>
         transport.request((client) =>
           client[WS_METHODS.serverResolveProviderUpdateBlockers](input),

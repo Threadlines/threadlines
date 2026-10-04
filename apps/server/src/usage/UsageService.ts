@@ -40,7 +40,10 @@ import { HttpClient, HttpClientResponse } from "effect/unstable/http";
 
 import { writeFileStringAtomically } from "../atomicWrite.ts";
 import { ServerConfig } from "../config.ts";
-import { resolveClaudeHomePath } from "../provider/Drivers/ClaudeHome.ts";
+import {
+  resolveClaudeHomePath,
+  resolveClaudeMainConfigDir,
+} from "../provider/Drivers/ClaudeHome.ts";
 import { resolveCodexHomeLayout } from "../provider/Drivers/CodexHomeLayout.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
 import { hourStartOf, UsageAggregator } from "./usageAggregation.ts";
@@ -245,8 +248,19 @@ export const make = Effect.gen(function* () {
       ),
     );
 
-    const claudeHome = yield* resolveClaudeHomePath(settings.providers.claudeAgent);
-    const claudeDir = yield* resolveClaudeTranscriptDir(claudeHome);
+    // The main Claude folder: extra accounts link their `projects` back to it,
+    // so their conversations are counted here too.
+    const claudeMainProjects = path.join(
+      yield* resolveClaudeMainConfigDir(settings.providers.claudeAgent, process.env),
+      "projects",
+    );
+    const claudeDir = (yield* fileSystem
+      .exists(claudeMainProjects)
+      .pipe(Effect.catchCause(() => Effect.succeed(false))))
+      ? claudeMainProjects
+      : yield* resolveClaudeTranscriptDir(
+          yield* resolveClaudeHomePath(settings.providers.claudeAgent),
+        );
     // The shared home, not the shadow overlay: the overlay only isolates
     // `auth.json`, and `sessions` is a symlink back to the shared directory.
     const codexLayout = yield* resolveCodexHomeLayout(settings.providers.codex);

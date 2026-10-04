@@ -31,7 +31,6 @@
  * @module provider/Layers/ClaudeUsage
  */
 import type {
-  ClaudeSettings,
   ServerProviderAccountUsage,
   ServerProviderScopedUsageWindow,
   ServerProviderUsageWindow,
@@ -47,7 +46,11 @@ import * as Schema from "effect/Schema";
 import { HttpClient, HttpClientRequest } from "effect/unstable/http";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
-import { resolveClaudeHomePath } from "../Drivers/ClaudeHome.ts";
+import {
+  type ClaudeFolderConfig,
+  makeClaudeEnvironment,
+  resolveClaudeConfigDir,
+} from "../Drivers/ClaudeHome.ts";
 import { spawnAndCollect } from "../providerSnapshot.ts";
 
 export const CLAUDE_OAUTH_USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
@@ -542,12 +545,40 @@ export function extractClaudeOAuthCredential(
 }
 
 /**
- * Read the OAuth credentials Claude Code maintains in
- * `<home>/.claude/.credentials.json`. Returns `undefined` when the file is
- * missing (API-key auth, keychain-backed storage) or unparseable.
+ * The keychain item Claude Code keeps its login in, for the environment it
+ * runs with (Claude Code 2.1.289): `Claude Code-credentials`, plus `-` and
+ * the first 8 hex of sha256 of the config folder (NFC, otherwise verbatim)
+ * when `CLAUDE_CONFIG_DIR` is set. `CLAUDE_SECURESTORAGE_CONFIG_DIR` takes
+ * precedence; set but empty, it names the default item.
+ */
+export function claudeKeychainServiceName(environment: NodeJS.ProcessEnv): string {
+  const secureStorageDir = environment.CLAUDE_SECURESTORAGE_CONFIG_DIR;
+  const hashInput =
+    secureStorageDir !== undefined ? secureStorageDir : environment.CLAUDE_CONFIG_DIR;
+  if (!hashInput) return CLAUDE_MACOS_KEYCHAIN_SERVICE;
+  const digest = createHash("sha256").update(hashInput.normalize("NFC")).digest("hex");
+  return `${CLAUDE_MACOS_KEYCHAIN_SERVICE}-${digest.slice(0, 8)}`;
+}
+
+/** The keychain account Claude Code files its login under. */
+export function claudeKeychainAccountName(environment: NodeJS.ProcessEnv): string {
+  let name: string | undefined;
+  try {
+    name = environment.USER || NodeOS.userInfo().username;
+  } catch {
+    name = undefined;
+  }
+  return name && /^[a-zA-Z0-9._-]+$/.test(name) ? name : "claude-code-user";
+}
+
+/**
+ * Read the OAuth credentials Claude Code keeps in `<config folder>/.credentials.json`
+ * (its store off macOS, and its fallback on macOS). `undefined` when the file
+ * is missing (API-key auth, keychain storage) or unparseable.
  */
 const readClaudeCredentialsFile = Effect.fn("readClaudeCredentialsFile")(function* (
-  claudeSettings: Pick<ClaudeSettings, "homePath">,
+  claudeSettings: ClaudeFolderConfig,
+  environment: NodeJS.ProcessEnv,
 ): Effect.fn.Return<
   ClaudeCredentialsPayload | undefined,
   never,
@@ -555,8 +586,8 @@ const readClaudeCredentialsFile = Effect.fn("readClaudeCredentialsFile")(functio
 > {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const homePath = yield* resolveClaudeHomePath(claudeSettings);
-  const credentialsPath = path.join(homePath, ".claude", ".credentials.json");
+  const configDir = yield* resolveClaudeConfigDir(claudeSettings, environment);
+  const credentialsPath = path.join(configDir, ".credentials.json");
 
   const credentials = yield* fileSystem.readFileString(credentialsPath).pipe(
     Effect.flatMap((content) => decodeClaudeCredentialsFile(content)),
@@ -565,8 +596,14 @@ const readClaudeCredentialsFile = Effect.fn("readClaudeCredentialsFile")(functio
   return credentials;
 });
 
+/**
+ * Reads the login from the macOS keychain the way the CLI would: `security`
+ * runs with the CLI's own environment, so a `HOME` override changes what it
+ * can reach exactly as it does for Claude.
+ */
 const readClaudeMacOSKeychainCredentials = Effect.fn("readClaudeMacOSKeychainCredentials")(
   function* (
+    environment: NodeJS.ProcessEnv,
     platform: NodeJS.Platform = process.platform,
   ): Effect.fn.Return<
     ClaudeCredentialsPayload | undefined,
@@ -577,7 +614,7 @@ const readClaudeMacOSKeychainCredentials = Effect.fn("readClaudeMacOSKeychainCre
 
     const readSecret = (args: ReadonlyArray<string>) =>
       Effect.gen(function* () {
-        const command = ChildProcess.make("security", args, { shell: false });
+        const command = ChildProcess.make("security", args, { shell: false, env: environment });
         const result = yield* spawnAndCollect("security", command).pipe(
           Effect.timeoutOption(KEYCHAIN_READ_TIMEOUT_MS),
           Effect.catch(() => Effect.succeed(Option.none())),
@@ -586,20 +623,16 @@ const readClaudeMacOSKeychainCredentials = Effect.fn("readClaudeMacOSKeychainCre
         return result.value.code === 0 ? result.value.stdout.trim() : undefined;
       });
 
+    const service = claudeKeychainServiceName(environment);
     const accountScopedArgs = [
       "find-generic-password",
       "-a",
-      NodeOS.userInfo().username,
+      claudeKeychainAccountName(environment),
       "-w",
       "-s",
-      CLAUDE_MACOS_KEYCHAIN_SERVICE,
+      service,
     ] as const;
-    const serviceScopedArgs = [
-      "find-generic-password",
-      "-w",
-      "-s",
-      CLAUDE_MACOS_KEYCHAIN_SERVICE,
-    ] as const;
+    const serviceScopedArgs = ["find-generic-password", "-w", "-s", service] as const;
     const secret = (yield* readSecret(accountScopedArgs)) ?? (yield* readSecret(serviceScopedArgs));
     if (!secret) return undefined;
 
@@ -607,22 +640,35 @@ const readClaudeMacOSKeychainCredentials = Effect.fn("readClaudeMacOSKeychainCre
   },
 );
 
+/**
+ * The OAuth credential this instance's Claude signs in with, read in the
+ * CLI's order (keychain on macOS, then the folder's file) for the exact
+ * environment it is spawned with. Never another instance's login: an
+ * account whose store is empty has no usage rather than someone else's.
+ */
 export const readClaudeOAuthCredential = Effect.fn("readClaudeOAuthCredential")(function* (
-  claudeSettings: Pick<ClaudeSettings, "homePath">,
+  claudeSettings: ClaudeFolderConfig,
   options: {
     readonly platform?: NodeJS.Platform;
+    /** The instance's environment before Claude-specific additions. */
+    readonly environment?: NodeJS.ProcessEnv;
   } = {},
 ): Effect.fn.Return<
   ClaudeOAuthCredential | undefined,
   never,
   FileSystem.FileSystem | Path.Path | ChildProcessSpawner.ChildProcessSpawner
 > {
-  const fileCredentials = yield* readClaudeCredentialsFile(claudeSettings);
-  const fileCredential = extractClaudeOAuthCredential(fileCredentials);
-  if (fileCredential) return fileCredential;
-
-  const keychainCredentials = yield* readClaudeMacOSKeychainCredentials(options.platform);
-  return extractClaudeOAuthCredential(keychainCredentials);
+  const spawnEnvironment = yield* makeClaudeEnvironment(
+    claudeSettings,
+    options.environment ?? process.env,
+  );
+  const keychainCredential = extractClaudeOAuthCredential(
+    yield* readClaudeMacOSKeychainCredentials(spawnEnvironment, options.platform),
+  );
+  if (keychainCredential) return keychainCredential;
+  return extractClaudeOAuthCredential(
+    yield* readClaudeCredentialsFile(claudeSettings, spawnEnvironment),
+  );
 });
 
 /**
@@ -704,7 +750,7 @@ const fetchClaudeUsageSnapshotOnce = Effect.fn("fetchClaudeUsageSnapshotOnce")(f
  * revoked sign-in from spawning a refresh attempt on every probe.
  */
 export const fetchClaudeAccountUsage = Effect.fn("fetchClaudeAccountUsage")(function* (
-  claudeSettings: Pick<ClaudeSettings, "homePath">,
+  claudeSettings: ClaudeFolderConfig,
   environment: NodeJS.ProcessEnv = process.env,
   refreshOAuthCredential?: Effect.Effect<boolean>,
 ): Effect.fn.Return<
@@ -715,7 +761,7 @@ export const fetchClaudeAccountUsage = Effect.fn("fetchClaudeAccountUsage")(func
   | Path.Path
   | ChildProcessSpawner.ChildProcessSpawner
 > {
-  const credential = yield* readClaudeOAuthCredential(claudeSettings);
+  const credential = yield* readClaudeOAuthCredential(claudeSettings, { environment });
   if (!credential) {
     yield* Effect.logDebug("claude.usage.fetch.skipped", {
       reason:
@@ -773,7 +819,7 @@ export const fetchClaudeAccountUsage = Effect.fn("fetchClaudeAccountUsage")(func
     return undefined;
   }
 
-  const refreshedCredential = yield* readClaudeOAuthCredential(claudeSettings);
+  const refreshedCredential = yield* readClaudeOAuthCredential(claudeSettings, { environment });
   if (!refreshedCredential || refreshedCredential.accessToken === credential.accessToken) {
     yield* Effect.logWarning("claude.usage.credential-refresh.failed", {
       reason: "credential-not-rotated",

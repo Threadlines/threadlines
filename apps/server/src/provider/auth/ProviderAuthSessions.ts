@@ -36,11 +36,13 @@ import {
 } from "@threadlines/contracts";
 import {
   buildProviderAuthCommand,
+  CLAUDE_DRIVER_KIND,
   CLAUDE_CREDENTIAL_OVERRIDE_ENV_NAMES,
   CLAUDE_LONG_LIVED_OAUTH_TOKEN_ENV,
   upsertClaudeLongLivedOAuthTokenEnvironment,
 } from "@threadlines/shared/providerAuthCommands";
 import { randomUUID } from "node:crypto";
+import * as NodePath from "node:path";
 
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -49,6 +51,7 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Semaphore from "effect/Semaphore";
 
+import { expandHomePath } from "../../pathExpansion.ts";
 import { ServerSettingsService, type ServerSettingsShape } from "../../serverSettings.ts";
 import { resolveOpenCodeBinary } from "../opencode/OpenCodeBinary.ts";
 import { PtyAdapter, type PtyAdapterShape, type PtyProcess } from "../../terminal/Services/PTY.ts";
@@ -233,6 +236,12 @@ function readConfigString(config: unknown, key: string): string {
   return typeof value === "string" ? value : "";
 }
 
+/** A folder setting the way the runtime resolves it: `~` expanded, made absolute. */
+function readConfigPath(config: unknown, key: string): string {
+  const value = readConfigString(config, key).trim();
+  return value ? NodePath.resolve(expandHomePath(value)) : "";
+}
+
 /**
  * Environment for the auth process: the server's environment plus the
  * instance's own variables, minus every credential override. A stale
@@ -242,12 +251,14 @@ function readConfigString(config: unknown, key: string): string {
  */
 function buildAuthSpawnEnv(input: {
   readonly baseEnv: NodeJS.ProcessEnv;
+  readonly extraSuppressed?: ReadonlyArray<string>;
   readonly instanceEnvironment: ReadonlyArray<ProviderInstanceEnvironmentVariable>;
   readonly commandEnv: Readonly<Record<string, string>>;
 }): NodeJS.ProcessEnv {
   const suppressed = new Set<string>([
     CLAUDE_LONG_LIVED_OAUTH_TOKEN_ENV,
     ...CLAUDE_CREDENTIAL_OVERRIDE_ENV_NAMES,
+    ...(input.extraSuppressed ?? []),
   ]);
   const env: NodeJS.ProcessEnv = {};
   for (const [key, value] of Object.entries(input.baseEnv)) {
@@ -590,8 +601,12 @@ export const makeProviderAuthSessions = Effect.fn("makeProviderAuthSessions")(fu
           driver: String(instance.driver),
           flow: input.flow,
           binaryPath: readConfigString(instance.config, "binaryPath"),
-          homePath: readConfigString(instance.config, "homePath"),
-          shadowHomePath: readConfigString(instance.config, "shadowHomePath"),
+          // Expanded here because nothing else will: the command is spawned
+          // without a shell, and the runtime expands the same settings, so a
+          // `~/…` folder must mean the same folder for sign-in.
+          homePath: readConfigPath(instance.config, "homePath"),
+          shadowHomePath: readConfigPath(instance.config, "shadowHomePath"),
+          accountFolder: readConfigPath(instance.config, "accountFolder"),
           platform: globalThis.process.platform,
         });
         if (!builtCommand) {
@@ -599,8 +614,14 @@ export const makeProviderAuthSessions = Effect.fn("makeProviderAuthSessions")(fu
             new ProviderAuthError({ instanceId: String(instanceId), reason: "unsupportedFlow" }),
           );
         }
+        const isClaudeAccount =
+          String(instance.driver) === CLAUDE_DRIVER_KIND &&
+          readConfigString(instance.config, "accountFolder").trim().length > 0;
         const spawnEnv = buildAuthSpawnEnv({
           baseEnv,
+          // An account signs in to its own folder; this would redirect the
+          // login past it (to the terminal's keychain item when empty).
+          ...(isClaudeAccount ? { extraSuppressed: ["CLAUDE_SECURESTORAGE_CONFIG_DIR"] } : {}),
           instanceEnvironment: instance.environment ?? [],
           commandEnv: builtCommand.env,
         });

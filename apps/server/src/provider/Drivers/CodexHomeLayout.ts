@@ -1,6 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeOS from "node:os";
-import * as NodeFS from "node:fs/promises";
 
 import { ProviderDriverKind, type CodexSettings } from "@threadlines/contracts";
 import * as Effect from "effect/Effect";
@@ -9,6 +8,12 @@ import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 
 import { expandHomePath } from "../../pathExpansion.ts";
+import {
+  AccountOverlayError,
+  linkSharedEntry,
+  readLinkState,
+  removeLinkIfPresent,
+} from "../accountOverlay.ts";
 
 export interface CodexHomeLayout {
   readonly mode: "direct" | "authOverlay";
@@ -29,7 +34,10 @@ const KNOWN_SHARED_DIRECTORIES = [
   "logs",
 ] as const;
 
-const PRIVATE_ENTRY_NAMES = new Set(["auth.json", "models_cache.json"]);
+// `secrets` holds Codex's encrypted credential store (`codex_auth.age`, keyed
+// to the home it lives in), so an account's login must never land in the
+// shared one.
+const PRIVATE_ENTRY_NAMES = new Set(["auth.json", "models_cache.json", "secrets"]);
 const SHADOW_LOCAL_ENTRY_NAMES = new Set(["log", "memories", "tmp"]);
 
 function resolveHomePath(path: Path.Path, value: string | undefined): string {
@@ -77,25 +85,15 @@ export class CodexShadowHomeError extends Schema.TaggedError<CodexShadowHomeErro
 }
 const isCodexShadowHomeError = Schema.is(CodexShadowHomeError);
 
-type LinkState =
-  | {
-      readonly _tag: "Missing";
-    }
-  | {
-      readonly _tag: "NotSymlink";
-    }
-  | {
-      readonly _tag: "Symlink";
-      readonly target: string;
-    };
-
 function toShadowHomeError(cause: unknown): CodexShadowHomeError {
-  return isCodexShadowHomeError(cause)
-    ? cause
-    : new CodexShadowHomeError({
-        detail: "Failed to materialize Codex shadow home.",
-        cause,
-      });
+  if (isCodexShadowHomeError(cause)) return cause;
+  return new CodexShadowHomeError({
+    detail:
+      cause instanceof AccountOverlayError
+        ? cause.detail
+        : "Failed to materialize Codex shadow home.",
+    cause,
+  });
 }
 
 function normalizeShadowHomeError<A, E, R>(
@@ -104,145 +102,13 @@ function normalizeShadowHomeError<A, E, R>(
   return effect.pipe(Effect.mapError(toShadowHomeError));
 }
 
-const readLinkState = Effect.fn("CodexHomeLayout.readLinkState")(function* (
-  fileSystem: FileSystem.FileSystem,
-  linkPath: string,
-): Effect.fn.Return<LinkState, CodexShadowHomeError> {
-  return yield* fileSystem.readLink(linkPath).pipe(
-    Effect.map((target): LinkState => ({ _tag: "Symlink", target })),
-    Effect.catch((error) => {
-      if (error.reason._tag === "NotFound") {
-        return Effect.succeed<LinkState>({ _tag: "Missing" });
-      }
-      return fileSystem.exists(linkPath).pipe(
-        Effect.map((exists): LinkState => (exists ? { _tag: "NotSymlink" } : { _tag: "Missing" })),
-        Effect.mapError(() => toShadowHomeError(error)),
-      );
-    }),
-  );
-});
-
-const removePrivateSymlink = Effect.fn("CodexHomeLayout.removePrivateSymlink")(function* (input: {
-  readonly fileSystem: FileSystem.FileSystem;
-  readonly shadowPath: string;
-  readonly entryName: string;
-}): Effect.fn.Return<void, CodexShadowHomeError, Path.Path> {
-  const path = yield* Path.Path;
-  const privatePath = path.join(input.shadowPath, input.entryName);
-  const state = yield* readLinkState(input.fileSystem, privatePath);
-  if (state._tag === "Symlink") {
-    yield* normalizeShadowHomeError(input.fileSystem.remove(privatePath));
-  }
-});
-
-const ensureSymlink = Effect.fn("CodexHomeLayout.ensureSymlink")(function* (input: {
-  readonly fileSystem: FileSystem.FileSystem;
-  readonly shadowPath: string;
-  readonly sharedPath: string;
-  readonly entryName: string;
-}): Effect.fn.Return<void, CodexShadowHomeError, Path.Path> {
-  const path = yield* Path.Path;
-  const target = path.join(input.sharedPath, input.entryName);
-  const link = path.join(input.shadowPath, input.entryName);
-  const state = yield* readLinkState(input.fileSystem, link);
-
-  if (state._tag === "NotSymlink") {
-    if (process.platform === "win32" && (yield* isSharedHardLink({ target, link }))) {
-      return;
-    }
-    return yield* new CodexShadowHomeError({
-      detail: `Cannot create Codex shadow home because '${link}' already exists and is not a symlink.`,
-    });
-  }
-
-  if (state._tag === "Missing") {
-    return yield* createSharedEntryLink({
-      fileSystem: input.fileSystem,
-      target,
-      link,
-    });
-  }
-
-  const resolvedExisting = path.resolve(path.dirname(link), state.target);
-  if (resolvedExisting !== target) {
-    yield* normalizeShadowHomeError(input.fileSystem.remove(link));
-    yield* createSharedEntryLink({
-      fileSystem: input.fileSystem,
-      target,
-      link,
-    });
-  }
-});
-
-const isSharedHardLink = Effect.fn("CodexHomeLayout.isSharedHardLink")(function* (input: {
-  readonly target: string;
-  readonly link: string;
-}): Effect.fn.Return<boolean> {
-  if (process.platform !== "win32") return false;
-
-  return yield* Effect.tryPromise({
-    try: async () => {
-      const [targetStats, linkStats] = await Promise.all([
-        NodeFS.stat(input.target),
-        NodeFS.stat(input.link),
-      ]);
-      return (
-        targetStats.isFile() &&
-        linkStats.isFile() &&
-        targetStats.dev === linkStats.dev &&
-        targetStats.ino === linkStats.ino
-      );
-    },
-    catch: (cause) =>
-      new CodexShadowHomeError({
-        detail: "Failed to inspect Codex shadow home link.",
-        cause,
-      }),
-  }).pipe(Effect.catchTag("CodexShadowHomeError", () => Effect.succeed(false)));
-});
-
-const createWindowsSharedEntryLink = Effect.fn("CodexHomeLayout.createWindowsSharedEntryLink")(
-  function* (input: {
-    readonly target: string;
-    readonly link: string;
-  }): Effect.fn.Return<void, CodexShadowHomeError> {
-    return yield* Effect.tryPromise({
-      try: async () => {
-        const stats = await NodeFS.stat(input.target);
-        if (stats.isDirectory()) {
-          await NodeFS.symlink(input.target, input.link, "junction");
-          return;
-        }
-        await NodeFS.link(input.target, input.link);
-      },
-      catch: (cause) =>
-        new CodexShadowHomeError({
-          detail: "Failed to materialize Codex shadow home.",
-          cause,
-        }),
-    });
-  },
-);
-
-const createSharedEntryLink = Effect.fn("CodexHomeLayout.createSharedEntryLink")(function* (input: {
-  readonly fileSystem: FileSystem.FileSystem;
-  readonly target: string;
-  readonly link: string;
-}): Effect.fn.Return<void, CodexShadowHomeError> {
-  const symlink = normalizeShadowHomeError(input.fileSystem.symlink(input.target, input.link));
-  if (process.platform !== "win32") {
-    return yield* symlink;
-  }
-  return yield* symlink.pipe(Effect.catch(() => createWindowsSharedEntryLink(input)));
-});
-
 const ensureShadowAuthIsPrivate = Effect.fn("CodexHomeLayout.ensureShadowAuthIsPrivate")(function* (
   fileSystem: FileSystem.FileSystem,
   shadowPath: string,
 ): Effect.fn.Return<void, CodexShadowHomeError, Path.Path> {
   const path = yield* Path.Path;
   const authPath = path.join(shadowPath, "auth.json");
-  const state = yield* readLinkState(fileSystem, authPath);
+  const state = yield* normalizeShadowHomeError(readLinkState(fileSystem, authPath));
   if (state._tag === "Symlink") {
     return yield* new CodexShadowHomeError({
       detail: `Codex shadow auth file '${authPath}' must be a real file, not a symlink.`,
@@ -295,27 +161,34 @@ export const materializeCodexShadowHome = Effect.fn("materializeCodexShadowHome"
     (entryName) =>
       entryName === "auth.json"
         ? Effect.void
-        : removePrivateSymlink({
-            fileSystem,
-            shadowPath: effectiveHomePath,
-            entryName,
-          }),
+        : normalizeShadowHomeError(
+            removeLinkIfPresent({ fileSystem, accountPath: effectiveHomePath, entryName }),
+          ),
     { discard: true },
   );
 
   yield* Effect.forEach(
     entries,
-    (entryName) => {
-      if (PRIVATE_ENTRY_NAMES.has(entryName)) {
-        return Effect.void;
-      }
-      return ensureSymlink({
-        fileSystem,
-        shadowPath: effectiveHomePath,
-        sharedPath: layout.sharedHomePath,
-        entryName,
-      });
-    },
+    (entryName) =>
+      Effect.gen(function* () {
+        if (PRIVATE_ENTRY_NAMES.has(entryName)) return;
+        const result = yield* normalizeShadowHomeError(
+          linkSharedEntry({
+            fileSystem,
+            sharedPath: layout.sharedHomePath,
+            accountPath: effectiveHomePath,
+            entryName,
+            platform: process.platform,
+            // The shadow home is Codex's own layout; stale links are ours to fix.
+            foreignLink: "replace",
+          }),
+        );
+        if (result._tag === "Conflict") {
+          return yield* new CodexShadowHomeError({
+            detail: `Cannot create Codex shadow home because '${path.join(effectiveHomePath, entryName)}' already exists and is not a symlink.`,
+          });
+        }
+      }),
     { discard: true },
   );
 

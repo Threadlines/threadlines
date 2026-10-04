@@ -125,6 +125,7 @@ const harness = Effect.gen(function* () {
       binaryPath: "opencode",
       serverUrl: "",
       serverPassword: "",
+      accountFolder: "",
       customModels: [],
     },
     manager,

@@ -294,8 +294,17 @@ export const ClaudeSettings = makeProviderSettingsSchema(
       Schema.annotateKey({
         title: "Claude HOME path",
         description:
-          "Custom HOME used when running this Claude instance. Keeps .claude.json and .claude separate.",
+          "Runs Claude with a different HOME. This also hides your git, SSH and GitHub settings from its commands; use Account folder for a second account.",
         providerSettingsForm: { placeholder: "~", clearWhenEmpty: "omit" },
+      }),
+    ),
+    accountFolder: TrimmedString.pipe(
+      Schema.withDecodingDefault(Effect.succeed("")),
+      Schema.annotateKey({
+        title: "Account folder",
+        description:
+          "Keeps this account's Claude sign-in separate (CLAUDE_CONFIG_DIR) while sharing your instructions, settings, skills and conversations with your main Claude folder.",
+        providerSettingsForm: { placeholder: "Your main Claude folder", clearWhenEmpty: "omit" },
       }),
     ),
     customModels: Schema.Array(Schema.String).pipe(
@@ -348,6 +357,7 @@ export const ClaudeSettings = makeProviderSettingsSchema(
   {
     order: [
       "binaryPath",
+      "accountFolder",
       "homePath",
       "launchArgs",
       "maxConcurrentSubagents",
@@ -485,13 +495,22 @@ export const OpenCodeSettings = makeProviderSettingsSchema(
         },
       }),
     ),
+    accountFolder: TrimmedString.pipe(
+      Schema.withDecodingDefault(Effect.succeed("")),
+      Schema.annotateKey({
+        title: "Account folder",
+        description:
+          "Keeps this account's sign-ins and conversations in their own database (OPENCODE_DB) instead of OpenCode's shared one. Ignored with a server URL.",
+        providerSettingsForm: { placeholder: "OpenCode's shared data", clearWhenEmpty: "omit" },
+      }),
+    ),
     customModels: Schema.Array(Schema.String).pipe(
       Schema.withDecodingDefault(Effect.succeed([])),
       Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
     ),
   },
   {
-    order: ["binaryPath", "serverUrl", "serverPassword"],
+    order: ["binaryPath", "accountFolder", "serverUrl", "serverPassword"],
   },
 );
 export type OpenCodeSettings = typeof OpenCodeSettings.Type;
@@ -662,6 +681,7 @@ const ClaudeSettingsPatch = Schema.Struct({
   enabled: Schema.optionalKey(Schema.Boolean),
   binaryPath: Schema.optionalKey(TrimmedString),
   homePath: Schema.optionalKey(TrimmedString),
+  accountFolder: Schema.optionalKey(TrimmedString),
   customModels: Schema.optionalKey(Schema.Array(Schema.String)),
   fallbackModel: Schema.optionalKey(Schema.Array(Schema.String)),
   launchArgs: Schema.optionalKey(TrimmedString),
@@ -694,6 +714,7 @@ const OpenCodeSettingsPatch = Schema.Struct({
   binaryPath: Schema.optionalKey(TrimmedString),
   serverUrl: Schema.optionalKey(TrimmedString),
   serverPassword: Schema.optionalKey(TrimmedString),
+  accountFolder: Schema.optionalKey(TrimmedString),
   customModels: Schema.optionalKey(Schema.Array(Schema.String)),
 });
 

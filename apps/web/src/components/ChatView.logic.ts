@@ -1807,44 +1807,65 @@ export function deriveLockedProvider(input: {
   return input.threadProvider ?? input.selectedProvider ?? null;
 }
 
-export type ModelSwitchClassification =
-  | "apply"
-  | "confirm-cross-driver"
-  | "blocked-incompatible-instance";
+export type ModelSwitchClassification = "apply" | "confirm-handoff";
 
 /**
  * Decide what should happen when the user picks `pickedDriverKind` for a thread
  * currently bound to `boundProvider`.
  *
- * - Different driver → `confirm-cross-driver`: allowed, but the server hands off
- *   by rehydrating the new driver from a transcript recap (not the outgoing
- *   model's full internal state), so the UI confirms the context-loss first.
- * - Same driver but a different *known* continuation group →
- *   `blocked-incompatible-instance`: native resume state cannot be reconciled
- *   across those instances, and the server rejects it.
- * - Otherwise (`apply`): a plain in-driver model swap, or the thread has no
- *   binding yet.
+ * - `confirm-handoff`: the picked instance can't resume this thread natively,
+ *   because it is another driver or the same driver in a different *known*
+ *   continuation group (an account with its own history). The server hands off
+ *   by rehydrating it from a transcript recap (not the outgoing model's full
+ *   internal state), so the UI confirms the context loss first.
+ * - `apply`: a plain model swap between instances that share resume state, or
+ *   the thread has no binding yet.
  */
 export function classifyModelSwitch(input: {
   boundProvider: ProviderDriverKind | null;
   pickedDriverKind: ProviderDriverKind | null;
   boundContinuationGroupKey: string | null;
   pickedContinuationGroupKey: string | null;
+  /**
+   * The thread's instance no longer exists (an account was removed). Any
+   * other instance can only pick the thread up from a recap.
+   */
+  boundInstanceMissing?: boolean;
 }): ModelSwitchClassification {
   if (input.boundProvider === null || input.pickedDriverKind === null) {
     return "apply";
   }
-  if (input.pickedDriverKind !== input.boundProvider) {
-    return "confirm-cross-driver";
+  if (input.pickedDriverKind !== input.boundProvider || input.boundInstanceMissing === true) {
+    return "confirm-handoff";
   }
   if (
     input.boundContinuationGroupKey !== null &&
     input.pickedContinuationGroupKey !== null &&
     input.boundContinuationGroupKey !== input.pickedContinuationGroupKey
   ) {
-    return "blocked-incompatible-instance";
+    return "confirm-handoff";
   }
   return "apply";
+}
+
+/**
+ * Copy for the dialog that confirms a handoff (see `classifyModelSwitch`).
+ * Labels are the instance names the model picker shows. A switch to another
+ * account of the same agent only loses the shared history; a switch to another
+ * agent also loses the outgoing agent's reasoning.
+ */
+export function buildModelHandoffConfirmCopy(input: {
+  readonly fromLabel: string;
+  readonly toLabel: string;
+  readonly sameAgent: boolean;
+}): { title: string; description: string; confirmLabel: string } {
+  return {
+    title: `Switch to ${input.toLabel}?`,
+    description: input.sameAgent
+      ? "It doesn't share this chat's history, so it picks up from a recap of the conversation."
+      : `This chat is running on ${input.fromLabel}. ${input.toLabel} picks up from a recap of the conversation and your working tree, but not ${input.fromLabel}'s full reasoning.`,
+    confirmLabel: `Switch to ${input.toLabel}`,
+  };
 }
 
 export async function waitForStartedServerThread(

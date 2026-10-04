@@ -18,6 +18,8 @@ import * as Stream from "effect/Stream";
 import { HttpClient } from "effect/unstable/http";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
+import { openCodeAccountEnvironment } from "@threadlines/shared/providerAuthCommands";
+
 import { ServerConfig } from "../../config.ts";
 import { makeOpenCodeTextGeneration } from "../../textGeneration/OpenCodeTextGeneration.ts";
 import { ProviderDriverError } from "../Errors.ts";
@@ -98,7 +100,32 @@ export const OpenCodeDriver: ProviderDriver<OpenCodeSettings, OpenCodeDriverEnv>
       const fileSystem = yield* FileSystem.FileSystem;
       const httpClient = yield* HttpClient.HttpClient;
       const eventLoggers = yield* ProviderEventLoggers;
-      const processEnv = mergeProviderInstanceEnvironment(environment);
+      // An account folder gives this instance its own OpenCode database (its
+      // sign-ins and sessions). With a server URL the data lives with that
+      // server instead. Copied, never assigned into: the merge can return
+      // `process.env` itself.
+      const accountFolder = config.serverUrl.trim() ? "" : config.accountFolder.trim();
+      const accountEnvironment = openCodeAccountEnvironment({
+        accountFolder,
+        platform: process.platform,
+      });
+      if (accountFolder) {
+        yield* fileSystem.makeDirectory(accountFolder, { recursive: true, mode: 0o700 }).pipe(
+          Effect.mapError(
+            (cause) =>
+              new ProviderDriverError({
+                driver: DRIVER_KIND,
+                instanceId,
+                detail: `Could not create the OpenCode account folder '${accountFolder}'.`,
+                cause,
+              }),
+          ),
+        );
+      }
+      const processEnv: NodeJS.ProcessEnv = {
+        ...mergeProviderInstanceEnvironment(environment),
+        ...accountEnvironment,
+      };
       const continuationIdentity = defaultProviderContinuationIdentity({
         driverKind: DRIVER_KIND,
         instanceId,
@@ -184,6 +211,7 @@ export const OpenCodeDriver: ProviderDriver<OpenCodeSettings, OpenCodeDriverEnv>
         },
         getSettings: Effect.gen(function* () {
           refreshProviderInstanceEnvironment(environment, processEnv);
+          Object.assign(processEnv, accountEnvironment);
           maintenance = yield* resolveMaintenance;
           return settings;
         }),

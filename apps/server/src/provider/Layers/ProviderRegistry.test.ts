@@ -315,6 +315,15 @@ function makeMutableServerSettingsService(
           yield* PubSub.publish(changes, next);
           return next;
         }),
+      updateSettingsWith: (makePatch) =>
+        Effect.gen(function* () {
+          const current = yield* Ref.get(settingsRef);
+          const next = applyServerSettingsPatch(current, yield* makePatch(current));
+          encodeServerSettings(next);
+          yield* Ref.set(settingsRef, next);
+          yield* PubSub.publish(changes, next);
+          return next;
+        }),
       get streamChanges() {
         return Stream.fromPubSub(changes);
       },
@@ -3020,7 +3029,10 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
             })}\n`,
           );
 
-          const readHistory = yield* makeClaudeTokenUsageHistoryReader({ homePath });
+          const readHistory = yield* makeClaudeTokenUsageHistoryReader(
+            { homePath, accountFolder: "" },
+            {},
+          );
           const history = yield* readHistory;
 
           assert.strictEqual(history?.scope, "local");

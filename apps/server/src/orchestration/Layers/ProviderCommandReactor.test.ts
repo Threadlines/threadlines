@@ -45,7 +45,7 @@ import { afterEach, describe, expect, it, onTestFinished, vi } from "vite-plus/t
 
 import { deriveServerPaths, ServerConfig } from "../../config.ts";
 import { TextGenerationError } from "@threadlines/contracts";
-import { ProviderAdapterRequestError } from "../../provider/Errors.ts";
+import { ProviderAdapterRequestError, ProviderUnsupportedError } from "../../provider/Errors.ts";
 import { OrchestrationEventStoreLive } from "../../persistence/Layers/OrchestrationEventStore.ts";
 import { OrchestrationCommandReceiptRepositoryLive } from "../../persistence/Layers/OrchestrationCommandReceipts.ts";
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
@@ -186,6 +186,8 @@ describe("ProviderCommandReactor", () => {
      *  reactor starts. */
     readonly beforeStart?: (engine: OrchestrationEngineShape) => Effect.Effect<void, unknown>;
     readonly serverSettings?: Parameters<typeof ServerSettingsService.layerTest>[0];
+    /** Instances that are no longer configured (an account was removed). */
+    readonly removedInstanceIds?: ReadonlyArray<string>;
   }) {
     const now = "2026-01-01T00:00:00.000Z";
     const baseDir =
@@ -464,6 +466,9 @@ describe("ProviderCommandReactor", () => {
         }),
       getInstanceInfo: (instanceId) => {
         const raw = String(instanceId);
+        if (input?.removedInstanceIds?.includes(raw)) {
+          return Effect.fail(new ProviderUnsupportedError({ provider: raw }));
+        }
         const driverKind = ProviderDriverKind.make(
           raw.startsWith("claude") ? "claudeAgent" : raw.startsWith("codex") ? "codex" : raw,
         );
@@ -509,9 +514,9 @@ describe("ProviderCommandReactor", () => {
       Layer.provideMerge(orchestrationLayer),
       Layer.provideMerge(projectionSnapshotLayer),
       Layer.provideMerge(Layer.succeed(ProviderService, service)),
-      // Return a deterministic seed so cross-driver handoff tests can assert it
-      // reaches `startSession`. `build` is only invoked on cross-driver switches,
-      // so same-driver tests are unaffected.
+      // Return a deterministic seed so handoff tests can assert it reaches
+      // `startSession`. `build` is only invoked on seeded handoffs (and to pay
+      // owed history), so native same-instance tests are unaffected.
       Layer.provideMerge(
         Layer.succeed(ThreadContextSeedBuilder, {
           build: (seedInput) => {
@@ -3829,6 +3834,8 @@ describe("ProviderCommandReactor", () => {
       providerInstanceId: ProviderInstanceId.make("codex_work"),
       resumeCursor: { opaque: "resume-1" },
     });
+    // Instances that share resume state resume natively, without a recap.
+    expect(harness.seedBuildInputs).toEqual([]);
 
     const readModel = await harness.readModel();
     const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
@@ -4819,6 +4826,138 @@ describe("ProviderCommandReactor", () => {
     const readModel = await harness.readModel();
     const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
     expect(thread?.session?.providerName).toBe("claudeAgent");
+    expect(
+      thread?.activities.some((activity) => activity.kind === "provider.turn.start.failed"),
+    ).toBe(false);
+  });
+
+  it("hands off with a seed to a same-driver instance that has its own history", async () => {
+    const harness = await createHarness({
+      threadModelSelection: {
+        instanceId: ProviderInstanceId.make("claudeAgent"),
+        model: "claude-opus-4-6",
+      },
+    });
+    const now = "2026-01-01T00:00:00.000Z";
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-account-switch-1"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: asMessageId("user-message-account-switch-1"),
+          role: "user",
+          text: "first",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+
+    // In the harness every Claude instance has its own continuation key, the
+    // way an extra account with its own folder does.
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-account-switch-2"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: asMessageId("user-message-account-switch-2"),
+          role: "user",
+          text: "second",
+          attachments: [],
+        },
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("claudeAgent_work"),
+          model: "claude-opus-4-6",
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+    await waitFor(() => harness.sendTurn.mock.calls.length === 2);
+    await harness.drain();
+
+    expect(harness.startSession.mock.calls.length).toBe(2);
+    const handoffStart = harness.startSession.mock.calls[1]?.[1] as
+      | ProviderSessionStartInput
+      | undefined;
+    expect(handoffStart?.providerInstanceId).toBe(ProviderInstanceId.make("claudeAgent_work"));
+    expect(handoffStart?.contextSeed?.fromProvider).toBe("claudeAgent");
+    expect(handoffStart?.resumeCursor).toBeUndefined();
+    expect(harness.seedBuildInputs[0]?.excludeMessageId).toBe(
+      asMessageId("user-message-account-switch-2"),
+    );
+    const readModel = await harness.readModel();
+    const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+    expect(thread?.session?.providerInstanceId).toBe(ProviderInstanceId.make("claudeAgent_work"));
+    expect(
+      thread?.activities.some((activity) => activity.kind === "provider.turn.start.failed"),
+    ).toBe(false);
+  });
+
+  it("hands off to the requested instance when the thread's instance was removed", async () => {
+    const harness = await createHarness({ removedInstanceIds: ["claudeAgent_work"] });
+    const now = "2026-01-01T00:00:00.000Z";
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-set-removed-instance"),
+        threadId: ThreadId.make("thread-1"),
+        session: {
+          threadId: ThreadId.make("thread-1"),
+          status: "stopped",
+          providerName: "claudeAgent",
+          providerInstanceId: ProviderInstanceId.make("claudeAgent_work"),
+          runtimeMode: "approval-required",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-removed-instance"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: asMessageId("user-message-removed-instance"),
+          role: "user",
+          text: "continue on the main account",
+          attachments: [],
+        },
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("claudeAgent"),
+          model: "claude-opus-4-6",
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    await harness.drain();
+
+    expect(harness.startSession.mock.calls.length).toBe(1);
+    const handoffStart = harness.startSession.mock.calls[0]?.[1] as
+      | ProviderSessionStartInput
+      | undefined;
+    expect(handoffStart?.providerInstanceId).toBe(ProviderInstanceId.make("claudeAgent"));
+    // The removed instance's driver comes from the thread's binding.
+    expect(handoffStart?.contextSeed?.fromProvider).toBe("claudeAgent");
+    expect(handoffStart?.resumeCursor).toBeUndefined();
+    const readModel = await harness.readModel();
+    const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+    expect(thread?.session?.providerInstanceId).toBe(ProviderInstanceId.make("claudeAgent"));
     expect(
       thread?.activities.some((activity) => activity.kind === "provider.turn.start.failed"),
     ).toBe(false);

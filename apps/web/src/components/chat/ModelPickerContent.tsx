@@ -18,6 +18,10 @@ import {
 import { Link } from "@tanstack/react-router";
 import { SearchIcon, StarIcon, XIcon } from "lucide-react";
 import { cn } from "~/lib/utils";
+import {
+  deriveProviderAccountUsagePresentationForProvider,
+  headlineUsageMeter,
+} from "~/lib/providerUsage";
 import { ModelListRow } from "./ModelListRow";
 import { resolveModelPickerEmptyState } from "./modelPickerEmptyState";
 import { buildModelPickerSearchText, scoreModelPickerSearch } from "./modelPickerSearch";
@@ -66,6 +70,8 @@ type ModelPickerTab = {
   models: ReadonlyArray<ModelPickerItem>;
   driverKind?: ProviderDriverKind;
   accentColor?: string | undefined;
+  /** For an agent with several accounts: how close this one is to its limit. */
+  usage?: { readonly usedPercent: number; readonly label: string; readonly warning: boolean };
 };
 
 /**
@@ -389,6 +395,13 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
 
   const providerTabs = useMemo((): ModelPickerTab[] => {
     const tabs: ModelPickerTab[] = [];
+    const instanceCountByDriver = new Map<string, number>();
+    for (const entry of instanceEntries) {
+      instanceCountByDriver.set(
+        entry.driverKind,
+        (instanceCountByDriver.get(entry.driverKind) ?? 0) + 1,
+      );
+    }
     for (const entry of instanceEntries) {
       const models = modelsByInstance.get(entry.instanceId);
       if (!models || models.length === 0) {
@@ -399,12 +412,28 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
         groupFavorites: isLocked,
         instanceOrder: [],
       });
+      // With more than one account for an agent, each tab says how much room
+      // it has left, the same figure its Settings row shows.
+      const usagePresentation =
+        (instanceCountByDriver.get(entry.driverKind) ?? 0) > 1
+          ? deriveProviderAccountUsagePresentationForProvider(entry.snapshot)
+          : null;
+      const usage = usagePresentation ? headlineUsageMeter(usagePresentation) : null;
       tabs.push({
         kind: "instance",
         id: entry.instanceId,
         label: entry.displayName,
         driverKind: entry.driverKind,
         ...(entry.accentColor ? { accentColor: entry.accentColor } : {}),
+        ...(usage
+          ? {
+              usage: {
+                usedPercent: Math.round(usage.usedPercent),
+                label: usage.label,
+                warning: usage.warning,
+              },
+            }
+          : {}),
         modelCount: sortedModels.length,
         models: sortedModels,
       });
@@ -784,7 +813,13 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
                           aria-label={iconOnly ? tab.label : undefined}
                           data-model-picker-tab={tab.id}
                           ref={isActive ? activeTabRef : undefined}
-                          title={`${tab.label} · ${tabModelCountLabel(tab.modelCount)}`}
+                          title={[
+                            tab.label,
+                            tabModelCountLabel(tab.modelCount),
+                            ...(tab.usage
+                              ? [`${tab.usage.label} ${tab.usage.usedPercent}% used`]
+                              : []),
+                          ].join(" · ")}
                           className={cn(
                             "flex max-w-40 shrink-0 cursor-pointer items-center gap-1.5 rounded-md px-2.5 py-1 text-left text-xs font-medium transition-colors",
                             "focus-ring",
@@ -801,6 +836,16 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
                             {renderTabIcon(tab)}
                           </span>
                           {iconOnly ? null : <span className="min-w-0 truncate">{tab.label}</span>}
+                          {iconOnly || !tab.usage ? null : (
+                            <span
+                              className={cn(
+                                "shrink-0 font-mono text-[10px] tabular-nums",
+                                tab.usage.warning ? "text-warning" : "text-muted-foreground/70",
+                              )}
+                            >
+                              {tab.usage.usedPercent}%
+                            </span>
+                          )}
                         </button>
                       );
                     })}

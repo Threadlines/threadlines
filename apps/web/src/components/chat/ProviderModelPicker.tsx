@@ -426,7 +426,10 @@ function RoomPickerTriggerContent(props: { room: RoomAgents; compact: boolean })
                 driverKind={row.entry.driverKind}
                 displayName={row.entry.displayName}
                 accentColor={row.entry.accentColor}
-                showBadge={false}
+                // An extra account wears its letter, so two accounts on one
+                // model can be told apart.
+                showBadge={!row.entry.isDefault}
+                badgeClassName="right-[-0.3rem] bottom-[-0.2rem] h-2.5 min-w-2.5 px-0 text-[6px] shadow-none"
                 // Faded behind the one in front, with a notch cut where it
                 // sits. Only the icon fades: the dot stays whole and bright.
                 className={cn(

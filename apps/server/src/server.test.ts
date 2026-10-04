@@ -70,6 +70,10 @@ import {
   ProviderAuthSessions,
   type ProviderAuthSessionsShape,
 } from "./provider/auth/ProviderAuthSessions.ts";
+import {
+  ProviderAccounts,
+  type ProviderAccountsShape,
+} from "./provider/accounts/ProviderAccounts.ts";
 import { DictationLive } from "./dictation/DictationService.ts";
 import { answerRequestsWhileStarting, makeRoutesLayer } from "./server.ts";
 import { RelayHost, type RelayHostShape } from "./relay/RelayHost.ts";
@@ -438,6 +442,7 @@ const buildAppUnderTest = (options?: {
     projectSetupScriptRunner?: Partial<ProjectSetupScriptRunnerShape>;
     terminalManager?: Partial<TerminalManagerShape>;
     providerAuthSessions?: Partial<ProviderAuthSessionsShape>;
+    providerAccounts?: Partial<ProviderAccountsShape>;
     orchestrationEngine?: Partial<OrchestrationEngineShape>;
     projectionSnapshotQuery?: Partial<ProjectionSnapshotQueryShape>;
     threadSearch?: Partial<ThreadSearchShape>;
@@ -831,6 +836,9 @@ const buildAppUnderTest = (options?: {
           }),
           Layer.mock(ProviderAuthSessions)({
             ...options?.layers?.providerAuthSessions,
+          }),
+          Layer.mock(ProviderAccounts)({
+            ...options?.layers?.providerAccounts,
           }),
         ),
       ),

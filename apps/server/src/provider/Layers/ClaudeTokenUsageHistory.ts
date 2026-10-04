@@ -23,7 +23,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 
-import { resolveClaudeHomePath } from "../Drivers/ClaudeHome.ts";
+import { resolveClaudeConfigDir, resolveClaudeHomePath } from "../Drivers/ClaudeHome.ts";
 import {
   formatProviderTokenUsageDateKey,
   parseProviderTokenUsageDateKey,
@@ -123,15 +123,19 @@ const clampDateKey = (value: string, minimum: string, maximum: string): string =
   value < minimum ? minimum : value > maximum ? maximum : value;
 
 export const makeClaudeTokenUsageHistoryReader = Effect.fn("ClaudeTokenUsageHistory.makeReader")(
-  function* (settings: Pick<ClaudeSettings, "homePath">) {
+  function* (
+    settings: Pick<ClaudeSettings, "homePath" | "accountFolder">,
+    environment: NodeJS.ProcessEnv = process.env,
+  ) {
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const resolvedHomePath = yield* resolveClaudeHomePath(settings);
-    const nestedDataDir = path.join(resolvedHomePath, ".claude");
-    const nestedDataDirExists = yield* fileSystem
-      .exists(nestedDataDir)
+    const configDir = yield* resolveClaudeConfigDir(settings, environment);
+    const configDirExists = yield* fileSystem
+      .exists(configDir)
       .pipe(Effect.catchCause(() => Effect.succeed(false)));
-    const dataDir = nestedDataDirExists ? nestedDataDir : resolvedHomePath;
+    // A `homePath` that already names a `.claude` folder is read as-is.
+    const dataDir = configDirExists ? configDir : resolvedHomePath;
     const statsCachePath = path.join(dataDir, "stats-cache.json");
     const transcriptDir = path.join(dataDir, "projects");
     const fileCache: ScanCache = new Map();

@@ -930,30 +930,39 @@ const make = Effect.gen(function* () {
           baseModelSelection.instanceId);
     const desiredModelSelection = requestedModelSelection ?? baseModelSelection;
     const desiredInstanceId = desiredModelSelection.instanceId;
-    const currentInfo = yield* providerService.getInstanceInfo(currentInstanceId).pipe(
-      Effect.mapError(
-        () =>
-          new ProviderAdapterRequestError({
-            provider: providerErrorLabelFromInstanceHint({
-              instanceId: String(currentInstanceId),
-              modelSelectionInstanceId: String(baseModelSelection.instanceId),
-              sessionProvider: projectedSession?.providerName ?? undefined,
-            }),
-            method: "thread.turn.start",
-            detail: `Thread '${threadId}' references unknown provider instance '${currentInstanceId}'. The instance is not configured in this build.`,
-          }),
-      ),
+    const unknownCurrentInstanceError = () =>
+      new ProviderAdapterRequestError({
+        provider: providerErrorLabelFromInstanceHint({
+          instanceId: String(currentInstanceId),
+          modelSelectionInstanceId: String(baseModelSelection.instanceId),
+          sessionProvider: projectedSession?.providerName ?? undefined,
+        }),
+        method: "thread.turn.start",
+        detail: `Thread '${threadId}' references unknown provider instance '${currentInstanceId}'. The instance is not configured in this build.`,
+      });
+    // The instance the thread is on can be gone (an account was removed).
+    // That only strands the thread when nothing else was asked for: the
+    // thread's own agent can still move to another instance, below.
+    const currentInfo = Option.getOrUndefined(
+      yield* providerService.getInstanceInfo(currentInstanceId).pipe(Effect.option),
     );
+    const replacementRequested =
+      requestedModelSelection !== undefined &&
+      requestedModelSelection.instanceId !== currentInstanceId;
+    if (currentInfo === undefined && (participantId !== null || !replacementRequested)) {
+      return yield* unknownCurrentInstanceError();
+    }
     const desiredInfo = yield* providerService.getInstanceInfo(desiredInstanceId).pipe(
-      Effect.mapError(
-        () =>
-          new ProviderAdapterRequestError({
-            provider: providerErrorLabelFromInstanceHint({
-              instanceId: String(desiredModelSelection.instanceId),
+      Effect.mapError(() =>
+        currentInfo === undefined
+          ? unknownCurrentInstanceError()
+          : new ProviderAdapterRequestError({
+              provider: providerErrorLabelFromInstanceHint({
+                instanceId: String(desiredModelSelection.instanceId),
+              }),
+              method: "thread.turn.start",
+              detail: `Requested provider instance '${desiredInstanceId}' is not configured in this build.`,
             }),
-            method: "thread.turn.start",
-            detail: `Requested provider instance '${desiredInstanceId}' is not configured in this build.`,
-          }),
       ),
     );
     const desiredDriverKind = desiredInfo.driverKind;
@@ -967,29 +976,35 @@ const make = Effect.gen(function* () {
     const preferredProvider: ProviderDriverKind = desiredDriverKind;
     const hasProviderBinding =
       activeThreadSession !== null || projectedSession?.providerName !== null;
-    const instanceSwitchRequested =
-      hasProviderBinding &&
-      requestedModelSelection !== undefined &&
-      requestedModelSelection.instanceId !== currentInstanceId;
-    // Switching to a different *driver* mid-thread is allowed: we hand off by
-    // rehydrating the new driver from a provider-agnostic context seed built
-    // from the orchestration transcript, instead of the outgoing driver's
-    // opaque (and non-portable) resume cursor. A same-driver switch to an
-    // instance with an incompatible continuation key stays blocked — there the
-    // native resume state matters and cannot be reconciled across instances.
+    const instanceSwitchRequested = hasProviderBinding && replacementRequested;
+    // Instances resume each other's conversations natively only when they
+    // share a continuation key (same driver, same transcript store).
+    const sharesResumeState =
+      currentInfo !== undefined &&
+      currentInfo.driverKind === desiredInfo.driverKind &&
+      currentInfo.continuationIdentity.continuationKey ===
+        desiredInfo.continuationIdentity.continuationKey;
+    // Moving to an instance that can't resume the conversation natively
+    // (another driver, another account with its own history, or away from an
+    // instance that no longer exists) is a seeded handoff: the new instance is
+    // rehydrated from a provider-agnostic context seed built from the
+    // orchestration transcript, never from the outgoing instance's opaque,
+    // non-portable resume cursor.
     // A room agent never changes provider in place. The thread's own agent
     // can, and is compared against its own runtime or saved selection even
     // while another agent holds the slot, so the handoff seed still carries
     // its history.
-    const isCrossDriverHandoff =
+    const isSeededHandoff =
       participantId === null &&
-      instanceSwitchRequested &&
-      currentInfo.driverKind !== desiredInfo.driverKind;
+      (currentInfo === undefined || (instanceSwitchRequested && !sharesResumeState));
+    // A room agent switching to a same-driver instance it can't resume would
+    // otherwise restart with a resume cursor the new instance can't read.
     if (
+      participantId !== null &&
       instanceSwitchRequested &&
+      currentInfo !== undefined &&
       currentInfo.driverKind === desiredInfo.driverKind &&
-      currentInfo.continuationIdentity.continuationKey !==
-        desiredInfo.continuationIdentity.continuationKey
+      !sharesResumeState
     ) {
       return yield* new ProviderAdapterRequestError({
         provider: preferredProvider,
@@ -1143,16 +1158,23 @@ const make = Effect.gen(function* () {
         });
       });
 
-    // Cross-driver switch: don't reuse the outgoing driver's resume cursor.
+    // Seeded handoff: don't reuse the outgoing instance's resume cursor.
     // Build a provider-agnostic seed from the transcript and start the new
-    // driver seeded. `ProviderService.startSession` stops the stale outgoing
-    // session and won't carry over the old instance's resume cursor, so a
-    // single start both rebinds and tears down the old runtime.
-    if (isCrossDriverHandoff) {
+    // instance seeded. `ProviderService.startSession` stops the stale outgoing
+    // session (if its instance still exists) and won't carry over the old
+    // instance's resume cursor, so a single start both rebinds and tears down
+    // the old runtime.
+    if (isSeededHandoff) {
+      // A removed instance can't say which driver it ran; the binding can.
+      const projectedProviderName = projectedSession?.providerName ?? undefined;
+      const fromDriverKind =
+        currentInfo?.driverKind ??
+        activeSession?.provider ??
+        (isProviderDriverKind(projectedProviderName) ? projectedProviderName : desiredDriverKind);
       const contextSeed = yield* seedBuilder
         .build({
           threadId,
-          fromProvider: currentInfo.driverKind,
+          fromProvider: fromDriverKind,
           toProvider: desiredDriverKind,
           ...(options?.excludeContextSeedMessageId !== undefined
             ? { excludeMessageId: options.excludeContextSeedMessageId }
@@ -1160,9 +1182,15 @@ const make = Effect.gen(function* () {
           ...(effectiveCwd ? { cwd: effectiveCwd } : {}),
         })
         .pipe(Effect.map(Option.getOrUndefined));
-      yield* Effect.logInfo("provider command reactor cross-driver handoff", {
+      yield* Effect.logInfo("provider command reactor seeded handoff", {
         threadId,
-        fromDriver: currentInfo.driverKind,
+        reason:
+          currentInfo === undefined
+            ? "current_instance_missing"
+            : currentInfo.driverKind !== desiredDriverKind
+              ? "driver"
+              : "continuation",
+        fromDriver: fromDriverKind,
         toDriver: desiredDriverKind,
         fromInstanceId: currentInstanceId,
         toInstanceId: desiredInstanceId,

@@ -62,7 +62,14 @@ import {
   normalizeCommandPath,
   resolveProviderMaintenanceCapabilitiesEffect,
 } from "../providerMaintenance.ts";
-import { makeClaudeCapabilitiesCacheKey, makeClaudeContinuationGroupKey } from "./ClaudeHome.ts";
+import { materializeClaudeAccountFolder } from "./ClaudeAccountFolder.ts";
+import {
+  claudeInstanceBaseEnvironment,
+  makeClaudeCapabilitiesCacheKey,
+  makeClaudeContinuationGroupKey,
+  resolveClaudeConfigDir,
+  resolveClaudeMainConfigDir,
+} from "./ClaudeHome.ts";
 const decodeClaudeSettings = Schema.decodeSync(ClaudeSettings);
 
 const DRIVER_KIND = ProviderDriverKind.make("claudeAgent");
@@ -326,19 +333,51 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
       const fileSystem = yield* FileSystem.FileSystem;
       const httpClient = yield* HttpClient.HttpClient;
       const eventLoggers = yield* ProviderEventLoggers;
-      const processEnv = mergeProviderInstanceEnvironment(environment);
+      const processEnv = mergeProviderInstanceEnvironment(
+        environment,
+        claudeInstanceBaseEnvironment(config),
+      );
       const fallbackContinuationIdentity = defaultProviderContinuationIdentity({
         driverKind: DRIVER_KIND,
         instanceId,
       });
       const effectiveConfig = { ...config, enabled } satisfies ClaudeSettings;
+      // An account folder is laid over the main Claude folder before anything
+      // runs in it, so the first turn already sees the user's settings and
+      // writes its history where other Claude instances can resume it.
+      const accountFolder =
+        config.accountFolder.trim().length > 0
+          ? yield* materializeClaudeAccountFolder({
+              mainDir: yield* resolveClaudeMainConfigDir(config, processEnv),
+              accountDir: yield* resolveClaudeConfigDir(config, processEnv),
+            }).pipe(
+              Effect.provideService(FileSystem.FileSystem, fileSystem),
+              Effect.mapError(
+                (cause) =>
+                  new ProviderDriverError({
+                    driver: DRIVER_KIND,
+                    instanceId,
+                    detail: cause.message,
+                    cause,
+                  }),
+              ),
+            )
+          : undefined;
       let maintenanceCapabilities = yield* resolveProviderMaintenanceCapabilitiesEffect(UPDATE, {
         binaryPath: effectiveConfig.binaryPath,
         env: processEnv,
         platform: process.platform,
       });
-      const continuationGroupKey = yield* makeClaudeContinuationGroupKey(effectiveConfig);
-      const readTokenUsage = yield* makeClaudeTokenUsageHistoryReader(effectiveConfig);
+      const continuationGroupKey = yield* makeClaudeContinuationGroupKey(
+        effectiveConfig,
+        processEnv,
+        { sharesMainHistory: accountFolder?.sharesMainHistory ?? true },
+      );
+      // An account that shares the main folder's history would report the
+      // same transcripts as the main instance; only one row counts them.
+      const readTokenUsage = accountFolder?.sharesMainHistory
+        ? undefined
+        : yield* makeClaudeTokenUsageHistoryReader(effectiveConfig, processEnv);
       const stampIdentity = withInstanceIdentity({
         instanceId,
         displayName,
@@ -358,7 +397,10 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
             Effect.provideService(Path.Path, path),
           ),
       });
-      const capabilitiesCacheKey = yield* makeClaudeCapabilitiesCacheKey(effectiveConfig);
+      const capabilitiesCacheKey = yield* makeClaudeCapabilitiesCacheKey(
+        effectiveConfig,
+        processEnv,
+      );
 
       const checkProvider = checkClaudeProviderStatus(
         effectiveConfig,
@@ -382,7 +424,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
             Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
             Effect.provideService(Path.Path, path),
           ),
-        () => readTokenUsage,
+        readTokenUsage ? () => readTokenUsage : undefined,
       ).pipe(
         Effect.map(stampIdentity),
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
@@ -394,7 +436,13 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
           return maintenanceCapabilities;
         },
         getSettings: Effect.gen(function* () {
-          refreshProviderInstanceEnvironment(environment, processEnv);
+          // From the same filtered base the instance started with: an account
+          // must not pick the server's ambient credentials back up.
+          refreshProviderInstanceEnvironment(
+            environment,
+            processEnv,
+            claudeInstanceBaseEnvironment(config),
+          );
           maintenanceCapabilities = yield* resolveProviderMaintenanceCapabilitiesEffect(UPDATE, {
             binaryPath: effectiveConfig.binaryPath,
             env: processEnv,

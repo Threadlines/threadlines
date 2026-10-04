@@ -181,12 +181,18 @@ it.layer(NodeServices.layer)("CodexHomeLayout", (it) => {
         yield* writeTextFile(path.join(sharedHome, "config.toml"), 'model = "gpt-5-codex"\n');
         yield* writeTextFile(path.join(sharedHome, "models_cache.json"), '{"models":["shared"]}\n');
         yield* writeTextFile(path.join(sharedHome, "auth.json"), '{"shared":true}\n');
+        // Codex's encrypted login store; an older overlay linked it.
+        yield* writeTextFile(path.join(sharedHome, "secrets", "codex_auth.age"), "shared-login");
         yield* fileSystem.makeDirectory(shadowHome, { recursive: true });
         yield* writeTextFile(path.join(shadowHome, "auth.json"), '{"shadow":true}\n');
         if (process.platform !== "win32") {
           yield* fileSystem.symlink(
             path.join(sharedHome, "models_cache.json"),
             path.join(shadowHome, "models_cache.json"),
+          );
+          yield* fileSystem.symlink(
+            path.join(sharedHome, "secrets"),
+            path.join(shadowHome, "secrets"),
           );
         }
 
@@ -217,6 +223,7 @@ it.layer(NodeServices.layer)("CodexHomeLayout", (it) => {
           expect(yield* fileSystem.readLink(configPath)).toBe(path.join(sharedHome, "config.toml"));
         }
         expect(modelsCacheExists).toBe(false);
+        expect(yield* fileSystem.exists(path.join(shadowHome, "secrets"))).toBe(false);
         expect(authLinkResult._tag).toBe("Failure");
         expect(authContents).toContain("shadow");
       }),
