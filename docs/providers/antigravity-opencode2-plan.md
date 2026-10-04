@@ -1,10 +1,11 @@
 # Antigravity + OpenCode 2: integration plan (draft, 2026-10-02)
 
 Status: both are built (see "OpenCode 2: as built" and "Antigravity: as
-built" at the end). OpenCode 2 ships in its own PR; Antigravity is stacked on
-it and held until Google confirms its sign-in in writing. Will's decisions (2026-10-02): build Antigravity's
-Google sign-in but get written confirmation from Google before it ships;
-support OpenCode 2 only. Evidence tags: **[v]** verified in code,
+built" at the end). OpenCode 2 shipped in #373; Antigravity ships in #374.
+Will's decisions: support OpenCode 2 only (2026-10-02); ship Antigravity's
+Google sign-in without waiting for Google in writing, because comparable
+independent harnesses already ship it (2026-10-04, see "Shipping Google
+sign-in"). Evidence tags: **[v]** verified in code,
 package contents or official docs; **[r]** reported by research (read in T3
 Code / Paseo source or a community post, not re-checked); **[i]** inference.
 
@@ -322,8 +323,7 @@ Revisions after Sol's plan review (11 findings, all accepted):
 
 Not built: Gemini API key / Vertex / Enterprise sign-in (per-use billing,
 needs Will's go-ahead), usage from Antigravity's SQLite (reverse-engineered
-protobuf), skills links into `~/.gemini`, a pooled process mode. Ships only
-after Google confirms in writing.
+protobuf), skills links into `~/.gemini`, a pooled process mode.
 
 ## OpenCode 2
 
@@ -553,8 +553,7 @@ Not done / known limits:
 Code: `acp/AntigravityAcpSupport.ts` (descriptor), `antigravity/` (release
 table, managed runtime, profile and temp dirs, sign-in and sign-out),
 `Drivers/AntigravityDriver.ts`, plus the generic ACP core additions listed in
-the build plan. Google sign-in is built but must not ship until Google
-confirms in writing. No API key or Vertex sign-in.
+the build plan. No API key or Vertex sign-in.
 
 - Runtime: Threadlines downloads `agy_acp_server` 1.3.0 itself (zip pinned by
   SHA-256 and size per platform), unpacks it under
@@ -635,3 +634,28 @@ Not done / known limits:
 - On Windows, if something kills only the onefile bootloader while its Python
   child lives and the server is gone too, a sweep can delete the child's
   temp dir. The child has lost its server and exits anyway.
+
+## Shipping Google sign-in (2026-10-04)
+
+Will's rule: ship it if comparable third-party harnesses already ship the
+same thing. Checked by us and, independently, by GPT-6.1-Sol:
+
+- T3 Code ships Google's official Antigravity ACP agent with personal Google
+  sign-in, a managed runtime and remote paste-back in a released version
+  (v0.0.45, `docs/user/providers-antigravity.md`). Emacs agent-shell and a
+  community Paseo plugin do the same; Zed and JetBrains do it as editors
+  Google lists.
+- Google LLC publishes the `antigravity-acp` entry in the open ACP registry
+  (added by a Google contributor, registry PR 542). The registry's
+  `AUTHENTICATION.md` describes exactly our split: the client triggers sign-in,
+  the agent runs the OAuth flow and keeps the tokens.
+- A 2026-09-16 reply on Google's developer forum calls direct use of the
+  official ACP server the supported path for editor integrations, distinct
+  from credential harvesting and unofficial APIs (author's authority not
+  confirmed).
+
+Remaining risk for users: the Antigravity terms (clause 6) and FAQ still
+forbid third-party software using Antigravity sign-in, with no exception for
+ACP clients, and Google has suspended accounts before. The enforcement found
+targeted tools that reuse Antigravity OAuth tokens directly (OpenClaw), and
+predates the registry entry; none was found against the official ACP path.
