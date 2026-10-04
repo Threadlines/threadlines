@@ -1481,6 +1481,70 @@ export function liveActivityLabel(steps: ReadonlyArray<ActivityStep>): string | 
   return `${latest.liveLabel} and ${running.length - 1} more`;
 }
 
+/** What the agent is on right now, for the line under a plan's current step. */
+export interface CurrentWorkLine {
+  readonly label: string;
+  readonly icon: ActivityIcon;
+  readonly tone: ActivityTone;
+  readonly running: boolean;
+}
+
+/** How far back from the newest work entry the current-work line looks. */
+const CURRENT_WORK_LOOKBACK = 40;
+
+/**
+ * The step the main agent is on: whatever runs at the newest end of the work
+ * log, in the live line's words ("Reading service.ts"), else the newest step
+ * it finished ("Read service.ts"). Entries older than `sinceMs` belong to
+ * earlier work and are left out, as is a spawned agent's own activity, which
+ * the Agents tab owns. A finished thought is skipped: its words are the
+ * thought itself, not a step. Looks back a bounded distance so a long thread
+ * costs the same as a short one.
+ */
+export function currentWorkLine(
+  entries: ReadonlyArray<WorkLogEntry>,
+  options: ActivityStepOptions & { readonly sinceMs?: number | null } = {},
+): CurrentWorkLine | null {
+  const running: ActivityStep[] = [];
+  let newestSettled: ActivityStep | null = null;
+  const stop = Math.max(0, entries.length - CURRENT_WORK_LOOKBACK);
+  for (let index = entries.length - 1; index >= stop; index -= 1) {
+    const entry = entries[index]!;
+    if (options.sinceMs != null && Date.parse(entry.createdAt) < options.sinceMs) {
+      break;
+    }
+    if (entry.sourceAgentThreadId !== undefined) {
+      continue;
+    }
+    const step = activityStepFromWorkLogEntry(entry, { workspaceRoot: options.workspaceRoot });
+    if (!step) {
+      continue;
+    }
+    if (step.running) {
+      running.unshift(step);
+    } else if (newestSettled === null && step.icon !== "thinking") {
+      newestSettled = step;
+    }
+  }
+  const latestRunning = running.at(-1);
+  if (latestRunning) {
+    return {
+      label: liveActivityLabel(running) ?? latestRunning.liveLabel,
+      icon: latestRunning.icon,
+      tone: latestRunning.tone,
+      running: true,
+    };
+  }
+  return newestSettled
+    ? {
+        label: newestSettled.label,
+        icon: newestSettled.icon,
+        tone: newestSettled.tone,
+        running: false,
+      }
+    : null;
+}
+
 /**
  * The newest words of a thought still running, for the line under the working
  * row: its last paragraph, without markdown emphasis. Null for anything else,

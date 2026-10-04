@@ -134,6 +134,7 @@ import { RepositoryIdentityResolver } from "./project/Services/RepositoryIdentit
 import { RelayHost } from "./relay/RelayHost.ts";
 import { ServerEnvironment } from "./environment/Services/ServerEnvironment.ts";
 import { ServerAuth } from "./auth/Services/ServerAuth.ts";
+import { makeBackgroundRunOutputReader } from "./diagnostics/BackgroundRunOutput.ts";
 import * as ProcessDiagnostics from "./diagnostics/ProcessDiagnostics.ts";
 import * as ProcessResourceMonitor from "./diagnostics/ProcessResourceMonitor.ts";
 import * as TraceDiagnostics from "./diagnostics/TraceDiagnostics.ts";
@@ -324,6 +325,7 @@ const makeWsRpcLayer = (currentSession: {
       const bootstrapCredentials = yield* BootstrapCredentialService;
       const sessions = yield* SessionCredentialService;
       const processDiagnostics = yield* ProcessDiagnostics.ProcessDiagnostics;
+      const readBackgroundRunOutput = makeBackgroundRunOutputReader(projectionSnapshotQuery);
       const processResourceMonitor = yield* ProcessResourceMonitor.ProcessResourceMonitor;
       const serverCommandId = (tag: string) =>
         CommandId.make(`server:${tag}:${crypto.randomUUID()}`);
@@ -1491,6 +1493,14 @@ const makeWsRpcLayer = (currentSession: {
           observeRpcEffect(
             WS_METHODS.serverStopBackgroundRun,
             processDiagnostics.stopBackgroundRun(input),
+            {
+              "rpc.aggregate": "server",
+            },
+          ),
+        [WS_METHODS.serverReadBackgroundRunOutput]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverReadBackgroundRunOutput,
+            readBackgroundRunOutput(input),
             {
               "rpc.aggregate": "server",
             },

@@ -1,33 +1,5 @@
-import {
-  AppWindowIcon,
-  BotIcon,
-  CheckIcon,
-  ChevronRightIcon,
-  CircleAlertIcon,
-  EyeIcon,
-  FolderIcon,
-  GitBranchIcon,
-  GlobeIcon,
-  ImageIcon,
-  InfoIcon,
-  LightbulbIcon,
-  MessageCircleQuestionIcon,
-  SearchIcon,
-  SquarePenIcon,
-  TerminalIcon,
-  TriangleAlertIcon,
-  WrenchIcon,
-  XIcon,
-} from "lucide-react";
-import {
-  Fragment,
-  memo,
-  useCallback,
-  useMemo,
-  useState,
-  type ReactElement,
-  type ReactNode,
-} from "react";
+import { ChevronRightIcon, SquarePenIcon } from "lucide-react";
+import { Fragment, memo, useCallback, useMemo, useState, type ReactNode } from "react";
 
 import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
 import { cn } from "~/lib/utils";
@@ -37,10 +9,10 @@ import {
   partitionActivitySteps,
   summarizeRoutineSteps,
   summarizeStretch,
-  type ActivityIcon,
   type ActivityStep,
   type StretchPart,
 } from "./activitySteps";
+import { activityStepIcon } from "./activityStepIcon";
 import { DiffStatLabel } from "./DiffStatLabel";
 
 /**
@@ -57,38 +29,12 @@ import { DiffStatLabel } from "./DiffStatLabel";
  * line names them.
  */
 
-const STEP_ICONS: Readonly<Record<ActivityIcon | "fail", (className: string) => ReactElement>> = {
-  read: (className) => <EyeIcon className={className} aria-hidden="true" />,
-  search: (className) => <SearchIcon className={className} aria-hidden="true" />,
-  list: (className) => <FolderIcon className={className} aria-hidden="true" />,
-  git: (className) => <GitBranchIcon className={className} aria-hidden="true" />,
-  web: (className) => <GlobeIcon className={className} aria-hidden="true" />,
-  browser: (className) => <AppWindowIcon className={className} aria-hidden="true" />,
-  edit: (className) => <SquarePenIcon className={className} aria-hidden="true" />,
-  check: (className) => <CheckIcon className={className} aria-hidden="true" />,
-  fail: (className) => <XIcon className={className} aria-hidden="true" />,
-  command: (className) => <TerminalIcon className={className} aria-hidden="true" />,
-  tool: (className) => <WrenchIcon className={className} aria-hidden="true" />,
-  image: (className) => <ImageIcon className={className} aria-hidden="true" />,
-  agent: (className) => <BotIcon className={className} aria-hidden="true" />,
-  question: (className) => <MessageCircleQuestionIcon className={className} aria-hidden="true" />,
-  thinking: (className) => <LightbulbIcon className={className} aria-hidden="true" />,
-  info: (className) => <InfoIcon className={className} aria-hidden="true" />,
-  warning: (className) => <TriangleAlertIcon className={className} aria-hidden="true" />,
-  error: (className) => <CircleAlertIcon className={className} aria-hidden="true" />,
-};
-
 /** Only long steps say how long they took; a 783ms search is noise. */
 const SHOW_DURATION_FROM_MS = 10_000;
 /** The stretch the agent is on shows only its newest lines; the ones before
  *  them read as one folded line above, so a long run of steps stops growing. */
 const OPEN_TAIL_LINES = 4;
 const OUTPUT_TAIL_LINES = 20;
-
-/** A check shows its result: a tick when it passed, a cross when it failed. */
-function stepIcon(step: ActivityStep, className: string): ReactElement {
-  return STEP_ICONS[step.icon === "check" && step.tone === "fail" ? "fail" : step.icon](className);
-}
 
 function toneTextClass(step: ActivityStep): string {
   if (step.tone === "fail") return "text-destructive-foreground/85";
@@ -200,7 +146,7 @@ function ListedStep({
         aria-expanded={open}
         onClick={() => onToggle(step.id)}
       >
-        {stepIcon(step, "size-[11px] shrink-0 text-muted-foreground/40")}
+        {activityStepIcon(step, "size-[11px] shrink-0 text-muted-foreground/40")}
         <span className="min-w-0 truncate">{step.label}</span>
         {step.diff ? (
           <span className="shrink-0 font-mono text-[10px]">
@@ -240,7 +186,7 @@ function NotableLine({
         aria-expanded={open}
         onClick={() => onToggle(step.id)}
       >
-        {stepIcon(step, cn("size-3 shrink-0", toneIconClass(step)))}
+        {activityStepIcon(step, cn("size-3 shrink-0", toneIconClass(step)))}
         <span className="min-w-0 truncate">{step.label}</span>
         {step.diff ? (
           <span className="shrink-0 font-mono text-[11px]">

@@ -35,6 +35,7 @@ function renderChatHeader(overrides: Partial<ComponentProps<typeof ChatHeader>> 
     taskProgress: null,
     forkContext: null,
     backgroundRuns: [],
+    activeThreadRef: null,
     onRunProjectScript: vi.fn(),
     onAddProjectScript: vi.fn(async () => {}),
     onUpdateProjectScript: vi.fn(async () => {}),

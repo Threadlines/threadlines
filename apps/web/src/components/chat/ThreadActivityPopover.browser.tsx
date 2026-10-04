@@ -4,47 +4,68 @@ import { page } from "vite-plus/test/browser";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { render } from "vitest-browser-react";
 
+import type { ActivePlanStep } from "../../session-logic";
 import { Button } from "../ui/button";
 import { ThreadActivityPopover, type ThreadTaskProgressState } from "./ThreadActivityPopover";
 
 const TASK_BADGE = {
-  label: "1/2",
-  ariaLabel: "Tasks, working on step 1 of 2",
+  label: "1/3",
+  ariaLabel: "Tasks, 1 of 3 done, working on step 2",
   tone: "active",
   pulse: true,
 } as const;
 
-function buildTaskProgress(activeStep: string): ThreadTaskProgressState {
+function step(
+  text: string,
+  status: ActivePlanStep["status"],
+  startedAt: string | null = null,
+  completedAt: string | null = null,
+): ActivePlanStep {
+  return { step: text, status, startedAt, completedAt };
+}
+
+function buildTaskProgress(
+  steps: ReadonlyArray<ActivePlanStep>,
+  overrides: Partial<ThreadTaskProgressState> = {},
+): ThreadTaskProgressState {
   return {
     activePlan: {
       createdAt: "2026-06-25T12:00:00.000Z",
+      startedAt: "2026-06-25T12:00:00.000Z",
       turnId: null,
-      steps: [
-        { step: activeStep, status: "inProgress" },
-        { step: "Run validation", status: "pending" },
-      ],
+      steps: [...steps],
     },
     activeProposedPlan: null,
     badge: TASK_BADGE,
     label: "Tasks",
+    live: false,
+    currentWork: null,
+    ...overrides,
   };
 }
 
-async function renderOpenPopover(activeStep: string) {
+const THREE_STEPS = [
+  step("Read the code", "completed", "2026-06-25T12:00:00.000Z", "2026-06-25T12:04:00.000Z"),
+  step("Build the popover", "inProgress", "2026-06-25T12:04:00.000Z"),
+  step("Run validation", "pending"),
+];
+
+async function renderOpenPopover(taskProgress: ThreadTaskProgressState) {
   const mounted = await render(
     <main
       style={{
         boxSizing: "border-box",
         display: "flex",
         justifyContent: "flex-end",
-        minHeight: 360,
+        minHeight: 480,
         padding: 24,
         width: 960,
       }}
     >
       <ThreadActivityPopover
-        taskProgress={buildTaskProgress(activeStep)}
+        taskProgress={taskProgress}
         backgroundRuns={[]}
+        threadRef={null}
         onToggleBackgroundRunTerminal={vi.fn()}
         onStopBackgroundRun={vi.fn()}
       />
@@ -52,7 +73,7 @@ async function renderOpenPopover(activeStep: string) {
   );
 
   await page.getByRole("button", { name: TASK_BADGE.ariaLabel }).click();
-  await expect.element(page.getByText("Current tasks")).toBeVisible();
+  await expect.element(page.getByRole("region", { name: "Tasks" })).toBeVisible();
 
   return mounted;
 }
@@ -67,8 +88,9 @@ describe("ThreadActivityPopover", () => {
     const mounted = await render(
       <main className="flex items-center gap-2">
         <ThreadActivityPopover
-          taskProgress={buildTaskProgress("Implement mobile layout")}
+          taskProgress={buildTaskProgress(THREE_STEPS)}
           backgroundRuns={[]}
+          threadRef={null}
           onToggleBackgroundRunTerminal={vi.fn()}
           onStopBackgroundRun={vi.fn()}
         />
@@ -86,92 +108,97 @@ describe("ThreadActivityPopover", () => {
       expect(activityTrigger.getBoundingClientRect().height).toBe(
         adjacentButton.getBoundingClientRect().height,
       );
+      // One progress block per step on the button itself.
+      expect(
+        activityTrigger.querySelectorAll("[data-plan-progress='trigger'] > span"),
+      ).toHaveLength(3);
     } finally {
       await mounted.unmount();
       await page.viewport(1_600, 1_300);
     }
   });
 
-  it("does not render task summary disclosure when the summary fits", async () => {
-    const fittingTask = "Review iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii";
-    const mounted = await renderOpenPopover(fittingTask);
+  it("shows where each step stands, how long the finished ones took, and what the agent is on", async () => {
+    const mounted = await renderOpenPopover(
+      buildTaskProgress(THREE_STEPS, {
+        live: true,
+        currentWork: {
+          label: "Reading CommandPalette.tsx",
+          icon: "read",
+          tone: "neutral",
+          running: true,
+        },
+      }),
+    );
 
     try {
-      await vi.waitFor(() => {
-        const summaryText = document.querySelector<HTMLElement>("[data-task-summary-text='true']");
-        // The task in hand reads as happening now; the next one keeps its name.
-        expect(summaryText?.textContent).toBe(
-          "Reviewing iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
-        );
-        expect(summaryText?.scrollWidth ?? 0).toBeLessThanOrEqual(
-          (summaryText?.clientWidth ?? 0) + 1,
-        );
-        expect(summaryText?.closest("[data-task-summary-toggle='true']")).toBeNull();
-      });
-
-      expect(document.querySelector("[data-task-summary-toggle='true']")).toBeNull();
-      // The row also carries its status for screen readers ("Next: …").
-      await expect.element(page.getByText("Run validation"), { timeout: 5_000 }).toBeVisible();
+      const rows = [...document.querySelectorAll<HTMLElement>("[data-plan-step-status]")];
+      expect(rows.map((row) => row.dataset.planStepStatus)).toEqual([
+        "completed",
+        "inProgress",
+        "pending",
+      ]);
+      expect(rows[0]?.textContent).toContain("4m");
+      // The task in hand reads as happening now, with the step the agent is on.
+      expect(rows[1]?.textContent).toContain("Building the popover");
+      await expect.element(page.getByText("Reading CommandPalette.tsx")).toBeVisible();
+      await expect.element(page.getByText("1 of 3 done")).toBeVisible();
     } finally {
       await mounted.unmount();
     }
   });
 
-  it("renders task summary disclosure when the summary is clipped", async () => {
-    const clippedTask =
-      "Add symlink-specific status and reason through server contracts, UI state, persistence, reconnection flows, and focused regression coverage.";
-    const clippedSummary = `Adding ${clippedTask.slice("Add ".length)}`;
-    const mounted = await renderOpenPopover(clippedTask);
+  it("folds the finished head of a long plan into one line that opens", async () => {
+    const doneSteps = Array.from({ length: 6 }, (_, index) =>
+      step(`Finished step ${index + 1}`, "completed"),
+    );
+    const mounted = await renderOpenPopover(
+      buildTaskProgress([
+        ...doneSteps,
+        step("Current step", "inProgress"),
+        step("Last", "pending"),
+      ]),
+    );
 
     try {
-      await vi.waitFor(() => {
-        const summaryText = document.querySelector<HTMLElement>("[data-task-summary-text='true']");
-        const toggle = document.querySelector<HTMLButtonElement>(
-          "[data-task-summary-toggle='true']",
-        );
+      const fold = page.getByRole("button", { name: /6 steps done/u });
+      await expect.element(fold).toHaveAttribute("aria-expanded", "false");
+      expect(document.body.textContent).not.toContain("Finished step 1");
 
-        expect(summaryText?.textContent).toBe(clippedSummary);
-        expect(summaryText?.scrollWidth ?? 0).toBeGreaterThan((summaryText?.clientWidth ?? 0) + 1);
-        expect(toggle).not.toBeNull();
-        expect(toggle?.getAttribute("aria-expanded")).toBe("false");
-      });
+      await fold.click();
 
-      document.querySelector<HTMLButtonElement>("[data-task-summary-toggle='true']")?.click();
-
-      await vi.waitFor(() => {
-        expect(
-          document
-            .querySelector<HTMLButtonElement>("[data-task-summary-toggle='true']")
-            ?.getAttribute("aria-expanded"),
-        ).toBe("true");
-      });
+      await expect.element(fold).toHaveAttribute("aria-expanded", "true");
+      await expect.element(page.getByText("Finished step 1")).toBeVisible();
     } finally {
       await mounted.unmount();
     }
   });
 
-  it("opens task and background-run details from the mixed activity chip", async () => {
+  it("opens task and background-run details from the mixed activity button", async () => {
     const mounted = await render(
-      <main style={{ minHeight: 360, padding: 24, width: 960 }}>
+      <main style={{ minHeight: 480, padding: 24, width: 960 }}>
         <ThreadActivityPopover
-          taskProgress={buildTaskProgress("Restore the activity popover")}
+          taskProgress={buildTaskProgress(THREE_STEPS)}
           backgroundRuns={[
             {
-              id: "provider:command-1",
+              id: "provider:task-1",
               source: "provider",
-              providerKind: "command",
+              providerKind: "task",
               terminalId: null,
               pid: null,
               port: null,
               elapsed: null,
-              canStop: false,
-              label: "Run preview server",
-              detail: "Agent command",
+              canStop: true,
+              label: "Start web dev server",
+              command: "vp run dev",
+              detail: "Local Bash task",
               cwd: null,
               statusLabel: "Running",
-              urls: [],
+              urls: ["http://localhost:5173/"],
+              outputLine: "ready in 412 ms",
             },
           ]}
+          threadRef={null}
           onToggleBackgroundRunTerminal={vi.fn()}
           onStopBackgroundRun={vi.fn()}
         />
@@ -180,9 +207,15 @@ describe("ThreadActivityPopover", () => {
 
     try {
       await page.getByRole("button", { name: "Thread activity" }).click();
-      await expect.element(page.getByText("Current tasks")).toBeVisible();
-      await expect.element(page.getByText("Background runs")).toBeVisible();
-      expect(document.querySelector("[data-activity-trigger-icon='subagents']")).toBeNull();
+      await expect.element(page.getByRole("region", { name: "Tasks" })).toBeVisible();
+      await expect
+        .element(page.getByRole("region", { name: "Running in the background" }))
+        .toBeVisible();
+      await expect.element(page.getByText("ready in 412 ms")).toBeVisible();
+      await expect.element(page.getByRole("link", { name: /localhost:5173/u })).toBeVisible();
+      await expect
+        .element(page.getByRole("button", { name: "Stop Start web dev server" }))
+        .toBeInTheDocument();
     } finally {
       await mounted.unmount();
     }
@@ -221,6 +254,7 @@ describe("ThreadActivityPopover", () => {
               urls: [],
             },
           ]}
+          threadRef={null}
           onToggleBackgroundRunTerminal={onToggleBackgroundRunTerminal}
           onStopBackgroundRun={vi.fn()}
         />

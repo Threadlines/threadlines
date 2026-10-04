@@ -272,6 +272,8 @@ import {
   ServerResolveBackgroundRunsInput,
   ServerResolveBackgroundRunsResult,
   ServerStopBackgroundRunInput,
+  ServerReadBackgroundRunOutputInput,
+  ServerReadBackgroundRunOutputResult,
   ServerUpsertKeybindingInput,
   ServerUpsertKeybindingResult,
 } from "./server.ts";
@@ -421,6 +423,7 @@ export const WS_METHODS = {
   serverSignalProcess: "server.signalProcess",
   serverResolveBackgroundRuns: "server.resolveBackgroundRuns",
   serverStopBackgroundRun: "server.stopBackgroundRun",
+  serverReadBackgroundRunOutput: "server.readBackgroundRunOutput",
   serverGetProviderExtensions: "server.getProviderExtensions",
   serverStartProviderExtensionMcpOAuth: "server.startProviderExtensionMcpOAuth",
   serverGetProviderExtensionOperationStatus: "server.getProviderExtensionOperationStatus",
@@ -636,6 +639,14 @@ export const WsServerStopBackgroundRunRpc = Rpc.make(WS_METHODS.serverStopBackgr
   payload: ServerStopBackgroundRunInput,
   success: ServerSignalProcessResult,
 });
+
+export const WsServerReadBackgroundRunOutputRpc = Rpc.make(
+  WS_METHODS.serverReadBackgroundRunOutput,
+  {
+    payload: ServerReadBackgroundRunOutputInput,
+    success: ServerReadBackgroundRunOutputResult,
+  },
+);
 
 export const WsServerGetProviderExtensionsRpc = Rpc.make(WS_METHODS.serverGetProviderExtensions, {
   payload: ProviderExtensionsInventoryInput,
@@ -1498,6 +1509,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerSignalProcessRpc,
   WsServerResolveBackgroundRunsRpc,
   WsServerStopBackgroundRunRpc,
+  WsServerReadBackgroundRunOutputRpc,
   WsServerGetProviderExtensionsRpc,
   WsServerStartProviderExtensionMcpOAuthRpc,
   WsServerGetProviderExtensionOperationStatusRpc,

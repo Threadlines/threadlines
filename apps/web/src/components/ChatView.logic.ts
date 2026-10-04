@@ -12,6 +12,7 @@ import {
   type ThreadId,
   type TurnId,
 } from "@threadlines/contracts";
+import { backgroundOutputFileFromText } from "@threadlines/shared/backgroundRunOutput";
 import {
   findProviderAuthRetryUserMessageIndex,
   isProviderAuthErrorMessage,
@@ -291,7 +292,19 @@ export interface ProviderBackgroundRunState {
   urls: ReadonlyArray<string>;
   pids: ReadonlyArray<number>;
   commandHints: ReadonlyArray<string>;
+  /** When the task began: the tool call that launched it when that is known
+   *  (a command moved to the background started before its task did), else
+   *  the task's own start. Null for a task the provider only counted. */
+  startedAt: string | null;
+  /** The file Claude writes a background command's output to, read off the
+   *  launching tool call's reply. */
+  outputFile: string | null;
+  /** False when the provider said a task runs but not what it is. */
+  described: boolean;
 }
+
+/** What a run row says about a task the provider counted but never named. */
+const UNDESCRIBED_TASK_DETAIL = "The agent started this but didn't say what it is.";
 
 export interface BackgroundRunDetectionSeeds {
   urls: ReadonlyArray<string>;
@@ -550,16 +563,41 @@ export function backgroundRunIntentLabelFromCommand(
   return executable ? `${executable} command` : null;
 }
 
+/**
+ * The provider-tracked run a detected process stands in for: the same
+ * process, else the same page, else the same command. The detected row
+ * replaces it in the list, so it carries that run's name and output file
+ * forward. The surest match wins: two runs can share a command (two dev
+ * servers) but never a process.
+ */
+export function matchDetectedProviderRun(input: {
+  readonly command: string | null | undefined;
+  readonly urls?: ReadonlyArray<string> | undefined;
+  readonly pid?: number | null | undefined;
+  readonly providerBackgroundRuns: ReadonlyArray<ProviderBackgroundRunState>;
+}): ProviderBackgroundRunState | null {
+  const { pid, providerBackgroundRuns: runs } = input;
+  const urls = input.urls ?? [];
+  return (
+    (pid != null ? runs.find((run) => run.pids.includes(pid)) : undefined) ??
+    runs.find((run) => urls.some((url) => run.urls.includes(url))) ??
+    runs.find(
+      (run) =>
+        backgroundRunCommandsMatch(run.command, input.command) ||
+        run.commandHints.some((hint) => backgroundRunCommandsMatch(hint, input.command)),
+    ) ??
+    null
+  );
+}
+
 export function deriveDetectedBackgroundRunLabel(input: {
   readonly command: string | null | undefined;
   readonly port: number | null;
+  readonly urls?: ReadonlyArray<string> | undefined;
+  readonly pid?: number | null | undefined;
   readonly providerBackgroundRuns: ReadonlyArray<ProviderBackgroundRunState>;
 }): string {
-  const matchedProviderRun = input.providerBackgroundRuns.find(
-    (run) =>
-      backgroundRunCommandsMatch(run.command, input.command) ||
-      run.commandHints.some((hint) => backgroundRunCommandsMatch(hint, input.command)),
-  );
+  const matchedProviderRun = matchDetectedProviderRun(input);
   if (matchedProviderRun) {
     return matchedProviderRun.label;
   }
@@ -826,6 +864,9 @@ function providerCommandRunFromToolActivity(
       ],
       pids: [],
       commandHints,
+      startedAt: activity.createdAt,
+      outputFile: null,
+      described: true,
     },
   };
 }
@@ -1038,8 +1079,29 @@ export function deriveProviderBackgroundRuns(input: {
     }
   >();
 
+  const toolCallStartedAtById = new Map<string, string>();
+  const outputFileByToolCallId = new Map<string, string>();
+  const toolUseIdByTaskId = new Map<string, string>();
+
   for (const activity of [...input.activities].toSorted(compareActivitiesByOrder)) {
     const payload = asBackgroundRunRecord(activity.payload);
+    const toolCallId = activity.kind.startsWith("tool.")
+      ? (asBackgroundRunString(payload?.toolCallId) ??
+        asBackgroundRunString(asBackgroundRunRecord(payload?.data)?.toolCallId))
+      : null;
+    if (toolCallId) {
+      if (!toolCallStartedAtById.has(toolCallId)) {
+        toolCallStartedAtById.set(toolCallId, activity.createdAt);
+      }
+      const outputFile =
+        backgroundOutputFileFromText(asBackgroundRunString(payload?.detail)) ??
+        backgroundOutputFileFromText(
+          asBackgroundRunString(asBackgroundRunRecord(payload?.data)?.result),
+        );
+      if (outputFile) {
+        outputFileByToolCallId.set(toolCallId, outputFile);
+      }
+    }
     const commandActivityRun =
       input.activeCommandTurnId !== null &&
       input.activeCommandTurnId !== undefined &&
@@ -1105,6 +1167,9 @@ export function deriveProviderBackgroundRuns(input: {
     if (promotedToolUseId && input.subagentSpawnCallIds?.has(promotedToolUseId)) {
       promotedToolUseIdByTaskId.set(taskId, promotedToolUseId);
     }
+    if (promotedToolUseId && !toolUseIdByTaskId.has(taskId)) {
+      toolUseIdByTaskId.set(taskId, promotedToolUseId);
+    }
 
     const previous = activeRunsByTaskId.get(taskId);
     const description = asBackgroundRunString(payload?.description);
@@ -1159,26 +1224,46 @@ export function deriveProviderBackgroundRuns(input: {
       continue;
     }
 
-    const label =
+    const describedLabel =
       description ??
       detail ??
       (taskType ? `${humanizeTaskType(taskType) ?? taskType} task` : null) ??
-      previous?.label ??
-      "Provider background task";
+      (previous?.described ? previous.label : null);
 
     activeRunsByTaskId.set(taskId, {
       id: `provider:${taskId}`,
       source: "provider",
       providerKind: "task",
-      label,
+      label: describedLabel ?? "Background task",
       command,
       detail: taskType
         ? `${humanizeTaskType(taskType) ?? taskType} task`
-        : (previous?.detail ?? "Provider-managed"),
+        : describedLabel
+          ? (previous?.detail ?? "Provider-managed")
+          : UNDESCRIBED_TASK_DETAIL,
       statusLabel: "Running",
       urls,
       pids,
       commandHints,
+      startedAt: previous?.startedAt ?? activity.createdAt,
+      outputFile: null,
+      described: describedLabel !== null,
+    });
+  }
+
+  // A task launched by a tool call started when that call did, and Claude's
+  // reply to the call names the file the output goes to.
+  for (const [taskId, run] of activeRunsByTaskId) {
+    const toolUseId = toolUseIdByTaskId.get(taskId);
+    if (!toolUseId) continue;
+    const toolStartedAt = toolCallStartedAtById.get(toolUseId);
+    activeRunsByTaskId.set(taskId, {
+      ...run,
+      startedAt:
+        toolStartedAt && (!run.startedAt || Date.parse(toolStartedAt) < Date.parse(run.startedAt))
+          ? toolStartedAt
+          : run.startedAt,
+      outputFile: outputFileByToolCallId.get(toolUseId) ?? null,
     });
   }
 
@@ -1254,16 +1339,16 @@ export function deriveProviderBackgroundRuns(input: {
       id: `provider:unknown:${index + 1}`,
       source: "provider",
       providerKind: "task",
-      label:
-        missingProviderCount === 1
-          ? "Provider background task"
-          : `Provider background task ${index + 1}`,
+      label: missingProviderCount === 1 ? "Background task" : `Background task ${index + 1}`,
       command: null,
-      detail: "Provider-managed; stop handle not exposed.",
+      detail: UNDESCRIBED_TASK_DETAIL,
       statusLabel: "Tracked",
       urls: [],
       pids: [],
       commandHints: [],
+      startedAt: null,
+      outputFile: null,
+      described: false,
     });
   }
 

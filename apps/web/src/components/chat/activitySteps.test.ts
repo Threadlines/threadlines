@@ -4,6 +4,7 @@ import { deriveWorkLogEntries, type WorkLogEntry } from "../../session-logic";
 import {
   activityStepFromTranscriptTool,
   activityStepFromWorkLogEntry,
+  currentWorkLine,
   liveActivityLabel,
   newestThoughtSentence,
   partitionActivitySteps,
@@ -454,6 +455,40 @@ describe("groups", () => {
     expect(routine.map((step) => step.label)).toEqual(["Read a.ts"]);
     expect(notable.map((step) => step.label)).toEqual(["Installed dependencies"]);
     expect(liveActivityLabel(steps)).toBe("Searching for foo");
+  });
+
+  it("names the main agent's current step for the plan, else the step it just finished", () => {
+    const commandEntry = (commandText: string, overrides: Partial<WorkLogEntry> = {}) =>
+      entry({
+        label: "Ran command",
+        itemType: "command_execution",
+        command: commandText,
+        ...overrides,
+      });
+    const finished = commandEntry("pnpm install", { createdAt: "2026-09-24T02:50:01.000Z" });
+    const running = commandEntry("rg foo src", {
+      createdAt: "2026-09-24T02:50:02.000Z",
+      executionState: "running",
+    });
+    // A spawned agent's own step belongs to the Agents tab, not the plan.
+    const childStep = commandEntry("cat child.ts", {
+      createdAt: "2026-09-24T02:50:03.000Z",
+      executionState: "running",
+      sourceAgentThreadId: "child-thread",
+    });
+
+    expect(currentWorkLine([finished, running, childStep])).toMatchObject({
+      label: "Searching for foo",
+      running: true,
+    });
+    expect(currentWorkLine([finished, childStep])).toMatchObject({
+      label: "Installed dependencies",
+      running: false,
+    });
+    // Work from before the step started is not this step's.
+    expect(
+      currentWorkLine([finished], { sinceMs: Date.parse("2026-09-24T02:50:05.000Z") }),
+    ).toBeNull();
   });
 
   it("says how many files are being read at once", () => {

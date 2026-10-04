@@ -220,6 +220,7 @@ import {
 } from "../lib/fileSelectionContext";
 import {
   selectTerminalActivityCommand,
+  selectTerminalActivityStartedAt,
   selectTerminalSubmittedCommand,
   selectThreadTerminalState,
   useTerminalStateStore,
@@ -246,7 +247,8 @@ import {
   pickedElementFromPreview,
   type PickedElementContextDraft,
 } from "../lib/pickedElementContext";
-import type { ThreadBackgroundRunItem } from "./chat/threadActivity";
+import { processStartedAt, type ThreadBackgroundRunItem } from "./chat/threadActivity";
+import { currentWorkLine } from "./chat/activitySteps";
 import {
   type ExpandedImagePreview,
   setActiveExpandedImageOpener,
@@ -273,6 +275,7 @@ import {
   createLocalDispatchSnapshot,
   deriveProviderBackgroundRuns,
   deriveDetectedBackgroundRunLabel,
+  matchDetectedProviderRun,
   deriveFailedTurnRetryMessageId,
   deriveComposerSendState,
   deriveProviderAuthReconnectPrompt,
@@ -1257,6 +1260,9 @@ export default function ChatView(props: ChatViewProps) {
   const terminalSubmittedCommandByKey = useTerminalStateStore(
     (state) => state.terminalSubmittedCommandByKey,
   );
+  const terminalActivityStartedAtByKey = useTerminalStateStore(
+    (state) => state.terminalActivityStartedAtByKey,
+  );
   const terminalActivityCommandByKey = useTerminalStateStore(
     (state) => state.terminalActivityCommandByKey,
   );
@@ -1990,18 +1996,6 @@ export default function ChatView(props: ChatViewProps) {
   const taskProgressBadge = useMemo(
     () => derivePlanTaskBadge({ activePlan, activeProposedPlan: taskProgressProposedPlan }),
     [activePlan, taskProgressProposedPlan],
-  );
-  const taskProgress = useMemo(
-    () =>
-      activePlan || taskProgressProposedPlan || taskProgressBadge
-        ? {
-            activePlan,
-            activeProposedPlan: taskProgressProposedPlan,
-            badge: taskProgressBadge,
-            label: taskProgressLabel,
-          }
-        : null,
-    [activePlan, taskProgressBadge, taskProgressLabel, taskProgressProposedPlan],
   );
   const subagentActivityState = useMemo(
     () =>
@@ -2766,6 +2760,47 @@ export default function ChatView(props: ChatViewProps) {
   const activeThreadWorktreePath = activeThread?.worktreePath ?? null;
   const activeWorkspaceRoot =
     activeThread?.effectiveCwd ?? activeThreadWorktreePath ?? activeProjectCwd ?? undefined;
+  // A plan is live while the turn that wrote it is still running: only then do
+  // its clocks tick and its current step say what the agent is on.
+  const taskPlanLive =
+    phase === "running" &&
+    activePlan !== null &&
+    activeTurnId !== null &&
+    activePlan.turnId === activeTurnId;
+  const taskCurrentStepStartedAt = taskPlanLive
+    ? (activePlan?.steps.find((step) => step.status === "inProgress")?.startedAt ?? null)
+    : null;
+  const taskCurrentWork = useMemo(
+    () =>
+      taskPlanLive
+        ? currentWorkLine(workLogEntries, {
+            workspaceRoot: activeWorkspaceRoot,
+            sinceMs: taskCurrentStepStartedAt ? Date.parse(taskCurrentStepStartedAt) : null,
+          })
+        : null,
+    [activeWorkspaceRoot, taskCurrentStepStartedAt, taskPlanLive, workLogEntries],
+  );
+  const taskProgress = useMemo(
+    () =>
+      activePlan || taskProgressProposedPlan || taskProgressBadge
+        ? {
+            activePlan,
+            activeProposedPlan: taskProgressProposedPlan,
+            badge: taskProgressBadge,
+            label: taskProgressLabel,
+            live: taskPlanLive,
+            currentWork: taskCurrentWork,
+          }
+        : null,
+    [
+      activePlan,
+      taskCurrentWork,
+      taskPlanLive,
+      taskProgressBadge,
+      taskProgressLabel,
+      taskProgressProposedPlan,
+    ],
+  );
   const activeMcpAuthProviderInstanceId =
     activeProviderInstanceId ??
     (activeProviderDriver === CODEX_PROVIDER_DRIVER
@@ -3274,27 +3309,40 @@ export default function ChatView(props: ChatViewProps) {
             commandHints: backgroundRunCommandHints,
           });
           if (cancelled) return;
+          const resolvedAtMs = Date.now();
           setDetectedBackgroundRuns(
-            result.runs.map((run) => ({
-              id: run.id,
-              source: "detected",
-              terminalId: null,
-              pid: run.pid,
-              port: run.port,
-              elapsed: run.elapsed ?? null,
-              canStop: run.canStop,
-              label: deriveDetectedBackgroundRunLabel({
+            result.runs.map((run) => {
+              const providerRun = matchDetectedProviderRun({
                 command: run.command,
-                port: run.port,
+                urls: run.urls,
+                pid: run.pid,
                 providerBackgroundRuns: providerBackgroundSnapshot.runs,
-              }),
-              command: run.command,
-              detail: run.detail,
-              cwd: null,
-              statusLabel: run.statusLabel,
-              urls: run.urls,
-              pids: [run.pid],
-            })),
+              });
+              return {
+                id: run.id,
+                source: "detected",
+                terminalId: null,
+                pid: run.pid,
+                port: run.port,
+                elapsed: run.elapsed ?? null,
+                startedAt: processStartedAt(run.elapsed, resolvedAtMs),
+                canStop: run.canStop,
+                label:
+                  providerRun?.label ??
+                  deriveDetectedBackgroundRunLabel({
+                    command: run.command,
+                    port: run.port,
+                    providerBackgroundRuns: [],
+                  }),
+                command: run.command,
+                detail: run.detail,
+                cwd: null,
+                statusLabel: run.statusLabel,
+                urls: run.urls,
+                pids: [run.pid],
+                outputFile: providerRun?.outputFile ?? null,
+              };
+            }),
           );
           const detectedUrlSet = new Set(result.runs.flatMap((run) => run.urls));
           const detectedPidSet = new Set(result.runs.map((run) => run.pid));
@@ -3357,6 +3405,11 @@ export default function ChatView(props: ChatViewProps) {
         pid: null,
         port: null,
         elapsed: null,
+        startedAt: selectTerminalActivityStartedAt(
+          terminalActivityStartedAtByKey,
+          activeThreadRef,
+          terminalId,
+        ),
         canStop: true,
         label: command ?? terminalLabel,
         command,
@@ -3386,6 +3439,7 @@ export default function ChatView(props: ChatViewProps) {
     stoppedBackgroundRunPids,
     activeThreadRef,
     terminalActivityCommandByKey,
+    terminalActivityStartedAtByKey,
     terminalSubmittedCommandByKey,
     terminalState.activeTerminalId,
     terminalState.runningTerminalIds,
@@ -7087,6 +7141,7 @@ export default function ChatView(props: ChatViewProps) {
           taskProgress={taskProgress}
           forkContext={forkHeaderContext}
           backgroundRuns={backgroundRuns}
+          activeThreadRef={activeThreadRef}
           onRunProjectScript={runProjectScript}
           onAddProjectScript={saveProjectScript}
           onUpdateProjectScript={updateProjectScript}

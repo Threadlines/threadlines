@@ -1,6 +1,8 @@
 import { parsePatchFiles } from "@pierre/diffs";
 import type { FileDiffMetadata } from "@pierre/diffs/react";
 
+import { stripTerminalControlSequences } from "./terminalText";
+
 export const DIFF_THEME_NAMES = {
   light: "pierre-light",
   dark: "pierre-dark",
@@ -19,18 +21,12 @@ export type RenderablePatch =
       reason: string;
     };
 
-const ANSI_ESCAPE = String.fromCharCode(0x1b);
-const ANSI_CONTROL_SEQUENCE_PATTERN = new RegExp(
-  `${ANSI_ESCAPE}(?:[@-Z\\\\-_]|\\[[0-?]*[ -/]*[@-~])`,
-  "gu",
-);
-
 export function resolveDiffThemeName(theme: "light" | "dark"): DiffThemeName {
   return theme === "dark" ? DIFF_THEME_NAMES.dark : DIFF_THEME_NAMES.light;
 }
 
 function normalizePatchForParsing(patch: string): string {
-  return patch.replace(ANSI_CONTROL_SEQUENCE_PATTERN, "").trim();
+  return stripTerminalControlSequences(patch).trim();
 }
 
 const FNV_OFFSET_BASIS_32 = 0x811c9dc5;

@@ -59,7 +59,10 @@ import * as SqlSchema from "effect/unstable/sql/SqlSchema";
 import type * as Statement from "effect/unstable/sql/Statement";
 import { awaitingInvite } from "@threadlines/shared/roomAgentRequests";
 import { MAX_THREAD_ACTIVITIES, MAX_THREAD_MESSAGES } from "@threadlines/shared/threadLimits";
-import { retainThreadActivities } from "@threadlines/shared/threadActivityRetention";
+import {
+  MAX_RETAINED_PLAN_UPDATES,
+  retainThreadActivities,
+} from "@threadlines/shared/threadActivityRetention";
 
 import {
   isPersistenceError,
@@ -864,25 +867,36 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                 activity.activity_id DESC
             ) AS activity_rank
           FROM projection_thread_activities AS activity
+        ), plan_rows AS MATERIALIZED (
+          -- Ranking only the plan rows keeps this one cheap side scan instead
+          -- of a second sort of the whole table; both uses below read it.
+          SELECT
+            activity.thread_id,
+            activity.turn_id,
+            activity.activity_id,
+            ROW_NUMBER() OVER (
+              PARTITION BY activity.thread_id
+              ORDER BY
+                activity.event_sequence DESC,
+                activity.sequence DESC,
+                activity.created_at DESC,
+                activity.activity_id DESC
+            ) AS plan_rank
+          FROM projection_thread_activities AS activity
+          WHERE activity.kind = 'turn.plan.updated'
         ), latest_plan_activities AS (
-          -- Ranking only the plan rows keeps this a cheap side scan instead of
-          -- a second sort of the whole table.
-          SELECT activity_id
-          FROM (
-            SELECT
-              activity.activity_id,
-              ROW_NUMBER() OVER (
-                PARTITION BY activity.thread_id
-                ORDER BY
-                  activity.event_sequence DESC,
-                  activity.sequence DESC,
-                  activity.created_at DESC,
-                  activity.activity_id DESC
-              ) AS plan_rank
-            FROM projection_thread_activities AS activity
-            WHERE activity.kind = 'turn.plan.updated'
-          )
-          WHERE plan_rank = 1
+          -- The newest plan update, and the rest of its turn's among the
+          -- newest plan updates, so the task list can time its steps.
+          SELECT plan.activity_id
+          FROM plan_rows AS plan
+          JOIN plan_rows AS latest
+            ON latest.thread_id = plan.thread_id
+            AND latest.plan_rank = 1
+          WHERE plan.plan_rank = 1
+            OR (
+              plan.turn_id = latest.turn_id
+              AND plan.plan_rank <= ${MAX_RETAINED_PLAN_UPDATES}
+            )
         )
         SELECT
           activity_id AS "activityId",
@@ -903,8 +917,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             'approval.requested', 'approval.resolved', 'provider.approval.respond.failed',
             'user-input.requested', 'user-input.resolved', 'provider.user-input.respond.failed'
           )
-          -- The newest plan update keeps the task list alive past the window
-          -- (see retainThreadActivities).
+          -- The newest plan update and the rest of its turn's keep the task
+          -- list alive past the window (see retainThreadActivities).
           OR activity_id IN (SELECT activity_id FROM latest_plan_activities)
         ORDER BY
           thread_id ASC,
@@ -1513,6 +1527,34 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           UNION
           SELECT * FROM (
             SELECT *
+            FROM projection_thread_activities
+            WHERE thread_id = ${threadId}
+              AND kind = 'turn.plan.updated'
+            ORDER BY
+              event_sequence DESC,
+              sequence DESC,
+              created_at DESC,
+              activity_id DESC
+            LIMIT 1
+          )
+          UNION
+          -- The rest of the latest plan's turn among the newest plan updates
+          -- (see retainThreadActivities).
+          SELECT *
+          FROM (
+            SELECT *
+            FROM projection_thread_activities
+            WHERE thread_id = ${threadId}
+              AND kind = 'turn.plan.updated'
+            ORDER BY
+              event_sequence DESC,
+              sequence DESC,
+              created_at DESC,
+              activity_id DESC
+            LIMIT ${MAX_RETAINED_PLAN_UPDATES}
+          )
+          WHERE turn_id = (
+            SELECT turn_id
             FROM projection_thread_activities
             WHERE thread_id = ${threadId}
               AND kind = 'turn.plan.updated'
