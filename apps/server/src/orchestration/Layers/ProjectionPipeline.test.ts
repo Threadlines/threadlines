@@ -1,6 +1,8 @@
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
 import {
   CheckpointRef,
+  ChildRequestBatchId,
+  ChildRequestId,
   CommandId,
   CorrelationId,
   EventId,
@@ -2775,6 +2777,140 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
         WHERE thread_id = ${threadId}
       `;
       assert.deepEqual(stillWorking, [{ participantId: astraId, status: "running" }]);
+    }),
+  );
+
+  it.effect("keeps a child thread's family and its parent's open requests through a rebuild", () =>
+    Effect.gen(function* () {
+      const engine = yield* OrchestrationEngineService;
+      const createdAt = "2026-10-04T10:00:00.000Z";
+      const projectId = ProjectId.make("project-family");
+      const parentId = ThreadId.make("thread-family-parent");
+      const childId = ThreadId.make("thread-family-child");
+      const callerTurn = TurnId.make("turn-family-parent");
+      const requestId = ChildRequestId.make("request-family");
+      const childMessageId = MessageId.make("message-family-child");
+      const model = { instanceId: ProviderInstanceId.make("claudeAgent"), model: "opus-5-5" };
+
+      yield* engine.dispatch({
+        type: "project.create",
+        commandId: CommandId.make("cmd-family-project"),
+        projectId,
+        title: "Family",
+        workspaceRoot: "/tmp/project-family",
+        defaultModelSelection: model,
+        createdAt,
+      });
+      yield* engine.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("cmd-family-parent"),
+        threadId: parentId,
+        projectId,
+        title: "Ship the release",
+        modelSelection: model,
+        interactionMode: "default",
+        runtimeMode: "auto-accept-edits",
+        branch: null,
+        worktreePath: null,
+        createdAt,
+      });
+      yield* engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-family-running"),
+        threadId: parentId,
+        session: {
+          threadId: parentId,
+          status: "running",
+          providerName: "claudeAgent",
+          runtimeMode: "auto-accept-edits",
+          activeTurnId: callerTurn,
+          lastError: null,
+          updatedAt: createdAt,
+        },
+        createdAt,
+      });
+      yield* engine.dispatch({
+        type: "thread.child.start",
+        commandId: CommandId.make("cmd-family-start"),
+        threadId: parentId,
+        batchId: ChildRequestBatchId.make("batch-family"),
+        from: { participantId: null },
+        callerTurnId: callerTurn,
+        mode: "auto",
+        children: [
+          {
+            requestId,
+            childThreadId: childId,
+            childMessageId,
+            launch: {
+              title: "Write the changelog",
+              prompt: "Write it.",
+              modelSelection: model,
+              runtimeMode: "auto-accept-edits",
+              interactionMode: "default",
+              reportBack: true,
+              runSetup: false,
+              workspace: { kind: "project_folder" },
+            },
+          },
+        ],
+        createdAt,
+      });
+      yield* engine.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("cmd-family-child"),
+        threadId: childId,
+        projectId,
+        title: "Write the changelog",
+        modelSelection: model,
+        interactionMode: "default",
+        runtimeMode: "auto-accept-edits",
+        branch: null,
+        worktreePath: null,
+        parentThreadId: parentId,
+        parentTurnId: callerTurn,
+        attachedToParent: true,
+        createdAt,
+      });
+      yield* engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-family-child-turn"),
+        threadId: childId,
+        message: { messageId: childMessageId, role: "user", text: "Write it.", attachments: [] },
+        runtimeMode: "auto-accept-edits",
+        interactionMode: "default",
+        fromThread: { threadId: parentId, requestId, kind: "request" },
+        createdAt: "2026-10-04T10:00:01.000Z",
+      });
+
+      // Read back from SQL, the way the engine rebuilds its read model at boot.
+      const query = yield* ProjectionSnapshotQuery.pipe(
+        Effect.provide(
+          OrchestrationProjectionSnapshotQueryLive.pipe(Layer.provide(RepositoryIdentityResolverLive)),
+        ),
+      );
+      const readModel = yield* query.getCommandReadModel();
+      const parent = readModel.threads.find((thread) => thread.id === parentId);
+      const child = readModel.threads.find((thread) => thread.id === childId);
+      assert.deepEqual(
+        parent?.childRequests.open.map((request) => [request.requestId, request.status]),
+        [[requestId, "running"]],
+      );
+      assert.equal(child?.parentThreadId, parentId);
+      assert.equal(child?.parentTurnId, callerTurn);
+      assert.equal(child?.attachedToParent, true);
+
+      const shell = yield* query.getShellSnapshot();
+      assert.equal(
+        shell.threads.find((thread) => thread.id === parentId)?.awaitedChildThreadCount,
+        1,
+      );
+
+      const detail = yield* query.getThreadDetailById(childId);
+      assert.equal(
+        detail._tag === "Some" ? detail.value.messages[0]?.fromThread?.kind : undefined,
+        "request",
+      );
     }),
   );
 
