@@ -191,6 +191,19 @@ export function normalizePreviewWaitForTimeoutMs(timeoutMs: number | undefined):
 }
 
 /**
+ * The longest a page holds the keyboard for one agent action.
+ *
+ * Chromium sends a page's keystrokes to whatever has focus in the window, so
+ * the renderer gives the page focus while an agent's keys go out and takes it
+ * back after this at the latest. The desktop stops sending keys
+ * PREVIEW_AGENT_KEYS_DEADLINE_MS into an action, sooner by enough to cover the
+ * message between the two: no agent key arrives once the focus may be the
+ * user's again.
+ */
+export const PREVIEW_AGENT_KEYBOARD_HOLD_MS = 1_000;
+export const PREVIEW_AGENT_KEYS_DEADLINE_MS = PREVIEW_AGENT_KEYBOARD_HOLD_MS - 100;
+
+/**
  * What one project's browser may reach without asking, on this computer.
  *
  * `allowAll` comes from the site policy ("Any site"); otherwise only private

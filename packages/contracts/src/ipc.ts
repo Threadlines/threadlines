@@ -653,9 +653,16 @@ export const DesktopPreviewDragResultSchema = Schema.Struct({
 });
 export type DesktopPreviewDragResult = typeof DesktopPreviewDragResultSchema.Type;
 
+/**
+ * Text for the element that has focus inside the page. The caller clicks the
+ * field first, and gives the page the keyboard while this runs: Chromium sends
+ * a guest's keystrokes to whatever holds focus in the window, so the main
+ * process refuses them unless the page does.
+ */
 export const DesktopPreviewTypeInputSchema = Schema.Struct({
   webContentsId: Schema.Number,
-  target: PreviewAutomationTargetSchema,
+  /** The tab's controlEpoch when the action began; the keys stop if it moves. */
+  controlEpoch: Schema.optionalKey(Schema.Number),
   text: Schema.String,
   /** Replace what is already in the field rather than appending to it. */
   clear: Schema.optional(Schema.Boolean),
@@ -666,6 +673,8 @@ export type DesktopPreviewTypeInput = typeof DesktopPreviewTypeInputSchema.Type;
 
 export const DesktopPreviewPressInputSchema = Schema.Struct({
   webContentsId: Schema.Number,
+  /** The tab's controlEpoch when the action began; the keys stop if it moves. */
+  controlEpoch: Schema.optionalKey(Schema.Number),
   key: Schema.String,
   modifiers: Schema.optionalKey(Schema.Array(Schema.Literals(["Alt", "Control", "Meta", "Shift"]))),
 });
@@ -1126,7 +1135,8 @@ export interface DesktopBridge {
   previewClick?: (input: DesktopPreviewClickInput) => Promise<DesktopPreviewPoint>;
   previewMove?: (input: DesktopPreviewMoveInput) => Promise<DesktopPreviewPoint>;
   previewDrag?: (input: DesktopPreviewDragInput) => Promise<DesktopPreviewDragResult>;
-  previewType?: (input: DesktopPreviewTypeInput) => Promise<DesktopPreviewPoint>;
+  /** Keyboard input; see `DesktopPreviewTypeInputSchema` for who must hold focus. */
+  previewType?: (input: DesktopPreviewTypeInput) => Promise<void>;
   previewPress?: (input: DesktopPreviewPressInput) => Promise<void>;
   previewScroll?: (input: DesktopPreviewScrollInput) => Promise<void>;
   previewWaitFor?: (input: DesktopPreviewWaitForInput) => Promise<void>;
