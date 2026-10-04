@@ -1,6 +1,12 @@
 /**
- * AntigravityAuth — Google sign-in and sign-out for one Antigravity
- * instance, run inside the agent's own process.
+ * AntigravityAuth — sign-in and sign-out for one Antigravity instance, per
+ * its sign-in method.
+ *
+ * Google account and Gemini Enterprise sign in inside the agent's own
+ * process (below). The key methods have nothing to sign in to: "login"
+ * checks what can be checked without spending (Google accepting a Gemini
+ * API key; Vertex AI's project and Google Cloud sign-in) and records the
+ * verdict for the status. They don't stop running sessions.
  *
  * Sign-in: the agent prints a Google URL and listens on a 127.0.0.1 port of
  * the machine it runs on for the browser's redirect. A client on the same
@@ -20,13 +26,24 @@
 import { request as httpRequest } from "node:http";
 
 import type { AntigravitySettings } from "@threadlines/contracts";
+import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import { HttpClient } from "effect/unstable/http";
 import type { ChildProcessSpawner } from "effect/unstable/process";
 
 import type { AcpProviderDescriptor } from "../acp/AcpProviderDescriptor.ts";
 import { makeAcpProviderRuntime } from "../acp/AcpProviderRuntime.ts";
 import type { ProviderInstanceAuthFlows } from "../ProviderDriver.ts";
+import {
+  antigravityCredentialFingerprint,
+  antigravityMissingSetup,
+  type AntigravitySignInConfig,
+  checkGeminiApiKey,
+  resolveAntigravityAdc,
+  writeAntigravityProfileSettings,
+  writeAntigravitySignInCheck,
+} from "./AntigravitySignInMethod.ts";
 
 const SIGN_IN_TIMEOUT = Duration.minutes(5);
 const SIGN_OUT_TIMEOUT = Duration.seconds(90);
@@ -128,7 +145,12 @@ export function makeAntigravityAuthFlows(input: {
   readonly gate: AntigravityAuthGate;
   /** Stops every session of the instance. */
   readonly stopSessions: Effect.Effect<void>;
+  readonly signIn: AntigravitySignInConfig;
+  readonly httpClient: HttpClient.HttpClient;
 }): ProviderInstanceAuthFlows {
+  const { signIn: method } = input;
+  const googleSignIn = method.method === "oauth-personal" || method.method === "oauth-business";
+  const enterprise = method.method === "oauth-business";
   let pending: PendingSignIn | undefined;
   let report: ((line: string) => Effect.Effect<void>) | undefined;
 
@@ -187,8 +209,11 @@ export function makeAntigravityAuthFlows(input: {
 
   const signIn = (emit: (line: string) => Effect.Effect<void>) =>
     Effect.gen(function* () {
+      // Nothing of the instance runs now: the agent reads the method and
+      // project from the profile when it starts.
+      yield* writeAntigravityProfileSettings(input.profileDir, method);
       const acp = yield* runtime({
-        authMethodId: "oauth-personal",
+        authMethodId: method.method,
         onSignInUrl: (url) =>
           Effect.gen(function* () {
             const parsed = new URL(url);
@@ -199,7 +224,11 @@ export function makeAntigravityAuthFlows(input: {
             // The URL on its own line: clients open it from the output. The
             // line after it is what their one-line status shows.
             yield* emit(url);
-            yield* emit("Finish signing in with Google in your browser.");
+            yield* emit(
+              enterprise
+                ? "Finish signing in with your work Google account in your browser."
+                : "Finish signing in with Google in your browser.",
+            );
           }),
       });
       yield* emit("Starting Antigravity…");
@@ -239,19 +268,93 @@ export function makeAntigravityAuthFlows(input: {
       ),
     );
 
+  const recordCheck = (accepted: boolean, message?: string) =>
+    Effect.gen(function* () {
+      yield* writeAntigravitySignInCheck(input.profileDir, {
+        fingerprint: antigravityCredentialFingerprint(method),
+        accepted,
+        ...(message ? { message } : {}),
+        checkedAt: DateTime.formatIso(yield* DateTime.now),
+      });
+    });
+
+  /** A Gemini API key: Google's free model list says whether it knows the key. */
+  const checkKey = (emit: (line: string) => Effect.Effect<void>) =>
+    Effect.gen(function* () {
+      yield* emit("Checking the key with Google…");
+      const result = yield* checkGeminiApiKey(method.key).pipe(
+        Effect.provideService(HttpClient.HttpClient, input.httpClient),
+      );
+      if (result.verdict === "unreachable") return yield* Effect.fail(failure(result.message));
+      if (result.verdict === "rejected") {
+        yield* recordCheck(false, result.message);
+        return yield* Effect.fail(failure(`Google didn't accept this key: ${result.message}`));
+      }
+      yield* recordCheck(true);
+      yield* emit("Google accepted this key.");
+    });
+
+  /** Vertex AI: a key is only tested by a request; without one, the Google Cloud sign-in must be there. */
+  const checkVertex = (emit: (line: string) => Effect.Effect<void>) =>
+    Effect.gen(function* () {
+      if (method.key) {
+        yield* emit("Vertex AI will use this key. Your first request tests it.");
+        return;
+      }
+      const adc = yield* resolveAntigravityAdc(input.environment, process.platform);
+      if (adc.status === "found") {
+        yield* emit(`Found the Google Cloud sign-in at ${adc.path}. Your first request tests it.`);
+        return;
+      }
+      return yield* Effect.fail(
+        failure(
+          adc.status === "unreadable"
+            ? `The Google Cloud credentials at ${adc.path} can't be read. Fix the file or run \`gcloud auth application-default login\` on the computer that runs Threadlines.`
+            : "No Google Cloud sign-in on the computer that runs Threadlines. Run `gcloud auth application-default login` there, then check again.",
+        ),
+      );
+    });
+
+  const missing = antigravityMissingSetup(method);
+  const missingMessage =
+    missing === "key"
+      ? "Add a Gemini API key first."
+      : enterprise
+        ? "Add your Google Cloud project and location first."
+        : "Add your Google Cloud project and location, or a Vertex AI key, first.";
+
   return {
-    flows: ["login", "logout"],
-    describe: (flow) => (flow === "logout" ? "Sign out of Google" : "Sign in with Google"),
-    run: ({ flow, report: emit }) =>
-      closed(
+    flows: googleSignIn ? ["login", "logout"] : ["login"],
+    describe: (flow) => {
+      if (flow === "logout") return "Sign out of Google";
+      switch (method.method) {
+        case "oauth-business":
+          return "Sign in with Gemini Enterprise";
+        case "gemini-api-key":
+          return "Check the Gemini API key";
+        case "agent-platform":
+          return "Check Vertex AI";
+        default:
+          return "Sign in with Google";
+      }
+    },
+    run: ({ flow, report: emit }) => {
+      if (flow !== "login" && !(flow === "logout" && googleSignIn)) {
+        return Effect.fail(failure("Antigravity has no such sign-in flow."));
+      }
+      if (flow === "login" && missing) return Effect.fail(failure(missingMessage));
+      // Checks touch neither the profile nor the agent: sessions keep running.
+      if (method.method === "gemini-api-key") return checkKey(emit);
+      if (method.method === "agent-platform") return checkVertex(emit);
+      return closed(
         emit,
         Effect.gen(function* () {
           report = emit;
           if (flow === "logout") return yield* signOut(emit);
-          if (flow === "login") return yield* signIn(emit);
-          return yield* Effect.fail(failure("Antigravity has no such sign-in flow."));
+          return yield* signIn(emit);
         }),
-      ),
+      );
+    },
     completeRedirect: (raw) =>
       Effect.gen(function* () {
         const current = pending;

@@ -24,6 +24,7 @@
 import type {
   ProviderAuthFlow,
   ProviderDriverKind,
+  ProviderInstanceConfig,
   ProviderInstanceEnvironment,
   ProviderInstanceId,
   ServerProviderRateLimitResetCreditOutcome,
@@ -97,6 +98,13 @@ export interface ProviderInstanceAuthFlows {
   }) => Effect.Effect<void, { readonly message: string }>;
   /** The address a browser on another device ended on, for the pending sign-in. */
   readonly completeRedirect: (url: string) => Effect.Effect<void, { readonly message: string }>;
+  /**
+   * Whether these flows were built from this instance configuration. Saving
+   * settings rebuilds the instance a moment later; a flow started right after
+   * a save waits for the rebuild instead of running the old configuration
+   * (a check would test the old key).
+   */
+  readonly builtFrom?: (entry: ProviderInstanceConfig) => boolean;
 }
 
 export interface ProviderAccountUsageActions {

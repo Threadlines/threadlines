@@ -159,6 +159,10 @@
       "types": "./src/providerAuthCommands.ts",
       "import": "./src/providerAuthCommands.ts"
     },
+    "./antigravitySignIn": {
+      "types": "./src/antigravitySignIn.ts",
+      "import": "./src/antigravitySignIn.ts"
+    },
     "./providerAccounts": {
       "types": "./src/providerAccounts.ts",
       "import": "./src/providerAccounts.ts"

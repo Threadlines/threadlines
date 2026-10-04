@@ -1119,16 +1119,16 @@ export function ProviderSettingsPanel({
   const inUseRows = rows.filter(isProviderRowEnabled);
   const notInUseRows = rows.filter((row) => !isProviderRowEnabled(row));
 
+  const providerInstancePatch = (row: ProviderSettingsRow, next: ProviderInstanceConfig) =>
+    buildProviderInstanceUpdatePatch({
+      settings,
+      instanceId: row.instanceId,
+      instance: next,
+      driver: row.driver,
+      isDefault: row.isDefault,
+    });
   const updateProviderInstance = (row: ProviderSettingsRow, next: ProviderInstanceConfig) => {
-    updateSettings(
-      buildProviderInstanceUpdatePatch({
-        settings,
-        instanceId: row.instanceId,
-        instance: next,
-        driver: row.driver,
-        isDefault: row.isDefault,
-      }),
-    );
+    updateSettings(providerInstancePatch(row, next));
   };
 
   const setProviderInstanceEnabled = (row: ProviderSettingsRow, enabled: boolean) =>
@@ -1309,6 +1309,7 @@ export function ProviderSettingsPanel({
           }))
         }
         onUpdate={(next) => updateProviderInstance(row, next)}
+        onSaveInstance={(next) => updateSettingsAndPersist(providerInstancePatch(row, next))}
         onEnabledChange={(enabled) => setProviderInstanceEnabled(row, enabled)}
         onDelete={row.isDefault ? undefined : () => deleteProviderInstance(row.instanceId)}
         onRemoveAccount={

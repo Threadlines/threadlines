@@ -2033,6 +2033,69 @@ describe("GeneralSettingsPanel observability", () => {
       .toBeVisible();
   });
 
+  it("switches Antigravity to a Gemini API key in one save, then checks the key", async () => {
+    const updateSettings = vi
+      .fn<LocalApi["server"]["updateSettings"]>()
+      .mockResolvedValue(DEFAULT_SERVER_SETTINGS);
+    window.nativeApi = {
+      persistence: {
+        getClientSettings: vi.fn().mockResolvedValue(null),
+        setClientSettings: vi.fn().mockResolvedValue(undefined),
+      },
+      server: { updateSettings },
+      shell: { openExternal: vi.fn().mockResolvedValue(undefined) },
+    } as unknown as LocalApi;
+    setServerConfigSnapshot({
+      ...createBaseServerConfig(),
+      providers: [
+        {
+          ...createClaudeProvider(),
+          instanceId: ProviderInstanceId.make("antigravity"),
+          driver: ProviderDriverKind.make("antigravity"),
+          displayName: "Antigravity",
+          version: "1.3.0",
+          auth: { status: "authenticated", type: "oauth-personal", label: "Google account" },
+        },
+      ],
+    });
+
+    mounted = await renderWithTestRouter(
+      <TestAppProviders>
+        <ProviderSettingsPanel />
+      </TestAppProviders>,
+    );
+
+    await page.getByLabelText("Toggle Antigravity details").click();
+    await expect
+      .element(page.getByRole("radio", { name: /Google account/ }))
+      .toHaveAttribute("aria-checked", "true");
+    await page.getByRole("radio", { name: /Gemini API key/ }).click();
+    // Per-use methods say so before anything is saved.
+    await expect
+      .element(page.getByText("Google bills each request to you", { exact: false }))
+      .toBeVisible();
+    const switchButton = page.getByRole("button", { name: "Switch to Gemini API key" });
+    await expect.element(switchButton).toBeDisabled();
+    await page.getByLabelText("Gemini API key").fill("AIzaSyTestKey000000000007Qx2");
+    await switchButton.click();
+
+    await vi.waitFor(() => {
+      expect(updateSettings).toHaveBeenCalledTimes(1);
+    });
+    const saved =
+      updateSettings.mock.calls[0]![0].providerInstances?.[ProviderInstanceId.make("antigravity")];
+    expect(saved?.config).toMatchObject({ authMethod: "gemini-api-key" });
+    expect(saved?.environment).toEqual([
+      { name: "GEMINI_API_KEY", value: "AIzaSyTestKey000000000007Qx2", sensitive: true },
+    ]);
+    // The key check starts once the save landed.
+    await vi.waitFor(() => {
+      expect(providerAuthHarness.startCalls).toEqual([
+        { instanceId: "antigravity", flow: "login" },
+      ]);
+    });
+  });
+
   it("opens the shared reset-credit picker from provider settings", async () => {
     setServerConfigSnapshot({
       ...createBaseServerConfig(),

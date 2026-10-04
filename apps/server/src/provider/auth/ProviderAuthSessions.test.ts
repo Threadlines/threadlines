@@ -19,7 +19,11 @@ import {
   type PtyProcess,
   type PtySpawnInput,
 } from "../../terminal/Services/PTY.ts";
-import { makeProviderAuthSessions } from "./ProviderAuthSessions.ts";
+import type { ProviderInstanceAuthFlows } from "../ProviderDriver.ts";
+import {
+  makeProviderAuthSessions,
+  type ProviderAuthSessionsOptions,
+} from "./ProviderAuthSessions.ts";
 
 class WaitForConditionError extends Data.TaggedError("WaitForConditionError")<{
   readonly message: string;
@@ -119,7 +123,9 @@ const settingsLayer = ServerSettingsService.layerTest({
   },
 });
 
-const createSessions = Effect.fn("createSessions")(function* () {
+const createSessions = Effect.fn("createSessions")(function* (
+  getInstanceAuthFlows?: ProviderAuthSessionsOptions["getInstanceAuthFlows"],
+) {
   const settings = yield* ServerSettingsService;
   const ptyAdapter = new FakePtyAdapter();
   const refreshedRef = yield* Ref.make<ReadonlyArray<string>>([]);
@@ -130,6 +136,7 @@ const createSessions = Effect.fn("createSessions")(function* () {
       Ref.update(refreshedRef, (refreshed) => [...refreshed, String(instanceId)]),
     homeDir: "/tmp",
     env: { PATH: "/usr/bin", CLAUDE_CODE_OAUTH_TOKEN: "stale-token" },
+    ...(getInstanceAuthFlows ? { getInstanceAuthFlows } : {}),
   });
 
   const eventsRef = yield* Ref.make<ReadonlyArray<ProviderAuthEvent>>([]);
@@ -272,6 +279,32 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("ProviderAuthSession
     }).pipe(Effect.provide(settingsLayer)),
   );
 
+  it.effect("runs an instance's own flow only once the instance has the saved settings", () =>
+    Effect.gen(function* () {
+      // The instance is still the one built before the last save on the first
+      // look, and rebuilt by the second.
+      const ran: string[] = [];
+      let lookups = 0;
+      const flowsBuilt = (build: string, current: boolean): ProviderInstanceAuthFlows => ({
+        flows: ["login"],
+        describe: () => "Check the key",
+        run: () => Effect.sync(() => void ran.push(build)),
+        completeRedirect: () => Effect.void,
+        builtFrom: () => current,
+      });
+      const harness = yield* createSessions(() =>
+        Effect.sync(() => {
+          lookups += 1;
+          return lookups === 1 ? flowsBuilt("before save", false) : flowsBuilt("after save", true);
+        }),
+      );
+      yield* harness.subscribeTo(CODEX_INSTANCE);
+      yield* harness.sessions.start({ instanceId: CODEX_INSTANCE, flow: "login" });
+      yield* waitFor(harness.getRefreshed.pipe(Effect.map((refreshed) => refreshed.length === 1)));
+      assert.deepStrictEqual(ran, ["after save"]);
+    }).pipe(Effect.provide(settingsLayer)),
+  );
+
   it.effect("reports the exit code when a login flow fails", () =>
     Effect.gen(function* () {
       const harness = yield* createSessions();
@@ -298,6 +331,23 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("ProviderAuthSession
         harness.sessions.start({ instanceId: CODEX_INSTANCE, flow: "claude-setup-token" }),
       );
       expect(error).toMatchObject({ _tag: "ProviderAuthError", reason: "unsupportedFlow" });
+    }).pipe(Effect.provide(settingsLayer)),
+  );
+
+  it.effect("tells every panel watching a run that it was stopped", () =>
+    Effect.gen(function* () {
+      const harness = yield* createSessions();
+      yield* harness.subscribeTo(CODEX_INSTANCE);
+      yield* harness.sessions.start({ instanceId: CODEX_INSTANCE, flow: "login" });
+      harness.ptyAdapter.processes[0]!.emitExit(7);
+      yield* waitFor(
+        harness.getEvents.pipe(Effect.map((events) => statusesOf(events).includes("failed"))),
+      );
+
+      // Another panel stops it (say, before the provider's settings change).
+      yield* harness.sessions.stop({ instanceId: CODEX_INSTANCE });
+
+      expect(statusesOf(yield* harness.getEvents).at(-1)).toBe("idle");
     }).pipe(Effect.provide(settingsLayer)),
   );
 

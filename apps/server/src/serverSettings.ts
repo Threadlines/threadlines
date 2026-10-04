@@ -46,6 +46,7 @@ import { writeFileStringAtomically } from "./atomicWrite.ts";
 import { ServerConfig } from "./config.ts";
 import { type DeepPartial, deepMerge } from "@threadlines/shared/Struct";
 import { fromJsonStringPretty, fromLenientJson } from "@threadlines/shared/schemaJson";
+import { isAntigravityKeyEnvName } from "@threadlines/shared/antigravitySignIn";
 import { applyServerSettingsPatch } from "@threadlines/shared/serverSettings";
 import { ServerSecretStoreLive } from "./auth/Layers/ServerSecretStore.ts";
 import { ServerSecretStore } from "./auth/Services/ServerSecretStore.ts";
@@ -93,17 +94,45 @@ function redactProviderEnvironmentVariable(
   };
 }
 
+/**
+ * Variables that always hold credentials for their driver: stored in the
+ * secret store and redacted for clients whatever a client sent, so a write
+ * that forgets `sensitive` can't put a key in settings or send it back.
+ */
+function isAlwaysSensitive(driver: string, name: string): boolean {
+  return driver === "antigravity" && isAntigravityKeyEnvName(name);
+}
+
+function withEnforcedSensitivity(instance: ProviderInstanceConfig): ProviderInstanceConfig {
+  if (!instance.environment) return instance;
+  const driver = String(instance.driver);
+  if (!instance.environment.some((variable) => isAlwaysSensitive(driver, variable.name))) {
+    return instance;
+  }
+  return {
+    ...instance,
+    environment: instance.environment.map((variable) =>
+      isAlwaysSensitive(driver, variable.name) && !variable.sensitive
+        ? { ...variable, sensitive: true }
+        : variable,
+    ),
+  };
+}
+
 export function redactServerSettingsForClient(settings: ServerSettings): ServerSettings {
   const providerInstances = Object.fromEntries(
-    Object.entries(settings.providerInstances).map(([instanceId, instance]) => [
-      instanceId,
-      instance.environment
-        ? {
-            ...instance,
-            environment: instance.environment.map(redactProviderEnvironmentVariable),
-          }
-        : instance,
-    ]),
+    Object.entries(settings.providerInstances).map(([instanceId, rawInstance]) => {
+      const instance = withEnforcedSensitivity(rawInstance);
+      return [
+        instanceId,
+        instance.environment
+          ? {
+              ...instance,
+              environment: instance.environment.map(redactProviderEnvironmentVariable),
+            }
+          : instance,
+      ];
+    }),
   );
   return { ...settings, providerInstances };
 }
@@ -473,29 +502,38 @@ const makeServerSettings = Effect.gen(function* () {
       };
     });
 
+  /**
+   * Moves sensitive values into the secret store and returns the settings to
+   * write, plus the secret removals to run once that write has landed: a
+   * failed settings write must not leave an account configured with its keys
+   * already deleted. New values are stored first, since the written settings
+   * point at them.
+   */
   const persistProviderEnvironmentSecrets = (
     current: ServerSettings,
     next: ServerSettings,
-  ): Effect.Effect<ServerSettings, ServerSettingsError> =>
+  ): Effect.Effect<
+    {
+      readonly settings: ServerSettings;
+      readonly removeStale: Effect.Effect<void, ServerSettingsError>;
+    },
+    ServerSettingsError
+  > =>
     Effect.gen(function* () {
       const providerInstances: Record<string, ProviderInstanceConfig> = {
         ...next.providerInstances,
       };
+      const removals: Array<{ readonly secretName: string; readonly label: string }> = [];
 
       const nextSecretKeys = new Set<string>();
-      for (const [instanceId, instance] of Object.entries(next.providerInstances)) {
+      for (const [instanceId, rawInstance] of Object.entries(next.providerInstances)) {
+        const instance = withEnforcedSensitivity(rawInstance);
         if (!instance.environment) continue;
         const environment: ProviderInstanceEnvironmentVariable[] = [];
         for (const variable of instance.environment) {
           const secretName = providerEnvironmentSecretName({ instanceId, name: variable.name });
           if (!variable.sensitive) {
-            yield* secretStore
-              .remove(secretName)
-              .pipe(
-                Effect.mapError((cause) =>
-                  toSettingsError(`failed to remove environment secret ${variable.name}`, cause),
-                ),
-              );
+            removals.push({ secretName, label: variable.name });
             environment.push(redactProviderEnvironmentVariable(variable));
             continue;
           }
@@ -512,13 +550,8 @@ const makeServerSettings = Effect.gen(function* () {
                 );
               environment.push({ ...variable, value: "", valueRedacted: true });
             } else {
-              yield* secretStore
-                .remove(secretName)
-                .pipe(
-                  Effect.mapError((cause) =>
-                    toSettingsError(`failed to remove environment secret ${variable.name}`, cause),
-                  ),
-                );
+              removals.push({ secretName, label: variable.name });
+              nextSecretKeys.delete(secretName);
               const { valueRedacted: _omit, ...rest } = variable;
               environment.push(rest);
             }
@@ -533,27 +566,36 @@ const makeServerSettings = Effect.gen(function* () {
         } satisfies ProviderInstanceConfig;
       }
 
-      for (const [instanceId, instance] of Object.entries(current.providerInstances)) {
+      for (const [instanceId, rawInstance] of Object.entries(current.providerInstances)) {
+        const instance = withEnforcedSensitivity(rawInstance);
         for (const variable of instance.environment ?? []) {
           if (!variable.sensitive) continue;
           const secretName = providerEnvironmentSecretName({ instanceId, name: variable.name });
           if (nextSecretKeys.has(secretName)) continue;
-          yield* secretStore
-            .remove(secretName)
-            .pipe(
-              Effect.mapError((cause) =>
-                toSettingsError(
-                  `failed to remove stale environment secret ${variable.name}`,
-                  cause,
-                ),
-              ),
-            );
+          removals.push({ secretName, label: variable.name });
         }
       }
 
+      const removeStale = Effect.forEach(
+        // A secret the written settings still use is never removed.
+        removals.filter((removal) => !nextSecretKeys.has(removal.secretName)),
+        ({ secretName, label }) =>
+          secretStore
+            .remove(secretName)
+            .pipe(
+              Effect.mapError((cause) =>
+                toSettingsError(`failed to remove stale environment secret ${label}`, cause),
+              ),
+            ),
+        { discard: true },
+      );
+
       return {
-        ...next,
-        providerInstances: providerInstances as ServerSettings["providerInstances"],
+        settings: {
+          ...next,
+          providerInstances: providerInstances as ServerSettings["providerInstances"],
+        },
+        removeStale,
       };
     });
 
@@ -635,12 +677,19 @@ const makeServerSettings = Effect.gen(function* () {
     Effect.gen(function* () {
       const current = yield* getSettingsFromCache;
       const patch = yield* makePatch(current);
-      const nextPersisted = yield* persistProviderEnvironmentSecrets(
+      const persisted = yield* persistProviderEnvironmentSecrets(
         current,
         applyServerSettingsPatch(current, patch),
       );
-      const next = yield* normalizeServerSettings(nextPersisted);
+      const next = yield* normalizeServerSettings(persisted.settings);
       yield* writeSettingsAtomically(next);
+      // Only now that the write landed: a stale secret is truly unused. A
+      // failed removal leaves an orphan file, never a missing key.
+      yield* persisted.removeStale.pipe(
+        Effect.catch((error) =>
+          Effect.logWarning("stale provider secret was not removed", { detail: error.detail }),
+        ),
+      );
       yield* Cache.set(settingsCache, cacheKey, next);
       yield* emitChange(next);
       const materialized = yield* materializeProviderEnvironmentSecrets(next);

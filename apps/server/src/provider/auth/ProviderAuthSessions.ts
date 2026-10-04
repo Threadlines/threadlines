@@ -64,6 +64,9 @@ const DEFAULT_COLS = 100;
 const DEFAULT_ROWS = 26;
 const DEFAULT_PARTIAL_FLUSH_DELAY_MS = 75;
 const DEFAULT_SCROLLBACK_CHARS = 64_000;
+/** How long a flow waits for its instance to pick up a just-saved setting. */
+const REBUILD_WAIT_INTERVAL_MS = 200;
+const REBUILD_WAIT_ATTEMPTS = 50;
 const CAPTURE_BUFFER_CHARS = 8_192;
 
 /**
@@ -551,6 +554,33 @@ export const makeProviderAuthSessions = Effect.fn("makeProviderAuthSessions")(fu
       yield* publishStatus(instanceId, session, "running");
     });
 
+  /**
+   * The instance's flows once they were built from `entry`, the settings this
+   * start just read: a flow started right after a settings save waits out
+   * the rebuild, and fails rather than run the old configuration.
+   */
+  const currentInstanceFlows = (
+    instanceId: ProviderInstanceId,
+    entry: ProviderInstanceConfig,
+    lookup: NonNullable<ProviderAuthSessionsOptions["getInstanceAuthFlows"]>,
+  ) =>
+    Effect.gen(function* () {
+      for (let attempt = 0; ; attempt += 1) {
+        const flows = yield* lookup(instanceId);
+        if (!flows?.builtFrom || flows.builtFrom(entry)) return flows;
+        if (attempt >= REBUILD_WAIT_ATTEMPTS) {
+          return yield* Effect.fail(
+            new ProviderAuthError({
+              instanceId: String(instanceId),
+              reason: "settingsFailed",
+              detail: "The new settings haven't taken effect yet. Try again in a moment.",
+            }),
+          );
+        }
+        yield* Effect.sleep(REBUILD_WAIT_INTERVAL_MS);
+      }
+    });
+
   const requireRunning = (instanceId: ProviderInstanceId) =>
     Effect.gen(function* () {
       const session = sessions.get(String(instanceId));
@@ -586,7 +616,7 @@ export const makeProviderAuthSessions = Effect.fn("makeProviderAuthSessions")(fu
         }
 
         const instanceFlows = options.getInstanceAuthFlows
-          ? yield* options.getInstanceAuthFlows(instanceId)
+          ? yield* currentInstanceFlows(instanceId, instance, options.getInstanceAuthFlows)
           : undefined;
         if (instanceFlows) {
           if (!instanceFlows.flows.includes(input.flow)) {
@@ -777,6 +807,16 @@ export const makeProviderAuthSessions = Effect.fn("makeProviderAuthSessions")(fu
         // A stale panel stops only its own run, never a newer one.
         if (session && input.flowId !== undefined && input.flowId !== session.flowId) return;
         yield* stopSession(instanceId);
+        if (!session) return;
+        // Every panel showing the run clears, not only the one that stopped it.
+        yield* publish(instanceId, {
+          type: "status",
+          instanceId,
+          createdAt: yield* nowIso,
+          status: "idle",
+          exitCode: null,
+          detail: null,
+        });
       }),
     subscribe: (instanceId, listener) =>
       Effect.gen(function* () {

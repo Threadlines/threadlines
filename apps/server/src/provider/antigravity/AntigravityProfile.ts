@@ -13,7 +13,6 @@
  * @module provider/antigravity/AntigravityProfile
  */
 import { createHash, randomBytes } from "node:crypto";
-import { existsSync } from "node:fs";
 import * as fs from "node:fs/promises";
 import { join } from "node:path";
 
@@ -65,7 +64,8 @@ function noopBrowser(platform: NodeJS.Platform, env: NodeJS.ProcessEnv): string 
 
 /**
  * The complete environment for an Antigravity process: the server's own,
- * minus ambient Google credentials and Python settings, plus the profile,
+ * minus ambient Google credentials and Python settings, plus the sign-in
+ * method's own credentials (`AntigravitySignInMethod`), the profile,
  * file-based credential storage (no shared OS keychain entry) and the
  * process's temp dir.
  */
@@ -74,11 +74,13 @@ export function antigravityEnvironment(input: {
   readonly profileDir: string;
   readonly tempDir: string;
   readonly platform: NodeJS.Platform;
+  readonly credentials?: Readonly<Record<string, string>>;
 }): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
   for (const [key, value] of Object.entries(input.base)) {
     if (value !== undefined && !STRIPPED_ENV_KEY.test(key)) env[key] = value;
   }
+  Object.assign(env, input.credentials);
   env.GEMINI_HOME = input.profileDir;
   env.AGY_ACP_FORCE_FILE_STORAGE = "1";
   env.PYTHONUNBUFFERED = "1";
@@ -181,9 +183,20 @@ export const sweepAntigravityTempRoot = (tempRoot: string) =>
     }
   });
 
-/** Whether the profile holds the agent's Google credentials. */
+/**
+ * Whether the profile holds a Google sign-in: a token file with something in
+ * it (an interrupted write leaves an empty or cut-off one).
+ */
 export const hasAntigravityCredentials = (profileDir: string) =>
-  existsSync(antigravityTokenPath(profileDir));
+  Effect.promise(async () => {
+    const raw = await fs.readFile(antigravityTokenPath(profileDir), "utf8").catch(() => "");
+    try {
+      const parsed = JSON.parse(raw) as unknown;
+      return typeof parsed === "object" && parsed !== null && Object.keys(parsed).length > 0;
+    } catch {
+      return false;
+    }
+  });
 
 export interface AntigravityModelChoice {
   readonly value: string;
@@ -193,17 +206,32 @@ export interface AntigravityModelChoice {
 export interface AntigravityCatalogCache {
   readonly choices: ReadonlyArray<AntigravityModelChoice>;
   readonly currentValue?: string;
+  /** The sign-in it was listed for (`antigravityCredentialFingerprint`). */
+  readonly fingerprint?: string;
 }
 
 const catalogPath = (profileDir: string) => join(profileDir, "threadlines-models.json");
 
-/** The model list from the last session, so status checks need not start the agent. */
-export const readAntigravityCatalog = (profileDir: string) =>
+/**
+ * The model list from the last session, so status checks need not start the
+ * agent. A list from another sign-in (method, project or key) doesn't count:
+ * what a sign-in may use differs. Lists saved before sign-in methods existed
+ * count for a Google account.
+ */
+export const readAntigravityCatalog = (
+  profileDir: string,
+  sign: { readonly fingerprint: string; readonly isGoogleAccount: boolean },
+) =>
   Effect.promise(async (): Promise<AntigravityCatalogCache | undefined> => {
     const raw = await fs.readFile(catalogPath(profileDir), "utf8").catch(() => undefined);
     if (raw === undefined) return undefined;
     try {
       const parsed = JSON.parse(raw) as Partial<AntigravityCatalogCache>;
+      const matches =
+        parsed.fingerprint === undefined
+          ? sign.isGoogleAccount
+          : parsed.fingerprint === sign.fingerprint;
+      if (!matches) return undefined;
       const choices = Array.isArray(parsed.choices)
         ? parsed.choices.filter(
             (choice): choice is AntigravityModelChoice =>
@@ -216,6 +244,7 @@ export const readAntigravityCatalog = (profileDir: string) =>
             ...(typeof parsed.currentValue === "string"
               ? { currentValue: parsed.currentValue }
               : {}),
+            fingerprint: sign.fingerprint,
           }
         : undefined;
     } catch {
@@ -224,7 +253,7 @@ export const readAntigravityCatalog = (profileDir: string) =>
   });
 
 export const writeAntigravityCatalog = (profileDir: string, catalog: AntigravityCatalogCache) =>
-  Effect.promise(async () => {
+  Effect.tryPromise(async () => {
     await fs.mkdir(profileDir, { recursive: true, mode: 0o700 });
     const target = catalogPath(profileDir);
     const temp = `${target}.${randomBytes(4).toString("hex")}.tmp`;

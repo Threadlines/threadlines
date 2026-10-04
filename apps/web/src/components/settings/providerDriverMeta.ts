@@ -83,7 +83,7 @@ export const PROVIDER_CLIENT_DEFINITIONS: readonly ProviderClientDefinition[] = 
     label: "Antigravity",
     icon: AntigravityIcon,
     settingsSchema: AntigravitySettings,
-    needs: "Google account",
+    needs: "Google account or Gemini API key",
   },
 ];
 

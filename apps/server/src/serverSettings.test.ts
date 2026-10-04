@@ -14,7 +14,11 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import { ServerConfig } from "./config.ts";
-import { ServerSettingsLive, ServerSettingsService } from "./serverSettings.ts";
+import {
+  redactServerSettingsForClient,
+  ServerSettingsLive,
+  ServerSettingsService,
+} from "./serverSettings.ts";
 
 const makeServerSettingsLayer = () =>
   ServerSettingsLive.pipe(
@@ -665,6 +669,43 @@ it.layer(NodeServices.layer)("server settings", (it) => {
         roundTripped.providerInstances[instanceId]?.environment?.[0]?.value,
         "sk-or-secret",
       );
+    }).pipe(Effect.provide(makeServerSettingsLayer())),
+  );
+
+  it.effect("keeps an Antigravity key secret even when a client forgets to mark it", () =>
+    Effect.gen(function* () {
+      const serverSettings = yield* ServerSettingsService;
+      const serverConfig = yield* ServerConfig;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const instanceId = ProviderInstanceId.make("antigravity_work");
+      const secretFiles = fileSystem
+        .readDirectory(serverConfig.secretsDir)
+        .pipe(Effect.map((names) => names.filter((name) => name.startsWith("provider-env-"))));
+
+      const next = yield* serverSettings.updateSettings({
+        providerInstances: {
+          [instanceId]: {
+            driver: ProviderDriverKind.make("antigravity"),
+            environment: [{ name: "gemini_api_key", value: "AIza-test-secret", sensitive: false }],
+            config: { authMethod: "gemini-api-key" },
+          },
+        },
+      });
+
+      const raw = yield* fileSystem.readFileString(serverConfig.settingsPath);
+      assert.notInclude(raw, "AIza-test-secret");
+      assert.deepEqual(
+        redactServerSettingsForClient(next).providerInstances[instanceId]?.environment,
+        [{ name: "gemini_api_key", value: "", sensitive: true, valueRedacted: true }],
+      );
+      assert.lengthOf(yield* secretFiles, 1);
+
+      // Removing the account removes its key, once the settings without it are saved.
+      yield* serverSettings.updateSettingsWith((current) => {
+        const { [instanceId]: _removed, ...providerInstances } = current.providerInstances;
+        return Effect.succeed({ providerInstances });
+      });
+      assert.lengthOf(yield* secretFiles, 0);
     }).pipe(Effect.provide(makeServerSettingsLayer())),
   );
 });

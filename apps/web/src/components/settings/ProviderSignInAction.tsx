@@ -20,6 +20,8 @@ export function ProviderSignInAction(props: {
   readonly displayName: string;
   readonly onStarted: () => void;
   readonly autoStart?: boolean;
+  /** The button's words; "Sign in" unless the sign-in is something else (a key check). */
+  readonly label?: string;
 }) {
   const { start, isStarting, isActive } = useProviderConnectFlow({
     instanceId: props.instanceId,
@@ -55,7 +57,7 @@ export function ProviderSignInAction(props: {
       }}
     >
       {busy ? <LoaderIcon className="size-2.5 animate-spin" /> : null}
-      Sign in
+      {props.label ?? "Sign in"}
     </Button>
   );
 }
