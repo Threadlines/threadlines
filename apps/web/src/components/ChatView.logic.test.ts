@@ -18,7 +18,7 @@ import { type ChatMessage, type Thread } from "../types";
 import {
   buildRevertConfirmView,
   resolveRemoteBehindCount,
-  resolveWorkingTreeDiffStat,
+  resolveWorkingTreeChanges,
   MAX_HIDDEN_MOUNTED_TERMINAL_THREADS,
   buildExpiredTerminalContextToastCopy,
   classifyModelSwitch,
@@ -2766,21 +2766,47 @@ describe("buildRevertConfirmView", () => {
   });
 });
 
-describe("resolveWorkingTreeDiffStat", () => {
-  it("reports counts only for a dirty repository", () => {
+describe("resolveWorkingTreeChanges", () => {
+  const status = (input: {
+    isRepo?: boolean;
+    hasWorkingTreeChanges: boolean;
+    files?: number;
+    insertions?: number;
+    deletions?: number;
+  }) => ({
+    isRepo: input.isRepo ?? true,
+    hasWorkingTreeChanges: input.hasWorkingTreeChanges,
+    workingTree: {
+      files: Array.from({ length: input.files ?? 0 }, (_, index) => ({ path: `f${index}` })),
+      insertions: input.insertions ?? 0,
+      deletions: input.deletions ?? 0,
+    },
+  });
+
+  it("reports line counts and the file count for a dirty repository", () => {
     expect(
-      resolveWorkingTreeDiffStat({ isRepo: true, workingTree: { insertions: 38, deletions: 12 } }),
-    ).toEqual({ insertions: 38, deletions: 12 });
+      resolveWorkingTreeChanges(
+        status({ hasWorkingTreeChanges: true, files: 3, insertions: 38, deletions: 12 }),
+      ),
+    ).toEqual({ insertions: 38, deletions: 12, fileCount: 3 });
+  });
+
+  it("still reports changes that add no lines, like a binary edit", () => {
+    expect(resolveWorkingTreeChanges(status({ hasWorkingTreeChanges: true, files: 1 }))).toEqual({
+      insertions: 0,
+      deletions: 0,
+      fileCount: 1,
+    });
   });
 
   it("stays quiet for a clean tree, a non-repo, and an unloaded status", () => {
+    expect(resolveWorkingTreeChanges(status({ hasWorkingTreeChanges: false }))).toBeNull();
     expect(
-      resolveWorkingTreeDiffStat({ isRepo: true, workingTree: { insertions: 0, deletions: 0 } }),
+      resolveWorkingTreeChanges(
+        status({ isRepo: false, hasWorkingTreeChanges: true, insertions: 9, deletions: 9 }),
+      ),
     ).toBeNull();
-    expect(
-      resolveWorkingTreeDiffStat({ isRepo: false, workingTree: { insertions: 9, deletions: 9 } }),
-    ).toBeNull();
-    expect(resolveWorkingTreeDiffStat(null)).toBeNull();
+    expect(resolveWorkingTreeChanges(null)).toBeNull();
   });
 });
 

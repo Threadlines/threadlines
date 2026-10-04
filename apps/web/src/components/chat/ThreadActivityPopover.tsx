@@ -997,7 +997,7 @@ export const ThreadActivityPopover = memo(function ThreadActivityPopover({
               render={
                 <Button
                   type="button"
-                  variant="outline"
+                  variant="ghost"
                   size="xs"
                   ref={popoverLayout.triggerRef}
                   className="min-w-6 px-1.5 text-[11px] [-webkit-app-region:no-drag]"

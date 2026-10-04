@@ -319,7 +319,7 @@ import {
   mergeLocalDraftThreadWithServerThread,
   buildRevertConfirmView,
   resolveRemoteBehindCount,
-  resolveWorkingTreeDiffStat,
+  resolveWorkingTreeChanges,
   type RevertConfirmView,
   resolveThreadBranchToRecord,
 } from "./ChatView.logic";
@@ -1363,17 +1363,14 @@ export default function ChatView(props: ChatViewProps) {
   const rightPanelStateKey =
     routeKind === "draft" && draftId ? draftRightPanelStateKey(draftId) : routeThreadKey;
   // The sidebar's tab strip is owned by the route that renders it; the header
-  // reads the same store so its panel button and activity chip agree with what
-  // is on screen. The button reflects the sidebar as a whole — it stays pressed
-  // on any tab, and on the launcher — and its counts stand in for whichever
-  // tabs the strip is showing without.
+  // reads the same store so its panel button agrees with what is on screen.
+  // The button reflects the sidebar as a whole: it stays pressed on any tab,
+  // and on the launcher.
   const rightPanelTabs = useRightPanelTabs(rightPanelStateKey);
   const rightPanelEngaged = rightPanelTabs.visible;
-  const agentsPanelOpen = rightPanelTabs.activeTab === "agents";
-  const railTabs = useMemo(
-    () => (rightPanelTabs.visible ? rightPanelTabs.openTabs : []),
-    [rightPanelTabs.visible, rightPanelTabs.openTabs],
-  );
+  // A hidden sidebar keeps its active tab for when it comes back, so the
+  // Agents tab only counts as open while the sidebar is showing.
+  const agentsPanelOpen = rightPanelTabs.visible && rightPanelTabs.activeTab === "agents";
   const activeThreadId = activeThread?.id ?? null;
   const activeThreadRef = useMemo(
     () => (activeThread ? scopeThreadRef(activeThread.environmentId, activeThread.id) : null),
@@ -2882,8 +2879,8 @@ export default function ChatView(props: ChatViewProps) {
       setBrowserOpen(routeThreadRef, false);
     }
   }, [routeThreadRef, setBrowserOpen]);
-  const workingTreeDiffStat = useMemo(
-    () => resolveWorkingTreeDiffStat(gitStatusQuery.data ?? null),
+  const workingTreeChanges = useMemo(
+    () => resolveWorkingTreeChanges(gitStatusQuery.data ?? null),
     [gitStatusQuery.data],
   );
   const remoteBehindCount = useMemo(
@@ -7080,6 +7077,12 @@ export default function ChatView(props: ChatViewProps) {
     },
     [agentsPanelOpen, openRightPanelTab],
   );
+  /** The header's agent faces: the Agents tab on its list, not on one agent. */
+  const onOpenHeaderAgentsTab = useCallback(() => onOpenAgentsPanel(null), [onOpenAgentsPanel]);
+  const onOpenHeaderSourceTab = useCallback(
+    () => openRightPanelTab("sourceControl"),
+    [openRightPanelTab],
+  );
 
   const timelineProposedPlanState = useMemo<TimelineProposedPlanState>(
     () => ({
@@ -7151,14 +7154,14 @@ export default function ChatView(props: ChatViewProps) {
           terminalToggleShortcutLabel={terminalToggleShortcutLabel}
           railToggleShortcutLabel={sourceControlPanelShortcutLabel}
           railOpen={rightPanelEngaged}
-          railTabs={railTabs}
           sourceControlAvailable={activeProject !== undefined && !isGeneralChatThread}
           browserAvailable={browserAvailable}
           browserOpen={browserOpen}
           onToggleBrowser={handleToggleBrowser}
-          workingTreeDiffStat={workingTreeDiffStat}
+          workingTreeChanges={workingTreeChanges}
           remoteBehindCount={remoteBehindCount}
           liveAgents={headerLiveAgents}
+          agentProviderDriverKind={activeProviderDriver}
           fileBrowserAvailable={!isGeneralChatThread}
           taskProgress={taskProgress}
           forkContext={forkHeaderContext}
@@ -7184,6 +7187,8 @@ export default function ChatView(props: ChatViewProps) {
           onOpenForkSourceThread={onOpenForkSourceThread}
           onToggleTerminal={toggleTerminalVisibility}
           onToggleRail={onToggleRail}
+          onOpenSourceTab={onOpenHeaderSourceTab}
+          onOpenAgentsTab={onOpenHeaderAgentsTab}
           onContinueInProject={
             isGeneralChatThread && isServerThread && (activeThread?.messages.length ?? 0) > 0
               ? onContinueInProject

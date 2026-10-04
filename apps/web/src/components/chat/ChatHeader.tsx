@@ -1,6 +1,7 @@
 import {
   type EnvironmentId,
   type EditorId,
+  type ProviderDriverKind,
   type ThreadId,
   type ProjectScript,
   type ResolvedKeybindingsConfig,
@@ -15,22 +16,20 @@ import {
   PanelRightIcon,
   TerminalSquareIcon,
 } from "lucide-react";
-import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
-import { Group } from "../ui/group";
 import { Tooltip, TooltipPopup, TooltipTrigger, TooltipWrapper } from "../ui/tooltip";
 import ProjectScriptsControl, { type NewProjectScriptInput } from "../ProjectScriptsControl";
 import { Toggle } from "../ui/toggle";
 import { SidebarOpenTrigger } from "../ui/sidebar";
-import { OpenInPicker } from "./OpenInPicker";
+import { ProjectCrumbMenu } from "./ProjectCrumbMenu";
 import { openActiveFileViewer } from "../../fileViewerStore";
 import { usePrimaryEnvironmentId } from "../../environments/primary";
 import { ThreadActivityPopover, type ThreadTaskProgressState } from "./ThreadActivityPopover";
 import type { ThreadBackgroundRunItem } from "./threadActivity";
 import type { LiveAgentIndicator } from "./agentsPanel.logic";
-import { LiveNode } from "../ui/threadline";
+import { HeaderAgentFaces } from "./HeaderAgentFaces";
+import type { WorkingTreeChanges } from "../ChatView.logic";
 import { cn } from "../../lib/utils";
-import type { RightPanelTab } from "../../rightPanelTabs";
 
 export interface ForkHeaderContext {
   readonly sourceThreadId: ThreadId;
@@ -42,6 +41,9 @@ interface ChatHeaderProps {
   activeThreadTitle: string;
   activeProjectName: string | undefined;
   isGitRepo: boolean;
+  /** The folder the project crumb's menu acts on: the thread's worktree when it
+   *  has one. Null for General Chats and threads without a project, whose
+   *  crumb is plain text. */
   openInCwd: string | null;
   activeProjectScripts: ProjectScript[] | undefined;
   preferredScriptId: string | null;
@@ -53,36 +55,25 @@ interface ChatHeaderProps {
   railToggleShortcutLabel: string | null;
   /** Whether the right rail is showing, on any of its tabs or the launcher. */
   railOpen: boolean;
-  /**
-   * The tabs in the rail's strip while it is showing; empty while it is hidden.
-   * The toggle repeats only what the strip does not already carry: the diffstat
-   * and behind count belong to the Source tab, the live node to the Agents tab.
-   */
-  railTabs: ReadonlyArray<RightPanelTab>;
   /** False for capability-gated threads (General Chats) even when a project
    *  name exists: the rail still opens, just without its Source tab. */
   sourceControlAvailable: boolean;
   /** False where there is no project to preview, e.g. a general chat. */
   browserAvailable: boolean;
   browserOpen: boolean;
+  /** Uncommitted work in the checkout, shown as its own count that opens the
+   *  Source tab. Null when the tree is clean or the status has not loaded. */
+  workingTreeChanges: WorkingTreeChanges | null;
   /**
-   * Working-tree diffstat, surfaced on the rail toggle while no Source tab is
-   * showing, so the size of the pending change is legible without opening one.
-   * Null when the tree is clean or the status has not loaded.
-   */
-  workingTreeDiffStat: { readonly insertions: number; readonly deletions: number } | null;
-  /**
-   * Commits the branch is behind its upstream, surfaced on the rail toggle as a
-   * pull-available hint while no Source tab is showing. Null when there is
-   * nothing to pull or the status has not loaded.
+   * Commits the branch is behind its upstream, shown beside the change count
+   * as a pull-available hint. Null when there is nothing to pull or the status
+   * has not loaded.
    */
   remoteBehindCount: number | null;
-  /**
-   * Agents running right now, surfaced on the rail toggle the same way the
-   * diffstat is. Null when nothing is live. An open Agents tab carries the live
-   * node itself, so the toggle drops it while that tab is in the strip.
-   */
+  /** Subagents running right now, drawn as faces. Null when nothing is live. */
   liveAgents: LiveAgentIndicator | null;
+  /** The provider the thread's subagents run on; their faces carry its mark. */
+  agentProviderDriverKind: ProviderDriverKind | null;
   /** False for General Chats: their scratch workspace has no files worth browsing. */
   fileBrowserAvailable: boolean;
   taskProgress: ThreadTaskProgressState | null;
@@ -103,10 +94,22 @@ interface ChatHeaderProps {
   onToggleTerminal: () => void;
   onToggleRail: () => void;
   onToggleBrowser: () => void;
+  /** Opens (or focuses) the rail's Source tab; the change count's action. */
+  onOpenSourceTab: () => void;
+  /** Opens (or focuses) the rail's Agents tab; the agent faces' action. */
+  onOpenAgentsTab: () => void;
   /** Present only for General Chat threads that can continue into a project. */
   onContinueInProject?: ((event: React.MouseEvent<HTMLButtonElement>) => void) | undefined;
   continueInProjectDisabledReason?: string | null;
 }
+
+/** Panel toggles carry no border, pressed or not: an open panel reads as a
+ *  filled control, the way a hovered one reads as a tinted one. */
+const HEADER_TOGGLE_CLASS =
+  "shrink-0 text-muted-foreground hover:text-foreground data-pressed:border-transparent data-pressed:text-foreground dark:data-pressed:border-transparent";
+
+/** Icon buttons that launch something rather than show a panel. */
+const HEADER_ICON_BUTTON_CLASS = "shrink-0 text-muted-foreground hover:text-foreground";
 
 export function shouldShowOpenInEditor(input: {
   readonly activeProjectName: string | undefined;
@@ -120,21 +123,6 @@ export function shouldShowOpenInEditor(input: {
   );
 }
 
-/** Reads the live-agent node on the closed panel button out loud. Waiting leads,
- *  because it is the part that asks the user for something. */
-export function formatLiveAgentsTooltip(liveAgents: LiveAgentIndicator): string {
-  const { count, waitingCount } = liveAgents;
-  const running = count - waitingCount;
-  const noun = (value: number) => (value === 1 ? "agent" : "agents");
-  if (running === 0) {
-    return `${waitingCount} ${noun(waitingCount)} waiting on you.`;
-  }
-  if (waitingCount === 0) {
-    return `${running} ${noun(running)} running.`;
-  }
-  return `${running} ${noun(running)} running, ${waitingCount} waiting on you.`;
-}
-
 export function resolveContinueInProjectHeaderState(disabledReason: string | null | undefined): {
   readonly disabled: boolean;
   readonly tooltip: string;
@@ -144,6 +132,36 @@ export function resolveContinueInProjectHeaderState(disabledReason: string | nul
     disabled,
     tooltip: disabled ? disabledReason : "Start a project thread seeded with this chat",
   };
+}
+
+/** Reads the change count out loud, naming what clicking it does. */
+export function formatSourceChangesLabel(input: {
+  readonly workingTreeChanges: WorkingTreeChanges | null;
+  readonly remoteBehindCount: number | null;
+}): string {
+  const parts: string[] = [];
+  const changes = input.workingTreeChanges;
+  if (changes) {
+    parts.push(
+      changes.insertions > 0 || changes.deletions > 0
+        ? `Uncommitted changes: ${changes.insertions} added, ${changes.deletions} removed.`
+        : `Uncommitted changes in ${formatFileCount(changes.fileCount)}.`,
+    );
+  }
+  if (input.remoteBehindCount !== null) {
+    parts.push(
+      input.remoteBehindCount === 1
+        ? "1 commit behind the remote."
+        : `${input.remoteBehindCount} commits behind the remote.`,
+    );
+  }
+  parts.push("Open the Source tab.");
+  return parts.join(" ");
+}
+
+function formatFileCount(count: number): string {
+  if (count === 0) return "the working tree";
+  return count === 1 ? "1 file" : `${count} files`;
 }
 
 export const ChatHeader = memo(function ChatHeader({
@@ -161,14 +179,14 @@ export const ChatHeader = memo(function ChatHeader({
   terminalToggleShortcutLabel,
   railToggleShortcutLabel,
   railOpen,
-  railTabs,
   sourceControlAvailable,
   browserAvailable,
   browserOpen,
   onToggleBrowser,
-  workingTreeDiffStat,
+  workingTreeChanges,
   remoteBehindCount,
   liveAgents,
+  agentProviderDriverKind,
   fileBrowserAvailable,
   taskProgress,
   forkContext,
@@ -186,11 +204,13 @@ export const ChatHeader = memo(function ChatHeader({
   onOpenForkSourceThread,
   onToggleTerminal,
   onToggleRail,
+  onOpenSourceTab,
+  onOpenAgentsTab,
   onContinueInProject,
   continueInProjectDisabledReason,
 }: ChatHeaderProps) {
   const primaryEnvironmentId = usePrimaryEnvironmentId();
-  const showOpenInEditor = shouldShowOpenInEditor({
+  const canOpenInEditor = shouldShowOpenInEditor({
     activeProjectName,
     activeThreadEnvironmentId,
     primaryEnvironmentId,
@@ -198,12 +218,12 @@ export const ChatHeader = memo(function ChatHeader({
   const continueInProjectState = resolveContinueInProjectHeaderState(
     continueInProjectDisabledReason,
   );
-  // The rail toggle repeats only what the strip does not already carry: a
-  // Source tab lists the per-file counts, an Agents tab draws its own live node.
-  const showSourceCounts =
-    !railTabs.includes("sourceControl") &&
-    (workingTreeDiffStat !== null || remoteBehindCount !== null);
-  const liveAgentsOnToggle = railTabs.includes("agents") ? null : liveAgents;
+  const showSourceChanges =
+    sourceControlAvailable && (workingTreeChanges !== null || remoteBehindCount !== null);
+  // The divider splits launchers from the views on its right; with nothing on
+  // its left it would only hang there. A narrow header drops it for the title.
+  const hasLaunchers =
+    activeProjectScripts !== undefined || fileBrowserAvailable || onContinueInProject !== undefined;
 
   return (
     <div
@@ -214,13 +234,25 @@ export const ChatHeader = memo(function ChatHeader({
       <div className="flex min-w-0 flex-1 items-center gap-1.5 sm:gap-2">
         <SidebarOpenTrigger className="size-7 shrink-0" />
         {activeProjectName && (
+          // Hidden, not unmounted, on phones: the crumb menu owns the
+          // open-favorite shortcut, which should still work there.
           <div className="hidden min-w-0 shrink items-center gap-1.5 sm:flex">
-            <span
-              className="min-w-0 max-w-48 truncate text-sm text-muted-foreground"
-              title={activeProjectName}
-            >
-              {activeProjectName}
-            </span>
+            {openInCwd !== null ? (
+              <ProjectCrumbMenu
+                projectName={activeProjectName}
+                cwd={openInCwd}
+                canOpenInEditor={canOpenInEditor}
+                keybindings={keybindings}
+                availableEditors={availableEditors}
+              />
+            ) : (
+              <span
+                className="min-w-0 max-w-48 truncate text-sm text-muted-foreground"
+                title={activeProjectName}
+              >
+                {activeProjectName}
+              </span>
+            )}
             <span aria-hidden="true" className="select-none text-muted-foreground/40">
               /
             </span>
@@ -235,7 +267,7 @@ export const ChatHeader = memo(function ChatHeader({
         {forkContext ? (
           <button
             type="button"
-            className="translate-y-px inline-flex h-6 min-w-0 shrink-0 items-center rounded-md border border-border/70 bg-muted/45 px-1.5 text-[11px] leading-none text-muted-foreground transition-colors hover:border-border hover:bg-muted/70 hover:text-foreground"
+            className="translate-y-px inline-flex h-6 min-w-0 shrink-0 items-center rounded-md px-1.5 text-[11px] leading-none text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
             onClick={() => onOpenForkSourceThread(forkContext.sourceThreadId)}
             aria-label={`Open source thread: ${forkContext.sourceThreadTitle}`}
             title={`Forked from ${forkContext.sourceThreadTitle}`}
@@ -251,16 +283,13 @@ export const ChatHeader = memo(function ChatHeader({
         ) : null}
         {activeProjectName && !isGitRepo && sourceControlAvailable && (
           <TooltipWrapper tooltip="This folder isn't a git repository. Chat works; source control, diffs, and refs need git. Run git init to enable them.">
-            <Badge
-              variant="outline"
-              className="shrink-0 text-[10px] leading-none text-amber-700/90"
-            >
+            <span className="shrink-0 cursor-default text-[11px] leading-none text-amber-700/90 dark:text-amber-400/90">
               No Git
-            </Badge>
+            </span>
           </TooltipWrapper>
         )}
       </div>
-      <div className="flex shrink-0 items-center justify-end gap-2 @3xl/header-actions:gap-3">
+      <div className="flex shrink-0 items-center justify-end gap-1 @3xl/header-actions:gap-1.5">
         <ThreadActivityPopover
           taskProgress={taskProgress}
           backgroundRuns={backgroundRuns}
@@ -282,209 +311,179 @@ export const ChatHeader = memo(function ChatHeader({
             onDeleteScript={onDeleteProjectScript}
           />
         )}
-        {/* Desktop affordance: "open in editor" acts on the machine running
-            the server, so it earns no room in the phone-width header. */}
-        {showOpenInEditor && openInCwd !== null && (
-          <div className="flex shrink-0 items-center max-sm:hidden">
-            <OpenInPicker
-              keybindings={keybindings}
-              availableEditors={availableEditors}
-              openInCwd={openInCwd}
+        {onContinueInProject ? (
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <button
+                  type="button"
+                  aria-label="Continue in project"
+                  aria-disabled={continueInProjectState.disabled || undefined}
+                  data-disabled={continueInProjectState.disabled ? "true" : undefined}
+                  className={cn(
+                    "inline-flex h-6 shrink-0 items-center gap-1.5 rounded-md px-2 text-[11px] transition-colors",
+                    continueInProjectState.disabled
+                      ? "cursor-default text-muted-foreground/70 opacity-70"
+                      : "cursor-pointer text-foreground/85 hover:bg-accent hover:text-foreground",
+                  )}
+                  onClick={continueInProjectState.disabled ? undefined : onContinueInProject}
+                >
+                  <FolderInputIcon className="size-3.5" />
+                  <span className="max-sm:hidden">Continue in project</span>
+                </button>
+              }
             />
-          </div>
-        )}
-        <div className="flex shrink-0 items-center gap-1">
-          {onContinueInProject ? (
-            <Tooltip>
-              <TooltipTrigger
-                render={
-                  <button
-                    type="button"
-                    aria-label="Continue in project"
-                    aria-disabled={continueInProjectState.disabled || undefined}
-                    data-disabled={continueInProjectState.disabled ? "true" : undefined}
-                    className={cn(
-                      "inline-flex h-6 shrink-0 items-center gap-1.5 rounded-md border border-border/70 bg-background px-2 text-[11px] transition-colors",
-                      continueInProjectState.disabled
-                        ? "cursor-default text-muted-foreground/70 opacity-70 hover:bg-background hover:text-muted-foreground/70"
-                        : "cursor-pointer text-foreground/85 hover:bg-foreground/10 hover:text-foreground",
-                    )}
-                    onClick={continueInProjectState.disabled ? undefined : onContinueInProject}
-                  >
-                    <FolderInputIcon className="size-3" />
-                    <span className="max-sm:hidden">Continue in project</span>
-                  </button>
-                }
-              />
-              <TooltipPopup side="bottom">{continueInProjectState.tooltip}</TooltipPopup>
-            </Tooltip>
-          ) : null}
-          {fileBrowserAvailable ? (
-            <Tooltip>
-              <TooltipTrigger
-                render={
-                  <Button
-                    className="shrink-0"
-                    onClick={() => {
-                      openActiveFileViewer();
-                    }}
-                    aria-label="Browse project files"
-                    variant="outline"
-                    size="icon-xs"
-                    disabled={!terminalAvailable}
-                  >
-                    <FolderOpenIcon className="size-3" />
-                  </Button>
-                }
-              />
-              <TooltipPopup side="bottom">
-                {!terminalAvailable
-                  ? "File viewer is unavailable until this thread has an active project."
-                  : "Browse project files"}
-              </TooltipPopup>
-            </Tooltip>
-          ) : null}
-          <Group aria-label="Thread panels">
-            <Tooltip>
-              <TooltipTrigger
-                render={
-                  <Toggle
-                    className="shrink-0"
-                    pressed={terminalOpen}
-                    onPressedChange={onToggleTerminal}
-                    aria-label="Toggle terminal drawer"
-                    variant="outline"
-                    size="xs"
-                    disabled={!terminalAvailable}
-                  >
-                    <TerminalSquareIcon className="size-3" />
-                  </Toggle>
-                }
-              />
-              <TooltipPopup side="bottom">
-                {!terminalAvailable
-                  ? "Terminal is unavailable until this thread has an active project."
-                  : terminalToggleShortcutLabel
-                    ? `Toggle terminal drawer (${terminalToggleShortcutLabel})`
-                    : "Toggle terminal drawer"}
-              </TooltipPopup>
-            </Tooltip>
-            {browserAvailable ? (
-              <Tooltip>
-                <TooltipTrigger
-                  render={
-                    <Toggle
-                      className="shrink-0"
-                      pressed={browserOpen}
-                      onPressedChange={onToggleBrowser}
-                      aria-label="Toggle browser preview"
-                      variant="outline"
-                      size="xs"
-                    >
-                      <GlobeIcon className="size-3" />
-                    </Toggle>
-                  }
+            <TooltipPopup side="bottom">{continueInProjectState.tooltip}</TooltipPopup>
+          </Tooltip>
+        ) : null}
+        {fileBrowserAvailable ? (
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <Button
+                  className={HEADER_ICON_BUTTON_CLASS}
+                  onClick={() => {
+                    openActiveFileViewer();
+                  }}
+                  aria-label="Browse project files"
+                  variant="ghost"
+                  size="icon-xs"
+                  disabled={!terminalAvailable}
+                >
+                  <FolderOpenIcon className="size-3.5" />
+                </Button>
+              }
+            />
+            <TooltipPopup side="bottom">
+              {!terminalAvailable
+                ? "File viewer is unavailable until this thread has an active project."
+                : "Browse project files"}
+            </TooltipPopup>
+          </Tooltip>
+        ) : null}
+        {hasLaunchers ? (
+          <span
+            aria-hidden="true"
+            className="mx-0.5 h-4 w-px shrink-0 bg-border @max-xl/header-actions:hidden"
+          />
+        ) : null}
+        {/* Hidden on a narrow header, where the room goes to the title; the
+            Source tab still lists every count. */}
+        {showSourceChanges ? (
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="xs"
+                  className="shrink-0 gap-1 px-1.5 font-mono text-[10.5px] @max-xl/header-actions:hidden"
+                  onClick={onOpenSourceTab}
+                  aria-label={formatSourceChangesLabel({ workingTreeChanges, remoteBehindCount })}
+                  data-header-source-changes="true"
                 />
-                <TooltipPopup side="bottom">Toggle browser preview</TooltipPopup>
-              </Tooltip>
-            ) : null}
-            {/* One entry point for the whole rail: the tab row inside it picks
-                between the turn's agents and the thread's changes. */}
+              }
+            >
+              {workingTreeChanges ? (
+                workingTreeChanges.insertions > 0 || workingTreeChanges.deletions > 0 ? (
+                  <>
+                    <span className="text-success">+{workingTreeChanges.insertions}</span>
+                    <span className="text-destructive">−{workingTreeChanges.deletions}</span>
+                  </>
+                ) : (
+                  <span className="font-sans text-[11px] text-muted-foreground">
+                    {formatFileCount(workingTreeChanges.fileCount)}
+                  </span>
+                )
+              ) : null}
+              {/* Deliberately hue-less: the arrow is the signal, and a third
+                  color beside the green/red counts would crowd them. */}
+              {remoteBehindCount !== null ? (
+                <span className="text-muted-foreground">↓{remoteBehindCount}</span>
+              ) : null}
+            </TooltipTrigger>
+            <TooltipPopup side="bottom">
+              {workingTreeChanges ? "Uncommitted changes. " : null}Open the Source tab.
+              {remoteBehindCount !== null ? (
+                <div className="text-muted-foreground">
+                  {remoteBehindCount === 1
+                    ? "1 commit behind the remote."
+                    : `${remoteBehindCount} commits behind the remote.`}{" "}
+                  Pull from the Source tab.
+                </div>
+              ) : null}
+            </TooltipPopup>
+          </Tooltip>
+        ) : null}
+        {liveAgents ? (
+          <HeaderAgentFaces
+            liveAgents={liveAgents}
+            providerDriverKind={agentProviderDriverKind}
+            onOpenAgents={onOpenAgentsTab}
+          />
+        ) : null}
+        <div role="group" aria-label="Thread panels" className="flex shrink-0 items-center">
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <Toggle
+                  className={HEADER_TOGGLE_CLASS}
+                  pressed={terminalOpen}
+                  onPressedChange={onToggleTerminal}
+                  aria-label="Toggle terminal drawer"
+                  size="xs"
+                  disabled={!terminalAvailable}
+                >
+                  <TerminalSquareIcon className="size-3.5" />
+                </Toggle>
+              }
+            />
+            <TooltipPopup side="bottom">
+              {!terminalAvailable
+                ? "Terminal is unavailable until this thread has an active project."
+                : terminalToggleShortcutLabel
+                  ? `Toggle terminal drawer (${terminalToggleShortcutLabel})`
+                  : "Toggle terminal drawer"}
+            </TooltipPopup>
+          </Tooltip>
+          {browserAvailable ? (
             <Tooltip>
               <TooltipTrigger
                 render={
                   <Toggle
-                    className={cn(
-                      "shrink-0",
-                      // With the counts alongside it, the control needs room
-                      // on both sides -- the icon otherwise sits against the
-                      // hover fill -- and less between them: the base gap is
-                      // sized for icons, not for a label that belongs to one.
-                      (showSourceCounts || liveAgentsOnToggle !== null) && "gap-1 px-1.5",
-                    )}
-                    pressed={railOpen}
-                    onPressedChange={onToggleRail}
-                    aria-label="Toggle panel"
-                    variant="outline"
+                    className={HEADER_TOGGLE_CLASS}
+                    pressed={browserOpen}
+                    onPressedChange={onToggleBrowser}
+                    aria-label="Toggle browser preview"
                     size="xs"
                   >
-                    <PanelRightIcon className="size-3" />
-                    {/* Only while no Source tab is showing: that tab lists the
-                        per-file counts, and repeating the total beside it is
-                        noise. */}
-                    {showSourceCounts ? (
-                      <span className="font-mono text-[10px] leading-none">
-                        {workingTreeDiffStat ? (
-                          <>
-                            <span className="text-success">+{workingTreeDiffStat.insertions}</span>
-                            <span className="ps-1 text-destructive">
-                              −{workingTreeDiffStat.deletions}
-                            </span>
-                          </>
-                        ) : null}
-                        {/* Deliberately hue-less: the arrow is the signal, and a
-                            third color next to the green/red counts would crowd
-                            an icon-sized control. */}
-                        {remoteBehindCount !== null ? (
-                          <span
-                            className={cn(
-                              "text-muted-foreground",
-                              workingTreeDiffStat !== null && "ps-1",
-                            )}
-                          >
-                            ↓{remoteBehindCount}
-                          </span>
-                        ) : null}
-                      </span>
-                    ) : null}
-                    {/* Typographic, like the counts beside it: a node and at most
-                        a digit. An agent waiting on the user turns it amber. */}
-                    {liveAgentsOnToggle ? (
-                      <span
-                        className="inline-flex shrink-0 items-center gap-0.5"
-                        data-header-live-agents={
-                          liveAgentsOnToggle.waitingCount > 0 ? "waiting" : "running"
-                        }
-                      >
-                        {liveAgentsOnToggle.waitingCount > 0 ? (
-                          <span
-                            aria-hidden="true"
-                            className="block size-1.5 rounded-full bg-amber-500"
-                          />
-                        ) : (
-                          <LiveNode className="size-1.5" />
-                        )}
-                        {liveAgentsOnToggle.count > 1 ? (
-                          <span
-                            className="font-mono text-[10px] leading-none text-muted-foreground"
-                            data-header-live-agents-count="true"
-                          >
-                            {liveAgentsOnToggle.count}
-                          </span>
-                        ) : null}
-                      </span>
-                    ) : null}
+                    <GlobeIcon className="size-3.5" />
                   </Toggle>
                 }
               />
-              <TooltipPopup side="bottom">
-                {railToggleShortcutLabel ? `Panel (${railToggleShortcutLabel})` : "Panel"}
-                {liveAgentsOnToggle ? (
-                  <div className="text-muted-foreground">
-                    {formatLiveAgentsTooltip(liveAgentsOnToggle)} Open the Agents tab.
-                  </div>
-                ) : null}
-                {showSourceCounts && sourceControlAvailable && remoteBehindCount !== null ? (
-                  <div className="text-muted-foreground">
-                    {remoteBehindCount === 1
-                      ? "1 commit behind the remote."
-                      : `${remoteBehindCount} commits behind the remote.`}{" "}
-                    Pull from the Source tab.
-                  </div>
-                ) : null}
-              </TooltipPopup>
+              <TooltipPopup side="bottom">Toggle browser preview</TooltipPopup>
             </Tooltip>
-          </Group>
+          ) : null}
+          {/* One entry point for the whole rail: the tab row inside it picks
+              between the turn's agents and the thread's changes. */}
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <Toggle
+                  className={HEADER_TOGGLE_CLASS}
+                  pressed={railOpen}
+                  onPressedChange={onToggleRail}
+                  aria-label="Toggle panel"
+                  size="xs"
+                >
+                  <PanelRightIcon className="size-3.5" />
+                </Toggle>
+              }
+            />
+            <TooltipPopup side="bottom">
+              {railToggleShortcutLabel ? `Panel (${railToggleShortcutLabel})` : "Panel"}
+            </TooltipPopup>
+          </Tooltip>
         </div>
       </div>
     </div>
