@@ -5375,7 +5375,10 @@ function AgentAuthorLine({
           driverKind={label.entry.driverKind}
           displayName={label.entry.displayName}
           accentColor={label.entry.accentColor}
-          showBadge={false}
+          // An extra account wears its colored letter, so a reply says which
+          // account wrote it even when two accounts run the same model.
+          showBadge={!label.entry.isDefault}
+          badgeClassName="right-[-0.3rem] bottom-[-0.2rem] h-2.5 min-w-2.5 px-0 text-[6px] shadow-none"
           // Centered on the line, 24px left of the text (the lane's 20px and
           // the section's 4px), 1px down to center on the name.
           className="absolute top-px -left-6 size-3.5"

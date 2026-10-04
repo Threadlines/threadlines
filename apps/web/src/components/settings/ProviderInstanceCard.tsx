@@ -41,10 +41,16 @@ import { LinkifiedText } from "../../lib/linkifiedText";
 import { cn } from "../../lib/utils";
 import {
   deriveProviderAccountUsagePresentationForProvider,
+  headlineUsageMeter,
   type ProviderAccountUsagePresentation,
   usageMeterColor,
 } from "../../lib/providerUsage";
-import { normalizeProviderAccentColor } from "../../providerInstances";
+import {
+  formatProviderInstanceName,
+  normalizeProviderAccentColor,
+  PROVIDER_ACCENT_SWATCHES,
+} from "../../providerInstances";
+import { AddProviderAccountForm } from "./AddProviderAccountForm";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Collapsible, CollapsibleContent } from "../ui/collapsible";
@@ -82,8 +88,6 @@ import {
 } from "./agentStatus";
 import { ProviderUpdatePopover } from "./ProviderUpdatePopover";
 import type { ProviderUpdateControls } from "./useProviderUpdateRunner";
-
-const PROVIDER_ACCENT_SWATCHES = ["#00347D", "#16a34a", "#ea580c", "#dc2626", "#7c3aed"] as const;
 
 const ENVIRONMENT_VARIABLE_NAME_PATTERN = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
 const CODEX_DRIVER_KIND = ProviderDriverKind.make("codex");
@@ -945,13 +949,7 @@ function ProviderUsageMeter(props: {
   readonly onResetAccountUsage?: (() => void) | undefined;
   readonly accountUsageResetInFlight?: boolean | undefined;
 }) {
-  const tightest = props.usage.windows.reduce<
-    ProviderAccountUsagePresentation["windows"][number] | null
-  >(
-    (worst, window) => (worst === null || window.usedPercent > worst.usedPercent ? window : worst),
-    null,
-  );
-  const meter = props.usage.spendControl ?? tightest;
+  const meter = headlineUsageMeter(props.usage);
   const resetCount = props.usage.resetCredits?.availableCount ?? 0;
   const canReset = props.onResetAccountUsage !== undefined && resetCount > 0;
   if (!meter && !canReset) return null;
@@ -1126,10 +1124,33 @@ interface ProviderInstanceCardProps {
   readonly updateControls: ProviderUpdateControls;
   readonly onResetAccountUsage?: (() => void) | undefined;
   readonly accountUsageResetInFlight?: boolean | undefined;
+  /**
+   * For agents that can hold extra accounts: the footer offers "Add another
+   * … account", which opens the form inside this row.
+   */
+  readonly addAccount?: ProviderAddAccountControls | undefined;
+  /** Removes this extra account (the caller confirms first). Shown instead of Delete. */
+  readonly onRemoveAccount?: (() => void) | undefined;
+  /** A just-added account: start its sign-in as soon as the row offers it. */
+  readonly autoSignIn?: boolean | undefined;
+  /** The auto sign-in started, or there was nothing to start. */
+  readonly onAutoSignInSettled?: ((instanceId: ProviderInstanceId) => void) | undefined;
+}
+
+export interface ProviderAddAccountControls {
+  /** The agent's own name, e.g. "Claude". */
+  readonly agentName: string;
+  readonly existingNames: ReadonlyArray<string>;
+  readonly existingColors: ReadonlyArray<string | undefined>;
+  readonly onAdded: (instanceId: ProviderInstanceId, startSignIn: boolean) => void;
+  /** Changes when the header's "+" menu asks this row to show the form. */
+  readonly openRequest: number;
 }
 
 /** How long a one-click Install on a turned-off agent waits for the server to offer it. */
 const PENDING_INSTALL_TIMEOUT_MS = 30_000;
+/** How long a just-added account waits for its row to offer sign-in. */
+const AUTO_SIGN_IN_TIMEOUT_MS = 45_000;
 
 /**
  * One configured provider instance on the Providers settings page, drawn as
@@ -1168,6 +1189,10 @@ export function ProviderInstanceCard({
   updateControls,
   onResetAccountUsage,
   accountUsageResetInFlight,
+  addAccount,
+  onRemoveAccount,
+  autoSignIn = false,
+  onAutoSignInSettled,
 }: ProviderInstanceCardProps) {
   const enabled = instance.enabled ?? true;
   const summary = getProviderSummary(liveProvider);
@@ -1194,11 +1219,22 @@ export function ProviderInstanceCard({
     ? instance.driver
     : null;
   const FallbackIconComponent = driverOption?.icon;
-  const displayName =
-    instance.displayName?.trim() ||
+  const agentName =
     driverOption?.label ||
     (driverKind ? PROVIDER_DISPLAY_NAMES[driverKind] : undefined) ||
     String(instance.driver);
+  const displayName = formatProviderInstanceName({
+    agentName,
+    displayName: instance.displayName,
+    isDefault: String(instanceId) === String(instance.driver),
+  });
+  const [addingAccount, setAddingAccount] = useState(false);
+  const [seenAddAccountRequest, setSeenAddAccountRequest] = useState(addAccount?.openRequest ?? 0);
+  if (addAccount && addAccount.openRequest !== seenAddAccountRequest) {
+    // Adjusting state while rendering: the header's "+" asked for the form.
+    setSeenAddAccountRequest(addAccount.openRequest);
+    setAddingAccount(true);
+  }
   const accentColor = normalizeProviderAccentColor(instance.accentColor);
   const agentStatus = deriveAgentStatus({
     enabled,
@@ -1228,6 +1264,7 @@ export function ProviderInstanceCard({
       buildClaudeSetupTokenCommand({
         binaryPath: readProviderConfigString(instance.config, "binaryPath"),
         homePath: readProviderConfigString(instance.config, "homePath"),
+        accountFolder: readProviderConfigString(instance.config, "accountFolder"),
       }),
     [instance.config],
   );
@@ -1243,6 +1280,7 @@ export function ProviderInstanceCard({
       return buildClaudeAuthLoginCommand({
         binaryPath: readProviderConfigString(instance.config, "binaryPath"),
         homePath: readProviderConfigString(instance.config, "homePath"),
+        accountFolder: readProviderConfigString(instance.config, "accountFolder"),
       });
     }
     if (driverKind === CURSOR_DRIVER_KIND) {
@@ -1258,6 +1296,7 @@ export function ProviderInstanceCard({
     if (driverKind === OPENCODE_DRIVER_KIND) {
       return buildOpenCodeLoginCommand({
         binaryPath: readProviderConfigString(instance.config, "binaryPath"),
+        accountFolder: readProviderConfigString(instance.config, "accountFolder"),
       });
     }
     if (driverKind !== null && BROWSER_SIGN_IN_DRIVERS.has(String(driverKind))) {
@@ -1305,6 +1344,22 @@ export function ProviderInstanceCard({
     const timeout = window.setTimeout(() => setPendingInstall(false), PENDING_INSTALL_TIMEOUT_MS);
     return () => window.clearTimeout(timeout);
   }, [pendingInstall]);
+  // A just-added account that turns out to be signed in already (a folder
+  // that held a login) has nothing to start; neither does one that never
+  // gets as far as offering sign-in.
+  const autoSignInMoot = autoSignIn && agentStatus.kind === "ready";
+  useEffect(() => {
+    if (!autoSignIn) return;
+    if (autoSignInMoot) {
+      onAutoSignInSettled?.(instanceId);
+      return;
+    }
+    const timeout = window.setTimeout(
+      () => onAutoSignInSettled?.(instanceId),
+      AUTO_SIGN_IN_TIMEOUT_MS,
+    );
+    return () => window.clearTimeout(timeout);
+  }, [autoSignIn, autoSignInMoot, instanceId, onAutoSignInSettled]);
 
   const updateDisplayName = (value: string) => {
     const trimmed = value.trim();
@@ -1479,9 +1534,11 @@ export function ProviderInstanceCard({
       <ProviderSignInAction
         instanceId={instanceId}
         displayName={displayName}
+        autoStart={autoSignIn}
         onStarted={() => {
           setDetailsSection("account");
           onExpandedChange(true);
+          if (autoSignIn) onAutoSignInSettled?.(instanceId);
         }}
       />
     ) : showPendingInstall ? (
@@ -1497,7 +1554,7 @@ export function ProviderInstanceCard({
 
   const versionExtraNode = (
     <>
-      {String(instanceId) !== String(instance.driver) ? (
+      {String(instanceId) !== String(instance.driver) && !instance.displayName?.trim() ? (
         <code className="truncate rounded bg-muted/60 px-1 py-0.5 text-[10px] text-muted-foreground">
           {instanceId}
         </code>
@@ -1704,7 +1761,28 @@ export function ProviderInstanceCard({
                 Reset to defaults
               </Button>
             ) : null}
-            {onDelete ? (
+            {addAccount && !addingAccount ? (
+              <Button
+                size="xs"
+                variant="ghost"
+                className="mr-auto text-muted-foreground hover:text-foreground"
+                onClick={() => setAddingAccount(true)}
+              >
+                <PlusIcon className="size-3" />
+                Add another {addAccount.agentName} account
+              </Button>
+            ) : null}
+            {onRemoveAccount ? (
+              <Button
+                size="xs"
+                variant="ghost"
+                className="text-muted-foreground hover:text-destructive"
+                onClick={onRemoveAccount}
+              >
+                <Trash2Icon className="size-3" />
+                Remove account
+              </Button>
+            ) : onDelete ? (
               <Button
                 size="xs"
                 variant="ghost"
@@ -1725,6 +1803,19 @@ export function ProviderInstanceCard({
               {enabled ? `Turn off ${displayName}` : `Turn on ${displayName}`}
             </Button>
           </div>
+          {addAccount && addingAccount && driverKind ? (
+            <AddProviderAccountForm
+              driverKind={driverKind}
+              agentName={addAccount.agentName}
+              existingNames={addAccount.existingNames}
+              existingColors={addAccount.existingColors}
+              onCancel={() => setAddingAccount(false)}
+              onAdded={(newInstanceId, startSignIn) => {
+                setAddingAccount(false);
+                addAccount.onAdded(newInstanceId, startSignIn);
+              }}
+            />
+          ) : null}
         </CollapsibleContent>
       </Collapsible>
     </AgentRow>

@@ -193,6 +193,18 @@ describe("classifyModelSwitch", () => {
     ).toBe("apply");
   });
 
+  it("confirms moving a thread off an account that was removed", () => {
+    expect(
+      classifyModelSwitch({
+        boundProvider: CLAUDE,
+        pickedDriverKind: CLAUDE,
+        boundContinuationGroupKey: null,
+        pickedContinuationGroupKey: "claude:home:/a",
+        boundInstanceMissing: true,
+      }),
+    ).toBe("confirm-handoff");
+  });
+
   it("applies when the thread has no binding yet", () => {
     expect(
       classifyModelSwitch({
@@ -212,18 +224,18 @@ describe("classifyModelSwitch", () => {
         boundContinuationGroupKey: "codex:home:/a",
         pickedContinuationGroupKey: "claudeAgent:instance:claudeAgent",
       }),
-    ).toBe("confirm-cross-driver");
+    ).toBe("confirm-handoff");
   });
 
-  it("blocks a same-driver switch across an incompatible continuation group", () => {
+  it("confirms a same-driver switch to an account with its own history", () => {
     expect(
       classifyModelSwitch({
-        boundProvider: CODEX,
-        pickedDriverKind: CODEX,
-        boundContinuationGroupKey: "codex:home:/a",
-        pickedContinuationGroupKey: "codex:home:/b",
+        boundProvider: CLAUDE,
+        pickedDriverKind: CLAUDE,
+        boundContinuationGroupKey: "claudeAgent:instance:claudeAgent",
+        pickedContinuationGroupKey: "claudeAgent:instance:claudeAgent_work_3f9a",
       }),
-    ).toBe("blocked-incompatible-instance");
+    ).toBe("confirm-handoff");
   });
 
   it("applies a same-driver switch when a continuation group is unknown", () => {

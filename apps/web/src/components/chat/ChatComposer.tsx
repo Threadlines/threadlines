@@ -916,12 +916,16 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     ownSession?.providerInstanceId ?? activeThreadModelSelection?.instanceId ?? null;
   const explicitSelectedInstanceId = selectedProviderByThreadId ?? threadProvider;
 
+  // A thread whose instance was removed (an extra account) falls back to
+  // another instance of the same agent rather than to Codex.
   const unlockedSelectedProvider =
     resolveProviderDriverKindForInstanceSelection(
       providerInstanceEntries,
       providerStatuses,
       explicitSelectedInstanceId,
-    ) ?? ProviderDriverKind.make("codex");
+    ) ??
+    ownSession?.provider ??
+    ProviderDriverKind.make("codex");
   const selectedProvider: ProviderDriverKind = lockedProvider ?? unlockedSelectedProvider;
   const threadGoal = optimisticGoal ?? activeThread?.goal ?? null;
   const goalSupported =
@@ -929,23 +933,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     activeThreadId !== null &&
     onSetThreadGoal !== undefined &&
     onClearThreadGoal !== undefined;
-  const lockedContinuationGroupKey = useMemo((): string | null => {
-    if (!lockedProvider || !activeThread) return null;
-    const lockedInstanceId =
-      ownAgentSession(activeThread)?.providerInstanceId ?? activeThreadModelSelection?.instanceId;
-    if (!lockedInstanceId) return null;
-    return (
-      providerInstanceEntries.find((entry) => entry.instanceId === lockedInstanceId)
-        ?.continuationGroupKey ?? null
-    );
-  }, [
-    activeThread,
-    activeThreadModelSelection?.instanceId,
-    lockedProvider,
-    providerInstanceEntries,
-  ]);
 
   // Resolve which configured instance the composer is currently targeting.
+  // Every configured instance stays selectable, including ones that can't
+  // resume this thread natively: the chat view confirms that handoff.
   // Priority:
   //   1. The composer draft's `activeProvider` — the user's unsaved pick
   //      from the model picker (must win, otherwise the UI appears to
@@ -967,22 +958,13 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       );
       if (match) {
         // When locked to a specific driver kind, ignore persisted instance
-        // ids from a different kind or continuation group.
+        // ids from a different kind.
         if (lockedProvider && match.driverKind !== lockedProvider) continue;
-        if (
-          lockedContinuationGroupKey &&
-          match.continuationGroupKey !== lockedContinuationGroupKey
-        ) {
-          continue;
-        }
         return match.instanceId;
       }
     }
     const byKind = providerInstanceEntries.find(
-      (entry) =>
-        entry.enabled &&
-        entry.driverKind === selectedProvider &&
-        (!lockedContinuationGroupKey || entry.continuationGroupKey === lockedContinuationGroupKey),
+      (entry) => entry.enabled && entry.driverKind === selectedProvider,
     );
     if (byKind) return byKind.instanceId;
     const anyEnabled = providerInstanceEntries.find((entry) => entry.enabled);
@@ -996,7 +978,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     ownSession?.providerInstanceId,
     activeThreadModelSelection?.instanceId,
     composerDraft.activeProvider,
-    lockedContinuationGroupKey,
     lockedProvider,
     providerInstanceEntries,
     selectedProvider,
@@ -4011,7 +3992,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                       activeInstanceId={selectedInstanceId}
                       model={selectedModelForPickerWithCustomFallback}
                       lockedProvider={lockedProvider}
-                      lockedContinuationGroupKey={lockedContinuationGroupKey}
                       instanceEntries={providerInstanceEntries}
                       keybindings={keybindings}
                       modelOptionsByInstance={modelOptionsByInstance}

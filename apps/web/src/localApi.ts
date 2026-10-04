@@ -134,6 +134,8 @@ function createBrowserLocalApi(resolveRpcClient?: () => WsRpcClient | null): Loc
       consumeProviderRateLimitResetCredit: (input) =>
         withServer((server) => server.consumeProviderRateLimitResetCredit(input)),
       updateProvider: (input) => withServer((server) => server.updateProvider(input)),
+      addProviderAccount: (input) => withServer((server) => server.addProviderAccount(input)),
+      removeProviderAccount: (input) => withServer((server) => server.removeProviderAccount(input)),
       resolveProviderUpdateBlockers: (input) =>
         withServer((server) => server.resolveProviderUpdateBlockers(input)),
       upsertKeybinding: (input) => withServer((server) => server.upsertKeybinding(input)),

@@ -200,6 +200,21 @@ function selectProviderUsageLimit(
   );
 }
 
+/**
+ * The one usage figure a compact surface shows for an account: its spend
+ * control when it has one, else whichever window is closest to its limit, so
+ * an account with an exhausted 5-hour window never reads as having room.
+ */
+export function headlineUsageMeter(
+  usage: Pick<ProviderAccountUsagePresentation, "spendControl" | "windows">,
+): ProviderAccountUsageSpendControlPresentation | ProviderAccountUsageWindowPresentation | null {
+  if (usage.spendControl) return usage.spendControl;
+  return usage.windows.reduce<ProviderAccountUsageWindowPresentation | null>(
+    (worst, window) => (worst === null || window.usedPercent > worst.usedPercent ? window : worst),
+    null,
+  );
+}
+
 /** Usage at or above this is "near limit": bars turn amber and the composer dot appears. */
 export const USAGE_WARNING_THRESHOLD_PERCENT = 75;
 

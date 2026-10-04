@@ -2281,6 +2281,82 @@ describe("GeneralSettingsPanel observability", () => {
     });
   });
 
+  it("adds another account from the header menu and starts signing it in", async () => {
+    const workInstanceId = ProviderInstanceId.make("claudeAgent_work_ab12cd");
+    const addProviderAccount = vi
+      .fn<LocalApi["server"]["addProviderAccount"]>()
+      .mockImplementation(async () => {
+        // The server saves the account and its row appears, signed out.
+        setServerConfigSnapshot({
+          ...createBaseServerConfig(),
+          providers: [
+            createClaudeProvider(),
+            {
+              ...createClaudeProvider(),
+              instanceId: workInstanceId,
+              displayName: "Work",
+              accentColor: "#16a34a",
+              auth: { status: "unauthenticated" },
+            },
+          ],
+          settings: {
+            ...DEFAULT_SERVER_SETTINGS,
+            providerInstances: {
+              [workInstanceId]: {
+                driver: ProviderDriverKind.make("claudeAgent"),
+                displayName: "Work",
+                accentColor: "#16a34a",
+                enabled: true,
+                config: { accountFolder: "/state/accounts/claudeAgent_work_ab12cd" },
+              },
+            },
+          },
+        });
+        return { instanceId: workInstanceId };
+      });
+    window.nativeApi = {
+      persistence: {
+        getClientSettings: vi.fn().mockResolvedValue(null),
+        setClientSettings: vi.fn().mockResolvedValue(undefined),
+      },
+      server: { addProviderAccount },
+    } as unknown as LocalApi;
+    setServerConfigSnapshot({
+      ...createBaseServerConfig(),
+      providers: [createClaudeProvider()],
+    });
+
+    mounted = await renderWithTestRouter(
+      <TestAppProviders>
+        <ProviderSettingsPanel />
+      </TestAppProviders>,
+    );
+
+    await page.getByRole("button", { name: "Add an account or provider instance" }).click();
+    await page.getByRole("menuitem", { name: "Add a Claude account" }).click();
+
+    const form = page.getByTestId("add-provider-account-form");
+    await expect.element(form.getByRole("textbox", { name: "Name" })).toHaveValue("Work");
+    await form.getByRole("button", { name: "Sign in to Claude" }).click();
+
+    await vi.waitFor(() =>
+      expect(addProviderAccount).toHaveBeenCalledWith({
+        driver: ProviderDriverKind.make("claudeAgent"),
+        displayName: "Work",
+        accentColor: "#16a34a",
+      }),
+    );
+    // The new row signs itself in; the agent's own row is left alone.
+    await vi.waitFor(() => {
+      expect(providerAuthHarness.startCalls).toEqual([
+        { instanceId: "claudeAgent_work_ab12cd", flow: "login" },
+      ]);
+    });
+    await expect
+      .element(page.getByRole("button", { name: "Toggle Claude · Work details" }))
+      .toHaveAttribute("aria-expanded", "true");
+  });
+
   it("reports a running provider install in place of the install button", async () => {
     window.nativeApi = {
       persistence: {

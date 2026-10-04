@@ -124,6 +124,7 @@ it.layer(NodeServices.layer)("server settings", (it) => {
         enabled: true,
         binaryPath: "/usr/local/bin/claude",
         homePath: "",
+        accountFolder: "",
         customModels: ["claude-custom"],
         fallbackModel: [],
         launchArgs: "",
@@ -497,6 +498,7 @@ it.layer(NodeServices.layer)("server settings", (it) => {
         enabled: true,
         binaryPath: "/opt/homebrew/bin/claude",
         homePath: "",
+        accountFolder: "",
         customModels: [],
         fallbackModel: [],
         launchArgs: "",
@@ -509,6 +511,7 @@ it.layer(NodeServices.layer)("server settings", (it) => {
         binaryPath: "/opt/homebrew/bin/opencode",
         serverUrl: "http://127.0.0.1:4096",
         serverPassword: "secret-password",
+        accountFolder: "",
         customModels: [],
       });
     }).pipe(Effect.provide(makeServerSettingsLayer())),

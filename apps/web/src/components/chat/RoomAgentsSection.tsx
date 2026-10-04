@@ -98,7 +98,10 @@ export const RoomAgentsSection = memo(function RoomAgentsSection(props: {
                     driverKind={row.entry.driverKind}
                     displayName={row.entry.displayName}
                     accentColor={row.entry.accentColor}
-                    showBadge={false}
+                    // An extra account wears its letter, so two accounts on one
+                    // model can be told apart.
+                    showBadge={!row.entry.isDefault}
+                    badgeClassName="right-[-0.3rem] bottom-[-0.2rem] h-2.5 min-w-2.5 px-0 text-[6px] shadow-none"
                     className="size-3.5 pointer-coarse:size-4"
                     iconClassName="size-3.5 pointer-coarse:size-4"
                   />

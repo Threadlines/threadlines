@@ -291,6 +291,7 @@ describe("ThreadAutoArchiveSweeper", () => {
       ready: Effect.void,
       getSettings: Effect.sync(() => current),
       updateSettings: () => Effect.die("unused"),
+      updateSettingsWith: () => Effect.die("unused"),
       streamChanges: Stream.make(enabled).pipe(
         Stream.tap((settings) =>
           Effect.sync(() => {

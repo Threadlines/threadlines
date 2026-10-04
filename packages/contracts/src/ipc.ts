@@ -177,6 +177,11 @@ import type {
   TerminalWriteInput,
 } from "./terminal.ts";
 import type { ServerRemoveKeybindingInput, ServerUpsertKeybindingInput } from "./server.ts";
+import type {
+  ProviderAccountAddInput,
+  ProviderAccountAddResult,
+  ProviderAccountRemoveInput,
+} from "./providerAccounts.ts";
 import * as Schema from "effect/Schema";
 
 import type {
@@ -1255,6 +1260,10 @@ export interface LocalApi {
       input: ServerProviderRateLimitResetCreditConsumeInput,
     ) => Promise<ServerProviderRateLimitResetCreditConsumeResult>;
     updateProvider: (input: ServerProviderUpdateInput) => Promise<ServerProviderUpdatedPayload>;
+    /** Creates an extra account (instance + private folder) on the server. */
+    addProviderAccount: (input: ProviderAccountAddInput) => Promise<ProviderAccountAddResult>;
+    /** Stops, signs out and removes an extra account. */
+    removeProviderAccount: (input: ProviderAccountRemoveInput) => Promise<void>;
     resolveProviderUpdateBlockers: (
       input: ServerProviderUpdateInput,
     ) => Promise<ServerProviderUpdateBlockerResolutionResult>;

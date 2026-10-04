@@ -21,6 +21,7 @@ import {
   normalizeClaudeUsageResetsAt,
   normalizeClaudeUsageWindow,
   parseClaudeUsageRetryAfter,
+  claudeKeychainServiceName,
   readClaudeOAuthCredential,
 } from "./ClaudeUsage.ts";
 
@@ -147,7 +148,10 @@ describe("readClaudeOAuthCredential", () => {
           const homePath = yield* fileSystem.makeTempDirectoryScoped({
             prefix: "threadlines-claude-usage-",
           });
-          return yield* readClaudeOAuthCredential({ homePath }, { platform: "linux" });
+          return yield* readClaudeOAuthCredential(
+            { homePath, accountFolder: "" },
+            { platform: "linux" },
+          );
         }).pipe(
           Effect.scoped,
           Effect.provide(
@@ -170,7 +174,7 @@ describe("readClaudeOAuthCredential", () => {
     }
   });
 
-  it("reads file-backed Claude credentials before consulting keychain", async () => {
+  it("reads the config folder's file when the keychain has no item", async () => {
     const credential = await Effect.runPromise(
       Effect.gen(function* () {
         const fileSystem = yield* FileSystem.FileSystem;
@@ -184,15 +188,17 @@ describe("readClaudeOAuthCredential", () => {
           '{"claudeAiOauth":{"accessToken":"file-token","expiresAt":1},"account":{"email":"file@example.com"},"organizationUuid":"file-org"}',
         );
 
-        return yield* readClaudeOAuthCredential({ homePath }, { platform: "darwin" });
+        return yield* readClaudeOAuthCredential(
+          { homePath, accountFolder: "" },
+          { platform: "darwin" },
+        );
       }).pipe(
         Effect.scoped,
         Effect.provide(
           Layer.mergeAll(
             NodeServices.layer,
-            mockSpawnerLayer(() => {
-              throw new Error("keychain should not be queried");
-            }),
+            // Like the CLI, the keychain is asked first; it has nothing here.
+            mockSpawnerLayer(() => ({ code: 44 })),
           ),
         ),
       ),
@@ -205,14 +211,17 @@ describe("readClaudeOAuthCredential", () => {
     });
   });
 
-  it("falls back to the Claude Code keychain item on macOS", async () => {
+  it("reads the Claude Code keychain item on macOS", async () => {
     const credential = await Effect.runPromise(
       Effect.gen(function* () {
         const fileSystem = yield* FileSystem.FileSystem;
         const homePath = yield* fileSystem.makeTempDirectoryScoped({
           prefix: "threadlines-claude-usage-",
         });
-        return yield* readClaudeOAuthCredential({ homePath }, { platform: "darwin" });
+        return yield* readClaudeOAuthCredential(
+          { homePath, accountFolder: "" },
+          { platform: "darwin" },
+        );
       }).pipe(
         Effect.scoped,
         Effect.provide(
@@ -251,7 +260,10 @@ describe("readClaudeOAuthCredential", () => {
         const homePath = yield* fileSystem.makeTempDirectoryScoped({
           prefix: "threadlines-claude-usage-",
         });
-        return yield* readClaudeOAuthCredential({ homePath }, { platform: "darwin" });
+        return yield* readClaudeOAuthCredential(
+          { homePath, accountFolder: "" },
+          { platform: "darwin" },
+        );
       }).pipe(
         Effect.scoped,
         Effect.provide(
@@ -294,7 +306,10 @@ describe("readClaudeOAuthCredential", () => {
         const homePath = yield* fileSystem.makeTempDirectoryScoped({
           prefix: "threadlines-claude-usage-",
         });
-        return yield* readClaudeOAuthCredential({ homePath }, { platform: "linux" });
+        return yield* readClaudeOAuthCredential(
+          { homePath, accountFolder: "" },
+          { platform: "linux" },
+        );
       }).pipe(
         Effect.scoped,
         Effect.provide(
@@ -860,10 +875,8 @@ describe("fetchClaudeAccountUsage", () => {
     return JSON.stringify({ claudeAiOauth: { accessToken } });
   }
 
-  const noKeychainLayer = () =>
-    mockSpawnerLayer(() => {
-      throw new Error("keychain should not be queried");
-    });
+  // An empty keychain (`security` exit 44): the login is read from the file.
+  const noKeychainLayer = () => mockSpawnerLayer(() => ({ code: 44 }));
 
   it("renews an expired credential and retries the usage fetch once", async () => {
     const bearers: Array<string | undefined> = [];
@@ -883,7 +896,7 @@ describe("fetchClaudeAccountUsage", () => {
           yield* fileSystem.writeFileString(credentialsPath, credentialsJson("renew-fresh-token"));
           return true;
         }).pipe(Effect.orDie);
-        return yield* fetchClaudeAccountUsage({ homePath }, {}, refresh);
+        return yield* fetchClaudeAccountUsage({ homePath, accountFolder: "" }, {}, refresh);
       }).pipe(
         Effect.scoped,
         Effect.provide(
@@ -923,8 +936,8 @@ describe("fetchClaudeAccountUsage", () => {
           refreshRuns += 1;
           return true;
         });
-        const first = yield* fetchClaudeAccountUsage({ homePath }, {}, refresh);
-        const second = yield* fetchClaudeAccountUsage({ homePath }, {}, refresh);
+        const first = yield* fetchClaudeAccountUsage({ homePath, accountFolder: "" }, {}, refresh);
+        const second = yield* fetchClaudeAccountUsage({ homePath, accountFolder: "" }, {}, refresh);
         return [first, second];
       }).pipe(
         Effect.scoped,
@@ -953,7 +966,11 @@ describe("fetchClaudeAccountUsage", () => {
           path.join(homePath, ".claude", ".credentials.json"),
           credentialsJson("failed-refresh-token"),
         );
-        return yield* fetchClaudeAccountUsage({ homePath }, {}, Effect.succeed(false));
+        return yield* fetchClaudeAccountUsage(
+          { homePath, accountFolder: "" },
+          {},
+          Effect.succeed(false),
+        );
       }).pipe(
         Effect.scoped,
         Effect.provide(
@@ -964,5 +981,51 @@ describe("fetchClaudeAccountUsage", () => {
 
     expect(usage).toBeUndefined();
     expect(bearers).toEqual(["Bearer failed-refresh-token"]);
+  });
+});
+
+describe("Claude keychain item per account", () => {
+  it("names the item the way Claude Code does for each config folder", () => {
+    expect(claudeKeychainServiceName({})).toBe("Claude Code-credentials");
+    expect(claudeKeychainServiceName({ CLAUDE_CONFIG_DIR: "/tmp/work" })).toBe(
+      "Claude Code-credentials-f9be197a",
+    );
+    // Verbatim apart from NFC: a trailing slash is a different item.
+    expect(claudeKeychainServiceName({ CLAUDE_CONFIG_DIR: "/tmp/work/" })).toBe(
+      "Claude Code-credentials-1370e28d",
+    );
+    // The secure-storage override wins; set but empty, it is the default item.
+    expect(
+      claudeKeychainServiceName({
+        CLAUDE_CONFIG_DIR: "/tmp/work",
+        CLAUDE_SECURESTORAGE_CONFIG_DIR: "",
+      }),
+    ).toBe("Claude Code-credentials");
+  });
+
+  it("reads an account's own item and never falls back to the terminal's", async () => {
+    const services: string[] = [];
+    const credential = await Effect.runPromise(
+      readClaudeOAuthCredential(
+        { homePath: "", accountFolder: "/tmp/work" },
+        {
+          platform: "darwin",
+          environment: { USER: "me", CLAUDE_SECURESTORAGE_CONFIG_DIR: "" },
+        },
+      ).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            NodeServices.layer,
+            mockSpawnerLayer((args) => {
+              services.push(args[args.indexOf("-s") + 1] ?? "");
+              return { code: 44 };
+            }),
+          ),
+        ),
+      ),
+    );
+
+    expect(credential).toBeUndefined();
+    expect(new Set(services)).toEqual(new Set(["Claude Code-credentials-f9be197a"]));
   });
 });

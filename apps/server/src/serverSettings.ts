@@ -123,6 +123,16 @@ export interface ServerSettingsShape {
     patch: ServerSettingsPatch,
   ) => Effect.Effect<ServerSettings, ServerSettingsError>;
 
+  /**
+   * Patch settings computed from the current settings, inside the same write
+   * lock as the write itself, so no other write can land between the read
+   * and the write. `current` is the stored form: sensitive environment
+   * values are references, not secrets.
+   */
+  readonly updateSettingsWith: <E>(
+    makePatch: (current: ServerSettings) => Effect.Effect<ServerSettingsPatch, E>,
+  ) => Effect.Effect<ServerSettings, ServerSettingsError | E>;
+
   /** Stream of settings change events. */
   readonly streamChanges: Stream.Stream<ServerSettings>;
 }
@@ -144,6 +154,8 @@ export class ServerSettingsService extends Context.Service<
             : {}),
         });
         const currentSettingsRef = yield* Ref.make<ServerSettings>(initialSettings);
+        // One write at a time, like the live service.
+        const writeLock = yield* Semaphore.make(1);
 
         return {
           start: Effect.void,
@@ -154,6 +166,18 @@ export class ServerSettingsService extends Context.Service<
               Effect.map((currentSettings) => applyServerSettingsPatch(currentSettings, patch)),
               Effect.flatMap(normalizeServerSettings),
               Effect.tap((nextSettings) => Ref.set(currentSettingsRef, nextSettings)),
+              writeLock.withPermits(1),
+            ),
+          updateSettingsWith: (makePatch) =>
+            Ref.get(currentSettingsRef).pipe(
+              Effect.flatMap((currentSettings) =>
+                makePatch(currentSettings).pipe(
+                  Effect.map((patch) => applyServerSettingsPatch(currentSettings, patch)),
+                ),
+              ),
+              Effect.flatMap(normalizeServerSettings),
+              Effect.tap((nextSettings) => Ref.set(currentSettingsRef, nextSettings)),
+              writeLock.withPermits(1),
             ),
           streamChanges: Stream.empty,
         } satisfies ServerSettingsShape;
@@ -604,6 +628,25 @@ const makeServerSettings = Effect.gen(function* () {
     );
   });
 
+  /** One settings write; callers hold `writeSemaphore`. */
+  const applyPatchLocked = <E>(
+    makePatch: (current: ServerSettings) => Effect.Effect<ServerSettingsPatch, E>,
+  ) =>
+    Effect.gen(function* () {
+      const current = yield* getSettingsFromCache;
+      const patch = yield* makePatch(current);
+      const nextPersisted = yield* persistProviderEnvironmentSecrets(
+        current,
+        applyServerSettingsPatch(current, patch),
+      );
+      const next = yield* normalizeServerSettings(nextPersisted);
+      yield* writeSettingsAtomically(next);
+      yield* Cache.set(settingsCache, cacheKey, next);
+      yield* emitChange(next);
+      const materialized = yield* materializeProviderEnvironmentSecrets(next);
+      return resolveTextGenerationProviders(materialized);
+    });
+
   const start = Effect.gen(function* () {
     const shouldStart = yield* Ref.modify(startedRef, (started) => [!started, true]);
     if (!shouldStart) {
@@ -633,21 +676,8 @@ const makeServerSettings = Effect.gen(function* () {
       Effect.map(resolveTextGenerationProviders),
     ),
     updateSettings: (patch) =>
-      writeSemaphore.withPermits(1)(
-        Effect.gen(function* () {
-          const current = yield* getSettingsFromCache;
-          const nextPersisted = yield* persistProviderEnvironmentSecrets(
-            current,
-            applyServerSettingsPatch(current, patch),
-          );
-          const next = yield* normalizeServerSettings(nextPersisted);
-          yield* writeSettingsAtomically(next);
-          yield* Cache.set(settingsCache, cacheKey, next);
-          yield* emitChange(next);
-          const materialized = yield* materializeProviderEnvironmentSecrets(next);
-          return resolveTextGenerationProviders(materialized);
-        }),
-      ),
+      writeSemaphore.withPermits(1)(applyPatchLocked(() => Effect.succeed(patch))),
+    updateSettingsWith: (makePatch) => writeSemaphore.withPermits(1)(applyPatchLocked(makePatch)),
     get streamChanges() {
       return Stream.fromPubSub(changesPubSub).pipe(
         Stream.mapEffect((settings) =>

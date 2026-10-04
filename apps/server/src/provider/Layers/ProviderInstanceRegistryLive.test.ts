@@ -66,6 +66,7 @@ const makeClaudeConfig = (overrides: Partial<ClaudeSettings>): ClaudeSettings =>
   enabled: false,
   binaryPath: "claude",
   homePath: "",
+  accountFolder: "",
   customModels: [],
   fallbackModel: [],
   launchArgs: "",
@@ -88,6 +89,7 @@ const makeOpenCodeConfig = (overrides: Partial<OpenCodeSettings>): OpenCodeSetti
   binaryPath: "opencode",
   serverUrl: "",
   serverPassword: "",
+  accountFolder: "",
   customModels: [],
   ...overrides,
 });

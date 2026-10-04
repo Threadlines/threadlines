@@ -11,26 +11,14 @@ Common reasons:
 
 ## I Only Use One Claude Account
 
-Use the default provider.
-
-Log in with Claude Code normally:
+Use the default provider and log in with Claude Code normally:
 
 ```bash
 claude auth login
 ```
 
-In Threadlines Settings, your Claude provider can stay like this:
-
-```text
-Display name: Claude
-Binary path: claude
-Claude HOME path: empty
-```
-
-An empty `Claude HOME path` means Threadlines uses your normal home directory.
-Threadlines shows Claude account setup under `Settings -> Providers -> Claude -> Account`. If you
-opened Settings from a chat, use `Run` to open that chat's terminal and start the sign-in command;
-otherwise use `Copy` and run the command yourself.
+Or use `Sign in` on the Claude row in `Settings -> Providers`. Threadlines runs the same sign-in for
+you and opens the sign-in page.
 
 ## Keeping Claude Sign-In Fresh
 
@@ -54,10 +42,10 @@ Default command:
 claude setup-token
 ```
 
-If the provider uses a custom `Claude HOME path`, the command must use the same home, for example:
+For an extra account, the command uses that account's folder, for example:
 
 ```bash
-HOME=~/.claude_personal_home claude setup-token
+CLAUDE_CONFIG_DIR=~/.threadlines/userdata/accounts/claudeAgent_work_3f9a claude setup-token
 ```
 
 Run the command, finish browser authorization, then copy the printed token into the `OAuth token`
@@ -75,63 +63,73 @@ credential variable in that provider, the Account section shows `Use long-lived 
 clears the provider-level Anthropic credentials and writes blank masks for those names so inherited
 shell environment variables cannot override `CLAUDE_CODE_OAUTH_TOKEN`.
 
-## I Want Work And Personal Claude Accounts
+## Add Another Claude Account
 
-Use a different Claude home for each account.
+Open `Settings -> Providers`, open the Claude row, and choose `Add another Claude account`. The `+`
+at the top of the page has the same option.
 
-Example:
+1. Give the account a name (for example `Work`) and pick a color.
+2. Choose `Sign in to Claude` and finish signing in on the page that opens.
 
-```text
-default home                 work account
-~/.claude_personal_home       personal account
-```
+The account shows up as `Claude · Work` with a colored letter on its logo in Settings, the model
+picker, and the chat. Its row shows its own email and usage.
 
-### Set Up The First Account
+What Threadlines does for you:
 
-Log in normally:
+- creates a private Claude folder for the account under `~/.threadlines/userdata/accounts/` and runs
+  Claude with `CLAUDE_CONFIG_DIR` pointing at it, so its login is stored separately (on a Mac, in
+  its own keychain item). Your terminal stays signed in to your main account.
+- links your instructions and extensions from `~/.claude` into that folder (`CLAUDE.md`, `rules`,
+  `settings.json`, `skills`, `agents`, `commands`, `plugins`, `output-styles`, `workflows`), plus
+  the conversation history (`projects`, `file-history`, `todos`, `plans`), so the new account
+  behaves like your main one
+- keeps everything account-specific private: the login, `.claude.json`, organization policy and
+  caches
+- leaves `HOME` alone, so the agent's own commands keep your git identity, SSH keys and GitHub
+  login
 
-```bash
-claude auth login
-```
+To remove an account, open its row and choose `Remove account`. Threadlines signs it out (which
+also removes its keychain item) and deletes its folder. Chats that used it stay, and can continue on
+another account.
 
-In Threadlines Settings:
+Two things don't carry over to an extra account: MCP servers you added at user scope (they live in
+`.claude.json`, which holds the account's login details), and anything a shared `settings.json`
+does to authentication. If your `settings.json` sets an `apiKeyHelper` or an Anthropic key in
+`env`, every Claude account uses it, and the account's row shows that sign-in instead.
 
-```text
-Display name: Claude Work
-Binary path: claude
-Claude HOME path: empty
-```
+## Which Account Am I Using?
 
-### Set Up The Second Account
+Open Settings and look at the provider row. Threadlines shows the signed-in email for each account.
+Emails are blurred by default; click the blurred email to reveal it.
 
-Log in with a separate home:
-
-```bash
-mkdir -p ~/.claude_personal_home
-HOME=~/.claude_personal_home claude auth login
-```
-
-Then add another Claude provider in Threadlines:
-
-```text
-Display name: Claude Personal
-Binary path: claude
-Claude HOME path: ~/.claude_personal_home
-```
-
-Use the email shown in Settings to confirm each provider is using the intended account. Emails are
-blurred by default; click the blurred email to reveal it.
+In the model picker, each Claude account has its own tab, with how much of its usage limit is used
+next to its name.
 
 ## Can I Switch Claude Accounts In An Existing Thread?
 
-Usually, no.
+Yes. Accounts added with `Add another Claude account` share your main Claude conversation history,
+so a thread moves between them and Claude resumes the full conversation, for example when one
+account hits its limit.
 
-Threadlines only offers Claude providers that use the same Claude home for an existing thread. A
-different Claude home is treated as a different Claude environment.
+A Claude setup with its own separate folder (one you chose, or a custom `CLAUDE_CONFIG_DIR`) keeps
+its own history. Switching a thread to it still works, but Threadlines asks first: the new setup
+picks up from a recap of the conversation.
 
-This is different from the recommended Codex setup. Claude Code keeps account and local state across
-multiple files under its home directory, so Threadlines keeps separate Claude homes isolated instead of
-trying to share part of the state.
+## Advanced: Choose The Account's Folder
+
+In the add-account form, `Use a folder I choose` takes a folder on the computer Claude runs on. This
+is handy when you also use that account from a terminal:
+
+```bash
+CLAUDE_CONFIG_DIR=~/claude-work claude
+```
+
+Threadlines creates the folder if it's missing and links the shared entries it doesn't already
+have. Entries already in the folder stay its own. Removing the account later never signs it out or
+deletes the folder.
+
+The older `Claude HOME path` setting still works, but it replaces `HOME` for everything the agent
+runs, which hides your git, SSH and GitHub settings from its commands. Prefer `Account folder`.
 
 ## I Want To Use OpenRouter
 
@@ -148,7 +146,7 @@ Add or edit a Claude provider in Threadlines Settings:
 ```text
 Display name: Claude OpenRouter
 Binary path: claude
-Claude HOME path: ~/.claude_openrouter_home
+Account folder: ~/.claude_openrouter
 ```
 
 In that provider's Environment variables section, add:
@@ -162,14 +160,14 @@ ANTHROPIC_API_KEY                              Empty value
 Mark `ANTHROPIC_AUTH_TOKEN` as sensitive. Threadlines stores the value as a server secret and does not
 send it back to the app after saving.
 
-If you want this setup isolated from your normal Claude account, create that home first:
+If you want this setup isolated from your normal Claude account, create that folder first:
 
 ```bash
-mkdir -p ~/.claude_openrouter_home
+mkdir -p ~/.claude_openrouter
 ```
 
-If you previously used the same Claude home with a normal Anthropic login, run `/logout` in a Claude
-Code session for that home before using OpenRouter. Otherwise Claude Code may keep using cached
+If you previously used the same Claude folder with a normal Anthropic login, run `/logout` in a Claude
+Code session for that folder before using OpenRouter. Otherwise Claude Code may keep using cached
 Anthropic credentials instead of the OpenRouter token.
 
 ### Pick OpenRouter Models
@@ -235,20 +233,20 @@ Configure a Claude provider:
 ```text
 Display name: Claude Router
 Binary path: claude
-Claude HOME path: ~/.claude_router_home
+Account folder: ~/.claude_router
 ```
 
 Then copy the variables that `ccr activate` would export into the provider's Environment variables
 section. Mark tokens and API keys as sensitive.
 
 If you want the router-backed setup to stay separate from your normal Claude account, create and log
-in with a dedicated home first:
+in with a dedicated folder first:
 
 ```bash
-mkdir -p ~/.claude_router_home
+mkdir -p ~/.claude_router
 ccr start
 ccr activate
-HOME=~/.claude_router_home claude auth login
+CLAUDE_CONFIG_DIR=~/.claude_router claude auth login
 ```
 
 Claude Code Router's setup can change over time. Use its upstream README for the current install and
@@ -264,7 +262,7 @@ Examples:
 - "Claude Router"
 - "Claude Experimental"
 
-If the preset needs different Claude files, give it a different `Claude HOME path`. If it needs
+If the preset needs different Claude files, give it its own `Account folder`. If it needs
 different API keys, base URLs, or router settings, use Environment variables.
 
 Do not put environment variable assignments in `Launch arguments`.

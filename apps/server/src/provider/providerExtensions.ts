@@ -41,6 +41,7 @@ import {
   type ProviderExtensionOperationStatusInput,
   type ProviderExtensionOperationStatusResult,
   type ProviderExtensionPlugin,
+  type ProviderInstanceEnvironment,
   type ProviderExtensionPluginComponent,
   type ProviderExtensionPluginComponentKind,
   type ProviderExtensionPluginDetail,
@@ -85,7 +86,11 @@ import {
 } from "@threadlines/contracts";
 
 import { codexAppServerCommandOptions } from "./codexAppServerArgs.ts";
-import { makeClaudeEnvironment, resolveClaudeHomePath } from "./Drivers/ClaudeHome.ts";
+import {
+  claudeInstanceBaseEnvironment,
+  makeClaudeEnvironment,
+  resolveClaudeConfigDir,
+} from "./Drivers/ClaudeHome.ts";
 import {
   materializeCodexShadowHome,
   resolveCodexHomeLayout,
@@ -1580,7 +1585,7 @@ const resolveClaudeActionContext = Effect.fn("providerExtensions.resolveClaudeAc
     }
 
     const config = { ...decoded, enabled };
-    const baseEnvironment = mergeProviderInstanceEnvironment(providerConfig.environment ?? []);
+    const baseEnvironment = claudeInstanceEnvironmentFor(config, providerConfig.environment);
     const claudeEnvironment = yield* makeClaudeEnvironment(config, baseEnvironment);
     return {
       config,
@@ -2987,12 +2992,12 @@ export function parseClaudeEnabledPlugins(contents: string): Map<string, boolean
  */
 const readClaudeEnabledPlugins = Effect.fn("providerExtensions.readClaudeEnabledPlugins")(
   function* (
-    claudeHome: string,
+    claudeConfigDir: string,
   ): Effect.fn.Return<Map<string, boolean>, never, FileSystem.FileSystem | Path.Path> {
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const contents = yield* fileSystem
-      .readFileString(path.join(claudeHome, ".claude", "settings.json"))
+      .readFileString(path.join(claudeConfigDir, "settings.json"))
       .pipe(Effect.catch(() => Effect.succeed("")));
     return parseClaudeEnabledPlugins(contents);
   },
@@ -3060,12 +3065,14 @@ export function parseClaudeHooks(
  */
 const readClaudeHooks = Effect.fn("providerExtensions.readClaudeHooks")(function* (input: {
   readonly claudeHome: string;
+  /** The folder Claude reads its user settings from (`CLAUDE_CONFIG_DIR`). */
+  readonly claudeConfigDir: string;
   readonly cwd: string;
   readonly plugins: ReadonlyArray<ProviderExtensionPlugin>;
 }): Effect.fn.Return<ProviderExtensionHook[], never, FileSystem.FileSystem | Path.Path> {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const userSettings = path.join(input.claudeHome, ".claude", "settings.json");
+  const userSettings = path.join(input.claudeConfigDir, "settings.json");
   const projectDirectory = path.resolve(input.cwd);
   // The machine scope's cwd is the home directory, whose project file is the user file.
   const isHome = normalizedPathKey(projectDirectory) === normalizedPathKey(input.claudeHome);
@@ -3490,9 +3497,17 @@ export function claudePluginSkillRoots(
   });
 }
 
+/** A Claude instance's environment before Claude-specific additions, as its driver builds it. */
+function claudeInstanceEnvironmentFor(
+  config: Pick<ClaudeSettings, "accountFolder">,
+  environment: ProviderInstanceEnvironment | undefined,
+): NodeJS.ProcessEnv {
+  return mergeProviderInstanceEnvironment(environment ?? [], claudeInstanceBaseEnvironment(config));
+}
+
 /** The user skills root Claude auto-loads as `<name>@skills-dir` plugins. */
-export function claudeUserSkillsRoot(path: Path.Path, claudeHome: string): string {
-  return path.join(claudeHome, ".claude", "skills");
+export function claudeUserSkillsRoot(path: Path.Path, claudeConfigDir: string): string {
+  return path.join(claudeConfigDir, "skills");
 }
 
 /**
@@ -3502,14 +3517,16 @@ export function claudeUserSkillsRoot(path: Path.Path, claudeHome: string): strin
  */
 const claudeWritableSkillRoots = Effect.fn("providerExtensions.claudeWritableSkillRoots")(
   function* (
-    claudeHome: string,
+    claudeConfigDir: string,
     cwd: string,
   ): Effect.fn.Return<ClaudeSkillRoot[], never, FileSystem.FileSystem | Path.Path> {
     const path = yield* Path.Path;
     const nestedProjectRoots = yield* discoverNestedClaudeSkillRoots(cwd);
     // A project under the home directory walks its ancestors up through ~/.claude/skills, which
     // would re-file every personal skill as a project skill. The user root keeps its own identity.
-    const userRootKey = normalizedPathKey(path.resolve(claudeUserSkillsRoot(path, claudeHome)));
+    const userRootKey = normalizedPathKey(
+      path.resolve(claudeUserSkillsRoot(path, claudeConfigDir)),
+    );
     const ancestorRoots = claudeAncestorSkillRoots(path, cwd).filter(
       (root) => normalizedPathKey(path.resolve(root.root)) !== userRootKey,
     );
@@ -3518,7 +3535,7 @@ const claudeWritableSkillRoots = Effect.fn("providerExtensions.claudeWritableSki
         ...nestedProjectRoots,
         ...ancestorRoots,
         {
-          root: claudeUserSkillsRoot(path, claudeHome),
+          root: claudeUserSkillsRoot(path, claudeConfigDir),
           scope: "user",
           source: "Claude user",
           priority: 0,
@@ -3835,6 +3852,7 @@ const readClaudeInventory = Effect.fn("providerExtensions.readClaudeInventory")(
   const path = yield* Path.Path;
   const claudeHome = claudeEnvironment.HOME ?? process.env.HOME ?? process.env.USERPROFILE ?? "";
   const resolvedClaudeHome = path.resolve(claudeHome);
+  const claudeConfigDir = yield* resolveClaudeConfigDir(input.config, claudeEnvironment);
   // `claude mcp list` health-checks every configured server, which takes seconds, so it only runs
   // when asked for, the same as Codex's MCP status.
   const includeMcpServers = input.includeMcpServers ?? true;
@@ -3892,8 +3910,8 @@ const readClaudeInventory = Effect.fn("providerExtensions.readClaudeInventory")(
               env: claudeEnvironment,
             }).pipe(Effect.result)
           : Effect.succeed(undefined),
-        claudeWritableSkillRoots(resolvedClaudeHome, input.cwd),
-        readClaudeEnabledPlugins(resolvedClaudeHome),
+        claudeWritableSkillRoots(claudeConfigDir, input.cwd),
+        readClaudeEnabledPlugins(claudeConfigDir),
       ],
       { concurrency: "unbounded" },
     );
@@ -3935,7 +3953,7 @@ const readClaudeInventory = Effect.fn("providerExtensions.readClaudeInventory")(
   const [skillsResult, hooks] = yield* Effect.all(
     [
       readClaudeSkills(writableRoots, plugins).pipe(Effect.result),
-      readClaudeHooks({ claudeHome: resolvedClaudeHome, cwd: input.cwd, plugins }),
+      readClaudeHooks({ claudeHome: resolvedClaudeHome, claudeConfigDir, cwd: input.cwd, plugins }),
     ],
     { concurrency: "unbounded" },
   );
@@ -3949,7 +3967,7 @@ const readClaudeInventory = Effect.fn("providerExtensions.readClaudeInventory")(
   const skills = Result.isSuccess(skillsResult)
     ? annotateClaudeSkillCapabilities(annotatePluginBackedSkills(skillsResult.success, plugins), {
         path,
-        userSkillsRoot: claudeUserSkillsRoot(path, resolvedClaudeHome),
+        userSkillsRoot: claudeUserSkillsRoot(path, claudeConfigDir),
         writableRoots: writableRoots.map((root) => root.root),
         enabledPlugins,
       })
@@ -4428,11 +4446,14 @@ const resolveProviderSkillRoots = Effect.fn("providerExtensions.resolveProviderS
       if (!(providerConfig.enabled ?? decoded.enabled)) {
         return yield* new ProviderExtensionsError({ message: "Provider is disabled." });
       }
-      const claudeHome = yield* resolveClaudeHomePath(decoded);
-      const roots = yield* claudeWritableSkillRoots(claudeHome, cwd);
+      const claudeConfigDir = yield* resolveClaudeConfigDir(
+        decoded,
+        claudeInstanceEnvironmentFor(decoded, providerConfig.environment),
+      );
+      const roots = yield* claudeWritableSkillRoots(claudeConfigDir, cwd);
       return {
         driver: providerConfig.driver,
-        userSkillsRoot: claudeUserSkillsRoot(path, claudeHome),
+        userSkillsRoot: claudeUserSkillsRoot(path, claudeConfigDir),
         writableRoots: roots.map((root) => root.root),
       };
     }
@@ -4648,9 +4669,9 @@ export const setProviderExtensionSkillEnabled = Effect.fn(
       settings: input.settings,
     });
     const skillPath = optionalText(input.request.path);
-    const claudeHome = yield* resolveClaudeHomePath(context.config);
+    const claudeConfigDir = yield* resolveClaudeConfigDir(context.config, context.environment);
     const directory = skillPath
-      ? skillDirectoryUnderRoots(path, [claudeUserSkillsRoot(path, claudeHome)], skillPath)
+      ? skillDirectoryUnderRoots(path, [claudeUserSkillsRoot(path, claudeConfigDir)], skillPath)
       : null;
     if (!directory) {
       return yield* new ProviderExtensionsError({

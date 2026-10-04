@@ -24,6 +24,7 @@ import {
   useSavedEnvironmentRuntimeStore,
 } from "../../environments/runtime";
 import { usePrimaryEnvironmentId } from "../../environments/primary";
+import { useServerProviders } from "../../rpc/serverState";
 import { selectProjectByRef, useStore } from "../../store";
 import { useGitStatus } from "../../lib/gitStatusState";
 import { resolveThreadWorkingCwd } from "@threadlines/shared/threadCwd";
@@ -202,6 +203,16 @@ function ThreadHoverCardContent({ thread, status, lineage }: ThreadHoverCardPayl
     ? (PROVIDER_OPTIONS.find((option) => option.value === provider)?.label ?? provider)
     : null;
   const modelLabel = loadedThread?.modelSelection?.model ?? null;
+  // An extra account names itself ("Opus 5.5 · Work"): two accounts on the
+  // same model are otherwise indistinguishable here.
+  const serverProviders = useServerProviders();
+  const instanceId =
+    thread.session?.providerInstanceId ?? loadedThread?.modelSelection?.instanceId ?? null;
+  const accountName =
+    instanceId !== null && provider !== null && String(instanceId) !== String(provider)
+      ? (serverProviders.find((snapshot) => snapshot.instanceId === instanceId)?.displayName ??
+        null)
+      : null;
   const activityAt = thread.latestUserMessageAt ?? thread.updatedAt ?? thread.createdAt;
   // A worktree is the more specific fact when present: it implies the branch
   // and tells you the checkout is isolated.
@@ -302,6 +313,9 @@ function ThreadHoverCardContent({ thread, status, lineage }: ThreadHoverCardPayl
         {ProviderIcon || modelLabel || providerLabel ? (
           <HoverCardDetailRow icon={ProviderIcon ? <ProviderIcon className="size-3.5" /> : null}>
             {modelLabel ?? providerLabel}
+            {accountName ? (
+              <span className="text-muted-foreground/70">{` · ${accountName}`}</span>
+            ) : null}
           </HoverCardDetailRow>
         ) : null}
       </HoverCardDetails>

@@ -1864,6 +1864,92 @@ routing.layer("ProviderServiceLive routing", (it) => {
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 
+  it.effect("resumes the saved conversation on another account that shares its history", () =>
+    Effect.gen(function* () {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "t3-provider-service-accounts-"));
+      const dbPath = path.join(tempDir, "orchestration.sqlite");
+      const persistenceLayer = makeSqlitePersistenceLive(dbPath);
+      const runtimeRepositoryLayer = ProviderSessionRuntimeRepositoryLive.pipe(
+        Layer.provide(persistenceLayer),
+      );
+      const claudeKind = ProviderDriverKind.make("claudeAgent");
+      const workInstanceId = ProviderInstanceId.make("claudeAgent_work");
+      const otherInstanceId = ProviderInstanceId.make("claudeAgent_other");
+      // Main account and the extra one read the same history; a third keeps its own.
+      const keyByInstance = new Map<string, string>([
+        [String(claudeAgentInstanceId), "claude:home:/Users/me"],
+        [String(workInstanceId), "claude:home:/Users/me"],
+        [String(otherInstanceId), "claude:config:/elsewhere"],
+      ]);
+      const accountsRegistry = (
+        adapter: ReturnType<typeof makeFakeCodexAdapter>["adapter"],
+      ): ProviderAdapterRegistryShape => {
+        const base = makeAdapterRegistryMock({ [claudeKind]: adapter });
+        return {
+          ...base,
+          getByInstance: (instanceId) =>
+            keyByInstance.has(String(instanceId))
+              ? Effect.succeed(adapter)
+              : base.getByInstance(instanceId),
+          getInstanceInfo: (instanceId) => {
+            const continuationKey = keyByInstance.get(String(instanceId));
+            return continuationKey === undefined
+              ? base.getInstanceInfo(instanceId)
+              : Effect.succeed({
+                  instanceId,
+                  driverKind: claudeKind,
+                  displayName: undefined,
+                  enabled: true,
+                  continuationIdentity: { driverKind: claudeKind, continuationKey },
+                });
+          },
+        };
+      };
+      const providerLayerFor = (adapter: ReturnType<typeof makeFakeCodexAdapter>["adapter"]) =>
+        makeProviderServiceLive().pipe(
+          Layer.provide(Layer.succeed(ProviderAdapterRegistry, accountsRegistry(adapter))),
+          Layer.provide(ProviderSessionDirectoryLive.pipe(Layer.provide(runtimeRepositoryLayer))),
+          Layer.provide(defaultServerSettingsLayer),
+          Layer.provide(AnalyticsService.layerTest),
+          Layer.provide(Layer.succeed(ProviderEventLoggers, NoOpProviderEventLoggers)),
+        );
+      const threadId = asThreadId("thread-claude-accounts");
+      const startOn = (
+        providerInstanceId: ProviderInstanceId,
+        adapter: ReturnType<typeof makeFakeCodexAdapter>["adapter"],
+      ) =>
+        Effect.gen(function* () {
+          const provider = yield* ProviderService;
+          return yield* provider.startSession(threadId, {
+            provider: claudeKind,
+            providerInstanceId,
+            threadId,
+            cwd: "/tmp/project-claude-accounts",
+            runtimeMode: "full-access",
+          });
+        }).pipe(Effect.provide(providerLayerFor(adapter)));
+
+      const initial = yield* startOn(
+        claudeAgentInstanceId,
+        makeFakeCodexAdapter(CLAUDE_AGENT_DRIVER).adapter,
+      );
+
+      // After a restart, the work account picks the conversation up natively.
+      const work = makeFakeCodexAdapter(CLAUDE_AGENT_DRIVER);
+      yield* startOn(workInstanceId, work.adapter);
+      const workStart = work.startSession.mock.calls[0]?.[0] as { resumeCursor?: unknown };
+      assert.deepEqual(workStart.resumeCursor, initial.resumeCursor);
+
+      // An account with its own history never receives another's cursor.
+      const other = makeFakeCodexAdapter(CLAUDE_AGENT_DRIVER);
+      yield* startOn(otherInstanceId, other.adapter);
+      const otherStart = other.startSession.mock.calls[0]?.[0] as { resumeCursor?: unknown };
+      assert.equal(otherStart.resumeCursor, undefined);
+
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
   it.effect(
     "reuses persisted cwd when startSession resumes a claude session without cwd input",
     () =>

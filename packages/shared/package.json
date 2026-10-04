@@ -159,6 +159,10 @@
       "types": "./src/providerAuthCommands.ts",
       "import": "./src/providerAuthCommands.ts"
     },
+    "./providerAccounts": {
+      "types": "./src/providerAccounts.ts",
+      "import": "./src/providerAccounts.ts"
+    },
     "./searchRanking": {
       "types": "./src/searchRanking.ts",
       "import": "./src/searchRanking.ts"

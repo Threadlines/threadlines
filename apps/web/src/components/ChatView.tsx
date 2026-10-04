@@ -306,7 +306,9 @@ import {
   LastInvokedScriptByProjectSchema,
   type LocalDispatchSnapshot,
   PullRequestDialogState,
+  buildModelHandoffConfirmCopy,
   classifyModelSwitch,
+  threadHasStarted,
   cloneComposerAttachmentForRetry,
   deriveLockedProvider,
   appendRestoredFollowUpText,
@@ -1128,12 +1130,18 @@ export default function ChatView(props: ChatViewProps) {
   const settings = useSettings();
   const { updateSettings } = useUpdateSettings();
   const suppressCrossProviderWarning = settings.suppressCrossProviderSwitchWarning ?? false;
-  const [pendingCrossProviderSwitch, setPendingCrossProviderSwitch] = useState<{
+  // Kept after closing (`open: false`) so the dialog's text holds while it
+  // animates out.
+  const [pendingModelHandoff, setPendingModelHandoff] = useState<{
+    open: boolean;
     instanceId: ProviderInstanceId;
     model: string;
-    fromLabel: string;
-    toLabel: string;
+    copy: ReturnType<typeof buildModelHandoffConfirmCopy>;
   } | null>(null);
+  const closeModelHandoffDialog = useCallback(
+    () => setPendingModelHandoff((current) => (current ? { ...current, open: false } : null)),
+    [],
+  );
   const [crossProviderDontAskAgain, setCrossProviderDontAskAgain] = useState(false);
   const [forkDialogState, setForkDialogState] = useState<ForkThreadDialogState | null>(null);
   const [revertDialogState, setRevertDialogState] = useState<RevertThreadDialogState | null>(null);
@@ -6027,6 +6035,24 @@ export default function ChatView(props: ChatViewProps) {
       providerSendPreflightRecheckFailed,
     ],
   );
+  // A thread whose account was removed continues on whichever instance the
+  // composer falls back to; say so before the next message goes out, since
+  // that instance only gets a recap of the conversation.
+  const removedAccountNotice = useMemo<ComposerNotice | null>(() => {
+    if (!activeThread || !threadHasStarted(activeThread) || providerStatuses.length === 0) {
+      return null;
+    }
+    const boundInstanceId =
+      ownAgentSession(activeThread)?.providerInstanceId ?? activeThread.modelSelection.instanceId;
+    if (providerStatuses.some((snapshot) => snapshot.instanceId === boundInstanceId)) return null;
+    return {
+      id: `removed-instance:${String(boundInstanceId)}`,
+      severity: "info",
+      lead: "The account this chat used was removed.",
+      detail:
+        "Your next message continues it on the agent picked below, which picks up from a recap of the conversation.",
+    };
+  }, [activeThread, providerStatuses]);
   const composerNotices = useMemo(
     () =>
       selectComposerNotices([
@@ -6035,12 +6061,14 @@ export default function ChatView(props: ChatViewProps) {
         sendPreflightNotice,
         providerStatusNotice,
         sessionStartupNotice,
+        removedAccountNotice,
         ...infrastructureComposerNotices,
       ]),
     [
       checkoutMissingNotice,
       infrastructureComposerNotices,
       providerStatusNotice,
+      removedAccountNotice,
       sendPreflightNotice,
       sessionStartupNotice,
       threadErrorNotice,
@@ -6894,31 +6922,51 @@ export default function ChatView(props: ChatViewProps) {
       // are rejected by returning early; the server remains authoritative too.
       const entry = providerStatuses.find((snapshot) => snapshot.instanceId === instanceId);
       const pickedDriverKind = entry?.driver ?? null;
+      // The instance the server compares against: the own agent's runtime, or
+      // the thread's saved selection when it has none (as the reactor does).
+      const boundInstanceId =
+        ownAgentSession(activeThread)?.providerInstanceId ?? activeThread.modelSelection.instanceId;
       const currentEntry = providerStatuses.find(
-        (snapshot) => snapshot.instanceId === ownAgentSession(activeThread)?.providerInstanceId,
+        (snapshot) => snapshot.instanceId === boundInstanceId,
       );
       const classification = classifyModelSwitch({
         boundProvider: lockedProvider,
         pickedDriverKind,
         boundContinuationGroupKey: currentEntry?.continuation?.groupKey ?? null,
         pickedContinuationGroupKey: entry?.continuation?.groupKey ?? null,
+        // Only once providers have loaded: before that every instance looks missing.
+        boundInstanceMissing:
+          providerStatuses.length > 0 &&
+          currentEntry === undefined &&
+          instanceId !== boundInstanceId,
       });
-      // Same driver across incompatible resume state can't be reconciled; the
-      // server rejects it, so keep blocking it in the UI.
-      if (classification === "blocked-incompatible-instance") {
-        scheduleComposerFocus();
-        return;
-      }
-      // Cross-driver is a deliberate, lossy handoff (the new model gets a recap
-      // + the working tree, not the outgoing model's full state): confirm once
-      // unless the user has opted out.
-      if (classification === "confirm-cross-driver" && !suppressCrossProviderWarning) {
-        const toLabel = entry?.displayName ?? (pickedDriverKind ? String(pickedDriverKind) : model);
+      // Another agent, or another account with its own history, is a
+      // deliberate, lossy handoff (the new instance gets a recap + the working
+      // tree, not the outgoing model's full state): confirm once unless the
+      // user has opted out.
+      if (classification === "confirm-handoff" && !suppressCrossProviderWarning) {
+        // Name both sides the way the model picker does.
+        const pickerLabel = (id: ProviderInstanceId | undefined) =>
+          providerInstanceEntries.find((candidate) => candidate.instanceId === id)?.displayName;
+        const toLabel =
+          pickerLabel(instanceId) ??
+          entry?.displayName ??
+          (pickedDriverKind ? String(pickedDriverKind) : model);
         const fromLabel =
+          pickerLabel(currentEntry?.instanceId) ??
           currentEntry?.displayName ??
           (lockedProvider ? String(lockedProvider) : "the current provider");
         setCrossProviderDontAskAgain(false);
-        setPendingCrossProviderSwitch({ instanceId, model, fromLabel, toLabel });
+        setPendingModelHandoff({
+          open: true,
+          instanceId,
+          model,
+          copy: buildModelHandoffConfirmCopy({
+            fromLabel,
+            toLabel,
+            sameAgent: pickedDriverKind === lockedProvider,
+          }),
+        });
         return;
       }
       applyModelSelection(instanceId, model);
@@ -6926,21 +6974,27 @@ export default function ChatView(props: ChatViewProps) {
     [
       activeThread,
       lockedProvider,
+      providerInstanceEntries,
       providerStatuses,
       suppressCrossProviderWarning,
       applyModelSelection,
-      scheduleComposerFocus,
     ],
   );
 
-  const confirmCrossProviderSwitch = useCallback(() => {
-    if (!pendingCrossProviderSwitch) return;
+  const confirmModelHandoff = useCallback(() => {
+    if (!pendingModelHandoff?.open) return;
     if (crossProviderDontAskAgain) {
       updateSettings({ suppressCrossProviderSwitchWarning: true });
     }
-    applyModelSelection(pendingCrossProviderSwitch.instanceId, pendingCrossProviderSwitch.model);
-    setPendingCrossProviderSwitch(null);
-  }, [pendingCrossProviderSwitch, crossProviderDontAskAgain, updateSettings, applyModelSelection]);
+    applyModelSelection(pendingModelHandoff.instanceId, pendingModelHandoff.model);
+    closeModelHandoffDialog();
+  }, [
+    pendingModelHandoff,
+    crossProviderDontAskAgain,
+    updateSettings,
+    applyModelSelection,
+    closeModelHandoffDialog,
+  ]);
   const onEnvModeChange = useCallback(
     (mode: DraftThreadEnvMode) => {
       if (canOverrideServerThreadEnvMode) {
@@ -7348,9 +7402,10 @@ export default function ChatView(props: ChatViewProps) {
                   activeProposedPlan={activeProposedPlan}
                   runtimeMode={runtimeMode}
                   interactionMode={interactionMode}
-                  // Unlocked so any provider's models are selectable;
-                  // `onProviderModelSelect` gates a driver change behind the
-                  // cross-provider handoff confirmation.
+                  // Unlocked so every instance's models are selectable;
+                  // `onProviderModelSelect` gates a switch the thread can't
+                  // resume natively (another agent or account) behind the
+                  // handoff confirmation.
                   lockedProvider={null}
                   providerStatuses={providerStatuses as ServerProvider[]}
                   // A local draft has not chosen a concrete model yet. Ignore
@@ -7433,23 +7488,16 @@ export default function ChatView(props: ChatViewProps) {
                   onPreviewFile={onPreviewFile}
                 />
                 <AlertDialog
-                  open={pendingCrossProviderSwitch !== null}
+                  open={pendingModelHandoff?.open === true}
                   onOpenChange={(open) => {
-                    if (!open) setPendingCrossProviderSwitch(null);
+                    if (!open) closeModelHandoffDialog();
                   }}
                 >
                   <AlertDialogPopup>
                     <AlertDialogHeader>
-                      <AlertDialogTitle>
-                        Switch to {pendingCrossProviderSwitch?.toLabel ?? "another provider"}?
-                      </AlertDialogTitle>
+                      <AlertDialogTitle>{pendingModelHandoff?.copy.title}</AlertDialogTitle>
                       <AlertDialogDescription>
-                        This thread is running on{" "}
-                        {pendingCrossProviderSwitch?.fromLabel ?? "the current provider"}.{" "}
-                        {pendingCrossProviderSwitch?.toLabel ?? "The new provider"} will pick up a
-                        recap of the conversation and your current working tree — but not{" "}
-                        {pendingCrossProviderSwitch?.fromLabel ?? "the current provider"}'s full
-                        internal reasoning.
+                        {pendingModelHandoff?.copy.description}
                       </AlertDialogDescription>
                     </AlertDialogHeader>
                     <label className="flex cursor-pointer items-center gap-2 px-6 pb-4 text-muted-foreground text-sm">
@@ -7465,8 +7513,8 @@ export default function ChatView(props: ChatViewProps) {
                       <AlertDialogClose render={<Button variant="outline" />}>
                         Cancel
                       </AlertDialogClose>
-                      <Button onClick={confirmCrossProviderSwitch}>
-                        Switch to {pendingCrossProviderSwitch?.toLabel ?? "provider"}
+                      <Button onClick={confirmModelHandoff}>
+                        {pendingModelHandoff?.copy.confirmLabel}
                       </Button>
                     </AlertDialogFooter>
                   </AlertDialogPopup>

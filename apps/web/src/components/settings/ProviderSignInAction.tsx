@@ -1,5 +1,6 @@
 import type { ProviderInstanceId } from "@threadlines/contracts";
 import { LoaderIcon } from "lucide-react";
+import { useEffect, useRef } from "react";
 
 import { Button } from "../ui/button";
 import { stackedThreadToast, toastManager } from "../ui/toast";
@@ -10,11 +11,15 @@ import { useProviderConnectFlow } from "./useProviderConnectFlow";
  * spot Install occupies before that. It starts the same server-run sign-in the
  * card's Account section shows, then asks the card to open that section so the
  * progress, the sign-in link, and any terminal prompt are in view.
+ *
+ * `autoStart` starts it once on mount, for an account the user just added:
+ * they already asked to sign in when they submitted the form.
  */
 export function ProviderSignInAction(props: {
   readonly instanceId: ProviderInstanceId;
   readonly displayName: string;
   readonly onStarted: () => void;
+  readonly autoStart?: boolean;
 }) {
   const { start, isStarting, isActive } = useProviderConnectFlow({
     instanceId: props.instanceId,
@@ -30,6 +35,14 @@ export function ProviderSignInAction(props: {
     },
   });
   const busy = isActive || isStarting;
+  const autoStartedRef = useRef(false);
+  const { autoStart, onStarted } = props;
+  useEffect(() => {
+    if (!autoStart || autoStartedRef.current) return;
+    autoStartedRef.current = true;
+    start();
+    onStarted();
+  }, [autoStart, onStarted, start]);
 
   return (
     <Button

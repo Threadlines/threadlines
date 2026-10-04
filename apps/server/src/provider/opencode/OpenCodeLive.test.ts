@@ -90,6 +90,7 @@ const setup = Effect.gen(function* () {
       binaryPath: binaryPath!,
       serverUrl: "",
       serverPassword: "",
+      accountFolder: "",
       customModels: [],
     },
     manager,

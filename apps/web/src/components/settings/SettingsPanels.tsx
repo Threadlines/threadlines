@@ -23,6 +23,10 @@ import {
 import { scopeThreadRef } from "@threadlines/client-runtime";
 import { agentInvitesChoice, agentThreadsMode } from "@threadlines/shared/serverSettings";
 import { DEFAULT_UNIFIED_SETTINGS } from "@threadlines/contracts/settings";
+import {
+  PROVIDER_ACCOUNT_DRIVER_KINDS,
+  supportsProviderAccounts,
+} from "@threadlines/shared/providerAccounts";
 import * as Duration from "effect/Duration";
 import * as Equal from "effect/Equal";
 import { APP_VERSION } from "../../branding";
@@ -71,6 +75,16 @@ import { DraftInput } from "../ui/draft-input";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Switch } from "../ui/switch";
 import { stackedThreadToast, toastManager } from "../ui/toast";
+import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from "../ui/menu";
+import {
+  AlertDialog,
+  AlertDialogClose,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogPopup,
+  AlertDialogTitle,
+} from "../ui/alert-dialog";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { AddProviderInstanceDialog } from "./AddProviderInstanceDialog";
 import {
@@ -78,7 +92,9 @@ import {
   type ArchivedThreadProject,
   ArchivedThreadsSection,
 } from "./ArchivedThreadsSection";
-import { ProviderInstanceCard } from "./ProviderInstanceCard";
+import { ProviderInstanceCard, type ProviderAddAccountControls } from "./ProviderInstanceCard";
+import { addAccountMenuLabel, isThreadlinesAccountFolder } from "./providerAccounts.logic";
+import { formatProviderInstanceName } from "../../providerInstances";
 import { getDriverOption } from "./providerDriverMeta";
 import { thisComputerLabel } from "./agentStatus";
 import {
@@ -1037,6 +1053,21 @@ export function ProviderSettingsPanel({
   const [isRefreshingProviders, setIsRefreshingProviders] = useState(false);
   const [isAddInstanceDialogOpen, setIsAddInstanceDialogOpen] = useState(false);
   const [openInstanceDetails, setOpenInstanceDetails] = useState<Record<string, boolean>>({});
+  // Extra accounts: rows that start sign-in as soon as they can (just added),
+  // requests from the header's "+" to show an agent's add-account form, and
+  // the account waiting for its removal to be confirmed.
+  const [autoSignInIds, setAutoSignInIds] = useState<ReadonlySet<string>>(() => new Set());
+  const [addAccountRequests, setAddAccountRequests] = useState<Record<string, number>>({});
+  const [accountToRemove, setAccountToRemove] = useState<ProviderSettingsRow | null>(null);
+  const [isRemovingAccount, setIsRemovingAccount] = useState(false);
+  const settleAutoSignIn = useCallback((instanceId: ProviderInstanceId) => {
+    setAutoSignInIds((existing) => {
+      if (!existing.has(instanceId)) return existing;
+      const next = new Set(existing);
+      next.delete(instanceId);
+      return next;
+    });
+  }, []);
   useEffect(() => {
     if (focusedInstanceId === null) {
       return;
@@ -1177,6 +1208,73 @@ export function ProviderSettingsPanel({
     });
   };
 
+  const openProviderRow = (instanceId: ProviderInstanceId) => {
+    setOpenInstanceDetails((existing) =>
+      existing[instanceId] === true ? existing : { ...existing, [instanceId]: true },
+    );
+    window.requestAnimationFrame(() => {
+      document
+        .querySelector(`[data-provider-instance-id="${CSS.escape(String(instanceId))}"]`)
+        ?.scrollIntoView({ block: "nearest" });
+    });
+  };
+
+  const requestAddAccount = (driver: ProviderDriverKind) => {
+    const instanceId = defaultInstanceIdForDriver(driver);
+    setAddAccountRequests((existing) => ({
+      ...existing,
+      [instanceId]: (existing[instanceId] ?? 0) + 1,
+    }));
+    openProviderRow(instanceId);
+  };
+
+  const addAccountControlsFor = (
+    row: ProviderSettingsRow,
+  ): ProviderAddAccountControls | undefined => {
+    if (!supportsProviderAccounts(String(row.driver))) return undefined;
+    const accounts = rows.filter(
+      (candidate) => candidate.driver === row.driver && !candidate.isDefault,
+    );
+    return {
+      agentName: getDriverOption(row.driver)?.label ?? String(row.driver),
+      existingNames: accounts.map((account) => account.instance.displayName ?? ""),
+      existingColors: accounts.map((account) => account.instance.accentColor),
+      openRequest: addAccountRequests[row.instanceId] ?? 0,
+      onAdded: (instanceId, startSignIn) => {
+        if (startSignIn) {
+          setAutoSignInIds((existing) => new Set(existing).add(instanceId));
+        }
+        openProviderRow(instanceId);
+      },
+    };
+  };
+
+  const confirmRemoveAccount = async () => {
+    const row = accountToRemove;
+    if (!row || isRemovingAccount) return;
+    setIsRemovingAccount(true);
+    try {
+      await ensureLocalApi().server.removeProviderAccount({ instanceId: row.instanceId });
+      // Favorites and model order live on this device; the server removed the rest.
+      updateSettings({
+        providerModelPreferences: withoutProviderInstanceKey(
+          settings.providerModelPreferences,
+          row.instanceId,
+        ),
+        favorites: withoutProviderInstanceFavorites(settings.favorites ?? [], row.instanceId),
+      });
+      setAccountToRemove(null);
+    } catch (error) {
+      toastManager.add({
+        type: "error",
+        title: "Could not remove the account",
+        description: error instanceof Error ? error.message : "Try again in a moment.",
+      });
+    } finally {
+      setIsRemovingAccount(false);
+    }
+  };
+
   const renderRow = (row: ProviderSettingsRow) => {
     const driverOption = getDriverOption(row.driver);
     const liveProvider = serverProviders.find(
@@ -1213,6 +1311,14 @@ export function ProviderSettingsPanel({
         onUpdate={(next) => updateProviderInstance(row, next)}
         onEnabledChange={(enabled) => setProviderInstanceEnabled(row, enabled)}
         onDelete={row.isDefault ? undefined : () => deleteProviderInstance(row.instanceId)}
+        onRemoveAccount={
+          !row.isDefault && supportsProviderAccounts(String(row.driver))
+            ? () => setAccountToRemove(row)
+            : undefined
+        }
+        addAccount={addAccountControlsFor(row)}
+        autoSignIn={autoSignInIds.has(row.instanceId)}
+        onAutoSignInSettled={settleAutoSignIn}
         onResetDefaults={
           row.isDefault && row.isDirty
             ? () => resetDefaultInstance(row.driver, isProviderRowEnabled(row))
@@ -1287,22 +1393,36 @@ export function ProviderSettingsPanel({
             >
               Open setup
             </Button>
-            <Tooltip>
-              <TooltipTrigger
+            <Menu>
+              <MenuTrigger
                 render={
                   <Button
                     size="icon-xs"
                     variant="ghost"
                     className="size-6 rounded-sm p-0 text-muted-foreground hover:text-foreground"
-                    onClick={() => setIsAddInstanceDialogOpen(true)}
-                    aria-label="Add provider instance"
-                  >
-                    <PlusIcon className="size-3" />
-                  </Button>
+                    aria-label="Add an account or provider instance"
+                  />
                 }
-              />
-              <TooltipPopup side="top">Add provider instance</TooltipPopup>
-            </Tooltip>
+              >
+                <PlusIcon className="size-3" />
+              </MenuTrigger>
+              <MenuPopup align="end" className="min-w-52">
+                {PROVIDER_ACCOUNT_DRIVER_KINDS.map((driver) => (
+                  <MenuItem
+                    key={driver}
+                    onClick={() => requestAddAccount(ProviderDriverKind.make(driver))}
+                  >
+                    {addAccountMenuLabel(
+                      getDriverOption(ProviderDriverKind.make(driver))?.label ?? driver,
+                    )}
+                  </MenuItem>
+                ))}
+                <MenuSeparator />
+                <MenuItem onClick={() => setIsAddInstanceDialogOpen(true)}>
+                  Custom instance…
+                </MenuItem>
+              </MenuPopup>
+            </Menu>
           </div>
         }
         headerClassName="px-1 sm:px-1"
@@ -1349,8 +1469,66 @@ export function ProviderSettingsPanel({
         open={isAddInstanceDialogOpen}
         onOpenChange={setIsAddInstanceDialogOpen}
       />
+      <AlertDialog
+        open={accountToRemove !== null}
+        onOpenChange={(open) => {
+          if (!open && !isRemovingAccount) setAccountToRemove(null);
+        }}
+      >
+        <AlertDialogPopup>
+          {accountToRemove ? (
+            <RemoveAccountDialogBody
+              row={accountToRemove}
+              agentName={
+                getDriverOption(accountToRemove.driver)?.label ?? String(accountToRemove.driver)
+              }
+              removing={isRemovingAccount}
+              onConfirm={() => void confirmRemoveAccount()}
+            />
+          ) : null}
+        </AlertDialogPopup>
+      </AlertDialog>
       {rateLimitResetCreditDialog}
     </SettingsPageContainer>
+  );
+}
+
+/** What removing an extra account does, said before it happens. */
+function RemoveAccountDialogBody(props: {
+  readonly row: ProviderSettingsRow;
+  readonly agentName: string;
+  readonly removing: boolean;
+  readonly onConfirm: () => void;
+}) {
+  const name = formatProviderInstanceName({
+    agentName: props.agentName,
+    displayName: props.row.instance.displayName,
+    isDefault: false,
+  });
+  const ownedFolder = isThreadlinesAccountFolder({
+    instanceId: String(props.row.instanceId),
+    driver: String(props.row.driver),
+    config: props.row.instance.config,
+  });
+  return (
+    <>
+      <AlertDialogHeader>
+        <AlertDialogTitle>Remove {name}?</AlertDialogTitle>
+        <AlertDialogDescription>
+          {ownedFolder
+            ? `Threadlines signs this account out and deletes its private folder. Its chats stay, and can continue on another ${props.agentName} account.`
+            : "Threadlines stops using this account. Your folder and the sign-in in it are left as they are."}
+        </AlertDialogDescription>
+      </AlertDialogHeader>
+      <AlertDialogFooter>
+        <AlertDialogClose render={<Button variant="outline" />} disabled={props.removing}>
+          Cancel
+        </AlertDialogClose>
+        <Button variant="destructive" disabled={props.removing} onClick={props.onConfirm}>
+          {props.removing ? "Removing…" : "Remove account"}
+        </Button>
+      </AlertDialogFooter>
+    </>
   );
 }
 

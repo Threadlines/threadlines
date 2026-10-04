@@ -61,6 +61,7 @@ import * as McpHttpServer from "./mcp/McpHttpServer.ts";
 import * as McpRoomServer from "./mcp/McpRoomServer.ts";
 import { DictationLive } from "./dictation/DictationService.ts";
 import * as PreviewAutomationBroker from "./preview/PreviewAutomationBroker.ts";
+import { ProviderAccountsLive } from "./provider/accounts/ProviderAccounts.ts";
 import { ProviderAuthSessionsLive } from "./provider/auth/ProviderAuthSessions.ts";
 import { ProviderRegistryLive } from "./provider/Layers/ProviderRegistry.ts";
 import { ServerSettingsLive } from "./serverSettings.ts";
@@ -385,7 +386,9 @@ const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
   // Settings-owned provider sign-in. Listed before the terminal layer so it
   // receives that layer's PTY adapter, but it keeps its own ephemeral,
   // never-persisted sessions rather than going through TerminalManager.
-  Layer.provideMerge(ProviderAuthSessionsLive),
+  // One-click extra accounts sit on top: they create and remove instances
+  // and their folders, and stop a removed account's sign-in run.
+  Layer.provideMerge(ProviderAccountsLive.pipe(Layer.provideMerge(ProviderAuthSessionsLive))),
   Layer.provideMerge(TerminalLayerLive),
   // The browser side of the agent's tools. Holds no resources of its own --
   // it is a rendezvous between a provider turn and whichever client is showing

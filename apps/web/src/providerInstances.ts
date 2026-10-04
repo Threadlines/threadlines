@@ -101,6 +101,31 @@ function driverKindLabel(driverKind: ProviderDriverKind): string {
   return PROVIDER_DISPLAY_NAMES[driverKind] ?? formatProviderDriverKindLabel(driverKind);
 }
 
+/**
+ * The name an instance goes by everywhere: the agent's name for its own row,
+ * and "Claude · Work" for an extra account, unless the user's name already
+ * says which agent it is ("Codex Personal").
+ */
+export function formatProviderInstanceName(input: {
+  readonly agentName: string;
+  readonly displayName: string | undefined;
+  readonly isDefault: boolean;
+}): string {
+  const name = input.displayName?.trim();
+  if (!name) return input.agentName;
+  if (input.isDefault || name.toLowerCase().includes(input.agentName.toLowerCase())) return name;
+  return `${input.agentName} · ${name}`;
+}
+
+/** The preset colors for an instance's badge, in the order they are offered. */
+export const PROVIDER_ACCENT_SWATCHES = [
+  "#00347D",
+  "#16a34a",
+  "#ea580c",
+  "#dc2626",
+  "#7c3aed",
+] as const;
+
 export function normalizeProviderAccentColor(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
   if (!trimmed) return undefined;
@@ -132,7 +157,11 @@ function resolveInstanceDisplayName(
   const trimmedSnapshotName = snapshot.displayName?.trim();
   const kindLabel = driverKindLabel(driverKind);
   if (trimmedSnapshotName && trimmedSnapshotName !== kindLabel) {
-    return trimmedSnapshotName;
+    return formatProviderInstanceName({
+      agentName: kindLabel,
+      displayName: trimmedSnapshotName,
+      isDefault,
+    });
   }
   if (!isDefault) {
     const humanized = humanizeInstanceId(instanceId);

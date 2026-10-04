@@ -114,6 +114,7 @@ import {
 import { ServerLifecycleEvents } from "./serverLifecycleEvents.ts";
 import { ServerRuntimeStartup } from "./serverRuntimeStartup.ts";
 import { redactServerSettingsForClient, ServerSettingsService } from "./serverSettings.ts";
+import { ProviderAccounts } from "./provider/accounts/ProviderAccounts.ts";
 import { ProviderAuthSessions } from "./provider/auth/ProviderAuthSessions.ts";
 import { TerminalManager } from "./terminal/Services/Manager.ts";
 import { realtimeAudioHub } from "./realtime/RealtimeAudioHub.ts";
@@ -308,6 +309,7 @@ const makeWsRpcLayer = (currentSession: {
       const vcsStatusBroadcaster = yield* VcsStatusBroadcaster;
       const terminalManager = yield* TerminalManager;
       const providerAuthSessions = yield* ProviderAuthSessions;
+      const providerAccounts = yield* ProviderAccounts;
       const dictation = yield* DictationService;
       const providerRegistry = yield* ProviderRegistry;
       const providerService = yield* ProviderService;
@@ -1140,6 +1142,14 @@ const makeWsRpcLayer = (currentSession: {
               "rpc.aggregate": "server",
             },
           ),
+        [WS_METHODS.serverAddProviderAccount]: (input) =>
+          observeRpcEffect(WS_METHODS.serverAddProviderAccount, providerAccounts.add(input), {
+            "rpc.aggregate": "server",
+          }),
+        [WS_METHODS.serverRemoveProviderAccount]: (input) =>
+          observeRpcEffect(WS_METHODS.serverRemoveProviderAccount, providerAccounts.remove(input), {
+            "rpc.aggregate": "server",
+          }),
         [WS_METHODS.serverDiscoverSourceControl]: (_input) =>
           observeRpcEffect(
             WS_METHODS.serverDiscoverSourceControl,

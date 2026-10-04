@@ -735,31 +735,42 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         const persistedModelSelection = readPersistedModelSelection(
           persistedBinding?.runtimePayload,
         );
+        // A saved resume cursor belongs to the conversation history, not to
+        // one instance: another instance that reads the same history (an
+        // extra account on the same main folder) resumes it too, even after
+        // the thread's session stopped or the server restarted.
+        const persistedInstanceId = persistedBinding?.providerInstanceId;
+        const persistedSharesHistory =
+          persistedInstanceId !== undefined &&
+          (persistedInstanceId === resolvedInstanceId ||
+            (yield* registry.getInstanceInfo(persistedInstanceId).pipe(
+              Effect.map(
+                (persistedInfo) =>
+                  persistedInfo.driverKind === instanceInfo.driverKind &&
+                  persistedInfo.continuationIdentity.continuationKey ===
+                    instanceInfo.continuationIdentity.continuationKey,
+              ),
+              Effect.orElseSucceed(() => false),
+            )));
         const effectiveResumeCursor =
           input.resumeCursor ??
-          (persistedBinding?.providerInstanceId === resolvedInstanceId
-            ? persistedBinding.resumeCursor
-            : undefined);
+          (persistedSharesHistory ? persistedBinding?.resumeCursor : undefined);
         const effectiveCwd =
           input.cwd ??
-          (persistedBinding?.providerInstanceId === resolvedInstanceId
-            ? readPersistedCwd(persistedBinding.runtimePayload)
-            : undefined);
+          (persistedSharesHistory ? readPersistedCwd(persistedBinding?.runtimePayload) : undefined);
         yield* Effect.annotateCurrentSpan({
           "provider.kind": resolvedProvider,
           "provider.resume_cursor.source":
             input.resumeCursor !== undefined
               ? "request"
-              : effectiveResumeCursor !== undefined &&
-                  persistedBinding?.providerInstanceId === resolvedInstanceId
+              : effectiveResumeCursor !== undefined && persistedSharesHistory
                 ? "persisted"
                 : "none",
           "provider.resume_cursor.present": effectiveResumeCursor !== undefined,
           "provider.cwd.source":
             input.cwd !== undefined
               ? "request"
-              : effectiveCwd !== undefined &&
-                  persistedBinding?.providerInstanceId === resolvedInstanceId
+              : effectiveCwd !== undefined && persistedSharesHistory
                 ? "persisted"
                 : "none",
           "provider.cwd.effective": effectiveCwd ?? "",

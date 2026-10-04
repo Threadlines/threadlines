@@ -7,6 +7,7 @@ import {
   buildCodexLoginCommand,
   buildProviderAuthCommand,
   deriveClaudeLongLivedOAuthTokenState,
+  openCodeAccountEnvironment,
   removeClaudeLongLivedOAuthTokenEnvironment,
   sanitizeClaudeLongLivedOAuthTokenInput,
   upsertClaudeLongLivedOAuthTokenEnvironment,
@@ -243,5 +244,19 @@ describe("buildProviderAuthCommand", () => {
         homePath: "",
       }),
     ).toBeNull();
+  });
+});
+
+describe("openCodeAccountEnvironment", () => {
+  it("points OpenCode at the account folder's own database on either platform", () => {
+    expect(
+      openCodeAccountEnvironment({ accountFolder: "/state/accounts/opencode_work//" }),
+    ).toEqual({ OPENCODE_DB: "/state/accounts/opencode_work/opencode.db" });
+    expect(openCodeAccountEnvironment({ accountFolder: "C:\\Users\\me\\opencode_work\\" })).toEqual(
+      {
+        OPENCODE_DB: "C:\\Users\\me\\opencode_work\\opencode.db",
+      },
+    );
+    expect(openCodeAccountEnvironment({ accountFolder: "  " })).toEqual({});
   });
 });

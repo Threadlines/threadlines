@@ -240,6 +240,12 @@ import {
   ProviderAuthWriteInput,
 } from "./providerAuth.ts";
 import {
+  ProviderAccountAddInput,
+  ProviderAccountAddResult,
+  ProviderAccountError,
+  ProviderAccountRemoveInput,
+} from "./providerAccounts.ts";
+import {
   TerminalClearInput,
   TerminalCloseInput,
   TerminalError,
@@ -412,6 +418,8 @@ export const WS_METHODS = {
   serverRemoveKeybinding: "server.removeKeybinding",
   serverGetSettings: "server.getSettings",
   serverUpdateSettings: "server.updateSettings",
+  serverAddProviderAccount: "server.addProviderAccount",
+  serverRemoveProviderAccount: "server.removeProviderAccount",
   serverDiscoverSourceControl: "server.discoverSourceControl",
   serverUpdateSourceControlTool: "server.updateSourceControlTool",
   serverGetSourceControlSetup: "server.getSourceControlSetup",
@@ -577,6 +585,18 @@ export const WsServerUpdateSettingsRpc = Rpc.make(WS_METHODS.serverUpdateSetting
   payload: Schema.Struct({ patch: ServerSettingsPatch }),
   success: ServerSettings,
   error: ServerSettingsError,
+});
+
+export const WsServerAddProviderAccountRpc = Rpc.make(WS_METHODS.serverAddProviderAccount, {
+  payload: ProviderAccountAddInput,
+  success: ProviderAccountAddResult,
+  error: ProviderAccountError,
+});
+
+export const WsServerRemoveProviderAccountRpc = Rpc.make(WS_METHODS.serverRemoveProviderAccount, {
+  payload: ProviderAccountRemoveInput,
+  success: Schema.Void,
+  error: ProviderAccountError,
 });
 
 export const WsServerDiscoverSourceControlRpc = Rpc.make(WS_METHODS.serverDiscoverSourceControl, {
@@ -1498,6 +1518,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerRemoveKeybindingRpc,
   WsServerGetSettingsRpc,
   WsServerUpdateSettingsRpc,
+  WsServerAddProviderAccountRpc,
+  WsServerRemoveProviderAccountRpc,
   WsServerDiscoverSourceControlRpc,
   WsServerUpdateSourceControlToolRpc,
   WsServerGetSourceControlSetupRpc,
