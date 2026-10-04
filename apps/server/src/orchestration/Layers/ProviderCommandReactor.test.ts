@@ -2994,6 +2994,11 @@ describe("ProviderCommandReactor", () => {
     expect(harness.generateBranchName.mock.calls[0]?.[0]).toMatchObject({
       message: "Add a safer reconnect backoff.",
     });
+    // The suggested `feature/` kind is normalized; no app prefix is added.
+    expect(harness.renameBranch.mock.calls[0]?.[0]).toMatchObject({
+      oldBranch: "t3code/1234abcd",
+      newBranch: expect.stringMatching(/^feat\/[a-z0-9-]+$/),
+    });
     expect(harness.refreshStatus.mock.calls[0]?.[0]).toBe(PROJECT_WORKTREE_ROOT);
   });
 
