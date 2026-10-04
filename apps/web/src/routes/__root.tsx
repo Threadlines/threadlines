@@ -204,6 +204,12 @@ function describeCompleted(count: number): string {
 // summarizes the rest.
 const TASKBAR_MENU_THREAD_LIMIT = 20;
 
+// How long nothing must run before the taskbar says the work is done. Work
+// hands over with a gap of a few hundred milliseconds (a queued message, or a
+// child thread's answer, starts the next turn just after one ends), and a
+// "completed" flash in that gap would be a false alarm.
+const TASKBAR_COMPLETION_SETTLE_MS = 1_500;
+
 function taskbarThreadKey(
   thread: Pick<DesktopTaskbarThreadSummary, "environmentId" | "threadId">,
 ): string {
@@ -240,6 +246,7 @@ function DesktopTaskbarStatusSync() {
   );
   const hadRunningThreadRef = useRef(false);
   const completionShownRef = useRef(false);
+  const completionSettleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const previousRunningThreadsRef = useRef<ReadonlyMap<string, DesktopTaskbarThreadSummary>>(
     new Map(),
   );
@@ -299,6 +306,10 @@ function DesktopTaskbarStatusSync() {
     );
 
     if (runningThreads.length > 0) {
+      if (completionSettleTimerRef.current !== null) {
+        clearTimeout(completionSettleTimerRef.current);
+        completionSettleTimerRef.current = null;
+      }
       hadRunningThreadRef.current = true;
       completionShownRef.current = false;
       setTaskbarStatus({
@@ -311,27 +322,49 @@ function DesktopTaskbarStatusSync() {
     }
 
     if (hadRunningThreadRef.current) {
-      hadRunningThreadRef.current = false;
-      if (document.hasFocus()) {
-        completionShownRef.current = false;
-        setTaskbarStatus({ status: "idle", description: "No threads are working", threads: [] });
-        return;
+      // Keep showing the work until nothing has run for a moment; the next
+      // turn of a handover cancels this.
+      if (completionSettleTimerRef.current === null) {
+        completionSettleTimerRef.current = setTimeout(() => {
+          completionSettleTimerRef.current = null;
+          settleTaskbarStatus();
+        }, TASKBAR_COMPLETION_SETTLE_MS);
       }
-
-      completionShownRef.current = true;
-      const completedThreadCount = Math.max(1, unseenCompletedThreads.length);
-      setTaskbarStatus({
-        status: "completed",
-        completedThreadCount,
-        description: describeCompleted(completedThreadCount),
-        threads: menuThreads,
-      });
       return;
     }
 
     if (!completionShownRef.current) {
       setTaskbarStatus({ status: "idle", description: "No threads are working", threads: [] });
     }
+  });
+
+  /** Nothing has run for the settle time: say the work is done. */
+  const settleTaskbarStatus = useEffectEvent(() => {
+    if (
+      selectRunningTaskbarThreads(useStore.getState()).length > 0 ||
+      !hadRunningThreadRef.current
+    ) {
+      syncTaskbarStatus();
+      return;
+    }
+    hadRunningThreadRef.current = false;
+    // Nothing unseen: the threads finished while the user was looking, or
+    // they focused the window during the wait and so saw them finish.
+    const unseenCompletedThreads = [...unseenCompletedThreadsRef.current.values()];
+    if (document.hasFocus() || unseenCompletedThreads.length === 0) {
+      completionShownRef.current = false;
+      setTaskbarStatus({ status: "idle", description: "No threads are working", threads: [] });
+      return;
+    }
+
+    completionShownRef.current = true;
+    const completedThreadCount = unseenCompletedThreads.length;
+    setTaskbarStatus({
+      status: "completed",
+      completedThreadCount,
+      description: describeCompleted(completedThreadCount),
+      threads: unseenCompletedThreads.slice(0, TASKBAR_MENU_THREAD_LIMIT),
+    });
   });
 
   useEffect(() => {
@@ -355,6 +388,10 @@ function DesktopTaskbarStatusSync() {
     return () => {
       window.removeEventListener("focus", handleFocus);
       document.removeEventListener("visibilitychange", handleFocus);
+      if (completionSettleTimerRef.current !== null) {
+        clearTimeout(completionSettleTimerRef.current);
+        completionSettleTimerRef.current = null;
+      }
       setTaskbarStatus({ status: "idle", description: "No threads are working" });
     };
   }, []);
