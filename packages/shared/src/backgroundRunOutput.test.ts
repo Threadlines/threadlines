@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { backgroundOutputFileFromText, isBackgroundRunOutputPath } from "./backgroundRunOutput.ts";
+import {
+  backgroundOutputFileFromText,
+  backgroundOutputFilesInText,
+  isBackgroundRunOutputPath,
+} from "./backgroundRunOutput.ts";
 
 describe("backgroundOutputFileFromText", () => {
   it("reads the output file off Claude's reply, spaces and all", () => {
@@ -17,6 +21,21 @@ describe("backgroundOutputFileFromText", () => {
     expect(backgroundOutputFileFromText("Output is being written to: /tmp/tasks/b1.output.")).toBe(
       "/tmp/tasks/b1.output",
     );
+  });
+});
+
+describe("backgroundOutputFilesInText", () => {
+  it("finds every announced file and stays fast on hostile text", () => {
+    expect(
+      backgroundOutputFilesInText(
+        "Output is being written to: /tmp/tasks/a.output\nOutput is being written to:\t/tmp/tasks/b.output",
+      ),
+    ).toEqual(["/tmp/tasks/a.output", "/tmp/tasks/b.output"]);
+
+    const hostile = `Output is being written to:${"\t".repeat(50_000)}x${".outputx".repeat(20_000)}`;
+    const startedAt = performance.now();
+    expect(backgroundOutputFilesInText(hostile.repeat(3))).toEqual([]);
+    expect(performance.now() - startedAt).toBeLessThan(500);
   });
 });
 

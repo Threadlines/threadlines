@@ -6,19 +6,56 @@
  * the same way.
  */
 
-// The path ends at `.output` followed by whitespace, a closing quote or
-// bracket, sentence punctuation that ends the text or a line, or the end of
-// the text, so a name like `b1.output.bak` is never cut short to `b1.output`.
-const BACKGROUND_OUTPUT_FILE_PATTERN =
-  /Output is being written to:\s*(.+?\.output)(?=$|[\s"'`)\]]|[.,;:](?:\s|$))/gu;
+const OUTPUT_FILE_MARKER = "Output is being written to:";
+const OUTPUT_FILE_EXTENSION = ".output";
 
-/** Every output file a piece of reply text names, in order. */
+function isWhitespace(char: string | undefined): boolean {
+  return char !== undefined && char.trim() === "";
+}
+
+/** Whether a path that reaches `index` ends there: at the end of its line,
+ *  before whitespace or a closing quote or bracket, or before sentence
+ *  punctuation that itself ends the line or is followed by whitespace. So a
+ *  name like `b1.output.bak` is never cut short to `b1.output`. */
+function pathEndsAt(text: string, index: number, lineEnd: number): boolean {
+  if (index >= lineEnd) return true;
+  const char = text[index]!;
+  if (isWhitespace(char) || "\"'`)]".includes(char)) return true;
+  return ".,;:".includes(char) && (index + 1 >= lineEnd || isWhitespace(text[index + 1]));
+}
+
+/**
+ * Every output file a piece of reply text names, in order. A plain scan
+ * rather than a regular expression: the text is agent output of any size,
+ * and a pattern that can backtrack would make a crafted reply slow to read.
+ */
 export function backgroundOutputFilesInText(text: string | null | undefined): string[] {
   if (!text) return [];
-  return [...text.matchAll(BACKGROUND_OUTPUT_FILE_PATTERN)].flatMap((match) => {
-    const file = match[1]?.trim();
-    return file ? [file] : [];
-  });
+  const files: string[] = [];
+  let markerAt = text.indexOf(OUTPUT_FILE_MARKER);
+  while (markerAt >= 0) {
+    let start = markerAt + OUTPUT_FILE_MARKER.length;
+    while (start < text.length && isWhitespace(text[start]) && text[start] !== "\n") start += 1;
+    const newline = text.indexOf("\n", start);
+    const lineEnd = newline < 0 ? text.length : newline;
+    // Where the next marker is looked for. A line with no path that ends
+    // properly has none for a later marker either, so the scan moves past it;
+    // every character is visited a bounded number of times.
+    let resumeAt = lineEnd;
+    let extensionAt = text.indexOf(OUTPUT_FILE_EXTENSION, start);
+    while (extensionAt >= 0 && extensionAt < lineEnd) {
+      const pathEnd = extensionAt + OUTPUT_FILE_EXTENSION.length;
+      if (pathEnd <= lineEnd && pathEndsAt(text, pathEnd, lineEnd)) {
+        const file = text.slice(start, pathEnd).trim();
+        if (file.length > OUTPUT_FILE_EXTENSION.length) files.push(file);
+        resumeAt = pathEnd;
+        break;
+      }
+      extensionAt = text.indexOf(OUTPUT_FILE_EXTENSION, extensionAt + 1);
+    }
+    markerAt = text.indexOf(OUTPUT_FILE_MARKER, resumeAt);
+  }
+  return files;
 }
 
 /** The output file a reply names, when it names one. */
