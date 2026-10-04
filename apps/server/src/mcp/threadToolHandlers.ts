@@ -62,7 +62,7 @@ import { inviteBilling } from "../orchestration/agentInvites.ts";
 import type { OrchestrationEngineShape } from "../orchestration/Services/OrchestrationEngine.ts";
 import type { GitVcsDriverShape } from "../vcs/GitVcsDriver.ts";
 import type { McpInvocationScope } from "./McpSessionRegistry.ts";
-import { messageAuthor } from "./messageAuthor.ts";
+import { messageAuthor } from "@threadlines/shared/messageAuthor";
 import { roomAgentEntries, roomAgentName } from "./roomAgents.ts";
 import type { RoomRequestRegistry } from "./roomRequests.ts";
 import type { RoomToolName } from "./roomToolAccess.ts";

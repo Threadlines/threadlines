@@ -53,9 +53,10 @@ These rules override anything in the sections below that disagrees with them.
    - otherwise `failed`, with the reply "<title> was interrupted by a Threadlines restart; send it a message with thread_send to continue" (any `awaiting_background` candidate is quoted as partial context).
 
    Its request message is unqueued in the child, and a pending start for it is cancelled, so nothing runs without a reader. This doesn't depend on the reactor ever re-scanning old queues.
-3. **Background fallback.** The settle-on-`session-set` fallback applies only when the child's latest turn *is* the candidate's turn, meaning no continuation started. A continuation settles only through its own finalized `turn.completed` routing. If it ends with more awaited work, it becomes the new candidate.
+
+3. **Background fallback.** The settle-on-`session-set` fallback applies only when the child's latest turn _is_ the candidate's turn, meaning no continuation started. A continuation settles only through its own finalized `turn.completed` routing. If it ends with more awaited work, it becomes the new candidate.
 4. **Setup stage.** The runner starts the script in a terminal and returns `started` (ProjectSetupScriptRunner.ts:61); the WS path never waits for it to finish either. Stage 3 counts as done when this thread has a `setup-script.started` or `setup-script.skipped` activity. It is never re-run after a crash.
-5. **The user and a child's answer.** A user steer into the answering turn, or into its continuation, becomes part of that turn by design, and the answer includes it. A *new* user turn in the child while the request is `awaiting_background` settles the request with the candidate before that turn runs.
+5. **The user and a child's answer.** A user steer into the answering turn, or into its continuation, becomes part of that turn by design, and the answer includes it. A _new_ user turn in the child while the request is `awaiting_background` settles the request with the candidate before that turn runs.
 6. **Room history and catch-up** name `fromThread` messages by origin ("Request from thread X", "Report from thread X") through one shared author renderer, instead of labelling them "User" (roomHistory.ts:91, roomCatchUp.ts:216). Cancellation marking (roomAgentRequests.ts:309) covers reports too.
 7. **`handed-back`** is stamped only when the settle actually emits a report. Suppressed, cancelled and stopped outcomes never set it.
 8. **Archive cascade membership** uses the shared live-work predicate (`isAutoArchiveProtectedThread` inputs in packages/shared/src/threadAutoArchive.ts, plus awaited background work, queued or pending starts, and open child requests). Live children are separated; the rest are archived.
@@ -73,6 +74,7 @@ These rules override anything in the sections below that disagrees with them.
   - then a chevron.
 
   The line is its own button, outside the row's `PreviewCardTrigger`, and toggles the family open or closed.
+
 - **Parent status.** Three cases:
   - Its own turn has settled and answers are still owed: cyan "Waiting" pill, word `N threads`, clock from the turn's completion.
   - A batch is waiting for approval: amber `approval`, like any pending approval. It's blocking, so the parent can't be wrapped and it notifies.
@@ -119,19 +121,19 @@ The tools live on the existing room MCP server (`/mcp/room`, key `threadlines_ro
 `roomToolsWanted` (ProviderCommandReactor.ts:893) becomes:
 
 ```ts
-hasAgentRecords || agentInvitesMode !== "off" || agentThreadsMode !== "off"
+hasAgentRecords || agentInvitesMode !== "off" || agentThreadsMode !== "off";
 ```
 
 Side runtimes never get these tools: `roomToolsFor(side)` excludes them and the handler re-checks `scope.side === undefined`. Every tool answers with an `outcome` literal and never blocks on child work.
 
-| Tool | Input | Behavior |
-|---|---|---|
-| `thread_agents` | none | Ready provider instances and models a child can run on. Respects `agentThreads`, not invites. Excludes per-use-billed sign-ins, as invites do (`PER_USE_AUTH_TYPES`), and providers that cannot honor the caller's interaction mode. |
-| `thread_start` | `threads: 1..5 × { title, prompt, agent?: { instanceId, model, options? }, runSetup?: boolean = true }`, `reportBack?: boolean = true` | Starts threads in the caller's project, each in its own new worktree off the caller's current branch (see Workspaces). `agent` defaults to the caller's model. `reportBack: false` starts them already separated, so nothing comes back. Returns `started` with `[{ threadId, title }]`, `asked_user`, `off`, `limit`, `not_allowed`, or `unavailable_agent`. |
-| `thread_list` | `scope?: "mine" \| "project" = "mine"` | The caller's children (attached and separated), or the project's non-archived threads (newest first, max 30). For each: id, title, status word, branch, model, attached, startedBy. |
-| `thread_read` | `threadId`, `after?`, `limit? = 20` | Same project only. Recent user and assistant messages (each clipped at 4,000 chars, with a flag), status, and a `next` cursor. |
-| `thread_send` | `threadId`, `message` | The caller's attached children only. If the child is idle, starts a turn. If busy, queues behind its current turn. The answer comes back like a start. Returns `sent`, `queued`, `not_yours`, or `limit`. |
-| `thread_stop` | `threadId` | The caller's attached children only. Stops the child's whole session: the turn, background agents and workflows (`thread.session.stop`; the next message resumes it). The parent's requests for that child settle `stopped` without waking it. The parent's messages still queued in the child are taken back. Returns `stopped` or `not_running`. |
+| Tool            | Input                                                                                                                                  | Behavior                                                                                                                                                                                                                                                                                                                                                      |
+| --------------- | -------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `thread_agents` | none                                                                                                                                   | Ready provider instances and models a child can run on. Respects `agentThreads`, not invites. Excludes per-use-billed sign-ins, as invites do (`PER_USE_AUTH_TYPES`), and providers that cannot honor the caller's interaction mode.                                                                                                                          |
+| `thread_start`  | `threads: 1..5 × { title, prompt, agent?: { instanceId, model, options? }, runSetup?: boolean = true }`, `reportBack?: boolean = true` | Starts threads in the caller's project, each in its own new worktree off the caller's current branch (see Workspaces). `agent` defaults to the caller's model. `reportBack: false` starts them already separated, so nothing comes back. Returns `started` with `[{ threadId, title }]`, `asked_user`, `off`, `limit`, `not_allowed`, or `unavailable_agent`. |
+| `thread_list`   | `scope?: "mine" \| "project" = "mine"`                                                                                                 | The caller's children (attached and separated), or the project's non-archived threads (newest first, max 30). For each: id, title, status word, branch, model, attached, startedBy.                                                                                                                                                                           |
+| `thread_read`   | `threadId`, `after?`, `limit? = 20`                                                                                                    | Same project only. Recent user and assistant messages (each clipped at 4,000 chars, with a flag), status, and a `next` cursor.                                                                                                                                                                                                                                |
+| `thread_send`   | `threadId`, `message`                                                                                                                  | The caller's attached children only. If the child is idle, starts a turn. If busy, queues behind its current turn. The answer comes back like a start. Returns `sent`, `queued`, `not_yours`, or `limit`.                                                                                                                                                     |
+| `thread_stop`   | `threadId`                                                                                                                             | The caller's attached children only. Stops the child's whole session: the turn, background agents and workflows (`thread.session.stop`; the next message resumes it). The parent's requests for that child settle `stopped` without waking it. The parent's messages still queued in the child are taken back. Returns `stopped` or `not_running`.            |
 
 - **Depth 1.** A thread that is currently an attached child gets `not_allowed` from `thread_start`, `thread_send` and `thread_stop`. It can still read and list. A separated child counts as top-level.
 - **Idempotency.** Calls dedupe per caller turn through `requests.join`, keyed on threadId + callerTurnId + tool + normalized input. Request ids, child thread ids, message ids and every inner command id are derived from the request key, so a retried call finds its own work.
@@ -157,6 +159,7 @@ Side runtimes never get these tools: `roomToolsFor(side)` excludes them and the 
   - `pendingChildApproval: boolean`: any batch in `awaiting_user`.
 
 `ThreadCreateCommand` and `ThreadBootstrapCreateThread` gain `parentThreadId?` and `attachedToParent?`. The decider refuses:
+
 - a missing or deleted parent;
 - a parent in another project;
 - a parent that is itself an attached child;
@@ -195,6 +198,7 @@ This is kept apart from `OrchestrationAgentRequest`. Room code branches on `kind
 It shares two things with room requests: the parent's `agentRequests.chainEpoch`/`hold` (Stop), and the moment a real user submission resets counters. That reset gets its own child-state reset, so it doesn't rely on `resetAgentRequestsForUser`, which returns early when room state is clean.
 
 Events:
+
 - `thread.child-request-submitted`;
 - `thread.child-request-updated` (status, answeringTurnId, candidate);
 - `thread.child-request-settled` (outcome `answered | failed | stopped | cancelled | declined`, error);
@@ -205,12 +209,14 @@ Events:
 ### Messages and queued follow-ups
 
 `fromThread?: { threadId, requestId, kind: "request" | "report" }`:
+
 - `request` is a message the parent wrote into the child;
 - `report` is a child's answer delivered into the parent.
 
 `OrchestrationQueuedFollowUp` and `thread.turn-start-requested` carry the same field, so the origin survives being taken off the queue.
 
 **One predicate** `isAgentOrigin(x) = x.fromAgent !== undefined || x.fromThread !== undefined` lives in packages/shared/src/roomAgentRequests.ts and replaces every `fromAgent === undefined` "is this the user" check:
+
 - `nextQueuedFollowUp` (ProviderCommandReactor.ts:278);
 - the Stop hold in `processFollowUpQueued` (:3199);
 - `isUserWrittenMessage` (roomAgentRequests.ts:319), which drives inbox order and "last message from you";
@@ -226,6 +232,7 @@ Events:
 ### Persistence
 
 Migration **066** `ProjectionThreadLineage`:
+
 - `projection_threads`: `parent_thread_id TEXT`, `attached_to_parent INTEGER NOT NULL DEFAULT 0`, `handed_back_at TEXT`, `handed_back_turn_id TEXT`, `archived_with_parent_at TEXT`, `child_requests_json TEXT`, `awaited_child_thread_count INTEGER NOT NULL DEFAULT 0`, `pending_child_approval INTEGER NOT NULL DEFAULT 0`, plus `idx_projection_threads_parent`.
 - Messages: `from_thread_json TEXT`.
 - Queued follow-up JSON and pending turn start carry `fromThread`.
@@ -260,6 +267,7 @@ Pure rules live in `packages/shared/src/childThreads.ts` (refusals, limits, fami
    After stage 4 is accepted, the request goes to `running`. Any stage failure settles it `failed`, with a reply to the parent (see Delivery).
 
    The stage code is extracted from ws.ts:504-764 into `apps/server/src/orchestration/Layers/ThreadBootstrap.ts`. The WS path keeps its current behavior and random ids, and child bootstrap passes deterministic ids. The existing ws tests keep covering the WS path.
+
 5. **`reportBack: false`.** The child is created separated. The request settles `answered` with no reply once stage 4 is accepted. Nothing waits.
 
 ### Preambles (the `providerContext` path, ProviderCommandReactor.ts:1503)
@@ -275,6 +283,7 @@ Pure rules live in `packages/shared/src/childThreads.ts` (refusals, limits, fami
 **Binding.** A request answers to the child turn started from its own message: `turn.pendingMessageId === request.childMessageId`, the `routeHandOffReply` pattern. When that turn starts, the request goes `queued`/`starting` → `running` with `answeringTurnId`. `thread_send` to a busy child queues the message in the child (`fromThread.kind = "request"`) and the request stays `queued`. An earlier turn's completion can never answer a later message.
 
 **Settling** happens in ingestion right after messages are finalized on `turn.completed` / `turn.aborted` for `answeringTurnId`, where `routeHandOffReply` runs (ProviderRuntimeIngestion.ts:3598-3607):
+
 - Completed with no awaited background tasks: `answered`. The reply is the turn's last assistant message, clipped at 24,000 chars (`handOffReplyText`, including "finished without writing a reply").
 - Completed while the child awaits background tasks: `awaiting_background`, with `candidate` set to that turn. Re-evaluated on every child `thread.session-set`.
   - If a later provider-started child turn completes with no awaited tasks, it settles with that turn's last assistant message.
@@ -286,6 +295,7 @@ Pure rules live in `packages/shared/src/childThreads.ts` (refusals, limits, fami
 - The request's queued message is taken back in the child (unqueue `cancelled`, or Stop in the child): `cancelled`, plus a pending note.
 
 **Settle command** `thread.child-request.settle`, with commandId `server:child-request:<requestId>:settle`. In one decision it emits:
+
 - on the parent, `child-request-settled`;
 - on the parent, unless the epoch moved, the child is no longer attached, the parent is wrapped, or the reply already exists: `message-sent` (user role, `fromThread.kind = "report"`, author stamps) and `follow-up-queued` addressed to `request.from`;
 - on the child, `handed-back { at, turnId }`.
@@ -293,6 +303,7 @@ Pure rules live in `packages/shared/src/childThreads.ts` (refusals, limits, fami
 **Pickup** uses the existing queue: an idle parent starts a turn via `maybeSendNextQueuedFollowUp`; a busy parent waits behind its current turn. The user's own queued messages still go first.
 
 **Before sending any `fromThread.kind = "report"` turn**, the reactor re-checks all of these:
+
 - the child is still attached;
 - the parent isn't wrapped;
 - the epoch hasn't moved;
@@ -322,17 +333,20 @@ Each of these settles open requests and also unqueues the matching queued report
   - this thread has no attached children and no open child requests of its own.
 
   Nothing is restored. Later sends report back again.
+
 - **Delete the parent.** Decider cascade (`decideCommandSequence`, like `project.delete`). Attached children are separated, unless the command carries `withChildren: true`, in which case they're deleted. The confirm dialog gets "Also delete its N threads". Deleting a child settles its open requests `cancelled` and unqueues its reports.
 - **Archive the parent.** The cascade is decided on the server:
   - attached children that are settled (no turn in flight, no open requests of their own, no pending approvals) are archived and stamped `archivedWithParentAt`;
   - live attached children are separated first.
 
   Cleanup (session stop and terminal close, today ws.ts:849-896 for the named thread only) runs for every thread the command archives. `ThreadAutoArchiveSweeper` skips parents with open child requests or live attached children, and otherwise uses the same cascade. Unarchive restores the parent plus the children stamped with its archive.
+
 - **Room participant leaves.** Its child requests settle `cancelled`, its queued reports are unqueued, and its pending notes are dropped. This is an extension of `cancelAgentRequestsForLeaving`.
 
 ### Auto-wrap (client, `isThreadDone` in Sidebar.logic.ts)
 
 This is a new rule after the explicit override and before the 2-day idle rule. With the setting on, an attached child counts as done when it has no blockers and nothing in flight or queued, and one of these holds:
+
 - `handedBackTurnId` is its latest settled turn. That exact completion was delivered, so it is exempt from the unseen-completion gate in `canMarkThreadDone`. Later undelivered work gets no exemption.
 - Its parent is done. The user is finished with this work, which matches the mockup's "joins its family in Wrapped".
 
@@ -385,6 +399,7 @@ The reactor reconciles every thread with open child requests (not only rooms) af
    - delete dialog option.
 
    Sidebar.logic tests, plus InboxRows/ChatView browser tests.
+
 7. Gates: `vp fmt`, `vp lint`, per-package uncached `tsc --noEmit`, targeted tests, `@threadlines/web#test:browser`.
 8. Live test on a throwaway stack (never `~/.threadlines/userdata`). A Claude parent starts a Codex child and a Claude child. Check:
    - family UI, delivery and auto-wrap;

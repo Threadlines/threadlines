@@ -11,7 +11,7 @@
  */
 import type { OrchestrationMessage, ThreadId } from "@threadlines/contracts";
 
-import { messageAuthor } from "./messageAuthor.ts";
+import { messageAuthor } from "@threadlines/shared/messageAuthor";
 import { type RoomAgentEntry, roomAgentName } from "./roomAgents.ts";
 
 export const ROOM_HISTORY_MAX_LIMIT = 20;

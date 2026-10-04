@@ -10,7 +10,7 @@
  * user's.
  */
 import type { OrchestrationMessage, ThreadId, ThreadParticipantId } from "@threadlines/contracts";
-import { isAgentOrigin } from "@threadlines/shared/roomAgentRequests";
+import { isAgentOrigin } from "./roomAgentRequests.ts";
 
 /**
  * `user`: the user wrote it. `agent`: an agent in the thread did, itself or

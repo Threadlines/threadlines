@@ -1,313 +1,1152 @@
 <!doctype html>
 <html lang="en">
-<head>
-<meta charset="utf-8" />
-<title>Threadlines · child threads in the sidebar</title>
-<style>
-@font-face { font-family: "Schibsted Grotesk Variable"; src: url(fonts/sg.woff2) format("woff2"); font-weight: 400 900; }
-@font-face { font-family: "Cascadia Mono Variable"; src: url(fonts/cm.woff2) format("woff2"); font-weight: 200 700; }
-:root {
-  --rail: oklch(0.26 0 0);
-  --bg: oklch(0.228 0 0);
-  --fg: oklch(0.93 0 0);
-  --muted: oklch(0.68 0 0);
-  --border: rgb(255 255 255 / 14%);
-  --accent: rgb(255 255 255 / 10%);
-  --accent-60: rgb(255 255 255 / 6%);
-  --blue-dot: oklch(0.7 0.17 264);
-  --blue-text: oklch(0.65 0.19 264);
-  --amber: rgb(252 211 77 / 0.9);
-  --cyan: rgb(103 232 249 / 0.9);
-  --emerald: rgb(110 231 183 / 0.9);
-  --violet: rgb(196 181 253 / 0.9);
-  --red: rgb(248 113 113 / 0.9);
-  --success: oklch(0.696 0.17 162.48);
-  --destructive: color-mix(in srgb, oklch(0.637 0.237 25.331) 90%, white);
-  --sans: "Schibsted Grotesk Variable", ui-sans-serif, system-ui, -apple-system, sans-serif;
-  --mono: "Cascadia Mono Variable", "SF Mono", Menlo, monospace;
-}
-* { box-sizing: border-box; }
-html, body { margin: 0; background: #141414; color: var(--fg); font-family: var(--sans); -webkit-font-smoothing: antialiased; }
-svg.i { fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; flex: none; }
-svg.pg { flex: none; }
-svg.pg path { fill: currentColor; }
+  <head>
+    <meta charset="utf-8" />
+    <title>Threadlines · child threads in the sidebar</title>
+    <style>
+      @font-face {
+        font-family: "Schibsted Grotesk Variable";
+        src: url(fonts/sg.woff2) format("woff2");
+        font-weight: 400 900;
+      }
+      @font-face {
+        font-family: "Cascadia Mono Variable";
+        src: url(fonts/cm.woff2) format("woff2");
+        font-weight: 200 700;
+      }
+      :root {
+        --rail: oklch(0.26 0 0);
+        --bg: oklch(0.228 0 0);
+        --fg: oklch(0.93 0 0);
+        --muted: oklch(0.68 0 0);
+        --border: rgb(255 255 255 / 14%);
+        --accent: rgb(255 255 255 / 10%);
+        --accent-60: rgb(255 255 255 / 6%);
+        --blue-dot: oklch(0.7 0.17 264);
+        --blue-text: oklch(0.65 0.19 264);
+        --amber: rgb(252 211 77 / 0.9);
+        --cyan: rgb(103 232 249 / 0.9);
+        --emerald: rgb(110 231 183 / 0.9);
+        --violet: rgb(196 181 253 / 0.9);
+        --red: rgb(248 113 113 / 0.9);
+        --success: oklch(0.696 0.17 162.48);
+        --destructive: color-mix(in srgb, oklch(0.637 0.237 25.331) 90%, white);
+        --sans: "Schibsted Grotesk Variable", ui-sans-serif, system-ui, -apple-system, sans-serif;
+        --mono: "Cascadia Mono Variable", "SF Mono", Menlo, monospace;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        background: #141414;
+        color: var(--fg);
+        font-family: var(--sans);
+        -webkit-font-smoothing: antialiased;
+      }
+      svg.i {
+        fill: none;
+        stroke: currentColor;
+        stroke-width: 2;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+        flex: none;
+      }
+      svg.pg {
+        flex: none;
+      }
+      svg.pg path {
+        fill: currentColor;
+      }
 
-/* ---------- page chrome (not part of the design) ---------- */
-.page { padding: 24px 24px 64px; }
-.page > h1 { font-size: 18px; font-weight: 600; margin: 0 0 4px; letter-spacing: -.01em; }
-.page > p.lede { margin: 0 0 22px; color: var(--muted); font-size: 13.5px; line-height: 1.5; max-width: 980px; }
-.page > h2 { font-size: 15px; font-weight: 600; margin: 40px 0 4px; }
-.page > p.sub { margin: 0 0 16px; color: var(--muted); font-size: 13px; line-height: 1.5; max-width: 980px; }
-.boards { display: flex; gap: 22px; align-items: flex-start; }
-.col { width: 256px; flex: none; }
-.col .tag { font-family: var(--mono); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: oklch(0.68 0 0 / .55); margin: 0 0 3px; }
-.col .tag.rec { color: #34d399; }
-.col h3 { font-size: 14px; font-weight: 600; margin: 0 0 10px; }
-.col ul.notes { margin: 12px 0 0; padding-left: 16px; color: var(--muted); font-size: 12.5px; line-height: 1.5; }
-.col ul.notes li { margin-bottom: 5px; }
-.col ul.notes li b { color: var(--fg); font-weight: 500; }
-.col ul.notes li.con { list-style: "–  "; }
-.col ul.notes li.pro { list-style: "+  "; }
+      /* ---------- page chrome (not part of the design) ---------- */
+      .page {
+        padding: 24px 24px 64px;
+      }
+      .page > h1 {
+        font-size: 18px;
+        font-weight: 600;
+        margin: 0 0 4px;
+        letter-spacing: -0.01em;
+      }
+      .page > p.lede {
+        margin: 0 0 22px;
+        color: var(--muted);
+        font-size: 13.5px;
+        line-height: 1.5;
+        max-width: 980px;
+      }
+      .page > h2 {
+        font-size: 15px;
+        font-weight: 600;
+        margin: 40px 0 4px;
+      }
+      .page > p.sub {
+        margin: 0 0 16px;
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.5;
+        max-width: 980px;
+      }
+      .boards {
+        display: flex;
+        gap: 22px;
+        align-items: flex-start;
+      }
+      .col {
+        width: 256px;
+        flex: none;
+      }
+      .col .tag {
+        font-family: var(--mono);
+        font-size: 10px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: oklch(0.68 0 0 / 0.55);
+        margin: 0 0 3px;
+      }
+      .col .tag.rec {
+        color: #34d399;
+      }
+      .col h3 {
+        font-size: 14px;
+        font-weight: 600;
+        margin: 0 0 10px;
+      }
+      .col ul.notes {
+        margin: 12px 0 0;
+        padding-left: 16px;
+        color: var(--muted);
+        font-size: 12.5px;
+        line-height: 1.5;
+      }
+      .col ul.notes li {
+        margin-bottom: 5px;
+      }
+      .col ul.notes li b {
+        color: var(--fg);
+        font-weight: 500;
+      }
+      .col ul.notes li.con {
+        list-style: "–  ";
+      }
+      .col ul.notes li.pro {
+        list-style: "+  ";
+      }
 
-/* ---------- the sidebar, copied from the real classes ---------- */
-.sb { width: 256px; height: 780px; background: var(--rail); border: 1px solid rgb(255 255 255 / 8%); border-radius: 10px; overflow: hidden; display: flex; flex-direction: column; font-size: 12px; }
-.sb.crop { height: auto; padding-bottom: 8px; }
-.chrome { display: flex; align-items: center; gap: 8px; padding: 12px 14px 6px; font-weight: 600; font-size: 14px; letter-spacing: -.01em; }
-.chrome svg { color: var(--blue-text); }
-.search { margin: 8px 8px 6px; height: 28px; display: flex; align-items: center; gap: 8px; padding: 0 6px; border: 1px solid rgb(255 255 255 / 8.4%); background: rgb(255 255 255 / 3%); border-radius: 6px; color: oklch(0.68 0 0 / .7); font-size: 12px; }
-.search .kbd { margin-left: auto; font-size: 10px; padding: 0 6px; height: 16px; display: inline-flex; align-items: center; border-radius: 4px; background: rgb(255 255 255 / 6%); color: var(--muted); }
-.list { flex: 1; min-height: 0; overflow: hidden; }
-.navrow { margin: 0 8px; height: 28px; display: flex; align-items: center; gap: 8px; padding: 0 4px; border-radius: 6px; color: oklch(0.93 0 0 / .85); font-size: 12px; }
-.navrow .n { margin-left: auto; font-family: var(--mono); font-size: 10px; color: var(--muted); }
-.navgroup { margin-top: 4px; margin-bottom: 16px; }
-.scope { display: flex; align-items: center; gap: 4px; padding: 4px 8px; }
-.scope .sel { flex: 1; min-width: 0; height: 28px; display: flex; align-items: center; gap: 8px; padding: 0 6px; border: 1px solid rgb(255 255 255 / 13%); background: var(--bg); border-radius: 6px; color: oklch(0.68 0 0 / .8); font-size: 12px; }
-.scope .sel span { flex: 1; }
-.scope .ib { width: 24px; height: 24px; display: inline-flex; align-items: center; justify-content: center; color: oklch(0.68 0 0 / .6); }
+      /* ---------- the sidebar, copied from the real classes ---------- */
+      .sb {
+        width: 256px;
+        height: 780px;
+        background: var(--rail);
+        border: 1px solid rgb(255 255 255 / 8%);
+        border-radius: 10px;
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+        font-size: 12px;
+      }
+      .sb.crop {
+        height: auto;
+        padding-bottom: 8px;
+      }
+      .chrome {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 12px 14px 6px;
+        font-weight: 600;
+        font-size: 14px;
+        letter-spacing: -0.01em;
+      }
+      .chrome svg {
+        color: var(--blue-text);
+      }
+      .search {
+        margin: 8px 8px 6px;
+        height: 28px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 0 6px;
+        border: 1px solid rgb(255 255 255 / 8.4%);
+        background: rgb(255 255 255 / 3%);
+        border-radius: 6px;
+        color: oklch(0.68 0 0 / 0.7);
+        font-size: 12px;
+      }
+      .search .kbd {
+        margin-left: auto;
+        font-size: 10px;
+        padding: 0 6px;
+        height: 16px;
+        display: inline-flex;
+        align-items: center;
+        border-radius: 4px;
+        background: rgb(255 255 255 / 6%);
+        color: var(--muted);
+      }
+      .list {
+        flex: 1;
+        min-height: 0;
+        overflow: hidden;
+      }
+      .navrow {
+        margin: 0 8px;
+        height: 28px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 0 4px;
+        border-radius: 6px;
+        color: oklch(0.93 0 0 / 0.85);
+        font-size: 12px;
+      }
+      .navrow .n {
+        margin-left: auto;
+        font-family: var(--mono);
+        font-size: 10px;
+        color: var(--muted);
+      }
+      .navgroup {
+        margin-top: 4px;
+        margin-bottom: 16px;
+      }
+      .scope {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        padding: 4px 8px;
+      }
+      .scope .sel {
+        flex: 1;
+        min-width: 0;
+        height: 28px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 0 6px;
+        border: 1px solid rgb(255 255 255 / 13%);
+        background: var(--bg);
+        border-radius: 6px;
+        color: oklch(0.68 0 0 / 0.8);
+        font-size: 12px;
+      }
+      .scope .sel span {
+        flex: 1;
+      }
+      .scope .ib {
+        width: 24px;
+        height: 24px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        color: oklch(0.68 0 0 / 0.6);
+      }
 
-.row { position: relative; padding: 6px 12px 8px; cursor: default; }
-.row:hover { background: var(--accent-60); }
-.row.active { background: var(--accent); }
-.l1 { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 11px; color: oklch(0.68 0 0 / .45); }
-.dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
-.fav { width: 12px; height: 12px; border-radius: 3px; flex: none; display: inline-flex; align-items: center; justify-content: center; font-size: 8px; font-weight: 600; line-height: 1; }
-.proj { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: oklch(0.68 0 0 / .6); }
-.branch { display: flex; align-items: center; gap: 4px; min-width: 0; }
-.branch span { font-family: var(--mono); font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.branch svg { opacity: .6; }
-.meta { margin-left: auto; flex: none; display: flex; align-items: center; gap: 6px; white-space: nowrap; font-family: var(--mono); font-size: 11px; line-height: 1; font-variant-numeric: tabular-nums; }
-.sep { font-family: var(--sans); white-space: pre; opacity: .6; }
-.l2 { margin-top: 2px; display: flex; align-items: center; gap: 6px; min-width: 0; }
-.title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; line-height: 16px; font-weight: 500; color: oklch(0.93 0 0 / .9); }
-.title.unseen { color: var(--fg); }
-.r2 { margin-left: auto; flex: none; display: flex; align-items: center; gap: 6px; }
-.diff { font-family: var(--mono); font-size: 10px; line-height: 1; }
-.diff .a { color: var(--success); } .diff .d { color: var(--destructive); padding-left: 4px; }
-.pr { display: inline-flex; align-items: center; gap: 2px; font-family: var(--mono); font-size: 10px; line-height: 1; }
-.pg { color: oklch(0.68 0 0 / .45); }
-.c-blue { color: var(--blue-text); } .c-amber { color: var(--amber); } .c-cyan { color: var(--cyan); }
-.c-emerald { color: var(--emerald); } .c-violet { color: var(--violet); } .c-red { color: var(--red); }
-.c-quiet { color: oklch(0.68 0 0 / .5); }
-.b-blue { background: var(--blue-dot); } .b-amber { background: var(--amber); } .b-cyan { background: var(--cyan); }
-.b-emerald { background: var(--emerald); } .b-violet { background: var(--violet); } .b-red { background: var(--red); }
+      .row {
+        position: relative;
+        padding: 6px 12px 8px;
+        cursor: default;
+      }
+      .row:hover {
+        background: var(--accent-60);
+      }
+      .row.active {
+        background: var(--accent);
+      }
+      .l1 {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        min-width: 0;
+        font-size: 11px;
+        color: oklch(0.68 0 0 / 0.45);
+      }
+      .dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        flex: none;
+      }
+      .fav {
+        width: 12px;
+        height: 12px;
+        border-radius: 3px;
+        flex: none;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 8px;
+        font-weight: 600;
+        line-height: 1;
+      }
+      .proj {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        color: oklch(0.68 0 0 / 0.6);
+      }
+      .branch {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        min-width: 0;
+      }
+      .branch span {
+        font-family: var(--mono);
+        font-size: 10px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .branch svg {
+        opacity: 0.6;
+      }
+      .meta {
+        margin-left: auto;
+        flex: none;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        white-space: nowrap;
+        font-family: var(--mono);
+        font-size: 11px;
+        line-height: 1;
+        font-variant-numeric: tabular-nums;
+      }
+      .sep {
+        font-family: var(--sans);
+        white-space: pre;
+        opacity: 0.6;
+      }
+      .l2 {
+        margin-top: 2px;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        min-width: 0;
+      }
+      .title {
+        flex: 1;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-size: 12px;
+        line-height: 16px;
+        font-weight: 500;
+        color: oklch(0.93 0 0 / 0.9);
+      }
+      .title.unseen {
+        color: var(--fg);
+      }
+      .r2 {
+        margin-left: auto;
+        flex: none;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .diff {
+        font-family: var(--mono);
+        font-size: 10px;
+        line-height: 1;
+      }
+      .diff .a {
+        color: var(--success);
+      }
+      .diff .d {
+        color: var(--destructive);
+        padding-left: 4px;
+      }
+      .pr {
+        display: inline-flex;
+        align-items: center;
+        gap: 2px;
+        font-family: var(--mono);
+        font-size: 10px;
+        line-height: 1;
+      }
+      .pg {
+        color: oklch(0.68 0 0 / 0.45);
+      }
+      .c-blue {
+        color: var(--blue-text);
+      }
+      .c-amber {
+        color: var(--amber);
+      }
+      .c-cyan {
+        color: var(--cyan);
+      }
+      .c-emerald {
+        color: var(--emerald);
+      }
+      .c-violet {
+        color: var(--violet);
+      }
+      .c-red {
+        color: var(--red);
+      }
+      .c-quiet {
+        color: oklch(0.68 0 0 / 0.5);
+      }
+      .b-blue {
+        background: var(--blue-dot);
+      }
+      .b-amber {
+        background: var(--amber);
+      }
+      .b-cyan {
+        background: var(--cyan);
+      }
+      .b-emerald {
+        background: var(--emerald);
+      }
+      .b-violet {
+        background: var(--violet);
+      }
+      .b-red {
+        background: var(--red);
+      }
 
-.more { display: flex; align-items: center; padding: 4px 12px 6px; font-size: 11px; color: oklch(0.68 0 0 / .45); }
-.more svg { margin-left: auto; color: oklch(0.68 0 0 / .5); }
-.sechead { display: flex; align-items: center; gap: 8px; padding: 0 12px 6px; margin-top: 6px; }
-.sechead span.t { font-size: 11px; font-weight: 500; color: oklch(0.68 0 0 / .7); flex: none; }
-.sechead span.rule { height: 1px; flex: 1; background: var(--border); }
-.sechead svg { color: oklch(0.68 0 0 / .5); }
-.done { display: flex; align-items: center; gap: 8px; padding: 6px 12px; }
-.done:hover { background: var(--accent-60); }
-.done .fav { width: 14px; height: 14px; font-size: 9px; opacity: .7; }
-.done .t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--muted); }
-.done .m { margin-left: auto; display: flex; align-items: center; gap: 6px; font-family: var(--mono); font-size: 11px; color: oklch(0.68 0 0 / .45); white-space: nowrap; }
-.foot { border-top: 1px solid var(--border); margin: 0 8px; padding: 6px 0 8px; display: flex; flex-direction: column; gap: 1px; }
-.foot div { display: flex; align-items: center; gap: 8px; padding: 5px 4px; font-size: 12px; color: var(--muted); }
-.foot div span.r { margin-left: auto; font-family: var(--mono); font-size: 11px; color: oklch(0.68 0 0 / .62); }
+      .more {
+        display: flex;
+        align-items: center;
+        padding: 4px 12px 6px;
+        font-size: 11px;
+        color: oklch(0.68 0 0 / 0.45);
+      }
+      .more svg {
+        margin-left: auto;
+        color: oklch(0.68 0 0 / 0.5);
+      }
+      .sechead {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 0 12px 6px;
+        margin-top: 6px;
+      }
+      .sechead span.t {
+        font-size: 11px;
+        font-weight: 500;
+        color: oklch(0.68 0 0 / 0.7);
+        flex: none;
+      }
+      .sechead span.rule {
+        height: 1px;
+        flex: 1;
+        background: var(--border);
+      }
+      .sechead svg {
+        color: oklch(0.68 0 0 / 0.5);
+      }
+      .done {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 12px;
+      }
+      .done:hover {
+        background: var(--accent-60);
+      }
+      .done .fav {
+        width: 14px;
+        height: 14px;
+        font-size: 9px;
+        opacity: 0.7;
+      }
+      .done .t {
+        flex: 1;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-size: 12px;
+        color: var(--muted);
+      }
+      .done .m {
+        margin-left: auto;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-family: var(--mono);
+        font-size: 11px;
+        color: oklch(0.68 0 0 / 0.45);
+        white-space: nowrap;
+      }
+      .foot {
+        border-top: 1px solid var(--border);
+        margin: 0 8px;
+        padding: 6px 0 8px;
+        display: flex;
+        flex-direction: column;
+        gap: 1px;
+      }
+      .foot div {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 5px 4px;
+        font-size: 12px;
+        color: var(--muted);
+      }
+      .foot div span.r {
+        margin-left: auto;
+        font-family: var(--mono);
+        font-size: 11px;
+        color: oklch(0.68 0 0 / 0.62);
+      }
 
-/* ---------- new: option A, family tree ---------- */
-.kids { position: relative; padding-bottom: 2px; }
-.kids::before { content: ""; position: absolute; left: 15px; top: -4px; bottom: 13px; width: 1px; background: var(--border); }
-.kid { position: relative; display: flex; align-items: center; gap: 6px; padding: 5px 12px 5px 26px; min-width: 0; }
-.kid:hover { background: var(--accent-60); }
-.kid.active { background: var(--accent); }
-.kid .kt { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; line-height: 16px; color: oklch(0.93 0 0 / .82); }
-.kid .kt.hot { color: var(--fg); }
-.kid .kt.settled { color: oklch(0.68 0 0 / .8); }
-.kid .km { margin-left: auto; flex: none; display: flex; align-items: center; gap: 6px; font-family: var(--mono); font-size: 11px; line-height: 1; white-space: nowrap; }
-.kid .dot { width: 6px; height: 6px; }
-.kid .chk { color: oklch(0.68 0 0 / .5); }
-.fold { position: relative; display: flex; align-items: center; gap: 6px; padding: 4px 12px 6px 26px; font-size: 11px; color: oklch(0.68 0 0 / .55); }
-.fold:hover { color: var(--fg); }
-.fold .tail { margin-left: auto; display: flex; align-items: center; color: oklch(0.68 0 0 / .45); }
-.fold.inrow { padding-left: 0; padding-right: 0; padding-bottom: 0; padding-top: 3px; }
+      /* ---------- new: option A, family tree ---------- */
+      .kids {
+        position: relative;
+        padding-bottom: 2px;
+      }
+      .kids::before {
+        content: "";
+        position: absolute;
+        left: 15px;
+        top: -4px;
+        bottom: 13px;
+        width: 1px;
+        background: var(--border);
+      }
+      .kid {
+        position: relative;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 5px 12px 5px 26px;
+        min-width: 0;
+      }
+      .kid:hover {
+        background: var(--accent-60);
+      }
+      .kid.active {
+        background: var(--accent);
+      }
+      .kid .kt {
+        flex: 1;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-size: 12px;
+        line-height: 16px;
+        color: oklch(0.93 0 0 / 0.82);
+      }
+      .kid .kt.hot {
+        color: var(--fg);
+      }
+      .kid .kt.settled {
+        color: oklch(0.68 0 0 / 0.8);
+      }
+      .kid .km {
+        margin-left: auto;
+        flex: none;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-family: var(--mono);
+        font-size: 11px;
+        line-height: 1;
+        white-space: nowrap;
+      }
+      .kid .dot {
+        width: 6px;
+        height: 6px;
+      }
+      .kid .chk {
+        color: oklch(0.68 0 0 / 0.5);
+      }
+      .fold {
+        position: relative;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 4px 12px 6px 26px;
+        font-size: 11px;
+        color: oklch(0.68 0 0 / 0.55);
+      }
+      .fold:hover {
+        color: var(--fg);
+      }
+      .fold .tail {
+        margin-left: auto;
+        display: flex;
+        align-items: center;
+        color: oklch(0.68 0 0 / 0.45);
+      }
+      .fold.inrow {
+        padding-left: 0;
+        padding-right: 0;
+        padding-bottom: 0;
+        padding-top: 3px;
+      }
 
-/* ---------- new: option B, summary line ---------- */
-.sumline { margin-top: 3px; display: flex; align-items: center; gap: 6px; font-size: 11px; color: oklch(0.68 0 0 / .6); min-width: 0; }
-.sumline .dots { display: flex; align-items: center; gap: 2px; }
-.sumline .dots i { width: 5px; height: 5px; border-radius: 50%; display: block; }
-.sumline .txt { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.sumline .tail { margin-left: auto; flex: none; display: flex; color: oklch(0.68 0 0 / .45); }
+      /* ---------- new: option B, summary line ---------- */
+      .sumline {
+        margin-top: 3px;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 11px;
+        color: oklch(0.68 0 0 / 0.6);
+        min-width: 0;
+      }
+      .sumline .dots {
+        display: flex;
+        align-items: center;
+        gap: 2px;
+      }
+      .sumline .dots i {
+        width: 5px;
+        height: 5px;
+        border-radius: 50%;
+        display: block;
+      }
+      .sumline .txt {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .sumline .tail {
+        margin-left: auto;
+        flex: none;
+        display: flex;
+        color: oklch(0.68 0 0 / 0.45);
+      }
 
-/* ---------- new: option C, flat with "from" ---------- */
-.from { display: flex; align-items: center; gap: 4px; min-width: 0; color: oklch(0.68 0 0 / .6); }
-.from span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.count { display: inline-flex; align-items: center; gap: 3px; font-family: var(--mono); font-size: 10px; line-height: 1; color: oklch(0.68 0 0 / .55); }
+      /* ---------- new: option C, flat with "from" ---------- */
+      .from {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        min-width: 0;
+        color: oklch(0.68 0 0 / 0.6);
+      }
+      .from span {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .count {
+        display: inline-flex;
+        align-items: center;
+        gap: 3px;
+        font-family: var(--mono);
+        font-size: 10px;
+        line-height: 1;
+        color: oklch(0.68 0 0 / 0.55);
+      }
 
+      /* ---------- option B opened ---------- */
+      .kids.flat::before {
+        display: none;
+      }
+      .kids.flat .kid {
+        padding-left: 12px;
+      }
+      .duo {
+        position: relative;
+        display: flex;
+        width: 556px;
+        min-height: 304px;
+      }
+      .duo .sb {
+        border-top-right-radius: 0;
+        border-bottom-right-radius: 0;
+      }
+      .mainslice {
+        width: 300px;
+        background: var(--bg);
+        border: 1px solid rgb(255 255 255 / 8%);
+        border-left: 0;
+        border-radius: 0 10px 10px 0;
+        padding: 14px 16px;
+      }
+      .mainslice .mh {
+        font-size: 13px;
+        font-weight: 600;
+        margin-bottom: 14px;
+      }
+      .mainslice .bar {
+        height: 8px;
+        border-radius: 4px;
+        background: rgb(255 255 255 / 5%);
+        margin-bottom: 9px;
+      }
+      .popover {
+        position: absolute;
+        width: 292px;
+        background: oklch(0.312 0 0);
+        border: 1px solid rgb(255 255 255 / 10%);
+        border-radius: 8px;
+        box-shadow: 0 12px 30px #0007;
+        padding: 4px;
+        font-size: 12px;
+        z-index: 5;
+      }
+      .popover .ph {
+        padding: 6px 8px 4px;
+        font-size: 11px;
+        color: oklch(0.68 0 0 / 0.6);
+      }
+      .popover .pi {
+        padding: 6px 8px;
+        border-radius: 6px;
+      }
+      .popover .pi:hover,
+      .popover .pi.hov {
+        background: rgb(255 255 255 / 6%);
+      }
+      .popover .p1 {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        min-width: 0;
+      }
+      .popover .p1 .t {
+        flex: 1;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        color: oklch(0.93 0 0 / 0.9);
+      }
+      .popover .p1 .t.hot {
+        color: var(--fg);
+      }
+      .popover .p1 .t.settled {
+        color: oklch(0.68 0 0 / 0.85);
+      }
+      .popover .p1 .m {
+        margin-left: auto;
+        flex: none;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-family: var(--mono);
+        font-size: 11px;
+        line-height: 1;
+        white-space: nowrap;
+      }
+      .popover .p1 .dot {
+        width: 6px;
+        height: 6px;
+      }
+      .popover .p2 {
+        margin-top: 3px;
+        padding-left: 12px;
+        display: flex;
+        gap: 4px;
+        align-items: center;
+        font-size: 11px;
+        color: oklch(0.68 0 0 / 0.55);
+        min-width: 0;
+        white-space: nowrap;
+      }
+      .popover .p2 .mono {
+        font-family: var(--mono);
+        font-size: 10px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .popover .rule {
+        height: 1px;
+        background: rgb(255 255 255 / 8%);
+        margin: 4px 4px;
+      }
+      .popover .act {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 8px;
+        border-radius: 6px;
+        color: var(--muted);
+      }
+      .popover .act:hover {
+        background: rgb(255 255 255 / 6%);
+        color: var(--fg);
+      }
 
-/* ---------- option B opened ---------- */
-.kids.flat::before { display: none; }
-.kids.flat .kid { padding-left: 12px; }
-.duo { position: relative; display: flex; width: 556px; min-height: 304px; }
-.duo .sb { border-top-right-radius: 0; border-bottom-right-radius: 0; }
-.mainslice { width: 300px; background: var(--bg); border: 1px solid rgb(255 255 255 / 8%); border-left: 0; border-radius: 0 10px 10px 0; padding: 14px 16px; }
-.mainslice .mh { font-size: 13px; font-weight: 600; margin-bottom: 14px; }
-.mainslice .bar { height: 8px; border-radius: 4px; background: rgb(255 255 255 / 5%); margin-bottom: 9px; }
-.popover { position: absolute; width: 292px; background: oklch(0.312 0 0); border: 1px solid rgb(255 255 255 / 10%); border-radius: 8px; box-shadow: 0 12px 30px #0007; padding: 4px; font-size: 12px; z-index: 5; }
-.popover .ph { padding: 6px 8px 4px; font-size: 11px; color: oklch(0.68 0 0 / .6); }
-.popover .pi { padding: 6px 8px; border-radius: 6px; }
-.popover .pi:hover, .popover .pi.hov { background: rgb(255 255 255 / 6%); }
-.popover .p1 { display: flex; align-items: center; gap: 6px; min-width: 0; }
-.popover .p1 .t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: oklch(0.93 0 0 / .9); }
-.popover .p1 .t.hot { color: var(--fg); }
-.popover .p1 .t.settled { color: oklch(0.68 0 0 / .85); }
-.popover .p1 .m { margin-left: auto; flex: none; display: flex; align-items: center; gap: 6px; font-family: var(--mono); font-size: 11px; line-height: 1; white-space: nowrap; }
-.popover .p1 .dot { width: 6px; height: 6px; }
-.popover .p2 { margin-top: 3px; padding-left: 12px; display: flex; gap: 4px; align-items: center; font-size: 11px; color: oklch(0.68 0 0 / .55); min-width: 0; white-space: nowrap; }
-.popover .p2 .mono { font-family: var(--mono); font-size: 10px; overflow: hidden; text-overflow: ellipsis; }
-.popover .rule { height: 1px; background: rgb(255 255 255 / 8%); margin: 4px 4px; }
-.popover .act { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 6px; color: var(--muted); }
-.popover .act:hover { background: rgb(255 255 255 / 6%); color: var(--fg); }
+      /* ---------- wrapping and separating ---------- */
+      .kid.hov {
+        background: var(--accent-60);
+      }
+      .wrapbtn {
+        display: inline-flex;
+        width: 20px;
+        height: 20px;
+        align-items: center;
+        justify-content: center;
+        border-radius: 4px;
+        color: var(--fg);
+        background: rgb(255 255 255 / 8%);
+      }
+      .ctx {
+        position: absolute;
+        width: 214px;
+        background: rgb(44 44 46 / 0.97);
+        border: 1px solid rgb(255 255 255 / 12%);
+        border-radius: 8px;
+        box-shadow: 0 14px 34px #0009;
+        padding: 5px;
+        font-size: 13px;
+        font-family: -apple-system, system-ui, sans-serif;
+        z-index: 6;
+      }
+      .ctx div {
+        padding: 3px 10px;
+        border-radius: 4px;
+        color: rgb(255 255 255 / 0.88);
+      }
+      .ctx div.on {
+        background: #0a5cd6;
+        color: white;
+      }
+      .ctx div.red {
+        color: #ff6b62;
+      }
+      .ctx hr {
+        border: 0;
+        height: 1px;
+        background: rgb(255 255 255 / 10%);
+        margin: 5px 8px;
+      }
 
+      /* ---------- chat header strip (lifecycle board) ---------- */
+      .hdr {
+        width: 540px;
+        height: 44px;
+        background: var(--bg);
+        border: 1px solid rgb(255 255 255 / 8%);
+        border-radius: 10px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 0 14px;
+        font-size: 13px;
+      }
+      .hdr .crumb {
+        color: var(--muted);
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .hdr .crumb:hover {
+        color: var(--fg);
+        text-decoration: underline;
+        text-underline-offset: 2px;
+      }
+      .hdr .cur {
+        font-weight: 600;
+      }
+      .hdr .chip {
+        margin-left: auto;
+        font-family: var(--mono);
+        font-size: 11px;
+        color: oklch(0.68 0 0 / 0.6);
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .hovercard {
+        width: 280px;
+        background: oklch(0.312 0 0);
+        border: 1px solid rgb(255 255 255 / 10%);
+        border-radius: 10px;
+        padding: 10px 12px;
+        font-size: 12px;
+        box-shadow: 0 12px 30px #0007;
+      }
+      .hovercard .h {
+        font-weight: 600;
+        margin-bottom: 6px;
+      }
+      .hovercard .kv {
+        display: grid;
+        grid-template-columns: 76px 1fr;
+        gap: 4px 8px;
+        color: var(--muted);
+        font-size: 11.5px;
+      }
+      .hovercard .kv b {
+        color: var(--fg);
+        font-weight: 400;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .hovercard .kv b.c-amber {
+        color: var(--amber);
+      }
+      .hovercard .kv .mono {
+        font-family: var(--mono);
+        font-size: 10.5px;
+      }
+    </style>
+  </head>
+  <body>
+    <svg width="0" height="0" style="position: absolute">
+      <symbol id="l-codex" viewBox="0 0 256 260">
+        <path
+          d="M239.184 106.203a64.716 64.716 0 0 0-5.576-53.103C219.452 28.459 191 15.784 163.213 21.74A65.586 65.586 0 0 0 52.096 45.22a64.716 64.716 0 0 0-43.23 31.36c-14.31 24.602-11.061 55.634 8.033 76.74a64.665 64.665 0 0 0 5.525 53.102c14.174 24.65 42.644 37.324 70.446 31.36a64.72 64.72 0 0 0 48.754 21.744c28.481.025 53.714-18.361 62.414-45.481a64.767 64.767 0 0 0 43.229-31.36c14.137-24.558 10.875-55.423-8.083-76.483Zm-97.56 136.338a48.397 48.397 0 0 1-31.105-11.255l1.535-.87 51.67-29.825a8.595 8.595 0 0 0 4.247-7.367v-72.85l21.845 12.636c.218.111.37.32.409.563v60.367c-.056 26.818-21.783 48.545-48.601 48.601Zm-104.466-44.61a48.345 48.345 0 0 1-5.781-32.589l1.534.921 51.722 29.826a8.339 8.339 0 0 0 8.441 0l63.181-36.425v25.221a.87.87 0 0 1-.358.665l-52.335 30.184c-23.257 13.398-52.97 5.431-66.404-17.803ZM23.549 85.38a48.499 48.499 0 0 1 25.58-21.333v61.39a8.288 8.288 0 0 0 4.195 7.316l62.874 36.272-21.845 12.636a.819.819 0 0 1-.767 0L41.353 151.53c-23.211-13.454-31.171-43.144-17.804-66.405v.256Zm179.466 41.695-63.08-36.63L161.73 77.86a.819.819 0 0 1 .768 0l52.233 30.184a48.6 48.6 0 0 1-7.316 87.635v-61.391a8.544 8.544 0 0 0-4.4-7.213Zm21.742-32.69-1.535-.922-51.619-30.081a8.39 8.39 0 0 0-8.492 0L99.98 99.808V74.587a.716.716 0 0 1 .307-.665l52.233-30.133a48.652 48.652 0 0 1 72.236 50.391v.205ZM88.061 139.097l-21.845-12.585a.87.87 0 0 1-.41-.614V65.685a48.652 48.652 0 0 1 79.757-37.346l-1.535.87-51.67 29.825a8.595 8.595 0 0 0-4.246 7.367l-.051 72.697Zm11.868-25.58 28.138-16.217 28.188 16.218v32.434l-28.086 16.218-28.188-16.218-.052-32.434Z"
+        />
+      </symbol>
+      <symbol id="l-claude" viewBox="0 0 256 257">
+        <path
+          d="m50.228 170.321 50.357-28.257.843-2.463-.843-1.361h-2.462l-8.426-.518-28.775-.778-24.952-1.037-24.175-1.296-6.092-1.297L0 125.796l.583-3.759 5.12-3.434 7.324.648 16.202 1.101 24.304 1.685 17.629 1.037 26.118 2.722h4.148l.583-1.685-1.426-1.037-1.101-1.037-25.147-17.045-27.22-18.017-14.258-10.37-7.713-5.25-3.888-4.925-1.685-10.758 7-7.713 9.397.649 2.398.648 9.527 7.323 20.35 15.75L94.817 91.9l3.889 3.24 1.555-1.102.195-.777-1.75-2.917-14.453-26.118-15.425-26.572-6.87-11.018-1.814-6.61c-.648-2.723-1.102-4.991-1.102-7.778l7.972-10.823L71.42 0 82.05 1.426l4.472 3.888 6.61 15.101 10.694 23.786 16.591 32.34 4.861 9.592 2.592 8.879.973 2.722h1.685v-1.556l1.36-18.211 2.528-22.36 2.463-28.776.843-8.1 4.018-9.722 7.971-5.25 6.222 2.981 5.12 7.324-.713 4.73-3.046 19.768-5.962 30.98-3.889 20.739h2.268l2.593-2.593 10.499-13.934 17.628-22.036 7.778-8.749 9.073-9.657 5.833-4.601h11.018l8.1 12.055-3.628 12.443-11.342 14.388-9.398 12.184-13.48 18.147-8.426 14.518.778 1.166 2.01-.194 30.46-6.481 16.462-2.982 19.637-3.37 8.88 4.148.971 4.213-3.5 8.62-20.998 5.184-24.628 4.926-36.682 8.685-.454.324.519.648 16.526 1.555 7.065.389h17.304l32.21 2.398 8.426 5.574 5.055 6.805-.843 5.184-12.962 6.611-17.498-4.148-40.83-9.721-14-3.5h-1.944v1.167l11.666 11.406 21.387 19.314 26.767 24.887 1.36 6.157-3.434 4.86-3.63-.518-23.526-17.693-9.073-7.972-20.545-17.304h-1.36v1.814l4.73 6.935 25.017 37.59 1.296 11.536-1.814 3.76-6.481 2.268-7.13-1.297-14.647-20.544-15.1-23.138-12.185-20.739-1.49.843-7.194 77.448-3.37 3.953-7.778 2.981-6.48-4.925-3.436-7.972 3.435-15.749 4.148-20.544 3.37-16.333 3.046-20.285 1.815-6.74-.13-.454-1.49.194-15.295 20.999-23.267 31.433-18.406 19.702-4.407 1.75-7.648-3.954.713-7.064 4.277-6.286 25.47-32.405 15.36-20.092 9.917-11.6-.065-1.686h-.583L44.07 198.125l-12.055 1.555-5.185-4.86.648-7.972 2.463-2.593 20.35-13.999-.064.065Z"
+        />
+      </symbol>
+    </svg>
 
-/* ---------- wrapping and separating ---------- */
-.kid.hov { background: var(--accent-60); }
-.wrapbtn { display: inline-flex; width: 20px; height: 20px; align-items: center; justify-content: center; border-radius: 4px; color: var(--fg); background: rgb(255 255 255 / 8%); }
-.ctx { position: absolute; width: 214px; background: rgb(44 44 46 / 0.97); border: 1px solid rgb(255 255 255 / 12%); border-radius: 8px; box-shadow: 0 14px 34px #0009; padding: 5px; font-size: 13px; font-family: -apple-system, system-ui, sans-serif; z-index: 6; }
-.ctx div { padding: 3px 10px; border-radius: 4px; color: rgb(255 255 255 / 0.88); }
-.ctx div.on { background: #0a5cd6; color: white; }
-.ctx div.red { color: #ff6b62; }
-.ctx hr { border: 0; height: 1px; background: rgb(255 255 255 / 10%); margin: 5px 8px; }
+    <div class="page">
+      <h1>Child threads in the sidebar</h1>
+      <p class="lede">
+        Same story in every frame: you asked an agent to ship the 0.6 release, and it started three
+        threads of its own (one still working, one waiting on you, one finished). A second agent
+        finished an audit using two threads earlier today. Sizes, colors and fonts are copied from
+        the real sidebar code.
+      </p>
 
-/* ---------- chat header strip (lifecycle board) ---------- */
-.hdr { width: 540px; height: 44px; background: var(--bg); border: 1px solid rgb(255 255 255 / 8%); border-radius: 10px; display: flex; align-items: center; gap: 8px; padding: 0 14px; font-size: 13px; }
-.hdr .crumb { color: var(--muted); display: flex; align-items: center; gap: 6px; }
-.hdr .crumb:hover { color: var(--fg); text-decoration: underline; text-underline-offset: 2px; }
-.hdr .cur { font-weight: 600; }
-.hdr .chip { margin-left: auto; font-family: var(--mono); font-size: 11px; color: oklch(0.68 0 0 / .6); display: flex; align-items: center; gap: 6px; }
-.hovercard { width: 280px; background: oklch(0.312 0 0); border: 1px solid rgb(255 255 255 / 10%); border-radius: 10px; padding: 10px 12px; font-size: 12px; box-shadow: 0 12px 30px #0007; }
-.hovercard .h { font-weight: 600; margin-bottom: 6px; }
-.hovercard .kv { display: grid; grid-template-columns: 76px 1fr; gap: 4px 8px; color: var(--muted); font-size: 11.5px; }
-.hovercard .kv b { color: var(--fg); font-weight: 400; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.hovercard .kv b.c-amber { color: var(--amber); }
-.hovercard .kv .mono { font-family: var(--mono); font-size: 10.5px; }
-</style>
-</head>
-<body>
-<svg width="0" height="0" style="position:absolute">
-    <symbol id="l-codex" viewBox="0 0 256 260"><path  d="M239.184 106.203a64.716 64.716 0 0 0-5.576-53.103C219.452 28.459 191 15.784 163.213 21.74A65.586 65.586 0 0 0 52.096 45.22a64.716 64.716 0 0 0-43.23 31.36c-14.31 24.602-11.061 55.634 8.033 76.74a64.665 64.665 0 0 0 5.525 53.102c14.174 24.65 42.644 37.324 70.446 31.36a64.72 64.72 0 0 0 48.754 21.744c28.481.025 53.714-18.361 62.414-45.481a64.767 64.767 0 0 0 43.229-31.36c14.137-24.558 10.875-55.423-8.083-76.483Zm-97.56 136.338a48.397 48.397 0 0 1-31.105-11.255l1.535-.87 51.67-29.825a8.595 8.595 0 0 0 4.247-7.367v-72.85l21.845 12.636c.218.111.37.32.409.563v60.367c-.056 26.818-21.783 48.545-48.601 48.601Zm-104.466-44.61a48.345 48.345 0 0 1-5.781-32.589l1.534.921 51.722 29.826a8.339 8.339 0 0 0 8.441 0l63.181-36.425v25.221a.87.87 0 0 1-.358.665l-52.335 30.184c-23.257 13.398-52.97 5.431-66.404-17.803ZM23.549 85.38a48.499 48.499 0 0 1 25.58-21.333v61.39a8.288 8.288 0 0 0 4.195 7.316l62.874 36.272-21.845 12.636a.819.819 0 0 1-.767 0L41.353 151.53c-23.211-13.454-31.171-43.144-17.804-66.405v.256Zm179.466 41.695-63.08-36.63L161.73 77.86a.819.819 0 0 1 .768 0l52.233 30.184a48.6 48.6 0 0 1-7.316 87.635v-61.391a8.544 8.544 0 0 0-4.4-7.213Zm21.742-32.69-1.535-.922-51.619-30.081a8.39 8.39 0 0 0-8.492 0L99.98 99.808V74.587a.716.716 0 0 1 .307-.665l52.233-30.133a48.652 48.652 0 0 1 72.236 50.391v.205ZM88.061 139.097l-21.845-12.585a.87.87 0 0 1-.41-.614V65.685a48.652 48.652 0 0 1 79.757-37.346l-1.535.87-51.67 29.825a8.595 8.595 0 0 0-4.246 7.367l-.051 72.697Zm11.868-25.58 28.138-16.217 28.188 16.218v32.434l-28.086 16.218-28.188-16.218-.052-32.434Z"/></symbol>
-    <symbol id="l-claude" viewBox="0 0 256 257"><path  d="m50.228 170.321 50.357-28.257.843-2.463-.843-1.361h-2.462l-8.426-.518-28.775-.778-24.952-1.037-24.175-1.296-6.092-1.297L0 125.796l.583-3.759 5.12-3.434 7.324.648 16.202 1.101 24.304 1.685 17.629 1.037 26.118 2.722h4.148l.583-1.685-1.426-1.037-1.101-1.037-25.147-17.045-27.22-18.017-14.258-10.37-7.713-5.25-3.888-4.925-1.685-10.758 7-7.713 9.397.649 2.398.648 9.527 7.323 20.35 15.75L94.817 91.9l3.889 3.24 1.555-1.102.195-.777-1.75-2.917-14.453-26.118-15.425-26.572-6.87-11.018-1.814-6.61c-.648-2.723-1.102-4.991-1.102-7.778l7.972-10.823L71.42 0 82.05 1.426l4.472 3.888 6.61 15.101 10.694 23.786 16.591 32.34 4.861 9.592 2.592 8.879.973 2.722h1.685v-1.556l1.36-18.211 2.528-22.36 2.463-28.776.843-8.1 4.018-9.722 7.971-5.25 6.222 2.981 5.12 7.324-.713 4.73-3.046 19.768-5.962 30.98-3.889 20.739h2.268l2.593-2.593 10.499-13.934 17.628-22.036 7.778-8.749 9.073-9.657 5.833-4.601h11.018l8.1 12.055-3.628 12.443-11.342 14.388-9.398 12.184-13.48 18.147-8.426 14.518.778 1.166 2.01-.194 30.46-6.481 16.462-2.982 19.637-3.37 8.88 4.148.971 4.213-3.5 8.62-20.998 5.184-24.628 4.926-36.682 8.685-.454.324.519.648 16.526 1.555 7.065.389h17.304l32.21 2.398 8.426 5.574 5.055 6.805-.843 5.184-12.962 6.611-17.498-4.148-40.83-9.721-14-3.5h-1.944v1.167l11.666 11.406 21.387 19.314 26.767 24.887 1.36 6.157-3.434 4.86-3.63-.518-23.526-17.693-9.073-7.972-20.545-17.304h-1.36v1.814l4.73 6.935 25.017 37.59 1.296 11.536-1.814 3.76-6.481 2.268-7.13-1.297-14.647-20.544-15.1-23.138-12.185-20.739-1.49.843-7.194 77.448-3.37 3.953-7.778 2.981-6.48-4.925-3.436-7.972 3.435-15.749 4.148-20.544 3.37-16.333 3.046-20.285 1.815-6.74-.13-.454-1.49.194-15.295 20.999-23.267 31.433-18.406 19.702-4.407 1.75-7.648-3.954.713-7.064 4.277-6.286 25.47-32.405 15.36-20.092 9.917-11.6-.065-1.686h-.583L44.07 198.125l-12.055 1.555-5.185-4.86.648-7.972 2.463-2.593 20.35-13.999-.064.065Z"/></symbol>
+      <div class="boards" id="options"></div>
 
-</svg>
+      <h2>B, opened</h2>
+      <p class="sub">
+        Two ways the summary line could open. Opened in place, B ends up looking a lot like A, so
+        the real choice between them is whether a family starts open or closed.
+      </p>
+      <div class="boards" id="bopen"></div>
 
-<div class="page">
-  <h1>Child threads in the sidebar</h1>
-  <p class="lede">Same story in every frame: you asked an agent to ship the 0.6 release, and it started three threads of its own (one still working, one waiting on you, one finished). A second agent finished an audit using two threads earlier today. Sizes, colors and fonts are copied from the real sidebar code.</p>
+      <h2>Wrapping and separating children</h2>
+      <p class="sub">
+        The version you picked: B, opening in place. Children don't have to stay attached. Each one
+        can be wrapped on its own, a live one never gets hidden by wrapping its parent, and any
+        child can be made into a thread of its own.
+      </p>
+      <div class="boards" id="wrapsep"></div>
 
-  <div class="boards" id="options"></div>
+      <h2>A, over a thread's life</h2>
+      <p class="sub">
+        How one family moves through the sidebar from launch to wrap-up. Nothing in the list moves
+        on its own: the family keeps its place by when the parent was created, like every other row.
+      </p>
+      <div class="boards" id="lifecycle"></div>
 
+      <h2>Around the edges</h2>
+      <p class="sub">
+        Two small pieces any option needs: a way back from a child to its parent, and a hover card
+        that says who started a thread.
+      </p>
+      <div class="boards" id="edges"></div>
+    </div>
 
-  <h2>B, opened</h2>
-  <p class="sub">Two ways the summary line could open. Opened in place, B ends up looking a lot like A, so the real choice between them is whether a family starts open or closed.</p>
-  <div class="boards" id="bopen"></div>
+    <script>
+      // ---------- icons (lucide paths) ----------
+      const ICONS = {
+        branch:
+          '<line x1="6" x2="6" y1="3" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/>',
+        search: '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>',
+        chats:
+          '<path d="M14 9a2 2 0 0 1-2 2H6l-4 4V4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2z"/><path d="M18 9h2a2 2 0 0 1 2 2v11l-4-4h-6a2 2 0 0 1-2-2v-1"/>',
+        pr: '<circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M13 6h3a2 2 0 0 1 2 2v7"/><line x1="6" x2="6" y1="9" y2="21"/>',
+        merged:
+          '<circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M6 21V9a9 9 0 0 0 9 9"/>',
+        users:
+          '<path d="M18 21a8 8 0 0 0-16 0"/><circle cx="10" cy="8" r="5"/><path d="M22 20c0-3.37-2-6.5-4-8a5 5 0 0 0-.45-8.3"/>',
+        folder:
+          '<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>',
+        updown: '<path d="m7 15 5 5 5-5"/><path d="m7 9 5-5 5 5"/>',
+        folderplus:
+          '<path d="M12 10v6"/><path d="M9 13h6"/><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>',
+        pen: '<path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.375 2.625a1 1 0 0 1 3 3l-9.013 9.014a2 2 0 0 1-.853.505l-2.873.84a.5.5 0 0 1-.62-.62l.84-2.873a2 2 0 0 1 .506-.852z"/>',
+        down: '<path d="m6 9 6 6 6-6"/>',
+        right: '<path d="m9 18 6-6-6-6"/>',
+        check: '<path d="M20 6 9 17l-5-5"/>',
+        chevsup: '<path d="m17 11-5-5-5 5"/><path d="m17 18-5-5-5 5"/>',
+        fork: '<circle cx="12" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><circle cx="18" cy="6" r="3"/><path d="M18 9v2c0 .6-.4 1-1 1H7c-.6 0-1-.4-1-1V9"/><path d="M12 12v3"/>',
+        corner: '<polyline points="15 10 20 15 15 20"/><path d="M4 4v7a4 4 0 0 0 4 4h12"/>',
+        gauge: '<path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/>',
+        settings:
+          '<path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/>',
+        logo: '<path d="M3 8h5l4 8h9"/><path d="M15 8h6"/>',
+      };
+      const ic = (name, size = 14, extra = "") =>
+        `<svg class="i ${extra}" width="${size}" height="${size}" viewBox="0 0 24 24">${ICONS[name]}</svg>`;
+      const glyph = (p) =>
+        `<svg class="pg" width="12" height="12" viewBox="0 0 256 ${p === "codex" ? 260 : 257}"><use href="#l-${p}"/></svg>`;
 
+      // ---------- data ----------
+      const PROJECTS = {
+        tl: { name: "threadlines", letter: "T", hue: 255 },
+        mk: { name: "marketing", letter: "M", hue: 35 },
+      };
+      const fav = (key) => {
+        const p = PROJECTS[key];
+        return `<span class="fav" style="background: oklch(0.65 0.08 ${p.hue} / 0.22); color: oklch(0.78 0.08 ${p.hue})">${p.letter}</span>`;
+      };
 
-  <h2>Wrapping and separating children</h2>
-  <p class="sub">The version you picked: B, opening in place. Children don't have to stay attached. Each one can be wrapped on its own, a live one never gets hidden by wrapping its parent, and any child can be made into a thread of its own.</p>
-  <div class="boards" id="wrapsep"></div>
+      // Status words, colors and dots follow Sidebar.logic.ts.
+      const S = {
+        working: { dot: "b-blue", color: "c-blue" },
+        starting: { dot: "b-blue", color: "c-blue" },
+        waiting: { dot: "b-cyan", color: "c-cyan" },
+        input: { dot: "b-amber", color: "c-amber" },
+        approval: { dot: "b-amber", color: "c-amber" },
+        failed: { dot: "b-red", color: "c-red" },
+        completed: { dot: "b-emerald", color: null },
+      };
 
-  <h2>A, over a thread's life</h2>
-  <p class="sub">How one family moves through the sidebar from launch to wrap-up. Nothing in the list moves on its own: the family keeps its place by when the parent was created, like every other row.</p>
-  <div class="boards" id="lifecycle"></div>
+      const T = {
+        paste: {
+          project: "tl",
+          branch: "fix/composer-paste",
+          title: "Composer paste drops images",
+          status: "working",
+          meta: ["working", "2m"],
+          diff: [18, 4],
+          provider: "codex",
+        },
+        release: {
+          project: "tl",
+          branch: "main",
+          title: "Ship the 0.6 release",
+          status: "waiting",
+          meta: ["3 threads", "12m"],
+          diff: [6, 2],
+          provider: "claude",
+        },
+        hero: {
+          project: "mk",
+          branch: "main",
+          title: "Hero copy pass for the site",
+          status: "completed",
+          meta: ["3h"],
+          provider: "claude",
+        },
+        audit: {
+          project: "tl",
+          branch: "main",
+          title: "Audit settings for flat design",
+          status: null,
+          meta: ["1h"],
+          diff: [120, 64],
+          provider: "codex",
+        },
+        relay: {
+          project: "tl",
+          branch: "fix/relay-1006",
+          title: "Relay reconnect logs",
+          status: null,
+          meta: ["1d"],
+          pr: { n: 377, kind: "merged" },
+          provider: "claude",
+        },
+      };
+      const KIDS = {
+        release: [
+          {
+            title: "Fix flaky worktree cleanup test",
+            branch: "fix/worktree-cleanup-flake",
+            status: "working",
+            meta: ["working", "4m"],
+            provider: "codex",
+          },
+          {
+            title: "Write the 0.6 changelog",
+            branch: "chore/changelog-0-6",
+            status: "input",
+            meta: ["input"],
+            provider: "claude",
+          },
+          {
+            title: "Bump Electron to 43.8",
+            branch: "feat/electron-43-8",
+            status: "finished",
+            meta: ["8m"],
+            provider: "codex",
+            pr: { n: 384, kind: "open" },
+          },
+        ],
+        audit: [
+          {
+            title: "Flatten the Providers tab",
+            branch: "fix/providers-flat",
+            status: "finished",
+            meta: ["1h"],
+            provider: "claude",
+          },
+          {
+            title: "Flatten the Connections tab",
+            branch: "fix/connections-flat",
+            status: "finished",
+            meta: ["1h"],
+            provider: "codex",
+          },
+        ],
+      };
+      const WRAPPED = [
+        {
+          project: "tl",
+          title: "Antigravity as a provider",
+          at: "2h",
+          pr: { n: 374, kind: "merged" },
+          kids: 2,
+        },
+        {
+          project: "tl",
+          title: "Worktree cleanup recognizes shipped work",
+          at: "5h",
+          pr: { n: 379, kind: "merged" },
+        },
+        {
+          project: "tl",
+          title: "Cloudflare sign-in in the browser",
+          at: "1d",
+          pr: { n: 378, kind: "merged" },
+        },
+        { project: "mk", title: "Rooms launch video", at: "2d" },
+        {
+          project: "tl",
+          title: "Phone link short codes",
+          at: "3d",
+          pr: { n: 375, kind: "merged" },
+        },
+      ];
 
-  <h2>Around the edges</h2>
-  <p class="sub">Two small pieces any option needs: a way back from a child to its parent, and a hover card that says who started a thread.</p>
-  <div class="boards" id="edges"></div>
-</div>
+      // ---------- row renderers ----------
+      const sep = `<span class="sep"> · </span>`;
+      const metaHtml = (t) => {
+        const st = t.status && S[t.status];
+        const live = t.status && t.status !== "completed" && t.status !== "finished";
+        const cls = live && st.color ? st.color : "c-quiet";
+        return `<span class="${cls}">${t.meta.join(sep)}</span>`;
+      };
+      const prHtml = (pr) =>
+        pr
+          ? `<span class="pr ${pr.kind === "merged" ? "c-violet" : "c-emerald"}">${ic(pr.kind === "merged" ? "merged" : "pr", 12)}<span style="transform: translateY(1px)">#${pr.n}</span></span>`
+          : "";
+      const diffHtml = (d) =>
+        d
+          ? `<span class="diff"><span class="a">+${d[0]}</span><span class="d">−${d[1]}</span></span>`
+          : "";
 
-<script>
-// ---------- icons (lucide paths) ----------
-const ICONS = {
-  branch: '<line x1="6" x2="6" y1="3" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/>',
-  search: '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>',
-  chats: '<path d="M14 9a2 2 0 0 1-2 2H6l-4 4V4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2z"/><path d="M18 9h2a2 2 0 0 1 2 2v11l-4-4h-6a2 2 0 0 1-2-2v-1"/>',
-  pr: '<circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M13 6h3a2 2 0 0 1 2 2v7"/><line x1="6" x2="6" y1="9" y2="21"/>',
-  merged: '<circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M6 21V9a9 9 0 0 0 9 9"/>',
-  users: '<path d="M18 21a8 8 0 0 0-16 0"/><circle cx="10" cy="8" r="5"/><path d="M22 20c0-3.37-2-6.5-4-8a5 5 0 0 0-.45-8.3"/>',
-  folder: '<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>',
-  updown: '<path d="m7 15 5 5 5-5"/><path d="m7 9 5-5 5 5"/>',
-  folderplus: '<path d="M12 10v6"/><path d="M9 13h6"/><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>',
-  pen: '<path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.375 2.625a1 1 0 0 1 3 3l-9.013 9.014a2 2 0 0 1-.853.505l-2.873.84a.5.5 0 0 1-.62-.62l.84-2.873a2 2 0 0 1 .506-.852z"/>',
-  down: '<path d="m6 9 6 6 6-6"/>',
-  right: '<path d="m9 18 6-6-6-6"/>',
-  check: '<path d="M20 6 9 17l-5-5"/>',
-  chevsup: '<path d="m17 11-5-5-5 5"/><path d="m17 18-5-5-5 5"/>',
-  fork: '<circle cx="12" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><circle cx="18" cy="6" r="3"/><path d="M18 9v2c0 .6-.4 1-1 1H7c-.6 0-1-.4-1-1V9"/><path d="M12 12v3"/>',
-  corner: '<polyline points="15 10 20 15 15 20"/><path d="M4 4v7a4 4 0 0 0 4 4h12"/>',
-  gauge: '<path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/>',
-  settings: '<path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/>',
-  logo: '<path d="M3 8h5l4 8h9"/><path d="M15 8h6"/>',
-};
-const ic = (name, size = 14, extra = "") => `<svg class="i ${extra}" width="${size}" height="${size}" viewBox="0 0 24 24">${ICONS[name]}</svg>`;
-const glyph = (p) => `<svg class="pg" width="12" height="12" viewBox="0 0 256 ${p === "codex" ? 260 : 257}"><use href="#l-${p}"/></svg>`;
-
-// ---------- data ----------
-const PROJECTS = {
-  tl: { name: "threadlines", letter: "T", hue: 255 },
-  mk: { name: "marketing", letter: "M", hue: 35 },
-};
-const fav = (key) => {
-  const p = PROJECTS[key];
-  return `<span class="fav" style="background: oklch(0.65 0.08 ${p.hue} / 0.22); color: oklch(0.78 0.08 ${p.hue})">${p.letter}</span>`;
-};
-
-// Status words, colors and dots follow Sidebar.logic.ts.
-const S = {
-  working: { dot: "b-blue", color: "c-blue" },
-  starting: { dot: "b-blue", color: "c-blue" },
-  waiting: { dot: "b-cyan", color: "c-cyan" },
-  input: { dot: "b-amber", color: "c-amber" },
-  approval: { dot: "b-amber", color: "c-amber" },
-  failed: { dot: "b-red", color: "c-red" },
-  completed: { dot: "b-emerald", color: null },
-};
-
-const T = {
-  paste: { project: "tl", branch: "fix/composer-paste", title: "Composer paste drops images", status: "working", meta: ["working", "2m"], diff: [18, 4], provider: "codex" },
-  release: { project: "tl", branch: "main", title: "Ship the 0.6 release", status: "waiting", meta: ["3 threads", "12m"], diff: [6, 2], provider: "claude" },
-  hero: { project: "mk", branch: "main", title: "Hero copy pass for the site", status: "completed", meta: ["3h"], provider: "claude" },
-  audit: { project: "tl", branch: "main", title: "Audit settings for flat design", status: null, meta: ["1h"], diff: [120, 64], provider: "codex" },
-  relay: { project: "tl", branch: "fix/relay-1006", title: "Relay reconnect logs", status: null, meta: ["1d"], pr: { n: 377, kind: "merged" }, provider: "claude" },
-};
-const KIDS = {
-  release: [
-    { title: "Fix flaky worktree cleanup test", branch: "fix/worktree-cleanup-flake", status: "working", meta: ["working", "4m"], provider: "codex" },
-    { title: "Write the 0.6 changelog", branch: "chore/changelog-0-6", status: "input", meta: ["input"], provider: "claude" },
-    { title: "Bump Electron to 43.8", branch: "feat/electron-43-8", status: "finished", meta: ["8m"], provider: "codex", pr: { n: 384, kind: "open" } },
-  ],
-  audit: [
-    { title: "Flatten the Providers tab", branch: "fix/providers-flat", status: "finished", meta: ["1h"], provider: "claude" },
-    { title: "Flatten the Connections tab", branch: "fix/connections-flat", status: "finished", meta: ["1h"], provider: "codex" },
-  ],
-};
-const WRAPPED = [
-  { project: "tl", title: "Antigravity as a provider", at: "2h", pr: { n: 374, kind: "merged" }, kids: 2 },
-  { project: "tl", title: "Worktree cleanup recognizes shipped work", at: "5h", pr: { n: 379, kind: "merged" } },
-  { project: "tl", title: "Cloudflare sign-in in the browser", at: "1d", pr: { n: 378, kind: "merged" } },
-  { project: "mk", title: "Rooms launch video", at: "2d" },
-  { project: "tl", title: "Phone link short codes", at: "3d", pr: { n: 375, kind: "merged" } },
-];
-
-// ---------- row renderers ----------
-const sep = `<span class="sep"> · </span>`;
-const metaHtml = (t) => {
-  const st = t.status && S[t.status];
-  const live = t.status && t.status !== "completed" && t.status !== "finished";
-  const cls = live && st.color ? st.color : "c-quiet";
-  return `<span class="${cls}">${t.meta.join(sep)}</span>`;
-};
-const prHtml = (pr) => pr ? `<span class="pr ${pr.kind === "merged" ? "c-violet" : "c-emerald"}">${ic(pr.kind === "merged" ? "merged" : "pr", 12)}<span style="transform: translateY(1px)">#${pr.n}</span></span>` : "";
-const diffHtml = (d) => d ? `<span class="diff"><span class="a">+${d[0]}</span><span class="d">−${d[1]}</span></span>` : "";
-
-function row(t, opts = {}) {
-  const st = t.status && S[t.status];
-  const hasStatusLabel = t.status && t.status !== "completed";
-  const showBranch = !hasStatusLabel && t.branch && t.branch !== "main";
-  const line1Left = opts.from
-    ? `<span class="from">${ic("corner", 10)}<span>${opts.from}</span></span>`
-    : `<span class="proj">${PROJECTS[t.project].name}</span>`;
-  return `
+      function row(t, opts = {}) {
+        const st = t.status && S[t.status];
+        const hasStatusLabel = t.status && t.status !== "completed";
+        const showBranch = !hasStatusLabel && t.branch && t.branch !== "main";
+        const line1Left = opts.from
+          ? `<span class="from">${ic("corner", 10)}<span>${opts.from}</span></span>`
+          : `<span class="proj">${PROJECTS[t.project].name}</span>`;
+        return `
   <div class="row ${opts.active ? "active" : ""}">
     <div class="l1">
       ${st ? `<span class="dot ${st.dot}"></span>` : ""}
@@ -322,56 +1161,70 @@ function row(t, opts = {}) {
     </div>
     ${opts.after || ""}
   </div>`;
-}
+      }
 
-function kid(k, opts = {}) {
-  const finished = k.status === "finished";
-  const st = !finished && S[k.status];
-  const lead = finished ? `<span class="chk">${ic("check", 10)}</span>` : `<span class="dot ${st.dot}"></span>`;
-  const titleCls = finished ? "settled" : (k.status === "input" || k.status === "approval") ? "hot" : "";
-  const metaCls = finished ? "c-quiet" : st.color;
-  return `
+      function kid(k, opts = {}) {
+        const finished = k.status === "finished";
+        const st = !finished && S[k.status];
+        const lead = finished
+          ? `<span class="chk">${ic("check", 10)}</span>`
+          : `<span class="dot ${st.dot}"></span>`;
+        const titleCls = finished
+          ? "settled"
+          : k.status === "input" || k.status === "approval"
+            ? "hot"
+            : "";
+        const metaCls = finished ? "c-quiet" : st.color;
+        return `
   <div class="kid ${opts.active ? "active" : ""}">
     ${lead}
     <span class="kt ${titleCls}">${k.title}</span>
     <span class="km">${finished ? prHtml(k.pr) : ""}<span class="${metaCls}">${k.meta.join(sep)}</span>${glyph(k.provider)}</span>
   </div>`;
-}
+      }
 
-const kidDots = (kids) => kids.map((k) => `<i class="${k.status === "finished" ? "" : S[k.status].dot}" style="${k.status === "finished" ? "background: oklch(0.68 0 0 / .45)" : ""}"></i>`).join("");
+      const kidDots = (kids) =>
+        kids
+          .map(
+            (k) =>
+              `<i class="${k.status === "finished" ? "" : S[k.status].dot}" style="${k.status === "finished" ? "background: oklch(0.68 0 0 / .45)" : ""}"></i>`,
+          )
+          .join("");
 
-function summaryText(kids) {
-  const need = kids.filter((k) => k.status === "input" || k.status === "approval").length;
-  const working = kids.filter((k) => k.status === "working" || k.status === "starting").length;
-  const done = kids.filter((k) => k.status === "finished").length;
-  if (done === kids.length) return `${kids.length} threads finished`;
-  const parts = [`${kids.length} threads`];
-  if (need) parts.push(`<span class="c-amber">${need} needs you</span>`);
-  else if (working) parts.push(`${working} working`);
-  return parts.join(sep);
-}
+      function summaryText(kids) {
+        const need = kids.filter((k) => k.status === "input" || k.status === "approval").length;
+        const working = kids.filter(
+          (k) => k.status === "working" || k.status === "starting",
+        ).length;
+        const done = kids.filter((k) => k.status === "finished").length;
+        if (done === kids.length) return `${kids.length} threads finished`;
+        const parts = [`${kids.length} threads`];
+        if (need) parts.push(`<span class="c-amber">${need} needs you</span>`);
+        else if (working) parts.push(`${working} working`);
+        return parts.join(sep);
+      }
 
-function sumline(kids, expanded = false) {
-  return `<div class="sumline"><span class="dots">${kidDots(kids)}</span><span class="txt">${summaryText(kids)}</span><span class="tail">${ic(expanded ? "down" : "right", 12)}</span></div>`;
-}
+      function sumline(kids, expanded = false) {
+        return `<div class="sumline"><span class="dots">${kidDots(kids)}</span><span class="txt">${summaryText(kids)}</span><span class="tail">${ic(expanded ? "down" : "right", 12)}</span></div>`;
+      }
 
-function fold(kids) {
-  return `<div class="fold">${ic("check", 10)}<span>${summaryText(kids)}</span><span class="tail">${ic("right", 12)}</span></div>`;
-}
+      function fold(kids) {
+        return `<div class="fold">${ic("check", 10)}<span>${summaryText(kids)}</span><span class="tail">${ic("right", 12)}</span></div>`;
+      }
 
-function doneRow(w, opts = {}) {
-  return `
+      function doneRow(w, opts = {}) {
+        return `
   <div class="done">
     ${fav(w.project)}
     <span class="t">${w.title}</span>
     <span class="m">${w.kids && opts.kidCount ? `<span class="count">${ic("fork", 10)}${w.kids}</span>` : ""}${prHtml(w.pr)}<span>${w.at}</span></span>
   </div>`;
-}
+      }
 
-// ---------- sidebar shell ----------
-function shell(listHtml, opts = {}) {
-  const wrapped = opts.wrapped ?? WRAPPED.map((w) => doneRow(w, opts)).join("");
-  return `
+      // ---------- sidebar shell ----------
+      function shell(listHtml, opts = {}) {
+        const wrapped = opts.wrapped ?? WRAPPED.map((w) => doneRow(w, opts)).join("");
+        return `
   <div class="sb">
     <div class="chrome">${ic("logo", 16)}Threadlines</div>
     <div class="search">${ic("search", 14)}<span>Search</span><span class="kbd">⌘K</span></div>
@@ -395,56 +1248,64 @@ function shell(listHtml, opts = {}) {
       <div>${ic("settings", 14)}<span>Settings</span><span class="r">v0.6.0</span></div>
     </div>
   </div>`;
-}
+      }
 
-// ---------- the four frames ----------
-const today = shell(
-  [row(T.paste), row({ ...T.release, status: "working", meta: ["working", "12m"] }, { active: true }), row(T.hero), row(T.audit), row(T.relay)].join(""),
-);
+      // ---------- the four frames ----------
+      const today = shell(
+        [
+          row(T.paste),
+          row({ ...T.release, status: "working", meta: ["working", "12m"] }, { active: true }),
+          row(T.hero),
+          row(T.audit),
+          row(T.relay),
+        ].join(""),
+      );
 
-const optionA = shell(
-  [
-    row(T.paste),
-    row(T.release, { active: true }),
-    `<div class="kids">${KIDS.release.map((k) => kid(k)).join("")}</div>`,
-    row(T.hero),
-    row(T.audit, { after: `<div class="fold inrow">${ic("check", 10)}<span>${summaryText(KIDS.audit)}</span><span class="tail">${ic("right", 12)}</span></div>` }),
-    row(T.relay),
-  ].join(""),
-  { kidCount: true },
-);
+      const optionA = shell(
+        [
+          row(T.paste),
+          row(T.release, { active: true }),
+          `<div class="kids">${KIDS.release.map((k) => kid(k)).join("")}</div>`,
+          row(T.hero),
+          row(T.audit, {
+            after: `<div class="fold inrow">${ic("check", 10)}<span>${summaryText(KIDS.audit)}</span><span class="tail">${ic("right", 12)}</span></div>`,
+          }),
+          row(T.relay),
+        ].join(""),
+        { kidCount: true },
+      );
 
-const optionB = shell(
-  [
-    row(T.paste),
-    row(T.release, { active: true, after: sumline(KIDS.release) }),
-    row(T.hero),
-    row(T.audit, { after: sumline(KIDS.audit) }),
-    row(T.relay),
-  ].join(""),
-  { kidCount: true },
-);
+      const optionB = shell(
+        [
+          row(T.paste),
+          row(T.release, { active: true, after: sumline(KIDS.release) }),
+          row(T.hero),
+          row(T.audit, { after: sumline(KIDS.audit) }),
+          row(T.relay),
+        ].join(""),
+        { kidCount: true },
+      );
 
-const kidAsRow = (k, parent) => ({
-  project: "tl",
-  branch: k.branch,
-  title: k.title,
-  status: k.status === "finished" ? null : k.status,
-  meta: k.meta,
-  provider: k.provider,
-  pr: k.pr,
-});
-const optionC = shell(
-  [
-    row(T.paste),
-    row(T.release, { active: true, count: 3 }),
-    ...KIDS.release.map((k) => row(kidAsRow(k), { from: "Ship the 0.6 release" })),
-    row(T.hero),
-  ].join(""),
-  { more: "Show 5 more…" },
-);
+      const kidAsRow = (k, parent) => ({
+        project: "tl",
+        branch: k.branch,
+        title: k.title,
+        status: k.status === "finished" ? null : k.status,
+        meta: k.meta,
+        provider: k.provider,
+        pr: k.pr,
+      });
+      const optionC = shell(
+        [
+          row(T.paste),
+          row(T.release, { active: true, count: 3 }),
+          ...KIDS.release.map((k) => row(kidAsRow(k), { from: "Ship the 0.6 release" })),
+          row(T.hero),
+        ].join(""),
+        { more: "Show 5 more…" },
+      );
 
-const col = (tag, title, frame, notes, rec = false) => `
+      const col = (tag, title, frame, notes, rec = false) => `
   <div class="col">
     <div class="tag ${rec ? "rec" : ""}">${tag}</div>
     <h3>${title}</h3>
@@ -452,53 +1313,93 @@ const col = (tag, title, frame, notes, rec = false) => `
     <ul class="notes">${notes.map(([kind, text]) => `<li class="${kind}">${text}</li>`).join("")}</ul>
   </div>`;
 
-document.getElementById("options").innerHTML = [
-  col("Today", "How it looks now", today, [
-    ["", "For comparison. The release thread is just a normal row, and anything an agent started would show up as more normal rows, mixed in with yours."],
-  ]),
-  col("Option A", "Family tree", optionA, [
-    ["pro", "<b>Children sit right under the parent</b> as short one-line rows, tied together by a thin line on the left."],
-    ["pro", "You can see what each child is doing, and the one waiting on you is bright amber, without a click."],
-    ["pro", "When every child is done, the family folds to one line (\"2 threads finished\"). Click to unfold."],
-    ["con", "Ten children make a tall family. Past four, the rest fold into \"6 more\"."],
-  ]),
-  col("Option B · your pick", "Summary line", optionB, [
-    ["pro", "<b>Each family is one row plus one small line</b>: a dot per child, then what matters most (\"1 needs you\")."],
-    ["pro", "Same height whether the agent started 2 threads or 12."],
-    ["con", "You can't see which child is which until you unfold it, so opening a child is two clicks."],
-    ["con", "The amber \"needs you\" is small. Easy to miss compared to A."],
-  ], true),
-  col("Option C", "Flat rows", optionC, [
-    ["pro", "<b>Children are ordinary rows</b>, placed right under the parent, with \"↳ Ship the 0.6 release\" where the project name usually goes."],
-    ["pro", "Nothing new to learn. Every row works the same way."],
-    ["con", "One busy agent fills the list. Here the release family alone pushes everything else under \"Show 5 more\"."],
-    ["con", "Harder to tell at a glance where one family ends."],
-  ]),
-].join("");
+      document.getElementById("options").innerHTML = [
+        col("Today", "How it looks now", today, [
+          [
+            "",
+            "For comparison. The release thread is just a normal row, and anything an agent started would show up as more normal rows, mixed in with yours.",
+          ],
+        ]),
+        col("Option A", "Family tree", optionA, [
+          [
+            "pro",
+            "<b>Children sit right under the parent</b> as short one-line rows, tied together by a thin line on the left.",
+          ],
+          [
+            "pro",
+            "You can see what each child is doing, and the one waiting on you is bright amber, without a click.",
+          ],
+          [
+            "pro",
+            'When every child is done, the family folds to one line ("2 threads finished"). Click to unfold.',
+          ],
+          ["con", 'Ten children make a tall family. Past four, the rest fold into "6 more".'],
+        ]),
+        col(
+          "Option B · your pick",
+          "Summary line",
+          optionB,
+          [
+            [
+              "pro",
+              '<b>Each family is one row plus one small line</b>: a dot per child, then what matters most ("1 needs you").',
+            ],
+            ["pro", "Same height whether the agent started 2 threads or 12."],
+            [
+              "con",
+              "You can't see which child is which until you unfold it, so opening a child is two clicks.",
+            ],
+            ["con", 'The amber "needs you" is small. Easy to miss compared to A.'],
+          ],
+          true,
+        ),
+        col("Option C", "Flat rows", optionC, [
+          [
+            "pro",
+            '<b>Children are ordinary rows</b>, placed right under the parent, with "↳ Ship the 0.6 release" where the project name usually goes.',
+          ],
+          ["pro", "Nothing new to learn. Every row works the same way."],
+          [
+            "con",
+            'One busy agent fills the list. Here the release family alone pushes everything else under "Show 5 more".',
+          ],
+          ["con", "Harder to tell at a glance where one family ends."],
+        ]),
+      ].join("");
 
+      // ---------- lifecycle board (option A) ----------
+      const crop = (html) =>
+        `<div class="sb crop"><div class="list" style="padding-top: 6px">${html}</div></div>`;
+      const L1 = crop(
+        row(
+          { ...T.release, status: "working", meta: ["working", "1m"], diff: null },
+          { active: true },
+        ) +
+          `<div class="kids">${KIDS.release.map((k) => kid({ ...k, status: "starting", meta: ["starting"], pr: null })).join("")}</div>` +
+          row(T.hero),
+      );
+      const L2 = crop(
+        row(T.release, { active: true }) +
+          `<div class="kids">${KIDS.release.map((k) => kid(k)).join("")}</div>` +
+          row(T.hero),
+      );
+      const L3 = crop(
+        row(
+          { ...T.release, status: "working", meta: ["working", "30s"], diff: [52, 22] },
+          {
+            active: true,
+            after: `<div class="fold inrow">${ic("check", 10)}<span>3 threads finished</span><span class="tail">${ic("right", 12)}</span></div>`,
+          },
+        ) + row(T.hero),
+      );
+      const L4 = `<div class="sb crop"><div class="list" style="padding-top: 6px">${row(T.hero)}<div class="sechead" style="margin-top: 10px"><span class="t">Wrapped (15)</span><span class="rule"></span>${ic("down", 14)}</div>${doneRow({ project: "tl", title: "Ship the 0.6 release", at: "now", pr: { n: 384, kind: "merged" }, kids: 3 }, { kidCount: true })}${WRAPPED.slice(
+        0,
+        3,
+      )
+        .map((w) => doneRow(w, { kidCount: true }))
+        .join("")}</div></div>`;
 
-// ---------- lifecycle board (option A) ----------
-const crop = (html) => `<div class="sb crop"><div class="list" style="padding-top: 6px">${html}</div></div>`;
-const L1 = crop(
-  row({ ...T.release, status: "working", meta: ["working", "1m"], diff: null }, { active: true }) +
-  `<div class="kids">${KIDS.release.map((k) => kid({ ...k, status: "starting", meta: ["starting"], pr: null })).join("")}</div>` +
-  row(T.hero),
-);
-const L2 = crop(
-  row(T.release, { active: true }) +
-  `<div class="kids">${KIDS.release.map((k) => kid(k)).join("")}</div>` +
-  row(T.hero),
-);
-const L3 = crop(
-  row({ ...T.release, status: "working", meta: ["working", "30s"], diff: [52, 22] }, {
-    active: true,
-    after: `<div class="fold inrow">${ic("check", 10)}<span>3 threads finished</span><span class="tail">${ic("right", 12)}</span></div>`,
-  }) +
-  row(T.hero),
-);
-const L4 = `<div class="sb crop"><div class="list" style="padding-top: 6px">${row(T.hero)}<div class="sechead" style="margin-top: 10px"><span class="t">Wrapped (15)</span><span class="rule"></span>${ic("down", 14)}</div>${doneRow({ project: "tl", title: "Ship the 0.6 release", at: "now", pr: { n: 384, kind: "merged" }, kids: 3 }, { kidCount: true })}${WRAPPED.slice(0, 3).map((w) => doneRow(w, { kidCount: true })).join("")}</div></div>`;
-
-const step = (n, title, frame, notes) => `
+      const step = (n, title, frame, notes) => `
   <div class="col">
     <div class="tag">Step ${n}</div>
     <h3>${title}</h3>
@@ -506,49 +1407,51 @@ const step = (n, title, frame, notes) => `
     <ul class="notes">${notes.map((t) => `<li>${t}</li>`).join("")}</ul>
   </div>`;
 
-document.getElementById("lifecycle").innerHTML = [
-  step(1, "Agent starts three threads", L1, [
-    "Children appear under the parent the moment the agent starts them, each in its own worktree.",
-    "If you set it to ask first, an approval card shows in the parent's chat and nothing appears here until you say yes.",
-  ]),
-  step(2, "One needs you", L2, [
-    "The parent's turn is over, so it reads \"3 threads · 12m\" in the same cyan as \"2 agents\" today.",
-    "The child waiting on you turns amber and stays visible even if you folded the family.",
-  ]),
-  step(3, "All finished", L3, [
-    "Each child's answer goes back to the parent, which picks up again on its own (\"working · 30s\").",
-    "The family folds to one line. The diff on the parent now counts its children's changes too.",
-  ]),
-  step(4, "Wrapped", L4, [
-    "Wrapping the parent wraps the family. The fork icon with \"3\" says it had children; hover shows them.",
-    "Reopening the parent brings the family back as it was. Each child can also be reopened on its own.",
-  ]),
-].join("");
+      document.getElementById("lifecycle").innerHTML = [
+        step(1, "Agent starts three threads", L1, [
+          "Children appear under the parent the moment the agent starts them, each in its own worktree.",
+          "If you set it to ask first, an approval card shows in the parent's chat and nothing appears here until you say yes.",
+        ]),
+        step(2, "One needs you", L2, [
+          'The parent\'s turn is over, so it reads "3 threads · 12m" in the same cyan as "2 agents" today.',
+          "The child waiting on you turns amber and stays visible even if you folded the family.",
+        ]),
+        step(3, "All finished", L3, [
+          'Each child\'s answer goes back to the parent, which picks up again on its own ("working · 30s").',
+          "The family folds to one line. The diff on the parent now counts its children's changes too.",
+        ]),
+        step(4, "Wrapped", L4, [
+          'Wrapping the parent wraps the family. The fork icon with "3" says it had children; hover shows them.',
+          "Reopening the parent brings the family back as it was. Each child can also be reopened on its own.",
+        ]),
+      ].join("");
 
-// ---------- option B opened ----------
-ICONS.square = '<rect width="14" height="14" x="5" y="5" rx="2"/>';
-const MODELS = { codex: "GPT-6 Astra", claude: "Claude Opus 5.5" };
-const B0 = crop(row(T.release, { after: sumline(KIDS.release) }) + row(T.hero));
-const B1 = crop(
-  row(T.release, { after: sumline(KIDS.release, true) }) +
-  `<div class="kids flat">${KIDS.release.map((k, i) => kid(k, { active: i === 1 })).join("")}</div>` +
-  row(T.hero),
-);
-// The popover lists who needs you first; it is gone as soon as you look away,
-// so reordering it moves nothing you were aiming at.
-const byAttention = [KIDS.release[1], KIDS.release[0], KIDS.release[2]];
-const popItem = (k, hov) => {
-  const finished = k.status === "finished";
-  const st = !finished && S[k.status];
-  const lead = finished ? `<span class="c-quiet">${ic("check", 10)}</span>` : `<span class="dot ${st.dot}"></span>`;
-  const tcls = finished ? "settled" : k.status === "input" ? "hot" : "";
-  return `
+      // ---------- option B opened ----------
+      ICONS.square = '<rect width="14" height="14" x="5" y="5" rx="2"/>';
+      const MODELS = { codex: "GPT-6 Astra", claude: "Claude Opus 5.5" };
+      const B0 = crop(row(T.release, { after: sumline(KIDS.release) }) + row(T.hero));
+      const B1 = crop(
+        row(T.release, { after: sumline(KIDS.release, true) }) +
+          `<div class="kids flat">${KIDS.release.map((k, i) => kid(k, { active: i === 1 })).join("")}</div>` +
+          row(T.hero),
+      );
+      // The popover lists who needs you first; it is gone as soon as you look away,
+      // so reordering it moves nothing you were aiming at.
+      const byAttention = [KIDS.release[1], KIDS.release[0], KIDS.release[2]];
+      const popItem = (k, hov) => {
+        const finished = k.status === "finished";
+        const st = !finished && S[k.status];
+        const lead = finished
+          ? `<span class="c-quiet">${ic("check", 10)}</span>`
+          : `<span class="dot ${st.dot}"></span>`;
+        const tcls = finished ? "settled" : k.status === "input" ? "hot" : "";
+        return `
     <div class="pi ${hov ? "hov" : ""}">
       <div class="p1">${lead}<span class="t ${tcls}">${k.title}</span><span class="m">${finished ? prHtml(k.pr) : ""}<span class="${finished ? "c-quiet" : st.color}">${k.meta.join(sep)}</span></span></div>
       <div class="p2">${glyph(k.provider)}<span>${MODELS[k.provider]}</span><span class="sep"> · </span><span class="mono">${k.branch}</span></div>
     </div>`;
-};
-const B2 = `
+      };
+      const B2 = `
   <div class="duo">
     ${crop(row(T.release, { active: true, after: sumline(KIDS.release, true) }) + row(T.hero) + row(T.audit, { after: sumline(KIDS.audit) }))}
     <div class="mainslice">
@@ -564,17 +1467,23 @@ const B2 = `
     </div>
   </div>`;
 
-document.getElementById("bopen").innerHTML = [
-  col("Closed", "What you see first", B0, [
-    ["", "The same summary line as in the main board. The arrow on the right says it opens."],
-  ]),
-  col("Opens in place", "The list grows under it", B1, [
-    ["pro", "<b>Click the line and the children slide in under it</b>, one short row each. Click again to close."],
-    ["pro", "Click a child to open its chat. Here you're in \"Write the 0.6 changelog\", so it's highlighted."],
-    ["pro", "Stays open until you close it, and remembers that per family."],
-    ["con", "This is basically A without the thin line. Only the default differs."],
-  ]),
-  `<div class="col" style="width: 556px">
+      document.getElementById("bopen").innerHTML = [
+        col("Closed", "What you see first", B0, [
+          ["", "The same summary line as in the main board. The arrow on the right says it opens."],
+        ]),
+        col("Opens in place", "The list grows under it", B1, [
+          [
+            "pro",
+            "<b>Click the line and the children slide in under it</b>, one short row each. Click again to close.",
+          ],
+          [
+            "pro",
+            "Click a child to open its chat. Here you're in \"Write the 0.6 changelog\", so it's highlighted.",
+          ],
+          ["pro", "Stays open until you close it, and remembers that per family."],
+          ["con", "This is basically A without the thin line. Only the default differs."],
+        ]),
+        `<div class="col" style="width: 556px">
     <div class="tag">Opens beside it</div>
     <h3>A small list floats next to the sidebar</h3>
     ${B2}
@@ -585,79 +1494,129 @@ document.getElementById("bopen").innerHTML = [
       <li class="con">It closes as soon as you click a child, so checking three children means opening it three times.</li>
     </ul>
   </div>`,
-].join("");
+      ].join("");
 
-
-// ---------- wrapping and separating (option B, opens in place) ----------
-const sumRaw = (dots, text, open) => `<div class="sumline"><span class="dots">${dots}</span><span class="txt">${text}</span><span class="tail">${ic(open ? "down" : "right", 12)}</span></div>`;
-const greyDot = `<i style="background: oklch(0.68 0 0 / .45)"></i>`;
-const failedKid = { title: "Bump Electron to 43.8", status: "failed", meta: ["failed"], provider: "codex" };
-const W1 = crop(
-  row(T.release, { after: sumRaw(`<i class="b-blue"></i><i class="b-red"></i>${greyDot}`, `3 threads${sep}<span class="c-red">1 failed</span>`, true) }) +
-  `<div class="kids flat">
+      // ---------- wrapping and separating (option B, opens in place) ----------
+      const sumRaw = (dots, text, open) =>
+        `<div class="sumline"><span class="dots">${dots}</span><span class="txt">${text}</span><span class="tail">${ic(open ? "down" : "right", 12)}</span></div>`;
+      const greyDot = `<i style="background: oklch(0.68 0 0 / .45)"></i>`;
+      const failedKid = {
+        title: "Bump Electron to 43.8",
+        status: "failed",
+        meta: ["failed"],
+        provider: "codex",
+      };
+      const W1 = crop(
+        row(T.release, {
+          after: sumRaw(
+            `<i class="b-blue"></i><i class="b-red"></i>${greyDot}`,
+            `3 threads${sep}<span class="c-red">1 failed</span>`,
+            true,
+          ),
+        }) +
+          `<div class="kids flat">
     ${kid(KIDS.release[0])}
     <div class="kid hov"><span class="dot b-red"></span><span class="kt">${failedKid.title}</span><span class="km"><span class="wrapbtn">${ic("check", 13)}</span><span class="c-red">failed</span>${glyph("codex")}</span></div>
     ${kid({ ...KIDS.release[1], status: "finished", meta: ["6m"] })}
   </div>` +
-  row(T.hero),
-);
-const W2 = crop(
-  row(T.paste) +
-  row({ project: "tl", branch: KIDS.release[0].branch, title: KIDS.release[0].title, status: "working", meta: ["working", "22m"], provider: "codex" }, { from: "Ship the 0.6 release" }) +
-  row(T.hero) +
-  `<div class="sechead" style="margin-top: 10px"><span class="t">Wrapped (15)</span><span class="rule"></span>${ic("down", 14)}</div>` +
-  doneRow({ project: "tl", title: "Ship the 0.6 release", at: "now", pr: { n: 384, kind: "merged" }, kids: 3 }, { kidCount: true }) +
-  doneRow(WRAPPED[0], { kidCount: true }),
-);
-const W3 = `<div style="position: relative">${crop(
-  row(T.release, { after: sumline(KIDS.release, true) }) +
-  `<div class="kids flat">${kid(KIDS.release[0])}${kid(KIDS.release[1], { active: true })}${kid(KIDS.release[2])}</div>` +
-  row(T.hero) + row(T.audit, { after: sumline(KIDS.audit) }) + row(T.relay) + `<div style="height: 40px"></div>`,
-)}
+          row(T.hero),
+      );
+      const W2 = crop(
+        row(T.paste) +
+          row(
+            {
+              project: "tl",
+              branch: KIDS.release[0].branch,
+              title: KIDS.release[0].title,
+              status: "working",
+              meta: ["working", "22m"],
+              provider: "codex",
+            },
+            { from: "Ship the 0.6 release" },
+          ) +
+          row(T.hero) +
+          `<div class="sechead" style="margin-top: 10px"><span class="t">Wrapped (15)</span><span class="rule"></span>${ic("down", 14)}</div>` +
+          doneRow(
+            {
+              project: "tl",
+              title: "Ship the 0.6 release",
+              at: "now",
+              pr: { n: 384, kind: "merged" },
+              kids: 3,
+            },
+            { kidCount: true },
+          ) +
+          doneRow(WRAPPED[0], { kidCount: true }),
+      );
+      const W3 = `<div style="position: relative">${crop(
+        row(T.release, { after: sumline(KIDS.release, true) }) +
+          `<div class="kids flat">${kid(KIDS.release[0])}${kid(KIDS.release[1], { active: true })}${kid(KIDS.release[2])}</div>` +
+          row(T.hero) +
+          row(T.audit, { after: sumline(KIDS.audit) }) +
+          row(T.relay) +
+          `<div style="height: 40px"></div>`,
+      )}
   <div class="ctx" style="top: 108px; left: 52px">
     <div>Rename thread</div><div>Pin</div><div>Mark unread</div>
     <hr><div class="on">Make it its own thread</div>
     <hr><div>Copy Path</div><div>Copy Thread ID</div>
     <hr><div class="red">Delete</div>
   </div></div>`;
-const W4 = crop(
-  row(T.paste) +
-  row({ project: "tl", branch: KIDS.release[1].branch, title: KIDS.release[1].title, status: "input", meta: ["input"], provider: "claude" }, { active: true }) +
-  row({ ...T.release, meta: ["2 threads", "14m"] }, { after: sumRaw(`<i class="b-blue"></i>${greyDot}`, `2 threads${sep}1 working`, false) }) +
-  row(T.hero),
-);
+      const W4 = crop(
+        row(T.paste) +
+          row(
+            {
+              project: "tl",
+              branch: KIDS.release[1].branch,
+              title: KIDS.release[1].title,
+              status: "input",
+              meta: ["input"],
+              provider: "claude",
+            },
+            { active: true },
+          ) +
+          row(
+            { ...T.release, meta: ["2 threads", "14m"] },
+            {
+              after: sumRaw(`<i class="b-blue"></i>${greyDot}`, `2 threads${sep}1 working`, false),
+            },
+          ) +
+          row(T.hero),
+      );
 
-document.getElementById("wrapsep").innerHTML = [
-  step("·", "Wrap one child", W1, [
-    "Any child that has stopped can be wrapped with the same check button as any row. It turns grey and the summary stops counting it.",
-    "Children that finish and hand their answer back wrap themselves, since the release agent already read it. Hover a grey child to reopen it.",
-    "A child that's working or waiting on you can't be wrapped, same as any thread today.",
-  ]),
-  step("·", "Wrap the parent early", W2, [
-    "Wrapping the parent takes the family to Wrapped, except a child that's still working or waiting on you. Live work never gets hidden.",
-    "That child stays in the list as its own row, with \"↳ Ship the 0.6 release\" so you know where it came from.",
-    "Once it's done, it joins its family in Wrapped.",
-  ]),
-  step("·", "Separate a child", W3, [
-    "Right-click a child and pick \"Make it its own thread\". Useful when a child turns into a piece of work you want to follow yourself.",
-    "Its answer stops going back to the release agent, and that agent gets a short note saying so.",
-  ]),
-  step("·", "Now its own thread", W4, [
-    "A normal row now. Nothing on the row ties it to the old parent, whose summary drops to \"2 threads\".",
-    "Its hover card still says \"Started by Ship the 0.6 release\", and its right-click menu has \"Put back under Ship the 0.6 release\" to undo.",
-    "Deleting a parent works the same way: its children become their own threads unless you choose to delete them too.",
-  ]),
-].join("").replaceAll('<div class="tag">Step ·</div>', "");
+      document.getElementById("wrapsep").innerHTML = [
+        step("·", "Wrap one child", W1, [
+          "Any child that has stopped can be wrapped with the same check button as any row. It turns grey and the summary stops counting it.",
+          "Children that finish and hand their answer back wrap themselves, since the release agent already read it. Hover a grey child to reopen it.",
+          "A child that's working or waiting on you can't be wrapped, same as any thread today.",
+        ]),
+        step("·", "Wrap the parent early", W2, [
+          "Wrapping the parent takes the family to Wrapped, except a child that's still working or waiting on you. Live work never gets hidden.",
+          'That child stays in the list as its own row, with "↳ Ship the 0.6 release" so you know where it came from.',
+          "Once it's done, it joins its family in Wrapped.",
+        ]),
+        step("·", "Separate a child", W3, [
+          'Right-click a child and pick "Make it its own thread". Useful when a child turns into a piece of work you want to follow yourself.',
+          "Its answer stops going back to the release agent, and that agent gets a short note saying so.",
+        ]),
+        step("·", "Now its own thread", W4, [
+          'A normal row now. Nothing on the row ties it to the old parent, whose summary drops to "2 threads".',
+          'Its hover card still says "Started by Ship the 0.6 release", and its right-click menu has "Put back under Ship the 0.6 release" to undo.',
+          "Deleting a parent works the same way: its children become their own threads unless you choose to delete them too.",
+        ]),
+      ]
+        .join("")
+        .replaceAll('<div class="tag">Step ·</div>', "");
 
-// ---------- edges board ----------
-const header = `
+      // ---------- edges board ----------
+      const header = `
   <div class="hdr">
     <span class="crumb">${fav("tl")}<span>Ship the 0.6 release</span></span>
     <span style="color: oklch(0.68 0 0 / .4)">/</span>
     <span class="cur">Write the 0.6 changelog</span>
     <span class="chip">${ic("branch", 11)}chore/changelog-0-6</span>
   </div>`;
-const card = `
+      const card = `
   <div class="hovercard">
     <div class="h">Write the 0.6 changelog</div>
     <div class="kv">
@@ -667,7 +1626,7 @@ const card = `
       <span>Status</span><b class="c-amber">Waiting for your answer</b>
     </div>
   </div>`;
-document.getElementById("edges").innerHTML = `
+      document.getElementById("edges").innerHTML = `
   <div class="col" style="width: 540px">
     <div class="tag">Opening a child</div>
     <h3>The chat header names the parent</h3>
@@ -680,6 +1639,6 @@ document.getElementById("edges").innerHTML = `
     ${card}
     <ul class="notes"><li>The branch lives here instead of on the row, so child rows stay one line.</li></ul>
   </div>`;
-</script>
-</body>
+    </script>
+  </body>
 </html>
