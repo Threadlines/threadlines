@@ -1,4 +1,4 @@
-import { RELAY_HEARTBEAT_PONG_FRAME, WsRpcGroup } from "@threadlines/contracts";
+import { WsRpcGroup } from "@threadlines/contracts";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -251,12 +251,10 @@ export function createWsRpcProtocolLayer(
         { once: true },
       );
       // Self-guarded instead of { once: true }: the relay chunking patch
-      // funnels message listeners and does not honor listener options. A
-      // heartbeat Pong doesn't count: the relay answers pings itself, so only
-      // a frame from the far server proves it is reachable.
+      // funnels message listeners and does not honor listener options.
       let sawFirstMessage = false;
-      socket.addEventListener("message", (event: MessageEvent) => {
-        if (sawFirstMessage || event.data === RELAY_HEARTBEAT_PONG_FRAME) {
+      socket.addEventListener("message", () => {
+        if (sawFirstMessage) {
           return;
         }
         sawFirstMessage = true;

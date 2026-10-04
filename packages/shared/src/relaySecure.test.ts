@@ -199,20 +199,24 @@ describe("SecureStream", () => {
       onError: (reason) => errors.push(reason),
     });
     const flush = () => new Promise((resolve) => setTimeout(resolve, 20));
-    return { sender, receiver, toHost, received, errors, flush };
+    /** Waits for slow work (big messages on a slow machine) instead of a fixed delay. */
+    const until = async (done: () => boolean) => {
+      for (let waited = 0; !done() && waited < 15_000; waited += 20) await flush();
+    };
+    return { sender, receiver, toHost, received, errors, flush, until };
   }
 
   it("delivers messages in order, splitting large ones into parts", async () => {
-    const { sender, receiver, toHost, received, errors, flush } = await connectedStreams();
+    const { sender, receiver, toHost, received, errors, until } = await connectedStreams();
     // A big first message too: a host's first answer can be a large snapshot.
     const large = "x".repeat(SECURE_PART_BYTES * 10 + 10);
     sender.sendText(large);
     sender.sendText("second");
     sender.sendText(large);
-    await flush();
+    await until(() => toHost.length >= 23);
     expect(toHost.length).toBe(23);
     for (const frame of toHost) receiver.receiveFrame(frame);
-    await flush();
+    await until(() => received.length >= 3 || errors.length > 0);
     expect(received).toEqual([large, "second", large]);
     expect(errors).toEqual([]);
   });
