@@ -595,7 +595,7 @@ function TextGenerationSection() {
 
       <SettingsRow
         title="Source control writer model"
-        description="Optional model override for commit messages, PR titles and descriptions, and branch names. Off uses the text generation model."
+        description="Optional model override for commit messages, PR titles and descriptions, and branch names. Off uses the writing model from Settings › Threads."
         control={
           <>
             {writerSelection ? (

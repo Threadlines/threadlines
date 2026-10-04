@@ -3,7 +3,15 @@ import {
   type ProviderDriverKind,
   type ResolvedKeybindingsConfig,
 } from "@threadlines/contracts";
-import { memo, useEffect, useEffectEvent, useMemo, useState, type CSSProperties } from "react";
+import {
+  memo,
+  useEffect,
+  useEffectEvent,
+  useMemo,
+  useState,
+  type CSSProperties,
+  type ReactNode,
+} from "react";
 import { scopedThreadKey } from "@threadlines/client-runtime";
 import { codexModelRetirementNotice } from "@threadlines/shared/model";
 import type { VariantProps } from "class-variance-authority";
@@ -68,6 +76,13 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
    * thread's own agent's.
    */
   room?: RoomAgents | null;
+  /**
+   * Above the model list, for a choice that is not a model (Settings'
+   * "Last used"). Adding an agent or a retired model's notice take the spot.
+   */
+  notice?: ReactNode;
+  /** What the button shows instead of the model, e.g. "Last used" or "Add agent". */
+  triggerContent?: ReactNode;
 }) {
   const [uncontrolledIsMenuOpen, setUncontrolledIsMenuOpen] = useState(false);
   const isMenuOpen = props.open ?? uncontrolledIsMenuOpen;
@@ -244,7 +259,9 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
           />
         }
       >
-        {inRoom && room !== null ? (
+        {props.triggerContent !== undefined ? (
+          props.triggerContent
+        ) : inRoom && room !== null ? (
           <RoomPickerTriggerContent room={room} compact={props.compact === true} />
         ) : (
           <span
@@ -337,7 +354,9 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
                   </Button>
                 ) : null}
               </div>
-            ) : null
+            ) : (
+              (props.notice ?? null)
+            )
           }
           activeInstanceId={adding ? props.activeInstanceId : activeInstanceId}
           model={adding ? "" : activeModel}
