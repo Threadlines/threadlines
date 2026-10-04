@@ -29,6 +29,7 @@ import {
 } from "../store";
 import { buildDraftThreadRouteParams, buildThreadRouteParams } from "../threadRoutes";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
+import { useFirstRunSetupGate, useSetupEnvironmentId } from "../components/setup/firstRunGateState";
 import { deriveChatIndexState } from "./-chatIndexState";
 
 function ChatIndexRouteView() {
@@ -40,6 +41,7 @@ function ChatIndexRouteView() {
   const environmentStateById = useStore((state) => state.environmentStateById);
   const projectCount = useStore((state) => selectProjectsAcrossEnvironments(state).length);
   const bootstrapComplete = useStore(selectBootstrapCompleteForActiveEnvironment);
+  const setupGate = useFirstRunSetupGate(useSetupEnvironmentId());
 
   const indexState = deriveChatIndexState({
     hostedStatic: authGateState.status === "hosted-static",
@@ -62,7 +64,9 @@ function ChatIndexRouteView() {
         <HostedStaticConnectionErrorState label={indexState.label} message={indexState.message} />
       );
     case "ready":
-      return <DefaultProjectDraftRedirect />;
+      // A first run goes to setup (the chat layout's redirect) instead of
+      // opening a draft it would only leave again.
+      return setupGate === "pending" ? <WorkspaceLoadingState /> : <DefaultProjectDraftRedirect />;
   }
 }
 

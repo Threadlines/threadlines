@@ -340,6 +340,20 @@ export const ServerProviderUpdateState = Schema.Struct({
 });
 export type ServerProviderUpdateState = typeof ServerProviderUpdateState.Type;
 
+/**
+ * What a cheap look at this computer found for a turned-off provider: the
+ * program on disk, without starting it. Set only when the instance is
+ * disabled; enabled instances report `installed` from a real probe.
+ */
+export const ServerProviderDetection = Schema.Struct({
+  status: Schema.Literals(["found", "notFound", "unknown"]),
+  /** Where the program was found. */
+  path: Schema.optional(TrimmedNonEmptyString),
+  /** Why the server could not look without starting something. */
+  reason: Schema.optional(TrimmedNonEmptyString),
+});
+export type ServerProviderDetection = typeof ServerProviderDetection.Type;
+
 export const ServerProvider = Schema.Struct({
   // Routing key for the configured instance this snapshot represents. This
   // is the only stable identity consumers may use for provider routing.
@@ -385,6 +399,7 @@ export const ServerProvider = Schema.Struct({
   skills: Schema.Array(ServerProviderSkill).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
   versionAdvisory: Schema.optionalKey(ServerProviderVersionAdvisory),
   updateState: Schema.optionalKey(ServerProviderUpdateState),
+  detection: Schema.optionalKey(ServerProviderDetection),
 });
 export type ServerProvider = typeof ServerProvider.Type;
 

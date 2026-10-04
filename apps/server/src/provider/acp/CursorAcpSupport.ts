@@ -744,7 +744,6 @@ export const CURSOR_ACP_DESCRIPTOR: AcpProviderDescriptor<CursorSettings> = {
   driverKind: CURSOR_DRIVER_KIND,
   presentation: {
     displayName: "Cursor",
-    badgeLabel: "Experimental",
     planUpgradeUrl: "https://cursor.com/settings",
     showInteractionModeToggle: true,
   },

@@ -16,6 +16,7 @@ import type {
   ProviderOptionSelection,
   ProviderUserInputAnswers,
   RuntimeMode,
+  ServerProviderDetection,
   ServerProviderModel,
   ThreadId,
   TurnId,
@@ -142,6 +143,15 @@ export interface AcpProviderExtensions {
   ) => Effect.Effect<void, EffectAcpErrors.AcpError>;
 }
 
+/** What a descriptor's `detect` hook is handed. */
+export interface AcpDetectionInput<Settings extends AcpProviderSettings> {
+  readonly settings: Settings;
+  readonly environment: NodeJS.ProcessEnv;
+  readonly platform: NodeJS.Platform;
+  /** The default: a binary looked up on disk the way spawning finds it. */
+  readonly detectBinary: (binaryPath: string) => ServerProviderDetection;
+}
+
 export interface AcpProviderDescriptor<Settings extends AcpProviderSettings> {
   readonly driverKind: ProviderDriverKind;
   readonly presentation: ServerProviderPresentation;
@@ -222,6 +232,13 @@ export interface AcpProviderDescriptor<Settings extends AcpProviderSettings> {
   readonly clientCapabilities?: EffectAcpSchema.InitializeRequest["clientCapabilities"];
   /** Message shown when the binary cannot be spawned. */
   readonly notInstalledMessage: string;
+  /**
+   * Looks for the agent while it is turned off, reading the filesystem only:
+   * no process, network or VM may start. Defaults to
+   * `detectBinary(settings.binaryPath)`. Agents that are not a host binary
+   * (a managed runtime, a CLI inside WSL) say what they can see instead.
+   */
+  readonly detect?: (input: AcpDetectionInput<Settings>) => Effect.Effect<ServerProviderDetection>;
   /**
    * CLI-level health check (installed, version, auth). Runs before any ACP
    * session is opened; discovery only follows when it does not report

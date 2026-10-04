@@ -17,6 +17,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import { LinkifiedText } from "../../lib/linkifiedText";
 import { formatProviderDriverKindLabel } from "../../providerModels";
+import { useNoAgentReady } from "../setup/firstRunGateState";
 import { Button } from "../ui/button";
 import type { ComposerNotice } from "./composerNotices";
 import {
@@ -157,6 +158,7 @@ export function useProviderStatusNotice(input: {
   readonly suppressed?: boolean;
 }): ComposerNotice | null {
   const { activeTurnInProgress, signIn, status, suppressed = false } = input;
+  const offerSetup = useNoAgentReady();
   const [nowMs, setNowMs] = useState(() => Date.now());
   const { isRefreshing, refreshError, refreshProvider } = useProviderStatusRefresh(
     status?.instanceId ?? null,
@@ -230,6 +232,11 @@ export function useProviderStatusNotice(input: {
               Open Settings
             </Button>
           ) : null}
+          {offerSetup ? (
+            <Button size="xs" variant="ghost" className="h-6 px-1.5" render={<Link to="/setup" />}>
+              Open setup
+            </Button>
+          ) : null}
           {actions.refresh || actions.diagnostics ? (
             <StatusNoticeActionButtons
               variant="ghost"
@@ -241,5 +248,5 @@ export function useProviderStatusNotice(input: {
         </>
       ),
     } satisfies ComposerNotice;
-  }, [isRefreshing, refreshError, refreshProvider, signIn, status, visible]);
+  }, [isRefreshing, offerSetup, refreshError, refreshProvider, signIn, status, visible]);
 }

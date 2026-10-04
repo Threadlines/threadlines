@@ -244,7 +244,6 @@ import {
   type TimelineTurnAgentsState,
 } from "./chat/MessagesTimeline";
 import { DraftEmptyState } from "./chat/DraftEmptyState";
-import { useFirstRunSetupCard } from "./chat/FirstRunSetupCard";
 import { ProviderModelPicker } from "./chat/ProviderModelPicker";
 import {
   ChatHeader,
@@ -274,6 +273,7 @@ import {
 } from "./chat/providerStatusNotice";
 import { useSessionStartupNotice } from "./chat/sessionStartupNotice";
 import { buildProviderSendPreflightNotice } from "./chat/providerReadinessNotice";
+import { useNoAgentReady } from "./setup/firstRunGateState";
 import { toProviderSignInFlowView } from "./chat/providerSignIn";
 import { useProviderConnectFlow } from "./settings/useProviderConnectFlow";
 import { buildThreadErrorNotice } from "./chat/threadErrorNotice";
@@ -3786,35 +3786,6 @@ export default function ChatView(props: ChatViewProps) {
     [activeProviderDriver, activeProviderLabel, providerAuthReconnectPrompt, runProjectScript],
   );
 
-  // --- First-run setup card -------------------------------------------------
-  // A cold install has no threads and no guidance, so the draft thread's empty
-  // state becomes the setup checklist until the user sends something or skips.
-  // The same card renders on the no-active-thread shell (see
-  // `NoActiveThreadState`), which is where a desktop launch with no project
-  // lands; the shared hook keeps the gate and the dismissal identical there.
-  //
-  // A reloaded draft thread has no project bound yet (`activeProject` is null
-  // until the first send); the hook falls back to the workspace's first
-  // project so the card cannot claim "No folder yet" while the sidebar shows
-  // one. General Chat can't be the active project here because the card never
-  // renders on General Chat drafts.
-  const {
-    isVisible: showFirstRunSetupCard,
-    card: firstRunSetupCard,
-    dismiss: dismissFirstRunSetupForEnvironment,
-  } = useFirstRunSetupCard({
-    surface: {
-      kind: "draftThread",
-      isDraftThread: isLocalDraftThread && draftThread !== undefined,
-      isGeneralChat: isGeneralChatThread,
-    },
-    environmentId: draftThread?.environmentId ?? environmentId,
-    providers: providerInstanceEntries,
-    activeProject: activeProject ?? null,
-    onStart: scheduleComposerFocus,
-  });
-  const firstRunSetupEmptyState = firstRunSetupCard ?? undefined;
-
   const runMcpAuthReconnect = useCallback(
     async (action: McpAuthReconnectAction) => {
       if (action.provider !== CODEX_PROVIDER_DRIVER) {
@@ -5014,12 +4985,6 @@ export default function ChatView(props: ChatViewProps) {
       return;
     }
 
-    // Sending is completing setup: the card has served its purpose and must
-    // not reappear behind the conversation the user just started.
-    if (showFirstRunSetupCard) {
-      dismissFirstRunSetupForEnvironment();
-    }
-
     sendInFlightRef.current = true;
     if (!isSteeringFollowUp && !askOnTheSide) {
       beginLocalDispatch({ preparingWorktree: Boolean(baseBranchForWorktree) });
@@ -5990,13 +5955,12 @@ export default function ChatView(props: ChatViewProps) {
     status: activeProviderStatus,
     activeTurnInProgress,
     signIn: composerSignInView,
-    // The held-send notice and the setup card each already state this
-    // provider's problem with the actions that fix it; a second ambient row
-    // saying it again is the stacking noise the dock exists to end.
+    // The held-send notice already states this provider's problem with the
+    // actions that fix it; a second ambient row saying it again is the
+    // stacking noise the dock exists to end.
     suppressed:
-      showFirstRunSetupCard ||
-      (providerSendPreflight !== null &&
-        providerSendPreflight.instanceId === activeProviderStatus?.instanceId),
+      providerSendPreflight !== null &&
+      providerSendPreflight.instanceId === activeProviderStatus?.instanceId,
   });
   const sessionStartupNotice = useSessionStartupNotice({
     isSessionStarting,
@@ -6038,6 +6002,7 @@ export default function ChatView(props: ChatViewProps) {
       threadErrorUsageResetLink,
     ],
   );
+  const noAgentReady = useNoAgentReady();
   const sendPreflightNotice = useMemo(
     () =>
       providerSendPreflight
@@ -6046,6 +6011,7 @@ export default function ChatView(props: ChatViewProps) {
             recheckFailed: providerSendPreflightRecheckFailed,
             isRechecking: isRecheckingProviderSendPreflight,
             signIn: composerSignInView,
+            offerSetup: noAgentReady,
             onConfirmSignedIn: () => confirmProviderSignedInRef.current(),
             onDismiss: () => {
               setProviderSendPreflight(null);
@@ -6056,6 +6022,7 @@ export default function ChatView(props: ChatViewProps) {
     [
       composerSignInView,
       isRecheckingProviderSendPreflight,
+      noAgentReady,
       providerSendPreflight,
       providerSendPreflightRecheckFailed,
     ],
@@ -7269,7 +7236,7 @@ export default function ChatView(props: ChatViewProps) {
             {/* Messages — LegendList handles virtualization and scrolling internally */}
             <MessagesTimeline
               key={activeThread.id}
-              emptyState={firstRunSetupEmptyState ?? draftTimelineEmptyState}
+              emptyState={draftTimelineEmptyState}
               isWorking={isWorking}
               isWaitingOnBackgroundTasks={waitingOnBackgroundTasks}
               awaitedTasks={awaitedTasks}

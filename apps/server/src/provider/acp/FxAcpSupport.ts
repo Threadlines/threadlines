@@ -37,6 +37,7 @@ import * as Schema from "effect/Schema";
 import { HttpClient, HttpClientRequest } from "effect/unstable/http";
 import { ChildProcess, type ChildProcessSpawner } from "effect/unstable/process";
 
+import { undetectableProvider } from "../providerDetection.ts";
 import {
   makeProviderMaintenanceCapabilities,
   type ProviderMaintenanceCommandDefinition,
@@ -437,7 +438,6 @@ export const FX_ACP_DESCRIPTOR: AcpProviderDescriptor<FxSettings> = {
   driverKind: FX_DRIVER_KIND,
   presentation: {
     displayName: "fx",
-    badgeLabel: "Experimental",
     planUpgradeUrl: "https://vercel.com/ai-gateway",
     showInteractionModeToggle: false,
   },
@@ -465,6 +465,13 @@ export const FX_ACP_DESCRIPTOR: AcpProviderDescriptor<FxSettings> = {
   // (served on the host's 127.0.0.1) are out of reach there.
   reachesHostLoopback: (platform) => !runsFxThroughWsl(platform),
   notInstalledMessage: fxNotInstalledMessage(),
+  // Looking inside WSL would boot it, which a turned-off fx must not cost.
+  detect: ({ settings, platform, detectBinary }) =>
+    Effect.sync(() =>
+      runsFxThroughWsl(platform)
+        ? undetectableProvider("fx runs inside WSL on Windows. Turn it on to check.")
+        : detectBinary(settings.binaryPath),
+    ),
   probe: probeFx,
   modelDiscoveryTimeoutMs: FX_MODEL_DISCOVERY_TIMEOUT_MS,
   enrichDiscoveredModels: (models) => enrichFxModelsWithGatewayCatalog(models),

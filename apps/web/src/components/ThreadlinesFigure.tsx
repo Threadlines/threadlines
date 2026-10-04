@@ -9,7 +9,7 @@ export function riseDelay(delay: string): React.CSSProperties {
 export function ThreadlinesFigure({
   /**
    * Two-thirds scale with tighter margins, for surfaces that put content
-   * under the figure (the setup card) rather than existing around it.
+   * under the figure (the setup screen) rather than existing around it.
    */
   compact = false,
 }: {

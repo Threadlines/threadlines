@@ -1,12 +1,10 @@
 /**
  * "Sign in" outside the settings page.
  *
- * The setup card and the composer notices used to open the thread's terminal
- * and type the provider's login command into it, which put a raw shell in
- * front of someone who had asked for one button. They now drive the same
- * server-side flow the Providers settings panel uses
- * (`useProviderConnectFlow`), and report it as one line of text on the row
- * they already occupy.
+ * The setup screen and the composer notices drive the same server-side flow
+ * the Providers settings page uses (`useProviderConnectFlow`) rather than
+ * typing a login command into a terminal, and report it as one line of text
+ * on the row they already occupy.
  *
  * Neither surface has room for the interactive terminal that settings can
  * open, so a run that stalls past the auto-expand threshold hands off: the

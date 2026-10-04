@@ -5,6 +5,7 @@ import type {
   ServerProvider,
   ServerProviderAccountUsage,
   ServerProviderAuth,
+  ServerProviderDetection,
   ServerProviderSkill,
   ServerProviderSlashCommand,
   ServerProviderModel,
@@ -213,6 +214,8 @@ export function buildServerProvider(input: {
   slashCommands?: ReadonlyArray<ServerProviderSlashCommand>;
   skills?: ReadonlyArray<ServerProviderSkill>;
   probe: ProviderProbeResult;
+  /** What a filesystem-only look found; kept only while the instance is turned off. */
+  detection?: ServerProviderDetection;
 }): ServerProviderDraft {
   const versionAdvisory = input.driver
     ? createProviderVersionAdvisory({
@@ -248,6 +251,7 @@ export function buildServerProvider(input: {
     slashCommands: [...(input.slashCommands ?? [])],
     skills: [...(input.skills ?? [])],
     ...(versionAdvisory ? { versionAdvisory } : {}),
+    ...(!input.enabled && input.detection ? { detection: input.detection } : {}),
   };
 }
 

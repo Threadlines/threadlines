@@ -122,6 +122,7 @@ export function buildProviderSendPreflightNotice({
   recheckFailed,
   isRechecking,
   signIn,
+  offerSetup = false,
   onConfirmSignedIn,
   onDismiss,
 }: {
@@ -129,9 +130,16 @@ export function buildProviderSendPreflightNotice({
   recheckFailed: boolean;
   isRechecking: boolean;
   signIn: ProviderSignInFlowView;
+  /** No agent works at all: setup is the better way forward than this one agent. */
+  offerSetup?: boolean;
   onConfirmSignedIn: () => void;
   onDismiss: () => void;
 }): ComposerNotice {
+  const setupAction = offerSetup ? (
+    <Button size="xs" variant="ghost" className="h-6 px-1.5" render={<Link to="/setup" />}>
+      Open setup
+    </Button>
+  ) : null;
   // A provider that isn't installed has nothing to sign in to yet, and one
   // whose sign-in Threadlines can't run has no flow we can start, so both fall
   // back to the install-and-connect notice.
@@ -140,6 +148,7 @@ export function buildProviderSendPreflightNotice({
       id: "provider-send-preflight",
       severity: "warning",
       providerLabel: prompt.providerLabel,
+      extraActions: setupAction,
       onDismiss,
     });
   }
@@ -161,7 +170,12 @@ export function buildProviderSendPreflightNotice({
     severity: "warning",
     providerLabel: prompt.providerLabel,
     instruction: "Sign in and your held message sends by itself.",
-    extraActions: isProviderSignInInFlight(signIn) ? null : confirmSignedIn,
+    extraActions: (
+      <>
+        {isProviderSignInInFlight(signIn) ? null : confirmSignedIn}
+        {setupAction}
+      </>
+    ),
     signIn,
     onDismiss,
   });

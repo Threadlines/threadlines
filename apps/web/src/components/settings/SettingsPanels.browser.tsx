@@ -2230,7 +2230,7 @@ describe("GeneralSettingsPanel observability", () => {
       </TestAppProviders>,
     );
 
-    await page.getByRole("button", { name: "Update available — view details" }).click();
+    await page.getByRole("button", { name: /^Update (Codex|Claude) to / }).click();
     await expect.element(page.getByRole("button", { name: "Update now" })).toBeInTheDocument();
     await page.getByRole("button", { name: "Update now" }).click();
 
@@ -2376,7 +2376,7 @@ describe("GeneralSettingsPanel observability", () => {
       </TestAppProviders>,
     );
 
-    await page.getByRole("button", { name: "Update available — view details" }).click();
+    await page.getByRole("button", { name: /^Update (Codex|Claude) to / }).click();
     await expect
       .element(
         page.getByText(
@@ -2435,7 +2435,7 @@ describe("GeneralSettingsPanel observability", () => {
       </TestAppProviders>,
     );
 
-    await page.getByRole("button", { name: "Update available — view details" }).click();
+    await page.getByRole("button", { name: /^Update (Codex|Claude) to / }).click();
 
     await expect
       .element(
@@ -2469,7 +2469,7 @@ describe("GeneralSettingsPanel observability", () => {
       </TestAppProviders>,
     );
 
-    await page.getByRole("button", { name: "Update available — view details" }).click();
+    await page.getByRole("button", { name: /^Update (Codex|Claude) to / }).click();
     await expect.element(page.getByText(longUpdateCommand)).toBeInTheDocument();
 
     await vi.waitFor(() => {

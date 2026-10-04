@@ -15,7 +15,6 @@ import {
   type AutoArchiveInactiveThreadsDays,
   defaultInstanceIdForDriver,
   type DesktopUpdateChannel,
-  PROVIDER_DISPLAY_NAMES,
   ProviderDriverKind,
   type ProviderInstanceConfig,
   type ProviderInstanceId,
@@ -35,7 +34,7 @@ import {
 import { isElectron } from "../../env";
 import { useDesktopUpdateAction } from "../../hooks/useDesktopUpdateAction";
 import { useTheme } from "../../hooks/useTheme";
-import { useSettings, useUpdateSettings } from "../../hooks/useSettings";
+import { updateSettingsAndPersist, useSettings, useUpdateSettings } from "../../hooks/useSettings";
 import { useThreadActions } from "../../hooks/useThreadActions";
 import { readEnvironmentApi } from "../../environmentApi";
 import { setDesktopUpdateStateQueryData } from "../../lib/desktopUpdateReactQuery";
@@ -79,22 +78,22 @@ import {
   type ArchivedThreadProject,
   ArchivedThreadsSection,
 } from "./ArchivedThreadsSection";
-import {
-  canOneClickUpdateProviderCandidate,
-  collectProviderUpdateCandidates,
-  hasOneClickUpdateProviderCandidate,
-  isProviderUpdateActive,
-  type ProviderUpdateCandidate,
-} from "../ProviderUpdateLaunchNotification.logic";
 import { ProviderInstanceCard } from "./ProviderInstanceCard";
-import { DRIVER_OPTIONS, getDriverOption } from "./providerDriverMeta";
+import { getDriverOption } from "./providerDriverMeta";
+import { thisComputerLabel } from "./agentStatus";
+import {
+  buildProviderEnablementPatch,
+  deriveMaintainedProviderRows,
+  isProviderRowEnabled,
+} from "./providerEnablement";
+import { useProviderUpdateRunner } from "./useProviderUpdateRunner";
+import { usePrimaryEnvironmentDescriptor } from "../../environments/primary/context";
 import {
   ARCHIVED_THREAD_DELETE_AGE_OPTIONS,
   type ArchivedThreadDeleteAgeDays,
   buildArchivedThreadBulkDeleteConfirmationMessage,
   buildProviderInstanceUpdatePatch,
   compareArchivedThreadsNewestFirst,
-  deriveProviderSettingsRows,
   formatArchivedThreadDeleteAgeLabel,
   formatAutoArchiveCandidateSummary,
   formatAutoArchiveDaysLabel,
@@ -138,7 +137,6 @@ const TIMESTAMP_FORMAT_LABELS = {
   "24-hour": "24-hour",
 } as const;
 
-const MAINTAINED_PROVIDER_DRIVER_KINDS = DRIVER_OPTIONS.map((definition) => definition.value);
 const INACTIVE_THREAD_ARCHIVE_COMMAND_DELAY_MS = 25;
 const ARCHIVED_THREAD_DELETE_COMMAND_DELAY_MS = 25;
 const DEFAULT_ARCHIVED_THREAD_DELETE_AGE_DAYS: ArchivedThreadDeleteAgeDays = 90;
@@ -969,8 +967,8 @@ export function GeneralSettingsPanel({ surface = "full" }: { surface?: "full" | 
 
 /**
  * The bridge from provider setup to what those providers have actually cost:
- * a clickable tile in the same card family as the provider entries below it,
- * named for its window so the figures cannot be mistaken for all-time totals.
+ * one flat, clickable line above the agent rows, named for its window so the
+ * figures cannot be mistaken for all-time totals.
  */
 function ProviderUsageLinkRow() {
   const targets = useUsageEnvironmentTargets();
@@ -984,35 +982,40 @@ function ProviderUsageLinkRow() {
 
   return (
     <Link
-      className="group/usage-tile relative block overflow-hidden rounded-2xl border border-border/75 bg-card text-card-foreground shadow-sm/4 transition-colors not-dark:bg-clip-padding before:pointer-events-none before:absolute before:inset-0 before:rounded-[calc(var(--radius-2xl)-1px)] before:shadow-[0_1px_--theme(--color-black/4%)] hover:border-border focus-ring dark:shadow-none dark:before:shadow-[0_-1px_--theme(--color-white/6%)]"
+      className="group/usage-tile flex items-center gap-3 border-y border-border/60 px-1 py-2.5 transition-colors hover:bg-muted/[0.07] focus-ring"
       data-testid="settings-usage-link"
       to="/usage"
     >
-      <span className="flex items-center gap-3 px-5 py-3.5">
-        <span className="flex min-w-0 flex-1 flex-col gap-1.5">
-          <span className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground/55 select-none">
-            Usage · Last {USAGE_SETTINGS_WINDOW_DAYS} days
-          </span>
-          {/* One typeface AND one color: mixing brightness on a line of small
-              mono type erodes the dim glyphs' anti-aliased bottom edge, so the
-              muted words read a pixel higher than the numbers beside them. The
-              caps label above carries the hierarchy instead. */}
-          {merged ? (
-            <span className="min-w-0 truncate font-mono text-[13px] text-foreground/90 tabular-nums">
-              {formatTokens(merged.totalTokens)} tokens · {formatUsd(merged.costUsd)} API-equivalent
-            </span>
-          ) : (
-            <span className="text-sm text-muted-foreground/55">Reading provider transcripts…</span>
-          )}
+      <span className="shrink-0 font-mono text-[10px] uppercase tracking-wider text-muted-foreground/55 select-none">
+        Last {USAGE_SETTINGS_WINDOW_DAYS} days
+      </span>
+      {/* One typeface AND one color: mixing brightness on a line of small
+          mono type erodes the dim glyphs' anti-aliased bottom edge. */}
+      {merged ? (
+        <span className="min-w-0 flex-1 truncate font-mono text-[12.5px] text-foreground/90 tabular-nums">
+          {formatTokens(merged.totalTokens)} tokens · {formatUsd(merged.costUsd)} API-equivalent
         </span>
-        {/* Bottom-aligned, not centered: the affordance sits level with the
-            figures line rather than floating between the two left rows. */}
-        <span className="flex shrink-0 items-center gap-1 self-end pb-px text-xs text-muted-foreground transition-colors group-hover/usage-tile:text-foreground">
-          View usage
-          <ChevronRightIcon className="size-3.5" />
+      ) : (
+        <span className="min-w-0 flex-1 text-xs text-muted-foreground/55">
+          Reading provider transcripts…
         </span>
+      )}
+      <span className="flex shrink-0 items-center gap-1 text-xs text-muted-foreground transition-colors group-hover/usage-tile:text-foreground">
+        View usage
+        <ChevronRightIcon className="size-3.5" />
       </span>
     </Link>
+  );
+}
+
+function ProviderGroupHeading({ label, count }: { label: string; count: number }) {
+  return (
+    <div className="flex items-baseline gap-2 border-b border-border/60 px-1 pt-5 pb-1.5">
+      <span className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground/55">
+        {label}
+      </span>
+      <span className="font-mono text-[10px] text-muted-foreground/55">{count}</span>
+    </div>
   );
 }
 
@@ -1020,7 +1023,7 @@ export function ProviderSettingsPanel({
   focusedInstanceId = null,
 }: {
   /**
-   * The card to open on arrival, from the route's `?instance=`. It is how a
+   * The row to open on arrival, from the route's `?instance=`. It is how a
    * sign-in started elsewhere in the app hands off to this page, which owns
    * the interactive terminal those surfaces have no room for.
    */
@@ -1029,14 +1032,10 @@ export function ProviderSettingsPanel({
   const settings = useSettings();
   const { updateSettings } = useUpdateSettings();
   const serverProviders = useServerProviders();
+  const primaryEnvironment = usePrimaryEnvironmentDescriptor();
+  const computerLabel = thisComputerLabel(primaryEnvironment?.platform.os);
   const [isRefreshingProviders, setIsRefreshingProviders] = useState(false);
   const [isAddInstanceDialogOpen, setIsAddInstanceDialogOpen] = useState(false);
-  const [updatingProviderDrivers, setUpdatingProviderDrivers] = useState<
-    ReadonlySet<ProviderDriverKind>
-  >(() => new Set());
-  const [resolvingProviderUpdateBlockers, setResolvingProviderUpdateBlockers] = useState<
-    ReadonlySet<ProviderInstanceId>
-  >(() => new Set());
   const [openInstanceDetails, setOpenInstanceDetails] = useState<Record<string, boolean>>({});
   useEffect(() => {
     if (focusedInstanceId === null) {
@@ -1053,17 +1052,9 @@ export function ProviderSettingsPanel({
     rateLimitResetCreditDialog,
   } = useProviderRateLimitResetCredit();
   const refreshingRef = useRef(false);
+  const updateRunner = useProviderUpdateRunner(serverProviders);
 
-  const providerUpdateCandidates = useMemo(
-    () => collectProviderUpdateCandidates(serverProviders),
-    [serverProviders],
-  );
-  const providerUpdateCandidateByInstanceId = useMemo(
-    () => new Map(providerUpdateCandidates.map((candidate) => [candidate.instanceId, candidate])),
-    [providerUpdateCandidates],
-  );
   const textGenerationModelSelection = resolveAppModelSelectionState(settings, serverProviders);
-  const textGenInstanceId = textGenerationModelSelection.instanceId;
   const textGenerationBackupModelSelection = resolveTextGenerationBackupModelSelectionState(
     settings,
     serverProviders,
@@ -1093,119 +1084,11 @@ export function ProviderSettingsPanel({
       });
   }, []);
 
-  const runProviderUpdate = useCallback(async (candidate: ProviderUpdateCandidate) => {
-    let started = false;
-    setUpdatingProviderDrivers((previous) => {
-      if (previous.has(candidate.driver)) {
-        return previous;
-      }
-      started = true;
-      const next = new Set(previous);
-      next.add(candidate.driver);
-      return next;
-    });
-    if (!started) {
-      return;
-    }
+  const rows = useMemo(() => deriveMaintainedProviderRows(settings), [settings]);
+  const inUseRows = rows.filter(isProviderRowEnabled);
+  const notInUseRows = rows.filter((row) => !isProviderRowEnabled(row));
 
-    try {
-      await ensureLocalApi().server.updateProvider({
-        provider: candidate.driver,
-        instanceId: candidate.instanceId,
-      });
-    } catch (error) {
-      toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: `Could not update ${PROVIDER_DISPLAY_NAMES[candidate.driver] ?? candidate.driver}`,
-          description:
-            error instanceof Error
-              ? error.message
-              : "The provider update command could not be started.",
-        }),
-      );
-    } finally {
-      setUpdatingProviderDrivers((previous) => {
-        if (!previous.has(candidate.driver)) {
-          return previous;
-        }
-        const next = new Set(previous);
-        next.delete(candidate.driver);
-        return next;
-      });
-    }
-  }, []);
-
-  const resolveProviderUpdateBlockers = useCallback(async (candidate: ProviderUpdateCandidate) => {
-    let started = false;
-    setResolvingProviderUpdateBlockers((previous) => {
-      if (previous.has(candidate.instanceId)) {
-        return previous;
-      }
-      started = true;
-      const next = new Set(previous);
-      next.add(candidate.instanceId);
-      return next;
-    });
-    if (!started) {
-      return;
-    }
-
-    try {
-      const result = await ensureLocalApi().server.resolveProviderUpdateBlockers({
-        provider: candidate.driver,
-        instanceId: candidate.instanceId,
-      });
-      toastManager.add({
-        type: result.remainingProcessCount > 0 ? "warning" : "success",
-        title:
-          result.remainingProcessCount > 0 ? "Claude is still running" : "Claude processes stopped",
-        description: result.message,
-      });
-    } catch (error) {
-      toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: "Could not stop Claude processes",
-          description:
-            error instanceof Error
-              ? error.message
-              : "Threadlines could not stop the processes blocking this update.",
-        }),
-      );
-    } finally {
-      setResolvingProviderUpdateBlockers((previous) => {
-        if (!previous.has(candidate.instanceId)) {
-          return previous;
-        }
-        const next = new Set(previous);
-        next.delete(candidate.instanceId);
-        return next;
-      });
-    }
-  }, []);
-
-  const rows = useMemo(
-    () =>
-      deriveProviderSettingsRows({
-        settings,
-        maintainedDriverKinds: MAINTAINED_PROVIDER_DRIVER_KINDS,
-      }),
-    [settings],
-  );
-
-  const updateProviderInstance = (
-    row: ProviderSettingsRow,
-    next: ProviderInstanceConfig,
-    options?: {
-      readonly textGenerationModelSelection?: Parameters<
-        typeof buildProviderInstanceUpdatePatch
-      >[0]["textGenerationModelSelection"];
-      readonly textGenerationBackupModelSelection?: Parameters<
-        typeof buildProviderInstanceUpdatePatch
-      >[0]["textGenerationBackupModelSelection"];
-    },
-  ) => {
+  const updateProviderInstance = (row: ProviderSettingsRow, next: ProviderInstanceConfig) => {
     updateSettings(
       buildProviderInstanceUpdatePatch({
         settings,
@@ -1213,11 +1096,14 @@ export function ProviderSettingsPanel({
         instance: next,
         driver: row.driver,
         isDefault: row.isDefault,
-        textGenerationModelSelection: options?.textGenerationModelSelection,
-        textGenerationBackupModelSelection: options?.textGenerationBackupModelSelection,
       }),
     );
   };
+
+  const setProviderInstanceEnabled = (row: ProviderSettingsRow, enabled: boolean) =>
+    updateSettingsAndPersist(
+      buildProviderEnablementPatch({ settings, changes: [{ row, enabled }] }),
+    );
 
   const deleteProviderInstance = (id: ProviderInstanceId) => {
     updateSettings({
@@ -1267,7 +1153,7 @@ export function ProviderSettingsPanel({
     });
   };
 
-  /** Restores a default slot's settings, leaving its on/off switch as it is. */
+  /** Restores a default slot's settings, leaving it on or off as it is. */
   const resetDefaultInstance = (driverKind: ProviderDriverKind, enabled: boolean) => {
     type LegacyProviderSettings = (typeof settings.providers)[keyof typeof settings.providers];
     const defaultLegacyProviders = DEFAULT_UNIFIED_SETTINGS.providers as Record<
@@ -1291,20 +1177,123 @@ export function ProviderSettingsPanel({
     });
   };
 
+  const renderRow = (row: ProviderSettingsRow) => {
+    const driverOption = getDriverOption(row.driver);
+    const liveProvider = serverProviders.find(
+      (candidate) => candidate.instanceId === row.instanceId,
+    );
+    const modelPreferences = settings.providerModelPreferences?.[row.instanceId] ?? {
+      hiddenModels: [],
+      modelOrder: [],
+    };
+    const favoriteModels = (settings.favorites ?? [])
+      .filter((favorite) => favorite.provider === row.instanceId)
+      .map((favorite) => favorite.model);
+    const canResetProviderUsage = canRequestProviderRateLimitResetCredit(
+      liveProvider,
+      liveProvider?.accountUsage?.rateLimitResetCredits?.availableCount,
+    );
+    const providerResetCredits = liveProvider?.accountUsage?.rateLimitResetCredits;
+    const resetLabel = driverOption?.label ?? String(row.driver);
+    return (
+      <ProviderInstanceCard
+        key={row.instanceId}
+        instanceId={row.instanceId}
+        instance={row.instance}
+        driverOption={driverOption}
+        liveProvider={liveProvider}
+        isExpanded={openInstanceDetails[row.instanceId] ?? false}
+        signInHandoffActive={row.instanceId === focusedInstanceId}
+        onExpandedChange={(open) =>
+          setOpenInstanceDetails((existing) => ({
+            ...existing,
+            [row.instanceId]: open,
+          }))
+        }
+        onUpdate={(next) => updateProviderInstance(row, next)}
+        onEnabledChange={(enabled) => setProviderInstanceEnabled(row, enabled)}
+        onDelete={row.isDefault ? undefined : () => deleteProviderInstance(row.instanceId)}
+        onResetDefaults={
+          row.isDefault && row.isDirty
+            ? () => resetDefaultInstance(row.driver, isProviderRowEnabled(row))
+            : undefined
+        }
+        computerLabel={computerLabel}
+        hiddenModels={modelPreferences.hiddenModels}
+        favoriteModels={favoriteModels}
+        modelOrder={modelPreferences.modelOrder}
+        onHiddenModelsChange={(hiddenModels) =>
+          updateProviderModelPreferences(row.instanceId, {
+            ...modelPreferences,
+            hiddenModels,
+          })
+        }
+        onFavoriteModelsChange={(favoriteModels) =>
+          updateProviderFavoriteModels(row.instanceId, favoriteModels)
+        }
+        onModelOrderChange={(modelOrder) =>
+          updateProviderModelPreferences(row.instanceId, {
+            ...modelPreferences,
+            modelOrder,
+          })
+        }
+        updateControls={updateRunner.controlsFor(liveProvider)}
+        onResetAccountUsage={
+          canResetProviderUsage && providerResetCredits
+            ? () =>
+                requestRateLimitResetCredit({
+                  instanceId: row.instanceId,
+                  providerLabel: liveProvider?.displayName?.trim() || resetLabel,
+                  resetCredits: providerResetCredits,
+                })
+            : undefined
+        }
+        accountUsageResetInFlight={
+          pendingRateLimitResetCredit?.instanceId === row.instanceId
+            ? isConsumingRateLimitResetCredit
+            : undefined
+        }
+      />
+    );
+  };
+
   return (
     <SettingsPageContainer>
       <SettingsSection
         title="Providers"
         headerAction={
-          <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-1">
             <ProviderLastChecked lastCheckedAt={lastCheckedAt} />
+            <Button
+              size="xs"
+              variant="ghost"
+              className="text-muted-foreground hover:text-foreground"
+              disabled={isRefreshingProviders}
+              onClick={() => void refreshProviders()}
+              aria-label="Refresh provider status"
+            >
+              {isRefreshingProviders ? (
+                <LoaderIcon className="size-3 animate-spin" />
+              ) : (
+                <RefreshCwIcon className="size-3" />
+              )}
+              Check again
+            </Button>
+            <Button
+              size="xs"
+              variant="ghost"
+              className="text-muted-foreground hover:text-foreground"
+              render={<Link to="/setup" />}
+            >
+              Open setup
+            </Button>
             <Tooltip>
               <TooltipTrigger
                 render={
                   <Button
                     size="icon-xs"
                     variant="ghost"
-                    className="size-5 rounded-sm p-0 text-muted-foreground hover:text-foreground"
+                    className="size-6 rounded-sm p-0 text-muted-foreground hover:text-foreground"
                     onClick={() => setIsAddInstanceDialogOpen(true)}
                     aria-label="Add provider instance"
                   >
@@ -1314,181 +1303,46 @@ export function ProviderSettingsPanel({
               />
               <TooltipPopup side="top">Add provider instance</TooltipPopup>
             </Tooltip>
-            <Tooltip>
-              <TooltipTrigger
-                render={
-                  <Button
-                    size="icon-xs"
-                    variant="ghost"
-                    className="size-5 rounded-sm p-0 text-muted-foreground hover:text-foreground"
-                    disabled={isRefreshingProviders}
-                    onClick={() => void refreshProviders()}
-                    aria-label="Refresh provider status"
-                  >
-                    {isRefreshingProviders ? (
-                      <LoaderIcon className="size-3 animate-spin" />
-                    ) : (
-                      <RefreshCwIcon className="size-3" />
-                    )}
-                  </Button>
-                }
-              />
-              <TooltipPopup side="top">Refresh provider status</TooltipPopup>
-            </Tooltip>
           </div>
         }
         headerClassName="px-1 sm:px-1"
         contentClassName="overflow-visible"
       >
-        <div className="space-y-2.5 pt-2.5">
-          <p className="px-1 text-xs leading-relaxed text-muted-foreground">
-            Account, usage, and configuration apply to the paired computer. Favorites and model
-            ordering are saved on this device.
-          </p>
-          <ProviderUsageLinkRow />
-          {rows.map((row) => {
-            const driverOption = getDriverOption(row.driver);
-            const liveProvider = serverProviders.find(
-              (candidate) => candidate.instanceId === row.instanceId,
-            );
-            const updateCandidate = liveProvider
-              ? providerUpdateCandidateByInstanceId.get(liveProvider.instanceId)
-              : undefined;
-            const isDriverUpdateRunning =
-              updateCandidate !== undefined &&
-              (updatingProviderDrivers.has(updateCandidate.driver) ||
-                serverProviders.some(
-                  (provider) =>
-                    provider.driver === updateCandidate.driver && isProviderUpdateActive(provider),
-                ));
-            const showInlineUpdateButton =
-              updateCandidate !== undefined &&
-              hasOneClickUpdateProviderCandidate(updateCandidate, serverProviders);
-            const canRunInlineUpdate =
-              updateCandidate !== undefined &&
-              canOneClickUpdateProviderCandidate(updateCandidate, serverProviders) &&
-              !updatingProviderDrivers.has(updateCandidate.driver);
-            const isResolvingUpdateBlockers =
-              updateCandidate !== undefined &&
-              resolvingProviderUpdateBlockers.has(updateCandidate.instanceId);
-            const modelPreferences = settings.providerModelPreferences?.[row.instanceId] ?? {
-              hiddenModels: [],
-              modelOrder: [],
-            };
-            const favoriteModels = (settings.favorites ?? [])
-              .filter((favorite) => favorite.provider === row.instanceId)
-              .map((favorite) => favorite.model);
-            const canResetProviderUsage = canRequestProviderRateLimitResetCredit(
-              liveProvider,
-              liveProvider?.accountUsage?.rateLimitResetCredits?.availableCount,
-            );
-            const providerResetCredits = liveProvider?.accountUsage?.rateLimitResetCredits;
-            const resetLabel = driverOption?.label ?? String(row.driver);
-            const headerAction =
-              row.isDefault && row.isDirty ? (
-                <SettingResetButton
-                  label={`${resetLabel} provider settings`}
-                  onClick={() => resetDefaultInstance(row.driver, row.instance.enabled ?? true)}
-                />
-              ) : null;
-            return (
-              <ProviderInstanceCard
-                key={row.instanceId}
-                instanceId={row.instanceId}
-                instance={row.instance}
-                driverOption={driverOption}
-                liveProvider={liveProvider}
-                isExpanded={openInstanceDetails[row.instanceId] ?? false}
-                signInHandoffActive={row.instanceId === focusedInstanceId}
-                onExpandedChange={(open) =>
-                  setOpenInstanceDetails((existing) => ({
-                    ...existing,
-                    [row.instanceId]: open,
-                  }))
-                }
-                onUpdate={(next) => {
-                  const wasEnabled = row.instance.enabled ?? true;
-                  const isDisabling = next.enabled === false && wasEnabled;
-                  const shouldClearTextGen = isDisabling && textGenInstanceId === row.instanceId;
-                  const shouldClearBackupTextGen =
-                    isDisabling && textGenBackupInstanceId === row.instanceId;
-                  if (shouldClearTextGen) {
-                    updateProviderInstance(row, next, {
-                      textGenerationModelSelection:
-                        DEFAULT_UNIFIED_SETTINGS.textGenerationModelSelection,
-                      ...(shouldClearBackupTextGen
-                        ? { textGenerationBackupModelSelection: null }
-                        : {}),
-                    });
-                  } else if (shouldClearBackupTextGen) {
-                    updateProviderInstance(row, next, {
-                      textGenerationBackupModelSelection: null,
-                    });
-                  } else {
-                    updateProviderInstance(row, next);
-                  }
-                }}
-                onDelete={row.isDefault ? undefined : () => deleteProviderInstance(row.instanceId)}
-                headerAction={headerAction}
-                hiddenModels={modelPreferences.hiddenModels}
-                favoriteModels={favoriteModels}
-                modelOrder={modelPreferences.modelOrder}
-                onHiddenModelsChange={(hiddenModels) =>
-                  updateProviderModelPreferences(row.instanceId, {
-                    ...modelPreferences,
-                    hiddenModels,
-                  })
-                }
-                onFavoriteModelsChange={(favoriteModels) =>
-                  updateProviderFavoriteModels(row.instanceId, favoriteModels)
-                }
-                onModelOrderChange={(modelOrder) =>
-                  updateProviderModelPreferences(row.instanceId, {
-                    ...modelPreferences,
-                    modelOrder,
-                  })
-                }
-                onRunUpdate={
-                  showInlineUpdateButton && updateCandidate
-                    ? () => {
-                        if (!canRunInlineUpdate) {
-                          return;
-                        }
-                        void runProviderUpdate(updateCandidate);
-                      }
-                    : undefined
-                }
-                isUpdating={showInlineUpdateButton ? isDriverUpdateRunning : undefined}
-                onResolveUpdateBlockers={
-                  showInlineUpdateButton && updateCandidate
-                    ? () => {
-                        if (isResolvingUpdateBlockers) {
-                          return;
-                        }
-                        void resolveProviderUpdateBlockers(updateCandidate);
-                      }
-                    : undefined
-                }
-                isResolvingUpdateBlockers={isResolvingUpdateBlockers}
-                onResetAccountUsage={
-                  canResetProviderUsage && providerResetCredits
-                    ? () =>
-                        requestRateLimitResetCredit({
-                          instanceId: row.instanceId,
-                          providerLabel: liveProvider?.displayName?.trim() || resetLabel,
-                          resetCredits: providerResetCredits,
-                        })
-                    : undefined
-                }
-                accountUsageResetInFlight={
-                  pendingRateLimitResetCredit?.instanceId === row.instanceId
-                    ? isConsumingRateLimitResetCredit
-                    : undefined
-                }
-              />
-            );
-          })}
-        </div>
+        <p className="px-1 pt-2.5 pb-3 text-xs leading-relaxed text-muted-foreground">
+          Agents run on {primaryEnvironment?.label ?? computerLabel}. Favorites and model order are
+          saved on this device.
+        </p>
+        <ProviderUsageLinkRow />
+        {/* One keyed list, headings included: a row that moves between the
+            groups is reordered, not remounted, so it keeps its open state and
+            a one-click install that is waiting for the server. */}
+        {[
+          <ProviderGroupHeading key="heading:in-use" label="In use" count={inUseRows.length} />,
+          ...(inUseRows.length > 0
+            ? inUseRows.map(renderRow)
+            : [
+                <p
+                  key="empty:in-use"
+                  className="border-b border-border/60 px-1 py-3 text-xs text-muted-foreground"
+                >
+                  No agents are turned on. Turn one on below, or{" "}
+                  <Link className="text-foreground hover:text-primary-readable" to="/setup">
+                    open setup
+                  </Link>
+                  .
+                </p>,
+              ]),
+          ...(notInUseRows.length > 0
+            ? [
+                <ProviderGroupHeading
+                  key="heading:not-in-use"
+                  label="Not in use"
+                  count={notInUseRows.length}
+                />,
+                ...notInUseRows.map(renderRow),
+              ]
+            : []),
+        ]}
       </SettingsSection>
 
       <AddProviderInstanceDialog

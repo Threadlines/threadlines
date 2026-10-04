@@ -47,6 +47,7 @@ import {
   spawnAndCollect,
   type ServerProviderDraft,
 } from "../providerSnapshot.ts";
+import { detectProviderBinary } from "../providerDetection.ts";
 import { makeClaudeEnvironment } from "../Drivers/ClaudeHome.ts";
 import { CLAUDE_CODE_OAUTH_TOKEN_ENV } from "./ClaudeUsage.ts";
 
@@ -1263,6 +1264,37 @@ export const refreshClaudeOAuthCredential = (
   );
 };
 
+/**
+ * The snapshot for a turned-off instance: no probe runs, only a filesystem
+ * look for `claude` on the PATH its `--version` check would spawn with.
+ */
+function makeDisabledClaudeProvider(
+  claudeSettings: ClaudeSettings,
+  checkedAt: string,
+  environment: NodeJS.ProcessEnv,
+): ServerProviderDraft {
+  return buildServerProvider({
+    presentation: CLAUDE_PRESENTATION,
+    enabled: false,
+    checkedAt,
+    modelCatalogSource: "fallback",
+    models: providerModelsFromSettings(
+      BUILT_IN_MODELS,
+      PROVIDER,
+      claudeSettings.customModels,
+      DEFAULT_CLAUDE_MODEL_CAPABILITIES,
+    ),
+    probe: {
+      installed: false,
+      version: null,
+      status: "warning",
+      auth: { status: "unknown" },
+      message: "Claude is disabled in Threadlines settings.",
+    },
+    detection: detectProviderBinary({ binaryPath: claudeSettings.binaryPath, env: environment }),
+  });
+}
+
 export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(function* (
   claudeSettings: ClaudeSettings,
   resolveCapabilities?: (
@@ -1290,20 +1322,7 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
   );
 
   if (!claudeSettings.enabled) {
-    return buildServerProvider({
-      presentation: CLAUDE_PRESENTATION,
-      enabled: false,
-      checkedAt,
-      modelCatalogSource: "fallback",
-      models: allModels,
-      probe: {
-        installed: false,
-        version: null,
-        status: "warning",
-        auth: { status: "unknown" },
-        message: "Claude is disabled in Threadlines settings.",
-      },
-    });
+    return makeDisabledClaudeProvider(claudeSettings, checkedAt, environment);
   }
 
   const versionProbe = yield* runClaudeCommand(claudeSettings, ["--version"], environment).pipe(
@@ -1526,6 +1545,7 @@ const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 
 export const makePendingClaudeProvider = (
   claudeSettings: ClaudeSettings,
+  environment: NodeJS.ProcessEnv = process.env,
 ): Effect.Effect<ServerProviderDraft> =>
   Effect.gen(function* () {
     const checkedAt = yield* nowIso;
@@ -1537,20 +1557,7 @@ export const makePendingClaudeProvider = (
     );
 
     if (!claudeSettings.enabled) {
-      return buildServerProvider({
-        presentation: CLAUDE_PRESENTATION,
-        enabled: false,
-        checkedAt,
-        modelCatalogSource: "fallback",
-        models,
-        probe: {
-          installed: false,
-          version: null,
-          status: "warning",
-          auth: { status: "unknown" },
-          message: "Claude is disabled in Threadlines settings.",
-        },
-      });
+      return makeDisabledClaudeProvider(claudeSettings, checkedAt, environment);
     }
 
     return buildServerProvider({

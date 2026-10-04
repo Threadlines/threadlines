@@ -8,8 +8,8 @@
  * enough to deserve the interactive terminal.
  *
  * It exists so every "Sign in" in the app drives the same flow: the settings
- * panel, the first-run setup card, and the composer notices all mount this and
- * differ only in how much of the state they draw.
+ * page, the setup screen, and the composer notices all mount this and differ
+ * only in how much of the state they draw.
  *
  * @module useProviderConnectFlow
  */

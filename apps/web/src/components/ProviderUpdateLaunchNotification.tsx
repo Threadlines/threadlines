@@ -20,7 +20,7 @@ import {
   shouldOpenProviderUpdatePrompt,
   type ProviderUpdateToastView,
 } from "./ProviderUpdateLaunchNotification.logic";
-import { useActiveEnvironmentFirstRunSetupPending } from "./chat/firstRunSetupState";
+import { useHoldLaunchPromptsForSetup } from "./setup/firstRunGateState";
 import { stackedThreadToast, toastManager } from "./ui/toast";
 
 const seenProviderUpdateNotificationKeys = new Set<string>();
@@ -165,8 +165,8 @@ export function ProviderUpdateLaunchNotification() {
   const activeToastRef = useRef<ActiveProviderUpdateToast | null>(null);
   const { dismissedNotificationKeys, dismissNotificationKey } =
     useDismissedProviderUpdateNotificationKeys();
-  // First-run setup owns the screen while it is up; this prompt waits for it.
-  const firstRunSetupPending = useActiveEnvironmentFirstRunSetupPending();
+  // Setup owns the screen while it is pending or open; this prompt waits.
+  const heldForSetup = useHoldLaunchPromptsForSetup();
 
   const updateProviders = useMemo(() => collectProviderUpdateCandidates(providers), [providers]);
   const notificationKey = useMemo(
@@ -225,6 +225,12 @@ export function ProviderUpdateLaunchNotification() {
     if (activeToast?.kind === "prompt" && activeToast.key !== notificationKey) {
       toastManager.close(activeToast.toastId);
       activeToastRef.current = null;
+    } else if (activeToast?.kind === "prompt" && heldForSetup) {
+      // Setup opened over a prompt already on screen: put it away without
+      // dismissing it, and let it come back once setup is out of the way.
+      toastManager.close(activeToast.toastId);
+      activeToastRef.current = null;
+      seenProviderUpdateNotificationKeys.delete(activeToast.key);
     }
 
     if (notificationKey === null) {
@@ -236,7 +242,7 @@ export function ProviderUpdateLaunchNotification() {
         isDismissed: dismissedNotificationKeys.has(notificationKey),
         isAlreadySeen: seenProviderUpdateNotificationKeys.has(notificationKey),
         hasActiveToast: activeToastRef.current !== null,
-        isFirstRunSetupPending: firstRunSetupPending,
+        isHeldForSetup: heldForSetup,
       })
     ) {
       return;
@@ -364,7 +370,7 @@ export function ProviderUpdateLaunchNotification() {
   }, [
     dismissNotificationKey,
     dismissedNotificationKeys,
-    firstRunSetupPending,
+    heldForSetup,
     notificationKey,
     oneClickProviders,
     openProviderSettings,

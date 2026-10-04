@@ -27,6 +27,7 @@ import {
   ArrowDownIcon,
   ArrowLeftIcon,
   ArrowUpIcon,
+  BotIcon,
   CornerLeftUpIcon,
   FileTextIcon,
   FolderIcon,
@@ -1330,6 +1331,13 @@ function OpenCommandPaletteDialog() {
   );
 
   const openAddProjectFlow = useCallback(() => {
+    // A caller picking a folder on a specific computer skips the computer list.
+    const selectionEnvironmentId =
+      useCommandPaletteStore.getState().projectSelection?.environmentId;
+    if (selectionEnvironmentId) {
+      void startAddProjectSourceSelection(selectionEnvironmentId);
+      return;
+    }
     if (addProjectEnvironmentOptions.length > 1) {
       pushPaletteView({
         addonIcon: <FolderPlusIcon className={ADDON_ICON_CLASS} />,
@@ -1755,6 +1763,17 @@ function OpenCommandPaletteDialog() {
 
   actionItems.push({
     kind: "action",
+    value: "action:setup",
+    searchTerms: ["setup", "set up", "agents", "providers", "install", "sign in", "onboarding"],
+    title: "Set up agents",
+    icon: <BotIcon className={ITEM_ICON_CLASS} />,
+    run: async () => {
+      await navigate({ to: "/setup" });
+    },
+  });
+
+  actionItems.push({
+    kind: "action",
     value: "action:skills",
     searchTerms: ["skills", "plugins", "extensions", "agents", "capabilities"],
     title: "Open skills",
@@ -1819,6 +1838,14 @@ function OpenCommandPaletteDialog() {
         projects.filter((project) => project.environmentId === browseEnvironmentId),
         cwd,
       );
+      // Picking a folder for someone else (the setup screen): report the
+      // project and close, instead of opening a thread in it.
+      const projectSelection = useCommandPaletteStore.getState().projectSelection;
+      if (existing && projectSelection) {
+        projectSelection.onProjectSelected(scopeProjectRef(existing.environmentId, existing.id));
+        closeIfGeneration(sessionGeneration);
+        return;
+      }
       if (existing) {
         const latestThread = getLatestThreadForProject(
           threads.filter((thread) => thread.environmentId === existing.environmentId),
@@ -1859,6 +1886,11 @@ function OpenCommandPaletteDialog() {
         // to the project's real identity. If it does not arrive in time the
         // draft is adopted (re-keyed) on the next new-thread call instead.
         await waitForProjectInStore(createdProjectRef);
+        if (projectSelection) {
+          projectSelection.onProjectSelected(createdProjectRef);
+          closeIfGeneration(sessionGeneration);
+          return;
+        }
         await handleNewThread(createdProjectRef, {
           envMode: settings.defaultThreadEnvMode,
         }).catch(() => undefined);

@@ -34,13 +34,12 @@ export interface ProviderClientDefinition {
   readonly icon: Icon;
   readonly settingsSchema: ProviderSettingsSchema;
   /**
-   * Optional short label rendered as a `variant="warning"` badge next to
-   * the instance title. Used to flag drivers that still ship under an
-   * early-access or preview gate — the flag is a property of the driver
-   * kind (not a specific instance), so every instance of that driver —
-   * built-in default or custom — advertises the same marker.
+   * What someone needs before this agent works, in a few plain words
+   * ("ChatGPT plan or API key"). Setup tiles and Settings rows for agents
+   * that aren't set up yet show it, so the choice is informed before any
+   * install or sign-in starts.
    */
-  readonly badgeLabel?: string;
+  readonly needs: string;
 }
 
 export const PROVIDER_CLIENT_DEFINITIONS: readonly ProviderClientDefinition[] = [
@@ -49,40 +48,42 @@ export const PROVIDER_CLIENT_DEFINITIONS: readonly ProviderClientDefinition[] = 
     label: "Codex",
     icon: OpenAI,
     settingsSchema: CodexSettings,
+    needs: "ChatGPT plan or API key",
   },
   {
     value: ProviderDriverKind.make("claudeAgent"),
     label: "Claude",
     icon: ClaudeAI,
     settingsSchema: ClaudeSettings,
+    needs: "Claude plan or API key",
   },
   {
     value: ProviderDriverKind.make("fx"),
     label: "fx",
     icon: FxIcon,
     settingsSchema: FxSettings,
-    badgeLabel: "Experimental",
+    needs: "Vercel AI Gateway account",
   },
   {
     value: ProviderDriverKind.make("cursor"),
     label: "Cursor",
     icon: CursorIcon,
     settingsSchema: CursorSettings,
-    badgeLabel: "Experimental",
+    needs: "Cursor account, free plan works",
   },
   {
     value: ProviderDriverKind.make("opencode"),
     label: "OpenCode",
     icon: OpenCodeIcon,
     settingsSchema: OpenCodeSettings,
-    badgeLabel: "Experimental",
+    needs: "Free models, no account needed",
   },
   {
     value: ProviderDriverKind.make("antigravity"),
     label: "Antigravity",
     icon: AntigravityIcon,
     settingsSchema: AntigravitySettings,
-    badgeLabel: "Experimental",
+    needs: "Google account",
   },
 ];
 

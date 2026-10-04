@@ -61,6 +61,7 @@ import {
 } from "../antigravity/AntigravityProfile.ts";
 import type { AntigravityAuthGate } from "../antigravity/AntigravityAuth.ts";
 import type { AntigravityRuntime } from "../antigravity/AntigravityRuntime.ts";
+import { detectionAt } from "../providerDetection.ts";
 import type {
   ProviderMaintenanceCapabilities,
   ProviderMaintenanceCommandAction,
@@ -588,6 +589,16 @@ export function makeAntigravityDescriptor(
       });
     },
     notInstalledMessage: "Antigravity is not installed. Install it to use it in Threadlines.",
+    // The same test the probe makes: a custom binary only has to exist; the
+    // managed runtime is found when a complete copy is on disk. Both read the
+    // filesystem only.
+    detect: ({ settings }) =>
+      Effect.gen(function* () {
+        const custom = settings.binaryPath.trim();
+        if (custom) return detectionAt(existsSync(custom) ? resolvePath(custom) : undefined);
+        const installed = runtime ? yield* runtime.installed : undefined;
+        return detectionAt(installed?.executable);
+      }),
     probe: (settings) =>
       Effect.gen(function* () {
         const custom = settings.binaryPath.trim();

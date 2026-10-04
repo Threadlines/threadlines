@@ -3,8 +3,13 @@ import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as Effect from "effect/Effect";
+import { HttpClient } from "effect/unstable/http";
+import { ChildProcessSpawner } from "effect/unstable/process";
 import { describe, expect, it } from "vite-plus/test";
 
+import { checkAcpProviderStatus } from "./AcpProvider.ts";
 import { makeAcpProviderMaintenanceResolver, resolveAcpBinaryPath } from "./AcpProviderDriver.ts";
 import { CURSOR_ACP_DESCRIPTOR } from "./CursorAcpSupport.ts";
 import { FX_ACP_DESCRIPTOR } from "./FxAcpSupport.ts";
@@ -84,5 +89,64 @@ describe("makeAcpProviderMaintenanceResolver", () => {
       resolver.resolve({ binaryPath: "/opt/missing/fx", platform: "linux", env: { PATH: "" } })
         .install,
     ).toBeNull();
+  });
+});
+
+describe("checkAcpProviderStatus while turned off", () => {
+  it("looks for the agent on disk without starting it, and leaves fx inside WSL alone", async () => {
+    const binDir = mkdtempSync(path.join(os.tmpdir(), "acp-detect-bin-"));
+    const agentFile = path.join(binDir, process.platform === "win32" ? "agent.cmd" : "agent");
+    writeFileSync(agentFile, process.platform === "win32" ? "@echo off\r\n" : "#!/bin/sh\n");
+    chmodSync(agentFile, 0o755);
+    const spawned: string[] = [];
+    const run = <A, E>(
+      effect: Effect.Effect<
+        A,
+        E,
+        ChildProcessSpawner.ChildProcessSpawner | HttpClient.HttpClient | NodeServices.NodeServices
+      >,
+    ) =>
+      Effect.runPromise(
+        effect.pipe(
+          Effect.provideService(
+            ChildProcessSpawner.ChildProcessSpawner,
+            ChildProcessSpawner.make((command) => {
+              spawned.push(String(command));
+              return Effect.die("A turned-off agent must not be started");
+            }),
+          ),
+          Effect.provideService(
+            HttpClient.HttpClient,
+            HttpClient.make(() => Effect.die("A turned-off agent must not reach the network")),
+          ),
+          Effect.provide(NodeServices.layer),
+        ),
+      );
+    const env = { PATH: binDir, PATHEXT: ".COM;.EXE;.BAT;.CMD" };
+
+    const cursor = await run(
+      checkAcpProviderStatus(
+        CURSOR_ACP_DESCRIPTOR,
+        { enabled: false, binaryPath: "agent", apiEndpoint: "", customModels: [] },
+        env,
+      ),
+    );
+    expect(cursor.status).toBe("disabled");
+    expect(cursor.detection?.status).toBe("found");
+    expect(cursor.detection?.path?.toLowerCase()).toBe(agentFile.toLowerCase());
+
+    const fx = await run(
+      checkAcpProviderStatus(
+        FX_ACP_DESCRIPTOR,
+        { enabled: false, binaryPath: "fx", customModels: [] },
+        env,
+        "win32",
+      ),
+    );
+    expect(fx.detection).toEqual({
+      status: "unknown",
+      reason: "fx runs inside WSL on Windows. Turn it on to check.",
+    });
+    expect(spawned).toEqual([]);
   });
 });

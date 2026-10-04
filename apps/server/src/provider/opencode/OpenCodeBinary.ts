@@ -15,9 +15,10 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 
-import { ProviderDriverKind } from "@threadlines/contracts";
-import { resolveCommandPath, resolveKnownWindowsCliDirs } from "@threadlines/shared/shell";
+import { ProviderDriverKind, type ServerProviderDetection } from "@threadlines/contracts";
+import { resolveCommandPath } from "@threadlines/shared/shell";
 
+import { detectProviderBinary, withKnownCliDirsOnPath } from "../providerDetection.ts";
 import {
   normalizeCommandPath,
   type PackageManagedProviderMaintenanceDefinition,
@@ -49,21 +50,39 @@ export function isOpenCodeInstallerCommandPath(commandPath: string): boolean {
   );
 }
 
+/** The installer's copy, for the default name when PATH has none. */
+function openCodeInstallerFallback(name: string, env: NodeJS.ProcessEnv): string | undefined {
+  return name === "opencode" ? openCodeInstallerBinary(env) : undefined;
+}
+
 /** The binary to run for a configured `binaryPath` (a bare name or a path). */
 export function resolveOpenCodeBinary(binaryPath: string, env: NodeJS.ProcessEnv): string {
   const trimmed = binaryPath.trim() || "opencode";
   if (/[\\/]/u.test(trimmed)) return trimmed;
-  const searchPath = [env.PATH ?? env.Path ?? "", ...resolveKnownWindowsCliDirs(env)]
-    .filter((entry) => entry.length > 0)
-    .join(process.platform === "win32" ? ";" : ":");
   return (
     resolveCommandPath(trimmed, {
       platform: process.platform,
-      env: process.platform === "win32" ? { ...env, PATH: searchPath } : env,
+      env: withKnownCliDirsOnPath(env),
     }) ??
-    (trimmed === "opencode" ? openCodeInstallerBinary(env) : undefined) ??
+    openCodeInstallerFallback(trimmed, env) ??
     trimmed
   );
+}
+
+/**
+ * Whether the binary is on disk where `resolveOpenCodeBinary` looks, for a
+ * turned-off instance. Reads the filesystem only; nothing is started.
+ */
+export function detectOpenCodeBinary(
+  binaryPath: string,
+  env: NodeJS.ProcessEnv,
+): ServerProviderDetection {
+  return detectProviderBinary({
+    binaryPath: binaryPath.trim() || "opencode",
+    env,
+    knownCliDirs: true,
+    fallback: (name) => openCodeInstallerFallback(name, env),
+  });
 }
 
 /**

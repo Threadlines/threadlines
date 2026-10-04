@@ -214,9 +214,9 @@ export function filterMaintainedProviderInstanceEntries(
 
 /**
  * The list every user-facing surface shows: maintained drivers only, in
- * default-first picker order. Composer, chat view, and the first-run setup
- * card all need the same projection, and disagreeing on it would mean one
- * surface offering an instance another refuses to run.
+ * default-first picker order. Composer, chat view, and the setup screen all
+ * need the same projection, and disagreeing on it would mean one surface
+ * offering an instance another refuses to run.
  */
 export function deriveDisplayProviderInstanceEntries(
   providers: ReadonlyArray<ServerProvider>,

@@ -3,6 +3,7 @@ import { Outlet, createFileRoute, redirect, useParams } from "@tanstack/react-ro
 import { useEffect } from "react";
 
 import { useCommandPaletteStore } from "../commandPaletteStore";
+import { FirstRunSetupRedirect } from "../components/setup/firstRunGateState";
 import { useComposerDraftStore } from "../composerDraftStore";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
 import { recordLastVisitedThreadRoute } from "../lastVisitedThreadRoute";
@@ -160,6 +161,7 @@ function ChatRouteLayout() {
     <>
       <ChatRouteGlobalShortcuts />
       <LastVisitedThreadRouteRecorder />
+      <FirstRunSetupRedirect />
       <Outlet />
     </>
   );

@@ -245,7 +245,7 @@ describe("provider update launch notification logic", () => {
       isDismissed: false,
       isAlreadySeen: false,
       hasActiveToast: false,
-      isFirstRunSetupPending: false,
+      isHeldForSetup: false,
     } as const;
 
     it("opens on launch when there is an update nobody has been told about", () => {
@@ -256,15 +256,11 @@ describe("provider update launch notification logic", () => {
       expect(shouldOpenProviderUpdatePrompt({ ...OPENABLE, hasActiveToast: true })).toBe(false);
     });
 
-    it("waits while first-run setup is on screen, then opens once setup is done", () => {
-      expect(shouldOpenProviderUpdatePrompt({ ...OPENABLE, isFirstRunSetupPending: true })).toBe(
-        false,
-      );
+    it("waits while setup holds launch prompts, then opens once setup is done", () => {
+      expect(shouldOpenProviderUpdatePrompt({ ...OPENABLE, isHeldForSetup: true })).toBe(false);
       // Deferred, not dropped: the same key still opens once setup is
       // completed or skipped, because nothing marked it seen while it waited.
-      expect(shouldOpenProviderUpdatePrompt({ ...OPENABLE, isFirstRunSetupPending: false })).toBe(
-        true,
-      );
+      expect(shouldOpenProviderUpdatePrompt({ ...OPENABLE, isHeldForSetup: false })).toBe(true);
     });
   });
 
