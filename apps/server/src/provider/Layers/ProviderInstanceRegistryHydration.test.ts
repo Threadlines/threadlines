@@ -13,10 +13,16 @@ describe("deriveProviderInstanceConfigMap", () => {
   it("hydrates only maintained built-in providers from default legacy settings", () => {
     const configMap = deriveProviderInstanceConfigMap(DEFAULT_SERVER_SETTINGS);
 
-    expect(Object.keys(configMap).toSorted()).toEqual(["claudeAgent", "codex", "cursor", "fx"]);
+    expect(Object.keys(configMap).toSorted()).toEqual([
+      "claudeAgent",
+      "codex",
+      "cursor",
+      "fx",
+      "opencode",
+    ]);
   });
 
-  it("preserves non-default legacy Cursor and OpenCode settings as deprecated instances", () => {
+  it("carries legacy Cursor and OpenCode settings into their instances", () => {
     const settings: ServerSettings = {
       ...DEFAULT_SERVER_SETTINGS,
       providers: {
@@ -44,7 +50,7 @@ describe("deriveProviderInstanceConfigMap", () => {
     });
   });
 
-  it("does not overwrite explicit provider instance entries with deprecated legacy settings", () => {
+  it("does not overwrite explicit provider instance entries with legacy settings", () => {
     const cursorId = defaultInstanceIdForDriver(ProviderDriverKind.make("cursor"));
     const settings: ServerSettings = {
       ...DEFAULT_SERVER_SETTINGS,

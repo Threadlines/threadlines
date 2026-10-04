@@ -1,474 +1,350 @@
+/**
+ * OpenCodeProvider — the OpenCode 2 provider snapshot: install, version,
+ * models, slash commands and skills.
+ *
+ * Models come from the running server, so the catalog is exactly what the
+ * user's OpenCode can use right now. OpenCode has no "signed in" flag: with no
+ * credentials it still serves its free Zen models, so a catalog of only those
+ * is ready but nudges the user to connect a provider.
+ *
+ * @module provider/Layers/OpenCodeProvider
+ */
 import {
-  ProviderDriverKind,
   type ModelCapabilities,
   type OpenCodeSettings,
+  ProviderDriverKind,
   type ServerProviderModel,
+  type ServerProviderSkill,
+  type ServerProviderSlashCommand,
 } from "@threadlines/contracts";
-import * as Cause from "effect/Cause";
-import * as Data from "effect/Data";
-import * as DateTime from "effect/DateTime";
-import * as Effect from "effect/Effect";
-
 import { createModelCapabilities } from "@threadlines/shared/model";
-import { compareSemverVersions } from "@threadlines/shared/semver";
+import * as DateTime from "effect/DateTime";
+import * as Duration from "effect/Duration";
+import * as Effect from "effect/Effect";
+import * as Schedule from "effect/Schedule";
+import type { ChildProcessSpawner } from "effect/unstable/process";
+
+import { type OpenCodeClient, OpenCodeError, runOpenCode } from "../opencode/OpenCodeClient.ts";
+import {
+  isOpenCodeNotInstalledError,
+  isOpenCodeOneVersion,
+  isSupportedOpenCodeVersion,
+  MINIMUM_OPENCODE_VERSION,
+  probeOpenCodeVersion,
+} from "../opencode/OpenCodeServer.ts";
+import { OPENCODE_INSTALL_COMMAND } from "../opencode/OpenCodeBinary.ts";
+import type { OpenCodeServerManagerShape } from "../opencode/OpenCodeServerManager.ts";
 import {
   buildServerProvider,
   nonEmptyTrimmed,
-  parseGenericCliVersion,
+  type ProviderProbeResult,
   providerModelsFromSettings,
   type ServerProviderDraft,
 } from "../providerSnapshot.ts";
-import {
-  OpenCodeRuntime,
-  openCodeRuntimeErrorDetail,
-  type OpenCodeInventory,
-} from "../opencodeRuntime.ts";
-import type { Agent, ProviderListResponse } from "@opencode-ai/sdk/v2";
 
 const PROVIDER = ProviderDriverKind.make("opencode");
-const OPENCODE_PRESENTATION = {
+
+export const OPENCODE_PRESENTATION = {
   displayName: "OpenCode",
-  showInteractionModeToggle: false,
+  showInteractionModeToggle: true,
 } as const;
-const MINIMUM_OPENCODE_VERSION = "1.14.19";
 
-class OpenCodeProbeError extends Data.TaggedError("OpenCodeProbeError")<{
-  readonly cause: unknown;
-  readonly detail: string;
-}> {}
+const CUSTOM_MODEL_CAPABILITIES: ModelCapabilities = createModelCapabilities({
+  optionDescriptors: [],
+});
 
-function normalizeProbeMessage(message: string): string | undefined {
-  const trimmed = message.trim();
-  if (trimmed.length === 0) {
-    return undefined;
-  }
-  if (
-    trimmed === "An error occurred in Effect.tryPromise" ||
-    trimmed === "An error occurred in Effect.try"
-  ) {
-    return undefined;
-  }
-  return trimmed;
-}
+/** OpenCode's own provider; without a key it serves only its free models. */
+const OPENCODE_ZEN_PROVIDER = "opencode";
 
-function normalizedErrorMessage(cause: unknown): string | undefined {
-  if (cause instanceof OpenCodeProbeError) {
-    return normalizeProbeMessage(cause.detail);
-  }
-
-  if (!(cause instanceof Error)) {
-    return undefined;
-  }
-
-  return normalizeProbeMessage(cause.message);
-}
-
-function formatOpenCodeProbeError(input: {
-  readonly cause: unknown;
-  readonly isExternalServer: boolean;
-  readonly serverUrl: string;
-}): { readonly installed: boolean; readonly message: string } {
-  const detail = normalizedErrorMessage(input.cause);
-  const lower = detail?.toLowerCase() ?? "";
-
-  if (input.isExternalServer) {
-    if (
-      lower.includes("401") ||
-      lower.includes("403") ||
-      lower.includes("unauthorized") ||
-      lower.includes("forbidden")
-    ) {
-      return {
-        installed: true,
-        message: "OpenCode server rejected authentication. Check the server URL and password.",
-      };
-    }
-
-    if (
-      lower.includes("econnrefused") ||
-      lower.includes("enotfound") ||
-      lower.includes("fetch failed") ||
-      lower.includes("networkerror") ||
-      lower.includes("timed out") ||
-      lower.includes("timeout") ||
-      lower.includes("socket hang up")
-    ) {
-      return {
-        installed: true,
-        message: `Couldn't reach the configured OpenCode server at ${input.serverUrl}. Check that the server is running and the URL is correct.`,
-      };
-    }
-
-    return {
-      installed: true,
-      message: detail ?? "Failed to connect to the configured OpenCode server.",
-    };
-  }
-
-  if (lower.includes("enoent") || lower.includes("notfound")) {
-    return {
-      installed: false,
-      message: "OpenCode CLI (`opencode`) is not installed or not on PATH.",
-    };
-  }
-
-  if (lower.includes("quarantine")) {
-    return {
-      installed: true,
-      message:
-        "macOS is blocking the OpenCode binary (quarantine). Run `xattr -d com.apple.quarantine $(which opencode)` to fix this.",
-    };
-  }
-
-  if (lower.includes("invalid code signature") || lower.includes("corrupted")) {
-    return {
-      installed: true,
-      message:
-        "macOS killed the OpenCode process due to an invalid code signature. The binary may be corrupted — try reinstalling OpenCode.",
-    };
-  }
-
-  return {
-    installed: true,
-    message: detail
-      ? `Failed to execute OpenCode CLI health check: ${detail}`
-      : "Failed to execute OpenCode CLI health check.",
-  };
-}
-
-function titleCaseSlug(value: string): string {
+function titleCase(value: string): string {
   return value
-    .split(/[-_/]+/)
+    .split(/[-_]+/u)
     .filter((segment) => segment.length > 0)
     .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))
     .join(" ");
 }
 
-function inferDefaultVariant(
-  providerID: string,
-  variants: ReadonlyArray<string>,
-): string | undefined {
-  if (variants.length === 1) {
-    return variants[0];
-  }
-  if (providerID === "anthropic" || providerID.startsWith("google")) {
-    return variants.includes("high") ? "high" : undefined;
-  }
-  if (providerID === "openai" || providerID === "opencode") {
-    return variants.includes("medium") ? "medium" : variants.includes("high") ? "high" : undefined;
-  }
-  return undefined;
-}
-
-function inferDefaultAgent(agents: ReadonlyArray<Agent>): string | undefined {
-  return agents.find((agent) => agent.name === "build")?.name ?? agents[0]?.name ?? undefined;
-}
-
-const DEFAULT_OPENCODE_MODEL_CAPABILITIES: ModelCapabilities = createModelCapabilities({
-  optionDescriptors: [],
-});
-
-function openCodeCapabilitiesForModel(input: {
-  readonly providerID: string;
-  readonly model: ProviderListResponse["all"][number]["models"][string];
-  readonly agents: ReadonlyArray<Agent>;
-}): ModelCapabilities {
-  const variantValues = Object.keys(input.model.variants ?? {});
-  const defaultVariant = inferDefaultVariant(input.providerID, variantValues);
-  const variantOptions = variantValues.map((value) =>
-    defaultVariant === value
-      ? { id: value, label: titleCaseSlug(value), isDefault: true as const }
-      : { id: value, label: titleCaseSlug(value) },
-  );
-  const primaryAgents = input.agents.filter(
-    (agent) => !agent.hidden && (agent.mode === "primary" || agent.mode === "all"),
-  );
-  const defaultAgent = inferDefaultAgent(primaryAgents);
-  const agentOptions = primaryAgents.map((agent) =>
-    defaultAgent === agent.name
-      ? { id: agent.name, label: titleCaseSlug(agent.name), isDefault: true as const }
-      : { id: agent.name, label: titleCaseSlug(agent.name) },
-  );
+/** Reasoning variants, with OpenCode's usual middle ground preselected. */
+export function openCodeVariantCapabilities(variants: ReadonlyArray<string>): ModelCapabilities {
+  const usable = variants.filter((variant) => variant !== "default");
+  if (usable.length === 0) return CUSTOM_MODEL_CAPABILITIES;
+  const preferred = ["medium", "high"].find((variant) => usable.includes(variant)) ?? usable[0]!;
   return createModelCapabilities({
     optionDescriptors: [
-      ...(variantOptions.length > 0
-        ? [
-            {
-              id: "variant",
-              label: "Variant",
-              type: "select" as const,
-              options: variantOptions,
-              ...(defaultVariant ? { currentValue: defaultVariant } : {}),
-            },
-          ]
-        : []),
-      ...(agentOptions.length > 0
-        ? [
-            {
-              id: "agent",
-              label: "Agent",
-              type: "select" as const,
-              options: agentOptions,
-              ...(defaultAgent ? { currentValue: defaultAgent } : {}),
-            },
-          ]
-        : []),
+      {
+        id: "variant",
+        label: "Reasoning",
+        type: "select",
+        options: usable.map((variant) =>
+          variant === preferred
+            ? { id: variant, label: titleCase(variant), isDefault: true as const }
+            : { id: variant, label: titleCase(variant) },
+        ),
+        currentValue: preferred,
+      },
     ],
   });
 }
 
-function flattenOpenCodeModels(input: OpenCodeInventory): ReadonlyArray<ServerProviderModel> {
-  const connected = new Set(input.providerList.connected);
-  const models: Array<ServerProviderModel> = [];
+interface OpenCodeCatalog {
+  readonly models: ReadonlyArray<ServerProviderModel>;
+  /**
+   * Providers the user connected, by name: any listed model that costs money
+   * or comes from a provider other than OpenCode's free Zen tier. Empty when
+   * only the free models are available.
+   */
+  readonly connectedProviders: ReadonlyArray<string>;
+  readonly slashCommands: ReadonlyArray<ServerProviderSlashCommand>;
+  readonly skills: ReadonlyArray<ServerProviderSkill>;
+}
 
-  for (const provider of input.providerList.all) {
-    if (!connected.has(provider.id)) {
-      continue;
-    }
+/** The server lists nothing for a moment while a directory loads. */
+const retryWhileEmpty = <A>(load: Effect.Effect<ReadonlyArray<A>, OpenCodeError>) =>
+  load.pipe(
+    Effect.flatMap((items) =>
+      items.length > 0 ? Effect.succeed(items) : Effect.fail("empty" as const),
+    ),
+    Effect.retry({ schedule: Schedule.spaced(Duration.millis(250)), times: 20 }),
+    Effect.catch((error) => (error === "empty" ? Effect.succeed([]) : Effect.fail(error))),
+  );
 
-    for (const model of Object.values(provider.models)) {
-      const name = nonEmptyTrimmed(model.name);
-      if (!name) {
-        continue;
-      }
+export const loadOpenCodeCatalog = (
+  client: OpenCodeClient,
+  directory: string,
+): Effect.Effect<OpenCodeCatalog, OpenCodeError> =>
+  Effect.gen(function* () {
+    const location = { location: { directory } };
+    const [models, providers, commands, skills] = yield* Effect.all(
+      [
+        retryWhileEmpty(
+          runOpenCode("model.list", (signal) => client.model.list(location, { signal })).pipe(
+            Effect.map((result) => result.data ?? []),
+          ),
+        ),
+        runOpenCode("provider.list", (signal) => client.provider.list(location, { signal })).pipe(
+          Effect.map((result) => result.data ?? []),
+          Effect.orElseSucceed(() => []),
+        ),
+        runOpenCode("command.list", (signal) => client.command.list(location, { signal })).pipe(
+          Effect.map((result) => result.data ?? []),
+          Effect.orElseSucceed(() => []),
+        ),
+        runOpenCode("skill.list", (signal) => client.skill.list(location, { signal })).pipe(
+          Effect.map((result) => result.data ?? []),
+          Effect.orElseSucceed(() => []),
+        ),
+      ],
+      { concurrency: "unbounded" },
+    );
+    const providerNames = new Map(providers.map((provider) => [provider.id, provider.name]));
+    return {
+      models: models
+        .flatMap((model): ReadonlyArray<ServerProviderModel> => {
+          const name = nonEmptyTrimmed(model.name) ?? model.id;
+          const subProvider = nonEmptyTrimmed(providerNames.get(model.providerID));
+          return [
+            {
+              slug: `${model.providerID}/${model.id}`,
+              name,
+              ...(subProvider ? { subProvider } : {}),
+              isCustom: false,
+              capabilities: openCodeVariantCapabilities(
+                (model.variants ?? []).map((variant) => variant.id),
+              ),
+            },
+          ];
+        })
+        .toSorted((left, right) => left.name.localeCompare(right.name)),
+      connectedProviders: [
+        ...new Set(
+          models
+            .filter(
+              (model) =>
+                model.providerID !== OPENCODE_ZEN_PROVIDER ||
+                (model.cost ?? []).some((tier) => tier.input > 0 || tier.output > 0),
+            )
+            .map((model) => providerNames.get(model.providerID) ?? model.providerID),
+        ),
+      ].toSorted((left, right) => left.localeCompare(right)),
+      slashCommands: commands.flatMap((command) => {
+        const name = nonEmptyTrimmed(command.name);
+        if (!name) return [];
+        const description = nonEmptyTrimmed(command.description);
+        return [{ name, ...(description ? { description } : {}) }];
+      }),
+      skills: skills.flatMap((skill) => {
+        const name = nonEmptyTrimmed(skill.id);
+        const path = nonEmptyTrimmed(skill.path);
+        if (!name || !path) return [];
+        const description = nonEmptyTrimmed(skill.description);
+        const displayName = nonEmptyTrimmed(skill.name);
+        return [
+          {
+            name,
+            path,
+            enabled: true,
+            ...(displayName && displayName !== name ? { displayName } : {}),
+            ...(description ? { description } : {}),
+          },
+        ];
+      }),
+    };
+  });
 
-      const subProvider = nonEmptyTrimmed(provider.name);
-      models.push({
-        slug: `${provider.id}/${model.id}`,
-        name,
-        ...(subProvider ? { subProvider } : {}),
-        isCustom: false,
-        capabilities: openCodeCapabilitiesForModel({
-          providerID: provider.id,
-          model,
-          agents: input.agents,
-        }),
-      });
-    }
-  }
+const snapshot = (input: {
+  readonly settings: OpenCodeSettings;
+  readonly checkedAt: string;
+  readonly probe: ProviderProbeResult;
+  readonly catalog?: OpenCodeCatalog;
+}): ServerProviderDraft =>
+  buildServerProvider({
+    presentation: OPENCODE_PRESENTATION,
+    enabled: input.settings.enabled,
+    checkedAt: input.checkedAt,
+    models: providerModelsFromSettings(
+      input.catalog?.models ?? [],
+      PROVIDER,
+      input.settings.customModels,
+      CUSTOM_MODEL_CAPABILITIES,
+    ),
+    ...(input.catalog ? { modelCatalogSource: "live" as const } : {}),
+    ...(input.catalog?.slashCommands.length ? { slashCommands: input.catalog.slashCommands } : {}),
+    ...(input.catalog?.skills.length ? { skills: input.catalog.skills } : {}),
+    probe: input.probe,
+  });
 
-  return models.toSorted((left, right) => left.name.localeCompare(right.name));
+function openCodeProviderLabel(providers: ReadonlyArray<string>): string {
+  return providers.length <= 3
+    ? providers.join(", ")
+    : `${providers.slice(0, 3).join(", ")} and ${providers.length - 3} more`;
 }
 
 export const makePendingOpenCodeProvider = (
-  openCodeSettings: OpenCodeSettings,
+  settings: OpenCodeSettings,
 ): Effect.Effect<ServerProviderDraft> =>
+  Effect.map(DateTime.now, (now) =>
+    snapshot({
+      settings,
+      checkedAt: DateTime.formatIso(now),
+      probe: {
+        installed: false,
+        version: null,
+        status: "warning",
+        auth: { status: "unknown" },
+        message: settings.enabled
+          ? "OpenCode has not been checked yet."
+          : "OpenCode is turned off in Threadlines settings.",
+      },
+    }),
+  );
+
+export const checkOpenCodeProviderStatus = (input: {
+  readonly settings: OpenCodeSettings;
+  readonly manager: OpenCodeServerManagerShape;
+  readonly cwd: string;
+  readonly environment: NodeJS.ProcessEnv;
+  /** A 1.x binary here has an Update that moves it to OpenCode 2. */
+  readonly canMoveToOpenCodeTwo: boolean;
+}): Effect.Effect<ServerProviderDraft, never, ChildProcessSpawner.ChildProcessSpawner> =>
   Effect.gen(function* () {
-    const checkedAt = yield* Effect.map(DateTime.now, DateTime.formatIso);
-    const models = providerModelsFromSettings(
-      [],
-      PROVIDER,
-      openCodeSettings.customModels,
-      DEFAULT_OPENCODE_MODEL_CAPABILITIES,
-    );
-
-    if (!openCodeSettings.enabled) {
-      return buildServerProvider({
-        presentation: OPENCODE_PRESENTATION,
-        enabled: false,
+    const { settings } = input;
+    const checkedAt = DateTime.formatIso(yield* DateTime.now);
+    const failed = (
+      probe: Omit<ProviderProbeResult, "auth" | "status"> & { readonly message: string },
+    ) =>
+      snapshot({
+        settings,
         checkedAt,
-        models,
-        probe: {
-          installed: false,
-          version: null,
-          status: "warning",
-          auth: { status: "unknown" },
-          message:
-            openCodeSettings.serverUrl.trim().length > 0
-              ? "OpenCode is disabled in Threadlines settings. A server URL is configured."
-              : "OpenCode is disabled in Threadlines settings.",
-        },
+        probe: { ...probe, status: "error", auth: { status: "unknown" } },
       });
+
+    if (!settings.enabled) {
+      return yield* makePendingOpenCodeProvider(settings);
     }
 
-    return buildServerProvider({
-      presentation: OPENCODE_PRESENTATION,
-      enabled: true,
-      checkedAt,
-      models,
-      probe: {
-        installed: false,
-        version: null,
-        status: "warning",
-        auth: { status: "unknown" },
-        message: "OpenCode provider status has not been checked in this session yet.",
-      },
-    });
-  });
-
-export const checkOpenCodeProviderStatus = Effect.fn("checkOpenCodeProviderStatus")(function* (
-  openCodeSettings: OpenCodeSettings,
-  cwd: string,
-  environment: NodeJS.ProcessEnv = process.env,
-): Effect.fn.Return<ServerProviderDraft, never, OpenCodeRuntime> {
-  const openCodeRuntime = yield* OpenCodeRuntime;
-  const checkedAt = DateTime.formatIso(yield* DateTime.now);
-  const customModels = openCodeSettings.customModels;
-  const isExternalServer = openCodeSettings.serverUrl.trim().length > 0;
-
-  const fallback = (cause: unknown, version: string | null = null) => {
-    const failure = formatOpenCodeProbeError({
-      cause,
-      isExternalServer,
-      serverUrl: openCodeSettings.serverUrl,
-    });
-    return buildServerProvider({
-      presentation: OPENCODE_PRESENTATION,
-      enabled: openCodeSettings.enabled,
-      checkedAt,
-      models: providerModelsFromSettings(
-        [],
-        PROVIDER,
-        customModels,
-        DEFAULT_OPENCODE_MODEL_CAPABILITIES,
-      ),
-      probe: {
-        installed: failure.installed,
-        version,
-        status: "error",
-        auth: { status: "unknown" },
-        message: failure.message,
-      },
-    });
-  };
-
-  if (!openCodeSettings.enabled) {
-    return buildServerProvider({
-      presentation: OPENCODE_PRESENTATION,
-      enabled: false,
-      checkedAt,
-      models: providerModelsFromSettings(
-        [],
-        PROVIDER,
-        customModels,
-        DEFAULT_OPENCODE_MODEL_CAPABILITIES,
-      ),
-      probe: {
-        installed: false,
-        version: null,
-        status: "warning",
-        auth: { status: "unknown" },
-        message: isExternalServer
-          ? "OpenCode is disabled in Threadlines settings. A server URL is configured."
-          : "OpenCode is disabled in Threadlines settings.",
-      },
-    });
-  }
-
-  let version: string | null = null;
-  if (!isExternalServer) {
-    const versionExit = yield* Effect.exit(
-      openCodeRuntime
-        .runOpenCodeCommand({
-          binaryPath: openCodeSettings.binaryPath,
-          args: ["--version"],
-          environment,
-        })
-        .pipe(
-          Effect.mapError(
-            (cause) => new OpenCodeProbeError({ cause, detail: openCodeRuntimeErrorDetail(cause) }),
-          ),
-        ),
-    );
-    if (versionExit._tag === "Failure") {
-      return fallback(Cause.squash(versionExit.cause));
-    }
-    version = parseGenericCliVersion(versionExit.value.stdout) ?? null;
-
-    if (!version) {
-      return fallback(
-        new Error(
-          `Unable to determine OpenCode version from \`opencode --version\` output. Threadlines requires OpenCode v${MINIMUM_OPENCODE_VERSION} or newer.`,
-        ),
-        null,
-      );
-    }
-    if (compareSemverVersions(version, MINIMUM_OPENCODE_VERSION) < 0) {
-      return buildServerProvider({
-        presentation: OPENCODE_PRESENTATION,
-        enabled: openCodeSettings.enabled,
-        checkedAt,
-        models: providerModelsFromSettings(
-          [],
-          PROVIDER,
-          customModels,
-          DEFAULT_OPENCODE_MODEL_CAPABILITIES,
-        ),
-        probe: {
+    const external = settings.serverUrl.trim().length > 0;
+    let version: string | null = null;
+    if (!external) {
+      const probed = yield* probeOpenCodeVersion({
+        binaryPath: settings.binaryPath,
+        environment: input.environment,
+      }).pipe(Effect.result);
+      if (probed._tag === "Failure") {
+        return failed({
+          installed: !isOpenCodeNotInstalledError(probed.failure),
+          version: null,
+          message: isOpenCodeNotInstalledError(probed.failure)
+            ? "OpenCode is not installed. Install OpenCode 2 to use it in Threadlines."
+            : probed.failure.detail,
+        });
+      }
+      version = probed.success.version ?? null;
+      if (!version) {
+        return failed({
+          installed: true,
+          version: null,
+          message: `Could not read OpenCode's version from \`${settings.binaryPath} --version\`.`,
+        });
+      }
+      if (!isSupportedOpenCodeVersion(version)) {
+        return failed({
           installed: true,
           version,
-          status: "error",
-          auth: { status: "unknown" },
-          message: `OpenCode v${version} is too old. Upgrade to v${MINIMUM_OPENCODE_VERSION} or newer.`,
-        },
-      });
+          // OpenCode 2 is a separate package. The driver turns Update into
+          // the move for install methods it knows; others install by hand.
+          message: !isOpenCodeOneVersion(version)
+            ? `OpenCode ${version} is too old. Update to ${MINIMUM_OPENCODE_VERSION} or newer.`
+            : input.canMoveToOpenCodeTwo
+              ? `Threadlines needs OpenCode 2, and \`${settings.binaryPath}\` is OpenCode ${version}. Update moves it to OpenCode 2 and keeps your OpenCode chats.`
+              : `Threadlines needs OpenCode 2, and \`${settings.binaryPath}\` is OpenCode ${version}. Install OpenCode 2 with \`${process.platform === "win32" ? "npm install -g @opencode/cli" : OPENCODE_INSTALL_COMMAND}\`. If Threadlines still finds 1.x afterwards, set Binary path to the new one.`,
+        });
+      }
     }
-  }
 
-  const inventoryExit = yield* Effect.exit(
-    Effect.scoped(
-      Effect.gen(function* () {
-        const server = yield* openCodeRuntime
-          .connectToOpenCodeServer({
-            binaryPath: openCodeSettings.binaryPath,
-            serverUrl: openCodeSettings.serverUrl,
-            environment,
-          })
-          .pipe(
-            Effect.mapError(
-              (cause) =>
-                new OpenCodeProbeError({ cause, detail: openCodeRuntimeErrorDetail(cause) }),
-            ),
-          );
-        return yield* openCodeRuntime
-          .loadOpenCodeInventory(
-            openCodeRuntime.createOpenCodeSdkClient({
-              baseUrl: server.url,
-              directory: cwd,
-              ...(isExternalServer && openCodeSettings.serverPassword
-                ? { serverPassword: openCodeSettings.serverPassword }
-                : {}),
-            }),
-          )
-          .pipe(
-            Effect.mapError(
-              (cause) =>
-                new OpenCodeProbeError({ cause, detail: openCodeRuntimeErrorDetail(cause) }),
-            ),
-          );
-      }),
-    ),
-  );
-  if (inventoryExit._tag === "Failure") {
-    return fallback(Cause.squash(inventoryExit.cause), version);
-  }
-
-  const models = providerModelsFromSettings(
-    flattenOpenCodeModels(inventoryExit.value),
-    PROVIDER,
-    customModels,
-    DEFAULT_OPENCODE_MODEL_CAPABILITIES,
-  );
-  const connectedCount = inventoryExit.value.providerList.connected.length;
-  return buildServerProvider({
-    presentation: OPENCODE_PRESENTATION,
-    enabled: true,
-    checkedAt,
-    models,
-    probe: {
-      installed: true,
-      version,
-      status: connectedCount > 0 ? "ready" : "warning",
-      auth: {
-        status: connectedCount > 0 ? "authenticated" : "unknown",
-        type: "opencode",
+    const installedVersion = version;
+    const catalog = yield* input.manager
+      .withServer((active) =>
+        Effect.gen(function* () {
+          version = version ?? active.server.version;
+          // The binary was updated under a running server: restart it once
+          // nothing is using it, so new sessions get the new version.
+          if (installedVersion && installedVersion !== active.server.version) {
+            yield* input.manager.retire;
+          }
+          return yield* loadOpenCodeCatalog(active.server.client, input.cwd);
+        }),
+      )
+      .pipe(Effect.result);
+    if (catalog._tag === "Failure") {
+      return failed({ installed: true, version, message: catalog.failure.detail });
+    }
+    const { connectedProviders, models } = catalog.success;
+    const connected = connectedProviders.length > 0;
+    return snapshot({
+      settings,
+      checkedAt,
+      catalog: catalog.success,
+      probe: {
+        installed: true,
+        version,
+        status: models.length > 0 ? "ready" : "warning",
+        // OpenCode's free models need no account, so a catalog of only those
+        // is signed in, labelled for what it is; "Sign in again" adds a
+        // provider. No models at all is the one state that needs a sign-in.
+        auth:
+          models.length === 0
+            ? { status: "unauthenticated" }
+            : {
+                status: "authenticated",
+                type: "opencode",
+                label: connected ? openCodeProviderLabel(connectedProviders) : "Free models only",
+              },
+        message:
+          models.length === 0
+            ? "OpenCode has no models it can use yet. Sign in to connect a provider."
+            : connected
+              ? `${models.length} model${models.length === 1 ? "" : "s"} available through ${external ? "the configured OpenCode server" : "OpenCode"}.`
+              : "Only OpenCode's free models are available. Sign in again to connect your own provider.",
       },
-      message:
-        connectedCount > 0
-          ? `${connectedCount} upstream provider${connectedCount === 1 ? "" : "s"} connected through ${isExternalServer ? "the configured OpenCode server" : "OpenCode"}.`
-          : isExternalServer
-            ? "Connected to the configured OpenCode server, but it did not report any connected upstream providers."
-            : "OpenCode is available, but it did not report any connected upstream providers.",
-    },
+    });
   });
-});

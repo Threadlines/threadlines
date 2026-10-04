@@ -483,9 +483,9 @@ describe("ProviderModelPicker", () => {
     const providers: ReadonlyArray<ServerProvider> = [
       ...TEST_PROVIDERS,
       {
-        driver: ProviderDriverKind.make("opencode"),
-        instanceId: ProviderInstanceId.make("opencode"),
-        displayName: "OpenCode",
+        driver: ProviderDriverKind.make("retiredDriver"),
+        instanceId: ProviderInstanceId.make("retired"),
+        displayName: "Retired",
         enabled: true,
         installed: true,
         version: "1.0.0",

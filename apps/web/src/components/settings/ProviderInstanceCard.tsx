@@ -33,6 +33,7 @@ import {
   buildCodexLoginCommand,
   buildCursorLoginCommand,
   buildFxLoginCommand,
+  buildOpenCodeLoginCommand,
   CLAUDE_CREDENTIAL_OVERRIDE_ENV_NAMES,
   CLAUDE_LONG_LIVED_OAUTH_TOKEN_ENV,
   deriveClaudeLongLivedOAuthTokenState,
@@ -92,6 +93,7 @@ const CODEX_DRIVER_KIND = ProviderDriverKind.make("codex");
 const CLAUDE_DRIVER_KIND = ProviderDriverKind.make("claudeAgent");
 const CURSOR_DRIVER_KIND = ProviderDriverKind.make("cursor");
 const FX_DRIVER_KIND = ProviderDriverKind.make("fx");
+const OPENCODE_DRIVER_KIND = ProviderDriverKind.make("opencode");
 const RUNTIME_PROVIDER_CONFIG_FIELD_KEYS = new Set([
   "binaryPath",
   "launchArgs",
@@ -753,6 +755,9 @@ function ProviderAccountSignInSection(props: {
   const authBadge = providerAuthBadge(props.liveProvider?.auth);
   const needsSignIn = authBadge.variant === "warning";
   const isClaude = props.driverKind === CLAUDE_DRIVER_KIND;
+  // OpenCode's sign-in opens on a menu of providers to connect, in the
+  // terminal itself, so the terminal shows from the start.
+  const signInStartsInTerminal = props.driverKind === OPENCODE_DRIVER_KIND;
   const hasClaudeCredentialOverride =
     isClaude && hasClaudeCredentialOverrideEnvironment(props.environment);
   const claudeLongLivedTokenConfigured =
@@ -784,9 +789,20 @@ function ProviderAccountSignInSection(props: {
             displayName={props.displayName}
             actionLabel={needsSignIn ? "Sign in" : "Sign in again"}
             command={props.terminalLoginCommand}
-            autoShowTerminal={props.signInHandoffActive ?? false}
+            autoShowTerminal={(props.signInHandoffActive ?? false) || signInStartsInTerminal}
+            runningHint={
+              signInStartsInTerminal
+                ? "Pick a provider in the terminal below, then finish any step it opens in your browser."
+                : undefined
+            }
             buttonVariant={needsSignIn ? "default" : "ghost"}
-            description={isClaude ? "Signing in covers both chat and usage." : undefined}
+            description={
+              isClaude
+                ? "Signing in covers both chat and usage."
+                : signInStartsInTerminal
+                  ? "Connects a model provider, such as an OpenCode Go plan or your ChatGPT account, to OpenCode."
+                  : undefined
+            }
             statusRow={
               <>
                 <Badge variant={authBadge.variant} size="sm">
@@ -1351,6 +1367,11 @@ export function ProviderInstanceCard({
     }
     if (driverKind === FX_DRIVER_KIND) {
       return buildFxLoginCommand({
+        binaryPath: readProviderConfigString(instance.config, "binaryPath"),
+      });
+    }
+    if (driverKind === OPENCODE_DRIVER_KIND) {
+      return buildOpenCodeLoginCommand({
         binaryPath: readProviderConfigString(instance.config, "binaryPath"),
       });
     }

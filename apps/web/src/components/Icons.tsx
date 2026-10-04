@@ -275,6 +275,13 @@ export const CursorIcon: Icon = ({ className, ...props }) => (
   </svg>
 );
 
+/** OpenCode's mark, as published in its ACP registry entry. */
+export const OpenCodeIcon: Icon = (props) => (
+  <svg {...props} viewBox="0 0 16 16" fill="currentColor">
+    <path fillRule="evenodd" clipRule="evenodd" d="M13 14H3V2H13V14ZM10.5 4.4H5.5V11.6H10.5V4.4Z" />
+  </svg>
+);
+
 export const TraeIcon: Icon = (props) => (
   <svg {...props} viewBox="0 0 24 24" fill="currentColor">
     {/* Back rectangle: left strip + bottom strip drawn separately — empty bottom-left corner is the gap between them */}

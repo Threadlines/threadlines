@@ -5,6 +5,7 @@ export const PROVIDER_AUTH_RECONNECT_COMMANDS = {
   codex: "codex login",
   cursor: "agent login",
   fx: "fx login",
+  opencode: "opencode auth login --standalone",
 } as const;
 
 const AUTH_ERROR_PATTERNS = [

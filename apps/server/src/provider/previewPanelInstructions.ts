@@ -18,7 +18,7 @@
  * until it searches for them. System-level text can, because developer-role
  * instructions outrank a skill file, which reaches the model as tool output.
  *
- * One body with the rivals named per provider, so both providers hear the same
+ * One body with the rivals named per provider, so every provider hears the same
  * story about the same panel. Kept short on purpose: every line here competes
  * with the user's actual task on every turn.
  */
@@ -30,7 +30,9 @@ interface PreviewPanelRivals {
   readonly doNotUse: string;
 }
 
-const RIVALS: Record<"claude" | "codex", PreviewPanelRivals> = {
+type PreviewPanelProvider = "claude" | "codex" | "opencode";
+
+const RIVALS: Record<PreviewPanelProvider, PreviewPanelRivals> = {
   claude: {
     notThePanel: "Claude in Chrome",
     doNotUse:
@@ -41,14 +43,29 @@ const RIVALS: Record<"claude" | "codex", PreviewPanelRivals> = {
     doNotUse:
       "Do not use the Browser plugin, the Chrome plugin, or any other browser automation for the user's panel.",
   },
+  opencode: {
+    notThePanel: "OpenCode's own browser tool",
+    doNotUse:
+      "Do not use OpenCode's browser tool, Playwright, or any other browser automation for the user's panel.",
+  },
 };
 
-export function buildPreviewPanelInstructions(provider: "claude" | "codex"): string {
+/** How Claude and Codex name the browser tools: `mcp__<server>__<tool>`. */
+const MCP_BROWSER_TOOL_PREFIX = "mcp__threadlines_browser__";
+
+/**
+ * `toolPrefix` is what precedes each browser tool's own name for this
+ * provider; OpenCode names tools `<server>_<tool>` with a per-thread server.
+ */
+export function buildPreviewPanelInstructions(
+  provider: PreviewPanelProvider,
+  toolPrefix: string = MCP_BROWSER_TOOL_PREFIX,
+): string {
   const rivals = RIVALS[provider];
   return `<threadlines_browser>
 This session runs inside Threadlines, a desktop workspace for coding agents. A browser panel sits beside this chat. Use it for any work that involves looking at a web page: opening a local dev server, checking a layout or a style change, reproducing a UI bug, reading console errors, or filling in a form. Prefer it over Chrome, headless browsers, and other browser automation, because the user watches every step in the panel, sees where you click, and can mark up the page and send the marks back to you. A browser you open anywhere else shows them nothing.
 
-The panel is reachable only through the MCP tools \`mcp__threadlines_browser__*\` (browser_snapshot, browser_screenshot, browser_navigate, browser_click, browser_type, and the rest). Start with \`mcp__threadlines_browser__browser_snapshot\`. You do not need to ask the user to open the panel: your first browser tool call opens it. If a call reports that no browser is connected, the user is not viewing this thread in the Threadlines desktop app; say so before reaching for any other browser.
+The panel is reachable only through the MCP tools \`${toolPrefix}*\` (browser_snapshot, browser_screenshot, browser_navigate, browser_click, browser_type, and the rest). Start with \`${toolPrefix}browser_snapshot\`. You do not need to ask the user to open the panel: your first browser tool call opens it. If a call reports that no browser is connected, the user is not viewing this thread in the Threadlines desktop app; say so before reaching for any other browser.
 
 When the user says "our browser", "the browser", "the in-app browser", "the preview", or "the page", they mean that panel. They do not mean Chrome, and they do not mean ${rivals.notThePanel}; those are different surfaces and none of them can see what the user is looking at.
 

@@ -4,7 +4,11 @@
  * line, the turn row's one-line summary — is decided here so the component
  * stays a pure projection of it.
  */
-import type { TurnId } from "@threadlines/contracts";
+import {
+  PROVIDER_DISPLAY_NAMES,
+  type ProviderDriverKind,
+  type TurnId,
+} from "@threadlines/contracts";
 import { formatDiffLineStats } from "@threadlines/shared/diffStats";
 
 import {
@@ -319,7 +323,10 @@ function providerDisplayLabel(providerLabel: string | null | undefined): string 
   if (!provider) {
     return null;
   }
-  return provider.charAt(0).toUpperCase() + provider.slice(1);
+  return (
+    PROVIDER_DISPLAY_NAMES[provider as ProviderDriverKind] ??
+    provider.charAt(0).toUpperCase() + provider.slice(1)
+  );
 }
 
 /**

@@ -493,6 +493,23 @@ describe("providerMaintenance", () => {
     });
   });
 
+  it("switches package-tool to Homebrew updates when the binary resolves through Linuxbrew", () => {
+    expect(
+      packageToolUpdate.resolve({
+        binaryPath: "/home/linuxbrew/.linuxbrew/bin/package-tool",
+        platform: "linux",
+        env: {
+          PATH: "",
+        },
+      }).update,
+    ).toEqual({
+      command: "brew upgrade package-tool",
+      executable: "brew",
+      args: ["upgrade", "package-tool"],
+      lockKey: "homebrew",
+    });
+  });
+
   it.effect(
     "switches native-package-tool to native updates when the binary resolves through the native installer",
     () =>

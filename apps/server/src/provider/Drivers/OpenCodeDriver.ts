@@ -1,14 +1,10 @@
 /**
- * OpenCodeDriver — `ProviderDriver` for the OpenCode runtime.
+ * OpenCodeDriver — `ProviderDriver` for OpenCode 2.
  *
- * Mirrors the Codex / Claude drivers: a plain value whose `create()`
- * bundles `snapshot` / `adapter` / `textGeneration` closures over the
- * per-instance `OpenCodeSettings`.
- *
- * Two instances with different `serverUrl`s therefore talk to independent
- * OpenCode servers; when no `serverUrl` is set, the adapter + text-generation
- * shares spin up their own scoped child processes, and those child
- * processes are released when the registry scope closes.
+ * Each instance owns one `OpenCodeServerManager`: a private OpenCode server
+ * shared by the instance's adapter (every thread), its snapshot probe and its
+ * text generation, started on first use and stopped when idle. Instances with
+ * a `serverUrl` talk to that server instead and never start one.
  *
  * @module provider/Drivers/OpenCodeDriver
  */
@@ -22,8 +18,8 @@ import * as Stream from "effect/Stream";
 import { HttpClient } from "effect/unstable/http";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
-import { makeOpenCodeTextGeneration } from "../../textGeneration/OpenCodeTextGeneration.ts";
 import { ServerConfig } from "../../config.ts";
+import { makeOpenCodeTextGeneration } from "../../textGeneration/OpenCodeTextGeneration.ts";
 import { ProviderDriverError } from "../Errors.ts";
 import { makeOpenCodeAdapter } from "../Layers/OpenCodeAdapter.ts";
 import {
@@ -32,50 +28,41 @@ import {
 } from "../Layers/OpenCodeProvider.ts";
 import { ProviderEventLoggers } from "../Layers/ProviderEventLoggers.ts";
 import { makeManagedServerProvider } from "../makeManagedServerProvider.ts";
-import { OpenCodeRuntime } from "../opencodeRuntime.ts";
+import {
+  openCodeMaintenanceBinaryPath,
+  openCodeMaintenanceResolver,
+  openCodeOneMigrationCapabilities,
+  resolveOpenCodeBinary,
+} from "../opencode/OpenCodeBinary.ts";
+import { isOpenCodeOneVersion } from "../opencode/OpenCodeServer.ts";
+import { makeOpenCodeServerManager } from "../opencode/OpenCodeServerManager.ts";
 import {
   defaultProviderContinuationIdentity,
   type ProviderDriver,
   type ProviderInstance,
 } from "../ProviderDriver.ts";
 import type { ServerProviderDraft } from "../providerSnapshot.ts";
-import { mergeProviderInstanceEnvironment } from "../ProviderInstanceEnvironment.ts";
 import {
+  mergeProviderInstanceEnvironment,
+  refreshProviderInstanceEnvironment,
+} from "../ProviderInstanceEnvironment.ts";
+import {
+  createProviderVersionAdvisory,
   enrichProviderSnapshotWithVersionAdvisory,
-  makePackageManagedProviderMaintenanceResolver,
-  normalizeCommandPath,
+  type ProviderMaintenanceCapabilities,
+  type ProviderMaintenanceCommandAction,
   resolveProviderMaintenanceCapabilitiesEffect,
 } from "../providerMaintenance.ts";
+
 const decodeOpenCodeSettings = Schema.decodeSync(OpenCodeSettings);
 
 const DRIVER_KIND = ProviderDriverKind.make("opencode");
 const SNAPSHOT_REFRESH_INTERVAL = Duration.minutes(5);
 
-function isOpenCodeNativeCommandPath(commandPath: string): boolean {
-  const normalized = normalizeCommandPath(commandPath);
-  return (
-    normalized.endsWith("/.opencode/bin/opencode") ||
-    normalized.endsWith("/.opencode/bin/opencode.exe")
-  );
-}
-
-const UPDATE = makePackageManagedProviderMaintenanceResolver({
-  provider: DRIVER_KIND,
-  npmPackageName: "opencode-ai",
-  homebrewFormula: "anomalyco/tap/opencode",
-  nativeUpdate: {
-    executable: "opencode",
-    args: ["upgrade"],
-    lockKey: "opencode-native",
-    isCommandPath: isOpenCodeNativeCommandPath,
-  },
-});
-
 export type OpenCodeDriverEnv =
   | ChildProcessSpawner.ChildProcessSpawner
   | FileSystem.FileSystem
   | HttpClient.HttpClient
-  | OpenCodeRuntime
   | Path.Path
   | ProviderEventLoggers
   | ServerConfig;
@@ -106,8 +93,9 @@ export const OpenCodeDriver: ProviderDriver<OpenCodeSettings, OpenCodeDriverEnv>
   defaultConfig: (): OpenCodeSettings => decodeOpenCodeSettings({}),
   create: ({ instanceId, displayName, accentColor, environment, enabled, config }) =>
     Effect.gen(function* () {
-      const openCodeRuntime = yield* OpenCodeRuntime;
       const serverConfig = yield* ServerConfig;
+      const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const fileSystem = yield* FileSystem.FileSystem;
       const httpClient = yield* HttpClient.HttpClient;
       const eventLoggers = yield* ProviderEventLoggers;
       const processEnv = mergeProviderInstanceEnvironment(environment);
@@ -121,38 +109,128 @@ export const OpenCodeDriver: ProviderDriver<OpenCodeSettings, OpenCodeDriverEnv>
         accentColor,
         continuationGroupKey: continuationIdentity.continuationKey,
       });
-      const effectiveConfig = { ...config, enabled } satisfies OpenCodeSettings;
-      const maintenanceCapabilities = yield* resolveProviderMaintenanceCapabilitiesEffect(UPDATE, {
-        binaryPath: effectiveConfig.binaryPath,
-        env: processEnv,
+      const settings = { ...config, enabled } satisfies OpenCodeSettings;
+      // Looked up each time it is needed, never once: a one-click install
+      // lands in a directory this server's PATH may not include yet.
+      const currentBinary = () => resolveOpenCodeBinary(settings.binaryPath, processEnv);
+      // The regular install/update actions, and the Update that moves a 1.x
+      // binary to OpenCode 2 instead.
+      const resolveMaintenance = Effect.suspend(() => {
+        const commandPath = currentBinary();
+        return Effect.all({
+          regular: resolveProviderMaintenanceCapabilitiesEffect(
+            openCodeMaintenanceResolver(processEnv, settings.binaryPath),
+            {
+              binaryPath: openCodeMaintenanceBinaryPath(settings.binaryPath, processEnv),
+              env: processEnv,
+            },
+          ),
+          // A bare name here was found nowhere; there is nothing to resolve.
+          realCommandPath: /[\\/]/u.test(commandPath)
+            ? fileSystem.realPath(commandPath).pipe(Effect.orElseSucceed(() => commandPath))
+            : Effect.succeed(commandPath),
+        }).pipe(
+          Effect.map(({ regular, realCommandPath }) => ({
+            regular,
+            oneMigration: openCodeOneMigrationCapabilities(regular, {
+              commandPath,
+              realCommandPath,
+              env: processEnv,
+            }),
+          })),
+        );
+      }).pipe(Effect.provideService(FileSystem.FileSystem, fileSystem));
+      let maintenance = yield* resolveMaintenance;
+      // From the last status check.
+      let installedVersion: string | null = null;
+      // The move offered for the last 1.x binary seen. A move that removed 1.x
+      // but failed to install OpenCode 2 leaves no binary to classify, so
+      // Install retries it (its steps tolerate the half-done state).
+      let pendingMove: ProviderMaintenanceCommandAction | null = null;
+      const capabilitiesFor = (version: string | null): ProviderMaintenanceCapabilities => {
+        if (version) {
+          return isOpenCodeOneVersion(version) ? maintenance.oneMigration : maintenance.regular;
+        }
+        return pendingMove ? { ...maintenance.regular, install: pendingMove } : maintenance.regular;
+      };
+
+      // Built first, so it is torn down last: the adapter's and text
+      // generation's finalizers still talk to the server.
+      const serverUrl = settings.serverUrl.trim();
+      const manager = yield* makeOpenCodeServerManager({
+        binaryPath: currentBinary,
+        environment: processEnv,
+        ...(serverUrl
+          ? {
+              externalServer: {
+                url: serverUrl,
+                password: settings.serverPassword.trim() || undefined,
+              },
+            }
+          : {}),
       });
 
-      const adapter = yield* makeOpenCodeAdapter(effectiveConfig, {
+      const adapter = yield* makeOpenCodeAdapter({
         instanceId,
-        environment: processEnv,
+        settings,
+        manager,
         ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
       });
-      const textGeneration = yield* makeOpenCodeTextGeneration(effectiveConfig, processEnv);
-
-      const checkProvider = checkOpenCodeProviderStatus(
-        effectiveConfig,
-        serverConfig.cwd,
-        processEnv,
-      ).pipe(Effect.map(stampIdentity), Effect.provideService(OpenCodeRuntime, openCodeRuntime));
+      const textGeneration = yield* makeOpenCodeTextGeneration(manager);
 
       const snapshot = yield* makeManagedServerProvider<OpenCodeSettings>({
-        maintenanceCapabilities,
-        getSettings: Effect.succeed(effectiveConfig),
+        get maintenanceCapabilities() {
+          return capabilitiesFor(installedVersion);
+        },
+        getSettings: Effect.gen(function* () {
+          refreshProviderInstanceEnvironment(environment, processEnv);
+          maintenance = yield* resolveMaintenance;
+          return settings;
+        }),
         streamSettings: Stream.never,
         haveSettingsChanged: () => false,
-        initialSnapshot: (settings) =>
-          makePendingOpenCodeProvider(settings).pipe(Effect.map(stampIdentity)),
-        checkProvider,
-        enrichSnapshot: ({ snapshot, publishSnapshot }) =>
-          enrichProviderSnapshotWithVersionAdvisory(snapshot, maintenanceCapabilities).pipe(
-            Effect.provideService(HttpClient.HttpClient, httpClient),
-            Effect.flatMap((enrichedSnapshot) => publishSnapshot(enrichedSnapshot)),
+        initialSnapshot: (current) =>
+          makePendingOpenCodeProvider(current).pipe(Effect.map(stampIdentity)),
+        checkProvider: Effect.suspend(() =>
+          checkOpenCodeProviderStatus({
+            settings: { ...settings, binaryPath: currentBinary() },
+            manager,
+            cwd: serverConfig.cwd,
+            environment: processEnv,
+            canMoveToOpenCodeTwo: maintenance.oneMigration.update !== null,
+          }),
+        ).pipe(
+          Effect.map(stampIdentity),
+          Effect.tap((current) =>
+            Effect.sync(() => {
+              installedVersion = current.version;
+              if (current.version) {
+                pendingMove = isOpenCodeOneVersion(current.version)
+                  ? maintenance.oneMigration.update
+                  : null;
+              }
+            }),
           ),
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+        ),
+        enrichSnapshot: ({ snapshot: current, publishSnapshot }) => {
+          const capabilities = capabilitiesFor(current.version);
+          // A 1.x install Threadlines cannot move gets no "update available";
+          // the status message says how to install OpenCode 2.
+          return current.version && isOpenCodeOneVersion(current.version) && !capabilities.update
+            ? publishSnapshot({
+                ...current,
+                versionAdvisory: createProviderVersionAdvisory({
+                  driver: current.driver,
+                  currentVersion: current.version,
+                  checkedAt: current.checkedAt,
+                }),
+              })
+            : enrichProviderSnapshotWithVersionAdvisory(current, capabilities).pipe(
+                Effect.provideService(HttpClient.HttpClient, httpClient),
+                Effect.flatMap(publishSnapshot),
+              );
+        },
         refreshInterval: SNAPSHOT_REFRESH_INTERVAL,
       }).pipe(
         Effect.mapError(

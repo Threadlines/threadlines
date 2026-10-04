@@ -16,6 +16,7 @@ describe("ProviderSettingsForm helpers", () => {
       ProviderDriverKind.make("claudeAgent"),
       ProviderDriverKind.make("fx"),
       ProviderDriverKind.make("cursor"),
+      ProviderDriverKind.make("opencode"),
     ]);
   });
 
