@@ -1,12 +1,9 @@
 import {
   ChevronDownIcon,
+  ChevronRightIcon,
   ChevronsLeftRightEllipsisIcon,
-  CircleCheckIcon,
-  ClockIcon,
-  CloudIcon,
-  CopyIcon,
-  ExternalLinkIcon,
-  PlusIcon,
+  LaptopIcon,
+  MonitorIcon,
   QrCodeIcon,
   RefreshCwIcon,
   SmartphoneIcon,
@@ -19,10 +16,10 @@ import {
   type AuthPairingLink,
   type AdvertisedEndpoint,
   type DesktopDiscoveredSshHost,
-  type DesktopRelayPairingSession,
   type DesktopSshEnvironmentTarget,
   type DesktopServerExposureState,
   type EnvironmentId,
+  RELAY_DEVICE_SESSION_SUBJECT as RELAY_DEVICE_SUBJECT,
 } from "@threadlines/contracts";
 import * as DateTime from "effect/DateTime";
 
@@ -31,6 +28,9 @@ import { useRelativeTimeTick } from "../../hooks/useRelativeTimeTick";
 import { isClipboardCopySupported } from "../../lib/clipboard";
 import { cn } from "../../lib/utils";
 import { formatElapsedDurationLabel, formatExpiresInLabel } from "../../timestampFormat";
+import { ConnectDeviceDialog } from "./connections/ConnectDeviceDialog";
+import { JoinComputerDialog } from "./connections/JoinComputerDialog";
+import { useRelayAccess } from "./connections/useRelayAccess";
 import { resolveDesktopPairingUrl, resolveHostedPairingUrl } from "./pairingUrls";
 import { SettingsPageContainer, SettingsRow, SettingsSection } from "./settingsLayout";
 import { Input } from "../ui/input";
@@ -63,9 +63,7 @@ import { Switch } from "../ui/switch";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { Button } from "../ui/button";
-import { Badge } from "../ui/badge";
 import { Group, GroupSeparator } from "../ui/group";
-import { AnimatedHeight } from "../AnimatedHeight";
 import {
   Menu,
   MenuGroup,
@@ -77,11 +75,7 @@ import {
 } from "../ui/menu";
 import { Textarea } from "../ui/textarea";
 import { getPairingTokenFromUrl, setPairingTokenOnUrl } from "../../pairingUrl";
-import {
-  channelMatchedHostedPairingUrl,
-  hostedAppDisplayHost,
-  readHostedPairingRequest,
-} from "../../hostedPairing";
+import { readHostedPairingRequest } from "../../hostedPairing";
 import {
   createServerPairingCredential,
   fetchSessionState,
@@ -99,7 +93,10 @@ import {
   useSavedEnvironmentRegistryStore,
   useSavedEnvironmentRuntimeStore,
   addSavedEnvironment,
+  cancelPendingRelayJoin,
   connectDesktopSshEnvironment,
+  RelayJoinError,
+  type SubmitCodeJoinViaServer,
   disconnectSavedEnvironment,
   getPrimaryEnvironmentConnection,
   reconnectSavedEnvironment,
@@ -108,23 +105,13 @@ import {
 import { useUiStateStore } from "~/uiStateStore";
 import { resolveServerConfigVersionMismatch } from "~/versionSkew";
 import { useServerConfig } from "~/rpc/serverState";
-import { useStore } from "~/store";
 
 const DEFAULT_TAILSCALE_SERVE_PORT = 443;
-const MOBILE_CONNECT_SESSION_HEALTHCHECK_INTERVAL_MS = 3_000;
 
 const accessTimestampFormatter = new Intl.DateTimeFormat(undefined, {
   dateStyle: "medium",
   timeStyle: "short",
 });
-
-/** The relay worker mints pairing URLs against the stable hosted app; align
- *  them (and sessions stored before the channel split) with this build's
- *  release channel before they are shown, copied, or opened. */
-function normalizeRelayPairingSession<T extends { readonly pairingUrl: string }>(session: T): T {
-  const pairingUrl = channelMatchedHostedPairingUrl(session.pairingUrl);
-  return pairingUrl === session.pairingUrl ? session : { ...session, pairingUrl };
-}
 
 function formatAccessTimestamp(value: string): string {
   const parsed = new Date(value);
@@ -132,127 +119,6 @@ function formatAccessTimestamp(value: string): string {
     return value;
   }
   return accessTimestampFormatter.format(parsed);
-}
-
-interface MobileConnectErrorView {
-  readonly title: string;
-  readonly description: string;
-  readonly detail: string;
-  readonly tone: "warning" | "error";
-}
-
-function parseEmbeddedErrorPayload(message: string): string | null {
-  const jsonStart = message.indexOf('{"error"');
-  if (jsonStart < 0) {
-    return null;
-  }
-
-  const jsonEnd = message.indexOf("}", jsonStart);
-  if (jsonEnd < 0) {
-    return null;
-  }
-
-  try {
-    const parsed = JSON.parse(message.slice(jsonStart, jsonEnd + 1)) as {
-      readonly error?: unknown;
-    };
-    return typeof parsed.error === "string" && parsed.error.trim().length > 0
-      ? parsed.error.trim()
-      : null;
-  } catch {
-    return null;
-  }
-}
-
-function normalizeMobileConnectErrorMessage(message: string): string {
-  const embedded = parseEmbeddedErrorPayload(message);
-  if (embedded) {
-    return embedded;
-  }
-
-  const desktopRelayPrefix = "DesktopRelayError: ";
-  const desktopRelayIndex = message.indexOf(desktopRelayPrefix);
-  if (desktopRelayIndex >= 0) {
-    const reason = message.slice(desktopRelayIndex + desktopRelayPrefix.length).trim();
-    if (reason.length > 0) {
-      return reason;
-    }
-  }
-
-  return message.trim();
-}
-
-function getMobileConnectErrorView(message: string): MobileConnectErrorView {
-  const detail = normalizeMobileConnectErrorMessage(message);
-  const lowerDetail = detail.toLowerCase();
-
-  if (
-    lowerDetail.includes("invalid bootstrap credential") ||
-    lowerDetail.includes("unknown bootstrap credential") ||
-    lowerDetail.includes("bootstrap credential expired") ||
-    lowerDetail.includes("desktop bridge sign-in was rejected")
-  ) {
-    return {
-      title: "Desktop sign-in was rejected",
-      description:
-        "The relay is reachable, but the desktop bridge could not sign into the local backend. Quit and reopen Threadlines, then create a new phone link.",
-      detail,
-      tone: "warning",
-    };
-  }
-
-  if (
-    lowerDetail.includes("relay") ||
-    lowerDetail.includes("cloudflare") ||
-    lowerDetail.includes("request failed with http")
-  ) {
-    return {
-      title: "Relay is not reachable",
-      description:
-        "Threadlines could not create the Cloudflare relay session. Check the network connection and try again.",
-      detail,
-      tone: "error",
-    };
-  }
-
-  if (lowerDetail.includes("local backend") || lowerDetail.includes("backend is not ready")) {
-    return {
-      title: "Desktop backend is not ready",
-      description:
-        "Keep the desktop app open and wait for the local backend to finish starting, then create a new phone link.",
-      detail,
-      tone: "warning",
-    };
-  }
-
-  if (
-    lowerDetail.includes("phone link disconnected") ||
-    lowerDetail.includes("desktop bridge closed")
-  ) {
-    return {
-      title: "Phone link disconnected",
-      description:
-        "The desktop bridge closed. Create a new link before opening Threadlines on your phone.",
-      detail,
-      tone: "warning",
-    };
-  }
-
-  return {
-    title: "Could not create phone link",
-    description: "Threadlines could not finish the phone-link setup. Try again in a moment.",
-    detail: detail || message,
-    tone: "error",
-  };
-}
-
-function getErrorMessage(error: unknown, fallback: string): string {
-  return error instanceof Error ? error.message : fallback;
-}
-
-function isIsoTimestampExpired(value: string, nowMs: number): boolean {
-  const parsed = Date.parse(value);
-  return Number.isFinite(parsed) && parsed <= nowMs;
 }
 
 type ConnectionStatusDotProps = {
@@ -1034,221 +900,91 @@ const PairingLinkListRow = memo(function PairingLinkListRow({
   );
 });
 
-type ConnectedClientListRowProps = {
+type DeviceAccessRowProps = {
   clientSession: ServerClientSessionRecord;
-  presentation?: AccessSectionPresentation;
   revokingClientSessionId: string | null;
   onRevokeSession: (sessionId: ServerClientSessionRecord["sessionId"]) => void;
 };
 
-const ConnectedClientListRow = memo(function ConnectedClientListRow({
+function deviceKindLabel(
+  deviceType: ServerClientSessionRecord["client"]["deviceType"],
+): string | null {
+  switch (deviceType) {
+    case "desktop":
+      return "Computer";
+    case "mobile":
+      return "Phone";
+    case "tablet":
+      return "Tablet";
+    default:
+      return null;
+  }
+}
+
+/**
+ * One device that can use this computer. Devices that joined with a code show
+ * as Computer / Phone with their platform; same-network links say so.
+ */
+const DeviceAccessRow = memo(function DeviceAccessRow({
   clientSession,
-  presentation = "current",
   revokingClientSessionId,
   onRevokeSession,
-}: ConnectedClientListRowProps) {
-  const nowMs = useRelativeTimeTick(1_000);
-  const isLive = clientSession.current || clientSession.connected;
+}: DeviceAccessRowProps) {
+  const nowMs = useRelativeTimeTick(30_000);
+  const isLive = clientSession.connected;
   const lastConnectedAt = clientSession.lastConnectedAt;
-  const statusTooltip = isLive
-    ? lastConnectedAt
-      ? `Connected for ${formatElapsedDurationLabel(lastConnectedAt, nowMs)}`
-      : "Connected"
+  const isRelayDevice = clientSession.subject === RELAY_DEVICE_SUBJECT;
+  const statusText = isLive
+    ? "Connected now"
     : lastConnectedAt
-      ? `Last connected at ${formatAccessTimestamp(lastConnectedAt)}`
-      : "Not connected yet.";
-  const roleLabel = clientSession.role === "owner" ? "Owner" : "Device";
-  const deviceInfoBits = [
-    clientSession.client.deviceType !== "unknown"
-      ? clientSession.client.deviceType[0]?.toUpperCase() + clientSession.client.deviceType.slice(1)
-      : null,
+      ? `Last connected ${formatElapsedDurationLabel(lastConnectedAt, nowMs)} ago`
+      : "Not connected yet";
+  const KindIcon =
+    clientSession.client.deviceType === "mobile" || clientSession.client.deviceType === "tablet"
+      ? SmartphoneIcon
+      : MonitorIcon;
+  const metaBits = [
+    deviceKindLabel(clientSession.client.deviceType),
+    isRelayDevice ? null : "Same network",
     clientSession.client.os ?? null,
-    clientSession.client.browser ?? null,
-    clientSession.client.ipAddress ?? null,
+    isRelayDevice ? null : (clientSession.client.browser ?? null),
+    statusText,
   ].filter((value): value is string => value !== null);
   const primaryLabel =
     clientSession.client.label ??
     ([clientSession.client.os, clientSession.client.browser].filter(Boolean).join(" · ") ||
-      clientSession.subject);
+      "Unnamed device");
 
   return (
-    <div className={accessRowClassName(presentation)}>
+    <div className={ITEM_ROW_CLASSNAME}>
       <div className={ITEM_ROW_INNER_CLASSNAME}>
         <div className="min-w-0 flex-1 space-y-1">
           <div className="flex min-h-5 items-center gap-1.5">
             <ConnectionStatusDot
-              tooltipText={statusTooltip}
+              tooltipText={
+                lastConnectedAt ? `Last connected ${formatAccessTimestamp(lastConnectedAt)}` : null
+              }
               dotClassName={isLive ? "bg-success" : "bg-muted-foreground/30"}
-              pingClassName={isLive ? "bg-success/60 duration-2000" : null}
             />
-            <h3 className="text-sm font-medium text-foreground">{primaryLabel}</h3>
-            {clientSession.current ? (
-              <span className="text-[10px] text-muted-foreground/80 rounded-md border border-border/50 bg-muted/50 px-1 py-0.5">
-                This device
-              </span>
-            ) : null}
+            <KindIcon aria-hidden className="size-3.5 shrink-0 text-muted-foreground" />
+            <h3 className="truncate text-[13px] font-semibold text-foreground">{primaryLabel}</h3>
           </div>
-          <p className="text-xs text-muted-foreground">
-            {[roleLabel, ...deviceInfoBits].join(" · ")}
-          </p>
+          <p className="text-xs text-muted-foreground/80">{metaBits.join(" · ")}</p>
         </div>
         <div className="flex w-full shrink-0 items-center gap-2 sm:w-auto sm:justify-end">
-          {!clientSession.current ? (
-            <Button
-              size="xs"
-              variant="destructive-outline"
-              disabled={revokingClientSessionId === clientSession.sessionId}
-              onClick={() => void onRevokeSession(clientSession.sessionId)}
-            >
-              {revokingClientSessionId === clientSession.sessionId ? "Removing..." : "Remove"}
-            </Button>
-          ) : null}
+          <Button
+            size="xs"
+            variant="destructive-outline"
+            disabled={revokingClientSessionId === clientSession.sessionId}
+            onClick={() => void onRevokeSession(clientSession.sessionId)}
+          >
+            {revokingClientSessionId === clientSession.sessionId ? "Removing..." : "Remove access"}
+          </Button>
         </div>
       </div>
     </div>
   );
 });
-
-type AuthorizedClientsHeaderActionProps = {
-  clientSessions: ReadonlyArray<ServerClientSessionRecord>;
-  isRevokingOtherClients: boolean;
-  onRevokeOtherClients: () => void;
-};
-
-const AuthorizedClientsHeaderAction = memo(function AuthorizedClientsHeaderAction({
-  clientSessions,
-  isRevokingOtherClients,
-  onRevokeOtherClients,
-}: AuthorizedClientsHeaderActionProps) {
-  const [dialogOpen, setDialogOpen] = useState(false);
-  const [confirmRemoveOpen, setConfirmRemoveOpen] = useState(false);
-  const [pairingLabel, setPairingLabel] = useState("");
-  const [isCreatingPairingLink, setIsCreatingPairingLink] = useState(false);
-  const otherDeviceCount = clientSessions.filter((clientSession) => !clientSession.current).length;
-
-  const handleCreatePairingLink = useCallback(async () => {
-    setIsCreatingPairingLink(true);
-    try {
-      await createServerPairingCredential(pairingLabel);
-      setPairingLabel("");
-      setDialogOpen(false);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Failed to create device link.";
-      toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: "Could not create device link",
-          description: message,
-        }),
-      );
-    } finally {
-      setIsCreatingPairingLink(false);
-    }
-  }, [pairingLabel]);
-
-  return (
-    <div className="flex items-center gap-2">
-      <Button
-        size="xs"
-        variant="destructive-outline"
-        disabled={isRevokingOtherClients || otherDeviceCount === 0}
-        onClick={() => setConfirmRemoveOpen(true)}
-      >
-        {isRevokingOtherClients ? "Removing..." : "Remove other devices"}
-      </Button>
-      <AlertDialog open={confirmRemoveOpen} onOpenChange={setConfirmRemoveOpen}>
-        <AlertDialogPopup>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Remove other devices?</AlertDialogTitle>
-            <AlertDialogDescription>
-              {otherDeviceCount === 1
-                ? "1 other device will be signed out and will need a new link to reconnect."
-                : `${otherDeviceCount} other devices will be signed out and will need a new link to reconnect.`}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogClose render={<Button variant="outline" />}>Cancel</AlertDialogClose>
-            <Button
-              variant="destructive"
-              onClick={() => {
-                setConfirmRemoveOpen(false);
-                void onRevokeOtherClients();
-              }}
-            >
-              {otherDeviceCount === 1 ? "Remove device" : "Remove devices"}
-            </Button>
-          </AlertDialogFooter>
-        </AlertDialogPopup>
-      </AlertDialog>
-      <Dialog
-        open={dialogOpen}
-        onOpenChange={(open) => {
-          setDialogOpen(open);
-          if (!open) {
-            setPairingLabel("");
-          }
-        }}
-      >
-        <DialogTrigger
-          render={
-            <Button size="xs" variant="default">
-              <PlusIcon className="size-3" />
-              Add device
-            </Button>
-          }
-        />
-        <DialogPopup className="max-w-sm">
-          <DialogHeader>
-            <DialogTitle>Add phone or tablet</DialogTitle>
-            <DialogDescription>
-              Create a one-time link. Open it on your phone or tablet to connect to this computer.
-            </DialogDescription>
-          </DialogHeader>
-          <DialogPanel>
-            <label className="block">
-              <span className="mb-1.5 block text-xs font-medium text-foreground">
-                Device name (optional)
-              </span>
-              <Input
-                value={pairingLabel}
-                onChange={(event) => setPairingLabel(event.target.value)}
-                placeholder="e.g. My iPhone"
-                disabled={isCreatingPairingLink}
-                autoFocus
-              />
-            </label>
-          </DialogPanel>
-          <DialogFooter variant="bare">
-            <Button
-              variant="outline"
-              disabled={isCreatingPairingLink}
-              onClick={() => setDialogOpen(false)}
-            >
-              Cancel
-            </Button>
-            <Button disabled={isCreatingPairingLink} onClick={() => void handleCreatePairingLink()}>
-              {isCreatingPairingLink ? "Creating..." : "Create link"}
-            </Button>
-          </DialogFooter>
-        </DialogPopup>
-      </Dialog>
-    </div>
-  );
-});
-
-type PairingClientsListProps = {
-  endpointUrl: string | null | undefined;
-  endpoints: ReadonlyArray<AdvertisedEndpoint>;
-  defaultEndpointKey: string | null;
-  presentation?: AccessSectionPresentation;
-  isLoading: boolean;
-  pairingLinks: ReadonlyArray<ServerPairingLinkRecord>;
-  clientSessions: ReadonlyArray<ServerClientSessionRecord>;
-  revokingPairingLinkId: string | null;
-  revokingClientSessionId: string | null;
-  onRevokePairingLink: (id: string) => void;
-  onRevokeClientSession: (sessionId: ServerClientSessionRecord["sessionId"]) => void;
-};
 
 function ConnectedDevicesSkeleton({ presentation }: { presentation: AccessSectionPresentation }) {
   return (
@@ -1273,61 +1009,6 @@ function ConnectedDevicesSkeleton({ presentation }: { presentation: AccessSectio
     </div>
   );
 }
-
-const PairingClientsList = memo(function PairingClientsList({
-  endpointUrl,
-  endpoints,
-  defaultEndpointKey,
-  presentation = "current",
-  isLoading,
-  pairingLinks,
-  clientSessions,
-  revokingPairingLinkId,
-  revokingClientSessionId,
-  onRevokePairingLink,
-  onRevokeClientSession,
-}: PairingClientsListProps) {
-  return (
-    <>
-      {pairingLinks.map((pairingLink) => (
-        <PairingLinkListRow
-          key={pairingLink.id}
-          pairingLink={pairingLink}
-          endpointUrl={endpointUrl}
-          endpoints={endpoints}
-          defaultEndpointKey={defaultEndpointKey}
-          presentation={presentation}
-          revokingPairingLinkId={revokingPairingLinkId}
-          onRevoke={onRevokePairingLink}
-        />
-      ))}
-
-      {clientSessions.map((clientSession) => (
-        <ConnectedClientListRow
-          key={clientSession.sessionId}
-          clientSession={clientSession}
-          presentation={presentation}
-          revokingClientSessionId={revokingClientSessionId}
-          onRevokeSession={onRevokeClientSession}
-        />
-      ))}
-
-      {/* An empty section with no copy at all reads as "nothing is paired",
-          which is a lie while the access snapshot is still in flight. */}
-      {pairingLinks.length === 0 && clientSessions.length === 0 ? (
-        isLoading ? (
-          <ConnectedDevicesSkeleton presentation={presentation} />
-        ) : (
-          <div className={accessRowClassName(presentation)}>
-            <p className="text-xs text-muted-foreground/60">
-              No phones or tablets are connected yet.
-            </p>
-          </div>
-        )
-      ) : null}
-    </>
-  );
-});
 
 type AdvertisedEndpointListRowProps = {
   endpoint: AdvertisedEndpoint;
@@ -1470,8 +1151,16 @@ type SavedBackendListRowProps = {
   onConnect: (environmentId: EnvironmentId) => void;
   onDisconnect: (environmentId: EnvironmentId) => void;
   onRemove: (environmentId: EnvironmentId) => void;
+  /** Opens "Connect to a computer" for a computer that removed this one. */
+  onConnectAgain: () => void;
 };
 
+/**
+ * One computer this device uses. Computers joined with a code that the host
+ * hasn't allowed yet say so (with the number to match) and offer Cancel; the
+ * rest show live state, the last problem in plain words, and Disconnect /
+ * Connect and Forget. Forget only removes it from this list.
+ */
 function SavedBackendListRow({
   environmentId,
   reconnectingEnvironmentId,
@@ -1480,8 +1169,9 @@ function SavedBackendListRow({
   onConnect,
   onDisconnect,
   onRemove,
+  onConnectAgain,
 }: SavedBackendListRowProps) {
-  const nowMs = useRelativeTimeTick(1_000);
+  const nowMs = useRelativeTimeTick(30_000);
   const record = useSavedEnvironmentRegistryStore((state) => state.byId[environmentId] ?? null);
   const runtime = useSavedEnvironmentRuntimeStore((state) => state.byId[environmentId] ?? null);
 
@@ -1489,32 +1179,51 @@ function SavedBackendListRow({
     return null;
   }
 
+  const relayLink = record.relay && "version" in record.relay ? record.relay : null;
+  const pending = relayLink?.pendingRequest ?? null;
   const connectionState = runtime?.connectionState ?? "disconnected";
   const isConnected = connectionState === "connected";
   const isConnecting =
     connectionState === "connecting" || reconnectingEnvironmentId === environmentId;
   const isDisconnecting = disconnectingEnvironmentId === environmentId;
-  const stateDotClassName =
-    connectionState === "connected"
+  const displayLabel = runtime?.descriptor?.label ?? record.label;
+  const versionMismatch = resolveServerConfigVersionMismatch(runtime?.serverConfig);
+  // A code-joined computer that removed this one needs a new code, not a retry.
+  const needsNewCode = relayLink !== null && !pending && runtime?.authState === "requires-auth";
+
+  const dotClassName = pending
+    ? "bg-amber-400"
+    : connectionState === "connected"
       ? "bg-success"
       : connectionState === "connecting"
         ? "bg-warning"
-        : connectionState === "error"
+        : connectionState === "error" || runtime?.authState === "requires-auth"
           ? "bg-destructive"
           : "bg-muted-foreground/40";
-  const roleLabel = runtime?.role ? (runtime.role === "owner" ? "Owner" : "Paired") : null;
-  const descriptorLabel = runtime?.descriptor?.label ?? null;
-  const displayLabel = descriptorLabel ?? record.label;
-  const statusTooltip = getSavedBackendStatusTooltip(runtime, record, nowMs);
-  const versionMismatch = resolveServerConfigVersionMismatch(runtime?.serverConfig);
-  const metadataBits = [
-    record.desktopSsh ? `SSH ${formatDesktopSshTarget(record.desktopSsh)}` : null,
-    record.relay ? "Phone link" : null,
-    roleLabel,
-    record.lastConnectedAt
-      ? `Last connected ${formatAccessTimestamp(record.lastConnectedAt)}`
-      : null,
-  ].filter((value): value is string => value !== null);
+
+  const description = pending
+    ? pending.matchNumber
+      ? `Waiting for ${displayLabel} to allow this computer. Check it shows ${pending.matchNumber}.`
+      : `Waiting for ${displayLabel} to allow this computer.`
+    : isConnected
+      ? [
+          record.desktopSsh ? `SSH ${formatDesktopSshTarget(record.desktopSsh)}` : null,
+          record.relay && !relayLink ? "Old phone link" : null,
+          "Connected now",
+          relayLink && runtime?.route === "direct"
+            ? "On your network"
+            : relayLink && runtime?.route === "relay"
+              ? "Through the relay"
+              : null,
+        ]
+          .filter(Boolean)
+          .join(" · ")
+      : isConnecting
+        ? "Connecting"
+        : (runtime?.lastError ??
+          (record.lastConnectedAt
+            ? `Last connected ${formatElapsedDurationLabel(record.lastConnectedAt, nowMs)} ago`
+            : "Not connected yet"));
 
   return (
     <div className={ITEM_ROW_CLASSNAME}>
@@ -1522,50 +1231,65 @@ function SavedBackendListRow({
         <div className="min-w-0 flex-1 space-y-1">
           <div className="flex min-h-5 items-center gap-1.5">
             <ConnectionStatusDot
-              tooltipText={statusTooltip}
-              dotClassName={stateDotClassName}
-              pingClassName={
-                connectionState === "connecting" ? "bg-warning/60 duration-2000" : null
-              }
+              tooltipText={getSavedBackendStatusTooltip(runtime, record, nowMs)}
+              dotClassName={dotClassName}
+              pingClassName={isConnecting && !pending ? "bg-warning/60 duration-2000" : null}
             />
-            <h3 className="text-sm font-medium text-foreground">{displayLabel}</h3>
+            <LaptopIcon aria-hidden className="size-3.5 shrink-0 text-muted-foreground" />
+            <h3 className="truncate text-[13px] font-semibold text-foreground">{displayLabel}</h3>
           </div>
-          {metadataBits.length > 0 ? (
-            <p className="text-xs text-muted-foreground">{metadataBits.join(" · ")}</p>
-          ) : null}
+          <p className="text-xs text-muted-foreground/80">{description}</p>
           {versionMismatch ? (
-            <p className="flex items-center gap-1 text-warning text-xs">
+            <p className="flex items-center gap-1 text-xs text-warning">
               <TriangleAlertIcon className="size-3.5 shrink-0" />
-              Version mismatch: this app {versionMismatch.clientVersion}, other computer{" "}
-              {versionMismatch.serverVersion}.
+              It runs Threadlines {versionMismatch.serverVersion} and this computer runs{" "}
+              {versionMismatch.clientVersion}. Update both if things act up.
             </p>
           ) : null}
         </div>
         <div className="flex w-full shrink-0 items-center gap-2 sm:w-auto sm:justify-end">
-          <Button
-            size="xs"
-            variant="outline"
-            disabled={isConnected ? isDisconnecting : isConnecting}
-            onClick={() =>
-              void (isConnected ? onDisconnect(environmentId) : onConnect(environmentId))
-            }
-          >
-            {isConnected
-              ? isDisconnecting
-                ? "Disconnecting…"
-                : "Disconnect"
-              : isConnecting
-                ? "Connecting…"
-                : "Connect"}
-          </Button>
-          <Button
-            size="xs"
-            variant="destructive-outline"
-            disabled={removingEnvironmentId === environmentId}
-            onClick={() => void onRemove(environmentId)}
-          >
-            {removingEnvironmentId === environmentId ? "Removing…" : "Remove"}
-          </Button>
+          {pending ? (
+            <Button
+              size="xs"
+              variant="outline"
+              onClick={() => void cancelPendingRelayJoin(environmentId)}
+            >
+              Cancel
+            </Button>
+          ) : (
+            <>
+              {needsNewCode ? (
+                <Button size="xs" variant="outline" onClick={onConnectAgain}>
+                  Connect again
+                </Button>
+              ) : (
+                <Button
+                  size="xs"
+                  variant="outline"
+                  disabled={isConnected ? isDisconnecting : isConnecting}
+                  onClick={() =>
+                    void (isConnected ? onDisconnect(environmentId) : onConnect(environmentId))
+                  }
+                >
+                  {isConnected
+                    ? isDisconnecting
+                      ? "Disconnecting…"
+                      : "Disconnect"
+                    : isConnecting
+                      ? "Connecting…"
+                      : "Connect"}
+                </Button>
+              )}
+              <Button
+                size="xs"
+                variant="destructive-outline"
+                disabled={removingEnvironmentId === environmentId}
+                onClick={() => void onRemove(environmentId)}
+              >
+                {removingEnvironmentId === environmentId ? "Forgetting…" : "Forget"}
+              </Button>
+            </>
+          )}
         </div>
       </div>
     </div>
@@ -1585,7 +1309,7 @@ const DesktopSshHostRow = memo(function DesktopSshHostRow({
 }: DesktopSshHostRowProps) {
   const address = formatDesktopSshTarget(target);
   const showAddress = address !== target.alias;
-  const buttonLabel = connectingHostAlias === target.alias ? "Adding..." : "Add computer";
+  const buttonLabel = connectingHostAlias === target.alias ? "Adding..." : "Add";
 
   return (
     <div className="border-t border-border/60 px-4 py-3 first:border-t-0 sm:px-5">
@@ -1612,6 +1336,17 @@ const DesktopSshHostRow = memo(function DesktopSshHostRow({
   );
 });
 
+/**
+ * Settings › Connections. Organized by direction so it's always clear which
+ * computer is which:
+ * - This computer: its name.
+ * - Devices using this computer: "Connect a device" (code + QR through the
+ *   relay) and every device with access, each with Remove access.
+ * - Computers you use from here: "Connect to a computer" (type a code) and the
+ *   saved computers, with older ways (address + pairing code, SSH) tucked in.
+ * - Connection options: Same network, Tailscale, one-time network links.
+ * The hosted app (`surface="phone"`) only has the middle-but-one section.
+ */
 export function ConnectionsSettings({ surface = "full" }: { surface?: "full" | "phone" }) {
   const isPhoneSurface = surface === "phone";
   const desktopBridge = window.desktopBridge;
@@ -1620,10 +1355,8 @@ export function ConnectionsSettings({ surface = "full" }: { surface?: "full" | "
   );
   const [currentAuthPolicy, setCurrentAuthPolicy] = useState<
     "desktop-managed-local" | "loopback-browser" | "remote-reachable" | "unsafe-no-auth" | null
-  >(desktopBridge ? null : null);
+  >(null);
   const savedEnvironmentsById = useSavedEnvironmentRegistryStore((state) => state.byId);
-  const savedEnvironmentRuntimeById = useSavedEnvironmentRuntimeStore((state) => state.byId);
-  const activeEnvironmentId = useStore((state) => state.activeEnvironmentId);
   const savedEnvironmentIds = useMemo(
     () =>
       Object.values(savedEnvironmentsById)
@@ -1631,16 +1364,6 @@ export function ConnectionsSettings({ surface = "full" }: { surface?: "full" | "
         .map((record) => record.environmentId),
     [savedEnvironmentsById],
   );
-  const activeSavedEnvironmentId =
-    activeEnvironmentId && savedEnvironmentsById[activeEnvironmentId]
-      ? activeEnvironmentId
-      : (savedEnvironmentIds[0] ?? null);
-  const activeSavedEnvironment = activeSavedEnvironmentId
-    ? (savedEnvironmentsById[activeSavedEnvironmentId] ?? null)
-    : null;
-  const activeSavedEnvironmentRuntime = activeSavedEnvironmentId
-    ? (savedEnvironmentRuntimeById[activeSavedEnvironmentId] ?? null)
-    : null;
   const savedDesktopSshEnvironmentsByAlias = useMemo(
     () =>
       Object.values(savedEnvironmentsById).reduce<Record<string, SavedEnvironmentRecord>>(
@@ -1695,7 +1418,14 @@ export function ConnectionsSettings({ surface = "full" }: { surface?: "full" | "
     string | null
   >(null);
   const [isRevokingOtherDesktopClients, setIsRevokingOtherDesktopClients] = useState(false);
-  const [addBackendDialogOpen, setAddBackendDialogOpen] = useState(false);
+  const [confirmRemoveAllOpen, setConfirmRemoveAllOpen] = useState(false);
+  const [connectDeviceOpen, setConnectDeviceOpen] = useState(false);
+  const [joinComputerOpen, setJoinComputerOpen] = useState(false);
+  const [connectionOptionsOpen, setConnectionOptionsOpen] = useState(false);
+  const [directLinkDialogOpen, setDirectLinkDialogOpen] = useState(false);
+  const [directLinkLabel, setDirectLinkLabel] = useState("");
+  const [isCreatingDirectLink, setIsCreatingDirectLink] = useState(false);
+  const [retiredPhoneLinkNotice, setRetiredPhoneLinkNotice] = useState(false);
   const [savedBackendMode, setSavedBackendMode] = useState<"remote" | "ssh">("remote");
   const [savedBackendHost, setSavedBackendHost] = useState("");
   const [savedBackendPairingCode, setSavedBackendPairingCode] = useState("");
@@ -1724,10 +1454,6 @@ export function ConnectionsSettings({ surface = "full" }: { surface?: "full" | "
   const [isUpdatingDesktopServerExposure, setIsUpdatingDesktopServerExposure] = useState(false);
   const [isDesktopServerExposureDialogOpen, setIsDesktopServerExposureDialogOpen] = useState(false);
   const [isUpdatingTailscaleServe, setIsUpdatingTailscaleServe] = useState(false);
-  const [mobileConnectSession, setMobileConnectSession] =
-    useState<DesktopRelayPairingSession | null>(null);
-  const [isCreatingMobileConnectLink, setIsCreatingMobileConnectLink] = useState(false);
-  const [mobileConnectError, setMobileConnectError] = useState<string | null>(null);
   const [pendingTailscaleServeEndpoint, setPendingTailscaleServeEndpoint] =
     useState<AdvertisedEndpoint | null>(null);
   const [disableTailscaleServeDialogOpen, setDisableTailscaleServeDialogOpen] = useState(false);
@@ -1739,6 +1465,8 @@ export function ConnectionsSettings({ surface = "full" }: { surface?: "full" | "
   >(null);
   const primaryServerConfig = useServerConfig();
   const primaryVersionMismatch = resolveServerConfigVersionMismatch(primaryServerConfig);
+  const thisComputerLabel = primaryServerConfig?.environment.label ?? "This computer";
+  const thisEnvironmentId = primaryServerConfig?.environment.environmentId ?? null;
   const [isAdvertisedEndpointListExpanded, setIsAdvertisedEndpointListExpanded] = useState(false);
   const defaultAdvertisedEndpointKey = useUiStateStore(
     (state) => state.defaultAdvertisedEndpointKey,
@@ -1746,19 +1474,8 @@ export function ConnectionsSettings({ surface = "full" }: { surface?: "full" | "
   const setDefaultAdvertisedEndpointKey = useUiStateStore(
     (state) => state.setDefaultAdvertisedEndpointKey,
   );
-  const mobileConnectNowMs = useRelativeTimeTick(1_000);
-  const mobileConnectErrorView = mobileConnectError
-    ? getMobileConnectErrorView(mobileConnectError)
-    : null;
-  const isMobileConnectSessionExpired = mobileConnectSession
-    ? isIsoTimestampExpired(mobileConnectSession.expiresAt, mobileConnectNowMs)
-    : false;
-  const mobileConnectSessionStatus = mobileConnectSession?.status ?? "open";
-  const isMobileConnectSessionReconnecting = mobileConnectSessionStatus === "reconnecting";
-  const isMobileConnectSessionDisconnected = mobileConnectSessionStatus === "disconnected";
-  const isMobileConnectSessionUnavailable =
-    isMobileConnectSessionExpired || isMobileConnectSessionDisconnected;
   const canManageLocalBackend = currentSessionRole === "owner";
+  const relayAccess = useRelayAccess(!isPhoneSurface && canManageLocalBackend);
   const isLocalBackendNetworkAccessible = desktopBridge
     ? desktopServerExposureState?.mode === "network-accessible"
     : currentAuthPolicy === "remote-reachable";
@@ -1769,97 +1486,25 @@ export function ConnectionsSettings({ surface = "full" }: { surface?: "full" | "
     Number.isInteger(parsedTailscaleServePort) &&
     parsedTailscaleServePort >= 1 &&
     parsedTailscaleServePort <= 65_535;
-  const { copyToClipboard: copyMobileConnectLink, isCopied: isMobileConnectLinkCopied } =
-    useCopyToClipboard<"mobile-link">({
-      onCopy: () => {
-        toastManager.add(
-          stackedThreadToast({
-            type: "success",
-            title: "Phone link copied",
-            description: "Open it on your phone to connect to this desktop app.",
-          }),
-        );
-      },
-      onError: () => {
-        toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: "Could not copy phone link",
-            description: "Use the QR code or copy the link manually.",
-          }),
-        );
-      },
-    });
 
   useEffect(() => {
-    if (!desktopBridge) {
-      setMobileConnectSession(null);
-      return;
-    }
-
+    if (!desktopBridge || isPhoneSurface) return;
     let cancelled = false;
     void desktopBridge
-      .getRelayPairingSession()
-      .then((session) => {
-        if (cancelled) return;
-        setMobileConnectSession(
-          (current) => current ?? (session ? normalizeRelayPairingSession(session) : session),
-        );
+      .getRetiredPhoneLinkNotice()
+      .then((notice) => {
+        if (!cancelled) setRetiredPhoneLinkNotice(notice);
       })
-      .catch(() => {
-        // A stale preload or transient IPC failure should not block creating a fresh phone link.
-      });
-
+      .catch(() => undefined);
     return () => {
       cancelled = true;
     };
+  }, [desktopBridge, isPhoneSurface]);
+
+  const dismissRetiredPhoneLinkNotice = useCallback(() => {
+    setRetiredPhoneLinkNotice(false);
+    void desktopBridge?.dismissRetiredPhoneLinkNotice().catch(() => undefined);
   }, [desktopBridge]);
-
-  useEffect(() => {
-    if (!desktopBridge || !mobileConnectSession || isMobileConnectSessionExpired) {
-      return;
-    }
-
-    let cancelled = false;
-    const refreshActiveSession = async () => {
-      try {
-        const session = await desktopBridge.getRelayPairingSession();
-        if (cancelled) return;
-        if (!session) {
-          setMobileConnectSession(null);
-          setMobileConnectError("Phone link disconnected. Create a new link.");
-          return;
-        }
-        setMobileConnectError(null);
-        const normalizedSession = normalizeRelayPairingSession(session);
-        setMobileConnectSession((current) => {
-          if (
-            !current ||
-            current.sessionId !== normalizedSession.sessionId ||
-            current.status !== normalizedSession.status ||
-            current.expiresAt !== normalizedSession.expiresAt ||
-            current.pairingUrl !== normalizedSession.pairingUrl ||
-            current.relayOrigin !== normalizedSession.relayOrigin
-          ) {
-            return normalizedSession;
-          }
-          return current;
-        });
-      } catch {
-        // A transient health-check failure should not hide an otherwise visible link.
-      }
-    };
-    void refreshActiveSession();
-    const intervalId = window.setInterval(
-      () => void refreshActiveSession(),
-      MOBILE_CONNECT_SESSION_HEALTHCHECK_INTERVAL_MS,
-    );
-
-    return () => {
-      cancelled = true;
-      window.clearInterval(intervalId);
-    };
-  }, [desktopBridge, isMobileConnectSessionExpired, mobileConnectSession]);
 
   const pendingTailscaleServeBaseUrl = useMemo(() => {
     if (!pendingTailscaleServeEndpoint) return null;
@@ -1939,56 +1584,6 @@ export function ConnectionsSettings({ surface = "full" }: { surface?: "full" | "
     }
   }, [desktopBridge, isTailscaleServePortValid, parsedTailscaleServePort]);
 
-  const handleCreateMobileConnectLink = useCallback(async () => {
-    if (!desktopBridge) return;
-    setIsCreatingMobileConnectLink(true);
-    setMobileConnectError(null);
-    try {
-      const session = normalizeRelayPairingSession(await desktopBridge.createRelayPairingSession());
-      setMobileConnectSession(session);
-      copyMobileConnectLink(session.pairingUrl, "mobile-link");
-    } catch (error) {
-      const message = getErrorMessage(error, "Failed to create a phone connection link.");
-      const errorView = getMobileConnectErrorView(message);
-      setMobileConnectError(message);
-      toastManager.add(
-        stackedThreadToast({
-          type: errorView.tone,
-          title: errorView.title,
-          description: errorView.description,
-        }),
-      );
-    } finally {
-      setIsCreatingMobileConnectLink(false);
-    }
-  }, [copyMobileConnectLink, desktopBridge]);
-
-  const handleDisconnectMobileConnectLink = useCallback(async () => {
-    if (!desktopBridge) return;
-    setMobileConnectError(null);
-    try {
-      await desktopBridge.disconnectRelayPairingSession();
-      setMobileConnectSession(null);
-    } catch (error) {
-      const message = getErrorMessage(error, "Failed to stop the phone connection link.");
-      setMobileConnectError(message);
-      toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: "Could not stop phone link",
-          description: message,
-        }),
-      );
-    }
-  }, [desktopBridge]);
-
-  const handleOpenMobileConnectLink = useCallback(async () => {
-    if (!mobileConnectSession) return;
-    const opened = await desktopBridge?.openExternal(mobileConnectSession.pairingUrl);
-    if (opened) return;
-    window.open(mobileConnectSession.pairingUrl, "_blank", "noopener,noreferrer");
-  }, [desktopBridge, mobileConnectSession]);
-
   const handleStartTailscaleServeSetup = useCallback(
     (endpoint: AdvertisedEndpoint) => {
       setTailscaleServePortInput(
@@ -2036,12 +1631,12 @@ export function ConnectionsSettings({ surface = "full" }: { surface?: "full" | "
     try {
       await revokeServerPairingLink(id);
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Failed to remove device link.";
+      const message = error instanceof Error ? error.message : "Failed to cancel the link.";
       setDesktopAccessManagementError(message);
       toastManager.add(
         stackedThreadToast({
           type: "error",
-          title: "Could not remove device link",
+          title: "Could not cancel the link",
           description: message,
         }),
       );
@@ -2057,12 +1652,12 @@ export function ConnectionsSettings({ surface = "full" }: { surface?: "full" | "
       try {
         await revokeServerClientSession(sessionId);
       } catch (error) {
-        const message = error instanceof Error ? error.message : "Failed to remove device access.";
+        const message = error instanceof Error ? error.message : "Failed to remove access.";
         setDesktopAccessManagementError(message);
         toastManager.add(
           stackedThreadToast({
             type: "error",
-            title: "Could not remove device",
+            title: "Could not remove access",
             description: message,
           }),
         );
@@ -2080,17 +1675,16 @@ export function ConnectionsSettings({ surface = "full" }: { surface?: "full" | "
       const revokedCount = await revokeOtherServerClientSessions();
       toastManager.add({
         type: "success",
-        title:
-          revokedCount === 1 ? "Removed 1 other device" : `Removed ${revokedCount} other devices`,
-        description: "Those devices will need a new link before reconnecting.",
+        title: revokedCount === 1 ? "Removed 1 device" : `Removed ${revokedCount} devices`,
+        description: "They'll need to connect again to use this computer.",
       });
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Failed to remove other devices.";
+      const message = error instanceof Error ? error.message : "Failed to remove devices.";
       setDesktopAccessManagementError(message);
       toastManager.add(
         stackedThreadToast({
           type: "error",
-          title: "Could not remove other devices",
+          title: "Could not remove devices",
           description: message,
         }),
       );
@@ -2099,69 +1693,66 @@ export function ConnectionsSettings({ surface = "full" }: { surface?: "full" | "
     }
   }, []);
 
+  const handleCreateDirectLink = useCallback(async () => {
+    setIsCreatingDirectLink(true);
+    try {
+      await createServerPairingCredential(directLinkLabel);
+      setDirectLinkLabel("");
+      setDirectLinkDialogOpen(false);
+    } catch (error) {
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: "Could not make a link",
+          description: error instanceof Error ? error.message : "Try again.",
+        }),
+      );
+    } finally {
+      setIsCreatingDirectLink(false);
+    }
+  }, [directLinkLabel]);
+
   const handleAddSavedBackend = useCallback(async () => {
-    if (savedBackendMode === "ssh") {
-      setIsAddingSavedBackend(true);
-      setSavedBackendError(null);
-      try {
+    setIsAddingSavedBackend(true);
+    setSavedBackendError(null);
+    try {
+      if (savedBackendMode === "ssh") {
         const target = parseManualDesktopSshTarget({
           host: savedBackendSshHost,
           username: savedBackendSshUsername,
           port: savedBackendSshPort,
         });
         const record = await connectDesktopSshEnvironment(target, { label: "" });
-        setSavedBackendHost("");
-        setSavedBackendPairingCode("");
-        setSavedBackendSshHost("");
-        setSavedBackendSshUsername("");
-        setSavedBackendSshPort("");
-
-        setAddBackendDialogOpen(false);
         toastManager.add({
           type: "success",
           title: "Computer connected",
           description: `${record.label} is ready through SSH.`,
         });
-      } catch (error) {
-        const message = formatDesktopSshConnectionError(error);
-        setSavedBackendError(message);
-      } finally {
-        setIsAddingSavedBackend(false);
+      } else {
+        const remotePairingInput = parseRemotePairingFields({
+          host: savedBackendHost,
+          pairingCode: savedBackendPairingCode,
+        });
+        const record = await addSavedEnvironment({ label: "", ...remotePairingInput });
+        toastManager.add({
+          type: "success",
+          title: "Computer saved",
+          description: `${record.label} will reconnect when Threadlines starts.`,
+        });
       }
-      return;
-    }
-
-    setIsAddingSavedBackend(true);
-    setSavedBackendError(null);
-    try {
-      const remotePairingInput = parseRemotePairingFields({
-        host: savedBackendHost,
-        pairingCode: savedBackendPairingCode,
-      });
-      const record = await addSavedEnvironment({
-        label: "",
-        ...remotePairingInput,
-      });
       setSavedBackendHost("");
       setSavedBackendPairingCode("");
       setSavedBackendSshHost("");
       setSavedBackendSshUsername("");
       setSavedBackendSshPort("");
-      setAddBackendDialogOpen(false);
-      toastManager.add({
-        type: "success",
-        title: "Computer saved",
-        description: `${record.label} will reconnect when Threadlines starts.`,
-      });
+      setJoinComputerOpen(false);
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Failed to add computer.";
-      setSavedBackendError(message);
-      toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: "Could not add computer",
-          description: message,
-        }),
+      setSavedBackendError(
+        savedBackendMode === "ssh"
+          ? formatDesktopSshConnectionError(error)
+          : error instanceof Error
+            ? error.message
+            : "Failed to add computer.",
       );
     } finally {
       setIsAddingSavedBackend(false);
@@ -2175,65 +1766,60 @@ export function ConnectionsSettings({ surface = "full" }: { surface?: "full" | "
     savedBackendSshUsername,
   ]);
 
-  const handleConnectSavedBackend = useCallback(async (environmentId: EnvironmentId) => {
-    setReconnectingSavedEnvironmentId(environmentId);
-    setSavedBackendError(null);
-    try {
-      await reconnectSavedEnvironment(environmentId);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Failed to connect computer.";
-      setSavedBackendError(message);
-      toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: "Could not connect computer",
-          description: message,
-        }),
-      );
-    } finally {
-      setReconnectingSavedEnvironmentId(null);
-    }
-  }, []);
-
-  const handleDisconnectSavedBackend = useCallback(async (environmentId: EnvironmentId) => {
-    setDisconnectingSavedEnvironmentId(environmentId);
-    setSavedBackendError(null);
-    try {
-      await disconnectSavedEnvironment(environmentId);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Failed to disconnect computer.";
-      setSavedBackendError(message);
-      toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: "Could not disconnect computer",
-          description: message,
-        }),
-      );
-    } finally {
-      setDisconnectingSavedEnvironmentId(null);
-    }
-  }, []);
-
-  const handleRemoveSavedBackend = useCallback(async (environmentId: EnvironmentId) => {
-    setRemovingSavedEnvironmentId(environmentId);
-    setSavedBackendError(null);
-    try {
-      await removeSavedEnvironment(environmentId);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Failed to remove computer.";
-      setSavedBackendError(message);
-      toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: "Could not remove computer",
-          description: message,
-        }),
-      );
-    } finally {
-      setRemovingSavedEnvironmentId(null);
-    }
-  }, []);
+  const runSavedBackendAction = useCallback(
+    async (
+      environmentId: EnvironmentId,
+      action: (environmentId: EnvironmentId) => Promise<void>,
+      setBusy: (environmentId: EnvironmentId | null) => void,
+      failure: { readonly title: string; readonly fallback: string },
+    ) => {
+      setBusy(environmentId);
+      try {
+        await action(environmentId);
+      } catch (error) {
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: failure.title,
+            description: error instanceof Error ? error.message : failure.fallback,
+          }),
+        );
+      } finally {
+        setBusy(null);
+      }
+    },
+    [],
+  );
+  const handleConnectSavedBackend = useCallback(
+    (environmentId: EnvironmentId) =>
+      void runSavedBackendAction(
+        environmentId,
+        reconnectSavedEnvironment,
+        setReconnectingSavedEnvironmentId,
+        { title: "Could not connect", fallback: "Failed to connect." },
+      ),
+    [runSavedBackendAction],
+  );
+  const handleDisconnectSavedBackend = useCallback(
+    (environmentId: EnvironmentId) =>
+      void runSavedBackendAction(
+        environmentId,
+        disconnectSavedEnvironment,
+        setDisconnectingSavedEnvironmentId,
+        { title: "Could not disconnect", fallback: "Failed to disconnect." },
+      ),
+    [runSavedBackendAction],
+  );
+  const handleRemoveSavedBackend = useCallback(
+    (environmentId: EnvironmentId) =>
+      void runSavedBackendAction(
+        environmentId,
+        removeSavedEnvironment,
+        setRemovingSavedEnvironmentId,
+        { title: "Could not forget that computer", fallback: "Failed to forget it." },
+      ),
+    [runSavedBackendAction],
+  );
 
   const loadDiscoveredSshHosts = useCallback(async () => {
     if (!desktopBridge) {
@@ -2261,11 +1847,7 @@ export function ConnectionsSettings({ surface = "full" }: { surface?: "full" | "
   const handleConnectSshHost = useCallback(
     async (target: DesktopSshEnvironmentTarget, label?: string) => {
       setConnectingSshHostAlias(target.alias);
-      if (savedBackendMode === "ssh") {
-        setSavedBackendError(null);
-      } else {
-        setDiscoveredSshHostsError(null);
-      }
+      setSavedBackendError(null);
       try {
         const record = await connectDesktopSshEnvironment(
           target,
@@ -2274,7 +1856,7 @@ export function ConnectionsSettings({ surface = "full" }: { surface?: "full" | "
         setSavedBackendSshHost("");
         setSavedBackendSshUsername("");
         setSavedBackendSshPort("");
-        setAddBackendDialogOpen(false);
+        setJoinComputerOpen(false);
         toastManager.add({
           type: "success",
           title: savedDesktopSshEnvironmentsByAlias[target.alias]
@@ -2283,21 +1865,16 @@ export function ConnectionsSettings({ surface = "full" }: { surface?: "full" | "
           description: `${record.label} is ready through SSH.`,
         });
       } catch (error) {
-        const message = formatDesktopSshConnectionError(error);
-        if (savedBackendMode === "ssh") {
-          setSavedBackendError(message);
-        } else {
-          setDiscoveredSshHostsError(message);
-        }
+        setSavedBackendError(formatDesktopSshConnectionError(error));
       } finally {
         setConnectingSshHostAlias(null);
       }
     },
-    [savedBackendMode, savedDesktopSshEnvironmentsByAlias],
+    [savedDesktopSshEnvironmentsByAlias],
   );
 
   useEffect(() => {
-    if (!desktopBridge || !addBackendDialogOpen || savedBackendMode !== "ssh") {
+    if (!desktopBridge || !joinComputerOpen || savedBackendMode !== "ssh") {
       return;
     }
     if (hasLoadedDiscoveredSshHosts || isLoadingDiscoveredSshHosts) {
@@ -2305,10 +1882,10 @@ export function ConnectionsSettings({ surface = "full" }: { surface?: "full" | "
     }
     void loadDiscoveredSshHosts();
   }, [
-    addBackendDialogOpen,
     desktopBridge,
     hasLoadedDiscoveredSshHosts,
     isLoadingDiscoveredSshHosts,
+    joinComputerOpen,
     loadDiscoveredSshHosts,
     savedBackendMode,
   ]);
@@ -2455,10 +2032,18 @@ export function ConnectionsSettings({ surface = "full" }: { surface?: "full" | "
     setDesktopAdvertisedEndpoints([]);
     setDesktopServerExposureError(null);
   }, [canManageLocalBackend, isPhoneSurface]);
+
   const visibleDesktopPairingLinks = useMemo(
     () => desktopPairingLinks.filter((pairingLink) => pairingLink.role === "client"),
     [desktopPairingLinks],
   );
+  // Only owners see this list, and the owner's own window or tab is "this
+  // computer", not a device using it.
+  const visibleDeviceSessions = useMemo(
+    () => desktopClientSessions.filter((clientSession) => !clientSession.current),
+    [desktopClientSessions],
+  );
+  const otherDeviceCount = visibleDeviceSessions.length;
   const tailscaleHttpsEndpoint = useMemo(
     () => desktopAdvertisedEndpoints.find(isTailscaleHttpsEndpoint) ?? null,
     [desktopAdvertisedEndpoints],
@@ -2512,6 +2097,35 @@ export function ConnectionsSettings({ surface = "full" }: { surface?: "full" | "
     setSavedBackendHost(value);
   }, []);
 
+  // Code joins go through this computer's own server, which describes itself
+  // to the relay; the hosted app (phone surface) talks to the relay directly.
+  const submitCodeJoinViaServer = useMemo<SubmitCodeJoinViaServer | null>(
+    () =>
+      isPhoneSurface
+        ? null
+        : async (input) => {
+            try {
+              return await getPrimaryEnvironmentConnection().client.relay.submitJoin(input);
+            } catch (error) {
+              const detail =
+                error && typeof error === "object" && "detail" in error
+                  ? String(error.detail)
+                  : error instanceof Error
+                    ? error.message
+                    : "That didn't work.";
+              const code =
+                error &&
+                typeof error === "object" &&
+                "code" in error &&
+                typeof error.code === "string"
+                  ? error.code
+                  : null;
+              throw new RelayJoinError(detail, code);
+            }
+          },
+    [isPhoneSurface],
+  );
+
   const renderConnectionModeCard = (input: {
     readonly mode: "remote" | "ssh";
     readonly title: string;
@@ -2524,21 +2138,20 @@ export function ConnectionsSettings({ surface = "full" }: { surface?: "full" | "
         type="button"
         aria-pressed={selected}
         className={cn(
-          "group flex min-h-24 items-start gap-3 rounded-lg border p-4 text-left",
+          "group flex items-start gap-3 rounded-lg border p-3 text-left",
           selected ? "border-primary/50 bg-primary/5" : "border-border/60 hover:bg-muted/40",
         )}
         disabled={isAddingSavedBackend}
         onClick={() => {
           setSavedBackendMode(input.mode);
+          setSavedBackendError(null);
         }}
       >
         {input.icon ? (
           <span
             className={cn(
-              "mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-md border",
-              selected
-                ? "border-primary/30 bg-primary/10 text-primary-readable"
-                : "border-border/70 bg-background text-muted-foreground group-hover:text-foreground",
+              "mt-0.5 shrink-0",
+              selected ? "text-primary-readable" : "text-muted-foreground",
             )}
           >
             {input.icon}
@@ -2546,7 +2159,7 @@ export function ConnectionsSettings({ surface = "full" }: { surface?: "full" | "
         ) : null}
         <span className="min-w-0">
           <span className="block text-sm font-medium text-foreground">{input.title}</span>
-          <span className="mt-1 block text-xs leading-relaxed text-muted-foreground">
+          <span className="mt-0.5 block text-xs leading-relaxed text-muted-foreground">
             {input.description}
           </span>
         </span>
@@ -2562,7 +2175,7 @@ export function ConnectionsSettings({ surface = "full" }: { surface?: "full" | "
           <Input
             value={savedBackendHost}
             onChange={(event) => handleSavedBackendHostChange(event.target.value)}
-            placeholder="Paste a setup link or address"
+            placeholder="Paste a link or address"
             disabled={isAddingSavedBackend}
             spellCheck={false}
           />
@@ -2578,125 +2191,119 @@ export function ConnectionsSettings({ surface = "full" }: { surface?: "full" | "
           />
         </label>
       </div>
-      <div>
-        <span className="mt-1 block text-[11px] text-muted-foreground">
-          If you paste a full setup link, Threadlines will fill in the code automatically.
-        </span>
-      </div>
+      <p className="text-[11px] text-muted-foreground">
+        For a one-time link from Connection options on the other computer. Pasting the whole link
+        fills in the code.
+      </p>
     </div>
   );
-  const renderRemoteModeBody = () => (
-    <div className="space-y-4">
-      {renderRemoteFields()}
-      {savedBackendError ? <p className="text-xs text-destructive">{savedBackendError}</p> : null}
+
+  const renderSshFields = () => (
+    <div className="space-y-3">
+      <label className="block">
+        <span className="mb-1.5 block text-xs font-medium text-foreground">
+          Computer name or SSH host
+        </span>
+        <Input
+          value={savedBackendSshHost}
+          onChange={(event) => setSavedBackendSshHost(event.target.value)}
+          placeholder="Search saved hosts or type devbox"
+          disabled={isAddingSavedBackend}
+          spellCheck={false}
+        />
+      </label>
+      <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_7rem]">
+        <label className="block">
+          <span className="mb-1.5 block text-xs font-medium text-foreground">User name</span>
+          <Input
+            value={savedBackendSshUsername}
+            onChange={(event) => setSavedBackendSshUsername(event.target.value)}
+            placeholder="root"
+            disabled={isAddingSavedBackend}
+            spellCheck={false}
+          />
+        </label>
+        <label className="block">
+          <span className="mb-1.5 block text-xs font-medium text-foreground">Port</span>
+          <Input
+            value={savedBackendSshPort}
+            onChange={(event) => setSavedBackendSshPort(event.target.value)}
+            placeholder="22"
+            inputMode="numeric"
+            disabled={isAddingSavedBackend}
+            spellCheck={false}
+          />
+        </label>
+      </div>
+      {unsavedDiscoveredSshHosts.length > 0 || isLoadingDiscoveredSshHosts ? (
+        <div className="border-t border-border/60 pt-2">
+          <div className="flex items-center justify-between gap-3 py-1">
+            <p className="text-xs text-muted-foreground">From your SSH config and known hosts</p>
+            <Button
+              size="xs"
+              variant="ghost"
+              disabled={isLoadingDiscoveredSshHosts}
+              onClick={() => void loadDiscoveredSshHosts()}
+            >
+              <RefreshCwIcon
+                className={cn("size-3", isLoadingDiscoveredSshHosts && "animate-spin")}
+              />
+              Refresh
+            </Button>
+          </div>
+          <ScrollArea scrollFade className="max-h-48">
+            <div>
+              {unsavedDiscoveredSshHosts.map((target) => (
+                <DesktopSshHostRow
+                  key={`${target.alias}:${target.hostname}:${target.port ?? ""}`}
+                  target={target}
+                  connectingHostAlias={connectingSshHostAlias}
+                  onConnect={(nextTarget) => void handleConnectSshHost(nextTarget)}
+                />
+              ))}
+            </div>
+          </ScrollArea>
+        </div>
+      ) : null}
+    </div>
+  );
+
+  const otherWaysToConnect = (
+    <div className="space-y-3">
+      <div className={cn("grid gap-2", desktopBridge && !isPhoneSurface && "sm:grid-cols-2")}>
+        {renderConnectionModeCard({
+          mode: "remote",
+          title: "Address and pairing code",
+          description: "A one-time link for the same network or Tailscale.",
+          icon: <ChevronsLeftRightEllipsisIcon aria-hidden className="size-4" />,
+        })}
+        {desktopBridge && !isPhoneSurface
+          ? renderConnectionModeCard({
+              mode: "ssh",
+              title: "SSH",
+              description: "For computers you already reach with SSH keys.",
+              icon: <TerminalIcon aria-hidden className="size-4" />,
+            })
+          : null}
+      </div>
+      {savedBackendMode === "ssh" && desktopBridge ? renderSshFields() : renderRemoteFields()}
+      {savedBackendError || discoveredSshHostsError ? (
+        <p className="text-xs text-destructive-foreground">
+          {savedBackendError ?? discoveredSshHostsError}
+        </p>
+      ) : null}
       <Button
+        size="sm"
         variant="outline"
         className="w-full"
         disabled={isAddingSavedBackend}
         onClick={() => void handleAddSavedBackend()}
       >
-        <PlusIcon className="size-3.5" />
-        {isAddingSavedBackend ? "Adding..." : "Add computer"}
+        {isAddingSavedBackend ? "Adding..." : "Add this computer"}
       </Button>
     </div>
   );
-  const renderSshFields = () => (
-    <div className="space-y-4">
-      <div className="space-y-3">
-        <label className="block">
-          <span className="mb-1.5 block text-xs font-medium text-foreground">
-            Computer name or SSH host
-          </span>
-          <Input
-            value={savedBackendSshHost}
-            onChange={(event) => setSavedBackendSshHost(event.target.value)}
-            placeholder="Search saved hosts or type devbox"
-            disabled={isAddingSavedBackend}
-            spellCheck={false}
-          />
-        </label>
-        <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_7rem]">
-          <label className="block">
-            <span className="mb-1.5 block text-xs font-medium text-foreground">User name</span>
-            <Input
-              value={savedBackendSshUsername}
-              onChange={(event) => setSavedBackendSshUsername(event.target.value)}
-              placeholder="root"
-              disabled={isAddingSavedBackend}
-              spellCheck={false}
-            />
-          </label>
-          <label className="block">
-            <span className="mb-1.5 block text-xs font-medium text-foreground">Port</span>
-            <Input
-              value={savedBackendSshPort}
-              onChange={(event) => setSavedBackendSshPort(event.target.value)}
-              placeholder="22"
-              inputMode="numeric"
-              disabled={isAddingSavedBackend}
-              spellCheck={false}
-            />
-          </label>
-        </div>
-        {savedBackendError || discoveredSshHostsError ? (
-          <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
-            {savedBackendError ?? discoveredSshHostsError}
-          </div>
-        ) : null}
-        <Button
-          variant="outline"
-          className="w-full"
-          disabled={isAddingSavedBackend}
-          onClick={() => void handleAddSavedBackend()}
-        >
-          <PlusIcon className="size-3.5" />
-          {isAddingSavedBackend ? "Adding..." : "Add computer"}
-        </Button>
-      </div>
-      <div className="overflow-hidden rounded-lg border border-border/60">
-        <div className="flex items-center justify-between gap-3 border-b border-border/60 bg-muted/30 px-3 py-2">
-          <div className="min-w-0">
-            <p className="text-xs font-medium text-foreground">Suggested computers</p>
-            <p className="text-[11px] text-muted-foreground">
-              From your SSH config and known hosts
-            </p>
-          </div>
-          <Button
-            size="xs"
-            variant="ghost"
-            disabled={isLoadingDiscoveredSshHosts}
-            onClick={() => void loadDiscoveredSshHosts()}
-          >
-            {isLoadingDiscoveredSshHosts ? (
-              <RefreshCwIcon className="size-3 animate-spin" />
-            ) : (
-              <RefreshCwIcon className="size-3" />
-            )}
-            Refresh
-          </Button>
-        </div>
-        <ScrollArea scrollFade className="max-h-56">
-          <div>
-            {unsavedDiscoveredSshHosts.map((target) => (
-              <DesktopSshHostRow
-                key={`${target.alias}:${target.hostname}:${target.port ?? ""}`}
-                target={target}
-                connectingHostAlias={connectingSshHostAlias}
-                onConnect={(nextTarget) => void handleConnectSshHost(nextTarget)}
-              />
-            ))}
-            {hasLoadedDiscoveredSshHosts &&
-            !isLoadingDiscoveredSshHosts &&
-            unsavedDiscoveredSshHosts.length === 0 ? (
-              <div className={ITEM_ROW_CLASSNAME}>
-                <p className="text-xs text-muted-foreground">No new SSH computers were found.</p>
-              </div>
-            ) : null}
-          </div>
-        </ScrollArea>
-      </div>
-    </div>
-  );
+
   const renderNetworkAccessToggle = () => (
     <Switch
       checked={desktopServerExposureState?.mode === "network-accessible"}
@@ -2705,758 +2312,542 @@ export function ConnectionsSettings({ surface = "full" }: { surface?: "full" | "
         setPendingDesktopServerExposureMode(checked ? "network-accessible" : "local-only");
         setIsDesktopServerExposureDialogOpen(true);
       }}
-      aria-label="Allow phone and tablet access"
+      aria-label="Same network"
     />
   );
-  const renderEndpointRows = (presentation: AccessSectionPresentation) =>
-    isAdvertisedEndpointListExpanded
-      ? visibleDesktopNetworkAdvertisedEndpoints.map((endpoint) => {
-          const endpointKey = endpointDefaultPreferenceKey(endpoint);
-          return (
-            <AdvertisedEndpointListRow
-              key={endpoint.id}
-              endpoint={endpoint}
-              isDefault={endpointKey === defaultDesktopAdvertisedEndpointKey}
-              presentation={presentation}
-              onSetDefault={handleSetDefaultAdvertisedEndpoint}
-              onSetupTailscaleServe={handleStartTailscaleServeSetup}
-              onDisableTailscaleServe={handleStartTailscaleServeDisable}
-              isUpdatingTailscaleServe={isUpdatingTailscaleServe}
-            />
-          );
-        })
-      : null;
-  const renderTailscaleRow = () => (
-    <SettingsRow
-      title="Private network link (Tailscale)"
-      description={
-        tailscaleHttpsEndpoint
-          ? tailscaleHttpsEndpoint.status === "available"
-            ? tailscaleHttpsEndpoint.httpBaseUrl
-            : "Use Tailscale to make this computer reachable from your private Tailscale network."
-          : "Start Tailscale to set up a private link."
-      }
-      control={
-        tailscaleHttpsEndpoint ? (
-          <Switch
-            checked={tailscaleHttpsEndpoint.status === "available"}
-            disabled={isUpdatingTailscaleServe}
-            onCheckedChange={(checked) => {
-              if (checked) {
-                handleStartTailscaleServeSetup(tailscaleHttpsEndpoint);
-                return;
-              }
-              handleStartTailscaleServeDisable(tailscaleHttpsEndpoint);
-            }}
-            aria-label="Enable private network link"
-          />
-        ) : null
-      }
-    />
-  );
-  const renderAuthorizedClients = (presentation: AccessSectionPresentation) => (
-    <>
-      {desktopAccessManagementError ? (
-        <div className={accessRowClassName(presentation)}>
-          <p className="text-xs text-destructive">{desktopAccessManagementError}</p>
-        </div>
-      ) : null}
-      <PairingClientsList
-        endpointUrl={desktopServerExposureState?.endpointUrl}
-        endpoints={visibleDesktopAdvertisedEndpoints}
-        defaultEndpointKey={defaultDesktopAdvertisedEndpointKey}
-        presentation={presentation}
-        isLoading={isLoadingDesktopAccessManagement}
-        pairingLinks={visibleDesktopPairingLinks}
-        clientSessions={desktopClientSessions}
-        revokingPairingLinkId={revokingDesktopPairingLinkId}
-        revokingClientSessionId={revokingDesktopClientSessionId}
-        onRevokePairingLink={handleRevokeDesktopPairingLink}
-        onRevokeClientSession={handleRevokeDesktopClientSession}
-      />
-    </>
-  );
-  const renderNetworkAccessRow = () => (
-    <SettingsRow
-      title="Allow nearby devices"
-      description={
-        isLocalBackendNetworkAccessible ? (
-          <NetworkAccessDescription
-            endpoint={defaultDesktopNetworkAdvertisedEndpoint}
-            hiddenEndpointCount={Math.max(visibleDesktopNetworkAdvertisedEndpoints.length - 1, 0)}
-            expanded={isAdvertisedEndpointListExpanded}
-            onToggleExpanded={() => setIsAdvertisedEndpointListExpanded((expanded) => !expanded)}
-            fallback={
-              desktopServerExposureState?.endpointUrl
-                ? `Connection address ${desktopServerExposureState.endpointUrl}`
-                : desktopServerExposureState?.advertisedHost
-                  ? `Devices can connect through ${desktopServerExposureState.advertisedHost}.`
-                  : "Devices on this network can connect."
-            }
-          />
-        ) : desktopServerExposureState ? (
-          "Only this computer can use Threadlines."
-        ) : (
-          "Loading..."
-        )
-      }
-      status={
-        desktopServerExposureError ? (
-          <span className="block text-destructive">{desktopServerExposureError}</span>
-        ) : null
-      }
-      control={renderNetworkAccessToggle()}
-    />
-  );
-  const renderDisabledNetworkAccessRow = () => (
-    <SettingsRow
-      title="Allow nearby devices"
-      description={
-        currentAuthPolicy === "remote-reachable"
-          ? "This computer is already reachable from other devices. Change this where Threadlines was started."
-          : "Only this computer can use Threadlines. Restart Threadlines with device access enabled to connect a phone or tablet."
-      }
-      control={
-        <Tooltip>
-          <TooltipTrigger
-            render={
-              <span className="inline-flex">
-                <Switch
-                  checked={isLocalBackendNetworkAccessible}
-                  disabled
-                  aria-label="Allow phone and tablet access"
-                />
-              </span>
-            }
-          />
-          <TooltipPopup side="top">
-            This setting restarts Threadlines and must be controlled where the app was started.
-          </TooltipPopup>
-        </Tooltip>
-      }
-    />
-  );
-  const renderMobileConnectProgressDetails = () => (
-    <div className="mt-3 border-t border-border/60 py-3">
-      <div className="flex items-start gap-3 text-xs">
-        <Spinner className="mt-0.5 size-4 shrink-0" />
-        <div className="min-w-0 space-y-2">
-          <p className="font-medium text-foreground">Creating phone link...</p>
-          <div className="grid gap-2 text-[11px] text-muted-foreground sm:grid-cols-3">
-            <div className="flex items-center gap-1.5">
-              <CloudIcon className="size-3.5 shrink-0" />
-              Cloud relay session
-            </div>
-            <div className="flex items-center gap-1.5">
-              <TerminalIcon className="size-3.5 shrink-0" />
-              Desktop bridge
-            </div>
-            <div className="flex items-center gap-1.5">
-              <SmartphoneIcon className="size-3.5 shrink-0" />
-              Phone-ready link
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-  const renderMobileConnectErrorDetails = () =>
-    mobileConnectErrorView ? (
-      <div className="mt-3 border-t border-border/60 py-3">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-          <div className="flex min-w-0 items-start gap-2">
-            <TriangleAlertIcon
-              className={cn(
-                "mt-0.5 size-4 shrink-0",
-                mobileConnectErrorView.tone === "warning" ? "text-warning" : "text-destructive",
-              )}
-            />
-            <div className="min-w-0 space-y-1">
-              <p className="text-xs font-medium text-foreground">{mobileConnectErrorView.title}</p>
-              <p className="text-xs text-muted-foreground">{mobileConnectErrorView.description}</p>
-            </div>
-          </div>
+
+  const relayUsage = relayAccess?.usage ?? null;
+  const relayStatusLine =
+    relayAccess?.status === "unsupported" || relayAccess?.status === "disabled"
+      ? (relayAccess.error ?? "Device codes are off on this relay.")
+      : relayAccess?.status === "offline"
+        ? (relayAccess.error ?? "Can't reach the relay right now.")
+        : relayUsage && (relayUsage.messages > 0 || visibleDeviceSessions.length > 0)
+          ? relayUsage.limited
+            ? `Today's relay allowance is used up. It resets at midnight UTC.`
+            : `Relay use today: ${Math.min(100, Math.ceil((relayUsage.messages / Math.max(relayUsage.messageLimit, 1)) * 100))}% of the free daily allowance`
+          : null;
+
+  const devicesSection = (
+    <SettingsSection
+      title="Devices using this computer"
+      headerAction={
+        otherDeviceCount >= 2 ? (
           <Button
             size="xs"
-            variant="outline"
-            className="self-start"
-            disabled={isCreatingMobileConnectLink}
-            onClick={() => void handleCreateMobileConnectLink()}
+            variant="ghost"
+            className="h-5 rounded-sm px-1 text-[11px] font-normal text-muted-foreground/70 hover:text-muted-foreground"
+            disabled={isRevokingOtherDesktopClients}
+            onClick={() => setConfirmRemoveAllOpen(true)}
           >
-            {isCreatingMobileConnectLink ? (
-              <Spinner className="size-3.5" />
-            ) : (
-              <RefreshCwIcon className="size-3.5" />
-            )}
-            Try again
+            {isRevokingOtherDesktopClients ? "Removing..." : "Remove all"}
           </Button>
-        </div>
-        <p className="mt-2 break-words rounded-md bg-muted/45 px-2 py-1.5 font-mono text-[10.5px] leading-relaxed text-muted-foreground">
-          {mobileConnectErrorView.detail}
-        </p>
-      </div>
-    ) : null;
-  const renderMobileConnectSessionDetails = () =>
-    mobileConnectSession ? (
-      <div className="mt-3 border-t border-border/60 py-3">
-        <div className="grid gap-3 sm:grid-cols-[8.5rem_minmax(0,1fr)]">
-          <div className="flex justify-start">
-            <div className="flex size-[8.5rem] items-center justify-center rounded-md bg-white p-2 text-black shadow-xs ring-1 ring-border/60">
-              <QRCodeSvg
-                value={mobileConnectSession.pairingUrl}
-                size={120}
-                level="M"
-                marginSize={2}
-                title="Phone link - scan to open on your phone"
-              />
-            </div>
-          </div>
-          <div className="min-w-0 space-y-3">
-            <div className="flex flex-wrap items-center gap-1.5">
-              <Badge
-                variant={
-                  isMobileConnectSessionExpired ||
-                  isMobileConnectSessionReconnecting ||
-                  isMobileConnectSessionDisconnected
-                    ? "warning"
-                    : "success"
-                }
-                size="sm"
-              >
-                {isMobileConnectSessionExpired ? (
-                  <ClockIcon className="size-3" />
-                ) : isMobileConnectSessionReconnecting ? (
-                  <RefreshCwIcon className="size-3 animate-spin" />
-                ) : isMobileConnectSessionDisconnected ? (
-                  <TriangleAlertIcon className="size-3" />
-                ) : (
-                  <CircleCheckIcon className="size-3" />
-                )}
-                {isMobileConnectSessionExpired
-                  ? "Expired"
-                  : isMobileConnectSessionReconnecting
-                    ? "Reconnecting"
-                    : isMobileConnectSessionDisconnected
-                      ? "Disconnected"
-                      : "Bridge open"}
-              </Badge>
-              <Badge variant="info" size="sm">
-                <CloudIcon className="size-3" />
-                Cloud relay
-              </Badge>
-              <Badge variant="outline" size="sm">
-                <ClockIcon className="size-3" />
-                {formatExpiresInLabel(mobileConnectSession.expiresAt, mobileConnectNowMs)}
-              </Badge>
-            </div>
-            <Textarea
-              readOnly
-              rows={3}
-              value={mobileConnectSession.pairingUrl}
-              className="text-[11px] leading-relaxed"
-              onFocus={(event) => event.currentTarget.select()}
-              onClick={(event) => event.currentTarget.select()}
-            />
-            <div className="grid gap-2 text-[11px] text-muted-foreground sm:grid-cols-2">
-              <div>
-                <span className="block font-medium text-foreground/75">Hosted app</span>
-                {hostedAppDisplayHost()}
-              </div>
-              <div>
-                <span className="block font-medium text-foreground/75">Relay</span>
-                <span className="break-all">{mobileConnectSession.relayOrigin}</span>
-              </div>
-              <div>
-                <span className="block font-medium text-foreground/75">Relay session</span>
-                <span className="break-all">{mobileConnectSession.sessionId}</span>
-              </div>
-              <div>
-                <span className="block font-medium text-foreground/75">Expires</span>
-                {formatAccessTimestamp(mobileConnectSession.expiresAt)}
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-    ) : null;
-  const renderMobileConnectDetails = () => {
-    if (!mobileConnectErrorView && !isCreatingMobileConnectLink && !mobileConnectSession) {
-      return null;
-    }
-
-    return (
-      <>
-        {renderMobileConnectErrorDetails()}
-        {isCreatingMobileConnectLink && !mobileConnectSession
-          ? renderMobileConnectProgressDetails()
-          : null}
-        {renderMobileConnectSessionDetails()}
-      </>
-    );
-  };
-  const renderMobileConnectRow = () => (
-    <SettingsRow
-      title="Phone link"
-      description={
-        mobileConnectSession
-          ? isMobileConnectSessionExpired
-            ? "This phone link expired. Create a new link before opening Threadlines on your phone."
-            : isMobileConnectSessionDisconnected
-              ? "The desktop bridge closed. Create a new link before opening Threadlines on your phone."
-              : isMobileConnectSessionReconnecting
-                ? "Reconnecting to this computer. The QR code and link stay valid while Threadlines tries to restore the bridge."
-                : `Ready for ${formatExpiresInLabel(mobileConnectSession.expiresAt, mobileConnectNowMs)}. Open this link on your phone while the desktop app stays running.`
-          : isCreatingMobileConnectLink
-            ? "Creating a Cloudflare relay session and opening the desktop bridge."
-            : mobileConnectErrorView
-              ? mobileConnectErrorView.description
-              : `Create a private ${hostedAppDisplayHost()} link for your phone. No same Wi-Fi or Tailscale setup required.`
-      }
-      control={
-        desktopBridge ? (
-          <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:justify-end">
-            {mobileConnectSession ? (
-              <Button
-                size="xs"
-                variant="outline"
-                disabled={isMobileConnectSessionUnavailable}
-                onClick={() => void handleOpenMobileConnectLink()}
-              >
-                <ExternalLinkIcon className="size-3.5" />
-                Open
-              </Button>
-            ) : null}
-            {mobileConnectSession ? (
-              <Button
-                size="xs"
-                variant="outline"
-                disabled={isMobileConnectSessionUnavailable}
-                onClick={() =>
-                  copyMobileConnectLink(mobileConnectSession.pairingUrl, "mobile-link")
-                }
-              >
-                <CopyIcon className="size-3.5" />
-                {isMobileConnectLinkCopied ? "Copied" : "Copy"}
-              </Button>
-            ) : null}
-            <Button
-              size="xs"
-              onClick={() => void handleCreateMobileConnectLink()}
-              disabled={isCreatingMobileConnectLink}
-            >
-              {isCreatingMobileConnectLink ? (
-                <Spinner className="size-3.5" />
-              ) : (
-                <SmartphoneIcon className="size-3.5" />
-              )}
-              {mobileConnectSession ? "New link" : "Create link"}
-            </Button>
-            {mobileConnectSession ? (
-              <Button
-                size="xs"
-                variant="destructive-outline"
-                onClick={() => void handleDisconnectMobileConnectLink()}
-                disabled={isCreatingMobileConnectLink}
-              >
-                Stop
-              </Button>
-            ) : null}
-          </div>
         ) : null
       }
     >
-      {renderMobileConnectDetails()}
-    </SettingsRow>
+      <SettingsRow
+        title="Connect a phone, tablet, or computer"
+        description="Get a code to type on the other device, or a QR code for a phone. Works from anywhere while this computer is on."
+        status={
+          relayStatusLine ? (
+            <span
+              className={cn(
+                relayAccess?.status === "offline" ||
+                  relayAccess?.status === "unsupported" ||
+                  relayUsage?.limited
+                  ? "text-warning"
+                  : undefined,
+              )}
+            >
+              {relayStatusLine}
+            </span>
+          ) : null
+        }
+        control={
+          <Button size="xs" onClick={() => setConnectDeviceOpen(true)}>
+            <SmartphoneIcon className="size-3.5" />
+            Connect a device
+          </Button>
+        }
+      />
+      {desktopAccessManagementError ? (
+        <div className={ITEM_ROW_CLASSNAME}>
+          <p className="text-xs text-destructive-foreground">{desktopAccessManagementError}</p>
+        </div>
+      ) : null}
+      {isLoadingDesktopAccessManagement && visibleDeviceSessions.length === 0 ? (
+        <ConnectedDevicesSkeleton presentation="current" />
+      ) : null}
+      {visibleDeviceSessions.map((clientSession) => (
+        <DeviceAccessRow
+          key={clientSession.sessionId}
+          clientSession={clientSession}
+          revokingClientSessionId={revokingDesktopClientSessionId}
+          onRevokeSession={handleRevokeDesktopClientSession}
+        />
+      ))}
+      {visibleDesktopPairingLinks.map((pairingLink) => (
+        <PairingLinkListRow
+          key={pairingLink.id}
+          pairingLink={pairingLink}
+          endpointUrl={desktopServerExposureState?.endpointUrl}
+          endpoints={visibleDesktopAdvertisedEndpoints}
+          defaultEndpointKey={defaultDesktopAdvertisedEndpointKey}
+          revokingPairingLinkId={revokingDesktopPairingLinkId}
+          onRevoke={handleRevokeDesktopPairingLink}
+        />
+      ))}
+    </SettingsSection>
   );
-  const renderPhoneConnectionSection = () => {
-    const connectionState = activeSavedEnvironmentRuntime?.connectionState ?? "disconnected";
-    const stateDotClassName =
-      connectionState === "connected"
-        ? "bg-success"
-        : connectionState === "connecting"
-          ? "bg-warning"
-          : connectionState === "error"
-            ? "bg-destructive"
-            : "bg-muted-foreground/40";
-    const badgeVariant =
-      connectionState === "connected"
-        ? "success"
-        : connectionState === "connecting"
-          ? "warning"
-          : connectionState === "error"
-            ? "error"
-            : "outline";
-    const statusLabel =
-      connectionState === "connected"
-        ? "Connected"
-        : connectionState === "connecting"
-          ? "Connecting"
-          : connectionState === "error"
-            ? "Connection error"
-            : "Disconnected";
-    const description = activeSavedEnvironment
-      ? activeSavedEnvironmentRuntime?.lastError && connectionState === "error"
-        ? activeSavedEnvironmentRuntime.lastError
-        : activeSavedEnvironment.relay
-          ? "This browser is paired through the hosted phone link."
-          : "This browser can connect to the saved computer."
-      : "No desktop is paired with this browser.";
-    const versionMismatch = resolveServerConfigVersionMismatch(
-      activeSavedEnvironmentRuntime?.serverConfig,
-    );
 
-    return (
-      <SettingsSection title="Phone connection">
-        <SettingsRow
-          title={
-            <span className="flex min-w-0 items-center gap-1.5">
-              {activeSavedEnvironment ? (
-                <ConnectionStatusDot
-                  tooltipText={
-                    activeSavedEnvironment
-                      ? getSavedBackendStatusTooltip(
-                          activeSavedEnvironmentRuntime,
-                          activeSavedEnvironment,
-                          mobileConnectNowMs,
-                        )
+  const computersSection = (
+    <SettingsSection title="Computers you use from here">
+      <SettingsRow
+        title="Connect to a computer"
+        description={
+          isPhoneSurface
+            ? "Scan the QR code on the computer that has your projects, or type its code here."
+            : "Type the code from the computer that has your projects."
+        }
+        control={
+          <Button size="xs" variant="outline" onClick={() => setJoinComputerOpen(true)}>
+            <LaptopIcon className="size-3.5" />
+            {isPhoneSurface ? "Type a code" : "Connect to a computer"}
+          </Button>
+        }
+      />
+      {savedEnvironmentIds.map((environmentId) => (
+        <SavedBackendListRow
+          key={environmentId}
+          environmentId={environmentId}
+          reconnectingEnvironmentId={reconnectingSavedEnvironmentId}
+          disconnectingEnvironmentId={disconnectingSavedEnvironmentId}
+          removingEnvironmentId={removingSavedEnvironmentId}
+          onConnect={handleConnectSavedBackend}
+          onDisconnect={handleDisconnectSavedBackend}
+          onRemove={handleRemoveSavedBackend}
+          onConnectAgain={() => setJoinComputerOpen(true)}
+        />
+      ))}
+    </SettingsSection>
+  );
+
+  const connectionOptionsSection = (
+    <SettingsSection
+      title="Connection options"
+      headerAction={
+        <Button
+          size="xs"
+          variant="ghost"
+          className="h-5 gap-1 rounded-sm px-1 text-[11px] font-normal text-muted-foreground/70 hover:text-muted-foreground"
+          aria-expanded={connectionOptionsOpen}
+          onClick={() => setConnectionOptionsOpen((value) => !value)}
+        >
+          {connectionOptionsOpen ? "Hide" : "Show"}
+          <ChevronRightIcon className={cn("size-3", connectionOptionsOpen && "rotate-90")} />
+        </Button>
+      }
+      {...(connectionOptionsOpen ? {} : { contentClassName: "hidden" })}
+    >
+      {desktopBridge ? (
+        <>
+          <SettingsRow
+            title="Same network"
+            description="Devices on your home or office network connect straight to this computer, which can be faster and doesn't use the relay. Turning it on or off restarts Threadlines."
+            status={
+              desktopServerExposureError ? (
+                <span className="block text-destructive-foreground">
+                  {desktopServerExposureError}
+                </span>
+              ) : isLocalBackendNetworkAccessible ? (
+                <NetworkAccessDescription
+                  endpoint={defaultDesktopNetworkAdvertisedEndpoint}
+                  hiddenEndpointCount={Math.max(
+                    visibleDesktopNetworkAdvertisedEndpoints.length - 1,
+                    0,
+                  )}
+                  expanded={isAdvertisedEndpointListExpanded}
+                  onToggleExpanded={() =>
+                    setIsAdvertisedEndpointListExpanded((expanded) => !expanded)
+                  }
+                  fallback={
+                    desktopServerExposureState?.endpointUrl
+                      ? `Address ${desktopServerExposureState.endpointUrl}`
                       : null
                   }
-                  dotClassName={stateDotClassName}
-                  pingClassName={connectionState === "connecting" ? "bg-warning/60" : null}
                 />
-              ) : null}
-              <span className="truncate">
-                {activeSavedEnvironmentRuntime?.descriptor?.label ??
-                  activeSavedEnvironment?.label ??
-                  "No desktop paired"}
-              </span>
-            </span>
-          }
-          description={description}
-          status={
-            versionMismatch ? (
-              <span className="flex items-center gap-1 text-warning">
-                <TriangleAlertIcon className="size-3.5 shrink-0" />
-                Version mismatch: this app {versionMismatch.clientVersion}, desktop{" "}
-                {versionMismatch.serverVersion}.
-              </span>
-            ) : null
-          }
-          control={
-            activeSavedEnvironment ? (
-              <Badge variant={badgeVariant} size="sm">
-                {statusLabel}
-              </Badge>
-            ) : null
+              ) : null
+            }
+            control={renderNetworkAccessToggle()}
+          />
+          {isAdvertisedEndpointListExpanded
+            ? visibleDesktopNetworkAdvertisedEndpoints.map((endpoint) => (
+                <AdvertisedEndpointListRow
+                  key={endpoint.id}
+                  endpoint={endpoint}
+                  isDefault={
+                    endpointDefaultPreferenceKey(endpoint) === defaultDesktopAdvertisedEndpointKey
+                  }
+                  presentation="endpoint-rail"
+                  onSetDefault={handleSetDefaultAdvertisedEndpoint}
+                  onSetupTailscaleServe={handleStartTailscaleServeSetup}
+                  onDisableTailscaleServe={handleStartTailscaleServeDisable}
+                  isUpdatingTailscaleServe={isUpdatingTailscaleServe}
+                />
+              ))
+            : null}
+          <SettingsRow
+            title="Tailscale"
+            description={
+              tailscaleHttpsEndpoint?.status === "available"
+                ? tailscaleHttpsEndpoint.httpBaseUrl
+                : tailscaleHttpsEndpoint
+                  ? "If you use Tailscale (an app that links your devices privately), devices on it can reach this computer. Turning it on restarts Threadlines."
+                  : "Start Tailscale on this computer to use it here."
+            }
+            control={
+              tailscaleHttpsEndpoint ? (
+                <Switch
+                  checked={tailscaleHttpsEndpoint.status === "available"}
+                  disabled={isUpdatingTailscaleServe}
+                  onCheckedChange={(checked) => {
+                    if (checked) {
+                      handleStartTailscaleServeSetup(tailscaleHttpsEndpoint);
+                      return;
+                    }
+                    handleStartTailscaleServeDisable(tailscaleHttpsEndpoint);
+                  }}
+                  aria-label="Tailscale"
+                />
+              ) : null
+            }
+          />
+        </>
+      ) : (
+        <SettingsRow
+          title="Same network"
+          description={
+            currentAuthPolicy === "remote-reachable"
+              ? "This computer is already reachable on its network. Change this where Threadlines was started."
+              : "Only devices using a code can reach this computer. To allow same-network connections, restart Threadlines with network access on."
           }
         />
-      </SettingsSection>
-    );
-  };
+      )}
+      {isLocalBackendRemotelyReachable ? (
+        <SettingsRow
+          title="One-time link for this network"
+          description="For devices that can reach this computer directly. The link works once and expires in 5 minutes."
+          control={
+            <Button size="xs" variant="outline" onClick={() => setDirectLinkDialogOpen(true)}>
+              Make a link
+            </Button>
+          }
+        />
+      ) : null}
+    </SettingsSection>
+  );
 
   return (
     <SettingsPageContainer>
-      {isPhoneSurface ? (
-        renderPhoneConnectionSection()
-      ) : canManageLocalBackend ? (
-        <>
-          <SettingsSection title="Connect your phone or tablet">
-            {primaryVersionMismatch ? (
-              <SettingsRow
-                title="Version drift"
-                description={
-                  <span className="flex items-center gap-1 text-warning">
-                    <TriangleAlertIcon className="size-3.5 shrink-0" />
-                    This app is version {primaryVersionMismatch.clientVersion}; the other side is{" "}
-                    {primaryVersionMismatch.serverVersion}. Update both if reconnecting fails.
-                  </span>
-                }
-              />
-            ) : null}
-            {desktopBridge ? (
-              <>
-                {renderMobileConnectRow()}
-                {renderNetworkAccessRow()}
-                {renderEndpointRows("endpoint-rail")}
-                {renderTailscaleRow()}
-              </>
-            ) : (
-              renderDisabledNetworkAccessRow()
-            )}
-          </SettingsSection>
-
-          {isLocalBackendRemotelyReachable ? (
-            <SettingsSection
-              title="Connected devices"
-              headerAction={
-                <AuthorizedClientsHeaderAction
-                  clientSessions={desktopClientSessions}
-                  isRevokingOtherClients={isRevokingOtherDesktopClients}
-                  onRevokeOtherClients={handleRevokeOtherDesktopClients}
-                />
-              }
-            >
-              {renderAuthorizedClients("current")}
-            </SettingsSection>
-          ) : null}
-          <AlertDialog
-            open={isDesktopServerExposureDialogOpen}
-            onOpenChange={(open) => {
-              if (isUpdatingDesktopServerExposure) return;
-              setIsDesktopServerExposureDialogOpen(open);
-            }}
-            onOpenChangeComplete={(open) => {
-              if (!open) setPendingDesktopServerExposureMode(null);
-            }}
-          >
-            <AlertDialogPopup>
-              <AlertDialogHeader>
-                <AlertDialogTitle>
-                  {pendingDesktopServerExposureMode === "network-accessible"
-                    ? "Allow other devices to connect?"
-                    : "Stop other devices from connecting?"}
-                </AlertDialogTitle>
-                <AlertDialogDescription>
-                  {pendingDesktopServerExposureMode === "network-accessible"
-                    ? "Threadlines will restart so your phone or tablet can connect to this computer."
-                    : "Threadlines will restart and only this computer will be able to use it."}
-                </AlertDialogDescription>
-              </AlertDialogHeader>
-              <AlertDialogFooter>
-                <AlertDialogClose
-                  disabled={isUpdatingDesktopServerExposure}
-                  render={<Button variant="outline" disabled={isUpdatingDesktopServerExposure} />}
-                >
-                  Cancel
-                </AlertDialogClose>
-                <Button
-                  variant={
-                    pendingDesktopServerExposureMode === "local-only" ? "destructive" : "default"
-                  }
-                  onClick={handleConfirmDesktopServerExposureChange}
-                  disabled={
-                    pendingDesktopServerExposureMode === null || isUpdatingDesktopServerExposure
-                  }
-                >
-                  {isUpdatingDesktopServerExposure ? (
-                    <>
-                      <Spinner className="size-3.5" />
-                      Restarting...
-                    </>
-                  ) : pendingDesktopServerExposureMode === "network-accessible" ? (
-                    "Restart and allow"
-                  ) : (
-                    "Restart and stop"
-                  )}
-                </Button>
-              </AlertDialogFooter>
-            </AlertDialogPopup>
-          </AlertDialog>
-          <AlertDialog
-            open={disableTailscaleServeDialogOpen}
-            onOpenChange={(open) => {
-              if (isUpdatingTailscaleServe) return;
-              setDisableTailscaleServeDialogOpen(open);
-            }}
-          >
-            <AlertDialogPopup>
-              <AlertDialogHeader>
-                <AlertDialogTitle>Turn off the Tailscale link?</AlertDialogTitle>
-                <AlertDialogDescription>
-                  Threadlines will restart and stop using Tailscale for device access.
-                </AlertDialogDescription>
-              </AlertDialogHeader>
-              <AlertDialogFooter>
-                <AlertDialogClose
-                  disabled={isUpdatingTailscaleServe}
-                  render={<Button variant="outline" disabled={isUpdatingTailscaleServe} />}
-                >
-                  Cancel
-                </AlertDialogClose>
-                <Button
-                  variant="destructive"
-                  onClick={() => void handleConfirmTailscaleServeDisable()}
-                  disabled={isUpdatingTailscaleServe}
-                >
-                  {isUpdatingTailscaleServe ? (
-                    <>
-                      <Spinner className="size-3.5" />
-                      Restarting...
-                    </>
-                  ) : (
-                    "Restart and disable"
-                  )}
-                </Button>
-              </AlertDialogFooter>
-            </AlertDialogPopup>
-          </AlertDialog>
-          <Dialog
-            open={pendingTailscaleServeEndpoint !== null}
-            onOpenChange={(open) => {
-              if (isUpdatingTailscaleServe) return;
-              if (!open) setPendingTailscaleServeEndpoint(null);
-            }}
-          >
-            <DialogPopup className="max-w-md">
-              <DialogHeader>
-                <DialogTitle>Set up the Tailscale link?</DialogTitle>
-                <DialogDescription>
-                  Threadlines will restart and ask Tailscale to make this computer available on your
-                  private Tailscale network.
-                </DialogDescription>
-              </DialogHeader>
-              <DialogPanel className="space-y-4">
-                <label className="block">
-                  <span className="text-sm font-medium text-foreground">HTTPS port</span>
-                  <Input
-                    className="mt-2"
-                    type="number"
-                    inputMode="numeric"
-                    min={1}
-                    max={65_535}
-                    step={1}
-                    value={tailscaleServePortInput}
-                    onChange={(event) => setTailscaleServePortInput(event.target.value)}
-                    disabled={isUpdatingTailscaleServe}
-                  />
-                </label>
-                {!isTailscaleServePortValid ? (
-                  <p className="mt-2 text-xs text-destructive">Enter a port from 1 to 65535.</p>
-                ) : null}
-                <div className="rounded-md border border-border/70 bg-muted/20 px-3 py-2">
-                  <p className="text-xs font-medium text-muted-foreground">Private link</p>
-                  <p
-                    className="mt-1 truncate text-sm text-foreground"
-                    title={pendingTailscaleServeBaseUrl ?? undefined}
-                  >
-                    {pendingTailscaleServeBaseUrl ?? "Waiting for Tailscale"}
-                  </p>
-                </div>
-              </DialogPanel>
-              <DialogFooter>
-                <DialogClose
-                  disabled={isUpdatingTailscaleServe}
-                  render={<Button variant="outline" disabled={isUpdatingTailscaleServe} />}
-                >
-                  Cancel
-                </DialogClose>
-                <Button
-                  onClick={() => void handleConfirmTailscaleServeSetup()}
-                  disabled={isUpdatingTailscaleServe || !isTailscaleServePortValid}
-                >
-                  {isUpdatingTailscaleServe ? (
-                    <>
-                      <Spinner className="size-3.5" />
-                      Restarting...
-                    </>
-                  ) : (
-                    "Set up link"
-                  )}
-                </Button>
-              </DialogFooter>
-            </DialogPopup>
-          </Dialog>
-        </>
-      ) : (
-        <SettingsSection title="Connect devices">
+      {retiredPhoneLinkNotice ? (
+        <SettingsSection title="Phone links changed">
           <SettingsRow
-            title="Owner tools"
-            description="Only the computer owner can add or remove phone and tablet links for this session."
+            title="Connect your phone again"
+            description="Phone links were replaced by Connect a device. Phones paired the old way need to scan a new QR code once."
+            control={
+              <Button size="xs" variant="outline" onClick={dismissRetiredPhoneLinkNotice}>
+                Got it
+              </Button>
+            }
+          />
+        </SettingsSection>
+      ) : null}
+
+      {isPhoneSurface ? null : (
+        <SettingsSection title="This computer">
+          <SettingsRow
+            title={
+              <span className="flex items-center gap-1.5">
+                <LaptopIcon aria-hidden className="size-3.5 shrink-0 text-muted-foreground" />
+                {thisComputerLabel}
+              </span>
+            }
+            description="Projects on this computer run here. Other devices see it by this name."
+            status={
+              primaryVersionMismatch ? (
+                <span className="flex items-center gap-1 text-warning">
+                  <TriangleAlertIcon className="size-3.5 shrink-0" />
+                  This app is version {primaryVersionMismatch.clientVersion}; the server is{" "}
+                  {primaryVersionMismatch.serverVersion}. Update both if things act up.
+                </span>
+              ) : null
+            }
           />
         </SettingsSection>
       )}
 
-      <SettingsSection
-        title={isPhoneSurface ? "Saved computers" : "Advanced: connect another computer"}
-        headerAction={
-          <Dialog
-            open={addBackendDialogOpen}
-            onOpenChange={(open) => {
-              setAddBackendDialogOpen(open);
-              if (!open) {
-                setSavedBackendError(null);
-              }
-            }}
-          >
-            <Tooltip>
-              <TooltipTrigger
-                render={
-                  <DialogTrigger
-                    render={
-                      <Button
-                        size="xs"
-                        variant="ghost"
-                        className="h-5 gap-1 rounded-sm px-1 text-[11px] font-normal text-muted-foreground/60 hover:text-muted-foreground"
-                        aria-label="Add computer"
-                      >
-                        <PlusIcon className="size-3" />
-                        <span>Add computer</span>
-                      </Button>
-                    }
-                  />
-                }
-              />
-              <TooltipPopup side="top">Add computer</TooltipPopup>
-            </Tooltip>
-            <DialogPopup className="max-h-[80dvh] sm:max-w-3xl">
-              <DialogHeader>
-                <DialogTitle>
-                  {isPhoneSurface ? "Add computer" : "Add another computer"}
-                </DialogTitle>
-                <DialogDescription>
-                  Use a Threadlines link or SSH if you already have it set up.
-                </DialogDescription>
-              </DialogHeader>
-              <DialogPanel>
-                <div className="space-y-4">
-                  <div className="grid gap-3 sm:grid-cols-2">
-                    {renderConnectionModeCard({
-                      mode: "remote",
-                      title: "Use a setup link",
-                      description: "Connect to another Threadlines computer with a link or code.",
-                      icon: <ChevronsLeftRightEllipsisIcon aria-hidden className="size-4" />,
-                    })}
-                    {desktopBridge
-                      ? renderConnectionModeCard({
-                          mode: "ssh",
-                          title: "Use SSH (advanced)",
-                          description: "For computers you already access with SSH keys or config.",
-                          icon: <TerminalIcon aria-hidden className="size-4" />,
-                        })
-                      : null}
-                  </div>
-                  <AnimatedHeight>
-                    {savedBackendMode === "ssh" ? renderSshFields() : renderRemoteModeBody()}
-                  </AnimatedHeight>
-                </div>
-              </DialogPanel>
-            </DialogPopup>
-          </Dialog>
-        }
-      >
-        {savedEnvironmentIds.map((environmentId) => (
-          <SavedBackendListRow
-            key={environmentId}
-            environmentId={environmentId}
-            reconnectingEnvironmentId={reconnectingSavedEnvironmentId}
-            disconnectingEnvironmentId={disconnectingSavedEnvironmentId}
-            removingEnvironmentId={removingSavedEnvironmentId}
-            onConnect={handleConnectSavedBackend}
-            onDisconnect={handleDisconnectSavedBackend}
-            onRemove={handleRemoveSavedBackend}
+      {isPhoneSurface ? null : canManageLocalBackend ? (
+        devicesSection
+      ) : (
+        <SettingsSection title="Devices using this computer">
+          <SettingsRow
+            title="Owner only"
+            description="Only the computer's owner can connect devices or remove their access."
           />
-        ))}
+        </SettingsSection>
+      )}
 
-        {savedEnvironmentIds.length === 0 ? (
-          <div className={ITEM_ROW_CLASSNAME}>
-            <p className="text-xs text-muted-foreground">
-              {isPhoneSurface
-                ? "No computers are saved in this browser."
-                : 'No other computers saved. Use "Add computer" when you want to connect Threadlines to another machine.'}
+      {computersSection}
+
+      {!isPhoneSurface && canManageLocalBackend ? connectionOptionsSection : null}
+
+      {canManageLocalBackend && !isPhoneSurface ? (
+        <ConnectDeviceDialog
+          open={connectDeviceOpen}
+          onOpenChange={setConnectDeviceOpen}
+          hostLabel={thisComputerLabel}
+          relayAccess={relayAccess}
+        />
+      ) : null}
+      <JoinComputerDialog
+        open={joinComputerOpen}
+        onOpenChange={(open) => {
+          setJoinComputerOpen(open);
+          if (!open) setSavedBackendError(null);
+        }}
+        viaServer={submitCodeJoinViaServer}
+        replaceExisting={removeSavedEnvironment}
+        selfEnvironmentId={thisEnvironmentId}
+        otherWays={otherWaysToConnect}
+        otherWaysSummary={
+          desktopBridge && !isPhoneSurface ? "Address and code, SSH" : "Address and code"
+        }
+      />
+
+      <AlertDialog open={confirmRemoveAllOpen} onOpenChange={setConfirmRemoveAllOpen}>
+        <AlertDialogPopup>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Remove every device?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {otherDeviceCount} devices will lose access to this computer and need to connect
+              again.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogClose render={<Button variant="outline" />}>Cancel</AlertDialogClose>
+            <Button
+              variant="destructive"
+              onClick={() => {
+                setConfirmRemoveAllOpen(false);
+                void handleRevokeOtherDesktopClients();
+              }}
+            >
+              Remove all
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogPopup>
+      </AlertDialog>
+
+      <Dialog
+        open={directLinkDialogOpen}
+        onOpenChange={(open) => {
+          setDirectLinkDialogOpen(open);
+          if (!open) setDirectLinkLabel("");
+        }}
+      >
+        <DialogPopup className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>One-time link for this network</DialogTitle>
+            <DialogDescription>
+              The link shows up under Devices using this computer. Open it on the other device, or
+              paste it there under Connect to a computer › Other ways to connect.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogPanel>
+            <label className="block">
+              <span className="mb-1.5 block text-xs font-medium text-foreground">
+                Name for the other device (optional)
+              </span>
+              <Input
+                value={directLinkLabel}
+                onChange={(event) => setDirectLinkLabel(event.target.value)}
+                placeholder="e.g. Work laptop"
+                disabled={isCreatingDirectLink}
+                autoFocus
+              />
+            </label>
+          </DialogPanel>
+          <DialogFooter variant="bare">
+            <Button
+              variant="outline"
+              disabled={isCreatingDirectLink}
+              onClick={() => setDirectLinkDialogOpen(false)}
+            >
+              Cancel
+            </Button>
+            <Button disabled={isCreatingDirectLink} onClick={() => void handleCreateDirectLink()}>
+              {isCreatingDirectLink ? "Making..." : "Make link"}
+            </Button>
+          </DialogFooter>
+        </DialogPopup>
+      </Dialog>
+
+      <AlertDialog
+        open={isDesktopServerExposureDialogOpen}
+        onOpenChange={(open) => {
+          if (isUpdatingDesktopServerExposure) return;
+          setIsDesktopServerExposureDialogOpen(open);
+        }}
+        onOpenChangeComplete={(open) => {
+          if (!open) setPendingDesktopServerExposureMode(null);
+        }}
+      >
+        <AlertDialogPopup>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {pendingDesktopServerExposureMode === "network-accessible"
+                ? "Let devices on this network connect?"
+                : "Stop same-network connections?"}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {pendingDesktopServerExposureMode === "network-accessible"
+                ? "Threadlines will restart so devices on your network can reach this computer directly."
+                : "Threadlines will restart. Devices that joined with a code keep working."}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogClose
+              disabled={isUpdatingDesktopServerExposure}
+              render={<Button variant="outline" disabled={isUpdatingDesktopServerExposure} />}
+            >
+              Cancel
+            </AlertDialogClose>
+            <Button
+              variant={
+                pendingDesktopServerExposureMode === "local-only" ? "destructive" : "default"
+              }
+              onClick={handleConfirmDesktopServerExposureChange}
+              disabled={
+                pendingDesktopServerExposureMode === null || isUpdatingDesktopServerExposure
+              }
+            >
+              {isUpdatingDesktopServerExposure ? (
+                <>
+                  <Spinner className="size-3.5" />
+                  Restarting...
+                </>
+              ) : pendingDesktopServerExposureMode === "network-accessible" ? (
+                "Restart and allow"
+              ) : (
+                "Restart and stop"
+              )}
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogPopup>
+      </AlertDialog>
+      <AlertDialog
+        open={disableTailscaleServeDialogOpen}
+        onOpenChange={(open) => {
+          if (isUpdatingTailscaleServe) return;
+          setDisableTailscaleServeDialogOpen(open);
+        }}
+      >
+        <AlertDialogPopup>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Turn off Tailscale?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Threadlines will restart and stop using Tailscale for device access.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogClose
+              disabled={isUpdatingTailscaleServe}
+              render={<Button variant="outline" disabled={isUpdatingTailscaleServe} />}
+            >
+              Cancel
+            </AlertDialogClose>
+            <Button
+              variant="destructive"
+              onClick={() => void handleConfirmTailscaleServeDisable()}
+              disabled={isUpdatingTailscaleServe}
+            >
+              {isUpdatingTailscaleServe ? (
+                <>
+                  <Spinner className="size-3.5" />
+                  Restarting...
+                </>
+              ) : (
+                "Restart and turn off"
+              )}
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogPopup>
+      </AlertDialog>
+      <Dialog
+        open={pendingTailscaleServeEndpoint !== null}
+        onOpenChange={(open) => {
+          if (isUpdatingTailscaleServe) return;
+          if (!open) setPendingTailscaleServeEndpoint(null);
+        }}
+      >
+        <DialogPopup className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Turn on Tailscale?</DialogTitle>
+            <DialogDescription>
+              Threadlines will restart and ask Tailscale to make this computer available on your
+              private Tailscale network.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogPanel className="space-y-4">
+            <label className="block">
+              <span className="text-sm font-medium text-foreground">HTTPS port</span>
+              <Input
+                className="mt-2"
+                type="number"
+                inputMode="numeric"
+                min={1}
+                max={65_535}
+                step={1}
+                value={tailscaleServePortInput}
+                onChange={(event) => setTailscaleServePortInput(event.target.value)}
+                disabled={isUpdatingTailscaleServe}
+              />
+            </label>
+            {!isTailscaleServePortValid ? (
+              <p className="mt-2 text-xs text-destructive-foreground">
+                Enter a port from 1 to 65535.
+              </p>
+            ) : null}
+            <p
+              className="truncate text-xs text-muted-foreground"
+              title={pendingTailscaleServeBaseUrl ?? undefined}
+            >
+              Address: {pendingTailscaleServeBaseUrl ?? "Waiting for Tailscale"}
             </p>
-          </div>
-        ) : null}
-      </SettingsSection>
+          </DialogPanel>
+          <DialogFooter>
+            <DialogClose
+              disabled={isUpdatingTailscaleServe}
+              render={<Button variant="outline" disabled={isUpdatingTailscaleServe} />}
+            >
+              Cancel
+            </DialogClose>
+            <Button
+              onClick={() => void handleConfirmTailscaleServeSetup()}
+              disabled={isUpdatingTailscaleServe || !isTailscaleServePortValid}
+            >
+              {isUpdatingTailscaleServe ? (
+                <>
+                  <Spinner className="size-3.5" />
+                  Restarting...
+                </>
+              ) : (
+                "Turn on"
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogPopup>
+      </Dialog>
     </SettingsPageContainer>
   );
 }

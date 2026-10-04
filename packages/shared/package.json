@@ -31,6 +31,10 @@
       "types": "./src/preview.ts",
       "import": "./src/preview.ts"
     },
+    "./relaySecure": {
+      "types": "./src/relaySecure.ts",
+      "import": "./src/relaySecure.ts"
+    },
     "./advertisedEndpoint": {
       "types": "./src/advertisedEndpoint.ts",
       "import": "./src/advertisedEndpoint.ts"

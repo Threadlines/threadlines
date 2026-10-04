@@ -182,7 +182,7 @@ export function HostedStaticConnectionErrorState({
       }
       detail={
         message ??
-        "Keep the desktop app open, then reload. If the phone link expired or the app restarted, create a new link."
+        "Keep Threadlines open on your computer, then reload. If it still can't connect, open Settings › Connections › Connect a device there and scan the new QR code."
       }
       action={
         <Button size="sm" variant="outline" onClick={() => window.location.reload()}>

@@ -503,6 +503,13 @@ export const makeSessionCredentialService = Effect.gen(function* () {
       return revoked;
     }).pipe(Effect.mapError(toSessionCredentialError("Failed to revoke session.")));
 
+  const extendExpiry: SessionCredentialServiceShape["extendExpiry"] = (sessionId, ttl) =>
+    Effect.gen(function* () {
+      const now = yield* DateTime.now;
+      const expiresAt = DateTime.add(now, { milliseconds: Duration.toMillis(ttl) });
+      return yield* authSessions.extendExpiry({ sessionId, expiresAt, now });
+    }).pipe(Effect.mapError(toSessionCredentialError("Failed to extend session.")));
+
   return {
     cookieName,
     issue,
@@ -515,6 +522,7 @@ export const makeSessionCredentialService = Effect.gen(function* () {
     },
     awaitRevoked,
     revoke,
+    extendExpiry,
     markConnected,
     markDisconnected,
   } satisfies SessionCredentialServiceShape;

@@ -16,6 +16,7 @@ import {
 } from "./http.ts";
 import { fixPath } from "./os-jank.ts";
 import { websocketRpcRouteLayer } from "./ws.ts";
+import { relayDirectRouteLayer } from "./relay/directRoute.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
 import { layerConfig as SqlitePersistenceLayerLive } from "./persistence/Layers/Sqlite.ts";
 import { ServerLifecycleEventsLive } from "./serverLifecycleEvents.ts";
@@ -99,6 +100,9 @@ import {
   authWebSocketTokenRouteLayer,
 } from "./auth/http.ts";
 import { ServerSecretStoreLive } from "./auth/Layers/ServerSecretStore.ts";
+import { RelayHost, RelayHostLive } from "./relay/RelayHost.ts";
+import { RelayDeviceRepositoryLive } from "./relay/RelayDeviceRepository.ts";
+import { formatHostForUrl, isWildcardHost } from "./startupAccess.ts";
 import { ServerAuthLive } from "./auth/Layers/ServerAuth.ts";
 import * as ProcessDiagnostics from "./diagnostics/ProcessDiagnostics.ts";
 import * as ProcessResourceMonitor from "./diagnostics/ProcessResourceMonitor.ts";
@@ -348,6 +352,13 @@ const AuthLayerLive = ServerAuthLive.pipe(
   Layer.provide(ServerSecretStoreLive),
 );
 
+// "Connect a device": the server's end of the relay. Needs persistence, the
+// session service, and its own secret-store handle for the host secret.
+const RelayLayerLive = RelayHostLive.pipe(
+  Layer.provide(RelayDeviceRepositoryLive),
+  Layer.provide(ServerSecretStoreLive),
+);
+
 const ProviderRuntimeLayerLive = Layer.mergeAll(
   ProviderSessionReaperLive,
   ThreadAutoArchiveSweeperLive,
@@ -378,7 +389,9 @@ const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
   // `DictationLive` sits alongside the broker: local speech-to-text, owning a
   // worker child process and the model downloads, reading the selected model
   // from the settings layer below.
-  Layer.provideMerge(Layer.mergeAll(PreviewAutomationBroker.layer, DictationLive)),
+  // `RelayLayerLive` ("Connect a device") rides along here: like the broker it
+  // owns no project state, only sockets and the relay_devices table below.
+  Layer.provideMerge(Layer.mergeAll(PreviewAutomationBroker.layer, DictationLive, RelayLayerLive)),
   Layer.provideMerge(PersistenceLayerLive),
   Layer.provideMerge(KeybindingsLive),
   Layer.provideMerge(ProviderRegistryLive),
@@ -446,6 +459,7 @@ export const makeRoutesLayer = Layer.mergeAll(
   serverEnvironmentRouteLayer,
   staticAndDevRouteLayer,
   websocketRpcRouteLayer,
+  relayDirectRouteLayer,
 ).pipe(
   Layer.provide(browserApiCorsLayer),
   // Build setup services once for the HTTP server, not once per WebSocket.
@@ -490,6 +504,21 @@ export const makeServerLayer = Layer.unwrap(
         }),
         () => clearPersistedServerRuntimeState(config.serverRuntimeStatePath),
       ),
+    );
+    // Relay device pipes connect back to this server's own /ws, so the relay
+    // link starts once the listener's real port is known.
+    const relayStartLayer = Layer.effectDiscard(
+      Effect.gen(function* () {
+        const server = yield* HttpServer.HttpServer;
+        const address = server.address;
+        if (typeof address === "string" || !("port" in address)) {
+          return;
+        }
+        const hostname =
+          config.host && !isWildcardHost(config.host) ? formatHostForUrl(config.host) : "127.0.0.1";
+        const relay = yield* RelayHost;
+        yield* relay.start(`http://${hostname}:${address.port}`);
+      }),
     );
     const tailscaleServeLayer = config.tailscaleServeEnabled
       ? Layer.effectDiscard(
@@ -549,6 +578,7 @@ export const makeServerLayer = Layer.unwrap(
       }),
       httpListeningLayer,
       runtimeStateLayer,
+      relayStartLayer,
       tailscaleServeLayer,
     );
 

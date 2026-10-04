@@ -71,7 +71,7 @@ export const GET_SERVER_EXPOSURE_STATE_CHANNEL = "desktop:get-server-exposure-st
 export const SET_SERVER_EXPOSURE_MODE_CHANNEL = "desktop:set-server-exposure-mode";
 export const SET_TAILSCALE_SERVE_ENABLED_CHANNEL = "desktop:set-tailscale-serve-enabled";
 export const GET_ADVERTISED_ENDPOINTS_CHANNEL = "desktop:get-advertised-endpoints";
-export const GET_RELAY_PAIRING_SESSION_CHANNEL = "desktop:get-relay-pairing-session";
-export const CREATE_RELAY_PAIRING_SESSION_CHANNEL = "desktop:create-relay-pairing-session";
-export const DISCONNECT_RELAY_PAIRING_SESSION_CHANNEL = "desktop:disconnect-relay-pairing-session";
+export const GET_RETIRED_PHONE_LINK_NOTICE_CHANNEL = "desktop:get-retired-phone-link-notice";
+export const DISMISS_RETIRED_PHONE_LINK_NOTICE_CHANNEL =
+  "desktop:dismiss-retired-phone-link-notice";
 export const SSH_PASSWORD_PROMPT_CANCELLED_RESULT = "ssh-password-prompt-cancelled";

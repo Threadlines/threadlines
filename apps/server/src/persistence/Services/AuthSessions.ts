@@ -62,6 +62,13 @@ export const SetAuthSessionLastConnectedAtInput = Schema.Struct({
 });
 export type SetAuthSessionLastConnectedAtInput = typeof SetAuthSessionLastConnectedAtInput.Type;
 
+export const ExtendAuthSessionExpiryInput = Schema.Struct({
+  sessionId: AuthSessionId,
+  expiresAt: Schema.DateTimeUtcFromString,
+  now: Schema.DateTimeUtcFromString,
+});
+export type ExtendAuthSessionExpiryInput = typeof ExtendAuthSessionExpiryInput.Type;
+
 export interface AuthSessionRepositoryShape {
   readonly create: (
     input: CreateAuthSessionInput,
@@ -78,6 +85,14 @@ export interface AuthSessionRepositoryShape {
   readonly setLastConnectedAt: (
     input: SetAuthSessionLastConnectedAtInput,
   ) => Effect.Effect<void, AuthSessionRepositoryError>;
+  /**
+   * Moves a live session's expiry later (never earlier). Returns whether the
+   * session is still usable; revoked, expired, or unknown sessions return false
+   * and are never revived.
+   */
+  readonly extendExpiry: (
+    input: ExtendAuthSessionExpiryInput,
+  ) => Effect.Effect<boolean, AuthSessionRepositoryError>;
 }
 
 export class AuthSessionRepository extends Context.Service<

@@ -980,6 +980,48 @@ export const DesktopSshPasswordPromptResolutionInputSchema = Schema.Struct({
   password: Schema.NullOr(Schema.String),
 });
 
+/** A computer saved through an old (v1) phone link: one shared relay session. */
+export const PersistedRelayLinkV1Schema = Schema.Struct({
+  relayOrigin: Schema.String,
+  sessionId: Schema.String,
+});
+export type PersistedRelayLinkV1 = typeof PersistedRelayLinkV1Schema.Type;
+
+/**
+ * A computer saved through "Connect a device" (relay v2). The device secret
+ * lives in the saved-environment secret store; `pendingRequest` is present
+ * until the host allows (or refuses) this device, so a restart can resume
+ * waiting. `requestSecret` only lets this client poll or cancel its own
+ * request.
+ */
+/**
+ * A computer joined with "Connect a device". `hostPublicKey` is the host's
+ * end-to-end key, pinned at pairing (from the QR code, or from the code join
+ * once its numbers were compared); connections are only made to whoever holds
+ * it. `directRoutes` are the host's own addresses for skipping the relay.
+ */
+export const PersistedRelayLinkV2Schema = Schema.Struct({
+  version: Schema.Literal(2),
+  relayOrigin: Schema.String,
+  hostId: Schema.String,
+  deviceId: Schema.String,
+  hostPublicKey: Schema.optionalKey(Schema.String),
+  directRoutes: Schema.optionalKey(Schema.Array(Schema.String)),
+  pendingRequest: Schema.optionalKey(
+    Schema.Struct({
+      requestId: Schema.String,
+      requestSecret: Schema.String,
+      expiresAt: Schema.String,
+      /** Code joins: kept secret until the host's nonce arrives. */
+      deviceNonce: Schema.optionalKey(Schema.String),
+      /** Frozen when first received; a different one later aborts the join. */
+      hostNonce: Schema.optionalKey(Schema.String),
+      matchNumber: Schema.optionalKey(Schema.String),
+    }),
+  ),
+});
+export type PersistedRelayLinkV2 = typeof PersistedRelayLinkV2Schema.Type;
+
 export const PersistedSavedEnvironmentRecordSchema = Schema.Struct({
   environmentId: EnvironmentId,
   label: Schema.String,
@@ -988,12 +1030,7 @@ export const PersistedSavedEnvironmentRecordSchema = Schema.Struct({
   createdAt: Schema.String,
   lastConnectedAt: Schema.NullOr(Schema.String),
   desktopSsh: Schema.optionalKey(DesktopSshEnvironmentTargetSchema),
-  relay: Schema.optionalKey(
-    Schema.Struct({
-      relayOrigin: Schema.String,
-      sessionId: Schema.String,
-    }),
-  ),
+  relay: Schema.optionalKey(Schema.Union([PersistedRelayLinkV2Schema, PersistedRelayLinkV1Schema])),
 });
 export type PersistedSavedEnvironmentRecord = typeof PersistedSavedEnvironmentRecordSchema.Type;
 
@@ -1019,18 +1056,6 @@ export const DesktopServerExposureStateSchema = Schema.Struct({
   tailscaleServeEnabled: Schema.Boolean,
   tailscaleServePort: Schema.Number,
 });
-
-export const DesktopRelayPairingSessionSchema = Schema.Struct({
-  pairingUrl: Schema.String,
-  relayOrigin: Schema.String,
-  sessionId: Schema.String,
-  expiresAt: IsoDateTime,
-  status: Schema.optionalKey(Schema.Literals(["open", "reconnecting", "disconnected"])),
-});
-export type DesktopRelayPairingSession = typeof DesktopRelayPairingSessionSchema.Type;
-export const DesktopRelayPairingSessionOrNullSchema = Schema.NullOr(
-  DesktopRelayPairingSessionSchema,
-);
 
 export interface PickFolderOptions {
   initialPath?: string | null;
@@ -1079,9 +1104,12 @@ export interface DesktopBridge {
     readonly port?: number;
   }) => Promise<DesktopServerExposureState>;
   getAdvertisedEndpoints: () => Promise<readonly AdvertisedEndpoint[]>;
-  getRelayPairingSession: () => Promise<DesktopRelayPairingSession | null>;
-  createRelayPairingSession: () => Promise<DesktopRelayPairingSession>;
-  disconnectRelayPairingSession: () => Promise<void>;
+  /**
+   * True once after an update retired this desktop's old (v1) phone link,
+   * until dismissed. Phones paired that way need "Connect a device" again.
+   */
+  getRetiredPhoneLinkNotice: () => Promise<boolean>;
+  dismissRetiredPhoneLinkNotice: () => Promise<void>;
   pickFolder: (options?: PickFolderOptions) => Promise<string | null>;
   confirm: (message: string) => Promise<boolean>;
   captureScreenshot?: (

@@ -25,10 +25,15 @@ import {
   parseRelayTokenProtocol,
   RELAY_WEBSOCKET_PROTOCOL,
 } from "./protocol.ts";
+import { generateToken, sha256Base64Url } from "./crypto.ts";
+import type { RelayV2Env } from "./v2/env.ts";
+import { routeV2 } from "./v2/routing.ts";
 
-type ThreadlinesRelayEnv = Env & {
-  readonly RELAY_MESSAGE_RATE_LIMITER: RateLimit;
-  readonly SESSION_CREATE_RATE_LIMITER: RateLimit;
+export { RelayHost } from "./v2/RelayHost.ts";
+export { RelayCodeShard } from "./v2/RelayCodeShard.ts";
+export { RelayLedger } from "./v2/RelayLedger.ts";
+
+type ThreadlinesRelayEnv = RelayV2Env & {
   readonly THREADLINES_RELAY_SESSION_CREATION_ENABLED: string;
 };
 
@@ -117,6 +122,10 @@ export class RelaySession extends DurableObject<ThreadlinesRelayEnv> {
 
     if (request.method === "POST" && new URL(request.url).pathname.endsWith("/renew")) {
       return this.handleRenewRequest(request);
+    }
+
+    if (request.method === "DELETE") {
+      return this.handleDeleteRequest(request);
     }
 
     if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
@@ -297,6 +306,26 @@ export class RelaySession extends DurableObject<ThreadlinesRelayEnv> {
     return createJsonResponse({
       expiresAt: new Date(expiresAt).toISOString(),
     } satisfies RelayRenewSessionResult);
+  }
+
+  // Ends a phone link for good. Updated desktops call this once when they
+  // retire their old link, so paired phones see "link no longer works" right
+  // away instead of "computer offline" until the session would have expired.
+  private async handleDeleteRequest(request: Request): Promise<Response> {
+    const token = parseBearerToken(request.headers.get("Authorization"));
+    if (!token) {
+      return createJsonResponse({ error: "Missing relay token." }, { status: 401 });
+    }
+    const session = this.readSession();
+    if (!session) {
+      return createJsonResponse({ deleted: false });
+    }
+    const tokenHash = await sha256Base64Url(token);
+    if (tokenHash !== session.desktop_token_hash) {
+      return createJsonResponse({ error: "Invalid relay token." }, { status: 401 });
+    }
+    await this.expireSession("session-deleted");
+    return createJsonResponse({ deleted: true });
   }
 
   override async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
@@ -582,6 +611,20 @@ export default {
   async fetch(request: Request, env: ThreadlinesRelayEnv): Promise<Response> {
     const url = new URL(request.url);
 
+    try {
+      const v2Response = await routeV2(request, env, resolveAllowedOrigins(env));
+      if (v2Response) {
+        return v2Response;
+      }
+    } catch (error) {
+      log("error", "relay v2 request failed", {
+        path: url.pathname,
+        method: request.method,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return createJsonResponse({ error: "Relay request failed." }, { status: 500 });
+    }
+
     if (request.method === "OPTIONS") {
       return new Response(null, {
         status: 204,
@@ -646,6 +689,16 @@ export default {
       const statusMatch = /^\/v1\/sessions\/([^/]+)\/status$/u.exec(url.pathname);
       if (request.method === "GET" && statusMatch) {
         const sessionId = statusMatch[1];
+        if (!sessionId) {
+          return createJsonResponse({ error: "Missing relay session." }, { status: 400 });
+        }
+        const stub = env.RELAY_SESSION.getByName(sessionId);
+        return withCors(request, env, await stub.fetch(request));
+      }
+
+      const deleteMatch = /^\/v1\/sessions\/([^/]+)$/u.exec(url.pathname);
+      if (request.method === "DELETE" && deleteMatch) {
+        const sessionId = deleteMatch[1];
         if (!sessionId) {
           return createJsonResponse({ error: "Missing relay session." }, { status: 400 });
         }
@@ -793,7 +846,7 @@ function corsHeaders(request: Request, env: ThreadlinesRelayEnv): Headers {
     headers.set("Access-Control-Allow-Origin", origin);
     headers.set("Vary", "Origin");
   }
-  headers.set("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+  headers.set("Access-Control-Allow-Methods", "GET,POST,DELETE,OPTIONS");
   headers.set("Access-Control-Allow-Headers", "Authorization,Content-Type");
   return headers;
 }
@@ -821,25 +874,6 @@ function resolveSessionTtlSeconds(env: ThreadlinesRelayEnv): number {
 function isSessionCreationEnabled(env: ThreadlinesRelayEnv): boolean {
   const configured = env.THREADLINES_RELAY_SESSION_CREATION_ENABLED?.trim().toLowerCase();
   return configured !== "false" && configured !== "0" && configured !== "off";
-}
-
-function generateToken(byteLength = 32): string {
-  const bytes = new Uint8Array(byteLength);
-  crypto.getRandomValues(bytes);
-  return base64UrlEncode(bytes);
-}
-
-async function sha256Base64Url(value: string): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
-  return base64UrlEncode(new Uint8Array(digest));
-}
-
-function base64UrlEncode(bytes: Uint8Array): string {
-  let binary = "";
-  for (const byte of bytes) {
-    binary += String.fromCharCode(byte);
-  }
-  return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
 }
 
 function log(level: "info" | "warn" | "error", message: string, data?: Record<string, unknown>) {

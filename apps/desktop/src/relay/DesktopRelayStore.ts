@@ -14,10 +14,11 @@ import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import * as ElectronSafeStorage from "../electron/ElectronSafeStorage.ts";
 
 /**
- * Persisted phone-link pairing session, with the relay desktop token held in
- * plain text only in memory; on disk it is encrypted with Electron's safe
- * storage. Persisting the session lets a desktop restart re-attach to the
- * same relay session, so paired phones reconnect without re-scanning a QR.
+ * What older desktops left behind when they had a phone link: the relay
+ * session and its desktop token (encrypted on disk with Electron's safe
+ * storage). Current desktops never create these; they only read one back so
+ * {@link DesktopRelayRetirement} can end it at the relay, then record that it
+ * happened so Connections can say so once.
  */
 export interface PersistedRelayPairingSession {
   readonly sessionId: string;
@@ -40,6 +41,9 @@ const StoredRelayPairingSessionSchema = Schema.Struct({
 const RelayPairingSessionDocumentSchema = Schema.Struct({
   version: Schema.optionalKey(Schema.Number),
   session: Schema.optionalKey(StoredRelayPairingSessionSchema),
+  /** Set once the old link was ended; the notice shows until dismissed. */
+  retiredAt: Schema.optionalKey(Schema.String),
+  noticeDismissed: Schema.optionalKey(Schema.Boolean),
 });
 
 const RelayPairingSessionDocumentJson = fromLenientJson(RelayPairingSessionDocumentSchema);
@@ -47,11 +51,13 @@ const decodeRelayPairingSessionDocumentJson = Schema.decodeEffect(RelayPairingSe
 const encodeRelayPairingSessionDocumentJson = Schema.encodeEffect(RelayPairingSessionDocumentJson);
 
 export interface DesktopRelayStoreShape {
-  /** Returns none when nothing is persisted or the payload cannot be read. */
+  /** The leftover old phone link, if any. None when absent, unreadable, or already retired. */
   readonly load: Effect.Effect<Option.Option<PersistedRelayPairingSession>>;
-  /** Returns false when safe storage is unavailable and nothing was saved. */
-  readonly save: (session: PersistedRelayPairingSession) => Effect.Effect<boolean>;
-  readonly clear: Effect.Effect<void>;
+  /** Forgets the old link and remembers to tell the user once. */
+  readonly markRetired: (retiredAt: string) => Effect.Effect<void>;
+  /** True after a retirement until the user dismisses the notice. */
+  readonly notice: Effect.Effect<boolean>;
+  readonly dismissNotice: Effect.Effect<void>;
 }
 
 export class DesktopRelayStore extends Context.Service<DesktopRelayStore, DesktopRelayStoreShape>()(
@@ -77,16 +83,17 @@ export const layer = Layer.effect(
         yield* fileSystem.rename(tempPath, sessionPath);
       });
 
+    const readDocument = Effect.gen(function* () {
+      const raw = yield* fileSystem.readFileString(sessionPath).pipe(Effect.option);
+      if (Option.isNone(raw)) {
+        return Option.none<typeof RelayPairingSessionDocumentSchema.Type>();
+      }
+      return yield* decodeRelayPairingSessionDocumentJson(raw.value).pipe(Effect.option);
+    });
+
     return DesktopRelayStore.of({
       load: Effect.gen(function* () {
-        const raw = yield* fileSystem.readFileString(sessionPath).pipe(Effect.option);
-        if (Option.isNone(raw)) {
-          return Option.none<PersistedRelayPairingSession>();
-        }
-
-        const document = yield* decodeRelayPairingSessionDocumentJson(raw.value).pipe(
-          Effect.option,
-        );
+        const document = yield* readDocument;
         const stored = Option.isSome(document) ? document.value.session : undefined;
         if (!stored) {
           return Option.none<PersistedRelayPairingSession>();
@@ -116,47 +123,46 @@ export const layer = Layer.effect(
         });
       }).pipe(Effect.withSpan("desktop.relayStore.load")),
 
-      save: (session) =>
-        Effect.gen(function* () {
-          if (!(yield* safeStorage.isEncryptionAvailable.pipe(Effect.orElseSucceed(() => false)))) {
-            return false;
-          }
-          const encryptedDesktopToken = Encoding.encodeBase64(
-            yield* safeStorage.encryptString(session.desktopToken),
-          );
-          yield* writeDocument({
-            version: 1,
-            session: {
-              sessionId: session.sessionId,
-              pairingUrl: session.pairingUrl,
-              relayOrigin: session.relayOrigin,
-              desktopSocketUrl: session.desktopSocketUrl,
-              expiresAt: session.expiresAt,
-              encryptedDesktopToken,
-            },
-          });
-          return true;
-        }).pipe(
-          Effect.orElseSucceed(() => false),
-          Effect.withSpan("desktop.relayStore.save"),
+      markRetired: (retiredAt) =>
+        writeDocument({ version: 2, retiredAt, noticeDismissed: false }).pipe(
+          Effect.ignore,
+          Effect.withSpan("desktop.relayStore.markRetired"),
         ),
 
-      clear: fileSystem
-        .remove(sessionPath)
-        .pipe(Effect.ignore, Effect.withSpan("desktop.relayStore.clear")),
+      notice: readDocument.pipe(
+        Effect.map((document) =>
+          Option.isSome(document)
+            ? document.value.retiredAt !== undefined && document.value.noticeDismissed !== true
+            : false,
+        ),
+      ),
+
+      dismissNotice: Effect.gen(function* () {
+        const document = yield* readDocument;
+        if (Option.isNone(document) || document.value.retiredAt === undefined) {
+          return;
+        }
+        yield* writeDocument({ ...document.value, noticeDismissed: true });
+      }).pipe(Effect.ignore, Effect.withSpan("desktop.relayStore.dismissNotice")),
     });
   }),
 );
 
-export const layerTest = (input?: { readonly session?: PersistedRelayPairingSession }) =>
+export const layerTest = (input?: {
+  readonly session?: PersistedRelayPairingSession;
+  readonly retired?: boolean;
+}) =>
   Layer.effect(
     DesktopRelayStore,
     Effect.gen(function* () {
       const sessionRef = yield* Ref.make(Option.fromNullishOr(input?.session));
+      const noticeRef = yield* Ref.make(input?.retired ?? false);
       return DesktopRelayStore.of({
         load: Ref.get(sessionRef),
-        save: (session) => Ref.set(sessionRef, Option.some(session)).pipe(Effect.as(true)),
-        clear: Ref.set(sessionRef, Option.none()),
+        markRetired: () =>
+          Ref.set(sessionRef, Option.none()).pipe(Effect.andThen(Ref.set(noticeRef, true))),
+        notice: Ref.get(noticeRef),
+        dismissNotice: Ref.set(noticeRef, false),
       });
     }),
   );

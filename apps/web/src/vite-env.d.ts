@@ -12,6 +12,8 @@ interface ImportMetaEnv {
   readonly VITE_WS_URL: string;
   readonly VITE_HOSTED_APP_URL: string;
   readonly VITE_HOSTED_APP_CHANNEL: string;
+  /** Relay for "Connect a device" code joins from the hosted app (self-hosted relays). */
+  readonly VITE_RELAY_URL?: string;
   readonly VITE_APP_VERSION: string;
   readonly APP_VERSION: string;
 }

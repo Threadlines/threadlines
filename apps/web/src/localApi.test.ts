@@ -265,11 +265,8 @@ function makeDesktopBridge(overrides: Partial<DesktopBridge> = {}): DesktopBridg
       tailscaleServePort: input.port ?? 443,
     }),
     getAdvertisedEndpoints: async () => [],
-    getRelayPairingSession: async () => null,
-    createRelayPairingSession: async () => {
-      throw new Error("createRelayPairingSession not implemented in test");
-    },
-    disconnectRelayPairingSession: async () => undefined,
+    getRetiredPhoneLinkNotice: async () => false,
+    dismissRetiredPhoneLinkNotice: async () => undefined,
     pickFolder: async () => null,
     confirm: async () => true,
     setTheme: async () => undefined,

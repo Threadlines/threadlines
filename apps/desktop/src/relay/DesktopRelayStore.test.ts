@@ -1,6 +1,7 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as Encoding from "effect/Encoding";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -78,50 +79,70 @@ const withRelayStore = <A, E, R>(
     return yield* effect.pipe(Effect.provide(makeLayer(baseDir, options)));
   }).pipe(Effect.provide(NodeServices.layer), Effect.scoped);
 
+/** Writes what an older desktop left on disk: a phone-link session with its encrypted token. */
+const writeLeftoverPhoneLink = Effect.gen(function* () {
+  const environment = yield* DesktopEnvironment.DesktopEnvironment;
+  const fileSystem = yield* FileSystem.FileSystem;
+  yield* fileSystem.makeDirectory(environment.stateDir, { recursive: true });
+  yield* fileSystem.writeFileString(
+    environment.relayPairingSessionPath,
+    JSON.stringify({
+      version: 1,
+      session: {
+        sessionId: pairingSession.sessionId,
+        pairingUrl: pairingSession.pairingUrl,
+        relayOrigin: pairingSession.relayOrigin,
+        desktopSocketUrl: pairingSession.desktopSocketUrl,
+        expiresAt: pairingSession.expiresAt,
+        encryptedDesktopToken: Encoding.encodeBase64(
+          textEncoder.encode(`enc:${pairingSession.desktopToken}`),
+        ),
+      },
+    }),
+  );
+});
+
 describe("DesktopRelayStore", () => {
-  it.effect("round-trips a pairing session with an encrypted desktop token", () =>
+  it.effect("reads back an old phone link with its decrypted desktop token", () =>
     withRelayStore(
       Effect.gen(function* () {
+        yield* writeLeftoverPhoneLink;
         const store = yield* DesktopRelayStore.DesktopRelayStore;
-        const environment = yield* DesktopEnvironment.DesktopEnvironment;
-        const fileSystem = yield* FileSystem.FileSystem;
-
-        assert.isTrue(yield* store.save(pairingSession));
         assert.deepEqual(yield* store.load, Option.some(pairingSession));
-
-        const raw = yield* fileSystem.readFileString(environment.relayPairingSessionPath);
-        assert.notInclude(raw, pairingSession.desktopToken);
+        assert.isFalse(yield* store.notice);
       }),
     ),
   );
 
-  it.effect("loads nothing when no session was persisted", () =>
+  it.effect("forgets a retired link and shows the notice until dismissed", () =>
+    withRelayStore(
+      Effect.gen(function* () {
+        yield* writeLeftoverPhoneLink;
+        const store = yield* DesktopRelayStore.DesktopRelayStore;
+        yield* store.markRetired("2026-10-03T00:00:00.000Z");
+        assert.deepEqual(yield* store.load, Option.none());
+        assert.isTrue(yield* store.notice);
+        yield* store.dismissNotice;
+        assert.isFalse(yield* store.notice);
+      }),
+    ),
+  );
+
+  it.effect("loads nothing when no link was ever saved", () =>
     withRelayStore(
       Effect.gen(function* () {
         const store = yield* DesktopRelayStore.DesktopRelayStore;
         assert.deepEqual(yield* store.load, Option.none());
+        assert.isFalse(yield* store.notice);
       }),
     ),
   );
 
-  it.effect("clears a persisted session", () =>
+  it.effect("loads nothing when safe storage can't decrypt the token", () =>
     withRelayStore(
       Effect.gen(function* () {
+        yield* writeLeftoverPhoneLink;
         const store = yield* DesktopRelayStore.DesktopRelayStore;
-        assert.isTrue(yield* store.save(pairingSession));
-        yield* store.clear;
-        assert.deepEqual(yield* store.load, Option.none());
-        // Clearing an already-clear store is a no-op, not an error.
-        yield* store.clear;
-      }),
-    ),
-  );
-
-  it.effect("does not persist when safe storage is unavailable", () =>
-    withRelayStore(
-      Effect.gen(function* () {
-        const store = yield* DesktopRelayStore.DesktopRelayStore;
-        assert.isFalse(yield* store.save(pairingSession));
         assert.deepEqual(yield* store.load, Option.none());
       }),
       { availableSecretStorage: false },

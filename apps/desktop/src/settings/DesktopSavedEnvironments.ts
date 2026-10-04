@@ -1,4 +1,9 @@
-import { EnvironmentId, type PersistedSavedEnvironmentRecord } from "@threadlines/contracts";
+import {
+  EnvironmentId,
+  PersistedRelayLinkV1Schema,
+  PersistedRelayLinkV2Schema,
+  type PersistedSavedEnvironmentRecord,
+} from "@threadlines/contracts";
 import { fromLenientJson } from "@threadlines/shared/schemaJson";
 import * as Context from "effect/Context";
 import * as Data from "effect/Data";
@@ -53,6 +58,7 @@ const PersistedSavedEnvironmentStorageRecordSchema = Schema.Struct({
   createdAt: Schema.String,
   lastConnectedAt: Schema.NullOr(Schema.String),
   desktopSsh: Schema.optionalKey(DesktopSshTargetSchema),
+  relay: Schema.optionalKey(Schema.Union([PersistedRelayLinkV2Schema, PersistedRelayLinkV1Schema])),
   encryptedBearerToken: Schema.optionalKey(Schema.String),
 });
 
@@ -126,44 +132,36 @@ export class DesktopSavedEnvironments extends Context.Service<
 function toPersistedSavedEnvironmentRecord(
   record: PersistedSavedEnvironmentStorageRecord,
 ): PersistedSavedEnvironmentRecord {
-  const nextRecord = {
+  return {
     environmentId: record.environmentId,
     label: record.label,
     httpBaseUrl: record.httpBaseUrl,
     wsBaseUrl: record.wsBaseUrl,
     createdAt: record.createdAt,
     lastConnectedAt: record.lastConnectedAt,
+    ...(record.desktopSsh ? { desktopSsh: record.desktopSsh } : {}),
+    ...(record.relay ? { relay: record.relay } : {}),
   };
-  return record.desktopSsh ? { ...nextRecord, desktopSsh: record.desktopSsh } : nextRecord;
 }
 
 function toSavedEnvironmentStorageRecord(
   record: PersistedSavedEnvironmentRecord | PersistedSavedEnvironmentStorageRecord,
   encryptedBearerToken: Option.Option<string>,
 ): PersistedSavedEnvironmentStorageRecord {
-  const nextRecord = {
+  return {
     environmentId: record.environmentId,
     label: record.label,
     httpBaseUrl: record.httpBaseUrl,
     wsBaseUrl: record.wsBaseUrl,
     createdAt: record.createdAt,
     lastConnectedAt: record.lastConnectedAt,
+    ...(record.desktopSsh ? { desktopSsh: record.desktopSsh } : {}),
+    ...(record.relay ? { relay: record.relay } : {}),
+    ...Option.match(encryptedBearerToken, {
+      onNone: () => ({}),
+      onSome: (value) => ({ encryptedBearerToken: value }),
+    }),
   };
-  const desktopSsh = record.desktopSsh;
-  if (desktopSsh) {
-    return Option.match(encryptedBearerToken, {
-      onNone: () => ({ ...nextRecord, desktopSsh }),
-      onSome: (value) => ({
-        ...nextRecord,
-        desktopSsh,
-        encryptedBearerToken: value,
-      }),
-    });
-  }
-  return Option.match(encryptedBearerToken, {
-    onNone: () => nextRecord,
-    onSome: (value) => ({ ...nextRecord, encryptedBearerToken: value }),
-  });
 }
 
 function normalizeSavedEnvironmentRegistryDocument(
