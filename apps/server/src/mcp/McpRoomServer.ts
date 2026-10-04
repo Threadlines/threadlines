@@ -163,7 +163,8 @@ const RoomToolHandlersLive = RoomEndpointToolkit.toLayer(
         Effect.flatMap(caller, (scope) => handlers.room_hand_off(scope, input)),
       room_available_agents: () => Effect.flatMap(caller, handlers.room_available_agents),
       room_invite: (input) => Effect.flatMap(caller, (scope) => handlers.room_invite(scope, input)),
-      thread_agents: () => Effect.flatMap(caller, threadHandlers.thread_agents),
+      thread_agents: (input) =>
+        Effect.flatMap(caller, (scope) => threadHandlers.thread_agents(scope, input)),
       thread_start: (input) =>
         Effect.flatMap(caller, (scope) => threadHandlers.thread_start(scope, input)),
       thread_list: (input) =>

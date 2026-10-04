@@ -116,6 +116,8 @@ const THREADS_OFF =
   "Starting threads is turned off in Settings, so the thread tools are off. Do the work in this thread.";
 const SIDE_REFUSAL = "Only the agent working in this thread can use the thread tools.";
 const GONE = "This thread is gone.";
+/** How many models thread_agents shows per provider before "and N more". */
+const MODELS_LISTED_PER_PROVIDER = 12;
 const NOT_FOUND = "No open thread with that id is in this project. thread_list shows them.";
 
 /** A turn id no thread has: a caller outside its turn never matches it. */
@@ -349,7 +351,10 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
   // thread_agents
   // ---------------------------------------------------------------------------
 
-  const threadAgents = (scope: McpInvocationScope): Effect.Effect<ThreadAgentsResult> =>
+  const threadAgents = (
+    scope: McpInvocationScope,
+    input: { readonly instanceId?: string | undefined } = {},
+  ): Effect.Effect<ThreadAgentsResult> =>
     Effect.gen(function* () {
       const empty = { agents: [], unavailable: [] };
       const gated = yield* gate(scope, "thread_agents");
@@ -358,25 +363,39 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
       }
       const { thread, mode } = gated;
       const providers = yield* deps.providers;
+      const only = input.instanceId?.trim() || undefined;
       const agents: Array<ThreadAgentsResult["agents"][number]> = [];
       const unavailable: Array<ThreadAgentsResult["unavailable"][number]> = [];
       for (const provider of providers) {
         // Providers the user never turned on are not worth a line.
         if (!provider.enabled || !provider.installed) continue;
+        if (only !== undefined && provider.instanceId !== only) continue;
         const refusal = childAgentRefusal(provider, thread.interactionMode);
         const name = childAgentProviderName(provider);
         if (refusal !== null) {
           unavailable.push({ instanceId: provider.instanceId, name, reason: refusal });
           continue;
         }
+        const models = provider.models
+          .filter((model) => model.isHidden !== true)
+          .map((model) => ({ model: model.slug, name: model.shortName ?? model.name }));
+        // A gateway can list a hundred models; the first ones, in the
+        // provider's own order, are enough to choose from unless asked.
+        const listed = only === undefined ? models.slice(0, MODELS_LISTED_PER_PROVIDER) : models;
         agents.push({
           instanceId: provider.instanceId,
           name,
           billing: inviteBilling(provider).label,
-          models: provider.models
-            .filter((model) => model.isHidden !== true)
-            .map((model) => ({ model: model.slug, name: model.shortName ?? model.name })),
+          models: listed,
+          ...(listed.length < models.length ? { moreModels: models.length - listed.length } : {}),
         });
+      }
+      if (only !== undefined && agents.length === 0 && unavailable.length === 0) {
+        return {
+          outcome: "refused",
+          detail: `No provider "${only}" is turned on here. Call thread_agents without an instanceId to see the ones that are.`,
+          ...empty,
+        } satisfies ThreadAgentsResult;
       }
       const yours = callerModelSelection(thread, scope.participantId);
       return {

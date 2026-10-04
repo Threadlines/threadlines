@@ -58,7 +58,17 @@ const PROVIDERS = [
   provider("claudeApi", "claudeAgent", {
     auth: { status: "authenticated", type: "apiKey", label: "API key" },
   }),
-  provider("cursor", "cursor"),
+  // A gateway-sized list: more models than thread_agents shows at once.
+  provider("cursor", "cursor", {
+    models: [
+      { slug: "cursor-model", name: "cursor model", isCustom: false },
+      ...Array.from({ length: 14 }, (_, index) => ({
+        slug: `cursor-extra-${index}`,
+        name: `Cursor extra ${index}`,
+        isCustom: false,
+      })),
+    ] as never,
+  }),
 ];
 
 /** The calling thread: Codex, working in its own turn, no family yet. */
@@ -273,6 +283,27 @@ describe("thread_agents", () => {
       expect(result.agents.map((agent) => agent.instanceId)).toEqual(["codex", "claudeAgent"]);
       expect(result.unavailable.map((entry) => entry.instanceId)).toEqual(["claudeApi", "cursor"]);
       expect(result.yours).toEqual({ instanceId: "codex", model: "gpt-6-astra" });
+    }),
+  );
+
+  it.effect("cuts a long model list and lists all of one provider when named", () =>
+    Effect.gen(function* () {
+      const tools = yield* makeTools({});
+      const all = yield* tools.handlers.thread_agents(mainCaller());
+      const cursor = all.agents.find((agent) => agent.instanceId === "cursor");
+      expect(cursor?.models).toHaveLength(12);
+      expect(cursor?.moreModels).toBe(3);
+      expect(all.agents.find((agent) => agent.instanceId === "codex")?.moreModels).toBeUndefined();
+
+      const named = yield* tools.handlers.thread_agents(mainCaller(), { instanceId: "cursor" });
+      expect(named.agents.map((agent) => agent.instanceId)).toEqual(["cursor"]);
+      expect(named.agents[0]?.models).toHaveLength(15);
+      expect(named.agents[0]?.moreModels).toBeUndefined();
+      expect(named.unavailable).toEqual([]);
+
+      const unknown = yield* tools.handlers.thread_agents(mainCaller(), { instanceId: "grok" });
+      expect(unknown.outcome).toBe("refused");
+      expect(unknown.detail).toContain("without an instanceId");
     }),
   );
 });

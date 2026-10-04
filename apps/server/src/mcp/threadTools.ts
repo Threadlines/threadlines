@@ -63,6 +63,8 @@ export const ThreadAgentsResult = Schema.Struct({
           name: Schema.String,
         }),
       ),
+      /** Models left off a long list; thread_agents with this `instanceId` lists them all. */
+      moreModels: Schema.optional(Schema.Number),
     }),
   ),
   /** Providers that are set up but can't take a thread now, and why. */
@@ -201,7 +203,12 @@ const drivesThreads = <T extends Tool.Any>(tool: T): T =>
 export const ThreadAgentsTool = readsThreads(
   Tool.make("thread_agents", {
     description:
-      "The agents a thread you start can run on: each ready provider, how it is paid for, and its models, plus your own model, which threads use when you don't pick one. Pass one as thread_start's `agent`.",
+      "The agents a thread you start can run on: each ready provider, how it is paid for, and its models, plus your own model, which threads use when you don't pick one. Pass one as thread_start's `agent`. A provider with a long model list shows its first ones and how many more it has; pass its `instanceId` to list them all.",
+    parameters: Schema.Struct({
+      instanceId: Schema.optional(
+        Schema.String.annotate({ description: "List only this provider, with every model." }),
+      ),
+    }),
     success: ThreadAgentsResult,
     dependencies,
   }).annotate(Tool.Title, "List agents threads can run on"),
