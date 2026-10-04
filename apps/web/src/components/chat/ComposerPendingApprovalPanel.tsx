@@ -1,5 +1,6 @@
 import { memo } from "react";
 import { type PendingApproval } from "../../session-logic";
+import { mcpCallLiveLabel } from "./activitySteps";
 
 interface ComposerPendingApprovalPanelProps {
   approval: PendingApproval;
@@ -10,6 +11,9 @@ interface ComposerPendingApprovalPanelProps {
 const SHELL_TOOL_NAMES = new Set(["bash", "powershell", "shell", "terminal"]);
 
 function approvalHeading(approval: PendingApproval): string {
+  // An MCP tool reads as what it does ("Opening a browser tab"), not its id.
+  const action = approval.toolName ? mcpCallLiveLabel(approval.toolName) : null;
+  if (action) return action;
   switch (approval.requestKind) {
     case "command":
       return approval.toolName && !SHELL_TOOL_NAMES.has(approval.toolName.toLowerCase())

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import type { WorkLogEntry } from "../../session-logic";
+import { deriveWorkLogEntries, type WorkLogEntry } from "../../session-logic";
 import {
   activityStepFromTranscriptTool,
   activityStepFromWorkLogEntry,
@@ -274,6 +274,108 @@ describe("other steps", () => {
     );
 
     expect(step).toMatchObject({ routine: true, label: "Couldn't edit a.ts", tallies: [] });
+  });
+
+  it("words room tools by what the agent does in the room, from every provider", () => {
+    const room = (detail: string, overrides: Partial<WorkLogEntry> = {}) =>
+      activityStepFromWorkLogEntry(
+        entry({ itemType: "mcp_tool_call", executionState: "running", detail, ...overrides }),
+      );
+
+    // Claude names the call `server · tool: args`.
+    expect(room("threadlines_room · room_review: agent=GPT-6-Astra 2")).toMatchObject({
+      routine: false,
+      label: "Asked GPT-6-Astra 2 for a review",
+      liveLabel: "Asking GPT-6-Astra 2 for a review",
+    });
+    // Codex names it `server.tool: args`.
+    expect(
+      room("threadlines_room.room_ask: agent=GPT-6.1-Sol text=Is the retry safe?"),
+    ).toMatchObject({ label: "Asked GPT-6.1-Sol", liveLabel: "Asking GPT-6.1-Sol" });
+    // Without arguments, the agent goes unnamed rather than showing the id.
+    expect(room("threadlines_room.room_diff")).toMatchObject({
+      routine: true,
+      liveLabel: "Checking the changes",
+    });
+    expect(
+      activityStepFromWorkLogEntry(
+        entry({
+          itemType: "mcp_tool_call",
+          executionState: "running",
+          toolTitle: "mcp__threadlines_room__room_hand_off",
+        }),
+      ),
+    ).toMatchObject({ label: "Handed off to another agent" });
+    expect(
+      activityStepFromTranscriptTool({
+        id: "1",
+        name: "mcp__threadlines_room__room_history",
+        summary: "",
+      }),
+    ).toMatchObject({ routine: true, label: "Read the room's earlier messages" });
+    // Codex transcripts preview the arguments as JSON.
+    expect(
+      activityStepFromTranscriptTool({
+        id: "2",
+        name: "threadlines_room.room_review",
+        summary: '{"agent":"GPT-6-Astra 2","request":"Check agent=Claude"}',
+      }),
+    ).toMatchObject({ label: "Asked GPT-6-Astra 2 for a review" });
+    // Cursor titles the call `server-tool: tool`, as a dynamic tool call.
+    expect(
+      activityStepFromWorkLogEntry(
+        entry({
+          itemType: "dynamic_tool_call",
+          tone: "tool",
+          executionState: "running",
+          toolTitle: "threadlines_room-room_ask: room_ask",
+        }),
+      ),
+    ).toMatchObject({ routine: false, liveLabel: "Asking another agent" });
+    // An agent's reported step and an approval request carry only the id.
+    expect(plainAgentStep("Using mcp__threadlines_room__room_review")).toBe(
+      "Asking another agent for a review",
+    );
+    // Free text that merely looks dotted is not a call.
+    expect(room("package.json")).toMatchObject({ label: "Used a tool" });
+  });
+
+  it("words the browser panel the same for every provider", () => {
+    // Codex reports its MCP calls as items with the server, tool and arguments.
+    const [codexOpen] = deriveWorkLogEntries([
+      {
+        id: "codex-open" as never,
+        createdAt: "2026-10-04T00:00:00.000Z",
+        kind: "tool.completed",
+        summary: "MCP tool call",
+        tone: "tool",
+        turnId: null,
+        payload: {
+          itemType: "mcp_tool_call",
+          title: "MCP tool call",
+          data: {
+            item: {
+              type: "mcpToolCall",
+              server: "threadlines_browser",
+              tool: "browser_navigate",
+              arguments: { url: "http://localhost:4173/settings" },
+            },
+          },
+        },
+      },
+    ]);
+    expect(activityStepFromWorkLogEntry(codexOpen!)).toMatchObject({
+      label: "Opened localhost:4173/settings",
+    });
+    // Cursor titles the call `server-tool: tool`.
+    expect(
+      activityStepFromWorkLogEntry(
+        entry({
+          itemType: "dynamic_tool_call",
+          toolTitle: "threadlines_browser-browser_screenshot: browser_screenshot",
+        }),
+      ),
+    ).toMatchObject({ routine: true, label: "Took a screenshot" });
   });
 
   it("words a tool call that failed as a failure", () => {

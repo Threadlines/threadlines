@@ -1674,6 +1674,8 @@ function summarizeTodoInput(input: Record<string, unknown>): string | undefined 
 function summarizeGenericToolArguments(input: Record<string, unknown>): string | undefined {
   const parts: string[] = [];
   for (const key of [
+    // The agent a room tool talks to, which the conversation names.
+    "agent",
     "url",
     "uri",
     "path",
@@ -5955,6 +5957,12 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     };
 
     if (message.type === "tool_progress") {
+      // Claude Code pings every 30 s while a long call runs, under the call's
+      // id plus `-heartbeat-N`. The call's own step already shows it running,
+      // so a ping would only add a second step that never finishes.
+      if (message.heartbeat === true || /-heartbeat-\d+$/u.test(message.tool_use_id)) {
+        return;
+      }
       yield* offerRuntimeEvent({
         ...base,
         type: "tool.progress",

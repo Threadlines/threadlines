@@ -3678,6 +3678,47 @@ describe("deriveWorkLogEntries", () => {
     });
   });
 
+  it("keeps a long Claude call to one step, without its stored still-running pings", () => {
+    const call = {
+      itemType: "mcp_tool_call",
+      toolCallId: "toolu_review",
+      title: "MCP tool call",
+      detail: "threadlines_room · room_review: agent=GPT-6-Astra",
+    };
+    const entries = deriveWorkLogEntries([
+      makeActivity({
+        id: "review-start",
+        sequence: 1,
+        kind: "tool.updated",
+        payload: { ...call, status: "inProgress" },
+      }),
+      ...[1, 2].map((n) =>
+        makeActivity({
+          id: `review-ping-${n}`,
+          sequence: 1 + n,
+          kind: "tool.progress",
+          summary: "mcp__threadlines_room__room_review",
+          payload: {
+            itemType: "mcp_tool_call",
+            toolCallId: `toolu_review-heartbeat-${n}`,
+            status: "inProgress",
+            title: "mcp__threadlines_room__room_review",
+            elapsedSeconds: 30 * n,
+          },
+        }),
+      ),
+      makeActivity({
+        id: "review-done",
+        sequence: 4,
+        kind: "tool.completed",
+        payload: { ...call, status: "completed" },
+      }),
+    ]);
+
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ toolCallId: "toolu_review", executionState: "completed" });
+  });
+
   it("collapses Threadlines browser work into a durable verification receipt", () => {
     const entries = deriveWorkLogEntries([
       makeActivity({
