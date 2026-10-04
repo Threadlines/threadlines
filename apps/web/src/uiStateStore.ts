@@ -1,4 +1,5 @@
 import { Debouncer } from "@tanstack/react-pacer";
+import { parseScopedThreadKey } from "@threadlines/client-runtime";
 import { create } from "zustand";
 
 export const PERSISTED_STATE_KEY = "threadlines:ui-state:v1";
@@ -622,8 +623,27 @@ function shouldRetireOverlay(
   return overlay.settled && (serverAt ?? null) !== overlay.baselineAt;
 }
 
-export function syncThreads(state: UiState, threads: readonly SyncThreadInput[]): UiState {
+export function syncThreads(
+  state: UiState,
+  threads: readonly SyncThreadInput[],
+  options: {
+    /**
+     * Environments whose thread list has loaded. Persisted per-device choices
+     * that outlive a reload (which families are open) are only forgotten for
+     * threads gone from one of these, never for an environment still
+     * connecting. Absent: none have.
+     */
+    readonly loadedEnvironmentIds?: ReadonlySet<string>;
+  } = {},
+): UiState {
   const retainedThreadKeys = new Set(threads.map((thread) => thread.key));
+  const isGoneFromLoadedEnvironment = (threadKey: string) => {
+    if (retainedThreadKeys.has(threadKey)) return false;
+    const environmentId = parseScopedThreadKey(threadKey)?.environmentId;
+    return (
+      environmentId !== undefined && (options.loadedEnvironmentIds?.has(environmentId) ?? false)
+    );
+  };
 
   const nextSeedVisitedAtById = Object.fromEntries(
     Object.entries(state.threadSeedVisitedAtById).filter(([threadKey]) =>
@@ -672,8 +692,8 @@ export function syncThreads(state: UiState, threads: readonly SyncThreadInput[])
     ),
   );
   const nextChildThreadFamilyOpenById = Object.fromEntries(
-    Object.entries(state.childThreadFamilyOpenById).filter(([threadKey]) =>
-      retainedThreadKeys.has(threadKey),
+    Object.entries(state.childThreadFamilyOpenById).filter(
+      ([threadKey]) => !isGoneFromLoadedEnvironment(threadKey),
     ),
   );
   if (
@@ -989,7 +1009,10 @@ export function reorderProjects(
 
 interface UiStateStore extends UiState {
   syncProjects: (projects: readonly SyncProjectInput[]) => void;
-  syncThreads: (threads: readonly SyncThreadInput[]) => void;
+  syncThreads: (
+    threads: readonly SyncThreadInput[],
+    options?: { readonly loadedEnvironmentIds?: ReadonlySet<string> },
+  ) => void;
   setDoneOverlay: (threadKey: string, overlay: ThreadDoneOverlayWrite) => void;
   setSeenOverlay: (threadKey: string, overlay: ThreadOverlayWrite) => void;
   resolveDoneOverlay: (threadKey: string, at: string, outcome: "confirmed" | "failed") => void;
@@ -1017,7 +1040,7 @@ interface UiStateStore extends UiState {
 export const useUiStateStore = create<UiStateStore>((set) => ({
   ...readPersistedState(),
   syncProjects: (projects) => set((state) => syncProjects(state, projects)),
-  syncThreads: (threads) => set((state) => syncThreads(state, threads)),
+  syncThreads: (threads, options) => set((state) => syncThreads(state, threads, options)),
   setDoneOverlay: (threadKey, overlay) => set((state) => setDoneOverlay(state, threadKey, overlay)),
   setSeenOverlay: (threadKey, overlay) => set((state) => setSeenOverlay(state, threadKey, overlay)),
   resolveDoneOverlay: (threadKey, at, outcome) =>

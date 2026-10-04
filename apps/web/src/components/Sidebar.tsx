@@ -95,6 +95,7 @@ import {
   childThreadsHoverLine,
   getSidebarThreadIdsToPrewarm,
   inboxLiveRowHasAttention,
+  inboxLiveRowHoldsOpenChild,
   inboxLiveRowThreadKeys,
   isChildThreadWorking,
   isNeedsUserStatus,
@@ -111,6 +112,7 @@ import {
   sortDoneThreads,
   sortInboxThreads,
   summarizeChildThreads,
+  windowInboxDoneRows,
   windowInboxThreads,
   useThreadJumpHintVisibility,
   type ThreadStatusPill,
@@ -1017,21 +1019,22 @@ export default function Sidebar() {
   // Volume is managed by folding, not by flattening rows: quiet threads past
   // the limit fold away, and pins and anything with a status stay put. A
   // family takes one seat, and has a status when its parent or any live child
-  // does.
+  // does. A family holding the thread open in the chat never folds away.
   const { visible: visibleLiveEntries, hiddenCount: hiddenLiveCount } = useMemo(
     () =>
       windowInboxThreads({
         rows: liveEntries,
-        hasAttention: inboxLiveRowHasAttention,
+        hasAttention: (row) =>
+          inboxLiveRowHasAttention(row) || inboxLiveRowHoldsOpenChild(row, routeThreadKey),
         isPinned: (row) => row.entry.thread.pinnedAt !== null,
         limit: LIVE_PREVIEW_COUNT + revealedLiveCount,
         expanded: false,
       }),
-    [liveEntries, revealedLiveCount],
+    [liveEntries, revealedLiveCount, routeThreadKey],
   );
   const nextLiveRevealCount = Math.min(LIVE_REVEAL_STEP, hiddenLiveCount);
   const visibleDoneEntries = useMemo(
-    () => doneEntries.slice(0, DONE_PREVIEW_COUNT + revealedDoneCount),
+    () => windowInboxDoneRows(doneEntries, DONE_PREVIEW_COUNT + revealedDoneCount),
     [doneEntries, revealedDoneCount],
   );
   const nextDoneRevealCount = Math.min(
@@ -2090,6 +2093,7 @@ export default function Sidebar() {
                               isDone={child.isDone}
                               doneAt={child.doneAt}
                               isActive={routeThreadKey === child.threadKey}
+                              jumpLabel={visibleThreadJumpLabelByKey.get(child.threadKey) ?? null}
                               canMarkDone={child.canMarkDone}
                               orderedThreadKeys={orderedThreadKeys}
                               renamingThreadKey={renamingThreadKey}
@@ -2214,6 +2218,9 @@ export default function Sidebar() {
                                 isDone
                                 doneAt={openChild.doneAt}
                                 isActive
+                                jumpLabel={
+                                  visibleThreadJumpLabelByKey.get(openChild.threadKey) ?? null
+                                }
                                 canMarkDone={false}
                                 orderedThreadKeys={orderedThreadKeys}
                                 renamingThreadKey={renamingThreadKey}

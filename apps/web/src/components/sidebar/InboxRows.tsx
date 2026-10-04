@@ -403,6 +403,15 @@ function resolveRowStatusParts(thread: SidebarThreadSummary, status: ThreadStatu
   };
 }
 
+/** The jump shortcut a row shows in its status slot while the modifier is held. */
+function ThreadJumpLabel({ label }: { label: string }) {
+  return (
+    <span className="inline-flex h-4 items-center rounded-full border border-border/80 bg-background/90 px-1.5 text-[10px] font-medium tracking-tight text-foreground">
+      {label}
+    </span>
+  );
+}
+
 /** The live half of a status slot: its word, then the clock. */
 function RowLiveStatus({ word, clockStartedAt }: { word: string; clockStartedAt: string | null }) {
   return (
@@ -881,9 +890,7 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
                   )}
                 >
                   {jumpLabel ? (
-                    <span className="inline-flex h-4 items-center rounded-full border border-border/80 bg-background/90 px-1.5 text-[10px] font-medium tracking-tight text-foreground">
-                      {jumpLabel}
-                    </span>
+                    <ThreadJumpLabel label={jumpLabel} />
                   ) : statusWord !== null ? (
                     statusWord
                   ) : isLive ? (
@@ -1017,6 +1024,8 @@ export interface InboxChildRowProps {
   isDone: boolean;
   doneAt: string | null;
   isActive: boolean;
+  /** See InboxThreadRowProps.jumpLabel. */
+  jumpLabel: string | null;
   /** See InboxThreadRowProps.canMarkDone. */
   canMarkDone: boolean;
   orderedThreadKeys: readonly string[];
@@ -1050,6 +1059,7 @@ export const InboxChildRow = memo(function InboxChildRow(props: InboxChildRowPro
     isDone,
     doneAt,
     isActive,
+    jumpLabel,
     canMarkDone,
     orderedThreadKeys,
     renamingThreadKey,
@@ -1213,12 +1223,21 @@ export const InboxChildRow = memo(function InboxChildRow(props: InboxChildRowPro
             </span>
           )}
           <span className={ROW_META_SLOT_CLASS_NAME}>
-            <ThreadStatusText
-              thread={thread}
-              status={shownStatus}
-              testId={`child-meta-${thread.id}`}
-              {...(isDone ? { resting: doneAt ? formatRelativeTimeLabel(doneAt) : null } : {})}
-            />
+            {jumpLabel ? (
+              <span
+                data-testid={`child-meta-${thread.id}`}
+                className="shrink-0 font-mono text-[11px] leading-none tabular-nums"
+              >
+                <ThreadJumpLabel label={jumpLabel} />
+              </span>
+            ) : (
+              <ThreadStatusText
+                thread={thread}
+                status={shownStatus}
+                testId={`child-meta-${thread.id}`}
+                {...(isDone ? { resting: doneAt ? formatRelativeTimeLabel(doneAt) : null } : {})}
+              />
+            )}
             {showAction ? (
               <RowFloatingActions isActive={isActive} isSelected={isSelected}>
                 <Tooltip>

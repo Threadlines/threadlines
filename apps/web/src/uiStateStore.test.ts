@@ -362,6 +362,32 @@ describe("uiStateStore pure functions", () => {
     expect(next.threadWrapUpOnPullRequestSettledById).toEqual({ [thread1]: false });
   });
 
+  it("keeps a family open on a computer still connecting, and forgets it once it is gone", () => {
+    const initialState = makeUiState({
+      childThreadFamilyOpenById: {
+        "local:parent-kept": true,
+        "local:parent-deleted": true,
+        "remote:parent": true,
+      },
+    });
+
+    // The remote computer has not listed its threads yet.
+    const next = syncThreads(initialState, [{ key: "local:parent-kept" }], {
+      loadedEnvironmentIds: new Set(["local"]),
+    });
+    expect(next.childThreadFamilyOpenById).toEqual({
+      "local:parent-kept": true,
+      "remote:parent": true,
+    });
+
+    // Once it has, a family it no longer has is forgotten.
+    expect(
+      syncThreads(next, [{ key: "local:parent-kept" }], {
+        loadedEnvironmentIds: new Set(["local", "remote"]),
+      }).childThreadFamilyOpenById,
+    ).toEqual({ "local:parent-kept": true });
+  });
+
   it("syncThreads seeds visit state for unseen snapshot threads", () => {
     const thread1 = ThreadId.make("thread-1");
     const initialState = makeUiState();

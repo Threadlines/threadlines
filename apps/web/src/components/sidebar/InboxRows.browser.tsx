@@ -258,7 +258,7 @@ describe("child thread families in the inbox", () => {
     expect(onToggleFamily).toHaveBeenCalledWith(`${ENVIRONMENT_ID}:${THREAD_ID}`);
   });
 
-  it("names a wrapped parent in a live child's row, and lets a wrapped child reopen", async () => {
+  it("names a wrapped parent in a live child's row, and gives child rows jump labels and reopen", async () => {
     const reopenThread = vi.fn();
     const child: SidebarThreadSummary = {
       ...THREAD,
@@ -289,6 +289,18 @@ describe("child thread families in the inbox", () => {
             isDone
             doneAt="2026-09-01T09:00:00.000Z"
             isActive={false}
+            jumpLabel={null}
+            canMarkDone={false}
+            reopenThread={reopenThread}
+          />
+          <InboxChildRow
+            {...rowCallbacks}
+            thread={{ ...child, id: ThreadId.make("thread-jump-child") }}
+            status={status("Working")}
+            isDone={false}
+            doneAt={null}
+            isActive={false}
+            jumpLabel="⌘4"
             canMarkDone={false}
             reopenThread={reopenThread}
           />
@@ -300,6 +312,9 @@ describe("child thread families in the inbox", () => {
     const detail = page.getByTestId(`thread-detail-${child.id}`);
     await expect.element(detail).toHaveTextContent("Ship the 0.6 release");
     await expect.element(detail).not.toHaveTextContent("threadlines");
+
+    // A child row is a row the keyboard jumps to, so it shows its shortcut too.
+    await expect.element(page.getByTestId("child-meta-thread-jump-child")).toHaveTextContent("⌘4");
 
     await page.getByTestId("child-row-thread-wrapped-child").hover();
     await userEvent.click(page.getByTestId("child-reopen-thread-wrapped-child"));

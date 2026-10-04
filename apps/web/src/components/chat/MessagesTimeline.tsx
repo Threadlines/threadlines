@@ -105,13 +105,15 @@ import {
   type ActivityStep,
 } from "./activitySteps";
 import {
+  describeThreadStartCall,
   parseThreadStartResult,
-  THREAD_START_REFUSAL_WORDS,
+  threadStartCallHasRecord,
   useChildRequestState,
   useChildThreadsStartedIn,
   useThreadTitle,
+  type ThreadStartCall,
 } from "../../childThreads";
-import { formatChildThreadCount, resolveThreadStatusPill } from "../Sidebar.logic";
+import { resolveThreadStatusPill } from "../Sidebar.logic";
 import { ThreadProviderGlyph, ThreadStatusText } from "../sidebar/InboxRows";
 import {
   computeStableMessagesTimelineRows,
@@ -254,6 +256,8 @@ interface TimelineRowSharedState {
   onOpenAgentsPanel: ((agentThreadId: string | null) => void) | null;
   /** See MessagesTimelineProps.onOpenThread. */
   onOpenThread: ((threadId: ThreadId) => void) | null;
+  /** Every finished `thread_start` call, by turn: a call's record reads its turn's. */
+  threadStartCallsByTurn: ReadonlyMap<string, ReadonlyArray<ThreadStartCall>>;
   /** True while the working anchor at the tail is mounted. The per-agent live
    *  status rows render there and only there; a receipt keeps its compact
    *  tracker chip but must not repeat those rows above the exchange. */
@@ -1005,6 +1009,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     }
     return requests;
   }, [rows]);
+  const threadStartCallsByTurn = useMemo(() => collectThreadStartCalls(rows), [rows]);
   const openAgentRequestByMessageId = useMemo(
     () => new Map(openAgentRequests.map((request) => [request.requestMessageId, request] as const)),
     [openAgentRequests],
@@ -1835,6 +1840,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       turnAgents,
       onOpenAgentsPanel,
       onOpenThread,
+      threadStartCallsByTurn,
       anchorOwnsLiveAgents,
     }),
     [
@@ -1875,6 +1881,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       turnAgents,
       onOpenAgentsPanel,
       onOpenThread,
+      threadStartCallsByTurn,
       anchorOwnsLiveAgents,
     ],
   );
@@ -3892,6 +3899,7 @@ const WorkGroupSection = memo(function WorkGroupSection({
     onOpenAgentsPanel,
     anchorOwnsLiveAgents,
     sideAnswerContext,
+    threadStartCallsByTurn,
   } = use(TimelineRowCtx);
   const { isWorking } = use(TimelineRowActivityCtx);
   const groupedEntries = useMemo(
@@ -3902,12 +3910,19 @@ const WorkGroupSection = memo(function WorkGroupSection({
   // each thread's live status, outside the steps so a folded group never
   // hides them.
   const threadStartEntries = useMemo(
-    () =>
-      groupedEntries.filter(
-        (entry) =>
-          entry.executionState !== "running" && threadlinesRoomToolOf(entry) === "thread_start",
-      ),
+    () => groupedEntries.filter(isSettledThreadStartEntry),
     [groupedEntries],
+  );
+  // The ones that leave a record here; a call another call of its turn speaks
+  // for leaves none.
+  const recordedThreadStartEntries = useMemo(
+    () =>
+      threadStartEntries.filter((entry) => {
+        const turnCalls = threadStartCallsByTurn.get(threadStartTurnKey(entry)) ?? [];
+        const call = turnCalls.find((candidate) => candidate.id === entry.id);
+        return call === undefined || threadStartCallHasRecord(call, turnCalls);
+      }),
+    [threadStartCallsByTurn, threadStartEntries],
   );
   const steps = useMemo(
     () =>
@@ -3942,7 +3957,7 @@ const WorkGroupSection = memo(function WorkGroupSection({
     !(isWorking && row.inActiveExchange);
   const hasSettledSteps = steps.some((step) => !step.running);
 
-  if (!hasSettledSteps && !showTracker && threadStartEntries.length === 0) {
+  if (!hasSettledSteps && !showTracker && recordedThreadStartEntries.length === 0) {
     return null;
   }
 
@@ -3988,60 +4003,79 @@ const WorkGroupSection = memo(function WorkGroupSection({
           durationMs={row.folded ? stretchDurationMs(row.groupedEntries) : null}
         />
       ) : null}
-      {threadStartEntries.map((entry) => (
+      {recordedThreadStartEntries.map((entry) => (
         <StartedThreadsRecord key={entry.id} entry={entry} />
       ))}
     </div>
   );
 });
 
+/** A finished `thread_start` call: the steps leave it to its own record. */
+function isSettledThreadStartEntry(entry: TimelineWorkEntry): boolean {
+  return entry.executionState !== "running" && threadlinesRoomToolOf(entry) === "thread_start";
+}
+
+/** The turn a `thread_start` call is grouped by; a call no turn names stands alone. */
+function threadStartTurnKey(entry: Pick<TimelineWorkEntry, "id" | "turnId">): string {
+  return entry.turnId ? `turn:${entry.turnId}` : `entry:${entry.id}`;
+}
+
+/** Every finished `thread_start` call in the chat, by turn, in order. */
+function collectThreadStartCalls(
+  rows: ReadonlyArray<MessagesTimelineRow>,
+): ReadonlyMap<string, ReadonlyArray<ThreadStartCall>> {
+  const byTurn = new Map<string, ThreadStartCall[]>();
+  for (const row of rows) {
+    if (row.kind !== "work") continue;
+    for (const entry of row.groupedEntries) {
+      if (!isSettledThreadStartEntry(entry)) continue;
+      const key = threadStartTurnKey(entry);
+      const calls = byTurn.get(key) ?? [];
+      calls.push({
+        id: entry.id,
+        turnId: entry.turnId ?? null,
+        result: parseThreadStartResult(entry.toolResult ?? entry.outputPreview),
+      });
+      byTurn.set(key, calls);
+    }
+  }
+  return byTurn;
+}
+
 /**
  * Where the agent started threads of its own (child threads): one line for
  * the call, then each thread with its live status, a click from its chat. In
- * "Ask me first", the line also says how the user answered.
+ * "Ask me first", the line also says how the user answered. When the calls'
+ * results do not say which threads are whose, the turn's last call speaks
+ * for all of them (describeThreadStartCall).
  */
 function StartedThreadsRecord({ entry }: { entry: TimelineWorkEntry }) {
   const ctx = use(TimelineRowCtx);
   const turnId = entry.turnId ?? null;
-  const started = useChildThreadsStartedIn(
+  const startedInTurn = useChildThreadsStartedIn(
     ctx.activeThreadEnvironmentId,
     ctx.activeThreadId,
     turnId,
   );
   const requests = useChildRequestState(ctx.activeThreadEnvironmentId, ctx.activeThreadId);
-  const result = useMemo(() => parseThreadStartResult(entry.outputPreview), [entry.outputPreview]);
-  // Two calls in one turn each list their own threads, when the result named them.
-  const threads =
-    result.threadIds.size > 0
-      ? started.filter((thread) => result.threadIds.has(thread.id))
-      : started;
-  const waitingCount =
-    requests?.open.filter(
-      (request) =>
-        request.kind === "start" &&
-        request.status === "awaiting_user" &&
-        request.callerTurnId === turnId,
-    ).length ?? 0;
-  const asked = result.outcome === "asked_user" || waitingCount > 0;
-  const refusal =
-    result.outcome !== null && result.outcome !== "started" && result.outcome !== "asked_user"
-      ? THREAD_START_REFUSAL_WORDS[result.outcome]
-      : null;
-  const [heading, outcome] =
-    waitingCount > 0
-      ? [`Asked to start ${formatChildThreadCount(waitingCount)}`, "waiting for you"]
-      : asked
-        ? threads.length > 0
-          ? [`Started ${formatChildThreadCount(threads.length)}`, "you said start"]
-          : ["Asked to start threads", "not started"]
-        : refusal !== null && threads.length === 0
-          ? ["Tried to start threads", refusal]
-          : [
-              threads.length > 0
-                ? `Started ${formatChildThreadCount(threads.length)}`
-                : "Started threads",
-              null,
-            ];
+  const record = useMemo(() => {
+    const turnCalls = ctx.threadStartCallsByTurn.get(threadStartTurnKey(entry)) ?? [];
+    const call = turnCalls.find((candidate) => candidate.id === entry.id) ?? {
+      id: entry.id,
+      turnId,
+      result: parseThreadStartResult(entry.toolResult ?? entry.outputPreview),
+    };
+    return describeThreadStartCall({
+      call,
+      turnCalls: turnCalls.length > 0 ? turnCalls : [call],
+      startedInTurn,
+      openRequests: requests?.open ?? [],
+    });
+  }, [ctx.threadStartCallsByTurn, entry, requests, startedInTurn, turnId]);
+  if (record === null) {
+    return null;
+  }
+  const { heading, outcome, threads } = record;
   return (
     <div className="min-w-0" data-started-threads={entry.id}>
       <div className="flex min-w-0 items-center gap-[7px] text-xs leading-5 text-foreground/80">

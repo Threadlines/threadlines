@@ -677,6 +677,9 @@ export function canMarkThreadDone(
     }
   }
   if (hasQueuedTurnStart(thread, options)) return false;
+  // A message waiting behind the last turn (the user's, or one another
+  // thread's agent sent) is work about to run, whoever wrote it.
+  if ((thread.queuedFollowUpCount ?? 0) > 0) return false;
   return true;
 }
 
@@ -736,13 +739,14 @@ export const INBOX_AUTO_DONE_AFTER_DAYS = 2;
 /**
  * Where a thread lives. Resolution order, each layer outranking the next:
  *
- * 1. Blockers. Moving or blocked-on-you work is live, whatever anyone said.
+ * 1. Blockers. Moving, queued or blocked-on-you work is live, whatever anyone
+ *    said.
  * 2. The user's override -- but only while it is FRESHER than the thread's
  *    last activity. New work outranks an old word in both directions: a done
  *    thread that starts again pulls itself back without being un-marked, and
  *    a reopened thread that goes quiet again is allowed to re-file itself.
  * 3. A finished child thread (the "wrap up finished child threads" setting):
- *    one still part of its parent's family, with nothing queued, files itself
+ *    one still part of its parent's family files itself
  *    once its latest work went back to the parent -- the parent's agent read
  *    that answer, so it needs no visit -- or once the parent itself is
  *    wrapped, since the user is finished with that work. Only the exact
@@ -795,11 +799,7 @@ export function isThreadDone(
   if (override != null && !overrideIsStale) {
     return override.state === "done";
   }
-  if (
-    childWrapUp !== null &&
-    (thread.queuedFollowUpCount ?? 0) === 0 &&
-    (handedBackCompletionSeen || childWrapUp.parentDone)
-  ) {
+  if (childWrapUp !== null && (handedBackCompletionSeen || childWrapUp.parentDone)) {
     return true;
   }
   if (
@@ -1115,6 +1115,31 @@ export function inboxLiveRowHasAttention(row: InboxLiveRow<InboxFamilyEntry>): b
     row.entry.status !== null ||
     row.children.some((child) => !child.isDone && child.status !== null)
   );
+}
+
+/**
+ * Whether a live row's family holds the thread open in the chat. Such a row
+ * never folds away: opening a quiet or wrapped child must not hide the whole
+ * family it sits in.
+ */
+export function inboxLiveRowHoldsOpenChild(
+  row: InboxLiveRow<InboxFamilyEntry>,
+  activeThreadKey: string | null,
+): boolean {
+  return (
+    activeThreadKey !== null && row.children.some((child) => child.threadKey === activeThreadKey)
+  );
+}
+
+/**
+ * The Wrapped rows shown at rest: the first `limit`, plus any wrapped family
+ * past them that holds the thread open in the chat. Order never changes.
+ */
+export function windowInboxDoneRows<E extends InboxFamilyEntry>(
+  rows: readonly InboxDoneRow<E>[],
+  limit: number,
+): InboxDoneRow<E>[] {
+  return rows.filter((row, index) => index < limit || row.openChild !== null);
 }
 
 /** The thread keys of the rows a live row draws, in order: it, then its shown children. */

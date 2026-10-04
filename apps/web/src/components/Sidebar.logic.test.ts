@@ -23,13 +23,16 @@ import {
   buildInboxSections,
   buildProjectScopeOptions,
   childThreadsSummaryText,
+  INBOX_AUTO_DONE_AFTER_DAYS,
   inboxLiveRowHasAttention,
+  inboxLiveRowHoldsOpenChild,
   inboxLiveRowThreadKeys,
   isThreadDone,
   mergeThreadDoneOverride,
   mergeThreadLastSeenAt,
   sortInboxThreads,
   summarizeChildThreads,
+  windowInboxDoneRows,
   windowInboxThreads,
   type InboxFamilyEntry,
   type ThreadStatusPill,
@@ -1518,6 +1521,45 @@ describe("child thread families", () => {
     ]);
   });
 
+  it("keeps the family of the thread open in the chat past both folds", () => {
+    // A quiet, wrapped child is open: its live parent sits past the live
+    // fold, and in Wrapped a wrapped family past the shelf's limit holds it.
+    const live = sections(
+      [
+        entry("a"),
+        entry("b"),
+        entry("parent"),
+        entry("open-child", { parent: "parent", done: true }),
+      ],
+      { active: "open-child" },
+    ).live;
+    const { visible } = windowInboxThreads({
+      rows: live,
+      hasAttention: (row) =>
+        inboxLiveRowHasAttention(row) || inboxLiveRowHoldsOpenChild(row, "open-child"),
+      isPinned: () => false,
+      limit: 2,
+      expanded: false,
+    });
+    expect(visible.flatMap(inboxLiveRowThreadKeys)).toEqual(["a", "b", "parent", "open-child"]);
+
+    const done = sections(
+      [
+        entry("x", { done: true }),
+        entry("y", { done: true }),
+        entry("wrapped-parent", { done: true }),
+        entry("wrapped-open-child", { parent: "wrapped-parent", done: true }),
+        entry("z", { done: true }),
+      ],
+      { active: "wrapped-open-child" },
+    ).done;
+    expect(windowInboxDoneRows(done, 2).map((row) => row.entry.threadKey)).toEqual([
+      "x",
+      "y",
+      "wrapped-parent",
+    ]);
+  });
+
   it("gives a quiet parent a seat past the fold when one of its threads has a status", () => {
     const entries = [
       entry("a"),
@@ -1703,6 +1745,35 @@ describe("child thread status and wrap-up", () => {
     expect(isThreadDone(working, null, { now: NOW, childWrapUp: { parentDone: true } })).toBe(
       false,
     );
+  });
+
+  it("never files a thread with a message queued behind its last turn", () => {
+    // An idle child with its parent's next request waiting: the request did
+    // not move the user's activity, so neither a fresh done mark nor any
+    // automatic rule may hide it.
+    const queued = { ...base, lastVisitedAt: "2026-10-04T11:06:00.000Z", queuedFollowUpCount: 1 };
+    expect(canMarkThreadDone(queued, { now: NOW })).toBe(false);
+    expect(
+      isThreadDone(
+        queued,
+        { state: "done", at: "2026-10-04T11:59:00.000Z" },
+        { now: NOW, childWrapUp: { parentDone: true } },
+      ),
+    ).toBe(false);
+    expect(
+      isThreadDone(queued, null, {
+        now: "2026-10-09T12:00:00.000Z",
+        autoDoneAfterDays: INBOX_AUTO_DONE_AFTER_DAYS,
+      }),
+    ).toBe(false);
+    // Once it is taken off the queue, the same mark files it.
+    expect(
+      isThreadDone(
+        { ...queued, queuedFollowUpCount: 0 },
+        { state: "done", at: "2026-10-04T11:59:00.000Z" },
+        { now: NOW },
+      ),
+    ).toBe(true);
   });
 
   it("marks a parent waiting on its threads without blocking its wrap-up", () => {
