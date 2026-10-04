@@ -54,12 +54,20 @@ import {
   antigravityEnvironment,
   type AntigravityInstancePaths,
   type AntigravityModelChoice,
-  hasAntigravityCredentials,
   prepareAntigravityProfile,
   readAntigravityCatalog,
   writeAntigravityCatalog,
 } from "../antigravity/AntigravityProfile.ts";
 import type { AntigravityAuthGate } from "../antigravity/AntigravityAuth.ts";
+import {
+  antigravityCredentialEnvironment,
+  antigravityCredentialFingerprint,
+  antigravitySignInStatus,
+  type AntigravitySignInConfig,
+  readAntigravityGoogleSignIn,
+  readAntigravitySignInCheck,
+  resolveAntigravityAdc,
+} from "../antigravity/AntigravitySignInMethod.ts";
 import type { AntigravityRuntime } from "../antigravity/AntigravityRuntime.ts";
 import { detectionAt } from "../providerDetection.ts";
 import type {
@@ -429,13 +437,16 @@ export interface AntigravityDescriptorInput {
   readonly release: AntigravityPlatformRelease | undefined;
   /** While busy (signing in or out), no agent process starts; each one holds it while it runs. */
   readonly gate?: AntigravityAuthGate;
+  /** The instance's sign-in method, project and key (fixed for an instance build). */
+  readonly signIn: AntigravitySignInConfig;
 }
 
 export function makeAntigravityDescriptor(
   input: AntigravityDescriptorInput,
 ): AcpProviderDescriptor<AntigravitySettings> {
-  const { paths, runtime, release, gate } = input;
+  const { paths, runtime, release, gate, signIn } = input;
   const platform = process.platform;
+  const fingerprint = antigravityCredentialFingerprint(signIn);
 
   const runtimeAction = (verb: "Install" | "Update"): ProviderMaintenanceCommandAction | null =>
     runtime && release
@@ -522,6 +533,7 @@ export function makeAntigravityDescriptor(
               profileDir: paths.profileDir,
               tempDir,
               platform,
+              credentials: antigravityCredentialEnvironment(signIn, environment ?? process.env),
             }),
             ANTIGRAVITY_HARNESS_PATH: harness,
           },
@@ -531,6 +543,11 @@ export function makeAntigravityDescriptor(
         };
       }),
     signInUrlFromStderr: parseAntigravitySignInUrl,
+    // Key methods sign in from the environment with no browser; Google
+    // accounts use the saved sign-in (a missing one prints a sign-in URL).
+    ...(signIn.method === "gemini-api-key" || signIn.method === "agent-platform"
+      ? { authMethodId: signIn.method }
+      : {}),
     agentModeFor: ({ runtimeMode, interactionMode }) => {
       // `/plan` only writes a plan; nothing else should run unasked.
       if (interactionMode === "plan") return "default";
@@ -586,6 +603,7 @@ export function makeAntigravityDescriptor(
       return writeAntigravityCatalog(paths.profileDir, {
         choices,
         ...(currentValue ? { currentValue } : {}),
+        fingerprint,
       });
     },
     notInstalledMessage: "Antigravity is not installed. Install it to use it in Threadlines.",
@@ -599,7 +617,7 @@ export function makeAntigravityDescriptor(
         const installed = runtime ? yield* runtime.installed : undefined;
         return detectionAt(installed?.executable);
       }),
-    probe: (settings) =>
+    probe: (settings, environment) =>
       Effect.gen(function* () {
         const custom = settings.binaryPath.trim();
         if (!custom && (!runtime || !release)) {
@@ -625,23 +643,36 @@ export function makeAntigravityDescriptor(
           } satisfies AcpProviderProbeOutcome;
         }
         const latest = custom ? {} : { latestVersion: ANTIGRAVITY_RELEASE.version };
-        if (!hasAntigravityCredentials(paths.profileDir)) {
+        const usesGoogleSignIn =
+          signIn.method === "oauth-personal" || signIn.method === "oauth-business";
+        const signInStatus = antigravitySignInStatus({
+          config: signIn,
+          signedIn: usesGoogleSignIn
+            ? (yield* readAntigravityGoogleSignIn(paths.profileDir)) === signIn.method
+            : false,
+          check: yield* readAntigravitySignInCheck(paths.profileDir, fingerprint),
+          adc:
+            signIn.method === "agent-platform" && !signIn.key
+              ? yield* resolveAntigravityAdc(environment, platform)
+              : undefined,
+        });
+        if (signInStatus.auth.status !== "authenticated") {
           return {
             installed: true,
             version,
-            status: "warning",
-            auth: { status: "unauthenticated" },
-            message: "Sign in with Google to use Antigravity.",
+            ...signInStatus,
             skipModelDiscovery: true,
             ...latest,
           } satisfies AcpProviderProbeOutcome;
         }
-        const catalog = yield* readAntigravityCatalog(paths.profileDir);
+        const catalog = yield* readAntigravityCatalog(paths.profileDir, {
+          fingerprint,
+          isGoogleAccount: signIn.method === "oauth-personal",
+        });
         return {
           installed: true,
           version,
-          status: "ready",
-          auth: { status: "authenticated", type: "google", label: "Google account" },
+          ...signInStatus,
           ...latest,
           ...(catalog ? { models: antigravityModelsFromChoices(catalog.choices) } : {}),
         } satisfies AcpProviderProbeOutcome;

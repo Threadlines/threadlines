@@ -11,6 +11,7 @@ import {
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link } from "@tanstack/react-router";
 import {
+  type AntigravityAuthMethod,
   isProviderDriverKind,
   PROVIDER_DISPLAY_NAMES,
   ProviderDriverKind,
@@ -22,6 +23,13 @@ import {
 } from "@threadlines/contracts";
 
 import {
+  ANTIGRAVITY_KEY_ENV_NAMES,
+  antigravityAuthMethodInfo,
+  antigravityNextStep,
+  readAntigravitySignInSetup,
+} from "@threadlines/shared/antigravitySignIn";
+import {
+  ANTIGRAVITY_DRIVER_KIND,
   BROWSER_SIGN_IN_DRIVERS,
   BROWSER_SIGN_IN_LABEL,
   buildClaudeAuthLoginCommand,
@@ -58,6 +66,7 @@ import { DraftInput } from "../ui/draft-input";
 import { Input } from "../ui/input";
 import { toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { AntigravitySignInMethods } from "./AntigravitySignInMethods";
 import { ProviderConnectFlow } from "./ProviderConnectFlow";
 import type { DriverOption } from "./providerDriverMeta";
 import {
@@ -721,6 +730,34 @@ export function claudeAuthCapabilityBadge(
   }
 }
 
+/** How the Account tab words Antigravity's sign-in or check, per method. */
+const ANTIGRAVITY_FLOW_COPY: Record<
+  AntigravityAuthMethod,
+  { readonly description: string; readonly runningHint: string; readonly again: string }
+> = {
+  "oauth-personal": {
+    description: "Signs in with your Google account.",
+    runningHint: "Finish signing in on Google's page in your browser.",
+    again: "Sign in again",
+  },
+  "oauth-business": {
+    description: "Signs in with your work Google account.",
+    runningHint: "Finish signing in on Google's page in your browser.",
+    again: "Sign in again",
+  },
+  "gemini-api-key": {
+    description: "Asks Google whether it accepts the key. The check is free.",
+    runningHint: "Checking the key with Google…",
+    again: "Check again",
+  },
+  "agent-platform": {
+    description:
+      "Checks the project and the Google Cloud sign-in. Your first request is the real test.",
+    runningHint: "Checking…",
+    again: "Check again",
+  },
+};
+
 function ProviderAccountSignInSection(props: {
   readonly instanceId: ProviderInstanceId;
   readonly driverKind: ProviderDriverKind | null;
@@ -734,9 +771,27 @@ function ProviderAccountSignInSection(props: {
   ) => void;
   readonly claudeSetupTokenCommand?: string | undefined;
   readonly signInHandoffActive?: boolean;
+  readonly instance: ProviderInstanceConfig;
+  /** Saves the instance and resolves once the server stored it (Antigravity's method). */
+  readonly onSaveInstance?: ((next: ProviderInstanceConfig) => Promise<void>) | undefined;
 }) {
   const authBadge = providerAuthBadge(props.liveProvider?.auth);
   const needsSignIn = authBadge.variant === "warning";
+  // Antigravity's sign-in follows its method: a browser sign-in, or a check
+  // of a key or Google Cloud project.
+  const antigravitySetup =
+    props.driverKind === ANTIGRAVITY_DRIVER_KIND
+      ? readAntigravitySignInSetup(props.instance)
+      : null;
+  const antigravityStep = antigravitySetup
+    ? antigravityNextStep({
+        setup: antigravitySetup,
+        ...(props.liveProvider ? { snapshot: props.liveProvider } : {}),
+      })
+    : null;
+  const antigravityCopy = antigravitySetup ? ANTIGRAVITY_FLOW_COPY[antigravitySetup.method] : null;
+  const usesGoogleSignIn =
+    antigravitySetup === null || antigravityAuthMethodInfo(antigravitySetup.method).browser;
   const isClaude = props.driverKind === CLAUDE_DRIVER_KIND;
   // OpenCode's sign-in opens on a menu of providers to connect, in the
   // terminal itself, so the terminal shows from the start.
@@ -764,6 +819,14 @@ function ProviderAccountSignInSection(props: {
       description="Shows whether this provider is ready and signs it back in without leaving settings."
     >
       <div className="grid gap-4">
+        {antigravitySetup && props.onSaveInstance ? (
+          <AntigravitySignInMethods
+            instanceId={props.instanceId}
+            instance={props.instance}
+            idPrefix={props.idPrefix}
+            onSave={props.onSaveInstance}
+          />
+        ) : null}
         {props.liveProvider?.enabled === false ? (
           // Turned off: the server has not looked at it, so there is no
           // sign-in state to show or run yet.
@@ -773,20 +836,38 @@ function ProviderAccountSignInSection(props: {
           <p className="text-xs text-muted-foreground">
             Install {props.displayName} first, then sign in here.
           </p>
+        ) : antigravityStep?.kind === "settings" && needsSignIn ? (
+          // Only a field above can fix it: no button that would just fail.
+          <div className="flex min-w-0 flex-wrap items-center gap-2 text-xs">
+            <Badge variant={authBadge.variant} size="sm">
+              {authBadge.label}
+            </Badge>
+            {props.liveProvider?.message ? (
+              <span className="min-w-0 text-muted-foreground">{props.liveProvider.message}</span>
+            ) : null}
+          </div>
         ) : (
           <ProviderConnectFlow
             instanceId={props.instanceId}
             flow="login"
             displayName={props.displayName}
-            actionLabel={needsSignIn ? "Sign in" : "Sign in again"}
+            actionLabel={
+              antigravityStep && antigravityCopy
+                ? needsSignIn
+                  ? antigravityStep.label
+                  : antigravityCopy.again
+                : needsSignIn
+                  ? "Sign in"
+                  : "Sign in again"
+            }
             command={props.terminalLoginCommand}
             autoShowTerminal={(props.signInHandoffActive ?? false) || signInStartsInTerminal}
             surface={browserSignIn ? "browser" : "terminal"}
             runningHint={
               signInStartsInTerminal
                 ? "Pick a provider in the terminal below, then finish any step it opens in your browser."
-                : browserSignIn
-                  ? "Finish signing in on Google's page in your browser."
+                : antigravityCopy
+                  ? antigravityCopy.runningHint
                   : undefined
             }
             buttonVariant={needsSignIn ? "default" : "ghost"}
@@ -795,8 +876,8 @@ function ProviderAccountSignInSection(props: {
                 ? "Signing in covers both chat and usage."
                 : signInStartsInTerminal
                   ? "Connects a model provider, such as an OpenCode Go plan or your ChatGPT account, to OpenCode."
-                  : browserSignIn
-                    ? "Signs in with your Google account."
+                  : antigravityCopy
+                    ? antigravityCopy.description
                     : undefined
             }
             statusRow={
@@ -819,7 +900,9 @@ function ProviderAccountSignInSection(props: {
           />
         )}
 
-        {browserSignIn && props.liveProvider?.auth.status === "authenticated" ? (
+        {browserSignIn &&
+        usesGoogleSignIn &&
+        props.liveProvider?.auth.status === "authenticated" ? (
           <ProviderConnectFlow
             instanceId={props.instanceId}
             flow="logout"
@@ -1099,6 +1182,8 @@ interface ProviderInstanceCardProps {
   readonly signInHandoffActive?: boolean;
   readonly onExpandedChange: (open: boolean) => void;
   readonly onUpdate: (nextInstance: ProviderInstanceConfig) => void;
+  /** `onUpdate` for a step that needs the server to have the change first. */
+  readonly onSaveInstance?: ((nextInstance: ProviderInstanceConfig) => Promise<void>) | undefined;
   /**
    * Turns the agent on or off through the shared enablement path. Resolves
    * once the server stored it, so "Install" on a turned-off agent can wait
@@ -1176,6 +1261,7 @@ export function ProviderInstanceCard({
   signInHandoffActive = false,
   onExpandedChange,
   onUpdate,
+  onSaveInstance,
   onEnabledChange,
   onDelete,
   onResetDefaults,
@@ -1304,17 +1390,30 @@ export function ProviderInstanceCard({
     }
     return null;
   }, [driverKind, instance.config]);
+  // Antigravity's next step follows its sign-in method: some can only be
+  // fixed on the Account tab (a missing key or project).
+  const antigravitySetup =
+    driverKind === ANTIGRAVITY_DRIVER_KIND ? readAntigravitySignInSetup(instance) : null;
+  const antigravityRowStep = antigravitySetup
+    ? antigravityNextStep({
+        setup: antigravitySetup,
+        ...(liveProvider ? { snapshot: liveProvider } : {}),
+      })
+    : null;
   // Installed but signed out: the next step belongs on the row, like Install.
   const showRowSignIn =
     enabled &&
     liveProvider?.installed === true &&
     liveProvider.auth.status === "unauthenticated" &&
     terminalLoginCommand !== null;
+  // Variables the Account tab owns; the generic editor leaves them alone.
   const reservedEnvironmentNames = useMemo(
     () =>
       driverKind === CLAUDE_DRIVER_KIND
         ? new Set<string>([CLAUDE_LONG_LIVED_OAUTH_TOKEN_ENV])
-        : undefined,
+        : driverKind === ANTIGRAVITY_DRIVER_KIND
+          ? new Set<string>(ANTIGRAVITY_KEY_ENV_NAMES)
+          : undefined,
     [driverKind],
   );
 
@@ -1440,7 +1539,10 @@ export function ProviderInstanceCard({
       : agentStatus.kind === "needsSignIn" || agentStatus.kind === "notInstalled"
         ? "warning"
         : "none";
-  const needs = driverOption?.needs ?? "";
+  const needs =
+    antigravitySetup && antigravitySetup.method !== "oauth-personal"
+      ? antigravityAuthMethodInfo(antigravitySetup.method).name
+      : (driverOption?.needs ?? "");
   // Healthy rows say who is signed in and nothing more; a broken one keeps the
   // first sentence of the server's diagnosis.
   // Without an Install button the full guide (with its link) is the only way
@@ -1530,8 +1632,19 @@ export function ProviderInstanceCard({
         view={providerInstallView}
         statusClassName="max-w-64"
       />
+    ) : showRowSignIn && antigravityRowStep?.kind === "settings" ? (
+      <Button
+        size="xs"
+        onClick={() => {
+          setDetailsSection("account");
+          onExpandedChange(true);
+        }}
+      >
+        {antigravityRowStep.label}
+      </Button>
     ) : showRowSignIn ? (
       <ProviderSignInAction
+        {...(antigravityRowStep ? { label: antigravityRowStep.label } : {})}
         instanceId={instanceId}
         displayName={displayName}
         autoStart={autoSignIn}
@@ -1656,6 +1769,8 @@ export function ProviderInstanceCard({
                 environment={instance.environment ?? []}
                 onEnvironmentChange={updateEnvironment}
                 signInHandoffActive={signInHandoffActive}
+                instance={instance}
+                onSaveInstance={onSaveInstance}
                 {...(driverKind === CLAUDE_DRIVER_KIND ? { claudeSetupTokenCommand } : {})}
               />
             </div>

@@ -154,7 +154,14 @@ function createBaseServerConfig(): ServerConfig {
           accountFolder: "",
           customModels: [],
         },
-        antigravity: { enabled: false, binaryPath: "", customModels: [] },
+        antigravity: {
+          enabled: false,
+          binaryPath: "",
+          authMethod: "oauth-personal",
+          gcpProject: "",
+          gcpLocation: "",
+          customModels: [],
+        },
       },
     },
   };

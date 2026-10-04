@@ -105,6 +105,8 @@ export interface ProviderConnectFlowController {
   readonly start: () => void;
   /** Cancels the server session and clears everything this hook is showing. */
   readonly reset: () => void;
+  /** Ends any run on the instance, not only this hook's, and resolves once the server has. */
+  readonly stopAnyRun: () => Promise<void>;
 }
 
 export function useProviderConnectFlow(input: {
@@ -258,12 +260,7 @@ export function useProviderConnectFlow(input: {
   }, [flow, instanceId, onStartError]);
 
   const flowId = state.flowId;
-  const reset = useCallback(() => {
-    if (instanceId !== null) {
-      void readProviderAuthClient()
-        ?.stop({ instanceId, ...(flowId ? { flowId } : {}) })
-        .catch(() => {});
-    }
+  const clearLocalState = useCallback(() => {
     outputBufferRef.current = "";
     sessionFlowRef.current = null;
     runObservedRef.current = false;
@@ -272,7 +269,28 @@ export function useProviderConnectFlow(input: {
     setState(initialProviderConnectFlowState);
     setStartError(null);
     setHasRun(false);
-  }, [flowId, instanceId]);
+  }, []);
+  const reset = useCallback(() => {
+    if (instanceId !== null) {
+      void readProviderAuthClient()
+        ?.stop({ instanceId, ...(flowId ? { flowId } : {}) })
+        .catch(() => {});
+    }
+    clearLocalState();
+  }, [clearLocalState, flowId, instanceId]);
+
+  /**
+   * Ends whatever sign-in the instance is running, whoever started it, and
+   * resolves once the server has: the caller is about to replace the
+   * settings that run belongs to.
+   */
+  const stopAnyRun = useCallback(async () => {
+    const client = readProviderAuthClient();
+    if (instanceId !== null && client !== null) {
+      await client.stop({ instanceId }).catch(() => {});
+    }
+    clearLocalState();
+  }, [clearLocalState, instanceId]);
 
   /**
    * Hands a browser sign-in the address the browser ended on (another
@@ -303,8 +321,20 @@ export function useProviderConnectFlow(input: {
       terminalWriteRef,
       start,
       reset,
+      stopAnyRun,
       submitRedirect,
     }),
-    [hasRun, isActive, isStarting, needsTerminal, reset, start, startError, state, submitRedirect],
+    [
+      hasRun,
+      isActive,
+      isStarting,
+      needsTerminal,
+      reset,
+      start,
+      startError,
+      state,
+      stopAnyRun,
+      submitRedirect,
+    ],
   );
 }

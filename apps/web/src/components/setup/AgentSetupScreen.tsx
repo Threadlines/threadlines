@@ -291,6 +291,16 @@ function SetupSignInAgentRow({
       actions={
         <>
           <ProviderSignInInlineStatus view={view} className="max-w-56" />
+          {isBrowserFlow && !controller.isActive ? (
+            // Keys and Google Cloud sign-ins are chosen on the Account tab.
+            <Link
+              to="/settings/providers"
+              search={{ instance: String(agent.row.instanceId) }}
+              className="shrink-0 text-xs text-muted-foreground hover:text-foreground"
+            >
+              Other ways
+            </Link>
+          ) : null}
           <ProviderSignInButton
             view={view}
             label={isBrowserFlow ? BROWSER_SIGN_IN_LABEL : "Sign in"}

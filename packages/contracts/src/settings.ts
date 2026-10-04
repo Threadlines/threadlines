@@ -440,6 +440,20 @@ export const FxSettings = makeProviderSettingsSchema(
 );
 export type FxSettings = typeof FxSettings.Type;
 
+/**
+ * How an Antigravity instance signs in, by Antigravity's own ACP method ids:
+ * a Google account or Gemini Enterprise (browser sign-in), a Gemini API key,
+ * or Gemini Enterprise Agent Platform (Vertex AI) with a key or the
+ * computer's Google Cloud sign-in. The last two bill per use.
+ */
+export const AntigravityAuthMethod = Schema.Literals([
+  "oauth-personal",
+  "oauth-business",
+  "gemini-api-key",
+  "agent-platform",
+]);
+export type AntigravityAuthMethod = typeof AntigravityAuthMethod.Type;
+
 export const AntigravitySettings = makeProviderSettingsSchema(
   {
     // Opt-in: Antigravity is a ~110-400 MB download Threadlines manages.
@@ -455,6 +469,20 @@ export const AntigravitySettings = makeProviderSettingsSchema(
           "Leave empty to use the Antigravity runtime Threadlines installs. Set it to run your own agy_acp_server.",
         providerSettingsForm: { placeholder: "Managed by Threadlines", clearWhenEmpty: "omit" },
       }),
+    ),
+    // The Account tab owns these three; keys live in the instance's
+    // environment as secrets (GEMINI_API_KEY, GOOGLE_API_KEY).
+    authMethod: AntigravityAuthMethod.pipe(
+      Schema.withDecodingDefault(Effect.succeed("oauth-personal" as const)),
+      Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
+    ),
+    gcpProject: TrimmedString.pipe(
+      Schema.withDecodingDefault(Effect.succeed("")),
+      Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
+    ),
+    gcpLocation: TrimmedString.pipe(
+      Schema.withDecodingDefault(Effect.succeed("")),
+      Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
     ),
     customModels: Schema.Array(Schema.String).pipe(
       Schema.withDecodingDefault(Effect.succeed([])),
@@ -748,6 +776,9 @@ const FxSettingsPatch = Schema.Struct({
 const AntigravitySettingsPatch = Schema.Struct({
   enabled: Schema.optionalKey(Schema.Boolean),
   binaryPath: Schema.optionalKey(TrimmedString),
+  authMethod: Schema.optionalKey(AntigravityAuthMethod),
+  gcpProject: Schema.optionalKey(TrimmedString),
+  gcpLocation: Schema.optionalKey(TrimmedString),
   customModels: Schema.optionalKey(Schema.Array(Schema.String)),
 });
 

@@ -19,6 +19,7 @@ import { LoaderIcon } from "lucide-react";
 import type { ReactNode } from "react";
 
 import { cn } from "../../lib/utils";
+import { useAntigravityNextStep } from "../settings/useAntigravityNextStep";
 import type { ProviderConnectFlowController } from "../settings/useProviderConnectFlow";
 import { Button } from "../ui/button";
 
@@ -99,6 +100,19 @@ export function ProviderSignInButton({
   readonly variant?: "default" | "outline" | "ghost" | undefined;
   readonly className?: string | undefined;
 }): ReactNode {
+  // Antigravity's sign-in follows its method; a missing key or project can
+  // only be fixed on its Account tab.
+  const antigravityStep = useAntigravityNextStep(view.instanceId);
+  if (antigravityStep?.kind === "settings") {
+    return (
+      <ProviderSignInSettingsLink
+        instanceId={view.instanceId}
+        className={className}
+        label={antigravityStep.label}
+      />
+    );
+  }
+  const buttonLabel = antigravityStep?.label ?? label;
   if (view.needsTerminal && !view.hasFailed) {
     return <ProviderSignInSettingsLink instanceId={view.instanceId} className={className} />;
   }
@@ -111,10 +125,10 @@ export function ProviderSignInButton({
       variant={variant ?? "default"}
       className={className}
       disabled={view.instanceId === null}
-      aria-label={ariaLabel ?? label}
+      aria-label={ariaLabel ?? buttonLabel}
       onClick={view.start}
     >
-      {label}
+      {buttonLabel}
     </Button>
   );
 }
@@ -127,16 +141,21 @@ export function ProviderSignInButton({
 export function ProviderSignInSettingsLink({
   instanceId,
   className,
+  label = "Open Settings",
 }: {
   readonly instanceId: ProviderInstanceId | null;
   readonly className?: string | undefined;
+  /** What the settings step is ("Add key"); "Open Settings" by default. */
+  readonly label?: string;
 }): ReactNode {
   return (
     <Button
       size="xs"
       variant="outline"
       className={className}
-      aria-label="Open provider settings to finish signing in"
+      aria-label={
+        label === "Open Settings" ? "Open provider settings to finish signing in" : undefined
+      }
       render={
         <Link
           to="/settings/providers"
@@ -144,7 +163,7 @@ export function ProviderSignInSettingsLink({
         />
       }
     >
-      Open Settings
+      {label}
     </Button>
   );
 }
