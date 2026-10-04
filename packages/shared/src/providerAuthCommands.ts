@@ -109,6 +109,13 @@ export function claudeAuthEnvironment(input: {
   };
 }
 
+/** `folder` without trailing slashes or backslashes. A loop, not a regex: a regex backtracks on long runs of them. */
+function withoutTrailingSeparators(folder: string): string {
+  let end = folder.length;
+  while (end > 0 && (folder[end - 1] === "/" || folder[end - 1] === "\\")) end -= 1;
+  return folder.slice(0, end);
+}
+
 /**
  * OpenCode keeps its sign-ins (and sessions) in one database; an account
  * folder gives the instance its own.
@@ -117,7 +124,7 @@ export function openCodeAccountEnvironment(input: {
   readonly accountFolder?: string | undefined;
   readonly platform?: string | undefined;
 }): Readonly<Record<string, string>> {
-  const accountFolder = input.accountFolder?.trim().replace(/[\\/]+$/u, "") ?? "";
+  const accountFolder = withoutTrailingSeparators(input.accountFolder?.trim() ?? "");
   if (!accountFolder) return {};
   // Clients building the copyable command may not know the server's platform;
   // a Windows folder says so itself.
