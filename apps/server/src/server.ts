@@ -50,6 +50,7 @@ import { RuntimeReceiptBusLive } from "./orchestration/Layers/RuntimeReceiptBus.
 import { ProviderRuntimeIngestionLive } from "./orchestration/Layers/ProviderRuntimeIngestion.ts";
 import { SubagentWorktreeFollowerLive } from "./orchestration/Layers/SubagentWorktreeFollower.ts";
 import { ProviderCommandReactorLive } from "./orchestration/Layers/ProviderCommandReactor.ts";
+import { ChildThreadReactorLive } from "./orchestration/Layers/ChildThreadReactor.ts";
 import { ThreadContextSeedBuilderLive } from "./provider/contextSeed/ThreadContextSeedBuilder.ts";
 import { CheckpointReactorLive } from "./orchestration/Layers/CheckpointReactor.ts";
 import { ThreadDeletionReactorLive } from "./orchestration/Layers/ThreadDeletionReactor.ts";
@@ -220,6 +221,7 @@ const ReactorLayerLive = Layer.empty.pipe(
   Layer.provideMerge(ProviderRuntimeIngestionLive),
   Layer.provideMerge(SubagentWorktreeFollowerLive),
   Layer.provideMerge(ProviderCommandReactorLive),
+  Layer.provideMerge(ChildThreadReactorLive),
   Layer.provideMerge(CheckpointReactorLive),
   Layer.provideMerge(ThreadDeletionReactorLive),
   Layer.provideMerge(ThreadDiffStatBaselineReactorLive),

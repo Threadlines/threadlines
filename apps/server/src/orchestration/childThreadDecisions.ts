@@ -641,6 +641,9 @@ export function decideChildDeliveriesStop(
   cause: "stopped" | "wrapped" | "archived",
 ): ReadonlyArray<PlannedEvent> {
   const open = parent.childRequests.open;
+  // Stop's chain stop already takes back every message agents queued, these
+  // reports included; wrapping and archiving have no chain stop to do it.
+  const unqueueReports = cause !== "stopped";
   const hasQueuedReports = (parent.queuedFollowUps ?? []).some(
     (queued) => queued.fromThread?.kind === "report",
   );
@@ -674,7 +677,7 @@ export function decideChildDeliveriesStop(
       (titles) =>
         `${why} ${quotedList(titles)} ${titles.length === 1 ? "keeps" : "keep"} running unless stopped, but no answer will come back to you.`,
     ),
-    ...unqueueReportsFrom(baseFor, parent, null, createdAt),
+    ...(unqueueReports ? unqueueReportsFrom(baseFor, parent, null, createdAt) : []),
   ];
 }
 
