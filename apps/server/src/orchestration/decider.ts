@@ -30,6 +30,8 @@ import {
 } from "./messageAgentModels.ts";
 
 import { isTurnAside } from "@threadlines/shared/transcriptRevert";
+import { isAttachedChild } from "@threadlines/shared/childThreads";
+import { isAgentOrigin } from "@threadlines/shared/roomAgentRequests";
 
 import { OrchestrationCommandInvariantError } from "./Errors.ts";
 import {
@@ -59,6 +61,27 @@ import {
   requireThreadPinned,
   requireWorkspaceProject,
 } from "./commandInvariants.ts";
+import {
+  type ChildEventBase,
+  type ChildThreadDecision,
+  attachedChildrenOf,
+  childArchivePlan,
+  childDeletionEvents,
+  childRevertRefusal,
+  childrenArchivedWith,
+  decideChildDeliveriesStop,
+  decideChildNotesDelivered,
+  decideChildRequestSettle,
+  decideChildRequestUpdate,
+  decideChildRespond,
+  decideChildSend,
+  decideChildStart,
+  decideChildrenStop,
+  decideParentAttachmentSet,
+  isStaleReport,
+  settleParentRequestsForUnqueued,
+} from "./childThreadDecisions.ts";
+import { childDeliveryForQuietCandidate } from "./childThreadDelivery.ts";
 import { projectEvent } from "./projector.ts";
 import { canReplaceThreadTitle } from "./threadTitle.ts";
 import { carriedBackgroundTasks } from "./sessionBackgroundTasks.ts";
@@ -158,6 +181,45 @@ function planAgentRequestDecision(commandType: string, decision: AgentRequestDec
     : Effect.succeed(decision);
 }
 
+/** Plan a child-thread decision's events, or refuse the command with its reason. */
+function planChildThreadDecision(commandType: string, decision: ChildThreadDecision) {
+  return "refusal" in decision
+    ? Effect.fail(new OrchestrationCommandInvariantError({ commandType, detail: decision.refusal }))
+    : Effect.succeed(decision);
+}
+
+/** Event fields for any thread's aggregate, from one command: a family decision touches two. */
+function childEventBase(
+  command: Pick<OrchestrationCommand, "commandId">,
+  occurredAt: string,
+): ChildEventBase {
+  return (threadId) =>
+    withEventBase({
+      aggregateKind: "thread",
+      aggregateId: threadId,
+      occurredAt,
+      commandId: command.commandId,
+    });
+}
+
+/** The user wrote: the per-message child thread counts start over. */
+function resetChildRequestsForUser(
+  thread: OrchestrationThread,
+  base: () => Omit<OrchestrationEvent, "sequence" | "type" | "payload">,
+  createdAt: string,
+): ReadonlyArray<PlannedOrchestrationEvent> {
+  const state = thread.childRequests;
+  return state.startsSinceUser === 0 && state.sendsSinceUser === 0
+    ? []
+    : [
+        {
+          ...base(),
+          type: "thread.child-requests-reset",
+          payload: { threadId: thread.id, createdAt },
+        },
+      ];
+}
+
 type DecideOrchestrationCommandResult =
   | PlannedOrchestrationEvent
   | ReadonlyArray<PlannedOrchestrationEvent>;
@@ -191,6 +253,68 @@ const decideCommandSequence = Effect.fn("decideCommandSequence")(function* ({
 
   return plannedEvents;
 });
+
+/**
+ * Child threads: the user writes to a child whose answer to its parent was
+ * waiting on the child's background work. The answer so far goes back now,
+ * before the user's turn, so the user taking over never changes what the
+ * parent receives.
+ */
+function settleCandidateBeforeUserTurn(
+  readModel: OrchestrationReadModel,
+  child: OrchestrationThread,
+  command: Pick<OrchestrationCommand, "commandId"> & { readonly createdAt: string },
+): ReadonlyArray<PlannedOrchestrationEvent> {
+  if (child.parentThreadId === null) {
+    return [];
+  }
+  const parent = readModel.threads.find(
+    (entry) => entry.id === child.parentThreadId && entry.deletedAt === null,
+  );
+  const request = parent?.childRequests.open.find(
+    (entry) => entry.childThreadId === child.id && entry.status === "awaiting_background",
+  );
+  if (parent === undefined || request === undefined) {
+    return [];
+  }
+  const delivery = childDeliveryForQuietCandidate(child, request);
+  if (delivery === null || delivery.type !== "thread.child-request.settle") {
+    return [];
+  }
+  const decision = decideChildRequestSettle(
+    readModel,
+    parent,
+    { ...delivery, threadId: parent.id, createdAt: command.createdAt },
+    childEventBase(command, command.createdAt),
+  );
+  return "refusal" in decision ? [] : decision;
+}
+
+/**
+ * Child threads on Stop (or a session stop) in `thread`: what it was owed by
+ * its own children will not come back, and a parent's requests still queued
+ * here (taken back by the chain stop) can never be answered.
+ */
+function childStopEvents(
+  readModel: OrchestrationReadModel,
+  thread: OrchestrationThread,
+  command: Pick<OrchestrationCommand, "commandId">,
+  createdAt: string,
+): ReadonlyArray<PlannedOrchestrationEvent> {
+  const baseFor = childEventBase(command, createdAt);
+  return [
+    ...decideChildDeliveriesStop(readModel, thread, baseFor, createdAt, "stopped"),
+    ...settleParentRequestsForUnqueued(
+      readModel,
+      thread,
+      (thread.queuedFollowUps ?? [])
+        .filter((queued) => queued.fromThread?.kind === "request")
+        .map((queued) => queued.messageId),
+      baseFor,
+      createdAt,
+    ),
+  ];
+}
 
 export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand")(function* ({
   command,
@@ -324,6 +448,30 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
+      // A thread started by another thread's agent: its parent must be a live
+      // thread of the same project, and not itself a child (one level deep).
+      const parentThreadId = command.parentThreadId;
+      if (parentThreadId !== undefined) {
+        const parent = readModel.threads.find(
+          (entry) => entry.id === parentThreadId && entry.deletedAt === null,
+        );
+        const lineageRefusal =
+          parentThreadId === command.threadId
+            ? "A thread cannot start itself."
+            : parent === undefined
+              ? `Thread '${parentThreadId}' does not exist.`
+              : parent.projectId !== command.projectId
+                ? "A thread can only start threads in its own project."
+                : isAttachedChild(parent)
+                  ? "A thread started by another thread cannot start threads itself."
+                  : null;
+        if (lineageRefusal !== null) {
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: lineageRefusal,
+          });
+        }
+      }
       // A thread set up as a room before its first message starts with its
       // agents: all of them are checked before any is recorded.
       const startingAgents = command.participants ?? [];
@@ -364,6 +512,15 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           interactionMode: command.interactionMode,
           branch: command.branch,
           worktreePath: normalizeWorktreePath(command.worktreePath, project.workspaceRoot),
+          ...(parentThreadId !== undefined
+            ? {
+                parentThreadId,
+                ...(command.parentTurnId !== undefined
+                  ? { parentTurnId: command.parentTurnId }
+                  : {}),
+                attachedToParent: command.attachedToParent === true,
+              }
+            : {}),
           createdAt: command.createdAt,
           updatedAt: command.createdAt,
         },
@@ -565,13 +722,13 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.delete": {
-      yield* requireThread({
+      const thread = yield* requireThread({
         readModel,
         command,
         threadId: command.threadId,
       });
       const occurredAt = yield* nowIso;
-      return {
+      const deletedEvent: PlannedOrchestrationEvent = {
         ...withEventBase({
           aggregateKind: "thread",
           aggregateId: command.threadId,
@@ -584,22 +741,43 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           deletedAt: occurredAt,
         },
       };
+      // Child threads: its family is separated (or deleted with it), and a
+      // child's parent stops waiting on it.
+      const withChildren = command.withChildren === true;
+      const familyEvents = childDeletionEvents(
+        readModel,
+        thread,
+        childEventBase(command, occurredAt),
+        occurredAt,
+        withChildren,
+      );
+      const childDeletes = withChildren
+        ? yield* decideCommandSequence({
+            readModel,
+            commands: attachedChildrenOf(readModel, thread.id).map(
+              (child): Extract<OrchestrationCommand, { type: "thread.delete" }> => ({
+                type: "thread.delete",
+                commandId: command.commandId,
+                threadId: child.id,
+              }),
+            ),
+          })
+        : [];
+      return familyEvents.length === 0 && childDeletes.length === 0
+        ? deletedEvent
+        : [...familyEvents, ...childDeletes, deletedEvent];
     }
 
     case "thread.archive": {
-      yield* requireThreadNotArchived({
+      const thread = yield* requireThreadNotArchived({
         readModel,
         command,
         threadId: command.threadId,
       });
       const occurredAt = yield* nowIso;
-      return {
-        ...withEventBase({
-          aggregateKind: "thread",
-          aggregateId: command.threadId,
-          occurredAt,
-          commandId: command.commandId,
-        }),
+      const baseFor = childEventBase(command, occurredAt);
+      const archivedEvent: PlannedOrchestrationEvent = {
+        ...baseFor(command.threadId),
         type: "thread.archived",
         payload: {
           threadId: command.threadId,
@@ -607,28 +785,65 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           updatedAt: occurredAt,
         },
       };
+      // Child threads: nothing it asked for comes back any more; its settled
+      // children are archived with it and its live ones separated; a child's
+      // parent stops waiting on it.
+      const plan = childArchivePlan(readModel, thread);
+      const familyEvents: ReadonlyArray<PlannedOrchestrationEvent> = [
+        ...decideChildDeliveriesStop(readModel, thread, baseFor, occurredAt, "archived"),
+        ...plan.separate.map((child): PlannedOrchestrationEvent => ({
+          ...baseFor(child.id),
+          type: "thread.parent-attachment-set",
+          payload: {
+            threadId: child.id,
+            attached: false,
+            attachmentEpoch: child.parentAttachmentEpoch + 1,
+            at: occurredAt,
+          },
+        })),
+        ...plan.archive.map((child): PlannedOrchestrationEvent => ({
+          ...baseFor(child.id),
+          type: "thread.archived",
+          payload: {
+            threadId: child.id,
+            archivedAt: occurredAt,
+            withParent: true,
+            updatedAt: occurredAt,
+          },
+        })),
+        ...childDeletionEvents(readModel, thread, baseFor, occurredAt, true, "archived"),
+      ];
+      return familyEvents.length === 0 ? archivedEvent : [...familyEvents, archivedEvent];
     }
 
     case "thread.unarchive": {
-      yield* requireThreadArchived({
+      const thread = yield* requireThreadArchived({
         readModel,
         command,
         threadId: command.threadId,
       });
       const occurredAt = yield* nowIso;
-      return {
-        ...withEventBase({
-          aggregateKind: "thread",
-          aggregateId: command.threadId,
-          occurredAt,
-          commandId: command.commandId,
-        }),
+      const baseFor = childEventBase(command, occurredAt);
+      const unarchivedEvent: PlannedOrchestrationEvent = {
+        ...baseFor(command.threadId),
         type: "thread.unarchived",
         payload: {
           threadId: command.threadId,
           updatedAt: occurredAt,
         },
       };
+      // The children its archive took along come back with it.
+      const children = childrenArchivedWith(readModel, thread);
+      return children.length === 0
+        ? unarchivedEvent
+        : [
+            unarchivedEvent,
+            ...children.map((child): PlannedOrchestrationEvent => ({
+              ...baseFor(child.id),
+              type: "thread.unarchived",
+              payload: { threadId: child.id, updatedAt: occurredAt },
+            })),
+          ];
     }
 
     case "thread.pin": {
@@ -751,13 +966,24 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.done-override.set": {
-      yield* requireThread({
+      const thread = yield* requireThread({
         readModel,
         command,
         threadId: command.threadId,
       });
       const occurredAt = yield* nowIso;
-      return {
+      // Child threads: a wrapped parent is not woken by a late answer.
+      const wrapEvents =
+        command.state === "done"
+          ? decideChildDeliveriesStop(
+              readModel,
+              thread,
+              childEventBase(command, occurredAt),
+              occurredAt,
+              "wrapped",
+            )
+          : [];
+      const overrideEvent: PlannedOrchestrationEvent = {
         ...withEventBase({
           aggregateKind: "thread",
           aggregateId: command.threadId,
@@ -774,6 +1000,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           at: command.at,
         },
       };
+      return wrapEvents.length === 0 ? overrideEvent : [...wrapEvents, overrideEvent];
     }
 
     case "thread.seen.set": {
@@ -1139,6 +1366,94 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       );
     }
 
+    case "thread.child.start":
+    case "thread.child-request.respond":
+    case "thread.child.send":
+    case "thread.child-request.update":
+    case "thread.child-request.settle":
+    case "thread.child-notes.delivered": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const baseFor = childEventBase(command, command.createdAt);
+      return yield* planChildThreadDecision(
+        command.type,
+        command.type === "thread.child.start"
+          ? decideChildStart(readModel, thread, command, baseFor)
+          : command.type === "thread.child-request.respond"
+            ? decideChildRespond(readModel, thread, command, baseFor)
+            : command.type === "thread.child.send"
+              ? decideChildSend(readModel, thread, command, baseFor)
+              : command.type === "thread.child-request.update"
+                ? decideChildRequestUpdate(thread, command, baseFor)
+                : command.type === "thread.child-request.settle"
+                  ? decideChildRequestSettle(readModel, thread, command, baseFor)
+                  : decideChildNotesDelivered(thread, command, baseFor),
+      );
+    }
+
+    case "thread.parent-attachment.set": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      return yield* planChildThreadDecision(
+        command.type,
+        decideParentAttachmentSet(
+          readModel,
+          thread,
+          command,
+          childEventBase(command, command.createdAt),
+        ),
+      );
+    }
+
+    case "thread.children.stop": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const decision = decideChildrenStop(
+        readModel,
+        thread,
+        command,
+        childEventBase(command, command.createdAt),
+      );
+      if ("refusal" in decision) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: decision.refusal,
+        });
+      }
+      // The parent's requests settle first, so each child's own stop finds
+      // nothing left to tell it about them.
+      let nextReadModel = readModel;
+      let nextSequence = readModel.snapshotSequence;
+      for (const event of decision.events) {
+        nextSequence += 1;
+        nextReadModel = yield* projectEvent(nextReadModel, {
+          ...event,
+          sequence: nextSequence,
+        } as OrchestrationEvent).pipe(Effect.orDie);
+      }
+      const stops = yield* decideCommandSequence({
+        readModel: nextReadModel,
+        commands: decision.childIds.map(
+          (childId): Extract<OrchestrationCommand, { type: "thread.session.stop" }> => ({
+            type: "thread.session.stop",
+            commandId: command.commandId,
+            threadId: childId,
+            createdAt: command.createdAt,
+          }),
+        ),
+      });
+      return [...decision.events, ...stops];
+    }
+
     case "thread.room-context.record": {
       yield* requireThread({
         readModel,
@@ -1331,8 +1646,42 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           occurredAt: command.createdAt,
           commandId: command.commandId,
         });
+      // Child threads: what it asked of its threads has nobody to go back to.
+      const leavingBase = childEventBase(command, command.createdAt);
+      const childEvents: ReadonlyArray<PlannedOrchestrationEvent> = [
+        ...thread.childRequests.open
+          .filter((request) => request.from.participantId === participant.id)
+          .map((request): PlannedOrchestrationEvent => ({
+            ...leavingBase(thread.id),
+            type: "thread.child-request-settled",
+            payload: {
+              threadId: thread.id,
+              requestId: request.requestId,
+              childThreadId: request.childThreadId,
+              outcome: "cancelled",
+              error: "The agent that asked left the room.",
+              settledAt: command.createdAt,
+            },
+          })),
+        ...(thread.queuedFollowUps ?? [])
+          .filter(
+            (queued) =>
+              queued.fromThread?.kind === "report" && queued.participantId === participant.id,
+          )
+          .map((queued): PlannedOrchestrationEvent => ({
+            ...leavingBase(thread.id),
+            type: "thread.follow-up-unqueued",
+            payload: {
+              threadId: thread.id,
+              messageId: queued.messageId,
+              reason: "cancelled",
+              createdAt: command.createdAt,
+            },
+          })),
+      ];
       return [
         ...cancelAgentRequestsForLeaving(thread, participant.id, removeBase, command.createdAt),
+        ...childEvents,
         removed,
       ];
     }
@@ -1622,6 +1971,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           attachments: command.message.attachments,
           ...(command.message.skills !== undefined ? { skills: command.message.skills } : {}),
           ...(participantId !== null ? { participantId } : {}),
+          ...(command.fromThread !== undefined ? { fromThread: command.fromThread } : {}),
           // Named as the turn is sent (recordTurnModel). A queued message an
           // agent wrote is already recorded, with its own stamps; sending it
           // must not restamp it.
@@ -1741,27 +2091,61 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           ...(handsOverSlot && targetThread.latestTurn !== null
             ? { handoverFromTurnId: targetThread.latestTurn.turnId }
             : {}),
+          ...(command.fromThread !== undefined ? { fromThread: command.fromThread } : {}),
           createdAt: command.createdAt,
         },
       };
+      const turnBase = () =>
+        withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        });
+      // Child threads: a parent's request starting its turn in the child is
+      // now running there.
+      const origin = command.fromThread;
+      const parentForRequest =
+        origin?.kind === "request"
+          ? readModel.threads.find((entry) => entry.id === origin.threadId)
+          : undefined;
+      const answeredRequest = parentForRequest?.childRequests.open.find(
+        (request) =>
+          request.requestId === origin?.requestId &&
+          request.childThreadId === command.threadId &&
+          (request.status === "starting" || request.status === "queued"),
+      );
+      const requestRunningEvents: ReadonlyArray<PlannedOrchestrationEvent> =
+        parentForRequest !== undefined && answeredRequest !== undefined
+          ? [
+              {
+                ...childEventBase(command, command.createdAt)(parentForRequest.id),
+                type: "thread.child-request-updated",
+                payload: {
+                  threadId: parentForRequest.id,
+                  requestId: answeredRequest.requestId,
+                  status: "running",
+                  updatedAt: command.createdAt,
+                },
+              },
+            ]
+          : [];
       return [
         userMessageEvent,
         ...(titleSeedEvent ? [titleSeedEvent] : []),
         ...(startingSessionEvent ? [startingSessionEvent] : []),
         turnStartRequestedEvent,
+        ...requestRunningEvents,
         // The user wrote: agents may make requests again. (A queued message
-        // sent later drops this; it counted when the user queued it.)
-        ...resetAgentRequestsForUser(
-          targetThread,
-          () =>
-            withEventBase({
-              aggregateKind: "thread",
-              aggregateId: command.threadId,
-              occurredAt: command.createdAt,
-              commandId: command.commandId,
-            }),
-          command.createdAt,
-        ),
+        // sent later drops these; it counted when the user queued it.) An
+        // agent's message is not the user writing.
+        ...(command.fromThread === undefined
+          ? [
+              ...resetAgentRequestsForUser(targetThread, turnBase, command.createdAt),
+              ...resetChildRequestsForUser(targetThread, turnBase, command.createdAt),
+              ...settleCandidateBeforeUserTurn(readModel, targetThread, command),
+            ]
+          : []),
       ];
     }
 
@@ -1927,7 +2311,10 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             commandId: command.commandId,
           });
         return withLeadingEvents(
-          resetAgentRequestsForUser(targetThread, userBase, command.createdAt),
+          [
+            ...resetAgentRequestsForUser(targetThread, userBase, command.createdAt),
+            ...resetChildRequestsForUser(targetThread, userBase, command.createdAt),
+          ],
           {
             ...userBase(),
             type: "thread.follow-up-queued",
@@ -1958,7 +2345,10 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           commandId: command.commandId,
         });
       return withLeadingEvents(
-        resetAgentRequestsForUser(targetThread, steerBase, command.createdAt),
+        [
+          ...resetAgentRequestsForUser(targetThread, steerBase, command.createdAt),
+          ...resetChildRequestsForUser(targetThread, steerBase, command.createdAt),
+        ],
         {
           ...steerBase(),
           type: "thread.follow-up-submitted",
@@ -1984,17 +2374,16 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
-      if (
-        !(targetThread.queuedFollowUps ?? []).some(
-          (queued) => queued.messageId === command.messageId,
-        )
-      ) {
+      const unqueuing = (targetThread.queuedFollowUps ?? []).find(
+        (queued) => queued.messageId === command.messageId,
+      );
+      if (unqueuing === undefined) {
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
           detail: `Message '${command.messageId}' is not queued on thread '${command.threadId}'; it may already have been sent.`,
         });
       }
-      return {
+      const unqueuedEvent: PlannedOrchestrationEvent = {
         ...withEventBase({
           aggregateKind: "thread",
           aggregateId: command.threadId,
@@ -2009,6 +2398,18 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           createdAt: command.createdAt,
         },
       };
+      // A parent's request taken back in its child can never be answered.
+      const parentSettles =
+        unqueuing.fromThread?.kind === "request"
+          ? settleParentRequestsForUnqueued(
+              readModel,
+              targetThread,
+              [command.messageId],
+              childEventBase(command, command.createdAt),
+              command.createdAt,
+            )
+          : [];
+      return parentSettles.length === 0 ? unqueuedEvent : [unqueuedEvent, ...parentSettles];
     }
 
     case "thread.follow-up.send-queued": {
@@ -2043,28 +2444,37 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           createdAt: command.createdAt,
         },
       };
-      // A message an agent queued (a hand-off or a routed reply) goes only to
-      // the agent it was for. If that agent left, it is taken back and its
-      // request cancelled, never handed to another agent.
+      // A message an agent queued (a hand-off, a routed reply, or a child
+      // thread's report or request) goes only to the agent it was for. If that
+      // agent left, it is taken back and its request cancelled, never handed
+      // to another agent.
       const fromAgent = queued.fromAgent;
+      const fromThread = queued.fromThread;
+      const agentQueued = isAgentOrigin(queued);
+      // A child's report whose delivery was cancelled after it was queued
+      // (Stop, wrap, the child separated or gone) is taken back, not sent.
+      if (isStaleReport(readModel, targetThread, fromThread)) {
+        return [{ ...unqueuedEvent, payload: { ...unqueuedEvent.payload, reason: "cancelled" } }];
+      }
       // A message an agent queued carries no model: its agent's current one
       // applies (the thread's own model for the thread's own agent), so a
       // model change since it was queued is honored.
-      const queuedAgentModel =
-        fromAgent === undefined
-          ? undefined
-          : queued.participantId === undefined || queued.participantId === null
-            ? targetThread.modelSelection
-            : activeParticipants(targetThread).find((entry) => entry.id === queued.participantId)
-                ?.modelSelection;
+      const queuedAgentModel = !agentQueued
+        ? undefined
+        : queued.participantId === undefined || queued.participantId === null
+          ? targetThread.modelSelection
+          : activeParticipants(targetThread).find((entry) => entry.id === queued.participantId)
+              ?.modelSelection;
       const queuedParticipantPresent =
         queued.participantId === undefined ||
         queued.participantId === null ||
         activeParticipants(targetThread).some((entry) => entry.id === queued.participantId);
-      if (fromAgent !== undefined && !queuedParticipantPresent) {
+      if (agentQueued && !queuedParticipantPresent) {
         return [
           { ...unqueuedEvent, payload: { ...unqueuedEvent.payload, reason: "cancelled" } },
-          ...(queued.participantId !== undefined && queued.participantId !== null
+          ...(fromAgent !== undefined &&
+          queued.participantId !== undefined &&
+          queued.participantId !== null
             ? cancelAgentRequestsForLeaving(
                 targetThread,
                 queued.participantId,
@@ -2078,31 +2488,35 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             : []),
         ];
       }
-      // The turn runs with the settings the message was queued with, applied
-      // the same way a normal send applies them before its turn starts. The
-      // message is stamped now, not when it was queued, so it lands after the
-      // answer it waited for.
+      // The user's queued message runs with the settings it was queued with,
+      // applied the same way a normal send applies them before its turn
+      // starts. Agent traffic never changes the thread's settings: it runs
+      // with the thread's current ones, so a message queued before the user
+      // narrowed access cannot widen it back. The message is stamped now, not
+      // when it was queued, so it lands after the answer it waited for.
+      const runtimeMode = agentQueued ? targetThread.runtimeMode : queued.runtimeMode;
+      const interactionMode = agentQueued ? targetThread.interactionMode : queued.interactionMode;
       const turnEvents = yield* decideCommandSequence({
         readModel,
         commands: [
-          ...(queued.runtimeMode !== targetThread.runtimeMode
+          ...(runtimeMode !== targetThread.runtimeMode
             ? [
                 {
                   type: "thread.runtime-mode.set" as const,
                   commandId: command.commandId,
                   threadId: command.threadId,
-                  runtimeMode: queued.runtimeMode,
+                  runtimeMode,
                   createdAt: command.createdAt,
                 },
               ]
             : []),
-          ...(queued.interactionMode !== targetThread.interactionMode
+          ...(interactionMode !== targetThread.interactionMode
             ? [
                 {
                   type: "thread.interaction-mode.set" as const,
                   commandId: command.commandId,
                   threadId: command.threadId,
-                  interactionMode: queued.interactionMode,
+                  interactionMode,
                   createdAt: command.createdAt,
                 },
               ]
@@ -2130,17 +2544,22 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             activeParticipants(targetThread).some((entry) => entry.id === queued.participantId)
               ? { participantId: queued.participantId }
               : {}),
-            runtimeMode: queued.runtimeMode,
-            interactionMode: queued.interactionMode,
+            runtimeMode,
+            interactionMode,
+            ...(fromThread !== undefined ? { fromThread } : {}),
             createdAt: command.createdAt,
           },
         ],
       });
-      if (fromAgent === undefined) {
+      if (!agentQueued) {
         // It counted as the user writing when it was queued.
         return [
           unqueuedEvent,
-          ...turnEvents.filter((event) => event.type !== "thread.agent-requests-reset"),
+          ...turnEvents.filter(
+            (event) =>
+              event.type !== "thread.agent-requests-reset" &&
+              event.type !== "thread.child-requests-reset",
+          ),
         ];
       }
       // The agent's message was written when it was queued; sending it keeps
@@ -2149,28 +2568,37 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       const request = targetThread.agentRequests.open.find(
         (entry) => entry.requestId === queued.requestId,
       );
+      const sentEvents: PlannedOrchestrationEvent[] = turnEvents
+        .filter(
+          (event) =>
+            event.type !== "thread.agent-requests-reset" &&
+            event.type !== "thread.child-requests-reset",
+        )
+        .map((event): PlannedOrchestrationEvent => {
+          if (
+            event.type !== "thread.message-sent" ||
+            (event.payload as { readonly messageId?: unknown }).messageId !== queued.messageId
+          ) {
+            return event;
+          }
+          return {
+            ...event,
+            payload: {
+              ...(event.payload as Extract<
+                OrchestrationEvent,
+                { type: "thread.message-sent" }
+              >["payload"]),
+              // It keeps its place: it was written when it was queued.
+              ...(existing !== undefined ? { createdAt: existing.createdAt } : {}),
+              ...(fromAgent !== undefined ? { fromAgent } : {}),
+              ...(queued.requestId !== undefined ? { requestId: queued.requestId } : {}),
+              ...(existing?.requestKind !== undefined ? { requestKind: existing.requestKind } : {}),
+            },
+          } as PlannedOrchestrationEvent;
+        });
       return [
         unqueuedEvent,
-        ...turnEvents
-          .filter((event) => event.type !== "thread.agent-requests-reset")
-          .map((event) =>
-            event.type === "thread.message-sent" &&
-            (event.payload as { readonly messageId?: unknown }).messageId === queued.messageId
-              ? {
-                  ...event,
-                  payload: {
-                    ...event.payload,
-                    // It keeps its place: it was written when it was queued.
-                    ...(existing !== undefined ? { createdAt: existing.createdAt } : {}),
-                    fromAgent,
-                    ...(queued.requestId !== undefined ? { requestId: queued.requestId } : {}),
-                    ...(existing?.requestKind !== undefined
-                      ? { requestKind: existing.requestKind }
-                      : {}),
-                  },
-                }
-              : event,
-          ),
+        ...sentEvents,
         ...(request !== undefined &&
         request.kind === "hand_off" &&
         request.status === "queued" &&
@@ -2204,8 +2632,13 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           occurredAt: command.createdAt,
           commandId: command.commandId,
         });
-      // In a room, Stop also ends the agents' chain of requests.
-      const chainStop = decideAgentChainStop(thread, base, command.createdAt);
+      // In a room, Stop also ends the agents' chain of requests; with child
+      // threads, it ends what this thread was owed by its children, and a
+      // parent's requests still queued here are taken back.
+      const chainStop = [
+        ...decideAgentChainStop(thread, base, command.createdAt),
+        ...childStopEvents(readModel, thread, command, command.createdAt),
+      ];
       const interruptEvent: PlannedOrchestrationEvent = {
         ...base(),
         type: "thread.turn-interrupt-requested",
@@ -2390,6 +2823,15 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           detail: "Finish or decline the agent's request first.",
         });
       }
+      // Child threads: answers on their way, or a child working on its
+      // parent's request, are about work a revert would take back.
+      const familyRefusal = childRevertRefusal(readModel, thread);
+      if (familyRefusal !== null) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: familyRefusal,
+        });
+      }
       return {
         ...withEventBase({
           aggregateKind: "thread",
@@ -2421,7 +2863,10 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         });
       // In a room, stopping the session ends the agents' chain the same way
       // Stop does, so a turn still being prepared for an agent is dropped.
-      const chainStop = decideAgentChainStop(thread, base, command.createdAt);
+      const chainStop = [
+        ...decideAgentChainStop(thread, base, command.createdAt),
+        ...childStopEvents(readModel, thread, command, command.createdAt),
+      ];
       const stopEvent: PlannedOrchestrationEvent = {
         ...base(),
         type: "thread.session-stop-requested",

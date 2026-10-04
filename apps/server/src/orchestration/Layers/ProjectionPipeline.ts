@@ -7,9 +7,11 @@ import {
   withUnqueuedAgentMessage,
 } from "@threadlines/shared/roomAgentRequests";
 import { retainMessagesAfterRevert } from "@threadlines/shared/transcriptRevert";
+import { childRequestStateOn } from "@threadlines/shared/childThreads";
 import {
   ApprovalRequestId,
   EMPTY_AGENT_REQUEST_STATE,
+  EMPTY_CHILD_REQUEST_STATE,
   type ChatAttachment,
   type OrchestrationEvent,
   type OrchestrationSubagent,
@@ -543,6 +545,9 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             interactionMode: event.payload.interactionMode,
             branch: event.payload.branch,
             worktreePath: event.payload.worktreePath,
+            parentThreadId: event.payload.parentThreadId ?? null,
+            parentTurnId: event.payload.parentTurnId ?? null,
+            attachedToParent: event.payload.attachedToParent === true ? 1 : 0,
             effectiveCwd: null,
             effectiveCwdSource: null,
             goal: null,
@@ -580,6 +585,8 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           yield* projectionThreadRepository.upsert({
             ...existingRow.value,
             archivedAt: event.payload.archivedAt,
+            archivedWithParentAt:
+              event.payload.withParent === true ? event.payload.archivedAt : null,
             updatedAt: event.payload.updatedAt,
           });
           return;
@@ -595,6 +602,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           yield* projectionThreadRepository.upsert({
             ...existingRow.value,
             archivedAt: null,
+            archivedWithParentAt: null,
             updatedAt: event.payload.updatedAt,
           });
           return;
@@ -769,6 +777,62 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
                     ? agentRequestStateOn.held(state, event.payload.chainEpoch)
                     : agentRequestStateOn.reset(state);
           yield* projectionThreadRepository.upsert({ ...existingRow.value, agentRequests });
+          return;
+        }
+
+        case "thread.child-request-submitted":
+        case "thread.child-request-updated":
+        case "thread.child-request-settled":
+        case "thread.child-notes-delivered":
+        case "thread.child-deliveries-cancelled":
+        case "thread.child-requests-reset": {
+          const existingRow = yield* projectionThreadRepository.getById({
+            threadId: event.payload.threadId,
+          });
+          if (Option.isNone(existingRow)) {
+            return;
+          }
+          const state = existingRow.value.childRequests ?? EMPTY_CHILD_REQUEST_STATE;
+          const childRequests =
+            event.type === "thread.child-request-submitted"
+              ? childRequestStateOn.submitted(state, event.payload.request)
+              : event.type === "thread.child-request-updated"
+                ? childRequestStateOn.updated(state, event.payload)
+                : event.type === "thread.child-request-settled"
+                  ? childRequestStateOn.settled(state, event.payload.requestId, event.payload.note)
+                  : event.type === "thread.child-notes-delivered"
+                    ? childRequestStateOn.notesDelivered(state, event.payload.requestIds)
+                    : event.type === "thread.child-deliveries-cancelled"
+                      ? childRequestStateOn.deliveriesCancelled(state, event.payload.deliveryEpoch)
+                      : childRequestStateOn.reset(state);
+          if (childRequests !== state) {
+            yield* projectionThreadRepository.upsert({ ...existingRow.value, childRequests });
+          }
+          return;
+        }
+
+        // Neither moves `updatedAt`: not work on the child.
+        case "thread.handed-back":
+        case "thread.parent-attachment-set": {
+          const existingRow = yield* projectionThreadRepository.getById({
+            threadId: event.payload.threadId,
+          });
+          if (Option.isNone(existingRow)) {
+            return;
+          }
+          yield* projectionThreadRepository.upsert(
+            event.type === "thread.handed-back"
+              ? {
+                  ...existingRow.value,
+                  handedBackAt: event.payload.handedBackAt,
+                  handedBackTurnId: event.payload.turnId,
+                }
+              : {
+                  ...existingRow.value,
+                  attachedToParent: event.payload.attached ? 1 : 0,
+                  parentAttachmentEpoch: event.payload.attachmentEpoch,
+                },
+          );
           return;
         }
 
@@ -1328,6 +1392,9 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
               ? { reviewInput: event.payload.reviewInput }
               : {}),
             ...(event.payload.invite !== undefined ? { invite: event.payload.invite } : {}),
+            ...(event.payload.fromThread !== undefined
+              ? { fromThread: event.payload.fromThread }
+              : {}),
             ...(event.payload.agentModels !== undefined
               ? { agentModels: event.payload.agentModels }
               : {}),
