@@ -2,7 +2,10 @@
 import "../index.css";
 
 import {
+  ChildRequestBatchId,
+  ChildRequestId,
   EMPTY_AGENT_REQUEST_STATE,
+  EMPTY_CHILD_REQUEST_STATE,
   EventId,
   ORCHESTRATION_WS_METHODS,
   EnvironmentId,
@@ -133,6 +136,17 @@ vi.mock("../lib/gitStatusState", () => ({
 
 const THREAD_ID = "thread-browser-test" as ThreadId;
 const THREAD_TITLE = "Browser test thread";
+/** A thread no other thread started, with no threads of its own. */
+const NO_CHILD_THREAD_FIELDS = {
+  parentThreadId: null,
+  parentTurnId: null,
+  attachedToParent: false,
+  parentAttachmentEpoch: 0,
+  handedBackAt: null,
+  handedBackTurnId: null,
+  archivedWithParentAt: null,
+  childRequests: EMPTY_CHILD_REQUEST_STATE,
+} as const;
 const ARCHIVED_SECONDARY_THREAD_ID = "thread-secondary-project-archived" as ThreadId;
 const PROJECT_ID = "project-1" as ProjectId;
 const SECOND_PROJECT_ID = "project-2" as ProjectId;
@@ -543,6 +557,7 @@ function createSnapshotForTargetUser(options: {
         checkpoints: [],
         diffStatBaselineTurnCount: 0,
         agentRequests: EMPTY_AGENT_REQUEST_STATE,
+        ...NO_CHILD_THREAD_FIELDS,
         session: {
           threadId: THREAD_ID,
           providerThreadId: null,
@@ -764,6 +779,7 @@ function addThreadToSnapshot(
         checkpoints: [],
         diffStatBaselineTurnCount: 0,
         agentRequests: EMPTY_AGENT_REQUEST_STATE,
+        ...NO_CHILD_THREAD_FIELDS,
         session: {
           threadId,
           providerThreadId: null,
@@ -1351,6 +1367,7 @@ function createSnapshotWithSecondaryProject(options?: {
           checkpoints: [],
           diffStatBaselineTurnCount: 0,
           agentRequests: EMPTY_AGENT_REQUEST_STATE,
+          ...NO_CHILD_THREAD_FIELDS,
           session: {
             threadId: "thread-secondary-project" as ThreadId,
             providerThreadId: null,
@@ -1396,6 +1413,7 @@ function createSnapshotWithSecondaryProject(options?: {
           checkpoints: [],
           diffStatBaselineTurnCount: 0,
           agentRequests: EMPTY_AGENT_REQUEST_STATE,
+          ...NO_CHILD_THREAD_FIELDS,
           session: {
             threadId: ARCHIVED_SECONDARY_THREAD_ID,
             providerThreadId: null,
@@ -8227,6 +8245,184 @@ describe("ChatView timeline estimator parity (full app)", () => {
                 (request as { type?: string }).type === "thread.agent-invite.respond",
             ),
           ).toMatchObject({ requestId, choice: "review" }),
+        { timeout: 8_000, interval: 16 },
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("asks before an agent starts threads, and names the thread whose answer came back", async () => {
+    const base = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-child-threads" as MessageId,
+      targetText: "child threads target",
+    });
+    const childThreadId = "thread-child-changelog" as ThreadId;
+    const batchId = ChildRequestBatchId.make("batch-1");
+    const parentThread = base.threads.find((thread) => thread.id === THREAD_ID)!;
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...base,
+        threads: [
+          ...base.threads.map((thread) =>
+            thread.id === THREAD_ID
+              ? {
+                  ...thread,
+                  messages: [
+                    ...thread.messages,
+                    {
+                      id: "msg-child-report" as MessageId,
+                      role: "user" as const,
+                      text: "The changelog is written.",
+                      fromThread: {
+                        threadId: childThreadId,
+                        requestId: ChildRequestId.make("request-earlier"),
+                        kind: "report" as const,
+                      },
+                      turnId: null,
+                      streaming: false,
+                      createdAt: isoAt(300),
+                      updatedAt: isoAt(300),
+                    },
+                  ],
+                  childRequests: {
+                    ...EMPTY_CHILD_REQUEST_STATE,
+                    startsSinceUser: 1,
+                    open: [
+                      {
+                        requestId: ChildRequestId.make("request-start-1"),
+                        batchId,
+                        kind: "start" as const,
+                        from: { participantId: null },
+                        callerTurnId: "turn-start" as TurnId,
+                        deliveryEpoch: 0,
+                        status: "awaiting_user" as const,
+                        childThreadId: "thread-child-flake" as ThreadId,
+                        childMessageId: "msg-child-flake" as MessageId,
+                        launch: {
+                          title: "Fix the flaky cleanup test",
+                          prompt: "Find out why the cleanup test flakes.",
+                          modelSelection: {
+                            instanceId: ProviderInstanceId.make("codex"),
+                            model: "gpt-5",
+                          },
+                          runtimeMode: "full-access" as const,
+                          interactionMode: "default" as const,
+                          reportBack: true,
+                          runSetup: true,
+                          workspace: { kind: "project_folder" as const },
+                        },
+                        createdAt: isoAt(301),
+                      },
+                    ],
+                  },
+                }
+              : thread,
+          ),
+          {
+            ...parentThread,
+            id: childThreadId,
+            title: "Write the changelog",
+            messages: [],
+            parentThreadId: THREAD_ID,
+            attachedToParent: true,
+          },
+        ],
+      },
+    });
+
+    try {
+      const panel = await waitForElement(
+        () => document.querySelector<HTMLElement>('[data-testid="child-threads-panel"]'),
+        "Unable to find the approval card.",
+      );
+      expect(panel.textContent).toContain("wants to start 1 thread");
+      expect(panel.textContent).toContain("Fix the flaky cleanup test");
+      // No git to isolate it in: the card says it shares the folder.
+      expect(panel.textContent).toContain("shares this folder");
+      // The answer that came back is the child's, never the user's.
+      expect(
+        document.querySelector('[data-thread-message="report"] [data-thread-message-author]')
+          ?.textContent,
+      ).toBe("Write the changelog");
+
+      [...panel.querySelectorAll<HTMLButtonElement>("button")]
+        .find((button) => button.textContent === "Start")
+        ?.click();
+      await vi.waitFor(
+        () =>
+          expect(
+            wsRequests.find(
+              (request) =>
+                request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+                (request as { type?: string }).type === "thread.child-request.respond",
+            ),
+          ).toMatchObject({ batchId, choice: "start" }),
+        { timeout: 8_000, interval: 16 },
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("names the thread that started this one, in the header and on its request", async () => {
+    const base = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-started-by" as MessageId,
+      targetText: "started by target",
+    });
+    const parentThreadId = "thread-parent-release" as ThreadId;
+    const thisThread = base.threads.find((thread) => thread.id === THREAD_ID)!;
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...base,
+        threads: [
+          ...base.threads.map((thread) =>
+            thread.id === THREAD_ID
+              ? {
+                  ...thread,
+                  parentThreadId,
+                  attachedToParent: true,
+                  // A later request from the parent, at the end of the chat
+                  // where the list rests.
+                  messages: [
+                    ...thread.messages,
+                    {
+                      id: "msg-parent-request" as MessageId,
+                      role: "user" as const,
+                      text: "Now write the 0.6 changelog.",
+                      fromThread: {
+                        threadId: parentThreadId,
+                        requestId: ChildRequestId.make("request-send-1"),
+                        kind: "request" as const,
+                      },
+                      turnId: null,
+                      streaming: false,
+                      createdAt: isoAt(300),
+                      updatedAt: isoAt(300),
+                    },
+                  ],
+                }
+              : thread,
+          ),
+          { ...thisThread, id: parentThreadId, title: "Ship the 0.6 release", messages: [] },
+        ],
+      },
+    });
+
+    try {
+      const chip = await waitForElement(
+        () => document.querySelector<HTMLElement>('[data-testid="chat-header-started-by"]'),
+        "Unable to find the Started by chip.",
+      );
+      expect(chip.textContent).toContain("Ship the 0.6 release");
+      await vi.waitFor(
+        () =>
+          expect(
+            document.querySelector('[data-thread-message="request"] [data-thread-message-author]')
+              ?.textContent,
+          ).toBe("Ship the 0.6 release"),
         { timeout: 8_000, interval: 16 },
       );
     } finally {

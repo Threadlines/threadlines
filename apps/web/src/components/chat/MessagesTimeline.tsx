@@ -56,7 +56,12 @@ import {
   type TurnAgentSummary,
 } from "./agentsPanel.logic";
 import { DEFAULT_SCROLL_END_TOLERANCE_PX, isScrollMetricsAtEnd } from "../ChatView.logic";
-import { type ChatAttachment, type ChatMessage, type TurnDiffSummary } from "../../types";
+import {
+  type ChatAttachment,
+  type ChatMessage,
+  type SidebarThreadSummary,
+  type TurnDiffSummary,
+} from "../../types";
 import { chatAttachmentPreviewQueryOptions } from "../../lib/attachmentPreviewQuery";
 import { environmentRequiresRpcAssetTransport } from "../../environments/runtime";
 import { summarizeTurnDiffStats } from "../../lib/turnDiffTree";
@@ -70,6 +75,7 @@ import {
   CircleAlertIcon,
   CopyIcon,
   FileTextIcon,
+  GitForkIcon,
   KeyRoundIcon,
   LoaderIcon,
   LogInIcon,
@@ -95,8 +101,18 @@ import { ActivityGroup } from "./ActivityGroup";
 import {
   activityStepFromWorkLogEntry,
   newestThoughtSentence,
+  threadlinesRoomToolOf,
   type ActivityStep,
 } from "./activitySteps";
+import {
+  parseThreadStartResult,
+  THREAD_START_REFUSAL_WORDS,
+  useChildRequestState,
+  useChildThreadsStartedIn,
+  useThreadTitle,
+} from "../../childThreads";
+import { formatChildThreadCount, resolveThreadStatusPill } from "../Sidebar.logic";
+import { ThreadProviderGlyph, ThreadStatusText } from "../sidebar/InboxRows";
 import {
   computeStableMessagesTimelineRows,
   deriveMessagesTimelineRows,
@@ -236,6 +252,8 @@ interface TimelineRowSharedState {
   proposedPlanState: TimelineProposedPlanState | null;
   turnAgents: TimelineTurnAgentsState | null;
   onOpenAgentsPanel: ((agentThreadId: string | null) => void) | null;
+  /** See MessagesTimelineProps.onOpenThread. */
+  onOpenThread: ((threadId: ThreadId) => void) | null;
   /** True while the working anchor at the tail is mounted. The per-agent live
    *  status rows render there and only there; a receipt keeps its compact
    *  tracker chip but must not repeat those rows above the exchange. */
@@ -772,6 +790,11 @@ interface MessagesTimelineProps {
    * stay clickable after the live progress state for the turn has emptied.
    */
   onOpenAgentsPanel?: ((agentThreadId: string | null) => void) | null | undefined;
+  /**
+   * Opens another thread in this environment: the one that started this
+   * thread, or one this thread's agent started (child threads).
+   */
+  onOpenThread?: ((threadId: ThreadId) => void) | null | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -827,6 +850,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   proposedPlanState = null,
   turnAgents = null,
   onOpenAgentsPanel = null,
+  onOpenThread = null,
 }: MessagesTimelineProps) {
   const liveAgentCount = useMemo(
     () =>
@@ -1810,6 +1834,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       proposedPlanState,
       turnAgents,
       onOpenAgentsPanel,
+      onOpenThread,
       anchorOwnsLiveAgents,
     }),
     [
@@ -1849,6 +1874,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       proposedPlanState,
       turnAgents,
       onOpenAgentsPanel,
+      onOpenThread,
       anchorOwnsLiveAgents,
     ],
   );
@@ -2410,7 +2436,9 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
     >
       {row.kind === "work" ? <WorkGroupSection row={row} /> : null}
       {row.kind === "message" && row.message.role === "user" ? (
-        row.message.fromAgent === undefined ? (
+        row.message.fromThread !== undefined ? (
+          <ThreadMessageTimelineRow row={row} origin={row.message.fromThread} />
+        ) : row.message.fromAgent === undefined ? (
           <UserTimelineRow row={row} />
         ) : row.message.requestKind === "invite" ? (
           <InviteMessageTimelineRow row={row} />
@@ -2807,6 +2835,84 @@ function AgentMessageTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "m
       {/* Inside the asker's stretch its line already sets the question off. */}
       {fromOwnStretch ? body : <div className="border-l border-border pl-3">{body}</div>}
       {outcome(!fromOwnStretch)}
+    </div>
+  );
+}
+
+/**
+ * A message another thread's agent wrote (child threads): a request the
+ * thread that started this one sent it, or the answer a thread this one
+ * started sent back. Its author is that thread, named and one click away,
+ * never the user.
+ */
+function ThreadMessageTimelineRow({
+  row,
+  origin,
+}: {
+  row: Extract<TimelineRow, { kind: "message" }>;
+  origin: NonNullable<ChatMessage["fromThread"]>;
+}) {
+  const ctx = use(TimelineRowCtx);
+  const { message } = row;
+  const title = useThreadTitle(ctx.activeThreadEnvironmentId, origin.threadId);
+  const isReport = origin.kind === "report";
+  const author = title ?? (isReport ? "A thread it started" : "The thread that started it");
+  return (
+    <div
+      className="group min-w-0 px-1 py-0.5"
+      data-thread-message={origin.kind}
+      title={formatTimestamp(message.createdAt, ctx.timestampFormat)}
+    >
+      <div className="mb-1 flex min-h-5 min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 font-mono text-[10.5px] text-muted-foreground">
+        {ctx.onOpenThread ? (
+          <button
+            type="button"
+            className="min-w-0 cursor-pointer truncate text-foreground/85 underline-offset-2 transition-colors hover:text-foreground hover:underline"
+            data-thread-message-author={origin.threadId}
+            onClick={() => ctx.onOpenThread?.(origin.threadId)}
+          >
+            {author}
+          </button>
+        ) : (
+          <span className="min-w-0 truncate text-foreground/85">{author}</span>
+        )}
+        <span className="shrink-0 text-muted-foreground/50">·</span>
+        <span className="shrink-0">{isReport ? "reply" : "request"}</span>
+        {message.text.length > 0 ? (
+          <div className="ml-auto opacity-0 transition-opacity duration-200 focus-within:opacity-100 group-hover:opacity-100">
+            <MessageCopyButton
+              text={message.text}
+              ariaLabel="Copy message"
+              size="icon-xs"
+              variant="ghost"
+              className="-my-1.5"
+            />
+          </div>
+        ) : null}
+      </div>
+      <div className="border-l border-border pl-3">
+        <CollapsibleUserMessageBody
+          text={message.text}
+          terminalContexts={NO_TERMINAL_CONTEXTS}
+          transcriptHighlights={NO_TRANSCRIPT_HIGHLIGHTS}
+          pickedElements={NO_PICKED_ELEMENTS}
+          drawings={NO_DRAWINGS}
+          skills={ctx.skills}
+          bodyClassName="text-foreground/80"
+          forceExpanded={ctx.searchTargetMessageId === message.id}
+          searchHighlightQuery={
+            ctx.activeSearchTargetMessageId === message.id ? ctx.searchTargetQuery : undefined
+          }
+        />
+      </div>
+      {message.requestOutcome === "cancelled" ? (
+        <p
+          className="mt-1 pl-3 text-xs leading-4 text-muted-foreground/70"
+          data-thread-message-outcome="cancelled"
+        >
+          {isReport ? "Not read: its delivery was cancelled first" : "Taken back before it ran"}
+        </p>
+      ) : null}
     </div>
   );
 }
@@ -3792,9 +3898,21 @@ const WorkGroupSection = memo(function WorkGroupSection({
     () => coalesceFileChangeWorkEntries(row.groupedEntries, turnDiffSummaryByTurnId, workspaceRoot),
     [row.groupedEntries, turnDiffSummaryByTurnId, workspaceRoot],
   );
+  // Where the agent started threads of its own: shown as its own record with
+  // each thread's live status, outside the steps so a folded group never
+  // hides them.
+  const threadStartEntries = useMemo(
+    () =>
+      groupedEntries.filter(
+        (entry) =>
+          entry.executionState !== "running" && threadlinesRoomToolOf(entry) === "thread_start",
+      ),
+    [groupedEntries],
+  );
   const steps = useMemo(
     () =>
       groupedEntries.flatMap((entry) => {
+        if (threadStartEntries.includes(entry)) return [];
         const step = activityStepFromWorkLogEntry(entry, {
           workspaceRoot,
           ...(isFileChangeWorkEntry(entry)
@@ -3803,7 +3921,7 @@ const WorkGroupSection = memo(function WorkGroupSection({
         });
         return step ? [step] : [];
       }),
-    [groupedEntries, turnDiffSummaryByTurnId, workspaceRoot],
+    [groupedEntries, threadStartEntries, turnDiffSummaryByTurnId, workspaceRoot],
   );
   const entriesById = useMemo(
     () => new Map(groupedEntries.map((entry) => [entry.id, entry] as const)),
@@ -3824,7 +3942,7 @@ const WorkGroupSection = memo(function WorkGroupSection({
     !(isWorking && row.inActiveExchange);
   const hasSettledSteps = steps.some((step) => !step.running);
 
-  if (!hasSettledSteps && !showTracker) {
+  if (!hasSettledSteps && !showTracker && threadStartEntries.length === 0) {
     return null;
   }
 
@@ -3870,9 +3988,129 @@ const WorkGroupSection = memo(function WorkGroupSection({
           durationMs={row.folded ? stretchDurationMs(row.groupedEntries) : null}
         />
       ) : null}
+      {threadStartEntries.map((entry) => (
+        <StartedThreadsRecord key={entry.id} entry={entry} />
+      ))}
     </div>
   );
 });
+
+/**
+ * Where the agent started threads of its own (child threads): one line for
+ * the call, then each thread with its live status, a click from its chat. In
+ * "Ask me first", the line also says how the user answered.
+ */
+function StartedThreadsRecord({ entry }: { entry: TimelineWorkEntry }) {
+  const ctx = use(TimelineRowCtx);
+  const turnId = entry.turnId ?? null;
+  const started = useChildThreadsStartedIn(
+    ctx.activeThreadEnvironmentId,
+    ctx.activeThreadId,
+    turnId,
+  );
+  const requests = useChildRequestState(ctx.activeThreadEnvironmentId, ctx.activeThreadId);
+  const result = useMemo(() => parseThreadStartResult(entry.outputPreview), [entry.outputPreview]);
+  // Two calls in one turn each list their own threads, when the result named them.
+  const threads =
+    result.threadIds.size > 0
+      ? started.filter((thread) => result.threadIds.has(thread.id))
+      : started;
+  const waitingCount =
+    requests?.open.filter(
+      (request) =>
+        request.kind === "start" &&
+        request.status === "awaiting_user" &&
+        request.callerTurnId === turnId,
+    ).length ?? 0;
+  const asked = result.outcome === "asked_user" || waitingCount > 0;
+  const refusal =
+    result.outcome !== null && result.outcome !== "started" && result.outcome !== "asked_user"
+      ? THREAD_START_REFUSAL_WORDS[result.outcome]
+      : null;
+  const [heading, outcome] =
+    waitingCount > 0
+      ? [`Asked to start ${formatChildThreadCount(waitingCount)}`, "waiting for you"]
+      : asked
+        ? threads.length > 0
+          ? [`Started ${formatChildThreadCount(threads.length)}`, "you said start"]
+          : ["Asked to start threads", "not started"]
+        : refusal !== null && threads.length === 0
+          ? ["Tried to start threads", refusal]
+          : [
+              threads.length > 0
+                ? `Started ${formatChildThreadCount(threads.length)}`
+                : "Started threads",
+              null,
+            ];
+  return (
+    <div className="min-w-0" data-started-threads={entry.id}>
+      <div className="flex min-w-0 items-center gap-[7px] text-xs leading-5 text-foreground/80">
+        <GitForkIcon aria-hidden className="size-3 shrink-0 text-muted-foreground/60" />
+        <span className="min-w-0 truncate" data-started-threads-heading>
+          {heading}
+        </span>
+        {outcome !== null ? (
+          <>
+            <span className="shrink-0 text-muted-foreground/50">·</span>
+            <span className="shrink-0 text-muted-foreground" data-started-threads-outcome>
+              {outcome}
+            </span>
+          </>
+        ) : null}
+      </div>
+      {threads.length > 0 ? (
+        <ul className="ml-[19px]">
+          {threads.map((thread) => (
+            <StartedThreadLine key={thread.id} thread={thread} />
+          ))}
+        </ul>
+      ) : null}
+    </div>
+  );
+}
+
+/** One thread the agent started: its live dot, title and status, opening its chat. */
+function StartedThreadLine({ thread }: { thread: SidebarThreadSummary }) {
+  const { onOpenThread } = use(TimelineRowCtx);
+  const status = resolveThreadStatusPill({
+    thread: { ...thread, ...(thread.lastSeenAt ? { lastVisitedAt: thread.lastSeenAt } : {}) },
+  });
+  const finished = status === null || status.label === "Completed";
+  const resting =
+    thread.latestTurn?.state === "completed"
+      ? "finished"
+      : thread.latestTurn?.state === "interrupted"
+        ? "stopped"
+        : undefined;
+  return (
+    <li>
+      <button
+        type="button"
+        className="flex w-full min-w-0 cursor-pointer items-center gap-1.5 text-left text-xs leading-5 text-foreground/85 transition-colors hover:text-foreground disabled:cursor-default"
+        disabled={onOpenThread === null}
+        data-started-thread={thread.id}
+        onClick={() => onOpenThread?.(thread.id)}
+      >
+        <span
+          aria-label={status?.label ?? "Finished"}
+          className={cn(
+            "size-1.5 shrink-0 rounded-full",
+            finished ? "bg-muted-foreground/45" : status.dotClass,
+          )}
+        />
+        <span className="min-w-0 truncate">{thread.title}</span>
+        <span className="ms-auto flex shrink-0 items-center gap-1.5">
+          <ThreadStatusText
+            thread={thread}
+            status={status?.label === "Completed" ? null : status}
+            resting={resting}
+          />
+          <ThreadProviderGlyph thread={thread} />
+        </span>
+      </button>
+    </li>
+  );
+}
 
 function hasWorkEntryExtras(entry: TimelineWorkEntry): boolean {
   return Boolean(entry.authReconnect || entry.mcpAuthReconnect || (entry.images?.length ?? 0) > 0);

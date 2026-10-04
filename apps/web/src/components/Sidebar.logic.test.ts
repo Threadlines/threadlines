@@ -20,12 +20,19 @@ import {
   THREAD_JUMP_HINT_SHOW_DELAY_MS,
 } from "./Sidebar.logic";
 import {
+  buildInboxSections,
   buildProjectScopeOptions,
+  childThreadsSummaryText,
+  inboxLiveRowHasAttention,
+  inboxLiveRowThreadKeys,
   isThreadDone,
   mergeThreadDoneOverride,
   mergeThreadLastSeenAt,
   sortInboxThreads,
+  summarizeChildThreads,
   windowInboxThreads,
+  type InboxFamilyEntry,
+  type ThreadStatusPill,
 } from "./Sidebar.logic";
 import {
   EnvironmentId,
@@ -1430,5 +1437,292 @@ describe("windowInboxThreads", () => {
         expanded: false,
       }).visible.length,
     ).toBe(3);
+  });
+});
+
+describe("child thread families", () => {
+  const status = (label: ThreadStatusPill["label"]): ThreadStatusPill => ({
+    label,
+    colorClass: `text-${label}`,
+    dotClass: `dot-${label}`,
+    pulse: false,
+  });
+  type Entry = InboxFamilyEntry & { readonly parent: string | null };
+  const entry = (
+    id: string,
+    options: {
+      parent?: string;
+      status?: ThreadStatusPill | null;
+      done?: boolean;
+      createdAt?: string;
+    } = {},
+  ): Entry => ({
+    threadKey: id,
+    thread: { id: ThreadId.make(id), createdAt: options.createdAt ?? "2026-10-01T00:00:00.000Z" },
+    status: options.status ?? null,
+    isDone: options.done ?? false,
+    parent: options.parent ?? null,
+  });
+  const sections = (
+    entries: readonly Entry[],
+    options: {
+      open?: readonly string[];
+      active?: string;
+      inScope?: (entry: Entry) => boolean;
+    } = {},
+  ) =>
+    buildInboxSections({
+      entries,
+      parentKeyOf: (candidate) => candidate.parent,
+      inScope: options.inScope ?? (() => true),
+      isFamilyOpen: (key) => options.open?.includes(key) ?? false,
+      activeThreadKey: options.active ?? null,
+      sortLive: (heads) => [...heads],
+      sortDone: (heads) => [...heads],
+    });
+
+  it("takes one seat per family and lists exactly the rows it draws", () => {
+    // Children never stand as live rows of their own while their parent is
+    // live; a family folds as one row, and the keyboard walks what is drawn.
+    const entries = [
+      entry("release"),
+      entry("changelog", { parent: "release", createdAt: "2026-10-01T00:02:00.000Z" }),
+      entry("flake", { parent: "release", createdAt: "2026-10-01T00:01:00.000Z" }),
+      entry("paste"),
+      entry("hero"),
+    ];
+    const open = sections(entries, { open: ["release"] });
+    expect(open.live.map((row) => row.entry.threadKey)).toEqual(["release", "paste", "hero"]);
+
+    const { visible, hiddenCount } = windowInboxThreads({
+      rows: open.live,
+      hasAttention: inboxLiveRowHasAttention,
+      isPinned: () => false,
+      limit: 2,
+      expanded: false,
+    });
+    expect(hiddenCount).toBe(1);
+    // Children keep creation order under their parent.
+    expect(visible.flatMap(inboxLiveRowThreadKeys)).toEqual([
+      "release",
+      "flake",
+      "changelog",
+      "paste",
+    ]);
+
+    // Closed (the default), the children take no rows at all.
+    expect(sections(entries).live.flatMap(inboxLiveRowThreadKeys)).toEqual([
+      "release",
+      "paste",
+      "hero",
+    ]);
+  });
+
+  it("gives a quiet parent a seat past the fold when one of its threads has a status", () => {
+    const entries = [
+      entry("a"),
+      entry("b"),
+      entry("parent"),
+      entry("child", { parent: "parent", status: status("Working") }),
+    ];
+    const { visible } = windowInboxThreads({
+      rows: sections(entries).live,
+      hasAttention: inboxLiveRowHasAttention,
+      isPinned: () => false,
+      limit: 2,
+      expanded: false,
+    });
+    expect(visible.map((row) => row.entry.threadKey)).toEqual(["a", "b", "parent"]);
+  });
+
+  it("keeps a closed family's thread in view while it needs you or is open in the chat", () => {
+    const entries = [
+      entry("release"),
+      entry("working", { parent: "release", status: status("Working") }),
+      entry("needs-input", { parent: "release", status: status("Awaiting Input") }),
+      entry("open-in-chat", { parent: "release", done: true }),
+      entry("finished", { parent: "release", done: true }),
+    ];
+    const [family] = sections(entries, { active: "open-in-chat" }).live;
+    expect(family?.shownChildren.map((child) => child.threadKey)).toEqual([
+      "needs-input",
+      "open-in-chat",
+    ]);
+  });
+
+  it("lets a live child of a wrapped parent stand on its own until it is done", () => {
+    const entries = [
+      entry("release", { done: true }),
+      entry("still-working", { parent: "release", status: status("Working") }),
+      entry("finished", { parent: "release", done: true }),
+    ];
+    const { live, done } = sections(entries);
+    expect(live.map((row) => [row.entry.threadKey, row.wrappedParent?.threadKey])).toEqual([
+      ["still-working", "release"],
+    ]);
+    // The wrapped parent counts its whole family, and its wrapped threads
+    // live inside it rather than as rows of their own.
+    expect(done.map((row) => [row.entry.threadKey, row.children.length])).toEqual([["release", 2]]);
+
+    // Once it is done too, it joins its family in Wrapped.
+    const settled = sections([
+      entry("release", { done: true }),
+      entry("still-working", { parent: "release", done: true }),
+    ]);
+    expect(settled.live).toEqual([]);
+    expect(settled.done.map((row) => row.entry.threadKey)).toEqual(["release"]);
+  });
+
+  it("treats a separated child as a thread of its own, and scopes a family by its parent", () => {
+    // `parentKeyOf` names only attached parents: a separated child has none.
+    const entries = [
+      entry("release"),
+      entry("separated"),
+      entry("attached", { parent: "release" }),
+    ];
+    expect(sections(entries).live.map((row) => row.entry.threadKey)).toEqual([
+      "release",
+      "separated",
+    ]);
+    // A scope that would drop the child keeps it with its parent, and one
+    // that drops the parent takes the child with it.
+    expect(
+      sections(entries, {
+        open: ["release"],
+        inScope: (candidate) => candidate.threadKey !== "attached",
+      }).live.flatMap(inboxLiveRowThreadKeys),
+    ).toEqual(["release", "attached", "separated"]);
+    expect(
+      sections(entries, {
+        inScope: (candidate) => candidate.threadKey !== "release",
+      }).live.map((row) => row.entry.threadKey),
+    ).toEqual(["separated"]);
+  });
+
+  it("says what matters most on the summary line", () => {
+    const summary = (children: readonly Entry[]) =>
+      childThreadsSummaryText(summarizeChildThreads(children));
+    const working = entry("w", { status: status("Working") });
+    const failed = entry("f", { status: status("Failed") });
+    const needsYou = entry("n", { status: status("Pending Approval") });
+    const finished = entry("d", { done: true });
+
+    expect(summary([working, failed, needsYou, finished])).toBe("4 threads · 1 needs you");
+    expect(summary([working, failed, finished])).toBe("3 threads · 1 failed");
+    expect(summary([working, finished])).toBe("2 threads · 1 working");
+    expect(summary([finished])).toBe("1 thread finished");
+    // A wrapped thread's old status no longer counts, and its dot goes grey.
+    const wrappedFailure = entry("x", { status: status("Failed"), done: true });
+    expect(summary([wrappedFailure])).toBe("1 thread finished");
+    expect(summarizeChildThreads([working, wrappedFailure]).dots).toEqual(["dot-Working", null]);
+    // Past eight dots, the rest are counted instead.
+    const many = Array.from({ length: 11 }, (_, index) => entry(`c${index}`));
+    expect(summarizeChildThreads(many).dots).toHaveLength(8);
+    expect(summarizeChildThreads(many).hiddenDotCount).toBe(3);
+  });
+});
+
+describe("child thread status and wrap-up", () => {
+  const NOW = "2026-10-04T12:00:00.000Z";
+  const settledTurn = {
+    turnId: TurnId.make("turn-answer"),
+    state: "completed",
+    requestedAt: "2026-10-04T11:00:00.000Z",
+    startedAt: "2026-10-04T11:00:00.000Z",
+    completedAt: "2026-10-04T11:05:00.000Z",
+    assistantMessageId: null,
+  } as const;
+  const base = {
+    hasActionableProposedPlan: false,
+    hasPendingApprovals: false,
+    hasPendingUserInput: false,
+    interactionMode: "default" as const,
+    session: {
+      provider: ProviderDriverKind.make("claudeAgent"),
+      status: "ready",
+      orchestrationStatus: "ready",
+      pendingBackgroundTaskCount: 0,
+      createdAt: "2026-10-04T11:00:00.000Z",
+      updatedAt: "2026-10-04T11:05:00.000Z",
+    } as const,
+    latestUserMessageAt: null,
+    latestTurn: settledTurn,
+    createdAt: "2026-10-04T10:00:00.000Z",
+    updatedAt: undefined,
+    pinnedAt: null,
+  };
+
+  it("files a child once the answer it handed back is its latest work, and only that one", () => {
+    // Nobody opened the child, but its parent's agent read the answer.
+    const handedBack = { ...base, handedBackTurnId: settledTurn.turnId };
+    expect(isThreadDone(handedBack, null, { now: NOW, childWrapUp: { parentDone: false } })).toBe(
+      true,
+    );
+    // With the setting off, the unread completion keeps it live as usual.
+    expect(isThreadDone(handedBack, null, { now: NOW })).toBe(false);
+    // Work done after the answer went back gets no pass.
+    const laterWork = {
+      ...handedBack,
+      latestTurn: {
+        ...settledTurn,
+        turnId: TurnId.make("turn-later"),
+        requestedAt: "2026-10-04T11:10:00.000Z",
+        startedAt: "2026-10-04T11:10:00.000Z",
+        completedAt: "2026-10-04T11:20:00.000Z",
+      },
+    };
+    expect(isThreadDone(laterWork, null, { now: NOW, childWrapUp: { parentDone: false } })).toBe(
+      false,
+    );
+    // Something still queued for it means it is not finished.
+    expect(
+      isThreadDone({ ...handedBack, queuedFollowUpCount: 1 }, null, {
+        now: NOW,
+        childWrapUp: { parentDone: false },
+      }),
+    ).toBe(false);
+    // An explicit reopen after the answer still wins.
+    expect(
+      isThreadDone(
+        handedBack,
+        { state: "active", at: "2026-10-04T11:30:00.000Z" },
+        { now: NOW, childWrapUp: { parentDone: false } },
+      ),
+    ).toBe(false);
+  });
+
+  it("files a seen child once its parent is wrapped, but never hides unread work for it", () => {
+    const seen = { ...base, lastVisitedAt: "2026-10-04T11:06:00.000Z" };
+    expect(isThreadDone(seen, null, { now: NOW, childWrapUp: { parentDone: true } })).toBe(true);
+    expect(isThreadDone(seen, null, { now: NOW, childWrapUp: { parentDone: false } })).toBe(false);
+    expect(isThreadDone(base, null, { now: NOW, childWrapUp: { parentDone: true } })).toBe(false);
+    const working = {
+      ...seen,
+      session: { ...base.session, status: "running", orchestrationStatus: "running" } as const,
+    };
+    expect(isThreadDone(working, null, { now: NOW, childWrapUp: { parentDone: true } })).toBe(
+      false,
+    );
+  });
+
+  it("marks a parent waiting on its threads without blocking its wrap-up", () => {
+    const seenParent = {
+      ...base,
+      awaitedChildThreadCount: 3,
+      lastVisitedAt: "2026-10-04T11:06:00.000Z",
+    };
+    expect(resolveThreadStatusPill({ thread: seenParent })).toMatchObject({
+      label: "Waiting",
+      childThreadCount: 3,
+    });
+    expect(canMarkThreadDone(seenParent, { now: NOW })).toBe(true);
+    // An unread completion under the wait still holds it, as it would alone.
+    expect(canMarkThreadDone({ ...seenParent, lastVisitedAt: undefined }, { now: NOW })).toBe(
+      false,
+    );
+    // Threads waiting for the user's yes block like any approval.
+    const asking = { ...seenParent, pendingChildApproval: true };
+    expect(resolveThreadStatusPill({ thread: asking })?.label).toBe("Pending Approval");
+    expect(canMarkThreadDone(asking, { now: NOW })).toBe(false);
   });
 });

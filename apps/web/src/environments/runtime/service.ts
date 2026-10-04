@@ -351,6 +351,7 @@ function isNonIdleThreadDetailSubscription(entry: ThreadDetailSubscriptionEntry)
   if (sidebarThread) {
     if (
       sidebarThread.hasPendingApprovals ||
+      sidebarThread.pendingChildApproval === true ||
       sidebarThread.hasPendingUserInput ||
       sidebarThread.hasActionableProposedPlan
     ) {
@@ -397,6 +398,7 @@ function shouldEvictThreadDetailSubscription(entry: ThreadDetailSubscriptionEntr
 function shouldWarmThreadDetailSubscription(thread: OrchestrationThreadShell): boolean {
   if (
     thread.hasPendingApprovals ||
+    thread.pendingChildApproval ||
     thread.hasPendingUserInput ||
     thread.hasActionableProposedPlan
   ) {

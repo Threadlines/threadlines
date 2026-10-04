@@ -35,6 +35,7 @@ const threadCache = new WeakMap<
     proposedPlans: Thread["proposedPlans"];
     turnDiffSummaries: Thread["turnDiffSummaries"];
     agentRequests: NonNullable<Thread["agentRequests"]>;
+    childRequests: Thread["childRequests"];
     thread: Thread;
   }
 >();
@@ -120,6 +121,8 @@ export function getThreadFromEnvironmentState(
   const proposedPlans = selectThreadProposedPlans(state, threadId);
   const turnDiffSummaries = selectThreadTurnDiffSummaries(state, threadId);
   const agentRequests = state.agentRequestsByThreadId[threadId] ?? EMPTY_AGENT_REQUEST_STATE;
+  // Absent until the detail stream loads it, so the shell's counts stand meanwhile.
+  const childRequests = state.childRequestsByThreadId[threadId];
   const cached = threadCache.get(shell);
 
   if (
@@ -130,7 +133,8 @@ export function getThreadFromEnvironmentState(
     cached.activities === activities &&
     cached.proposedPlans === proposedPlans &&
     cached.turnDiffSummaries === turnDiffSummaries &&
-    cached.agentRequests === agentRequests
+    cached.agentRequests === agentRequests &&
+    cached.childRequests === childRequests
   ) {
     return cached.thread;
   }
@@ -145,6 +149,7 @@ export function getThreadFromEnvironmentState(
     proposedPlans,
     turnDiffSummaries,
     agentRequests,
+    ...(childRequests !== undefined ? { childRequests } : {}),
   };
 
   threadCache.set(shell, {
@@ -155,6 +160,7 @@ export function getThreadFromEnvironmentState(
     proposedPlans,
     turnDiffSummaries,
     agentRequests,
+    childRequests,
     thread,
   });
 

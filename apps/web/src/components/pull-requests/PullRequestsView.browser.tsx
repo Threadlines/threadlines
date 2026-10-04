@@ -229,6 +229,7 @@ function seedProject(): void {
         turnDiffIdsByThreadId: {},
         turnDiffSummaryByThreadId: {},
         agentRequestsByThreadId: {},
+        childRequestsByThreadId: {},
         sidebarThreadSummaryById: {},
         bootstrapComplete: true,
       },

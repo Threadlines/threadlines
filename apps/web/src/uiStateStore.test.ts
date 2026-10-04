@@ -30,6 +30,7 @@ function makeUiState(overrides: Partial<UiState> = {}): UiState {
     threadChangedFilesExpandedById: {},
     doneThreadOverlays: {},
     threadWrapUpOnPullRequestSettledById: {},
+    childThreadFamilyOpenById: {},
     inboxProjectScopeKey: null,
     inboxEnvironmentScopeId: null,
     defaultAdvertisedEndpointKey: null,

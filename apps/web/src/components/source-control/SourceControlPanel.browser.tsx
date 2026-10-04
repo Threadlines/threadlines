@@ -389,6 +389,7 @@ function seedWorktreeThread(worktreePath: string): void {
         turnDiffIdsByThreadId: {},
         turnDiffSummaryByThreadId: {},
         agentRequestsByThreadId: {},
+        childRequestsByThreadId: {},
         sidebarThreadSummaryById: {},
         bootstrapComplete: true,
       },

@@ -34,6 +34,8 @@ export interface PersistedUiState {
   inboxEnvironmentScopeId?: string | null;
   /** See `UiInboxState.threadWrapUpOnPullRequestSettledById`. */
   threadWrapUpOnPullRequestSettledById?: Record<string, boolean>;
+  /** See `UiInboxState.childThreadFamilyOpenById`. */
+  childThreadFamilyOpenById?: Record<string, boolean>;
 }
 
 export interface UiProjectState {
@@ -87,6 +89,12 @@ export interface UiInboxState {
    * setting it stands in for.
    */
   threadWrapUpOnPullRequestSettledById: Record<string, boolean>;
+  /**
+   * Which families of child threads the user opened under their parent's row,
+   * by the parent's scoped thread key. Absent means closed, the default. Kept
+   * on this device: how a list is folded is a matter of where it is read.
+   */
+  childThreadFamilyOpenById: Record<string, boolean>;
   /** Which project chip is selected; null is All. */
   inboxProjectScopeKey: string | null;
   /** Which machine the list is narrowed to; null is All machines. */
@@ -123,6 +131,7 @@ const initialState: UiState = {
   threadChangedFilesExpandedById: {},
   doneThreadOverlays: {},
   threadWrapUpOnPullRequestSettledById: {},
+  childThreadFamilyOpenById: {},
   inboxProjectScopeKey: null,
   inboxEnvironmentScopeId: null,
   defaultAdvertisedEndpointKey: null,
@@ -182,6 +191,7 @@ export function readPersistedState(): UiState {
       threadWrapUpOnPullRequestSettledById: sanitizePersistedBooleanRecord(
         parsed.threadWrapUpOnPullRequestSettledById,
       ),
+      childThreadFamilyOpenById: sanitizePersistedBooleanRecord(parsed.childThreadFamilyOpenById),
     };
   } catch {
     return initialState;
@@ -397,6 +407,7 @@ export function persistState(state: UiState): void {
         inboxProjectScopeKey: state.inboxProjectScopeKey,
         inboxEnvironmentScopeId: state.inboxEnvironmentScopeId,
         threadWrapUpOnPullRequestSettledById: state.threadWrapUpOnPullRequestSettledById,
+        childThreadFamilyOpenById: state.childThreadFamilyOpenById,
       } satisfies PersistedUiState),
     );
     if (!legacyKeysCleanedUp) {
@@ -660,6 +671,11 @@ export function syncThreads(state: UiState, threads: readonly SyncThreadInput[])
       retainedThreadKeys.has(threadKey),
     ),
   );
+  const nextChildThreadFamilyOpenById = Object.fromEntries(
+    Object.entries(state.childThreadFamilyOpenById).filter(([threadKey]) =>
+      retainedThreadKeys.has(threadKey),
+    ),
+  );
   if (
     recordsEqual(state.threadSeedVisitedAtById, nextSeedVisitedAtById) &&
     recordsEqual(state.seenThreadOverlays, nextSeenThreadOverlays) &&
@@ -671,7 +687,8 @@ export function syncThreads(state: UiState, threads: readonly SyncThreadInput[])
     recordsEqual(
       state.threadWrapUpOnPullRequestSettledById,
       nextThreadWrapUpOnPullRequestSettledById,
-    )
+    ) &&
+    recordsEqual(state.childThreadFamilyOpenById, nextChildThreadFamilyOpenById)
   ) {
     return state;
   }
@@ -682,6 +699,7 @@ export function syncThreads(state: UiState, threads: readonly SyncThreadInput[])
     doneThreadOverlays: nextDoneThreadOverlays,
     threadChangedFilesExpandedById: nextThreadChangedFilesExpandedById,
     threadWrapUpOnPullRequestSettledById: nextThreadWrapUpOnPullRequestSettledById,
+    childThreadFamilyOpenById: nextChildThreadFamilyOpenById,
   };
 }
 
@@ -763,12 +781,14 @@ export function clearThreadUi(state: UiState, threadKey: string): UiState {
   const hasSeedState = threadKey in state.threadSeedVisitedAtById;
   const hasChangedFilesState = threadKey in state.threadChangedFilesExpandedById;
   const hasWrapUpState = threadKey in state.threadWrapUpOnPullRequestSettledById;
+  const hasFamilyOpenState = threadKey in state.childThreadFamilyOpenById;
   if (
     !hasSeenOverlay &&
     !hasDoneOverlay &&
     !hasSeedState &&
     !hasChangedFilesState &&
-    !hasWrapUpState
+    !hasWrapUpState &&
+    !hasFamilyOpenState
   ) {
     return state;
   }
@@ -784,6 +804,8 @@ export function clearThreadUi(state: UiState, threadKey: string): UiState {
   delete nextSeedVisitedAtById[threadKey];
   delete nextThreadChangedFilesExpandedById[threadKey];
   delete nextThreadWrapUpOnPullRequestSettledById[threadKey];
+  const nextChildThreadFamilyOpenById = { ...state.childThreadFamilyOpenById };
+  delete nextChildThreadFamilyOpenById[threadKey];
   return {
     ...state,
     seenThreadOverlays: nextSeenThreadOverlays,
@@ -791,7 +813,29 @@ export function clearThreadUi(state: UiState, threadKey: string): UiState {
     threadSeedVisitedAtById: nextSeedVisitedAtById,
     threadChangedFilesExpandedById: nextThreadChangedFilesExpandedById,
     threadWrapUpOnPullRequestSettledById: nextThreadWrapUpOnPullRequestSettledById,
+    childThreadFamilyOpenById: nextChildThreadFamilyOpenById,
   };
+}
+
+/**
+ * Opens or closes a family of child threads under its parent's row. Closed is
+ * the default, so closing forgets the entry rather than storing it.
+ */
+export function setChildThreadFamilyOpen(
+  state: UiState,
+  parentThreadKey: string,
+  open: boolean,
+): UiState {
+  if ((state.childThreadFamilyOpenById[parentThreadKey] ?? false) === open) {
+    return state;
+  }
+  const next = { ...state.childThreadFamilyOpenById };
+  if (open) {
+    next[parentThreadKey] = true;
+  } else {
+    delete next[parentThreadKey];
+  }
+  return { ...state, childThreadFamilyOpenById: next };
 }
 
 /**
@@ -954,6 +998,7 @@ interface UiStateStore extends UiState {
   setInboxEnvironmentScope: (environmentId: string | null) => void;
   clearThreadUi: (threadKey: string) => void;
   setThreadWrapUpOnPullRequestSettled: (threadKey: string, wrapUp: boolean) => void;
+  setChildThreadFamilyOpen: (parentThreadKey: string, open: boolean) => void;
   setThreadChangedFilesExpanded: (
     threadId: string,
     turnId: string,
@@ -994,6 +1039,8 @@ export const useUiStateStore = create<UiStateStore>((set) => ({
   clearThreadUi: (threadKey) => set((state) => clearThreadUi(state, threadKey)),
   setThreadWrapUpOnPullRequestSettled: (threadKey, wrapUp) =>
     set((state) => setThreadWrapUpOnPullRequestSettled(state, threadKey, wrapUp)),
+  setChildThreadFamilyOpen: (parentThreadKey, open) =>
+    set((state) => setChildThreadFamilyOpen(state, parentThreadKey, open)),
   setThreadChangedFilesExpanded: (threadId, turnId, expanded, defaultExpanded) =>
     set((state) =>
       setThreadChangedFilesExpanded(state, threadId, turnId, expanded, defaultExpanded),

@@ -9,6 +9,7 @@ import {
 } from "../lib/threadSort";
 import type { SidebarThreadSummary, Thread } from "../types";
 import { isLatestTurnSettled, isWaitingOnBackgroundTasks } from "../session-logic";
+import { isHandedBackCompletion } from "@threadlines/shared/childThreads";
 
 export const THREAD_SELECTION_SAFE_SELECTOR = "[data-thread-item], [data-thread-selection-safe]";
 export const THREAD_JUMP_HINT_SHOW_DELAY_MS = 100;
@@ -39,6 +40,11 @@ export interface ThreadStatusPill {
   colorClass: string;
   dotClass: string;
   pulse: boolean;
+  /**
+   * "Waiting" on the threads its agent started rather than on its own
+   * background work: how many still owe it an answer.
+   */
+  childThreadCount?: number;
 }
 
 export const THREAD_STATUS_DOT_CLASSES = {
@@ -60,6 +66,8 @@ type ThreadStatusInput = Pick<
   | "latestTurn"
   | "session"
   | "sideTurn"
+  | "pendingChildApproval"
+  | "awaitedChildThreadCount"
 > & {
   lastVisitedAt?: string | undefined;
 };
@@ -293,10 +301,18 @@ export function isContextMenuPointerDown(input: {
 
 export function resolveThreadStatusPill(input: {
   thread: ThreadStatusInput;
+  /**
+   * Look past waiting on the threads its agent started, to what the thread
+   * itself shows beneath it. Wrapping up reads it this way: those threads keep
+   * running wrapped or not.
+   */
+  ignoreChildThreadWait?: boolean;
 }): ThreadStatusPill | null {
   const { thread } = input;
 
-  if (thread.hasPendingApprovals) {
+  // Threads its agent asked to start wait for the user's yes like any other
+  // approval: blocking, and never wrapped away.
+  if (thread.hasPendingApprovals || thread.pendingChildApproval === true) {
     return {
       label: "Pending Approval",
       colorClass: "text-amber-600 dark:text-amber-300/90",
@@ -377,6 +393,23 @@ export function resolveThreadStatusPill(input: {
       colorClass: "text-cyan-600 dark:text-cyan-300/90",
       dotClass: THREAD_STATUS_DOT_CLASSES.cyan,
       pulse: true,
+    };
+  }
+
+  // Its own turn is over and the threads its agent started still owe it
+  // answers: each one that comes back starts it up again on its own.
+  const awaitedChildThreads = thread.awaitedChildThreadCount ?? 0;
+  if (
+    input.ignoreChildThreadWait !== true &&
+    awaitedChildThreads > 0 &&
+    isLatestTurnSettled(thread.latestTurn, thread.session)
+  ) {
+    return {
+      label: "Waiting",
+      colorClass: "text-cyan-600 dark:text-cyan-300/90",
+      dotClass: THREAD_STATUS_DOT_CLASSES.cyan,
+      pulse: true,
+      childThreadCount: awaitedChildThreads,
     };
   }
 
@@ -564,6 +597,10 @@ type InboxLifecycleInput = Pick<
   | "session"
   | "latestUserMessageAt"
   | "latestTurn"
+  | "pendingChildApproval"
+  | "awaitedChildThreadCount"
+  | "handedBackTurnId"
+  | "queuedFollowUpCount"
 > & {
   lastVisitedAt?: string | undefined;
 };
@@ -611,19 +648,33 @@ export function hasQueuedTurnStart(
  * completion or background wakeup hides where its result will land.
  * A failed thread CAN be marked done after it has been inspected -- that is
  * "I saw it, I'm done with it" rather than an accidental dismissal.
+ *
+ * Waiting on the threads its agent started does not hold a thread open:
+ * wrapping it up never stops them, so the check reads what the thread shows
+ * beneath that wait.
  */
 export function canMarkThreadDone(
   thread: InboxLifecycleInput,
-  options: { readonly now: string },
+  options: {
+    readonly now: string;
+    /**
+     * A child thread whose latest finished work went back to its parent: the
+     * parent's agent read that completion, so it needs no visit.
+     */
+    readonly handedBackCompletionSeen?: boolean;
+  },
 ): boolean {
   // The same status resolution the row uses, so "can't be marked done" and
   // "shows a status that deserves attention" can never drift apart.
-  const status = resolveThreadStatusPill({ thread });
+  const status = resolveThreadStatusPill({ thread, ignoreChildThreadWait: true });
   if (status !== null) {
-    if (status.label !== "Failed") return false;
-    // Failed persists as a diagnostic status after a visit, unlike Completed,
-    // so compare its session timestamp explicitly before allowing dismissal.
-    if (hasUnseenSessionFailure(thread)) return false;
+    const handedBack = status.label === "Completed" && options.handedBackCompletionSeen === true;
+    if (!handedBack) {
+      if (status.label !== "Failed") return false;
+      // Failed persists as a diagnostic status after a visit, unlike Completed,
+      // so compare its session timestamp explicitly before allowing dismissal.
+      if (hasUnseenSessionFailure(thread)) return false;
+    }
   }
   if (hasQueuedTurnStart(thread, options)) return false;
   return true;
@@ -690,12 +741,18 @@ export const INBOX_AUTO_DONE_AFTER_DAYS = 2;
  *    last activity. New work outranks an old word in both directions: a done
  *    thread that starts again pulls itself back without being un-marked, and
  *    a reopened thread that goes quiet again is allowed to re-file itself.
- * 3. A merged or closed pull request. The branch landing is a stronger signal
+ * 3. A finished child thread (the "wrap up finished child threads" setting):
+ *    one still part of its parent's family, with nothing queued, files itself
+ *    once its latest work went back to the parent -- the parent's agent read
+ *    that answer, so it needs no visit -- or once the parent itself is
+ *    wrapped, since the user is finished with that work. Only the exact
+ *    completion handed back skips the unread rule; later work does not.
+ * 4. A merged or closed pull request. The branch landing is a stronger signal
  *    than idleness, so it files the thread at once rather than waiting out the
  *    timer, and a pin does not hold it back -- finished work is finished
  *    wherever it was placed. Unread work still stays out, and a moving thread
  *    was already excluded above.
- * 4. Auto-done on idle, unless the thread is pinned or holds a completion the
+ * 5. Auto-done on idle, unless the thread is pinned or holds a completion the
  *    user has not seen. A pin is "keep this at hand" -- filing it on a timer
  *    would undo the one placement the user made by hand -- and unread work is
  *    the inbox's reason to exist; filing it unread would be the sidebar
@@ -715,9 +772,21 @@ export function isThreadDone(
      * is the user's word that the thread is still in use.
      */
     readonly pullRequestSettledAt?: string | null;
+    /**
+     * Set for a thread in its parent's family while "wrap up finished child
+     * threads" is on: whether that parent is wrapped. Absent: rule 3 is off.
+     */
+    readonly childWrapUp?: { readonly parentDone: boolean } | null;
   },
 ): boolean {
-  if (!canMarkThreadDone(thread, options)) return false;
+  const childWrapUp = options.childWrapUp ?? null;
+  const handedBackCompletionSeen =
+    childWrapUp !== null &&
+    isHandedBackCompletion({
+      handedBackTurnId: thread.handedBackTurnId ?? null,
+      latestTurn: thread.latestTurn,
+    });
+  if (!canMarkThreadDone(thread, { now: options.now, handedBackCompletionSeen })) return false;
   const lastActivityAt = resolveDoneTimestamp(thread, null);
   const overrideIsStale =
     override != null &&
@@ -725,6 +794,13 @@ export function isThreadDone(
     Date.parse(lastActivityAt) > Date.parse(override.at);
   if (override != null && !overrideIsStale) {
     return override.state === "done";
+  }
+  if (
+    childWrapUp !== null &&
+    (thread.queuedFollowUpCount ?? 0) === 0 &&
+    (handedBackCompletionSeen || childWrapUp.parentDone)
+  ) {
+    return true;
   }
   if (
     isFiledByPullRequest(thread, override, options.pullRequestSettledAt) &&
@@ -894,4 +970,229 @@ export function windowInboxThreads<T>(input: {
     return seatsTaken <= input.limit || input.hasAttention(row);
   });
   return { visible, hiddenCount: input.rows.length - visible.length };
+}
+
+// ── Child thread families ────────────────────────────────────────────
+//
+// A thread whose agent started threads of its own heads a family: the parent
+// plus the children still attached to it (docs/design/child-threads.md). The
+// inbox shows a family as one row with a summary line that opens in place,
+// so an agent that starts five threads costs the list one seat, not six.
+
+/** What the family rules read about each inbox thread. */
+export interface InboxFamilyEntry {
+  readonly threadKey: string;
+  readonly thread: Pick<SidebarThreadSummary, "id" | "createdAt">;
+  readonly status: ThreadStatusPill | null;
+  readonly isDone: boolean;
+}
+
+/** One live row: a thread, the family it heads, and what shows under it. */
+export interface InboxLiveRow<E extends InboxFamilyEntry> {
+  readonly entry: E;
+  /** The threads in its family, oldest first; empty unless it is a parent. */
+  readonly children: readonly E[];
+  /** The children drawn under it: all of them while open, else only those
+   *  that need the user and the one open in the chat. */
+  readonly shownChildren: readonly E[];
+  /** A live child whose parent is wrapped stands on its own, naming the parent. */
+  readonly wrappedParent: E | null;
+}
+
+/** One wrapped row: a thread, and the threads its family had. */
+export interface InboxDoneRow<E extends InboxFamilyEntry> {
+  readonly entry: E;
+  /** Its attached children, oldest first: the wrapped ones live inside it. */
+  readonly children: readonly E[];
+  /** A wrapped child of this wrapped parent that is open in the chat. */
+  readonly openChild: E | null;
+}
+
+const NEEDS_YOU_NOW: ReadonlySet<ThreadStatusPill["label"]> = new Set([
+  "Pending Approval",
+  "Awaiting Input",
+]);
+
+/** A child that is waiting on the user's answer: never folded out of sight. */
+export function isChildThreadNeedingYou(entry: InboxFamilyEntry): boolean {
+  return !entry.isDone && entry.status !== null && NEEDS_YOU_NOW.has(entry.status.label);
+}
+
+const IN_FLIGHT: ReadonlySet<ThreadStatusPill["label"]> = new Set([
+  "Working",
+  "Starting",
+  "Answering",
+  "Waiting",
+]);
+
+/** A child with work in flight: what "Stop N working threads" stops. */
+export function isChildThreadWorking(entry: InboxFamilyEntry): boolean {
+  return !entry.isDone && entry.status !== null && IN_FLIGHT.has(entry.status.label);
+}
+
+/**
+ * Lays the inbox out in families. `parentKeyOf` names the parent a thread is
+ * attached to, whether or not it is in the list; a thread whose parent is not
+ * (archived, deleted) stands on its own. Scope is decided by the family's
+ * parent, so children always travel with it. The live and wrapped orders come
+ * from the caller's sorts, applied to the rows that stand on their own;
+ * children keep creation order and are never re-sorted.
+ */
+export function buildInboxSections<E extends InboxFamilyEntry>(input: {
+  readonly entries: readonly E[];
+  readonly parentKeyOf: (entry: E) => string | null;
+  readonly inScope: (entry: E) => boolean;
+  readonly isFamilyOpen: (parentKey: string) => boolean;
+  readonly activeThreadKey: string | null;
+  readonly sortLive: (entries: readonly E[]) => E[];
+  readonly sortDone: (entries: readonly E[]) => E[];
+}): { readonly live: InboxLiveRow<E>[]; readonly done: InboxDoneRow<E>[] } {
+  const entryByKey = new Map(input.entries.map((entry) => [entry.threadKey, entry] as const));
+  const parentOf = (entry: E): E | null => {
+    const parentKey = input.parentKeyOf(entry);
+    if (parentKey === null || parentKey === entry.threadKey) return null;
+    return entryByKey.get(parentKey) ?? null;
+  };
+  const childrenByParentKey = new Map<string, E[]>();
+  for (const entry of input.entries) {
+    const parent = parentOf(entry);
+    if (parent === null) continue;
+    const siblings = childrenByParentKey.get(parent.threadKey) ?? [];
+    siblings.push(entry);
+    childrenByParentKey.set(parent.threadKey, siblings);
+  }
+  for (const siblings of childrenByParentKey.values()) {
+    siblings.sort(
+      (left, right) =>
+        (toSortableTimestamp(left.thread.createdAt) ?? 0) -
+          (toSortableTimestamp(right.thread.createdAt) ?? 0) ||
+        left.thread.id.localeCompare(right.thread.id),
+    );
+  }
+
+  const liveHeads: E[] = [];
+  const doneHeads: E[] = [];
+  const wrappedParentByKey = new Map<string, E>();
+  for (const entry of input.entries) {
+    const parent = parentOf(entry);
+    if (parent === null) {
+      if (!input.inScope(entry)) continue;
+      (entry.isDone ? doneHeads : liveHeads).push(entry);
+      continue;
+    }
+    // In a live family, or inside its wrapped parent: not a row of its own.
+    if (!parent.isDone || entry.isDone) continue;
+    if (!input.inScope(parent)) continue;
+    liveHeads.push(entry);
+    wrappedParentByKey.set(entry.threadKey, parent);
+  }
+
+  const live = input.sortLive(liveHeads).map((entry): InboxLiveRow<E> => {
+    const wrappedParent = wrappedParentByKey.get(entry.threadKey) ?? null;
+    const children = wrappedParent === null ? (childrenByParentKey.get(entry.threadKey) ?? []) : [];
+    const shownChildren = input.isFamilyOpen(entry.threadKey)
+      ? children
+      : children.filter(
+          (child) => isChildThreadNeedingYou(child) || child.threadKey === input.activeThreadKey,
+        );
+    return { entry, children, shownChildren, wrappedParent };
+  });
+  const done = input.sortDone(doneHeads).map((entry): InboxDoneRow<E> => {
+    const children = childrenByParentKey.get(entry.threadKey) ?? [];
+    return {
+      entry,
+      children,
+      openChild:
+        children.find((child) => child.isDone && child.threadKey === input.activeThreadKey) ?? null,
+    };
+  });
+  return { live, done };
+}
+
+/** Whether a live row earns a seat past the fold: it or a live child shows a status. */
+export function inboxLiveRowHasAttention(row: InboxLiveRow<InboxFamilyEntry>): boolean {
+  return (
+    row.entry.status !== null ||
+    row.children.some((child) => !child.isDone && child.status !== null)
+  );
+}
+
+/** The thread keys of the rows a live row draws, in order: it, then its shown children. */
+export function inboxLiveRowThreadKeys(row: InboxLiveRow<InboxFamilyEntry>): string[] {
+  return [row.entry.threadKey, ...row.shownChildren.map((child) => child.threadKey)];
+}
+
+/** Dots past this fold into "+N". */
+export const CHILD_THREAD_SUMMARY_DOT_LIMIT = 8;
+
+/** A family's summary line: a dot per child, then what matters most. */
+export interface ChildThreadsSummary {
+  readonly count: number;
+  /** Each shown child's status dot class; null draws it grey (finished or wrapped). */
+  readonly dots: ReadonlyArray<string | null>;
+  readonly hiddenDotCount: number;
+  /** The one count the line names after "N threads"; null when all are finished. */
+  readonly highlight: {
+    readonly kind: "needs-you" | "failed" | "working";
+    readonly count: number;
+  } | null;
+}
+
+export function summarizeChildThreads(
+  children: ReadonlyArray<InboxFamilyEntry>,
+): ChildThreadsSummary {
+  const dotOf = (child: InboxFamilyEntry) =>
+    child.isDone || child.status === null ? null : child.status.dotClass;
+  const needsYou = children.filter(isChildThreadNeedingYou).length;
+  const failed = children.filter(
+    (child) => !child.isDone && child.status?.label === "Failed",
+  ).length;
+  const working = children.filter(isChildThreadWorking).length;
+  return {
+    count: children.length,
+    dots: children.slice(0, CHILD_THREAD_SUMMARY_DOT_LIMIT).map(dotOf),
+    hiddenDotCount: Math.max(0, children.length - CHILD_THREAD_SUMMARY_DOT_LIMIT),
+    highlight:
+      needsYou > 0
+        ? { kind: "needs-you", count: needsYou }
+        : failed > 0
+          ? { kind: "failed", count: failed }
+          : working > 0
+            ? { kind: "working", count: working }
+            : null,
+  };
+}
+
+/** "3 threads", "1 thread". */
+export function formatChildThreadCount(count: number): string {
+  return `${count} ${count === 1 ? "thread" : "threads"}`;
+}
+
+/** The highlight's words: "1 needs you", "2 failed", "3 working". */
+export function formatChildThreadsHighlight(
+  highlight: NonNullable<ChildThreadsSummary["highlight"]>,
+): string {
+  switch (highlight.kind) {
+    case "needs-you":
+      return `${highlight.count} needs you`;
+    case "failed":
+      return `${highlight.count} failed`;
+    case "working":
+      return `${highlight.count} working`;
+  }
+}
+
+/** The summary line as text: "3 threads · 1 needs you", or "3 threads finished". */
+export function childThreadsSummaryText(summary: ChildThreadsSummary): string {
+  const count = formatChildThreadCount(summary.count);
+  return summary.highlight === null
+    ? `${count} finished`
+    : `${count} · ${formatChildThreadsHighlight(summary.highlight)}`;
+}
+
+/** A parent's hover card line: "Threads: 3 · 1 needs you", or "Threads: 3". */
+export function childThreadsHoverLine(summary: ChildThreadsSummary): string {
+  return summary.highlight === null
+    ? `Threads: ${summary.count}`
+    : `Threads: ${summary.count} · ${formatChildThreadsHighlight(summary.highlight)}`;
 }

@@ -405,9 +405,42 @@ function roomToolDraft(tool: string, agent: string | null): StepDraft | null {
       );
     case "room_diff":
       return routine(phrase("Checked the changes", "Checking the changes"));
+    // Child threads: the threads this thread's agent starts and steers.
+    case "thread_start":
+      return notable(phrase("Started threads", "Starting threads"));
+    case "thread_send":
+      return notable(phrase("Sent one of its threads a message", "Sending a thread a message"));
+    case "thread_stop":
+      return notable(phrase("Stopped one of its threads", "Stopping a thread"));
+    case "thread_agents":
+      return routine(
+        phrase("Checked which agents can run a thread", "Checking which agents can run a thread"),
+      );
+    case "thread_list":
+      return routine(phrase("Checked its threads", "Checking its threads"));
+    case "thread_read":
+      return routine(phrase("Read one of its threads", "Reading a thread"));
     default:
       return null;
   }
+}
+
+/**
+ * The Threadlines room tool a work-log entry called (`room_ask`,
+ * `thread_start`), however its provider named the call; null for anything
+ * else. The chat gives some of them more than a line.
+ */
+export function threadlinesRoomToolOf(entry: WorkLogEntry): string | null {
+  for (const value of [entry.detail, entry.toolTitle, entry.label]) {
+    const text = value?.trim();
+    if (!text) continue;
+    const named = /^([\w.-]+):\s*/su.exec(text);
+    const call = parseMcpCall(text) ?? (named ? parseMcpCall(named[1]!) : null);
+    if (call?.server === "threadlines_room") {
+      return call.tool.toLowerCase();
+    }
+  }
+  return null;
 }
 
 /** The agent a call names, from its argument preview: `agent=GPT-6-Astra 2 text=…`

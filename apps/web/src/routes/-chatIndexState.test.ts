@@ -48,6 +48,7 @@ function environmentState(bootstrapComplete: boolean): EnvironmentState {
     turnDiffIdsByThreadId: {},
     turnDiffSummaryByThreadId: {},
     agentRequestsByThreadId: {},
+    childRequestsByThreadId: {},
     sidebarThreadSummaryById: {},
     bootstrapComplete,
   };

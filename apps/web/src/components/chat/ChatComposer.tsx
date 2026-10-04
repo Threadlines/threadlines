@@ -125,6 +125,8 @@ import {
 } from "./ComposerPrimaryActions";
 import { useSettings, useUpdateSettings } from "../../hooks/useSettings";
 import { ComposerAgentInvitePanel } from "./ComposerAgentInvitePanel";
+import { ComposerChildThreadsPanel } from "./ComposerChildThreadsPanel";
+import { pendingChildThreads } from "../../childThreads";
 import { ComposerPendingApprovalPanel } from "./ComposerPendingApprovalPanel";
 import { ComposerPendingUserInputPanel } from "./ComposerPendingUserInputPanel";
 import { ComposerGoalBar, type ComposerGoalSetInput } from "./ComposerGoalBar";
@@ -1221,6 +1223,17 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
               providerInstanceEntries,
               (model, entry) => getPickerModelName(model, entry.driverKind),
             ),
+          )
+        : null,
+    [activeThread, providerInstanceEntries],
+  );
+  // Threads the agent asked to start, waiting for the user's yes (child
+  // threads, "Ask me first"). The thread waits on it like on an invite.
+  const pendingChildThreadStarts = useMemo(
+    () =>
+      activeThread
+        ? pendingChildThreads(activeThread, providerInstanceEntries, (model, entry) =>
+            getPickerModelName(model, entry.driverKind),
           )
         : null,
     [activeThread, providerInstanceEntries],
@@ -3621,6 +3634,14 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   key={pendingInvite.requestId}
                   threadRef={routeThreadRef}
                   invite={pendingInvite}
+                />
+              </div>
+            ) : pendingChildThreadStarts !== null ? (
+              <div className="rounded-t-[19px] border-b border-border/65 bg-muted/20">
+                <ComposerChildThreadsPanel
+                  key={pendingChildThreadStarts.batchId}
+                  threadRef={routeThreadRef}
+                  request={pendingChildThreadStarts}
                 />
               </div>
             ) : showPlanFollowUpPrompt && activeProposedPlan ? (

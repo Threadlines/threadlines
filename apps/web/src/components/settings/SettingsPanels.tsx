@@ -12,6 +12,7 @@ import { formatTokens, formatUsd } from "@threadlines/shared/usageFormat";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   type AgentInvitesMode,
+  type AgentThreadsMode,
   AUTO_ARCHIVE_INACTIVE_THREADS_DAY_OPTIONS,
   type AutoArchiveInactiveThreadsDays,
   defaultInstanceIdForDriver,
@@ -23,7 +24,7 @@ import {
   type UsageWindowDays,
 } from "@threadlines/contracts";
 import { scopeThreadRef } from "@threadlines/client-runtime";
-import { agentInvitesChoice } from "@threadlines/shared/serverSettings";
+import { agentInvitesChoice, agentThreadsMode } from "@threadlines/shared/serverSettings";
 import { DEFAULT_UNIFIED_SETTINGS } from "@threadlines/contracts/settings";
 import * as Duration from "effect/Duration";
 import * as Equal from "effect/Equal";
@@ -412,6 +413,11 @@ export function useSettingsRestore(onRestored?: () => void) {
         : []),
       ...(!roomsEnabledFor(settings) ? ["Rooms"] : []),
       ...(agentInvitesChoice(settings) !== "ask" ? ["Agents bringing in other agents"] : []),
+      ...(agentThreadsMode(settings) !== "ask" ? ["Agents can start threads"] : []),
+      ...(settings.wrapUpChildThreadsOnFinish !==
+      DEFAULT_UNIFIED_SETTINGS.wrapUpChildThreadsOnFinish
+        ? ["Wrap up finished child threads"]
+        : []),
       ...(isGitWritingModelDirty ? ["Git writing model"] : []),
       ...(isGitWritingBackupModelDirty ? ["Backup git writing model"] : []),
       ...(isSourceControlWritingStyleDirty ? ["Source control writing style"] : []),
@@ -428,6 +434,8 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.confirmThreadDelete,
       settings.enableRooms,
       settings.agentInvites,
+      settings.agentThreads,
+      settings.wrapUpChildThreadsOnFinish,
       settings.addProjectBaseDirectory,
       settings.agentBrowserSitePolicy,
       settings.defaultThreadEnvMode,
@@ -476,6 +484,8 @@ export function useSettingsRestore(onRestored?: () => void) {
       agentBrowserSitePolicy: DEFAULT_UNIFIED_SETTINGS.agentBrowserSitePolicy,
       enableRooms: true,
       agentInvites: "ask",
+      agentThreads: "ask",
+      wrapUpChildThreadsOnFinish: DEFAULT_UNIFIED_SETTINGS.wrapUpChildThreadsOnFinish,
       textGenerationModelSelection: DEFAULT_UNIFIED_SETTINGS.textGenerationModelSelection,
       textGenerationBackupModelSelection:
         DEFAULT_UNIFIED_SETTINGS.textGenerationBackupModelSelection,
@@ -703,6 +713,61 @@ function AgentInvitesRow() {
             <SelectItem value="off">{AGENT_INVITES_LABELS.off}</SelectItem>
             <SelectItem value="ask">{AGENT_INVITES_LABELS.ask}</SelectItem>
             <SelectItem value="auto">{AGENT_INVITES_LABELS.auto}</SelectItem>
+          </SelectPopup>
+        </Select>
+      }
+    />
+  );
+}
+
+const AGENT_THREADS_LABELS: Record<AgentThreadsMode, string> = {
+  off: "Off",
+  ask: "Ask me first",
+  auto: "Automatic",
+};
+
+/**
+ * Whether the thread's agent may start threads of its own
+ * (docs/design/child-threads.md). A setting of this computer's server, like
+ * invites, but independent of Rooms: a thread with one agent can start them.
+ */
+function AgentThreadsRow() {
+  const mode = useSettings((settings) => agentThreadsMode(settings));
+  const { updateSettings } = useUpdateSettings();
+  return (
+    <SettingsRow
+      title="Agents can start threads"
+      description={
+        mode === "auto"
+          ? "The thread's agent can start threads of its own, each in its own worktree, without asking you."
+          : mode === "ask"
+            ? "The thread's agent can ask to start threads of its own, each in its own worktree, and you decide each time."
+            : "The thread's agent never starts threads of its own."
+      }
+      resetAction={
+        mode !== "ask" ? (
+          <SettingResetButton
+            label="agents can start threads"
+            onClick={() => updateSettings({ agentThreads: "ask" })}
+          />
+        ) : null
+      }
+      control={
+        <Select
+          value={mode}
+          onValueChange={(value) => {
+            if (value === "off" || value === "ask" || value === "auto") {
+              updateSettings({ agentThreads: value });
+            }
+          }}
+        >
+          <SelectTrigger className="w-full sm:w-44" aria-label="Agents can start threads">
+            <SelectValue>{AGENT_THREADS_LABELS[mode]}</SelectValue>
+          </SelectTrigger>
+          <SelectPopup align="end" alignItemWithTrigger={false}>
+            <SelectItem value="off">{AGENT_THREADS_LABELS.off}</SelectItem>
+            <SelectItem value="ask">{AGENT_THREADS_LABELS.ask}</SelectItem>
+            <SelectItem value="auto">{AGENT_THREADS_LABELS.auto}</SelectItem>
           </SelectPopup>
         </Select>
       }
@@ -1213,6 +1278,33 @@ export function GeneralSettingsPanel({ surface = "full" }: { surface?: "full" | 
           }
         />
         <SettingsRow
+          id="wrap-up-finished-child-threads"
+          title="Wrap up finished child threads"
+          description="File a thread an agent started under Wrapped once its answer went back to that agent, or once the thread that started it is wrapped."
+          resetAction={
+            settings.wrapUpChildThreadsOnFinish !==
+            DEFAULT_UNIFIED_SETTINGS.wrapUpChildThreadsOnFinish ? (
+              <SettingResetButton
+                label="wrap up finished child threads"
+                onClick={() =>
+                  updateSettings({
+                    wrapUpChildThreadsOnFinish: DEFAULT_UNIFIED_SETTINGS.wrapUpChildThreadsOnFinish,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Switch
+              checked={settings.wrapUpChildThreadsOnFinish}
+              onCheckedChange={(checked) =>
+                updateSettings({ wrapUpChildThreadsOnFinish: Boolean(checked) })
+              }
+              aria-label="Wrap up finished child threads"
+            />
+          }
+        />
+        <SettingsRow
           title="Delete confirmation"
           description="Ask before deleting a thread and its chat history."
           resetAction={
@@ -1257,6 +1349,7 @@ export function GeneralSettingsPanel({ surface = "full" }: { surface?: "full" | 
           }
         />
         <AgentInvitesRow />
+        <AgentThreadsRow />
         {isElectron ? <AgentBrowserSitesRow /> : null}
         {isElectron && !isPhoneSurface ? <ClearBrowserDataRow /> : null}
       </SettingsSection>

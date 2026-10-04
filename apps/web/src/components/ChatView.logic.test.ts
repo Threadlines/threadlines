@@ -1948,6 +1948,7 @@ function setStoreThreads(threads: ReadonlyArray<ReturnType<typeof makeThread>>) 
       ]),
     ),
     agentRequestsByThreadId: {},
+    childRequestsByThreadId: {},
     sidebarThreadSummaryById: {},
     bootstrapComplete: true,
   };
