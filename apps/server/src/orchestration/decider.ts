@@ -78,8 +78,11 @@ import {
   decideChildStart,
   decideChildrenStop,
   decideParentAttachmentSet,
+  isChildBeingSetUp,
+  isOpenParentRequest,
   isStaleReport,
   settleParentRequestsForUnqueued,
+  withinModeCeiling,
 } from "./childThreadDecisions.ts";
 import { childDeliveryForQuietCandidate } from "./childThreadDelivery.ts";
 import { projectEvent } from "./projector.ts";
@@ -464,7 +467,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
                 ? "A thread can only start threads in its own project."
                 : isAttachedChild(parent)
                   ? "A thread started by another thread cannot start threads itself."
-                  : null;
+                  : !withinModeCeiling(command, parent)
+                    ? "A thread cannot be started with more access than the thread starting it."
+                    : null;
         if (lineageRefusal !== null) {
           return yield* new OrchestrationCommandInvariantError({
             commandType: command.type,
@@ -1871,6 +1876,24 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
+      // Child threads: nothing runs in a child before its worktree exists,
+      // and a parent's request that was cancelled (stopped, separated) never
+      // starts.
+      if (command.fromThread === undefined && isChildBeingSetUp(readModel, targetThread)) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "This thread is still being set up. Try again in a moment.",
+        });
+      }
+      if (
+        command.fromThread?.kind === "request" &&
+        !isOpenParentRequest(readModel, command.fromThread)
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "The request this turn answers was cancelled.",
+        });
+      }
       const sourceProposedPlan = command.sourceProposedPlan;
       const sourceThread = sourceProposedPlan
         ? yield* requireThread({
@@ -2453,7 +2476,11 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       const agentQueued = isAgentOrigin(queued);
       // A child's report whose delivery was cancelled after it was queued
       // (Stop, wrap, the child separated or gone) is taken back, not sent.
-      if (isStaleReport(readModel, targetThread, fromThread)) {
+      // Likewise a parent's request whose request was cancelled meanwhile.
+      if (
+        isStaleReport(readModel, targetThread, fromThread) ||
+        (fromThread?.kind === "request" && !isOpenParentRequest(readModel, fromThread))
+      ) {
         return [{ ...unqueuedEvent, payload: { ...unqueuedEvent.payload, reason: "cancelled" } }];
       }
       // A message an agent queued carries no model: its agent's current one

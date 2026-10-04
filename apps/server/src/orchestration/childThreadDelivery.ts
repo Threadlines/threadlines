@@ -109,14 +109,23 @@ export function childDeliveryForTurnEnd(input: {
   readonly awaitedBackgroundTaskCount: number;
 }): ChildDelivery | null {
   const { parent, child, end } = input;
-  const request = parent.childRequests.open.find(
-    (entry) =>
-      entry.childThreadId === child.id &&
-      ((entry.status === "running" && entry.childMessageId === input.pendingMessageId) ||
-        (entry.status === "awaiting_background" &&
-          entry.candidateTurnId !== undefined &&
-          entry.candidateTurnId !== end.turnId)),
-  );
+  // The request whose own message started this turn comes first. Only a turn
+  // no message started (the follow-up a child's background work starts on
+  // its own) continues a request waiting on that work; a turn the parent or
+  // the user started answers its own message, never an older request.
+  const owned = parent.childRequests.open.filter((entry) => entry.childThreadId === child.id);
+  const request =
+    owned.find(
+      (entry) => entry.status === "running" && entry.childMessageId === input.pendingMessageId,
+    ) ??
+    (input.pendingMessageId === null
+      ? owned.find(
+          (entry) =>
+            entry.status === "awaiting_background" &&
+            entry.candidateTurnId !== undefined &&
+            entry.candidateTurnId !== end.turnId,
+        )
+      : undefined);
   if (request === undefined) {
     return null;
   }

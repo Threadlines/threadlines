@@ -1656,7 +1656,9 @@ describe("ProviderCommandReactor", () => {
   it("restarts the thread's own agent with resume once, to pick up the room tools", async () => {
     // Agents bringing in others and starting threads off: only a room gives
     // the agent room tools.
-    const harness = await createHarness({ serverSettings: { agentInvites: "off", agentThreads: "off" } });
+    const harness = await createHarness({
+      serverSettings: { agentInvites: "off", agentThreads: "off" },
+    });
     const now = "2026-01-01T00:00:00.000Z";
     const threadId = ThreadId.make("thread-1");
     const dispatch = (command: Parameters<typeof harness.engine.dispatch>[0]) =>
@@ -1721,7 +1723,9 @@ describe("ProviderCommandReactor", () => {
   });
 
   it("picks up the room tools at the next turn, never in the middle of one", async () => {
-    const harness = await createHarness({ serverSettings: { agentInvites: "off", agentThreads: "off" } });
+    const harness = await createHarness({
+      serverSettings: { agentInvites: "off", agentThreads: "off" },
+    });
     const now = "2026-01-01T00:00:00.000Z";
     const threadId = ThreadId.make("thread-1");
     const dispatch = (command: Parameters<typeof harness.engine.dispatch>[0]) =>

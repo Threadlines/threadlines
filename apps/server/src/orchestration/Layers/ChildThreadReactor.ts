@@ -21,7 +21,8 @@ import * as Stream from "effect/Stream";
 import { ProjectionTurnRepositoryLive } from "../../persistence/Layers/ProjectionTurns.ts";
 import { ProjectionTurnRepository } from "../../persistence/Services/ProjectionTurns.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
-import { childReportMessageId } from "../childThreadDecisions.ts";
+import { isAgentOrigin } from "@threadlines/shared/roomAgentRequests";
+import { childReportMessageId, clampLaunchToCeiling } from "../childThreadDecisions.ts";
 import {
   childDeliveryAfterRestart,
   childDeliveryForQuietCandidate,
@@ -159,7 +160,9 @@ export const makeChildThreadReactor = Effect.gen(function* () {
             requestId,
             childThreadId: request.childThreadId,
             childMessageId: request.childMessageId,
-            launch,
+            // Never more access than the parent has now, whatever it had
+            // when it asked (an approval can come much later).
+            launch: clampLaunchToCeiling(launch, parent),
             fromThread: { threadId: parent.id, requestId, kind: "request" },
             createdAt: request.createdAt,
           }),
@@ -336,16 +339,34 @@ export const makeChildThreadReactor = Effect.gen(function* () {
           });
           continue;
         }
-        const answeringTurn =
+        const childTurns = yield* turns
+          .listByThreadId({ threadId: child.id })
+          .pipe(Effect.orElseSucceed(() => [] as const));
+        // The turn that durably finished the answer, if one did: the turn the
+        // request's message started, or for an answer waiting on background
+        // work, the latest follow-up that work started on its own.
+        const candidateEnded =
+          childTurns.find((entry) => entry.turnId === request.candidateTurnId)?.completedAt ?? "";
+        const finishedTurn =
           request.status === "running"
-            ? (yield* turns
-                .listByThreadId({ threadId: child.id })
-                .pipe(Effect.orElseSucceed(() => [] as const))).find(
-                (turn) => turn.pendingMessageId === request.childMessageId,
+            ? childTurns.find(
+                (turn) =>
+                  turn.pendingMessageId === request.childMessageId && turn.state === "completed",
               )
-            : undefined;
-        const finishedTurnId =
-          answeringTurn?.state === "completed" ? (answeringTurn.turnId ?? null) : null;
+            : request.status === "awaiting_background"
+              ? childTurns
+                  .filter(
+                    (turn) =>
+                      turn.state === "completed" &&
+                      turn.pendingMessageId === null &&
+                      turn.turnId !== null &&
+                      turn.turnId !== request.candidateTurnId &&
+                      turn.requestedAt >= candidateEnded,
+                  )
+                  .toSorted((left, right) => left.requestedAt.localeCompare(right.requestedAt))
+                  .at(-1)
+              : undefined;
+        const finishedTurnId = finishedTurn?.turnId ?? null;
         const delivery = childDeliveryAfterRestart(child, request, finishedTurnId);
         yield* dispatch(
           { ...delivery, threadId: parent.id, createdAt: yield* nowIso },
@@ -370,6 +391,40 @@ export const makeChildThreadReactor = Effect.gen(function* () {
           );
         }
       }
+    }
+  });
+
+  /**
+   * A report the previous process queued for a parent but never sent: the
+   * normal queue only sends when a turn ends, and there is no turn after a
+   * restart. Sent now, through the same send that checks it was not
+   * cancelled meanwhile, unless the user's own queued messages come first
+   * (those wait for the user, as they always have).
+   */
+  const sendReportsQueuedBeforeRestart = Effect.gen(function* () {
+    const shell = yield* snapshots.getShellSnapshot().pipe(Effect.orElseSucceed(() => undefined));
+    for (const summary of shell?.threads ?? []) {
+      const queued = summary.queuedFollowUps ?? [];
+      const report = queued.find((entry) => entry.fromThread?.kind === "report");
+      const status = summary.session?.status;
+      if (
+        report === undefined ||
+        queued.some((entry) => !isAgentOrigin(entry)) ||
+        status === "running" ||
+        status === "starting"
+      ) {
+        continue;
+      }
+      yield* dispatch(
+        {
+          type: "thread.follow-up.send-queued",
+          commandId: CommandId.make(`server:child-report-after-restart:${report.messageId}`),
+          threadId: summary.id,
+          messageId: report.messageId,
+          createdAt: yield* nowIso,
+        },
+        "send a report queued before a restart",
+      );
     }
   });
 
@@ -408,6 +463,7 @@ export const makeChildThreadReactor = Effect.gen(function* () {
     // events that settling writes are seen here too.
     const events = yield* engine.subscribeDomainEvents;
     yield* settleFromPreviousProcess.pipe(
+      Effect.andThen(sendReportsQueuedBeforeRestart),
       Effect.catchCause((cause) =>
         Effect.logWarning(
           "child thread reactor could not settle requests from the previous process",

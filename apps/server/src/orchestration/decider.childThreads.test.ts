@@ -495,6 +495,109 @@ describe("decider child threads", () => {
     expect(await refused(family, childOfChild)).toBe(true);
   });
 
+  it("runs nothing in a child before its setup is done, and never a first turn whose request was cancelled", async () => {
+    const started = await run(
+      readModel([thread(PARENT, { session: session(PARENT) })]),
+      startCommand("auto"),
+    );
+    const created = await run(started.model, {
+      type: "thread.create",
+      commandId: CommandId.make("create-child"),
+      threadId: CHILD,
+      projectId,
+      title: "Write the changelog",
+      modelSelection: model,
+      runtimeMode: "auto-accept-edits",
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+      branch: null,
+      worktreePath: null,
+      parentThreadId: PARENT,
+      parentTurnId: CALLER_TURN,
+      attachedToParent: true,
+      createdAt: at(2),
+    });
+    // The user typing into the child before its worktree exists is refused.
+    expect(
+      await refused(created.model, {
+        type: "thread.turn.start",
+        commandId: CommandId.make("user-early"),
+        threadId: CHILD,
+        message: { messageId: MessageId.make("early"), role: "user", text: "hi", attachments: [] },
+        runtimeMode: "auto-accept-edits",
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        createdAt: at(3),
+      }),
+    ).toBe(true);
+    // So is the parent's agent sending it a message.
+    expect(
+      await refused(created.model, {
+        type: "thread.child.send",
+        commandId: CommandId.make("send-early"),
+        threadId: PARENT,
+        requestId: ChildRequestId.make("send-1"),
+        from: PRIMARY,
+        callerTurnId: CALLER_TURN,
+        childThreadId: CHILD,
+        childMessageId: MessageId.make("send-early-message"),
+        text: "Also do X",
+        createdAt: at(3),
+      }),
+    ).toBe(true);
+    // Stopped while it was set up: its first turn never starts.
+    const stopped = await run(created.model, {
+      type: "thread.turn.interrupt",
+      commandId: CommandId.make("stop-parent"),
+      threadId: PARENT,
+      createdAt: at(4),
+    });
+    expect(
+      await refused(stopped.model, {
+        type: "thread.turn.start",
+        commandId: CommandId.make("server:child-request:request-1:turn"),
+        threadId: CHILD,
+        message: { messageId: CHILD_MESSAGE, role: "user", text: launch().prompt, attachments: [] },
+        runtimeMode: "auto-accept-edits",
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        fromThread: { threadId: PARENT, requestId: REQUEST, kind: "request" },
+        createdAt: at(5),
+      }),
+    ).toBe(true);
+  });
+
+  it("refuses to create a child with more access than its parent has now", async () => {
+    const narrowed = readModel([thread(PARENT, { runtimeMode: "approval-required" })]);
+    expect(
+      await refused(narrowed, {
+        type: "thread.create",
+        commandId: CommandId.make("create-wide"),
+        threadId: CHILD,
+        projectId,
+        title: "Too much access",
+        modelSelection: model,
+        runtimeMode: "full-access",
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        branch: null,
+        worktreePath: null,
+        parentThreadId: PARENT,
+        attachedToParent: true,
+        createdAt: at(1),
+      }),
+    ).toBe(true);
+  });
+
+  it("stopping a child also cuts off an answer it had just queued for its parent", async () => {
+    const delivered = await run(await familyWithRunningChild(), settleAnswered());
+    const stopped = await run(delivered.model, {
+      type: "thread.children.stop",
+      commandId: CommandId.make("stop-children"),
+      threadId: PARENT,
+      childThreadIds: [CHILD],
+      createdAt: at(11),
+    });
+    expect(threadIn(stopped.model, PARENT).queuedFollowUps).toEqual([]);
+    expect(threadIn(stopped.model, CHILD).parentAttachmentEpoch).toBe(1);
+  });
+
   it("a user turn in a child that was finishing background work hands back its answer so far first", async () => {
     const family = await familyWithRunningChild();
     const candidateTurn = TurnId.make("child-turn-1");

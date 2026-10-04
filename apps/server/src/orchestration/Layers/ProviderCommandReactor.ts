@@ -2106,11 +2106,15 @@ const make = Effect.gen(function* () {
       });
     const stoppedSinceRequested = Effect.gen(function* () {
       const latest = yield* resolveThread(event.payload.threadId);
+      if (latest === undefined) {
+        // Archived or deleted while it was prepared: a child's report has
+        // no one left to read it. Anything else goes on as before.
+        return event.payload.fromThread?.kind === "report";
+      }
       if (
-        latest === undefined ||
-        ((event.payload.chainEpoch === undefined ||
+        (event.payload.chainEpoch === undefined ||
           latest.agentRequests.chainEpoch === event.payload.chainEpoch) &&
-          !(yield* reportCancelled(latest)))
+        !(yield* reportCancelled(latest))
       ) {
         return false;
       }

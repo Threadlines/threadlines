@@ -8,10 +8,11 @@
  * 2. worktree: a worktree on the request's branch, reusing one an
  *    interrupted run left, then `thread.meta.update`. Skipped once the thread
  *    has a worktree, and for children working in the project folder.
- * 3. setup: the project's setup script, launched once. Done when the thread
- *    has a `setup-script.started`, `.skipped` or `.failed` activity; the
- *    runner starts the script in a terminal and returns, so nothing waits on
- *    it, and a launched script is never launched again.
+ * 3. setup: the project's setup script, launched at most once. The
+ *    `setup-script.requested` activity is written before the launch, so a
+ *    crash between the two never launches it again; it, `.started`,
+ *    `.skipped` or `.failed` marks the stage done. The runner starts the
+ *    script in a terminal and returns, so nothing waits on it.
  * 4. turn: `thread.turn.start` with the request's message. Its receipt is the
  *    proof the whole setup is done.
  *
@@ -60,6 +61,7 @@ const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 
 /** Activities that mark a child's setup stage done; see the module comment. */
 const SETUP_DONE_KINDS: ReadonlySet<string> = new Set([
+  "setup-script.requested",
   "setup-script.started",
   "setup-script.skipped",
   "setup-script.failed",
@@ -580,6 +582,14 @@ const make = Effect.gen(function* () {
       if (input.launch.workspace.kind !== "worktree" || worktreePath === null) {
         return yield* skip("no-worktree");
       }
+      // Claimed before it is launched: at most once, even across a crash.
+      yield* appendChildSetupActivity(input, {
+        kind: "setup-script.requested",
+        summary: "Starting setup script",
+        tone: "info",
+        payload: { worktreePath },
+        createdAt: requestedAt,
+      });
       const launched = yield* projectSetupScriptRunner
         .runForThread({
           threadId: input.childThreadId,
@@ -607,13 +617,6 @@ const make = Effect.gen(function* () {
         terminalId: launched.success.terminalId,
         worktreePath,
       };
-      yield* appendChildSetupActivity(input, {
-        kind: "setup-script.requested",
-        summary: "Starting setup script",
-        tone: "info",
-        payload,
-        createdAt: requestedAt,
-      });
       yield* appendChildSetupActivity(input, {
         kind: "setup-script.started",
         summary: "Setup script started",

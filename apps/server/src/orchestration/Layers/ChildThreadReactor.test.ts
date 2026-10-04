@@ -122,6 +122,7 @@ interface Harness {
   readonly threads: Map<ThreadId, OrchestrationThread>;
   readonly dispatched: OrchestrationCommand[];
   readonly startChildCalls: ChildRequestId[];
+  readonly startChildRuntimeModes: string[];
   readonly events: PubSub.PubSub<OrchestrationEvent>;
 }
 
@@ -136,6 +137,7 @@ function withReactor<A, E>(
       threads: new Map(threads.map((entry) => [entry.id, entry])),
       dispatched: [],
       startChildCalls: [],
+      startChildRuntimeModes: [],
       events: yield* PubSub.unbounded<OrchestrationEvent>(),
     };
     const layers = Layer.mergeAll(
@@ -158,6 +160,8 @@ function withReactor<A, E>(
             projects: [],
             threads: [...harness.threads.values()].map((entry) => ({
               id: entry.id,
+              queuedFollowUps: entry.queuedFollowUps ?? [],
+              session: entry.session,
               awaitedChildThreadCount: entry.childRequests.open.filter(
                 (open) => open.status !== "awaiting_user",
               ).length,
@@ -173,6 +177,7 @@ function withReactor<A, E>(
         startChild: (input) =>
           Effect.suspend(() => {
             harness.startChildCalls.push(input.requestId);
+            harness.startChildRuntimeModes.push(input.launch.runtimeMode);
             return options.setupFails === true
               ? Effect.fail(
                   new ChildBootstrapError({
@@ -367,6 +372,69 @@ describe("ChildThreadReactor", () => {
           yield* settle;
           expect(settles(harness)).toMatchObject([{ outcome: "answered" }]);
           expect(settles(harness)[0]?.reply?.text).toBe("Done; both helpers reported back.");
+        }),
+    ),
+  );
+
+  it.effect("starts a child with no more access than its parent has now", () =>
+    withReactor(
+      [
+        thread(PARENT, {
+          runtimeMode: "approval-required",
+          childRequests: {
+            ...EMPTY_CHILD_REQUEST_STATE,
+            open: [
+              request({
+                status: "starting",
+                launch: { ...request().launch!, runtimeMode: "full-access" },
+              }),
+            ],
+          },
+        }),
+      ],
+      {},
+      (harness) =>
+        Effect.gen(function* () {
+          yield* settle;
+          expect(harness.startChildRuntimeModes).toEqual(["approval-required"]);
+        }),
+    ),
+  );
+
+  it.effect("after a restart, sends a report that was queued but never sent", () =>
+    withReactor(
+      [
+        thread(PARENT, {
+          session: {
+            threadId: PARENT,
+            status: "ready",
+            providerName: "claudeAgent",
+            runtimeMode: "auto-accept-edits",
+            activeTurnId: null,
+            lastError: null,
+            updatedAt: now,
+          },
+          queuedFollowUps: [
+            {
+              messageId: MessageId.make("child-report:request-1"),
+              text: "Changelog written.",
+              attachments: [],
+              fromThread: { threadId: CHILD, requestId: REQUEST, kind: "report" },
+              runtimeMode: "auto-accept-edits",
+              interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+              createdAt: now,
+            },
+          ],
+        }),
+      ],
+      {},
+      (harness) =>
+        Effect.sync(() => {
+          expect(
+            harness.dispatched
+              .filter((command) => command.type === "thread.follow-up.send-queued")
+              .map((command) => (command as { messageId: string }).messageId),
+          ).toEqual(["child-report:request-1"]);
         }),
     ),
   );

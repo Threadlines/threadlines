@@ -1399,8 +1399,9 @@ export const OrchestrationThread = Schema.Struct({
   /** See OrchestrationThreadShell.attachedToParent. */
   attachedToParent: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   /**
-   * Raised each time `attachedToParent` changes, so an answer delivered under
-   * an earlier attachment (separated, then put back) is never sent.
+   * Raised each time this child's answers to its parent are cut off (it was
+   * separated, put back, or stopped), so an answer delivered under an earlier
+   * epoch is never sent.
    */
   parentAttachmentEpoch: NonNegativeInt.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
   /** See OrchestrationThreadShell.handedBackTurnId. */

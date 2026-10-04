@@ -29,6 +29,11 @@ import {
   isAttachedChild,
   ownChildRefusal,
 } from "@threadlines/shared/childThreads";
+import {
+  APPROVAL_ACTIVITY_KINDS,
+  collectOpenPendingRequests,
+  countPendingUserInputs,
+} from "@threadlines/shared/pendingRequests";
 import { isAgentOrigin } from "@threadlines/shared/roomAgentRequests";
 import { activeParticipants } from "@threadlines/shared/threadParticipants";
 
@@ -65,6 +70,64 @@ export function withinModeCeiling(
   return (
     RUNTIME_MODE_RANK[child.runtimeMode] <= RUNTIME_MODE_RANK[ceiling.runtimeMode] &&
     (ceiling.interactionMode !== "plan" || child.interactionMode === "plan")
+  );
+}
+
+/**
+ * A launch narrowed to its parent's access now: a request approved after the
+ * parent's access was lowered starts with the lower access, never the access
+ * it was asked under.
+ */
+export function clampLaunchToCeiling<
+  Launch extends {
+    readonly runtimeMode: RuntimeMode;
+    readonly interactionMode: ProviderInteractionMode;
+  },
+>(
+  launch: Launch,
+  ceiling: { readonly runtimeMode: RuntimeMode; readonly interactionMode: ProviderInteractionMode },
+): Launch {
+  return {
+    ...launch,
+    runtimeMode:
+      RUNTIME_MODE_RANK[launch.runtimeMode] <= RUNTIME_MODE_RANK[ceiling.runtimeMode]
+        ? launch.runtimeMode
+        : ceiling.runtimeMode,
+    interactionMode: ceiling.interactionMode === "plan" ? "plan" : launch.interactionMode,
+  };
+}
+
+/**
+ * Whether a child is still being set up (its start request is `starting`):
+ * nothing may run in it yet, or it would run before its worktree exists.
+ */
+export function isChildBeingSetUp(
+  readModel: OrchestrationReadModel,
+  thread: Pick<OrchestrationThread, "id" | "parentThreadId">,
+): boolean {
+  if (thread.parentThreadId === null) {
+    return false;
+  }
+  const parent = readModel.threads.find((entry) => entry.id === thread.parentThreadId);
+  return (
+    parent?.childRequests.open.some(
+      (request) =>
+        request.childThreadId === thread.id &&
+        request.kind === "start" &&
+        request.status === "starting",
+    ) ?? false
+  );
+}
+
+/** Whether a parent's request is still open: the only kind a child may still run. */
+export function isOpenParentRequest(
+  readModel: OrchestrationReadModel,
+  origin: { readonly threadId: ThreadId; readonly requestId: ChildRequestId },
+): boolean {
+  return (
+    readModel.threads
+      .find((entry) => entry.id === origin.threadId)
+      ?.childRequests.open.some((request) => request.requestId === origin.requestId) ?? false
   );
 }
 
@@ -277,6 +340,9 @@ export function decideChildSend(
   });
   if (refusal !== null || child === null) {
     return refuse(refusal?.detail ?? "That thread is gone.");
+  }
+  if (isChildBeingSetUp(readModel, child)) {
+    return refuse("That thread is still being set up. Send it a message once it has started.");
   }
   if (
     child.messages.some((message) => message.id === command.childMessageId) ||
@@ -569,7 +635,18 @@ function separationEvents(
 /** Whether a child has work going: a turn, a start, background work, or work it asked for. */
 export function childHasLiveWork(thread: OrchestrationThread): boolean {
   const session = thread.session;
+  const latestTurnId = thread.latestTurn?.turnId ?? null;
   return (
+    // Waiting on the user counts too: an approval, a question, a plan to act on.
+    collectOpenPendingRequests(thread.activities, APPROVAL_ACTIVITY_KINDS).length > 0 ||
+    countPendingUserInputs(thread.activities).pendingUserInputCount > 0 ||
+    thread.proposedPlans.some(
+      (plan) =>
+        latestTurnId !== null &&
+        plan.turnId === latestTurnId &&
+        plan.implementedAt === null &&
+        plan.dismissedAt === null,
+    ) ||
     thread.latestTurn?.state === "running" ||
     session?.status === "running" ||
     session?.status === "starting" ||
@@ -613,16 +690,34 @@ export function decideChildrenStop(
   }
   const stoppedIds = new Set(children.map((child) => child.id));
   return {
-    events: settleOpenRequests(
-      readModel,
-      baseFor,
-      parent,
-      parent.childRequests.open.filter((request) => stoppedIds.has(request.childThreadId)),
-      "stopped",
-      command.createdAt,
-      (titles) =>
-        `${quotedList(titles)} ${titles.length === 1 ? "was" : "were"} stopped, so no answer will come back.`,
-    ),
+    events: [
+      ...settleOpenRequests(
+        readModel,
+        baseFor,
+        parent,
+        parent.childRequests.open.filter((request) => stoppedIds.has(request.childThreadId)),
+        "stopped",
+        command.createdAt,
+        (titles) =>
+          `${quotedList(titles)} ${titles.length === 1 ? "was" : "were"} stopped, so no answer will come back.`,
+      ),
+      // An answer a child gave just before it was stopped does not come back
+      // either: queued ones are taken back, and one already on its way to a
+      // turn is cut off by moving the child's delivery epoch.
+      ...children.flatMap((child): ReadonlyArray<PlannedEvent> => [
+        ...unqueueReportsFrom(baseFor, parent, child.id, command.createdAt),
+        {
+          ...baseFor(child.id),
+          type: "thread.parent-attachment-set",
+          payload: {
+            threadId: child.id,
+            attached: true,
+            attachmentEpoch: child.parentAttachmentEpoch + 1,
+            at: command.createdAt,
+          },
+        },
+      ]),
+    ],
     childIds: children.map((child) => child.id),
   };
 }
@@ -647,7 +742,14 @@ export function decideChildDeliveriesStop(
   const hasQueuedReports = (parent.queuedFollowUps ?? []).some(
     (queued) => queued.fromThread?.kind === "report",
   );
-  if (open.length === 0 && !hasQueuedReports) {
+  // A report already taken off the queue and being prepared leaves nothing
+  // open and nothing queued; while the thread has a family the epoch moves
+  // anyway, so that report is caught before it is sent.
+  if (
+    open.length === 0 &&
+    !hasQueuedReports &&
+    attachedChildrenOf(readModel, parent.id).length === 0
+  ) {
     return [];
   }
   const outcome: ChildRequestOutcome = cause === "stopped" ? "stopped" : "cancelled";
