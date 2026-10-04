@@ -235,6 +235,10 @@
       "types": "./src/roomAgentRequests.ts",
       "import": "./src/roomAgentRequests.ts"
     },
+    "./childThreads": {
+      "types": "./src/childThreads.ts",
+      "import": "./src/childThreads.ts"
+    },
     "./threadParticipants": {
       "types": "./src/threadParticipants.ts",
       "import": "./src/threadParticipants.ts"

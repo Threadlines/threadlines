@@ -1,5 +1,6 @@
 import {
   type AgentInvitesMode,
+  type AgentThreadsMode,
   ServerSettings,
   type ServerSettingsPatch,
 } from "@threadlines/contracts";
@@ -182,3 +183,13 @@ export const agentInvitesChoice = (settings: RoomsSettings): AgentInvitesMode =>
  */
 export const agentInvitesMode = (settings: RoomsSettings): AgentInvitesMode =>
   roomsEnabled(settings) ? agentInvitesChoice(settings) : "off";
+
+/**
+ * Whether the thread's agents may start threads of their own (child threads):
+ * the user's choice, never chosen meaning ask first. Unlike invites it does
+ * not depend on Rooms. The server's tools, the approval check and the
+ * settings page all read this one rule.
+ */
+export const agentThreadsMode = (
+  settings: Pick<Partial<ServerSettings>, "agentThreads"> | null | undefined,
+): AgentThreadsMode => settings?.agentThreads ?? "ask";
