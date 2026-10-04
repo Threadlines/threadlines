@@ -1,6 +1,7 @@
 import {
   type ChildRequestId,
   CommandId,
+  type MessageId,
   type OrchestrationChildRequest,
   type OrchestrationCommand,
   type OrchestrationEvent,
@@ -395,38 +396,48 @@ export const makeChildThreadReactor = Effect.gen(function* () {
   });
 
   /**
-   * A report the previous process queued for a parent but never sent: the
+   * Reports the previous process queued for a parent but never sent: the
    * normal queue only sends when a turn ends, and there is no turn after a
-   * restart. Sent now, through the same send that checks it was not
-   * cancelled meanwhile, unless the user's own queued messages come first
-   * (those wait for the user, as they always have).
+   * restart. Read before anything is settled, since a report settling writes
+   * now goes out the normal way. Skipped when the user's own queued messages
+   * come first (those wait for the user, as they always have).
    */
-  const sendReportsQueuedBeforeRestart = Effect.gen(function* () {
+  const reportsQueuedBeforeRestart = Effect.gen(function* () {
     const shell = yield* snapshots.getShellSnapshot().pipe(Effect.orElseSucceed(() => undefined));
-    for (const summary of shell?.threads ?? []) {
+    return (shell?.threads ?? []).flatMap((summary) => {
       const queued = summary.queuedFollowUps ?? [];
       const report = queued.find((entry) => entry.fromThread?.kind === "report");
       const status = summary.session?.status;
-      if (
-        report === undefined ||
+      return report === undefined ||
         queued.some((entry) => !isAgentOrigin(entry)) ||
         status === "running" ||
         status === "starting"
-      ) {
-        continue;
-      }
-      yield* dispatch(
-        {
-          type: "thread.follow-up.send-queued",
-          commandId: CommandId.make(`server:child-report-after-restart:${report.messageId}`),
-          threadId: summary.id,
-          messageId: report.messageId,
-          createdAt: yield* nowIso,
-        },
-        "send a report queued before a restart",
-      );
-    }
+        ? []
+        : [{ threadId: summary.id, messageId: report.messageId }];
+    });
   });
+
+  /** Sent through the same send that drops a report cancelled meanwhile. */
+  const sendReportsQueuedBeforeRestart = (
+    reports: ReadonlyArray<{ readonly threadId: ThreadId; readonly messageId: MessageId }>,
+  ) =>
+    Effect.forEach(
+      reports,
+      (report) =>
+        Effect.gen(function* () {
+          yield* dispatch(
+            {
+              type: "thread.follow-up.send-queued",
+              commandId: CommandId.make(`server:child-report-after-restart:${report.messageId}`),
+              threadId: report.threadId,
+              messageId: report.messageId,
+              createdAt: yield* nowIso,
+            },
+            "send a report queued before a restart",
+          );
+        }),
+      { discard: true },
+    );
 
   const processEvent = (event: ReactorEvent) =>
     Effect.gen(function* () {
@@ -462,8 +473,9 @@ export const makeChildThreadReactor = Effect.gen(function* () {
     // Subscribed before the previous process's requests are settled, so the
     // events that settling writes are seen here too.
     const events = yield* engine.subscribeDomainEvents;
+    const queuedBeforeRestart = yield* reportsQueuedBeforeRestart;
     yield* settleFromPreviousProcess.pipe(
-      Effect.andThen(sendReportsQueuedBeforeRestart),
+      Effect.andThen(sendReportsQueuedBeforeRestart(queuedBeforeRestart)),
       Effect.catchCause((cause) =>
         Effect.logWarning(
           "child thread reactor could not settle requests from the previous process",
