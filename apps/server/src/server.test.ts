@@ -4582,6 +4582,116 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
+  it.effect("cleans up every thread an archive took with it, not only the one named", () =>
+    Effect.gen(function* () {
+      const parentId = ThreadId.make("thread-archive-parent");
+      const liveChildId = ThreadId.make("thread-archive-live-child");
+      const idleChildId = ThreadId.make("thread-archive-idle-child");
+      const archiveCommandId = CommandId.make("cmd-thread-archive-family");
+      const effects: string[] = [];
+      const now = "2026-01-01T00:00:00.000Z";
+      // What the archive wrote (the decider took two settled children with
+      // it), between another command's events.
+      const archived = (sequence: number, threadId: ThreadId, commandId: CommandId) =>
+        ({
+          sequence,
+          eventId: EventId.make(`event-${sequence}`),
+          aggregateKind: "thread",
+          aggregateId: threadId,
+          occurredAt: now,
+          commandId,
+          causationEventId: null,
+          correlationId: commandId,
+          metadata: {},
+          type: "thread.archived",
+          payload: { threadId, archivedAt: now, updatedAt: now },
+        }) as unknown as OrchestrationEvent;
+      const log = [
+        archived(11, ThreadId.make("thread-elsewhere"), CommandId.make("cmd-other")),
+        archived(12, liveChildId, archiveCommandId),
+        archived(13, idleChildId, archiveCommandId),
+        archived(14, parentId, archiveCommandId),
+      ];
+
+      yield* buildAppUnderTest({
+        layers: {
+          terminalManager: {
+            close: (input) =>
+              Effect.sync(() => {
+                effects.push(`terminal.close:${input.threadId}`);
+              }),
+          },
+          orchestrationEngine: {
+            dispatch: (command) =>
+              Effect.sync(() => {
+                effects.push(
+                  `dispatch:${command.type}:${"threadId" in command ? command.threadId : ""}`,
+                );
+                return { sequence: command.type === "thread.archive" ? 14 : 15 };
+              }),
+            readEvents: (fromSequenceExclusive) =>
+              Stream.fromIterable(log.filter((event) => event.sequence > fromSequenceExclusive)),
+          },
+          providerService: {
+            listSessions: () =>
+              Effect.succeed([
+                {
+                  provider: ProviderDriverKind.make("codex"),
+                  status: "ready",
+                  runtimeMode: "full-access",
+                  threadId: liveChildId,
+                  createdAt: now,
+                  updatedAt: now,
+                },
+              ]),
+          },
+          projectionSnapshotQuery: {
+            getSnapshotSequence: () => Effect.succeed({ snapshotSequence: 10 }),
+            getThreadShellById: () =>
+              Effect.succeed(
+                Option.some(
+                  makeDefaultOrchestrationThreadShell({
+                    id: parentId,
+                    updatedAt: now,
+                    session: {
+                      threadId: parentId,
+                      status: "ready",
+                      providerName: "claudeAgent",
+                      runtimeMode: "full-access",
+                      activeTurnId: null,
+                      lastError: null,
+                      updatedAt: now,
+                    },
+                  }),
+                ),
+              ),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.dispatchCommand]({
+            type: "thread.archive",
+            commandId: archiveCommandId,
+            threadId: parentId,
+          }),
+        ),
+      );
+
+      assert.deepEqual(effects, [
+        `dispatch:thread.archive:${parentId}`,
+        `dispatch:thread.session.stop:${parentId}`,
+        `terminal.close:${parentId}`,
+        // Only the child with a live runtime has a session to stop.
+        `dispatch:thread.session.stop:${liveChildId}`,
+        `terminal.close:${liveChildId}`,
+        `terminal.close:${idleChildId}`,
+      ]);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
   it.effect(
     "bootstraps first-send worktree turns on the server before dispatching turn start",
     () =>

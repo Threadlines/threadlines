@@ -31,7 +31,7 @@ import { ProviderSessionReaperLive } from "./provider/Layers/ProviderSessionReap
 import { ThreadAutoArchiveSweeperLive } from "./orchestration/Layers/ThreadAutoArchiveSweeper.ts";
 import { PullRequestAutomationWatcherLive } from "./orchestration/Layers/PullRequestAutomationWatcher.ts";
 import { ThreadPullRequestLinkerLive } from "./orchestration/Layers/ThreadPullRequestLinker.ts";
-import { BootstrapTurnStartRunsLive } from "./orchestration/Layers/BootstrapTurnStartRuns.ts";
+import { ThreadBootstrapLive } from "./orchestration/Layers/ThreadBootstrap.ts";
 import { CheckpointDiffQueryLive } from "./checkpointing/Layers/CheckpointDiffQuery.ts";
 import { CheckpointRevertLive } from "./checkpointing/Layers/CheckpointRevert.ts";
 import { CheckpointStoreLive } from "./checkpointing/Layers/CheckpointStore.ts";
@@ -367,8 +367,10 @@ const ProviderRuntimeLayerLive = Layer.mergeAll(
 ).pipe(Layer.provideMerge(ProviderLayerLive), Layer.provideMerge(OrchestrationLayerLive));
 
 const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
-  // Core Services
-  Layer.provideMerge(CheckpointingLayerLive),
+  // Core Services. ThreadBootstrap sets threads up: the reactor starts child
+  // threads with it, and the WebSocket routes run first-send bootstraps
+  // through the same instance.
+  Layer.provideMerge(Layer.mergeAll(CheckpointingLayerLive, ThreadBootstrapLive)),
   Layer.provideMerge(
     Layer.mergeAll(SourceControlProviderRegistryLayerLive, PullRequestServiceLayerLive),
   ),
@@ -469,8 +471,9 @@ export const makeRoutesLayer = Layer.mergeAll(
   Layer.provide(GitHubAuth.layer),
   Layer.provide(ProviderMaintenanceRunner.layer),
   // One registry for the whole server: a retried bootstrap turn start must
-  // find the run in flight even when it arrives on a different socket.
-  Layer.provide(BootstrapTurnStartRunsLive),
+  // find the run in flight even when it arrives on a different socket. The
+  // same layer the runtime builds above, so it is built once.
+  Layer.provide(ThreadBootstrapLive),
 );
 
 export const makeServerLayer = Layer.unwrap(
