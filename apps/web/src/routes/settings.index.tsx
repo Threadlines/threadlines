@@ -5,7 +5,9 @@ import { SettingsPageContainer, SettingsSection } from "../components/settings/s
 import {
   HOSTED_STATIC_SETTINGS_NAV_ITEMS,
   SETTINGS_NAV_ITEMS,
+  startsSettingsNavGroup,
 } from "../components/settings/settingsNavigation";
+import { cn } from "../lib/utils";
 
 /**
  * Full-page settings section index. Only reachable on mobile viewports —
@@ -24,14 +26,18 @@ function SettingsIndexRoute() {
   return (
     <SettingsPageContainer>
       <SettingsSection>
-        {navItems.map((item) => {
+        {navItems.map((item, index) => {
           const Icon = item.icon;
           return (
             <Link
               key={item.to}
               to={item.to}
               replace
-              className="flex items-center gap-3 border-t border-border/60 px-4 py-3.5 transition-colors first:border-t-0 hover:bg-accent/50 active:bg-accent sm:px-5"
+              className={cn(
+                "flex items-center gap-3 border-t border-border/60 px-4 py-3.5 transition-colors first:border-t-0 hover:bg-accent/50 active:bg-accent sm:px-5",
+                // A new cluster of the menu: a full line and a little room.
+                startsSettingsNavGroup(navItems, index) && "mt-3 border-border",
+              )}
             >
               <Icon className="size-4 shrink-0 text-muted-foreground/70" />
               <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-foreground">

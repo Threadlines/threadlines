@@ -16,6 +16,7 @@ import {
 } from "../composerDraftStore";
 import { preserveRightPanelSearchParamsForDraftNavigation } from "../diffRouteSearch";
 import { newDraftId, newThreadId } from "../lib/utils";
+import { applyNewThreadDefaultsToDraft } from "../newThreadDefaults";
 import {
   orderItemsByPreferredIds,
   sortScopedProjectsByActivity,
@@ -67,7 +68,6 @@ function useNewThreadState() {
         getDraftSessionByLogicalProjectKey,
         getDraftSession,
         getDraftThread,
-        applyStickyState,
         setDraftThreadContext,
         setLogicalProjectDraftThreadId,
         setPrompt,
@@ -117,10 +117,6 @@ function useNewThreadState() {
         : null;
       if (emptyStoredDraftThread) {
         return (async () => {
-          // A reused draft can hold the model it was minted with long ago;
-          // "new thread" means the last-used model, so sticky state is
-          // re-applied here just as it is for a freshly minted draft.
-          applyStickyState(emptyStoredDraftThread.draftId);
           if (hasBranchOption || hasWorktreePathOption || hasEnvModeOption) {
             setDraftThreadContext(emptyStoredDraftThread.draftId, {
               ...(hasBranchOption ? { branch: options?.branch ?? null } : {}),
@@ -137,18 +133,26 @@ function useNewThreadState() {
             },
           );
           writeInitialPrompt(emptyStoredDraftThread.draftId);
+          // A reused draft can hold the model and agents it was set up with
+          // long ago; "new thread" means today's, so the defaults are applied
+          // again, after the draft is on its project (moving it drops a room).
+          // The draft opens meanwhile: the defaults never hold it up.
+          const defaultsApplied = applyNewThreadDefaultsToDraft(
+            emptyStoredDraftThread.draftId,
+            projectRef.environmentId,
+          );
           if (
-            currentRouteTarget?.kind === "draft" &&
-            currentRouteTarget.draftId === emptyStoredDraftThread.draftId
+            currentRouteTarget?.kind !== "draft" ||
+            currentRouteTarget.draftId !== emptyStoredDraftThread.draftId
           ) {
-            return;
+            await router.navigate({
+              to: "/draft/$draftId",
+              params: { draftId: emptyStoredDraftThread.draftId },
+              search: preserveRightPanelSearchParamsForDraftNavigation,
+              replace: options?.replace ?? false,
+            });
           }
-          await router.navigate({
-            to: "/draft/$draftId",
-            params: { draftId: emptyStoredDraftThread.draftId },
-            search: preserveRightPanelSearchParamsForDraftNavigation,
-            replace: options?.replace ?? false,
-          });
+          await defaultsApplied;
         })();
       }
 
@@ -162,15 +166,15 @@ function useNewThreadState() {
         // invested draft mints a fresh one instead of repurposing it.
         !composerDraftHasUserContent(getComposerDraft(currentRouteTarget.draftId))
       ) {
-        applyStickyState(currentRouteTarget.draftId);
+        const currentDraftId = currentRouteTarget.draftId;
         if (hasBranchOption || hasWorktreePathOption || hasEnvModeOption) {
-          setDraftThreadContext(currentRouteTarget.draftId, {
+          setDraftThreadContext(currentDraftId, {
             ...(hasBranchOption ? { branch: options?.branch ?? null } : {}),
             ...(hasWorktreePathOption ? { worktreePath: options?.worktreePath ?? null } : {}),
             ...(hasEnvModeOption ? { envMode: options?.envMode } : {}),
           });
         }
-        setLogicalProjectDraftThreadId(logicalProjectKey, projectRef, currentRouteTarget.draftId, {
+        setLogicalProjectDraftThreadId(logicalProjectKey, projectRef, currentDraftId, {
           threadId: latestActiveDraftThread.threadId,
           createdAt: latestActiveDraftThread.createdAt,
           runtimeMode: latestActiveDraftThread.runtimeMode,
@@ -179,8 +183,8 @@ function useNewThreadState() {
           ...(hasWorktreePathOption ? { worktreePath: options?.worktreePath ?? null } : {}),
           ...(hasEnvModeOption ? { envMode: options?.envMode } : {}),
         });
-        writeInitialPrompt(currentRouteTarget.draftId);
-        return Promise.resolve();
+        writeInitialPrompt(currentDraftId);
+        return applyNewThreadDefaultsToDraft(currentDraftId, projectRef.environmentId);
       }
 
       const draftId = newDraftId();
@@ -195,8 +199,8 @@ function useNewThreadState() {
           envMode: options?.envMode ?? "local",
           runtimeMode: DEFAULT_NEW_THREAD_RUNTIME_MODE,
         });
-        applyStickyState(draftId);
         writeInitialPrompt(draftId);
+        const defaultsApplied = applyNewThreadDefaultsToDraft(draftId, projectRef.environmentId);
 
         await router.navigate({
           to: "/draft/$draftId",
@@ -204,6 +208,7 @@ function useNewThreadState() {
           search: preserveRightPanelSearchParamsForDraftNavigation,
           replace: options?.replace ?? false,
         });
+        await defaultsApplied;
       })();
     },
     [getCurrentRouteTarget, projectGroupingSettings, router],

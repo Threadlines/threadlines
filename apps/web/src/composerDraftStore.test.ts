@@ -2031,6 +2031,126 @@ describe("composerDraftStore sticky composer settings", () => {
   });
 });
 
+describe("composerDraftStore new thread defaults", () => {
+  const projectRef = scopeProjectRef(TEST_ENVIRONMENT_ID, ProjectId.make("project-defaults"));
+  const draftId = DraftId.make("draft-defaults");
+  const threadId = ThreadId.make("thread-defaults");
+  const opus = modelSelection(CLAUDE_AGENT_DRIVER, "claude-opus-5-5");
+  const room = {
+    agents: [
+      {
+        id: ThreadParticipantId.make("7a0b1c2d-3e4f-4a5b-8c6d-7e8f9a0b1c2d"),
+        handle: "GPT-6 Astra",
+        role: "Reviewer",
+        modelSelection: { instanceId: CODEX_INSTANCE, model: "gpt-6-astra" },
+      },
+    ],
+  };
+  const composerDraft = () => useComposerDraftStore.getState().getComposerDraft(draftId);
+  const draftRoom = () => useComposerDraftStore.getState().getDraftThread(draftId)?.room;
+
+  beforeEach(() => {
+    resetComposerDraftStore();
+    useComposerDraftStore.getState().setProjectDraftThreadId(projectRef, draftId, { threadId });
+  });
+
+  it("starts with the computer's model, written whole, and its room", () => {
+    const store = useComposerDraftStore.getState();
+    store.setStickyModelSelection(
+      modelSelection(CODEX_DRIVER, "gpt-5.4", { reasoningEffort: "xhigh" }),
+    );
+    store.setStickyModelSelection(
+      modelSelection(CLAUDE_AGENT_DRIVER, "claude-sonnet-5-5", { effort: "max" }),
+    );
+
+    store.applyNewThreadDefaults(draftId, { modelSelection: opus, room });
+
+    // The default has no reasoning of its own: the last-used "max" must not leak in.
+    expect(composerDraft()?.modelSelectionByProvider[CLAUDE_AGENT_INSTANCE]).toEqual(opus);
+    expect(composerDraft()?.activeProvider).toBe(CLAUDE_AGENT_INSTANCE);
+    // Other providers keep the device's last-used picks.
+    expect(composerDraft()?.modelSelectionByProvider[CODEX_INSTANCE]).toEqual(
+      modelSelection(CODEX_DRIVER, "gpt-5.4", { reasoningEffort: "xhigh" }),
+    );
+    expect(draftRoom()).toEqual(room);
+  });
+
+  it("does not keep an old default once the setting is cleared", () => {
+    const store = useComposerDraftStore.getState();
+    store.applyNewThreadDefaults(draftId, { modelSelection: opus, room });
+
+    // No last-used pick on this device, defaults cleared: nothing of the old default stays.
+    store.applyNewThreadDefaults(draftId, { modelSelection: null, room: null });
+
+    expect(composerDraft()?.activeProvider ?? null).toBeNull();
+    expect(composerDraft()?.modelSelectionByProvider ?? {}).toEqual({});
+    expect(draftRoom()).toBeUndefined();
+  });
+
+  it("drops an old default's reasoning even when another provider has a last-used pick", () => {
+    const store = useComposerDraftStore.getState();
+    store.setStickyModelSelection(modelSelection(CLAUDE_AGENT_DRIVER, "claude-opus-5-5"));
+    store.applyNewThreadDefaults(draftId, {
+      modelSelection: modelSelection(CODEX_DRIVER, "gpt-6-astra", { reasoningEffort: "xhigh" }),
+      room: null,
+    });
+
+    store.applyNewThreadDefaults(draftId, { modelSelection: null, room: null });
+
+    expect(composerDraft()?.modelSelectionByProvider[CODEX_INSTANCE]).toBeUndefined();
+    expect(composerDraft()?.activeProvider).toBe(CLAUDE_AGENT_INSTANCE);
+  });
+
+  it("remembers a model the user picked, across a reload, until a new thread starts over", () => {
+    const store = useComposerDraftStore.getState();
+    store.applyNewThreadDefaults(draftId, { modelSelection: opus, room: null });
+    expect(composerDraft()?.modelPicked).toBeUndefined();
+
+    store.setModelSelection(draftId, modelSelection(CODEX_DRIVER, "gpt-6-astra"));
+    expect(composerDraft()?.modelPicked).toBe(true);
+
+    const persistApi = useComposerDraftStore.persist as unknown as {
+      getOptions: () => {
+        partialize: (state: ReturnType<typeof useComposerDraftStore.getState>) => unknown;
+        merge: (
+          persistedState: unknown,
+          currentState: ReturnType<typeof useComposerDraftStore.getState>,
+        ) => ReturnType<typeof useComposerDraftStore.getState>;
+      };
+    };
+    const persisted = JSON.parse(
+      JSON.stringify(persistApi.getOptions().partialize(useComposerDraftStore.getState())),
+    );
+    resetComposerDraftStore();
+    useComposerDraftStore.setState(
+      persistApi.getOptions().merge(persisted, useComposerDraftStore.getState()),
+    );
+    expect(composerDraft()?.modelPicked).toBe(true);
+
+    useComposerDraftStore
+      .getState()
+      .applyNewThreadDefaults(draftId, { modelSelection: opus, room: null });
+    expect(composerDraft()?.modelPicked).toBeUndefined();
+  });
+
+  it("leaves the room alone without the computer's settings, and the model when told to", () => {
+    const store = useComposerDraftStore.getState();
+    store.setDraftRoom(draftId, room);
+    store.setModelSelection(draftId, modelSelection(CODEX_DRIVER, "gpt-6.1-sol"));
+
+    store.applyNewThreadDefaults(draftId, null);
+    expect(draftRoom()).toEqual(room);
+
+    store.applyNewThreadDefaults(
+      draftId,
+      { modelSelection: opus, room: null },
+      { keepModel: true },
+    );
+    expect(composerDraft()?.activeProvider).toBe(CODEX_INSTANCE);
+    expect(draftRoom()).toBeUndefined();
+  });
+});
+
 describe("composerDraftStore provider-scoped option updates", () => {
   const threadId = ThreadId.make("thread-provider");
   const threadRef = scopeThreadRef(TEST_ENVIRONMENT_ID, threadId);

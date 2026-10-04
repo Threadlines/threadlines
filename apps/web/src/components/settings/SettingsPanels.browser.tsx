@@ -27,7 +27,7 @@ import {
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
-import { page } from "vite-plus/test/browser";
+import { page, userEvent } from "vite-plus/test/browser";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { render } from "vitest-browser-react";
 import { useState, type ReactNode } from "react";
@@ -51,6 +51,7 @@ import { ConnectionsSettings } from "./ConnectionsSettings";
 import { DiagnosticsSettingsPanel } from "./DiagnosticsSettings";
 import { GeneralSettingsPanel, ProviderSettingsPanel } from "./SettingsPanels";
 import { SourceControlSettingsPanel } from "./SourceControlSettings";
+import { ThreadsSettingsPanel } from "./ThreadsSettings";
 import { resetSourceControlDiscoveryStateForTests } from "../../lib/sourceControlDiscoveryState";
 
 /**
@@ -1282,7 +1283,7 @@ describe("GeneralSettingsPanel observability", () => {
     );
 
     await expect
-      .element(page.getByRole("heading", { name: "About", exact: true }))
+      .element(page.getByRole("heading", { name: "Privacy & about", exact: true }))
       .toBeInTheDocument();
     await expect
       .element(page.getByRole("heading", { name: "Diagnostics", exact: true }))
@@ -1297,7 +1298,27 @@ describe("GeneralSettingsPanel observability", () => {
       .toBeInTheDocument();
   });
 
-  it("shows host text-generation controls on the phone surface", async () => {
+  it("shows the paired computer's writing model on the phone's Threads page", async () => {
+    setServerConfigSnapshot(createBaseServerConfig());
+
+    mounted = await renderWithTestRouter(
+      <TestAppProviders>
+        <ThreadsSettingsPanel surface="phone" />
+      </TestAppProviders>,
+    );
+
+    await expect
+      .element(page.getByRole("heading", { name: "Writing model", exact: true }))
+      .toBeInTheDocument();
+    await expect
+      .element(page.getByRole("heading", { name: "Backup writing model", exact: true }))
+      .toBeInTheDocument();
+    await expect
+      .element(page.getByText("Applies to your paired computer.").first())
+      .toBeInTheDocument();
+  });
+
+  it("keeps the phone's General page to this computer and the browser's own settings", async () => {
     setServerConfigSnapshot(createBaseServerConfig());
 
     mounted = await renderWithTestRouter(
@@ -1307,14 +1328,11 @@ describe("GeneralSettingsPanel observability", () => {
     );
 
     await expect
-      .element(page.getByRole("heading", { name: "This Computer", exact: true }))
+      .element(page.getByRole("heading", { name: "This computer", exact: true }))
       .toBeInTheDocument();
     await expect
-      .element(page.getByRole("heading", { name: "Text generation model", exact: true }))
-      .toBeInTheDocument();
-    await expect
-      .element(page.getByRole("heading", { name: "Backup text generation model", exact: true }))
-      .toBeInTheDocument();
+      .element(page.getByRole("heading", { name: "Writing model", exact: true }))
+      .not.toBeInTheDocument();
     await expect
       .element(page.getByRole("link", { name: "View diagnostics" }))
       .not.toBeInTheDocument();
@@ -2475,6 +2493,134 @@ describe("GeneralSettingsPanel observability", () => {
       expect(viewportRect.right).toBeLessThanOrEqual(popupRect.right + 0.5);
       expect(scrollViewport!.scrollWidth).toBeGreaterThan(scrollViewport!.clientWidth);
     });
+  });
+});
+
+describe("ThreadsSettingsPanel new thread defaults", () => {
+  let mounted:
+    | (Awaited<ReturnType<typeof render>> & {
+        cleanup?: () => Promise<void>;
+        unmount?: () => Promise<void>;
+      })
+    | null = null;
+
+  const codexWithAstra = (): ServerProvider => ({
+    instanceId: ProviderInstanceId.make("codex"),
+    driver: ProviderDriverKind.make("codex"),
+    enabled: true,
+    installed: true,
+    version: "1.0.0",
+    status: "ready",
+    auth: { status: "authenticated" },
+    checkedAt: "2026-10-04T00:00:00.000Z",
+    models: [
+      { slug: "gpt-6-astra", name: "GPT-6 Astra", isCustom: false, capabilities: null },
+      { slug: "gpt-6.1-sol", name: "GPT-6.1 Sol", isCustom: false, capabilities: null },
+    ],
+    slashCommands: [],
+    skills: [],
+  });
+  const astra = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6-astra" };
+
+  const mountWith = async (settings: Partial<ServerConfig["settings"]>) => {
+    const updateSettings = vi
+      .fn<LocalApi["server"]["updateSettings"]>()
+      .mockResolvedValue(DEFAULT_SERVER_SETTINGS);
+    window.nativeApi = {
+      persistence: {
+        getClientSettings: vi.fn().mockResolvedValue(null),
+        setClientSettings: vi.fn().mockResolvedValue(undefined),
+      },
+      server: { updateSettings },
+    } as unknown as LocalApi;
+    setServerConfigSnapshot({
+      ...createBaseServerConfig(),
+      providers: [codexWithAstra()],
+      settings: { ...DEFAULT_SERVER_SETTINGS, ...settings },
+    });
+    mounted = await renderWithTestRouter(
+      <TestAppProviders>
+        <ThreadsSettingsPanel />
+      </TestAppProviders>,
+    );
+    return updateSettings;
+  };
+
+  beforeEach(async () => {
+    resetServerStateForTests();
+    await __resetLocalApiForTests();
+    localStorage.clear();
+  });
+
+  afterEach(async () => {
+    if (mounted) {
+      const teardown = mounted.cleanup ?? mounted.unmount;
+      await teardown?.call(mounted).catch(() => {});
+    }
+    mounted = null;
+    Reflect.deleteProperty(window, "nativeApi");
+    document.body.innerHTML = "";
+    resetServerStateForTests();
+    await __resetLocalApiForTests();
+  });
+
+  it("starts on the device's last used model, sets a default, and goes back to last used", async () => {
+    const updateSettings = await mountWith({});
+
+    await page.getByRole("button", { name: "Last used" }).click();
+    await page.getByRole("tab", { name: "Codex" }).click();
+    await page.getByRole("option", { name: /GPT-6 Astra/ }).click();
+    await vi.waitFor(() => {
+      expect(updateSettings).toHaveBeenCalledWith({
+        newThreadModelSelection: { instanceId: "codex", model: "gpt-6-astra" },
+      });
+    });
+    await expect
+      .element(page.getByText("Every new thread starts with this model and reasoning."))
+      .toBeInTheDocument();
+
+    await page.getByRole("button", { name: "GPT-6 Astra" }).first().click();
+    await page.getByRole("button", { name: /Last used/ }).click();
+    await vi.waitFor(() => {
+      expect(updateSettings).toHaveBeenLastCalledWith({ newThreadModelSelection: null });
+    });
+  });
+
+  it("lists the room's agents, renames and removes them", async () => {
+    const updateSettings = await mountWith({
+      newThreadRoomAgents: [{ modelSelection: astra, role: "Reviewer" }],
+    });
+
+    const name = page.getByRole("textbox", { name: "Name for agent 1" });
+    await expect.element(name).toHaveValue("Reviewer");
+    await expect
+      .element(page.getByText("Threads that start with other agents can't be reverted."))
+      .toBeInTheDocument();
+
+    await name.fill("Checker");
+    await userEvent.keyboard("{Enter}");
+    await vi.waitFor(() => {
+      expect(updateSettings).toHaveBeenCalledWith({
+        newThreadRoomAgents: [{ modelSelection: astra, role: "Checker" }],
+      });
+    });
+
+    await page.getByRole("button", { name: "Remove agent 1" }).click();
+    await vi.waitFor(() => {
+      expect(updateSettings).toHaveBeenLastCalledWith({ newThreadRoomAgents: [] });
+    });
+    await expect
+      .element(page.getByText("No other agents. New threads start with one agent."))
+      .toBeInTheDocument();
+  });
+
+  it("holds the room back while Rooms is off", async () => {
+    await mountWith({ enableRooms: false, newThreadRoomAgents: [{ modelSelection: astra }] });
+
+    await expect
+      .element(page.getByText("Turn on Rooms below to start threads with more than one agent."))
+      .toBeInTheDocument();
+    await expect.element(page.getByRole("button", { name: "Add agent" })).toBeDisabled();
   });
 });
 

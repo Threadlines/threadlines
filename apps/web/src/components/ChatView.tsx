@@ -179,6 +179,12 @@ import { formatProviderDriverKindLabel, resolveSelectableProvider } from "../pro
 import { useSettings, useUpdateSettings } from "../hooks/useSettings";
 import { roomsEnabledFor } from "../hooks/useRoomsEnabled";
 import {
+  applyMovedDraftDefaults,
+  buildNewThreadParticipants,
+  canRunOnComputer,
+  resolveNewThreadDefaults,
+} from "../newThreadDefaults";
+import {
   type AppModelOption,
   getAppModelOptionsForInstance,
   resolveAppModelSelectionForInstance,
@@ -1692,16 +1698,19 @@ export default function ChatView(props: ChatViewProps) {
   const roomsEnabled = roomsEnabledFor(serverConfig?.settings);
   // Agents added before the first message: the thread is created with them.
   const draftRoom = draftThread?.room;
-  const draftRoomCreateFields = useMemo(
-    () =>
-      roomsEnabled && draftRoom
-        ? {
-            ...(draftRoom.agents.length > 0 ? { participants: draftRoom.agents } : {}),
-            ...(draftRoom.agentRole !== undefined ? { agentRole: draftRoom.agentRole } : {}),
-          }
-        : {},
-    [draftRoom, roomsEnabled],
-  );
+  const computerProviders = serverConfig?.providers;
+  const draftRoomCreateFields = useMemo(() => {
+    if (!roomsEnabled || !draftRoom) return {};
+    // An agent whose provider is gone or turned off would join for good and
+    // never answer: it is left out.
+    const agents = draftRoom.agents.filter((agent) =>
+      canRunOnComputer(computerProviders ?? [], agent.modelSelection.instanceId),
+    );
+    return {
+      ...(agents.length > 0 ? { participants: agents } : {}),
+      ...(draftRoom.agentRole !== undefined ? { agentRole: draftRoom.agentRole } : {}),
+    };
+  }, [computerProviders, draftRoom, roomsEnabled]);
   const versionMismatch = resolveServerConfigVersionMismatch(serverConfig);
   const versionMismatchDismissKey =
     versionMismatch && activeThread
@@ -3010,6 +3019,8 @@ export default function ChatView(props: ChatViewProps) {
       setDraftThreadContext(draftId, {
         projectRef: scopeProjectRef(target.environmentId, target.projectId),
       });
+      // The move drops the draft's agents: they were the old computer's.
+      void applyMovedDraftDefaults(draftId, target.environmentId);
     },
     [draftId, envLocked, logicalProjectEnvironments, setDraftThreadContext],
   );
@@ -6687,6 +6698,14 @@ export default function ChatView(props: ChatViewProps) {
     const outgoingImplementationPrompt = formatOutgoingPrompt(implementationPrompt);
     const nextThreadTitle = truncate(buildPlanImplementationThreadTitle(planMarkdown));
     const nextThreadModelSelection: ModelSelection = ctxSelectedModelSelection;
+    // The plan's agent carries on; the computer's default agents join it.
+    const startingAgents = serverConfig
+      ? buildNewThreadParticipants({
+          agents: resolveNewThreadDefaults(serverConfig).roomAgents,
+          primaryModelSelection: nextThreadModelSelection,
+          instanceEntries: providerInstanceEntries,
+        })
+      : [];
 
     sendInFlightRef.current = true;
     beginLocalDispatch({ preparingWorktree: false });
@@ -6703,6 +6722,7 @@ export default function ChatView(props: ChatViewProps) {
         projectId: activeProject.id,
         title: nextThreadTitle,
         modelSelection: nextThreadModelSelection,
+        ...(startingAgents.length > 0 ? { participants: startingAgents } : {}),
         runtimeMode,
         interactionMode: "default",
         branch: activeThreadBranch,
@@ -6774,9 +6794,11 @@ export default function ChatView(props: ChatViewProps) {
     isSendBusy,
     isServerThread,
     navigate,
+    providerInstanceEntries,
     resetLocalDispatch,
     runtimeMode,
     environmentId,
+    serverConfig,
   ]);
 
   const [planScrollTarget, setPlanScrollTarget] = useState<{

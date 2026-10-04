@@ -27,6 +27,7 @@ import { Route as SettingsKeybindingsRouteImport } from './routes/settings.keybi
 import { Route as SettingsPluginsRouteImport } from './routes/settings.plugins'
 import { Route as SettingsProvidersRouteImport } from './routes/settings.providers'
 import { Route as SettingsSourceControlRouteImport } from './routes/settings.source-control'
+import { Route as SettingsThreadsRouteImport } from './routes/settings.threads'
 import { Route as ChatEnvironmentIdThreadIdRouteImport } from './routes/_chat.$environmentId.$threadId'
 import { Route as ChatDraftDraftIdRouteImport } from './routes/_chat.draft.$draftId'
 
@@ -119,6 +120,11 @@ const SettingsSourceControlRoute = SettingsSourceControlRouteImport.update({
   path: '/source-control',
   getParentRoute: () => SettingsRoute,
 } as any)
+const SettingsThreadsRoute = SettingsThreadsRouteImport.update({
+  id: '/threads',
+  path: '/threads',
+  getParentRoute: () => SettingsRoute,
+} as any)
 const ChatEnvironmentIdThreadIdRoute =
   ChatEnvironmentIdThreadIdRouteImport.update({
     id: '/$environmentId/$threadId',
@@ -148,6 +154,7 @@ export interface FileRoutesByFullPath {
   '/settings/plugins': typeof SettingsPluginsRoute
   '/settings/providers': typeof SettingsProvidersRoute
   '/settings/source-control': typeof SettingsSourceControlRoute
+  '/settings/threads': typeof SettingsThreadsRoute
   '/settings/': typeof SettingsIndexRoute
   '/$environmentId/$threadId': typeof ChatEnvironmentIdThreadIdRoute
   '/draft/$draftId': typeof ChatDraftDraftIdRoute
@@ -167,6 +174,7 @@ export interface FileRoutesByTo {
   '/settings/plugins': typeof SettingsPluginsRoute
   '/settings/providers': typeof SettingsProvidersRoute
   '/settings/source-control': typeof SettingsSourceControlRoute
+  '/settings/threads': typeof SettingsThreadsRoute
   '/': typeof ChatIndexRoute
   '/settings': typeof SettingsIndexRoute
   '/$environmentId/$threadId': typeof ChatEnvironmentIdThreadIdRoute
@@ -190,6 +198,7 @@ export interface FileRoutesById {
   '/settings/plugins': typeof SettingsPluginsRoute
   '/settings/providers': typeof SettingsProvidersRoute
   '/settings/source-control': typeof SettingsSourceControlRoute
+  '/settings/threads': typeof SettingsThreadsRoute
   '/_chat/': typeof ChatIndexRoute
   '/settings/': typeof SettingsIndexRoute
   '/_chat/$environmentId/$threadId': typeof ChatEnvironmentIdThreadIdRoute
@@ -214,6 +223,7 @@ export interface FileRouteTypes {
     | '/settings/plugins'
     | '/settings/providers'
     | '/settings/source-control'
+    | '/settings/threads'
     | '/settings/'
     | '/$environmentId/$threadId'
     | '/draft/$draftId'
@@ -233,6 +243,7 @@ export interface FileRouteTypes {
     | '/settings/plugins'
     | '/settings/providers'
     | '/settings/source-control'
+    | '/settings/threads'
     | '/'
     | '/settings'
     | '/$environmentId/$threadId'
@@ -255,6 +266,7 @@ export interface FileRouteTypes {
     | '/settings/plugins'
     | '/settings/providers'
     | '/settings/source-control'
+    | '/settings/threads'
     | '/_chat/'
     | '/settings/'
     | '/_chat/$environmentId/$threadId'
@@ -396,6 +408,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SettingsSourceControlRouteImport
       parentRoute: typeof SettingsRoute
     }
+    '/settings/threads': {
+      id: '/settings/threads'
+      path: '/threads'
+      fullPath: '/settings/threads'
+      preLoaderRoute: typeof SettingsThreadsRouteImport
+      parentRoute: typeof SettingsRoute
+    }
     '/_chat/$environmentId/$threadId': {
       id: '/_chat/$environmentId/$threadId'
       path: '/$environmentId/$threadId'
@@ -443,6 +462,7 @@ interface SettingsRouteChildren {
   SettingsPluginsRoute: typeof SettingsPluginsRoute
   SettingsProvidersRoute: typeof SettingsProvidersRoute
   SettingsSourceControlRoute: typeof SettingsSourceControlRoute
+  SettingsThreadsRoute: typeof SettingsThreadsRoute
   SettingsIndexRoute: typeof SettingsIndexRoute
 }
 
@@ -456,6 +476,7 @@ const SettingsRouteChildren: SettingsRouteChildren = {
   SettingsPluginsRoute: SettingsPluginsRoute,
   SettingsProvidersRoute: SettingsProvidersRoute,
   SettingsSourceControlRoute: SettingsSourceControlRoute,
+  SettingsThreadsRoute: SettingsThreadsRoute,
   SettingsIndexRoute: SettingsIndexRoute,
 }
 
