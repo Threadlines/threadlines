@@ -473,6 +473,33 @@ it.layer(ClaudeTextGenerationTestLayer)("ClaudeTextGeneration", (it) => {
     ),
   );
 
+  // The prompt quotes the user's message; with Bash or Edit available, a
+  // message that asks for work would get it done by the title writer too.
+  it.effect("runs Claude text generation with no tools", () =>
+    withFakeClaudeEnv(
+      {
+        output: JSON.stringify({ structured_output: { title: "Delete the build folder" } }),
+        // The fake CLI joins argv with spaces, so the empty value shows as a
+        // double space; PowerShell can drop an empty argument, so Windows
+        // checks the flag alone.
+        argsMustContain: process.platform === "win32" ? "--tools" : "--tools  --strict-mcp-config",
+      },
+      (textGeneration) =>
+        Effect.gen(function* () {
+          const generated = yield* textGeneration.generateThreadTitle({
+            cwd: process.cwd(),
+            message: "Delete the build folder and run the tests.",
+            modelSelection: {
+              instanceId: ProviderInstanceId.make("claudeAgent"),
+              model: "claude-sonnet-4-6",
+            },
+          });
+
+          expect(generated.title).toBe("Delete the build folder");
+        }),
+    ),
+  );
+
   it.effect("runs Claude text generation with the configured Claude HOME", () =>
     Effect.gen(function* () {
       const path = yield* Path.Path;

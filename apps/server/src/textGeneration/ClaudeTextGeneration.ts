@@ -174,6 +174,11 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
           ...(cliEffort ? ["--effort", cliEffort] : []),
           "--settings",
           settingsJson,
+          // No tools: the prompt quotes the user's message, and a writer that
+          // could run Bash or Edit would carry out what it asks. The JSON
+          // schema's own StructuredOutput tool survives this.
+          "--tools",
+          "",
           // No MCP servers: generation needs no tools, and a run that exits
           // mid OAuth refresh loses the server's rotated refresh token.
           "--strict-mcp-config",
