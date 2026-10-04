@@ -94,6 +94,16 @@ export interface SessionCredentialServiceShape {
     sessionId: AuthSessionId,
   ) => Effect.Effect<void, SessionCredentialError, Scope.Scope>;
   readonly revoke: (sessionId: AuthSessionId) => Effect.Effect<boolean, SessionCredentialError>;
+  /**
+   * Slides a live session's expiry to `ttl` from now (never shortens it).
+   * Used for relay devices, which never hold their signed session token, so the
+   * stored expiry is the one that counts. Returns whether the session is still
+   * usable; a revoked or already-expired session is never revived.
+   */
+  readonly extendExpiry: (
+    sessionId: AuthSessionId,
+    ttl: Duration.Duration,
+  ) => Effect.Effect<boolean, SessionCredentialError>;
   readonly markConnected: (sessionId: AuthSessionId) => Effect.Effect<void, never>;
   readonly markDisconnected: (sessionId: AuthSessionId) => Effect.Effect<void, never>;
 }

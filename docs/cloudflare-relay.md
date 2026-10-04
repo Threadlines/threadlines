@@ -1,185 +1,195 @@
 # Cloudflare Relay
 
-Threadlines Relay is the planned mobile-connect path for using a desktop
-Threadlines session from a phone or tablet without Tailscale, SSH, port
-forwarding, or a public desktop IP.
+Threadlines Relay lets a phone, tablet, or another computer use a Threadlines
+server from anywhere, without Tailscale, SSH, port forwarding, or a public IP.
 
-The desktop still runs Codex, Claude, git, terminals, and project access. The
-Cloudflare Worker only coordinates encrypted WebSocket connections between the
-desktop and browser clients.
+The computer with the projects still runs Codex, Claude, git, terminals, and
+project access. The Cloudflare Worker only forwards WebSocket frames between
+that computer's server and the devices it has allowed. Those frames are end-to-end
+encrypted: the relay can't read or change them, and can't pose as either side.
+When a device can reach the computer directly (same network or Tailscale), it
+skips the relay altogether.
 
-## Current Slice
+## Where it lives
 
-This branch adds the first working relay path:
+- `apps/relay-worker`: the Worker and its Durable Objects. `src/v2/` is
+  Connect a device; `src/index.ts` still serves the retired v1 phone links.
+- `packages/contracts/src/relay.ts`: relay wire schemas, close codes, and the
+  v1 session schemas. `relayAccess.ts`: the owner-facing RPC shapes.
+- `packages/shared/src/relaySecure.ts`: the end-to-end encryption (Noise KK
+  handshake, encrypted framing) and the pairing math (commitment, match number,
+  QR claim proof), shared by server and web.
+- `apps/server/src/relay/`: the host side (`RelayHost.ts`), which registers the
+  server with the relay, checks and approves joins, issues device sessions, and
+  serves each device's encrypted connection (`securePipe.ts`) over a relay
+  pipe or the direct endpoint (`directRoute.ts`, `directRoutes.ts`).
+- `apps/web/src/relayDevice.ts` and `environments/runtime/relayJoins.ts`: the
+  joiner side (typing a code, claiming a QR invite, waiting for Allow).
+  `rpc/secureRelaySocket.ts` is the device end of every encrypted connection.
+- `apps/web/src/components/settings/connections/`: the Connect a device and
+  Connect to a computer dialogs.
 
-- `apps/relay-worker`: Cloudflare Worker + Durable Object service.
-- `packages/contracts/src/relay.ts`: shared relay message and session schemas.
-- one Durable Object per relay session.
-- envelope mode for relay-level tests and raw mode for the app WebSocket bridge.
-- web pairing support for hosted `app.threadlines.dev` relay links.
-- desktop IPC support for creating and stopping a phone link.
-- a user-facing `Phone link` row in Connections settings.
-- generated Wrangler runtime types in `apps/relay-worker/src/worker-configuration.d.ts`.
+## Connect a device (v2)
 
-This does not replace the existing direct local WebSocket path. Relay-backed
-saved environments are added alongside direct and SSH environments.
+The server registers itself once (`POST /v2/hosts`) and keeps a control
+WebSocket open to its own `RelayHost` Durable Object, sending a lease every
+60 seconds. The relay treats a host as offline after 150 seconds without one.
 
-## Live Test Status
+Joining:
 
-As of 2026-06-20, the first hosted path is online:
+1. The owner clicks **Connect a device**. The server makes a QR invite secret
+   and asks its Durable Object for an invite: a 6-digit code (10 minutes, one
+   try). The relay only gets a hash of a claim token derived from the secret.
+2. A computer types the code. It makes a static key pair and a nonce, and its
+   own server sends `POST /v2/join` with its public key, a commitment to the
+   key and nonce, and hashes of a device secret and a request secret (the
+   secrets never leave the joiner).
+3. The host server stores the join in `relay_pairings` and sends back its own
+   nonce and public key (`POST .../requests/{r}/host-nonce`). The joiner
+   freezes them, shows the 4-digit match number, and reveals its nonce
+   (`POST .../requests/{r}/reveal`).
+4. The host checks the nonce against the commitment, works out the same
+   number from its own stored copy, and only then shows **Allow {name}?**.
+   Allow records the device and its pinned public key, issues it a client
+   session, and tells the relay to approve.
+5. A phone that scans the QR code takes the host's public key from the QR and
+   claims the invite with the claim token and a proof made with a key derived
+   from the secret. The relay never sees that key; the host checks the proof
+   and approves without a prompt, because only someone who saw the owner's
+   screen could make it.
 
-- Relay Worker: `https://threadlines-relay.threadlines.workers.dev`
-- Hosted app: `https://app.threadlines.dev`
-- Vercel projects are intentionally split:
-  - `threadlines` serves the marketing site at `threadlines.dev` and
-    `www.threadlines.dev`.
-  - `threadlines-app` serves the hosted app shell at `app.threadlines.dev`.
+Why the number works: a relay in the middle has to commit to a fake key before
+it sees the host's nonce, and has to hand the joiner a nonce before it learns
+the joiner's. It gets one blind guess per code (each code gets one try,
+enforced by the host), which matches 1 time in 10,000; otherwise the two
+screens show different numbers.
 
-Verified live:
+Codes live in ten `RelayCodeShard` Durable Objects keyed by the code's last
+digit, so lookups never touch every host. A used or denied code stays routable
+until it expires, so a joiner whose first reply was lost can retry its join.
 
-- `GET /health` returns the relay health payload.
-- `POST /v1/sessions` creates a pairing session.
-- generated pairing URLs point to `https://app.threadlines.dev/pair`.
-- a raw-mode WebSocket message forwards between simulated desktop and device
-  sockets through the Durable Object.
+Connecting: the device first tries the direct routes the host last reported
+(LAN addresses when the host listens on the network, the Tailscale HTTPS name
+when Tailscale Serve is on; https pages only use `wss://` routes), for at most
+1.5 seconds, at `/relay/direct/{deviceId}` on the host's own server. Otherwise
+it opens `/v2/hosts/{h}/devices/{d}/connect`; the relay holds the upgrade,
+tells the host's control socket `device.connecting`, and the host opens
+`/v2/hosts/{h}/pipes/{p}`. The two sockets are spliced. A host that refuses
+(device revoked, still approving) closes the device socket with a code the
+client understands. A device whose relay route is on hold still checks its
+direct routes every minute.
 
-## Cloudflare Setup Needed
+Either way, the device then runs a Noise KK handshake with the host
+(`Noise_KK_P256_AESGCM_SHA256`, prologue binding host and device ids), with
+both static keys pinned at pairing. The host opens the app's `/ws` only after
+the device's first encrypted record, so a replayed handshake never counts as a
+live device. All app frames are binary ciphertext, split into parts under the
+1 MiB cap. On the relay route the only plaintext is the RPC heartbeat, which
+the relay answers at the edge; an encrypted keepalive every minute of silence
+proves the host itself is still there, and the device reconnects after 150
+seconds without one. The direct endpoint has no HTTP sign-in (the handshake is
+the sign-in), and caps handshakes in progress at 32 overall and 4 per address.
 
-Required:
+Device sessions last 90 days and are renewed every 6 hours while the device is
+connected. **Remove access** revokes the session on the server and the device
+at the relay, which closes the device's socket with `4003`.
 
-- A Cloudflare account.
-- Wrangler login on this machine, or a Cloudflare API token in CI.
-- A verified Cloudflare account email address. Deploy fails with Cloudflare API
-  error `10034` until the account email is verified.
-- Workers/Durable Objects enabled for the account.
+Close codes the client acts on:
 
-Optional for first test:
+| Code   | Meaning                         | Client behavior                      |
+| ------ | ------------------------------- | ------------------------------------ |
+| `4001` | Replaced by a newer connection  | Hold; another window took over       |
+| `4003` | Access removed                  | Hold until the user connects again   |
+| `4004` | This computer's daily allowance | Retry after 15 minutes               |
+| `4005` | Relay-wide budget reached       | Retry after 15 minutes               |
+| `4006` | Host offline                    | Back off 30 s, 60 s, 120 s, then 5 m |
+| `1013` | Not ready yet                   | Retry with backoff                   |
 
-- Use the default `https://threadlines-relay.threadlines.workers.dev` deployment URL.
+The relay answers `{"_tag":"Ping"}` with `{"_tag":"Pong"}` at the edge
+(`setWebSocketAutoResponse`), so client heartbeats don't wake the Durable
+Object or count against the allowance.
 
-Recommended before real user testing:
+## Limits (Workers Free)
 
-- Add a custom Worker domain such as `relay.threadlines.dev`.
-- Keep `app.threadlines.dev` on Vercel for the web UI.
-- Cloudflare Worker custom domains require the domain's nameservers to be
-  managed by Cloudflare. If `threadlines.dev` remains on Vercel nameservers, use
-  the `*.workers.dev` relay URL for the first test or move DNS management to
-  Cloudflare and recreate the Vercel app records there.
-- Set `THREADLINES_RELAY_PUBLIC_ORIGIN` to the public relay origin if the Worker
-  is behind a custom domain.
-- Set desktop `THREADLINES_RELAY_URL` to the public relay origin when it differs
-  from the default `https://threadlines-relay.threadlines.workers.dev`.
+The relay stays on Workers Free, which has a hard daily ceiling. Each host gets
+a share of it:
 
-No Cloudflare secret is required for the current MVP. Tokens are generated per
-relay session with Web Crypto and stored as SHA-256 hashes in the Durable Object.
+- `THREADLINES_RELAY_HOST_DAILY_MESSAGES` (200,000): forwarded frames per host
+  per UTC day. Settings shows this as "Relay use today: N% of the free daily
+  allowance".
+- `THREADLINES_RELAY_HOST_DAILY_AWAKE_SECONDS` (86,400): awake time per host.
+  Hibernated sockets aren't billed while idle, so this is tracked but
+  effectively uncapped by default.
+- `THREADLINES_RELAY_DAILY_MESSAGE_BUDGET` (1,200,000): relay-wide frames per
+  day, kept in the `RelayLedger` Durable Object. Past it, new connections get
+  `4005`.
+- `THREADLINES_RELAY_REGISTRATIONS_PER_IP_PER_DAY` (20): new hosts per IP.
+- `JOIN_RATE_LIMITER`: 10 join attempts per IP per minute.
+- At most 50 devices per host.
+
+Usage is tallied on each socket's attachment (so it survives hibernation) and
+committed to storage at most once a minute, or when a device disconnects.
+
+Measured on a local relay: an idle connected device sends close to zero
+frames; clicking around another computer's projects is about 490 frames a
+minute. A long agent turn has not been measured yet.
+
+`THREADLINES_RELAY_V2_ENABLED=false` turns Connect a device off without
+touching v1.
+
+## v1 phone links (retired)
+
+Older desktop builds created one `RelaySession` Durable Object per phone link
+through `POST /v1/sessions`, with the Electron main process bridging frames.
+Current builds don't create them. A desktop updated from a build that had a
+phone link deletes that session once (`DELETE /v1/sessions/{id}`) and shows a
+one-time notice in Connections. Phones on an old link see "This link doesn't work anymore" and
+scan a new QR code. The v1 routes stay deployed for older desktop builds.
 
 ## Privacy and trust boundary
 
-Phone Link is an opt-in remote-access path. Its WebSockets use TLS, but the app
-protocol is not currently end-to-end encrypted above that transport. Relay
-frames can contain prompts, responses, file contents, diffs, and terminal data.
-The Worker forwards those frames in memory and does not intentionally persist
-their contents, while Cloudflare remains part of the transport trust boundary.
+"Connect a device" connections are end-to-end encrypted between the device and
+the host server, on the relay and on direct routes alike. The relay sees which
+host and device talk, when, and how much, but not prompts, files, diffs, or
+terminal output, and it can't inject or alter frames: anything it changes fails
+to decrypt and ends the connection. What still relies on trust:
 
-Users who do not want project traffic to pass through the hosted relay should
-leave Phone Link disconnected, use a direct or SSH connection, or self-host the
-relay and set `THREADLINES_RELAY_URL` to that deployment.
+- Code joins: a relay in the middle gets one 1-in-10,000 guess per code; the
+  owner sees mismatched numbers the rest of the time.
+- The hosted app's code (`app.threadlines.dev`), which phones run: it handles
+  their keys.
+- Devices keep their keys where they keep other saved-computer secrets (the OS
+  keychain on desktop, browser storage in the hosted app).
 
-## Cost and abuse controls
+Old v1 phone links were not end-to-end encrypted; they are retired. Users who
+want no third party at all can use Same network, Tailscale, or SSH under
+Connection options, or self-host the relay and set `THREADLINES_RELAY_URL` on
+the server (and `VITE_RELAY_URL` for a self-hosted web app).
 
-The public relay uses Cloudflare's Durable Object WebSocket Hibernation API, so
-idle connections remain attached without continuously accruing active-duration
-charges. The deployment also applies:
+## Setup and deploy
 
-- at most five new relay sessions per minute per Cloudflare client IP;
-- at most 3,000 incoming frames per minute per relay session;
-- at most four connected phone/browser devices per relay session; and
-- a session-creation kill switch through
-  `THREADLINES_RELAY_SESSION_CREATION_ENABLED=false`.
-
-The rate-limit counters are intentionally permissive and local to a Cloudflare
-location. They reduce accidental and single-source abuse but are not an exact
-billing ledger. Keep the relay on Workers Free for a hard platform usage ceiling
-at launch. If the account moves to Workers Paid, configure several account-wide
-budget alerts; Cloudflare budget alerts notify but do not stop usage.
-
-## Commands
+The default relay is `https://threadlines-relay.threadlines.workers.dev`. The
+hosted app is `https://app.threadlines.dev`. Deploys need a Cloudflare account
+with a verified email (error `10034` otherwise) and `wrangler login` or an API
+token.
 
 From the repo root:
 
-```powershell
-pnpm --filter @threadlines/relay-worker run types
-pnpm --filter @threadlines/relay-worker run test
-pnpm --filter @threadlines/relay-worker run typecheck
+```sh
+vp run '@threadlines/relay-worker#types'      # regenerate worker-configuration.d.ts after wrangler.jsonc changes
+vp run '@threadlines/relay-worker#test'
+vp run '@threadlines/relay-worker#typecheck'
+vp run '@threadlines/relay-worker#dev'        # local relay; point THREADLINES_RELAY_URL at it
+vp run '@threadlines/relay-worker#deploy'
 ```
 
-Local Worker dev:
+Deploying v2 the first time applies the `v2` Durable Object migration
+(`RelayHost`, `RelayCodeShard`, `RelayLedger`). Deploy the relay before
+shipping a desktop or server build that uses it; older relays answer `/v2/`
+with 404, which Settings reports as "This relay doesn't support device codes
+yet."
 
-```powershell
-pnpm --filter @threadlines/relay-worker run dev
-```
-
-Deploy after `wrangler login`:
-
-```powershell
-pnpm --filter @threadlines/relay-worker run deploy
-```
-
-Dry-run deploy validation:
-
-```powershell
-pnpm --filter @threadlines/relay-worker exec wrangler deploy --dry-run --config wrangler.jsonc
-```
-
-## Runtime Flow
-
-1. Desktop Connections settings creates a `Phone link`.
-2. Desktop asks the relay Worker to create a session with `POST /v1/sessions`.
-3. Worker creates high-entropy desktop/device tokens.
-4. Worker stores token hashes in the session Durable Object.
-5. Desktop opens a local backend WebSocket and a raw-mode desktop relay
-   WebSocket, then pipes frames between them.
-6. Phone or tablet opens the returned pairing URL through `app.threadlines.dev`.
-7. The hosted app stores the relay environment and opens a raw-mode device relay
-   WebSocket.
-8. The Durable Object relays app WebSocket frames between the phone browser and
-   the desktop app.
-
-Connection lifecycle rules in raw mode:
-
-- A new desktop connection replaces any existing desktop socket (close code
-  `4001`), so a half-dead socket left by sleep or a network drop cannot block
-  reconnects. The replaced desktop stops reconnecting when it sees `4001`.
-- Desktop frames sent while no device is connected are dropped, not treated as
-  an error. Devices resync from a fresh snapshot when they reconnect.
-- Device frames sent while no desktop is connected close the device socket
-  with `1013` so the device retries with backoff.
-- The Durable Object notifies raw-mode desktop sockets of device joins and
-  leaves with control frames: an ASCII record separator (`U+001E`) followed by
-  a `relay.peer-joined` / `relay.peer-left` JSON event. The desktop bridge
-  uses these to recycle its local backend socket so a reconnecting device
-  never resumes on a server connection that still holds a previous device's
-  RPC state.
-
-Preferred WebSocket auth uses subprotocols:
-
-```ts
-new WebSocket(socketUrl, ["threadlines-relay", `threadlines-token.${token}`]);
-```
-
-Tokens are not accepted in query strings because URLs may be retained in logs
-or browser history. Status and renewal requests use `Authorization: Bearer`.
-
-## Next Integration Steps
-
-1. Restart the desktop app after pulling this branch so it uses the default
-   relay URL, `https://threadlines-relay.threadlines.workers.dev`.
-2. In Settings, open Connections and create a `Phone link`.
-3. Open the generated `app.threadlines.dev` pairing URL on a phone or tablet.
-4. For `relay.threadlines.dev`, move `threadlines.dev` DNS management to
-   Cloudflare or use another Cloudflare-managed zone, then attach
-   `relay.threadlines.dev` as the Worker custom domain.
-5. Set `THREADLINES_RELAY_PUBLIC_ORIGIN=https://relay.threadlines.dev` for the
-   Worker if the custom domain is not inferred from the request.
-6. Add browser/runtime coverage for reconnects, expired sessions, and desktop
-   disconnects.
+For a custom domain such as `relay.threadlines.dev`, the zone must be managed
+by Cloudflare. Set `THREADLINES_RELAY_PUBLIC_ORIGIN` on the Worker if the
+public origin isn't inferred from requests, and add the hosted app's origin to
+`THREADLINES_ALLOWED_ORIGINS` so phones can join from it.

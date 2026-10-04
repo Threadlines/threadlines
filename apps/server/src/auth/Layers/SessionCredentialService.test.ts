@@ -101,6 +101,38 @@ it.layer(NodeServices.layer)("SessionCredentialServiceLive", (it) => {
     }).pipe(Effect.provide(Layer.merge(makeSessionCredentialLayer(), TestClock.layer()))),
   );
 
+  it.effect("keeps a session in use alive but never revives an expired or revoked one", () =>
+    Effect.gen(function* () {
+      const sessions = yield* SessionCredentialService;
+      const inUse = yield* sessions.issue({
+        method: "bearer-session-token",
+        subject: "relay-device",
+        ttl: Duration.seconds(10),
+      });
+      const idle = yield* sessions.issue({
+        method: "bearer-session-token",
+        subject: "relay-device",
+        ttl: Duration.seconds(10),
+      });
+      const removed = yield* sessions.issue({
+        method: "bearer-session-token",
+        subject: "relay-device",
+        ttl: Duration.seconds(10),
+      });
+      yield* sessions.revoke(removed.sessionId);
+
+      yield* TestClock.adjust(Duration.seconds(8));
+      expect(yield* sessions.extendExpiry(inUse.sessionId, Duration.seconds(10))).toBe(true);
+      expect(yield* sessions.extendExpiry(removed.sessionId, Duration.seconds(10))).toBe(false);
+
+      // Past the original expiry: the extended session still works, the idle one is gone.
+      yield* TestClock.adjust(Duration.seconds(4));
+      const token = yield* sessions.issueWebSocketToken(inUse.sessionId);
+      expect((yield* sessions.verifyWebSocketToken(token.token)).sessionId).toBe(inUse.sessionId);
+      expect(yield* sessions.extendExpiry(idle.sessionId, Duration.seconds(10))).toBe(false);
+    }).pipe(Effect.provide(Layer.merge(makeSessionCredentialLayer(), TestClock.layer()))),
+  );
+
   it.effect("lists active sessions, tracks connectivity, and revokes sessions", () =>
     Effect.gen(function* () {
       const sessions = yield* SessionCredentialService;

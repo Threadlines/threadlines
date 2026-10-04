@@ -54,6 +54,7 @@ import {
   SourceControlToolUpdateError,
   WS_METHODS,
   WsRpcGroup,
+  WsOwnerRequiredError,
 } from "@threadlines/contracts";
 import { clamp } from "effect/Number";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
@@ -130,6 +131,7 @@ import { GitAuthRemediationService } from "./git/GitAuthRemediationService.ts";
 import { GitWorkflowService } from "./git/GitWorkflowService.ts";
 import { ProjectSetupScriptRunner } from "./project/Services/ProjectSetupScriptRunner.ts";
 import { RepositoryIdentityResolver } from "./project/Services/RepositoryIdentityResolver.ts";
+import { RelayHost } from "./relay/RelayHost.ts";
 import { ServerEnvironment } from "./environment/Services/ServerEnvironment.ts";
 import { ServerAuth } from "./auth/Services/ServerAuth.ts";
 import * as ProcessDiagnostics from "./diagnostics/ProcessDiagnostics.ts";
@@ -259,9 +261,20 @@ function toAuthAccessStreamEvent(
   }
 }
 
-const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
+const makeWsRpcLayer = (currentSession: {
+  readonly sessionId: AuthSessionId;
+  readonly role: "owner" | "client";
+}) =>
   WsRpcGroup.toLayer(
     Effect.gen(function* () {
+      const currentSessionId = currentSession.sessionId;
+      // Access management is owner-only. Everything else stays open to client
+      // sessions: a paired device is meant to use projects, turns, terminals.
+      const requireOwner = (method: string) =>
+        currentSession.role === "owner"
+          ? Effect.void
+          : Effect.fail(new WsOwnerRequiredError({ method }));
+      const relayHost = yield* RelayHost;
       const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
       const threadSearch = yield* ThreadSearch;
       const usage = yield* UsageService;
@@ -2474,10 +2487,49 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
             }),
             { "rpc.aggregate": "server" },
           ),
+        [WS_METHODS.subscribeRelayAccess]: (_input) =>
+          observeRpcStreamEffect(
+            WS_METHODS.subscribeRelayAccess,
+            requireOwner(WS_METHODS.subscribeRelayAccess).pipe(Effect.as(relayHost.snapshots)),
+            { "rpc.aggregate": "auth" },
+          ),
+        [WS_METHODS.relayCreateInvite]: (_input) =>
+          observeRpcEffect(
+            WS_METHODS.relayCreateInvite,
+            requireOwner(WS_METHODS.relayCreateInvite).pipe(Effect.andThen(relayHost.createInvite)),
+            { "rpc.aggregate": "auth" },
+          ),
+        [WS_METHODS.relayCancelInvite]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.relayCancelInvite,
+            requireOwner(WS_METHODS.relayCancelInvite).pipe(
+              Effect.andThen(relayHost.cancelInvite(input.inviteId)),
+            ),
+            { "rpc.aggregate": "auth" },
+          ),
+        [WS_METHODS.relayRespondToJoinRequest]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.relayRespondToJoinRequest,
+            requireOwner(WS_METHODS.relayRespondToJoinRequest).pipe(
+              Effect.andThen(relayHost.respondToJoinRequest(input)),
+            ),
+            { "rpc.aggregate": "auth" },
+          ),
+        [WS_METHODS.relaySubmitJoin]: (input) =>
+          observeRpcEffect(WS_METHODS.relaySubmitJoin, relayHost.submitJoin(input), {
+            "rpc.aggregate": "auth",
+          }),
+        [WS_METHODS.relayDirectRoutes]: (_input) =>
+          observeRpcEffect(
+            WS_METHODS.relayDirectRoutes,
+            relayHost.directRoutes(currentSessionId).pipe(Effect.map((routes) => ({ routes }))),
+            { "rpc.aggregate": "auth" },
+          ),
         [WS_METHODS.subscribeAuthAccess]: (_input) =>
           observeRpcStreamEffect(
             WS_METHODS.subscribeAuthAccess,
             Effect.gen(function* () {
+              yield* requireOwner(WS_METHODS.subscribeAuthAccess);
               const initialSnapshot = yield* loadAuthAccessSnapshot();
               const revisionRef = yield* Ref.make(1);
               const accessChanges: Stream.Stream<
@@ -2537,7 +2589,7 @@ export const websocketRpcRouteLayer = Layer.unwrap(
           disableTracing: true,
         }).pipe(
           Effect.provide(
-            makeWsRpcLayer(session.sessionId).pipe(
+            makeWsRpcLayer(session).pipe(
               Layer.provide(
                 Layer.succeed(
                   SourceControlToolMaintenance.SourceControlToolMaintenance,

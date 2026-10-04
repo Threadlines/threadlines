@@ -158,6 +158,46 @@ describe("DesktopSavedEnvironments", () => {
     ),
   );
 
+  it.effect("keeps relay links (old phone links and Connect a device) across reloads", () =>
+    withSavedEnvironments(
+      Effect.gen(function* () {
+        const savedEnvironments = yield* DesktopSavedEnvironments.DesktopSavedEnvironments;
+        const base = {
+          label: "Will's MacBook",
+          httpBaseUrl: "https://relay.example.com/",
+          wsBaseUrl: "wss://relay.example.com/",
+          createdAt: "2026-10-03T00:00:00.000Z",
+          lastConnectedAt: null,
+        };
+        const records: PersistedSavedEnvironmentRecord[] = [
+          {
+            ...base,
+            environmentId: EnvironmentId.make("environment-v1"),
+            relay: { relayOrigin: "https://relay.example.com", sessionId: "relay-session-1" },
+          },
+          {
+            ...base,
+            environmentId: EnvironmentId.make("environment-v2"),
+            relay: {
+              version: 2,
+              relayOrigin: "https://relay.example.com",
+              hostId: "host-1",
+              deviceId: "device-1",
+              pendingRequest: {
+                requestId: "request-1",
+                requestSecret: "request-secret",
+                matchNumber: "47",
+                expiresAt: "2026-10-03T00:10:00.000Z",
+              },
+            },
+          },
+        ];
+        yield* savedEnvironments.setRegistry(records);
+        assert.deepEqual(yield* savedEnvironments.getRegistry, records);
+      }),
+    ),
+  );
+
   it.effect("loads lenient saved environment registry documents", () =>
     withSavedEnvironments(
       Effect.gen(function* () {

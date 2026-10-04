@@ -19,6 +19,7 @@ import {
   GetAuthSessionByIdInput,
   ListActiveAuthSessionsInput,
   RevokeAuthSessionInput,
+  ExtendAuthSessionExpiryInput,
   SetAuthSessionLastConnectedAtInput,
 } from "../Services/AuthSessions.ts";
 
@@ -183,6 +184,20 @@ const makeAuthSessionRepository = Effect.gen(function* () {
       `,
   });
 
+  const extendExpiryRows = SqlSchema.findAll({
+    Request: ExtendAuthSessionExpiryInput,
+    Result: Schema.Struct({ sessionId: AuthSessionId }),
+    execute: ({ sessionId, expiresAt, now }) =>
+      sql`
+        UPDATE auth_sessions
+        SET expires_at = MAX(expires_at, ${expiresAt})
+        WHERE session_id = ${sessionId}
+          AND revoked_at IS NULL
+          AND expires_at > ${now}
+        RETURNING session_id AS "sessionId"
+      `,
+  });
+
   const create: AuthSessionRepositoryShape["create"] = (input) =>
     createSessionRow(input).pipe(
       Effect.mapError(
@@ -241,12 +256,24 @@ const makeAuthSessionRepository = Effect.gen(function* () {
       ),
     );
 
+  const extendExpiry: AuthSessionRepositoryShape["extendExpiry"] = (input) =>
+    extendExpiryRows(input).pipe(
+      Effect.mapError(
+        toPersistenceSqlOrDecodeError(
+          "AuthSessionRepository.extendExpiry:query",
+          "AuthSessionRepository.extendExpiry:decodeRows",
+        ),
+      ),
+      Effect.map((rows) => rows.length > 0),
+    );
+
   return {
     create,
     getById,
     listActive,
     revoke,
     setLastConnectedAt,
+    extendExpiry,
   } satisfies AuthSessionRepositoryShape;
 });
 

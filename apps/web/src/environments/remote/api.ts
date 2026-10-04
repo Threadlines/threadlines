@@ -52,7 +52,7 @@ async function readRemoteAuthErrorMessage(
 
 /**
  * Pairing runs over whatever network is between the phone and the computer, and
- * a stalled socket there used to hang the "Add computer" dialog forever. Every
+ * a stalled socket there used to hang adding a computer forever. Every
  * auth call is small, so cap it and surface a real error instead.
  */
 const REMOTE_AUTH_REQUEST_TIMEOUT_MS = 20_000;

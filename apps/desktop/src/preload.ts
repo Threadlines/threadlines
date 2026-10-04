@@ -103,11 +103,10 @@ contextBridge.exposeInMainWorld("desktopBridge", {
   setTailscaleServeEnabled: (input) =>
     ipcRenderer.invoke(IpcChannels.SET_TAILSCALE_SERVE_ENABLED_CHANNEL, input),
   getAdvertisedEndpoints: () => ipcRenderer.invoke(IpcChannels.GET_ADVERTISED_ENDPOINTS_CHANNEL),
-  getRelayPairingSession: () => ipcRenderer.invoke(IpcChannels.GET_RELAY_PAIRING_SESSION_CHANNEL),
-  createRelayPairingSession: () =>
-    ipcRenderer.invoke(IpcChannels.CREATE_RELAY_PAIRING_SESSION_CHANNEL),
-  disconnectRelayPairingSession: () =>
-    ipcRenderer.invoke(IpcChannels.DISCONNECT_RELAY_PAIRING_SESSION_CHANNEL),
+  getRetiredPhoneLinkNotice: () =>
+    ipcRenderer.invoke(IpcChannels.GET_RETIRED_PHONE_LINK_NOTICE_CHANNEL),
+  dismissRetiredPhoneLinkNotice: () =>
+    ipcRenderer.invoke(IpcChannels.DISMISS_RETIRED_PHONE_LINK_NOTICE_CHANNEL),
   pickFolder: (options) => ipcRenderer.invoke(IpcChannels.PICK_FOLDER_CHANNEL, options),
   confirm: (message) => ipcRenderer.invoke(IpcChannels.CONFIRM_CHANNEL, message),
   captureScreenshot: (input) => ipcRenderer.invoke(IpcChannels.CAPTURE_SCREENSHOT_CHANNEL, input),

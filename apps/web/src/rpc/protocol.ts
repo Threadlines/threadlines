@@ -90,6 +90,14 @@ export interface WsRpcProtocolOptions {
    * over 1 MiB.
    */
   readonly chunkFrames?: boolean;
+  /**
+   * "Connect a device" connections: builds the end-to-end encrypted socket
+   * (route choice and handshake) in place of a plain WebSocket. It frames its
+   * own messages, so `chunkFrames` and `protocols` don't apply.
+   */
+  readonly secureSocket?: (socketUrl: string) => WebSocket;
+  /** How long to wait for `open`; effect's default is 10 seconds. */
+  readonly openTimeoutMs?: number;
 }
 
 function formatSocketErrorMessage(error: unknown): string {
@@ -228,8 +236,10 @@ export function createWsRpcProtocolLayer(
     Socket.WebSocketConstructor,
     (socketUrl, protocols) => {
       lifecycle.onAttempt(socketUrl);
-      const socket = new globalThis.WebSocket(socketUrl, protocols);
-      if (options?.chunkFrames) {
+      const socket = options?.secureSocket
+        ? options.secureSocket(socketUrl)
+        : new globalThis.WebSocket(socketUrl, protocols);
+      if (options?.chunkFrames && !options.secureSocket) {
         applyRelayFrameChunking(socket);
       }
 
@@ -276,10 +286,14 @@ export function createWsRpcProtocolLayer(
       return socket;
     },
   );
-  const socketLayer = Socket.layerWebSocket(
-    resolvedUrl,
-    options?.protocols === undefined ? {} : { protocols: normalizeProtocols(options.protocols) },
-  ).pipe(Layer.provide(trackingWebSocketConstructorLayer));
+  const socketLayer = Socket.layerWebSocket(resolvedUrl, {
+    ...(options?.protocols === undefined || options.secureSocket
+      ? {}
+      : { protocols: normalizeProtocols(options.protocols) }),
+    ...(options?.openTimeoutMs === undefined
+      ? {}
+      : { openTimeout: Duration.millis(options.openTimeoutMs) }),
+  }).pipe(Layer.provide(trackingWebSocketConstructorLayer));
   // Retry forever with capped backoff: giving up permanently meant mobile
   // browsers that dropped the socket while backgrounded came back to a dead
   // page. The online/visibility handlers reset the loop with a fresh session.

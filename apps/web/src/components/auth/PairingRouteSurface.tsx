@@ -36,7 +36,7 @@ export function deriveHostedPairingProbeNotice(
       return {
         terminal: true,
         message:
-          "This phone link is no longer valid. On your computer, open Threadlines and create a new phone link, then scan the new QR code.",
+          "This link no longer works. On your computer, open Threadlines, go to Settings › Connections › Connect a device, and scan the new QR code.",
       };
     case "desktop-offline":
       return {
@@ -281,7 +281,7 @@ export function HostedPairingRouteSurface() {
     const timeout = window.setTimeout(() => {
       setMessage(
         request?.kind === "relay"
-          ? "Still connecting to your desktop app. Keep the desktop app open, then wait here or request a new phone link if this does not finish."
+          ? "Still connecting to your computer. Keep Threadlines open there, then wait here. If this doesn't finish, scan a new code from Settings › Connections › Connect a device."
           : "Still connecting to this backend. Keep the backend running, then wait here or request a new pairing link if this does not finish.",
       );
     }, HOSTED_PAIRING_SLOW_FEEDBACK_DELAY_MS);
@@ -346,7 +346,7 @@ export function HostedPairingRouteSurface() {
             : status === "error"
               ? "Pairing failed"
               : linkInvalid
-                ? "Phone link expired"
+                ? "This link doesn't work anymore"
                 : "Pairing backend"}
         </h1>
         <p className="mt-2 text-sm leading-relaxed text-muted-foreground">

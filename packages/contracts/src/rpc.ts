@@ -5,6 +5,18 @@ import * as RpcGroup from "effect/unstable/rpc/RpcGroup";
 import { ExternalLauncherError, LaunchEditorInput } from "./editor.ts";
 import { AuthAccessStreamEvent } from "./auth.ts";
 import {
+  RelayAccessError,
+  RelayAccessSnapshot,
+  RelayCancelInviteInput,
+  RelayDirectRoutesResult,
+  RelayOpenInvite,
+  RelayRespondToJoinRequestInput,
+  RelayRespondToJoinRequestResult,
+  RelaySubmitJoinInput,
+  RelaySubmitJoinResult,
+  WsOwnerRequiredError,
+} from "./relayAccess.ts";
+import {
   PreviewAutomationHostSchema,
   PreviewAutomationHostMessageSchema,
   PreviewAutomationProgressSchema,
@@ -451,6 +463,14 @@ export const WS_METHODS = {
   subscribeServerConfig: "subscribeServerConfig",
   subscribeServerLifecycle: "subscribeServerLifecycle",
   subscribeAuthAccess: "subscribeAuthAccess",
+  subscribeRelayAccess: "subscribeRelayAccess",
+
+  // Connect a device (relay v2). Host-side methods are owner-only.
+  relayCreateInvite: "relay.createInvite",
+  relayCancelInvite: "relay.cancelInvite",
+  relayRespondToJoinRequest: "relay.respondToJoinRequest",
+  relaySubmitJoin: "relay.submitJoin",
+  relayDirectRoutes: "relay.directRoutes",
 } as const;
 
 export const WsServerUpsertKeybindingRpc = Rpc.make(WS_METHODS.serverUpsertKeybinding, {
@@ -1412,7 +1432,44 @@ export const WsSubscribeServerLifecycleRpc = Rpc.make(WS_METHODS.subscribeServer
 export const WsSubscribeAuthAccessRpc = Rpc.make(WS_METHODS.subscribeAuthAccess, {
   payload: Schema.Struct({}),
   success: AuthAccessStreamEvent,
+  error: WsOwnerRequiredError,
   stream: true,
+});
+
+export const WsSubscribeRelayAccessRpc = Rpc.make(WS_METHODS.subscribeRelayAccess, {
+  payload: Schema.Struct({}),
+  success: RelayAccessSnapshot,
+  error: WsOwnerRequiredError,
+  stream: true,
+});
+
+export const WsRelayCreateInviteRpc = Rpc.make(WS_METHODS.relayCreateInvite, {
+  payload: Schema.Struct({}),
+  success: RelayOpenInvite,
+  error: Schema.Union([WsOwnerRequiredError, RelayAccessError]),
+});
+
+export const WsRelayCancelInviteRpc = Rpc.make(WS_METHODS.relayCancelInvite, {
+  payload: RelayCancelInviteInput,
+  error: Schema.Union([WsOwnerRequiredError, RelayAccessError]),
+});
+
+export const WsRelayRespondToJoinRequestRpc = Rpc.make(WS_METHODS.relayRespondToJoinRequest, {
+  payload: RelayRespondToJoinRequestInput,
+  success: RelayRespondToJoinRequestResult,
+  error: Schema.Union([WsOwnerRequiredError, RelayAccessError]),
+});
+
+export const WsRelaySubmitJoinRpc = Rpc.make(WS_METHODS.relaySubmitJoin, {
+  payload: RelaySubmitJoinInput,
+  success: RelaySubmitJoinResult,
+  error: RelayAccessError,
+});
+
+/** Empty for anyone but a "Connect a device" device. */
+export const WsRelayDirectRoutesRpc = Rpc.make(WS_METHODS.relayDirectRoutes, {
+  payload: Schema.Struct({}),
+  success: RelayDirectRoutesResult,
 });
 
 export const WsRpcGroup = RpcGroup.make(
@@ -1547,6 +1604,12 @@ export const WsRpcGroup = RpcGroup.make(
   WsSubscribeServerConfigRpc,
   WsSubscribeServerLifecycleRpc,
   WsSubscribeAuthAccessRpc,
+  WsSubscribeRelayAccessRpc,
+  WsRelayCreateInviteRpc,
+  WsRelayCancelInviteRpc,
+  WsRelayRespondToJoinRequestRpc,
+  WsRelaySubmitJoinRpc,
+  WsRelayDirectRoutesRpc,
   WsOrchestrationDispatchCommandRpc,
   WsOrchestrationGetTurnDiffRpc,
   WsOrchestrationGetFullThreadDiffRpc,

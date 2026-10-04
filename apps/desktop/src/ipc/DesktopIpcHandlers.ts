@@ -15,11 +15,7 @@ import {
   setServerExposureMode,
   setTailscaleServeEnabled,
 } from "./methods/serverExposure.ts";
-import {
-  createRelayPairingSession,
-  disconnectRelayPairingSession,
-  getRelayPairingSession,
-} from "./methods/relay.ts";
+import { dismissRetiredPhoneLinkNotice, getRetiredPhoneLinkNotice } from "./methods/relay.ts";
 import {
   bootstrapSshBearerSession,
   disconnectSshEnvironment,
@@ -144,9 +140,8 @@ export const installDesktopIpcHandlers = Effect.gen(function* () {
   yield* ipc.handle(setServerExposureMode);
   yield* ipc.handle(setTailscaleServeEnabled);
   yield* ipc.handle(getAdvertisedEndpoints);
-  yield* ipc.handle(getRelayPairingSession);
-  yield* ipc.handle(createRelayPairingSession);
-  yield* ipc.handle(disconnectRelayPairingSession);
+  yield* ipc.handle(getRetiredPhoneLinkNotice);
+  yield* ipc.handle(dismissRetiredPhoneLinkNotice);
 
   yield* ipc.handle(pickFolder);
   yield* ipc.handle(confirm);

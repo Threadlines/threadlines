@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 
+import type { RelayDeviceStatusProbe } from "../relayDevice";
 import type { RelaySessionStatusProbe } from "../relaySessionStatus";
 import {
   deriveSavedEnvironmentOverlayPhase,
@@ -38,6 +39,20 @@ function statusProbe(
       desktopConnected: true,
       ...overrides,
     },
+  };
+}
+
+function deviceProbe(
+  overrides: Partial<{
+    hostOnline: boolean;
+    revoked: boolean;
+    limited: boolean;
+    relayBusy: boolean;
+  }> = {},
+): RelayDeviceStatusProbe {
+  return {
+    kind: "status",
+    status: { hostOnline: true, revoked: false, limited: false, relayBusy: false, ...overrides },
   };
 }
 
@@ -116,6 +131,42 @@ describe("deriveSavedEnvironmentOverlayPhase", () => {
     ).toBe("link-expired");
   });
 
+  it("tells removed devices and used-up allowances apart from an offline computer", () => {
+    expect(
+      deriveSavedEnvironmentOverlayPhase(
+        makeInput({ msSinceDisconnect: 0, deviceProbe: deviceProbe({ revoked: true }) }),
+      ),
+    ).toBe("access-removed");
+    expect(
+      deriveSavedEnvironmentOverlayPhase(
+        makeInput({ msSinceDisconnect: 0, deviceProbe: { kind: "unauthorized" } }),
+      ),
+    ).toBe("link-expired");
+    expect(
+      deriveSavedEnvironmentOverlayPhase(
+        makeInput({ msSinceDisconnect: 0, deviceProbe: deviceProbe({ limited: true }) }),
+      ),
+    ).toBe("daily-limit");
+    expect(
+      deriveSavedEnvironmentOverlayPhase(
+        makeInput({ msSinceDisconnect: 0, deviceProbe: deviceProbe({ relayBusy: true }) }),
+      ),
+    ).toBe("relay-busy");
+    expect(
+      deriveSavedEnvironmentOverlayPhase(
+        makeInput({ deviceProbe: deviceProbe({ hostOnline: false }) }),
+      ),
+    ).toBe("desktop-offline");
+  });
+
+  it("waits for Allow before treating a new code join as a connection problem", () => {
+    expect(
+      deriveSavedEnvironmentOverlayPhase(
+        makeInput({ awaitingApproval: true, authState: "requires-auth" }),
+      ),
+    ).toBe("awaiting-approval");
+  });
+
   it("reports browser offline over relay probe results", () => {
     expect(
       deriveSavedEnvironmentOverlayPhase(
@@ -142,9 +193,9 @@ describe("describeSavedEnvironmentOverlay", () => {
       label: "MacBook",
       isRelay: true,
     });
-    expect(copy.title).toBe("Phone link expired");
+    expect(copy.title).toBe("This link doesn't work anymore");
     expect(copy.showRetry).toBe(false);
-    expect(copy.description).toContain("create a new phone link");
+    expect(copy.description).toContain("Connect a device");
   });
 
   it("offers retry while the desktop is offline", () => {
@@ -152,7 +203,8 @@ describe("describeSavedEnvironmentOverlay", () => {
       label: "MacBook",
       isRelay: true,
     });
+    expect(copy.title).toBe("Can't reach your computer");
     expect(copy.showRetry).toBe(true);
-    expect(copy.description).toContain("Open Threadlines on your computer");
+    expect(copy.description).toContain("Open Threadlines on it");
   });
 });

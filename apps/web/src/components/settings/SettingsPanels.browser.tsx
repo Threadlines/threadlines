@@ -12,6 +12,12 @@ import {
   type LocalApi,
   ProviderDriverKind,
   ProviderInstanceId,
+  type RelayAccessSnapshot,
+  type RelayHostJoinRequest,
+  RelayDeviceId,
+  RelayHostId,
+  RelayInviteId,
+  RelayRequestId,
   type ServerConfig,
   type ServerProcessResourceHistoryResult,
   type ServerProvider,
@@ -246,6 +252,41 @@ const providerAuthHarness = vi.hoisted(() => {
 
 const mockConnectDesktopSshEnvironment = vi.hoisted(() => vi.fn());
 
+const relayAccessHarness = vi.hoisted(() => {
+  let snapshot: RelayAccessSnapshot | null = null;
+  const listeners = new Set<(snapshot: RelayAccessSnapshot) => void>();
+  const client = {
+    subscribeAccess: (listener: (snapshot: RelayAccessSnapshot) => void) => {
+      listeners.add(listener);
+      if (snapshot) listener(snapshot);
+      return () => {
+        listeners.delete(listener);
+      };
+    },
+    createInvite: vi.fn(),
+    cancelInvite: vi.fn(),
+    respondToJoinRequest: vi.fn(),
+    submitJoin: vi.fn(),
+  };
+  return {
+    client,
+    reset() {
+      snapshot = null;
+      listeners.clear();
+      client.createInvite.mockReset();
+      client.cancelInvite.mockReset().mockResolvedValue(undefined);
+      client.respondToJoinRequest.mockReset();
+      client.submitJoin.mockReset();
+    },
+    emit(next: RelayAccessSnapshot) {
+      snapshot = next;
+      for (const listener of listeners) {
+        listener(next);
+      }
+    },
+  };
+});
+
 vi.mock("../../environments/runtime", () => {
   const primaryConnection = {
     kind: "primary" as const,
@@ -266,6 +307,7 @@ vi.mock("../../environments/runtime", () => {
           authAccessHarness.subscribe(listener),
       },
       providerAuth: providerAuthHarness.client,
+      relay: relayAccessHarness.client,
     },
     ensureBootstrapped: async () => undefined,
     reconnect: async () => undefined,
@@ -285,6 +327,8 @@ vi.mock("../../environments/runtime", () => {
       new URL(path, "http://localhost:3000").toString(),
     waitForSavedEnvironmentRegistryHydration: async () => undefined,
     addSavedEnvironment: vi.fn(),
+    cancelPendingRelayJoin: vi.fn(),
+    canJoinWithCode: () => true,
     connectDesktopSshEnvironment: mockConnectDesktopSshEnvironment,
     disconnectSavedEnvironment: vi.fn(),
     ensureEnvironmentConnectionBootstrapped: async () => undefined,
@@ -293,10 +337,23 @@ vi.mock("../../environments/runtime", () => {
     readEnvironmentConnection: () => primaryConnection,
     reconnectSavedEnvironment: vi.fn(),
     removeSavedEnvironment: vi.fn(),
+    RelayJoinError: class RelayJoinError extends Error {
+      readonly code: string | null;
+      constructor(message: string, code: string | null) {
+        super(message);
+        this.code = code;
+      }
+    },
     requireEnvironmentConnection: () => primaryConnection,
     resetEnvironmentServiceForTests: () => undefined,
+    startCodeJoin: vi.fn(),
     startEnvironmentConnectionService: () => undefined,
     subscribeEnvironmentConnections: () => () => {},
+    useRelayJoinStore: Object.assign(
+      (selector: (state: { byEnvironmentId: Record<string, never> }) => unknown) =>
+        selector({ byEnvironmentId: {} }),
+      { getState: () => ({ dismiss: () => undefined }) },
+    ),
     useSavedEnvironmentRegistryStore: (
       selector: (state: { byId: Record<string, never> }) => unknown,
     ) => selector({ byId: {} }),
@@ -633,7 +690,7 @@ function makeClientSession(input: {
   readonly sessionId: string;
   readonly subject: string;
   readonly role: "owner" | "client";
-  readonly method: "browser-session-cookie";
+  readonly method: AuthAccessSnapshot["clientSessions"][number]["method"];
   readonly client?: {
     readonly label?: string;
     readonly ipAddress?: string;
@@ -664,14 +721,53 @@ function makeClientSession(input: {
   };
 }
 
+function makeRelayInvite() {
+  return {
+    inviteId: RelayInviteId.make("invite-1"),
+    hostId: RelayHostId.make("host-1"),
+    relayOrigin: "https://relay.threadlines.dev",
+    code: "482913",
+    inviteSecret: "invite-secret",
+    hostPublicKey: "host-public-key",
+    expiresAt: new Date(Date.now() + 10 * 60_000).toISOString(),
+  };
+}
+
+function makeRelayJoinRequest(
+  state: RelayHostJoinRequest["state"],
+  options: { readonly matchNumber?: string } = { matchNumber: "4721" },
+): RelayHostJoinRequest {
+  return {
+    requestId: RelayRequestId.make("request-1"),
+    inviteId: RelayInviteId.make("invite-1"),
+    deviceId: RelayDeviceId.make("device-1"),
+    joiner: { label: "Will's Desktop", platform: "Windows", kind: "computer" },
+    ...(options.matchNumber ? { matchNumber: options.matchNumber } : {}),
+    autoApprove: false,
+    state,
+    expiresAt: new Date(Date.now() + 5 * 60_000).toISOString(),
+  };
+}
+
+function makeRelayAccessSnapshot(
+  requests: ReadonlyArray<RelayHostJoinRequest> = [],
+): RelayAccessSnapshot {
+  return {
+    status: "online",
+    hostLabel: "Local environment",
+    invite: null,
+    requests,
+    usage: null,
+  };
+}
+
 const createDesktopBridgeStub = (overrides?: {
   readonly discoverSshHosts?: DesktopBridge["discoverSshHosts"];
   readonly serverExposureState?: Awaited<ReturnType<DesktopBridge["getServerExposureState"]>>;
   readonly advertisedEndpoints?: Awaited<ReturnType<DesktopBridge["getAdvertisedEndpoints"]>>;
   readonly setServerExposureMode?: DesktopBridge["setServerExposureMode"];
-  readonly getRelayPairingSession?: DesktopBridge["getRelayPairingSession"];
-  readonly createRelayPairingSession?: DesktopBridge["createRelayPairingSession"];
-  readonly disconnectRelayPairingSession?: DesktopBridge["disconnectRelayPairingSession"];
+  readonly getRetiredPhoneLinkNotice?: DesktopBridge["getRetiredPhoneLinkNotice"];
+  readonly dismissRetiredPhoneLinkNotice?: DesktopBridge["dismissRetiredPhoneLinkNotice"];
   readonly openExternal?: DesktopBridge["openExternal"];
   readonly setUpdateChannel?: DesktopBridge["setUpdateChannel"];
 }): DesktopBridge => {
@@ -778,18 +874,10 @@ const createDesktopBridgeStub = (overrides?: {
       tailscaleServePort: input.port ?? 443,
     })),
     getAdvertisedEndpoints: vi.fn().mockResolvedValue(overrides?.advertisedEndpoints ?? []),
-    getRelayPairingSession: overrides?.getRelayPairingSession ?? vi.fn().mockResolvedValue(null),
-    createRelayPairingSession:
-      overrides?.createRelayPairingSession ??
-      vi.fn().mockResolvedValue({
-        pairingUrl:
-          "https://app.threadlines.dev/pair?relay=https%3A%2F%2Frelay.threadlines.dev&session=session-1#token=device-token",
-        relayOrigin: "https://relay.threadlines.dev",
-        sessionId: "session-1",
-        expiresAt: "2036-06-20T12:00:00.000Z",
-      }),
-    disconnectRelayPairingSession:
-      overrides?.disconnectRelayPairingSession ?? vi.fn().mockResolvedValue(undefined),
+    getRetiredPhoneLinkNotice:
+      overrides?.getRetiredPhoneLinkNotice ?? vi.fn().mockResolvedValue(false),
+    dismissRetiredPhoneLinkNotice:
+      overrides?.dismissRetiredPhoneLinkNotice ?? vi.fn().mockResolvedValue(undefined),
     pickFolder: vi.fn().mockResolvedValue(null),
     confirm: vi.fn().mockResolvedValue(false),
     setTheme: vi.fn().mockResolvedValue(undefined),
@@ -829,6 +917,7 @@ describe("GeneralSettingsPanel observability", () => {
     useUiStateStore.setState({ defaultAdvertisedEndpointKey: null });
     authAccessHarness.reset();
     providerAuthHarness.reset();
+    relayAccessHarness.reset();
     mockConnectDesktopSshEnvironment.mockReset();
   });
 
@@ -847,7 +936,7 @@ describe("GeneralSettingsPanel observability", () => {
     authAccessHarness.reset();
   });
 
-  it("hides owner pairing tools in browser-served loopback builds without remote exposure", async () => {
+  it("lets a browser-served owner connect devices without listing its own tab", async () => {
     Reflect.deleteProperty(window, "desktopBridge");
     authAccessHarness.setSnapshot({
       pairingLinks: [],
@@ -899,45 +988,101 @@ describe("GeneralSettingsPanel observability", () => {
       </TestAppProviders>,
     );
 
-    await expect.element(page.getByText("Connect your phone or tablet")).toBeInTheDocument();
-    await expect.element(page.getByLabelText("Allow phone and tablet access")).toBeDisabled();
+    await expect
+      .element(page.getByRole("button", { name: "Connect a device", exact: true }))
+      .toBeInTheDocument();
+    await expect.element(page.getByText("Chrome on Mac")).not.toBeInTheDocument();
+    await page.getByRole("button", { name: "Show", exact: true }).click();
     await expect
       .element(
         page.getByText(
-          "Only this computer can use Threadlines. Restart Threadlines with device access enabled to connect a phone or tablet.",
+          "Only devices using a code can reach this computer. To allow same-network connections, restart Threadlines with network access on.",
         ),
       )
       .toBeInTheDocument();
-    await expect.element(page.getByText("Connected devices")).not.toBeInTheDocument();
-    await expect.element(page.getByText("Chrome on Mac")).not.toBeInTheDocument();
     await expect
-      .element(
-        page.getByRole("heading", { name: "Advanced: connect another computer", exact: true }),
-      )
+      .element(page.getByRole("switch", { name: "Same network" }))
+      .not.toBeInTheDocument();
+  });
+
+  it("shows a code for a new device and allows it once the numbers match", async () => {
+    window.desktopBridge = createDesktopBridgeStub();
+    relayAccessHarness.client.createInvite.mockResolvedValue(makeRelayInvite());
+    relayAccessHarness.client.respondToJoinRequest.mockResolvedValue({
+      requestId: RelayRequestId.make("request-1"),
+      state: "approved",
+    });
+    relayAccessHarness.emit(makeRelayAccessSnapshot());
+    setServerConfigSnapshot(createBaseServerConfig());
+
+    mounted = await renderWithTestRouter(
+      <TestAppProviders>
+        <ConnectionsSettings />
+      </TestAppProviders>,
+    );
+
+    await page.getByRole("button", { name: "Connect a device", exact: true }).click();
+    await expect.element(page.getByText("482 913", { exact: true })).toBeInTheDocument();
+    await expect.element(page.getByText("Scan with your camera.")).toBeInTheDocument();
+
+    // No Allow until the server has checked the joiner's half of the number.
+    relayAccessHarness.emit(makeRelayAccessSnapshot([makeRelayJoinRequest("pending", {})]));
+    await expect
+      .element(page.getByText("Will's Desktop typed your code. Getting the number to compare."))
       .toBeInTheDocument();
+    await expect
+      .element(page.getByRole("button", { name: "Allow", exact: true }))
+      .not.toBeInTheDocument();
+
+    relayAccessHarness.emit(makeRelayAccessSnapshot([makeRelayJoinRequest("pending")]));
+    await expect
+      .element(page.getByRole("heading", { name: "Allow Will's Desktop?", exact: true }))
+      .toBeInTheDocument();
+    await expect.element(page.getByText("4721", { exact: true })).toBeInTheDocument();
+    await page.getByRole("button", { name: "Allow", exact: true }).click();
+    await vi.waitFor(() => {
+      expect(relayAccessHarness.client.respondToJoinRequest).toHaveBeenCalledWith({
+        requestId: "request-1",
+        allow: true,
+      });
+    });
+
+    relayAccessHarness.emit(makeRelayAccessSnapshot([makeRelayJoinRequest("approved")]));
+    await expect
+      .element(page.getByText("Will's Desktop can now use this computer."))
+      .toBeInTheDocument();
+    await page.getByRole("button", { name: "Done", exact: true }).click();
+    // A used code has nothing left to cancel.
+    expect(relayAccessHarness.client.cancelInvite).not.toHaveBeenCalled();
   });
 
-  it("creates a desktop phone link and shows QR details inline", async () => {
-    const session = {
-      pairingUrl:
-        "https://app.threadlines.dev/pair?relay=https%3A%2F%2Frelay.threadlines.dev&session=session-1#token=device-token",
-      relayOrigin: "https://relay.threadlines.dev",
-      sessionId: "session-1",
-      expiresAt: "2036-06-20T12:00:00.000Z",
-    };
-    let activeSession: typeof session | null = null;
-    const getRelayPairingSession = vi.fn(async () => activeSession);
-    const createRelayPairingSession = vi.fn(async () => {
-      activeSession = session;
-      return session;
+  it("cancels an unused code when the connect dialog closes", async () => {
+    window.desktopBridge = createDesktopBridgeStub();
+    relayAccessHarness.client.createInvite.mockResolvedValue(makeRelayInvite());
+    relayAccessHarness.emit(makeRelayAccessSnapshot());
+    setServerConfigSnapshot(createBaseServerConfig());
+
+    mounted = await renderWithTestRouter(
+      <TestAppProviders>
+        <ConnectionsSettings />
+      </TestAppProviders>,
+    );
+
+    await page.getByRole("button", { name: "Connect a device", exact: true }).click();
+    await expect.element(page.getByText("482 913", { exact: true })).toBeInTheDocument();
+    await page.getByRole("button", { name: "Close", exact: true }).first().click();
+    await vi.waitFor(() => {
+      expect(relayAccessHarness.client.cancelInvite).toHaveBeenCalledWith({
+        inviteId: "invite-1",
+      });
     });
+  });
+
+  it("tells desktop users once that old phone links were replaced", async () => {
+    const dismissRetiredPhoneLinkNotice = vi.fn().mockResolvedValue(undefined);
     window.desktopBridge = createDesktopBridgeStub({
-      getRelayPairingSession,
-      createRelayPairingSession,
-    });
-    authAccessHarness.setSnapshot({
-      pairingLinks: [],
-      clientSessions: [],
+      getRetiredPhoneLinkNotice: vi.fn().mockResolvedValue(true),
+      dismissRetiredPhoneLinkNotice,
     });
     setServerConfigSnapshot(createBaseServerConfig());
 
@@ -947,181 +1092,10 @@ describe("GeneralSettingsPanel observability", () => {
       </TestAppProviders>,
     );
 
-    await page.getByRole("button", { name: "Create link", exact: true }).click();
-
-    await vi.waitFor(() => {
-      expect(createRelayPairingSession).toHaveBeenCalledTimes(1);
-    });
-    await expect.element(page.getByText("Bridge open")).toBeInTheDocument();
-    await expect.element(page.getByText("Cloud relay")).toBeInTheDocument();
-    await expect.element(page.getByText("https://relay.threadlines.dev")).toBeInTheDocument();
-    await vi.waitFor(() => {
-      const text = document.body.textContent ?? "";
-      expect(text).toContain("app.threadlines.dev");
-      expect(text).toContain("session-1");
-    });
-  });
-
-  it("restores an active desktop phone link when settings remount", async () => {
-    const getRelayPairingSession = vi.fn().mockResolvedValue({
-      pairingUrl:
-        "https://app.threadlines.dev/pair?relay=https%3A%2F%2Frelay.threadlines.dev&session=session-restored#token=device-token",
-      relayOrigin: "https://relay.threadlines.dev",
-      sessionId: "session-restored",
-      expiresAt: "2036-06-20T12:00:00.000Z",
-    });
-    const createRelayPairingSession = vi.fn();
-    window.desktopBridge = createDesktopBridgeStub({
-      getRelayPairingSession,
-      createRelayPairingSession,
-    });
-    authAccessHarness.setSnapshot({
-      pairingLinks: [],
-      clientSessions: [],
-    });
-    setServerConfigSnapshot(createBaseServerConfig());
-
-    mounted = await renderWithTestRouter(
-      <TestAppProviders>
-        <ConnectionsSettings />
-      </TestAppProviders>,
-    );
-
-    await vi.waitFor(() => {
-      expect(getRelayPairingSession).toHaveBeenCalled();
-    });
-    await expect.element(page.getByText("Bridge open")).toBeInTheDocument();
-    await vi.waitFor(() => {
-      expect(document.body.textContent ?? "").toContain("session-restored");
-    });
-    expect(createRelayPairingSession).not.toHaveBeenCalled();
-  });
-
-  it("shows when an active desktop phone link disconnects", async () => {
-    const session = {
-      pairingUrl:
-        "https://app.threadlines.dev/pair?relay=https%3A%2F%2Frelay.threadlines.dev&session=session-1#token=device-token",
-      relayOrigin: "https://relay.threadlines.dev",
-      sessionId: "session-1",
-      expiresAt: "2036-06-20T12:00:00.000Z",
-    };
-    let activeSession: typeof session | null = null;
-    const getRelayPairingSession = vi.fn(async () => activeSession);
-    const createRelayPairingSession = vi.fn(async () => {
-      activeSession = session;
-      return session;
-    });
-    window.desktopBridge = createDesktopBridgeStub({
-      getRelayPairingSession,
-      createRelayPairingSession,
-    });
-    authAccessHarness.setSnapshot({
-      pairingLinks: [],
-      clientSessions: [],
-    });
-    setServerConfigSnapshot(createBaseServerConfig());
-
-    mounted = await renderWithTestRouter(
-      <TestAppProviders>
-        <ConnectionsSettings />
-      </TestAppProviders>,
-    );
-
-    await page.getByRole("button", { name: "Create link", exact: true }).click();
-
-    await expect.element(page.getByText("Bridge open")).toBeInTheDocument();
-    activeSession = null;
-    getRelayPairingSession.mockClear();
-    await vi.waitFor(
-      () => {
-        expect(document.body.textContent ?? "").toContain("Phone link disconnected");
-      },
-      { timeout: 4_000 },
-    );
-    await expect.element(page.getByText("Bridge open")).not.toBeInTheDocument();
-  });
-
-  it("keeps a desktop phone link visible while the desktop bridge reconnects", async () => {
-    const session = {
-      pairingUrl:
-        "https://app.threadlines.dev/pair?relay=https%3A%2F%2Frelay.threadlines.dev&session=session-1#token=device-token",
-      relayOrigin: "https://relay.threadlines.dev",
-      sessionId: "session-1",
-      expiresAt: "2036-06-20T12:00:00.000Z",
-      status: "open" as const,
-    };
-    const reconnectingSession = {
-      ...session,
-      status: "reconnecting" as const,
-    };
-    let activeSession: typeof session | typeof reconnectingSession | null = null;
-    const getRelayPairingSession = vi.fn(async () => activeSession);
-    const createRelayPairingSession = vi.fn(async () => {
-      activeSession = session;
-      return session;
-    });
-    window.desktopBridge = createDesktopBridgeStub({
-      getRelayPairingSession,
-      createRelayPairingSession,
-    });
-    authAccessHarness.setSnapshot({
-      pairingLinks: [],
-      clientSessions: [],
-    });
-    setServerConfigSnapshot(createBaseServerConfig());
-
-    mounted = await renderWithTestRouter(
-      <TestAppProviders>
-        <ConnectionsSettings />
-      </TestAppProviders>,
-    );
-
-    await page.getByRole("button", { name: "Create link", exact: true }).click();
-
-    await expect.element(page.getByText("Bridge open")).toBeInTheDocument();
-    activeSession = reconnectingSession;
-
-    await vi.waitFor(
-      () => {
-        const text = document.body.textContent ?? "";
-        expect(text).toContain("Reconnecting");
-        expect(text).toContain("session-1");
-      },
-      { timeout: 4_000 },
-    );
-    await expect.element(page.getByText("Phone link disconnected")).not.toBeInTheDocument();
-  });
-
-  it("explains invalid desktop bootstrap failures when creating a phone link", async () => {
-    const createRelayPairingSession = vi
-      .fn()
-      .mockRejectedValue(
-        new Error(
-          'Error invoking remote method \'desktop:create-relay-pairing-session\': DesktopRelayError: {"error":"Invalid bootstrap credential."}',
-        ),
-      );
-    window.desktopBridge = createDesktopBridgeStub({ createRelayPairingSession });
-    authAccessHarness.setSnapshot({
-      pairingLinks: [],
-      clientSessions: [],
-    });
-    setServerConfigSnapshot(createBaseServerConfig());
-
-    mounted = await renderWithTestRouter(
-      <TestAppProviders>
-        <ConnectionsSettings />
-      </TestAppProviders>,
-    );
-
-    await page.getByRole("button", { name: "Create link", exact: true }).click();
-
-    await expect.element(page.getByText("Desktop sign-in was rejected")).toBeInTheDocument();
-    await vi.waitFor(() => {
-      expect(document.body.textContent ?? "").toContain(
-        "The relay is reachable, but the desktop bridge could not sign into the local backend. Quit and reopen Threadlines, then create a new phone link.",
-      );
-    });
-    await expect.element(page.getByText("Invalid bootstrap credential.")).toBeInTheDocument();
+    await expect.element(page.getByText("Connect your phone again")).toBeInTheDocument();
+    await page.getByRole("button", { name: "Got it", exact: true }).click();
+    await expect.element(page.getByText("Connect your phone again")).not.toBeInTheDocument();
+    expect(dismissRetiredPhoneLinkNotice).toHaveBeenCalledTimes(1);
   });
 
   it("hides advertised endpoint rows when desktop network access is disabled", async () => {
@@ -1187,9 +1161,10 @@ describe("GeneralSettingsPanel observability", () => {
       </TestAppProviders>,
     );
 
+    await page.getByRole("button", { name: "Show", exact: true }).click();
     await expect
-      .element(page.getByText("Only this computer can use Threadlines."))
-      .toBeInTheDocument();
+      .element(page.getByRole("switch", { name: "Same network" }))
+      .toHaveAttribute("aria-checked", "false");
     await expect
       .element(page.getByRole("heading", { name: "This machine", exact: true }))
       .not.toBeInTheDocument();
@@ -1280,6 +1255,7 @@ describe("GeneralSettingsPanel observability", () => {
       </TestAppProviders>,
     );
 
+    await page.getByRole("button", { name: "Show", exact: true }).click();
     await expect.element(page.getByText("http://192.168.86.39:3773/")).toBeInTheDocument();
     await expect.element(page.getByRole("button", { name: "+2" })).toBeInTheDocument();
     await expect
@@ -1478,22 +1454,24 @@ describe("GeneralSettingsPanel observability", () => {
       </TestAppProviders>,
     );
 
-    await expect.element(page.getByText("Connected devices")).toBeInTheDocument();
-    await expect.element(page.getByText("Remove other devices")).toBeInTheDocument();
-    await expect.element(page.getByText("This Mac")).toBeInTheDocument();
-    await page.getByRole("button", { name: "Add device", exact: true }).click();
-    await expect.element(page.getByText("Add phone or tablet")).toBeInTheDocument();
-    await page.getByRole("button", { name: "Create link", exact: true }).click();
+    await expect
+      .element(page.getByText("Devices using this computer", { exact: true }))
+      .toBeInTheDocument();
+    // The desktop window's own sign-in is this computer, not a device using it.
+    await expect.element(page.getByText("This Mac")).not.toBeInTheDocument();
+    await page.getByRole("button", { name: "Show", exact: true }).click();
+    await page.getByRole("button", { name: "Make a link", exact: true }).click();
+    await page.getByPlaceholder("e.g. Work laptop").fill("Julius iPhone");
+    await page.getByRole("button", { name: "Make link", exact: true }).click();
     authAccessHarness.emitPairingLinkUpserted(pairingLinks[0]!);
     authAccessHarness.emitClientUpserted(clientSessions[1]!);
     await expect
-      .element(page.getByText("Device · Mobile · iOS · Safari · 192.168.1.88"))
+      .element(page.getByText("Phone · Same network · iOS · Safari · Not connected yet"))
       .toBeInTheDocument();
     await expect.element(page.getByRole("button", { name: /^Copy link for:/ })).toBeInTheDocument();
-    await expect.element(page.getByText("Remove other devices")).toBeInTheDocument();
   });
 
-  it("revokes all other paired clients from settings", async () => {
+  it("removes every other device from settings after confirming", async () => {
     window.desktopBridge = createDesktopBridgeStub({
       serverExposureState: {
         mode: "network-accessible",
@@ -1537,6 +1515,21 @@ describe("GeneralSettingsPanel observability", () => {
         connected: false,
         current: false,
       }),
+      makeClientSession({
+        sessionId: "session-relay-device",
+        subject: "relay-device",
+        role: "client",
+        method: "bearer-session-token",
+        client: {
+          label: "Will's Desktop",
+          deviceType: "desktop",
+          os: "Windows",
+        },
+        issuedAt: "2036-04-05T00:02:00.000Z",
+        expiresAt: "2036-07-04T00:02:00.000Z",
+        connected: true,
+        current: false,
+      }),
     ];
     authAccessHarness.setSnapshot({
       pairingLinks: [],
@@ -1553,7 +1546,8 @@ describe("GeneralSettingsPanel observability", () => {
           clientSessions,
         });
         authAccessHarness.emitClientRemoved("session-client");
-        return new Response(JSON.stringify({ revokedCount: 1 }), {
+        authAccessHarness.emitClientRemoved("session-relay-device");
+        return new Response(JSON.stringify({ revokedCount: 2 }), {
           status: 200,
           headers: { "content-type": "application/json" },
         });
@@ -1572,20 +1566,27 @@ describe("GeneralSettingsPanel observability", () => {
     );
 
     await expect.element(page.getByText("Julius iPhone")).toBeInTheDocument();
-    await page.getByRole("button", { name: "Remove other devices", exact: true }).click();
+    // Code-joined devices show what they are, not the browser they joined from.
+    await expect
+      .element(page.getByText("Computer · Windows · Connected now", { exact: true }))
+      .toBeInTheDocument();
+    await page.getByRole("button", { name: "Remove all", exact: true }).click();
+    const confirmDialog = page.getByRole("alertdialog");
     await expect
       .element(
-        page.getByText("1 other device will be signed out and will need a new link to reconnect."),
+        confirmDialog.getByText(
+          "2 devices will lose access to this computer and need to connect again.",
+        ),
       )
       .toBeInTheDocument();
-    await page.getByRole("button", { name: "Remove device", exact: true }).click();
-    await expect.element(page.getByText("This Mac")).toBeInTheDocument();
+    await confirmDialog.getByRole("button", { name: "Remove all", exact: true }).click();
     await expect.element(page.getByText("Julius iPhone")).not.toBeInTheDocument();
+    await expect.element(page.getByText("Will's Desktop")).not.toBeInTheDocument();
     expect(fetchMock).toHaveBeenCalled();
   });
 
   // An audit read the pre-snapshot section as "nothing paired" because it was
-  // rendered completely empty, and revoke stayed disabled with it.
+  // rendered completely empty, and offered to remove devices it hadn't loaded.
   it("shows a device-row skeleton until the access snapshot lands", async () => {
     window.desktopBridge = createDesktopBridgeStub({
       serverExposureState: {
@@ -1625,6 +1626,17 @@ describe("GeneralSettingsPanel observability", () => {
         connected: true,
         current: false,
       }),
+      makeClientSession({
+        sessionId: "session-tablet",
+        subject: "one-time-token",
+        role: "client",
+        method: "browser-session-cookie",
+        client: { label: "Julius iPad", deviceType: "tablet", os: "iPadOS", browser: "Safari" },
+        issuedAt: "2036-04-05T00:02:00.000Z",
+        expiresAt: "2036-05-05T00:02:00.000Z",
+        connected: false,
+        current: false,
+      }),
     ];
     authAccessHarness.setSnapshot({ pairingLinks: [], clientSessions });
     authAccessHarness.deferSnapshot();
@@ -1639,22 +1651,19 @@ describe("GeneralSettingsPanel observability", () => {
 
     await expect.element(page.getByTestId("connected-devices-skeleton")).toBeInTheDocument();
     await expect
-      .element(page.getByText("No phones or tablets are connected yet."))
+      .element(page.getByRole("button", { name: "Remove all", exact: true }))
       .not.toBeInTheDocument();
-    await expect
-      .element(page.getByRole("button", { name: "Remove other devices", exact: true }))
-      .toBeDisabled();
 
     authAccessHarness.emitSnapshot();
 
     await expect.element(page.getByText("Julius iPhone")).toBeInTheDocument();
     await expect.element(page.getByTestId("connected-devices-skeleton")).not.toBeInTheDocument();
     await expect
-      .element(page.getByRole("button", { name: "Remove other devices", exact: true }))
+      .element(page.getByRole("button", { name: "Remove all", exact: true }))
       .not.toBeDisabled();
   });
 
-  it("shows a disabled network access toggle with guidance in desktop builds", async () => {
+  it("turns on same-network access from connection options after a restart warning", async () => {
     const desktopBridge = createDesktopBridgeStub();
     window.desktopBridge = desktopBridge;
 
@@ -1666,14 +1675,17 @@ describe("GeneralSettingsPanel observability", () => {
       </TestAppProviders>,
     );
 
-    const networkAccessToggle = page.getByLabelText("Allow phone and tablet access");
+    await page.getByRole("button", { name: "Show", exact: true }).click();
+    const networkAccessToggle = page.getByRole("switch", { name: "Same network" });
     await expect.element(networkAccessToggle).not.toBeDisabled();
     await networkAccessToggle.click();
-    await expect.element(page.getByText("Allow other devices to connect?")).toBeInTheDocument();
+    await expect
+      .element(page.getByText("Let devices on this network connect?"))
+      .toBeInTheDocument();
     await expect
       .element(
         page.getByText(
-          "Threadlines will restart so your phone or tablet can connect to this computer.",
+          "Threadlines will restart so devices on your network can reach this computer directly.",
         ),
       )
       .toBeInTheDocument();
@@ -1684,7 +1696,7 @@ describe("GeneralSettingsPanel observability", () => {
     await expect.element(page.getByText("http://192.168.1.44:3773")).toBeInTheDocument();
   });
 
-  it("adds desktop ssh environments from the add-environment dialog", async () => {
+  it("adds desktop ssh environments from the connect-to-a-computer dialog", async () => {
     const discoverSshHosts = vi.fn().mockResolvedValue([
       {
         alias: "devbox",
@@ -1720,14 +1732,10 @@ describe("GeneralSettingsPanel observability", () => {
       </TestAppProviders>,
     );
 
-    await page.getByRole("button", { name: "Add computer", exact: true }).click();
-    const addEnvironmentDialog = page.getByRole("dialog", { name: "Add another computer" });
-    await expect
-      .element(
-        addEnvironmentDialog.getByRole("heading", { name: "Add another computer", exact: true }),
-      )
-      .toBeInTheDocument();
-    await addEnvironmentDialog.getByRole("button", { name: "Use SSH (advanced)" }).click();
+    await page.getByRole("button", { name: "Connect to a computer", exact: true }).click();
+    const addEnvironmentDialog = page.getByRole("dialog", { name: "Connect to a computer" });
+    await addEnvironmentDialog.getByRole("button", { name: /^Other ways to connect/ }).click();
+    await addEnvironmentDialog.getByRole("button", { name: /^SSH/ }).click();
     await vi.waitFor(() => {
       expect(discoverSshHosts).toHaveBeenCalledTimes(1);
     });
@@ -1741,8 +1749,7 @@ describe("GeneralSettingsPanel observability", () => {
     await addEnvironmentDialog.getByLabelText("User name").fill("julius");
     await addEnvironmentDialog.getByLabelText("Port").fill("2222");
     await addEnvironmentDialog
-      .getByRole("button", { name: "Add computer", exact: true })
-      .first()
+      .getByRole("button", { name: "Add this computer", exact: true })
       .click();
 
     await vi.waitFor(() => {

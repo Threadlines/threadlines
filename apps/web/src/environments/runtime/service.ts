@@ -12,7 +12,12 @@ import {
   ThreadId,
 } from "@threadlines/contracts";
 import {
+  RELAY_CLOSE_CODE_ACCESS_REMOVED,
+  RELAY_CLOSE_CODE_DAILY_LIMIT,
+  RELAY_CLOSE_CODE_HOST_OFFLINE,
   RELAY_CLOSE_CODE_PEER_UNAVAILABLE,
+  RELAY_CLOSE_CODE_RELAY_BUSY,
+  RELAY_CLOSE_CODE_REPLACED,
   RELAY_CLOSE_CODE_SESSION_EXPIRED,
 } from "@threadlines/contracts/relay";
 import { type QueryClient } from "@tanstack/react-query";
@@ -64,6 +69,7 @@ import {
   writeSavedEnvironmentBearerToken,
 } from "./catalog";
 import { createEnvironmentConnection, type EnvironmentConnection } from "./connection";
+import { isPendingRelayJoin } from "./relayJoins";
 import {
   useStore,
   selectProjectsAcrossEnvironments,
@@ -79,6 +85,15 @@ import { getServerConfig } from "../../rpc/serverState";
 import { WsTransport } from "../../rpc/wsTransport";
 import { createWsRpcClient, type WsRpcClient } from "../../rpc/wsRpcClient";
 import { relayWebSocketProtocols } from "../../relayTransport";
+import {
+  probeDirectRoutes,
+  SECURE_CLOSE_CODE_NO_ROUTE,
+  SECURE_CLOSE_CODE_PROTOCOL,
+  SECURE_OPEN_TIMEOUT_MS,
+  SecureRelaySocket,
+  type SecureRelayTarget,
+} from "../../rpc/secureRelaySocket";
+import { readRelayDeviceCredentials } from "./relayCredentials";
 import { appendVersionMismatchHint, resolveServerConfigVersionMismatch } from "../../versionSkew";
 import {
   deriveLogicalProjectKeyFromSettings,
@@ -934,7 +949,7 @@ async function issueDesktopSshBearerSession(record: SavedEnvironmentRecord): Pro
 }
 
 export const RELAY_LINK_EXPIRED_MESSAGE =
-  "Mobile connection expired. Create a new phone link from the desktop app.";
+  "This phone link no longer works. On your computer, open Settings › Connections › Connect a device and scan the new QR code.";
 
 /**
  * Marks a relay-paired environment as permanently unpairable (relay session
@@ -986,6 +1001,195 @@ function setRuntimeDisconnected(environmentId: EnvironmentId, reason?: string | 
         }
       : {}),
   });
+}
+
+function isRelayV2Record(record: SavedEnvironmentRecord | null | undefined): boolean {
+  const relay = record?.relay;
+  return Boolean(relay && "version" in relay && relay.version === 2);
+}
+
+/**
+ * Relay ("Connect a device") computers the client should leave alone for a
+ * while. Every connect attempt costs the shared free relay allowance, so an
+ * offline host is retried slowly, a used-up allowance waits, and a removed
+ * device waits until it pairs again. Cleared by an explicit Connect.
+ */
+const relayHolds = new Map<
+  EnvironmentId,
+  {
+    until: number;
+    timer: ReturnType<typeof setTimeout> | null;
+    /** While the relay route is held, its direct routes are still tried now and then. */
+    probe: ReturnType<typeof setInterval> | null;
+  }
+>();
+const RELAY_HOLD_DIRECT_PROBE_MS = 60_000;
+const relayOfflineAttempts = new Map<EnvironmentId, number>();
+const RELAY_OFFLINE_RETRY_MS = [30_000, 60_000, 120_000, 300_000] as const;
+const RELAY_LIMIT_RETRY_MS = 15 * 60_000;
+
+function isRelayHeld(environmentId: EnvironmentId): boolean {
+  const hold = relayHolds.get(environmentId);
+  return hold !== undefined && hold.until > Date.now();
+}
+
+function clearRelayHold(environmentId: EnvironmentId): void {
+  const hold = relayHolds.get(environmentId);
+  if (hold?.timer) clearTimeout(hold.timer);
+  if (hold?.probe) clearInterval(hold.probe);
+  relayHolds.delete(environmentId);
+}
+
+/**
+ * Everything a secure connection to a "Connect a device" computer needs: its
+ * pinned key, this device's key, the direct routes it last reported, and the
+ * relay route unless that is on hold.
+ */
+async function resolveSecureRelayTarget(environmentId: EnvironmentId): Promise<SecureRelayTarget> {
+  const record = getSavedEnvironmentRecord(environmentId);
+  const relay = record?.relay;
+  if (!record || !relay || !("version" in relay) || relay.version !== 2 || !relay.hostPublicKey) {
+    throw new Error("This computer was connected before encryption and has to be connected again.");
+  }
+  const credentials = await readRelayDeviceCredentials(environmentId);
+  if (!credentials) {
+    throw new Error("This computer's keys are missing. Connect it again.");
+  }
+  return {
+    hostId: relay.hostId,
+    deviceId: relay.deviceId,
+    hostPublicKey: relay.hostPublicKey,
+    deviceKey: credentials.deviceKey,
+    directRoutes: relay.directRoutes ?? [],
+    relay: isRelayHeld(environmentId)
+      ? null
+      : { url: record.wsBaseUrl, protocols: relayWebSocketProtocols(credentials.deviceSecret) },
+  };
+}
+
+/** Saves the host's latest direct routes on its record (used from the next connection on). */
+async function saveDirectRoutes(
+  environmentId: EnvironmentId,
+  routes: ReadonlyArray<string>,
+): Promise<void> {
+  const record = getSavedEnvironmentRecord(environmentId);
+  const relay = record?.relay;
+  if (!record || !relay || !("version" in relay) || relay.version !== 2) return;
+  const current = relay.directRoutes ?? [];
+  if (
+    current.length === routes.length &&
+    current.every((route, index) => route === routes[index])
+  ) {
+    return;
+  }
+  const next: SavedEnvironmentRecord = {
+    ...record,
+    relay: { ...relay, directRoutes: [...routes] },
+  };
+  await persistSavedEnvironmentRecord(next);
+  useSavedEnvironmentRegistryStore.getState().upsert(next);
+}
+
+function holdRelayEnvironment(environmentId: EnvironmentId, delayMs: number, reason: string): void {
+  clearRelayHold(environmentId);
+  const timer = Number.isFinite(delayMs)
+    ? setTimeout(() => {
+        relayHolds.delete(environmentId);
+        if (getSavedEnvironmentRecord(environmentId)) {
+          void reconnectSavedEnvironment(environmentId).catch(() => undefined);
+        }
+      }, delayMs)
+    : null;
+  // A held relay route doesn't stop a computer on the same network: keep
+  // checking its direct routes and come back as soon as one answers.
+  const record = getSavedEnvironmentRecord(environmentId);
+  const hasDirectRoutes =
+    record?.relay !== undefined &&
+    "version" in record.relay &&
+    record.relay.version === 2 &&
+    (record.relay.directRoutes?.length ?? 0) > 0;
+  const probe = hasDirectRoutes
+    ? setInterval(() => {
+        void resolveSecureRelayTarget(environmentId)
+          .then((target) => probeDirectRoutes(target))
+          .then((route) => {
+            if (!route || !relayHolds.has(environmentId)) return;
+            clearRelayHold(environmentId);
+            void reconnectSavedEnvironment(environmentId).catch(() => undefined);
+          })
+          .catch(() => undefined);
+      }, RELAY_HOLD_DIRECT_PROBE_MS)
+    : null;
+  relayHolds.set(environmentId, { until: Date.now() + delayMs, timer, probe });
+  void disconnectSavedEnvironment(environmentId)
+    .catch(() => undefined)
+    .then(() => {
+      setRuntimeDisconnected(environmentId, reason);
+    });
+}
+
+/** Maps a relay v2 close code to what the client does next. Returns true if handled. */
+function handleRelayV2Close(environmentId: EnvironmentId, code: number): boolean {
+  const label = getSavedEnvironmentRecord(environmentId)?.label ?? "That computer";
+  switch (code) {
+    case RELAY_CLOSE_CODE_ACCESS_REMOVED:
+      holdRelayEnvironment(
+        environmentId,
+        Number.POSITIVE_INFINITY,
+        `${label} removed this computer's access. Connect again with a new code.`,
+      );
+      useSavedEnvironmentRuntimeStore.getState().patch(environmentId, {
+        authState: "requires-auth",
+        role: null,
+      });
+      return true;
+    case RELAY_CLOSE_CODE_DAILY_LIMIT:
+      holdRelayEnvironment(
+        environmentId,
+        RELAY_LIMIT_RETRY_MS,
+        `Today's relay allowance for ${label} is used up. It resets at midnight UTC. On the same network? Turn on Same network on that computer for unlimited use.`,
+      );
+      return true;
+    case RELAY_CLOSE_CODE_RELAY_BUSY:
+      holdRelayEnvironment(
+        environmentId,
+        RELAY_LIMIT_RETRY_MS,
+        "The relay is busy today. Threadlines will try again later.",
+      );
+      return true;
+    case RELAY_CLOSE_CODE_HOST_OFFLINE:
+    case SECURE_CLOSE_CODE_NO_ROUTE: {
+      const attempt = relayOfflineAttempts.get(environmentId) ?? 0;
+      relayOfflineAttempts.set(environmentId, attempt + 1);
+      holdRelayEnvironment(
+        environmentId,
+        RELAY_OFFLINE_RETRY_MS[Math.min(attempt, RELAY_OFFLINE_RETRY_MS.length - 1)]!,
+        `Can't reach ${label}. It may be asleep, off, or offline.`,
+      );
+      return true;
+    }
+    case SECURE_CLOSE_CODE_PROTOCOL: {
+      // A broken or tampered connection; retrying at once would only spend
+      // the relay allowance on the same failure.
+      const attempt = relayOfflineAttempts.get(environmentId) ?? 0;
+      relayOfflineAttempts.set(environmentId, attempt + 1);
+      holdRelayEnvironment(
+        environmentId,
+        RELAY_OFFLINE_RETRY_MS[Math.min(attempt, RELAY_OFFLINE_RETRY_MS.length - 1)]!,
+        `The secure connection to ${label} failed. Threadlines will try again shortly.`,
+      );
+      return true;
+    }
+    case RELAY_CLOSE_CODE_REPLACED:
+      holdRelayEnvironment(
+        environmentId,
+        Number.POSITIVE_INFINITY,
+        `This computer connected to ${label} from another window.`,
+      );
+      return true;
+    default:
+      return false;
+  }
 }
 
 function setRuntimeError(environmentId: EnvironmentId, error: unknown) {
@@ -1300,6 +1504,7 @@ function createSavedEnvironmentClient(
 ): WsRpcClient {
   useSavedEnvironmentRuntimeStore.getState().ensure(environmentId);
   const isRelay = Boolean(getSavedEnvironmentRecord(environmentId)?.relay);
+  const isSecureRelay = isRelayV2Record(getSavedEnvironmentRecord(environmentId));
 
   return createWsRpcClient(
     new WsTransport(
@@ -1333,6 +1538,13 @@ function createSavedEnvironmentClient(
           setRuntimeConnecting(environmentId);
         },
         onOpen: () => {
+          // A secure connection only opens once the computer itself answered
+          // the handshake, so it is connected now.
+          if (isSecureRelay) {
+            relayOfflineAttempts.delete(environmentId);
+            setRuntimeConnected(environmentId);
+            return;
+          }
           // The relay accepts device sockets whether or not the desktop is
           // bridged behind it, so an open relay socket proves nothing about
           // the desktop. Stay "connecting" until the first inbound frame —
@@ -1345,6 +1557,7 @@ function createSavedEnvironmentClient(
         },
         onFirstMessage: () => {
           if (isRelay) {
+            relayOfflineAttempts.delete(environmentId);
             setRuntimeConnected(environmentId);
           }
         },
@@ -1366,6 +1579,12 @@ function createSavedEnvironmentClient(
             return;
           }
           if (
+            isRelayV2Record(getSavedEnvironmentRecord(environmentId)) &&
+            handleRelayV2Close(environmentId, details.code)
+          ) {
+            return;
+          }
+          if (
             details.code === RELAY_CLOSE_CODE_SESSION_EXPIRED &&
             getSavedEnvironmentRecord(environmentId)?.relay
           ) {
@@ -1377,9 +1596,14 @@ function createSavedEnvironmentClient(
             details.code === RELAY_CLOSE_CODE_PEER_UNAVAILABLE &&
             getSavedEnvironmentRecord(environmentId)?.relay
           ) {
-            // The relay closes device sockets that send while no desktop is
-            // bridged; surface that instead of the raw close reason.
-            setRuntimeDisconnected(environmentId, "The desktop app is not connected to the relay.");
+            // The relay closes device sockets when the far end of the pipe goes
+            // away; surface that instead of the raw close reason.
+            setRuntimeDisconnected(
+              environmentId,
+              isRelayV2Record(getSavedEnvironmentRecord(environmentId))
+                ? "Reconnecting to the other computer."
+                : "The desktop app is not connected to the relay.",
+            );
             return;
           }
           setRuntimeDisconnected(
@@ -1393,13 +1617,24 @@ function createSavedEnvironmentClient(
           );
         },
       },
-      isRelay
+      isSecureRelay
         ? {
             preservePath: true,
-            protocols: relayWebSocketProtocols(bearerToken),
-            chunkFrames: true,
+            openTimeoutMs: SECURE_OPEN_TIMEOUT_MS,
+            secureSocket: (socketUrl) =>
+              new SecureRelaySocket(socketUrl, {
+                resolveTarget: () => resolveSecureRelayTarget(environmentId),
+                onRoute: (route) =>
+                  useSavedEnvironmentRuntimeStore.getState().patch(environmentId, { route }),
+              }),
           }
-        : undefined,
+        : isRelay
+          ? {
+              preservePath: true,
+              protocols: relayWebSocketProtocols(bearerToken),
+              chunkFrames: true,
+            }
+          : undefined,
     ),
   );
 }
@@ -1422,8 +1657,18 @@ async function refreshSavedEnvironmentMetadata(
       authState: "authenticated",
       descriptor: serverConfig.environment,
       serverConfig,
-      role: roleHint ?? "owner",
+      // Old phone links rode the desktop's own owner session; devices that
+      // joined with a code get their own client session.
+      role: roleHint ?? (isRelayV2Record(record) ? "client" : "owner"),
     });
+    if (isRelayV2Record(record)) {
+      // Where to reach the computer without the relay next time. Older
+      // servers don't have this; their computers just stay on the relay.
+      void client.relay
+        .directRoutes()
+        .then(({ routes }) => saveDirectRoutes(record.environmentId, routes))
+        .catch(() => undefined);
+    }
     useSavedEnvironmentRegistryStore
       .getState()
       .rename(record.environmentId, serverConfig.environment.label);
@@ -1520,6 +1765,10 @@ async function ensureSavedEnvironmentConnection(
     return pending.promise;
   }
 
+  if (isPendingRelayJoin(record)) {
+    throw new Error("This computer is still waiting to be allowed.");
+  }
+
   const pendingEntry: PendingSavedEnvironmentConnection = {
     cancelled: false,
     promise: Promise.resolve().then(async () => {
@@ -1533,7 +1782,9 @@ async function ensureSavedEnvironmentConnection(
             authState: "requires-auth",
             role: null,
             connectionState: "disconnected",
-            lastError: RELAY_LINK_EXPIRED_MESSAGE,
+            lastError: isRelayV2Record(record)
+              ? `This computer's key for ${record.label} is missing. Connect again with a new code.`
+              : RELAY_LINK_EXPIRED_MESSAGE,
             lastErrorAt: isoNow(),
           });
           throw new Error("Saved relay connection is missing its device token.");
@@ -1698,7 +1949,9 @@ async function syncSavedEnvironmentConnections(
     staleEnvironmentIds.map((environmentId) => disconnectSavedEnvironment(environmentId)),
   );
   await Promise.all(
-    records.map((record) => ensureSavedEnvironmentConnection(record).catch(() => undefined)),
+    records
+      .filter((record) => !isPendingRelayJoin(record) && !isRelayHeld(record.environmentId))
+      .map((record) => ensureSavedEnvironmentConnection(record).catch(() => undefined)),
   );
 }
 
@@ -1829,6 +2082,7 @@ export async function reconnectSavedEnvironment(environmentId: EnvironmentId): P
   if (!record) {
     throw new Error("Saved environment not found.");
   }
+  clearRelayHold(environmentId);
 
   const connection = environmentConnections.get(environmentId);
   if (!connection) {
@@ -1877,6 +2131,8 @@ export async function reconnectSavedEnvironment(environmentId: EnvironmentId): P
 }
 
 export async function removeSavedEnvironment(environmentId: EnvironmentId): Promise<void> {
+  clearRelayHold(environmentId);
+  relayOfflineAttempts.delete(environmentId);
   await disconnectSavedEnvironment(environmentId);
   disposeThreadDetailSubscriptionsForEnvironment(environmentId);
   useSavedEnvironmentRegistryStore.getState().remove(environmentId);

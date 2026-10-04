@@ -251,7 +251,13 @@ export function resetSavedEnvironmentRegistryStoreForTests() {
   useSavedEnvironmentRegistryStore.setState({ byId: {} });
 }
 
+/**
+ * Saves one record with the rest of the list. Waits for the saved list to
+ * load first: pages that skip loading it at startup (like the QR join page)
+ * would otherwise write a list holding only this record.
+ */
 export async function persistSavedEnvironmentRecord(record: SavedEnvironmentRecord): Promise<void> {
+  await waitForSavedEnvironmentRegistryHydration();
   const byId = {
     ...useSavedEnvironmentRegistryStore.getState().byId,
     [record.environmentId]: record,
@@ -295,6 +301,8 @@ export interface SavedEnvironmentRuntimeState {
   readonly serverConfig: ServerConfig | null;
   readonly connectedAt: string | null;
   readonly disconnectedAt: string | null;
+  /** "Connect a device" computers: how the current connection reaches it. */
+  readonly route: "direct" | "relay" | null;
 }
 
 interface SavedEnvironmentRuntimeStoreState {
@@ -318,6 +326,7 @@ const DEFAULT_SAVED_ENVIRONMENT_RUNTIME_STATE: SavedEnvironmentRuntimeState = Ob
   serverConfig: null,
   connectedAt: null,
   disconnectedAt: null,
+  route: null,
 });
 
 function createDefaultSavedEnvironmentRuntimeState(): SavedEnvironmentRuntimeState {

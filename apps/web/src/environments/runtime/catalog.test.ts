@@ -6,6 +6,7 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import {
+  persistSavedEnvironmentRecord,
   resetSavedEnvironmentRegistryStoreForTests,
   resetSavedEnvironmentRuntimeStoreForTests,
   useSavedEnvironmentRegistryStore,
@@ -137,5 +138,52 @@ describe("environment runtime catalog stores", () => {
     await hydrationPromise;
 
     expect(useSavedEnvironmentRegistryStore.getState().byId[environmentId]).toEqual(record);
+  });
+
+  // The QR join page skips loading the saved list at startup; saving a new
+  // computer there used to write a list holding only that computer.
+  it("keeps already saved computers when saving one before the list has loaded", async () => {
+    const saved: PersistedSavedEnvironmentRecord = {
+      environmentId: EnvironmentId.make("environment-saved"),
+      label: "Office Mac",
+      httpBaseUrl: "https://office.example.com/",
+      wsBaseUrl: "wss://office.example.com/",
+      createdAt: "2026-04-09T00:00:00.000Z",
+      lastConnectedAt: null,
+    };
+    const writes: Array<ReadonlyArray<PersistedSavedEnvironmentRecord>> = [];
+    vi.stubGlobal("window", {
+      nativeApi: {
+        persistence: {
+          getClientSettings: async () => null,
+          setClientSettings: async () => undefined,
+          getSavedEnvironmentRegistry: async () => [saved],
+          setSavedEnvironmentRegistry: async (records) => {
+            writes.push(records);
+          },
+          getSavedEnvironmentSecret: async () => null,
+          setSavedEnvironmentSecret: async () => true,
+          removeSavedEnvironmentSecret: async () => undefined,
+        },
+      } satisfies Pick<LocalApi, "persistence">,
+    });
+    const { __resetLocalApiForTests } = await import("../../localApi");
+    await __resetLocalApiForTests();
+
+    await persistSavedEnvironmentRecord({
+      environmentId: EnvironmentId.make("environment-new"),
+      label: "Home PC",
+      httpBaseUrl: "https://home.example.com/",
+      wsBaseUrl: "wss://home.example.com/",
+      createdAt: "2026-04-10T00:00:00.000Z",
+      lastConnectedAt: null,
+    });
+
+    expect(
+      writes
+        .at(-1)
+        ?.map((record) => record.environmentId)
+        .toSorted(),
+    ).toEqual(["environment-new", "environment-saved"]);
   });
 });

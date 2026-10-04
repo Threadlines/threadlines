@@ -34,3 +34,18 @@ export {
   startEnvironmentConnectionService,
   subscribeEnvironmentConnections,
 } from "./service";
+
+export { readRelayDeviceCredentials } from "./relayCredentials";
+export {
+  cancelPendingRelayJoin,
+  canJoinWithCode,
+  isPendingRelayJoin,
+  RelayJoinError,
+  startCodeJoin,
+  startInviteClaim,
+  startRelayJoinWatchers,
+  useRelayJoinStore,
+  type RelayJoinAccepted,
+  type RelayJoinOutcome,
+  type SubmitCodeJoinViaServer,
+} from "./relayJoins";

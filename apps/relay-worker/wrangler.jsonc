@@ -17,6 +17,13 @@
     "THREADLINES_RELAY_PUBLIC_ORIGIN": "",
     "THREADLINES_RELAY_SESSION_CREATION_ENABLED": "true",
     "THREADLINES_RELAY_SESSION_TTL_SECONDS": "43200",
+    // Connect a device (v2). Per-computer daily allowance, relay-wide budget
+    // (kept under the Workers Free pool), and per-IP registration cap.
+    "THREADLINES_RELAY_V2_ENABLED": "true",
+    "THREADLINES_RELAY_HOST_DAILY_MESSAGES": "200000",
+    "THREADLINES_RELAY_HOST_DAILY_AWAKE_SECONDS": "86400",
+    "THREADLINES_RELAY_DAILY_MESSAGE_BUDGET": "1200000",
+    "THREADLINES_RELAY_REGISTRATIONS_PER_IP_PER_DAY": "20",
   },
   "ratelimits": [
     {
@@ -35,6 +42,22 @@
         "period": 60,
       },
     },
+    {
+      "name": "JOIN_RATE_LIMITER",
+      "namespace_id": "2026100301",
+      "simple": {
+        "limit": 10,
+        "period": 60,
+      },
+    },
+    {
+      "name": "CONTROL_RATE_LIMITER",
+      "namespace_id": "2026100302",
+      "simple": {
+        "limit": 10,
+        "period": 60,
+      },
+    },
   ],
   "durable_objects": {
     "bindings": [
@@ -42,12 +65,28 @@
         "name": "RELAY_SESSION",
         "class_name": "RelaySession",
       },
+      {
+        "name": "RELAY_HOST",
+        "class_name": "RelayHost",
+      },
+      {
+        "name": "RELAY_CODE_SHARD",
+        "class_name": "RelayCodeShard",
+      },
+      {
+        "name": "RELAY_LEDGER",
+        "class_name": "RelayLedger",
+      },
     ],
   },
   "migrations": [
     {
       "tag": "v1",
       "new_sqlite_classes": ["RelaySession"],
+    },
+    {
+      "tag": "v2",
+      "new_sqlite_classes": ["RelayHost", "RelayCodeShard", "RelayLedger"],
     },
   ],
 }

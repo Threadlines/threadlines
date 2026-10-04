@@ -330,6 +330,15 @@ export interface WsRpcClient {
     readonly subscribeLifecycle: RpcStreamMethod<typeof WS_METHODS.subscribeServerLifecycle>;
     readonly subscribeAuthAccess: RpcStreamMethod<typeof WS_METHODS.subscribeAuthAccess>;
   };
+  /** "Connect a device". Host methods are owner-only on the server. */
+  readonly relay: {
+    readonly subscribeAccess: RpcStreamMethod<typeof WS_METHODS.subscribeRelayAccess>;
+    readonly createInvite: RpcUnaryNoArgMethod<typeof WS_METHODS.relayCreateInvite>;
+    readonly cancelInvite: RpcUnaryMethod<typeof WS_METHODS.relayCancelInvite>;
+    readonly respondToJoinRequest: RpcUnaryMethod<typeof WS_METHODS.relayRespondToJoinRequest>;
+    readonly submitJoin: RpcUnaryMethod<typeof WS_METHODS.relaySubmitJoin>;
+    readonly directRoutes: RpcUnaryNoArgMethod<typeof WS_METHODS.relayDirectRoutes>;
+  };
   readonly orchestration: {
     readonly dispatchCommand: RpcUnaryMethod<typeof ORCHESTRATION_WS_METHODS.dispatchCommand>;
     readonly getTurnDiff: RpcUnaryMethod<typeof ORCHESTRATION_WS_METHODS.getTurnDiff>;
@@ -662,7 +671,7 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
         transport.request((client) => client[WS_METHODS.pullRequestsRequestReviewers](input)),
     },
     server: {
-      // Pure read, and the only thing standing between "Add computer" and a
+      // Pure read, and the only thing standing between adding a computer and a
       // closed dialog. A plain request is pinned to the transport session it
       // started on, so a socket drop or session swap mid-pairing left it
       // pending forever and the dialog stuck on "Adding...".
@@ -887,6 +896,21 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
           ...options,
           tag: WS_METHODS.subscribeAuthAccess,
         }),
+    },
+    relay: {
+      subscribeAccess: (listener, options) =>
+        transport.subscribe((client) => client[WS_METHODS.subscribeRelayAccess]({}), listener, {
+          ...options,
+          tag: WS_METHODS.subscribeRelayAccess,
+        }),
+      createInvite: () => transport.request((client) => client[WS_METHODS.relayCreateInvite]({})),
+      cancelInvite: (input) =>
+        transport.request((client) => client[WS_METHODS.relayCancelInvite](input)),
+      respondToJoinRequest: (input) =>
+        transport.request((client) => client[WS_METHODS.relayRespondToJoinRequest](input)),
+      submitJoin: (input) =>
+        transport.request((client) => client[WS_METHODS.relaySubmitJoin](input)),
+      directRoutes: () => transport.request((client) => client[WS_METHODS.relayDirectRoutes]({})),
     },
     orchestration: {
       // Commands are deduped server-side by commandId receipts, so re-sending

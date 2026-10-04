@@ -763,7 +763,7 @@ export default function Sidebar() {
   );
 
   // Every machine the inbox knows about: this device, plus whatever has been
-  // added under "Add computer". Ordered with this device first, the rest by
+  // added under Settings › Connections. Ordered with this device first, the rest by
   // name, so the list does not reshuffle as machines connect and drop.
   const environmentScopeOptions = useMemo<EnvironmentScopeOption[]>(() => {
     const resolveLabel = (environmentId: EnvironmentId, isPrimary: boolean) =>

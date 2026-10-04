@@ -27,6 +27,8 @@ import {
   WsRpcGroup,
   EditorId,
   EMPTY_AGENT_REQUEST_STATE,
+  RelayHostId,
+  RelayInviteId,
 } from "@threadlines/contracts";
 import { assert, it } from "@effect/vitest";
 import { assertFailure, assertInclude, assertTrue } from "@effect/vitest/utils";
@@ -34,7 +36,9 @@ import * as Clock from "effect/Clock";
 import * as Deferred from "effect/Deferred";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -68,6 +72,7 @@ import {
 } from "./provider/auth/ProviderAuthSessions.ts";
 import { DictationLive } from "./dictation/DictationService.ts";
 import { answerRequestsWhileStarting, makeRoutesLayer } from "./server.ts";
+import { RelayHost, type RelayHostShape } from "./relay/RelayHost.ts";
 import { resolveAttachmentRelativePath } from "./attachmentPaths.ts";
 import {
   CheckpointDiffQuery,
@@ -436,6 +441,7 @@ const buildAppUnderTest = (options?: {
     orchestrationEngine?: Partial<OrchestrationEngineShape>;
     projectionSnapshotQuery?: Partial<ProjectionSnapshotQueryShape>;
     threadSearch?: Partial<ThreadSearchShape>;
+    relayHost?: Partial<RelayHostShape>;
     checkpointDiffQuery?: Partial<CheckpointDiffQueryShape>;
     checkpointRevert?: Partial<CheckpointRevertShape>;
     browserTraceCollector?: Partial<BrowserTraceCollectorShape>;
@@ -695,6 +701,13 @@ const buildAppUnderTest = (options?: {
             deleteThread: () => Effect.die(new Error("Unsupported provider call in test")),
             streamEvents: Stream.empty,
             ...options?.layers?.providerService,
+          }),
+          Layer.mock(RelayHost)({
+            snapshots: Stream.empty,
+            admitDirect: () => null,
+            acceptDirect: () => Effect.succeed(null),
+            directRoutes: () => Effect.succeed([]),
+            ...options?.layers?.relayHost,
           }),
           Layer.mock(ThreadSearch)({
             search: () => Effect.succeed({ matches: [], truncated: false }),
@@ -2000,6 +2013,65 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
 
       assert.equal(revokeResponse.status, 200);
       assert.equal(pairedClientPairingResponse.status, 401);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("keeps device access management owner-only over the websocket", () =>
+    Effect.gen(function* () {
+      yield* buildAppUnderTest({
+        config: {
+          host: "0.0.0.0",
+        },
+        layers: {
+          relayHost: {
+            createInvite: Effect.succeed({
+              inviteId: RelayInviteId.make("invite-1"),
+              hostId: RelayHostId.make("host-1"),
+              relayOrigin: "https://relay.example.com",
+              code: "482913",
+              inviteSecret: "invite-secret",
+              hostPublicKey: "host-public-key",
+              expiresAt: "2026-10-03T00:10:00.000Z",
+            }),
+          },
+        },
+      });
+
+      const ownerCookie = yield* getAuthenticatedSessionCookieHeader();
+      const pairingResponse = yield* HttpClient.post("/api/auth/pairing-token", {
+        headers: { cookie: ownerCookie },
+      });
+      const pairingBody = (yield* pairingResponse.json) as { readonly credential: string };
+      const deviceCookie = yield* getAuthenticatedSessionCookieHeader(pairingBody.credential);
+      const deviceWsUrl = appendSessionCookieToWsUrl(
+        yield* getWsServerUrl("/ws", { authenticated: false }),
+        deviceCookie,
+      );
+
+      const deviceResults = yield* Effect.scoped(
+        withWsRpcClient(deviceWsUrl, (client) =>
+          Effect.all({
+            createInvite: Effect.exit(client[WS_METHODS.relayCreateInvite]({})),
+            // Streams pairing-link secrets; a joined device must not see them.
+            authAccess: Effect.exit(Stream.runHead(client[WS_METHODS.subscribeAuthAccess]({}))),
+          }),
+        ),
+      );
+      const assertOwnerRequired = (exit: Exit.Exit<unknown, unknown>) => {
+        assert.isTrue(Exit.isFailure(exit));
+        if (Exit.isFailure(exit)) {
+          assert.include(String(Cause.squash(exit.cause)), "owner");
+        }
+      };
+      assertOwnerRequired(deviceResults.createInvite);
+      assertOwnerRequired(deviceResults.authAccess);
+
+      const ownerInvite = yield* Effect.scoped(
+        withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+          client[WS_METHODS.relayCreateInvite]({}),
+        ),
+      );
+      assert.equal(ownerInvite.code, "482913");
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 

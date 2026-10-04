@@ -70,6 +70,7 @@ import {
   listSavedEnvironmentRecords,
   waitForSavedEnvironmentRegistryHydration,
   startEnvironmentConnectionService,
+  startRelayJoinWatchers,
   useSavedEnvironmentRegistryStore,
   useSavedEnvironmentRuntimeStore,
 } from "../environments/runtime";
@@ -87,8 +88,11 @@ export const Route = createRootRouteWithContext<{
 }>()({
   beforeLoad: async ({ location }) => {
     if (
-      location.pathname === "/pair" &&
-      hasHostedPairingRouteIntent(new URL(window.location.href))
+      (location.pathname === "/pair" &&
+        hasHostedPairingRouteIntent(new URL(window.location.href))) ||
+      // The join page strips its secret from the address bar on arrival, so
+      // the path alone keeps it in place; with no link it says to rescan.
+      location.pathname === "/join"
     ) {
       return {
         authGateState: {
@@ -494,7 +498,13 @@ function EnvironmentConnectionManagerBootstrap() {
   const queryClient = useQueryClient();
 
   useEffect(() => {
-    return startEnvironmentConnectionService(queryClient);
+    const stopConnections = startEnvironmentConnectionService(queryClient);
+    // Joins waiting for a host's Allow survive restarts; pick them back up.
+    const stopRelayJoins = startRelayJoinWatchers();
+    return () => {
+      stopRelayJoins();
+      stopConnections();
+    };
   }, [queryClient]);
 
   return null;

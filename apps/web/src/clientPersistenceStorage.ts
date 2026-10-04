@@ -3,6 +3,8 @@ import {
   EnvironmentId,
   type ClientSettings,
   type EnvironmentId as EnvironmentIdValue,
+  PersistedRelayLinkV1Schema,
+  PersistedRelayLinkV2Schema,
   type PersistedSavedEnvironmentRecord,
 } from "@threadlines/contracts";
 import * as Schema from "effect/Schema";
@@ -31,12 +33,7 @@ const BrowserSavedEnvironmentRecordSchema = Schema.Struct({
       port: Schema.NullOr(Schema.Number),
     }),
   ),
-  relay: Schema.optionalKey(
-    Schema.Struct({
-      relayOrigin: Schema.String,
-      sessionId: Schema.String,
-    }),
-  ),
+  relay: Schema.optionalKey(Schema.Union([PersistedRelayLinkV2Schema, PersistedRelayLinkV1Schema])),
   bearerToken: Schema.optionalKey(Schema.String),
 });
 type BrowserSavedEnvironmentRecord = typeof BrowserSavedEnvironmentRecordSchema.Type;

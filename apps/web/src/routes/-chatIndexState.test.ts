@@ -25,6 +25,7 @@ function runtime(input: Partial<SavedEnvironmentRuntimeState> = {}): SavedEnviro
     serverConfig: null,
     connectedAt: null,
     disconnectedAt: null,
+    route: null,
     ...input,
   };
 }
