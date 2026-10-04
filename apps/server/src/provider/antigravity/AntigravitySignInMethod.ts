@@ -324,8 +324,10 @@ export function classifyAntigravityGoogleToken(
   if (!isRecord(token) || Object.keys(token).length === 0) return undefined;
   if (token.client_id === GOOGLE_ACCOUNT_CLIENT_ID) return "oauth-personal";
   if (token.client_id === GEMINI_ENTERPRISE_CLIENT_ID) return "oauth-business";
-  const scopes = Array.isArray(token.scopes) ? token.scopes : undefined;
-  return scopes && !scopes.includes(CODE_ASSIST_SCOPE) ? "oauth-business" : "oauth-personal";
+  if (!Array.isArray(token.scopes)) return "oauth-personal";
+  // Exact scope names, never a substring of one.
+  const codeAssist = token.scopes.some((scope: unknown) => scope === CODE_ASSIST_SCOPE);
+  return codeAssist ? "oauth-personal" : "oauth-business";
 }
 
 /** The Google method the profile's saved sign-in belongs to, or `undefined` when it holds none. */
