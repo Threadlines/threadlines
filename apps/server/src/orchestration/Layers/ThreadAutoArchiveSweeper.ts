@@ -1,7 +1,10 @@
 import { randomUUID } from "node:crypto";
 
 import { CommandId } from "@threadlines/contracts";
-import { selectAutoArchiveCandidates } from "@threadlines/shared/threadAutoArchive";
+import {
+  isAutoArchiveProtectedThread,
+  selectAutoArchiveCandidates,
+} from "@threadlines/shared/threadAutoArchive";
 import * as Clock from "effect/Clock";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -68,10 +71,25 @@ const makeThreadAutoArchiveSweeper = (options?: ThreadAutoArchiveSweeperLiveOpti
       }
 
       const nowMs = yield* Clock.currentTimeMillis;
+      // Child threads: a parent whose family still has work going stays; so
+      // does one whose threads still owe it answers (the shared protection).
+      const liveChildParents = new Set(
+        snapshot.threads
+          .filter(
+            (thread) =>
+              thread.parentThreadId !== null &&
+              thread.attachedToParent &&
+              // At work or waiting on the user (a pin is not work).
+              isAutoArchiveProtectedThread({ ...thread, pinnedAt: null }) &&
+              thread.archivedAt === null,
+          )
+          .map((thread) => thread.parentThreadId),
+      );
       const candidates = selectAutoArchiveCandidates({
         threads: snapshot.threads,
         inactiveDays,
         nowMs,
+        isExcluded: (thread) => liveChildParents.has(thread.id),
       });
       let archivedCount = 0;
 
@@ -94,6 +112,29 @@ const makeThreadAutoArchiveSweeper = (options?: ThreadAutoArchiveSweeperLiveOpti
         );
         if (archived) {
           archivedCount += 1;
+          // Archiving stops what the thread had running, as it does from the
+          // sidebar: its runtimes and its settled children's, which the
+          // archive took with it.
+          const family = [
+            thread.id,
+            ...snapshot.threads
+              .filter((entry) => entry.parentThreadId === thread.id && entry.attachedToParent)
+              .map((entry) => entry.id),
+          ];
+          for (const threadId of family) {
+            yield* orchestrationEngine
+              .dispatch({
+                type: "thread.session.stop",
+                commandId: CommandId.make(`thread-auto-archive-stop:${threadId}:${randomUUID()}`),
+                threadId,
+                createdAt: new Date(nowMs).toISOString(),
+              })
+              .pipe(
+                Effect.catchCause((cause) =>
+                  Effect.logWarning("thread.auto-archive.session-stop-failed", { threadId, cause }),
+                ),
+              );
+          }
         }
       }
 

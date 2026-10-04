@@ -756,16 +756,18 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         occurredAt,
         withChildren,
       );
+      // Only the children the user was shown: the ones not archived. An
+      // archived child is separated instead and lives on in the archive.
       const childDeletes = withChildren
         ? yield* decideCommandSequence({
             readModel,
-            commands: attachedChildrenOf(readModel, thread.id).map(
-              (child): Extract<OrchestrationCommand, { type: "thread.delete" }> => ({
+            commands: attachedChildrenOf(readModel, thread.id)
+              .filter((child) => child.archivedAt === null)
+              .map((child): Extract<OrchestrationCommand, { type: "thread.delete" }> => ({
                 type: "thread.delete",
                 commandId: command.commandId,
                 threadId: child.id,
-              }),
-            ),
+              })),
           })
         : [];
       return familyEvents.length === 0 && childDeletes.length === 0
@@ -1887,6 +1889,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       }
       if (
         command.fromThread?.kind === "request" &&
+        targetThread.attachedToParent &&
         !isOpenParentRequest(readModel, command.fromThread)
       ) {
         return yield* new OrchestrationCommandInvariantError({
@@ -2476,10 +2479,13 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       const agentQueued = isAgentOrigin(queued);
       // A child's report whose delivery was cancelled after it was queued
       // (Stop, wrap, the child separated or gone) is taken back, not sent.
-      // Likewise a parent's request whose request was cancelled meanwhile.
+      // Likewise a parent's request cancelled meanwhile (Stop, wrap) in a child
+      // still in its family. A separated child keeps it: it is its own work now.
       if (
         isStaleReport(readModel, targetThread, fromThread) ||
-        (fromThread?.kind === "request" && !isOpenParentRequest(readModel, fromThread))
+        (fromThread?.kind === "request" &&
+          targetThread.attachedToParent &&
+          !isOpenParentRequest(readModel, fromThread))
       ) {
         return [{ ...unqueuedEvent, payload: { ...unqueuedEvent.payload, reason: "cancelled" } }];
       }

@@ -829,18 +829,20 @@ export function childDeletionEvents(
   withChildren: boolean,
   verb: "deleted" | "archived" = "deleted",
 ): ReadonlyArray<PlannedEvent> {
-  const familyEvents = withChildren
-    ? []
-    : attachedChildrenOf(readModel, thread.id).map((child): PlannedEvent => ({
-        ...baseFor(child.id),
-        type: "thread.parent-attachment-set",
-        payload: {
-          threadId: child.id,
-          attached: false,
-          attachmentEpoch: child.parentAttachmentEpoch + 1,
-          at: createdAt,
-        },
-      }));
+  // Children deleted along with it need nothing; the rest (all of them, or
+  // with `withChildren` the archived ones) are separated.
+  const familyEvents = attachedChildrenOf(readModel, thread.id)
+    .filter((child) => !withChildren || child.archivedAt !== null)
+    .map((child): PlannedEvent => ({
+      ...baseFor(child.id),
+      type: "thread.parent-attachment-set",
+      payload: {
+        threadId: child.id,
+        attached: false,
+        attachmentEpoch: child.parentAttachmentEpoch + 1,
+        at: createdAt,
+      },
+    }));
   const parent =
     thread.parentThreadId !== null && thread.attachedToParent
       ? findThread(readModel, thread.parentThreadId)
@@ -879,9 +881,13 @@ export function childArchivePlan(
   const children = attachedChildrenOf(readModel, parent.id).filter(
     (child) => child.archivedAt === null,
   );
+  // A child its parent still has a request open for is at work for it, even
+  // one with nothing running yet because it is still being set up.
+  const live = (child: OrchestrationThread) =>
+    childHasLiveWork(child) || requestsFor(parent, child.id).length > 0;
   return {
-    archive: children.filter((child) => !childHasLiveWork(child)),
-    separate: children.filter((child) => childHasLiveWork(child)),
+    archive: children.filter((child) => !live(child)),
+    separate: children.filter(live),
   };
 }
 

@@ -38,6 +38,7 @@ import { GitWorkflowService } from "../../git/GitWorkflowService.ts";
 import { ProjectSetupScriptRunner } from "../../project/Services/ProjectSetupScriptRunner.ts";
 import { VcsStatusBroadcaster } from "../../vcs/VcsStatusBroadcaster.ts";
 import { childRequestCommandId, childWorktreeBranch, derivedUuid } from "../childRequestIds.ts";
+import { withinModeCeiling } from "../childThreadDecisions.ts";
 import { OrchestrationCommandPreviouslyRejectedError } from "../Errors.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
@@ -490,6 +491,42 @@ const make = Effect.gen(function* () {
     });
 
   /**
+   * A child an interrupted run already created keeps the access it was
+   * created with; the launch may have been narrowed since (its parent's
+   * access went down). It is narrowed to the launch before anything runs.
+   */
+  const narrowChildModes = (input: ChildBootstrapInput, thread: OrchestrationThread) =>
+    Effect.gen(function* () {
+      if (withinModeCeiling(thread, input.launch)) {
+        return thread;
+      }
+      const at = yield* nowIso;
+      if (thread.runtimeMode !== input.launch.runtimeMode) {
+        yield* orchestrationEngine.dispatch({
+          type: "thread.runtime-mode.set",
+          commandId: childRequestCommandId(input.requestId, "narrow-runtime"),
+          threadId: input.childThreadId,
+          runtimeMode: input.launch.runtimeMode,
+          createdAt: at,
+        });
+      }
+      if (thread.interactionMode !== input.launch.interactionMode) {
+        yield* orchestrationEngine.dispatch({
+          type: "thread.interaction-mode.set",
+          commandId: childRequestCommandId(input.requestId, "narrow-interaction"),
+          threadId: input.childThreadId,
+          interactionMode: input.launch.interactionMode,
+          createdAt: at,
+        });
+      }
+      return {
+        ...thread,
+        runtimeMode: input.launch.runtimeMode,
+        interactionMode: input.launch.interactionMode,
+      };
+    }).pipe(Effect.mapError(stageError("create")));
+
+  /**
    * Stage 2: the child's own worktree. A worktree already on the request's
    * branch is one an interrupted run made; so is the branch alone, if git
    * stopped between making the branch and checking it out.
@@ -662,7 +699,7 @@ const make = Effect.gen(function* () {
           detail: turnReceipt.value.error ?? "it was refused earlier.",
         });
       }
-      const created = yield* ensureChildThread(input);
+      const created = yield* narrowChildModes(input, yield* ensureChildThread(input));
       const placed = yield* ensureChildWorktree(input, created);
       yield* ensureChildSetup(input, placed);
       return yield* startChildTurn(input);

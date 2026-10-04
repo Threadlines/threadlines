@@ -598,6 +598,92 @@ describe("decider child threads", () => {
     expect(threadIn(stopped.model, CHILD).parentAttachmentEpoch).toBe(1);
   });
 
+  it("a separated child keeps the parent's message still queued for it, as its own work", async () => {
+    const family = await familyWithRunningChild();
+    const busyChild = (model: OrchestrationReadModel) => ({
+      ...model,
+      threads: model.threads.map((entry) =>
+        entry.id === CHILD
+          ? { ...entry, session: session(CHILD, { activeTurnId: TurnId.make("child-turn-1") }) }
+          : entry,
+      ),
+    });
+    const sent = await run(busyChild(family), {
+      type: "thread.child.send",
+      commandId: CommandId.make("send"),
+      threadId: PARENT,
+      requestId: ChildRequestId.make("send-1"),
+      from: PRIMARY,
+      callerTurnId: CALLER_TURN,
+      childThreadId: CHILD,
+      childMessageId: MessageId.make("send-message"),
+      text: "Also update the README",
+      createdAt: at(6),
+    });
+    const separated = await run(sent.model, {
+      type: "thread.parent-attachment.set",
+      commandId: CommandId.make("separate"),
+      threadId: CHILD,
+      attached: false,
+      createdAt: at(7),
+    });
+    const idle: OrchestrationReadModel = {
+      ...separated.model,
+      threads: separated.model.threads.map((entry) =>
+        entry.id === CHILD
+          ? { ...entry, session: session(CHILD, { status: "ready", activeTurnId: null }) }
+          : entry,
+      ),
+    };
+    const ran = await run(idle, {
+      type: "thread.follow-up.send-queued",
+      commandId: CommandId.make("send-queued"),
+      threadId: CHILD,
+      messageId: MessageId.make("send-message"),
+      createdAt: at(8),
+    });
+    expect(ran.events.map((event) => event.type)).toContain("thread.turn-start-requested");
+  });
+
+  it("deleting a parent with its threads leaves archived children alone, separated", async () => {
+    const archivedChild = thread(ThreadId.make("archived-child"), {
+      parentThreadId: PARENT,
+      attachedToParent: true,
+      archivedAt: at(1),
+    });
+    const liveChild = thread(CHILD, { parentThreadId: PARENT, attachedToParent: true });
+    const deleted = await run(readModel([thread(PARENT), liveChild, archivedChild]), {
+      type: "thread.delete",
+      commandId: CommandId.make("delete-all"),
+      threadId: PARENT,
+      withChildren: true,
+    });
+    expect(threadIn(deleted.model, CHILD).deletedAt).not.toBeNull();
+    expect(threadIn(deleted.model, archivedChild.id).deletedAt).toBeNull();
+    expect(threadIn(deleted.model, archivedChild.id).attachedToParent).toBe(false);
+  });
+
+  it("archiving a parent separates a child that is still being set up instead of archiving it", async () => {
+    const started = await run(
+      readModel([thread(PARENT, { session: session(PARENT) })]),
+      startCommand("auto"),
+    );
+    const settingUp: OrchestrationReadModel = {
+      ...started.model,
+      threads: [
+        ...started.model.threads,
+        thread(CHILD, { parentThreadId: PARENT, attachedToParent: true }),
+      ],
+    };
+    const archived = await run(settingUp, {
+      type: "thread.archive",
+      commandId: CommandId.make("archive"),
+      threadId: PARENT,
+    });
+    expect(threadIn(archived.model, CHILD).archivedAt).toBeNull();
+    expect(threadIn(archived.model, CHILD).attachedToParent).toBe(false);
+  });
+
   it("a user turn in a child that was finishing background work hands back its answer so far first", async () => {
     const family = await familyWithRunningChild();
     const candidateTurn = TurnId.make("child-turn-1");

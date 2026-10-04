@@ -44,6 +44,7 @@ import {
   hasAgentRecords,
   isRoomThread,
   participantSessionKey,
+  sessionKeyThreadId,
   roomAgentKey,
   sessionSlotParticipantId,
   sideSessionKey,
@@ -2957,6 +2958,31 @@ const make = Effect.gen(function* () {
   ) {
     const thread = yield* resolveThread(event.payload.threadId);
     if (!thread) {
+      // An archived thread reads as gone here, but archiving stops its
+      // runtimes (a parent's family included): every live one for it goes.
+      const sessions = yield* providerService
+        .listSessions()
+        .pipe(Effect.orElseSucceed(() => [] as const));
+      yield* Effect.forEach(
+        sessions.filter(
+          (session) =>
+            session.status !== "closed" &&
+            sessionKeyThreadId(session.threadId) === event.payload.threadId,
+        ),
+        (session) =>
+          providerService.stopSession({ threadId: session.threadId }).pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning(
+                "provider command reactor could not stop an archived thread's session",
+                {
+                  threadId: event.payload.threadId,
+                  cause: Cause.pretty(cause),
+                },
+              ),
+            ),
+          ),
+        { discard: true },
+      );
       return;
     }
 
