@@ -2604,6 +2604,7 @@ export function deriveWorkLogEntries(
     .filter((activity) => activity.kind !== "mcp.status.updated")
     .filter((activity) => activity.kind !== "mcp.oauth.completed")
     .filter((activity) => activity.kind !== "prompt-suggestion.updated")
+    .filter((activity) => !isToolHeartbeatActivity(activity))
     .filter(
       (activity) =>
         activity.kind !== "provider.model.safety-buffering" ||
@@ -3354,6 +3355,18 @@ function deriveThinkingCollapseKey(
     return `thinking-turn\u001f${activity.turnId ?? "thread"}`;
   }
   return undefined;
+}
+
+/**
+ * Claude Code's "still running" ping for a long tool call, stored by servers
+ * before the Claude driver stopped forwarding them. Its id is the call's plus
+ * `-heartbeat-N`, so it never matched the call and read as a second step that
+ * stayed running after the call finished.
+ */
+function isToolHeartbeatActivity(activity: OrchestrationThreadActivity): boolean {
+  if (activity.kind !== "tool.progress") return false;
+  const toolCallId = asTrimmedString(asRecord(activity.payload)?.toolCallId);
+  return toolCallId !== null && /-heartbeat-\d+$/u.test(toolCallId);
 }
 
 function isToolLifecycleActivityKind(kind: OrchestrationThreadActivity["kind"]): boolean {
@@ -4686,6 +4699,11 @@ function isNodeReplJsTool(identity: ToolCallIdentity): boolean {
 }
 
 function isBrowserAutomationTool(identity: ToolCallIdentity): boolean {
+  // Threadlines' own browser panel is worded per tool by the activity steps,
+  // the same for every provider ("Opening example.com", "Taking a screenshot").
+  if (identity.serverOrNamespace?.trim().toLowerCase() === "threadlines_browser") {
+    return false;
+  }
   if (toolNamespaceMatches(identity.serverOrNamespace, "browser", "browser_use", "browser-use")) {
     return true;
   }
@@ -4974,6 +4992,8 @@ function summarizeToolArguments(value: unknown): string | null {
 
   const summaryParts: string[] = [];
   for (const key of [
+    // The agent a room tool talks to, which its step names.
+    "agent",
     "url",
     "uri",
     "path",

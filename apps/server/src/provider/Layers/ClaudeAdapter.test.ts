@@ -4346,6 +4346,54 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("drops Claude's still-running pings and keeps real tool progress", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const runtimeEventsFiber = yield* Stream.take(adapter.streamEvents, 5).pipe(
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      harness.query.emit({
+        type: "tool_progress",
+        tool_use_id: "toolu_review-heartbeat-3",
+        tool_name: "mcp__threadlines_room__room_review",
+        parent_tool_use_id: null,
+        elapsed_time_seconds: 90,
+        heartbeat: true,
+        session_id: "sdk-session-ping",
+        uuid: "tool-progress-ping",
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "tool_progress",
+        tool_use_id: "toolu_build",
+        tool_name: "Bash",
+        parent_tool_use_id: null,
+        elapsed_time_seconds: 12,
+        session_id: "sdk-session-ping",
+        uuid: "tool-progress-real",
+      } as unknown as SDKMessage);
+
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+      const progress = runtimeEvents.filter((event) => event.type === "tool.progress");
+      assert.deepEqual(
+        progress.map((event) => event.type === "tool.progress" && event.payload.toolUseId),
+        ["toolu_build"],
+      );
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("maps Claude task_updated running patches to task progress", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {

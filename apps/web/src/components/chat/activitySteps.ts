@@ -365,6 +365,63 @@ const BROWSER_TOOL_PHRASES: Readonly<Record<string, Phrase>> = {
   browser_wait_for: phrase("Waited for the page", "Waiting for the page"),
 };
 
+/**
+ * Threadlines' own room tools, worded by what the agent is doing in the room
+ * ("Asking GPT-6-Astra for a review"). `agent` is the agent the call names,
+ * when the provider passed its arguments along. Asks, reviews and hand-offs
+ * stay in view; looking around the room folds into the tallies.
+ */
+function roomToolDraft(tool: string, agent: string | null): StepDraft | null {
+  const who = agent ?? "another agent";
+  const notable = (wording: Phrase): StepDraft => ({
+    routine: false,
+    icon: "agent",
+    label: wording.past,
+    liveLabel: wording.live,
+  });
+  const routine = (wording: Phrase): StepDraft => ({
+    routine: true,
+    tallies: [{ tally: "tool" }],
+    icon: "agent",
+    label: wording.past,
+    liveLabel: wording.live,
+  });
+  switch (tool) {
+    case "room_ask":
+      return notable(phrase(`Asked ${who}`, `Asking ${who}`));
+    case "room_review":
+      return notable(phrase(`Asked ${who} for a review`, `Asking ${who} for a review`));
+    case "room_hand_off":
+      return notable(phrase(`Handed off to ${who}`, `Handing off to ${who}`));
+    case "room_invite":
+      return notable(phrase("Asked to bring in another agent", "Asking to bring in another agent"));
+    case "room_agents":
+      return routine(phrase("Checked who's in the room", "Checking who's in the room"));
+    case "room_available_agents":
+      return routine(phrase("Checked which agents can join", "Checking which agents can join"));
+    case "room_history":
+      return routine(
+        phrase("Read the room's earlier messages", "Reading the room's earlier messages"),
+      );
+    case "room_diff":
+      return routine(phrase("Checked the changes", "Checking the changes"));
+    default:
+      return null;
+  }
+}
+
+/** The agent a call names, from its argument preview: `agent=GPT-6-Astra 2 text=…`
+ *  (Claude, Codex steps) or `{"agent":"GPT-6-Astra 2",…}` (Codex transcripts). */
+function agentArgument(args: string | null): string | null {
+  if (!args) return null;
+  // A JSON preview is read by its key, so `agent=` inside the request text
+  // cannot stand in for the agent.
+  const match = args.trimStart().startsWith("{")
+    ? /"agent"\s*:\s*"([^"]+)"/u.exec(args)
+    : /(?:^|\s)agent=(.+?)(?=\s+\w+=|$)/su.exec(args);
+  return match ? truncate(match[1]!.trim(), 40) : null;
+}
+
 function words(identifier: string): string {
   return identifier
     .replace(/([a-z0-9])([A-Z])/gu, "$1 $2")
@@ -381,17 +438,47 @@ function serverLabel(server: string): string {
   return capitalize(words(name));
 }
 
-/** `server · tool: args` or `mcp__server__tool`, as providers name MCP calls. */
+/** Threadlines' own MCP servers: the room, the browser panel, and `threadlines` itself. */
+const THREADLINES_MCP_SERVER = "threadlines(?:_room|_browser)?";
+
+/**
+ * An MCP call as a provider names it: `server · tool: args` (Claude's step
+ * detail) or `mcp__server__tool` (Claude's id) for any server. Codex
+ * (`server.tool: args`) and Cursor (`server-tool: tool`) names are only read
+ * for Threadlines' own servers, so free text such as `package.json` never
+ * reads as a call.
+ */
 function parseMcpCall(value: string): { server: string; tool: string; args: string | null } | null {
-  const dotted = /^([^·]+?)\s*·\s*([\w.-]+)(?::\s*(.*))?$/su.exec(value.trim());
+  const trimmed = value.trim();
+  const dotted = /^([^·]+?)\s*·\s*([\w.-]+)(?::\s*(.*))?$/su.exec(trimmed);
   if (dotted) {
     return { server: dotted[1]!.trim(), tool: dotted[2]!.trim(), args: dotted[3]?.trim() || null };
   }
-  const prefixed = /^mcp__(.+?)__(.+)$/u.exec(value.trim());
+  const prefixed = /^mcp__(.+?)__(.+)$/u.exec(trimmed);
   if (prefixed) {
     return { server: prefixed[1]!, tool: prefixed[2]!, args: null };
   }
+  const own = new RegExp(`^(${THREADLINES_MCP_SERVER})([.-])(\\w+)(?::\\s*(.*))?$`, "su").exec(
+    trimmed,
+  );
+  if (own) {
+    // Cursor repeats the tool name after the colon; it carries no arguments.
+    const args = own[2] === "-" ? null : own[4]?.trim() || null;
+    return { server: own[1]!, tool: own[3]!, args };
+  }
   return null;
+}
+
+/**
+ * The live wording for a call a provider names by its tool id, for surfaces
+ * that only have the id (an approval request, an agent's reported step).
+ * Null for anything that is not an MCP call.
+ */
+export function mcpCallLiveLabel(name: string): string | null {
+  const call = parseMcpCall(name);
+  if (!call) return null;
+  const draft = mcpDraft(call);
+  return draft.liveLabel ?? draft.label;
 }
 
 function mcpDraft(call: { server: string; tool: string; args: string | null }): StepDraft {
@@ -411,6 +498,15 @@ function mcpDraft(call: { server: string; tool: string; args: string | null }): 
       liveLabel: wording.live,
       detail: { call: `${call.server} · ${call.tool}${call.args ? `: ${call.args}` : ""}` },
     };
+  }
+  if (call.server === "threadlines_room") {
+    const room = roomToolDraft(tool, agentArgument(call.args));
+    if (room) {
+      return {
+        ...room,
+        detail: { call: `${call.server} · ${call.tool}${call.args ? `: ${call.args}` : ""}` },
+      };
+    }
   }
   if (call.server === "threadlines" && tool === "mark_long_running") {
     const wording = phrase(
@@ -553,6 +649,14 @@ function searchDraft(detail: string | undefined): StepDraft {
 /** A tool call the provider named but we have no wording for. */
 function genericToolDraft(title: string, detail: string | undefined): StepDraft {
   const named = /^([\w.-]+):\s*(.*)$/su.exec(detail?.trim() ?? "");
+  // A raw MCP id (`mcp__server__tool`, `threadlines_room-room_ask`) is never
+  // shown as is.
+  const rawName = (named?.[1] ?? title).trim();
+  const rawMcp = rawName.includes("·") ? null : parseMcpCall(rawName);
+  if (rawMcp) {
+    const args = named ? named[2]!.trim() : detail?.trim();
+    return mcpDraft({ ...rawMcp, args: args || null });
+  }
   const tool = truncate(named?.[1] ?? title, 40);
   // A provider's placeholder title names no tool at all.
   if (/^(?:mcp tool call|dynamic tool call|tool call|tool)$/iu.test(tool)) {
@@ -1430,6 +1534,11 @@ export function newestThoughtSentence(thought: string): string {
  */
 export function plainAgentStep(step: string): string {
   const text = step.replace(/\s+/gu, " ").trim();
+  const usingTool = /^Using\s+(\S+)$/u.exec(text);
+  const toolAction = usingTool ? mcpCallLiveLabel(usingTool[1]!) : null;
+  if (toolAction) {
+    return toolAction;
+  }
   const file = /^(Reading|Editing|Writing|Viewing|Opening)\s+(.+)$/u.exec(text);
   if (file && looksLikePath(file[2]!)) {
     return `${file[1]} ${truncate(pathBasename(file[2]!), 60)}`;
