@@ -26,6 +26,12 @@ export interface AcpClientOptions {
   readonly logIncoming?: boolean;
   readonly logOutgoing?: boolean;
   readonly logger?: (event: AcpProtocol.AcpProtocolLogEvent) => Effect.Effect<void, never>;
+  /**
+   * Each line the agent writes to stderr. Some agents print things the
+   * client needs there (Antigravity's sign-in URL); without a handler stderr
+   * is still read, so the child never blocks on a full pipe, and discarded.
+   */
+  readonly onStderrLine?: (line: string) => Effect.Effect<void, never>;
 }
 
 type AcpClientRaw = {
@@ -569,7 +575,16 @@ export const layerChildProcess = (
       // Agent CLI diagnostics can exceed the child stderr pipe capacity;
       // without a reader the child blocks mid-write and JSON-RPC responses
       // never arrive.
-      yield* Stream.runDrain(handle.stderr).pipe(Effect.ignore, Effect.forkScoped);
+      const onStderrLine = options.onStderrLine;
+      yield* (
+        onStderrLine
+          ? handle.stderr.pipe(
+              Stream.decodeText(),
+              Stream.splitLines,
+              Stream.runForEach((line) => onStderrLine(line)),
+            )
+          : Stream.runDrain(handle.stderr)
+      ).pipe(Effect.ignore, Effect.forkScoped);
       return yield* make(makeChildStdio(handle), options, makeTerminationError(handle));
     }),
   );

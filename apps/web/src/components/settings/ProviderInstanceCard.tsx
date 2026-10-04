@@ -28,6 +28,8 @@ import {
 } from "@threadlines/contracts";
 
 import {
+  BROWSER_SIGN_IN_DRIVERS,
+  BROWSER_SIGN_IN_LABEL,
   buildClaudeAuthLoginCommand,
   buildClaudeSetupTokenCommand,
   buildCodexLoginCommand,
@@ -758,6 +760,10 @@ function ProviderAccountSignInSection(props: {
   // OpenCode's sign-in opens on a menu of providers to connect, in the
   // terminal itself, so the terminal shows from the start.
   const signInStartsInTerminal = props.driverKind === OPENCODE_DRIVER_KIND;
+  // Antigravity signs in through a Google page, inside the agent: no
+  // terminal, and it can sign out.
+  const browserSignIn =
+    props.driverKind !== null && BROWSER_SIGN_IN_DRIVERS.has(String(props.driverKind));
   const hasClaudeCredentialOverride =
     isClaude && hasClaudeCredentialOverrideEnvironment(props.environment);
   const claudeLongLivedTokenConfigured =
@@ -790,10 +796,13 @@ function ProviderAccountSignInSection(props: {
             actionLabel={needsSignIn ? "Sign in" : "Sign in again"}
             command={props.terminalLoginCommand}
             autoShowTerminal={(props.signInHandoffActive ?? false) || signInStartsInTerminal}
+            surface={browserSignIn ? "browser" : "terminal"}
             runningHint={
               signInStartsInTerminal
                 ? "Pick a provider in the terminal below, then finish any step it opens in your browser."
-                : undefined
+                : browserSignIn
+                  ? "Finish signing in on Google's page in your browser."
+                  : undefined
             }
             buttonVariant={needsSignIn ? "default" : "ghost"}
             description={
@@ -801,7 +810,9 @@ function ProviderAccountSignInSection(props: {
                 ? "Signing in covers both chat and usage."
                 : signInStartsInTerminal
                   ? "Connects a model provider, such as an OpenCode Go plan or your ChatGPT account, to OpenCode."
-                  : undefined
+                  : browserSignIn
+                    ? "Signs in with your Google account."
+                    : undefined
             }
             statusRow={
               <>
@@ -822,6 +833,20 @@ function ProviderAccountSignInSection(props: {
             }
           />
         )}
+
+        {browserSignIn && props.liveProvider?.auth.status === "authenticated" ? (
+          <ProviderConnectFlow
+            instanceId={props.instanceId}
+            flow="logout"
+            displayName={props.displayName}
+            actionLabel="Sign out"
+            command="Sign out of Google"
+            surface="browser"
+            buttonVariant="ghost"
+            runningHint="Signing out…"
+            description="Ends this Google sign-in for Antigravity on this computer."
+          />
+        ) : null}
 
         {hasClaudeCredentialOverride ? (
           <div className="rounded-md border border-warning/35 bg-warning/8 px-3 py-2 text-xs leading-5 text-warning">
@@ -1374,6 +1399,9 @@ export function ProviderInstanceCard({
       return buildOpenCodeLoginCommand({
         binaryPath: readProviderConfigString(instance.config, "binaryPath"),
       });
+    }
+    if (driverKind !== null && BROWSER_SIGN_IN_DRIVERS.has(String(driverKind))) {
+      return BROWSER_SIGN_IN_LABEL;
     }
     return null;
   }, [driverKind, instance.config]);

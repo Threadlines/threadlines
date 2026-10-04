@@ -6,6 +6,7 @@
  * @module provider/acp/AcpTextGeneration
  */
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
@@ -57,6 +58,7 @@ export const makeAcpTextGeneration = Effect.fn("makeAcpTextGeneration")(function
   environment: NodeJS.ProcessEnv = process.env,
 ) {
   const commandSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  const fileSystem = yield* FileSystem.FileSystem;
   const agentName = descriptor.presentation.displayName;
 
   const mapAcpError = (operation: TextGenerationOperation, detail: string, cause: unknown) =>
@@ -81,13 +83,22 @@ export const makeAcpTextGeneration = Effect.fn("makeAcpTextGeneration")(function
   }): Effect.Effect<S["Type"], TextGenerationError, S["DecodingServices"]> =>
     Effect.gen(function* () {
       const outputRef = yield* Ref.make("");
+      // Workspace hooks and settings can act before a denied tool call
+      // would stop them; agents that read them run in an empty directory.
+      const runCwd = descriptor.isolateTextGeneration
+        ? yield* fileSystem.makeTempDirectoryScoped({ prefix: "threadlines-text-" })
+        : cwd;
       const runtime = yield* makeAcpProviderRuntime(descriptor, {
         settings,
         environment,
         childProcessSpawner: commandSpawner,
-        cwd,
+        cwd: runCwd,
         clientInfo: { name: "threadlines-git-text", version: "0.0.0" },
       });
+      // Text generation needs no tools: every request is refused.
+      yield* runtime.handleRequestPermission(() =>
+        Effect.succeed({ outcome: { outcome: "cancelled" as const } }),
+      );
 
       yield* runtime.handleSessionUpdate((notification) => {
         const update = notification.update;
@@ -103,7 +114,14 @@ export const makeAcpTextGeneration = Effect.fn("makeAcpTextGeneration")(function
 
       const promptResult = yield* Effect.gen(function* () {
         yield* runtime.start();
-        yield* Effect.ignore(runtime.setMode(ACP_TEXT_GENERATION_MODE_ID));
+        yield* Effect.ignore(
+          runtime.setMode(
+            descriptor.agentModeFor?.({
+              runtimeMode: "approval-required",
+              interactionMode: undefined,
+            }) ?? ACP_TEXT_GENERATION_MODE_ID,
+          ),
+        );
         yield* applyAcpModelSelection({
           descriptor,
           runtime,

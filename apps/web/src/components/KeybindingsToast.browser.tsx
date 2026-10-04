@@ -151,6 +151,7 @@ function createBaseServerConfig(): ServerConfig {
           serverPassword: "",
           customModels: [],
         },
+        antigravity: { enabled: false, binaryPath: "", customModels: [] },
       },
     },
   };

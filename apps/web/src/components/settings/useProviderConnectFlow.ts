@@ -29,6 +29,8 @@ import {
 } from "react";
 
 import { getPrimaryEnvironmentConnection } from "../../environments/runtime";
+import { randomUUID } from "../../lib/utils";
+import { ensureLocalApi } from "../../localApi";
 import {
   applyProviderAuthEvent,
   initialProviderConnectFlowState,
@@ -55,6 +57,20 @@ function readProviderAuthClient(): ProviderAuthClient | null {
   }
 }
 
+/** Sign-in pages this tab already opened: several surfaces can watch one run. */
+const openedSignInUrls = new Set<string>();
+
+/** Opens a run's sign-in page unless this tab already did. */
+export function openProviderSignInUrlOnce(url: string): void {
+  if (openedSignInUrls.has(url)) return;
+  openedSignInUrls.add(url);
+  void ensureLocalApi()
+    .shell.openExternal(url)
+    .catch(() => {
+      // Settings keeps a button to open it by hand.
+    });
+}
+
 /** Default PTY geometry for a flow started from a surface with no terminal. */
 export const PROVIDER_CONNECT_TERMINAL_COLS = 100;
 export const PROVIDER_CONNECT_TERMINAL_ROWS = 20;
@@ -64,6 +80,8 @@ const OUTPUT_BUFFER_CHARS = 64_000;
 
 export interface ProviderConnectFlowController {
   readonly state: ProviderConnectFlowState;
+  /** Finishes a browser sign-in with the address the browser ended on. */
+  readonly submitRedirect: (url: string) => Promise<void>;
   /** True between the start click and the server's first status event. */
   readonly isStarting: boolean;
   /** True while the server reports the flow starting or running. */
@@ -107,6 +125,12 @@ export function useProviderConnectFlow(input: {
   // Without it, attaching to a session that already succeeded would replay that
   // status and fire `onSucceeded` for something the user did minutes ago.
   const runObservedRef = useRef(false);
+  // The run this consumer's own `start` began: the server echoes the start's
+  // `requestId` on that run's command event. Every client watching the
+  // instance sees every run; only the one the user clicked in opens pages for
+  // it, and only for that run.
+  const requestIdRef = useRef<string | null>(null);
+  const ownedFlowIdRef = useRef<string | null>(null);
   const outputBufferRef = useRef("");
   const terminalWriteRef = useRef<((data: string) => void) | null>(null);
   // An instance has one auth session but can back two panels (sign-in and
@@ -116,6 +140,9 @@ export function useProviderConnectFlow(input: {
 
   const handleEvent = useEffectEvent((event: ProviderAuthEvent) => {
     if (event.type === "command") {
+      if (requestIdRef.current !== null && event.requestId === requestIdRef.current) {
+        ownedFlowIdRef.current = event.flowId ?? null;
+      }
       sessionFlowRef.current = event.flow;
       if (event.flow !== flow) {
         outputBufferRef.current = "";
@@ -175,6 +202,14 @@ export function useProviderConnectFlow(input: {
 
   const isActive = isProviderConnectFlowActive(state.status);
 
+  // A browser sign-in has no CLI to open the page and no terminal to show it
+  // in: whichever surface the user started it from, the page opens here.
+  useEffect(() => {
+    if (!isActive || state.surface !== "browser" || state.signInUrl === null) return;
+    if (state.flowId === null || state.flowId !== ownedFlowIdRef.current) return;
+    openProviderSignInUrlOnce(state.signInUrl);
+  }, [isActive, state.flowId, state.signInUrl, state.surface]);
+
   useEffect(() => {
     if (!isActive) {
       setRunningForMs(0);
@@ -195,6 +230,9 @@ export function useProviderConnectFlow(input: {
     }
     outputBufferRef.current = "";
     sessionFlowRef.current = null;
+    const requestId = randomUUID();
+    requestIdRef.current = requestId;
+    ownedFlowIdRef.current = null;
     setState(initialProviderConnectFlowState);
     setStartError(null);
     setHasRun(true);
@@ -205,8 +243,10 @@ export function useProviderConnectFlow(input: {
         flow,
         cols: PROVIDER_CONNECT_TERMINAL_COLS,
         rows: PROVIDER_CONNECT_TERMINAL_ROWS,
+        requestId,
       })
       .catch((error: unknown) => {
+        requestIdRef.current = null;
         setStartError(
           error instanceof Error ? error.message : "The sign-in command could not be started.",
         );
@@ -217,19 +257,35 @@ export function useProviderConnectFlow(input: {
       });
   }, [flow, instanceId, onStartError]);
 
+  const flowId = state.flowId;
   const reset = useCallback(() => {
     if (instanceId !== null) {
       void readProviderAuthClient()
-        ?.stop({ instanceId })
+        ?.stop({ instanceId, ...(flowId ? { flowId } : {}) })
         .catch(() => {});
     }
     outputBufferRef.current = "";
     sessionFlowRef.current = null;
     runObservedRef.current = false;
+    requestIdRef.current = null;
+    ownedFlowIdRef.current = null;
     setState(initialProviderConnectFlowState);
     setStartError(null);
     setHasRun(false);
-  }, [instanceId]);
+  }, [flowId, instanceId]);
+
+  /**
+   * Hands a browser sign-in the address the browser ended on (another
+   * device's unreachable 127.0.0.1 page). Rejects with the server's reason.
+   */
+  const submitRedirect = useCallback(
+    async (url: string) => {
+      const client = readProviderAuthClient();
+      if (instanceId === null || client === null) return;
+      await client.write({ instanceId, data: url, ...(flowId ? { flowId } : {}) });
+    },
+    [flowId, instanceId],
+  );
 
   const needsTerminal = shouldAutoExpandTerminal({ status: state.status, runningForMs });
 
@@ -247,7 +303,8 @@ export function useProviderConnectFlow(input: {
       terminalWriteRef,
       start,
       reset,
+      submitRedirect,
     }),
-    [hasRun, isActive, isStarting, needsTerminal, reset, start, startError, state],
+    [hasRun, isActive, isStarting, needsTerminal, reset, start, startError, state, submitRedirect],
   );
 }

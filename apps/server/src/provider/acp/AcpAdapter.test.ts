@@ -27,7 +27,7 @@ import {
 
 import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
-import { type AcpAdapterShape, makeAcpAdapter } from "./AcpAdapter.ts";
+import { type AcpAdapterShape, acpDiffFileChanges, makeAcpAdapter } from "./AcpAdapter.ts";
 import { CURSOR_ACP_DESCRIPTOR } from "./CursorAcpSupport.ts";
 const decodeCursorSettings = Schema.decodeSync(CursorSettings);
 
@@ -833,7 +833,9 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
             "outcome" in entry.result.outcome &&
             entry.result.outcome.outcome === "selected" &&
             "optionId" in entry.result.outcome &&
-            entry.result.outcome.optionId === "allow-always",
+            // Once, not always: full access answers every request anyway,
+            // and "always" would leave a standing rule in the agent.
+            entry.result.outcome.optionId === "allow-once",
         );
         assert.isDefined(permissionResponse);
 
@@ -1510,4 +1512,29 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
       }).pipe(Effect.provide(customAdapterLayer));
     },
   );
+});
+
+it("names an edit's files relative to the session, whichever way the agent wrote them", () => {
+  const root = path.resolve("/work/project");
+  const linked = path.resolve("/private/work/project");
+  const changes = acpDiffFileChanges(
+    {
+      toolCallId: "edit-1",
+      kind: "edit",
+      status: "completed",
+      data: {
+        content: [
+          { type: "diff", path: "src/a.ts", oldText: "a\n", newText: "b\n" },
+          { type: "diff", path: path.join(linked, "b.ts"), newText: "x\n" },
+          { type: "diff", path: path.resolve("/elsewhere/c.ts"), newText: "x\n" },
+        ],
+      },
+    },
+    [root, linked],
+    path,
+  );
+  assert.deepEqual(changes, [
+    { path: "src/a.ts", kind: "update", additions: 1, deletions: 1 },
+    { path: "b.ts", kind: "add", additions: 1, deletions: 0 },
+  ]);
 });

@@ -4,6 +4,7 @@ import {
   type CanonicalRequestType,
   type EventId,
   type ProviderApprovalDecision,
+  type ProviderApprovalDecisionWarnings,
   type ProviderDriverKind,
   type ProviderRuntimeEvent,
   type RuntimeRequestId,
@@ -104,6 +105,8 @@ export function makeAcpRequestOpenedEvent(input: {
   readonly permissionRequest: AcpPermissionRequest;
   readonly detail: string;
   readonly args: object;
+  readonly availableDecisions?: ReadonlyArray<ProviderApprovalDecision>;
+  readonly decisionWarnings?: ProviderApprovalDecisionWarnings;
   readonly source: AcpAdapterRawSource;
   readonly method: string;
   readonly rawPayload: unknown;
@@ -121,6 +124,8 @@ export function makeAcpRequestOpenedEvent(input: {
     payload: {
       requestType,
       detail: input.detail,
+      ...(input.availableDecisions ? { availableDecisions: input.availableDecisions } : {}),
+      ...(input.decisionWarnings ? { decisionWarnings: input.decisionWarnings } : {}),
       args: toolName ? { ...input.args, toolName } : input.args,
     },
     raw: {

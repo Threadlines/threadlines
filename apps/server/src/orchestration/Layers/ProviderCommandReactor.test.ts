@@ -814,6 +814,63 @@ describe("ProviderCommandReactor", () => {
     });
   });
 
+  it("hands the thread's history to a session that could not reopen its conversation", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    const turnStart = (id: string, text: string) =>
+      Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make(`cmd-turn-start-${id}`),
+          threadId: ThreadId.make("thread-1"),
+          message: {
+            messageId: asMessageId(`user-message-${id}`),
+            role: "user",
+            text,
+            attachments: [],
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          createdAt: now,
+        }),
+      );
+
+    await turnStart("1", "first question");
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+
+    // The access-mode change restarts the session, and the agent can't reopen
+    // the conversation. Nothing is sent then; the next message carries it.
+    const startFresh = harness.startSession.getMockImplementation();
+    if (!startFresh) throw new Error("expected the harness start implementation");
+    harness.startSession.mockImplementationOnce((key, input) =>
+      startFresh(key, input).pipe(Effect.map((session) => ({ ...session, resumeFailed: true }))),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.runtime-mode.set",
+        commandId: CommandId.make("cmd-runtime-mode-set-resume-failed"),
+        threadId: ThreadId.make("thread-1"),
+        runtimeMode: "full-access",
+        createdAt: now,
+      }),
+    );
+    await waitFor(() => harness.startSession.mock.calls.length === 2);
+
+    await turnStart("2", "second question");
+    await waitFor(() => harness.sendTurn.mock.calls.length === 2);
+    const sent = harness.sendTurn.mock.calls[1]?.[0] as { readonly input?: string } | undefined;
+    // The harness's seed builder renders a fixed transcript.
+    expect(sent?.input).toContain("prior context");
+    expect(sent?.input?.endsWith("second question")).toBe(true);
+
+    // Paid once: the turn after that goes out as written.
+    await turnStart("3", "third question");
+    await waitFor(() => harness.sendTurn.mock.calls.length === 3);
+    expect((harness.sendTurn.mock.calls[2]?.[0] as { readonly input?: string })?.input).toBe(
+      "third question",
+    );
+  });
+
   it("runs a room agent in its own session and tells it what it missed", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";

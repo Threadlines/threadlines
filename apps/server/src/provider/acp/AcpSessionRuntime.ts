@@ -1,5 +1,6 @@
 import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
@@ -31,6 +32,8 @@ function formatConfigOptionValue(value: string | boolean): string {
   return JSON.stringify(value);
 }
 
+const FORCE_KILL_AFTER = Duration.seconds(3);
+
 /** Short option lists (effort, mode) are worth spelling out in a rejection. */
 const MAX_LISTED_CONFIG_OPTION_VALUES = 8;
 
@@ -52,9 +55,17 @@ export interface AcpSpawnInput {
   readonly command: string;
   readonly args: ReadonlyArray<string>;
   readonly cwd?: string;
+  /** Added to the server's environment, or the whole of it when `inheritEnv` is false. */
   readonly env?: NodeJS.ProcessEnv;
+  /**
+   * `false` hands the child exactly `env`: for agents whose environment must
+   * not carry the server's ambient credentials (Antigravity).
+   */
+  readonly inheritEnv?: boolean;
   /** Override the default (`true` on Windows so `.cmd` shims resolve). */
   readonly shell?: boolean;
+  /** Told the agent's pid once it is running. */
+  readonly onSpawned?: (pid: number) => Effect.Effect<void>;
 }
 
 export interface AcpSessionRuntimeOptions {
@@ -79,6 +90,14 @@ export interface AcpSessionRuntimeOptions {
    * speaks that transport, as ACP requires.
    */
   readonly mcpServers?: ReadonlyArray<EffectAcpSchema.McpServer>;
+  /** Each line the agent writes to stderr (see `AcpClientOptions.onStderrLine`). */
+  readonly onStderrLine?: (line: string) => Effect.Effect<void, never>;
+  /**
+   * A stderr line that means this process can't go on (a sign-in prompt
+   * outside a sign-in flow). Returns the reason: the process is stopped and
+   * every request fails with it (code -32000).
+   */
+  readonly stderrFailure?: (line: string) => string | undefined;
   readonly requestLogger?: (event: AcpSessionRequestLogEvent) => Effect.Effect<void, never>;
   readonly protocolLogging?: {
     readonly logIncoming?: boolean;
@@ -103,6 +122,11 @@ export interface AcpSessionRuntimeStartResult {
     | EffectAcpSchema.NewSessionResponse
     | EffectAcpSchema.ResumeSessionResponse;
   readonly modelConfigId: string | undefined;
+  /**
+   * Set when a `resumeSessionId` was asked for but the agent could not reopen
+   * it, so this is a fresh session without the earlier conversation.
+   */
+  readonly resumeFailure?: string;
 }
 
 export interface AcpSessionRuntimeShape {
@@ -217,6 +241,29 @@ const makeAcpSessionRuntime = (
 
     const logRequest = (event: AcpSessionRequestLogEvent) =>
       options.requestLogger ? options.requestLogger(event) : Effect.void;
+    // Set once a stderr line ended the process; requests then fail with it
+    // rather than with the bare "process exited" the transport reports.
+    const fatalRef = yield* Ref.make<string | undefined>(undefined);
+    const withFatalReason = <A>(
+      effect: Effect.Effect<A, EffectAcpErrors.AcpError>,
+    ): Effect.Effect<A, EffectAcpErrors.AcpError> =>
+      effect.pipe(
+        Effect.catch((error) =>
+          Ref.get(fatalRef).pipe(
+            Effect.flatMap((reason) =>
+              reason === undefined
+                ? Effect.fail(error)
+                : Effect.fail(
+                    new EffectAcpErrors.AcpRequestError({
+                      code: -32000,
+                      errorMessage: reason,
+                      data: { reason: "stderr" },
+                    }),
+                  ),
+            ),
+          ),
+        ),
+      );
 
     const runLoggedRequest = <A>(
       method: string,
@@ -225,7 +272,7 @@ const makeAcpSessionRuntime = (
     ): Effect.Effect<A, EffectAcpErrors.AcpError> =>
       logRequest({ method, payload, status: "started" }).pipe(
         Effect.flatMap(() =>
-          effect.pipe(
+          withFatalReason(effect).pipe(
             Effect.tap((result) =>
               logRequest({
                 method,
@@ -253,7 +300,17 @@ const makeAcpSessionRuntime = (
           [...options.spawn.args],
           hideWindowsConsole({
             ...(options.spawn.cwd ? { cwd: options.spawn.cwd } : {}),
-            ...(options.spawn.env ? { env: { ...process.env, ...options.spawn.env } } : {}),
+            ...(options.spawn.env
+              ? {
+                  env:
+                    options.spawn.inheritEnv === false
+                      ? options.spawn.env
+                      : { ...process.env, ...options.spawn.env },
+                }
+              : {}),
+            // Closing the session scope must end the agent even when it
+            // ignores SIGTERM, or a stuck agent blocks every teardown.
+            forceKillAfter: FORCE_KILL_AFTER,
             // cmd.exe re-splits quoted argv (`bash -lc "fx acp"` → `bash -lc fx acp`),
             // so wrappers like wsl.exe opt out via `spawn.shell`.
             shell: options.spawn.shell ?? process.platform === "win32",
@@ -271,6 +328,8 @@ const makeAcpSessionRuntime = (
         ),
       );
 
+    if (options.spawn.onSpawned) yield* options.spawn.onSpawned(Number(child.pid));
+
     const acpContext = yield* Layer.build(
       EffectAcpClient.layerChildProcess(child, {
         ...(options.protocolLogging?.logIncoming !== undefined
@@ -280,6 +339,20 @@ const makeAcpSessionRuntime = (
           ? { logOutgoing: options.protocolLogging.logOutgoing }
           : {}),
         ...(options.protocolLogging?.logger ? { logger: options.protocolLogging.logger } : {}),
+        ...(options.onStderrLine || options.stderrFailure
+          ? {
+              onStderrLine: (line: string) =>
+                Effect.gen(function* () {
+                  if (options.onStderrLine) yield* options.onStderrLine(line);
+                  const reason = options.stderrFailure?.(line);
+                  if (reason !== undefined && (yield* Ref.get(fatalRef)) === undefined) {
+                    yield* Ref.set(fatalRef, reason);
+                    // Scope cleanup's deadline doesn't apply to a direct kill.
+                    yield* child.kill({ forceKillAfter: FORCE_KILL_AFTER }).pipe(Effect.ignore);
+                  }
+                }),
+            }
+          : {}),
       }),
     ).pipe(Effect.provideService(Scope.Scope, runtimeScope));
 
@@ -469,21 +542,34 @@ const makeAcpSessionRuntime = (
         | EffectAcpSchema.LoadSessionResponse
         | EffectAcpSchema.NewSessionResponse
         | EffectAcpSchema.ResumeSessionResponse;
+      let resumeFailure: string | undefined;
       if (options.resumeSessionId) {
-        const loadPayload = {
+        const reopenPayload = {
           sessionId: options.resumeSessionId,
           cwd: options.cwd,
           mcpServers,
-        } satisfies EffectAcpSchema.LoadSessionRequest;
-        const resumed = yield* runLoggedRequest(
-          "session/load",
-          loadPayload,
-          acp.agent.loadSession(loadPayload),
+        } satisfies EffectAcpSchema.LoadSessionRequest & EffectAcpSchema.ResumeSessionRequest;
+        // `session/resume` reopens without replaying the conversation, which
+        // `session/load` streams back update by update; prefer it when offered.
+        const canResume =
+          initializeResult.agentCapabilities?.sessionCapabilities?.resume !== undefined &&
+          initializeResult.agentCapabilities?.sessionCapabilities?.resume !== null;
+        const resumed = yield* (
+          canResume
+            ? runLoggedRequest(
+                "session/resume",
+                reopenPayload,
+                acp.agent.resumeSession(reopenPayload),
+              )
+            : runLoggedRequest("session/load", reopenPayload, acp.agent.loadSession(reopenPayload))
         ).pipe(Effect.exit);
         if (Exit.isSuccess(resumed)) {
           sessionId = options.resumeSessionId;
           sessionSetupResult = resumed.value;
         } else {
+          const failure = Cause.squash(resumed.cause);
+          resumeFailure =
+            failure instanceof Error && failure.message ? failure.message : "unknown error";
           const createPayload = {
             cwd: options.cwd,
             mcpServers,
@@ -518,6 +604,7 @@ const makeAcpSessionRuntime = (
         initializeResult,
         sessionSetupResult,
         modelConfigId: extractModelConfigId(sessionSetupResult),
+        ...(resumeFailure !== undefined ? { resumeFailure } : {}),
       } satisfies AcpStartedState;
       return nextState;
     });

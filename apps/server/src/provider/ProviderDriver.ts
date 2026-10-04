@@ -22,6 +22,7 @@
  * @module provider/ProviderDriver
  */
 import type {
+  ProviderAuthFlow,
   ProviderDriverKind,
   ProviderInstanceEnvironment,
   ProviderInstanceId,
@@ -73,6 +74,29 @@ export interface ProviderInstance {
   readonly adapter: ProviderAdapterShape<ProviderAdapterError>;
   readonly textGeneration: TextGenerationShape;
   readonly accountUsage?: ProviderAccountUsageActions | undefined;
+  /** Sign-in and sign-out the instance runs itself, without a terminal. */
+  readonly authFlows?: ProviderInstanceAuthFlows | undefined;
+}
+
+/**
+ * Sign-in and sign-out an instance runs inside its own agent process
+ * (Antigravity: Google OAuth whose redirect lands on the agent's loopback
+ * listener). The provider-auth sessions drive these instead of a PTY.
+ */
+export interface ProviderInstanceAuthFlows {
+  readonly flows: ReadonlyArray<ProviderAuthFlow>;
+  /** What the panel calls the flow, e.g. "Sign in with Google". */
+  readonly describe: (flow: ProviderAuthFlow) => string;
+  /**
+   * Runs one flow to its end. `report` streams lines to the panel; a line
+   * holding the sign-in URL lets the client open it. Interrupting cancels.
+   */
+  readonly run: (input: {
+    readonly flow: ProviderAuthFlow;
+    readonly report: (line: string) => Effect.Effect<void>;
+  }) => Effect.Effect<void, { readonly message: string }>;
+  /** The address a browser on another device ended on, for the pending sign-in. */
+  readonly completeRedirect: (url: string) => Effect.Effect<void, { readonly message: string }>;
 }
 
 export interface ProviderAccountUsageActions {

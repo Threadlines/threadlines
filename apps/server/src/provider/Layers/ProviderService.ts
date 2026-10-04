@@ -1915,7 +1915,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       payload: rawInput,
     });
     if (input.numTurns === 0) {
-      return;
+      return { conversationRolledBack: true };
     }
     let metricProvider = "unknown";
     return yield* Effect.gen(function* () {
@@ -1952,6 +1952,9 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         provider: routed.adapter.provider,
         turns: input.numTurns,
       });
+      return {
+        conversationRolledBack: routed.adapter.capabilities.conversationRollback !== "none",
+      };
     }).pipe(
       withMetrics({
         counter: providerTurnsTotal,

@@ -15,8 +15,17 @@ export interface ProviderConnectFlowState {
   readonly detail: string | null;
   /** Shell-quoted command as resolved by the server, once it reports one. */
   readonly command: string | null;
+  /** The server's id for this run; writes and stops name it. */
+  readonly flowId: string | null;
+  /** `browser`: no terminal; the panel opens the sign-in page and takes its final address. */
+  readonly surface: "terminal" | "browser";
   /** Last non-empty output line, shown as a one-line live preview. */
   readonly lastLine: string;
+  /**
+   * Output after the last newline: a line still being written. A chunk
+   * continues it; a finished line never runs into the next one.
+   */
+  readonly openLine: string;
   /**
    * First sign-in URL the command printed this run. CLIs that cannot open a
    * browser themselves (fx inside WSL, headless hosts) print a device-code
@@ -36,10 +45,15 @@ export const initialProviderConnectFlowState: ProviderConnectFlowState = {
   exitCode: null,
   detail: null,
   command: null,
+  flowId: null,
+  surface: "terminal",
   lastLine: "",
+  openLine: "",
   signInUrl: null,
   urlScanTail: "",
 };
+
+const OPEN_LINE_CHARS = 2048;
 
 const SIGN_IN_URL_PATTERN = /https?:\/\/[^\s"'<>)\]]+/gu;
 const URL_SCAN_TAIL_CHARS = 2048;
@@ -88,17 +102,26 @@ export function applyProviderAuthEvent(
 ): ProviderConnectFlowState {
   switch (event.type) {
     case "command":
-      return { ...state, command: event.command };
+      return {
+        ...state,
+        command: event.command,
+        flowId: event.flowId ?? null,
+        surface: event.surface ?? "terminal",
+      };
     case "output": {
-      const lastLine = appendOutputPreview(state.lastLine, event.data);
+      const preview = appendOutputPreview(state.openLine, event.data);
+      const lastLine = preview.length > 0 ? preview : state.lastLine;
+      const tail = `${state.openLine}${stripTerminalControlSequences(event.data).replace(/\r/g, "\n")}`;
+      const openLine = tail.slice(tail.lastIndexOf("\n") + 1).slice(-OPEN_LINE_CHARS);
       if (state.signInUrl !== null) {
-        return { ...state, lastLine };
+        return { ...state, lastLine, openLine };
       }
       const scanned = `${state.urlScanTail}${stripTerminalControlSequences(event.data)}`;
       const signInUrl = extractSignInUrl(scanned);
       return {
         ...state,
         lastLine,
+        openLine,
         signInUrl,
         urlScanTail: signInUrl === null ? scanned.slice(-URL_SCAN_TAIL_CHARS) : "",
       };
@@ -109,7 +132,9 @@ export function applyProviderAuthEvent(
         status: event.status,
         exitCode: event.exitCode,
         detail: event.detail,
-        ...(event.status === "starting" ? { lastLine: "", signInUrl: null, urlScanTail: "" } : {}),
+        ...(event.status === "starting"
+          ? { lastLine: "", openLine: "", signInUrl: null, urlScanTail: "" }
+          : {}),
       };
   }
 }
@@ -145,23 +170,30 @@ export function providerConnectStatusLine(input: {
   readonly runningHint?: string | undefined;
 }): string {
   const isToken = input.flow === "claude-setup-token";
+  const isSignOut = input.flow === "logout";
   switch (input.state.status) {
     case "idle":
       return "";
     case "starting":
-      return isToken ? "Starting token setup" : `Starting ${input.displayName} sign-in`;
+      return isToken
+        ? "Starting token setup"
+        : isSignOut
+          ? `Signing out of ${input.displayName}`
+          : `Starting ${input.displayName} sign-in`;
     case "running":
       if (input.runningHint) return input.runningHint;
       return isToken
         ? "Finish authorization in your browser. The token is saved here automatically."
-        : "Finish sign-in in your browser, then come back to this page.";
+        : isSignOut
+          ? `Signing out of ${input.displayName}`
+          : "Finish sign-in in your browser, then come back to this page.";
     case "succeeded":
-      return isToken ? "Token saved" : "Signed in";
+      return isToken ? "Token saved" : isSignOut ? "Signed out" : "Signed in";
     case "failed": {
       if (input.state.detail && input.state.detail.trim().length > 0) {
         return input.state.detail;
       }
-      return isToken ? "Token setup failed" : "Sign-in failed";
+      return isToken ? "Token setup failed" : isSignOut ? "Sign-out failed" : "Sign-in failed";
     }
   }
 }

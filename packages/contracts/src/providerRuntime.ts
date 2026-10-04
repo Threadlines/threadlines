@@ -575,12 +575,21 @@ const ContentDeltaPayload = Schema.Struct({
 });
 export type ContentDeltaPayload = typeof ContentDeltaPayload.Type;
 
+export const ProviderApprovalDecisionWarnings = Schema.Struct({
+  accept: Schema.optional(TrimmedNonEmptyStringSchema),
+  acceptForSession: Schema.optional(TrimmedNonEmptyStringSchema),
+  decline: Schema.optional(TrimmedNonEmptyStringSchema),
+});
+export type ProviderApprovalDecisionWarnings = typeof ProviderApprovalDecisionWarnings.Type;
+
 const RequestOpenedPayload = Schema.Struct({
   requestType: CanonicalRequestType,
   environmentId: Schema.optional(TrimmedNonEmptyStringSchema),
   detail: Schema.optional(TrimmedNonEmptyStringSchema),
   /** The answers the provider accepts for this approval. Absent: all of them. */
   availableDecisions: Schema.optional(Schema.Array(ProviderApprovalDecision)),
+  /** A risk the provider attached to an answer (Antigravity's "allow always"). */
+  decisionWarnings: Schema.optional(ProviderApprovalDecisionWarnings),
   args: Schema.optional(Schema.Unknown),
 });
 export type RequestOpenedPayload = typeof RequestOpenedPayload.Type;

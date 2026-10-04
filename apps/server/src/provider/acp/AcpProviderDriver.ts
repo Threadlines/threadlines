@@ -173,10 +173,20 @@ export function makeAcpProviderDriver<Settings extends AcpProviderSettings>(
           enabled,
           binaryPath: resolveAcpBinaryPath(descriptor, config.binaryPath, processEnv),
         };
-        const maintenanceCapabilities = yield* resolveProviderMaintenanceCapabilitiesEffect(
+        let maintenanceCapabilities = yield* resolveProviderMaintenanceCapabilitiesEffect(
           maintenanceResolver,
           { binaryPath: config.binaryPath, env: processEnv },
         );
+        const refreshMaintenance = descriptor.resolveMaintenance
+          ? descriptor.resolveMaintenance(effectiveConfig).pipe(
+              Effect.tap((capabilities) =>
+                Effect.sync(() => {
+                  maintenanceCapabilities = capabilities;
+                }),
+              ),
+            )
+          : Effect.void;
+        yield* refreshMaintenance;
 
         const adapter = yield* makeAcpAdapter(descriptor, effectiveConfig, {
           environment: processEnv,
@@ -198,8 +208,10 @@ export function makeAcpProviderDriver<Settings extends AcpProviderSettings>(
         );
 
         const snapshot = yield* makeManagedServerProvider<Settings>({
-          maintenanceCapabilities,
-          getSettings: Effect.succeed(effectiveConfig),
+          get maintenanceCapabilities() {
+            return maintenanceCapabilities;
+          },
+          getSettings: refreshMaintenance.pipe(Effect.as(effectiveConfig)),
           streamSettings: Stream.never,
           haveSettingsChanged: () => false,
           initialSnapshot: (settings) =>

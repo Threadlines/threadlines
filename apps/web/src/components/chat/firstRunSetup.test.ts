@@ -225,11 +225,11 @@ describe("deriveFirstRunProviderRows", () => {
     const rows = deriveFirstRunProviderRows([signedOutCodex, missingClaude, signedInCodex]);
 
     expect(rows.map((row) => row.state)).toEqual(["needsSignIn", "notInstalled", "ready"]);
-    expect(rows[0]?.signInCommand).toBe("codex login");
+    expect(rows[0]?.canSignIn).toBe(true);
     expect(rows[0]?.versionLabel).toBe("v0.146.1");
     expect(rows[0]?.description).toContain("Not authenticated");
-    // Nothing to sign in to yet, so the row must not offer a login command.
-    expect(rows[1]?.signInCommand).toBeNull();
+    // Nothing to sign in to yet, so the row must not offer a sign-in.
+    expect(rows[1]?.canSignIn).toBe(false);
     expect(rows[1]?.description).toContain("CLI not detected on PATH");
     expect(rows[2]?.description).toBe("Signed in · ChatGPT Plus Subscription");
     expect(new Set(rows.map((row) => row.dotClassName)).size).toBe(3);

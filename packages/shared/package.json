@@ -246,6 +246,7 @@
   },
   "dependencies": {
     "@threadlines/contracts": "workspace:*",
+    "diff": "^9.0.0",
     "effect": "catalog:",
     "yaml": "catalog:"
   },

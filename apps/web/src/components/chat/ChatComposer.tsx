@@ -3645,6 +3645,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                 <ComposerPendingApprovalActions
                   requestId={activePendingApproval.requestId}
                   availableDecisions={activePendingApproval.availableDecisions}
+                  decisionWarnings={activePendingApproval.decisionWarnings}
                   isResponding={respondingRequestIds.includes(activePendingApproval.requestId)}
                   onRespondToApproval={onRespondToApproval}
                 />
@@ -3940,6 +3941,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   <ComposerPendingApprovalActions
                     requestId={activePendingApproval.requestId}
                     availableDecisions={activePendingApproval.availableDecisions}
+                    decisionWarnings={activePendingApproval.decisionWarnings}
                     isResponding={respondingRequestIds.includes(activePendingApproval.requestId)}
                     onRespondToApproval={onRespondToApproval}
                   />

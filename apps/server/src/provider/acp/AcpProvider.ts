@@ -161,12 +161,21 @@ export const discoverAcpModels = <Settings extends AcpProviderSettings>(
     descriptor,
     settings,
     (acp) =>
-      Effect.map(startProbeSession(descriptor, acp), (configOptions) =>
-        buildAcpModelsFromConfigOptions({
-          configOptions,
-          mapping: mappingFor(descriptor),
-          sharedCapabilities: descriptor.modelCapabilitiesVaryByModel !== true,
-        }),
+      startProbeSession(descriptor, acp).pipe(
+        // Agents that cache their catalog (to skip discovery next time) see
+        // this session's options like any other's.
+        Effect.tap((configOptions) =>
+          descriptor.onSessionConfigOptions
+            ? descriptor.onSessionConfigOptions(settings, configOptions).pipe(Effect.ignore)
+            : Effect.void,
+        ),
+        Effect.map((configOptions) =>
+          buildAcpModelsFromConfigOptions({
+            configOptions,
+            mapping: mappingFor(descriptor),
+            sharedCapabilities: descriptor.modelCapabilitiesVaryByModel !== true,
+          }),
+        ),
       ),
     environment,
   );
@@ -361,9 +370,16 @@ export const checkAcpProviderStatus = <Settings extends AcpProviderSettings>(
     const probe = yield* descriptor.probe(settings, environment);
     const discoveryTimeoutMs = descriptor.modelDiscoveryTimeoutMs ?? ACP_MODEL_DISCOVERY_TIMEOUT_MS;
 
-    let discoveredModels: ReadonlyArray<ServerProviderModel> = [];
+    // A probe that already knows the catalog (cached from the last session)
+    // spares a cold start of the agent on every check.
+    let discoveredModels: ReadonlyArray<ServerProviderModel> = probe.models ?? [];
     let discoveryWarning: string | undefined;
-    if (probe.installed && probe.auth.status !== "unauthenticated" && !probe.skipModelDiscovery) {
+    if (
+      probe.models === undefined &&
+      probe.installed &&
+      probe.auth.status !== "unauthenticated" &&
+      !probe.skipModelDiscovery
+    ) {
       const discoveryExit = yield* Effect.exit(
         discoverAcpModels(descriptor, settings, environment).pipe(
           Effect.timeoutOption(discoveryTimeoutMs),

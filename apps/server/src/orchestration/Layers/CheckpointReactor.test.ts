@@ -101,7 +101,7 @@ function createProviderServiceHarness(
       readonly threadId: ThreadId;
       readonly numTurns: number;
       readonly targetUserMessageId?: MessageId;
-    }) => Effect.void,
+    }) => Effect.succeed({ conversationRolledBack: true }),
   );
 
   const unsupported = <A>() =>
@@ -2019,6 +2019,71 @@ describe("CheckpointReactor", () => {
     expect(
       gitRefExists(harness.cwd, checkpointRefForThreadTurn(ThreadId.make("thread-1"), 2)),
     ).toBe(false);
+  });
+
+  it("says so when the agent can't forget the reverted turns", async () => {
+    const harness = await createHarness({
+      projectWorkspaceRoot: path.join(os.tmpdir(), "t3-isolated-project-root-revert-acp"),
+    });
+    harness.provider.rollbackConversation.mockImplementation(() =>
+      Effect.succeed({ conversationRolledBack: false }),
+    );
+    const createdAt = "2026-01-01T00:00:00.000Z";
+    const threadId = ThreadId.make("thread-1");
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-set"),
+        threadId,
+        session: {
+          threadId,
+          status: "ready",
+          providerName: "codex",
+          runtimeMode: "approval-required",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: createdAt,
+        },
+        createdAt,
+      }),
+    );
+    for (const turn of [1, 2]) {
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.diff.complete",
+          commandId: CommandId.make(`cmd-diff-${turn}`),
+          threadId,
+          turnId: asTurnId(`turn-${turn}`),
+          completedAt: createdAt,
+          checkpointRef: checkpointRefForThreadTurn(threadId, turn),
+          status: "ready",
+          files: [],
+          checkpointTurnCount: turn,
+          completesTurn: true,
+          createdAt,
+        }),
+      );
+    }
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.checkpoint.revert",
+        commandId: CommandId.make("cmd-revert-request"),
+        threadId,
+        turnCount: 1,
+        createdAt,
+      }),
+    );
+
+    await waitForEvent(harness.engine, (event) => event.type === "thread.reverted");
+    const thread = await waitForThread(
+      harness.readModel,
+      (entry) =>
+        entry.checkpoints.length === 1 &&
+        entry.activities.some(
+          (activity) => activity.kind === "checkpoint.revert.rollback-unsupported",
+        ),
+    );
+    expect(thread.checkpoints[0]?.checkpointTurnCount).toBe(1);
   });
 
   it("rewinds Claude to the removed user message after a clock rollback", async () => {
