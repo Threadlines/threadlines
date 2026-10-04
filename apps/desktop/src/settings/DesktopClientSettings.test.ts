@@ -20,6 +20,7 @@ const clientSettings: ClientSettings = {
   confirmThreadArchive: true,
   confirmThreadDelete: false,
   wrapUpThreadsOnPullRequestSettled: true,
+  wrapUpChildThreadsOnFinish: true,
   dismissedProviderUpdateNotificationKeys: [],
   dictationHoldToRecord: true,
   dictationMicrophoneDeviceId: null,
