@@ -327,6 +327,131 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
       }),
     );
 
+    // Squash and rebase merges ship a branch's work under new commits, so its
+    // own commits never reach the default branch. Counting them alone would
+    // mark every merged pull request's checkout as holding unshipped work.
+    it.effect("recognizes squash-merged branches as merged by content", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        const { initialBranch } = yield* initRepoWithCommit(cwd);
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+        const path = yield* Path.Path;
+        yield* writeTextFile(cwd, "app.ts", "export const a = 1;\nexport const b = 2;\n");
+        // Two identical blocks: an edit to either one has the same patch id.
+        const twinBlock = "a\nb\nc\nX\nd\ne\nf\n";
+        yield* writeTextFile(cwd, "twin.txt", `${twinBlock}${twinBlock}`);
+        yield* git(cwd, ["add", "."]);
+        yield* git(cwd, ["commit", "-m", "app"]);
+
+        const addBranch = (name: string, edits: ReadonlyArray<readonly [string, string]>) =>
+          Effect.gen(function* () {
+            const worktreePath = path.join(cwd, "worktrees", name);
+            yield* git(cwd, ["worktree", "add", "-b", name, worktreePath]);
+            for (const [file, contents] of edits) {
+              yield* writeTextFile(worktreePath, file, contents);
+              yield* git(worktreePath, ["add", "."]);
+              yield* git(worktreePath, ["commit", "-m", `edit ${file}`]);
+            }
+          });
+        const squashMerge = (name: string) =>
+          Effect.gen(function* () {
+            yield* git(cwd, ["merge", "--squash", name]);
+            yield* git(cwd, ["commit", "-m", `${name} (#1)`]);
+          });
+
+        // Squashed, and main has not touched those lines since.
+        yield* addBranch("fresh-squash", [
+          ["fresh.ts", "export const fresh = 1;\n"],
+          ["fresh.ts", "export const fresh = 2;\n"],
+        ]);
+        // Squashed, then main reworked the same line, so a trial merge
+        // conflicts and only the patch fingerprint can tell.
+        yield* addBranch("reworked-squash", [
+          ["app.ts", "export const a = 10;\nexport const b = 2;\n"],
+        ]);
+        yield* addBranch("unshipped", [["wip.ts", "export const wip = true;\n"]]);
+        // Edits the first block; main makes the same edit to the second one.
+        yield* addBranch("look-alike", [
+          ["twin.txt", "a\nb\nc\nY\nd\ne\nf\na\nb\nc\nX\nd\ne\nf\n"],
+        ]);
+        // Rebase-merged commit by commit, then main reworked one of them.
+        yield* addBranch("rebased", [
+          ["first.ts", "export const first = 1;\n"],
+          ["second.ts", "export const second = 1;\n"],
+        ]);
+        const rebasedCommits = (yield* git(cwd, [
+          "rev-list",
+          "--reverse",
+          `${initialBranch}..rebased`,
+        ]))
+          .split("\n")
+          .filter((line) => line.length > 0);
+        yield* squashMerge("fresh-squash");
+        yield* squashMerge("reworked-squash");
+        yield* writeTextFile(cwd, "app.ts", "export const a = 11;\nexport const b = 2;\n");
+        yield* git(cwd, ["commit", "-am", "rework a"]);
+        yield* writeTextFile(cwd, "twin.txt", "a\nb\nc\nX\nd\ne\nf\na\nb\nc\nY\nd\ne\nf\n");
+        yield* git(cwd, ["commit", "-am", "edit the second block"]);
+        yield* git(cwd, ["cherry-pick", ...rebasedCommits]);
+        yield* writeTextFile(cwd, "first.ts", "export const first = 2;\n");
+        yield* git(cwd, ["commit", "-am", "rework first"]);
+        assert.equal(yield* git(cwd, ["branch", "--show-current"]), initialBranch);
+
+        const { worktrees } = yield* driver.listWorktreeStatuses({ cwd });
+        const byBranch = (name: string) => {
+          const worktree = worktrees.find((entry) => entry.refName === name);
+          return { unmerged: worktree?.unmergedCommitCount, merged: worktree?.mergedByContent };
+        };
+        assert.deepStrictEqual(byBranch("fresh-squash"), { unmerged: 2, merged: true });
+        assert.deepStrictEqual(byBranch("reworked-squash"), { unmerged: 1, merged: true });
+        assert.deepStrictEqual(byBranch("unshipped"), { unmerged: 1, merged: false });
+        assert.deepStrictEqual(byBranch("look-alike"), { unmerged: 1, merged: false });
+        assert.deepStrictEqual(byBranch("rebased"), { unmerged: 2, merged: true });
+      }),
+    );
+
+    // The cleanup list is the one place a user can see these, so it must not
+    // drop them: a lock says an agent may still be working there, a folder
+    // deleted by hand leaves a registration nothing else can reach, and a
+    // checkout git cannot read is unknown, not clean.
+    it.effect("lists locked, hand-deleted and unreadable checkouts as such", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        yield* initRepoWithCommit(cwd);
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+        const path = yield* Path.Path;
+        const fileSystem = yield* FileSystem.FileSystem;
+
+        const lockedPath = path.join(cwd, "worktrees", "locked");
+        const gonePath = path.join(cwd, "worktrees", "gone");
+        const brokenPath = path.join(cwd, "worktrees", "broken");
+        yield* git(cwd, ["worktree", "add", "-b", "locked-branch", lockedPath]);
+        yield* git(cwd, ["worktree", "lock", "--reason", "claude agent (pid 42)", lockedPath]);
+        yield* git(cwd, ["worktree", "add", "-b", "gone-branch", gonePath]);
+        yield* fileSystem.remove(gonePath, { recursive: true });
+        yield* git(cwd, ["worktree", "add", "-b", "broken-branch", brokenPath]);
+        // A corrupt index makes `git status` fail outright.
+        const brokenGitDir = yield* git(brokenPath, ["rev-parse", "--absolute-git-dir"]);
+        yield* fileSystem.writeFileString(path.join(brokenGitDir, "index"), "not an index");
+
+        const { worktrees } = yield* driver.listWorktreeStatuses({ cwd });
+        const byBranch = (name: string) => worktrees.find((entry) => entry.refName === name);
+
+        assert.equal(byBranch("locked-branch")?.lockReason, "claude agent (pid 42)");
+        assert.deepStrictEqual(
+          { missing: byBranch("gone-branch")?.missing, lock: byBranch("gone-branch")?.lockReason },
+          { missing: true, lock: null },
+        );
+        assert.deepStrictEqual(
+          {
+            dirty: byBranch("broken-branch")?.dirty,
+            unknown: byBranch("broken-branch")?.dirtyUnknown,
+          },
+          { dirty: true, unknown: true },
+        );
+      }),
+    );
+
     it.effect("reports no checkouts for a non-repository directory", () =>
       Effect.gen(function* () {
         const cwd = yield* makeTmpDir();
@@ -1034,6 +1159,59 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
 
         assert.equal(yield* fileSystem.exists(worktreePath), false);
         assert.notMatch(yield* git(cwd, ["worktree", "list", "--porcelain"]), /half-gone/u);
+      }),
+    );
+
+    // A retry after a removal that did finish, or a list that was already out
+    // of date, asks to remove what is gone. That is the outcome asked for.
+    it.effect("treats removing an already-removed worktree as done", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        const { initialBranch } = yield* initRepoWithCommit(cwd);
+        const pathService = yield* Path.Path;
+        const worktreePath = pathService.join(yield* makeTmpDir("git-worktrees-"), "twice");
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+
+        yield* driver.createWorktree({
+          cwd,
+          path: worktreePath,
+          refName: initialBranch,
+          newRefName: "feature/twice",
+        });
+        yield* driver.removeWorktree({ cwd, path: worktreePath, force: true });
+        yield* driver.removeWorktree({ cwd, path: worktreePath, force: true });
+
+        assert.notMatch(yield* git(cwd, ["worktree", "list", "--porcelain"]), /twice/u);
+      }),
+    );
+
+    // A lock usually means an agent is working in the checkout, so removal
+    // only overrides it when the caller says so.
+    it.effect("removes a locked worktree only when asked to unlock it", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        const { initialBranch } = yield* initRepoWithCommit(cwd);
+        const pathService = yield* Path.Path;
+        const worktreePath = pathService.join(yield* makeTmpDir("git-worktrees-"), "pinned");
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+        const fileSystem = yield* FileSystem.FileSystem;
+
+        yield* driver.createWorktree({
+          cwd,
+          path: worktreePath,
+          refName: initialBranch,
+          newRefName: "feature/pinned",
+        });
+        yield* git(cwd, ["worktree", "lock", worktreePath]);
+
+        const refused = yield* driver
+          .removeWorktree({ cwd, path: worktreePath, force: true })
+          .pipe(Effect.flip);
+        assert.match(refused.detail, /locked working tree/u);
+        assert.equal(yield* fileSystem.exists(worktreePath), true);
+
+        yield* driver.removeWorktree({ cwd, path: worktreePath, force: true, unlock: true });
+        assert.equal(yield* fileSystem.exists(worktreePath), false);
       }),
     );
   });
@@ -2105,4 +2283,65 @@ it.live("removes a worktree that a process briefly holds as its working director
     const worktrees = yield* driver.listWorktrees({ cwd });
     assert.isUndefined(worktrees.find((worktree) => worktree.branch === "feature/held"));
   }).pipe(Effect.scoped, Effect.provide(TestLayer)),
+);
+
+// Git drops the registration even when some files would not delete, which
+// leaves a folder that no longer lists as a worktree. A retry once the files
+// free up has to finish the removal rather than refuse an "unknown" folder.
+// Read-only directories stand in for files another program holds open; they
+// do not block root or Windows, so the test runs elsewhere.
+it.live.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+  "finishes a removal on retry after files that would not delete free up",
+  () =>
+    Effect.gen(function* () {
+      const cwd = yield* makeTmpDir();
+      const { initialBranch } = yield* initRepoWithCommit(cwd);
+      const pathService = yield* Path.Path;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const worktreePath = pathService.join(yield* makeTmpDir("git-worktrees-"), "stuck");
+      const driver = yield* GitVcsDriver.GitVcsDriver;
+      yield* driver.createWorktree({
+        cwd,
+        path: worktreePath,
+        refName: initialBranch,
+        newRefName: "feature/stuck",
+      });
+      const pinnedDirectory = pathService.join(worktreePath, "pinned");
+      yield* writeTextFile(worktreePath, "pinned/held.txt", "held\n");
+      yield* fileSystem.chmod(pinnedDirectory, 0o555);
+      yield* Effect.addFinalizer(() =>
+        fileSystem.chmod(pinnedDirectory, 0o755).pipe(Effect.ignore),
+      );
+
+      const refused = yield* driver
+        .removeWorktree({ cwd, path: worktreePath, force: true })
+        .pipe(Effect.flip);
+      assert.match(refused.detail, /failed to delete/u);
+      assert.equal(yield* fileSystem.exists(worktreePath), true);
+
+      yield* fileSystem.chmod(pinnedDirectory, 0o755);
+      yield* driver.removeWorktree({ cwd, path: worktreePath, force: true });
+      assert.equal(yield* fileSystem.exists(worktreePath), false);
+
+      // Something else moved in at that path after the failure: a retry must
+      // not take it for the leftovers.
+      const replacedPath = pathService.join(yield* makeTmpDir("git-worktrees-"), "replaced");
+      yield* driver.createWorktree({
+        cwd,
+        path: replacedPath,
+        refName: initialBranch,
+        newRefName: "feature/replaced",
+      });
+      const replacedPinned = pathService.join(replacedPath, "pinned");
+      yield* writeTextFile(replacedPath, "pinned/held.txt", "held\n");
+      yield* fileSystem.chmod(replacedPinned, 0o555);
+      yield* driver.removeWorktree({ cwd, path: replacedPath, force: true }).pipe(Effect.flip);
+      yield* fileSystem.chmod(replacedPinned, 0o755);
+      yield* fileSystem.rename(replacedPath, `${replacedPath}-moved-away`);
+      yield* writeTextFile(replacedPath, "unrelated.txt", "keep me\n");
+
+      yield* driver.removeWorktree({ cwd, path: replacedPath, force: true }).pipe(Effect.flip);
+      assert.equal(yield* fileSystem.exists(pathService.join(replacedPath, "unrelated.txt")), true);
+    }).pipe(Effect.scoped, Effect.provide(TestLayer)),
+  45_000,
 );

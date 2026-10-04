@@ -1,15 +1,18 @@
 import {
   EnvironmentId,
+  GitCommandError,
   ProjectId,
   ProviderInstanceId,
   ThreadId,
+  VcsWorktreeInUseError,
   type VcsRef,
 } from "@threadlines/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import { DEFAULT_COMPOSER_RUNTIME_MODE, DEFAULT_INTERACTION_MODE, type Thread } from "./types";
 import {
-  describeWorktreeRisks,
+  describeWorktreeNotes,
+  describeWorktreeRemovalError,
   formatWorktreePathForDisplay,
   getOrphanedWorktreePathForThread,
   getVcsRefBadge,
@@ -137,10 +140,16 @@ describe("worktree cleanup selection", () => {
       path: "/repo/.worktrees/feature",
       refName: "feature",
       dirty: false,
+      dirtyUnknown: false,
       unmergedCommitCount: 0,
       unrelatedHistory: false,
+      mergedByContent: false,
+      missing: false,
+      lockReason: null,
       state: "unused",
       archivedThreadTitles: [],
+      blockingThreadTitles: [],
+      archiveUnknown: false,
       ...overrides,
     };
   }
@@ -157,12 +166,36 @@ describe("worktree cleanup selection", () => {
     expect(isWorktreeSafeToDelete(makeRow({ unrelatedHistory: true }))).toBe(false);
     // An unknown count is not a promise that the branch is merged.
     expect(isWorktreeSafeToDelete(makeRow({ unmergedCommitCount: null }))).toBe(false);
+    // Unknown is never clean: an unreadable status or archive list blocks it.
+    expect(isWorktreeSafeToDelete(makeRow({ dirty: true, dirtyUnknown: true }))).toBe(false);
+    expect(isWorktreeSafeToDelete(makeRow({ archiveUnknown: true }))).toBe(false);
+    // A lock usually means an agent is still working there.
+    expect(isWorktreeSafeToDelete(makeRow({ lockReason: "" }))).toBe(false);
+  });
+
+  // Squash merges ship a branch under new commits, and a folder that is
+  // already gone holds nothing; both are safe even with commits "not on main".
+  it("treats squash-merged branches and vanished folders as safe", () => {
+    expect(
+      isWorktreeSafeToDelete(makeRow({ unmergedCommitCount: 13, mergedByContent: true })),
+    ).toBe(true);
+    expect(isWorktreeSafeToDelete(makeRow({ missing: true, unmergedCommitCount: null }))).toBe(
+      true,
+    );
+    expect(
+      isWorktreeSafeToDelete(
+        makeRow({ mergedByContent: true, unmergedCommitCount: 2, dirty: true }),
+      ),
+    ).toBe(false);
+    expect(
+      describeWorktreeNotes(makeRow({ unmergedCommitCount: 13, mergedByContent: true }), "main"),
+    ).toEqual([]);
   });
 
   it("names every risk on the row", () => {
-    expect(describeWorktreeRisks(makeRow(), "main")).toEqual([]);
+    expect(describeWorktreeNotes(makeRow(), "main")).toEqual([]);
     expect(
-      describeWorktreeRisks(
+      describeWorktreeNotes(
         makeRow({
           dirty: true,
           unmergedCommitCount: 1,
@@ -172,22 +205,42 @@ describe("worktree cleanup selection", () => {
         "main",
       ),
     ).toEqual(["uncommitted changes", "1 commit not on main", "archived thread points here"]);
-    expect(describeWorktreeRisks(makeRow({ unmergedCommitCount: 3 }), null)).toEqual([
+    expect(describeWorktreeNotes(makeRow({ unmergedCommitCount: 3 }), null)).toEqual([
       "3 commits not on the default branch",
     ]);
     expect(
-      describeWorktreeRisks(makeRow({ refName: null, unmergedCommitCount: null }), "main"),
+      describeWorktreeNotes(makeRow({ refName: null, unmergedCommitCount: null }), "main"),
     ).toEqual(["detached checkout"]);
+    expect(
+      describeWorktreeNotes(
+        makeRow({
+          dirty: true,
+          dirtyUnknown: true,
+          unmergedCommitCount: null,
+          lockReason: "claude agent (pid 42)",
+          archiveUnknown: true,
+        }),
+        "main",
+      ),
+    ).toEqual([
+      "locked: claude agent (pid 42)",
+      "couldn't check for uncommitted changes",
+      "couldn't compare with main",
+      "couldn't check archived threads",
+    ]);
+    expect(
+      describeWorktreeNotes(makeRow({ missing: true, unmergedCommitCount: null }), "main"),
+    ).toEqual(["folder already gone"]);
   });
 
   // Counting against a base the branch never touched reports its whole history
   // as unshipped work, which is how "1731 commits not on main" happened.
   it("says the histories are unrelated instead of counting them", () => {
     expect(
-      describeWorktreeRisks(makeRow({ unrelatedHistory: true, unmergedCommitCount: null }), "main"),
+      describeWorktreeNotes(makeRow({ unrelatedHistory: true, unmergedCommitCount: null }), "main"),
     ).toEqual(["no shared history with main"]);
     expect(
-      describeWorktreeRisks(makeRow({ unrelatedHistory: true, unmergedCommitCount: null }), null),
+      describeWorktreeNotes(makeRow({ unrelatedHistory: true, unmergedCommitCount: null }), null),
     ).toEqual(["no shared history with the default branch"]);
   });
 
@@ -207,6 +260,42 @@ describe("worktree cleanup selection", () => {
       count: 0,
       hasRisky: false,
     });
+  });
+});
+
+describe("describeWorktreeRemovalError", () => {
+  const gitError = (detail: string) =>
+    new GitCommandError({
+      operation: "GitVcsDriver.removeWorktree",
+      command: "git worktree remove --force /repo/.worktrees/feature",
+      cwd: "/repo",
+      detail,
+    });
+
+  // Rows used to show the whole nested git error: command lines, cwd and full
+  // paths, two or three times over.
+  it("turns removal failures into one plain sentence", () => {
+    expect(
+      describeWorktreeRemovalError(
+        new VcsWorktreeInUseError({
+          worktreePath: "/repo/.worktrees/feature",
+          blockingThreads: [{ threadId: "thread-1", title: "Fix login", hasLiveSession: true }],
+        }),
+      ),
+    ).toBe('Now in use by "Fix login".');
+    expect(describeWorktreeRemovalError(gitError("git worktree remove --force x timed out."))).toBe(
+      "Deleting took too long. Try again to finish.",
+    );
+    expect(
+      describeWorktreeRemovalError(
+        gitError("error: failed to delete '/repo/.worktrees/feature': Permission denied"),
+      ),
+    ).toBe("Some files are still open. Close anything using this folder, then try again.");
+    expect(
+      describeWorktreeRemovalError(
+        gitError("fatal: working trees containing submodules cannot be moved or removed"),
+      ),
+    ).toBe("Working trees containing submodules cannot be moved or removed.");
   });
 });
 

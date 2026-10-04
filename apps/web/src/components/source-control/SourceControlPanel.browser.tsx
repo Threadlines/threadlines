@@ -3,6 +3,7 @@ import "../../index.css";
 import { scopeThreadRef } from "@threadlines/client-runtime";
 import {
   EnvironmentId,
+  GitCommandError,
   ThreadId,
   type ScopedThreadRef,
   type GitActionProgressEvent,
@@ -13,6 +14,7 @@ import {
   type VcsCommitGraphResult,
   type VcsPullResult,
   type VcsStatusResult,
+  type VcsWorktreeStatus,
 } from "@threadlines/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
@@ -321,6 +323,22 @@ function makeEnvironmentApi(
       ...overrides.vcs,
     },
   } as unknown as EnvironmentApi;
+}
+
+function makeWorktreeStatus(
+  overrides: Partial<VcsWorktreeStatus> & Pick<VcsWorktreeStatus, "path" | "refName">,
+): VcsWorktreeStatus {
+  return {
+    isRoot: false,
+    dirty: false,
+    dirtyUnknown: false,
+    unmergedCommitCount: 0,
+    unrelatedHistory: false,
+    mergedByContent: false,
+    missing: false,
+    lockReason: null,
+    ...overrides,
+  };
 }
 
 /**
@@ -2058,38 +2076,15 @@ describe("SourceControlPanel changes", () => {
     const livePath = "/repo/.worktrees/feature-live";
     const listWorktrees = vi.fn(async () => ({
       worktrees: [
-        {
-          path: CWD,
-          refName: "main",
-          isRoot: true,
-          dirty: false,
-          unmergedCommitCount: null,
-          unrelatedHistory: false,
-        },
-        {
-          path: safePath,
-          refName: "feature/safe",
-          isRoot: false,
-          dirty: false,
-          unmergedCommitCount: 0,
-          unrelatedHistory: false,
-        },
-        {
+        makeWorktreeStatus({ path: CWD, refName: "main", isRoot: true, unmergedCommitCount: null }),
+        makeWorktreeStatus({ path: safePath, refName: "feature/safe" }),
+        makeWorktreeStatus({
           path: riskyPath,
           refName: "feature/risky",
-          isRoot: false,
           dirty: true,
           unmergedCommitCount: 2,
-          unrelatedHistory: false,
-        },
-        {
-          path: livePath,
-          refName: "feature/live",
-          isRoot: false,
-          dirty: false,
-          unmergedCommitCount: 0,
-          unrelatedHistory: false,
-        },
+        }),
+        makeWorktreeStatus({ path: livePath, refName: "feature/live" }),
       ],
     }));
     const removeWorktree = vi.fn(async () => undefined);
@@ -2123,15 +2118,22 @@ describe("SourceControlPanel changes", () => {
         expect(onActiveBranchChange).toHaveBeenCalledWith("feature/risky", riskyPath);
       });
 
+      // Each open reads a fresh list instead of reusing what the menu saw.
+      const listCallsBeforeReopen = listWorktrees.mock.calls.length;
       await openCleanupDialog();
       await expect.element(page.getByText("Clean up worktrees")).toBeVisible();
       await expect
-        .element(page.getByText("Threadlines has 2 worktrees nothing is using."))
+        .element(
+          page.getByText("Threadlines has 2 worktrees no active thread is using.", {
+            exact: false,
+          }),
+        )
         .toBeVisible();
+      expect(listWorktrees.mock.calls.length).toBeGreaterThan(listCallsBeforeReopen);
       await expect
         .element(page.getByText("uncommitted changes, 2 commits not on main"))
         .toBeVisible();
-      await expect.element(page.getByText("in use")).toBeVisible();
+      await expect.element(page.getByText("used by Live work")).toBeVisible();
 
       // Only the risk-free checkout starts ticked; Select all pulls in the
       // risky one too and Select none clears both.
@@ -2154,6 +2156,79 @@ describe("SourceControlPanel changes", () => {
     } finally {
       await mounted.cleanup();
       resetSeededThreads();
+    }
+  });
+
+  it("pre-ticks squash-merged worktrees and retries only the deletions that failed", async () => {
+    const shippedPath = "/repo/.worktrees/feature-shipped";
+    const pinnedPath = "/repo/.worktrees/feature-pinned";
+    const listWorktrees = vi.fn(async () => ({
+      worktrees: [
+        makeWorktreeStatus({ path: CWD, refName: "main", isRoot: true }),
+        // Squash-merged: its commits are not on main, but its changes are.
+        makeWorktreeStatus({
+          path: shippedPath,
+          refName: "feature/shipped",
+          unmergedCommitCount: 3,
+          mergedByContent: true,
+        }),
+        makeWorktreeStatus({
+          path: pinnedPath,
+          refName: "feature/pinned",
+          lockReason: "claude agent (pid 42)",
+        }),
+      ],
+    }));
+    let shippedAttempts = 0;
+    const removeWorktree = vi.fn(async (input: { readonly path: string }) => {
+      if (input.path === shippedPath && shippedAttempts++ === 0) {
+        throw new GitCommandError({
+          operation: "GitVcsDriver.removeWorktree",
+          command: `git worktree remove --force ${shippedPath}`,
+          cwd: CWD,
+          detail: `error: failed to delete '${shippedPath}': Permission denied`,
+        });
+      }
+    });
+    const mounted = await renderPanel({
+      environmentApi: makeEnvironmentApi({
+        vcs: { listWorktrees, removeWorktree } as unknown as Partial<EnvironmentApi["vcs"]>,
+      }),
+    });
+
+    try {
+      await page.getByRole("button", { name: "Branch: main" }).click();
+      await page.getByRole("menuitem", { name: /Clean up worktrees/ }).click();
+
+      await expect.element(page.getByText("locked: claude agent (pid 42)")).toBeVisible();
+      // Only the shipped one starts ticked; the locked one waits for the user.
+      await expect.element(page.getByRole("button", { name: "Delete 1 worktree" })).toBeVisible();
+      await page.getByText("feature-pinned", { exact: false }).click();
+      await page.getByRole("button", { name: "Delete 2 worktrees" }).click();
+
+      await expect
+        .element(
+          page.getByText(
+            "Some files are still open. Close anything using this folder, then try again.",
+          ),
+        )
+        .toBeVisible();
+      expect(removeWorktree).toHaveBeenCalledWith({
+        cwd: CWD,
+        path: pinnedPath,
+        force: true,
+        unlock: true,
+      });
+
+      await page.getByRole("button", { name: "Try again" }).click();
+      await vi.waitFor(() => {
+        expect(removeWorktree).toHaveBeenCalledTimes(3);
+      });
+      expect(removeWorktree).toHaveBeenLastCalledWith({ cwd: CWD, path: shippedPath, force: true });
+      await expect.element(page.getByRole("button", { name: "Try again" })).not.toBeInTheDocument();
+      await expect.element(page.getByRole("button", { name: "Close" })).toBeVisible();
+    } finally {
+      await mounted.cleanup();
     }
   });
 });
