@@ -4,6 +4,9 @@ import { defineConfig, mergeConfig } from "vite-plus";
 import baseConfig from "../../vite.config.ts";
 
 const bundledPackagePrefixes = [
+  // OpenCode 2's client (with its schema and protocol packages): bundled so a
+  // packed server never installs the client's own copy of effect.
+  "@opencode/",
   "@pierre/diffs",
   "@threadlines/",
   "effect-acp",
