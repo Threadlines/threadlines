@@ -161,6 +161,8 @@ import type {
   ServerSignalProcessInput,
   ServerSignalProcessResult,
   ServerStopBackgroundRunInput,
+  ServerReadBackgroundRunOutputInput,
+  ServerReadBackgroundRunOutputResult,
   ServerTraceDiagnosticsResult,
   ServerUpsertKeybindingResult,
 } from "./server.ts";
@@ -1392,6 +1394,13 @@ export interface EnvironmentApi {
     listEntries: (input: ProjectListEntriesInput) => Promise<ProjectListEntriesResult>;
     readFile: (input: ProjectReadFileInput) => Promise<ProjectReadFileResult>;
     favicon: (input: ProjectFaviconInput) => Promise<ProjectFaviconResult>;
+  };
+  /** The commands agents leave running on this environment's machine.
+   * Optional so newer clients can still connect to older Threadlines servers. */
+  backgroundRuns?: {
+    readOutput: (
+      input: ServerReadBackgroundRunOutputInput,
+    ) => Promise<ServerReadBackgroundRunOutputResult>;
   };
   /** Provider capabilities scoped to this backend environment. Optional so
    * newer clients can still connect to older Threadlines servers. */

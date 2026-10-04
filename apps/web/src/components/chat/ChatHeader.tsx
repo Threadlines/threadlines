@@ -4,6 +4,7 @@ import {
   type ThreadId,
   type ProjectScript,
   type ResolvedKeybindingsConfig,
+  type ScopedThreadRef,
 } from "@threadlines/contracts";
 import { memo } from "react";
 import {
@@ -87,6 +88,8 @@ interface ChatHeaderProps {
   taskProgress: ThreadTaskProgressState | null;
   forkContext: ForkHeaderContext | null;
   backgroundRuns: ReadonlyArray<ThreadBackgroundRunItem>;
+  /** The thread the background runs belong to; where their output is read from. */
+  activeThreadRef: ScopedThreadRef | null;
   onRunProjectScript: (script: ProjectScript) => void;
   onAddProjectScript: (input: NewProjectScriptInput) => Promise<void>;
   onUpdateProjectScript: (scriptId: string, input: NewProjectScriptInput) => Promise<void>;
@@ -170,6 +173,7 @@ export const ChatHeader = memo(function ChatHeader({
   taskProgress,
   forkContext,
   backgroundRuns,
+  activeThreadRef,
   onRunProjectScript,
   onAddProjectScript,
   onUpdateProjectScript,
@@ -260,6 +264,7 @@ export const ChatHeader = memo(function ChatHeader({
         <ThreadActivityPopover
           taskProgress={taskProgress}
           backgroundRuns={backgroundRuns}
+          threadRef={activeThreadRef}
           onToggleBackgroundRunTerminal={onToggleBackgroundRunTerminal}
           onStopBackgroundRun={onStopBackgroundRun}
           onViewProposedPlan={onViewProposedPlan}

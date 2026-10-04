@@ -538,6 +538,24 @@ export const ServerResolveBackgroundRunsResult = Schema.Struct({
 });
 export type ServerResolveBackgroundRunsResult = typeof ServerResolveBackgroundRunsResult.Type;
 
+/**
+ * Reading the newest output of a command an agent left running in the
+ * background. Claude writes that output to a file and never streams it; the
+ * server reads the end of the file, and only a file the thread itself
+ * announced.
+ */
+export const ServerReadBackgroundRunOutputInput = Schema.Struct({
+  threadId: ThreadId,
+  outputFile: TrimmedNonEmptyString,
+});
+export type ServerReadBackgroundRunOutputInput = typeof ServerReadBackgroundRunOutputInput.Type;
+
+export const ServerReadBackgroundRunOutputResult = Schema.Struct({
+  /** The end of the file as text; null when it can't be read. */
+  tail: Schema.NullOr(Schema.String),
+});
+export type ServerReadBackgroundRunOutputResult = typeof ServerReadBackgroundRunOutputResult.Type;
+
 export const ServerStopBackgroundRunInput = Schema.Struct({
   pid: PositiveInt,
   port: Schema.NullOr(PositiveInt),

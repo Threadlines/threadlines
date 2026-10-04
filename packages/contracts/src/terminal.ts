@@ -147,6 +147,8 @@ const TerminalActivityEvent = Schema.Struct({
   type: Schema.Literal("activity"),
   hasRunningSubprocess: Schema.Boolean,
   command: Schema.optional(Schema.NullOr(TrimmedNonEmptyStringSchema)),
+  /** When the running subprocess was first seen; absent from older servers. */
+  startedAt: Schema.optional(Schema.NullOr(Schema.String)),
 });
 
 export const TerminalEvent = Schema.Union([

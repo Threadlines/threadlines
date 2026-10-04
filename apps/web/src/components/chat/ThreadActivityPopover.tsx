@@ -1,3 +1,4 @@
+import type { ScopedThreadRef } from "@threadlines/contracts";
 import {
   memo,
   useLayoutEffect,
@@ -5,40 +6,54 @@ import {
   useRef,
   useState,
   type CSSProperties,
-  type ReactNode,
+  type ReactElement,
   type RefObject,
 } from "react";
 import {
+  BotIcon,
+  CheckIcon,
   ChevronDownIcon,
+  CpuIcon,
   ExternalLinkIcon,
   FileTextIcon,
+  GlobeIcon,
   ListTodoIcon,
-  RadarIcon,
+  RadioIcon,
   SquareIcon,
+  TerminalIcon,
   TerminalSquareIcon,
 } from "lucide-react";
 
 import type { PlanTaskBadgeState } from "../../planPanelState";
 import { proposedPlanTitle } from "../../proposedPlan";
-import { formatRelativeTimeLabel } from "../../timestampFormat";
-import { type ActivePlanState, type LatestProposedPlanState } from "../../session-logic";
+import {
+  formatRelativeTimeLabel,
+  formatSpanDurationLabel,
+  formatWorkingDurationLabel,
+} from "../../timestampFormat";
+import { useRelativeTimeTick } from "../../hooks/useRelativeTimeTick";
+import {
+  type ActivePlanState,
+  type ActivePlanStep,
+  type ActivePlanStepStatus,
+  type LatestProposedPlanState,
+} from "../../session-logic";
 import { cn } from "~/lib/utils";
-import { useHorizontalOverflow } from "../../hooks/useHorizontalOverflow";
 import { Button } from "../ui/button";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
-import {
-  LiveNode,
-  SpineNode,
-  SpineRow,
-  spineAccentRowStyle,
-  type SpineNodeKind,
-} from "../ui/threadline";
+import { LiveNode } from "../ui/threadline";
 import { Tooltip, TooltipPopup, TooltipTrigger, TooltipWrapper } from "../ui/tooltip";
 import { presentTense } from "./activityWording";
+import type { CurrentWorkLine } from "./activitySteps";
+import { activityStepIcon } from "./activityStepIcon";
+import { useBackgroundRunOutputLine } from "./backgroundRunOutput";
 import {
-  backgroundRunCommandText,
-  backgroundRunMetaItems,
-  backgroundRunSourceLabel,
+  backgroundRunAge,
+  backgroundRunDetailLine,
+  backgroundRunKind,
+  backgroundRunLink,
+  backgroundRunTooltip,
+  type BackgroundRunKind,
   type ThreadBackgroundRunItem,
 } from "./threadActivity";
 
@@ -47,11 +62,19 @@ export interface ThreadTaskProgressState {
   activeProposedPlan: LatestProposedPlanState | null;
   badge: PlanTaskBadgeState | null;
   label: string;
+  /** True while the turn that wrote the plan is still running: its clocks
+   *  tick and its current step carries the live node. */
+  live: boolean;
+  /** What the agent is on right now, shown under the current step while the
+   *  plan is live. */
+  currentWork: CurrentWorkLine | null;
 }
 
 interface ThreadActivityPopoverProps {
   taskProgress: ThreadTaskProgressState | null;
   backgroundRuns: ReadonlyArray<ThreadBackgroundRunItem>;
+  /** The thread the runs belong to; where their output is read from. */
+  threadRef: ScopedThreadRef | null;
   onToggleBackgroundRunTerminal: (terminalId: string) => void;
   onStopBackgroundRun: (run: ThreadBackgroundRunItem) => void;
   onViewProposedPlan?: (() => void) | undefined;
@@ -59,46 +82,44 @@ interface ThreadActivityPopoverProps {
   onDismissProposedPlan?: (() => void) | undefined;
 }
 
-type ActivityBadgeTone = PlanTaskBadgeState["tone"];
+type ActivityTone = PlanTaskBadgeState["tone"];
+type PlanStepLike = Pick<ActivePlanStep, "step" | "status">;
 
-interface ActivityBadgeState {
-  kind: "tasks" | "background";
+/** The task half of the top-bar button: the plan's progress, or a plan
+ *  waiting to be built. */
+interface TaskTriggerPart {
+  /** Present when there are steps to draw as progress blocks. */
+  steps: ReadonlyArray<PlanStepLike> | null;
   label: string;
   ariaLabel: string;
-  tone: ActivityBadgeTone;
-  pulse: boolean;
+  tone: ActivityTone;
 }
 
 interface ActivityTriggerState {
-  mode: "tasks" | "background" | "mixed";
-  badge: ActivityBadgeState | null;
-  chips: ReadonlyArray<ActivityBadgeState>;
+  tasks: TaskTriggerPart | null;
+  runCount: number;
   ariaLabel: string;
   tooltipText: string;
   summary: string;
 }
 
-const COLLAPSED_TASK_LIMIT = 3;
 const ACTIVITY_POPOVER_MIN_WIDTH_PX = 256;
 const ACTIVITY_POPOVER_PREFERRED_MIN_WIDTH_PX = 320;
 const ACTIVITY_POPOVER_MAX_WIDTH_PX = 480;
 const ACTIVITY_POPOVER_VIEWPORT_WIDTH_RATIO = 0.36;
 const ACTIVITY_POPOVER_BOUNDARY_GUTTER_PX = 12;
 
+/** Plans up to this long draw one block per step on the top-bar button;
+ *  longer ones draw a single bar. */
+const TRIGGER_BLOCK_LIMIT = 10;
+/** The same limit for the bar across the top of the panel. */
+const PANEL_BLOCK_LIMIT = 16;
+/** Plans at least this long fold their finished opening steps into one line. */
+const FOLD_DONE_FROM_STEPS = 7;
+
 type ActivityPopoverWidthStyle = CSSProperties & {
   "--thread-activity-popover-width": string;
 };
-
-function badgeClassName(tone: ActivityBadgeTone, pulse: boolean) {
-  return cn(
-    "ml-0.5 inline-flex h-4 min-w-4 items-center justify-center rounded-[var(--app-radius-badge)] px-1 pt-px font-semibold text-[10px] leading-none tabular-nums",
-    tone === "active" && "bg-primary/15 text-primary-readable",
-    tone === "complete" && "bg-success/15 text-success",
-    tone === "ready" && "bg-amber-500/15 text-amber-600 dark:text-amber-400",
-    tone === "idle" && "bg-muted text-muted-foreground",
-    pulse && "animate-status-pulse",
-  );
-}
 
 function clampNumber(value: number, minimum: number, maximum: number): number {
   return Math.min(Math.max(value, minimum), maximum);
@@ -217,85 +238,86 @@ function useActivityPopoverAnchorLayout(open: boolean): {
   };
 }
 
-function chipClassName(tone: ActivityBadgeTone, pulse: boolean) {
-  return cn(
-    "inline-flex h-4 min-w-4 items-center justify-center gap-1 rounded-[var(--app-radius-badge)] px-1 pt-px font-semibold text-[10px] leading-none tabular-nums",
-    tone === "active" && "bg-primary/15 text-primary-readable",
-    tone === "complete" && "bg-success/15 text-success",
-    tone === "ready" && "bg-amber-500/15 text-amber-600 dark:text-amber-400",
-    tone === "idle" && "bg-muted text-muted-foreground",
-    pulse && "animate-status-pulse",
-  );
+function toneTextClassName(tone: ActivityTone): string {
+  if (tone === "active") return "text-primary-readable";
+  if (tone === "complete") return "text-success-foreground";
+  if (tone === "ready") return "text-amber-600 dark:text-amber-400";
+  return "text-muted-foreground";
 }
 
-function ActivityKindIcon({
-  kind,
-  className,
+function formatCount(count: number, singular: string, plural: string): string {
+  return `${count} ${count === 1 ? singular : plural}`;
+}
+
+// ---------------------------------------------------------------------------
+// Progress blocks
+// ---------------------------------------------------------------------------
+
+function progressBlockClassName(status: ActivePlanStepStatus, allDone: boolean): string {
+  if (allDone) return "bg-success";
+  if (status === "completed") return "bg-foreground/55";
+  if (status === "inProgress") return "bg-primary-graph";
+  return "bg-foreground/15";
+}
+
+/**
+ * The plan's progress at a glance: one block per step, filled in as steps
+ * finish, the step in hand in the accent colour, all green once everything
+ * is done. A plan too long for blocks draws one bar split the same way.
+ */
+function PlanProgressBlocks({
+  steps,
+  variant,
 }: {
-  kind: ActivityBadgeState["kind"];
-  className: string;
+  steps: ReadonlyArray<PlanStepLike>;
+  variant: "trigger" | "panel";
 }) {
-  if (kind === "tasks") {
+  const allDone = steps.every((step) => step.status === "completed");
+  const blockLimit = variant === "trigger" ? TRIGGER_BLOCK_LIMIT : PANEL_BLOCK_LIMIT;
+  if (steps.length <= blockLimit) {
     return (
-      <ListTodoIcon className={className} data-activity-trigger-icon="tasks" aria-hidden="true" />
-    );
-  }
-  return (
-    <RadarIcon className={className} data-activity-trigger-icon="background" aria-hidden="true" />
-  );
-}
-
-function TriggerChip({ chip }: { chip: ActivityBadgeState }) {
-  return (
-    <span className="inline-flex min-w-0 items-center gap-0.5">
-      <ActivityKindIcon kind={chip.kind} className="size-3 text-foreground/80" />
-      <span className={chipClassName(chip.tone, chip.pulse)}>{chip.label}</span>
-    </span>
-  );
-}
-
-function TriggerContent({ state }: { state: ActivityTriggerState }) {
-  if (state.mode === "mixed") {
-    return (
-      <span className="flex min-w-0 items-center gap-0.5">
-        {state.chips.map((chip) => (
-          <TriggerChip key={chip.kind} chip={chip} />
+      <span
+        aria-hidden="true"
+        data-plan-progress={variant}
+        className={cn("flex", variant === "trigger" ? "items-center gap-[1.5px]" : "gap-0.5")}
+      >
+        {keyedPlanSteps(steps).map(({ key, step }) => (
+          <span
+            key={key}
+            className={cn(
+              variant === "trigger" ? "h-1 w-[5px] rounded-[1px]" : "h-[3px] flex-1 rounded-full",
+              progressBlockClassName(step.status, allDone),
+            )}
+          />
         ))}
       </span>
     );
   }
 
+  const doneCount = steps.filter((step) => step.status === "completed").length;
+  const currentCount = steps.filter((step) => step.status === "inProgress").length;
   return (
-    <>
-      <ActivityKindIcon kind={state.mode} className="size-3" />
-      {state.badge ? (
-        <span className={badgeClassName(state.badge.tone, state.badge.pulse)}>
-          {state.badge.label}
-        </span>
-      ) : null}
-    </>
+    <span
+      aria-hidden="true"
+      data-plan-progress={variant}
+      className={cn(
+        "flex overflow-hidden rounded-full bg-foreground/15",
+        variant === "trigger" ? "h-1 w-[34px]" : "h-[3px] w-full",
+      )}
+    >
+      <span
+        className={allDone ? "bg-success" : "bg-foreground/55"}
+        style={{ flex: `${doneCount} 1 0` }}
+      />
+      <span className="bg-primary-graph" style={{ flex: `${currentCount} 1 0` }} />
+      <span style={{ flex: `${steps.length - doneCount - currentCount} 1 0` }} />
+    </span>
   );
 }
 
-type PlanStepStatus = ActivePlanState["steps"][number]["status"];
-
-function taskStepNodeKind(status: PlanStepStatus): SpineNodeKind {
-  if (status === "completed") return "done";
-  if (status === "inProgress") return "running";
-  return "pending";
-}
-
-/** Spoken status for each step; the spine node carries it visually. */
-function taskStatusLabel(status: PlanStepStatus): string {
-  if (status === "completed") return "Done";
-  if (status === "inProgress") return "Now";
-  return "Next";
-}
-
-// Step rows are 12px text on a 16px line over 4px of top padding, so the node
-// lands on the first line's centre.
-const TASK_STEP_NODE_OFFSET_PX = 12;
-const TASK_SPINE_STYLE = { ["--spine"]: "var(--border)" } as CSSProperties;
+// ---------------------------------------------------------------------------
+// Trigger
+// ---------------------------------------------------------------------------
 
 function taskSummary(activePlan: ActivePlanState | null, activeProposedPlan: boolean): string {
   if (!activePlan) {
@@ -317,71 +339,18 @@ function taskSummary(activePlan: ActivePlanState | null, activeProposedPlan: boo
   return `${completedCount} of ${total} complete`;
 }
 
-function keyedPlanSteps(steps: ActivePlanState["steps"]) {
-  const seenKeys = new Map<string, number>();
-  return steps.map((step) => {
-    const baseKey = `${step.status}:${step.step}`;
-    const count = seenKeys.get(baseKey) ?? 0;
-    seenKeys.set(baseKey, count + 1);
-    return {
-      key: count === 0 ? baseKey : `${baseKey}:${count}`,
-      step,
-    };
-  });
-}
-
-function collapsedPlanStepWindow(steps: ActivePlanState["steps"]): {
-  start: number;
-  end: number;
-} {
-  if (steps.length <= COLLAPSED_TASK_LIMIT) {
-    return { start: 0, end: steps.length };
-  }
-
-  const activeIndex = steps.findIndex((step) => step.status === "inProgress");
-  const anchorIndex =
-    activeIndex >= 0 ? activeIndex : steps.findIndex((step) => step.status !== "completed");
-
-  if (anchorIndex < 0) {
-    return { start: Math.max(0, steps.length - COLLAPSED_TASK_LIMIT), end: steps.length };
-  }
-
-  const preferredStart = Math.max(0, anchorIndex - 1);
-  const start = Math.min(preferredStart, steps.length - COLLAPSED_TASK_LIMIT);
-
-  return { start, end: start + COLLAPSED_TASK_LIMIT };
-}
-
-function formatCount(count: number, singular: string, plural: string): string {
-  return `${count} ${count === 1 ? singular : plural}`;
-}
-
-function backgroundSummary(backgroundRuns: ReadonlyArray<ThreadBackgroundRunItem>): string | null {
-  const total = backgroundRuns.length;
-  return total > 0 ? formatCount(total, "background run", "background runs") : null;
-}
-
-function backgroundRunSectionSummary(
-  backgroundRuns: ReadonlyArray<ThreadBackgroundRunItem>,
-): string {
-  const stoppableCount = backgroundRuns.filter((run) => run.canStop).length;
-  const trackedCount = backgroundRuns.length - stoppableCount;
-  const parts = [
-    stoppableCount > 0 ? formatCount(stoppableCount, "active run", "active runs") : null,
-    trackedCount > 0 ? formatCount(trackedCount, "tracked run", "tracked runs") : null,
-  ].filter((part): part is string => part !== null);
-  return parts.join(" / ");
-}
-
 export function deriveThreadActivityTriggerState(input: {
   taskProgress: ThreadTaskProgressState | null;
   backgroundRuns: ReadonlyArray<ThreadBackgroundRunItem>;
 }): ActivityTriggerState | null {
-  const taskSummaryText = input.taskProgress
-    ? taskSummary(input.taskProgress.activePlan, input.taskProgress.activeProposedPlan !== null)
+  const { taskProgress, backgroundRuns } = input;
+  const runCount = backgroundRuns.length;
+  const taskSummaryText = taskProgress
+    ? taskSummary(taskProgress.activePlan, taskProgress.activeProposedPlan !== null)
     : null;
-  const backgroundSummaryText = backgroundSummary(input.backgroundRuns);
-  const summaryParts = [taskSummaryText, backgroundSummaryText].filter((part): part is string =>
+  const runSummaryText =
+    runCount > 0 ? formatCount(runCount, "background run", "background runs") : null;
+  const summaryParts = [taskSummaryText, runSummaryText].filter((part): part is string =>
     Boolean(part),
   );
 
@@ -389,42 +358,378 @@ export function deriveThreadActivityTriggerState(input: {
     return null;
   }
 
-  const hasTasks = input.taskProgress !== null;
-  const hasBackgroundRuns = input.backgroundRuns.length > 0;
-  const activeKindCount = [hasTasks, hasBackgroundRuns].filter(Boolean).length;
-  const taskChip =
-    input.taskProgress?.badge !== null && input.taskProgress?.badge !== undefined
-      ? {
-          kind: "tasks" as const,
-          label: input.taskProgress.badge.label,
-          ariaLabel: input.taskProgress.badge.ariaLabel,
-          tone: input.taskProgress.badge.tone,
-          pulse: input.taskProgress.badge.pulse,
-        }
-      : null;
-  const backgroundChip = hasBackgroundRuns
+  const badge = taskProgress?.badge ?? null;
+  const tasks: TaskTriggerPart | null = badge
     ? {
-        kind: "background" as const,
-        label: String(input.backgroundRuns.length),
-        ariaLabel: formatCount(input.backgroundRuns.length, "background run", "background runs"),
-        tone: "active" as const,
-        pulse: true,
+        steps: taskProgress?.activePlan?.steps ?? null,
+        label: badge.label,
+        ariaLabel: badge.ariaLabel,
+        tone: badge.tone,
       }
     : null;
-  const chipCandidates: Array<ActivityBadgeState | null> = [taskChip, backgroundChip];
-  const chips = chipCandidates.filter((chip): chip is ActivityBadgeState => chip !== null);
-  const badge = activeKindCount > 1 ? null : (chips[0] ?? null);
-  const mode = activeKindCount > 1 ? "mixed" : hasTasks ? "tasks" : "background";
   const summary = summaryParts.join(" / ");
+  const ariaLabel =
+    taskProgress !== null && runCount > 0
+      ? "Thread activity"
+      : (tasks?.ariaLabel ?? runSummaryText ?? "Thread activity");
 
   return {
-    mode,
-    badge,
-    chips,
-    ariaLabel: badge?.ariaLabel ?? "Thread activity",
+    tasks,
+    runCount,
+    ariaLabel,
     tooltipText: `Activity: ${summary}. Click to view details.`,
     summary,
   };
+}
+
+function TriggerContent({ state }: { state: ActivityTriggerState }) {
+  const { tasks, runCount } = state;
+  return (
+    <span className="flex min-w-0 items-center gap-1.5">
+      {tasks ? (
+        <span className="flex items-center gap-1" data-activity-trigger-part="tasks">
+          {tasks.steps && tasks.steps.length > 0 ? (
+            <PlanProgressBlocks steps={tasks.steps} variant="trigger" />
+          ) : tasks.tone === "ready" ? (
+            <FileTextIcon className={cn("size-3", toneTextClassName("ready"))} aria-hidden="true" />
+          ) : (
+            <ListTodoIcon className="size-3" aria-hidden="true" />
+          )}
+          <span
+            className={cn(
+              "font-mono text-[10.5px] font-semibold leading-none tabular-nums",
+              toneTextClassName(tasks.tone),
+            )}
+          >
+            {tasks.label}
+          </span>
+        </span>
+      ) : null}
+      {tasks && runCount > 0 ? <span aria-hidden="true" className="h-3 w-px bg-border" /> : null}
+      {runCount > 0 ? (
+        <span className="flex items-center gap-1" data-activity-trigger-part="runs">
+          <RadioIcon className="size-3" aria-hidden="true" />
+          <span className="font-mono text-[10.5px] font-semibold leading-none tabular-nums">
+            {runCount}
+          </span>
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Tasks
+// ---------------------------------------------------------------------------
+
+/** Spoken status for each step; the glyph carries it visually. */
+function taskStatusLabel(status: ActivePlanStepStatus): string {
+  if (status === "completed") return "Done";
+  if (status === "inProgress") return "Now";
+  return "Next";
+}
+
+function keyedPlanSteps<Step extends PlanStepLike>(steps: ReadonlyArray<Step>) {
+  const seenKeys = new Map<string, number>();
+  return steps.map((step) => {
+    const count = seenKeys.get(step.step) ?? 0;
+    seenKeys.set(step.step, count + 1);
+    return { key: count === 0 ? step.step : `${step.step}:${count}`, step };
+  });
+}
+
+function spanMs(from: string | null, to: string | null): number | null {
+  if (!from || !to) return null;
+  const span = Date.parse(to) - Date.parse(from);
+  return Number.isFinite(span) && span >= 1_000 ? span : null;
+}
+
+function latestCompletion(steps: ReadonlyArray<ActivePlanStep>): string | null {
+  let latest: string | null = null;
+  for (const step of steps) {
+    if (step.completedAt && (!latest || Date.parse(step.completedAt) > Date.parse(latest))) {
+      latest = step.completedAt;
+    }
+  }
+  return latest;
+}
+
+/**
+ * How many finished steps at the head of the plan fold into one line. Long
+ * plans fold them so what's left stays in view; a finished plan folds whole
+ * once it is more than a few steps.
+ */
+export function foldedDoneStepCount(steps: ReadonlyArray<Pick<ActivePlanStep, "status">>): number {
+  const firstOpen = steps.findIndex((step) => step.status !== "completed");
+  const doneHead = firstOpen < 0 ? steps.length : firstOpen;
+  if (doneHead < 2) return 0;
+  const allDone = firstOpen < 0;
+  return steps.length >= FOLD_DONE_FROM_STEPS || (allDone && steps.length > 3) ? doneHead : 0;
+}
+
+/** A clock for a span still running. Its own component, so the per-second
+ *  tick re-renders only the label. */
+function LiveDuration({ since, format }: { since: string; format: "working" | "span" }) {
+  const nowMs = useRelativeTimeTick(1_000);
+  return (
+    <>
+      {format === "working"
+        ? formatWorkingDurationLabel(since, nowMs)
+        : formatSpanDurationLabel(nowMs - Date.parse(since))}
+    </>
+  );
+}
+
+function PlanMeta({ plan, live }: { plan: ActivePlanState; live: boolean }) {
+  const total = plan.steps.length;
+  const doneCount = plan.steps.filter((step) => step.status === "completed").length;
+  const started = doneCount > 0 || plan.steps.some((step) => step.status === "inProgress");
+  const allDone = doneCount === total;
+  const finishedSpan = spanMs(plan.startedAt, allDone ? latestCompletion(plan.steps) : null);
+  // A plan still open whose turn ended (stopped, interrupted) has no honest
+  // total: its last update says nothing about when the work stopped.
+  const elapsed =
+    live && !allDone ? (
+      <LiveDuration since={plan.startedAt} format="span" />
+    ) : finishedSpan !== null ? (
+      formatSpanDurationLabel(finishedSpan)
+    ) : null;
+  const count = allDone
+    ? `All ${total} done`
+    : started
+      ? `${doneCount} of ${total} done`
+      : formatCount(total, "step", "steps");
+
+  return (
+    <span
+      className={cn(
+        "shrink-0 font-mono text-[10.5px] text-muted-foreground",
+        allDone && "text-success-foreground",
+      )}
+      data-plan-meta="true"
+    >
+      {count}
+      {elapsed !== null ? <> · {elapsed}</> : null}
+    </span>
+  );
+}
+
+function StepGlyph({ status, live }: { status: ActivePlanStepStatus; live: boolean }) {
+  if (status === "completed") {
+    return (
+      <CheckIcon className="size-[11px] stroke-[2.5] text-muted-foreground" aria-hidden="true" />
+    );
+  }
+  if (status === "inProgress") {
+    return live ? (
+      <LiveNode className="size-[7px]" />
+    ) : (
+      <span aria-hidden="true" className="size-[7px] rounded-full bg-primary-graph/70" />
+    );
+  }
+  return (
+    <span
+      aria-hidden="true"
+      className="size-[7px] rounded-full border border-muted-foreground/40"
+    />
+  );
+}
+
+/** One step of the plan: a glyph for where it stands, its words, and how long
+ *  it took (or, for the one in hand, how long it has been going). */
+function PlanStepRow({
+  step,
+  live,
+  currentWork,
+}: {
+  step: ActivePlanStep;
+  live: boolean;
+  currentWork: CurrentWorkLine | null;
+}) {
+  const isNow = step.status === "inProgress";
+  const doneSpan = step.status === "completed" ? spanMs(step.startedAt, step.completedAt) : null;
+  return (
+    <div
+      className={cn(
+        "grid grid-cols-[16px_minmax(0,1fr)_auto] items-start gap-x-2 rounded-md p-1",
+        isNow && "bg-accent/50",
+      )}
+      data-plan-step-status={step.status}
+    >
+      <span className="flex h-4 items-center justify-center">
+        <StepGlyph status={step.status} live={live} />
+      </span>
+      <span
+        className={cn(
+          "min-w-0 text-[12px] leading-4 break-words",
+          step.status === "completed" && "text-muted-foreground/80",
+          isNow && "font-medium text-foreground",
+          step.status === "pending" && "text-foreground/80",
+        )}
+      >
+        <span className="sr-only">{taskStatusLabel(step.status)}: </span>
+        {/* The task in hand reads as happening now. */}
+        {isNow ? presentTense(step.step) : step.step}
+        {isNow && live && currentWork ? (
+          <span
+            className={cn(
+              "mt-0.5 flex min-w-0 items-center gap-1.5 text-[11px] font-normal text-muted-foreground",
+              !currentWork.running && "text-muted-foreground/70",
+            )}
+            data-plan-current-work="true"
+          >
+            {activityStepIcon(currentWork, "size-2.5 shrink-0")}
+            <span className="truncate">{currentWork.label}</span>
+          </span>
+        ) : null}
+      </span>
+      <span
+        className={cn(
+          "font-mono text-[10.5px] leading-4 text-muted-foreground/55",
+          isNow && "text-primary-readable",
+        )}
+      >
+        {isNow && live && step.startedAt ? (
+          <LiveDuration since={step.startedAt} format="working" />
+        ) : doneSpan !== null ? (
+          formatSpanDurationLabel(doneSpan)
+        ) : null}
+      </span>
+    </div>
+  );
+}
+
+function PlanSteps({
+  plan,
+  live,
+  currentWork,
+}: {
+  plan: ActivePlanState;
+  live: boolean;
+  currentWork: CurrentWorkLine | null;
+}) {
+  const [foldOpen, setFoldOpen] = useState(false);
+  const rows = useMemo(() => keyedPlanSteps(plan.steps), [plan.steps]);
+  const foldCount = foldedDoneStepCount(plan.steps);
+  const allDone = plan.steps.every((step) => step.status === "completed");
+  // A finished plan's header already carries its total.
+  const foldSpan =
+    foldCount > 0 && !allDone
+      ? spanMs(plan.startedAt, latestCompletion(plan.steps.slice(0, foldCount)))
+      : null;
+  const renderRow = ({ key, step }: (typeof rows)[number]) => (
+    <PlanStepRow key={key} step={step} live={live} currentWork={currentWork} />
+  );
+
+  return (
+    <div className="min-w-0">
+      {foldCount > 0 ? (
+        <button
+          type="button"
+          className="grid w-full cursor-pointer grid-cols-[16px_minmax(0,1fr)_auto] items-start gap-x-2 rounded-md p-1 text-left text-muted-foreground transition-colors hover:text-foreground focus-ring"
+          aria-expanded={foldOpen}
+          onClick={() => setFoldOpen((value) => !value)}
+          data-plan-fold="true"
+        >
+          <span className="flex h-4 items-center justify-center">
+            <CheckIcon
+              className={cn(
+                "size-[11px] stroke-[2.5]",
+                allDone ? "text-success-foreground" : "text-muted-foreground",
+              )}
+              aria-hidden="true"
+            />
+          </span>
+          <span className="flex min-w-0 items-center gap-1 text-[12px] leading-4">
+            {formatCount(foldCount, "step done", "steps done")}
+            <ChevronDownIcon
+              className={cn("size-3 opacity-70 transition-transform", foldOpen && "rotate-180")}
+              aria-hidden="true"
+            />
+          </span>
+          <span className="font-mono text-[10.5px] leading-4 text-muted-foreground/55">
+            {foldSpan !== null ? formatSpanDurationLabel(foldSpan) : null}
+          </span>
+        </button>
+      ) : null}
+      {(foldOpen ? rows : rows.slice(foldCount)).map(renderRow)}
+    </div>
+  );
+}
+
+function ProposedPlanSummary({
+  plan,
+  onView,
+  onImplement,
+  onDismiss,
+}: {
+  plan: LatestProposedPlanState;
+  onView?: (() => void) | undefined;
+  onImplement?: (() => void) | undefined;
+  onDismiss?: (() => void) | undefined;
+}) {
+  const title = proposedPlanTitle(plan.planMarkdown) ?? "Plan ready";
+  return (
+    <div className="min-w-0">
+      <button
+        type="button"
+        className={cn(
+          "grid w-full grid-cols-[16px_minmax(0,1fr)] items-start gap-x-2 rounded-md p-1 text-left",
+          onView && "cursor-pointer transition-colors hover:bg-accent/50 focus-ring",
+        )}
+        disabled={!onView}
+        aria-label="View plan in conversation"
+        onClick={onView}
+      >
+        <span className="flex h-4 items-center justify-center">
+          <FileTextIcon className={cn("size-3", toneTextClassName("ready"))} aria-hidden="true" />
+        </span>
+        <span className="min-w-0">
+          <span className="block truncate text-[12px] leading-4 text-foreground/90" title={title}>
+            {title}
+          </span>
+          <span className="mt-0.5 block text-[11px] text-muted-foreground/70">
+            Ready to implement
+          </span>
+        </span>
+      </button>
+      {onImplement || onDismiss ? (
+        <div className="mt-1.5 flex justify-end gap-1.5 px-1">
+          {onDismiss ? (
+            <Button
+              type="button"
+              size="xs"
+              variant="ghost"
+              className="h-6 px-2 text-[11px] text-muted-foreground/80 hover:text-destructive"
+              onClick={onDismiss}
+            >
+              Dismiss
+            </Button>
+          ) : null}
+          {onImplement ? (
+            <Button
+              type="button"
+              size="xs"
+              variant="outline"
+              className="h-6 px-2 text-[11px]"
+              onClick={onImplement}
+            >
+              Implement
+            </Button>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function SectionHeader({ title, meta }: { title: string; meta: ReactElement | null }) {
+  return (
+    <div className="mb-1.5 flex min-w-0 items-baseline justify-between gap-3 px-1">
+      <span className="truncate text-xs font-semibold text-foreground">{title}</span>
+      {meta}
+    </div>
+  );
 }
 
 function TaskSection({
@@ -438,211 +743,179 @@ function TaskSection({
   onImplementProposedPlan?: (() => void) | undefined;
   onDismissProposedPlan?: (() => void) | undefined;
 }) {
-  const [expanded, setExpanded] = useState(false);
-  const [summaryExpanded, setSummaryExpanded] = useState(false);
-  const activePlan = taskProgress.activePlan;
-  const activeProposedPlan = taskProgress.activeProposedPlan;
-  const planStepRows = useMemo(
-    () => (activePlan ? keyedPlanSteps(activePlan.steps) : []),
-    [activePlan],
-  );
-  const headerLabel = activePlan ? "Current tasks" : taskProgress.label;
-  const summary = taskSummary(activePlan, activeProposedPlan !== null);
-  const summaryOverflow = useHorizontalOverflow(summary, !summaryExpanded);
-  const summaryCanExpand = summaryExpanded || summaryOverflow.overflows;
-  const planTitle = activeProposedPlan
-    ? (proposedPlanTitle(activeProposedPlan.planMarkdown) ?? "Plan ready")
-    : null;
-  const collapsedWindow = activePlan ? collapsedPlanStepWindow(activePlan.steps) : null;
-  const shouldCollapsePlanSteps = activePlan
-    ? activePlan.steps.length > COLLAPSED_TASK_LIMIT
-    : false;
-  const visiblePlanStepRows =
-    shouldCollapsePlanSteps && !expanded && collapsedWindow
-      ? planStepRows.slice(collapsedWindow.start, collapsedWindow.end)
-      : planStepRows;
-  const liveStepIndex = visiblePlanStepRows.findIndex(({ step }) => step.status === "inProgress");
+  const { activePlan, activeProposedPlan, live, currentWork } = taskProgress;
+
+  if (activePlan && activePlan.steps.length > 0) {
+    return (
+      <section className="min-w-0" aria-label={taskProgress.label}>
+        <SectionHeader
+          title={taskProgress.label}
+          meta={<PlanMeta plan={activePlan} live={live} />}
+        />
+        <div className="mb-1.5 px-1">
+          <PlanProgressBlocks steps={activePlan.steps} variant="panel" />
+        </div>
+        <PlanSteps plan={activePlan} live={live} currentWork={currentWork} />
+      </section>
+    );
+  }
+
+  if (activeProposedPlan) {
+    return (
+      <section className="min-w-0" aria-label="Plan ready">
+        <SectionHeader
+          title="Plan ready"
+          meta={
+            <span className={cn("shrink-0 font-mono text-[10.5px]", toneTextClassName("ready"))}>
+              {formatRelativeTimeLabel(activeProposedPlan.createdAt)}
+            </span>
+          }
+        />
+        <ProposedPlanSummary
+          plan={activeProposedPlan}
+          onView={onViewProposedPlan}
+          onImplement={onImplementProposedPlan}
+          onDismiss={onDismissProposedPlan}
+        />
+      </section>
+    );
+  }
+
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Background runs
+// ---------------------------------------------------------------------------
+
+const RUN_KIND_ICONS: Readonly<Record<BackgroundRunKind, (className: string) => ReactElement>> = {
+  preview: (className) => <GlobeIcon className={className} aria-hidden="true" />,
+  terminal: (className) => <TerminalIcon className={className} aria-hidden="true" />,
+  command: (className) => <TerminalIcon className={className} aria-hidden="true" />,
+  task: (className) => <BotIcon className={className} aria-hidden="true" />,
+  process: (className) => <CpuIcon className={className} aria-hidden="true" />,
+};
+
+/** The actions on a run show while it is hovered or focused, and always on
+ *  touch screens, where there is no hover. */
+const RUN_ACTION_REVEAL_CLASS_NAME =
+  "opacity-0 transition-opacity group-hover/run:opacity-100 group-focus-within/run:opacity-100 pointer-coarse:opacity-100";
+
+function BackgroundRunRow({
+  run,
+  threadRef,
+  onToggleTerminal,
+  onStop,
+}: {
+  run: ThreadBackgroundRunItem;
+  threadRef: ScopedThreadRef | null;
+  onToggleTerminal: (terminalId: string) => void;
+  onStop: (run: ThreadBackgroundRunItem) => void;
+}) {
+  const outputLine = useBackgroundRunOutputLine(run, threadRef);
+  const kind = backgroundRunKind(run);
+  const link = backgroundRunLink(run);
+  const detailLine = backgroundRunDetailLine({ ...run, outputLine });
+  const age = backgroundRunAge(run);
+  const terminalId = run.terminalId;
+  const terminalActionLabel = `${run.terminalVisible ? "Close" : "Open"} ${run.label}`;
 
   return (
-    <section className="min-w-0 space-y-1.5">
-      <div className="flex min-w-0 items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="flex items-center gap-1.5 text-xs font-medium text-foreground">
-            <ListTodoIcon className="size-3 text-muted-foreground/85" aria-hidden="true" />
-            <span>{headerLabel}</span>
+    <div
+      className="group/run grid grid-cols-[16px_minmax(0,1fr)_auto] items-start gap-x-2 px-1 py-1.5 transition-colors hover:bg-accent/40"
+      data-background-run-kind={kind}
+    >
+      <span className="flex h-4 items-center justify-center text-muted-foreground">
+        {RUN_KIND_ICONS[kind]("size-3")}
+      </span>
+      <div className="min-w-0">
+        <div className="flex min-w-0 items-center gap-2 leading-4">
+          <TooltipWrapper tooltip={backgroundRunTooltip(run)}>
+            <span
+              className={cn(
+                "min-w-0 truncate text-[12px]",
+                run.described === false ? "text-foreground/80" : "font-medium text-foreground",
+              )}
+            >
+              {run.label}
+            </span>
+          </TooltipWrapper>
+          {link ? (
+            <a
+              href={link.href}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex shrink-0 items-center gap-0.5 font-mono text-[10.5px] text-primary-readable hover:underline focus-ring"
+              title={link.href}
+            >
+              {link.label}
+              <ExternalLinkIcon className="size-2.5" aria-hidden="true" />
+            </a>
+          ) : null}
+        </div>
+        {detailLine ? (
+          <div
+            className={cn(
+              "mt-0.5 truncate text-[10.5px] leading-[15px] text-muted-foreground/75",
+              detailLine.kind === "prose" ? "text-[11px]" : "font-mono",
+            )}
+            title={detailLine.text}
+            data-background-run-detail={detailLine.kind}
+          >
+            {detailLine.text}
           </div>
-          {summaryCanExpand ? (
+        ) : null}
+      </div>
+      <div className="-my-0.5 flex h-5 items-center gap-0.5">
+        {age ? (
+          <span className="mr-0.5 font-mono text-[10.5px] text-muted-foreground/55">
+            {age.live ? <LiveDuration since={age.since} format="span" /> : age.label}
+          </span>
+        ) : null}
+        {terminalId ? (
+          <TooltipWrapper tooltip={terminalActionLabel}>
             <button
               type="button"
               className={cn(
-                "mt-0.5 flex max-w-full items-start gap-1 text-left text-[11px] text-muted-foreground/80 transition-colors hover:text-foreground/85",
-                summaryExpanded && "pr-1",
+                "inline-flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-ring",
+                run.terminalVisible ? "bg-muted text-foreground" : RUN_ACTION_REVEAL_CLASS_NAME,
               )}
-              aria-expanded={summaryExpanded}
-              title={summary}
-              onClick={() => setSummaryExpanded((value) => !value)}
-              data-task-summary-toggle="true"
+              aria-label={terminalActionLabel}
+              aria-pressed={run.terminalVisible}
+              onClick={() => onToggleTerminal(terminalId)}
             >
-              <span
-                ref={summaryOverflow.elementRef}
-                className={cn(
-                  "min-w-0",
-                  summaryExpanded
-                    ? "max-h-20 overflow-y-auto whitespace-normal break-words"
-                    : "truncate",
-                )}
-                data-task-summary-text="true"
-              >
-                {summary}
-              </span>
-              <ChevronDownIcon
-                className={cn(
-                  "mt-0.5 size-3 shrink-0 opacity-55 transition-transform",
-                  summaryExpanded && "rotate-180",
-                )}
-                aria-hidden="true"
-              />
+              <TerminalSquareIcon className="size-3" aria-hidden="true" />
             </button>
-          ) : (
-            <div className="mt-0.5 text-[11px] text-muted-foreground/80">
-              <span
-                ref={summaryOverflow.elementRef}
-                className="block min-w-0 truncate"
-                data-task-summary-text="true"
-              >
-                {summary}
-              </span>
-            </div>
-          )}
-        </div>
-        {taskProgress.badge ? (
-          <span className={badgeClassName(taskProgress.badge.tone, taskProgress.badge.pulse)}>
-            {taskProgress.badge.label}
-          </span>
+          </TooltipWrapper>
+        ) : null}
+        {run.canStop ? (
+          <TooltipWrapper tooltip={`Stop ${run.label}`}>
+            <button
+              type="button"
+              className={cn(
+                "inline-flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-md text-destructive transition-colors hover:bg-destructive/10 focus-ring",
+                RUN_ACTION_REVEAL_CLASS_NAME,
+              )}
+              aria-label={`Stop ${run.label}`}
+              onClick={() => onStop(run)}
+            >
+              <SquareIcon className="size-2 fill-current" aria-hidden="true" />
+            </button>
+          </TooltipWrapper>
         ) : null}
       </div>
-
-      {activePlan && activePlan.steps.length > 0 ? (
-        <div className="space-y-1.5">
-          <div
-            className={cn("pr-1", expanded && "max-h-56 overflow-y-auto")}
-            style={TASK_SPINE_STYLE}
-          >
-            {visiblePlanStepRows.map(({ key, step }, index) => (
-              <SpineRow
-                key={key}
-                node={<SpineNode kind={taskStepNodeKind(step.status)} />}
-                nodeOffset={TASK_STEP_NODE_OFFSET_PX}
-                connectTop={index > 0}
-                connectBottom={index < visiblePlanStepRows.length - 1}
-                style={liveStepIndex >= 0 ? spineAccentRowStyle(liveStepIndex - index) : undefined}
-              >
-                <div
-                  className={cn(
-                    "min-w-0 py-1 text-[12px] leading-4 break-words",
-                    step.status === "completed"
-                      ? "text-muted-foreground/70"
-                      : step.status === "inProgress"
-                        ? "font-medium text-foreground"
-                        : "text-muted-foreground/85",
-                  )}
-                >
-                  <span className="sr-only">{taskStatusLabel(step.status)}: </span>
-                  {/* The task in hand reads as happening now. */}
-                  {step.status === "inProgress" ? presentTense(step.step) : step.step}
-                </div>
-              </SpineRow>
-            ))}
-          </div>
-          {shouldCollapsePlanSteps ? (
-            <Button
-              type="button"
-              variant="ghost"
-              size="xs"
-              className="h-5 w-full justify-center text-[11px] text-muted-foreground/80 hover:text-foreground"
-              aria-expanded={expanded}
-              onClick={() => setExpanded((value) => !value)}
-            >
-              {expanded ? "Show less" : `Show all ${activePlan.steps.length} steps`}
-            </Button>
-          ) : null}
-        </div>
-      ) : activeProposedPlan ? (
-        <div className="rounded-md border border-border/60 bg-muted/25 px-2 py-2">
-          <button
-            type="button"
-            className={cn(
-              "grid w-full grid-cols-[auto_minmax(0,1fr)] items-start gap-2 text-left",
-              onViewProposedPlan &&
-                "cursor-pointer rounded-sm transition-colors hover:text-foreground focus-ring",
-            )}
-            disabled={!onViewProposedPlan}
-            aria-label="View plan in conversation"
-            onClick={onViewProposedPlan}
-          >
-            <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-amber-500/15 text-amber-600 dark:text-amber-400">
-              <FileTextIcon className="size-3" aria-hidden="true" />
-            </span>
-            <span className="min-w-0">
-              <span
-                className="block truncate text-[12px] text-foreground/90"
-                title={planTitle ?? ""}
-              >
-                {planTitle}
-              </span>
-              <span className="mt-0.5 block text-[11px] text-muted-foreground/65">
-                Proposed {formatRelativeTimeLabel(activeProposedPlan.createdAt)} · ready to
-                implement
-              </span>
-            </span>
-          </button>
-          {onImplementProposedPlan || onDismissProposedPlan ? (
-            <div className="mt-1.5 flex justify-end gap-1.5">
-              {onDismissProposedPlan ? (
-                <Button
-                  type="button"
-                  size="xs"
-                  variant="ghost"
-                  className="h-6 px-2 text-[11px] text-muted-foreground/80 hover:text-destructive"
-                  onClick={onDismissProposedPlan}
-                >
-                  Dismiss
-                </Button>
-              ) : null}
-              {onImplementProposedPlan ? (
-                <Button
-                  type="button"
-                  size="xs"
-                  variant="outline"
-                  className="h-6 px-2 text-[11px]"
-                  onClick={onImplementProposedPlan}
-                >
-                  Implement
-                </Button>
-              ) : null}
-            </div>
-          ) : null}
-        </div>
-      ) : null}
-    </section>
-  );
-}
-
-function isInformativeBackgroundRunCommand(commandText: string): boolean {
-  return (
-    commandText.includes(" ") ||
-    commandText.length > 18 ||
-    commandText.includes("/") ||
-    commandText.includes("\\")
+    </div>
   );
 }
 
 function BackgroundRunsSection({
   backgroundRuns,
+  threadRef,
   onToggleBackgroundRunTerminal,
   onStopBackgroundRun,
 }: {
   backgroundRuns: ReadonlyArray<ThreadBackgroundRunItem>;
+  threadRef: ScopedThreadRef | null;
   onToggleBackgroundRunTerminal: (terminalId: string) => void;
   onStopBackgroundRun: (run: ThreadBackgroundRunItem) => void;
 }) {
@@ -651,133 +924,42 @@ function BackgroundRunsSection({
   }
 
   return (
-    <section className="min-w-0 space-y-2">
-      <div className="flex min-w-0 items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="flex items-center gap-1.5 text-xs font-medium text-foreground">
-            <RadarIcon className="size-3 text-muted-foreground/70" aria-hidden="true" />
-            <span>Background runs</span>
-          </div>
-          <div className="mt-0.5 truncate text-[11px] text-muted-foreground/70">
-            {backgroundRunSectionSummary(backgroundRuns)}
-          </div>
-        </div>
-        <span className={badgeClassName("active", true)}>{backgroundRuns.length}</span>
-      </div>
-
-      {/* Runs are rows on their own spine, drawn the same way as the task
-          steps above so the popover reads as one surface. Every run is live,
-          so each row carries the halo node. */}
-      <div className="pr-1" style={TASK_SPINE_STYLE}>
-        {backgroundRuns.map((run, index) => {
-          const metaItems = [backgroundRunSourceLabel(run), ...backgroundRunMetaItems(run)];
-          const commandText = backgroundRunCommandText(run);
-          const showCommandText = isInformativeBackgroundRunCommand(commandText);
-          const primaryUrl = run.urls[0] ?? null;
-          const extraUrlCount = Math.max(0, run.urls.length - 1);
-
-          return (
-            <SpineRow
-              key={run.id}
-              node={<LiveNode className="size-1.5" />}
-              nodeOffset={TASK_STEP_NODE_OFFSET_PX}
-              connectTop={index > 0}
-              connectBottom={index < backgroundRuns.length - 1}
-            >
-              <div className="min-w-0 py-1">
-                <div className="flex min-w-0 items-center gap-1.5">
-                  <div className="min-w-0 flex-1 truncate text-[12px] font-medium leading-4 text-foreground">
-                    {run.label}
-                  </div>
-                  <span className="shrink-0 text-[10px] leading-none text-primary-readable">
-                    {run.statusLabel}
-                  </span>
-                  {run.terminalId ? (
-                    <TooltipWrapper
-                      tooltip={`${run.terminalVisible ? "Close" : "Open"} ${run.label}`}
-                    >
-                      <button
-                        type="button"
-                        className={cn(
-                          "inline-flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground/70 transition-colors hover:bg-muted hover:text-foreground focus-ring",
-                          run.terminalVisible && "bg-muted text-foreground",
-                        )}
-                        aria-label={`${run.terminalVisible ? "Close" : "Open"} ${run.label}`}
-                        aria-pressed={run.terminalVisible}
-                        onClick={() => {
-                          if (run.terminalId) {
-                            onToggleBackgroundRunTerminal(run.terminalId);
-                          }
-                        }}
-                      >
-                        <TerminalSquareIcon className="size-3" aria-hidden="true" />
-                      </button>
-                    </TooltipWrapper>
-                  ) : null}
-                  {run.canStop ? (
-                    <TooltipWrapper tooltip={`Stop ${run.label}`}>
-                      <button
-                        type="button"
-                        className="inline-flex h-5 shrink-0 cursor-pointer items-center gap-1 rounded-md px-1.5 text-[10px] font-medium text-destructive transition-colors hover:bg-destructive/10 focus-ring"
-                        aria-label={`Stop ${run.label}`}
-                        onClick={() => {
-                          onStopBackgroundRun(run);
-                        }}
-                      >
-                        <SquareIcon className="size-2 fill-current" aria-hidden="true" />
-                        <span>Stop</span>
-                      </button>
-                    </TooltipWrapper>
-                  ) : null}
-                </div>
-
-                <div className="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-1.5 text-[10px] leading-3.5 text-muted-foreground/70">
-                  {metaItems.map((item, itemIndex) => (
-                    <span key={item} className="inline-flex items-center gap-1.5">
-                      {itemIndex > 0 ? (
-                        <span aria-hidden="true" className="text-muted-foreground/40">
-                          ·
-                        </span>
-                      ) : null}
-                      <span className={itemIndex > 0 ? "font-mono" : undefined}>{item}</span>
-                    </span>
-                  ))}
-                </div>
-
-                {primaryUrl ? (
-                  <Button
-                    render={<a href={primaryUrl} target="_blank" rel="noreferrer" />}
-                    variant="ghost"
-                    size="xs"
-                    className="mt-0.5 h-5 w-full min-w-0 justify-start gap-1 rounded-md px-0 text-[10px] text-muted-foreground hover:bg-transparent hover:text-foreground"
-                    tooltip={primaryUrl}
-                  >
-                    <ExternalLinkIcon className="size-2.5 shrink-0" aria-hidden="true" />
-                    <span className="truncate">{primaryUrl}</span>
-                    {extraUrlCount > 0 ? (
-                      <span className="shrink-0 text-muted-foreground/50">+{extraUrlCount}</span>
-                    ) : null}
-                  </Button>
-                ) : null}
-                {showCommandText ? (
-                  <TooltipWrapper tooltip={commandText}>
-                    <div className="mt-0.5 min-w-0 truncate font-mono text-[10px] leading-3.5 text-muted-foreground/60">
-                      {commandText}
-                    </div>
-                  </TooltipWrapper>
-                ) : null}
-              </div>
-            </SpineRow>
-          );
-        })}
+    <section className="min-w-0" aria-label="Running in the background">
+      <SectionHeader
+        title="Running in the background"
+        meta={
+          <span className="shrink-0 font-mono text-[10.5px] text-muted-foreground">
+            {backgroundRuns.length}
+          </span>
+        }
+      />
+      <div className="divide-y divide-border/60">
+        {backgroundRuns.map((run) => (
+          <BackgroundRunRow
+            key={run.id}
+            run={run}
+            threadRef={threadRef}
+            onToggleTerminal={onToggleBackgroundRunTerminal}
+            onStop={onStopBackgroundRun}
+          />
+        ))}
       </div>
     </section>
   );
 }
 
+// ---------------------------------------------------------------------------
+// Popover
+// ---------------------------------------------------------------------------
+
+function keyboardOpensIntoPopup(openType: string): boolean {
+  return openType === "keyboard";
+}
+
 export const ThreadActivityPopover = memo(function ThreadActivityPopover({
   taskProgress,
   backgroundRuns,
+  threadRef,
   onToggleBackgroundRunTerminal,
   onStopBackgroundRun,
   onViewProposedPlan,
@@ -795,6 +977,17 @@ export const ThreadActivityPopover = memo(function ThreadActivityPopover({
     return null;
   }
 
+  const closeThen = (action: (() => void) | undefined) =>
+    action
+      ? () => {
+          setPopoverOpen(false);
+          action();
+        }
+      : undefined;
+  const showsTasks =
+    taskProgress !== null &&
+    ((taskProgress.activePlan?.steps.length ?? 0) > 0 || taskProgress.activeProposedPlan !== null);
+
   return (
     <Tooltip>
       <Popover open={popoverOpen} onOpenChange={setPopoverOpen}>
@@ -807,11 +1000,7 @@ export const ThreadActivityPopover = memo(function ThreadActivityPopover({
                   variant="outline"
                   size="xs"
                   ref={popoverLayout.triggerRef}
-                  className={cn(
-                    "min-w-6 px-1.5 text-[11px] [-webkit-app-region:no-drag]",
-                    triggerState.mode !== "background" && triggerState.badge ? "pr-1" : undefined,
-                    triggerState.mode === "mixed" && "max-w-44",
-                  )}
+                  className="min-w-6 px-1.5 text-[11px] [-webkit-app-region:no-drag]"
                   aria-label={triggerState.ariaLabel}
                 />
               }
@@ -829,41 +1018,27 @@ export const ThreadActivityPopover = memo(function ThreadActivityPopover({
           positionerClassName="transition-none"
           side="bottom"
           sideOffset={8}
-          className="max-h-[min(34rem,calc(100vh-5rem))] w-(--thread-activity-popover-width) max-w-[calc(100vw-1rem)] overflow-y-auto [&_[data-slot=popover-viewport]]:py-3 [&_[data-slot=popover-viewport]]:[--viewport-inline-padding:--spacing(3)]"
+          // Keyboard users land on the first control; a click leaves focus on
+          // the button, so no row opens already showing its actions.
+          initialFocus={keyboardOpensIntoPopup}
+          className="max-h-[min(34rem,calc(100vh-5rem))] w-(--thread-activity-popover-width) max-w-[calc(100vw-1rem)] overflow-y-auto [&_[data-slot=popover-viewport]]:py-3 [&_[data-slot=popover-viewport]]:[--viewport-inline-padding:--spacing(2)]"
           style={popoverLayout.widthStyle}
         >
-          <div className="min-w-0 space-y-2.5">
-            {taskProgress ? (
+          <div className="min-w-0">
+            {taskProgress && showsTasks ? (
               <TaskSection
                 taskProgress={taskProgress}
-                onViewProposedPlan={
-                  onViewProposedPlan
-                    ? () => {
-                        setPopoverOpen(false);
-                        onViewProposedPlan();
-                      }
-                    : undefined
-                }
-                onImplementProposedPlan={
-                  onImplementProposedPlan
-                    ? () => {
-                        setPopoverOpen(false);
-                        onImplementProposedPlan();
-                      }
-                    : undefined
-                }
-                onDismissProposedPlan={
-                  onDismissProposedPlan
-                    ? () => {
-                        setPopoverOpen(false);
-                        onDismissProposedPlan();
-                      }
-                    : undefined
-                }
+                onViewProposedPlan={closeThen(onViewProposedPlan)}
+                onImplementProposedPlan={closeThen(onImplementProposedPlan)}
+                onDismissProposedPlan={closeThen(onDismissProposedPlan)}
               />
+            ) : null}
+            {showsTasks && backgroundRuns.length > 0 ? (
+              <div aria-hidden="true" className="mx-1 my-2.5 h-px bg-border/60" />
             ) : null}
             <BackgroundRunsSection
               backgroundRuns={backgroundRuns}
+              threadRef={threadRef}
               onToggleBackgroundRunTerminal={onToggleBackgroundRunTerminal}
               onStopBackgroundRun={onStopBackgroundRun}
             />

@@ -4,6 +4,7 @@
  * panel and the timeline's turn row all read from here so a run reads the same
  * way wherever it surfaces. Pure: nothing here touches React or the network.
  */
+import { urlLabel } from "./activityWording";
 
 export interface ThreadBackgroundRunItem {
   id: string;
@@ -23,6 +24,15 @@ export interface ThreadBackgroundRunItem {
   port: number | null;
   elapsed: string | null;
   canStop: boolean;
+  /** When the run started, when anything says; its age then ticks. */
+  startedAt?: string | null | undefined;
+  /** The newest line the run printed, when its output reaches the client. */
+  outputLine?: string | null | undefined;
+  /** Where Claude is writing a background command's output. The popover reads
+   *  the newest line from it while open; nothing streams it. */
+  outputFile?: string | null | undefined;
+  /** False when the provider said a task runs but not what it is. */
+  described?: boolean | undefined;
 }
 
 export interface SubagentDisplayDetails {
@@ -164,4 +174,105 @@ export function backgroundRunMetaItems(run: ThreadBackgroundRunItem): ReadonlyAr
     run.port === null ? null : `:${run.port}`,
     run.elapsed ? `Up ${run.elapsed}` : null,
   ].filter((item): item is string => item !== null);
+}
+
+/** What a run is, by what it gives the user: a page to open, a terminal, a
+ *  command or task the agent started, or a process found on the machine. */
+export type BackgroundRunKind = "preview" | "terminal" | "command" | "task" | "process";
+
+export function backgroundRunKind(run: ThreadBackgroundRunItem): BackgroundRunKind {
+  if (run.urls.length > 0 || run.port !== null) return "preview";
+  if (run.source === "terminal") return "terminal";
+  if (run.source === "detected") return "process";
+  return run.providerKind === "command" || Boolean(run.command?.trim()) ? "command" : "task";
+}
+
+/** The page a run serves, labelled the short way ("localhost:5173"). */
+export function backgroundRunLink(
+  run: ThreadBackgroundRunItem,
+): { readonly href: string; readonly label: string } | null {
+  const href = run.urls[0] ?? (run.port !== null ? `http://localhost:${run.port}` : null);
+  if (!href) return null;
+  return { href, label: urlLabel(href) ?? href };
+}
+
+export interface BackgroundRunDetailLine {
+  readonly kind: "output" | "command" | "prose";
+  readonly text: string;
+}
+
+function isInformativeBackgroundRunCommand(commandText: string): boolean {
+  return (
+    commandText.includes(" ") ||
+    commandText.length > 18 ||
+    commandText.includes("/") ||
+    commandText.includes("\\")
+  );
+}
+
+/**
+ * The second line of a run: the newest thing it printed when that reaches
+ * us, else the command behind it when the name doesn't already say it, else
+ * a plain sentence for a task nobody described.
+ */
+export function backgroundRunDetailLine(
+  run: ThreadBackgroundRunItem,
+): BackgroundRunDetailLine | null {
+  const output = run.outputLine?.trim();
+  if (output) return { kind: "output", text: output };
+  if (run.described === false) {
+    return run.detail ? { kind: "prose", text: run.detail } : null;
+  }
+  const command = backgroundRunCommandText(run).trim();
+  if (command && command !== run.label.trim() && isInformativeBackgroundRunCommand(command)) {
+    return { kind: "command", text: command };
+  }
+  return null;
+}
+
+export type BackgroundRunAge =
+  | { readonly live: true; readonly since: string }
+  | { readonly live: false; readonly label: string };
+
+/** How long a run has been going: a ticking clock from its start when known,
+ *  else whatever fixed age the machine reported. */
+export function backgroundRunAge(run: ThreadBackgroundRunItem): BackgroundRunAge | null {
+  if (run.startedAt && Number.isFinite(Date.parse(run.startedAt))) {
+    return { live: true, since: run.startedAt };
+  }
+  return run.elapsed ? { live: false, label: run.elapsed } : null;
+}
+
+/** Everything a run row leaves out, for its name's tooltip. */
+export function backgroundRunTooltip(run: ThreadBackgroundRunItem): string {
+  const command = backgroundRunCommandText(run).trim();
+  return [
+    [backgroundRunSourceLabel(run), ...backgroundRunMetaItems(run)].join(" · "),
+    command && command !== run.label.trim() ? command : null,
+    run.urls.length > 1 ? run.urls.join("\n") : null,
+  ]
+    .filter((part): part is string => Boolean(part))
+    .join("\n");
+}
+
+/** When a process started, from the `ps` elapsed time the machine reported at
+ *  `reportedAtMs`, so its age can keep ticking after the one report. */
+export function processStartedAt(
+  elapsed: string | null | undefined,
+  reportedAtMs: number,
+): string | null {
+  const elapsedMs = parseProcessElapsedMs(elapsed);
+  return elapsedMs === null ? null : new Date(reportedAtMs - elapsedMs).toISOString();
+}
+
+/** The `ps` elapsed time ("12:34", "01:02:03", "2-01:02:03") in milliseconds,
+ *  or null when it isn't one. */
+function parseProcessElapsedMs(elapsed: string | null | undefined): number | null {
+  const match = /^(?:(\d+)-)?(?:(\d{1,2}):)?(\d{1,2}):(\d{2})$/u.exec(elapsed?.trim() ?? "");
+  if (!match) return null;
+  const [, days, hours, minutes, seconds] = match;
+  return (
+    ((Number(days ?? 0) * 24 + Number(hours ?? 0)) * 60 + Number(minutes)) * 60_000 +
+    Number(seconds) * 1_000
+  );
 }
