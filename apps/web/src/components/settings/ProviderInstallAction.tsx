@@ -1,6 +1,6 @@
 /**
- * The "Install" control, shared by the settings provider card and the
- * first-run setup card.
+ * The "Install" control, shared by the Providers settings page and the setup
+ * screen.
  *
  * Starting an install is one RPC: the same `server.updateProvider` the Update
  * button calls, with `action: "install"`. Everything after that arrives on the
@@ -30,6 +30,37 @@ import {
   type ProviderInstallView,
 } from "./providerInstall";
 
+/**
+ * Starts the server's install for one provider and toasts if it could not
+ * start. Progress arrives on the snapshot. Exported for the one-click
+ * "Install" on a turned-off agent, which turns it on first and starts the
+ * install once the server offers it.
+ */
+export function startProviderInstall(input: {
+  readonly instanceId: ProviderInstanceId;
+  readonly driverKind: ProviderDriverKind;
+  readonly displayName: string | undefined;
+}): Promise<void> {
+  const { instanceId, driverKind, displayName } = input;
+  return ensureLocalApi()
+    .server.updateProvider({ provider: driverKind, instanceId, action: "install" })
+    .then(
+      () => undefined,
+      (error: unknown) => {
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: `Could not install ${displayName ?? PROVIDER_DISPLAY_NAMES[driverKind] ?? driverKind}`,
+            description:
+              error instanceof Error
+                ? error.message
+                : "The provider install command could not be started.",
+          }),
+        );
+      },
+    );
+}
+
 function useProviderInstallStart(input: {
   readonly instanceId: ProviderInstanceId;
   readonly driverKind: ProviderDriverKind;
@@ -43,23 +74,9 @@ function useProviderInstallStart(input: {
       return;
     }
     setIsStarting(true);
-    void ensureLocalApi()
-      .server.updateProvider({ provider: driverKind, instanceId, action: "install" })
-      .catch((error: unknown) => {
-        toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: `Could not install ${displayName ?? PROVIDER_DISPLAY_NAMES[driverKind] ?? driverKind}`,
-            description:
-              error instanceof Error
-                ? error.message
-                : "The provider install command could not be started.",
-          }),
-        );
-      })
-      .finally(() => {
-        setIsStarting(false);
-      });
+    void startProviderInstall({ instanceId, driverKind, displayName }).finally(() => {
+      setIsStarting(false);
+    });
   }, [displayName, driverKind, instanceId, isStarting]);
 
   return { isStarting, start };

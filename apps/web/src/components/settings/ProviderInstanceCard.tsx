@@ -1,20 +1,14 @@
 "use client";
 
 import {
-  ArrowUpCircleIcon,
-  AlertCircleIcon,
   ChevronDownIcon,
-  CopyIcon,
-  DownloadIcon,
-  GaugeIcon,
-  LoaderIcon,
   PipetteIcon,
   PlusIcon,
   RotateCcwIcon,
   Trash2Icon,
   XIcon,
 } from "lucide-react";
-import { useEffect, useMemo, useState, type MouseEvent, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link } from "@tanstack/react-router";
 import {
   isProviderDriverKind,
@@ -50,17 +44,13 @@ import {
   type ProviderAccountUsagePresentation,
   usageMeterColor,
 } from "../../lib/providerUsage";
-import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { normalizeProviderAccentColor } from "../../providerInstances";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Collapsible, CollapsibleContent } from "../ui/collapsible";
 import { DraftInput } from "../ui/draft-input";
 import { Input } from "../ui/input";
-import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
-import { ScrollArea } from "../ui/scroll-area";
-import { Switch } from "../ui/switch";
-import { stackedThreadToast, toastManager } from "../ui/toast";
+import { toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { ProviderConnectFlow } from "./ProviderConnectFlow";
 import type { DriverOption } from "./providerDriverMeta";
@@ -77,18 +67,23 @@ import { RedactedSensitiveText } from "./RedactedSensitiveText";
 import {
   firstSentenceOf,
   getProviderVersionAdvisoryPresentation,
-  PROVIDER_STATUS_STYLES,
   getProviderSummary,
   getProviderVersionLabel,
-  type ProviderStatusKey,
 } from "./providerStatus";
 import { deriveProviderInstallView } from "./providerInstall";
-import { ProviderInstallAction } from "./ProviderInstallAction";
+import { ProviderInstallAction, startProviderInstall } from "./ProviderInstallAction";
 import { ProviderSignInAction } from "./ProviderSignInAction";
-import { ProviderExternalResetsButton } from "../ProviderRateLimitResetCredit";
+import { AgentRow, AgentUpdateTag, type AgentRowTone } from "./AgentRow";
+import {
+  agentDetectionLabel,
+  agentStatusLine,
+  deriveAgentStatus,
+  offAgentAction,
+} from "./agentStatus";
+import { ProviderUpdatePopover } from "./ProviderUpdatePopover";
+import type { ProviderUpdateControls } from "./useProviderUpdateRunner";
 
 const PROVIDER_ACCENT_SWATCHES = ["#00347D", "#16a34a", "#ea580c", "#dc2626", "#7c3aed"] as const;
-const PROVIDER_UPDATE_OUTPUT_PREVIEW_CHARS = 700;
 
 const ENVIRONMENT_VARIABLE_NAME_PATTERN = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
 const CODEX_DRIVER_KIND = ProviderDriverKind.make("codex");
@@ -106,24 +101,6 @@ const RUNTIME_PROVIDER_CONFIG_FIELD_KEYS = new Set([
 
 let environmentVariableDraftId = 0;
 const nextEnvironmentVariableDraftId = () => `provider-env-${environmentVariableDraftId++}`;
-
-function truncateProviderUpdateOutput(value: string): string {
-  const trimmed = value.trim();
-  if (trimmed.length <= PROVIDER_UPDATE_OUTPUT_PREVIEW_CHARS) {
-    return trimmed;
-  }
-  return `${trimmed.slice(0, PROVIDER_UPDATE_OUTPUT_PREVIEW_CHARS).trimEnd()}...`;
-}
-
-function isProviderUpdateProcessLockMessage(value: string): boolean {
-  const normalized = value.toLowerCase();
-  return (
-    normalized.includes("claude") &&
-    normalized.includes("windows") &&
-    normalized.includes("replace") &&
-    normalized.includes("executable")
-  );
-}
 
 type EnvironmentDraftRow = {
   readonly id: string;
@@ -783,7 +760,11 @@ function ProviderAccountSignInSection(props: {
       description="Shows whether this provider is ready and signs it back in without leaving settings."
     >
       <div className="grid gap-4">
-        {props.liveProvider?.installed === false ? (
+        {props.liveProvider?.enabled === false ? (
+          // Turned off: the server has not looked at it, so there is no
+          // sign-in state to show or run yet.
+          <p className="text-xs text-muted-foreground">Turn {props.displayName} on to sign in.</p>
+        ) : props.liveProvider?.installed === false ? (
           // Nothing to sign in to yet: the row's Install comes first.
           <p className="text-xs text-muted-foreground">
             Install {props.displayName} first, then sign in here.
@@ -926,170 +907,95 @@ function splitProviderSettingsFields(fields: ReadonlyArray<ProviderSettingsField
   return { runtimeFields, advancedFields };
 }
 
-const PROVIDER_CARD_TOGGLE_IGNORE_SELECTOR = [
-  "button",
-  "a[href]",
-  "input",
-  "select",
-  "textarea",
-  "[role='button']",
-  "[role='switch']",
-  "[data-provider-card-toggle-ignore]",
-].join(",");
-
-function shouldIgnoreProviderCardToggle(target: EventTarget | null): boolean {
-  return target instanceof Element && target.closest(PROVIDER_CARD_TOGGLE_IGNORE_SELECTOR) !== null;
-}
-
-function ProviderUsageSummaryBar(props: {
-  readonly usageLabel: string;
-  readonly label: string;
-  readonly detail: string;
-  readonly usedPercent: number;
-  readonly warning: boolean;
-}) {
-  const meterColor = usageMeterColor(props.usedPercent, props.warning);
-  return (
-    <div className="space-y-1.5">
-      <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5 text-xs">
-        <span className="min-w-10 font-medium text-foreground">{props.label}</span>
-        <span className="text-muted-foreground">{props.detail}</span>
-      </div>
-      <div
-        role="meter"
-        aria-label={`${props.usageLabel} ${props.label} ${props.usedPercent}% used`}
-        aria-valuemin={0}
-        aria-valuemax={100}
-        aria-valuenow={props.usedPercent}
-        className="h-1.5 overflow-hidden rounded-full bg-muted/70"
-      >
-        <div
-          className={cn("h-full rounded-full transition-[width]", !meterColor && "bg-primary")}
-          style={{ width: `${props.usedPercent}%`, backgroundColor: meterColor }}
-        />
-      </div>
-    </div>
-  );
-}
-
-function ProviderUsageSummary(props: {
-  readonly usage: ProviderAccountUsagePresentation;
-  readonly displayName: string;
-  readonly onResetAccountUsage?: (() => void) | undefined;
-  readonly accountUsageResetInFlight?: boolean | undefined;
-}) {
-  const hasLimitSummary =
-    props.usage.windows.length > 0 ||
-    props.usage.spendControl !== undefined ||
-    props.usage.resetCredits !== undefined;
-  if (!hasLimitSummary) return null;
-
-  const canReset =
-    props.onResetAccountUsage !== undefined && (props.usage.resetCredits?.availableCount ?? 0) > 0;
-
-  return (
-    <div className="mt-2 max-w-md space-y-1.5">
-      <div className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
-        <GaugeIcon className="size-3.5 shrink-0" aria-hidden />
-        <span className="font-medium text-foreground">{props.usage.label}</span>
-      </div>
-      <div className="space-y-1.5 pl-5">
-        {props.usage.externalResets && !props.usage.resetCredits ? (
-          <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs text-muted-foreground">
-            <span className="min-w-10 font-medium text-foreground">Resets</span>
-            <ProviderExternalResetsButton
-              link={props.usage.externalResets}
-              className="h-5 rounded px-1.5 text-[10px] leading-none"
-            />
-          </div>
-        ) : null}
-        {props.usage.resetCredits ? (
-          <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs text-muted-foreground">
-            <span className="min-w-10 font-medium text-foreground">Resets</span>
-            <span>{props.usage.resetCredits.shortLabel}</span>
-            <span aria-hidden>·</span>
-            <span>{props.usage.resetCredits.detail}</span>
-            {canReset ? (
-              <Button
-                type="button"
-                size="xs"
-                variant="outline"
-                className="ml-1 h-5 gap-1 rounded px-1.5 text-[10px] leading-none [&_svg]:size-2.5"
-                disabled={props.accountUsageResetInFlight === true}
-                onClick={props.onResetAccountUsage}
-                aria-label={
-                  props.usage.resetCredits.expirationUrgency
-                    ? `Choose a reset credit for ${props.displayName} usage (a reset expires soon)`
-                    : `Choose a reset credit for ${props.displayName} usage`
-                }
-              >
-                <RotateCcwIcon className="size-3" />
-                {props.accountUsageResetInFlight ? "Using" : "Use reset"}
-                {props.usage.resetCredits.expirationUrgency ? (
-                  <span
-                    aria-hidden="true"
-                    className={cn(
-                      "-right-px -top-px absolute h-1.5 w-1.5 rounded-full ring-2 ring-card",
-                      props.usage.resetCredits.expirationUrgency === "critical"
-                        ? "bg-destructive"
-                        : "bg-warning",
-                    )}
-                  />
-                ) : null}
-              </Button>
-            ) : null}
-          </div>
-        ) : null}
-        {props.usage.spendControl ? (
-          <ProviderUsageSummaryBar
-            usageLabel={props.usage.label}
-            label={props.usage.spendControl.label}
-            detail={props.usage.spendControl.detail}
-            usedPercent={props.usage.spendControl.usedPercent}
-            warning={props.usage.spendControl.warning}
-          />
-        ) : null}
-        {props.usage.windows.map((window) => (
-          <ProviderUsageSummaryBar
-            key={window.key}
-            usageLabel={props.usage.label}
-            label={window.label}
-            detail={window.detail}
-            usedPercent={window.usedPercent}
-            warning={window.warning}
-          />
-        ))}
-      </div>
-    </div>
-  );
-}
-
 function ProviderDetailsNav(props: {
   readonly sections: ReadonlyArray<ProviderDetailsSection>;
   readonly activeSection: ProviderDetailsSection;
   readonly onSectionChange: (section: ProviderDetailsSection) => void;
 }) {
   return (
-    <div className="w-full overflow-x-auto">
-      <div className="inline-flex min-w-max rounded-md border border-border/70 bg-muted/20 p-0.5">
-        {props.sections.map((section) => (
-          <button
-            key={section}
-            type="button"
-            className={cn(
-              "h-7 cursor-pointer rounded px-2.5 text-xs transition-colors",
-              props.activeSection === section
-                ? "bg-background text-foreground shadow-xs"
-                : "text-muted-foreground hover:text-foreground",
-            )}
-            onClick={() => props.onSectionChange(section)}
-            aria-pressed={props.activeSection === section}
-          >
-            {PROVIDER_DETAILS_SECTION_LABELS[section]}
-          </button>
-        ))}
-      </div>
+    <div className="flex min-w-0 flex-wrap gap-x-4 border-b border-border/60">
+      {props.sections.map((section) => (
+        <button
+          key={section}
+          type="button"
+          className={cn(
+            "relative h-8 shrink-0 cursor-pointer text-xs transition-colors",
+            props.activeSection === section
+              ? "text-foreground after:absolute after:inset-x-0 after:-bottom-px after:h-[1.5px] after:bg-primary-readable"
+              : "text-muted-foreground hover:text-foreground",
+          )}
+          onClick={() => props.onSectionChange(section)}
+          aria-pressed={props.activeSection === section}
+        >
+          {PROVIDER_DETAILS_SECTION_LABELS[section]}
+        </button>
+      ))}
     </div>
+  );
+}
+
+/**
+ * The row's compact usage: the tightest limit window as one small meter, plus
+ * a reset-credit button when the account has credits. The full view (every
+ * window, history, external resets) lives in the opened row's Usage tab.
+ */
+function ProviderUsageMeter(props: {
+  readonly usage: ProviderAccountUsagePresentation;
+  readonly displayName: string;
+  readonly onResetAccountUsage?: (() => void) | undefined;
+  readonly accountUsageResetInFlight?: boolean | undefined;
+}) {
+  const tightest = props.usage.windows.reduce<
+    ProviderAccountUsagePresentation["windows"][number] | null
+  >(
+    (worst, window) => (worst === null || window.usedPercent > worst.usedPercent ? window : worst),
+    null,
+  );
+  const meter = props.usage.spendControl ?? tightest;
+  const resetCount = props.usage.resetCredits?.availableCount ?? 0;
+  const canReset = props.onResetAccountUsage !== undefined && resetCount > 0;
+  if (!meter && !canReset) return null;
+  const meterColor = meter ? usageMeterColor(meter.usedPercent, meter.warning) : undefined;
+
+  return (
+    <span className="flex min-w-0 items-center gap-2.5 text-[11.5px] text-muted-foreground">
+      {canReset ? (
+        <Button
+          type="button"
+          size="xs"
+          variant="ghost"
+          className="h-6 px-1.5 text-[11.5px] font-normal text-muted-foreground hover:text-foreground"
+          disabled={props.accountUsageResetInFlight === true}
+          onClick={props.onResetAccountUsage}
+          aria-label={`Choose a reset credit for ${props.displayName} usage`}
+        >
+          {props.accountUsageResetInFlight
+            ? "Using reset"
+            : `${resetCount} ${resetCount === 1 ? "reset" : "resets"}`}
+        </Button>
+      ) : null}
+      {meter ? (
+        <span className="flex items-center gap-1.5">
+          <span>{meter.label}</span>
+          <span
+            role="meter"
+            aria-label={`${props.usage.label} ${meter.label} ${meter.usedPercent}% used`}
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={meter.usedPercent}
+            className="h-1 w-13 overflow-hidden rounded-full bg-muted/80"
+          >
+            <span
+              className={cn("block h-full rounded-full", !meterColor && "bg-primary-graph")}
+              style={{ width: `${meter.usedPercent}%`, backgroundColor: meterColor }}
+            />
+          </span>
+          <span className="min-w-7 text-right font-mono text-[11px] text-foreground tabular-nums">
+            {meter.usedPercent}%
+          </span>
+        </span>
+      ) : null}
+    </span>
   );
 }
 
@@ -1196,57 +1102,49 @@ interface ProviderInstanceCardProps {
   readonly onExpandedChange: (open: boolean) => void;
   readonly onUpdate: (nextInstance: ProviderInstanceConfig) => void;
   /**
-   * Pass `undefined` to hide the delete button entirely. Built-in default
-   * instance slots use `undefined` — they can't be deleted without losing
-   * the slot, and their "reset to defaults" affordance lives on an outer
-   * reset button instead. Explicit `| undefined` in the type accommodates
-   * `exactOptionalPropertyTypes: true`, where an absent key and
-   * `{ onDelete: undefined }` are treated as distinct shapes.
+   * Turns the agent on or off through the shared enablement path. Resolves
+   * once the server stored it, so "Install" on a turned-off agent can wait
+   * for the server to offer the install.
+   */
+  readonly onEnabledChange: (enabled: boolean) => Promise<void>;
+  /**
+   * Pass `undefined` to hide Delete. Built-in default instance slots use
+   * `undefined`: they can't be deleted without losing the slot. Explicit
+   * `| undefined` accommodates `exactOptionalPropertyTypes: true`.
    */
   readonly onDelete?: (() => void) | undefined;
-  /**
-   * Optional outer reset button rendered next to the driver icon. Built-in
-   * default slots supply a reset-to-factory control here; custom instances
-   * omit it.
-   */
-  readonly headerAction?: ReactNode | undefined;
+  /** Restores a built-in slot's settings; absent when nothing differs from defaults. */
+  readonly onResetDefaults?: (() => void) | undefined;
+  /** "this Mac", "this PC" or "this computer", for detection copy. */
+  readonly computerLabel: string;
   readonly hiddenModels: ReadonlyArray<string>;
   readonly favoriteModels: ReadonlyArray<string>;
   readonly modelOrder: ReadonlyArray<string>;
   readonly onHiddenModelsChange: (next: ReadonlyArray<string>) => void;
   readonly onFavoriteModelsChange: (next: ReadonlyArray<string>) => void;
   readonly onModelOrderChange: (next: ReadonlyArray<string>) => void;
-  readonly onRunUpdate?: (() => void) | undefined;
-  readonly isUpdating?: boolean | undefined;
-  readonly onResolveUpdateBlockers?: (() => void) | undefined;
-  readonly isResolvingUpdateBlockers?: boolean | undefined;
+  readonly updateControls: ProviderUpdateControls;
   readonly onResetAccountUsage?: (() => void) | undefined;
   readonly accountUsageResetInFlight?: boolean | undefined;
 }
 
+/** How long a one-click Install on a turned-off agent waits for the server to offer it. */
+const PENDING_INSTALL_TIMEOUT_MS = 30_000;
+
 /**
- * A single configured provider-instance row in the Providers settings
- * section. Used for every row — both the built-in default instance for a
- * driver (rendered with `onDelete` omitted) and user-authored custom
- * instances (`onDelete` supplied). The only UI difference between the two
- * is whether the trash button is visible; every other field (display
- * name, config fields, models) behaves identically.
+ * One configured provider instance on the Providers settings page, drawn as
+ * a flat agent row that opens in place. Used for every row: built-in default
+ * slots (no Delete) and user-authored custom instances.
  *
  * Behavior notes:
- *   - `liveProvider` is matched by the caller via `instanceId`; when no
- *     match is available (e.g. the server hasn't probed yet, or the
- *     driver is not shipped by the current build) the card still renders
- *     with a neutral "checking" summary.
- *   - Unknown drivers (`driverOption === undefined`) get a read-only
- *     notice instead of editable fields, so fork instances round-trip
- *     without accidentally destroying their config.
- *   - The enabled Switch writes to the envelope's `instance.enabled`
- *     field; the server's registry consults this at `entry.enabled ?? true`
- *     before materializing the instance, and the probe also checks its
- *     driver-specific `config.enabled`. We treat the envelope flag as the
- *     single source of truth from the UI — built-in cards used to write
- *     the inner flag, but on the promotion-to-instance path every edit
- *     flows through the envelope.
+ *   - `liveProvider` is matched by the caller via `instanceId`; when no match
+ *     is available yet the row still renders and reads "Checking…".
+ *   - Turned-off rows say what the agent needs and what the server's file-only
+ *     look found, with one button: "Turn on", or "Install" (turn on, then
+ *     install once the server offers it).
+ *   - Unknown drivers (`driverOption === undefined`) get a read-only notice
+ *     instead of editable fields, so fork instances round-trip without
+ *     destroying their config.
  */
 export function ProviderInstanceCard({
   instanceId,
@@ -1257,29 +1155,22 @@ export function ProviderInstanceCard({
   signInHandoffActive = false,
   onExpandedChange,
   onUpdate,
+  onEnabledChange,
   onDelete,
-  headerAction,
+  onResetDefaults,
+  computerLabel,
   hiddenModels,
   favoriteModels,
   modelOrder,
   onHiddenModelsChange,
   onFavoriteModelsChange,
   onModelOrderChange,
-  onRunUpdate,
-  isUpdating = false,
-  onResolveUpdateBlockers,
-  isResolvingUpdateBlockers = false,
+  updateControls,
   onResetAccountUsage,
   accountUsageResetInFlight,
 }: ProviderInstanceCardProps) {
   const enabled = instance.enabled ?? true;
-  // The server-reported status wins when present; otherwise fall back to
-  // "disabled"/"warning" based on the local `enabled` flag so the dot
-  // reflects the persisted intent even before the first probe completes.
-  const statusKey: ProviderStatusKey =
-    (liveProvider?.status as ProviderStatusKey | undefined) ?? (enabled ? "warning" : "disabled");
-  const statusStyle = PROVIDER_STATUS_STYLES[statusKey];
-  const rawSummary = getProviderSummary(liveProvider);
+  const summary = getProviderSummary(liveProvider);
   const authEmail = liveProvider?.auth.email;
   const usageEmail = liveProvider?.auth.usageEmail;
   const usageEmailForDisplay =
@@ -1289,30 +1180,12 @@ export function ProviderInstanceCard({
   const authenticatedDetail = hasAuthenticatedEmail
     ? (liveProvider?.auth.label ?? liveProvider?.auth.type ?? null)
     : null;
-  const summary = rawSummary;
   const versionLabel = getProviderVersionLabel(liveProvider?.version);
   const providerInstallView = deriveProviderInstallView(liveProvider);
-  // With an Install button on the row, the detail keeps its diagnosis and
-  // drops the manual install recipe: never both at once.
-  const summaryDetail = providerInstallView
-    ? firstSentenceOf(summary.detail)
-    : (summary.detail ?? null);
-  const versionAdvisory = getProviderVersionAdvisoryPresentation(liveProvider?.versionAdvisory);
-  const updateCommand = versionAdvisory?.updateCommand ?? null;
-  const providerUpdateState = liveProvider?.updateState ?? null;
-  const providerUpdateMessage = providerUpdateState?.message?.trim() ?? "";
-  const providerUpdateOutput = providerUpdateState?.output?.trim() ?? "";
-  const providerUpdateIsProcessLock =
-    providerUpdateState?.status === "failed" &&
-    isProviderUpdateProcessLockMessage(providerUpdateMessage);
-  const providerUpdatePanelMessage = providerUpdateIsProcessLock
-    ? "Claude is running in the background, so Windows cannot replace claude.exe. Stop those Claude processes, then run the update again."
-    : providerUpdateMessage;
-  const canResolveProviderUpdateBlockers =
-    providerUpdateIsProcessLock && onResolveUpdateBlockers !== undefined;
   const usagePresentation = deriveProviderAccountUsagePresentationForProvider(liveProvider);
-  const hasTokenUsageDetails = usagePresentation?.tokenUsage !== undefined;
+  const versionAdvisory = getProviderVersionAdvisoryPresentation(liveProvider?.versionAdvisory);
   const [detailsSection, setDetailsSection] = useState<ProviderDetailsSection>("account");
+  const [pendingInstall, setPendingInstall] = useState(false);
   // Narrow `instance.driver` for callers that key on the closed
   // `ProviderDriverKind` union (e.g. `normalizeModelSlug`'s alias table). Custom
   // fork drivers pass through as `null` and those callers fall back to
@@ -1327,23 +1200,10 @@ export function ProviderInstanceCard({
     (driverKind ? PROVIDER_DISPLAY_NAMES[driverKind] : undefined) ||
     String(instance.driver);
   const accentColor = normalizeProviderAccentColor(instance.accentColor);
-  const { copyToClipboard } = useCopyToClipboard<{ providerName: string }>({
-    onCopy: ({ providerName }) => {
-      toastManager.add({
-        type: "success",
-        title: `${providerName} update command copied`,
-        description: "Run it in a terminal when you are ready to update.",
-      });
-    },
-    onError: (error, { providerName }) => {
-      toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: `Could not copy ${providerName} update command`,
-          description: error.message,
-        }),
-      );
-    },
+  const agentStatus = deriveAgentStatus({
+    enabled,
+    driverKind: instance.driver,
+    snapshot: liveProvider,
   });
 
   const customModels = readConfigStringArray(instance.config, "customModels");
@@ -1419,6 +1279,33 @@ export function ProviderInstanceCard({
     [driverKind],
   );
 
+  // A one-click Install on a turned-off agent: the agent is turned on first,
+  // and the install starts as soon as the server's snapshot offers it. The
+  // row only says so while the server is still catching up; once it reports
+  // anything else (installing, already there, nothing to install) the row
+  // shows that instead, and a bounded timeout ends the wait.
+  const installStartedRef = useRef(false);
+  const showPendingInstall =
+    pendingInstall && (agentStatus.kind === "checking" || agentStatus.kind === "off");
+  useEffect(() => {
+    if (!pendingInstall || installStartedRef.current) return;
+    // Any install the server offers and isn't already running: a previous
+    // failed attempt shows as "failed", and the user just asked again.
+    if (!providerInstallView || providerInstallView.status === "running" || driverKind === null) {
+      return;
+    }
+    installStartedRef.current = true;
+    void startProviderInstall({ instanceId, driverKind, displayName }).finally(() => {
+      installStartedRef.current = false;
+      setPendingInstall(false);
+    });
+  }, [displayName, driverKind, instanceId, pendingInstall, providerInstallView]);
+  useEffect(() => {
+    if (!pendingInstall) return;
+    const timeout = window.setTimeout(() => setPendingInstall(false), PENDING_INSTALL_TIMEOUT_MS);
+    return () => window.clearTimeout(timeout);
+  }, [pendingInstall]);
+
   const updateDisplayName = (value: string) => {
     const trimmed = value.trim();
     const { displayName: _omit, ...rest } = instance;
@@ -1427,10 +1314,6 @@ export function ProviderInstanceCard({
         ? ({ ...rest, displayName: trimmed } as ProviderInstanceConfig)
         : (rest as ProviderInstanceConfig),
     );
-  };
-
-  const updateEnabled = (value: boolean) => {
-    onUpdate({ ...instance, enabled: value });
   };
 
   const updateAccentColor = (value: string) => {
@@ -1482,84 +1365,162 @@ export function ProviderInstanceCard({
     );
   };
 
-  const titleIconNode = driverKind ? (
+  const iconNode = driverKind ? (
     <ProviderInstanceIcon
       driverKind={driverKind}
       displayName={displayName}
       accentColor={accentColor}
       showBadge={Boolean(accentColor)}
-      statusDotClassName={statusStyle.dot}
       className="size-5"
       iconClassName="size-4 text-foreground/80"
       badgeClassName="right-[-0.125rem] bottom-[-0.125rem] h-3 min-w-3 text-[7px]"
     />
   ) : FallbackIconComponent ? (
-    <span className="relative inline-flex size-5 shrink-0 items-center justify-center">
-      <FallbackIconComponent className="size-4 text-foreground/80" aria-hidden />
-      <span
-        className={cn(
-          "pointer-events-none absolute -left-0.5 -top-0.5 size-2 rounded-full ring-2 ring-background",
-          statusStyle.dot,
-        )}
-        aria-hidden
-      />
-    </span>
-  ) : (
-    <span className={cn("size-2 shrink-0 rounded-full", statusStyle.dot)} />
-  );
+    <FallbackIconComponent className="size-4 text-foreground/80" aria-hidden />
+  ) : null;
 
-  const titleHeadNode = (
+  const tone: AgentRowTone =
+    agentStatus.kind === "problem"
+      ? "error"
+      : agentStatus.kind === "needsSignIn" || agentStatus.kind === "notInstalled"
+        ? "warning"
+        : "none";
+  const needs = driverOption?.needs ?? "";
+  // Healthy rows say who is signed in and nothing more; a broken one keeps the
+  // first sentence of the server's diagnosis.
+  // Without an Install button the full guide (with its link) is the only way
+  // forward, so it stays whole.
+  const showFullGuide = agentStatus.kind === "notInstalled" && !providerInstallView;
+  const diagnosis =
+    tone === "none"
+      ? null
+      : showFullGuide
+        ? (summary.detail ?? null)
+        : firstSentenceOf(summary.detail);
+  // A signed-out row with a Sign in button says what the agent needs, the same
+  // words setup uses; the server's terminal instructions would only compete
+  // with the button next to them.
+  const statusNode: ReactNode =
+    agentStatus.kind === "off" ||
+    agentStatus.kind === "installing" ||
+    (agentStatus.kind === "needsSignIn" && showRowSignIn) ? (
+      agentStatusLine({ status: agentStatus, needs, snapshot: liveProvider })
+    ) : agentStatus.kind === "checking" ? (
+      "Checking…"
+    ) : hasAuthenticatedEmail ? (
+      <span className="inline-flex min-w-0 items-center gap-x-1">
+        <ProviderAuthEmail email={authEmail} />
+        {authenticatedDetail ? <span>· {authenticatedDetail}</span> : null}
+        <ProviderAuthEmail email={usageEmailForDisplay} separator prefix="Usage" />
+      </span>
+    ) : showFullGuide ? (
+      <span>
+        {summary.headline}
+        {diagnosis ? (
+          <>
+            {" · "}
+            <LinkifiedText text={diagnosis} />
+          </>
+        ) : null}
+      </span>
+    ) : (
+      <span className="inline-flex min-w-0 items-center gap-x-1">
+        <span className="shrink-0">{summary.headline}</span>
+        {diagnosis ? (
+          <span className="min-w-0 truncate">
+            · <LinkifiedText text={diagnosis} />
+          </span>
+        ) : null}
+      </span>
+    );
+
+  const detectionLabel =
+    agentStatus.kind === "off" ? agentDetectionLabel(agentStatus.detection, computerLabel) : null;
+  const actionsNode: ReactNode =
+    agentStatus.kind === "off" ? (
+      <>
+        {detectionLabel ? (
+          <span className="text-xs text-muted-foreground/62">{detectionLabel}</span>
+        ) : null}
+        {showPendingInstall ? (
+          <span className="text-xs text-muted-foreground">Starting install…</span>
+        ) : offAgentAction(agentStatus.detection) === "install" ? (
+          <Button
+            size="xs"
+            variant="outline"
+            aria-label={`Install ${displayName}`}
+            onClick={() => {
+              setPendingInstall(true);
+              void onEnabledChange(true).catch(() => setPendingInstall(false));
+            }}
+          >
+            Install
+          </Button>
+        ) : (
+          <Button
+            size="xs"
+            variant="outline"
+            aria-label={`Turn on ${displayName}`}
+            onClick={() => void onEnabledChange(true)}
+          >
+            Turn on
+          </Button>
+        )}
+      </>
+    ) : providerInstallView && driverKind ? (
+      <ProviderInstallAction
+        instanceId={instanceId}
+        driverKind={driverKind}
+        displayName={displayName}
+        view={providerInstallView}
+        statusClassName="max-w-64"
+      />
+    ) : showRowSignIn ? (
+      <ProviderSignInAction
+        instanceId={instanceId}
+        displayName={displayName}
+        onStarted={() => {
+          setDetailsSection("account");
+          onExpandedChange(true);
+        }}
+      />
+    ) : showPendingInstall ? (
+      <span className="text-xs text-muted-foreground">Starting install…</span>
+    ) : usagePresentation && agentStatus.kind === "ready" ? (
+      <ProviderUsageMeter
+        usage={usagePresentation}
+        displayName={displayName}
+        onResetAccountUsage={onResetAccountUsage}
+        accountUsageResetInFlight={accountUsageResetInFlight}
+      />
+    ) : null;
+
+  const versionExtraNode = (
     <>
-      {titleIconNode}
-      <h3 className="truncate text-[13px] font-semibold tracking-[-0.01em] text-foreground">
-        {displayName}
-      </h3>
       {String(instanceId) !== String(instance.driver) ? (
         <code className="truncate rounded bg-muted/60 px-1 py-0.5 text-[10px] text-muted-foreground">
           {instanceId}
         </code>
       ) : null}
-      {driverOption?.badgeLabel ? (
-        <Badge variant="warning" size="sm" className="shrink-0">
-          {driverOption.badgeLabel}
-        </Badge>
-      ) : null}
-    </>
-  );
-
-  const titleTailNode = (
-    <>
-      {headerAction ? (
-        <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center">
-          {headerAction}
-        </span>
-      ) : null}
-      {onDelete ? (
-        <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center">
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <Button
-                  size="icon-xs"
-                  variant="ghost"
-                  className="size-5 rounded-sm p-0 text-muted-foreground hover:text-destructive"
-                  onClick={onDelete}
-                  aria-label={`Delete provider instance ${instanceId}`}
-                >
-                  <Trash2Icon className="size-3" />
-                </Button>
-              }
+      {enabled && versionAdvisory && updateControls.candidate ? (
+        <ProviderUpdatePopover
+          liveProvider={liveProvider}
+          displayName={displayName}
+          controls={updateControls}
+          trigger={
+            <AgentUpdateTag
+              version={updateControls.candidate.versionAdvisory.latestVersion}
+              aria-label={`Update ${displayName} to ${updateControls.candidate.versionAdvisory.latestVersion}`}
             />
-            <TooltipPopup side="top">Delete instance</TooltipPopup>
-          </Tooltip>
-        </span>
+          }
+        />
       ) : null}
     </>
   );
 
   const availableDetailsSections: ReadonlyArray<ProviderDetailsSection> = [
     ...(terminalLoginCommand ? (["account"] as const) : []),
-    ...(hasTokenUsageDetails ? (["usage"] as const) : []),
+    ...(usagePresentation ? (["usage"] as const) : []),
     ...(driverOption !== undefined ? (["models"] as const) : []),
     "configuration",
   ];
@@ -1567,246 +1528,39 @@ export function ProviderInstanceCard({
     ? detailsSection
     : (availableDetailsSections[0] ?? "configuration");
 
-  const authRowNode = (
-    <p className="flex min-w-0 flex-wrap items-center gap-x-1 text-xs text-muted-foreground/80">
-      {hasAuthenticatedEmail ? (
-        <>
-          <span>Authenticated as</span>
-          <ProviderAuthEmail email={authEmail} />
-          {authenticatedDetail ? <span>· {authenticatedDetail}</span> : null}
-          <ProviderAuthEmail email={usageEmailForDisplay} separator prefix="Usage" />
-        </>
-      ) : (
-        <>
-          <span>{summary.headline}</span>
-          <ProviderAuthEmail email={authEmail} separator prefix="Email" />
-          <ProviderAuthEmail email={usageEmailForDisplay} separator prefix="Usage" />
-        </>
-      )}
-      {summaryDetail ? (
-        <span>
-          - <LinkifiedText text={summaryDetail} />
-        </span>
-      ) : null}
-    </p>
-  );
-
-  const versionCodeNode = versionLabel ? (
-    <code className="text-xs text-muted-foreground">{versionLabel}</code>
-  ) : null;
-  const toggleDetails = () => onExpandedChange(!isExpanded);
-  const handleSummaryClick = (event: MouseEvent<HTMLDivElement>) => {
-    if (shouldIgnoreProviderCardToggle(event.target)) return;
-    toggleDetails();
-  };
-
   return (
-    <div className="relative overflow-hidden rounded-2xl border border-border/75 bg-card text-card-foreground shadow-sm/4 not-dark:bg-clip-padding before:pointer-events-none before:absolute before:inset-0 before:rounded-[calc(var(--radius-2xl)-1px)] before:shadow-[0_1px_--theme(--color-black/4%)] dark:shadow-none dark:before:shadow-[0_-1px_--theme(--color-white/6%)]">
-      <div
-        className="cursor-pointer px-4 py-3.5 transition-colors hover:bg-muted/10 sm:px-5"
-        onClick={handleSummaryClick}
-      >
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <div className="min-w-0 flex-1 space-y-1">
-            <div className="flex min-w-0 flex-wrap items-center gap-2">
-              {titleHeadNode}
-              {versionCodeNode}
-              {versionAdvisory ? (
-                <Popover>
-                  <PopoverTrigger
-                    render={
-                      <Button
-                        type="button"
-                        size="icon-xs"
-                        variant="ghost"
-                        className={cn(
-                          "size-5 rounded-sm p-0",
-                          versionAdvisory.emphasis === "strong"
-                            ? "text-warning hover:text-warning"
-                            : "text-primary-readable hover:text-primary-readable",
-                        )}
-                        aria-label="Update available — view details"
-                      >
-                        <ArrowUpCircleIcon className="size-3.5 [animation:bounce_2.4s_ease-in-out_infinite] motion-reduce:animate-none" />
-                      </Button>
-                    }
-                  />
-                  <PopoverPopup
-                    side="bottom"
-                    align="start"
-                    className="w-[min(21rem,calc(100vw-1.5rem))] [--popup-width:min(21rem,calc(100vw-1.5rem))]"
-                  >
-                    <div className="grid min-w-0 gap-3">
-                      <div className="grid gap-0.5">
-                        <p className="text-[13px] font-semibold leading-tight text-foreground">
-                          Update available
-                        </p>
-                        <p
-                          className={cn(
-                            "text-xs leading-snug",
-                            versionAdvisory.emphasis === "strong"
-                              ? "text-warning"
-                              : "text-muted-foreground",
-                          )}
-                        >
-                          {versionAdvisory.detail}
-                        </p>
-                      </div>
-                      {providerUpdateMessage ? (
-                        <div
-                          className={cn(
-                            "grid gap-2 rounded-md border px-2.5 py-2 text-xs leading-snug",
-                            providerUpdateIsProcessLock
-                              ? "border-warning/35 bg-warning/8 text-warning"
-                              : providerUpdateState?.status === "failed"
-                                ? "border-destructive/35 bg-destructive/8 text-destructive"
-                                : providerUpdateState?.status === "unchanged"
-                                  ? "border-warning/35 bg-warning/8 text-warning"
-                                  : "border-border/70 bg-muted/40 text-muted-foreground",
-                          )}
-                        >
-                          <div className="flex min-w-0 items-start gap-2">
-                            <AlertCircleIcon className="mt-0.5 size-3.5 shrink-0" aria-hidden />
-                            <p className="min-w-0">{providerUpdatePanelMessage}</p>
-                          </div>
-                          {providerUpdateState?.status === "failed" &&
-                          providerUpdateOutput &&
-                          !providerUpdateIsProcessLock ? (
-                            <ScrollArea scrollFade className="max-h-24 min-w-0 rounded-sm">
-                              <code className="block whitespace-pre-wrap break-words rounded-sm bg-background/55 p-2 font-mono text-[10px] leading-snug text-foreground/80">
-                                {truncateProviderUpdateOutput(providerUpdateOutput)}
-                              </code>
-                            </ScrollArea>
-                          ) : null}
-                          {canResolveProviderUpdateBlockers ? (
-                            <Button
-                              type="button"
-                              size="xs"
-                              variant="outline"
-                              className="w-full border-warning/35 bg-background/45 text-warning hover:bg-warning/10 hover:text-warning"
-                              disabled={isResolvingUpdateBlockers || isUpdating}
-                              onClick={onResolveUpdateBlockers}
-                            >
-                              {isResolvingUpdateBlockers ? (
-                                <LoaderIcon className="animate-spin" />
-                              ) : (
-                                <XIcon />
-                              )}
-                              {isResolvingUpdateBlockers
-                                ? "Stopping Claude"
-                                : "Stop Claude processes"}
-                            </Button>
-                          ) : null}
-                        </div>
-                      ) : null}
-                      {onRunUpdate ? (
-                        <Button
-                          type="button"
-                          size="xs"
-                          variant="default"
-                          className="w-full"
-                          disabled={isUpdating || isResolvingUpdateBlockers}
-                          onClick={onRunUpdate}
-                        >
-                          {isUpdating ? <LoaderIcon className="animate-spin" /> : <DownloadIcon />}
-                          {isUpdating ? "Updating" : "Update now"}
-                        </Button>
-                      ) : null}
-                      {onRunUpdate && updateCommand ? (
-                        <div className="flex items-center gap-2 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
-                          <span aria-hidden className="h-px flex-1 bg-border" />
-                          or, update manually using
-                          <span aria-hidden className="h-px flex-1 bg-border" />
-                        </div>
-                      ) : null}
-                      {updateCommand ? (
-                        <div className="flex min-w-0 items-center gap-1 rounded-md border border-border/70 bg-muted/40 py-0.5 pr-0.5 pl-2">
-                          <ScrollArea scrollFade className="h-8 min-w-0 flex-1 rounded-none">
-                            <code className="flex h-full w-max items-center whitespace-nowrap pr-3 font-mono text-[11px] text-foreground">
-                              {updateCommand}
-                            </code>
-                          </ScrollArea>
-                          <Tooltip>
-                            <TooltipTrigger
-                              render={
-                                <Button
-                                  type="button"
-                                  size="icon-xs"
-                                  variant="ghost"
-                                  className="size-6 shrink-0 rounded-sm p-0 text-muted-foreground hover:text-foreground"
-                                  onClick={() =>
-                                    copyToClipboard(updateCommand, {
-                                      providerName: displayName,
-                                    })
-                                  }
-                                  aria-label="Copy update command"
-                                >
-                                  <CopyIcon className="size-3" />
-                                </Button>
-                              }
-                            />
-                            <TooltipPopup side="top">Copy command</TooltipPopup>
-                          </Tooltip>
-                        </div>
-                      ) : null}
-                    </div>
-                  </PopoverPopup>
-                </Popover>
-              ) : null}
-              {titleTailNode}
-            </div>
-            {authRowNode}
-            {usagePresentation ? (
-              <ProviderUsageSummary
-                usage={usagePresentation}
-                displayName={displayName}
-                onResetAccountUsage={onResetAccountUsage}
-                accountUsageResetInFlight={accountUsageResetInFlight}
-              />
-            ) : null}
-          </div>
-          <div className="flex w-full min-w-0 shrink-0 items-center gap-2 sm:w-auto sm:justify-end">
-            {providerInstallView && driverKind ? (
-              <ProviderInstallAction
-                instanceId={instanceId}
-                driverKind={driverKind}
-                displayName={displayName}
-                view={providerInstallView}
-                statusClassName="max-w-64"
-              />
-            ) : showRowSignIn ? (
-              <ProviderSignInAction
-                instanceId={instanceId}
-                displayName={displayName}
-                onStarted={() => {
-                  setDetailsSection("account");
-                  onExpandedChange(true);
-                }}
-              />
-            ) : null}
-            <Button
-              size="sm"
-              variant="ghost"
-              className="h-7 px-2 text-xs text-muted-foreground hover:bg-transparent hover:text-foreground data-[pressed]:bg-transparent"
-              onClick={toggleDetails}
-              aria-label={`Toggle ${displayName} details`}
-            >
-              <ChevronDownIcon
-                className={cn("size-3.5 transition-transform", isExpanded && "rotate-180")}
-              />
-            </Button>
-            <Switch
-              checked={enabled}
-              onCheckedChange={(checked) => updateEnabled(Boolean(checked))}
-              aria-label={`Enable ${displayName}`}
-            />
-          </div>
-        </div>
-      </div>
-
+    <AgentRow
+      data-testid="provider-instance-row"
+      data-provider-instance-id={String(instanceId)}
+      data-agent-status={agentStatus.kind}
+      icon={iconNode}
+      name={displayName}
+      version={enabled ? versionLabel : null}
+      versionExtra={versionExtraNode}
+      status={statusNode}
+      wrapStatus={showFullGuide}
+      tone={enabled ? tone : "none"}
+      actions={actionsNode}
+      expanded={isExpanded}
+      onToggle={() => onExpandedChange(!isExpanded)}
+      trailing={
+        <Button
+          size="icon-xs"
+          variant="ghost"
+          className="size-6 shrink-0 text-muted-foreground/70 hover:bg-transparent hover:text-foreground data-[pressed]:bg-transparent"
+          onClick={() => onExpandedChange(!isExpanded)}
+          aria-label={`Toggle ${displayName} details`}
+          aria-expanded={isExpanded}
+        >
+          <ChevronDownIcon
+            className={cn("size-3.5 transition-transform", isExpanded && "rotate-180")}
+          />
+        </Button>
+      }
+    >
       <Collapsible open={isExpanded} onOpenChange={onExpandedChange}>
         <CollapsibleContent>
-          <div className="border-t border-border/60 px-4 py-3 sm:px-5">
+          <div className="px-4 sm:px-5">
             <ProviderDetailsNav
               sections={availableDetailsSections}
               activeSection={activeDetailsSection}
@@ -1815,11 +1569,10 @@ export function ProviderInstanceCard({
           </div>
 
           {activeDetailsSection === "usage" && usagePresentation ? (
-            <div className="border-t border-border/60 px-4 py-4 sm:px-5">
+            <div className="px-4 py-4 sm:px-5">
               <ProviderUsageDashboard
                 usage={usagePresentation}
                 displayName={displayName}
-                showLimits={false}
                 onResetAccountUsage={onResetAccountUsage}
                 accountUsageResetInFlight={accountUsageResetInFlight}
               />
@@ -1938,8 +1691,42 @@ export function ProviderInstanceCard({
               )}
             </div>
           ) : null}
+
+          <div className="flex flex-wrap items-center justify-end gap-1 border-t border-border/60 px-3 py-2">
+            {onResetDefaults ? (
+              <Button
+                size="xs"
+                variant="ghost"
+                className="text-muted-foreground hover:text-foreground"
+                onClick={onResetDefaults}
+              >
+                <RotateCcwIcon className="size-3" />
+                Reset to defaults
+              </Button>
+            ) : null}
+            {onDelete ? (
+              <Button
+                size="xs"
+                variant="ghost"
+                className="text-muted-foreground hover:text-destructive"
+                onClick={onDelete}
+                aria-label={`Delete provider instance ${instanceId}`}
+              >
+                <Trash2Icon className="size-3" />
+                Delete
+              </Button>
+            ) : null}
+            <Button
+              size="xs"
+              variant="ghost"
+              className="text-muted-foreground hover:text-foreground"
+              onClick={() => void onEnabledChange(!enabled)}
+            >
+              {enabled ? `Turn off ${displayName}` : `Turn on ${displayName}`}
+            </Button>
+          </div>
         </CollapsibleContent>
       </Collapsible>
-    </div>
+    </AgentRow>
   );
 }

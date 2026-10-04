@@ -224,11 +224,11 @@ export function providerUpdateNotificationKey(
 /**
  * Whether the launch prompt ("Updates available") may open right now.
  *
- * The last clause is the interesting one: while first-run setup is on screen
- * the user is being told what to install and sign in to, and a toast offering
- * a different install on top of that is the stacking noise the composer notice
- * dock already refuses. The prompt is deferred, not dropped -- once setup is
- * completed or skipped this turns true and the prompt opens then. Only this
+ * The last clause is the interesting one: while setup is pending, not yet
+ * known (the app is still loading), or on screen, the user is being told what
+ * to install and sign in to, and a toast offering a different install on top
+ * of that is stacking noise. The prompt is deferred, not dropped -- once setup
+ * is completed or skipped this turns true and the prompt opens then. Only this
  * informational prompt waits; a running or failed update still reports itself,
  * because that is progress the user asked for.
  */
@@ -238,14 +238,14 @@ export function shouldOpenProviderUpdatePrompt(input: {
   /** Already shown once this session, whether or not it is still on screen. */
   readonly isAlreadySeen: boolean;
   readonly hasActiveToast: boolean;
-  readonly isFirstRunSetupPending: boolean;
+  readonly isHeldForSetup: boolean;
 }): boolean {
   return (
     input.notificationKey !== null &&
     !input.isDismissed &&
     !input.isAlreadySeen &&
     !input.hasActiveToast &&
-    !input.isFirstRunSetupPending
+    !input.isHeldForSetup
   );
 }
 

@@ -85,7 +85,7 @@ function ProviderConnectTerminal({
     <div
       ref={mountRef}
       className="h-56 w-full overflow-hidden rounded-sm bg-background"
-      data-provider-card-toggle-ignore
+      data-agent-row-toggle-ignore
     />
   );
 }
@@ -128,7 +128,12 @@ export interface ProviderConnectFlowProps {
   readonly surface?: "terminal" | "browser";
 }
 
-function BrowserRedirectField(props: { readonly onSubmit: (url: string) => Promise<void> }) {
+/**
+ * Finishes a browser sign-in started on another device: the browser ends on a
+ * loopback address that only this computer can reach, so the user pastes it
+ * here. Settings and the setup screen both show it while such a sign-in runs.
+ */
+export function BrowserRedirectField(props: { readonly onSubmit: (url: string) => Promise<void> }) {
   const [value, setValue] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
@@ -146,7 +151,7 @@ function BrowserRedirectField(props: { readonly onSubmit: (url: string) => Promi
       .finally(() => setPending(false));
   };
   return (
-    <div className="grid gap-1.5" data-provider-card-toggle-ignore>
+    <div className="grid gap-1.5" data-agent-row-toggle-ignore>
       <p className="text-xs text-muted-foreground">
         Signing in on another device? When the browser ends on a page that can't be reached, copy
         that page's address and paste it here.

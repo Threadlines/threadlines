@@ -147,11 +147,17 @@ function RootRouteView() {
     return <Outlet />;
   }
 
+  // Setup takes the whole window: no sidebar, but the same services, toasts
+  // and command palette (its folder picker runs there).
   const appShell = (
     <CommandPalette>
-      <AppSidebarLayout>
+      {pathname === "/setup" ? (
         <Outlet />
-      </AppSidebarLayout>
+      ) : (
+        <AppSidebarLayout>
+          <Outlet />
+        </AppSidebarLayout>
+      )}
     </CommandPalette>
   );
 

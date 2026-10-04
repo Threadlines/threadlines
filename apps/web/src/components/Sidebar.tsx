@@ -1766,7 +1766,7 @@ export default function Sidebar() {
                     environmentOptions={environmentScopeOptions}
                     scopedEnvironmentId={scopedEnvironmentIdValue}
                     onEnvironmentScopeChange={handleEnvironmentScopeChange}
-                    onAddProject={openAddProjectCommandPalette}
+                    onAddProject={() => openAddProjectCommandPalette()}
                     onNewThread={handleComposeClick}
                     newThreadShortcutLabel={newThreadShortcutLabel}
                   />
@@ -1795,7 +1795,7 @@ export default function Sidebar() {
                             type="button"
                             data-testid="inbox-empty-add-project"
                             className="cursor-pointer text-[11px] text-muted-foreground/80 underline-offset-2 transition-colors hover:text-foreground hover:underline focus-ring"
-                            onClick={openAddProjectCommandPalette}
+                            onClick={() => openAddProjectCommandPalette()}
                           >
                             Add a project
                           </button>

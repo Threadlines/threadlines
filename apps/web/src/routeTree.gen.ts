@@ -13,6 +13,7 @@ import { Route as ChatRouteImport } from './routes/_chat'
 import { Route as JoinRouteImport } from './routes/join'
 import { Route as PairRouteImport } from './routes/pair'
 import { Route as SettingsRouteImport } from './routes/settings'
+import { Route as SetupRouteImport } from './routes/setup'
 import { Route as ChatIndexRouteImport } from './routes/_chat.index'
 import { Route as ChatChatsRouteImport } from './routes/_chat.chats'
 import { Route as ChatPullRequestsRouteImport } from './routes/_chat.pull-requests'
@@ -47,6 +48,11 @@ const PairRoute = PairRouteImport.update({
 const SettingsRoute = SettingsRouteImport.update({
   id: '/settings',
   path: '/settings',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SetupRoute = SetupRouteImport.update({
+  id: '/setup',
+  path: '/setup',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ChatIndexRoute = ChatIndexRouteImport.update({
@@ -136,6 +142,7 @@ export interface FileRoutesByFullPath {
   '/join': typeof JoinRoute
   '/pair': typeof PairRoute
   '/settings': typeof SettingsRouteWithChildren
+  '/setup': typeof SetupRoute
   '/chats': typeof ChatChatsRoute
   '/pull-requests': typeof ChatPullRequestsRoute
   '/usage': typeof ChatUsageRoute
@@ -155,6 +162,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/join': typeof JoinRoute
   '/pair': typeof PairRoute
+  '/setup': typeof SetupRoute
   '/chats': typeof ChatChatsRoute
   '/pull-requests': typeof ChatPullRequestsRoute
   '/usage': typeof ChatUsageRoute
@@ -178,6 +186,7 @@ export interface FileRoutesById {
   '/join': typeof JoinRoute
   '/pair': typeof PairRoute
   '/settings': typeof SettingsRouteWithChildren
+  '/setup': typeof SetupRoute
   '/_chat/chats': typeof ChatChatsRoute
   '/_chat/pull-requests': typeof ChatPullRequestsRoute
   '/_chat/usage': typeof ChatUsageRoute
@@ -202,6 +211,7 @@ export interface FileRouteTypes {
     | '/join'
     | '/pair'
     | '/settings'
+    | '/setup'
     | '/chats'
     | '/pull-requests'
     | '/usage'
@@ -221,6 +231,7 @@ export interface FileRouteTypes {
   to:
     | '/join'
     | '/pair'
+    | '/setup'
     | '/chats'
     | '/pull-requests'
     | '/usage'
@@ -243,6 +254,7 @@ export interface FileRouteTypes {
     | '/join'
     | '/pair'
     | '/settings'
+    | '/setup'
     | '/_chat/chats'
     | '/_chat/pull-requests'
     | '/_chat/usage'
@@ -266,6 +278,7 @@ export interface RootRouteChildren {
   JoinRoute: typeof JoinRoute
   PairRoute: typeof PairRoute
   SettingsRoute: typeof SettingsRouteWithChildren
+  SetupRoute: typeof SetupRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -296,6 +309,13 @@ declare module '@tanstack/react-router' {
       path: '/settings'
       fullPath: '/settings'
       preLoaderRoute: typeof SettingsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/setup': {
+      id: '/setup'
+      path: '/setup'
+      fullPath: '/setup'
+      preLoaderRoute: typeof SetupRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/_chat/': {
@@ -468,6 +488,7 @@ const rootRouteChildren: RootRouteChildren = {
   JoinRoute: JoinRoute,
   PairRoute: PairRoute,
   SettingsRoute: SettingsRouteWithChildren,
+  SetupRoute: SetupRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

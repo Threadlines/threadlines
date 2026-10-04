@@ -12,6 +12,7 @@
 import type {
   ModelCapabilities,
   ServerProvider,
+  ServerProviderDetection,
   ServerProviderModel,
 } from "@threadlines/contracts";
 import * as Cause from "effect/Cause";
@@ -28,6 +29,7 @@ import {
   enrichProviderSnapshotWithVersionAdvisory,
   type ProviderMaintenanceCapabilities,
 } from "../providerMaintenance.ts";
+import { detectProviderBinary, undetectableProvider } from "../providerDetection.ts";
 import {
   buildServerProvider,
   providerModelsFromSettings,
@@ -79,35 +81,97 @@ export function getAcpFallbackModels<Settings extends AcpProviderSettings>(
   );
 }
 
+/**
+ * The default ACP detection: the configured binary looked up on disk the way
+ * `resolveAcpBinaryPath` finds it for spawning (PATH, then the Windows CLI
+ * installer folders). Agents that run somewhere the host cannot see are
+ * reported as unknown rather than guessed at.
+ */
+export function detectAcpBinary<Settings extends AcpProviderSettings>(
+  descriptor: AcpProviderDescriptor<Settings>,
+  binaryPath: string,
+  environment: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform = process.platform,
+): ServerProviderDetection {
+  if (descriptor.resolveBinaryOnHost?.(platform) === false) {
+    return undetectableProvider(
+      `Threadlines can't look for ${descriptor.presentation.displayName} without starting it. Turn it on to check.`,
+    );
+  }
+  return detectProviderBinary({ binaryPath, env: environment, platform, knownCliDirs: true });
+}
+
+/** What a filesystem-only look finds for a turned-off agent: its `detect` hook, or the binary. */
+const detectAcpProvider = <Settings extends AcpProviderSettings>(
+  descriptor: AcpProviderDescriptor<Settings>,
+  settings: Settings,
+  environment: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform,
+): Effect.Effect<ServerProviderDetection> => {
+  const detectBinary = (binaryPath: string) =>
+    detectAcpBinary(descriptor, binaryPath, environment, platform);
+  return descriptor.detect
+    ? descriptor.detect({ settings, environment, platform, detectBinary })
+    : Effect.sync(() => detectBinary(settings.binaryPath));
+};
+
+/** The snapshot for a turned-off instance: no probe, only the filesystem detection. */
+const buildDisabledAcpProviderSnapshot = <Settings extends AcpProviderSettings>(
+  descriptor: AcpProviderDescriptor<Settings>,
+  settings: Settings,
+  checkedAt: string,
+  environment: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform,
+): Effect.Effect<ServerProviderDraft> =>
+  detectAcpProvider(descriptor, settings, environment, platform).pipe(
+    Effect.map((detection) =>
+      buildServerProvider({
+        presentation: descriptor.presentation,
+        enabled: false,
+        checkedAt,
+        models: getAcpFallbackModels(descriptor, settings),
+        probe: {
+          installed: false,
+          version: null,
+          status: "warning",
+          auth: { status: "unknown" },
+          message: `${descriptor.presentation.displayName} is disabled in Threadlines settings.`,
+        },
+        detection,
+      }),
+    ),
+  );
+
 export function buildInitialAcpProviderSnapshot<Settings extends AcpProviderSettings>(
   descriptor: AcpProviderDescriptor<Settings>,
   settings: Settings,
+  environment: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
 ): Effect.Effect<ServerProviderDraft> {
   return Effect.gen(function* () {
     const checkedAt = yield* Effect.map(DateTime.now, DateTime.formatIso);
-    const models = getAcpFallbackModels(descriptor, settings);
-    const displayName = descriptor.presentation.displayName;
+    if (!settings.enabled) {
+      return yield* buildDisabledAcpProviderSnapshot(
+        descriptor,
+        settings,
+        checkedAt,
+        environment,
+        platform,
+      );
+    }
     return buildServerProvider({
       presentation: descriptor.presentation,
-      enabled: settings.enabled,
+      enabled: true,
       checkedAt,
-      models,
-      probe: settings.enabled
-        ? {
-            installed: true,
-            version: null,
-            status: "warning",
-            statusReason: "provider_probe_pending",
-            auth: { status: "unknown" },
-            message: `Checking ${displayName} availability...`,
-          }
-        : {
-            installed: false,
-            version: null,
-            status: "warning",
-            auth: { status: "unknown" },
-            message: `${displayName} is disabled in Threadlines settings.`,
-          },
+      models: getAcpFallbackModels(descriptor, settings),
+      probe: {
+        installed: true,
+        version: null,
+        status: "warning",
+        statusReason: "provider_probe_pending",
+        auth: { status: "unknown" },
+        message: `Checking ${descriptor.presentation.displayName} availability...`,
+      },
     });
   });
 }
@@ -346,25 +410,20 @@ export const checkAcpProviderStatus = <Settings extends AcpProviderSettings>(
   descriptor: AcpProviderDescriptor<Settings>,
   settings: Settings,
   environment: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
 ): Effect.Effect<ServerProviderDraft, never, ProbeEnv> =>
   Effect.gen(function* () {
     const checkedAt = DateTime.formatIso(yield* DateTime.now);
     const displayName = descriptor.presentation.displayName;
 
     if (!settings.enabled) {
-      return buildServerProvider({
-        presentation: descriptor.presentation,
-        enabled: false,
+      return yield* buildDisabledAcpProviderSnapshot(
+        descriptor,
+        settings,
         checkedAt,
-        models: getAcpFallbackModels(descriptor, settings),
-        probe: {
-          installed: false,
-          version: null,
-          status: "warning",
-          auth: { status: "unknown" },
-          message: `${displayName} is disabled in Threadlines settings.`,
-        },
-      });
+        environment,
+        platform,
+      );
     }
 
     const probe = yield* descriptor.probe(settings, environment);

@@ -1,3 +1,4 @@
+import type { EnvironmentId, ScopedProjectRef } from "@threadlines/contracts";
 import { create } from "zustand";
 
 export interface CommandPaletteThreadSearchRequest {
@@ -5,6 +6,16 @@ export interface CommandPaletteThreadSearchRequest {
   projectName: string;
   /** Scoped project keys of the logical project's member projects. */
   memberProjectKeys: readonly string[];
+}
+
+/**
+ * An add-project flow opened to pick a folder for someone else (the setup
+ * screen): the palette reports the project instead of opening a thread in it,
+ * and stays on the given environment.
+ */
+export interface CommandPaletteProjectSelection {
+  readonly environmentId?: EnvironmentId;
+  readonly onProjectSelected: (projectRef: ScopedProjectRef) => void;
 }
 
 type CommandPaletteOpenIntent =
@@ -22,11 +33,14 @@ interface CommandPaletteStore {
    */
   openGeneration: number;
   openIntent: CommandPaletteOpenIntent | null;
+  /** Present while an add-project flow is picking a folder for a caller; cleared on close. */
+  projectSelection: CommandPaletteProjectSelection | null;
   setOpen: (open: boolean) => void;
   /** Closes only if the palette is still on the given open generation. */
   closeIfGeneration: (generation: number) => void;
   toggleOpen: () => void;
-  openAddProject: () => void;
+  /** Opens the add-project flow; with a selection, it reports the project instead of opening it. */
+  openAddProject: (selection?: CommandPaletteProjectSelection) => void;
   openThreadSearch: (request: CommandPaletteThreadSearchRequest) => void;
   clearOpenIntent: () => void;
 }
@@ -35,6 +49,7 @@ export const useCommandPaletteStore = create<CommandPaletteStore>((set) => ({
   open: false,
   openGeneration: 0,
   openIntent: null,
+  projectSelection: null,
   setOpen: (open) =>
     set((state) => ({
       open,
@@ -42,21 +57,26 @@ export const useCommandPaletteStore = create<CommandPaletteStore>((set) => ({
         ? state.open
           ? {}
           : { openGeneration: state.openGeneration + 1 }
-        : { openIntent: null }),
+        : { openIntent: null, projectSelection: null }),
     })),
   closeIfGeneration: (generation) =>
     set((state) =>
-      state.open && state.openGeneration === generation ? { open: false, openIntent: null } : state,
+      state.open && state.openGeneration === generation
+        ? { open: false, openIntent: null, projectSelection: null }
+        : state,
     ),
   toggleOpen: () =>
     set((state) => ({
       open: !state.open,
-      ...(state.open ? { openIntent: null } : { openGeneration: state.openGeneration + 1 }),
+      ...(state.open
+        ? { openIntent: null, projectSelection: null }
+        : { openGeneration: state.openGeneration + 1 }),
     })),
-  openAddProject: () =>
+  openAddProject: (selection) =>
     set((state) => ({
       open: true,
       ...(state.open ? {} : { openGeneration: state.openGeneration + 1 }),
+      projectSelection: selection ?? null,
       openIntent: {
         kind: "add-project",
         requestId: (state.openIntent?.requestId ?? 0) + 1,
@@ -66,6 +86,7 @@ export const useCommandPaletteStore = create<CommandPaletteStore>((set) => ({
     set((state) => ({
       open: true,
       ...(state.open ? {} : { openGeneration: state.openGeneration + 1 }),
+      projectSelection: null,
       openIntent: {
         kind: "search-threads",
         requestId: (state.openIntent?.requestId ?? 0) + 1,

@@ -27,12 +27,13 @@ import {
   type ProviderInstance,
 } from "../ProviderDriver.ts";
 import { mergeProviderInstanceEnvironment } from "../ProviderInstanceEnvironment.ts";
-import { resolveCommandPath, resolveKnownWindowsCliDirs } from "@threadlines/shared/shell";
+import { resolveCommandPath } from "@threadlines/shared/shell";
 
 import {
   type ProviderMaintenanceCapabilitiesResolver,
   resolveProviderMaintenanceCapabilitiesEffect,
 } from "../providerMaintenance.ts";
+import { withKnownCliDirsOnPath } from "../providerDetection.ts";
 import type { ServerProviderDraft } from "../providerSnapshot.ts";
 import { makeAcpAdapter } from "./AcpAdapter.ts";
 import {
@@ -120,14 +121,8 @@ export function resolveAcpBinaryPath<Settings extends AcpProviderSettings>(
   if (!isBareCommandName(trimmed) || descriptor.resolveBinaryOnHost?.(platform) === false) {
     return trimmed;
   }
-  const searchPath = [env.PATH ?? env.Path ?? "", ...resolveKnownWindowsCliDirs(env)]
-    .filter((entry) => entry.length > 0)
-    .join(platform === "win32" ? ";" : ":");
   return (
-    resolveCommandPath(trimmed, {
-      platform,
-      env: platform === "win32" ? { ...env, PATH: searchPath } : env,
-    }) ?? trimmed
+    resolveCommandPath(trimmed, { platform, env: withKnownCliDirsOnPath(env, platform) }) ?? trimmed
   );
 }
 
@@ -215,7 +210,9 @@ export function makeAcpProviderDriver<Settings extends AcpProviderSettings>(
           streamSettings: Stream.never,
           haveSettingsChanged: () => false,
           initialSnapshot: (settings) =>
-            buildInitialAcpProviderSnapshot(descriptor, settings).pipe(Effect.map(stampIdentity)),
+            buildInitialAcpProviderSnapshot(descriptor, settings, processEnv).pipe(
+              Effect.map(stampIdentity),
+            ),
           checkProvider,
           enrichSnapshot: ({ settings, snapshot: currentSnapshot, publishSnapshot }) =>
             enrichAcpSnapshot({

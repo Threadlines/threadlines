@@ -172,23 +172,35 @@ const getLegacyProviderSettings = (
 ): LegacyProviderSettings | undefined =>
   (settings.providers as Record<string, LegacyProviderSettings | undefined>)[provider];
 
-function resolveTextGenerationDriver(
+/**
+ * The driver an instance runs on, or null when it is turned off or unknown.
+ * An instance envelope decides when one exists (the UI turns providers off
+ * there); otherwise the legacy `providers.<kind>` blob does.
+ */
+function resolveEnabledInstanceDriver(
   settings: ServerSettings,
-  selection: ModelSelection,
+  instanceId: ProviderInstanceId,
 ): ProviderDriverKind | null {
-  const instanceConfig = settings.providerInstances[selection.instanceId];
+  const instanceConfig = settings.providerInstances[instanceId];
   if (instanceConfig !== undefined) {
     return (instanceConfig.enabled ?? true) ? instanceConfig.driver : null;
   }
 
   if (
-    isProviderDriverKind(selection.instanceId) &&
-    getLegacyProviderSettings(settings, selection.instanceId)?.enabled
+    isProviderDriverKind(instanceId) &&
+    getLegacyProviderSettings(settings, instanceId)?.enabled
   ) {
-    return ProviderDriverKind.make(selection.instanceId);
+    return ProviderDriverKind.make(instanceId);
   }
 
   return null;
+}
+
+function resolveTextGenerationDriver(
+  settings: ServerSettings,
+  selection: ModelSelection,
+): ProviderDriverKind | null {
+  return resolveEnabledInstanceDriver(settings, selection.instanceId);
 }
 
 function textGenerationSelectionIsEnabled(
@@ -198,24 +210,30 @@ function textGenerationSelectionIsEnabled(
   return resolveTextGenerationDriver(settings, selection) !== null;
 }
 
+/**
+ * The first turned-on instance: built-in default instances in settings order,
+ * then custom instances (a second account can serve when every default is off).
+ */
 function fallbackTextGenerationSelection(
   settings: ServerSettings,
   options: { readonly excludeDriver?: ProviderDriverKind | null } = {},
 ): ModelSelection | null {
-  const fallbackEntry = Object.entries(settings.providers).find(([driver, provider]) => {
-    if (!provider.enabled) return false;
-    return options.excludeDriver === undefined || driver !== options.excludeDriver;
-  });
-  const fallback = fallbackEntry ? ProviderDriverKind.make(fallbackEntry[0]) : undefined;
-  if (!fallback) {
-    return null;
+  const defaultIds = Object.keys(settings.providers);
+  const customIds = Object.keys(settings.providerInstances).filter(
+    (key) => !defaultIds.includes(key),
+  );
+  for (const key of [...defaultIds, ...customIds]) {
+    const instanceId = ProviderInstanceId.make(key);
+    const driver = resolveEnabledInstanceDriver(settings, instanceId);
+    if (driver === null) continue;
+    if (options.excludeDriver !== undefined && driver === options.excludeDriver) continue;
+    return {
+      instanceId,
+      model:
+        DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_PROVIDER[driver] ?? DEFAULT_GIT_TEXT_GENERATION_MODEL,
+    } satisfies ModelSelection;
   }
-
-  return {
-    instanceId: ProviderInstanceId.make(fallback),
-    model:
-      DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_PROVIDER[fallback] ?? DEFAULT_GIT_TEXT_GENERATION_MODEL,
-  } satisfies ModelSelection;
+  return null;
 }
 
 /**

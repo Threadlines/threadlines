@@ -190,7 +190,7 @@ export const OpenCodeDriver: ProviderDriver<OpenCodeSettings, OpenCodeDriverEnv>
         streamSettings: Stream.never,
         haveSettingsChanged: () => false,
         initialSnapshot: (current) =>
-          makePendingOpenCodeProvider(current).pipe(Effect.map(stampIdentity)),
+          makePendingOpenCodeProvider(current, processEnv).pipe(Effect.map(stampIdentity)),
         checkProvider: Effect.suspend(() =>
           checkOpenCodeProviderStatus({
             settings: { ...settings, binaryPath: currentBinary() },

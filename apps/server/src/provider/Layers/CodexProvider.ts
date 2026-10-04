@@ -35,6 +35,7 @@ import { createModelCapabilities } from "@threadlines/shared/model";
 import { isCommandAvailable } from "@threadlines/shared/shell";
 import { DEFAULT_CODEX_SERVICE_TIER_SELECTION } from "../../codexServiceTier.ts";
 import { CODEX_APP_SERVER_ARGS, codexAppServerCommandOptions } from "../codexAppServerArgs.ts";
+import { detectProviderBinary } from "../providerDetection.ts";
 import {
   AUTH_PROBE_TIMEOUT_MS,
   buildServerProvider,
@@ -814,28 +815,41 @@ const emptyCodexModelsFromSettings = (codexSettings: CodexSettings): ServerProvi
       capabilities: null,
     }));
 
+/**
+ * The snapshot for a turned-off instance: no probe runs, only a filesystem
+ * look for `codex` where the app-server spawn would find it.
+ */
+const makeDisabledCodexProvider = (
+  codexSettings: CodexSettings,
+  checkedAt: string,
+  environment: NodeJS.ProcessEnv,
+): ServerProviderDraft =>
+  buildServerProvider({
+    presentation: CODEX_PRESENTATION,
+    enabled: false,
+    checkedAt,
+    models: emptyCodexModelsFromSettings(codexSettings),
+    skills: [],
+    probe: {
+      installed: false,
+      version: null,
+      status: "warning",
+      auth: { status: "unknown" },
+      message: "Codex is disabled in Threadlines settings.",
+    },
+    detection: detectProviderBinary({ binaryPath: codexSettings.binaryPath, env: environment }),
+  });
+
 const makePendingCodexProvider = (
   codexSettings: CodexSettings,
+  environment: NodeJS.ProcessEnv = process.env,
 ): Effect.Effect<ServerProviderDraft> =>
   Effect.gen(function* () {
     const checkedAt = yield* Effect.map(DateTime.now, DateTime.formatIso);
     const models = emptyCodexModelsFromSettings(codexSettings);
 
     if (!codexSettings.enabled) {
-      return buildServerProvider({
-        presentation: CODEX_PRESENTATION,
-        enabled: false,
-        checkedAt,
-        models,
-        skills: [],
-        probe: {
-          installed: false,
-          version: null,
-          status: "warning",
-          auth: { status: "unknown" },
-          message: "Codex is disabled in Threadlines settings.",
-        },
-      });
+      return makeDisabledCodexProvider(codexSettings, checkedAt, environment);
     }
 
     return buildServerProvider({
@@ -907,20 +921,7 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
   const emptyModels = emptyCodexModelsFromSettings(codexSettings);
 
   if (!codexSettings.enabled) {
-    return buildServerProvider({
-      presentation: CODEX_PRESENTATION,
-      enabled: false,
-      checkedAt,
-      models: emptyModels,
-      skills: [],
-      probe: {
-        installed: false,
-        version: null,
-        status: "warning",
-        auth: { status: "unknown" },
-        message: "Codex is disabled in Threadlines settings.",
-      },
-    });
+    return makeDisabledCodexProvider(codexSettings, checkedAt, environment);
   }
 
   const probeResult = yield* probe({

@@ -20,6 +20,7 @@ import {
   ClaudeSettings,
   CodexSettings,
   DEFAULT_SERVER_SETTINGS,
+  OpenCodeSettings,
   ProviderDriverKind,
   ProviderInstanceId,
   ServerSettings,
@@ -41,6 +42,7 @@ import {
   type CodexAppServerProviderSnapshot,
 } from "./CodexProvider.ts";
 import { checkClaudeProviderStatus } from "./ClaudeProvider.ts";
+import { checkOpenCodeProviderStatus } from "./OpenCodeProvider.ts";
 import {
   makeClaudeTokenUsageHistoryReader,
   parseClaudeStatsTokenUsage,
@@ -63,6 +65,7 @@ import {
   writeProviderStatusCache,
 } from "../providerStatusCache.ts";
 import type { ProviderInstance } from "../ProviderDriver.ts";
+import type { OpenCodeServerManagerShape } from "../opencode/OpenCodeServerManager.ts";
 import { ProviderInstanceRegistry } from "../Services/ProviderInstanceRegistry.ts";
 import { ProviderRegistry } from "../Services/ProviderRegistry.ts";
 import { makeManualOnlyProviderMaintenanceCapabilities } from "../providerMaintenance.ts";
@@ -76,6 +79,7 @@ const defaultCodexSettings: CodexSettings = Schema.decodeSync(CodexSettings)({})
 const disabledCodexSettings: CodexSettings = Schema.decodeSync(CodexSettings)({
   enabled: false,
 });
+const decodeOpenCodeSettings = Schema.decodeSync(OpenCodeSettings);
 
 process.env.T3CODE_CURSOR_ENABLED = "1";
 
@@ -2649,6 +2653,11 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
                 claudeProvider?.message,
                 "Claude is disabled in Threadlines settings.",
               );
+              // Every turned-off driver still reports what a look at the disk found.
+              assert.deepStrictEqual(
+                providers.filter((provider) => provider.detection === undefined),
+                [],
+              );
               assert.strictEqual(providerBinarySpawned, false);
             }).pipe(Effect.provide(runtimeServices));
           }),
@@ -2656,13 +2665,97 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
 
       it.effect("skips codex probes entirely when the provider is disabled", () =>
         Effect.gen(function* () {
-          const status = yield* checkCodexProviderStatus(disabledCodexSettings).pipe(
-            Effect.provide(failingSpawnerLayer("spawn codex ENOENT")),
+          const fileSystem = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const binaryDir = yield* fileSystem.makeTempDirectoryScoped({
+            prefix: "t3-codex-disabled-",
+          });
+          const binaryPath = path.join(
+            binaryDir,
+            process.platform === "win32" ? "codex.cmd" : "codex",
+          );
+          yield* fileSystem.writeFileString(
+            binaryPath,
+            process.platform === "win32" ? "@echo off\r\n" : "#!/bin/sh\n",
+          );
+          yield* fileSystem.chmod(binaryPath, 0o755);
+          const spawned: string[] = [];
+
+          const status = yield* checkCodexProviderStatus(disabledCodexSettings, undefined, {
+            PATH: binaryDir,
+            PATHEXT: ".COM;.EXE;.BAT;.CMD",
+          }).pipe(
+            Effect.provide(
+              mockCommandSpawnerLayer((command) => {
+                spawned.push(command);
+                return { stdout: "", stderr: "", code: 0 };
+              }),
+            ),
           );
           assert.strictEqual(status.enabled, false);
           assert.strictEqual(status.status, "disabled");
           assert.strictEqual(status.installed, false);
           assert.strictEqual(status.message, "Codex is disabled in Threadlines settings.");
+          // Found on the instance's PATH by looking at the disk, not by running it.
+          assert.deepStrictEqual(status.detection, { status: "found", path: binaryPath });
+          assert.deepStrictEqual(spawned, []);
+        }),
+      );
+    });
+
+    // ── checkOpenCodeProviderStatus tests ────────────────────────
+
+    describe("checkOpenCodeProviderStatus", () => {
+      it.effect("looks for a turned-off OpenCode on disk without starting its server", () =>
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const home = yield* fileSystem.makeTempDirectoryScoped({
+            prefix: "t3-opencode-disabled-",
+          });
+          // Only OpenCode's installer folder holds the binary; PATH has none.
+          const installerBinary = path.join(
+            home,
+            ".opencode",
+            "bin",
+            process.platform === "win32" ? "opencode.exe" : "opencode",
+          );
+          yield* fileSystem.makeDirectory(path.dirname(installerBinary), { recursive: true });
+          yield* fileSystem.writeFileString(installerBinary, "");
+          const spawned: string[] = [];
+          const unusedManager: OpenCodeServerManagerShape = {
+            server: Effect.die("A turned-off OpenCode must not start its server"),
+            lease: Effect.die("A turned-off OpenCode must not lease its server"),
+            retire: Effect.die("A turned-off OpenCode must not retire its server"),
+            withServer: () => Effect.die("A turned-off OpenCode must not use its server"),
+            signals: Stream.empty,
+          };
+          const check = (settings: Partial<OpenCodeSettings>) =>
+            checkOpenCodeProviderStatus({
+              settings: decodeOpenCodeSettings({ ...settings, enabled: false }),
+              manager: unusedManager,
+              cwd: home,
+              environment: { PATH: "", HOME: home },
+              canMoveToOpenCodeTwo: false,
+            }).pipe(
+              Effect.provide(
+                mockCommandSpawnerLayer((command) => {
+                  spawned.push(command);
+                  return { stdout: "", stderr: "", code: 0 };
+                }),
+              ),
+            );
+
+          const local = yield* check({});
+          assert.strictEqual(local.status, "disabled");
+          assert.deepStrictEqual(local.detection, { status: "found", path: installerBinary });
+          // A configured server replaces the binary, and checking it means connecting.
+          const external = yield* check({ serverUrl: "http://127.0.0.1:4096" });
+          assert.deepStrictEqual(external.detection, {
+            status: "unknown",
+            reason: "Uses the OpenCode server at http://127.0.0.1:4096. Turn it on to check.",
+          });
+          assert.deepStrictEqual(spawned, []);
         }),
       );
     });
@@ -2670,6 +2763,28 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
     // ── checkClaudeProviderStatus tests ──────────────────────────
 
     describe("checkClaudeProviderStatus", () => {
+      it.effect("only looks on disk for claude while the provider is turned off", () =>
+        Effect.gen(function* () {
+          const spawned: string[] = [];
+          const status = yield* checkClaudeProviderStatus(
+            { ...defaultClaudeSettings, enabled: false },
+            () => Effect.die("A turned-off provider must not probe Claude capabilities"),
+            { PATH: "" },
+          ).pipe(
+            Effect.provide(
+              mockCommandSpawnerLayer((command) => {
+                spawned.push(command);
+                return { stdout: "", stderr: "", code: 0 };
+              }),
+            ),
+          );
+          assert.strictEqual(status.status, "disabled");
+          assert.strictEqual(status.message, "Claude is disabled in Threadlines settings.");
+          assert.deepStrictEqual(status.detection, { status: "notFound" });
+          assert.deepStrictEqual(spawned, []);
+        }),
+      );
+
       it.effect("does not treat a fresh Claude model catalog as configured credentials", () =>
         Effect.gen(function* () {
           const status = yield* checkClaudeProviderStatus(

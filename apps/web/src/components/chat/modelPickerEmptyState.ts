@@ -78,6 +78,11 @@ function matchesProviderQuery(provider: ModelPickerProviderState, query: string)
 }
 
 function unavailableProviderLine(provider: ModelPickerProviderState): string {
+  if (!provider.enabled) {
+    return provider.snapshot.detection?.status === "found"
+      ? `${provider.displayName} is installed but turned off. Turn it on in Settings.`
+      : `${provider.displayName} is turned off. Turn it on in Settings.`;
+  }
   return getModelPickerProviderAvailability(provider.snapshot) === "notInstalled"
     ? `${provider.displayName} isn't installed. Install it and sign in from Settings.`
     : `${provider.displayName} needs sign-in. Connect it from Settings.`;

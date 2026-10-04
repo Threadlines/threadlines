@@ -14,7 +14,7 @@ import {
 } from "../lib/sourceControlToolUpdateCopy";
 import { useDismissedSourceControlToolAdvisoryKeys } from "../sourceControlToolAdvisoryDismissal";
 import { useStore } from "../store";
-import { useActiveEnvironmentFirstRunSetupPending } from "./chat/firstRunSetupState";
+import { useHoldLaunchPromptsForSetup } from "./setup/firstRunGateState";
 import {
   collectSourceControlToolUpdateNotices,
   sourceControlToolUpdateNoticeSetKey,
@@ -67,7 +67,7 @@ export function SourceControlToolUpdateLaunchNotification() {
   const navigate = useNavigate();
   const activeEnvironmentId = useStore((state) => state.activeEnvironmentId);
   const discovery = useSourceControlDiscovery({ environmentId: activeEnvironmentId });
-  const firstRunSetupPending = useActiveEnvironmentFirstRunSetupPending();
+  const heldForSetup = useHoldLaunchPromptsForSetup();
   const activeToastRef = useRef<ActiveSourceControlToolNoticeToast | null>(null);
   const [updateInProgress, setUpdateInProgress] =
     useState<SourceControlToolUpdateInProgress | null>(null);
@@ -90,11 +90,17 @@ export function SourceControlToolUpdateLaunchNotification() {
     if (activeToast?.kind === "prompt" && activeToast.key !== noticeSetKey) {
       toastManager.close(activeToast.toastId);
       activeToastRef.current = null;
+    } else if (activeToast?.kind === "prompt" && heldForSetup) {
+      // Setup opened over a prompt already on screen: put it away without
+      // dismissing it, and let it come back once setup is out of the way.
+      toastManager.close(activeToast.toastId);
+      activeToastRef.current = null;
+      seenSourceControlToolNoticeSetKeys.delete(activeToast.key);
     }
 
     if (
       noticeSetKey === null ||
-      firstRunSetupPending ||
+      heldForSetup ||
       activeToastRef.current !== null ||
       seenSourceControlToolNoticeSetKeys.has(noticeSetKey)
     ) {
@@ -232,7 +238,7 @@ export function SourceControlToolUpdateLaunchNotification() {
       }),
     );
     activeToastRef.current = { kind: "prompt", key: noticeSetKey, toastId };
-  }, [dismissNotificationKeys, firstRunSetupPending, navigate, noticeSetKey, notices]);
+  }, [dismissNotificationKeys, heldForSetup, navigate, noticeSetKey, notices]);
 
   return updateInProgress ? <SourceControlToolUpdateToastProgress {...updateInProgress} /> : null;
 }

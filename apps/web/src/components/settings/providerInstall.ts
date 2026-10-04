@@ -8,9 +8,9 @@
  * already streams carries everything a surface needs: whether an install is
  * offered at all, whether one is running, and why the last one failed.
  *
- * Both surfaces that show the action (the settings provider card and the
- * first-run setup card) read it from here so they never disagree about
- * whether a provider can be installed.
+ * Both surfaces that show the action (the Providers settings page and the
+ * setup screen) read it from here so they never disagree about whether a
+ * provider can be installed.
  *
  * @module providerInstall
  */

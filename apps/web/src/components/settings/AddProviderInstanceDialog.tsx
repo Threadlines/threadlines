@@ -21,7 +21,6 @@ import {
   DialogPopup,
   DialogTitle,
 } from "../ui/dialog";
-import { Badge } from "../ui/badge";
 import { Input } from "../ui/input";
 import { RadioGroup } from "../ui/radio-group";
 import { toastManager } from "../ui/toast";
@@ -288,11 +287,6 @@ export function AddProviderInstanceDialog({ open, onOpenChange }: AddProviderIns
                         <span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground">
                           {option.label}
                         </span>
-                        {option.badgeLabel ? (
-                          <Badge variant="warning" size="sm">
-                            {option.badgeLabel}
-                          </Badge>
-                        ) : null}
                       </RadioPrimitive.Root>
                     );
                   })}

@@ -111,6 +111,7 @@ import {
 } from "./composerFooterLayout";
 import { resetRightPanelTabsForTests } from "../rightPanelTabs";
 import { selectBootstrapCompleteForActiveEnvironment, useStore } from "../store";
+import { dismissFirstRunSetup } from "./setup/firstRunGate";
 import { useTerminalStateStore } from "../terminalStateStore";
 import { useUiStateStore } from "../uiStateStore";
 import { createAuthenticatedSessionHandlers } from "../../test/authHttpHandlers";
@@ -2783,6 +2784,9 @@ describe("ChatView timeline estimator parity (full app)", () => {
     await __resetLocalApiForTests();
     await setViewport(DEFAULT_VIEWPORT);
     localStorage.clear();
+    // A computer that has finished setup: these specs exercise empty drafts
+    // and threads, which a first run would leave for the setup screen.
+    dismissFirstRunSetup(LOCAL_ENVIRONMENT_ID);
     document.body.innerHTML = "";
     wsRequests.length = 0;
     customWsRpcResolver = null;

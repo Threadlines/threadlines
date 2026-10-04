@@ -13,6 +13,7 @@ import {
   type ModelCapabilities,
   type OpenCodeSettings,
   ProviderDriverKind,
+  type ServerProviderDetection,
   type ServerProviderModel,
   type ServerProviderSkill,
   type ServerProviderSlashCommand,
@@ -32,8 +33,9 @@ import {
   MINIMUM_OPENCODE_VERSION,
   probeOpenCodeVersion,
 } from "../opencode/OpenCodeServer.ts";
-import { OPENCODE_INSTALL_COMMAND } from "../opencode/OpenCodeBinary.ts";
+import { detectOpenCodeBinary, OPENCODE_INSTALL_COMMAND } from "../opencode/OpenCodeBinary.ts";
 import type { OpenCodeServerManagerShape } from "../opencode/OpenCodeServerManager.ts";
+import { undetectableProvider } from "../providerDetection.ts";
 import {
   buildServerProvider,
   nonEmptyTrimmed,
@@ -196,6 +198,7 @@ const snapshot = (input: {
   readonly checkedAt: string;
   readonly probe: ProviderProbeResult;
   readonly catalog?: OpenCodeCatalog;
+  readonly detection?: ServerProviderDetection;
 }): ServerProviderDraft =>
   buildServerProvider({
     presentation: OPENCODE_PRESENTATION,
@@ -211,6 +214,7 @@ const snapshot = (input: {
     ...(input.catalog?.slashCommands.length ? { slashCommands: input.catalog.slashCommands } : {}),
     ...(input.catalog?.skills.length ? { skills: input.catalog.skills } : {}),
     probe: input.probe,
+    ...(input.detection ? { detection: input.detection } : {}),
   });
 
 function openCodeProviderLabel(providers: ReadonlyArray<string>): string {
@@ -219,8 +223,23 @@ function openCodeProviderLabel(providers: ReadonlyArray<string>): string {
     : `${providers.slice(0, 3).join(", ")} and ${providers.length - 3} more`;
 }
 
+/**
+ * A filesystem-only look for a turned-off instance. With a server URL the
+ * binary is never used, and checking the server would mean connecting to it.
+ */
+function detectOpenCode(
+  settings: OpenCodeSettings,
+  environment: NodeJS.ProcessEnv,
+): ServerProviderDetection {
+  const serverUrl = settings.serverUrl.trim();
+  return serverUrl
+    ? undetectableProvider(`Uses the OpenCode server at ${serverUrl}. Turn it on to check.`)
+    : detectOpenCodeBinary(settings.binaryPath, environment);
+}
+
 export const makePendingOpenCodeProvider = (
   settings: OpenCodeSettings,
+  environment: NodeJS.ProcessEnv = process.env,
 ): Effect.Effect<ServerProviderDraft> =>
   Effect.map(DateTime.now, (now) =>
     snapshot({
@@ -230,11 +249,15 @@ export const makePendingOpenCodeProvider = (
         installed: false,
         version: null,
         status: "warning",
+        // Not checked yet, so `installed` says nothing; surfaces read this
+        // as "checking" rather than "missing".
+        ...(settings.enabled ? { statusReason: "provider_probe_pending" as const } : {}),
         auth: { status: "unknown" },
         message: settings.enabled
           ? "OpenCode has not been checked yet."
           : "OpenCode is turned off in Threadlines settings.",
       },
+      ...(settings.enabled ? {} : { detection: detectOpenCode(settings, environment) }),
     }),
   );
 
@@ -259,7 +282,7 @@ export const checkOpenCodeProviderStatus = (input: {
       });
 
     if (!settings.enabled) {
-      return yield* makePendingOpenCodeProvider(settings);
+      return yield* makePendingOpenCodeProvider(settings, input.environment);
     }
 
     const external = settings.serverUrl.trim().length > 0;

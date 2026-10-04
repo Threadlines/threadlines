@@ -32,6 +32,7 @@ import { resetSourceControlDiscoveryStateForTests } from "../lib/sourceControlDi
 import { __resetLocalApiForTests } from "../localApi";
 import { AppAtomRegistryProvider, resetAppAtomRegistryForTests } from "../rpc/atomRegistry";
 import { useStore } from "../store";
+import { dismissFirstRunSetup } from "./setup/firstRunGate";
 import { SourceControlToolUpdateLaunchNotification } from "./SourceControlToolUpdateLaunchNotification";
 import { ToastProvider } from "./ui/toast";
 
@@ -139,7 +140,8 @@ describe("SourceControlToolUpdateLaunchNotification", () => {
       serverVersion: "0.1.0",
       capabilities: { repositoryIdentity: false },
     });
-    // No bootstrap yet means first-run setup is not pending, so the prompt may open.
+    // Setup is finished on this computer, so launch prompts may open.
+    dismissFirstRunSetup(ENVIRONMENT_ID);
     useStore.setState({ activeEnvironmentId: ENVIRONMENT_ID, environmentStateById: {} } as never);
   });
 

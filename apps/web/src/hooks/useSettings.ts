@@ -197,15 +197,29 @@ export function useSettings<T = UnifiedSettings>(selector?: (s: UnifiedSettings)
  * setting without first being a component.
  */
 export function updateSettings(patch: Partial<UnifiedSettings>): void {
+  // Fire-and-forget: the server's push reconciles on success.
+  void writeSettings(patch);
+}
+
+/**
+ * `updateSettings` for callers whose next step needs the server to have the
+ * change: it resolves once the server stored it, and rejects if it refused.
+ * Setup waits on this before installing an agent it just turned on.
+ */
+export function updateSettingsAndPersist(patch: Partial<UnifiedSettings>): Promise<void> {
+  return writeSettings(patch);
+}
+
+function writeSettings(patch: Partial<UnifiedSettings>): Promise<void> {
   const { serverPatch, clientPatch } = splitPatch(patch);
+  let serverWrite: Promise<unknown> = Promise.resolve();
 
   if (Object.keys(serverPatch).length > 0) {
     const currentServerConfig = getServerConfig();
     if (currentServerConfig) {
       applySettingsUpdated(applyServerSettingsPatch(currentServerConfig.settings, serverPatch));
     }
-    // Fire-and-forget RPC — push will reconcile on success
-    void ensureLocalApi().server.updateSettings(serverPatch);
+    serverWrite = ensureLocalApi().server.updateSettings(serverPatch);
   }
 
   if (Object.keys(clientPatch).length > 0) {
@@ -214,6 +228,8 @@ export function updateSettings(patch: Partial<UnifiedSettings>): void {
       ...clientPatch,
     });
   }
+
+  return serverWrite.then(() => undefined);
 }
 
 /**
