@@ -88,6 +88,7 @@ export const PROVIDER_OPTIONS: Array<{
     pickerSidebarBadge: "new",
   },
   { value: ProviderDriverKind.make("cursor"), label: "Cursor", available: true },
+  { value: ProviderDriverKind.make("opencode"), label: "OpenCode", available: true },
 ];
 
 export interface WorkLogImagePreview {

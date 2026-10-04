@@ -3,10 +3,11 @@ import {
   CodexSettings,
   CursorSettings,
   FxSettings,
+  OpenCodeSettings,
   ProviderDriverKind,
 } from "@threadlines/contracts";
 import type * as Schema from "effect/Schema";
-import { ClaudeAI, CursorIcon, FxIcon, type Icon, OpenAI } from "../Icons";
+import { ClaudeAI, CursorIcon, FxIcon, type Icon, OpenAI, OpenCodeIcon } from "../Icons";
 
 type ProviderSettingsSchema = {
   readonly fields: Readonly<Record<string, Schema.Top>>;
@@ -58,6 +59,13 @@ export const PROVIDER_CLIENT_DEFINITIONS: readonly ProviderClientDefinition[] = 
     label: "Cursor",
     icon: CursorIcon,
     settingsSchema: CursorSettings,
+    badgeLabel: "Experimental",
+  },
+  {
+    value: ProviderDriverKind.make("opencode"),
+    label: "OpenCode",
+    icon: OpenCodeIcon,
+    settingsSchema: OpenCodeSettings,
     badgeLabel: "Experimental",
   },
 ];

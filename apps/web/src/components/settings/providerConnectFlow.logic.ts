@@ -141,6 +141,8 @@ export function providerConnectStatusLine(input: {
   readonly flow: ProviderAuthFlow;
   readonly state: ProviderConnectFlowState;
   readonly displayName: string;
+  /** What to do while it runs, for sign-ins that start in the terminal. */
+  readonly runningHint?: string | undefined;
 }): string {
   const isToken = input.flow === "claude-setup-token";
   switch (input.state.status) {
@@ -149,6 +151,7 @@ export function providerConnectStatusLine(input: {
     case "starting":
       return isToken ? "Starting token setup" : `Starting ${input.displayName} sign-in`;
     case "running":
+      if (input.runningHint) return input.runningHint;
       return isToken
         ? "Finish authorization in your browser. The token is saved here automatically."
         : "Finish sign-in in your browser, then come back to this page.";

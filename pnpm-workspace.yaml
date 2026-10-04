@@ -78,6 +78,7 @@ peerDependencyRules:
     - vite
     - vitest
   allowedVersions:
+    "@opencode/client>effect": "*"
     "@voidzero-dev/vite-plus-core>typescript": "7"
     vite: "*"
     vitest: "*"

@@ -48,6 +48,7 @@ import * as Layer from "effect/Layer";
 import * as Semaphore from "effect/Semaphore";
 
 import { ServerSettingsService, type ServerSettingsShape } from "../../serverSettings.ts";
+import { resolveOpenCodeBinary } from "../opencode/OpenCodeBinary.ts";
 import { PtyAdapter, type PtyAdapterShape, type PtyProcess } from "../../terminal/Services/PTY.ts";
 import { ProviderRegistry } from "../Services/ProviderRegistry.ts";
 import { deriveProviderInstanceConfigMap } from "../Layers/ProviderInstanceRegistryHydration.ts";
@@ -489,7 +490,7 @@ export const makeProviderAuthSessions = Effect.fn("makeProviderAuthSessions")(fu
           );
         }
 
-        const command = buildProviderAuthCommand({
+        const builtCommand = buildProviderAuthCommand({
           driver: String(instance.driver),
           flow: input.flow,
           binaryPath: readConfigString(instance.config, "binaryPath"),
@@ -497,11 +498,22 @@ export const makeProviderAuthSessions = Effect.fn("makeProviderAuthSessions")(fu
           shadowHomePath: readConfigString(instance.config, "shadowHomePath"),
           platform: globalThis.process.platform,
         });
-        if (!command) {
+        if (!builtCommand) {
           return yield* Effect.fail(
             new ProviderAuthError({ instanceId: String(instanceId), reason: "unsupportedFlow" }),
           );
         }
+        const spawnEnv = buildAuthSpawnEnv({
+          baseEnv,
+          instanceEnvironment: instance.environment ?? [],
+          commandEnv: builtCommand.env,
+        });
+        // OpenCode's installer leaves the binary off this server's PATH until
+        // a restart; sign-in right after a one-click install must still work.
+        const command =
+          String(instance.driver) === "opencode"
+            ? { ...builtCommand, file: resolveOpenCodeBinary(builtCommand.file, spawnEnv) }
+            : builtCommand;
 
         const session: SessionState = {
           flow: input.flow,
@@ -540,11 +552,7 @@ export const makeProviderAuthSessions = Effect.fn("makeProviderAuthSessions")(fu
                 ? SETUP_TOKEN_PTY_COLS
                 : (input.cols ?? DEFAULT_COLS),
             rows: input.rows ?? DEFAULT_ROWS,
-            env: buildAuthSpawnEnv({
-              baseEnv,
-              instanceEnvironment: instance.environment ?? [],
-              commandEnv: command.env,
-            }),
+            env: spawnEnv,
           })
           .pipe(Effect.result);
 

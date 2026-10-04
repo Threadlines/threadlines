@@ -99,6 +99,8 @@ export interface ProviderConnectFlowProps {
   /** Command shown under the copy fallback before the server reports one. */
   readonly command: string;
   readonly description?: string | undefined;
+  /** Replaces the "finish in your browser" line while the flow runs. */
+  readonly runningHint?: string | undefined;
   /**
    * Status content (badges) rendered inline before the action, so the row
    * reads as one statement: state first, then what you can do about it.
@@ -135,6 +137,7 @@ export function ProviderConnectFlow({
   actionLabel,
   command,
   description,
+  runningHint,
   statusRow,
   buttonVariant = "default",
   autoShowTerminal = false,
@@ -221,7 +224,7 @@ export function ProviderConnectFlow({
     setShowTerminal(false);
   };
 
-  const statusLine = providerConnectStatusLine({ flow, state, displayName });
+  const statusLine = providerConnectStatusLine({ flow, state, displayName, runningHint });
   const displayCommand = state.command ?? command;
   const panelOpen = state.status !== "idle" || isStarting;
 

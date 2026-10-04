@@ -895,6 +895,9 @@ function hasRenderableAssistantText(text: string | undefined): boolean {
   return (text?.trim().length ?? 0) > 0;
 }
 
+/** Providers whose file-change items carry exact per-edit stats and no turn diff. */
+const PER_ITEM_DIFF_EVIDENCE_PROVIDERS: ReadonlySet<string> = new Set(["claudeAgent", "opencode"]);
+
 function providerThreadIdFromEvent(event: ProviderRuntimeEvent): string | undefined {
   const providerThreadId = event.providerRefs?.providerThreadId?.trim();
   return providerThreadId && providerThreadId.length > 0 ? providerThreadId : undefined;
@@ -3683,15 +3686,16 @@ const make = Effect.gen(function* () {
         }
       }
 
-      // Claude has no cumulative turn-diff notification; its per-tool-call
-      // file-change stats are the provider evidence the turn summary (and
-      // shared-checkout attribution at capture time) relies on. Codex reports
-      // one, but only for the parent conversation, so a child agent's edits
-      // stay invisible between emissions unless its items count too.
+      // Claude and OpenCode have no cumulative turn-diff notification; their
+      // per-tool-call file-change stats are the provider evidence the turn
+      // summary (and shared-checkout attribution at capture time) relies on.
+      // Codex reports one, but only for the parent conversation, so a child
+      // agent's edits stay invisible between emissions unless its items count
+      // too.
       if (
         (event.type === "item.updated" || event.type === "item.completed") &&
         event.payload.itemType === "file_change" &&
-        (event.provider === "claudeAgent" ||
+        (PER_ITEM_DIFF_EVIDENCE_PROVIDERS.has(event.provider) ||
           childProviderThreadIdForEvent(event, attributionThread) !== undefined)
       ) {
         const turnId = toTurnId(event.turnId);

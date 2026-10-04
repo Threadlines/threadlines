@@ -456,7 +456,7 @@ it.layer(NodeServices.layer)("server settings", (it) => {
         maxSubagentSpawnDepth: "",
       });
       assert.deepEqual(next.providers.opencode, {
-        enabled: true,
+        enabled: false,
         binaryPath: "/opt/homebrew/bin/opencode",
         serverUrl: "http://127.0.0.1:4096",
         serverPassword: "secret-password",

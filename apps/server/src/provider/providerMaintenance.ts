@@ -38,6 +38,12 @@ export interface ProviderMaintenanceCommandAction {
   readonly args: ReadonlyArray<string>;
   readonly lockKey: string;
   readonly environmentPatch?: Readonly<Record<string, string>>;
+  /**
+   * Done in-process instead of by spawning `executable` (a managed runtime
+   * Threadlines downloads and verifies itself). Its output is shown like a
+   * command's; a failure's message is the error.
+   */
+  readonly run?: Effect.Effect<{ readonly output: string }, { readonly message: string }>;
 }
 
 export interface ProviderMaintenanceCommandDefinition {
@@ -425,7 +431,9 @@ function isHomebrewCommandPath(commandPath: string): boolean {
     normalized.includes("/usr/local/caskroom/") ||
     normalized.includes("/homebrew/caskroom/") ||
     normalized.startsWith("/opt/homebrew/bin/") ||
-    normalized.startsWith("/usr/local/bin/")
+    normalized.startsWith("/usr/local/bin/") ||
+    // Homebrew on Linux: /home/linuxbrew/.linuxbrew or ~/.linuxbrew.
+    normalized.includes("/.linuxbrew/")
   );
 }
 

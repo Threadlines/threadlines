@@ -1,856 +1,333 @@
-import assert from "node:assert/strict";
+/**
+ * The OpenCode adapter against a scripted OpenCode: requests are recorded,
+ * and the test plays the server's event frames (shapes as recorded from
+ * OpenCode 2.0.22) and checks the runtime events that come out.
+ */
+import { mkdtempSync, realpathSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it } from "@effect/vitest";
-import * as Context from "effect/Context";
-import * as Effect from "effect/Effect";
-import * as Exit from "effect/Exit";
-import * as Fiber from "effect/Fiber";
-import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
-import * as Schema from "effect/Schema";
-import * as Scope from "effect/Scope";
-import * as Stream from "effect/Stream";
-import * as TestClock from "effect/testing/TestClock";
-import { beforeEach } from "vite-plus/test";
-
 import {
-  OpenCodeSettings,
-  ProviderDriverKind,
+  ApprovalRequestId,
+  MessageId,
   ProviderInstanceId,
+  type ProviderRuntimeEvent,
   ThreadId,
 } from "@threadlines/contracts";
-import { createModelSelection } from "@threadlines/shared/model";
+import * as Duration from "effect/Duration";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import * as PubSub from "effect/PubSub";
+import * as Queue from "effect/Queue";
+import * as Stream from "effect/Stream";
+import { describe, expect } from "vite-plus/test";
+
 import { ServerConfig } from "../../config.ts";
-import { ServerSettingsService } from "../../serverSettings.ts";
-import { ProviderSessionDirectory } from "../Services/ProviderSessionDirectory.ts";
-import type { OpenCodeAdapterShape } from "../Services/OpenCodeAdapter.ts";
-import {
-  OpenCodeRuntime,
-  OpenCodeRuntimeError,
-  type OpenCodeRuntimeShape,
-} from "../opencodeRuntime.ts";
-import {
-  appendOpenCodeAssistantTextDelta,
-  makeOpenCodeAdapter,
-  mergeOpenCodeAssistantText,
-} from "./OpenCodeAdapter.ts";
+import type { OpenCodeClient } from "../opencode/OpenCodeClient.ts";
+import { decodeOpenCodeFrame } from "../opencode/OpenCodeEvents.ts";
+import type {
+  OpenCodeServerManagerShape,
+  OpenCodeServerSignal,
+} from "../opencode/OpenCodeServerManager.ts";
+import { makeOpenCodeAdapter } from "./OpenCodeAdapter.ts";
 
-// Test-local service tag so the rest of the file can keep using `yield* OpenCodeAdapter`.
-class OpenCodeAdapter extends Context.Service<OpenCodeAdapter, OpenCodeAdapterShape>()(
-  "test/OpenCodeAdapter",
-) {}
+const INSTANCE_ID = ProviderInstanceId.make("opencode");
+const ROOT = "ses_root";
 
-const asThreadId = (value: string): ThreadId => ThreadId.make(value);
+interface Call {
+  readonly method: string;
+  readonly input: unknown;
+}
 
-type MessageEntry = {
-  info: {
-    id: string;
-    role: "user" | "assistant";
+/** Only what the adapter calls; every call is recorded. */
+function fakeClient(calls: Array<Call>, overrides: Record<string, (input: any) => unknown> = {}) {
+  const call =
+    (method: string, result: (input: any) => unknown = () => undefined) =>
+    async (input: unknown) => {
+      calls.push({ method, input });
+      return (overrides[method] ?? result)(input);
+    };
+  return {
+    agent: {
+      list: call("agent.list", () => ({
+        data: [
+          {
+            id: "build",
+            mode: "primary",
+            permissions: [{ action: "*", resource: "*", effect: "allow" }],
+          },
+        ],
+      })),
+    },
+    model: { list: call("model.list", () => ({ data: [] })) },
+    mcp: {
+      add: call("mcp.add"),
+      remove: call("mcp.remove"),
+      list: call("mcp.list", () => ({ data: [] })),
+    },
+    command: { list: call("command.list", () => ({ data: [] })) },
+    permission: { reply: call("permission.reply"), list: call("permission.list", () => []) },
+    shell: { remove: call("shell.remove") },
+    message: { list: call("message.list", () => ({ data: [], cursor: {} })) },
+    session: {
+      create: call("session.create", () => ({ id: ROOT, location: { directory: "/" } })),
+      get: call("session.get", () => ({ id: ROOT })),
+      update: call("session.update"),
+      prompt: call("session.prompt", (input) => ({ id: input.id })),
+      interrupt: call("session.interrupt", () => ({ interrupted: true })),
+      active: call("session.active", () => ({})),
+      list: call("session.list", () => ({ data: [] })),
+      switchAgent: call("session.switchAgent"),
+      switchModel: call("session.switchModel"),
+      inbox: { list: call("session.inbox.list", () => []), cancel: call("session.inbox.cancel") },
+      instructions: { entry: { put: call("instructions.put") } },
+      form: {
+        list: call("form.list", () => []),
+        reply: call("form.reply"),
+        cancel: call("form.cancel"),
+      },
+    },
+  } as unknown as OpenCodeClient;
+}
+
+function frame(type: string, data: Record<string, unknown>) {
+  return { id: "evt_x", created: Date.now(), type, data };
+}
+
+const harness = Effect.gen(function* () {
+  const calls: Array<Call> = [];
+  const signals = yield* PubSub.unbounded<OpenCodeServerSignal>();
+  const client = fakeClient(calls);
+  const active = {
+    generation: 1,
+    server: {
+      url: "http://127.0.0.1:1",
+      client,
+      version: "2.0.22",
+      external: false,
+      exited: Effect.never,
+    },
+    streamReady: Effect.void,
   };
-  parts: Array<unknown>;
-};
+  const manager: OpenCodeServerManagerShape = {
+    server: Effect.succeed(active),
+    lease: Effect.void,
+    retire: Effect.void,
+    withServer: (use) => Effect.scoped(use(active)),
+    signals: Stream.fromPubSub(signals),
+  };
+  const adapter = yield* makeOpenCodeAdapter({
+    instanceId: INSTANCE_ID,
+    settings: {
+      enabled: true,
+      binaryPath: "opencode",
+      serverUrl: "",
+      serverPassword: "",
+      customModels: [],
+    },
+    manager,
+  });
+  const events = yield* Queue.unbounded<ProviderRuntimeEvent>();
+  yield* adapter.streamEvents.pipe(
+    Stream.runForEach((event) => Queue.offer(events, event)),
+    Effect.forkScoped,
+  );
+  // Let the adapter's signal loop subscribe before anything is published.
+  yield* Effect.sleep(Duration.millis(10));
 
-const runtimeMock = {
-  state: {
-    startCalls: [] as string[],
-    sessionCreateUrls: [] as string[],
-    authHeaders: [] as Array<string | null>,
-    abortCalls: [] as string[],
-    closeCalls: [] as string[],
-    revertCalls: [] as Array<{ sessionID: string; messageID?: string }>,
-    promptCalls: [] as Array<unknown>,
-    promptAsyncError: null as Error | null,
-    closeError: null as Error | null,
-    messages: [] as MessageEntry[],
-    subscribedEvents: [] as unknown[],
-  },
-  reset() {
-    this.state.startCalls.length = 0;
-    this.state.sessionCreateUrls.length = 0;
-    this.state.authHeaders.length = 0;
-    this.state.abortCalls.length = 0;
-    this.state.closeCalls.length = 0;
-    this.state.revertCalls.length = 0;
-    this.state.promptCalls.length = 0;
-    this.state.promptAsyncError = null;
-    this.state.closeError = null;
-    this.state.messages = [];
-    this.state.subscribedEvents = [];
-  },
-};
-
-const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
-  startOpenCodeServerProcess: ({ binaryPath }) =>
+  const send = (type: string, data: Record<string, unknown>) => {
+    const decoded = decodeOpenCodeFrame(frame(type, data));
+    if (decoded._tag !== "Event") throw new Error(`frame ${type} did not decode`);
+    return PubSub.publish(signals, { _tag: "Event", generation: 1, event: decoded.event });
+  };
+  const next = (predicate: (event: ProviderRuntimeEvent) => boolean) =>
     Effect.gen(function* () {
-      runtimeMock.state.startCalls.push(binaryPath);
-      const url = "http://127.0.0.1:4301";
-      yield* Effect.addFinalizer(() =>
-        Effect.sync(() => {
-          runtimeMock.state.closeCalls.push(url);
-          if (runtimeMock.state.closeError) {
-            throw runtimeMock.state.closeError;
-          }
-        }),
-      );
-      return {
-        url,
-        exitCode: Effect.never,
-      };
-    }),
-  connectToOpenCodeServer: ({ serverUrl }) =>
-    Effect.gen(function* () {
-      const url = serverUrl ?? "http://127.0.0.1:4301";
-      // Unconditionally register a scope finalizer for test observability —
-      // preserves the `closeCalls` / `closeError` probes that the existing
-      // suites rely on. Production code never attaches a finalizer to an
-      // external server (it simply returns `Effect.succeed(...)`).
-      yield* Effect.addFinalizer(() =>
-        Effect.sync(() => {
-          runtimeMock.state.closeCalls.push(url);
-          if (runtimeMock.state.closeError) {
-            throw runtimeMock.state.closeError;
-          }
-        }),
-      );
-      return {
-        url,
-        exitCode: null,
-        external: Boolean(serverUrl),
-      };
-    }),
-  runOpenCodeCommand: () => Effect.succeed({ stdout: "", stderr: "", code: 0 }),
-  createOpenCodeSdkClient: ({ baseUrl, serverPassword }) =>
-    ({
-      session: {
-        create: async () => {
-          runtimeMock.state.sessionCreateUrls.push(baseUrl);
-          runtimeMock.state.authHeaders.push(
-            serverPassword ? `Basic ${btoa(`opencode:${serverPassword}`)}` : null,
-          );
-          return { data: { id: `${baseUrl}/session` } };
-        },
-        abort: async ({ sessionID }: { sessionID: string }) => {
-          runtimeMock.state.abortCalls.push(sessionID);
-        },
-        promptAsync: async (input: unknown) => {
-          runtimeMock.state.promptCalls.push(input);
-          if (runtimeMock.state.promptAsyncError) {
-            throw runtimeMock.state.promptAsyncError;
-          }
-        },
-        messages: async () => ({ data: runtimeMock.state.messages }),
-        revert: async ({ sessionID, messageID }: { sessionID: string; messageID?: string }) => {
-          runtimeMock.state.revertCalls.push({
-            sessionID,
-            ...(messageID ? { messageID } : {}),
-          });
-          if (!messageID) {
-            runtimeMock.state.messages = [];
-            return;
-          }
+      while (true) {
+        const event = yield* Queue.take(events);
+        if (predicate(event)) return event;
+      }
+    }).pipe(Effect.timeout(Duration.seconds(5)));
+  const drain = Effect.gen(function* () {
+    yield* Effect.sleep(Duration.millis(30));
+    return yield* Queue.takeAll(events);
+  });
 
-          const targetIndex = runtimeMock.state.messages.findIndex(
-            (entry) => entry.info.id === messageID,
-          );
-          runtimeMock.state.messages =
-            targetIndex >= 0
-              ? runtimeMock.state.messages.slice(0, targetIndex + 1)
-              : runtimeMock.state.messages;
-        },
-      },
-      event: {
-        subscribe: async () => ({
-          stream: (async function* () {
-            for (const event of runtimeMock.state.subscribedEvents) {
-              yield event;
-            }
-          })(),
-        }),
-      },
-    }) as unknown as ReturnType<OpenCodeRuntimeShape["createOpenCodeSdkClient"]>,
-  loadOpenCodeInventory: () =>
-    Effect.fail(
-      new OpenCodeRuntimeError({
-        operation: "loadOpenCodeInventory",
-        detail: "OpenCodeRuntimeTestDouble.loadOpenCodeInventory not used in this test",
-        cause: null,
-      }),
-    ),
-};
-
-const providerSessionDirectoryTestLayer = Layer.succeed(ProviderSessionDirectory, {
-  upsert: () => Effect.void,
-  getProvider: () =>
-    Effect.die(new Error("ProviderSessionDirectory.getProvider is not used in test")),
-  getBinding: () => Effect.succeed(Option.none()),
-  listThreadIds: () => Effect.succeed([]),
-  listBindings: () => Effect.succeed([]),
-  deleteBinding: () => Effect.void,
+  const threadId = ThreadId.make("thread-1");
+  const cwd = realpathSync(mkdtempSync(join(tmpdir(), "opencode-adapter-")));
+  return { adapter, calls, send, next, drain, threadId, cwd };
 });
 
-// The adapter now receives its settings as a plain argument (the old design
-// read from `ServerSettingsService` internally). The test-only
-// `ServerSettingsService` below is still kept because other dependencies in
-// the layer graph reach for it — but the routing values the assertions
-// probe (serverUrl, serverPassword) must be threaded directly through the
-// decoded `OpenCodeSettings`.
-const openCodeAdapterTestSettings = Schema.decodeSync(OpenCodeSettings)({
-  binaryPath: "fake-opencode",
-  serverUrl: "http://127.0.0.1:9999",
-  serverPassword: "secret-password",
-});
-
-const OpenCodeAdapterTestLayer = Layer.effect(
-  OpenCodeAdapter,
-  makeOpenCodeAdapter(openCodeAdapterTestSettings),
-).pipe(
-  Layer.provideMerge(Layer.succeed(OpenCodeRuntime, OpenCodeRuntimeTestDouble)),
-  Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
-  Layer.provideMerge(
-    ServerSettingsService.layerTest({
-      providers: {
-        opencode: {
-          binaryPath: "fake-opencode",
-          serverUrl: "http://127.0.0.1:9999",
-          serverPassword: "secret-password",
-        },
-      },
-    }),
-  ),
-  Layer.provideMerge(providerSessionDirectoryTestLayer),
+const testLayer = ServerConfig.layerTest(process.cwd(), { prefix: "opencode-adapter-" }).pipe(
   Layer.provideMerge(NodeServices.layer),
 );
 
-beforeEach(() => {
-  runtimeMock.reset();
-});
-
-const advanceTestClock = (ms: number) =>
-  TestClock.adjust(`${ms} millis`).pipe(Effect.andThen(Effect.yieldNow));
-
-it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
-  it.effect("reuses a configured OpenCode server URL instead of spawning a local server", () =>
+describe("OpenCodeAdapter", () => {
+  it.live("keeps a turn open while steered input waits for the next execution", () =>
     Effect.gen(function* () {
-      const adapter = yield* OpenCodeAdapter;
-
-      const session = yield* adapter.startSession({
-        provider: ProviderDriverKind.make("opencode"),
-        threadId: asThreadId("thread-opencode"),
-        runtimeMode: "full-access",
-      });
-
-      assert.equal(session.provider, "opencode");
-      assert.equal(session.threadId, "thread-opencode");
-      assert.deepEqual(runtimeMock.state.startCalls, []);
-      assert.deepEqual(runtimeMock.state.sessionCreateUrls, ["http://127.0.0.1:9999"]);
-      assert.deepEqual(runtimeMock.state.authHeaders, [
-        `Basic ${btoa("opencode:secret-password")}`,
-      ]);
-    }),
-  );
-
-  it.effect("says plainly that it has no room tools when a room asks for them", () =>
-    Effect.gen(function* () {
-      const adapter = yield* OpenCodeAdapter;
-      // Left unanswered, the room would restart this agent at every turn.
-      const session = yield* adapter.startSession({
-        provider: ProviderDriverKind.make("opencode"),
-        threadId: asThreadId("thread-opencode-room"),
-        runtimeMode: "full-access",
-        roomTools: true,
-      });
-      assert.equal(session.roomTools, false);
-      yield* adapter.stopSession(asThreadId("thread-opencode-room"));
-    }),
-  );
-
-  it.effect("stops a configured-server session without trying to own server lifecycle", () =>
-    Effect.gen(function* () {
-      const adapter = yield* OpenCodeAdapter;
-      yield* adapter.startSession({
-        provider: ProviderDriverKind.make("opencode"),
-        threadId: asThreadId("thread-opencode"),
-        runtimeMode: "full-access",
-      });
-
-      yield* adapter.stopSession(asThreadId("thread-opencode"));
-
-      assert.deepEqual(runtimeMock.state.startCalls, []);
-      assert.deepEqual(
-        runtimeMock.state.abortCalls.includes("http://127.0.0.1:9999/session"),
-        true,
-      );
-    }),
-  );
-
-  it.effect("emits one session.exited event when stopping a session", () =>
-    Effect.gen(function* () {
-      const adapter = yield* OpenCodeAdapter;
-      const threadId = asThreadId("thread-opencode-stop-event");
-      const eventsFiber = yield* adapter.streamEvents.pipe(
-        Stream.filter((event) => event.threadId === threadId),
-        Stream.take(3),
-        Stream.runCollect,
-        Effect.forkChild,
-      );
-
-      yield* adapter.startSession({
-        provider: ProviderDriverKind.make("opencode"),
+      const { adapter, calls, send, next, drain, threadId, cwd } = yield* harness;
+      yield* adapter.startSession({ threadId, cwd, runtimeMode: "full-access" });
+      const turn = yield* adapter.sendTurn({
         threadId,
-        runtimeMode: "full-access",
+        messageId: MessageId.make("m1"),
+        input: "go",
       });
+      expect(turn.turnId).toBe("msg_tl_m1");
+      expect(calls.find((call) => call.method === "session.prompt")?.input).toMatchObject({
+        sessionID: ROOT,
+        id: "msg_tl_m1",
+        delivery: "steer",
+      });
+
+      yield* send("session.execution.started", { sessionID: ROOT });
+      yield* send("session.inbox.delivered", { sessionID: ROOT, inboxID: "msg_tl_m1" });
+      yield* adapter.steerTurn({
+        threadId,
+        expectedTurnId: turn.turnId,
+        messageId: MessageId.make("m2"),
+        input: "also this",
+      });
+      // The execution ends before reading the steer: the turn must not end.
+      yield* send("session.execution.succeeded", { sessionID: ROOT });
+      expect((yield* drain).some((event) => event.type === "turn.completed")).toBe(false);
+
+      // OpenCode starts another execution to deliver it; that one ends the turn.
+      yield* send("session.execution.started", { sessionID: ROOT });
+      yield* send("session.inbox.delivered", { sessionID: ROOT, inboxID: "msg_tl_m2" });
+      yield* send("session.execution.succeeded", { sessionID: ROOT });
+      const completed = yield* next((event) => event.type === "turn.completed");
+      expect(completed).toMatchObject({ turnId: turn.turnId, payload: { state: "completed" } });
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.live("turns an execution nobody asked for into the agent's own turn", () =>
+    Effect.gen(function* () {
+      const { adapter, send, next, threadId, cwd } = yield* harness;
+      yield* adapter.startSession({ threadId, cwd, runtimeMode: "full-access" });
+      yield* send("session.execution.started", { sessionID: ROOT });
+      const started = yield* next((event) => event.type === "turn.started");
+      expect(started.turnId).toMatch(/^wake_/);
+      yield* send("session.execution.succeeded", { sessionID: ROOT });
+      const completed = yield* next((event) => event.type === "turn.completed");
+      expect(completed.turnId).toBe(started.turnId);
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.live("files a subagent's work under the agent, linked to its spawning call", () =>
+    Effect.gen(function* () {
+      const { adapter, calls, send, next, threadId, cwd } = yield* harness;
+      yield* adapter.startSession({ threadId, cwd, runtimeMode: "approval-required" });
+      const turn = yield* adapter.sendTurn({
+        threadId,
+        messageId: MessageId.make("m1"),
+        input: "delegate",
+      });
+      yield* send("session.execution.started", { sessionID: ROOT });
+      yield* send("session.tool.input.started", {
+        sessionID: ROOT,
+        assistantMessageID: "msg_a",
+        id: "call_1",
+        name: "subagent",
+      });
+      yield* send("session.tool.called", {
+        sessionID: ROOT,
+        assistantMessageID: "msg_a",
+        id: "call_1",
+        input: { agent: "general", description: "Count lines", prompt: "Count the lines" },
+        executed: false,
+      });
+      yield* send("session.created", {
+        sessionID: "ses_child",
+        parentID: ROOT,
+        agent: "general",
+        title: "Count lines",
+      });
+      yield* send("session.tool.progress", {
+        sessionID: ROOT,
+        id: "call_1",
+        metadata: { sessionID: "ses_child", status: "running" },
+      });
+      yield* send("session.text.delta", {
+        sessionID: "ses_child",
+        assistantMessageID: "msg_c",
+        ordinal: 0,
+        delta: "42 lines",
+      });
+
+      const linked = yield* next(
+        (event) => event.type === "subagent.metadata.updated" && event.payload.callId === "call_1",
+      );
+      expect(linked.payload).toMatchObject({
+        agentThreadId: "ses_child",
+        status: "running",
+        isBackgrounded: false,
+      });
+      const childText = yield* next((event) => event.type === "content.delta");
+      expect(childText).toMatchObject({
+        turnId: turn.turnId,
+        providerRefs: { providerThreadId: "ses_child" },
+        payload: { delta: "42 lines" },
+      });
+      // The child got its parent's approval rules.
+      expect(
+        calls.some(
+          (call) =>
+            call.method === "session.update" &&
+            (call.input as { sessionID: string }).sessionID === "ses_child",
+        ),
+      ).toBe(true);
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.live("answers OpenCode's asks itself in full access and shows them otherwise", () =>
+    Effect.gen(function* () {
+      const { adapter, calls, send, next, threadId, cwd } = yield* harness;
+      const ask = {
+        id: "per_1",
+        sessionID: ROOT,
+        action: "shell",
+        resources: ["echo hi"],
+        save: ["echo *"],
+        source: { type: "tool", messageID: "msg_a", id: "call_9" },
+      };
+      yield* adapter.startSession({ threadId, cwd, runtimeMode: "full-access" });
+      yield* send("permission.asked", ask);
+      yield* Effect.sleep(Duration.millis(30));
+      expect(calls.find((call) => call.method === "permission.reply")?.input).toMatchObject({
+        requestID: "per_1",
+        decision: "once",
+      });
+
       yield* adapter.stopSession(threadId);
-
-      const events = Array.from(yield* Fiber.join(eventsFiber).pipe(Effect.timeout("1 second")));
-      assert.deepEqual(
-        events.map((event) => event.type),
-        ["session.started", "thread.started", "session.exited"],
-      );
-    }),
-  );
-
-  it.effect("clears session state even when cleanup finalizers throw", () =>
-    Effect.gen(function* () {
-      const adapter = yield* OpenCodeAdapter;
-      yield* adapter.startSession({
-        provider: ProviderDriverKind.make("opencode"),
-        threadId: asThreadId("thread-stop-all-a"),
-        runtimeMode: "full-access",
-      });
-      yield* adapter.startSession({
-        provider: ProviderDriverKind.make("opencode"),
-        threadId: asThreadId("thread-stop-all-b"),
-        runtimeMode: "full-access",
-      });
-
-      runtimeMock.state.closeError = new Error("close failed");
-      // `stopAll` relies on `stopOpenCodeContext`, which is typed as
-      // never-failing. A throwing finalizer surfaces as a defect — `Effect.exit`
-      // captures it so the assertions can still run. The key invariant we're
-      // validating is "the sessions map and close-call probes reflect cleanup
-      // attempts regardless of finalizer outcome".
-      yield* Effect.exit(adapter.stopAll());
-      const sessions = yield* adapter.listSessions();
-
-      assert.deepEqual(runtimeMock.state.closeCalls, [
-        "http://127.0.0.1:9999",
-        "http://127.0.0.1:9999",
-      ]);
-      assert.deepEqual(sessions, []);
-    }),
-  );
-
-  it.effect("completes streamEvents when the adapter scope closes", () =>
-    Effect.gen(function* () {
-      const scope = yield* Scope.make("sequential");
-      let scopeClosed = false;
-
-      try {
-        const adapterLayer = Layer.effect(
-          OpenCodeAdapter,
-          makeOpenCodeAdapter(openCodeAdapterTestSettings),
-        ).pipe(
-          Layer.provideMerge(Layer.succeed(OpenCodeRuntime, OpenCodeRuntimeTestDouble)),
-          Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
-          Layer.provideMerge(ServerSettingsService.layerTest()),
-          Layer.provideMerge(providerSessionDirectoryTestLayer),
-          Layer.provideMerge(NodeServices.layer),
-        );
-        const context = yield* Layer.buildWithScope(adapterLayer, scope);
-        const adapter = yield* Effect.service(OpenCodeAdapter).pipe(Effect.provide(context));
-        const eventsFiber = yield* adapter.streamEvents.pipe(Stream.runCollect, Effect.forkChild);
-
-        yield* Scope.close(scope, Exit.void);
-        scopeClosed = true;
-
-        const exit = yield* Fiber.await(eventsFiber).pipe(Effect.timeout("1 second"));
-        assert.equal(Exit.hasInterrupts(exit), true);
-      } finally {
-        if (!scopeClosed) {
-          yield* Scope.close(scope, Exit.void).pipe(Effect.ignore);
-        }
-      }
-    }),
-  );
-
-  it.effect("rolls back session state when sendTurn fails before OpenCode accepts the prompt", () =>
-    Effect.gen(function* () {
-      const adapter = yield* OpenCodeAdapter;
-      yield* adapter.startSession({
-        provider: ProviderDriverKind.make("opencode"),
-        threadId: asThreadId("thread-send-turn-failure"),
-        runtimeMode: "full-access",
-      });
-
-      runtimeMock.state.promptAsyncError = new Error("prompt failed");
-      const error = yield* adapter
-        .sendTurn({
-          threadId: asThreadId("thread-send-turn-failure"),
-          input: "Fix it",
-          modelSelection: {
-            instanceId: ProviderInstanceId.make("opencode"),
-            model: "openai/gpt-5",
-          },
-        })
-        .pipe(Effect.flip);
-      const sessions = yield* adapter.listSessions();
-
-      assert.equal(error._tag, "ProviderAdapterRequestError");
-      if (error._tag !== "ProviderAdapterRequestError") {
-        throw new Error("Unexpected error type");
-      }
-      assert.equal(error.detail, "prompt failed");
-      assert.equal(
-        error.message,
-        "Provider adapter request failed (opencode) for session.promptAsync: prompt failed",
-      );
-      assert.equal(sessions.length, 1);
-      assert.equal(sessions[0]?.status, "ready");
-      assert.equal(sessions[0]?.activeTurnId, undefined);
-      assert.equal(sessions[0]?.lastError, "prompt failed");
-    }),
-  );
-
-  it.effect("passes agent and variant options for the adapter's bound custom instance id", () => {
-    const instanceId = ProviderInstanceId.make("opencode_zen");
-    const adapterLayer = Layer.effect(
-      OpenCodeAdapter,
-      makeOpenCodeAdapter(openCodeAdapterTestSettings, { instanceId }),
-    ).pipe(
-      Layer.provideMerge(Layer.succeed(OpenCodeRuntime, OpenCodeRuntimeTestDouble)),
-      Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
-      Layer.provideMerge(ServerSettingsService.layerTest()),
-      Layer.provideMerge(providerSessionDirectoryTestLayer),
-      Layer.provideMerge(NodeServices.layer),
-    );
-
-    return Effect.gen(function* () {
-      const adapter = yield* OpenCodeAdapter;
-      yield* adapter.startSession({
-        provider: ProviderDriverKind.make("opencode"),
-        threadId: asThreadId("thread-custom-instance"),
-        runtimeMode: "full-access",
-      });
-
-      yield* adapter.sendTurn({
-        threadId: asThreadId("thread-custom-instance"),
-        input: "Fix it",
-        modelSelection: createModelSelection(
-          ProviderInstanceId.make("opencode_zen"),
-          "anthropic/claude-sonnet-4-5",
-          [
-            { id: "agent", value: "github-copilot" },
-            { id: "variant", value: "high" },
-          ],
-        ),
-      });
-
-      assert.deepEqual(runtimeMock.state.promptCalls.at(-1), {
-        sessionID: "http://127.0.0.1:9999/session",
-        model: {
-          providerID: "anthropic",
-          modelID: "claude-sonnet-4-5",
-        },
-        agent: "github-copilot",
-        variant: "high",
-        parts: [{ type: "text", text: "Fix it" }],
-      });
-    }).pipe(Effect.provide(adapterLayer));
-  });
-
-  it.effect("uses the bound custom instance id for fallback sendTurn model selection", () => {
-    const instanceId = ProviderInstanceId.make("opencode_zen");
-    const adapterLayer = Layer.effect(
-      OpenCodeAdapter,
-      makeOpenCodeAdapter(openCodeAdapterTestSettings, { instanceId }),
-    ).pipe(
-      Layer.provideMerge(Layer.succeed(OpenCodeRuntime, OpenCodeRuntimeTestDouble)),
-      Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
-      Layer.provideMerge(ServerSettingsService.layerTest()),
-      Layer.provideMerge(providerSessionDirectoryTestLayer),
-      Layer.provideMerge(NodeServices.layer),
-    );
-
-    return Effect.gen(function* () {
-      const adapter = yield* OpenCodeAdapter;
-      const threadId = asThreadId("thread-custom-instance-fallback-model");
-      yield* adapter.startSession({
-        provider: ProviderDriverKind.make("opencode"),
+      yield* adapter.startSession({ threadId, cwd, runtimeMode: "approval-required" });
+      yield* send("permission.asked", { ...ask, id: "per_2" });
+      const opened = yield* next((event) => event.type === "request.opened");
+      expect(opened.payload).toMatchObject({ requestType: "exec_command_approval" });
+      yield* adapter.respondToRequest(
         threadId,
-        runtimeMode: "full-access",
-        modelSelection: createModelSelection(
-          ProviderInstanceId.make("opencode_zen"),
-          "anthropic/claude-sonnet-4-5",
-        ),
-      });
-
-      yield* adapter.sendTurn({
-        threadId,
-        input: "Fix it",
-      });
-
-      assert.deepEqual(runtimeMock.state.promptCalls.at(-1), {
-        sessionID: "http://127.0.0.1:9999/session",
-        model: {
-          providerID: "anthropic",
-          modelID: "claude-sonnet-4-5",
-        },
-        parts: [{ type: "text", text: "Fix it" }],
-      });
-    }).pipe(Effect.provide(adapterLayer));
-  });
-
-  it.effect("rejects sendTurn model selections for another instance id", () => {
-    const instanceId = ProviderInstanceId.make("opencode_zen");
-    const adapterLayer = Layer.effect(
-      OpenCodeAdapter,
-      makeOpenCodeAdapter(openCodeAdapterTestSettings, { instanceId }),
-    ).pipe(
-      Layer.provideMerge(Layer.succeed(OpenCodeRuntime, OpenCodeRuntimeTestDouble)),
-      Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
-      Layer.provideMerge(ServerSettingsService.layerTest()),
-      Layer.provideMerge(providerSessionDirectoryTestLayer),
-      Layer.provideMerge(NodeServices.layer),
-    );
-
-    return Effect.gen(function* () {
-      const adapter = yield* OpenCodeAdapter;
-      const threadId = asThreadId("thread-custom-instance-wrong-selection");
-      yield* adapter.startSession({
-        provider: ProviderDriverKind.make("opencode"),
-        threadId,
-        runtimeMode: "full-access",
-      });
-
-      const error = yield* adapter
-        .sendTurn({
-          threadId,
-          input: "Fix it",
-          modelSelection: createModelSelection(
-            ProviderInstanceId.make("opencode"),
-            "anthropic/claude-sonnet-4-5",
-          ),
-        })
-        .pipe(Effect.flip);
-
-      assert.equal(error._tag, "ProviderAdapterValidationError");
-      if (error._tag !== "ProviderAdapterValidationError") {
-        throw new Error("Unexpected error type");
-      }
-      assert.equal(
-        error.issue,
-        "OpenCode model selection is bound to instance 'opencode', expected 'opencode_zen'.",
+        ApprovalRequestId.make(opened.requestId!),
+        "decline",
       );
-      assert.deepEqual(runtimeMock.state.promptCalls, []);
-    }).pipe(Effect.provide(adapterLayer));
-  });
-
-  it.effect("reverts the full thread when rollback removes every assistant turn", () =>
-    Effect.gen(function* () {
-      const adapter = yield* OpenCodeAdapter;
-      const threadId = asThreadId("thread-rollback-all");
-      yield* adapter.startSession({
-        provider: ProviderDriverKind.make("opencode"),
-        threadId,
-        runtimeMode: "full-access",
+      // A decline carries a note, so the model moves on instead of the run ending.
+      expect(calls.findLast((call) => call.method === "permission.reply")?.input).toMatchObject({
+        requestID: "per_2",
+        decision: "reject",
+        message: expect.stringContaining("declined"),
       });
-
-      runtimeMock.state.messages = [
-        {
-          info: { id: "assistant-1", role: "assistant" },
-          parts: [],
-        },
-        {
-          info: { id: "assistant-2", role: "assistant" },
-          parts: [],
-        },
-      ];
-
-      const snapshot = yield* adapter.rollbackThread(threadId, 2);
-
-      assert.deepEqual(runtimeMock.state.revertCalls, [
-        { sessionID: "http://127.0.0.1:9999/session" },
-      ]);
-      assert.deepEqual(snapshot.turns, []);
-    }),
+      yield* next(
+        (event) => event.type === "request.resolved" && event.payload.decision === "decline",
+      );
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
 
-  it.effect("appends raw assistant text deltas and reconciles part update snapshots", () =>
-    Effect.sync(() => {
-      const firstUpdate = mergeOpenCodeAssistantText(undefined, "Hello");
-      const overlapDelta = appendOpenCodeAssistantTextDelta(firstUpdate.latestText, "lo world");
-      const secondUpdate = mergeOpenCodeAssistantText(overlapDelta.nextText, "Hellolo world");
-
-      assert.deepEqual(
-        [firstUpdate.deltaToEmit, overlapDelta.deltaToEmit, secondUpdate.deltaToEmit],
-        ["Hello", "lo world", ""],
-      );
-      assert.equal(secondUpdate.latestText, "Hellolo world");
-    }),
-  );
-
-  it.effect("does not strip coincidental prefix overlap from OpenCode part deltas", () =>
+  it.live("ignores a stop meant for a turn that already ended", () =>
     Effect.gen(function* () {
-      const adapter = yield* OpenCodeAdapter;
-      const threadId = asThreadId("thread-opencode-raw-delta");
-      const part = {
-        id: "part-raw-delta",
-        sessionID: "http://127.0.0.1:9999/session",
-        messageID: "msg-raw-delta",
-        type: "text",
-        text: "A B",
-        time: { start: 1 },
-      };
-      runtimeMock.state.subscribedEvents = [
-        {
-          type: "message.updated",
-          properties: {
-            sessionID: "http://127.0.0.1:9999/session",
-            info: {
-              id: "msg-raw-delta",
-              role: "assistant",
-            },
-          },
-        },
-        {
-          type: "message.part.updated",
-          properties: {
-            sessionID: "http://127.0.0.1:9999/session",
-            part,
-            time: 1,
-          },
-        },
-        {
-          type: "message.part.delta",
-          properties: {
-            sessionID: "http://127.0.0.1:9999/session",
-            messageID: "msg-raw-delta",
-            partID: "part-raw-delta",
-            field: "text",
-            delta: "Bonus",
-          },
-        },
-        {
-          type: "message.part.updated",
-          properties: {
-            sessionID: "http://127.0.0.1:9999/session",
-            part: {
-              ...part,
-              text: "A BBonus",
-              time: { start: 1, end: 2 },
-            },
-            time: 2,
-          },
-        },
-      ];
-      const eventsFiber = yield* adapter.streamEvents.pipe(
-        Stream.filter((event) => event.threadId === threadId),
-        Stream.take(5),
-        Stream.runCollect,
-        Effect.forkChild,
-      );
-
-      yield* adapter.startSession({
-        provider: ProviderDriverKind.make("opencode"),
-        threadId,
-        runtimeMode: "full-access",
-      });
-
-      const events = Array.from(yield* Fiber.join(eventsFiber).pipe(Effect.timeout("1 second")));
-      const deltas = events.filter((event) => event.type === "content.delta");
-      assert.deepEqual(
-        deltas.map((event) => (event.type === "content.delta" ? event.payload.delta : "")),
-        ["A B", "Bonus"],
-      );
-      assert.equal(events.at(-1)?.type, "item.completed");
-      const completed = events.at(-1);
-      if (completed?.type === "item.completed") {
-        assert.equal(completed.payload.detail, "A BBonus");
-      }
-    }),
-  );
-
-  it.effect("writes provider-native observability records using the session thread id", () =>
-    Effect.gen(function* () {
-      const nativeEvents: Array<{
-        readonly event?: {
-          readonly provider?: string;
-          readonly threadId?: string;
-          readonly providerThreadId?: string;
-          readonly type?: string;
-        };
-      }> = [];
-      const nativeThreadIds: Array<string | null> = [];
-      runtimeMock.state.subscribedEvents = [
-        {
-          type: "message.updated",
-          properties: {
-            info: {
-              id: "msg-missing-session",
-              role: "assistant",
-            },
-          },
-        },
-        {
-          type: "message.updated",
-          properties: {
-            sessionID: "http://127.0.0.1:9999/other-session",
-            info: {
-              id: "msg-other-session",
-              role: "assistant",
-            },
-          },
-        },
-        {
-          type: "message.updated",
-          properties: {
-            sessionID: "http://127.0.0.1:9999/session",
-            info: {
-              id: "msg-native-log",
-              role: "assistant",
-            },
-          },
-        },
-      ];
-
-      const nativeEventLogger = {
-        filePath: "memory://opencode-native-events",
-        write: (event: unknown, threadId: ThreadId | null) => {
-          nativeEvents.push(event as (typeof nativeEvents)[number]);
-          nativeThreadIds.push(threadId ?? null);
-          return Effect.void;
-        },
-        close: () => Effect.void,
-      };
-
-      const adapterLayer = Layer.effect(
-        OpenCodeAdapter,
-        makeOpenCodeAdapter(openCodeAdapterTestSettings, {
-          nativeEventLogger,
-        }),
-      ).pipe(
-        Layer.provideMerge(Layer.succeed(OpenCodeRuntime, OpenCodeRuntimeTestDouble)),
-        Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
-        Layer.provideMerge(
-          ServerSettingsService.layerTest({
-            providers: {
-              opencode: {
-                binaryPath: "fake-opencode",
-                serverUrl: "http://127.0.0.1:9999",
-                serverPassword: "secret-password",
-              },
-            },
-          }),
-        ),
-        Layer.provideMerge(providerSessionDirectoryTestLayer),
-        Layer.provideMerge(NodeServices.layer),
-      );
-
-      const session = yield* Effect.gen(function* () {
-        const adapter = yield* OpenCodeAdapter;
-        const started = yield* adapter.startSession({
-          provider: ProviderDriverKind.make("opencode"),
-          threadId: asThreadId("thread-native-log"),
-          runtimeMode: "full-access",
-        });
-        yield* advanceTestClock(10);
-        return started;
-      }).pipe(Effect.provide(adapterLayer));
-
-      assert.equal(session.threadId, "thread-native-log");
-      assert.equal(nativeEvents.length, 1);
-      assert.equal(
-        nativeEvents.some((record) => record.event?.provider === "opencode"),
-        true,
-      );
-      assert.equal(
-        nativeEvents.some(
-          (record) => record.event?.providerThreadId === "http://127.0.0.1:9999/session",
-        ),
-        true,
-      );
-      assert.equal(
-        nativeEvents.some((record) => record.event?.threadId === "thread-native-log"),
-        true,
-      );
-      assert.equal(
-        nativeEvents.some((record) => record.event?.type === "message.updated"),
-        true,
-      );
-      assert.equal(
-        nativeThreadIds.every((threadId) => threadId === "thread-native-log"),
-        true,
-      );
-    }),
-  );
-
-  it.effect("keeps the event pump alive when native event logging fails", () =>
-    Effect.gen(function* () {
-      runtimeMock.state.subscribedEvents = [
-        {
-          type: "message.updated",
-          properties: {
-            sessionID: "http://127.0.0.1:9999/session",
-            info: {
-              id: "msg-native-log-failure",
-              role: "assistant",
-            },
-          },
-        },
-      ];
-
-      const nativeEventLogger = {
-        filePath: "memory://opencode-native-events",
-        write: () => Effect.die(new Error("native log write failed")),
-        close: () => Effect.void,
-      };
-
-      const adapterLayer = Layer.effect(
-        OpenCodeAdapter,
-        makeOpenCodeAdapter(openCodeAdapterTestSettings, {
-          nativeEventLogger,
-        }),
-      ).pipe(
-        Layer.provideMerge(Layer.succeed(OpenCodeRuntime, OpenCodeRuntimeTestDouble)),
-        Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
-        Layer.provideMerge(
-          ServerSettingsService.layerTest({
-            providers: {
-              opencode: {
-                binaryPath: "fake-opencode",
-                serverUrl: "http://127.0.0.1:9999",
-                serverPassword: "secret-password",
-              },
-            },
-          }),
-        ),
-        Layer.provideMerge(providerSessionDirectoryTestLayer),
-        Layer.provideMerge(NodeServices.layer),
-      );
-
-      // Capture closeCalls *inside* the provided layer scope: the adapter's
-      // layer finalizer now tears down any live sessions when the layer
-      // closes (which is exactly what we want for leak prevention), so
-      // inspecting closeCalls after `Effect.provide` completes would observe
-      // the teardown — not the behavior under test. We care that the event
-      // pump kept the session alive while logging was failing.
-      const { sessions, closeCallsDuringRun } = yield* Effect.gen(function* () {
-        const adapter = yield* OpenCodeAdapter;
-        yield* adapter.startSession({
-          provider: ProviderDriverKind.make("opencode"),
-          threadId: asThreadId("thread-native-log-failure"),
-          runtimeMode: "full-access",
-        });
-        yield* advanceTestClock(10);
-        return {
-          sessions: yield* adapter.listSessions(),
-          closeCallsDuringRun: [...runtimeMock.state.closeCalls],
-        };
-      }).pipe(Effect.provide(adapterLayer));
-
-      assert.equal(sessions.length, 1);
-      assert.equal(sessions[0]?.threadId, "thread-native-log-failure");
-      assert.deepEqual(closeCallsDuringRun, []);
-    }),
+      const { adapter, calls, threadId, cwd } = yield* harness;
+      yield* adapter.startSession({ threadId, cwd, runtimeMode: "full-access" });
+      yield* adapter.sendTurn({ threadId, messageId: MessageId.make("m1"), input: "go" });
+      yield* adapter.interruptTurn(threadId, "msg_tl_old" as never);
+      expect(calls.some((call) => call.method === "session.interrupt")).toBe(false);
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
 });

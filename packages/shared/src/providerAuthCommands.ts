@@ -19,6 +19,7 @@ export const CODEX_DRIVER_KIND = "codex";
 export const CLAUDE_DRIVER_KIND = "claudeAgent";
 export const CURSOR_DRIVER_KIND = "cursor";
 export const FX_DRIVER_KIND = "fx";
+export const OPENCODE_DRIVER_KIND = "opencode";
 
 export const CLAUDE_LONG_LIVED_OAUTH_TOKEN_ENV = "CLAUDE_CODE_OAUTH_TOKEN";
 
@@ -120,6 +121,18 @@ export function buildFxLoginCommand(input: { readonly binaryPath: string }): str
   return `${shellWord(input.binaryPath.trim() || "fx")} login`;
 }
 
+const OPENCODE_LOGIN_ARGS = ["auth", "login", "--standalone"] as const;
+
+/**
+ * `opencode auth login --standalone` — connects a model provider account to
+ * OpenCode. `--standalone` signs in through a private server instead of
+ * starting OpenCode's shared background service, which would outlive the
+ * sign-in.
+ */
+export function buildOpenCodeLoginCommand(input: { readonly binaryPath: string }): string {
+  return `${shellWord(input.binaryPath.trim() || "opencode")} ${OPENCODE_LOGIN_ARGS.join(" ")}`;
+}
+
 /**
  * Resolve the executable, argv, and env overrides for one auth flow.
  * Returns `null` when the driver/flow pair has no supported command
@@ -177,6 +190,15 @@ export function buildProviderAuthCommand(
       env: {},
       display: renderDisplayCommand({ file: binary, args: ["login"], env: {} }),
     };
+  }
+
+  // OpenCode keeps model-provider credentials in its own store; the user
+  // picks which provider to connect in the interactive prompt.
+  if (input.driver === OPENCODE_DRIVER_KIND) {
+    if (input.flow !== "login") return null;
+    const file = binaryPath || "opencode";
+    const args = [...OPENCODE_LOGIN_ARGS];
+    return { file, args, env: {}, display: renderDisplayCommand({ file, args, env: {} }) };
   }
 
   return null;
