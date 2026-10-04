@@ -682,7 +682,7 @@ export class RelayHost extends DurableObject<RelayV2Env> {
     try {
       ws.close(code, reason);
     } catch {
-      // Already closed.
+      // A dropped connection reports 1005/1006, which can't be sent back.
     }
   }
 
