@@ -650,7 +650,23 @@ describe("summarizeLiveAgents", () => {
           buildSubagent({ id: "c", status: "completed" }),
         ],
       }),
-    ).toEqual({ count: 2, waitingCount: 1 });
+    ).toMatchObject({ count: 2, waitingCount: 1 });
+  });
+
+  it("lists agents waiting on the user first, then the longest-running", () => {
+    const summary = summarizeLiveAgents({
+      subagents: [
+        buildSubagent({ id: "newer", createdAt: "2026-08-11T10:05:00.000Z" }),
+        buildSubagent({ id: "older", createdAt: "2026-08-11T10:01:00.000Z" }),
+        buildSubagent({ id: "blocked", status: "waiting", createdAt: "2026-08-11T10:09:00.000Z" }),
+      ],
+    });
+
+    expect(summary?.agents.map((agent) => [agent.id, agent.waiting])).toEqual([
+      ["blocked", true],
+      ["older", false],
+      ["newer", false],
+    ]);
   });
 
   it("says nothing when the thread is idle", () => {

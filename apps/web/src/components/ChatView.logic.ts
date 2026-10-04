@@ -2244,22 +2244,35 @@ export function buildRevertConfirmView(input: {
   };
 }
 
+/** Uncommitted work in the thread's checkout, as the header's change count shows it. */
+export interface WorkingTreeChanges {
+  readonly insertions: number;
+  readonly deletions: number;
+  readonly fileCount: number;
+}
+
 /**
- * The working-tree diffstat to show on a closed source control toggle, or null
- * when there is nothing worth reporting. A clean tree stays visually quiet, and
- * an unloaded or non-repo status must not read as "no changes".
+ * The working tree's uncommitted changes for the header, or null when there is
+ * nothing to report. Keyed off the status's own changed flag rather than the
+ * line counts: a binary edit or an empty new file changes the tree without
+ * adding a line. An unloaded or non-repo status must not read as "no changes".
  */
-export function resolveWorkingTreeDiffStat(
+export function resolveWorkingTreeChanges(
   status: {
     readonly isRepo: boolean;
-    readonly workingTree: { readonly insertions: number; readonly deletions: number };
+    readonly hasWorkingTreeChanges: boolean;
+    readonly workingTree: {
+      readonly files: ReadonlyArray<unknown>;
+      readonly insertions: number;
+      readonly deletions: number;
+    };
   } | null,
-): { readonly insertions: number; readonly deletions: number } | null {
-  if (status === null || !status.isRepo) {
+): WorkingTreeChanges | null {
+  if (status === null || !status.isRepo || !status.hasWorkingTreeChanges) {
     return null;
   }
-  const { insertions, deletions } = status.workingTree;
-  return insertions === 0 && deletions === 0 ? null : { insertions, deletions };
+  const { files, insertions, deletions } = status.workingTree;
+  return { insertions, deletions, fileCount: files.length };
 }
 
 /**
