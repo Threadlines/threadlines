@@ -6,6 +6,7 @@ import * as Scope from "effect/Scope";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
 import { CheckpointReactor } from "../Services/CheckpointReactor.ts";
+import { ChildThreadReactor } from "../Services/ChildThreadReactor.ts";
 import { ProviderCommandReactor } from "../Services/ProviderCommandReactor.ts";
 import { ProviderRuntimeIngestionService } from "../Services/ProviderRuntimeIngestion.ts";
 import { ThreadDeletionReactor } from "../Services/ThreadDeletionReactor.ts";
@@ -23,7 +24,7 @@ describe("OrchestrationReactor", () => {
     runtime = null;
   });
 
-  it("starts provider ingestion, provider command, checkpoint, thread deletion, and diff-stat baseline reactors", async () => {
+  it("starts provider ingestion, provider command, child thread, checkpoint, thread deletion, and diff-stat baseline reactors", async () => {
     const started: string[] = [];
 
     runtime = ManagedRuntime.make(
@@ -41,6 +42,15 @@ describe("OrchestrationReactor", () => {
           Layer.succeed(ProviderCommandReactor, {
             start: () => {
               started.push("provider-command-reactor");
+              return Effect.void;
+            },
+            drain: Effect.void,
+          }),
+        ),
+        Layer.provideMerge(
+          Layer.succeed(ChildThreadReactor, {
+            start: () => {
+              started.push("child-thread-reactor");
               return Effect.void;
             },
             drain: Effect.void,
@@ -83,6 +93,7 @@ describe("OrchestrationReactor", () => {
     expect(started).toEqual([
       "provider-runtime-ingestion",
       "provider-command-reactor",
+      "child-thread-reactor",
       "checkpoint-reactor",
       "thread-deletion-reactor",
       "thread-diffstat-baseline-reactor",

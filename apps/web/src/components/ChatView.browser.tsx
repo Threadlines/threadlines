@@ -2,7 +2,10 @@
 import "../index.css";
 
 import {
+  ChildRequestBatchId,
+  ChildRequestId,
   EMPTY_AGENT_REQUEST_STATE,
+  EMPTY_CHILD_REQUEST_STATE,
   EventId,
   ORCHESTRATION_WS_METHODS,
   EnvironmentId,
@@ -41,7 +44,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { HttpResponse, http, ws } from "msw";
 import { setupWorker } from "msw/browser";
-import { page } from "vite-plus/test/browser";
+import { page, userEvent } from "vite-plus/test/browser";
 import {
   afterAll,
   afterEach,
@@ -134,6 +137,17 @@ vi.mock("../lib/gitStatusState", () => ({
 
 const THREAD_ID = "thread-browser-test" as ThreadId;
 const THREAD_TITLE = "Browser test thread";
+/** A thread no other thread started, with no threads of its own. */
+const NO_CHILD_THREAD_FIELDS = {
+  parentThreadId: null,
+  parentTurnId: null,
+  attachedToParent: false,
+  parentAttachmentEpoch: 0,
+  handedBackAt: null,
+  handedBackTurnId: null,
+  archivedWithParentAt: null,
+  childRequests: EMPTY_CHILD_REQUEST_STATE,
+} as const;
 const ARCHIVED_SECONDARY_THREAD_ID = "thread-secondary-project-archived" as ThreadId;
 const PROJECT_ID = "project-1" as ProjectId;
 const SECOND_PROJECT_ID = "project-2" as ProjectId;
@@ -544,6 +558,7 @@ function createSnapshotForTargetUser(options: {
         checkpoints: [],
         diffStatBaselineTurnCount: 0,
         agentRequests: EMPTY_AGENT_REQUEST_STATE,
+        ...NO_CHILD_THREAD_FIELDS,
         session: {
           threadId: THREAD_ID,
           providerThreadId: null,
@@ -765,6 +780,7 @@ function addThreadToSnapshot(
         checkpoints: [],
         diffStatBaselineTurnCount: 0,
         agentRequests: EMPTY_AGENT_REQUEST_STATE,
+        ...NO_CHILD_THREAD_FIELDS,
         session: {
           threadId,
           providerThreadId: null,
@@ -1352,6 +1368,7 @@ function createSnapshotWithSecondaryProject(options?: {
           checkpoints: [],
           diffStatBaselineTurnCount: 0,
           agentRequests: EMPTY_AGENT_REQUEST_STATE,
+          ...NO_CHILD_THREAD_FIELDS,
           session: {
             threadId: "thread-secondary-project" as ThreadId,
             providerThreadId: null,
@@ -1397,6 +1414,7 @@ function createSnapshotWithSecondaryProject(options?: {
           checkpoints: [],
           diffStatBaselineTurnCount: 0,
           agentRequests: EMPTY_AGENT_REQUEST_STATE,
+          ...NO_CHILD_THREAD_FIELDS,
           session: {
             threadId: ARCHIVED_SECONDARY_THREAD_ID,
             providerThreadId: null,
@@ -3455,24 +3473,59 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
-  async function clickOpenInPrimaryButton(editorLabel: string) {
-    const openButton = await waitForElement(
-      () =>
-        document.querySelector<HTMLButtonElement>(`button[aria-label="Open in ${editorLabel}"]`),
-      `Unable to find Open in ${editorLabel} button.`,
-    );
-    await vi.waitFor(() => {
-      expect((openButton as HTMLButtonElement).disabled).toBe(false);
-    });
-    (openButton as HTMLButtonElement).click();
+  /** Binds the open-favorite shortcut, which the default fixture leaves unbound. */
+  const OPEN_FAVORITE_EDITOR_KEYBINDING = {
+    command: "editor.openFavorite",
+    shortcut: {
+      key: "o",
+      metaKey: false,
+      ctrlKey: false,
+      shiftKey: false,
+      altKey: false,
+      modKey: true,
+    },
+  } as const;
+
+  async function openProjectMenu() {
+    await page.getByRole("button", { name: /, project options$/ }).click();
   }
 
-  async function openEditorPickerMenu() {
-    const menuButton = await waitForElement(
-      () => document.querySelector<HTMLButtonElement>('button[aria-label="Open project options"]'),
-      "Unable to find Open picker menu button.",
+  async function clickProjectMenuItem(label: string) {
+    await openProjectMenu();
+    await page.getByRole("menuitem", { name: label }).click();
+  }
+
+  async function openDefaultEditorSubmenu() {
+    await openProjectMenu();
+    await page.getByRole("menuitem", { name: /^Default/ }).click();
+  }
+
+  /** Presses the open-favorite shortcut until an open request goes out: the
+   *  crumb menu that owns it mounts, and picks up its keybinding, after the
+   *  server config lands. */
+  async function pressOpenFavoriteEditorShortcut() {
+    await waitForElement(
+      () => document.querySelector('button[aria-label$=", project options"]'),
+      "Unable to find the project crumb menu that owns the shortcut.",
     );
-    (menuButton as HTMLButtonElement).click();
+    const useMetaForMod = isMacPlatform(navigator.platform);
+    await vi.waitFor(
+      () => {
+        window.dispatchEvent(
+          new KeyboardEvent("keydown", {
+            key: "o",
+            metaKey: useMetaForMod,
+            ctrlKey: !useMetaForMod,
+            bubbles: true,
+            cancelable: true,
+          }),
+        );
+        expect(wsRequests.some((request) => request._tag === WS_METHODS.shellOpenInEditor)).toBe(
+          true,
+        );
+      },
+      { timeout: 8_000, interval: 50 },
+    );
   }
 
   it("opens the project cwd for draft threads without a worktree path", async () => {
@@ -3491,7 +3544,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
 
     try {
       await waitForServerConfigToApply();
-      await clickOpenInPrimaryButton("VS Code");
+      await clickProjectMenuItem("Open in VS Code");
 
       await vi.waitFor(
         () => {
@@ -4445,7 +4498,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
 
     try {
       await waitForServerConfigToApply();
-      await clickOpenInPrimaryButton("VS Code Insiders");
+      await clickProjectMenuItem("Open in VS Code Insiders");
 
       await vi.waitFor(
         () => {
@@ -4481,7 +4534,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
 
     try {
       await waitForServerConfigToApply();
-      await clickOpenInPrimaryButton("Trae");
+      await clickProjectMenuItem("Open in Trae");
 
       await vi.waitFor(
         () => {
@@ -4517,18 +4570,15 @@ describe("ChatView timeline estimator parity (full app)", () => {
 
     try {
       await waitForServerConfigToApply();
-      await openEditorPickerMenu();
-
-      const kiroItem = await waitForElement(
-        () =>
-          Array.from(document.querySelectorAll('[data-slot="menu-radio-item"]')).find((item) =>
-            item.textContent?.includes("Kiro"),
-          ) ?? null,
-        "Unable to find Kiro menu item.",
+      // Keyboard path: focus the crumb, open its menu, and take the first item.
+      const trigger = await waitForElement(
+        () => document.querySelector<HTMLButtonElement>('button[aria-label$=", project options"]'),
+        "Unable to find the project crumb menu.",
       );
-      (kiroItem as HTMLElement).click();
-
-      await clickOpenInPrimaryButton("Kiro");
+      trigger.focus();
+      await userEvent.keyboard("{Enter}");
+      await expect.element(page.getByRole("menuitem", { name: "Open in Kiro" })).toBeVisible();
+      await userEvent.keyboard("{Enter}");
 
       await vi.waitFor(
         () => {
@@ -4564,32 +4614,18 @@ describe("ChatView timeline estimator parity (full app)", () => {
 
     try {
       await waitForServerConfigToApply();
-      await openEditorPickerMenu();
+      await openProjectMenu();
 
-      await waitForElement(
-        () =>
-          Array.from(document.querySelectorAll('[data-slot="menu-radio-item"]')).find((item) =>
-            item.textContent?.includes("VS Code Insiders"),
-          ) ?? null,
-        "Unable to find VS Code Insiders menu item.",
-      );
-
+      await expect
+        .element(page.getByRole("menuitem", { name: "Open in VS Code Insiders" }))
+        .toBeVisible();
       expect(
-        Array.from(document.querySelectorAll('[data-slot="menu-radio-item"]')).some((item) =>
+        Array.from(document.querySelectorAll('[data-slot="menu-item"]')).some((item) =>
           item.textContent?.includes("Zed"),
         ),
       ).toBe(false);
 
-      const vscodiumItem = await waitForElement(
-        () =>
-          Array.from(document.querySelectorAll('[data-slot="menu-radio-item"]')).find((item) =>
-            item.textContent?.includes("VSCodium"),
-          ) ?? null,
-        "Unable to find VSCodium menu item.",
-      );
-      (vscodiumItem as HTMLElement).click();
-
-      await clickOpenInPrimaryButton("VSCodium");
+      await page.getByRole("menuitem", { name: "Open in VSCodium" }).click();
 
       await vi.waitFor(
         () => {
@@ -4624,37 +4660,27 @@ describe("ChatView timeline estimator parity (full app)", () => {
         nextFixture.serverConfig = {
           ...nextFixture.serverConfig,
           availableEditors: ["cursor", "file-manager"],
+          keybindings: [OPEN_FAVORITE_EDITOR_KEYBINDING],
         };
       },
     });
 
     try {
       await waitForServerConfigToApply();
-      await openEditorPickerMenu();
+      await openDefaultEditorSubmenu();
+      await page.getByRole("menuitemradio", { name: fileManagerName }).click();
 
-      const fileManagerItem = await waitForElement(
-        () =>
-          Array.from(document.querySelectorAll('[data-slot="menu-radio-item"]')).find(
-            (item) => item.textContent?.trim() === fileManagerName,
-          ) ?? null,
-        `Unable to find ${fileManagerName} menu item.`,
-      );
-      (fileManagerItem as HTMLElement).click();
-
-      await waitForElement(
-        () =>
-          document.querySelector<HTMLButtonElement>(
-            `button[aria-label="Open in ${fileManagerName}"]`,
-          ),
-        `Unable to find selected ${fileManagerName} primary button.`,
-      );
-
+      await vi.waitFor(() => {
+        expect(localStorage.getItem("threadlines:last-editor")).toBe(
+          JSON.stringify("file-manager"),
+        );
+      });
+      // Picking a default only changes what the shortcut opens.
       expect(wsRequests.some((request) => request._tag === WS_METHODS.shellOpenInEditor)).toBe(
         false,
       );
-      expect(localStorage.getItem("threadlines:last-editor")).toBe(JSON.stringify("file-manager"));
 
-      await clickOpenInPrimaryButton(fileManagerName);
+      await pressOpenFavoriteEditorShortcut();
 
       await vi.waitFor(
         () => {
@@ -4685,6 +4711,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
         nextFixture.serverConfig = {
           ...nextFixture.serverConfig,
           availableEditors: ["vscode-insiders"],
+          keybindings: [OPEN_FAVORITE_EDITOR_KEYBINDING],
         };
       },
     });
@@ -4692,8 +4719,8 @@ describe("ChatView timeline estimator parity (full app)", () => {
     try {
       await waitForServerConfigToApply();
       // The unavailable stored favorite falls back to the first installed
-      // editor as the primary open target.
-      await clickOpenInPrimaryButton("VS Code Insiders");
+      // editor as the open-favorite shortcut's target.
+      await pressOpenFavoriteEditorShortcut();
 
       await vi.waitFor(
         () => {
@@ -4704,6 +4731,49 @@ describe("ChatView timeline estimator parity (full app)", () => {
             _tag: WS_METHODS.shellOpenInEditor,
             cwd: "/repo/project",
             editor: "vscode-insiders",
+          });
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("keeps the open-favorite shortcut working on a phone, where the crumb is hidden", async () => {
+    setDraftThreadWithoutWorktree();
+
+    const mounted = await mountChatView({
+      viewport: PHONE_VIEWPORT,
+      snapshot: createDraftOnlySnapshot(),
+      configureFixture: (nextFixture) => {
+        nextFixture.serverConfig = {
+          ...nextFixture.serverConfig,
+          availableEditors: ["vscode"],
+          keybindings: [OPEN_FAVORITE_EDITOR_KEYBINDING],
+        };
+      },
+    });
+
+    try {
+      await waitForServerConfigToApply();
+      const trigger = await waitForElement(
+        () => document.querySelector<HTMLButtonElement>('button[aria-label$=", project options"]'),
+        "Unable to find the project crumb menu.",
+      );
+      expect(trigger.checkVisibility()).toBe(false);
+
+      await pressOpenFavoriteEditorShortcut();
+
+      await vi.waitFor(
+        () => {
+          const openRequest = wsRequests.find(
+            (request) => request._tag === WS_METHODS.shellOpenInEditor,
+          );
+          expect(openRequest).toMatchObject({
+            _tag: WS_METHODS.shellOpenInEditor,
+            cwd: "/repo/project",
+            editor: "vscode",
           });
         },
         { timeout: 8_000, interval: 16 },
@@ -8231,6 +8301,184 @@ describe("ChatView timeline estimator parity (full app)", () => {
                 (request as { type?: string }).type === "thread.agent-invite.respond",
             ),
           ).toMatchObject({ requestId, choice: "review" }),
+        { timeout: 8_000, interval: 16 },
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("asks before an agent starts threads, and names the thread whose answer came back", async () => {
+    const base = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-child-threads" as MessageId,
+      targetText: "child threads target",
+    });
+    const childThreadId = "thread-child-changelog" as ThreadId;
+    const batchId = ChildRequestBatchId.make("batch-1");
+    const parentThread = base.threads.find((thread) => thread.id === THREAD_ID)!;
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...base,
+        threads: [
+          ...base.threads.map((thread) =>
+            thread.id === THREAD_ID
+              ? {
+                  ...thread,
+                  messages: [
+                    ...thread.messages,
+                    {
+                      id: "msg-child-report" as MessageId,
+                      role: "user" as const,
+                      text: "The changelog is written.",
+                      fromThread: {
+                        threadId: childThreadId,
+                        requestId: ChildRequestId.make("request-earlier"),
+                        kind: "report" as const,
+                      },
+                      turnId: null,
+                      streaming: false,
+                      createdAt: isoAt(300),
+                      updatedAt: isoAt(300),
+                    },
+                  ],
+                  childRequests: {
+                    ...EMPTY_CHILD_REQUEST_STATE,
+                    startsSinceUser: 1,
+                    open: [
+                      {
+                        requestId: ChildRequestId.make("request-start-1"),
+                        batchId,
+                        kind: "start" as const,
+                        from: { participantId: null },
+                        callerTurnId: "turn-start" as TurnId,
+                        deliveryEpoch: 0,
+                        status: "awaiting_user" as const,
+                        childThreadId: "thread-child-flake" as ThreadId,
+                        childMessageId: "msg-child-flake" as MessageId,
+                        launch: {
+                          title: "Fix the flaky cleanup test",
+                          prompt: "Find out why the cleanup test flakes.",
+                          modelSelection: {
+                            instanceId: ProviderInstanceId.make("codex"),
+                            model: "gpt-5",
+                          },
+                          runtimeMode: "full-access" as const,
+                          interactionMode: "default" as const,
+                          reportBack: true,
+                          runSetup: true,
+                          workspace: { kind: "project_folder" as const },
+                        },
+                        createdAt: isoAt(301),
+                      },
+                    ],
+                  },
+                }
+              : thread,
+          ),
+          {
+            ...parentThread,
+            id: childThreadId,
+            title: "Write the changelog",
+            messages: [],
+            parentThreadId: THREAD_ID,
+            attachedToParent: true,
+          },
+        ],
+      },
+    });
+
+    try {
+      const panel = await waitForElement(
+        () => document.querySelector<HTMLElement>('[data-testid="child-threads-panel"]'),
+        "Unable to find the approval card.",
+      );
+      expect(panel.textContent).toContain("wants to start 1 thread");
+      expect(panel.textContent).toContain("Fix the flaky cleanup test");
+      // No git to isolate it in: the card says it shares the folder.
+      expect(panel.textContent).toContain("shares this folder");
+      // The answer that came back is the child's, never the user's.
+      expect(
+        document.querySelector('[data-thread-message="report"] [data-thread-message-author]')
+          ?.textContent,
+      ).toBe("Write the changelog");
+
+      [...panel.querySelectorAll<HTMLButtonElement>("button")]
+        .find((button) => button.textContent === "Start")
+        ?.click();
+      await vi.waitFor(
+        () =>
+          expect(
+            wsRequests.find(
+              (request) =>
+                request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+                (request as { type?: string }).type === "thread.child-request.respond",
+            ),
+          ).toMatchObject({ batchId, choice: "start" }),
+        { timeout: 8_000, interval: 16 },
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("names the thread that started this one, in the header and on its request", async () => {
+    const base = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-started-by" as MessageId,
+      targetText: "started by target",
+    });
+    const parentThreadId = "thread-parent-release" as ThreadId;
+    const thisThread = base.threads.find((thread) => thread.id === THREAD_ID)!;
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...base,
+        threads: [
+          ...base.threads.map((thread) =>
+            thread.id === THREAD_ID
+              ? {
+                  ...thread,
+                  parentThreadId,
+                  attachedToParent: true,
+                  // A later request from the parent, at the end of the chat
+                  // where the list rests.
+                  messages: [
+                    ...thread.messages,
+                    {
+                      id: "msg-parent-request" as MessageId,
+                      role: "user" as const,
+                      text: "Now write the 0.6 changelog.",
+                      fromThread: {
+                        threadId: parentThreadId,
+                        requestId: ChildRequestId.make("request-send-1"),
+                        kind: "request" as const,
+                      },
+                      turnId: null,
+                      streaming: false,
+                      createdAt: isoAt(300),
+                      updatedAt: isoAt(300),
+                    },
+                  ],
+                }
+              : thread,
+          ),
+          { ...thisThread, id: parentThreadId, title: "Ship the 0.6 release", messages: [] },
+        ],
+      },
+    });
+
+    try {
+      const chip = await waitForElement(
+        () => document.querySelector<HTMLElement>('[data-testid="chat-header-started-by"]'),
+        "Unable to find the Started by chip.",
+      );
+      expect(chip.textContent).toContain("Ship the 0.6 release");
+      await vi.waitFor(
+        () =>
+          expect(
+            document.querySelector('[data-thread-message="request"] [data-thread-message-author]')
+              ?.textContent,
+          ).toBe("Ship the 0.6 release"),
         { timeout: 8_000, interval: 16 },
       );
     } finally {

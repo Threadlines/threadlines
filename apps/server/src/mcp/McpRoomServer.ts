@@ -11,13 +11,17 @@
  * The same bearer credentials as `/mcp` (McpSessionRegistry); a credential
  * reaches this endpoint only if it carries room tools, and each handler still
  * checks that its caller may use that tool.
+ *
+ * The thread tools (child threads, threadTools.ts) are served here too: they
+ * need the same caller identity and the same per-runtime grant.
  */
-import { agentInvitesMode } from "@threadlines/shared/serverSettings";
+import { agentInvitesMode, agentThreadsMode } from "@threadlines/shared/serverSettings";
+import type { ThreadId } from "@threadlines/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import type * as Types from "effect/Types";
-import { McpProtocol, McpServer } from "effect/unstable/ai";
+import { McpProtocol, McpServer, Toolkit } from "effect/unstable/ai";
 import { HttpRouter, HttpServerRequest, type HttpServerResponse } from "effect/unstable/http";
 
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
@@ -36,6 +40,11 @@ import { mcpSessionRegistry } from "./McpSessionRegistry.ts";
 import { makeRoomRequestRegistry } from "./roomRequests.ts";
 import { makeRoomToolHandlers } from "./roomToolHandlers.ts";
 import { McpRoomInvocation, RoomToolkit } from "./roomTools.ts";
+import { makeThreadToolHandlers } from "./threadToolHandlers.ts";
+import { ThreadToolkit } from "./threadTools.ts";
+
+/** Every tool the endpoint serves. */
+const RoomEndpointToolkit = Toolkit.merge(RoomToolkit, ThreadToolkit);
 
 const authenticate = Effect.succeed(
   Effect.fn("McpRoomServer.authenticate")(function* (
@@ -62,7 +71,7 @@ const AuthenticationLive = HttpRouter.middleware<{
 }>()(authenticate).layer;
 
 /** The handlers, bound to the running server's orchestration and git. */
-const RoomToolHandlersLive = RoomToolkit.toLayer(
+const RoomToolHandlersLive = RoomEndpointToolkit.toLayer(
   Effect.gen(function* () {
     const engine = yield* OrchestrationEngineService;
     const snapshots = yield* ProjectionSnapshotQuery;
@@ -72,12 +81,13 @@ const RoomToolHandlersLive = RoomToolkit.toLayer(
     const settings = yield* ServerSettingsService;
     // Requests outlive the HTTP calls waiting on them; they end with the server.
     const requests = makeRoomRequestRegistry(yield* Effect.scope);
+    const readThread = (threadId: ThreadId) =>
+      snapshots.getThreadDetailById(threadId).pipe(Effect.map(Option.getOrUndefined), Effect.orDie);
+    const readThreadShell = (threadId: ThreadId) =>
+      snapshots.getThreadShellById(threadId).pipe(Effect.map(Option.getOrUndefined), Effect.orDie);
     const handlers = makeRoomToolHandlers({
       engine,
-      readThread: (threadId) =>
-        snapshots
-          .getThreadDetailById(threadId)
-          .pipe(Effect.map(Option.getOrUndefined), Effect.orDie),
+      readThread,
       readProjectRoot: (projectId) =>
         snapshots.getProjectShellById(projectId).pipe(
           Effect.map((project) => Option.getOrUndefined(project)?.workspaceRoot),
@@ -104,9 +114,38 @@ const RoomToolHandlersLive = RoomToolkit.toLayer(
             return model?.shortName ?? model?.name ?? selection.model;
           }),
         ),
+      threadTitleOf: (threadId) =>
+        readThreadShell(threadId).pipe(
+          Effect.map((thread) => thread?.title),
+          Effect.orElseSucceed(() => undefined),
+        ),
       providers: providers.getProviders,
       invitesMode: settings.getSettings.pipe(
         Effect.map(agentInvitesMode),
+        Effect.orElseSucceed(() => "off" as const),
+      ),
+      git,
+      requests,
+    });
+    const threadHandlers = makeThreadToolHandlers({
+      engine,
+      readThread,
+      readThreadShell,
+      // The sidebar's snapshot, narrowed to one project: open threads only.
+      listProjectThreads: (projectId) =>
+        snapshots.getShellSnapshot().pipe(
+          Effect.map((snapshot) =>
+            snapshot.threads.filter((thread) => thread.projectId === projectId),
+          ),
+          Effect.orDie,
+        ),
+      readProject: (projectId) =>
+        snapshots
+          .getProjectShellById(projectId)
+          .pipe(Effect.map(Option.getOrUndefined), Effect.orDie),
+      providers: providers.getProviders,
+      threadsMode: settings.getSettings.pipe(
+        Effect.map(agentThreadsMode),
         Effect.orElseSucceed(() => "off" as const),
       ),
       git,
@@ -124,12 +163,23 @@ const RoomToolHandlersLive = RoomToolkit.toLayer(
         Effect.flatMap(caller, (scope) => handlers.room_hand_off(scope, input)),
       room_available_agents: () => Effect.flatMap(caller, handlers.room_available_agents),
       room_invite: (input) => Effect.flatMap(caller, (scope) => handlers.room_invite(scope, input)),
+      thread_agents: () => Effect.flatMap(caller, threadHandlers.thread_agents),
+      thread_start: (input) =>
+        Effect.flatMap(caller, (scope) => threadHandlers.thread_start(scope, input)),
+      thread_list: (input) =>
+        Effect.flatMap(caller, (scope) => threadHandlers.thread_list(scope, input)),
+      thread_read: (input) =>
+        Effect.flatMap(caller, (scope) => threadHandlers.thread_read(scope, input)),
+      thread_send: (input) =>
+        Effect.flatMap(caller, (scope) => threadHandlers.thread_send(scope, input)),
+      thread_stop: (input) =>
+        Effect.flatMap(caller, (scope) => threadHandlers.thread_stop(scope, input)),
     };
   }),
 );
 
 export const layer = Layer.fresh(
-  McpServer.toolkit(RoomToolkit).pipe(
+  McpServer.toolkit(RoomEndpointToolkit).pipe(
     Layer.provide(RoomToolHandlersLive),
     Layer.provideMerge(
       McpServer.layerHttp({

@@ -21,6 +21,7 @@ import {
   agentInviteAcceptRefusal,
   agentInviteRefusal,
   agentRequestRefusal,
+  isAgentOrigin,
 } from "@threadlines/shared/roomAgentRequests";
 import {
   activeParticipants,
@@ -821,8 +822,9 @@ export function settleAgentRequestForSideTurn(
 /**
  * Stop ends the agents' chain for good: the hold goes on, the epoch moves,
  * every open request (an invite waiting for the user included) is stopped,
- * an agent's side answer is stopped, and messages agents queued are taken
- * back. The user's own side answer and queued messages are left alone.
+ * an agent's side answer is stopped, and messages agents queued (a room
+ * agent's, or another thread's request or report) are taken back. The user's
+ * own side answer and queued messages are left alone.
  */
 export function decideAgentChainStop(
   thread: OrchestrationThread,
@@ -836,7 +838,7 @@ export function decideAgentChainStop(
   if (
     !hasAgentRecords(thread) &&
     state.open.length === 0 &&
-    !(thread.queuedFollowUps ?? []).some((queued) => queued.fromAgent !== undefined)
+    !(thread.queuedFollowUps ?? []).some(isAgentOrigin)
   ) {
     return [];
   }
@@ -857,18 +859,16 @@ export function decideAgentChainStop(
           },
         ]
       : []),
-    ...(thread.queuedFollowUps ?? [])
-      .filter((queued) => queued.fromAgent !== undefined)
-      .map((queued): PlannedEvent => ({
-        ...base(),
-        type: "thread.follow-up-unqueued",
-        payload: {
-          threadId: thread.id,
-          messageId: queued.messageId,
-          reason: "cancelled",
-          createdAt,
-        },
-      })),
+    ...(thread.queuedFollowUps ?? []).filter(isAgentOrigin).map((queued): PlannedEvent => ({
+      ...base(),
+      type: "thread.follow-up-unqueued",
+      payload: {
+        threadId: thread.id,
+        messageId: queued.messageId,
+        reason: "cancelled",
+        createdAt,
+      },
+    })),
   ];
 }
 

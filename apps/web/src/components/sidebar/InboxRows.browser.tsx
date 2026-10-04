@@ -32,8 +32,8 @@ import { render } from "vitest-browser-react";
 
 import type { ThreadPullRequest } from "../pull-requests/pullRequests.logic";
 import type { SidebarThreadSummary } from "../../types";
-import { resolveThreadStatusPill } from "../Sidebar.logic";
-import { InboxThreadRow } from "./InboxRows";
+import { resolveThreadStatusPill, summarizeChildThreads } from "../Sidebar.logic";
+import { InboxChildRow, InboxThreadRow } from "./InboxRows";
 import { ThreadHoverCardProvider } from "./ThreadHoverCard";
 
 const ENVIRONMENT_ID = EnvironmentId.make("environment-local");
@@ -183,6 +183,142 @@ describe("InboxThreadRow pull request badge", () => {
 
     await expect.element(page.getByTestId(`thread-title-${THREAD_ID}`)).toBeVisible();
     expect(page.getByTestId("inbox-thread-pr-badge").elements()).toHaveLength(0);
+  });
+});
+
+describe("child thread families in the inbox", () => {
+  const rowCallbacks = {
+    orderedThreadKeys: [],
+    renamingThreadKey: null,
+    renamingTitle: "",
+    setRenamingTitle: () => undefined,
+    renamingInputRef: { current: null },
+    renamingCommittedRef: { current: false },
+    handleThreadClick: () => undefined,
+    navigateToThread: () => undefined,
+    handleMultiSelectContextMenu: async () => undefined,
+    handleThreadContextMenu: async () => undefined,
+    clearSelection: () => undefined,
+    commitRename: async () => undefined,
+    cancelRename: () => undefined,
+    markThreadDone: () => undefined,
+  } as const;
+  const status = (label: "Awaiting Input" | "Working") =>
+    resolveThreadStatusPill({
+      thread:
+        label === "Awaiting Input"
+          ? { ...THREAD, hasPendingUserInput: true }
+          : {
+              ...THREAD,
+              session: {
+                provider: ProviderDriverKind.make("codex"),
+                status: "running",
+                orchestrationStatus: "running",
+                createdAt: "2026-09-01T09:00:00.000Z",
+                updatedAt: "2026-09-01T09:00:00.000Z",
+              },
+            },
+    });
+
+  it("opens a family from the parent's summary line and says who needs you", async () => {
+    const onToggleFamily = vi.fn();
+    const needsYou = status("Awaiting Input")!;
+    render(
+      <ThreadHoverCardProvider>
+        <ul>
+          <InboxThreadRow
+            {...rowCallbacks}
+            thread={THREAD}
+            status={null}
+            projectLabel={null}
+            isActive={false}
+            jumpLabel={null}
+            canMarkDone={false}
+            listPullRequest={null}
+            linkedPullRequests={[]}
+            openPrLink={() => undefined}
+            family={{
+              open: false,
+              summary: summarizeChildThreads([
+                { threadKey: "a", thread: THREAD, status: needsYou, isDone: false },
+                { threadKey: "b", thread: THREAD, status: status("Working"), isDone: false },
+                { threadKey: "c", thread: THREAD, status: null, isDone: true },
+              ]),
+            }}
+            onToggleFamily={onToggleFamily}
+          />
+        </ul>
+      </ThreadHoverCardProvider>,
+    );
+
+    const line = page.getByTestId(`thread-family-${THREAD_ID}`);
+    await expect.element(line).toHaveTextContent("3 threads · 1 needs you");
+    await expect.element(line).toHaveAttribute("aria-expanded", "false");
+    await userEvent.click(line);
+    expect(onToggleFamily).toHaveBeenCalledWith(`${ENVIRONMENT_ID}:${THREAD_ID}`);
+  });
+
+  it("names a wrapped parent in a live child's row, and gives child rows jump labels and reopen", async () => {
+    const reopenThread = vi.fn();
+    const child: SidebarThreadSummary = {
+      ...THREAD,
+      id: ThreadId.make("thread-child"),
+      title: "Write the changelog",
+      branch: null,
+    };
+    render(
+      <ThreadHoverCardProvider>
+        <ul>
+          <InboxThreadRow
+            {...rowCallbacks}
+            thread={child}
+            status={status("Working")}
+            projectLabel="threadlines"
+            isActive={false}
+            jumpLabel={null}
+            canMarkDone={false}
+            listPullRequest={null}
+            linkedPullRequests={[]}
+            openPrLink={() => undefined}
+            wrappedParentTitle="Ship the 0.6 release"
+          />
+          <InboxChildRow
+            {...rowCallbacks}
+            thread={{ ...child, id: ThreadId.make("thread-wrapped-child") }}
+            status={null}
+            isDone
+            doneAt="2026-09-01T09:00:00.000Z"
+            isActive={false}
+            jumpLabel={null}
+            canMarkDone={false}
+            reopenThread={reopenThread}
+          />
+          <InboxChildRow
+            {...rowCallbacks}
+            thread={{ ...child, id: ThreadId.make("thread-jump-child") }}
+            status={status("Working")}
+            isDone={false}
+            doneAt={null}
+            isActive={false}
+            jumpLabel="⌘4"
+            canMarkDone={false}
+            reopenThread={reopenThread}
+          />
+        </ul>
+      </ThreadHoverCardProvider>,
+    );
+
+    // Where the project name usually sits, the row says where it came from.
+    const detail = page.getByTestId(`thread-detail-${child.id}`);
+    await expect.element(detail).toHaveTextContent("Ship the 0.6 release");
+    await expect.element(detail).not.toHaveTextContent("threadlines");
+
+    // A child row is a row the keyboard jumps to, so it shows its shortcut too.
+    await expect.element(page.getByTestId("child-meta-thread-jump-child")).toHaveTextContent("⌘4");
+
+    await page.getByTestId("child-row-thread-wrapped-child").hover();
+    await userEvent.click(page.getByTestId("child-reopen-thread-wrapped-child"));
+    expect(reopenThread).toHaveBeenCalledWith(`${ENVIRONMENT_ID}:thread-wrapped-child`);
   });
 });
 

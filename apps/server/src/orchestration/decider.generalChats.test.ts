@@ -11,6 +11,7 @@ import {
   type OrchestrationReadModel,
   type OrchestrationThread,
   EMPTY_AGENT_REQUEST_STATE,
+  EMPTY_CHILD_REQUEST_STATE,
 } from "@threadlines/contracts";
 import * as Effect from "effect/Effect";
 import * as Path from "effect/Path";
@@ -265,6 +266,14 @@ function makeThread(input: {
     pullRequestAutoMerge: null,
     linkedPullRequests: [],
     agentRequests: EMPTY_AGENT_REQUEST_STATE,
+    parentThreadId: null,
+    parentTurnId: null,
+    attachedToParent: false,
+    parentAttachmentEpoch: 0,
+    handedBackAt: null,
+    handedBackTurnId: null,
+    archivedWithParentAt: null,
+    childRequests: EMPTY_CHILD_REQUEST_STATE,
     participants: [],
     doneOverride: null,
     lastSeenAt: null,

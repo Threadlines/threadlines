@@ -211,6 +211,7 @@ const PersistedComposerThreadDraftState = Schema.Struct({
   // an entry already encodes "no selection for this instance".
   modelSelectionByProvider: Schema.optionalKey(Schema.Record(ProviderInstanceId, ModelSelection)),
   activeProvider: Schema.optionalKey(Schema.NullOr(ProviderInstanceId)),
+  modelPicked: Schema.optionalKey(Schema.Boolean),
   runtimeMode: Schema.optionalKey(RuntimeMode),
   interactionMode: Schema.optionalKey(ProviderInteractionMode),
 });
@@ -282,6 +283,14 @@ const DraftRoomSchema = Schema.Struct({
 export type DraftRoom = typeof DraftRoomSchema.Type;
 const decodeDraftRoom = Schema.decodeUnknownOption(DraftRoomSchema);
 
+/** What a computer's settings say a new thread starts with, ready for a draft. */
+export interface NewThreadDraftDefaults {
+  /** Null: the model last picked on this device. */
+  readonly modelSelection: ModelSelection | null;
+  /** Null: no agents beside the thread's own. */
+  readonly room: DraftRoom | null;
+}
+
 const PersistedDraftThreadState = Schema.Struct({
   threadId: ThreadId,
   environmentId: Schema.String,
@@ -346,6 +355,12 @@ export interface ComposerThreadDraftState {
   modelSelectionByProvider: Partial<Record<ProviderInstanceId, ModelSelection>>;
   /** Routing key of the last picked instance (see `modelSelectionByProvider`). */
   activeProvider: ProviderInstanceId | null;
+  /**
+   * The user picked this draft's model or reasoning, rather than it coming
+   * with the draft (the computer's default or the last used one). A picked
+   * model stays when the draft moves to another computer.
+   */
+  modelPicked?: true;
   runtimeMode: RuntimeMode | null;
   interactionMode: ProviderInteractionMode | null;
 }
@@ -555,6 +570,18 @@ interface ComposerDraftStoreState {
       | undefined,
   ) => void;
   applyStickyState: (threadRef: ComposerThreadTarget) => void;
+  /**
+   * Sets a new thread up the way "new thread" means: the device's last-used
+   * model, then the computer's defaults over it (Settings › Threads). Null
+   * defaults: the computer's settings are not known, so only last used is
+   * applied and the room is left alone. `keepModel` leaves the model as it is
+   * (a draft moved to another computer after its model was picked).
+   */
+  applyNewThreadDefaults: (
+    threadRef: ComposerThreadTarget,
+    defaults: NewThreadDraftDefaults | null,
+    options?: { readonly keepModel?: boolean },
+  ) => void;
   setProviderModelOptions: (
     threadRef: ComposerThreadTarget,
     provider: ProviderDriverKind,
@@ -884,6 +911,56 @@ function normalizeTranscriptHighlightContextsForThread(
   }
 
   return normalizedContexts;
+}
+
+/**
+ * A draft with the device's last-used picks laid over its own: every model
+ * pick, in a thread or a draft, also writes them, so they are at least as
+ * fresh as a reused draft's selection, which can date from whenever that
+ * draft was abandoned. Null when there is no last-used pick at all; the
+ * draft itself when nothing changes.
+ */
+function withStickyModel(
+  base: ComposerThreadDraftState,
+  sticky: Pick<ComposerDraftStoreState, "stickyModelSelectionByProvider" | "stickyActiveProvider">,
+): ComposerThreadDraftState | null {
+  const stickyMap = sticky.stickyModelSelectionByProvider;
+  if (Object.keys(stickyMap).length === 0 && sticky.stickyActiveProvider === null) {
+    return null;
+  }
+  const nextMap = { ...base.modelSelectionByProvider };
+  for (const [provider, selection] of Object.entries(stickyMap)) {
+    if (selection) {
+      // The key comes from the instance-keyed sticky map.
+      nextMap[provider as ProviderInstanceId] = selection;
+    }
+  }
+  if (
+    Equal.equals(base.modelSelectionByProvider, nextMap) &&
+    base.activeProvider === sticky.stickyActiveProvider
+  ) {
+    return base;
+  }
+  return {
+    ...base,
+    modelSelectionByProvider: nextMap,
+    activeProvider: sticky.stickyActiveProvider,
+  };
+}
+
+/** The composer drafts with one replaced, or dropped when it holds nothing. */
+function withComposerDraft(
+  state: Pick<ComposerDraftStoreState, "draftsByThreadKey">,
+  threadKey: string,
+  draft: ComposerThreadDraftState,
+): Record<string, ComposerThreadDraftState> {
+  const next = { ...state.draftsByThreadKey };
+  if (shouldRemoveDraft(draft)) {
+    delete next[threadKey];
+  } else {
+    next[threadKey] = draft;
+  }
+  return next;
 }
 
 function shouldRemoveDraft(draft: ComposerThreadDraftState): boolean {
@@ -1975,6 +2052,7 @@ function normalizePersistedDraftsByThreadId(
         ? {
             modelSelectionByProvider: compactModelSelectionByProvider(modelSelectionByProvider),
             activeProvider,
+            ...(draftCandidate.modelPicked === true ? { modelPicked: true } : {}),
           }
         : {}),
       ...(runtimeMode ? { runtimeMode } : {}),
@@ -2139,6 +2217,7 @@ function partializeComposerDraftStoreState(
               draft.modelSelectionByProvider,
             ),
             activeProvider: draft.activeProvider,
+            ...(draft.modelPicked ? { modelPicked: true } : {}),
           }
         : {}),
       ...(draft.runtimeMode ? { runtimeMode: draft.runtimeMode } : {}),
@@ -2413,6 +2492,7 @@ function toHydratedThreadDraft(
       }) ?? [],
     modelSelectionByProvider,
     activeProvider,
+    ...(persistedDraft.modelPicked === true ? { modelPicked: true as const } : {}),
     runtimeMode: persistedDraft.runtimeMode ?? null,
     interactionMode: persistedDraft.interactionMode ?? null,
   };
@@ -2936,45 +3016,82 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
             return;
           }
           set((state) => {
-            const stickyMap = state.stickyModelSelectionByProvider;
-            const stickyActiveProvider = state.stickyActiveProvider;
-            if (Object.keys(stickyMap).length === 0 && stickyActiveProvider === null) {
+            const base = state.draftsByThreadKey[threadKey] ?? createEmptyThreadDraft();
+            const nextDraft = withStickyModel(base, state);
+            if (nextDraft === null || nextDraft === base) {
               return state;
             }
-            const existing = state.draftsByThreadKey[threadKey];
-            const base = existing ?? createEmptyThreadDraft();
-            const nextMap = { ...base.modelSelectionByProvider };
-            for (const [provider, selection] of Object.entries(stickyMap)) {
+            return { draftsByThreadKey: withComposerDraft(state, threadKey, nextDraft) };
+          });
+        },
+        applyNewThreadDefaults: (threadRef, defaults, options) => {
+          const threadKey = resolveComposerDraftKey(get(), threadRef) ?? "";
+          if (threadKey.length === 0) {
+            return;
+          }
+          set((state) => {
+            const base = state.draftsByThreadKey[threadKey] ?? createEmptyThreadDraft();
+            let nextDraft = base;
+            if (options?.keepModel !== true) {
+              // With the computer's settings known, the model starts from the
+              // last-used picks alone: any other selection the draft holds can
+              // only be an earlier default, which must not outlive its setting
+              // (its reasoning would come back with a later pick). Without
+              // them, last used is laid over the draft as before.
+              const { modelPicked: _picked, ...unpicked } = base;
+              const start =
+                defaults === null
+                  ? unpicked
+                  : { ...unpicked, modelSelectionByProvider: {}, activeProvider: null };
+              nextDraft = withStickyModel(start, state) ?? start;
+              const selection = normalizeModelSelection(defaults?.modelSelection ?? null);
               if (selection) {
-                // Iteration key comes from the instance-keyed sticky map,
-                // so coerce the string back to `ProviderInstanceId` for
-                // the typed lookup. The sticky selection wins over anything
-                // the draft already held: every model pick — in a thread or
-                // in a draft — also writes sticky, so sticky is always at
-                // least as fresh, while a reused draft's own selection can
-                // date from whenever that draft was abandoned.
-                const instanceKey = provider as ProviderInstanceId;
-                nextMap[instanceKey] = selection;
+                // Written whole: a default without reasoning means the model's
+                // own, never the reasoning a last-used pick had.
+                nextDraft = {
+                  ...nextDraft,
+                  modelSelectionByProvider: {
+                    ...nextDraft.modelSelectionByProvider,
+                    [selection.instanceId]: selection,
+                  },
+                  activeProvider: selection.instanceId,
+                };
               }
             }
-            if (
-              Equal.equals(base.modelSelectionByProvider, nextMap) &&
-              base.activeProvider === stickyActiveProvider
-            ) {
+            const draftsChanged =
+              !Equal.equals(base.modelSelectionByProvider, nextDraft.modelSelectionByProvider) ||
+              base.activeProvider !== nextDraft.activeProvider ||
+              base.modelPicked !== nextDraft.modelPicked;
+
+            // "New thread" starts with the computer's room, or none: agents in
+            // a draft are setup, like its model, not work in progress.
+            const thread = state.draftThreadsByThreadKey[threadKey];
+            let nextThread = thread;
+            if (defaults !== null && thread && !isDraftThreadPromoting(thread)) {
+              const { room: _previous, ...rest } = thread;
+              nextThread =
+                defaults.room === null || defaults.room.agents.length === 0
+                  ? rest
+                  : { ...rest, room: defaults.room };
+            }
+            const threadChanged = nextThread !== thread && !Equal.equals(nextThread, thread);
+
+            if (!draftsChanged && !threadChanged) {
               return state;
             }
-            const nextDraft: ComposerThreadDraftState = {
-              ...base,
-              modelSelectionByProvider: nextMap,
-              activeProvider: stickyActiveProvider,
+            return {
+              ...(draftsChanged
+                ? { draftsByThreadKey: withComposerDraft(state, threadKey, nextDraft) }
+                : {}),
+              ...(threadChanged && nextThread
+                ? {
+                    draftThreadsByThreadKey: {
+                      ...state.draftThreadsByThreadKey,
+                      [threadKey]: nextThread,
+                    },
+                  }
+                : {}),
             };
-            const nextDraftsByThreadKey = { ...state.draftsByThreadKey };
-            if (shouldRemoveDraft(nextDraft)) {
-              delete nextDraftsByThreadKey[threadKey];
-            } else {
-              nextDraftsByThreadKey[threadKey] = nextDraft;
-            }
-            return { draftsByThreadKey: nextDraftsByThreadKey };
           });
         },
         setPrompt: (threadRef, prompt) => {
@@ -3130,9 +3247,12 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
               }
             }
             const nextActiveProvider = normalized?.instanceId ?? base.activeProvider;
+            // Picking a model, even the one already there, makes it the user's.
+            const picked = normalized !== null || base.modelPicked === true;
             if (
               Equal.equals(base.modelSelectionByProvider, nextMap) &&
-              base.activeProvider === nextActiveProvider
+              base.activeProvider === nextActiveProvider &&
+              (base.modelPicked === true) === picked
             ) {
               return state;
             }
@@ -3140,6 +3260,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
               ...base,
               modelSelectionByProvider: nextMap,
               activeProvider: nextActiveProvider,
+              ...(picked ? { modelPicked: true } : {}),
             };
             const nextDraftsByThreadKey = { ...state.draftsByThreadKey };
             if (shouldRemoveDraft(nextDraft)) {
@@ -3266,6 +3387,8 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
               ...base,
               ...(options?.instanceId ? { activeProvider: instanceKey } : {}),
               modelSelectionByProvider: nextMap,
+              // Reasoning picked by the user: the model setup is theirs now.
+              modelPicked: true,
             };
             const nextDraftsByThreadKey = { ...state.draftsByThreadKey };
             if (shouldRemoveDraft(nextDraft)) {

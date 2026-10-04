@@ -1,3 +1,5 @@
+import { PREVIEW_AGENT_KEYBOARD_HOLD_MS } from "@threadlines/shared/preview";
+
 /**
  * Keeps agent-driven browser work from moving the user's focus.
  *
@@ -28,6 +30,11 @@
  * task instead of after the wait, since every moment spent waiting is a
  * keystroke typed into the page. A user's own click that lands in that moment
  * announces itself just after, and the focus is handed back to the page.
+ *
+ * The one time a page is meant to hold focus without the user asking is while
+ * an agent's keys are being sent (withPageKeyboard): Chromium delivers a
+ * guest's keystrokes to whatever has focus in the window, so a page that does
+ * not hold it has the agent typing into the app instead.
  */
 
 /** How long a sign of user intent keeps the webview's focus legitimate. */
@@ -56,14 +63,40 @@ const GIVE_BACK_WINDOW_MS = 300;
  */
 const MAX_RESTORES = 4;
 const RESTORE_BUDGET_WINDOW_MS = 2_000;
-
 let lastUserIntentAt = 0;
 let agentHolds = 0;
 let agentTailUntil = 0;
+/**
+ * A page holding the keyboard for an agent's keys, and where the user's focus
+ * goes back to afterwards: where it was, or wherever the user moved it since.
+ */
+interface KeyboardLoan {
+  readonly webview: HTMLElement;
+  previous: Element | null;
+}
+let currentLoan: KeyboardLoan | null = null;
+/** The end of the last agent input in line; see withAgentInputTurn. */
+let inputQueue: Promise<void> = Promise.resolve();
+/**
+ * The app element a page took focus from, while the user has not chosen the
+ * page or gone anywhere else since: the user's place, even when a restore is
+ * still pending or the guard gave up on it. A keyboard loan returns focus here
+ * rather than to the page that took it.
+ */
+let robbedFrom: HTMLElement | null = null;
+/** The last press the user made inside a page, as the main process reported it. */
+let lastPagePointer: { readonly webContentsId: number; readonly at: number } | null = null;
+/** The last time focus was taken back from a page, for a click that raced it. */
+let lastRestore: {
+  readonly webview: WebviewElement;
+  readonly restoredTo: HTMLElement;
+  readonly at: number;
+} | null = null;
 
 /** Call when the user demonstrably meant to interact with the browser panel. */
 export function noteBrowserUserIntent(): void {
   lastUserIntentAt = Date.now();
+  robbedFrom = null;
 }
 
 /**
@@ -83,6 +116,103 @@ export function holdFocusForAgent(): () => void {
 
 function isAgentActing(): boolean {
   return agentHolds > 0 || Date.now() < agentTailUntil;
+}
+
+/**
+ * Runs one agent input that moves keyboard focus -- a click, a drag, keys --
+ * with no other running anywhere in the window.
+ *
+ * There is one keyboard focus for the whole window. A click in one page takes
+ * it, so a click landing between another page's keys would take the rest of
+ * them (the main process refuses them, leaving that agent's input half done).
+ * Turns go in arrival order, and pass on after PREVIEW_AGENT_KEYBOARD_HOLD_MS
+ * even if `task` is still going, so one stuck page cannot hold up every agent.
+ */
+export async function withAgentInputTurn<T>(task: () => Promise<T>): Promise<T> {
+  const ahead = inputQueue;
+  let finishTurn = () => {};
+  inputQueue = new Promise((resolve) => {
+    finishTurn = resolve;
+  });
+  await ahead;
+  const limit = setTimeout(finishTurn, PREVIEW_AGENT_KEYBOARD_HOLD_MS);
+  try {
+    return await task();
+  } finally {
+    clearTimeout(limit);
+    finishTurn();
+  }
+}
+
+/**
+ * Gives a page the keyboard while `send` delivers an agent's keys, then puts
+ * focus back where the user had it. Called inside withAgentInputTurn.
+ *
+ * `send` goes first and the page takes focus right behind it, so the desktop
+ * is already keeping the user's keys out of the page when focus arrives. The
+ * hand-back happens after the keys, or after PREVIEW_AGENT_KEYBOARD_HOLD_MS if
+ * the page is still not done; the desktop stops sending keys before then, so
+ * ending early costs the agent an error, never the user keys in the wrong
+ * place. Focus the user moved during the loan stays where they put it: into
+ * the app, or into a page they pressed in.
+ */
+export async function withPageKeyboard<T>(
+  webview: HTMLElement,
+  send: () => Promise<T>,
+): Promise<T> {
+  const doc = webview.ownerDocument;
+  const focused = doc.activeElement;
+  const loan: KeyboardLoan = {
+    webview,
+    // The user's place: kept from a loan this one cuts short, or the element
+    // a page took focus from -- focus can be on a page or still passing
+    // through nowhere on its way into one.
+    previous:
+      currentLoan?.previous ??
+      ((focused === null || focused === doc.body || isWebview(focused)) && robbedFrom?.isConnected
+        ? robbedFrom
+        : focused),
+  };
+  const sending = send();
+  currentLoan = loan;
+  const lentAt = Date.now();
+  let handedBack = false;
+  const handBack = () => {
+    if (handedBack) return;
+    handedBack = true;
+    // A newer loan took over, and hands the user's focus back itself.
+    if (currentLoan !== loan) return;
+    currentLoan = null;
+    // However this ends, focus is where the user has it now.
+    robbedFrom = null;
+    const holder = doc.activeElement;
+    if (!isWebview(holder)) return;
+    const pointer = lastPagePointer;
+    if (
+      pointer !== null &&
+      pointer.at >= lentAt &&
+      pointer.webContentsId === webContentsIdOf(holder)
+    ) {
+      return;
+    }
+    const { previous } = loan;
+    const restoredTo =
+      previous instanceof HTMLElement && previous.isConnected ? previous : doc.body;
+    if (restoredTo === holder) return;
+    if (restoredTo === doc.body) holder.blur();
+    else restoredTo.focus({ preventScroll: true });
+    // A press in the page that this beat may still be on its way over IPC.
+    lastRestore = { webview: holder, restoredTo, at: Date.now() };
+  };
+
+  webview.focus({ preventScroll: true });
+  const limit = setTimeout(handBack, PREVIEW_AGENT_KEYBOARD_HOLD_MS);
+  try {
+    return await sending;
+  } finally {
+    clearTimeout(limit);
+    handBack();
+  }
 }
 
 type WebviewElement = HTMLElement & {
@@ -106,11 +236,6 @@ function webContentsIdOf(webview: WebviewElement): number | null {
 function listen(doc: Document): () => void {
   const restoresAt: number[] = [];
   let pending: number | null = null;
-  let lastRestore: {
-    readonly webview: WebviewElement;
-    readonly restoredTo: HTMLElement;
-    readonly at: number;
-  } | null = null;
 
   const onKeyDown = (event: KeyboardEvent) => {
     if (event.key === "Tab") noteBrowserUserIntent();
@@ -122,11 +247,18 @@ function listen(doc: Document): () => void {
     if (!(robbed instanceof HTMLElement) || isWebview(robbed)) {
       return;
     }
+    // While a page holds the keyboard, focus left on an element of the app is
+    // the user's latest choice of where to be.
+    if (currentLoan !== null) currentLoan.previous = robbed;
     const blurredAt = Date.now();
     if (blurredAt - lastUserIntentAt < USER_INTENT_WINDOW_MS) {
       return;
     }
     const intentAtBlur = lastUserIntentAt;
+    // The theft is settled one way or another: not the user's place any more.
+    const settled = () => {
+      if (robbedFrom === robbed) robbedFrom = null;
+    };
     const settle = () => {
       pending = null;
       // Only a blur that resolved to a webview holding the focus is the bug;
@@ -137,21 +269,30 @@ function listen(doc: Document): () => void {
       if (!isWebview(thief)) {
         if ((thief === null || thief === doc.body) && Date.now() - blurredAt < RESTORE_DELAY_MS) {
           pending = window.setTimeout(settle, RECHECK_MS);
+          return;
         }
+        settled();
         return;
       }
+      // Lent for an agent's keys; withPageKeyboard hands it back.
+      if (thief === currentLoan?.webview) return;
       // Intent that arrived while waiting -- the IPC report of a click inside
       // the guest, most likely -- makes this the user's focus, not a theft.
-      if (lastUserIntentAt !== intentAtBlur) return;
-      if (!robbed.isConnected) return;
+      if (lastUserIntentAt !== intentAtBlur || !robbed.isConnected) {
+        settled();
+        return;
+      }
       const now = Date.now();
       while (restoresAt.length > 0 && now - restoresAt[0]! > RESTORE_BUDGET_WINDOW_MS) {
         restoresAt.shift();
       }
+      // Out of restores: the page keeps the focus, but the user's place is
+      // still where it was taken from.
       if (restoresAt.length >= MAX_RESTORES) return;
       restoresAt.push(now);
       lastRestore = { webview: thief, restoredTo: robbed, at: now };
       robbed.focus({ preventScroll: true });
+      settled();
     };
     if (pending !== null) window.clearTimeout(pending);
     // While an agent acts, look at once -- unless this grab follows the last
@@ -161,6 +302,7 @@ function listen(doc: Document): () => void {
     const lastRestoredAt = restoresAt.at(-1);
     const regrab = lastRestoredAt !== undefined && blurredAt - lastRestoredAt < RESTORE_DELAY_MS;
     pending = window.setTimeout(settle, isAgentActing() && !regrab ? 0 : RESTORE_DELAY_MS);
+    robbedFrom = robbed;
   };
   // A click in the page that a restore beat to the punch: the user meant to be
   // there, so the page gets its focus back.
@@ -180,6 +322,7 @@ function listen(doc: Document): () => void {
   doc.addEventListener("focusout", onFocusOut, true);
   const unsubscribeUserControl = window.desktopBridge?.onPreviewUserControl?.((control) => {
     if (control.input !== "pointer") return;
+    lastPagePointer = { webContentsId: control.webContentsId, at: Date.now() };
     // Noted first, so the blur the give-back causes reads as the user's doing.
     noteBrowserUserIntent();
     giveBack(control.webContentsId);
@@ -189,6 +332,8 @@ function listen(doc: Document): () => void {
     doc.removeEventListener("focusout", onFocusOut, true);
     unsubscribeUserControl?.();
     if (pending !== null) window.clearTimeout(pending);
+    robbedFrom = null;
+    lastRestore = null;
   };
 }
 

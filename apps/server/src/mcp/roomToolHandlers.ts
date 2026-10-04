@@ -160,6 +160,8 @@ export interface RoomToolDeps {
   readonly roomToolsOf: (sessionKey: ThreadId) => Effect.Effect<boolean | undefined>;
   /** A model's name as the model picker shows it. */
   readonly modelNameOf: (selection: ModelSelection) => Effect.Effect<string>;
+  /** Another open thread's title, for labelling messages that came from it. */
+  readonly threadTitleOf: (threadId: ThreadId) => Effect.Effect<string | undefined>;
   /** The provider snapshots: who could be invited, and how each is paid for. */
   readonly providers: Effect.Effect<ReadonlyArray<ServerProvider>>;
   /** Whether agents may bring in other agents, read live at every call. */
@@ -300,6 +302,29 @@ export function makeRoomToolHandlers(deps: RoomToolDeps) {
       return { outcome: "ok", agents } satisfies RoomAgentsResult;
     });
 
+  /** Titles of the threads this thread's cross-thread messages came from. */
+  const titlesOfThreadsIn = (thread: OrchestrationThread) =>
+    Effect.gen(function* () {
+      const ids = new Set<ThreadId>();
+      for (const message of thread.messages) {
+        if (message.fromThread !== undefined) ids.add(message.fromThread.threadId);
+      }
+      const titles = new Map<ThreadId, string>();
+      yield* Effect.forEach(
+        ids,
+        (threadId) =>
+          deps.threadTitleOf(threadId).pipe(
+            Effect.tap((title) =>
+              Effect.sync(() => {
+                if (title !== undefined) titles.set(threadId, title);
+              }),
+            ),
+          ),
+        { discard: true },
+      );
+      return titles;
+    });
+
   const roomHistory = (
     scope: McpInvocationScope,
     input: {
@@ -327,6 +352,7 @@ export function makeRoomToolHandlers(deps: RoomToolDeps) {
       const page = roomHistoryPage({
         messages: room.thread.messages,
         entries: room.entries,
+        threadTitles: yield* titlesOfThreadsIn(room.thread),
         before:
           input.before !== undefined && Number.isFinite(input.before) ? input.before : undefined,
         limit: input.limit,

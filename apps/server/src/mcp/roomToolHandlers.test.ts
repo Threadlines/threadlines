@@ -188,6 +188,7 @@ const makeRoom = (options: {
         ),
       modelNameOf: (selection) =>
         Effect.succeed(selection.model === "gpt-6-astra" ? "GPT-6 Astra" : selection.model),
+      threadTitleOf: () => Effect.succeed(undefined),
       providers: Effect.succeed(options.providers ?? []),
       invitesMode: Effect.succeed(options.invitesMode ?? "ask"),
       git: {

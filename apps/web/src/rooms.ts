@@ -42,7 +42,7 @@ import type { ProviderInstanceEntry } from "./providerInstances";
 import { getProviderModelCapabilities } from "./providerModels";
 import type { ChatMessage } from "./types";
 
-interface RoomThreadLike {
+export interface RoomThreadLike {
   readonly participants?: ReadonlyArray<OrchestrationThreadParticipant> | undefined;
   readonly session?: { readonly participantId?: ThreadParticipantId | null | undefined } | null;
 }

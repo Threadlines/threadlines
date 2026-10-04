@@ -199,6 +199,10 @@
       "types": "./src/threadActivityRetention.ts",
       "import": "./src/threadActivityRetention.ts"
     },
+    "./backgroundRunOutput": {
+      "types": "./src/backgroundRunOutput.ts",
+      "import": "./src/backgroundRunOutput.ts"
+    },
     "./keybindings": {
       "types": "./src/keybindings.ts",
       "import": "./src/keybindings.ts"
@@ -234,6 +238,14 @@
     "./roomAgentRequests": {
       "types": "./src/roomAgentRequests.ts",
       "import": "./src/roomAgentRequests.ts"
+    },
+    "./childThreads": {
+      "types": "./src/childThreads.ts",
+      "import": "./src/childThreads.ts"
+    },
+    "./messageAuthor": {
+      "types": "./src/messageAuthor.ts",
+      "import": "./src/messageAuthor.ts"
     },
     "./threadParticipants": {
       "types": "./src/threadParticipants.ts",

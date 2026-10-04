@@ -11,7 +11,6 @@ import { Link } from "@tanstack/react-router";
 import { formatTokens, formatUsd } from "@threadlines/shared/usageFormat";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  type AgentInvitesMode,
   AUTO_ARCHIVE_INACTIVE_THREADS_DAY_OPTIONS,
   type AutoArchiveInactiveThreadsDays,
   defaultInstanceIdForDriver,
@@ -22,7 +21,7 @@ import {
   type UsageWindowDays,
 } from "@threadlines/contracts";
 import { scopeThreadRef } from "@threadlines/client-runtime";
-import { agentInvitesChoice } from "@threadlines/shared/serverSettings";
+import { agentInvitesChoice, agentThreadsMode } from "@threadlines/shared/serverSettings";
 import { DEFAULT_UNIFIED_SETTINGS } from "@threadlines/contracts/settings";
 import * as Duration from "effect/Duration";
 import * as Equal from "effect/Equal";
@@ -45,7 +44,6 @@ import {
   useUsageEnvironmentTargets,
 } from "../../lib/usageReactQuery";
 import {
-  resolveDefaultTextGenerationBackupModelSelectionState,
   resolveAppModelSelectionState,
   resolveTextGenerationBackupModelSelectionState,
 } from "../../modelSelection";
@@ -114,10 +112,6 @@ import {
   SettingsRow,
   SettingsSection,
 } from "./settingsLayout";
-import {
-  TextGenerationModelControl,
-  textGenerationInstanceEntries,
-} from "./TextGenerationModelControl";
 import { useServerObservability, useServerProviders } from "../../rpc/serverState";
 import { newCommandId } from "../../lib/utils";
 import { roomsEnabledFor } from "../../hooks/useRoomsEnabled";
@@ -143,7 +137,6 @@ const TIMESTAMP_FORMAT_LABELS = {
   "24-hour": "24-hour",
 } as const;
 
-const DEFAULT_DRIVER_KIND = ProviderDriverKind.make("codex");
 const INACTIVE_THREAD_ARCHIVE_COMMAND_DELAY_MS = 25;
 const ARCHIVED_THREAD_DELETE_COMMAND_DELAY_MS = 25;
 const DEFAULT_ARCHIVED_THREAD_DELETE_AGE_DAYS: ArchivedThreadDeleteAgeDays = 90;
@@ -296,7 +289,7 @@ function AboutVersionSection() {
       {hasDesktopBridge ? (
         <SettingsRow
           title="Update track"
-          description="Stable follows full releases. Nightly follows the nightly desktop channel and can switch back to stable immediately."
+          description="Stable gets full releases. Nightly gets a new build every day, and you can switch back any time."
           control={
             <Select
               value={selectedUpdateChannel}
@@ -359,7 +352,7 @@ export function useSettingsRestore(onRestored?: () => void) {
         ? ["Visible threads"]
         : []),
       ...(settings.diffWordWrap !== DEFAULT_UNIFIED_SETTINGS.diffWordWrap
-        ? ["Diff line wrapping"]
+        ? ["Wrap diff lines"]
         : []),
       ...(settings.diffIgnoreWhitespace !== DEFAULT_UNIFIED_SETTINGS.diffIgnoreWhitespace
         ? ["Diff whitespace changes"]
@@ -369,18 +362,18 @@ export function useSettingsRestore(onRestored?: () => void) {
         : []),
       ...(settings.chatChangedFilesDefaultExpanded !==
       DEFAULT_UNIFIED_SETTINGS.chatChangedFilesDefaultExpanded
-        ? ["Changed files chat block"]
+        ? ["Changed files in chat"]
         : []),
       ...(settings.autoArchiveInactiveThreadsDays !==
       DEFAULT_UNIFIED_SETTINGS.autoArchiveInactiveThreadsDays
         ? ["Auto-archive inactive threads"]
         : []),
       ...(settings.enableAssistantStreaming !== DEFAULT_UNIFIED_SETTINGS.enableAssistantStreaming
-        ? ["Agent responses"]
+        ? ["Stream replies"]
         : []),
       ...(settings.preventSleepDuringActiveTurns !==
       DEFAULT_UNIFIED_SETTINGS.preventSleepDuringActiveTurns
-        ? ["Prevent sleep during turns"]
+        ? ["Keep awake during turns"]
         : []),
       ...(settings.usageAnalyticsEnabled !== DEFAULT_UNIFIED_SETTINGS.usageAnalyticsEnabled
         ? ["Usage analytics"]
@@ -394,24 +387,35 @@ export function useSettingsRestore(onRestored?: () => void) {
         ? ["Source control panel default"]
         : []),
       ...(settings.defaultThreadEnvMode !== DEFAULT_UNIFIED_SETTINGS.defaultThreadEnvMode
-        ? ["New thread mode"]
+        ? ["Start in"]
         : []),
       ...(settings.addProjectBaseDirectory !== DEFAULT_UNIFIED_SETTINGS.addProjectBaseDirectory
         ? ["Add project base directory"]
         : []),
       ...(settings.confirmThreadArchive !== DEFAULT_UNIFIED_SETTINGS.confirmThreadArchive
-        ? ["Archive confirmation"]
+        ? ["Confirm archive"]
         : []),
       ...(settings.confirmThreadDelete !== DEFAULT_UNIFIED_SETTINGS.confirmThreadDelete
-        ? ["Delete confirmation"]
+        ? ["Confirm delete"]
         : []),
+      ...(settings.wrapUpThreadsOnPullRequestSettled !==
+      DEFAULT_UNIFIED_SETTINGS.wrapUpThreadsOnPullRequestSettled
+        ? ["Wrap up merged threads"]
+        : []),
+      ...(settings.newThreadModelSelection !== null ? ["New thread agent"] : []),
+      ...(settings.newThreadRoomAgents.length > 0 ? ["New thread room"] : []),
       ...(settings.agentBrowserSitePolicy !== DEFAULT_UNIFIED_SETTINGS.agentBrowserSitePolicy
         ? ["Sites agents can visit"]
         : []),
       ...(!roomsEnabledFor(settings) ? ["Rooms"] : []),
       ...(agentInvitesChoice(settings) !== "ask" ? ["Agents bringing in other agents"] : []),
-      ...(isGitWritingModelDirty ? ["Git writing model"] : []),
-      ...(isGitWritingBackupModelDirty ? ["Backup git writing model"] : []),
+      ...(agentThreadsMode(settings) !== "ask" ? ["Agents can start threads"] : []),
+      ...(settings.wrapUpChildThreadsOnFinish !==
+      DEFAULT_UNIFIED_SETTINGS.wrapUpChildThreadsOnFinish
+        ? ["Wrap up finished child threads"]
+        : []),
+      ...(isGitWritingModelDirty ? ["Writing model"] : []),
+      ...(isGitWritingBackupModelDirty ? ["Backup writing model"] : []),
       ...(isSourceControlWritingStyleDirty ? ["Source control writing style"] : []),
       ...(isSourceControlWriterModelDirty ? ["Source control writer model"] : []),
     ],
@@ -424,8 +428,13 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.chatChangedFilesDefaultExpanded,
       settings.confirmThreadArchive,
       settings.confirmThreadDelete,
+      settings.wrapUpThreadsOnPullRequestSettled,
+      settings.newThreadModelSelection,
+      settings.newThreadRoomAgents,
       settings.enableRooms,
       settings.agentInvites,
+      settings.agentThreads,
+      settings.wrapUpChildThreadsOnFinish,
       settings.addProjectBaseDirectory,
       settings.agentBrowserSitePolicy,
       settings.defaultThreadEnvMode,
@@ -471,9 +480,14 @@ export function useSettingsRestore(onRestored?: () => void) {
       addProjectBaseDirectory: DEFAULT_UNIFIED_SETTINGS.addProjectBaseDirectory,
       confirmThreadArchive: DEFAULT_UNIFIED_SETTINGS.confirmThreadArchive,
       confirmThreadDelete: DEFAULT_UNIFIED_SETTINGS.confirmThreadDelete,
+      wrapUpThreadsOnPullRequestSettled: DEFAULT_UNIFIED_SETTINGS.wrapUpThreadsOnPullRequestSettled,
+      newThreadModelSelection: DEFAULT_UNIFIED_SETTINGS.newThreadModelSelection,
+      newThreadRoomAgents: DEFAULT_UNIFIED_SETTINGS.newThreadRoomAgents,
       agentBrowserSitePolicy: DEFAULT_UNIFIED_SETTINGS.agentBrowserSitePolicy,
       enableRooms: true,
       agentInvites: "ask",
+      agentThreads: "ask",
+      wrapUpChildThreadsOnFinish: DEFAULT_UNIFIED_SETTINGS.wrapUpChildThreadsOnFinish,
       textGenerationModelSelection: DEFAULT_UNIFIED_SETTINGS.textGenerationModelSelection,
       textGenerationBackupModelSelection:
         DEFAULT_UNIFIED_SETTINGS.textGenerationBackupModelSelection,
@@ -497,12 +511,12 @@ function AssistantStreamingRow() {
   const { updateSettings } = useUpdateSettings();
   return (
     <SettingsRow
-      title="Agent responses"
-      description="Stream response text while a turn is in progress."
+      title="Stream replies"
+      description="Show the agent's reply while it's being written."
       resetAction={
         settings.enableAssistantStreaming !== DEFAULT_UNIFIED_SETTINGS.enableAssistantStreaming ? (
           <SettingResetButton
-            label="agent responses"
+            label="stream replies"
             onClick={() =>
               updateSettings({
                 enableAssistantStreaming: DEFAULT_UNIFIED_SETTINGS.enableAssistantStreaming,
@@ -529,13 +543,13 @@ function PreventSleepRow() {
   const { updateSettings } = useUpdateSettings();
   return (
     <SettingsRow
-      title="Prevent sleep during turns"
-      description="Keep the computer awake while any thread has a turn running. The display still locks normally. macOS and Windows."
+      title="Keep awake during turns"
+      description="Stops the computer sleeping while an agent works. The screen still locks. macOS and Windows."
       resetAction={
         settings.preventSleepDuringActiveTurns !==
         DEFAULT_UNIFIED_SETTINGS.preventSleepDuringActiveTurns ? (
           <SettingResetButton
-            label="prevent sleep during turns"
+            label="keep awake during turns"
             onClick={() =>
               updateSettings({
                 preventSleepDuringActiveTurns:
@@ -558,49 +572,6 @@ function PreventSleepRow() {
   );
 }
 
-function DefaultThreadEnvModeRow() {
-  const settings = useSettings();
-  const { updateSettings } = useUpdateSettings();
-  return (
-    <SettingsRow
-      title="New threads"
-      description="Pick the default workspace mode for newly created draft threads."
-      resetAction={
-        settings.defaultThreadEnvMode !== DEFAULT_UNIFIED_SETTINGS.defaultThreadEnvMode ? (
-          <SettingResetButton
-            label="new threads"
-            onClick={() =>
-              updateSettings({
-                defaultThreadEnvMode: DEFAULT_UNIFIED_SETTINGS.defaultThreadEnvMode,
-              })
-            }
-          />
-        ) : null
-      }
-      control={
-        <Select
-          value={settings.defaultThreadEnvMode}
-          onValueChange={(value) => {
-            if (value === "local" || value === "worktree") {
-              updateSettings({ defaultThreadEnvMode: value });
-            }
-          }}
-        >
-          <SelectTrigger className="w-full sm:w-44" aria-label="Default thread mode">
-            <SelectValue>
-              {settings.defaultThreadEnvMode === "worktree" ? "New worktree" : "Local"}
-            </SelectValue>
-          </SelectTrigger>
-          <SelectPopup align="end" alignItemWithTrigger={false}>
-            <SelectItem value="local">Local</SelectItem>
-            <SelectItem value="worktree">New worktree</SelectItem>
-          </SelectPopup>
-        </Select>
-      }
-    />
-  );
-}
-
 /**
  * Where agents may take the built-in browser without asking. Kept on this
  * computer with the browser it governs; each project can choose otherwise from
@@ -612,7 +583,7 @@ function AgentBrowserSitesRow() {
   return (
     <SettingsRow
       title="Sites agents can visit"
-      description="Local addresses always open. For other sites, agents can ask you first or go anywhere. Each project can change this from the browser menu."
+      description="Local addresses always open. Other sites can ask you first or open freely. Each project can change this in the browser menu."
       resetAction={
         settings.agentBrowserSitePolicy !== DEFAULT_UNIFIED_SETTINGS.agentBrowserSitePolicy ? (
           <SettingResetButton
@@ -649,72 +620,13 @@ function AgentBrowserSitesRow() {
   );
 }
 
-const AGENT_INVITES_LABELS: Record<AgentInvitesMode, string> = {
-  off: "Off",
-  ask: "Ask me first",
-  auto: "Without asking",
-};
-
-/**
- * Whether the thread's agent may bring in another agent for a review
- * (docs/design/rooms-agent-invites.md). A setting of this computer's server:
- * the agents ask through it.
- */
-function AgentInvitesRow() {
-  const mode = useSettings((settings) => agentInvitesChoice(settings));
-  const roomsOn = useSettings((settings) => roomsEnabledFor(settings));
-  const { updateSettings } = useUpdateSettings();
-  return (
-    <SettingsRow
-      title="Agents bringing in other agents"
-      description={
-        !roomsOn
-          ? "Turn on Rooms to let the thread's agent bring in another model to review its work."
-          : mode === "auto"
-            ? "The thread's agent can bring in another model to review its work without asking you. That can spend another provider's quota, and one it adds as a teammate turns revert off for good."
-            : mode === "ask"
-              ? "The thread's agent can ask to bring in another model to review its work. You decide each time: a one-off review, adding it to the thread, or not now."
-              : "The thread's agent never brings in another model."
-      }
-      resetAction={
-        mode !== "ask" ? (
-          <SettingResetButton
-            label="agents bringing in other agents"
-            onClick={() => updateSettings({ agentInvites: "ask" })}
-          />
-        ) : null
-      }
-      control={
-        <Select
-          value={mode}
-          disabled={!roomsOn}
-          onValueChange={(value) => {
-            if (value === "off" || value === "ask" || value === "auto") {
-              updateSettings({ agentInvites: value });
-            }
-          }}
-        >
-          <SelectTrigger className="w-full sm:w-44" aria-label="Agents bringing in other agents">
-            <SelectValue>{AGENT_INVITES_LABELS[mode]}</SelectValue>
-          </SelectTrigger>
-          <SelectPopup align="end" alignItemWithTrigger={false}>
-            <SelectItem value="off">{AGENT_INVITES_LABELS.off}</SelectItem>
-            <SelectItem value="ask">{AGENT_INVITES_LABELS.ask}</SelectItem>
-            <SelectItem value="auto">{AGENT_INVITES_LABELS.auto}</SelectItem>
-          </SelectPopup>
-        </Select>
-      }
-    />
-  );
-}
-
 function UsageAnalyticsRow() {
   const settings = useSettings();
   const { updateSettings } = useUpdateSettings();
   return (
     <SettingsRow
       title="Usage analytics"
-      description="Share anonymous usage events so we can understand installs, active usage, providers, and reliability. Threadlines does not send prompts, code, file paths, repository names, terminal output, or secrets."
+      description="Anonymous usage counts that show us installs and reliability. Never prompts, code, file paths, repository names, terminal output, or secrets."
       resetAction={
         settings.usageAnalyticsEnabled !== DEFAULT_UNIFIED_SETTINGS.usageAnalyticsEnabled ? (
           <SettingResetButton
@@ -778,7 +690,7 @@ function ClearBrowserDataRow() {
   return (
     <SettingsRow
       title="Clear all browser data"
-      description="Signs you out of sites in the built-in browser for every project."
+      description="Signs you out of every site in the built-in browser, in every project."
       control={
         <Button
           type="button"
@@ -800,13 +712,18 @@ function ClearBrowserDataRow() {
   );
 }
 
+/**
+ * Settings › General: how the app looks, chat and diff display, dictation,
+ * this computer, privacy and version. How threads start and end lives on the
+ * Threads page. On a phone, settings stored with the paired computer sit under
+ * "This Computer"; the rest are stored in the phone's browser.
+ */
 export function GeneralSettingsPanel({ surface = "full" }: { surface?: "full" | "phone" }) {
   const { theme, setTheme } = useTheme();
   const settings = useSettings();
   const { updateSettings } = useUpdateSettings();
   const isPhoneSurface = surface === "phone";
   const observability = useServerObservability();
-  const serverProviders = useServerProviders();
   const diagnosticsDescription = formatDiagnosticsDescription({
     localTracingEnabled: observability?.localTracingEnabled ?? false,
     otlpTracesEnabled: observability?.otlpTracesEnabled ?? false,
@@ -815,42 +732,12 @@ export function GeneralSettingsPanel({ surface = "full" }: { surface?: "full" | 
     otlpMetricsUrl: observability?.otlpMetricsUrl,
   });
 
-  const textGenerationModelSelection = resolveAppModelSelectionState(settings, serverProviders);
-  const gitModelInstanceEntries = textGenerationInstanceEntries(serverProviders);
-  const textGenInstanceEntry = gitModelInstanceEntries.find(
-    (entry) => entry.instanceId === textGenerationModelSelection.instanceId,
-  );
-  const textGenProvider: ProviderDriverKind =
-    textGenInstanceEntry?.driverKind ?? DEFAULT_DRIVER_KIND;
-  const textGenerationBackupModelSelection = resolveTextGenerationBackupModelSelectionState(
-    settings,
-    serverProviders,
-    textGenerationModelSelection,
-  );
-  const defaultTextGenerationBackupModelSelection =
-    resolveDefaultTextGenerationBackupModelSelectionState(
-      settings,
-      serverProviders,
-      textGenerationModelSelection,
-    );
-  const gitBackupModelInstanceEntries = gitModelInstanceEntries.filter(
-    (entry) => entry.driverKind !== textGenProvider,
-  );
-  const isGitWritingModelDirty = !Equal.equals(
-    settings.textGenerationModelSelection ?? null,
-    DEFAULT_UNIFIED_SETTINGS.textGenerationModelSelection ?? null,
-  );
-  const isGitWritingBackupModelDirty = !Equal.equals(
-    settings.textGenerationBackupModelSelection ?? null,
-    DEFAULT_UNIFIED_SETTINGS.textGenerationBackupModelSelection ?? null,
-  );
-
   return (
     <SettingsPageContainer>
       <SettingsSection title="Appearance">
         <SettingsRow
           title="Theme"
-          description="Choose how Threadlines looks across the app."
+          description="How Threadlines looks."
           resetAction={
             theme !== "system" ? (
               <SettingResetButton label="theme" onClick={() => setTheme("system")} />
@@ -883,7 +770,7 @@ export function GeneralSettingsPanel({ surface = "full" }: { surface?: "full" | 
 
         <SettingsRow
           title="Time format"
-          description="System default follows your browser or OS clock preference."
+          description="System default follows your computer's clock setting."
           resetAction={
             settings.timestampFormat !== DEFAULT_UNIFIED_SETTINGS.timestampFormat ? (
               <SettingResetButton
@@ -918,60 +805,13 @@ export function GeneralSettingsPanel({ surface = "full" }: { surface?: "full" | 
         />
       </SettingsSection>
 
-      <SettingsSection title="Review & Diffs">
-        <SettingsRow
-          title="Diff line wrapping"
-          description="Set the default wrap state when the diff panel opens."
-          resetAction={
-            settings.diffWordWrap !== DEFAULT_UNIFIED_SETTINGS.diffWordWrap ? (
-              <SettingResetButton
-                label="diff line wrapping"
-                onClick={() =>
-                  updateSettings({
-                    diffWordWrap: DEFAULT_UNIFIED_SETTINGS.diffWordWrap,
-                  })
-                }
-              />
-            ) : null
-          }
-          control={
-            <Switch
-              checked={settings.diffWordWrap}
-              onCheckedChange={(checked) => updateSettings({ diffWordWrap: Boolean(checked) })}
-              aria-label="Wrap diff lines by default"
-            />
-          }
-        />
-
-        <SettingsRow
-          title="Hide whitespace changes"
-          description="Set whether the diff panel ignores whitespace-only edits by default."
-          resetAction={
-            settings.diffIgnoreWhitespace !== DEFAULT_UNIFIED_SETTINGS.diffIgnoreWhitespace ? (
-              <SettingResetButton
-                label="diff whitespace changes"
-                onClick={() =>
-                  updateSettings({
-                    diffIgnoreWhitespace: DEFAULT_UNIFIED_SETTINGS.diffIgnoreWhitespace,
-                  })
-                }
-              />
-            ) : null
-          }
-          control={
-            <Switch
-              checked={settings.diffIgnoreWhitespace}
-              onCheckedChange={(checked) =>
-                updateSettings({ diffIgnoreWhitespace: Boolean(checked) })
-              }
-              aria-label="Hide whitespace changes by default"
-            />
-          }
-        />
+      <SettingsSection title="Chat & diffs">
+        {/* On a phone this one is the paired computer's: it sits under This Computer. */}
+        {!isPhoneSurface ? <AssistantStreamingRow /> : null}
 
         <SettingsRow
           title="Changed files in chat"
-          description="Expand the per-turn changes tree in agent responses by default."
+          description="Open the list of changed files under each reply."
           resetAction={
             settings.chatChangedFilesDefaultExpanded !==
             DEFAULT_UNIFIED_SETTINGS.chatChangedFilesDefaultExpanded ? (
@@ -996,270 +836,101 @@ export function GeneralSettingsPanel({ surface = "full" }: { surface?: "full" | 
             />
           }
         />
-      </SettingsSection>
-
-      <SettingsSection title={isPhoneSurface ? "This Computer" : "Agent Behavior"}>
-        <AssistantStreamingRow />
-
-        <PreventSleepRow />
 
         <SettingsRow
-          title="Text generation model"
-          description="Default model for generated text like thread titles and source control content. Source control settings can override it with a dedicated writer model."
+          title="Wrap diff lines"
+          description="Wrap long lines when the diff panel opens."
           resetAction={
-            isGitWritingModelDirty ? (
+            settings.diffWordWrap !== DEFAULT_UNIFIED_SETTINGS.diffWordWrap ? (
               <SettingResetButton
-                label="text generation model"
+                label="wrap diff lines"
                 onClick={() =>
                   updateSettings({
-                    textGenerationModelSelection:
-                      DEFAULT_UNIFIED_SETTINGS.textGenerationModelSelection,
+                    diffWordWrap: DEFAULT_UNIFIED_SETTINGS.diffWordWrap,
                   })
                 }
               />
             ) : null
           }
           control={
-            <TextGenerationModelControl
-              selection={textGenerationModelSelection}
-              settings={settings}
-              serverProviders={serverProviders}
-              instanceEntries={gitModelInstanceEntries}
-              onSelectionChange={(nextSelection, change) => {
-                const nextPrimarySelection = resolveAppModelSelectionState(
-                  { ...settings, textGenerationModelSelection: nextSelection },
-                  serverProviders,
-                );
-                updateSettings({
-                  textGenerationModelSelection: nextPrimarySelection,
-                  // Switching providers can invalidate the backup (it must sit
-                  // on a different driver), so re-resolve it alongside.
-                  ...(change === "instanceModel" &&
-                  settings.textGenerationBackupModelSelection !== null
-                    ? {
-                        textGenerationBackupModelSelection:
-                          resolveTextGenerationBackupModelSelectionState(
-                            {
-                              ...settings,
-                              textGenerationModelSelection: nextPrimarySelection,
-                            },
-                            serverProviders,
-                            nextPrimarySelection,
-                          ),
-                      }
-                    : {}),
-                });
-              }}
+            <Switch
+              checked={settings.diffWordWrap}
+              onCheckedChange={(checked) => updateSettings({ diffWordWrap: Boolean(checked) })}
+              aria-label="Wrap diff lines by default"
             />
           }
         />
 
         <SettingsRow
-          title="Backup text generation model"
-          description="Retry generated thread titles, branch names, commit messages, and PR text with a different provider when the primary provider fails."
+          title="Hide whitespace changes"
+          description="Leave out edits that only change spacing."
           resetAction={
-            isGitWritingBackupModelDirty ? (
+            settings.diffIgnoreWhitespace !== DEFAULT_UNIFIED_SETTINGS.diffIgnoreWhitespace ? (
               <SettingResetButton
-                label="backup text generation model"
+                label="diff whitespace changes"
                 onClick={() =>
                   updateSettings({
-                    textGenerationBackupModelSelection:
-                      DEFAULT_UNIFIED_SETTINGS.textGenerationBackupModelSelection,
+                    diffIgnoreWhitespace: DEFAULT_UNIFIED_SETTINGS.diffIgnoreWhitespace,
                   })
                 }
               />
             ) : null
           }
           control={
-            <div className="flex flex-wrap items-center justify-end gap-1.5">
-              {textGenerationBackupModelSelection ? (
-                <TextGenerationModelControl
-                  selection={textGenerationBackupModelSelection}
-                  settings={settings}
-                  serverProviders={serverProviders}
-                  instanceEntries={gitBackupModelInstanceEntries}
-                  onSelectionChange={(nextSelection) => {
-                    const nextBackupSelection = resolveTextGenerationBackupModelSelectionState(
-                      { ...settings, textGenerationBackupModelSelection: nextSelection },
-                      serverProviders,
-                      textGenerationModelSelection,
-                    );
-                    if (!nextBackupSelection) return;
-                    updateSettings({
-                      textGenerationBackupModelSelection: nextBackupSelection,
-                    });
-                  }}
-                />
-              ) : defaultTextGenerationBackupModelSelection ? (
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="gap-1.5"
-                  onClick={() =>
-                    updateSettings({
-                      textGenerationBackupModelSelection: defaultTextGenerationBackupModelSelection,
-                    })
-                  }
-                >
-                  <PlusIcon className="size-3.5" />
-                  <span>Add backup</span>
-                </Button>
-              ) : (
-                <span className="text-xs text-muted-foreground">No different provider ready</span>
-              )}
-            </div>
+            <Switch
+              checked={settings.diffIgnoreWhitespace}
+              onCheckedChange={(checked) =>
+                updateSettings({ diffIgnoreWhitespace: Boolean(checked) })
+              }
+              aria-label="Hide whitespace changes by default"
+            />
           }
         />
-
-        {isPhoneSurface ? (
-          <>
-            <DefaultThreadEnvModeRow />
-            <UsageAnalyticsRow />
-          </>
-        ) : null}
       </SettingsSection>
 
       <DictationSettings />
 
-      <SettingsSection title="Projects & Threads">
-        {!isPhoneSurface ? (
-          <>
-            <DefaultThreadEnvModeRow />
+      <SettingsSection title="This computer">
+        {isPhoneSurface ? <AssistantStreamingRow /> : null}
 
-            <SettingsRow
-              title="Add project starts in"
-              description='Leave empty to start in your home folder ("~/"). On Windows, Desktop follows the real user Desktop folder, including OneDrive redirection.'
-              resetAction={
-                settings.addProjectBaseDirectory !==
-                DEFAULT_UNIFIED_SETTINGS.addProjectBaseDirectory ? (
-                  <SettingResetButton
-                    label="add project base directory"
-                    onClick={() =>
-                      updateSettings({
-                        addProjectBaseDirectory: DEFAULT_UNIFIED_SETTINGS.addProjectBaseDirectory,
-                      })
-                    }
-                  />
-                ) : null
-              }
-              control={
-                <DraftInput
-                  className="w-full sm:w-72"
-                  value={settings.addProjectBaseDirectory}
-                  onCommit={(next) => updateSettings({ addProjectBaseDirectory: next })}
-                  placeholder="~/"
-                  spellCheck={false}
-                  aria-label="Add project base directory"
+        <PreventSleepRow />
+
+        {!isPhoneSurface ? (
+          <SettingsRow
+            title="Add project starts in"
+            description="Where the folder picker opens. Empty means your home folder (~/)."
+            resetAction={
+              settings.addProjectBaseDirectory !==
+              DEFAULT_UNIFIED_SETTINGS.addProjectBaseDirectory ? (
+                <SettingResetButton
+                  label="add project base directory"
+                  onClick={() =>
+                    updateSettings({
+                      addProjectBaseDirectory: DEFAULT_UNIFIED_SETTINGS.addProjectBaseDirectory,
+                    })
+                  }
                 />
-              }
-            />
-          </>
+              ) : null
+            }
+            control={
+              <DraftInput
+                className="w-full sm:w-72"
+                value={settings.addProjectBaseDirectory}
+                onCommit={(next) => updateSettings({ addProjectBaseDirectory: next })}
+                placeholder="~/"
+                spellCheck={false}
+                aria-label="Add project base directory"
+              />
+            }
+          />
         ) : null}
 
-        <SettingsRow
-          title="Archive confirmation"
-          description="Require a second click on the inline archive action before a thread is archived."
-          resetAction={
-            settings.confirmThreadArchive !== DEFAULT_UNIFIED_SETTINGS.confirmThreadArchive ? (
-              <SettingResetButton
-                label="archive confirmation"
-                onClick={() =>
-                  updateSettings({
-                    confirmThreadArchive: DEFAULT_UNIFIED_SETTINGS.confirmThreadArchive,
-                  })
-                }
-              />
-            ) : null
-          }
-          control={
-            <Switch
-              checked={settings.confirmThreadArchive}
-              onCheckedChange={(checked) =>
-                updateSettings({ confirmThreadArchive: Boolean(checked) })
-              }
-              aria-label="Confirm thread archiving"
-            />
-          }
-        />
-
-        <SettingsRow
-          id="wrap-up-merged-threads"
-          title="Wrap up merged threads"
-          description="File a thread under Wrapped once its pull request merges or closes; a thread's pull request row can say otherwise. A new message in the thread brings it back."
-          resetAction={
-            settings.wrapUpThreadsOnPullRequestSettled !==
-            DEFAULT_UNIFIED_SETTINGS.wrapUpThreadsOnPullRequestSettled ? (
-              <SettingResetButton
-                label="wrap up merged threads"
-                onClick={() =>
-                  updateSettings({
-                    wrapUpThreadsOnPullRequestSettled:
-                      DEFAULT_UNIFIED_SETTINGS.wrapUpThreadsOnPullRequestSettled,
-                  })
-                }
-              />
-            ) : null
-          }
-          control={
-            <Switch
-              checked={settings.wrapUpThreadsOnPullRequestSettled}
-              onCheckedChange={(checked) =>
-                updateSettings({ wrapUpThreadsOnPullRequestSettled: Boolean(checked) })
-              }
-              aria-label="Wrap up merged threads"
-            />
-          }
-        />
-        <SettingsRow
-          title="Delete confirmation"
-          description="Ask before deleting a thread and its chat history."
-          resetAction={
-            settings.confirmThreadDelete !== DEFAULT_UNIFIED_SETTINGS.confirmThreadDelete ? (
-              <SettingResetButton
-                label="delete confirmation"
-                onClick={() =>
-                  updateSettings({
-                    confirmThreadDelete: DEFAULT_UNIFIED_SETTINGS.confirmThreadDelete,
-                  })
-                }
-              />
-            ) : null
-          }
-          control={
-            <Switch
-              checked={settings.confirmThreadDelete}
-              onCheckedChange={(checked) =>
-                updateSettings({ confirmThreadDelete: Boolean(checked) })
-              }
-              aria-label="Confirm thread deletion"
-            />
-          }
-        />
-        <SettingsRow
-          title="Rooms"
-          description="Add other agents to a thread and pick who each message goes to. Rooms have no revert. Off keeps the model picker to one agent, on every device connected to this computer."
-          resetAction={
-            !roomsEnabledFor(settings) ? (
-              <SettingResetButton
-                label="rooms"
-                onClick={() => updateSettings({ enableRooms: true })}
-              />
-            ) : null
-          }
-          control={
-            <Switch
-              checked={roomsEnabledFor(settings)}
-              onCheckedChange={(checked) => updateSettings({ enableRooms: Boolean(checked) })}
-              aria-label="Enable rooms"
-            />
-          }
-        />
-        <AgentInvitesRow />
+        {isPhoneSurface ? <UsageAnalyticsRow /> : null}
         {isElectron ? <AgentBrowserSitesRow /> : null}
         {isElectron && !isPhoneSurface ? <ClearBrowserDataRow /> : null}
       </SettingsSection>
 
-      <SettingsSection title="About">
+      <SettingsSection title={isPhoneSurface ? "About" : "Privacy & about"}>
         {isElectron ? (
           <AboutVersionSection />
         ) : (
@@ -1285,7 +956,7 @@ export function GeneralSettingsPanel({ surface = "full" }: { surface?: "full" | 
           <SettingsRow
             title="Phone settings"
             description={
-              'Appearance and thread preferences are stored in this browser. Settings under "This Computer" apply to your paired computer.'
+              'Appearance, chat and thread-closing preferences are stored in this browser. Settings under "This Computer", and the Threads page\'s new-thread, Rooms and writing settings, apply to your paired computer.'
             }
           />
         )}
@@ -1634,9 +1305,10 @@ export function ProviderSettingsPanel({
             </Tooltip>
           </div>
         }
-        contentClassName="overflow-visible rounded-none border-0 bg-transparent shadow-none before:hidden dark:shadow-none"
+        headerClassName="px-1 sm:px-1"
+        contentClassName="overflow-visible"
       >
-        <p className="px-1 pb-3 text-xs leading-relaxed text-muted-foreground">
+        <p className="px-1 pt-2.5 pb-3 text-xs leading-relaxed text-muted-foreground">
           Agents run on {primaryEnvironment?.label ?? computerLabel}. Favorites and model order are
           saved on this device.
         </p>

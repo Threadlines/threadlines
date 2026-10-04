@@ -1326,9 +1326,9 @@ function FileViewerTabs({
 }
 
 /**
- * Open-the-active-file counterpart of the chat header's OpenInPicker: the
- * primary button shows which editor will launch (icon + named tooltip), the
- * chevron menu switches the shared preferred-editor choice. Selecting the
+ * Open-the-active-file counterpart of the chat header's project crumb menu:
+ * the primary button shows which editor will launch (icon + named tooltip),
+ * the chevron menu switches the shared preferred-editor choice. Selecting the
  * file manager makes the primary action reveal the file.
  */
 function FileViewerOpenInControl({

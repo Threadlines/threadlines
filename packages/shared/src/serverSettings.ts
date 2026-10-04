@@ -1,5 +1,6 @@
 import {
   type AgentInvitesMode,
+  type AgentThreadsMode,
   ServerSettings,
   type ServerSettingsPatch,
 } from "@threadlines/contracts";
@@ -86,14 +87,23 @@ export function applyServerSettingsPatch(
   const selectionPatch = patch.textGenerationModelSelection;
   const backupSelectionPatch = patch.textGenerationBackupModelSelection;
   const writerSelectionPatch = patch.sourceControlWriterModelSelection;
-  const { automaticGitFetchInterval, ...patchForMerge } = patch;
+  const {
+    automaticGitFetchInterval,
+    newThreadModelSelection,
+    newThreadRoomAgents,
+    ...patchForMerge
+  } = patch;
   const next = deepMerge(current, patchForMerge);
+  // Whole values: merging would keep an old default's options in a new one,
+  // and turns a list into an object.
   let nextWithReplacements = {
     ...next,
     ...(patch.providerInstances !== undefined
       ? { providerInstances: patch.providerInstances }
       : {}),
     ...(automaticGitFetchInterval !== undefined ? { automaticGitFetchInterval } : {}),
+    ...(newThreadModelSelection !== undefined ? { newThreadModelSelection } : {}),
+    ...(newThreadRoomAgents !== undefined ? { newThreadRoomAgents } : {}),
   };
 
   const applyModelSelectionPatch = (
@@ -182,3 +192,13 @@ export const agentInvitesChoice = (settings: RoomsSettings): AgentInvitesMode =>
  */
 export const agentInvitesMode = (settings: RoomsSettings): AgentInvitesMode =>
   roomsEnabled(settings) ? agentInvitesChoice(settings) : "off";
+
+/**
+ * Whether the thread's agents may start threads of their own (child threads):
+ * the user's choice, never chosen meaning ask first. Unlike invites it does
+ * not depend on Rooms. The server's tools, the approval check and the
+ * settings page all read this one rule.
+ */
+export const agentThreadsMode = (
+  settings: Pick<Partial<ServerSettings>, "agentThreads"> | null | undefined,
+): AgentThreadsMode => settings?.agentThreads ?? "ask";

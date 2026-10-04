@@ -10,6 +10,10 @@ export interface AutoArchiveThreadFields {
   readonly hasPendingUserInput: boolean;
   readonly hasActionableProposedPlan: boolean;
   readonly latestTurn: { readonly state: string } | null;
+  /** Child threads: answers this thread's threads still owe it. */
+  readonly awaitedChildThreadCount?: number | undefined;
+  /** Child threads: threads its agent asked to start wait for the user. */
+  readonly pendingChildApproval?: boolean | undefined;
   readonly session: {
     readonly status: string;
     readonly orchestrationStatus?: string | undefined;
@@ -32,6 +36,11 @@ export function isAutoArchiveProtectedThread(thread: AutoArchiveThreadFields): b
     thread.hasPendingUserInput ||
     thread.hasActionableProposedPlan
   ) {
+    return true;
+  }
+
+  // Its threads are still working for it: archiving would cancel their answers.
+  if ((thread.awaitedChildThreadCount ?? 0) > 0 || thread.pendingChildApproval === true) {
     return true;
   }
 

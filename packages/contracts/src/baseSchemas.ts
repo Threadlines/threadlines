@@ -53,6 +53,12 @@ export type SideTurnId = typeof SideTurnId.Type;
 /** One request a room agent made of another through a room tool. */
 export const RoomAgentRequestId = makeEntityId("RoomAgentRequestId");
 export type RoomAgentRequestId = typeof RoomAgentRequestId.Type;
+/** One piece of work a thread's agent asked of a thread it started. */
+export const ChildRequestId = makeEntityId("ChildRequestId");
+export type ChildRequestId = typeof ChildRequestId.Type;
+/** The requests one `thread_start` call made, approved or declined together. */
+export const ChildRequestBatchId = makeEntityId("ChildRequestBatchId");
+export type ChildRequestBatchId = typeof ChildRequestBatchId.Type;
 export const AuthSessionId = makeEntityId("AuthSessionId");
 export type AuthSessionId = typeof AuthSessionId.Type;
 
