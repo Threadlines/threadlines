@@ -100,10 +100,12 @@ const UNPLACED: TimelineRowPlacement = { padTop: false };
 /**
  * The user writing starts an exchange. A message one room agent wrote to
  * another (a hand-off, its reply) happens inside the exchange: it neither
- * splits the turn that wrote it nor ends the user's exchange.
+ * splits the turn that wrote it nor ends the user's exchange. A message from
+ * another thread (child threads: a parent's request, a child's answer) starts
+ * a turn of its own, so it starts an exchange the way the user's would.
  */
-const startsExchange = (message: Pick<ChatMessage, "role" | "fromAgent">) =>
-  isUserWrittenMessage(message);
+const startsExchange = (message: Pick<ChatMessage, "role" | "fromAgent" | "fromThread">) =>
+  isUserWrittenMessage(message) || (message.role === "user" && message.fromThread !== undefined);
 
 export type MessagesTimelineRow = TimelineRowPlacement &
   (
@@ -1915,7 +1917,10 @@ function estimateRowContentHeight(row: MessagesTimelineRow, width: number): numb
           (hasChangedFiles ? (column < 430 ? 110 : 88) : 0)
         );
       }
-      if (row.message.role === "user" && row.message.fromAgent !== undefined) {
+      if (
+        row.message.role === "user" &&
+        (row.message.fromAgent !== undefined || row.message.fromThread !== undefined)
+      ) {
         // An agent's message to another: a meta line over its text, no bubble.
         return shouldCollapseUserMessage(row.message.text)
           ? 234

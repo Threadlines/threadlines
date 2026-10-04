@@ -18,7 +18,7 @@ import { type ChatMessage, type Thread } from "../types";
 import {
   buildRevertConfirmView,
   resolveRemoteBehindCount,
-  resolveWorkingTreeDiffStat,
+  resolveWorkingTreeChanges,
   MAX_HIDDEN_MOUNTED_TERMINAL_THREADS,
   buildExpiredTerminalContextToastCopy,
   classifyModelSwitch,
@@ -29,6 +29,7 @@ import {
   deriveDetectedBackgroundRunLabel,
   deriveFailedTurnRetryMessageId,
   deriveProviderBackgroundRuns,
+  matchDetectedProviderRun,
   deriveProviderSendPreflight,
   deriveProviderAuthReconnectPrompt,
   desktopCapturedScreenshotToFile,
@@ -800,6 +801,36 @@ describe("shouldConfirmTerminalKill", () => {
   });
 });
 
+describe("matchDetectedProviderRun", () => {
+  const run = (id: string, pid: number, outputFile: string) => ({
+    id,
+    source: "provider" as const,
+    label: `Dev server ${id}`,
+    command: "npm run dev",
+    detail: "Local Bash task",
+    statusLabel: "Running",
+    urls: [],
+    pids: [pid],
+    commandHints: ["npm run dev"],
+    startedAt: null,
+    outputFile,
+    described: true,
+  });
+
+  it("pairs a process with the run that owns it, not one that merely shares its command", () => {
+    const first = run("a", 1001, "/tmp/tasks/a.output");
+    const second = run("b", 2002, "/tmp/tasks/b.output");
+
+    expect(
+      matchDetectedProviderRun({
+        command: "npm run dev",
+        pid: 2002,
+        providerBackgroundRuns: [first, second],
+      })?.outputFile,
+    ).toBe("/tmp/tasks/b.output");
+  });
+});
+
 describe("deriveDetectedBackgroundRunLabel", () => {
   it("uses provider intent before command-derived fallbacks", () => {
     const command =
@@ -820,6 +851,12 @@ describe("deriveDetectedBackgroundRunLabel", () => {
             urls: [],
             pids: [],
             commandHints: [command],
+
+            startedAt: null,
+
+            outputFile: null,
+
+            described: true,
           },
         ],
       }),
@@ -982,6 +1019,49 @@ describe("deriveProviderBackgroundRuns", () => {
       urls: ["http://localhost:5953"],
     });
     expect(detectionSeeds.urls).toEqual(["http://localhost:5953"]);
+  });
+
+  it("dates a Claude background command from its tool call and finds its output file", () => {
+    const outputFile = "/private/tmp/claude-502/-repo/session-1/tasks/b1x2.output";
+    const { runs } = deriveProviderBackgroundRuns({
+      activities: [
+        commandToolActivity("vp run dev", 1, TurnId.make("turn-1"), "tool.started", "toolu_bash"),
+        {
+          id: EventId.make("event-bash-output"),
+          tone: "tool",
+          kind: "tool.output.updated",
+          summary: "Command output",
+          payload: {
+            toolCallId: "toolu_bash",
+            streamKind: "command_output",
+            detail: `Command running in background with ID: b1x2. Output is being written to: ${outputFile}`,
+          },
+          turnId: TurnId.make("turn-1"),
+          sequence: 2,
+          createdAt: "2026-06-23T00:00:02.000Z",
+        },
+        taskActivity(
+          "task.started",
+          {
+            taskId: "b1x2",
+            taskType: "local_bash",
+            description: "Start web dev server",
+            toolUseId: "toolu_bash",
+          },
+          3,
+        ),
+      ],
+      messages: [],
+      pendingBackgroundTaskCount: 1,
+    });
+
+    expect(runs).toHaveLength(1);
+    expect(runs[0]).toMatchObject({
+      label: "Start web dev server",
+      startedAt: "2026-06-23T00:00:01.000Z",
+      outputFile,
+      described: true,
+    });
   });
 
   it("never mines pid 1 from task details", () => {
@@ -1297,13 +1377,16 @@ describe("deriveProviderBackgroundRuns", () => {
         id: "provider:unknown:1",
         source: "provider",
         providerKind: "task",
-        label: "Provider background task",
+        label: "Background task",
         command: null,
-        detail: "Provider-managed; stop handle not exposed.",
+        detail: "The agent started this but didn't say what it is.",
         statusLabel: "Tracked",
         urls: [],
         pids: [],
         commandHints: [],
+        startedAt: null,
+        outputFile: null,
+        described: false,
       },
     ]);
   });
@@ -1481,6 +1564,12 @@ describe("filterUnresolvedProviderBackgroundRuns", () => {
     urls: ["http://localhost:5953"],
     pids: [],
     commandHints: [],
+
+    startedAt: null,
+
+    outputFile: null,
+
+    described: true,
   };
 
   it("keeps provider runs while detection has not covered their URL yet", () => {
@@ -1514,6 +1603,12 @@ describe("filterUnresolvedProviderBackgroundRuns", () => {
       urls: [],
       pids: [],
       commandHints: [command],
+
+      startedAt: null,
+
+      outputFile: null,
+
+      described: true,
     };
 
     expect(
@@ -1535,13 +1630,16 @@ describe("filterUnresolvedProviderBackgroundRuns", () => {
       id: "provider:unknown:1",
       source: "provider" as const,
       providerKind: "task" as const,
-      label: "Provider background task",
+      label: "Background task",
       command: null,
-      detail: "Provider-managed; stop handle not exposed.",
+      detail: "The agent started this but didn't say what it is.",
       statusLabel: "Tracked",
       urls: [],
       pids: [],
       commandHints: [],
+      startedAt: null,
+      outputFile: null,
+      described: false,
     };
 
     expect(
@@ -1563,6 +1661,12 @@ describe("filterUnresolvedProviderBackgroundRuns", () => {
       urls: [],
       pids: [21820],
       commandHints: [],
+
+      startedAt: null,
+
+      outputFile: null,
+
+      described: true,
     };
 
     expect(
@@ -1585,6 +1689,12 @@ describe("filterUnresolvedProviderBackgroundRuns", () => {
       urls: [],
       pids: [],
       commandHints: [command],
+
+      startedAt: null,
+
+      outputFile: null,
+
+      described: true,
     };
 
     expect(
@@ -1609,6 +1719,12 @@ describe("filterUnresolvedProviderBackgroundRuns", () => {
       urls: [],
       pids: [],
       commandHints: [command],
+
+      startedAt: null,
+
+      outputFile: null,
+
+      described: true,
     };
 
     expect(
@@ -1633,6 +1749,12 @@ describe("filterUnresolvedProviderBackgroundRuns", () => {
       urls: [],
       pids: [],
       commandHints: [wrappedCommand],
+
+      startedAt: null,
+
+      outputFile: null,
+
+      described: true,
     };
 
     expect(
@@ -1960,6 +2082,7 @@ function setStoreThreads(threads: ReadonlyArray<ReturnType<typeof makeThread>>) 
       ]),
     ),
     agentRequestsByThreadId: {},
+    childRequestsByThreadId: {},
     sidebarThreadSummaryById: {},
     bootstrapComplete: true,
   };
@@ -2656,21 +2779,47 @@ describe("buildRevertConfirmView", () => {
   });
 });
 
-describe("resolveWorkingTreeDiffStat", () => {
-  it("reports counts only for a dirty repository", () => {
+describe("resolveWorkingTreeChanges", () => {
+  const status = (input: {
+    isRepo?: boolean;
+    hasWorkingTreeChanges: boolean;
+    files?: number;
+    insertions?: number;
+    deletions?: number;
+  }) => ({
+    isRepo: input.isRepo ?? true,
+    hasWorkingTreeChanges: input.hasWorkingTreeChanges,
+    workingTree: {
+      files: Array.from({ length: input.files ?? 0 }, (_, index) => ({ path: `f${index}` })),
+      insertions: input.insertions ?? 0,
+      deletions: input.deletions ?? 0,
+    },
+  });
+
+  it("reports line counts and the file count for a dirty repository", () => {
     expect(
-      resolveWorkingTreeDiffStat({ isRepo: true, workingTree: { insertions: 38, deletions: 12 } }),
-    ).toEqual({ insertions: 38, deletions: 12 });
+      resolveWorkingTreeChanges(
+        status({ hasWorkingTreeChanges: true, files: 3, insertions: 38, deletions: 12 }),
+      ),
+    ).toEqual({ insertions: 38, deletions: 12, fileCount: 3 });
+  });
+
+  it("still reports changes that add no lines, like a binary edit", () => {
+    expect(resolveWorkingTreeChanges(status({ hasWorkingTreeChanges: true, files: 1 }))).toEqual({
+      insertions: 0,
+      deletions: 0,
+      fileCount: 1,
+    });
   });
 
   it("stays quiet for a clean tree, a non-repo, and an unloaded status", () => {
+    expect(resolveWorkingTreeChanges(status({ hasWorkingTreeChanges: false }))).toBeNull();
     expect(
-      resolveWorkingTreeDiffStat({ isRepo: true, workingTree: { insertions: 0, deletions: 0 } }),
+      resolveWorkingTreeChanges(
+        status({ isRepo: false, hasWorkingTreeChanges: true, insertions: 9, deletions: 9 }),
+      ),
     ).toBeNull();
-    expect(
-      resolveWorkingTreeDiffStat({ isRepo: false, workingTree: { insertions: 9, deletions: 9 } }),
-    ).toBeNull();
-    expect(resolveWorkingTreeDiffStat(null)).toBeNull();
+    expect(resolveWorkingTreeChanges(null)).toBeNull();
   });
 });
 

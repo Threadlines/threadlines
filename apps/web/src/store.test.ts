@@ -1,6 +1,8 @@
 import { scopeProjectRef, scopeThreadRef } from "@threadlines/client-runtime";
 import {
   CheckpointRef,
+  ChildRequestBatchId,
+  ChildRequestId,
   DEFAULT_MODEL,
   EnvironmentId,
   EventId,
@@ -50,6 +52,16 @@ import {
 
 const localEnvironmentId = EnvironmentId.make("environment-local");
 const remoteEnvironmentId = EnvironmentId.make("environment-remote");
+/** A shell no other thread started, with no threads of its own. */
+const NO_CHILD_THREAD_SHELL_FIELDS = {
+  parentThreadId: null,
+  parentTurnId: null,
+  attachedToParent: false,
+  handedBackAt: null,
+  handedBackTurnId: null,
+  awaitedChildThreadCount: 0,
+  pendingChildApproval: false,
+} as const;
 
 function withActiveEnvironmentState(
   environmentState: EnvironmentState,
@@ -212,6 +224,7 @@ function makeState(thread: Thread): AppState {
       ) as EnvironmentState["turnDiffSummaryByThreadId"][ThreadId],
     },
     agentRequestsByThreadId: {},
+    childRequestsByThreadId: {},
     sidebarThreadSummaryById: {},
     bootstrapComplete: true,
   };
@@ -238,6 +251,7 @@ function makeEmptyState(overrides: Partial<AppState & EnvironmentState> = {}): A
     turnDiffIdsByThreadId: {},
     turnDiffSummaryByThreadId: {},
     agentRequestsByThreadId: {},
+    childRequestsByThreadId: {},
     sidebarThreadSummaryById: {},
     bootstrapComplete: true,
   };
@@ -813,6 +827,7 @@ describe("incremental orchestration updates", () => {
           hasActionableProposedPlan: false,
           cumulativeDiffStat: { additions: 12, deletions: 4 },
           diffStatBaselineTurnCount: 0,
+          ...NO_CHILD_THREAD_SHELL_FIELDS,
         },
       },
       localEnvironmentId,
@@ -872,6 +887,7 @@ describe("incremental orchestration updates", () => {
           hasActionableProposedPlan: false,
           cumulativeDiffStat: null,
           diffStatBaselineTurnCount: 0,
+          ...NO_CHILD_THREAD_SHELL_FIELDS,
         },
       }) as const;
 
@@ -1596,6 +1612,158 @@ describe("incremental orchestration updates", () => {
       hold: false,
       chainEpoch: 1,
       requestsSinceUser: 0,
+    });
+  });
+
+  it("folds a family of child threads: lineage, open requests, answers and separating", () => {
+    const parentId = ThreadId.make("thread-1");
+    const childId = ThreadId.make("thread-child");
+    const callerTurnId = TurnId.make("turn-parent");
+    const answerTurnId = TurnId.make("turn-child-answer");
+    const startRequestId = ChildRequestId.make("child-request-1");
+    const apply = (state: AppState, event: OrchestrationEvent) =>
+      applyOrchestrationEvent(state, event, localEnvironmentId);
+    const summaryOf = (state: AppState, threadId: ThreadId) =>
+      localEnvironmentStateOf(state).sidebarThreadSummaryById[threadId];
+    const launch = {
+      title: "Write the changelog",
+      prompt: "Write the 0.6 changelog.",
+      modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: DEFAULT_MODEL },
+      runtimeMode: DEFAULT_COMPOSER_RUNTIME_MODE,
+      interactionMode: DEFAULT_INTERACTION_MODE,
+      reportBack: true,
+      runSetup: true,
+      workspace: { kind: "project_folder" as const },
+    };
+    const request = (requestId: ChildRequestId, status: "awaiting_user" | "running") => ({
+      requestId,
+      batchId: ChildRequestBatchId.make(`batch-${requestId}`),
+      kind: "start" as const,
+      from: { participantId: null },
+      callerTurnId,
+      deliveryEpoch: 0,
+      status,
+      childThreadId: childId,
+      childMessageId: MessageId.make(`message-${requestId}`),
+      launch,
+      createdAt: "2026-02-27T00:00:02.000Z",
+    });
+
+    let state = makeState(makeThread({ id: parentId }));
+    state = apply(
+      state,
+      makeEvent("thread.created", {
+        threadId: childId,
+        projectId: ProjectId.make("project-1"),
+        title: launch.title,
+        modelSelection: launch.modelSelection,
+        runtimeMode: launch.runtimeMode,
+        interactionMode: launch.interactionMode,
+        branch: null,
+        worktreePath: null,
+        parentThreadId: parentId,
+        parentTurnId: callerTurnId,
+        attachedToParent: true,
+        createdAt: "2026-02-27T00:00:03.000Z",
+        updatedAt: "2026-02-27T00:00:03.000Z",
+      }),
+    );
+    expect(summaryOf(state, childId)).toMatchObject({
+      parentThreadId: parentId,
+      parentTurnId: callerTurnId,
+      attachedToParent: true,
+    });
+
+    // The parent's open requests: one under way, one waiting for the user.
+    state = apply(
+      state,
+      makeEvent("thread.child-request-submitted", {
+        threadId: parentId,
+        request: request(startRequestId, "running"),
+        createdAt: "2026-02-27T00:00:02.000Z",
+      }),
+    );
+    state = apply(
+      state,
+      makeEvent("thread.child-request-submitted", {
+        threadId: parentId,
+        request: request(ChildRequestId.make("child-request-2"), "awaiting_user"),
+        createdAt: "2026-02-27T00:00:02.000Z",
+      }),
+    );
+    expect(summaryOf(state, parentId)).toMatchObject({
+      awaitedChildThreadCount: 1,
+      pendingChildApproval: true,
+    });
+    expect(selectThreadByRef(state, scopeThreadRef(localEnvironmentId, parentId))).toMatchObject({
+      childRequests: { startsSinceUser: 2 },
+    });
+
+    // The parent's request lands in the child as another thread's message.
+    state = apply(
+      state,
+      makeEvent("thread.message-sent", {
+        threadId: childId,
+        messageId: MessageId.make("message-child-request-1"),
+        role: "user",
+        text: launch.prompt,
+        fromThread: { threadId: parentId, requestId: startRequestId, kind: "request" },
+        turnId: null,
+        streaming: false,
+        createdAt: "2026-02-27T00:00:04.000Z",
+        updatedAt: "2026-02-27T00:00:04.000Z",
+      }),
+    );
+    expect(selectThreadByRef(state, scopeThreadRef(localEnvironmentId, childId))?.messages).toEqual(
+      [
+        expect.objectContaining({
+          fromThread: { threadId: parentId, requestId: startRequestId, kind: "request" },
+        }),
+      ],
+    );
+    // It is not the user writing.
+    expect(summaryOf(state, childId)?.latestUserMessageAt).toBeNull();
+
+    // Answered: the parent no longer waits, and the child knows which of its
+    // turns went back, without that counting as activity.
+    state = apply(
+      state,
+      makeEvent("thread.child-request-settled", {
+        threadId: parentId,
+        requestId: startRequestId,
+        childThreadId: childId,
+        outcome: "answered",
+        settledAt: "2026-02-27T00:00:09.000Z",
+      }),
+    );
+    expect(summaryOf(state, parentId)?.awaitedChildThreadCount).toBe(0);
+    const updatedAtBefore = summaryOf(state, childId)?.updatedAt;
+    state = apply(
+      state,
+      makeEvent("thread.handed-back", {
+        threadId: childId,
+        turnId: answerTurnId,
+        handedBackAt: "2026-02-27T00:00:09.000Z",
+      }),
+    );
+    expect(summaryOf(state, childId)).toMatchObject({
+      handedBackTurnId: answerTurnId,
+      updatedAt: updatedAtBefore,
+    });
+
+    // Made its own thread: still started by the parent, no longer in its family.
+    state = apply(
+      state,
+      makeEvent("thread.parent-attachment-set", {
+        threadId: childId,
+        attached: false,
+        attachmentEpoch: 1,
+        at: "2026-02-27T00:00:10.000Z",
+      }),
+    );
+    expect(summaryOf(state, childId)).toMatchObject({
+      parentThreadId: parentId,
+      attachedToParent: false,
     });
   });
 

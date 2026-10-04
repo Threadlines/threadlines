@@ -9,6 +9,8 @@ import { RepositoryIdentity } from "./environment.ts";
 import {
   ApprovalRequestId,
   CheckpointRef,
+  ChildRequestBatchId,
+  ChildRequestId,
   CommandId,
   EventId,
   IsoDateTime,
@@ -534,6 +536,31 @@ export type RoomAgentInvite = typeof RoomAgentInvite.Type;
 export const AgentInvitesMode = Schema.Literals(["off", "ask", "auto"]);
 export type AgentInvitesMode = typeof AgentInvitesMode.Type;
 
+/**
+ * Whether the thread's agents may start threads of their own (child threads,
+ * docs/design/child-threads.md): `off`, `ask` the user each time, or `auto`,
+ * without asking. A server setting, like AgentInvitesMode.
+ */
+export const AgentThreadsMode = Schema.Literals(["off", "ask", "auto"]);
+export type AgentThreadsMode = typeof AgentThreadsMode.Type;
+
+/**
+ * A message that crossed between a thread and one it started: a `request` its
+ * parent's agent wrote into the child, or a `report`, the child's answer
+ * delivered into the parent. An agent wrote it either way, never the user. A
+ * report carries the stamps it was delivered under (the parent's delivery
+ * epoch and the child's attachment epoch), so one cancelled meanwhile (Stop,
+ * wrapping the parent, separating the child) is never sent.
+ */
+export const ThreadMessageOrigin = Schema.Struct({
+  threadId: ThreadId,
+  requestId: ChildRequestId,
+  kind: Schema.Literals(["request", "report"]),
+  deliveryEpoch: Schema.optional(NonNegativeInt),
+  attachmentEpoch: Schema.optional(NonNegativeInt),
+});
+export type ThreadMessageOrigin = typeof ThreadMessageOrigin.Type;
+
 export const OrchestrationMessageRole = Schema.Literals(["user", "assistant", "system"]);
 export type OrchestrationMessageRole = typeof OrchestrationMessageRole.Type;
 
@@ -569,6 +596,8 @@ export const OrchestrationMessage = Schema.Struct({
   reviewInput: Schema.optional(RoomReviewInput),
   /** An invite request: see RoomAgentInvite. */
   invite: Schema.optional(RoomAgentInvite),
+  /** Child threads: a message another thread's agent wrote. See ThreadMessageOrigin. */
+  fromThread: Schema.optional(ThreadMessageOrigin),
   /**
    * The agents the message names, as they were when it was written, keyed by
    * agent (`primary` or a participant id): an assistant message's author, the
@@ -988,6 +1017,12 @@ export const OrchestrationQueuedFollowUp = Schema.Struct({
    */
   fromAgent: Schema.optional(RoomAgentRef),
   requestId: Schema.optional(RoomAgentRequestId),
+  /**
+   * Child threads: queued by another thread's agent (a request into a child,
+   * or a report into its parent). Like `fromAgent`, its message already
+   * exists and it is never the user's.
+   */
+  fromThread: Schema.optional(ThreadMessageOrigin),
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
   createdAt: IsoDateTime,
@@ -1136,6 +1171,138 @@ export const EMPTY_AGENT_REQUEST_STATE: OrchestrationAgentRequestState = {
   invitesPaused: false,
 };
 
+/**
+ * Child threads (docs/design/child-threads.md). A child request is one piece
+ * of work a thread's agent asked of a thread it started: its first task
+ * (`start`) or a later message (`send`). The child turn its message starts
+ * answers it, and the answer comes back to the agent that asked.
+ *
+ * `awaiting_user` until the user approves (ask mode); `starting` while the
+ * child is set up; `queued` while its message waits in the child; `running`
+ * while that turn runs; `awaiting_background` once the turn ended with the
+ * child still waiting on its own background work, holding the answer so far
+ * as `candidate`. A settled request leaves the open set.
+ */
+export const ChildRequestStatus = Schema.Literals([
+  "awaiting_user",
+  "starting",
+  "queued",
+  "running",
+  "awaiting_background",
+]);
+export type ChildRequestStatus = typeof ChildRequestStatus.Type;
+
+/** How a child request ended. */
+export const ChildRequestOutcome = Schema.Literals([
+  "answered",
+  "failed",
+  "stopped",
+  "cancelled",
+  /** The user said no to starting it. */
+  "declined",
+]);
+export type ChildRequestOutcome = typeof ChildRequestOutcome.Type;
+
+/**
+ * Where a child works: its own new worktree off `baseRef`, resolved when it
+ * was asked for, or the project folder itself when the project has no git
+ * repository to isolate it in.
+ */
+export const ChildThreadWorkspace = Schema.Union([
+  Schema.Struct({
+    kind: Schema.Literal("worktree"),
+    projectCwd: TrimmedNonEmptyString,
+    baseRef: TrimmedNonEmptyString,
+  }),
+  Schema.Struct({ kind: Schema.Literal("project_folder") }),
+]);
+export type ChildThreadWorkspace = typeof ChildThreadWorkspace.Type;
+
+/**
+ * Everything it takes to set up a child, saved with its request when it is
+ * asked for, so approval and a restart rebuild it exactly. Its access is the
+ * asking thread's at that moment, never more.
+ */
+export const ChildThreadLaunch = Schema.Struct({
+  title: TrimmedNonEmptyString,
+  prompt: TrimmedNonEmptyString,
+  modelSelection: ModelSelection,
+  runtimeMode: RuntimeMode,
+  interactionMode: ProviderInteractionMode,
+  /** False: it starts separated, and nothing comes back. */
+  reportBack: Schema.Boolean,
+  runSetup: Schema.Boolean,
+  workspace: ChildThreadWorkspace,
+});
+export type ChildThreadLaunch = typeof ChildThreadLaunch.Type;
+
+export const OrchestrationChildRequest = Schema.Struct({
+  requestId: ChildRequestId,
+  batchId: ChildRequestBatchId,
+  kind: Schema.Literals(["start", "send"]),
+  /** The agent in this thread that asked, and that gets the answer. */
+  from: RoomAgentRef,
+  callerTurnId: TurnId,
+  /** This thread's delivery epoch when it was asked; see OrchestrationChildRequestState. */
+  deliveryEpoch: NonNegativeInt,
+  status: ChildRequestStatus,
+  /** Reserved when it is asked for, before the child exists. */
+  childThreadId: ThreadId,
+  /** The child's message whose turn answers it. */
+  childMessageId: MessageId,
+  /** `start` only. */
+  launch: Schema.optional(ChildThreadLaunch),
+  /** `awaiting_background`: the finished turn whose last answer stands so far. */
+  candidateTurnId: Schema.optional(TurnId),
+  createdAt: IsoDateTime,
+});
+export type OrchestrationChildRequest = typeof OrchestrationChildRequest.Type;
+
+/**
+ * Something an agent should hear at its next turn, without being woken for
+ * it: a request that ended without an answer (declined, stopped, separated).
+ */
+export const ChildRequestNote = Schema.Struct({
+  requestId: ChildRequestId,
+  /** The agent the note is for. */
+  recipient: RoomAgentRef,
+  text: TrimmedNonEmptyString,
+  createdAt: IsoDateTime,
+});
+export type ChildRequestNote = typeof ChildRequestNote.Type;
+
+/**
+ * Child threads on the thread that started them. `deliveryEpoch` is raised by
+ * Stop and by wrapping this thread: no answer asked for under an older epoch
+ * comes back. The counts are toward the per-message limits and start over
+ * when the user writes; pending approvals count.
+ */
+export const OrchestrationChildRequestState = Schema.Struct({
+  open: Schema.Array(OrchestrationChildRequest),
+  deliveryEpoch: NonNegativeInt,
+  startsSinceUser: NonNegativeInt,
+  sendsSinceUser: NonNegativeInt,
+  pendingNotes: Schema.Array(ChildRequestNote),
+});
+export type OrchestrationChildRequestState = typeof OrchestrationChildRequestState.Type;
+
+export const EMPTY_CHILD_REQUEST_STATE: OrchestrationChildRequestState = {
+  open: [],
+  deliveryEpoch: 0,
+  startsSinceUser: 0,
+  sendsSinceUser: 0,
+  pendingNotes: [],
+};
+
+/** Threads one `thread_start` call may start. */
+export const CHILD_THREADS_PER_CALL = 5;
+/** Threads an agent may start per user message, pending approvals included. */
+export const CHILD_THREAD_START_LIMIT = 5;
+/** Messages an agent may send its threads per user message. */
+export const CHILD_THREAD_SEND_LIMIT = 10;
+/** Notes kept for an agent's next turn; the oldest give way. */
+export const CHILD_REQUEST_NOTE_LIMIT = 20;
+
 export const OrchestrationSideTurnOutcome = Schema.Literals(["completed", "failed", "interrupted"]);
 export type OrchestrationSideTurnOutcome = typeof OrchestrationSideTurnOutcome.Type;
 
@@ -1224,6 +1391,32 @@ export const OrchestrationThread = Schema.Struct({
   /** Room tools: open agent requests, the Stop hold and the limit's count. */
   agentRequests: OrchestrationAgentRequestState.pipe(
     Schema.withDecodingDefault(Effect.succeed(EMPTY_AGENT_REQUEST_STATE)),
+  ),
+  /** See OrchestrationThreadShell.parentThreadId. */
+  parentThreadId: Schema.NullOr(ThreadId).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
+  /** See OrchestrationThreadShell.parentTurnId. */
+  parentTurnId: Schema.NullOr(TurnId).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
+  /** See OrchestrationThreadShell.attachedToParent. */
+  attachedToParent: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  /**
+   * Raised each time this child's answers to its parent are cut off (it was
+   * separated, put back, or stopped), so an answer delivered under an earlier
+   * epoch is never sent.
+   */
+  parentAttachmentEpoch: NonNegativeInt.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
+  /** See OrchestrationThreadShell.handedBackTurnId. */
+  handedBackAt: Schema.NullOr(IsoDateTime).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
+  handedBackTurnId: Schema.NullOr(TurnId).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
+  /**
+   * When its parent's archive archived it too, so unarchiving the parent
+   * brings it back. Its own archive or unarchive clears it.
+   */
+  archivedWithParentAt: Schema.NullOr(IsoDateTime).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
+  /** Child threads this thread started: open requests, limits and notes. */
+  childRequests: OrchestrationChildRequestState.pipe(
+    Schema.withDecodingDefault(Effect.succeed(EMPTY_CHILD_REQUEST_STATE)),
   ),
   /**
    * Per agent (`primary` or a participant id), what its conversation has been
@@ -1352,6 +1545,36 @@ export const OrchestrationThreadShell = Schema.Struct({
   sideTurn: Schema.optional(Schema.NullOr(OrchestrationSideTurn)),
   /** In a room, the user's name for the thread's own agent (RoomAgentRole). */
   agentRole: Schema.optional(RoomAgentRole),
+  /**
+   * Child threads: the thread whose agent started this one. Set once, kept
+   * after the child is separated ("Started by" stays true). Null: none.
+   */
+  parentThreadId: Schema.NullOr(ThreadId).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
+  /**
+   * The parent's turn whose agent started it, so the parent's chat can show
+   * its threads where they were started. Null: none.
+   */
+  parentTurnId: Schema.NullOr(TurnId).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
+  /**
+   * Part of its parent's family: the sidebar nests it under the parent and
+   * the answers to the parent's requests go back to it. False once separated.
+   */
+  attachedToParent: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  /**
+   * The turn whose answer last went back to the parent, and when. The parent's
+   * agent read that answer, so that exact completion may be filed without the
+   * user opening it (the "wrap up finished child threads" setting). Like
+   * `doneOverride`, it does not move `updatedAt`.
+   */
+  handedBackAt: Schema.NullOr(IsoDateTime).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
+  handedBackTurnId: Schema.NullOr(TurnId).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
+  /**
+   * On a parent: requests whose answers are still owed (started, queued,
+   * running or finishing background work). Drives "Waiting · 3 threads".
+   */
+  awaitedChildThreadCount: NonNegativeInt.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
+  /** On a parent: threads its agent asked to start are waiting for the user's yes. */
+  pendingChildApproval: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   /**
    * The user's last explicit Mark done / Reopen for this thread, or null if
    * they never gave one. Deliberately does not move `updatedAt`: the inbox
@@ -1514,6 +1737,19 @@ const ThreadCreateRoomFields = {
   agentRole: Schema.optional(RoomAgentRole),
 };
 
+/**
+ * Child threads: the thread whose agent started the new one, and whether it
+ * joins that thread's family. Only the server sets these; client command
+ * schemas that spread them are re-checked by the decider.
+ */
+const ThreadCreateLineageFields = {
+  parentThreadId: Schema.optional(ThreadId),
+  /** The parent's turn whose agent started it. */
+  parentTurnId: Schema.optional(TurnId),
+  attachedToParent: Schema.optional(Schema.Boolean),
+};
+// The normalizer refuses these on commands that arrive from a client.
+
 const ThreadCreateCommand = Schema.Struct({
   type: Schema.Literal("thread.create"),
   commandId: CommandId,
@@ -1528,6 +1764,7 @@ const ThreadCreateCommand = Schema.Struct({
   branch: Schema.NullOr(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
   ...ThreadCreateRoomFields,
+  ...ThreadCreateLineageFields,
   createdAt: IsoDateTime,
 });
 
@@ -1594,6 +1831,11 @@ const ThreadDeleteCommand = Schema.Struct({
   type: Schema.Literal("thread.delete"),
   commandId: CommandId,
   threadId: ThreadId,
+  /**
+   * Child threads: also delete the threads in this one's family. Without it
+   * they are separated and live on as threads of their own.
+   */
+  withChildren: Schema.optional(Schema.Boolean),
 });
 
 const ThreadArchiveCommand = Schema.Struct({
@@ -1765,6 +2007,7 @@ export const ThreadBootstrapCreateThread = Schema.Struct({
   branch: Schema.NullOr(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
   ...ThreadCreateRoomFields,
+  ...ThreadCreateLineageFields,
   createdAt: IsoDateTime,
 });
 export type ThreadBootstrapCreateThread = typeof ThreadBootstrapCreateThread.Type;
@@ -1804,6 +2047,11 @@ export const ThreadTurnStartCommand = Schema.Struct({
   ),
   bootstrap: Schema.optional(ThreadTurnStartBootstrap),
   sourceProposedPlan: Schema.optional(SourceProposedPlanReference),
+  /**
+   * Child threads: the message is the parent's request (server only; the
+   * client turn-start schema has no such field). See ThreadMessageOrigin.
+   */
+  fromThread: Schema.optional(ThreadMessageOrigin),
   createdAt: IsoDateTime,
 });
 
@@ -1996,6 +2244,46 @@ const ThreadAgentInviteRespondCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+/**
+ * Child threads: the user's answer to an agent asking to start threads (ask
+ * mode). The server re-checks the setting and the agents before it starts.
+ */
+const ThreadChildRequestRespondCommand = Schema.Struct({
+  type: Schema.Literal("thread.child-request.respond"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  batchId: ChildRequestBatchId,
+  choice: Schema.Literals(["start", "decline"]),
+  createdAt: IsoDateTime,
+});
+
+/**
+ * Child threads: separate a thread from its parent's family ("Make it its own
+ * thread"), or put it back. Anything its parent was still owed from it is
+ * cancelled on the way out.
+ */
+const ThreadParentAttachmentSetCommand = Schema.Struct({
+  type: Schema.Literal("thread.parent-attachment.set"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  attached: Schema.Boolean,
+  createdAt: IsoDateTime,
+});
+
+/**
+ * Child threads: stop threads in this thread's family, whole sessions with
+ * their background work. Their answers no longer come back, and this
+ * thread's agent is told at its next turn rather than woken. Absent ids:
+ * every attached child with work in flight.
+ */
+const ThreadChildrenStopCommand = Schema.Struct({
+  type: Schema.Literal("thread.children.stop"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  childThreadIds: Schema.optional(Schema.Array(ThreadId)),
+  createdAt: IsoDateTime,
+});
+
 const ThreadCheckpointRevertCommand = Schema.Struct({
   type: Schema.Literal("thread.checkpoint.revert"),
   commandId: CommandId,
@@ -2085,6 +2373,9 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ThreadApprovalRespondCommand,
   ThreadUserInputRespondCommand,
   ThreadAgentInviteRespondCommand,
+  ThreadChildRequestRespondCommand,
+  ThreadParentAttachmentSetCommand,
+  ThreadChildrenStopCommand,
   ThreadCheckpointRevertCommand,
   ThreadSessionStopCommand,
   ThreadGoalSetCommand,
@@ -2128,6 +2419,9 @@ export const ClientOrchestrationCommand = Schema.Union([
   ThreadApprovalRespondCommand,
   ThreadUserInputRespondCommand,
   ThreadAgentInviteRespondCommand,
+  ThreadChildRequestRespondCommand,
+  ThreadParentAttachmentSetCommand,
+  ThreadChildrenStopCommand,
   ThreadCheckpointRevertCommand,
   ThreadSessionStopCommand,
   ThreadGoalSetCommand,
@@ -2474,7 +2768,99 @@ const ThreadAgentRequestSettleCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+/**
+ * Child threads: an agent asks to start threads, through its MCP tool. One
+ * request per child, sharing `batchId`. `ask` waits for the user; `auto`
+ * starts at once. The decider checks the caller's turn, depth and limits.
+ */
+const ThreadChildStartCommand = Schema.Struct({
+  type: Schema.Literal("thread.child.start"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  batchId: ChildRequestBatchId,
+  from: RoomAgentRef,
+  callerTurnId: TurnId,
+  mode: Schema.Literals(["ask", "auto"]),
+  children: Schema.Array(
+    Schema.Struct({
+      requestId: ChildRequestId,
+      childThreadId: ThreadId,
+      childMessageId: MessageId,
+      launch: ChildThreadLaunch,
+    }),
+  ),
+  createdAt: IsoDateTime,
+});
+
+/**
+ * Child threads: an agent sends one of its attached children a message. It
+ * is written into the child and queued there; the child's turn for it
+ * answers the request.
+ */
+const ThreadChildSendCommand = Schema.Struct({
+  type: Schema.Literal("thread.child.send"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  requestId: ChildRequestId,
+  from: RoomAgentRef,
+  callerTurnId: TurnId,
+  childThreadId: ThreadId,
+  childMessageId: MessageId,
+  text: TrimmedNonEmptyString,
+  createdAt: IsoDateTime,
+});
+
+/** Child threads: a request moved on (set up, its turn started, background wait). */
+const ThreadChildRequestUpdateCommand = Schema.Struct({
+  type: Schema.Literal("thread.child-request.update"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  requestId: ChildRequestId,
+  status: ChildRequestStatus,
+  candidateTurnId: Schema.optional(TurnId),
+  createdAt: IsoDateTime,
+});
+
+/**
+ * Child threads: a request is over. With `reply`, the child's answer is
+ * delivered to the agent that asked and queued for it, in the same step,
+ * unless its delivery was cancelled meanwhile. With `note`, the agent hears
+ * of it at its next turn instead.
+ */
+const ThreadChildRequestSettleCommand = Schema.Struct({
+  type: Schema.Literal("thread.child-request.settle"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  requestId: ChildRequestId,
+  outcome: ChildRequestOutcome,
+  reply: Schema.optional(
+    Schema.Struct({
+      messageId: MessageId,
+      text: Schema.String,
+      /** The child turn whose answer this is. */
+      turnId: Schema.NullOr(TurnId),
+    }),
+  ),
+  note: Schema.optional(TrimmedNonEmptyString),
+  error: Schema.optional(TrimmedNonEmptyString),
+  createdAt: IsoDateTime,
+});
+
+/** Child threads: notes went out with an agent's turn. */
+const ThreadChildNotesDeliveredCommand = Schema.Struct({
+  type: Schema.Literal("thread.child-notes.delivered"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  requestIds: Schema.Array(ChildRequestId),
+  createdAt: IsoDateTime,
+});
+
 const InternalOrchestrationCommand = Schema.Union([
+  ThreadChildStartCommand,
+  ThreadChildSendCommand,
+  ThreadChildRequestUpdateCommand,
+  ThreadChildRequestSettleCommand,
+  ThreadChildNotesDeliveredCommand,
   ThreadSessionSetCommand,
   ThreadRealtimeStateSetCommand,
   ThreadEffectiveCwdSetCommand,
@@ -2538,6 +2924,14 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.agent-request-settled",
   "thread.agent-requests-held",
   "thread.agent-requests-reset",
+  "thread.child-request-submitted",
+  "thread.child-request-updated",
+  "thread.child-request-settled",
+  "thread.child-notes-delivered",
+  "thread.child-deliveries-cancelled",
+  "thread.child-requests-reset",
+  "thread.handed-back",
+  "thread.parent-attachment-set",
   "thread.meta-updated",
   "thread.runtime-mode-set",
   "thread.interaction-mode-set",
@@ -2612,6 +3006,10 @@ export const ThreadCreatedPayload = Schema.Struct({
   ),
   branch: Schema.NullOr(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
+  /** Child threads: see OrchestrationThreadShell.parentThreadId. */
+  parentThreadId: Schema.optional(ThreadId),
+  parentTurnId: Schema.optional(TurnId),
+  attachedToParent: Schema.optional(Schema.Boolean),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
 });
@@ -2624,6 +3022,8 @@ export const ThreadDeletedPayload = Schema.Struct({
 export const ThreadArchivedPayload = Schema.Struct({
   threadId: ThreadId,
   archivedAt: IsoDateTime,
+  /** Archived along with its parent: unarchiving the parent brings it back. */
+  withParent: Schema.optional(Schema.Literal(true)),
   updatedAt: IsoDateTime,
 });
 
@@ -2777,6 +3177,69 @@ export const ThreadAgentRequestsResetPayload = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+/** Child threads: a request was made (see OrchestrationChildRequest). */
+export const ThreadChildRequestSubmittedPayload = Schema.Struct({
+  threadId: ThreadId,
+  request: OrchestrationChildRequest,
+  createdAt: IsoDateTime,
+});
+
+export const ThreadChildRequestUpdatedPayload = Schema.Struct({
+  threadId: ThreadId,
+  requestId: ChildRequestId,
+  status: ChildRequestStatus,
+  candidateTurnId: Schema.optional(TurnId),
+  updatedAt: IsoDateTime,
+});
+
+/** With `note`, the agent that asked hears of it at its next turn. */
+export const ThreadChildRequestSettledPayload = Schema.Struct({
+  threadId: ThreadId,
+  requestId: ChildRequestId,
+  childThreadId: ThreadId,
+  outcome: ChildRequestOutcome,
+  error: Schema.optional(TrimmedNonEmptyString),
+  note: Schema.optional(ChildRequestNote),
+  settledAt: IsoDateTime,
+});
+
+export const ThreadChildNotesDeliveredPayload = Schema.Struct({
+  threadId: ThreadId,
+  requestIds: Schema.Array(ChildRequestId),
+  createdAt: IsoDateTime,
+});
+
+/**
+ * Stop, or the thread was wrapped: its delivery epoch moves to
+ * `deliveryEpoch`, so no answer asked for before comes back.
+ */
+export const ThreadChildDeliveriesCancelledPayload = Schema.Struct({
+  threadId: ThreadId,
+  deliveryEpoch: NonNegativeInt,
+  createdAt: IsoDateTime,
+});
+
+/** The user wrote: the per-message child thread counts start over. */
+export const ThreadChildRequestsResetPayload = Schema.Struct({
+  threadId: ThreadId,
+  createdAt: IsoDateTime,
+});
+
+/** On a child: its answer from `turnId` went back to its parent. No `updatedAt`. */
+export const ThreadHandedBackPayload = Schema.Struct({
+  threadId: ThreadId,
+  turnId: Schema.NullOr(TurnId),
+  handedBackAt: IsoDateTime,
+});
+
+/** On a child: separated from or put back into its parent's family. No `updatedAt`. */
+export const ThreadParentAttachmentSetPayload = Schema.Struct({
+  threadId: ThreadId,
+  attached: Schema.Boolean,
+  attachmentEpoch: NonNegativeInt,
+  at: IsoDateTime,
+});
+
 export const ThreadRoomContextRecordedPayload = Schema.Struct({
   threadId: ThreadId,
   agentKey: TrimmedNonEmptyString,
@@ -2831,6 +3294,8 @@ export const ThreadMessageSentPayload = Schema.Struct({
   requestKind: Schema.optional(RoomAgentMessageKind),
   reviewInput: Schema.optional(RoomReviewInput),
   invite: Schema.optional(RoomAgentInvite),
+  /** See OrchestrationMessage.fromThread. */
+  fromThread: Schema.optional(ThreadMessageOrigin),
   /** See OrchestrationMessage.agentModels. Only the write that creates the message counts. */
   agentModels: Schema.optional(Schema.Record(Schema.String, MessageAgentModel)),
   turnId: Schema.NullOr(TurnId),
@@ -2870,6 +3335,12 @@ export const ThreadTurnStartRequestedPayload = Schema.Struct({
    * checkpoint captured, or closed for good) before this turn is sent.
    */
   handoverFromTurnId: Schema.optional(TurnId),
+  /**
+   * Child threads: the turn answers a parent's request, or reads a child's
+   * report. A report whose stamps went stale while it was being prepared is
+   * not sent.
+   */
+  fromThread: Schema.optional(ThreadMessageOrigin),
   createdAt: IsoDateTime,
 });
 
@@ -3187,6 +3658,46 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.agent-requests-reset"),
     payload: ThreadAgentRequestsResetPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.child-request-submitted"),
+    payload: ThreadChildRequestSubmittedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.child-request-updated"),
+    payload: ThreadChildRequestUpdatedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.child-request-settled"),
+    payload: ThreadChildRequestSettledPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.child-notes-delivered"),
+    payload: ThreadChildNotesDeliveredPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.child-deliveries-cancelled"),
+    payload: ThreadChildDeliveriesCancelledPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.child-requests-reset"),
+    payload: ThreadChildRequestsResetPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.handed-back"),
+    payload: ThreadHandedBackPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.parent-attachment-set"),
+    payload: ThreadParentAttachmentSetPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,

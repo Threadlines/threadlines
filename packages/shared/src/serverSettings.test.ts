@@ -331,4 +331,34 @@ describe("serverSettings helpers", () => {
       config: { homePath: "~/.codex" },
     });
   });
+  it("replaces new-thread defaults whole, so no old reasoning or agent survives", () => {
+    const claude = ProviderInstanceId.make("claudeAgent");
+    const codex = ProviderInstanceId.make("codex");
+    const current = {
+      ...DEFAULT_SERVER_SETTINGS,
+      newThreadModelSelection: createModelSelection(claude, "claude-opus-5-5", [
+        { id: "effort", value: "max" },
+      ]),
+      newThreadRoomAgents: [
+        { modelSelection: createModelSelection(codex, "gpt-6-astra"), role: "Reviewer" },
+        { modelSelection: createModelSelection(claude, "claude-sonnet-5-5") },
+      ],
+    };
+
+    const next = applyServerSettingsPatch(current, {
+      newThreadModelSelection: { instanceId: claude, model: "claude-fable-5-1" },
+      newThreadRoomAgents: [{ modelSelection: { instanceId: codex, model: "gpt-6.1-sol" } }],
+    });
+    expect(next.newThreadModelSelection).toEqual({ instanceId: claude, model: "claude-fable-5-1" });
+    expect(next.newThreadRoomAgents).toEqual([
+      { modelSelection: { instanceId: codex, model: "gpt-6.1-sol" } },
+    ]);
+
+    const cleared = applyServerSettingsPatch(next, {
+      newThreadModelSelection: null,
+      newThreadRoomAgents: [],
+    });
+    expect(cleared.newThreadModelSelection).toBeNull();
+    expect(cleared.newThreadRoomAgents).toEqual([]);
+  });
 });

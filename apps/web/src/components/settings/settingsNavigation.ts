@@ -4,6 +4,7 @@ import {
   BotIcon,
   FileTextIcon,
   KeyboardIcon,
+  MessagesSquareIcon,
   PlugIcon,
   Settings2Icon,
   SmartphoneIcon,
@@ -18,44 +19,77 @@ export const HOSTED_STATIC_DEFAULT_SETTINGS_SECTION_PATH = "/settings/general" a
 
 export const VISIBLE_SETTINGS_SECTION_PATHS = [
   DEFAULT_SETTINGS_SECTION_PATH,
+  "/settings/threads",
+  "/settings/archived",
   "/settings/providers",
   "/settings/plugins",
-  "/settings/connections",
-  "/settings/source-control",
   "/settings/instructions",
+  "/settings/source-control",
+  "/settings/connections",
   "/settings/keybindings",
-  "/settings/archived",
 ] as const;
 
 export type SettingsSectionPath = (typeof VISIBLE_SETTINGS_SECTION_PATHS)[number];
 
 export const HOSTED_STATIC_SETTINGS_SECTION_PATHS = [
   HOSTED_STATIC_DEFAULT_SETTINGS_SECTION_PATH,
+  "/settings/threads",
+  "/settings/archived",
   "/settings/providers",
   "/settings/plugins",
-  "/settings/connections",
-  "/settings/source-control",
   "/settings/instructions",
-  "/settings/archived",
+  "/settings/source-control",
+  "/settings/connections",
 ] as const satisfies ReadonlyArray<SettingsSectionPath>;
 
 export type HostedStaticSettingsSectionPath = (typeof HOSTED_STATIC_SETTINGS_SECTION_PATHS)[number];
 
-export const SETTINGS_NAV_ITEMS: ReadonlyArray<{
-  label: string;
-  to: SettingsSectionPath;
-  icon: ComponentType<{ className?: string }>;
-}> = [
-  { label: "General", to: "/settings/general", icon: Settings2Icon },
-  { label: "Providers", to: "/settings/providers", icon: BotIcon },
+export interface SettingsNavItem {
+  readonly label: string;
+  readonly to: SettingsSectionPath;
+  readonly icon: ComponentType<{ className?: string }>;
+  /**
+   * Which cluster of the menu it sits in: you and your threads, what agents
+   * can use, then this computer's tools. A thin line separates clusters.
+   */
+  readonly group: "threads" | "agents" | "computer";
+}
+
+export const SETTINGS_NAV_ITEMS: ReadonlyArray<SettingsNavItem> = [
+  { label: "General", to: "/settings/general", icon: Settings2Icon, group: "threads" },
+  { label: "Threads", to: "/settings/threads", icon: MessagesSquareIcon, group: "threads" },
+  { label: "Archives", to: "/settings/archived", icon: ArchiveIcon, group: "threads" },
+  { label: "Providers", to: "/settings/providers", icon: BotIcon, group: "agents" },
   // The route stays /settings/plugins: links, panel memory, and the tab search param all key off it.
-  { label: "Plugins & Skills", to: "/settings/plugins", icon: PlugIcon },
-  { label: "Connections", to: CONNECTIONS_SETTINGS_SECTION_PATH, icon: SmartphoneIcon },
-  { label: "Source Control", to: "/settings/source-control", icon: SourceControlIcon },
-  { label: "Agent Instructions", to: "/settings/instructions", icon: FileTextIcon },
-  { label: "Keybindings", to: "/settings/keybindings", icon: KeyboardIcon },
-  { label: "Archives", to: "/settings/archived", icon: ArchiveIcon },
+  { label: "Plugins & Skills", to: "/settings/plugins", icon: PlugIcon, group: "agents" },
+  {
+    label: "Agent Instructions",
+    to: "/settings/instructions",
+    icon: FileTextIcon,
+    group: "agents",
+  },
+  {
+    label: "Source Control",
+    to: "/settings/source-control",
+    icon: SourceControlIcon,
+    group: "computer",
+  },
+  {
+    label: "Connections",
+    to: CONNECTIONS_SETTINGS_SECTION_PATH,
+    icon: SmartphoneIcon,
+    group: "computer",
+  },
+  { label: "Keybindings", to: "/settings/keybindings", icon: KeyboardIcon, group: "computer" },
 ];
+
+/** Whether a menu item opens a new cluster, so a line goes above it. */
+export function startsSettingsNavGroup(
+  items: ReadonlyArray<SettingsNavItem>,
+  index: number,
+): boolean {
+  return index > 0 && items[index - 1]?.group !== items[index]?.group;
+}
 
 export const HOSTED_STATIC_SETTINGS_NAV_ITEMS = SETTINGS_NAV_ITEMS.filter((item) =>
   (HOSTED_STATIC_SETTINGS_SECTION_PATHS as readonly string[]).includes(item.to),

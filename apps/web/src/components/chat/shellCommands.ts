@@ -3,6 +3,7 @@
  * the setup (cd, env, echo), and say what is left does to the machine. Checks
  * (tests, typecheck, lint) are recognized so their results can be reported.
  */
+import { stripTerminalControlSequences } from "../../lib/terminalText";
 import type { ActivityTallyMark } from "./activitySteps";
 import {
   capitalize,
@@ -1272,14 +1273,10 @@ function checkLiveLabel(checks: ReadonlyArray<CheckKind>): string {
 // Check results
 // ---------------------------------------------------------------------------
 
-// Built from the escape character so the pattern itself holds no control code.
-const ANSI_PATTERN = new RegExp(`${String.fromCharCode(0x1b)}\\[[0-9;?]*[ -/]*[@-~]`, "gu");
-
 function outputLines(output: string | undefined): string[] {
   if (!output) return [];
   return (
-    output
-      .replace(ANSI_PATTERN, "")
+    stripTerminalControlSequences(output)
       .split(/\r?\n/u)
       .map((line) => line.trim())
       // A backgrounded command's own output is only the notice that it went to

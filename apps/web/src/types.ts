@@ -18,6 +18,7 @@ import type {
   OrchestrationThreadLinkedPullRequest,
   OrchestrationThreadGoal,
   OrchestrationAgentRequestState,
+  OrchestrationChildRequestState,
   OrchestrationSideTurn,
   OrchestrationThreadParticipant,
   ProjectKind,
@@ -40,6 +41,7 @@ import type {
   RoomAgentInvite,
   RoomReviewInput,
   RuntimeMode,
+  ThreadMessageOrigin,
 } from "@threadlines/contracts";
 
 export type SessionPhase = "disconnected" | "connecting" | "ready" | "running";
@@ -100,6 +102,11 @@ export interface ChatMessage {
   reviewInput?: RoomReviewInput | undefined;
   /** See OrchestrationMessage.invite. */
   invite?: RoomAgentInvite | undefined;
+  /**
+   * See OrchestrationMessage.fromThread: a user-role message another thread's
+   * agent wrote (child threads). Never the user's.
+   */
+  fromThread?: ThreadMessageOrigin | undefined;
   /** See OrchestrationMessage.agentModels: the agents it names, as they were. */
   agentModels?: Readonly<Record<string, MessageAgentModel>> | undefined;
   turnId?: TurnId | null;
@@ -187,6 +194,28 @@ export interface Thread {
    * Carried by the thread's detail stream only.
    */
   agentRequests?: OrchestrationAgentRequestState;
+  /**
+   * See OrchestrationThread.childRequests: what this thread's agent asked of
+   * the threads it started. Carried by the thread's detail stream only, so
+   * absent until it loads.
+   */
+  childRequests?: OrchestrationChildRequestState;
+  /**
+   * Child threads (docs/design/child-threads.md): the thread whose agent
+   * started this one, kept after it is separated. Absent or null: none.
+   */
+  parentThreadId?: ThreadId | null;
+  /** The parent's turn whose agent started it. */
+  parentTurnId?: TurnId | null;
+  /** Still part of its parent's family. Absent means separated or no parent. */
+  attachedToParent?: boolean;
+  /** When its last answer went back to its parent, and from which turn. */
+  handedBackAt?: string | null;
+  handedBackTurnId?: TurnId | null;
+  /** On a parent: answers its threads still owe it. Absent means none. */
+  awaitedChildThreadCount?: number;
+  /** On a parent: threads its agent asked to start wait for the user's yes. */
+  pendingChildApproval?: boolean;
   /** See ThreadShell.doneOverride. */
   doneOverride: OrchestrationThreadDoneOverride | null;
   /** See ThreadShell.lastSeenAt. */
@@ -262,6 +291,22 @@ export interface ThreadShell {
   /** See OrchestrationThreadShell.agentRole: the user's name for the thread's own agent. */
   agentRole?: string | undefined;
   /**
+   * Child threads (docs/design/child-threads.md): the thread whose agent
+   * started this one, kept after it is separated. Absent or null: none.
+   */
+  parentThreadId?: ThreadId | null;
+  /** The parent's turn whose agent started it. */
+  parentTurnId?: TurnId | null;
+  /** Still part of its parent's family. Absent means separated or no parent. */
+  attachedToParent?: boolean;
+  /** When its last answer went back to its parent, and from which turn. */
+  handedBackAt?: string | null;
+  handedBackTurnId?: TurnId | null;
+  /** On a parent: answers its threads still owe it. Absent means none. */
+  awaitedChildThreadCount?: number;
+  /** On a parent: threads its agent asked to start wait for the user's yes. */
+  pendingChildApproval?: boolean;
+  /**
    * The user's last explicit Mark done / Reopen, held on the server so every
    * device agrees on the inbox's Active/Wrapped split. Null when never filed.
    */
@@ -333,6 +378,20 @@ export interface SidebarThreadSummary {
   roomSideModelSelection?: ModelSelection | null;
   /** The user's name for the agent answering on the side, if any. */
   roomSideRole?: string | null;
+  /** See ThreadShell.parentThreadId. */
+  parentThreadId?: ThreadId | null;
+  /** See ThreadShell.parentTurnId. */
+  parentTurnId?: TurnId | null;
+  /** See ThreadShell.attachedToParent: nested under its parent in the inbox. */
+  attachedToParent?: boolean;
+  /** See ThreadShell.handedBackTurnId: drives "wrap up finished child threads". */
+  handedBackTurnId?: TurnId | null;
+  /** See ThreadShell.awaitedChildThreadCount. */
+  awaitedChildThreadCount?: number;
+  /** See ThreadShell.pendingChildApproval. */
+  pendingChildApproval?: boolean;
+  /** Messages queued behind the running turn; a child with any is not finished. */
+  queuedFollowUpCount?: number;
 }
 
 export interface ThreadSession {

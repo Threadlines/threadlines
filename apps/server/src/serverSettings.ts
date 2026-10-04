@@ -326,6 +326,7 @@ const ATOMIC_SETTINGS_KEYS: ReadonlySet<string> = new Set([
   "textGenerationModelSelection",
   "textGenerationBackupModelSelection",
   "sourceControlWriterModelSelection",
+  "newThreadModelSelection",
 ]);
 
 function stripDefaultServerSettings(current: unknown, defaults: unknown): unknown | undefined {

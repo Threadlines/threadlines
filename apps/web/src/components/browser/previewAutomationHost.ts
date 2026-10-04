@@ -12,7 +12,7 @@ import type {
 } from "@threadlines/contracts";
 
 import { ensureEnvironmentApi } from "../../environmentApi";
-import { holdFocusForAgent } from "./browserFocusGuard";
+import { holdFocusForAgent, withAgentInputTurn } from "./browserFocusGuard";
 
 /**
  * The end of the wire that can actually touch the page.
@@ -174,6 +174,12 @@ export interface PreviewAutomationHostTarget {
    * off screen -- and returns the call that marks the action finished.
    */
   readonly beginWork?: (() => Promise<() => void>) | undefined;
+  /**
+   * Runs `send` with the page holding the keyboard. Chromium delivers a page's
+   * keystrokes to whatever has focus in the window; the main process refuses
+   * keys while the page does not hold it, so without this they fail.
+   */
+  readonly withKeyboard?: (<T>(send: () => Promise<T>) => Promise<T>) | undefined;
 }
 
 /**
@@ -396,27 +402,43 @@ export function createPreviewAutomationHandler(
         // Acting on a page can pull the user's focus into it; the guard puts
         // it back without waiting while it knows the agent is the cause.
         const releaseFocus = controlled ? holdFocusForAgent() : () => {};
-        const dispatched = await dispatch(
+        const outcome = await dispatch(
           bridge,
           target,
           target.webContentsId,
           request,
           signal,
-        ).finally(() => {
-          releaseFocus();
-          endWork();
-        });
+          before?.controlEpoch,
+        )
+          .then(
+            (value) => ({ ok: true as const, value }),
+            (error: unknown) => ({ ok: false as const, error }),
+          )
+          .finally(() => {
+            releaseFocus();
+            endWork();
+          });
         const after =
           controlled && bridge.previewStatus !== undefined
-            ? await bridge.previewStatus({ webContentsId: target.webContentsId as number })
+            ? await bridge
+                .previewStatus({ webContentsId: target.webContentsId as number })
+                // After a failure the failure is the answer, unless the user
+                // caused it; a page too far gone to say has nothing to add.
+                .catch((cause: unknown) => {
+                  if (outcome.ok) throw cause;
+                  return null;
+                })
             : null;
+        // Checked whether or not the action succeeded: the desktop stops an
+        // agent's keys once the user takes over, and that is the reason to give.
         if (before !== null && after !== null && before.controlEpoch !== after.controlEpoch) {
           target.onUserTakeover?.();
           throw new Error(
             "The browser action was interrupted because the user took control of this tab.",
           );
         }
-        return dispatched;
+        if (!outcome.ok) throw outcome.error;
+        return outcome.value;
       });
       // The key is omitted rather than set to undefined: an operation with
       // nothing to report should send nothing, not a hole.
@@ -446,8 +468,11 @@ async function dispatch(
   request: PreviewAutomationRequest,
   /** Reaches the operations that can wait on the user, so a cancel stops the wait. */
   signal: AbortSignal | undefined,
+  /** The tab's controlEpoch as the action began; keys stop if the user takes over. */
+  controlEpoch: number | undefined,
 ): Promise<unknown> {
   const input = (request.input ?? {}) as Record<string, never>;
+  const sinceEpoch = controlEpoch === undefined ? {} : { controlEpoch };
   const callOn = <T>(
     targetWebContentsId: number,
     method: ((...args: never[]) => Promise<T>) | undefined,
@@ -467,6 +492,8 @@ async function dispatch(
     if (webContentsId === null) throw new Error("The browser tab is not attached yet.");
     return callOn(webContentsId, method, args);
   };
+  const withKeyboard = <T>(send: () => Promise<T>): Promise<T> =>
+    target.withKeyboard === undefined ? send() : target.withKeyboard(send);
 
   switch (request.operation) {
     case "status":
@@ -490,7 +517,7 @@ async function dispatch(
     // returned nothing failed MCP validation and was shown to the agent as an
     // error, which invited a retry -- and a retried click clicks twice.
     case "click": {
-      const point = await call(bridge.previewClick, input);
+      const point = await withAgentInputTurn(() => call(bridge.previewClick, input));
       // Shown before the page is asked what changed, so the mark lands while
       // the click is still the most recent thing that happened.
       target.onAgentPoint(point);
@@ -502,7 +529,7 @@ async function dispatch(
       return toStatus(target.tabId ?? "", await call(bridge.previewStatus, {}), target.viewport());
     }
     case "drag": {
-      const gesture = await call(bridge.previewDrag, input);
+      const gesture = await withAgentInputTurn(() => call(bridge.previewDrag, input));
       // The whole drag has already happened by the time we hear about it, so
       // the pointer replays it: pressed at one end, travelling, released at the
       // other. Sending only the result would show the destination and lose the
@@ -550,12 +577,22 @@ async function dispatch(
       );
     }
     case "type": {
-      const point = await call(bridge.previewType, input);
+      // Two steps, so the page needs the keyboard only while the keys go out:
+      // the click focuses the field inside the page, then the keys follow.
+      // Each takes its own turn; a slow click cannot run into the keys of
+      // whichever agent goes next.
+      const { target: field, ...keys } = input as { target?: unknown };
+      const point = await withAgentInputTurn(() => call(bridge.previewClick, { target: field }));
       target.onAgentPoint(point);
+      await withAgentInputTurn(() =>
+        withKeyboard(() => call(bridge.previewType, { ...keys, ...sinceEpoch })),
+      );
       return toStatus(target.tabId ?? "", await call(bridge.previewStatus, {}), target.viewport());
     }
     case "press":
-      await call(bridge.previewPress, input);
+      await withAgentInputTurn(() =>
+        withKeyboard(() => call(bridge.previewPress, { ...input, ...sinceEpoch })),
+      );
       return toStatus(target.tabId ?? "", await call(bridge.previewStatus, {}), target.viewport());
     case "scroll":
       await call(bridge.previewScroll, input);

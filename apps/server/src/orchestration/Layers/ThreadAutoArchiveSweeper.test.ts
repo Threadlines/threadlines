@@ -73,6 +73,13 @@ function thread(
     session: null,
     latestUserMessageAt: daysAgo(45),
     hasPendingApprovals: false,
+    parentThreadId: null,
+    parentTurnId: null,
+    attachedToParent: false,
+    handedBackAt: null,
+    handedBackTurnId: null,
+    awaitedChildThreadCount: 0,
+    pendingChildApproval: false,
     hasPendingUserInput: false,
     hasActionableProposedPlan: false,
     cumulativeDiffStat: null,
@@ -142,6 +149,7 @@ describe("ThreadAutoArchiveSweeper", () => {
     readonly settingsShape?: ServerSettingsShape;
   }) {
     const dispatched: Array<Extract<OrchestrationCommand, { type: "thread.archive" }>> = [];
+    const stopped: string[] = [];
     let onDispatch: (() => void) | null = null;
     // Bounded so a regression that never dispatches fails in seconds instead
     // of hanging until the suite-wide timeout.
@@ -157,6 +165,12 @@ describe("ThreadAutoArchiveSweeper", () => {
       readEvents: () => Stream.empty,
       getCommandReceipt: () => Effect.succeed(Option.none()),
       dispatch: (command) => {
+        if (command.type === "thread.session.stop") {
+          return Effect.sync(() => {
+            stopped.push(command.threadId);
+            return { sequence: 0 };
+          });
+        }
         if (command.type !== "thread.archive") {
           return Effect.die(`Unexpected command: ${command.type}`);
         }
@@ -192,7 +206,7 @@ describe("ThreadAutoArchiveSweeper", () => {
     );
     runtime = ManagedRuntime.make(layer);
     const sweeper = await runtime.runPromise(Effect.service(ThreadAutoArchiveSweeper));
-    return { dispatched, nextDispatch, sweeper };
+    return { dispatched, stopped, nextDispatch, sweeper };
   }
 
   it("archives nothing when disabled", async () => {
@@ -219,6 +233,31 @@ describe("ThreadAutoArchiveSweeper", () => {
       commandId: expect.stringContaining(`thread-auto-archive:${candidate.id}:`),
       threadId: candidate.id,
     });
+  });
+
+  it("stops the sessions of what it archives, and leaves a parent whose child is still at work", async () => {
+    const idleParent = thread("idle-parent");
+    const busyParent = thread("busy-parent");
+    const busyChild = thread("busy-child", {
+      parentThreadId: busyParent.id,
+      attachedToParent: true,
+    });
+    const { dispatched, stopped, sweeper } = await createHarness({
+      inactiveDays: 30,
+      threads: [
+        idleParent,
+        thread("idle-child", { parentThreadId: idleParent.id, attachedToParent: true }),
+        busyParent,
+        { ...busyChild, session: runningSession(busyChild.id) },
+      ],
+    });
+
+    await runtime!.runPromise(sweeper.sweepNow());
+    expect(dispatched.map((command) => command.threadId)).toEqual(
+      expect.arrayContaining([idleParent.id]),
+    );
+    expect(dispatched.map((command) => command.threadId)).not.toContain(busyParent.id);
+    expect(stopped).toEqual(expect.arrayContaining([idleParent.id, "idle-child"]));
   });
 
   it("does not archive protected or recently active threads", async () => {

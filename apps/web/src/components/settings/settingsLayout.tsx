@@ -6,6 +6,10 @@ import { Button } from "../ui/button";
 import { SectionTick } from "../ui/threadline";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 
+/**
+ * A titled group of settings rows. Flat: a line under the heading and
+ * hairlines between rows, no box. Rows and heading share one left edge.
+ */
 export function SettingsSection({
   title,
   description,
@@ -13,6 +17,7 @@ export function SettingsSection({
   headerAction,
   children,
   className,
+  headerClassName,
   contentClassName,
   ...sectionProps
 }: ComponentPropsWithoutRef<"section"> & {
@@ -22,12 +27,14 @@ export function SettingsSection({
   icon?: ReactNode;
   headerAction?: ReactNode;
   children: ReactNode;
+  /** For sections of tiles rather than rows, whose edge the heading follows. */
+  headerClassName?: string;
   contentClassName?: string;
 }) {
   return (
-    <section {...sectionProps} className={cn("space-y-2.5", className)}>
+    <section {...sectionProps} className={cn("flex flex-col", className)}>
       {title !== undefined ? (
-        <div className="space-y-1 px-1">
+        <div className={cn("space-y-1 border-b border-border px-4 pb-2 sm:px-5", headerClassName)}>
           <div className="flex items-center justify-between">
             <h2 className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.08em] text-foreground/50">
               <SectionTick />
@@ -39,14 +46,7 @@ export function SettingsSection({
           {description ? <p className="text-xs text-muted-foreground/80">{description}</p> : null}
         </div>
       ) : null}
-      <div
-        className={cn(
-          "relative overflow-hidden rounded-2xl border bg-card text-card-foreground shadow-sm/4 not-dark:bg-clip-padding before:pointer-events-none before:absolute before:inset-0 before:rounded-[calc(var(--radius-2xl)-1px)] before:shadow-[0_1px_--theme(--color-black/4%)] dark:shadow-none dark:before:shadow-[0_-1px_--theme(--color-white/6%)]",
-          contentClassName,
-        )}
-      >
-        {children}
-      </div>
+      <div className={cn("relative", contentClassName)}>{children}</div>
     </section>
   );
 }
@@ -73,7 +73,7 @@ export function SettingsRow({
       {...rowProps}
       className={cn(
         "border-t border-border/60 px-4 first:border-t-0 sm:px-5",
-        children ? "pt-3.5 pb-0" : "py-3.5",
+        children ? "pt-3 pb-0" : "py-3",
         className,
       )}
     >

@@ -28,6 +28,7 @@ import {
   withUnqueuedAgentMessage,
 } from "@threadlines/shared/roomAgentRequests";
 import { retainMessagesAfterRevert } from "@threadlines/shared/transcriptRevert";
+import { childRequestStateOn } from "@threadlines/shared/childThreads";
 
 import { toProjectorDecodeError, type OrchestrationProjectorDecodeError } from "./Errors.ts";
 import {
@@ -60,6 +61,14 @@ import {
   ThreadAgentRequestSettledPayload,
   ThreadAgentRequestsHeldPayload,
   ThreadAgentRequestsResetPayload,
+  ThreadChildDeliveriesCancelledPayload,
+  ThreadChildNotesDeliveredPayload,
+  ThreadChildRequestSettledPayload,
+  ThreadChildRequestSubmittedPayload,
+  ThreadChildRequestUpdatedPayload,
+  ThreadChildRequestsResetPayload,
+  ThreadHandedBackPayload,
+  ThreadParentAttachmentSetPayload,
   ThreadSideTurnInterruptRequestedPayload,
   ThreadSideTurnRunningPayload,
   ThreadSideTurnSettledPayload,
@@ -119,6 +128,22 @@ function updateSideTurnStatus(
       sideTurn: { ...sideTurn, status: next(sideTurn.status) },
     }),
   };
+}
+
+/** Apply a change to one thread's child-thread request state. */
+function updateChildRequests(
+  base: OrchestrationReadModel,
+  threadId: ThreadId,
+  change: (state: OrchestrationThread["childRequests"]) => OrchestrationThread["childRequests"],
+): OrchestrationReadModel {
+  const thread = base.threads.find((entry) => entry.id === threadId);
+  if (thread === undefined) {
+    return base;
+  }
+  const next = change(thread.childRequests);
+  return next === thread.childRequests
+    ? base
+    : { ...base, threads: updateThread(base.threads, threadId, { childRequests: next }) };
 }
 
 /** Apply a change to one thread's room request state. */
@@ -335,6 +360,9 @@ export function projectEvent(
             interactionMode: payload.interactionMode,
             branch: payload.branch,
             worktreePath: payload.worktreePath,
+            parentThreadId: payload.parentThreadId ?? null,
+            parentTurnId: payload.parentTurnId ?? null,
+            attachedToParent: payload.attachedToParent ?? false,
             voiceActive: false,
             latestTurn: null,
             createdAt: payload.createdAt,
@@ -384,6 +412,7 @@ export function projectEvent(
           ...nextBase,
           threads: updateThread(nextBase.threads, payload.threadId, {
             archivedAt: payload.archivedAt,
+            archivedWithParentAt: payload.withParent === true ? payload.archivedAt : null,
             updatedAt: payload.updatedAt,
           }),
         })),
@@ -395,6 +424,7 @@ export function projectEvent(
           ...nextBase,
           threads: updateThread(nextBase.threads, payload.threadId, {
             archivedAt: null,
+            archivedWithParentAt: null,
             updatedAt: payload.updatedAt,
           }),
         })),
@@ -751,6 +781,117 @@ export function projectEvent(
         ),
       );
 
+    case "thread.child-request-submitted":
+      return decodeForEvent(
+        ThreadChildRequestSubmittedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) =>
+          updateChildRequests(nextBase, payload.threadId, (state) =>
+            childRequestStateOn.submitted(state, payload.request),
+          ),
+        ),
+      );
+
+    case "thread.child-request-updated":
+      return decodeForEvent(
+        ThreadChildRequestUpdatedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) =>
+          updateChildRequests(nextBase, payload.threadId, (state) =>
+            childRequestStateOn.updated(state, payload),
+          ),
+        ),
+      );
+
+    case "thread.child-request-settled":
+      return decodeForEvent(
+        ThreadChildRequestSettledPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) =>
+          updateChildRequests(nextBase, payload.threadId, (state) =>
+            childRequestStateOn.settled(state, payload.requestId, payload.note),
+          ),
+        ),
+      );
+
+    case "thread.child-notes-delivered":
+      return decodeForEvent(
+        ThreadChildNotesDeliveredPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) =>
+          updateChildRequests(nextBase, payload.threadId, (state) =>
+            childRequestStateOn.notesDelivered(state, payload.requestIds),
+          ),
+        ),
+      );
+
+    case "thread.child-deliveries-cancelled":
+      return decodeForEvent(
+        ThreadChildDeliveriesCancelledPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) =>
+          updateChildRequests(nextBase, payload.threadId, (state) =>
+            childRequestStateOn.deliveriesCancelled(state, payload.deliveryEpoch),
+          ),
+        ),
+      );
+
+    case "thread.child-requests-reset":
+      return decodeForEvent(
+        ThreadChildRequestsResetPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) =>
+          updateChildRequests(nextBase, payload.threadId, childRequestStateOn.reset),
+        ),
+      );
+
+    // Neither moves `updatedAt`: a handed-back answer and a family change
+    // are not work on the child.
+    case "thread.handed-back":
+      return decodeForEvent(ThreadHandedBackPayload, event.payload, event.type, "payload").pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, {
+            handedBackAt: payload.handedBackAt,
+            handedBackTurnId: payload.turnId,
+          }),
+        })),
+      );
+
+    case "thread.parent-attachment-set":
+      return decodeForEvent(
+        ThreadParentAttachmentSetPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, {
+            attachedToParent: payload.attached,
+            parentAttachmentEpoch: payload.attachmentEpoch,
+          }),
+        })),
+      );
+
     case "thread.participant-removed":
       return decodeForEvent(
         ThreadParticipantRemovedPayload,
@@ -915,6 +1056,7 @@ export function projectEvent(
             ...(payload.requestKind !== undefined ? { requestKind: payload.requestKind } : {}),
             ...(payload.reviewInput !== undefined ? { reviewInput: payload.reviewInput } : {}),
             ...(payload.invite !== undefined ? { invite: payload.invite } : {}),
+            ...(payload.fromThread !== undefined ? { fromThread: payload.fromThread } : {}),
             ...(payload.agentModels !== undefined ? { agentModels: payload.agentModels } : {}),
             turnId: payload.turnId,
             streaming: payload.streaming,

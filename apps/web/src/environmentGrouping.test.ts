@@ -107,6 +107,7 @@ function makeEmptyEnvironmentState(): EnvironmentState {
     turnDiffIdsByThreadId: {},
     turnDiffSummaryByThreadId: {},
     agentRequestsByThreadId: {},
+    childRequestsByThreadId: {},
     sidebarThreadSummaryById: {},
     bootstrapComplete: true,
   };

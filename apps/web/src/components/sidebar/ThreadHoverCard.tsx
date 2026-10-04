@@ -7,7 +7,9 @@ import {
   BotIcon,
   CircleDashedIcon,
   CloudIcon,
+  CornerDownRightIcon,
   GitBranchIcon,
+  GitForkIcon,
   MonitorIcon,
   TerminalIcon,
   WorkflowIcon,
@@ -29,7 +31,7 @@ import { resolveThreadWorkingCwd } from "@threadlines/shared/threadCwd";
 import { createThreadSelectorByRef } from "../../storeSelectors";
 import { formatRelativeTimeLabel } from "../../timestampFormat";
 import type { SidebarThreadSummary } from "../../types";
-import type { ThreadStatusPill } from "../Sidebar.logic";
+import { formatChildThreadCount, type ThreadStatusPill } from "../Sidebar.logic";
 import { ProjectFavicon } from "../ProjectFavicon";
 import {
   PreviewCard,
@@ -41,6 +43,15 @@ import {
 export interface ThreadHoverCardPayload {
   thread: SidebarThreadSummary;
   status: ThreadStatusPill | null;
+  /** Child threads: who started this thread, and the threads it started. */
+  lineage?: ThreadHoverCardLineage | undefined;
+}
+
+export interface ThreadHoverCardLineage {
+  /** The title of the thread whose agent started this one; it stays after separating. */
+  readonly startedBy: string | null;
+  /** "Threads: 3 · 1 needs you" for a parent; null for anything else. */
+  readonly threads: string | null;
 }
 
 /**
@@ -89,6 +100,7 @@ import {
 export function ThreadHoverCard({
   thread,
   status,
+  lineage,
   children,
 }: ThreadHoverCardPayload & { children: ReactNode }) {
   const handle = useContext(ThreadCardHandleContext);
@@ -101,7 +113,7 @@ export function ThreadHoverCard({
     <PreviewCardTrigger
       handle={handle}
       closeDelay={120}
-      payload={{ thread, status } satisfies ThreadHoverCardPayload}
+      payload={{ thread, status, lineage } satisfies ThreadHoverCardPayload}
       render={children as never}
     />
   );
@@ -155,7 +167,7 @@ function AwaitedTaskLines({ tasks }: { tasks: ReadonlyArray<OrchestrationAwaited
   );
 }
 
-function ThreadHoverCardContent({ thread, status }: ThreadHoverCardPayload) {
+function ThreadHoverCardContent({ thread, status, lineage }: ThreadHoverCardPayload) {
   const projectRef = useMemo(
     () => scopeProjectRef(thread.environmentId, thread.projectId),
     [thread.environmentId, thread.projectId],
@@ -224,13 +236,16 @@ function ThreadHoverCardContent({ thread, status }: ThreadHoverCardPayload) {
   // A waiting thread says what it waits on: the kinds in the status line, each
   // task under it. A wait the server did not describe stays general.
   const isWaiting = status?.label === "Waiting";
-  const awaitedTasks = isWaiting ? describedAwaitedTasks(thread.session) : null;
+  const waitingOnThreads = status?.childThreadCount;
+  const awaitedTasks =
+    isWaiting && waitingOnThreads === undefined ? describedAwaitedTasks(thread.session) : null;
   // A wrapped label breaks between the counts, never inside one ("1 command").
   const waitLabel = isWaiting
-    ? `Waiting on ${(awaitedTasks && formatAwaitedTasks(awaitedTasks)) ?? "background tasks"}`.replace(
-        /(\d) /g,
-        "$1\u00a0",
-      )
+    ? `Waiting on ${
+        waitingOnThreads !== undefined
+          ? formatChildThreadCount(waitingOnThreads)
+          : ((awaitedTasks && formatAwaitedTasks(awaitedTasks)) ?? "background tasks")
+      }`.replace(/(\d) /g, "$1\u00a0")
     : undefined;
 
   return (
@@ -244,6 +259,16 @@ function ThreadHoverCardContent({ thread, status }: ThreadHoverCardPayload) {
         {awaitedTasks ? <AwaitedTaskLines tasks={awaitedTasks} /> : null}
       </HoverCardStatusLine>
       <HoverCardDetails>
+        {lineage?.startedBy ? (
+          <HoverCardDetailRow icon={<CornerDownRightIcon className="size-3.5" />}>
+            Started by {lineage.startedBy}
+          </HoverCardDetailRow>
+        ) : null}
+        {lineage?.threads ? (
+          <HoverCardDetailRow icon={<GitForkIcon className="size-3.5" />}>
+            {lineage.threads}
+          </HoverCardDetailRow>
+        ) : null}
         {project ? (
           <HoverCardDetailRow
             icon={

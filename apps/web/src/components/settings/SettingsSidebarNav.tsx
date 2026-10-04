@@ -18,6 +18,7 @@ import {
   HOSTED_STATIC_SETTINGS_NAV_ITEMS,
   SETTINGS_NAV_ITEMS,
   type SettingsSectionPath,
+  startsSettingsNavGroup,
 } from "./settingsNavigation";
 import { useNavigateBackWithinApp } from "../../hooks/useNavigateBackWithinApp";
 
@@ -44,11 +45,18 @@ export function SettingsSidebarNav({ pathname }: { pathname: string }) {
       <SidebarContent className="overflow-x-hidden">
         <SidebarGroup className="px-2 py-3">
           <SidebarMenu>
-            {navItems.map((item) => {
+            {navItems.map((item, index) => {
               const Icon = item.icon;
               const isActive = pathname === item.to;
               return (
-                <SidebarMenuItem key={item.to}>
+                <SidebarMenuItem
+                  key={item.to}
+                  className={
+                    startsSettingsNavGroup(navItems, index)
+                      ? "mt-2 border-t border-sidebar-border pt-2"
+                      : undefined
+                  }
+                >
                   <SidebarMenuButton
                     size="sm"
                     isActive={isActive}

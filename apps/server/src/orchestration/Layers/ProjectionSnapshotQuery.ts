@@ -39,13 +39,16 @@ import {
   ThreadId,
   ThreadParticipantId,
   EMPTY_AGENT_REQUEST_STATE,
+  EMPTY_CHILD_REQUEST_STATE,
   OrchestrationAgentRequestState,
+  OrchestrationChildRequestState,
   OrchestrationAwaitedBackgroundTask,
   RoomAgentMessageKind,
   RoomAgentRef,
   RoomAgentRequestId,
   RoomAgentRequestOutcome,
   RoomAgentInvite,
+  ThreadMessageOrigin,
   RoomReviewInput,
   TrimmedNonEmptyString,
 } from "@threadlines/contracts";
@@ -58,8 +61,15 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as SqlSchema from "effect/unstable/sql/SqlSchema";
 import type * as Statement from "effect/unstable/sql/Statement";
 import { awaitingInvite } from "@threadlines/shared/roomAgentRequests";
+import {
+  awaitedChildRequestCount,
+  hasPendingChildApproval,
+} from "@threadlines/shared/childThreads";
 import { MAX_THREAD_ACTIVITIES, MAX_THREAD_MESSAGES } from "@threadlines/shared/threadLimits";
-import { retainThreadActivities } from "@threadlines/shared/threadActivityRetention";
+import {
+  MAX_RETAINED_PLAN_UPDATES,
+  retainThreadActivities,
+} from "@threadlines/shared/threadActivityRetention";
 
 import {
   isPersistenceError,
@@ -112,6 +122,48 @@ const ProjectionProjectCatalogDbRowSchema = Schema.Struct({
 const hasAwaitingInvite = (state: OrchestrationAgentRequestState | null | undefined) =>
   state != null && awaitingInvite(state) !== undefined;
 
+type ThreadLineageRow = Pick<
+  ProjectionThread,
+  | "parentThreadId"
+  | "parentTurnId"
+  | "attachedToParent"
+  | "parentAttachmentEpoch"
+  | "handedBackAt"
+  | "handedBackTurnId"
+  | "archivedWithParentAt"
+  | "childRequests"
+>;
+
+/** Child threads: lineage and family as the decider and the thread detail read them. */
+const threadLineageFields = (row: ThreadLineageRow) => ({
+  parentThreadId: row.parentThreadId ?? null,
+  parentTurnId: row.parentTurnId ?? null,
+  attachedToParent: (row.attachedToParent ?? 0) > 0,
+  parentAttachmentEpoch: row.parentAttachmentEpoch ?? 0,
+  handedBackAt: row.handedBackAt ?? null,
+  handedBackTurnId: row.handedBackTurnId ?? null,
+  archivedWithParentAt: row.archivedWithParentAt ?? null,
+  childRequests: row.childRequests ?? EMPTY_CHILD_REQUEST_STATE,
+});
+
+/**
+ * Child threads as the sidebar reads them: lineage, and on a parent the
+ * answers still owed and whether threads wait for the user's yes, without
+ * shipping the open requests to every row.
+ */
+const shellLineageFields = (row: ThreadLineageRow) => {
+  const childRequests = row.childRequests ?? EMPTY_CHILD_REQUEST_STATE;
+  return {
+    parentThreadId: row.parentThreadId ?? null,
+    parentTurnId: row.parentTurnId ?? null,
+    attachedToParent: (row.attachedToParent ?? 0) > 0,
+    handedBackAt: row.handedBackAt ?? null,
+    handedBackTurnId: row.handedBackTurnId ?? null,
+    awaitedChildThreadCount: awaitedChildRequestCount(childRequests),
+    pendingChildApproval: hasPendingChildApproval(childRequests),
+  };
+};
+
 const ProjectionThreadMessageDbRowSchema = ProjectionThreadMessage.mapFields(
   Struct.assign({
     isStreaming: Schema.Number,
@@ -127,6 +179,7 @@ const ProjectionThreadMessageDbRowSchema = ProjectionThreadMessage.mapFields(
     requestError: Schema.NullOr(TrimmedNonEmptyString),
     reviewInput: Schema.NullOr(Schema.fromJsonString(RoomReviewInput)),
     invite: Schema.NullOr(Schema.fromJsonString(RoomAgentInvite)),
+    fromThread: Schema.NullOr(Schema.fromJsonString(ThreadMessageOrigin)),
     agentModels: Schema.NullOr(
       Schema.fromJsonString(Schema.Record(Schema.String, MessageAgentModel)),
     ),
@@ -151,6 +204,9 @@ const ProjectionThreadDbRowSchema = ProjectionThread.mapFields(
     ),
     agentRequests: Schema.optional(
       Schema.NullOr(Schema.fromJsonString(OrchestrationAgentRequestState)),
+    ),
+    childRequests: Schema.optional(
+      Schema.NullOr(Schema.fromJsonString(OrchestrationChildRequestState)),
     ),
   }),
 );
@@ -408,6 +464,7 @@ function mapThreadMessageRow(
     ...(row.requestError !== null ? { requestError: row.requestError } : {}),
     ...(row.reviewInput !== null ? { reviewInput: row.reviewInput } : {}),
     ...(row.invite !== null ? { invite: row.invite } : {}),
+    ...(row.fromThread !== null ? { fromThread: row.fromThread } : {}),
     ...(row.agentModels !== null ? { agentModels: row.agentModels } : {}),
     turnId: row.turnId,
     streaming: row.isStreaming === 1,
@@ -631,6 +688,14 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           room_context AS "roomContext",
           sent_models AS "sentModels",
           agent_requests AS "agentRequests",
+          parent_thread_id AS "parentThreadId",
+          parent_turn_id AS "parentTurnId",
+          attached_to_parent AS "attachedToParent",
+          parent_attachment_epoch AS "parentAttachmentEpoch",
+          handed_back_at AS "handedBackAt",
+          handed_back_turn_id AS "handedBackTurnId",
+          archived_with_parent_at AS "archivedWithParentAt",
+          child_requests AS "childRequests",
           done_override AS "doneOverride",
           done_override_at AS "doneOverrideAt",
           last_seen_at AS "lastSeenAt",
@@ -679,6 +744,14 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           room_context AS "roomContext",
           sent_models AS "sentModels",
           agent_requests AS "agentRequests",
+          parent_thread_id AS "parentThreadId",
+          parent_turn_id AS "parentTurnId",
+          attached_to_parent AS "attachedToParent",
+          parent_attachment_epoch AS "parentAttachmentEpoch",
+          handed_back_at AS "handedBackAt",
+          handed_back_turn_id AS "handedBackTurnId",
+          archived_with_parent_at AS "archivedWithParentAt",
+          child_requests AS "childRequests",
           done_override AS "doneOverride",
           done_override_at AS "doneOverrideAt",
           last_seen_at AS "lastSeenAt",
@@ -729,6 +802,14 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           room_context AS "roomContext",
           sent_models AS "sentModels",
           agent_requests AS "agentRequests",
+          parent_thread_id AS "parentThreadId",
+          parent_turn_id AS "parentTurnId",
+          attached_to_parent AS "attachedToParent",
+          parent_attachment_epoch AS "parentAttachmentEpoch",
+          handed_back_at AS "handedBackAt",
+          handed_back_turn_id AS "handedBackTurnId",
+          archived_with_parent_at AS "archivedWithParentAt",
+          child_requests AS "childRequests",
           done_override AS "doneOverride",
           done_override_at AS "doneOverrideAt",
           last_seen_at AS "lastSeenAt",
@@ -762,6 +843,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           participant_id AS "participantId",
           side_turn_id AS "sideTurnId",
           from_agent AS "fromAgent",
+          from_thread AS "fromThread",
           request_id AS "requestId",
           request_kind AS "requestKind",
           request_outcome AS "requestOutcome",
@@ -810,6 +892,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           participant_id AS "participantId",
           side_turn_id AS "sideTurnId",
           from_agent AS "fromAgent",
+          from_thread AS "fromThread",
           request_id AS "requestId",
           request_kind AS "requestKind",
           request_outcome AS "requestOutcome",
@@ -864,25 +947,36 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                 activity.activity_id DESC
             ) AS activity_rank
           FROM projection_thread_activities AS activity
+        ), plan_rows AS MATERIALIZED (
+          -- Ranking only the plan rows keeps this one cheap side scan instead
+          -- of a second sort of the whole table; both uses below read it.
+          SELECT
+            activity.thread_id,
+            activity.turn_id,
+            activity.activity_id,
+            ROW_NUMBER() OVER (
+              PARTITION BY activity.thread_id
+              ORDER BY
+                activity.event_sequence DESC,
+                activity.sequence DESC,
+                activity.created_at DESC,
+                activity.activity_id DESC
+            ) AS plan_rank
+          FROM projection_thread_activities AS activity
+          WHERE activity.kind = 'turn.plan.updated'
         ), latest_plan_activities AS (
-          -- Ranking only the plan rows keeps this a cheap side scan instead of
-          -- a second sort of the whole table.
-          SELECT activity_id
-          FROM (
-            SELECT
-              activity.activity_id,
-              ROW_NUMBER() OVER (
-                PARTITION BY activity.thread_id
-                ORDER BY
-                  activity.event_sequence DESC,
-                  activity.sequence DESC,
-                  activity.created_at DESC,
-                  activity.activity_id DESC
-              ) AS plan_rank
-            FROM projection_thread_activities AS activity
-            WHERE activity.kind = 'turn.plan.updated'
-          )
-          WHERE plan_rank = 1
+          -- The newest plan update, and the rest of its turn's among the
+          -- newest plan updates, so the task list can time its steps.
+          SELECT plan.activity_id
+          FROM plan_rows AS plan
+          JOIN plan_rows AS latest
+            ON latest.thread_id = plan.thread_id
+            AND latest.plan_rank = 1
+          WHERE plan.plan_rank = 1
+            OR (
+              plan.turn_id = latest.turn_id
+              AND plan.plan_rank <= ${MAX_RETAINED_PLAN_UPDATES}
+            )
         )
         SELECT
           activity_id AS "activityId",
@@ -903,8 +997,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             'approval.requested', 'approval.resolved', 'provider.approval.respond.failed',
             'user-input.requested', 'user-input.resolved', 'provider.user-input.respond.failed'
           )
-          -- The newest plan update keeps the task list alive past the window
-          -- (see retainThreadActivities).
+          -- The newest plan update and the rest of its turn's keep the task
+          -- list alive past the window (see retainThreadActivities).
           OR activity_id IN (SELECT activity_id FROM latest_plan_activities)
         ORDER BY
           thread_id ASC,
@@ -1414,6 +1508,14 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           room_context AS "roomContext",
           sent_models AS "sentModels",
           agent_requests AS "agentRequests",
+          parent_thread_id AS "parentThreadId",
+          parent_turn_id AS "parentTurnId",
+          attached_to_parent AS "attachedToParent",
+          parent_attachment_epoch AS "parentAttachmentEpoch",
+          handed_back_at AS "handedBackAt",
+          handed_back_turn_id AS "handedBackTurnId",
+          archived_with_parent_at AS "archivedWithParentAt",
+          child_requests AS "childRequests",
           done_override AS "doneOverride",
           done_override_at AS "doneOverrideAt",
           last_seen_at AS "lastSeenAt",
@@ -1448,6 +1550,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           participant_id AS "participantId",
           side_turn_id AS "sideTurnId",
           from_agent AS "fromAgent",
+          from_thread AS "fromThread",
           request_id AS "requestId",
           request_kind AS "requestKind",
           request_outcome AS "requestOutcome",
@@ -1513,6 +1616,34 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           UNION
           SELECT * FROM (
             SELECT *
+            FROM projection_thread_activities
+            WHERE thread_id = ${threadId}
+              AND kind = 'turn.plan.updated'
+            ORDER BY
+              event_sequence DESC,
+              sequence DESC,
+              created_at DESC,
+              activity_id DESC
+            LIMIT 1
+          )
+          UNION
+          -- The rest of the latest plan's turn among the newest plan updates
+          -- (see retainThreadActivities).
+          SELECT *
+          FROM (
+            SELECT *
+            FROM projection_thread_activities
+            WHERE thread_id = ${threadId}
+              AND kind = 'turn.plan.updated'
+            ORDER BY
+              event_sequence DESC,
+              sequence DESC,
+              created_at DESC,
+              activity_id DESC
+            LIMIT ${MAX_RETAINED_PLAN_UPDATES}
+          )
+          WHERE turn_id = (
+            SELECT turn_id
             FROM projection_thread_activities
             WHERE thread_id = ${threadId}
               AND kind = 'turn.plan.updated'
@@ -2037,6 +2168,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                 queuedFollowUps: row.queuedFollowUps ?? [],
                 participants: row.participants ?? [],
                 agentRequests: row.agentRequests ?? EMPTY_AGENT_REQUEST_STATE,
+                ...threadLineageFields(row),
                 ...(row.sideTurn ? { sideTurn: row.sideTurn } : {}),
                 ...(row.agentRole ? { agentRole: row.agentRole } : {}),
                 ...(row.roomContext && Object.keys(row.roomContext).length > 0
@@ -2297,6 +2429,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   queuedFollowUps: row.queuedFollowUps ?? [],
                   participants: row.participants ?? [],
                   agentRequests: row.agentRequests ?? EMPTY_AGENT_REQUEST_STATE,
+                  ...threadLineageFields(row),
                   ...(row.sideTurn ? { sideTurn: row.sideTurn } : {}),
                   ...(row.agentRole ? { agentRole: row.agentRole } : {}),
                   ...(row.roomContext && Object.keys(row.roomContext).length > 0
@@ -2464,7 +2597,10 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                     lastSeenAt: row.lastSeenAt ?? null,
                     session: sessionByThread.get(row.threadId) ?? null,
                     latestUserMessageAt: row.latestUserMessageAt,
-                    hasPendingApprovals: row.pendingApprovalCount > 0,
+                    ...shellLineageFields(row),
+                    hasPendingApprovals:
+                      row.pendingApprovalCount > 0 ||
+                      hasPendingChildApproval(row.childRequests ?? EMPTY_CHILD_REQUEST_STATE),
                     hasPendingUserInput:
                       row.pendingUserInputCount > 0 || hasAwaitingInvite(row.agentRequests),
                     hasBlockingUserInput: row.blockingUserInputCount > 0,
@@ -2623,7 +2759,10 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   lastSeenAt: row.lastSeenAt ?? null,
                   session: sessionByThread.get(row.threadId) ?? null,
                   latestUserMessageAt: row.latestUserMessageAt,
-                  hasPendingApprovals: row.pendingApprovalCount > 0,
+                  ...shellLineageFields(row),
+                  hasPendingApprovals:
+                    row.pendingApprovalCount > 0 ||
+                    hasPendingChildApproval(row.childRequests ?? EMPTY_CHILD_REQUEST_STATE),
                   hasPendingUserInput:
                     row.pendingUserInputCount > 0 || hasAwaitingInvite(row.agentRequests),
                   hasBlockingUserInput: row.blockingUserInputCount > 0,
@@ -2901,7 +3040,10 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         lastSeenAt: threadRow.value.lastSeenAt ?? null,
         session: Option.isSome(sessionRow) ? mapSessionRow(sessionRow.value) : null,
         latestUserMessageAt: threadRow.value.latestUserMessageAt,
-        hasPendingApprovals: threadRow.value.pendingApprovalCount > 0,
+        ...shellLineageFields(threadRow.value),
+        hasPendingApprovals:
+          threadRow.value.pendingApprovalCount > 0 ||
+          hasPendingChildApproval(threadRow.value.childRequests ?? EMPTY_CHILD_REQUEST_STATE),
         hasPendingUserInput:
           threadRow.value.pendingUserInputCount > 0 ||
           hasAwaitingInvite(threadRow.value.agentRequests),
@@ -3029,6 +3171,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         queuedFollowUps: threadRow.value.queuedFollowUps ?? [],
         participants: threadRow.value.participants ?? [],
         agentRequests: threadRow.value.agentRequests ?? EMPTY_AGENT_REQUEST_STATE,
+        ...threadLineageFields(threadRow.value),
         ...(threadRow.value.sideTurn ? { sideTurn: threadRow.value.sideTurn } : {}),
         ...(threadRow.value.agentRole ? { agentRole: threadRow.value.agentRole } : {}),
         ...(threadRow.value.roomContext && Object.keys(threadRow.value.roomContext).length > 0

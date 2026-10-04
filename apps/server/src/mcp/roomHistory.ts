@@ -3,14 +3,15 @@
  * said what to whom, and on whose behalf.
  *
  * Every message carries its author, its addressee and its origin (the user,
- * or an agent asking on the user's behalf), so an agent's request is never
- * read as the user speaking. Side exchanges are included and marked. Order is
- * the event sequence; the cursor is the sequence of the oldest message on the
- * page. Output is bounded per message and per page; attachments are listed,
- * never inlined.
+ * or an agent asking on the user's behalf, or another thread's agent), so an
+ * agent's request is never read as the user speaking (see messageAuthor).
+ * Side exchanges are included and marked. Order is the event sequence; the
+ * cursor is the sequence of the oldest message on the page. Output is
+ * bounded per message and per page; attachments are listed, never inlined.
  */
-import type { OrchestrationMessage } from "@threadlines/contracts";
+import type { OrchestrationMessage, ThreadId } from "@threadlines/contracts";
 
+import { messageAuthor } from "@threadlines/shared/messageAuthor";
 import { type RoomAgentEntry, roomAgentName } from "./roomAgents.ts";
 
 export const ROOM_HISTORY_MAX_LIMIT = 20;
@@ -64,6 +65,7 @@ function labelMessage(
   message: OrchestrationMessage,
   entries: ReadonlyArray<RoomAgentEntry>,
   questionsBySideTurn: ReadonlyMap<string, OrchestrationMessage>,
+  threadTitles: ReadonlyMap<ThreadId, string>,
 ): Omit<RoomHistoryEntry, "text" | "clipped"> {
   const onTheSide = message.sideTurnId !== undefined;
   const base = {
@@ -85,14 +87,15 @@ function labelMessage(
       : {}),
   };
   if (message.role === "user") {
+    const { author, origin } = messageAuthor(message, {
+      agentName: (participantId) => roomAgentName(entries, participantId),
+      threadTitle: (threadId) => threadTitles.get(threadId),
+    });
     return {
       ...base,
-      author:
-        message.fromAgent !== undefined
-          ? roomAgentName(entries, message.fromAgent.participantId)
-          : "User",
+      author,
       to: roomAgentName(entries, message.participantId),
-      origin: message.fromAgent !== undefined ? "agent" : "user",
+      origin: origin === "user" ? "user" : "agent",
     };
   }
   // A side answer answers whoever asked it; a working turn answers the room.
@@ -115,6 +118,8 @@ function labelMessage(
 export function roomHistoryPage(input: {
   readonly messages: ReadonlyArray<OrchestrationMessage>;
   readonly entries: ReadonlyArray<RoomAgentEntry>;
+  /** Titles of the threads its cross-thread messages came from, when known. */
+  readonly threadTitles?: ReadonlyMap<ThreadId, string> | undefined;
   readonly before?: number | undefined;
   readonly limit?: number | undefined;
   readonly query?: string | undefined;
@@ -136,12 +141,13 @@ export function roomHistoryPage(input: {
       questionsBySideTurn.set(message.sideTurnId, message);
     }
   }
+  const threadTitles = input.threadTitles ?? new Map<ThreadId, string>();
   const query = input.query?.trim().toLowerCase() ?? "";
   const labelled = sorted
     .filter((message) => input.before === undefined || sequenceOf(message) < input.before)
     .map((message) => ({
       message,
-      label: labelMessage(message, input.entries, questionsBySideTurn),
+      label: labelMessage(message, input.entries, questionsBySideTurn, threadTitles),
     }))
     .filter(
       ({ message, label }) =>

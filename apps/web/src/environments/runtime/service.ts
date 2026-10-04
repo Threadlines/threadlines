@@ -351,6 +351,7 @@ function isNonIdleThreadDetailSubscription(entry: ThreadDetailSubscriptionEntry)
   if (sidebarThread) {
     if (
       sidebarThread.hasPendingApprovals ||
+      sidebarThread.pendingChildApproval === true ||
       sidebarThread.hasPendingUserInput ||
       sidebarThread.hasActionableProposedPlan
     ) {
@@ -397,6 +398,7 @@ function shouldEvictThreadDetailSubscription(entry: ThreadDetailSubscriptionEntr
 function shouldWarmThreadDetailSubscription(thread: OrchestrationThreadShell): boolean {
   if (
     thread.hasPendingApprovals ||
+    thread.pendingChildApproval ||
     thread.hasPendingUserInput ||
     thread.hasActionableProposedPlan
   ) {
@@ -1253,7 +1255,8 @@ function syncProjectUiFromStore() {
 }
 
 function syncThreadUiFromStore() {
-  const threads = selectThreadsAcrossEnvironments(useStore.getState());
+  const appState = useStore.getState();
+  const threads = selectThreadsAcrossEnvironments(appState);
   useUiStateStore.getState().syncThreads(
     threads.map((thread) => ({
       key: scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
@@ -1261,6 +1264,15 @@ function syncThreadUiFromStore() {
       serverLastSeenAt: thread.lastSeenAt,
       serverDoneOverrideAt: thread.doneOverride?.at ?? null,
     })),
+    {
+      // A remote computer still connecting has not listed its threads yet;
+      // its saved choices wait for it.
+      loadedEnvironmentIds: new Set(
+        Object.entries(appState.environmentStateById)
+          .filter(([, environmentState]) => environmentState.bootstrapComplete)
+          .map(([environmentId]) => environmentId),
+      ),
+    },
   );
   markPromotedDraftThreadsByRef(
     threads.map((thread) => scopeThreadRef(thread.environmentId, thread.id)),

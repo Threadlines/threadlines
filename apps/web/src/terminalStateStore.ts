@@ -616,6 +616,17 @@ export function selectTerminalSubmittedCommand(
   return terminalSubmittedCommandByKey[terminalEventBufferKey(threadRef, terminalId)] ?? null;
 }
 
+export function selectTerminalActivityStartedAt(
+  terminalActivityStartedAtByKey: Record<string, string>,
+  threadRef: ScopedThreadRef | null | undefined,
+  terminalId: string,
+): string | null {
+  if (!threadRef || threadRef.threadId.length === 0 || terminalId.trim().length === 0) {
+    return null;
+  }
+  return terminalActivityStartedAtByKey[terminalEventBufferKey(threadRef, terminalId)] ?? null;
+}
+
 export function selectTerminalActivityCommand(
   terminalActivityCommandByKey: Record<string, string>,
   threadRef: ScopedThreadRef | null | undefined,
@@ -633,6 +644,8 @@ interface TerminalStateStoreState {
   terminalEventEntriesByKey: Record<string, ReadonlyArray<TerminalEventEntry>>;
   terminalSubmittedCommandByKey: Record<string, string>;
   terminalActivityCommandByKey: Record<string, string>;
+  /** When each terminal's running subprocess started, as the server saw it. */
+  terminalActivityStartedAtByKey: Record<string, string>;
   terminalCommandHistoryByKey: Record<string, true>;
   nextTerminalEventId: number;
   setTerminalOpen: (threadRef: ScopedThreadRef, open: boolean) => void;
@@ -697,6 +710,7 @@ export const useTerminalStateStore = create<TerminalStateStoreState>()(
         terminalEventEntriesByKey: {},
         terminalSubmittedCommandByKey: {},
         terminalActivityCommandByKey: {},
+        terminalActivityStartedAtByKey: {},
         terminalCommandHistoryByKey: {},
         nextTerminalEventId: 1,
         setTerminalOpen: (threadRef, open) =>
@@ -740,11 +754,13 @@ export const useTerminalStateStore = create<TerminalStateStoreState>()(
             const key = terminalEventBufferKey(threadRef, terminalId);
             const hadSubmittedCommand = state.terminalSubmittedCommandByKey[key] !== undefined;
             const hadActivityCommand = state.terminalActivityCommandByKey[key] !== undefined;
+            const hadActivityStartedAt = state.terminalActivityStartedAtByKey[key] !== undefined;
             const hadCommandHistory = state.terminalCommandHistoryByKey[key] !== undefined;
             if (
               nextTerminalStateByThreadKey === state.terminalStateByThreadKey &&
               !hadSubmittedCommand &&
               !hadActivityCommand &&
+              !hadActivityStartedAt &&
               !hadCommandHistory
             ) {
               return state;
@@ -753,12 +769,15 @@ export const useTerminalStateStore = create<TerminalStateStoreState>()(
               state.terminalSubmittedCommandByKey;
             const { [key]: _removedActivity, ...nextTerminalActivityCommandByKey } =
               state.terminalActivityCommandByKey;
+            const { [key]: _removedStartedAt, ...nextTerminalActivityStartedAtByKey } =
+              state.terminalActivityStartedAtByKey;
             const { [key]: _removedHistory, ...nextTerminalCommandHistoryByKey } =
               state.terminalCommandHistoryByKey;
             return {
               terminalStateByThreadKey: nextTerminalStateByThreadKey,
               terminalSubmittedCommandByKey: nextTerminalSubmittedCommandByKey,
               terminalActivityCommandByKey: nextTerminalActivityCommandByKey,
+              terminalActivityStartedAtByKey: nextTerminalActivityStartedAtByKey,
               terminalCommandHistoryByKey: nextTerminalCommandHistoryByKey,
             };
           }),
@@ -834,6 +853,7 @@ export const useTerminalStateStore = create<TerminalStateStoreState>()(
             let nextTerminalLaunchContextByThreadKey = state.terminalLaunchContextByThreadKey;
             let nextTerminalSubmittedCommandByKey = state.terminalSubmittedCommandByKey;
             let nextTerminalActivityCommandByKey = state.terminalActivityCommandByKey;
+            let nextTerminalActivityStartedAtByKey = state.terminalActivityStartedAtByKey;
             let nextTerminalCommandHistoryByKey = state.terminalCommandHistoryByKey;
 
             const clearSubmittedCommand = () => {
@@ -847,11 +867,27 @@ export const useTerminalStateStore = create<TerminalStateStoreState>()(
 
             const clearActivityCommand = () => {
               const key = terminalEventBufferKey(threadRef, event.terminalId);
+              if (nextTerminalActivityStartedAtByKey[key] !== undefined) {
+                const { [key]: _removedStartedAt, ...restStartedAt } =
+                  nextTerminalActivityStartedAtByKey;
+                nextTerminalActivityStartedAtByKey = restStartedAt;
+              }
               if (nextTerminalActivityCommandByKey[key] === undefined) {
                 return;
               }
               const { [key]: _removed, ...rest } = nextTerminalActivityCommandByKey;
               nextTerminalActivityCommandByKey = rest;
+            };
+
+            const setActivityStartedAt = (startedAt: string | null | undefined) => {
+              const key = terminalEventBufferKey(threadRef, event.terminalId);
+              if (!startedAt || nextTerminalActivityStartedAtByKey[key] === startedAt) {
+                return;
+              }
+              nextTerminalActivityStartedAtByKey = {
+                ...nextTerminalActivityStartedAtByKey,
+                [key]: startedAt,
+              };
             };
 
             const clearCommandHistory = () => {
@@ -924,6 +960,7 @@ export const useTerminalStateStore = create<TerminalStateStoreState>()(
               } else if (event.type === "activity") {
                 markCommandHistory();
                 setActivityCommand(event.command);
+                setActivityStartedAt(event.startedAt);
               }
               nextTerminalStateByThreadKey = updateTerminalStateByThreadKey(
                 nextTerminalStateByThreadKey,
@@ -954,6 +991,7 @@ export const useTerminalStateStore = create<TerminalStateStoreState>()(
               terminalLaunchContextByThreadKey: nextTerminalLaunchContextByThreadKey,
               terminalSubmittedCommandByKey: nextTerminalSubmittedCommandByKey,
               terminalActivityCommandByKey: nextTerminalActivityCommandByKey,
+              terminalActivityStartedAtByKey: nextTerminalActivityStartedAtByKey,
               terminalCommandHistoryByKey: nextTerminalCommandHistoryByKey,
               ...nextEventState,
             };
@@ -978,6 +1016,13 @@ export const useTerminalStateStore = create<TerminalStateStoreState>()(
             } = removeTerminalKeyedEntriesForThread(state.terminalSubmittedCommandByKey, threadKey);
             const { entries: nextTerminalActivityCommandByKey, removed: removedActivityCommands } =
               removeTerminalKeyedEntriesForThread(state.terminalActivityCommandByKey, threadKey);
+            const {
+              entries: nextTerminalActivityStartedAtByKey,
+              removed: removedActivityStartedAts,
+            } = removeTerminalKeyedEntriesForThread(
+              state.terminalActivityStartedAtByKey,
+              threadKey,
+            );
             const { entries: nextTerminalCommandHistoryByKey, removed: removedCommandHistory } =
               removeTerminalKeyedEntriesForThread(state.terminalCommandHistoryByKey, threadKey);
             if (
@@ -986,6 +1031,7 @@ export const useTerminalStateStore = create<TerminalStateStoreState>()(
               !removedEventEntries &&
               !removedSubmittedCommands &&
               !removedActivityCommands &&
+              !removedActivityStartedAts &&
               !removedCommandHistory
             ) {
               return state;
@@ -996,6 +1042,7 @@ export const useTerminalStateStore = create<TerminalStateStoreState>()(
               terminalEventEntriesByKey: nextTerminalEventEntriesByKey,
               terminalSubmittedCommandByKey: nextTerminalSubmittedCommandByKey,
               terminalActivityCommandByKey: nextTerminalActivityCommandByKey,
+              terminalActivityStartedAtByKey: nextTerminalActivityStartedAtByKey,
               terminalCommandHistoryByKey: nextTerminalCommandHistoryByKey,
             };
           }),
@@ -1013,6 +1060,13 @@ export const useTerminalStateStore = create<TerminalStateStoreState>()(
             } = removeTerminalKeyedEntriesForThread(state.terminalSubmittedCommandByKey, threadKey);
             const { entries: nextTerminalActivityCommandByKey, removed: removedActivityCommands } =
               removeTerminalKeyedEntriesForThread(state.terminalActivityCommandByKey, threadKey);
+            const {
+              entries: nextTerminalActivityStartedAtByKey,
+              removed: removedActivityStartedAts,
+            } = removeTerminalKeyedEntriesForThread(
+              state.terminalActivityStartedAtByKey,
+              threadKey,
+            );
             const { entries: nextTerminalCommandHistoryByKey, removed: removedCommandHistory } =
               removeTerminalKeyedEntriesForThread(state.terminalCommandHistoryByKey, threadKey);
             if (
@@ -1021,6 +1075,7 @@ export const useTerminalStateStore = create<TerminalStateStoreState>()(
               !removedEventEntries &&
               !removedSubmittedCommands &&
               !removedActivityCommands &&
+              !removedActivityStartedAts &&
               !removedCommandHistory
             ) {
               return state;
@@ -1035,6 +1090,7 @@ export const useTerminalStateStore = create<TerminalStateStoreState>()(
               terminalEventEntriesByKey: nextTerminalEventEntriesByKey,
               terminalSubmittedCommandByKey: nextTerminalSubmittedCommandByKey,
               terminalActivityCommandByKey: nextTerminalActivityCommandByKey,
+              terminalActivityStartedAtByKey: nextTerminalActivityStartedAtByKey,
               terminalCommandHistoryByKey: nextTerminalCommandHistoryByKey,
             };
           }),
@@ -1060,6 +1116,13 @@ export const useTerminalStateStore = create<TerminalStateStoreState>()(
                 state.terminalActivityCommandByKey,
                 activeThreadKeys,
               );
+            const {
+              entries: nextTerminalActivityStartedAtByKey,
+              removed: removedActivityStartedAts,
+            } = removeOrphanedTerminalKeyedEntries(
+              state.terminalActivityStartedAtByKey,
+              activeThreadKeys,
+            );
             const { entries: nextTerminalCommandHistoryByKey, removed: removedCommandHistory } =
               removeOrphanedTerminalKeyedEntries(
                 state.terminalCommandHistoryByKey,
@@ -1071,6 +1134,7 @@ export const useTerminalStateStore = create<TerminalStateStoreState>()(
               !removedEventEntries &&
               !removedSubmittedCommands &&
               !removedActivityCommands &&
+              !removedActivityStartedAts &&
               !removedCommandHistory
             ) {
               return state;
@@ -1089,6 +1153,7 @@ export const useTerminalStateStore = create<TerminalStateStoreState>()(
               terminalEventEntriesByKey: nextTerminalEventEntriesByKey,
               terminalSubmittedCommandByKey: nextTerminalSubmittedCommandByKey,
               terminalActivityCommandByKey: nextTerminalActivityCommandByKey,
+              terminalActivityStartedAtByKey: nextTerminalActivityStartedAtByKey,
               terminalCommandHistoryByKey: nextTerminalCommandHistoryByKey,
             };
           }),

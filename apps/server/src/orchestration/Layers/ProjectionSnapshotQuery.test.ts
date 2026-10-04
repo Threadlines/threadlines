@@ -7,6 +7,7 @@ import {
   TurnId,
   ProviderInstanceId,
   EMPTY_AGENT_REQUEST_STATE,
+  EMPTY_CHILD_REQUEST_STATE,
 } from "@threadlines/contracts";
 import { MAX_THREAD_ACTIVITIES, MAX_THREAD_MESSAGES } from "@threadlines/shared/threadLimits";
 import { assert, it } from "@effect/vitest";
@@ -389,6 +390,14 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           linkedPullRequests: [],
           queuedFollowUps: [],
           agentRequests: EMPTY_AGENT_REQUEST_STATE,
+          parentThreadId: null,
+          parentTurnId: null,
+          attachedToParent: false,
+          parentAttachmentEpoch: 0,
+          handedBackAt: null,
+          handedBackTurnId: null,
+          archivedWithParentAt: null,
+          childRequests: EMPTY_CHILD_REQUEST_STATE,
           participants: [],
           doneOverride: null,
           lastSeenAt: null,
@@ -540,6 +549,13 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           },
           latestUserMessageAt: "2026-02-24T00:00:04.000Z",
           hasPendingApprovals: true,
+          parentThreadId: null,
+          parentTurnId: null,
+          attachedToParent: false,
+          handedBackAt: null,
+          handedBackTurnId: null,
+          awaitedChildThreadCount: 0,
+          pendingChildApproval: false,
           hasPendingUserInput: false,
           hasBlockingUserInput: false,
           hasActionableProposedPlan: false,
@@ -1313,17 +1329,19 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           )
         `;
       }
-      // Only the newest plan update outlives the window: it is what the
-      // activity popover renders as the task list.
-      for (const [id, createdAt] of [
-        ["plan-stale", "2026-02-01T00:00:00.000Z"],
-        ["plan-latest", "2026-02-02T00:00:00.000Z"],
+      // The newest plan update and the rest of its turn's outlive the window:
+      // the activity popover renders the newest as the task list and times
+      // its steps from the others. An earlier turn's plan does not.
+      for (const [id, turnId, createdAt] of [
+        ["plan-stale", "turn-plan-old", "2026-02-01T00:00:00.000Z"],
+        ["plan-turn-start", "turn-plan", "2026-02-01T12:00:00.000Z"],
+        ["plan-latest", "turn-plan", "2026-02-02T00:00:00.000Z"],
       ] as const) {
         yield* sql`
           INSERT INTO projection_thread_activities (
-            activity_id, thread_id, tone, kind, summary, payload_json, sequence, created_at
+            activity_id, thread_id, turn_id, tone, kind, summary, payload_json, sequence, created_at
           ) VALUES (
-            ${id}, 'thread-activity-cap', 'info', 'turn.plan.updated', 'Plan updated',
+            ${id}, 'thread-activity-cap', ${turnId}, 'info', 'turn.plan.updated', 'Plan updated',
             '{"plan":[{"step":"Ship","status":"inProgress"}]}', 0, ${createdAt}
           )
         `;
@@ -1335,10 +1353,10 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       assert.equal(retainedDetail._tag, "Some");
       if (retainedDetail._tag === "Some") {
         const activities = retainedDetail.value.activities;
-        assert.equal(activities.length, MAX_THREAD_ACTIVITIES + 3);
+        assert.equal(activities.length, MAX_THREAD_ACTIVITIES + 4);
         assert.deepEqual(
-          activities.slice(0, 3).map((activity) => activity.id),
-          ["plan-latest", "open-question", "open-approval"],
+          activities.slice(0, 4).map((activity) => activity.id),
+          ["plan-turn-start", "plan-latest", "open-question", "open-approval"],
         );
         assert.equal(
           activities.some((activity) => activity.id === "closed-question"),

@@ -1216,9 +1216,18 @@ describe("deriveActivePlanState", () => {
 
     expect(deriveActivePlanState(activities, TurnId.make("turn-1"))).toEqual({
       createdAt: "2026-02-23T00:00:02.000Z",
+      // The refined plan shares no step with the first, so it is a new plan.
+      startedAt: "2026-02-23T00:00:02.000Z",
       turnId: "turn-1",
       explanation: "Refined plan",
-      steps: [{ step: "Implement Codex user input", status: "inProgress" }],
+      steps: [
+        {
+          step: "Implement Codex user input",
+          status: "inProgress",
+          startedAt: "2026-02-23T00:00:02.000Z",
+          completedAt: null,
+        },
+      ],
     });
   });
 
@@ -1241,8 +1250,141 @@ describe("deriveActivePlanState", () => {
     const result = deriveActivePlanState(activities, TurnId.make("turn-2"));
     expect(result).toEqual({
       createdAt: "2026-02-23T00:00:01.000Z",
+      startedAt: "2026-02-23T00:00:01.000Z",
       turnId: "turn-1",
-      steps: [{ step: "Write tests", status: "completed" }],
+      steps: [
+        {
+          step: "Write tests",
+          status: "completed",
+          startedAt: null,
+          completedAt: "2026-02-23T00:00:01.000Z",
+        },
+      ],
+    });
+  });
+
+  function planUpdate(
+    second: number,
+    turnId: string,
+    plan: ReadonlyArray<{ step: string; status: string }>,
+  ): OrchestrationThreadActivity {
+    return makeActivity({
+      id: `plan-${second}`,
+      createdAt: `2026-02-23T00:00:${String(second).padStart(2, "0")}.000Z`,
+      kind: "turn.plan.updated",
+      tone: "info",
+      turnId,
+      payload: { plan },
+    });
+  }
+
+  it("times each step from the updates that moved it", () => {
+    const plan = deriveActivePlanState(
+      [
+        planUpdate(0, "turn-1", [
+          { step: "Read", status: "inProgress" },
+          { step: "Build", status: "pending" },
+          { step: "Ship", status: "pending" },
+        ]),
+        planUpdate(5, "turn-1", [
+          { step: "Read", status: "completed" },
+          { step: "Build", status: "inProgress" },
+          { step: "Ship", status: "pending" },
+        ]),
+        planUpdate(9, "turn-1", [
+          { step: "Read", status: "completed" },
+          { step: "Build", status: "completed" },
+          { step: "Ship", status: "completed" },
+        ]),
+      ],
+      TurnId.make("turn-1"),
+    );
+
+    expect(plan?.startedAt).toBe("2026-02-23T00:00:00.000Z");
+    expect(plan?.steps.map(({ startedAt, completedAt }) => [startedAt, completedAt])).toEqual([
+      ["2026-02-23T00:00:00.000Z", "2026-02-23T00:00:05.000Z"],
+      ["2026-02-23T00:00:05.000Z", "2026-02-23T00:00:09.000Z"],
+      // Ticked done without ever showing in progress: no honest duration.
+      [null, "2026-02-23T00:00:09.000Z"],
+    ]);
+  });
+
+  it("starts over after the plan is cleared, and never hands a twin step's time to another", () => {
+    const afterClear = deriveActivePlanState(
+      [
+        planUpdate(0, "turn-1", [{ step: "Build", status: "inProgress" }]),
+        planUpdate(5, "turn-1", []),
+        planUpdate(9, "turn-1", [{ step: "Build", status: "inProgress" }]),
+      ],
+      TurnId.make("turn-1"),
+    );
+    expect(afterClear?.startedAt).toBe("2026-02-23T00:00:09.000Z");
+    expect(afterClear?.steps[0]?.startedAt).toBe("2026-02-23T00:00:09.000Z");
+
+    // A step dropped and later put back starts over too.
+    const readded = deriveActivePlanState(
+      [
+        planUpdate(0, "turn-1", [
+          { step: "Test", status: "inProgress" },
+          { step: "Build", status: "pending" },
+        ]),
+        planUpdate(5, "turn-1", [{ step: "Build", status: "inProgress" }]),
+        planUpdate(9, "turn-1", [
+          { step: "Test", status: "completed" },
+          { step: "Build", status: "inProgress" },
+        ]),
+      ],
+      TurnId.make("turn-1"),
+    );
+    expect(readded?.steps[0]).toMatchObject({
+      startedAt: null,
+      completedAt: "2026-02-23T00:00:09.000Z",
+    });
+
+    const twins = deriveActivePlanState(
+      [
+        planUpdate(0, "turn-1", [
+          { step: "Test", status: "inProgress" },
+          { step: "Test", status: "pending" },
+        ]),
+        planUpdate(5, "turn-1", [
+          { step: "Test", status: "completed" },
+          { step: "Test", status: "pending" },
+        ]),
+        // The finished twin is dropped and the other one ticked straight to done.
+        planUpdate(9, "turn-1", [{ step: "Test", status: "completed" }]),
+      ],
+      TurnId.make("turn-1"),
+    );
+    expect(twins?.steps[0]).toMatchObject({
+      startedAt: null,
+      completedAt: "2026-02-23T00:00:09.000Z",
+    });
+  });
+
+  it("restarts the clocks when a later turn picks the plan up", () => {
+    const plan = deriveActivePlanState(
+      [
+        planUpdate(0, "turn-1", [
+          { step: "Read", status: "inProgress" },
+          { step: "Build", status: "pending" },
+        ]),
+        planUpdate(40, "turn-2", [
+          { step: "Read", status: "inProgress" },
+          { step: "Build", status: "pending" },
+        ]),
+        planUpdate(45, "turn-2", [
+          { step: "Read", status: "completed" },
+          { step: "Build", status: "inProgress" },
+        ]),
+      ],
+      TurnId.make("turn-2"),
+    );
+
+    expect(plan?.startedAt).toBe("2026-02-23T00:00:40.000Z");
+    expect(plan?.steps[0]).toMatchObject({
+      startedAt: "2026-02-23T00:00:40.000Z",
+      completedAt: "2026-02-23T00:00:45.000Z",
     });
   });
 });
@@ -3676,6 +3818,51 @@ describe("deriveWorkLogEntries", () => {
       detail: "Opening http://localhost:3000",
       executionState: "completed",
     });
+  });
+
+  it("keeps what an MCP call answered, from Codex's item or Claude's tool_result", () => {
+    const answer = { outcome: "started", threads: [{ threadId: "thread-a", title: "A" }] };
+    const [codex, claude] = deriveWorkLogEntries([
+      makeActivity({
+        id: "codex-start",
+        sequence: 1,
+        kind: "tool.completed",
+        payload: {
+          itemType: "mcp_tool_call",
+          title: "MCP tool call",
+          detail: "threadlines_room.thread_start",
+          data: {
+            item: {
+              type: "mcpToolCall",
+              server: "threadlines_room",
+              tool: "thread_start",
+              result: { content: [], structuredContent: answer },
+            },
+          },
+        },
+      }),
+      makeActivity({
+        id: "claude-start",
+        sequence: 2,
+        kind: "tool.completed",
+        payload: {
+          itemType: "mcp_tool_call",
+          title: "MCP tool call",
+          detail: "threadlines_room · thread_start",
+          data: {
+            toolName: "mcp__threadlines_room__thread_start",
+            result: {
+              type: "tool_result",
+              tool_use_id: "toolu_start",
+              content: [{ type: "text", text: JSON.stringify(answer) }],
+            },
+          },
+        },
+      }),
+    ]);
+
+    expect(JSON.parse(codex!.toolResult!)).toEqual(answer);
+    expect(JSON.parse(claude!.toolResult!)).toEqual(answer);
   });
 
   it("keeps a long Claude call to one step, without its stored still-running pings", () => {

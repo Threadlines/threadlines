@@ -7,10 +7,24 @@
  * `enabled_tools`. A side runtime is listed the tools its kind allows and is
  * also refused the others at the endpoint, so a runtime that ignores its list
  * still cannot reach them.
+ *
+ * The thread tools (child threads, docs/design/child-threads.md) ride on the
+ * same endpoint and are main-runtime only: a side runtime answers one
+ * question read-only and never starts or steers other threads.
  */
 
 /** The room endpoint's name, as each provider namespaces its tools. */
 export const ROOM_MCP_SERVER_NAME = "threadlines_room";
+
+/** Tools for starting, reading, messaging and stopping other threads. */
+export const THREAD_TOOL_NAMES = [
+  "thread_agents",
+  "thread_start",
+  "thread_list",
+  "thread_read",
+  "thread_send",
+  "thread_stop",
+] as const;
 
 export const ROOM_TOOL_NAMES = [
   "room_agents",
@@ -21,6 +35,7 @@ export const ROOM_TOOL_NAMES = [
   "room_diff",
   "room_available_agents",
   "room_invite",
+  ...THREAD_TOOL_NAMES,
 ] as const;
 export type RoomToolName = (typeof ROOM_TOOL_NAMES)[number];
 

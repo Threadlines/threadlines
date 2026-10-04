@@ -2,6 +2,7 @@ import "../index.css";
 
 import {
   EMPTY_AGENT_REQUEST_STATE,
+  EMPTY_CHILD_REQUEST_STATE,
   DEFAULT_SERVER_SETTINGS,
   EnvironmentId,
   ORCHESTRATION_WS_METHODS,
@@ -221,6 +222,14 @@ function createMinimalSnapshot(): OrchestrationReadModel {
         checkpoints: [],
         diffStatBaselineTurnCount: 0,
         agentRequests: EMPTY_AGENT_REQUEST_STATE,
+        parentThreadId: null,
+        parentTurnId: null,
+        attachedToParent: false,
+        parentAttachmentEpoch: 0,
+        handedBackAt: null,
+        handedBackTurnId: null,
+        archivedWithParentAt: null,
+        childRequests: EMPTY_CHILD_REQUEST_STATE,
         session: {
           threadId: THREAD_ID,
           providerThreadId: null,

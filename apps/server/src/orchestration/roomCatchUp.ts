@@ -29,6 +29,7 @@ import type {
 
 import { isRoomThread } from "@threadlines/shared/threadParticipants";
 
+import { messageAuthor } from "@threadlines/shared/messageAuthor";
 import { handOffReplyText } from "./agentRequestDecisions.ts";
 
 /** Messages an agent joining late gets verbatim. */
@@ -227,6 +228,15 @@ export function buildRoomCatchUp(input: RoomCatchUpInput): RoomCatchUp | undefin
                 ? `${from}, replying to the hand-off from ${to}`
                 : `${from} asked ${to}, on the user's behalf${onTheSide ? " (answered on the side)" : ""}`;
       return `${label}:\n${text}`;
+    }
+    // Another thread's request or report (child threads) is an agent's word,
+    // never the user's.
+    if (message.role === "user" && message.fromThread !== undefined) {
+      const { author } = messageAuthor(message, {
+        agentName: (id) => nameOf(id ?? null),
+        threadTitle: () => undefined,
+      });
+      return `${author}, to ${nameOf(ownerOf(message))}:\n${text}`;
     }
     if (message.role === "user") {
       return `User, to ${nameOf(ownerOf(message))}${onTheSide ? " (asked on the side)" : ""}:\n${text}`;

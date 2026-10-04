@@ -9,6 +9,7 @@ import {
   type OrchestrationProposedPlan,
   type OrchestrationReadModel,
   EMPTY_AGENT_REQUEST_STATE,
+  EMPTY_CHILD_REQUEST_STATE,
 } from "@threadlines/contracts";
 import * as Effect from "effect/Effect";
 import { describe, expect, it } from "vite-plus/test";
@@ -62,6 +63,14 @@ function makeReadModel(proposedPlan: OrchestrationProposedPlan): OrchestrationRe
         pullRequestAutoMerge: null,
         linkedPullRequests: [],
         agentRequests: EMPTY_AGENT_REQUEST_STATE,
+        parentThreadId: null,
+        parentTurnId: null,
+        attachedToParent: false,
+        parentAttachmentEpoch: 0,
+        handedBackAt: null,
+        handedBackTurnId: null,
+        archivedWithParentAt: null,
+        childRequests: EMPTY_CHILD_REQUEST_STATE,
         participants: [],
         doneOverride: null,
         lastSeenAt: null,

@@ -119,6 +119,23 @@ export function formatWorkingDurationLabel(isoDate: string, nowMs: number = Date
 }
 
 /**
+ * A finished span at a glance: seconds under a minute, whole minutes under an
+ * hour, then hours and minutes ("45s", "11m", "1h 4m"). For a span still
+ * running, {@link formatWorkingDurationLabel} keeps the seconds.
+ */
+export function formatSpanDurationLabel(durationMs: number): string {
+  const totalSeconds = Math.max(0, Math.floor(durationMs / 1_000));
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+
+  const totalMinutes = Math.floor(totalSeconds / 60);
+  if (totalMinutes < 60) return `${totalMinutes}m`;
+
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return minutes === 0 ? `${hours}h` : `${hours}h ${minutes}m`;
+}
+
+/**
  * Relative time until an ISO instant (e.g. expiry). Mirrors {@link formatRelativeTime} but for future times.
  */
 export function formatRelativeTimeUntil(isoDate: string): { value: string; suffix: string | null } {
