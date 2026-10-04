@@ -14,6 +14,7 @@ import {
   AgentThreadsMode,
   FollowUpDelivery,
   ModelSelection,
+  RoomAgentRole,
 } from "./orchestration.ts";
 import { ProviderInstanceConfig, ProviderInstanceId } from "./providerInstance.ts";
 
@@ -535,6 +536,17 @@ export type SourceControlWritingStyleSettings = typeof SourceControlWritingStyle
 
 export const DEFAULT_AUTOMATIC_GIT_FETCH_INTERVAL = Duration.minutes(2);
 
+/**
+ * An agent every new thread on this computer starts with, beside its own
+ * (Settings › Threads › Room). Becomes a `thread.create` participant with a
+ * fresh id and name when a new thread is opened.
+ */
+export const NewThreadRoomAgent = Schema.Struct({
+  modelSelection: ModelSelection,
+  role: Schema.optionalKey(RoomAgentRole),
+});
+export type NewThreadRoomAgent = typeof NewThreadRoomAgent.Type;
+
 /** Parakeet is the accuracy default; Moonshine is the small/fast alternative. */
 export const DEFAULT_DICTATION_MODEL: DictationModelId = "parakeet";
 
@@ -632,6 +644,20 @@ export const ServerSettings = Schema.Struct({
    * included, agrees. Never chosen: on.
    */
   enableRooms: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  /**
+   * The model and reasoning a new thread starts with on this computer.
+   * `null`: the model last picked on the device opening the thread.
+   */
+  newThreadModelSelection: Schema.NullOr(ModelSelection).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
+  /**
+   * Agents every new thread starts with, beside its own: a room from the
+   * first message (rooms have no revert). Ignored while Rooms is off.
+   */
+  newThreadRoomAgents: Schema.Array(NewThreadRoomAgent).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
 });
 export type ServerSettings = typeof ServerSettings.Type;
 
@@ -757,6 +783,10 @@ export const ServerSettingsPatch = Schema.Struct({
   agentInvites: Schema.optionalKey(AgentInvitesMode),
   agentThreads: Schema.optionalKey(AgentThreadsMode),
   enableRooms: Schema.optionalKey(Schema.Boolean),
+  // Whole values, replaced as sent: a new default never keeps an old one's
+  // reasoning, and the list is the whole list.
+  newThreadModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelection)),
+  newThreadRoomAgents: Schema.optionalKey(Schema.Array(NewThreadRoomAgent)),
 });
 export type ServerSettingsPatch = typeof ServerSettingsPatch.Type;
 

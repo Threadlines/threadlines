@@ -916,12 +916,20 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("TerminalManager", (
         "1200 millis",
       );
 
+      const liveActivity = (yield* getEvents).find(
+        (event) => event.type === "activity" && event.hasRunningSubprocess,
+      );
+      const startedAt = liveActivity?.type === "activity" ? liveActivity.startedAt : undefined;
+      assert.isString(startedAt);
+
       const replayedEvents = yield* Ref.make<ReadonlyArray<TerminalEvent>>([]);
       const unsubscribe = yield* manager.subscribe((event) =>
         Ref.update(replayedEvents, (events) => [...events, event]),
       );
       yield* Effect.addFinalizer(() => Effect.sync(unsubscribe));
 
+      // A client that subscribes later learns when the command started, not
+      // when the terminal last printed something.
       expect(yield* Ref.get(replayedEvents)).toContainEqual(
         expect.objectContaining({
           type: "activity",
@@ -929,6 +937,7 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("TerminalManager", (
           terminalId: DEFAULT_TERMINAL_ID,
           hasRunningSubprocess: true,
           command: "vp run dev:desktop",
+          startedAt,
         }),
       );
     }),

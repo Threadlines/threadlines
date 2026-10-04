@@ -121,10 +121,10 @@ export const previewDrag = makeIpcMethod({
 export const previewType = makeIpcMethod({
   channel: IpcChannels.PREVIEW_TYPE_CHANNEL,
   payload: DesktopPreviewTypeInputSchema,
-  result: DesktopPreviewPointSchema,
+  result: Schema.Void,
   handler: Effect.fn("desktop.ipc.preview.type")(function* (input) {
     const automation = yield* PreviewAutomation.PreviewAutomation;
-    return yield* automation.type(input);
+    yield* automation.type(input);
   }),
 });
 

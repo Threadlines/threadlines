@@ -8,8 +8,14 @@ function plan(
 ): ActivePlanState {
   return {
     createdAt: "2026-09-06T08:00:00.000Z",
+    startedAt: "2026-09-06T08:00:00.000Z",
     turnId: null,
-    steps: statuses.map((status, index) => ({ step: `Step ${index + 1}`, status })),
+    steps: statuses.map((status, index) => ({
+      step: `Step ${index + 1}`,
+      status,
+      startedAt: null,
+      completedAt: null,
+    })),
   };
 }
 

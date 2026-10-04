@@ -446,33 +446,63 @@ function liveAgentStep(item: SubagentProgressItem): string | null {
   return line ? normalizeSubagentInlineText(line) : null;
 }
 
+/** One live agent as the header draws it: a face, and a line in its tooltip. */
+export interface LiveAgentFace {
+  readonly id: string;
+  readonly name: string;
+  /** Blocked on the user; its face is ringed amber. */
+  readonly waiting: boolean;
+  readonly startedAt: string;
+}
+
 export interface LiveAgentIndicator {
   /** How many agents are live right now; at least 1. */
   readonly count: number;
-  /** How many of them are blocked on the user. Any at all turns the node amber,
-   *  since that is the only state on the button that asks for something. */
+  /** How many of them are blocked on the user: the only live state that asks
+   *  something of them. */
   readonly waitingCount: number;
+  /** Every live agent, the ones waiting on the user first and then oldest
+   *  first, so a face that asks for something is never folded into "+N". */
+  readonly agents: ReadonlyArray<LiveAgentFace>;
 }
 
 /**
- * What the closed sidebar's panel button says about agents. Null when nothing is
- * live, because the button then has nothing to add over its diffstat.
+ * The agents running right now, for the header's agent faces and the sidebar
+ * launcher's counts. Null when nothing is live.
  */
 export function summarizeLiveAgents(input: {
   readonly subagents: ReadonlyArray<SubagentProgressItem>;
 }): LiveAgentIndicator | null {
   // Background command runs deliberately do not count: a CI watcher is not an
-  // agent, and every live-agent affordance keyed off this (tab dot, closed
-  // panel node, launcher counts) would otherwise claim one is working.
-  const statuses = input.subagents
-    .map((item) => subagentBranchStatus(item.status))
-    .filter(isLiveAgentBranchStatus);
-  if (statuses.length === 0) {
+  // agent, and every live-agent affordance keyed off this (tab dot, header
+  // faces, launcher counts) would otherwise claim one is working.
+  const agents = input.subagents
+    .flatMap((item): LiveAgentFace[] => {
+      const status = subagentBranchStatus(item.status);
+      if (!isLiveAgentBranchStatus(status)) {
+        return [];
+      }
+      return [
+        {
+          id: item.id,
+          name: formatSubagentDisplayName(item),
+          waiting: status === "waiting",
+          startedAt: item.createdAt,
+        },
+      ];
+    })
+    .toSorted(
+      (left, right) =>
+        Number(right.waiting) - Number(left.waiting) ||
+        left.startedAt.localeCompare(right.startedAt),
+    );
+  if (agents.length === 0) {
     return null;
   }
   return {
-    count: statuses.length,
-    waitingCount: statuses.filter((status) => status === "waiting").length,
+    count: agents.length,
+    waitingCount: agents.filter((agent) => agent.waiting).length,
+    agents,
   };
 }
 

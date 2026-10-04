@@ -44,7 +44,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { HttpResponse, http, ws } from "msw";
 import { setupWorker } from "msw/browser";
-import { page } from "vite-plus/test/browser";
+import { page, userEvent } from "vite-plus/test/browser";
 import {
   afterAll,
   afterEach,
@@ -3469,24 +3469,59 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
-  async function clickOpenInPrimaryButton(editorLabel: string) {
-    const openButton = await waitForElement(
-      () =>
-        document.querySelector<HTMLButtonElement>(`button[aria-label="Open in ${editorLabel}"]`),
-      `Unable to find Open in ${editorLabel} button.`,
-    );
-    await vi.waitFor(() => {
-      expect((openButton as HTMLButtonElement).disabled).toBe(false);
-    });
-    (openButton as HTMLButtonElement).click();
+  /** Binds the open-favorite shortcut, which the default fixture leaves unbound. */
+  const OPEN_FAVORITE_EDITOR_KEYBINDING = {
+    command: "editor.openFavorite",
+    shortcut: {
+      key: "o",
+      metaKey: false,
+      ctrlKey: false,
+      shiftKey: false,
+      altKey: false,
+      modKey: true,
+    },
+  } as const;
+
+  async function openProjectMenu() {
+    await page.getByRole("button", { name: /, project options$/ }).click();
   }
 
-  async function openEditorPickerMenu() {
-    const menuButton = await waitForElement(
-      () => document.querySelector<HTMLButtonElement>('button[aria-label="Open project options"]'),
-      "Unable to find Open picker menu button.",
+  async function clickProjectMenuItem(label: string) {
+    await openProjectMenu();
+    await page.getByRole("menuitem", { name: label }).click();
+  }
+
+  async function openDefaultEditorSubmenu() {
+    await openProjectMenu();
+    await page.getByRole("menuitem", { name: /^Default/ }).click();
+  }
+
+  /** Presses the open-favorite shortcut until an open request goes out: the
+   *  crumb menu that owns it mounts, and picks up its keybinding, after the
+   *  server config lands. */
+  async function pressOpenFavoriteEditorShortcut() {
+    await waitForElement(
+      () => document.querySelector('button[aria-label$=", project options"]'),
+      "Unable to find the project crumb menu that owns the shortcut.",
     );
-    (menuButton as HTMLButtonElement).click();
+    const useMetaForMod = isMacPlatform(navigator.platform);
+    await vi.waitFor(
+      () => {
+        window.dispatchEvent(
+          new KeyboardEvent("keydown", {
+            key: "o",
+            metaKey: useMetaForMod,
+            ctrlKey: !useMetaForMod,
+            bubbles: true,
+            cancelable: true,
+          }),
+        );
+        expect(wsRequests.some((request) => request._tag === WS_METHODS.shellOpenInEditor)).toBe(
+          true,
+        );
+      },
+      { timeout: 8_000, interval: 50 },
+    );
   }
 
   it("opens the project cwd for draft threads without a worktree path", async () => {
@@ -3505,7 +3540,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
 
     try {
       await waitForServerConfigToApply();
-      await clickOpenInPrimaryButton("VS Code");
+      await clickProjectMenuItem("Open in VS Code");
 
       await vi.waitFor(
         () => {
@@ -4459,7 +4494,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
 
     try {
       await waitForServerConfigToApply();
-      await clickOpenInPrimaryButton("VS Code Insiders");
+      await clickProjectMenuItem("Open in VS Code Insiders");
 
       await vi.waitFor(
         () => {
@@ -4495,7 +4530,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
 
     try {
       await waitForServerConfigToApply();
-      await clickOpenInPrimaryButton("Trae");
+      await clickProjectMenuItem("Open in Trae");
 
       await vi.waitFor(
         () => {
@@ -4531,18 +4566,15 @@ describe("ChatView timeline estimator parity (full app)", () => {
 
     try {
       await waitForServerConfigToApply();
-      await openEditorPickerMenu();
-
-      const kiroItem = await waitForElement(
-        () =>
-          Array.from(document.querySelectorAll('[data-slot="menu-radio-item"]')).find((item) =>
-            item.textContent?.includes("Kiro"),
-          ) ?? null,
-        "Unable to find Kiro menu item.",
+      // Keyboard path: focus the crumb, open its menu, and take the first item.
+      const trigger = await waitForElement(
+        () => document.querySelector<HTMLButtonElement>('button[aria-label$=", project options"]'),
+        "Unable to find the project crumb menu.",
       );
-      (kiroItem as HTMLElement).click();
-
-      await clickOpenInPrimaryButton("Kiro");
+      trigger.focus();
+      await userEvent.keyboard("{Enter}");
+      await expect.element(page.getByRole("menuitem", { name: "Open in Kiro" })).toBeVisible();
+      await userEvent.keyboard("{Enter}");
 
       await vi.waitFor(
         () => {
@@ -4578,32 +4610,18 @@ describe("ChatView timeline estimator parity (full app)", () => {
 
     try {
       await waitForServerConfigToApply();
-      await openEditorPickerMenu();
+      await openProjectMenu();
 
-      await waitForElement(
-        () =>
-          Array.from(document.querySelectorAll('[data-slot="menu-radio-item"]')).find((item) =>
-            item.textContent?.includes("VS Code Insiders"),
-          ) ?? null,
-        "Unable to find VS Code Insiders menu item.",
-      );
-
+      await expect
+        .element(page.getByRole("menuitem", { name: "Open in VS Code Insiders" }))
+        .toBeVisible();
       expect(
-        Array.from(document.querySelectorAll('[data-slot="menu-radio-item"]')).some((item) =>
+        Array.from(document.querySelectorAll('[data-slot="menu-item"]')).some((item) =>
           item.textContent?.includes("Zed"),
         ),
       ).toBe(false);
 
-      const vscodiumItem = await waitForElement(
-        () =>
-          Array.from(document.querySelectorAll('[data-slot="menu-radio-item"]')).find((item) =>
-            item.textContent?.includes("VSCodium"),
-          ) ?? null,
-        "Unable to find VSCodium menu item.",
-      );
-      (vscodiumItem as HTMLElement).click();
-
-      await clickOpenInPrimaryButton("VSCodium");
+      await page.getByRole("menuitem", { name: "Open in VSCodium" }).click();
 
       await vi.waitFor(
         () => {
@@ -4638,37 +4656,27 @@ describe("ChatView timeline estimator parity (full app)", () => {
         nextFixture.serverConfig = {
           ...nextFixture.serverConfig,
           availableEditors: ["cursor", "file-manager"],
+          keybindings: [OPEN_FAVORITE_EDITOR_KEYBINDING],
         };
       },
     });
 
     try {
       await waitForServerConfigToApply();
-      await openEditorPickerMenu();
+      await openDefaultEditorSubmenu();
+      await page.getByRole("menuitemradio", { name: fileManagerName }).click();
 
-      const fileManagerItem = await waitForElement(
-        () =>
-          Array.from(document.querySelectorAll('[data-slot="menu-radio-item"]')).find(
-            (item) => item.textContent?.trim() === fileManagerName,
-          ) ?? null,
-        `Unable to find ${fileManagerName} menu item.`,
-      );
-      (fileManagerItem as HTMLElement).click();
-
-      await waitForElement(
-        () =>
-          document.querySelector<HTMLButtonElement>(
-            `button[aria-label="Open in ${fileManagerName}"]`,
-          ),
-        `Unable to find selected ${fileManagerName} primary button.`,
-      );
-
+      await vi.waitFor(() => {
+        expect(localStorage.getItem("threadlines:last-editor")).toBe(
+          JSON.stringify("file-manager"),
+        );
+      });
+      // Picking a default only changes what the shortcut opens.
       expect(wsRequests.some((request) => request._tag === WS_METHODS.shellOpenInEditor)).toBe(
         false,
       );
-      expect(localStorage.getItem("threadlines:last-editor")).toBe(JSON.stringify("file-manager"));
 
-      await clickOpenInPrimaryButton(fileManagerName);
+      await pressOpenFavoriteEditorShortcut();
 
       await vi.waitFor(
         () => {
@@ -4699,6 +4707,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
         nextFixture.serverConfig = {
           ...nextFixture.serverConfig,
           availableEditors: ["vscode-insiders"],
+          keybindings: [OPEN_FAVORITE_EDITOR_KEYBINDING],
         };
       },
     });
@@ -4706,8 +4715,8 @@ describe("ChatView timeline estimator parity (full app)", () => {
     try {
       await waitForServerConfigToApply();
       // The unavailable stored favorite falls back to the first installed
-      // editor as the primary open target.
-      await clickOpenInPrimaryButton("VS Code Insiders");
+      // editor as the open-favorite shortcut's target.
+      await pressOpenFavoriteEditorShortcut();
 
       await vi.waitFor(
         () => {
@@ -4718,6 +4727,49 @@ describe("ChatView timeline estimator parity (full app)", () => {
             _tag: WS_METHODS.shellOpenInEditor,
             cwd: "/repo/project",
             editor: "vscode-insiders",
+          });
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("keeps the open-favorite shortcut working on a phone, where the crumb is hidden", async () => {
+    setDraftThreadWithoutWorktree();
+
+    const mounted = await mountChatView({
+      viewport: PHONE_VIEWPORT,
+      snapshot: createDraftOnlySnapshot(),
+      configureFixture: (nextFixture) => {
+        nextFixture.serverConfig = {
+          ...nextFixture.serverConfig,
+          availableEditors: ["vscode"],
+          keybindings: [OPEN_FAVORITE_EDITOR_KEYBINDING],
+        };
+      },
+    });
+
+    try {
+      await waitForServerConfigToApply();
+      const trigger = await waitForElement(
+        () => document.querySelector<HTMLButtonElement>('button[aria-label$=", project options"]'),
+        "Unable to find the project crumb menu.",
+      );
+      expect(trigger.checkVisibility()).toBe(false);
+
+      await pressOpenFavoriteEditorShortcut();
+
+      await vi.waitFor(
+        () => {
+          const openRequest = wsRequests.find(
+            (request) => request._tag === WS_METHODS.shellOpenInEditor,
+          );
+          expect(openRequest).toMatchObject({
+            _tag: WS_METHODS.shellOpenInEditor,
+            cwd: "/repo/project",
+            editor: "vscode",
           });
         },
         { timeout: 8_000, interval: 16 },

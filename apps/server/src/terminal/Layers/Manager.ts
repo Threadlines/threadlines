@@ -146,6 +146,9 @@ interface TerminalSessionState {
   unsubscribeExit: (() => void) | null;
   hasRunningSubprocess: boolean;
   runningSubprocessCommand: string | null;
+  /** When polling first saw the running subprocess, so clients can show how
+   *  long it has been going, including after they reconnect. */
+  runningSubprocessStartedAt: string | null;
   submittedCommand: string | null;
   commandGeneration: number;
   subprocessPollingArmed: boolean;
@@ -1481,6 +1484,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
             if (commandFinished) {
               session.hasRunningSubprocess = false;
               session.runningSubprocessCommand = null;
+              session.runningSubprocessStartedAt = null;
               session.submittedCommand = null;
               session.subprocessPollingArmed = false;
               session.consecutiveSubprocessIdlePolls = 0;
@@ -1504,6 +1508,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
           session.pid = null;
           session.hasRunningSubprocess = false;
           session.runningSubprocessCommand = null;
+          session.runningSubprocessStartedAt = null;
           session.submittedCommand = null;
           session.subprocessPollingArmed = false;
           session.consecutiveSubprocessIdlePolls = 0;
@@ -1591,6 +1596,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
         session.pid = null;
         session.hasRunningSubprocess = false;
         session.runningSubprocessCommand = null;
+        session.runningSubprocessStartedAt = null;
         session.submittedCommand = null;
         session.subprocessPollingArmed = false;
         session.consecutiveSubprocessIdlePolls = 0;
@@ -1700,6 +1706,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
         session.exitSignal = null;
         session.hasRunningSubprocess = false;
         session.runningSubprocessCommand = null;
+        session.runningSubprocessStartedAt = null;
         session.submittedCommand = null;
         session.commandGeneration = 0;
         session.subprocessPollingArmed = false;
@@ -1800,6 +1807,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
           session.unsubscribeExit = null;
           session.hasRunningSubprocess = false;
           session.runningSubprocessCommand = null;
+          session.runningSubprocessStartedAt = null;
           session.submittedCommand = null;
           session.commandGeneration = 0;
           session.subprocessPollingArmed = false;
@@ -1918,6 +1926,17 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
           return [Option.none(), state] as const;
         }
 
+        // A subprocess keeps the start it was first seen at; a new one starts
+        // now, including a different command that took over before polling
+        // saw the terminal go idle.
+        const previousCommand = liveSession.value.runningSubprocessCommand;
+        const sameSubprocess =
+          liveSession.value.hasRunningSubprocess &&
+          (previousCommand === null || command === null || previousCommand === command);
+        const keptStartedAt = sameSubprocess ? liveSession.value.runningSubprocessStartedAt : null;
+        liveSession.value.runningSubprocessStartedAt = activity.hasRunningSubprocess
+          ? (keptStartedAt ?? createdAt)
+          : null;
         liveSession.value.hasRunningSubprocess = activity.hasRunningSubprocess;
         liveSession.value.runningSubprocessCommand = command;
         if (!activity.hasRunningSubprocess) {
@@ -1938,6 +1957,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
             createdAt,
             hasRunningSubprocess: activity.hasRunningSubprocess,
             command,
+            startedAt: liveSession.value.runningSubprocessStartedAt,
           }),
           state,
         ] as const;
@@ -2132,6 +2152,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
               unsubscribeExit: null,
               hasRunningSubprocess: false,
               runningSubprocessCommand: null,
+              runningSubprocessStartedAt: null,
               submittedCommand: null,
               commandGeneration: 0,
               subprocessPollingArmed: false,
@@ -2353,6 +2374,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
               unsubscribeExit: null,
               hasRunningSubprocess: false,
               runningSubprocessCommand: null,
+              runningSubprocessStartedAt: null,
               submittedCommand: null,
               commandGeneration: 0,
               subprocessPollingArmed: false,
@@ -2456,6 +2478,10 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
                   command:
                     session.status === "running" && session.hasRunningSubprocess
                       ? session.runningSubprocessCommand
+                      : null,
+                  startedAt:
+                    session.status === "running" && session.hasRunningSubprocess
+                      ? session.runningSubprocessStartedAt
                       : null,
                 })),
                 state,

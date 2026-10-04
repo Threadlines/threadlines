@@ -273,14 +273,30 @@ export function isBlockingUserInput(input: Pick<PendingUserInput, "isBlocking">)
   return input.isBlocking !== false;
 }
 
+export type ActivePlanStepStatus = "pending" | "inProgress" | "completed";
+
+export interface ActivePlanStep {
+  step: string;
+  status: ActivePlanStepStatus;
+  /** When the step went in progress in the turn it is being worked in. Null
+   *  when no update ever showed it in progress (providers sometimes tick
+   *  several steps done at once), so its duration is unknown rather than
+   *  guessed. */
+  startedAt: string | null;
+  /** When an update first showed the step done; null until then. */
+  completedAt: string | null;
+}
+
 export interface ActivePlanState {
+  /** When the newest version of the plan arrived. */
   createdAt: string;
+  /** When this plan was first written in the turn that last updated it. The
+   *  plan's elapsed time counts from here, so a plan carried over from an
+   *  earlier turn does not count the hours the thread sat idle. */
+  startedAt: string;
   turnId: TurnId | null;
   explanation?: string | null;
-  steps: Array<{
-    step: string;
-    status: "pending" | "inProgress" | "completed";
-  }>;
+  steps: ActivePlanStep[];
 }
 
 export interface LatestProposedPlanState {
@@ -886,42 +902,173 @@ export function deriveActivePlanState(
     latest.payload && typeof latest.payload === "object"
       ? (latest.payload as Record<string, unknown>)
       : null;
-  const rawPlan = payload?.plan;
-  if (!Array.isArray(rawPlan)) {
+  const steps = parsePlanSteps(payload);
+  if (!steps || steps.length === 0) {
     return null;
   }
-  const steps = rawPlan
-    .map((entry) => {
-      if (!entry || typeof entry !== "object") return null;
-      const record = entry as Record<string, unknown>;
-      if (typeof record.step !== "string") {
-        return null;
-      }
-      const status =
-        record.status === "completed" || record.status === "inProgress" ? record.status : "pending";
-      return {
-        step: record.step,
-        status,
-      };
-    })
-    .filter(
-      (
-        step,
-      ): step is {
-        step: string;
-        status: "pending" | "inProgress" | "completed";
-      } => step !== null,
-    );
-  if (steps.length === 0) {
-    return null;
-  }
+  const timing = replayPlanStepTiming(
+    allPlanActivities.slice(0, allPlanActivities.indexOf(latest) + 1),
+  );
+  const keys = planStepKeys(steps);
   return {
     createdAt: latest.createdAt,
+    startedAt: timing.startedAt ?? latest.createdAt,
     turnId: latest.turnId,
     ...(payload && "explanation" in payload
       ? { explanation: payload.explanation as string | null }
       : {}),
-    steps,
+    steps: steps.map((step, index) => {
+      const stepTiming = timing.steps.get(keys[index]!);
+      return {
+        ...step,
+        startedAt: stepTiming?.startedAt ?? null,
+        completedAt: stepTiming?.completedAt ?? null,
+      };
+    }),
+  };
+}
+
+type PlanStepSnapshot = Pick<ActivePlanStep, "step" | "status">;
+
+function parsePlanSteps(payload: Record<string, unknown> | null): PlanStepSnapshot[] | null {
+  const rawPlan = payload?.plan;
+  if (!Array.isArray(rawPlan)) {
+    return null;
+  }
+  return rawPlan.flatMap((entry): PlanStepSnapshot[] => {
+    if (!entry || typeof entry !== "object") return [];
+    const record = entry as Record<string, unknown>;
+    if (typeof record.step !== "string") {
+      return [];
+    }
+    const status =
+      record.status === "completed" || record.status === "inProgress" ? record.status : "pending";
+    return [{ step: record.step, status }];
+  });
+}
+
+/** A step is known by its text; a repeated text is told apart by how many
+ *  times it came before. */
+function planStepKeys(steps: ReadonlyArray<PlanStepSnapshot>): string[] {
+  const seen = new Map<string, number>();
+  return steps.map((step) => {
+    const count = seen.get(step.step) ?? 0;
+    seen.set(step.step, count + 1);
+    return `${count}:${step.step}`;
+  });
+}
+
+interface PlanStepTimingState {
+  status: ActivePlanStepStatus;
+  startedAt: string | null;
+  startedTurnId: TurnId | null;
+  completedAt: string | null;
+}
+
+/**
+ * Replays every version of a plan, oldest first, to learn when each step
+ * started and finished. Plans only carry statuses, so the times are the
+ * moments an update showed a change. A version that shares no step with the
+ * one before it is a new plan and starts the clock over. Time only counts
+ * within one turn: a step still open when a new turn picks it up restarts
+ * from there, and one closed in a later turn than it started has no duration.
+ */
+function replayPlanStepTiming(planActivities: ReadonlyArray<OrchestrationThreadActivity>): {
+  startedAt: string | null;
+  steps: ReadonlyMap<string, PlanStepTimingState>;
+} {
+  const steps = new Map<string, PlanStepTimingState>();
+  let startedAt: string | null = null;
+  let previousKeys: ReadonlySet<string> | null = null;
+  let previousTextCounts: ReadonlyMap<string, number> = new Map();
+  let previousTurnId: TurnId | null = null;
+  for (const activity of planActivities) {
+    const snapshot = parsePlanSteps(
+      activity.payload && typeof activity.payload === "object"
+        ? (activity.payload as Record<string, unknown>)
+        : null,
+    );
+    if (!snapshot) {
+      continue;
+    }
+    if (snapshot.length === 0) {
+      // A cleared plan ends the old one; whatever comes next starts fresh.
+      steps.clear();
+      previousKeys = new Set();
+      previousTextCounts = new Map();
+      previousTurnId = activity.turnId;
+      continue;
+    }
+    const keys = planStepKeys(snapshot);
+    const priorKeys = previousKeys;
+    const continuesPlan = priorKeys !== null && keys.some((key) => priorKeys.has(key));
+    if (!continuesPlan) {
+      steps.clear();
+    }
+    if (!continuesPlan || activity.turnId !== previousTurnId) {
+      startedAt = activity.createdAt;
+    }
+    // Repeated step texts are told apart by position among their twins; when
+    // the number of twins changes, positions no longer line up, so their
+    // times start over rather than pass to the wrong twin.
+    const textCounts = new Map<string, number>();
+    for (const step of snapshot) {
+      textCounts.set(step.step, (textCounts.get(step.step) ?? 0) + 1);
+    }
+    for (const [text, count] of previousTextCounts) {
+      if (count > 1 || (textCounts.get(text) ?? 0) > 1) {
+        if (textCounts.get(text) !== count) {
+          for (const key of steps.keys()) {
+            if (key.slice(key.indexOf(":") + 1) === text) steps.delete(key);
+          }
+        }
+      }
+    }
+    // A step dropped from the plan takes its times with it; if it comes back,
+    // it starts over.
+    const keySet = new Set(keys);
+    for (const key of steps.keys()) {
+      if (!keySet.has(key)) steps.delete(key);
+    }
+    previousKeys = keySet;
+    previousTextCounts = textCounts;
+    previousTurnId = activity.turnId;
+    snapshot.forEach((step, index) => {
+      const key = keys[index]!;
+      steps.set(key, nextPlanStepTiming(steps.get(key), step.status, activity));
+    });
+  }
+  return { startedAt, steps };
+}
+
+function nextPlanStepTiming(
+  previous: PlanStepTimingState | undefined,
+  status: ActivePlanStepStatus,
+  activity: OrchestrationThreadActivity,
+): PlanStepTimingState {
+  if (status === "pending") {
+    return { status, startedAt: null, startedTurnId: null, completedAt: null };
+  }
+  if (status === "inProgress") {
+    return previous?.status === "inProgress" && previous.startedTurnId === activity.turnId
+      ? previous
+      : {
+          status,
+          startedAt: activity.createdAt,
+          startedTurnId: activity.turnId,
+          completedAt: null,
+        };
+  }
+  if (previous?.status === "completed") {
+    return previous;
+  }
+  const startedThisTurn =
+    previous?.status === "inProgress" && previous.startedTurnId === activity.turnId;
+  return {
+    status,
+    startedAt: startedThisTurn ? previous.startedAt : null,
+    startedTurnId: startedThisTurn ? previous.startedTurnId : null,
+    completedAt: activity.createdAt,
   };
 }
 

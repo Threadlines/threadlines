@@ -10,20 +10,26 @@ import {
   resolveSettingsEntryPath,
   resolveSettingsEntryRedirect,
   SETTINGS_NAV_ITEMS,
+  startsSettingsNavGroup,
   VISIBLE_SETTINGS_SECTION_PATHS,
 } from "./settingsNavigation";
 
 describe("SETTINGS_NAV_ITEMS", () => {
-  it("shows settings sections in their intended order", () => {
-    expect(SETTINGS_NAV_ITEMS.map((item) => item.label)).toEqual([
+  it("shows settings sections in their intended order, in three clusters", () => {
+    expect(
+      SETTINGS_NAV_ITEMS.map((item, index) =>
+        startsSettingsNavGroup(SETTINGS_NAV_ITEMS, index) ? `| ${item.label}` : item.label,
+      ),
+    ).toEqual([
       "General",
-      "Providers",
-      "Plugins & Skills",
-      "Connections",
-      "Source Control",
-      "Agent Instructions",
-      "Keybindings",
+      "Threads",
       "Archives",
+      "| Providers",
+      "Plugins & Skills",
+      "Agent Instructions",
+      "| Source Control",
+      "Connections",
+      "Keybindings",
     ]);
   });
 
@@ -34,12 +40,13 @@ describe("SETTINGS_NAV_ITEMS", () => {
   it("keeps hosted phone navigation to phone-safe settings sections", () => {
     expect(HOSTED_STATIC_SETTINGS_NAV_ITEMS.map((item) => item.to)).toEqual([
       "/settings/general",
+      "/settings/threads",
+      "/settings/archived",
       "/settings/providers",
       "/settings/plugins",
-      "/settings/connections",
-      "/settings/source-control",
       "/settings/instructions",
-      "/settings/archived",
+      "/settings/source-control",
+      "/settings/connections",
     ]);
     expect(HOSTED_STATIC_SETTINGS_NAV_ITEMS.map((item) => item.to)).toEqual([
       ...HOSTED_STATIC_SETTINGS_SECTION_PATHS,

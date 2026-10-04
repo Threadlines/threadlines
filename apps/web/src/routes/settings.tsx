@@ -52,7 +52,11 @@ function SettingsContentLayout() {
   const navigateBackWithinApp = useNavigateBackWithinApp();
   const [restoreSignal, setRestoreSignal] = useState(0);
   const isHostedStatic = authGateState.status === "hosted-static";
-  const showRestoreDefaults = location.pathname === "/settings/general" && !isHostedStatic;
+  // One restore for every setting on these two pages (and Source Control's
+  // writing settings, which it has always covered).
+  const showRestoreDefaults =
+    (location.pathname === "/settings/general" || location.pathname === "/settings/threads") &&
+    !isHostedStatic;
   const isSettingsIndex = location.pathname === "/settings" || location.pathname === "/settings/";
   // On mobile the header titles the current section and offers ← back to the
   // full-page section index; desktop always titles the page "Settings" (the

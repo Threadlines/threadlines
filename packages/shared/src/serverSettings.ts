@@ -87,14 +87,23 @@ export function applyServerSettingsPatch(
   const selectionPatch = patch.textGenerationModelSelection;
   const backupSelectionPatch = patch.textGenerationBackupModelSelection;
   const writerSelectionPatch = patch.sourceControlWriterModelSelection;
-  const { automaticGitFetchInterval, ...patchForMerge } = patch;
+  const {
+    automaticGitFetchInterval,
+    newThreadModelSelection,
+    newThreadRoomAgents,
+    ...patchForMerge
+  } = patch;
   const next = deepMerge(current, patchForMerge);
+  // Whole values: merging would keep an old default's options in a new one,
+  // and turns a list into an object.
   let nextWithReplacements = {
     ...next,
     ...(patch.providerInstances !== undefined
       ? { providerInstances: patch.providerInstances }
       : {}),
     ...(automaticGitFetchInterval !== undefined ? { automaticGitFetchInterval } : {}),
+    ...(newThreadModelSelection !== undefined ? { newThreadModelSelection } : {}),
+    ...(newThreadRoomAgents !== undefined ? { newThreadRoomAgents } : {}),
   };
 
   const applyModelSelectionPatch = (

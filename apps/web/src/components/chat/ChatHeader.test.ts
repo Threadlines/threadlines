@@ -1,7 +1,11 @@
 import { EnvironmentId } from "@threadlines/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { resolveContinueInProjectHeaderState, shouldShowOpenInEditor } from "./ChatHeader";
+import {
+  formatSourceChangesLabel,
+  resolveContinueInProjectHeaderState,
+  shouldShowOpenInEditor,
+} from "./ChatHeader";
 
 describe("shouldShowOpenInEditor", () => {
   const primaryEnvironmentId = EnvironmentId.make("environment-primary");
@@ -64,5 +68,30 @@ describe("resolveContinueInProjectHeaderState", () => {
       disabled: true,
       tooltip: "Wait for the current response to finish before continuing into a project.",
     });
+  });
+});
+
+describe("formatSourceChangesLabel", () => {
+  it("reads the counts and what clicking does", () => {
+    expect(
+      formatSourceChangesLabel({
+        workingTreeChanges: { insertions: 38, deletions: 12, fileCount: 3 },
+        remoteBehindCount: 2,
+      }),
+    ).toBe(
+      "Uncommitted changes: 38 added, 12 removed. 2 commits behind the remote. Open the Source tab.",
+    );
+  });
+
+  it("names files when the changes add no lines, and a lone behind count", () => {
+    expect(
+      formatSourceChangesLabel({
+        workingTreeChanges: { insertions: 0, deletions: 0, fileCount: 1 },
+        remoteBehindCount: null,
+      }),
+    ).toBe("Uncommitted changes in 1 file. Open the Source tab.");
+    expect(formatSourceChangesLabel({ workingTreeChanges: null, remoteBehindCount: 1 })).toBe(
+      "1 commit behind the remote. Open the Source tab.",
+    );
   });
 });

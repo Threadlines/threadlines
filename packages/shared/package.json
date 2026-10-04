@@ -199,6 +199,10 @@
       "types": "./src/threadActivityRetention.ts",
       "import": "./src/threadActivityRetention.ts"
     },
+    "./backgroundRunOutput": {
+      "types": "./src/backgroundRunOutput.ts",
+      "import": "./src/backgroundRunOutput.ts"
+    },
     "./keybindings": {
       "types": "./src/keybindings.ts",
       "import": "./src/keybindings.ts"

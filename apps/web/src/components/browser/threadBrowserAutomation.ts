@@ -29,6 +29,7 @@ import {
   nextBrowserApprovalId,
   waitForBrowserApproval,
 } from "./browserApprovalRequests";
+import { withPageKeyboard } from "./browserFocusGuard";
 import { beginAgentWork, reviveEvictedPage } from "./browserLifecycle";
 import type { PreviewAutomationHostTarget } from "./previewAutomationHost";
 import { normalizePreviewUrl } from "./previewUrl";
@@ -379,6 +380,8 @@ export function resolveThreadBrowserTarget(
     tabId: tabId === "" ? null : tabId,
     webContentsId: webview === null ? null : attachedWebContentsId(webview),
     beginWork: tabId === "" ? undefined : () => beginAgentWork(threadRef, tabId),
+    withKeyboard:
+      webview instanceof HTMLElement ? (send) => withPageKeyboard(webview, send) : undefined,
     onAgentPoint: (point) => useBrowserPanelStore.getState().setAgentPoint(threadRef, point),
     onAgentActivity: (activity) =>
       useBrowserPanelStore.getState().setAgentActivity(threadRef, activity),

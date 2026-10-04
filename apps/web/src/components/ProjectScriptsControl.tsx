@@ -46,7 +46,6 @@ import {
   DialogPopup,
   DialogTitle,
 } from "./ui/dialog";
-import { Group, GroupSeparator } from "./ui/group";
 import { Input } from "./ui/input";
 import { Label } from "./ui/label";
 import { Menu, MenuItem, MenuPopup, MenuShortcut, MenuTrigger } from "./ui/menu";
@@ -218,11 +217,14 @@ export default function ProjectScriptsControl({
   return (
     <>
       {primaryScript ? (
-        <Group aria-label="Project scripts">
+        // Boxless like the rest of the header: two plain buttons side by side,
+        // each with its own hover, rather than a joined, bordered pair.
+        <div role="group" aria-label="Project scripts" className="flex shrink-0 items-center">
           <Button
             aria-label={`Run ${primaryScript.name}`}
             size="xs"
-            variant="outline"
+            variant="ghost"
+            className="text-foreground/85 hover:text-foreground"
             onClick={() => onRunScript(primaryScript)}
             tooltip={`Run ${primaryScript.name}`}
           >
@@ -231,12 +233,18 @@ export default function ProjectScriptsControl({
               {primaryScript.name}
             </span>
           </Button>
-          <GroupSeparator className="hidden @3xl/header-actions:block" />
           <Menu highlightItemOnHover={false}>
             <MenuTrigger
-              render={<Button size="icon-xs" variant="outline" aria-label="Script actions" />}
+              render={
+                <Button
+                  size="xs"
+                  variant="ghost"
+                  className="px-0.5 text-muted-foreground hover:text-foreground"
+                  aria-label="Script actions"
+                />
+              }
             >
-              <ChevronDownIcon className="size-4" />
+              <ChevronDownIcon className="size-3.5" />
             </MenuTrigger>
             <MenuPopup align="end">
               {scripts.map((script) => {
@@ -288,9 +296,15 @@ export default function ProjectScriptsControl({
               </MenuItem>
             </MenuPopup>
           </Menu>
-        </Group>
+        </div>
       ) : (
-        <Button size="xs" variant="outline" onClick={openAddDialog} tooltip="Add action">
+        <Button
+          size="xs"
+          variant="ghost"
+          className="text-muted-foreground hover:text-foreground"
+          onClick={openAddDialog}
+          tooltip="Add action"
+        >
           <PlusIcon className="size-3.5" />
           <span className="sr-only @3xl/header-actions:not-sr-only @3xl/header-actions:ml-0.5">
             Add action

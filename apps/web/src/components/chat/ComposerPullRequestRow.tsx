@@ -470,7 +470,7 @@ function ComposerPullRequestChecksPopover({
           Wrap up thread after merge or close
         </label>
         <Link
-          to="/settings/general"
+          to="/settings/threads"
           hash="wrap-up-merged-threads"
           className="shrink-0 rounded-sm text-[11px] text-muted-foreground transition-colors hover:text-foreground focus-ring"
         >

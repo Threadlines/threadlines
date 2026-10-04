@@ -180,6 +180,12 @@ import { formatProviderDriverKindLabel, resolveSelectableProvider } from "../pro
 import { useSettings, useUpdateSettings } from "../hooks/useSettings";
 import { roomsEnabledFor } from "../hooks/useRoomsEnabled";
 import {
+  applyMovedDraftDefaults,
+  buildNewThreadParticipants,
+  canRunOnComputer,
+  resolveNewThreadDefaults,
+} from "../newThreadDefaults";
+import {
   type AppModelOption,
   getAppModelOptionsForInstance,
   resolveAppModelSelectionForInstance,
@@ -221,6 +227,7 @@ import {
 } from "../lib/fileSelectionContext";
 import {
   selectTerminalActivityCommand,
+  selectTerminalActivityStartedAt,
   selectTerminalSubmittedCommand,
   selectThreadTerminalState,
   useTerminalStateStore,
@@ -252,7 +259,8 @@ import {
   pickedElementFromPreview,
   type PickedElementContextDraft,
 } from "../lib/pickedElementContext";
-import type { ThreadBackgroundRunItem } from "./chat/threadActivity";
+import { processStartedAt, type ThreadBackgroundRunItem } from "./chat/threadActivity";
+import { currentWorkLine } from "./chat/activitySteps";
 import {
   type ExpandedImagePreview,
   setActiveExpandedImageOpener,
@@ -279,6 +287,7 @@ import {
   createLocalDispatchSnapshot,
   deriveProviderBackgroundRuns,
   deriveDetectedBackgroundRunLabel,
+  matchDetectedProviderRun,
   deriveFailedTurnRetryMessageId,
   deriveComposerSendState,
   deriveProviderAuthReconnectPrompt,
@@ -316,7 +325,7 @@ import {
   mergeLocalDraftThreadWithServerThread,
   buildRevertConfirmView,
   resolveRemoteBehindCount,
-  resolveWorkingTreeDiffStat,
+  resolveWorkingTreeChanges,
   type RevertConfirmView,
   resolveThreadBranchToRecord,
 } from "./ChatView.logic";
@@ -1264,6 +1273,9 @@ export default function ChatView(props: ChatViewProps) {
   const terminalSubmittedCommandByKey = useTerminalStateStore(
     (state) => state.terminalSubmittedCommandByKey,
   );
+  const terminalActivityStartedAtByKey = useTerminalStateStore(
+    (state) => state.terminalActivityStartedAtByKey,
+  );
   const terminalActivityCommandByKey = useTerminalStateStore(
     (state) => state.terminalActivityCommandByKey,
   );
@@ -1358,17 +1370,14 @@ export default function ChatView(props: ChatViewProps) {
   const rightPanelStateKey =
     routeKind === "draft" && draftId ? draftRightPanelStateKey(draftId) : routeThreadKey;
   // The sidebar's tab strip is owned by the route that renders it; the header
-  // reads the same store so its panel button and activity chip agree with what
-  // is on screen. The button reflects the sidebar as a whole — it stays pressed
-  // on any tab, and on the launcher — and its counts stand in for whichever
-  // tabs the strip is showing without.
+  // reads the same store so its panel button agrees with what is on screen.
+  // The button reflects the sidebar as a whole: it stays pressed on any tab,
+  // and on the launcher.
   const rightPanelTabs = useRightPanelTabs(rightPanelStateKey);
   const rightPanelEngaged = rightPanelTabs.visible;
-  const agentsPanelOpen = rightPanelTabs.activeTab === "agents";
-  const railTabs = useMemo(
-    () => (rightPanelTabs.visible ? rightPanelTabs.openTabs : []),
-    [rightPanelTabs.visible, rightPanelTabs.openTabs],
-  );
+  // A hidden sidebar keeps its active tab for when it comes back, so the
+  // Agents tab only counts as open while the sidebar is showing.
+  const agentsPanelOpen = rightPanelTabs.visible && rightPanelTabs.activeTab === "agents";
   const activeThreadId = activeThread?.id ?? null;
   const activeThreadRef = useMemo(
     () => (activeThread ? scopeThreadRef(activeThread.environmentId, activeThread.id) : null),
@@ -1693,16 +1702,19 @@ export default function ChatView(props: ChatViewProps) {
   const roomsEnabled = roomsEnabledFor(serverConfig?.settings);
   // Agents added before the first message: the thread is created with them.
   const draftRoom = draftThread?.room;
-  const draftRoomCreateFields = useMemo(
-    () =>
-      roomsEnabled && draftRoom
-        ? {
-            ...(draftRoom.agents.length > 0 ? { participants: draftRoom.agents } : {}),
-            ...(draftRoom.agentRole !== undefined ? { agentRole: draftRoom.agentRole } : {}),
-          }
-        : {},
-    [draftRoom, roomsEnabled],
-  );
+  const computerProviders = serverConfig?.providers;
+  const draftRoomCreateFields = useMemo(() => {
+    if (!roomsEnabled || !draftRoom) return {};
+    // An agent whose provider is gone or turned off would join for good and
+    // never answer: it is left out.
+    const agents = draftRoom.agents.filter((agent) =>
+      canRunOnComputer(computerProviders ?? [], agent.modelSelection.instanceId),
+    );
+    return {
+      ...(agents.length > 0 ? { participants: agents } : {}),
+      ...(draftRoom.agentRole !== undefined ? { agentRole: draftRoom.agentRole } : {}),
+    };
+  }, [computerProviders, draftRoom, roomsEnabled]);
   const versionMismatch = resolveServerConfigVersionMismatch(serverConfig);
   const versionMismatchDismissKey =
     versionMismatch && activeThread
@@ -2008,18 +2020,6 @@ export default function ChatView(props: ChatViewProps) {
   const taskProgressBadge = useMemo(
     () => derivePlanTaskBadge({ activePlan, activeProposedPlan: taskProgressProposedPlan }),
     [activePlan, taskProgressProposedPlan],
-  );
-  const taskProgress = useMemo(
-    () =>
-      activePlan || taskProgressProposedPlan || taskProgressBadge
-        ? {
-            activePlan,
-            activeProposedPlan: taskProgressProposedPlan,
-            badge: taskProgressBadge,
-            label: taskProgressLabel,
-          }
-        : null,
-    [activePlan, taskProgressBadge, taskProgressLabel, taskProgressProposedPlan],
   );
   const subagentActivityState = useMemo(
     () =>
@@ -2789,6 +2789,47 @@ export default function ChatView(props: ChatViewProps) {
   const activeThreadWorktreePath = activeThread?.worktreePath ?? null;
   const activeWorkspaceRoot =
     activeThread?.effectiveCwd ?? activeThreadWorktreePath ?? activeProjectCwd ?? undefined;
+  // A plan is live while the turn that wrote it is still running: only then do
+  // its clocks tick and its current step say what the agent is on.
+  const taskPlanLive =
+    phase === "running" &&
+    activePlan !== null &&
+    activeTurnId !== null &&
+    activePlan.turnId === activeTurnId;
+  const taskCurrentStepStartedAt = taskPlanLive
+    ? (activePlan?.steps.find((step) => step.status === "inProgress")?.startedAt ?? null)
+    : null;
+  const taskCurrentWork = useMemo(
+    () =>
+      taskPlanLive
+        ? currentWorkLine(workLogEntries, {
+            workspaceRoot: activeWorkspaceRoot,
+            sinceMs: taskCurrentStepStartedAt ? Date.parse(taskCurrentStepStartedAt) : null,
+          })
+        : null,
+    [activeWorkspaceRoot, taskCurrentStepStartedAt, taskPlanLive, workLogEntries],
+  );
+  const taskProgress = useMemo(
+    () =>
+      activePlan || taskProgressProposedPlan || taskProgressBadge
+        ? {
+            activePlan,
+            activeProposedPlan: taskProgressProposedPlan,
+            badge: taskProgressBadge,
+            label: taskProgressLabel,
+            live: taskPlanLive,
+            currentWork: taskCurrentWork,
+          }
+        : null,
+    [
+      activePlan,
+      taskCurrentWork,
+      taskPlanLive,
+      taskProgressBadge,
+      taskProgressLabel,
+      taskProgressProposedPlan,
+    ],
+  );
   const activeMcpAuthProviderInstanceId =
     activeProviderInstanceId ??
     (activeProviderDriver === CODEX_PROVIDER_DRIVER
@@ -2861,8 +2902,8 @@ export default function ChatView(props: ChatViewProps) {
       setBrowserOpen(routeThreadRef, false);
     }
   }, [routeThreadRef, setBrowserOpen]);
-  const workingTreeDiffStat = useMemo(
-    () => resolveWorkingTreeDiffStat(gitStatusQuery.data ?? null),
+  const workingTreeChanges = useMemo(
+    () => resolveWorkingTreeChanges(gitStatusQuery.data ?? null),
     [gitStatusQuery.data],
   );
   const remoteBehindCount = useMemo(
@@ -2998,6 +3039,8 @@ export default function ChatView(props: ChatViewProps) {
       setDraftThreadContext(draftId, {
         projectRef: scopeProjectRef(target.environmentId, target.projectId),
       });
+      // The move drops the draft's agents: they were the old computer's.
+      void applyMovedDraftDefaults(draftId, target.environmentId);
     },
     [draftId, envLocked, logicalProjectEnvironments, setDraftThreadContext],
   );
@@ -3297,27 +3340,40 @@ export default function ChatView(props: ChatViewProps) {
             commandHints: backgroundRunCommandHints,
           });
           if (cancelled) return;
+          const resolvedAtMs = Date.now();
           setDetectedBackgroundRuns(
-            result.runs.map((run) => ({
-              id: run.id,
-              source: "detected",
-              terminalId: null,
-              pid: run.pid,
-              port: run.port,
-              elapsed: run.elapsed ?? null,
-              canStop: run.canStop,
-              label: deriveDetectedBackgroundRunLabel({
+            result.runs.map((run) => {
+              const providerRun = matchDetectedProviderRun({
                 command: run.command,
-                port: run.port,
+                urls: run.urls,
+                pid: run.pid,
                 providerBackgroundRuns: providerBackgroundSnapshot.runs,
-              }),
-              command: run.command,
-              detail: run.detail,
-              cwd: null,
-              statusLabel: run.statusLabel,
-              urls: run.urls,
-              pids: [run.pid],
-            })),
+              });
+              return {
+                id: run.id,
+                source: "detected",
+                terminalId: null,
+                pid: run.pid,
+                port: run.port,
+                elapsed: run.elapsed ?? null,
+                startedAt: processStartedAt(run.elapsed, resolvedAtMs),
+                canStop: run.canStop,
+                label:
+                  providerRun?.label ??
+                  deriveDetectedBackgroundRunLabel({
+                    command: run.command,
+                    port: run.port,
+                    providerBackgroundRuns: [],
+                  }),
+                command: run.command,
+                detail: run.detail,
+                cwd: null,
+                statusLabel: run.statusLabel,
+                urls: run.urls,
+                pids: [run.pid],
+                outputFile: providerRun?.outputFile ?? null,
+              };
+            }),
           );
           const detectedUrlSet = new Set(result.runs.flatMap((run) => run.urls));
           const detectedPidSet = new Set(result.runs.map((run) => run.pid));
@@ -3380,6 +3436,11 @@ export default function ChatView(props: ChatViewProps) {
         pid: null,
         port: null,
         elapsed: null,
+        startedAt: selectTerminalActivityStartedAt(
+          terminalActivityStartedAtByKey,
+          activeThreadRef,
+          terminalId,
+        ),
         canStop: true,
         label: command ?? terminalLabel,
         command,
@@ -3409,6 +3470,7 @@ export default function ChatView(props: ChatViewProps) {
     stoppedBackgroundRunPids,
     activeThreadRef,
     terminalActivityCommandByKey,
+    terminalActivityStartedAtByKey,
     terminalSubmittedCommandByKey,
     terminalState.activeTerminalId,
     terminalState.runningTerminalIds,
@@ -6657,6 +6719,14 @@ export default function ChatView(props: ChatViewProps) {
     const outgoingImplementationPrompt = formatOutgoingPrompt(implementationPrompt);
     const nextThreadTitle = truncate(buildPlanImplementationThreadTitle(planMarkdown));
     const nextThreadModelSelection: ModelSelection = ctxSelectedModelSelection;
+    // The plan's agent carries on; the computer's default agents join it.
+    const startingAgents = serverConfig
+      ? buildNewThreadParticipants({
+          agents: resolveNewThreadDefaults(serverConfig).roomAgents,
+          primaryModelSelection: nextThreadModelSelection,
+          instanceEntries: providerInstanceEntries,
+        })
+      : [];
 
     sendInFlightRef.current = true;
     beginLocalDispatch({ preparingWorktree: false });
@@ -6673,6 +6743,7 @@ export default function ChatView(props: ChatViewProps) {
         projectId: activeProject.id,
         title: nextThreadTitle,
         modelSelection: nextThreadModelSelection,
+        ...(startingAgents.length > 0 ? { participants: startingAgents } : {}),
         runtimeMode,
         interactionMode: "default",
         branch: activeThreadBranch,
@@ -6744,9 +6815,11 @@ export default function ChatView(props: ChatViewProps) {
     isSendBusy,
     isServerThread,
     navigate,
+    providerInstanceEntries,
     resetLocalDispatch,
     runtimeMode,
     environmentId,
+    serverConfig,
   ]);
 
   const [planScrollTarget, setPlanScrollTarget] = useState<{
@@ -7028,6 +7101,12 @@ export default function ChatView(props: ChatViewProps) {
     },
     [agentsPanelOpen, openRightPanelTab],
   );
+  /** The header's agent faces: the Agents tab on its list, not on one agent. */
+  const onOpenHeaderAgentsTab = useCallback(() => onOpenAgentsPanel(null), [onOpenAgentsPanel]);
+  const onOpenHeaderSourceTab = useCallback(
+    () => openRightPanelTab("sourceControl"),
+    [openRightPanelTab],
+  );
 
   const timelineProposedPlanState = useMemo<TimelineProposedPlanState>(
     () => ({
@@ -7099,20 +7178,21 @@ export default function ChatView(props: ChatViewProps) {
           terminalToggleShortcutLabel={terminalToggleShortcutLabel}
           railToggleShortcutLabel={sourceControlPanelShortcutLabel}
           railOpen={rightPanelEngaged}
-          railTabs={railTabs}
           sourceControlAvailable={activeProject !== undefined && !isGeneralChatThread}
           browserAvailable={browserAvailable}
           browserOpen={browserOpen}
           onToggleBrowser={handleToggleBrowser}
-          workingTreeDiffStat={workingTreeDiffStat}
+          workingTreeChanges={workingTreeChanges}
           remoteBehindCount={remoteBehindCount}
           liveAgents={headerLiveAgents}
+          agentProviderDriverKind={activeProviderDriver}
           fileBrowserAvailable={!isGeneralChatThread}
           taskProgress={taskProgress}
           forkContext={forkHeaderContext}
           parentContext={parentHeaderContext}
           onOpenParentThread={onOpenForkSourceThread}
           backgroundRuns={backgroundRuns}
+          activeThreadRef={activeThreadRef}
           onRunProjectScript={runProjectScript}
           onAddProjectScript={saveProjectScript}
           onUpdateProjectScript={updateProjectScript}
@@ -7133,6 +7213,8 @@ export default function ChatView(props: ChatViewProps) {
           onOpenForkSourceThread={onOpenForkSourceThread}
           onToggleTerminal={toggleTerminalVisibility}
           onToggleRail={onToggleRail}
+          onOpenSourceTab={onOpenHeaderSourceTab}
+          onOpenAgentsTab={onOpenHeaderAgentsTab}
           onContinueInProject={
             isGeneralChatThread && isServerThread && (activeThread?.messages.length ?? 0) > 0
               ? onContinueInProject

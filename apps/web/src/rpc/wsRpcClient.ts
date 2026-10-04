@@ -267,6 +267,9 @@ export interface WsRpcClient {
     >;
     readonly signalProcess: RpcUnaryMethod<typeof WS_METHODS.serverSignalProcess>;
     readonly resolveBackgroundRuns: RpcUnaryMethod<typeof WS_METHODS.serverResolveBackgroundRuns>;
+    readonly readBackgroundRunOutput: RpcUnaryMethod<
+      typeof WS_METHODS.serverReadBackgroundRunOutput
+    >;
     readonly stopBackgroundRun: RpcUnaryMethod<typeof WS_METHODS.serverStopBackgroundRun>;
     readonly getProviderExtensions: RpcUnaryMethod<typeof WS_METHODS.serverGetProviderExtensions>;
     readonly startProviderExtensionMcpOAuth: RpcUnaryMethod<
@@ -751,6 +754,12 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
       stopBackgroundRun: (input) =>
         transport.request((client) =>
           client[WS_METHODS.serverStopBackgroundRun](input).pipe(Effect.withTracerEnabled(false)),
+        ),
+      readBackgroundRunOutput: (input) =>
+        transport.request((client) =>
+          client[WS_METHODS.serverReadBackgroundRunOutput](input).pipe(
+            Effect.withTracerEnabled(false),
+          ),
         ),
       // Pure read. A plain request lost to a dropped socket left the plugins page empty with no
       // error until it remounted. With MCP and apps included the server may legitimately take
