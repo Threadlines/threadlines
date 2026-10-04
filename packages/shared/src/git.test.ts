@@ -5,6 +5,7 @@ import {
   applyGitStatusStreamEvent,
   buildSshRemoteUrl,
   buildTemporaryWorktreeBranchName,
+  buildWorkBranchName,
   classifyGitRemoteAuthFailure,
   deriveRepositoryDirectoryName,
   parseGitRemoteEndpoint,
@@ -17,6 +18,7 @@ import {
   parseRepositoryWebUrlFromRemoteUrl,
   sanitizeBranchFragment,
   WORKTREE_BRANCH_PREFIX,
+  worktreeFolderNameForBranch,
 } from "./git.ts";
 
 describe("sanitizeBranchFragment", () => {
@@ -291,6 +293,41 @@ describe("isTemporaryWorktreeBranch", () => {
     expect(isTemporaryWorktreeBranch(`${WORKTREE_BRANCH_PREFIX}/feature/demo`)).toBe(false);
     expect(isTemporaryWorktreeBranch("main")).toBe(false);
     expect(isTemporaryWorktreeBranch(`${WORKTREE_BRANCH_PREFIX}/deadbeef-extra`)).toBe(false);
+  });
+});
+
+describe("worktreeFolderNameForBranch", () => {
+  it("names placeholder worktrees by their token alone", () => {
+    expect(worktreeFolderNameForBranch(`${WORKTREE_BRANCH_PREFIX}/deadbeef`)).toBe("deadbeef");
+    expect(worktreeFolderNameForBranch("t3code/DEADBEEF")).toBe("deadbeef");
+  });
+
+  it("flattens real branch names into one folder", () => {
+    expect(worktreeFolderNameForBranch("fix/login-timeout")).toBe("fix-login-timeout");
+    expect(worktreeFolderNameForBranch("main")).toBe("main");
+  });
+});
+
+describe("buildWorkBranchName", () => {
+  it("keeps a known kind and one description segment", () => {
+    expect(buildWorkBranchName("fix/login-timeout")).toBe("fix/login-timeout");
+    expect(buildWorkBranchName("refs/heads/Docs/Setup Guide")).toBe("docs/setup-guide");
+    expect(buildWorkBranchName("feat/settings/dark-mode")).toBe("feat/settings-dark-mode");
+  });
+
+  it("maps common spellings of a kind", () => {
+    expect(buildWorkBranchName("Bugfix/Login Timeout")).toBe("fix/login-timeout");
+    expect(buildWorkBranchName("feature/dark-mode")).toBe("feat/dark-mode");
+  });
+
+  it("files a missing or unknown kind under chore", () => {
+    expect(buildWorkBranchName("login timeout")).toBe("chore/login-timeout");
+    expect(buildWorkBranchName("threadlines/login-timeout")).toBe(
+      "chore/threadlines-login-timeout",
+    );
+    expect(buildWorkBranchName("constructor/update")).toBe("chore/constructor-update");
+    expect(buildWorkBranchName("fix")).toBe("fix/update");
+    expect(buildWorkBranchName("  ")).toBe("chore/update");
   });
 });
 

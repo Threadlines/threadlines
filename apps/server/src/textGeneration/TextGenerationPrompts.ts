@@ -8,6 +8,7 @@
  */
 import * as Schema from "effect/Schema";
 import type { ChatAttachment } from "@threadlines/contracts";
+import { WORK_BRANCH_KINDS } from "@threadlines/shared/git";
 
 import { limitSection } from "./TextGenerationUtils.ts";
 import type { TextGenerationPolicy } from "./TextGenerationPolicy.ts";
@@ -210,8 +211,11 @@ export function buildBranchNamePrompt(input: BranchNamePromptInput) {
     instruction: "You generate concise git branch names.",
     responseShape: "Return a JSON object with key: branch.",
     rules: [
-      "Branch should describe the requested work from the user message.",
-      "Keep it short and specific (2-6 words).",
+      "Format the branch as <kind>/<description>, for example fix/login-timeout.",
+      `Pick the kind that fits the requested work best: ${WORK_BRANCH_KINDS.map(
+        (entry) => `${entry.kind} (${entry.description})`,
+      ).join(", ")}.`,
+      "The description says what the work is about: short and specific (2-6 words).",
       "Use plain words only, no issue prefixes and no punctuation-heavy text.",
       "If images are attached, use them as primary context for visual/UI issues.",
     ],

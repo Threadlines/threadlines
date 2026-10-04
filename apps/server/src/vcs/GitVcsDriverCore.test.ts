@@ -894,6 +894,37 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
       }),
     );
 
+    it.effect("renames around branch names a remote already uses", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        const remote = yield* makeTmpDir("git-vcs-driver-remote-");
+        const { initialBranch } = yield* initRepoWithCommit(cwd);
+        yield* git(remote, ["init", "--bare"]);
+        yield* git(cwd, ["remote", "add", "origin", remote]);
+        yield* git(cwd, ["push", "origin", `${initialBranch}:fix/login-timeout`]);
+        yield* git(cwd, ["push", "origin", `${initialBranch}:docs`]);
+        yield* git(cwd, ["fetch", "origin"]);
+        yield* git(cwd, ["checkout", "-b", "threadlines/deadbeef"]);
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+
+        const suffixed = yield* driver.renameBranch({
+          cwd,
+          oldBranch: "threadlines/deadbeef",
+          newBranch: "fix/login-timeout",
+        });
+        assert.equal(suffixed.branch, "fix/login-timeout-1");
+
+        // A `docs` branch blocks every `docs/...` name, so the name flattens.
+        const flattened = yield* driver.renameBranch({
+          cwd,
+          oldBranch: suffixed.branch,
+          newBranch: "docs/setup-guide",
+        });
+        assert.equal(flattened.branch, "docs-setup-guide");
+        assert.equal(yield* git(cwd, ["branch", "--show-current"]), "docs-setup-guide");
+      }),
+    );
+
     it.effect("returns the existing refName when rename source and target match", () =>
       Effect.gen(function* () {
         const cwd = yield* makeTmpDir();

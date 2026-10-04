@@ -32,6 +32,7 @@ import {
 import {
   classifyGitRemoteAuthFailure,
   dedupeRemoteBranchesWithLocalMatches,
+  worktreeFolderNameForBranch,
 } from "@threadlines/shared/git";
 import { compactTraceAttributes } from "@threadlines/shared/observability";
 import { decodeJsonResult } from "@threadlines/shared/schemaJson";
@@ -1396,18 +1397,77 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       },
     ).pipe(Effect.map((result) => result.exitCode === 0));
 
+  // A name is taken when a local branch or any remote's branch already uses
+  // it (or nests under it). Generated names share namespaces like `fix/` with
+  // everyone else's branches, and pushing over a teammate's would fail.
+  const isBranchNameTaken = (
+    cwd: string,
+    refName: string,
+    namespaces: ReadonlyArray<string>,
+  ): Effect.Effect<boolean, GitCommandError> =>
+    executeGit(
+      "GitVcsDriver.isBranchNameTaken",
+      cwd,
+      [
+        "for-each-ref",
+        "--count=1",
+        "--format=%(refname)",
+        ...namespaces.map((namespace) => `${namespace}/${refName}`),
+      ],
+      { timeoutMs: 5_000 },
+    ).pipe(Effect.map((result) => result.stdout.trim().length > 0));
+
+  // Whether a branch is named exactly like one of `refName`'s parent folders
+  // (`docs` for `docs/setup-guide`). Git can't hold both, so such a branch
+  // blocks every name under it. Checked exactly: a `for-each-ref` pattern would
+  // also list every sibling branch under the parent.
+  const isParentBranchNameTaken = (
+    cwd: string,
+    refName: string,
+    namespaces: ReadonlyArray<string>,
+  ): Effect.Effect<boolean, GitCommandError> => {
+    const segments = refName.split("/");
+    const parents = segments.slice(1).map((_, index) => segments.slice(0, index + 1).join("/"));
+    if (parents.length === 0) return Effect.succeed(false);
+    const parentRefs = namespaces.flatMap((namespace) =>
+      parents.map((parent) => `${namespace}/${parent}`),
+    );
+    return executeGit("GitVcsDriver.isParentBranchNameTaken", cwd, ["cat-file", "--batch-check"], {
+      stdin: `${parentRefs.join("\n")}\n`,
+      timeoutMs: 5_000,
+    }).pipe(
+      Effect.map((result) =>
+        result.stdout
+          .split("\n")
+          .some((line) => line.trim().length > 0 && !line.trimEnd().endsWith(" missing")),
+      ),
+    );
+  };
+
   const resolveAvailableBranchName = Effect.fn("resolveAvailableBranchName")(function* (
     cwd: string,
     desiredBranch: string,
   ) {
-    const isDesiredTaken = yield* branchExists(cwd, desiredBranch);
-    if (!isDesiredTaken) {
-      return desiredBranch;
+    const remoteNames = yield* runGitStdout("GitVcsDriver.listRemoteNames", cwd, ["remote"]).pipe(
+      Effect.map(parseRemoteNames),
+      Effect.catch(() => Effect.succeed<ReadonlyArray<string>>([])),
+    );
+    const namespaces = [
+      "refs/heads",
+      ...remoteNames.map((remoteName) => `refs/remotes/${remoteName}`),
+    ];
+    // Suffixes can't get out from under a blocking parent, so flatten instead:
+    // `docs/setup-guide` becomes `docs-setup-guide`.
+    const baseBranch = (yield* isParentBranchNameTaken(cwd, desiredBranch, namespaces))
+      ? desiredBranch.replace(/\//g, "-")
+      : desiredBranch;
+    if (!(yield* isBranchNameTaken(cwd, baseBranch, namespaces))) {
+      return baseBranch;
     }
 
     for (let suffix = 1; suffix <= 100; suffix += 1) {
-      const candidate = `${desiredBranch}-${suffix}`;
-      const isCandidateTaken = yield* branchExists(cwd, candidate);
+      const candidate = `${baseBranch}-${suffix}`;
+      const isCandidateTaken = yield* isBranchNameTaken(cwd, candidate, namespaces);
       if (!isCandidateTaken) {
         return candidate;
       }
@@ -4769,9 +4829,9 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     "createWorktree",
   )(function* (input) {
     const targetBranch = input.newRefName ?? input.refName;
-    const sanitizedBranch = targetBranch.replace(/\//g, "-");
     const repoName = path.basename(input.cwd);
-    const worktreePath = input.path ?? path.join(worktreesDir, repoName, sanitizedBranch);
+    const worktreePath =
+      input.path ?? path.join(worktreesDir, repoName, worktreeFolderNameForBranch(targetBranch));
     // `--no-track`: a thread's branch may start from a remote-tracking ref
     // (see resolveFreshWorktreeBase) and must not inherit it as upstream, or a
     // later push would target the base branch itself.

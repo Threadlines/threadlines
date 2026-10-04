@@ -135,6 +135,70 @@ export function isTemporaryWorktreeBranch(refName: string): boolean {
 }
 
 /**
+ * Folder name for a worktree created without an explicit path. A placeholder
+ * branch gives just its token (`7508bb23`): the branch is renamed after the
+ * first message, but the folder never moves, so the placeholder's prefix would
+ * outlive it on disk.
+ */
+export function worktreeFolderNameForBranch(refName: string): string {
+  if (isTemporaryWorktreeBranch(refName)) {
+    return refName.trim().toLowerCase().split("/").at(-1) ?? refName;
+  }
+  return refName.replace(/\//g, "-");
+}
+
+/**
+ * The kinds of work a generated thread branch name starts with, in the order
+ * the naming prompt lists them. `chore` covers anything the others don't.
+ */
+export const WORK_BRANCH_KINDS = [
+  { kind: "feat", description: "new feature or behavior" },
+  { kind: "fix", description: "bug fix" },
+  { kind: "docs", description: "documentation only" },
+  { kind: "refactor", description: "restructuring without changing behavior" },
+  { kind: "perf", description: "performance" },
+  { kind: "test", description: "tests only" },
+  { kind: "chore", description: "anything else" },
+] as const;
+type WorkBranchKind = (typeof WORK_BRANCH_KINDS)[number]["kind"];
+
+const WORK_BRANCH_KIND_ALIASES: ReadonlyMap<string, WorkBranchKind> = new Map([
+  ["feature", "feat"],
+  ["features", "feat"],
+  ["bug", "fix"],
+  ["bugfix", "fix"],
+  ["hotfix", "fix"],
+  ["doc", "docs"],
+  ["refactoring", "refactor"],
+  ["performance", "perf"],
+  ["tests", "test"],
+]);
+
+function resolveWorkBranchKind(segment: string): WorkBranchKind | null {
+  return (
+    WORK_BRANCH_KINDS.find((entry) => entry.kind === segment)?.kind ??
+    WORK_BRANCH_KIND_ALIASES.get(segment) ??
+    null
+  );
+}
+
+/**
+ * Normalize a model-suggested branch name into `<kind>/<description>`, e.g.
+ * `Bugfix/Login Timeout` becomes `fix/login-timeout`. A missing or unknown
+ * kind becomes `chore`, and the description is kept to one path segment.
+ */
+export function buildWorkBranchName(raw: string): string {
+  const [head = "", ...rest] = sanitizeBranchFragment(raw.trim().replace(/^refs\/heads\//i, ""))
+    .split("/")
+    .filter((segment) => segment.length > 0);
+  const kind = resolveWorkBranchKind(head);
+  if (kind !== null) {
+    return `${kind}/${rest.join("-") || "update"}`;
+  }
+  return `chore/${[head, ...rest].join("-") || "update"}`;
+}
+
+/**
  * Normalize a git remote URL into a stable comparison key.
  */
 export function normalizeGitRemoteUrl(value: string): string {
