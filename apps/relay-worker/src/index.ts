@@ -424,7 +424,11 @@ export class RelaySession extends DurableObject<ThreadlinesRelayEnv> {
     if (attachment?.mode === "raw" && attachment.role === "device") {
       this.notifyRawDesktopsOfDevice("relay.peer-left", attachment);
     }
-    ws.close(code, reason);
+    try {
+      ws.close(code, reason);
+    } catch {
+      // A dropped connection reports 1005/1006, which can't be sent back.
+    }
   }
 
   override async webSocketError(ws: WebSocket, error: unknown): Promise<void> {
