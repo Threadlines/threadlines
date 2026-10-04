@@ -69,7 +69,6 @@ import {
   useState,
 } from "react";
 import * as Schema from "effect/Schema";
-import { useShallow } from "zustand/react/shallow";
 
 import { openInPreferredEditor } from "~/editorPreferences";
 import { openFileInActiveViewer } from "~/fileViewerStore";
@@ -94,10 +93,8 @@ import {
   gitRunStackedActionMutationOptions,
   gitStartProviderReviewMutationOptions,
   gitStashesQueryOptions,
-  invalidateGitQueries,
   gitStageChangesMutationOptions,
   gitUnstageChangesMutationOptions,
-  vcsListWorktreesQueryOptions,
 } from "~/lib/gitReactQuery";
 import {
   GIT_STATUS_STALE_MESSAGE,
@@ -121,20 +118,12 @@ import {
 import { getAppModelOptionsForInstance } from "~/modelSelection";
 import { useServerProviders } from "~/rpc/serverState";
 import { getSourceControlPresentation } from "~/sourceControlPresentation";
-import { selectThreadsForEnvironment, useStore } from "~/store";
+import { useStore } from "~/store";
 import { createProjectSelectorByRef, createThreadSelectorByRef } from "~/storeSelectors";
 import { buildThreadRouteParams } from "~/threadRoutes";
 import { resolvePathLinkTarget } from "~/terminal-links";
-import {
-  classifyWorktreesForCleanup,
-  describeWorktreeRisks,
-  formatWorktreePathForDisplay,
-  getVcsRefBadge,
-  isWorktreeSafeToDelete,
-  summarizeWorktreeSelection,
-  type WorktreeCleanupRow,
-} from "~/worktreeCleanup";
-import { useArchivedThreadSnapshots } from "~/lib/archivedThreadsState";
+import { getVcsRefBadge, type WorktreeCleanupRow } from "~/worktreeCleanup";
+import { BranchMenuCleanupItem, WorktreeCleanupDialogBody } from "./WorktreeCleanupDialog";
 import { PublishRepositoryDialog } from "../GitActionsControl";
 import { GitAuthRemediationDialog } from "./GitAuthRemediationDialog";
 import { ProviderReviewDialog } from "./ProviderReviewDialog";
@@ -187,7 +176,6 @@ import {
   MenuTrigger,
 } from "../ui/menu";
 import { Skeleton } from "../ui/skeleton";
-import { Spinner } from "../ui/spinner";
 import { Textarea } from "../ui/textarea";
 import { SectionLabel } from "../ui/threadline";
 import { stackedThreadToast, toastManager, type ThreadToastData } from "../ui/toast";
@@ -1513,299 +1501,6 @@ function getBranchActionDisabledReason(input: {
   return null;
 }
 
-/**
- * The branch menu's entry point into worktree cleanup.
- *
- * Mounted only while the branch menu is open: the worktree list and the
- * archived thread snapshot are both fetched on demand, and neither is worth
- * polling for a menu the user opens for a second at a time. The rows travel up
- * with the click so the dialog can outlive the menu that launched it.
- */
-function BranchMenuCleanupItem({
-  target,
-  onOpenCleanup,
-}: {
-  readonly target: SourceControlProjectTarget;
-  readonly onOpenCleanup: (rows: readonly WorktreeCleanupRow[]) => void;
-}) {
-  const worktreesQuery = useQuery(
-    vcsListWorktreesQueryOptions({
-      environmentId: target.environmentId,
-      cwd: target.cwd,
-    }),
-  );
-  const environmentIds = useMemo(() => [target.environmentId], [target.environmentId]);
-  const { snapshots, isLoading: archivedLoading } = useArchivedThreadSnapshots(environmentIds);
-  const liveThreads = useStore(
-    useShallow((state) => selectThreadsForEnvironment(state, target.environmentId)),
-  );
-  const archivedThreads = useMemo(
-    () => snapshots.flatMap((entry) => entry.snapshot.threads),
-    [snapshots],
-  );
-  const rows = useMemo(
-    () =>
-      classifyWorktreesForCleanup({
-        worktrees: worktreesQuery.data?.worktrees ?? [],
-        liveThreads,
-        archivedThreads,
-      }),
-    [archivedThreads, liveThreads, worktreesQuery.data?.worktrees],
-  );
-  const cleanableCount = rows.filter((row) => row.state !== "in-use").length;
-  // The archived snapshot decides which rows read as "archived", so opening
-  // before it lands would pre-check a worktree an archived thread still wants.
-  // A background revalidation with snapshots already in hand does not count.
-  const isLoading = worktreesQuery.isPending || (archivedLoading && snapshots.length === 0);
-
-  return (
-    <MenuItem disabled={isLoading || rows.length === 0} onClick={() => onOpenCleanup(rows)}>
-      <FolderGit2Icon className="size-3.5" />
-      <span>Clean up worktrees...</span>
-      {isLoading ? (
-        <Spinner className="ms-auto size-3 shrink-0 text-muted-foreground/60 motion-reduce:animate-none" />
-      ) : cleanableCount > 0 ? (
-        <span className="ms-auto shrink-0 text-[10px] text-muted-foreground/60">
-          {cleanableCount} unused
-        </span>
-      ) : null}
-    </MenuItem>
-  );
-}
-
-type WorktreeCleanupProgress =
-  | { readonly status: "deleting" }
-  | { readonly status: "deleted" }
-  | { readonly status: "failed"; readonly message: string };
-
-/**
- * Batch cleanup for a project's spare checkouts.
- *
- * Deletions run one at a time and report in place, so a repository with two
- * dozen worktrees costs the user a single decision and still shows an outcome
- * per row. Mounted fresh per open, which is what resets the ticks and the
- * progress.
- */
-function WorktreeCleanupDialogBody({
-  rows,
-  projectName,
-  projectCwd,
-  environmentId,
-  defaultBranchName,
-  onDone,
-  onSwitchCheckout,
-}: {
-  readonly rows: readonly WorktreeCleanupRow[];
-  readonly projectName: string;
-  readonly projectCwd: string;
-  readonly environmentId: EnvironmentId;
-  readonly defaultBranchName: string | null;
-  readonly onDone: () => void;
-  /** Omitted when no thread is open: there is nothing to move. */
-  readonly onSwitchCheckout?: ((row: WorktreeCleanupRow) => void) | undefined;
-}) {
-  const queryClient = useQueryClient();
-  const cleanableRows = useMemo(() => rows.filter((row) => row.state !== "in-use"), [rows]);
-  const inUseRows = useMemo(() => rows.filter((row) => row.state === "in-use"), [rows]);
-  const [selectedPaths, setSelectedPaths] = useState<ReadonlySet<string>>(
-    () => new Set(cleanableRows.filter(isWorktreeSafeToDelete).map((row) => row.path)),
-  );
-  const [progress, setProgress] = useState<ReadonlyMap<string, WorktreeCleanupProgress>>(
-    () => new Map(),
-  );
-  const [isRunning, setIsRunning] = useState(false);
-  const [hasRun, setHasRun] = useState(false);
-  const selection = summarizeWorktreeSelection(cleanableRows, selectedPaths);
-  const locked = isRunning || hasRun;
-  const allSelected = cleanableRows.length > 0 && selection.count === cleanableRows.length;
-  const showSelectAll = cleanableRows.length > 1;
-
-  const toggleRow = (path: string, checked: boolean) => {
-    setSelectedPaths((current) => {
-      const next = new Set(current);
-      if (checked) {
-        next.add(path);
-      } else {
-        next.delete(path);
-      }
-      return next;
-    });
-  };
-
-  const runCleanup = async () => {
-    const api = readEnvironmentApi(environmentId);
-    if (!api) {
-      return;
-    }
-    const targets = cleanableRows.filter((row) => selectedPaths.has(row.path));
-    setIsRunning(true);
-    for (const row of targets) {
-      setProgress((current) => new Map(current).set(row.path, { status: "deleting" }));
-      try {
-        // Run from the project root: git cannot remove the folder it stands in.
-        await api.vcs.removeWorktree({ cwd: projectCwd, path: row.path, force: true });
-        setProgress((current) => new Map(current).set(row.path, { status: "deleted" }));
-      } catch (error) {
-        setProgress((current) =>
-          new Map(current).set(row.path, {
-            status: "failed",
-            message: toGitActionErrorMessage(error),
-          }),
-        );
-      }
-    }
-    setIsRunning(false);
-    setHasRun(true);
-    await invalidateGitQueries(queryClient, { environmentId });
-  };
-
-  const safeCount = cleanableRows.filter(isWorktreeSafeToDelete).length;
-  // The count on the menu row promises N deletable; explain here why fewer
-  // start checked: only the rows whose removal provably loses nothing.
-  const preselectionNote =
-    cleanableRows.length === 0
-      ? ""
-      : safeCount === 0
-        ? " Each one has something at risk, so none are checked yet."
-        : safeCount < cleanableRows.length
-          ? ` The ${safeCount} with nothing to lose ${safeCount === 1 ? "is" : "are"} already checked; the rest show what deleting them would cost.`
-          : "";
-  const summary =
-    cleanableRows.length === 0
-      ? "All worktrees are in use."
-      : `${projectName} has ${cleanableRows.length} worktree${
-          cleanableRows.length === 1 ? "" : "s"
-        } nothing is using.${preselectionNote}`;
-
-  return (
-    <>
-      <AlertDialogHeader>
-        <AlertDialogTitle>Clean up worktrees</AlertDialogTitle>
-        <AlertDialogDescription>{summary}</AlertDialogDescription>
-      </AlertDialogHeader>
-      {showSelectAll ? (
-        <div className="-mt-2 flex justify-end px-6 pb-1">
-          <Button
-            disabled={locked}
-            onClick={() =>
-              setSelectedPaths(
-                allSelected ? new Set() : new Set(cleanableRows.map((row) => row.path)),
-              )
-            }
-            size="xs"
-            variant="ghost"
-          >
-            {allSelected ? "Select none" : `Select all ${cleanableRows.length}`}
-          </Button>
-        </div>
-      ) : null}
-      {/* Sides match the header's p-6; the popup itself is unpadded. */}
-      <div className={cn("max-h-72 overflow-y-auto px-6", !showSelectAll && "-mt-2")}>
-        {cleanableRows.map((row) => {
-          const risks = describeWorktreeRisks(row, defaultBranchName);
-          const rowProgress = progress.get(row.path);
-          return (
-            <div
-              className="flex items-start gap-2.5 border-border/55 border-b py-2 last:border-b-0"
-              key={row.path}
-              title={row.path}
-            >
-              {/* The label stops short of the switch button so clicking that
-                  button never doubles as a tick. */}
-              <label className="flex min-w-0 flex-1 items-start gap-2.5">
-                <Checkbox
-                  checked={selectedPaths.has(row.path)}
-                  className="mt-0.5"
-                  disabled={locked}
-                  onCheckedChange={(checked) => toggleRow(row.path, checked === true)}
-                />
-                <span className="flex min-w-0 flex-1 flex-col">
-                  <span className="flex min-w-0 items-baseline gap-2">
-                    <span className="truncate text-sm">
-                      {formatWorktreePathForDisplay(row.path)}
-                    </span>
-                    {row.refName ? (
-                      <span className="truncate text-muted-foreground text-xs">{row.refName}</span>
-                    ) : null}
-                  </span>
-                  {risks.length > 0 ? (
-                    <span className="text-muted-foreground text-xs">{risks.join(", ")}</span>
-                  ) : null}
-                  {rowProgress?.status === "failed" ? (
-                    <span className="text-destructive-foreground text-xs">
-                      {rowProgress.message}
-                    </span>
-                  ) : null}
-                </span>
-              </label>
-              {rowProgress ? (
-                <span className="mt-1 shrink-0 text-[10px] text-muted-foreground">
-                  {rowProgress.status === "deleting"
-                    ? "deleting"
-                    : rowProgress.status === "deleted"
-                      ? "deleted"
-                      : "failed"}
-                </span>
-              ) : null}
-              {onSwitchCheckout && row.refName ? (
-                <Button
-                  aria-label={`Switch checkout to ${formatWorktreePathForDisplay(row.path)}`}
-                  className="shrink-0"
-                  disabled={locked}
-                  onClick={() => onSwitchCheckout(row)}
-                  size="icon-xs"
-                  title="Switch checkout here"
-                  variant="ghost"
-                >
-                  <FolderGit2Icon />
-                </Button>
-              ) : null}
-            </div>
-          );
-        })}
-        {inUseRows.map((row) => (
-          <div
-            className="flex items-baseline gap-2 border-border/55 border-b py-2 opacity-64 last:border-b-0"
-            key={row.path}
-            title={row.path}
-          >
-            <span className="truncate text-sm">{formatWorktreePathForDisplay(row.path)}</span>
-            {row.refName ? (
-              <span className="truncate text-muted-foreground text-xs">{row.refName}</span>
-            ) : null}
-            <span className="ms-auto shrink-0 text-[10px] text-muted-foreground">in use</span>
-          </div>
-        ))}
-      </div>
-      <AlertDialogFooter className="mt-4">
-        {hasRun ? (
-          <Button onClick={onDone} size="sm">
-            Close
-          </Button>
-        ) : (
-          <>
-            <AlertDialogClose disabled={isRunning} render={<Button size="sm" variant="outline" />}>
-              Cancel
-            </AlertDialogClose>
-            <Button
-              disabled={selection.count === 0 || isRunning}
-              onClick={() => {
-                void runCleanup();
-              }}
-              size="sm"
-              variant={selection.hasRisky ? "destructive" : "default"}
-            >
-              {isRunning
-                ? "Deleting..."
-                : `Delete ${selection.count} worktree${selection.count === 1 ? "" : "s"}`}
-            </Button>
-          </>
-        )}
-      </AlertDialogFooter>
-    </>
-  );
-}
-
 function SourceControlBranchMenu({
   target,
   activeThreadRef,
@@ -1843,7 +1538,7 @@ function SourceControlBranchMenu({
   const [menuOpen, setMenuOpen] = useState(false);
   // Held in the panel, not the menu: opening the dialog closes the menu, which
   // would unmount a dialog rendered inside it.
-  const [cleanupRows, setCleanupRows] = useState<readonly WorktreeCleanupRow[] | null>(null);
+  const [cleanupOpen, setCleanupOpen] = useState(false);
   const branchSearch = useInfiniteQuery(
     gitBranchSearchInfiniteQueryOptions({
       environmentId: target.environmentId,
@@ -1967,7 +1662,7 @@ function SourceControlBranchMenu({
         );
         return;
       }
-      setCleanupRows(null);
+      setCleanupOpen(false);
       applyCheckoutSwitch(row.refName, row.path);
     },
     [applyCheckoutSwitch],
@@ -2228,30 +1923,21 @@ function SourceControlBranchMenu({
               </MenuSubPopup>
             </MenuSub>
             {menuOpen ? (
-              <BranchMenuCleanupItem target={target} onOpenCleanup={setCleanupRows} />
+              <BranchMenuCleanupItem target={target} onOpen={() => setCleanupOpen(true)} />
             ) : null}
           </MenuPopup>
         </Menu>
       </div>
 
-      <AlertDialog
-        open={cleanupRows !== null}
-        onOpenChange={(open) => {
-          if (!open) {
-            setCleanupRows(null);
-          }
-        }}
-      >
+      <AlertDialog open={cleanupOpen} onOpenChange={setCleanupOpen}>
         <AlertDialogPopup className="max-w-lg">
-          {cleanupRows ? (
+          {cleanupOpen ? (
             <WorktreeCleanupDialogBody
               defaultBranchName={defaultBranchName}
-              environmentId={target.environmentId}
-              onDone={() => setCleanupRows(null)}
+              onDone={() => setCleanupOpen(false)}
               onSwitchCheckout={activeThreadRef ? switchCheckoutToWorktree : undefined}
-              projectCwd={target.projectCwd}
               projectName={target.name}
-              rows={cleanupRows}
+              target={target}
             />
           ) : null}
         </AlertDialogPopup>

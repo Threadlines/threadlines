@@ -27,6 +27,7 @@ import {
   type VcsRef,
   type VcsStashEntry,
   type VcsWorkingTreeFileChangeKind,
+  type VcsWorktreeStatus,
 } from "@threadlines/contracts";
 import {
   classifyGitRemoteAuthFailure,
@@ -95,6 +96,26 @@ const WORKTREE_BASE_FETCH_TIMEOUT = Duration.seconds(15);
  */
 const LEFTOVER_WORKTREE_REMOVE_ATTEMPTS = 20;
 const LEFTOVER_WORKTREE_REMOVE_DELAY = Duration.millis(250);
+/**
+ * How long one `git worktree remove` may run. Deleting installed dependencies
+ * on a slow disk or under antivirus scanning takes far longer than an ordinary
+ * git command, and a removal killed halfway leaves a half-deleted checkout.
+ */
+const WORKTREE_REMOVE_TIMEOUT_MS = 5 * 60_000;
+/** Checkouts inspected at once while listing worktree statuses. */
+const WORKTREE_STATUS_CONCURRENCY = 4;
+/**
+ * Shipping verdicts kept per (base commit, branch commit) pair. Commit ids pin
+ * both histories, so a verdict never goes stale; the cap only bounds memory.
+ */
+const BRANCH_SHIPPING_CACHE_CAPACITY = 4_096;
+/** Diffs larger than this are not fingerprinted; the branch just reads as unshipped. */
+const BRANCH_SHIPPING_DIFF_MAX_BYTES = 16 * 1024 * 1024;
+/**
+ * Above this many characters of file names the base branch's log runs without
+ * a path filter, which stays under command-line limits (32K on Windows).
+ */
+const BRANCH_SHIPPING_MAX_PATHSPEC_CHARS = 8_000;
 const BACKGROUND_GIT_FETCH_ENV = Object.freeze({
   GCM_INTERACTIVE: "Never",
   GIT_TERMINAL_PROMPT: "0",
@@ -760,6 +781,57 @@ function remoteTrackingRef(remoteName: string, branchName: string): string {
 function remoteBranchFetchRefspec(remoteName: string, branchName: string): string {
   return `+refs/heads/${branchName}:${remoteTrackingRef(remoteName, branchName)}`;
 }
+
+/** One registration in `git worktree list --porcelain`, kept even when its folder is gone. */
+interface WorktreeRegistration {
+  readonly path: string;
+  readonly branch: string | null;
+  /** Empty when locked without a reason; null when not locked. */
+  readonly lockReason: string | null;
+  /** Git would prune it: the folder or its `.git` link is gone. */
+  readonly prunable: boolean;
+}
+
+/**
+ * Every registration `git worktree list --porcelain` reports, including the
+ * ones whose folder was deleted by hand. The cleanup list needs those too:
+ * they are exactly the leftovers nothing else in the app can reach.
+ */
+function parseWorktreeRegistrations(stdout: string): ReadonlyArray<WorktreeRegistration> {
+  const registrations: WorktreeRegistration[] = [];
+  for (const block of stdout.split("\n\n")) {
+    const lines = block.split("\n");
+    const header = lines.find((line) => line.startsWith("worktree "));
+    if (header === undefined) {
+      continue;
+    }
+    const branchLine = lines.find((line) => line.startsWith("branch refs/heads/"));
+    const lockLine = lines.find((line) => line === "locked" || line.startsWith("locked "));
+    registrations.push({
+      path: header.slice("worktree ".length),
+      branch: branchLine?.slice("branch refs/heads/".length) ?? null,
+      lockReason: lockLine === undefined ? null : lockLine.slice("locked".length).trim(),
+      prunable: lines.some((line) => line === "prunable" || line.startsWith("prunable ")),
+    });
+  }
+  return registrations;
+}
+
+/** How much of a branch the default branch is missing; see `VcsWorktreeStatus`. */
+interface BranchShipping {
+  readonly count: number | null;
+  readonly unrelatedHistory: boolean;
+  readonly mergedByContent: boolean;
+}
+
+const UNKNOWN_BRANCH_SHIPPING: BranchShipping = {
+  count: null,
+  unrelatedHistory: false,
+  mergedByContent: false,
+};
+
+/** The commit id `git patch-id` reports for a patch that had no `commit` header. */
+const isNullObjectId = (value: string): boolean => /^0+$/u.test(value);
 
 function isMissingGitCwdError(error: GitCommandError): boolean {
   const normalized = `${error.detail}\n${error.message}`.toLowerCase();
@@ -3886,93 +3958,417 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       .realPath(candidate)
       .pipe(Effect.catch(() => Effect.succeed(path.resolve(candidate))));
 
-  /** Uncommitted changes in one checkout. A checkout git can no longer read
-   * (its directory was removed underneath us) counts as clean rather than
-   * failing the whole listing. */
-  const readWorktreeDirty = (cwd: string): Effect.Effect<boolean> =>
+  /**
+   * Uncommitted changes in one checkout, or null when git could not read it (a
+   * timeout, a broken checkout). Unknown stays unknown: the cleanup dialog
+   * force-deletes whatever this reports as clean.
+   */
+  const readWorktreeDirty = (cwd: string): Effect.Effect<boolean | null> =>
     executeGit("GitVcsDriver.listWorktreeStatuses.status", cwd, ["status", "--porcelain"], {
       timeoutMs: 10_000,
       allowNonZeroExit: true,
     }).pipe(
-      Effect.map((result) => result.exitCode === 0 && result.stdout.trim().length > 0),
-      Effect.catch(() => Effect.succeed(false)),
+      Effect.map((result) => (result.exitCode === 0 ? result.stdout.trim().length > 0 : null)),
+      Effect.catch(() => Effect.succeed(null)),
     );
 
+  const branchShippingCache = new Map<string, BranchShipping>();
+  const rememberBranchShipping = (key: string, shipping: BranchShipping): BranchShipping => {
+    if (branchShippingCache.size >= BRANCH_SHIPPING_CACHE_CAPACITY) {
+      const oldest = branchShippingCache.keys().next();
+      if (!oldest.done) {
+        branchShippingCache.delete(oldest.value);
+      }
+    }
+    branchShippingCache.set(key, shipping);
+    return shipping;
+  };
+
   /**
-   * Commits on `branch` the repository's default branch cannot reach.
+   * The ref a branch's shipping is judged against: the default branch, or its
+   * remote-tracking copy when the local one is merely behind it. A pull request
+   * merged on the host lands there first, and a local default branch nobody
+   * pulled would otherwise report that work as unshipped. Memoized per listing.
+   */
+  const resolveShippingBaseRef = (
+    cwd: string,
+    branch: string,
+    freshenedBaseRefs: Map<string, string>,
+  ) =>
+    Effect.gen(function* () {
+      const baseRef = yield* resolveBaseBranchForNoUpstream(cwd, branch);
+      if (!baseRef) {
+        return null;
+      }
+      const known = freshenedBaseRefs.get(baseRef);
+      if (known !== undefined) {
+        return known;
+      }
+      const remoteName = yield* resolvePrimaryRemoteName(cwd).pipe(
+        Effect.catch(() => Effect.succeed(null)),
+      );
+      let freshest = baseRef;
+      if (remoteName !== null && !baseRef.startsWith(`${remoteName}/`)) {
+        const behind = yield* executeGit(
+          "GitVcsDriver.listWorktreeStatuses.baseFreshness",
+          cwd,
+          ["merge-base", "--is-ancestor", baseRef, remoteTrackingRef(remoteName, baseRef)],
+          { timeoutMs: 5_000, allowNonZeroExit: true },
+        );
+        if (behind.exitCode === 0) {
+          freshest = `${remoteName}/${baseRef}`;
+        }
+      }
+      freshenedBaseRefs.set(baseRef, freshest);
+      return freshest;
+    });
+
+  /**
+   * Whether every change `tip` made since `mergeBase` is already on `base`,
+   * even though its commits are not. Cheapest check first:
    *
-   * A branch with no merge base against that default branch reports
+   * - Merging the branch into the base would change nothing. Catches fresh
+   *   squash and rebase merges.
+   * - Patch ids point at the base commits that look like the branch: one
+   *   commit matching its whole diff (a squash merge), or one per branch
+   *   commit (a rebase merge or cherry-picks). Patch ids ignore line numbers
+   *   and whitespace, so they survive later edits around the change; they are
+   *   only leads. A lead counts once merging the branch onto the base just
+   *   before those commits reproduces the files they produced. That rules out
+   *   look-alike edits elsewhere in a file or with different whitespace.
+   *
+   * Null when git could not answer (a timeout, a diff too large to read); the
+   * row then shows its commit count and the user decides.
+   */
+  const isBranchContentOnBase = (
+    cwd: string,
+    shas: {
+      readonly base: string;
+      readonly baseTree: string;
+      readonly tip: string;
+      readonly mergeBase: string;
+    },
+  ): Effect.Effect<boolean | null> =>
+    Effect.gen(function* () {
+      const mergeOntoTree = (onto: string) =>
+        executeGit(
+          "GitVcsDriver.listWorktreeStatuses.trialMerge",
+          cwd,
+          ["merge-tree", "--write-tree", "--no-messages", onto, shas.tip],
+          { timeoutMs: 10_000, allowNonZeroExit: true },
+        ).pipe(
+          Effect.map((result) =>
+            result.exitCode === 0 ? (result.stdout.split("\n", 1)[0] ?? null) : null,
+          ),
+        );
+      if ((yield* mergeOntoTree(shas.base)) === shas.baseTree) {
+        return true;
+      }
+
+      // Rename detection off everywhere: the base's log is filtered to these
+      // paths, which would turn a rename there into an add here and break
+      // the match.
+      const diffFlags = ["--no-color", "--no-ext-diff", "--no-textconv", "--no-renames"];
+      const outputLimits = {
+        timeoutMs: 15_000,
+        allowNonZeroExit: true,
+        maxOutputBytes: BRANCH_SHIPPING_DIFF_MAX_BYTES,
+      };
+      const changedFiles = yield* executeGit(
+        "GitVcsDriver.listWorktreeStatuses.changedFiles",
+        cwd,
+        ["diff", "--name-only", "-z", "--no-renames", shas.mergeBase, shas.tip],
+        outputLimits,
+      );
+      if (changedFiles.exitCode !== 0 || changedFiles.stdoutTruncated) {
+        return null;
+      }
+      const files = changedFiles.stdout.split("\0").filter((file) => file.length > 0);
+      if (files.length === 0) {
+        return false;
+      }
+      const pathspec =
+        files.reduce((total, file) => total + file.length + 1, 0) <=
+        BRANCH_SHIPPING_MAX_PATHSPEC_CHARS
+          ? ["--", ...files]
+          : [];
+      const readPatches = (operation: string, args: ReadonlyArray<string>) =>
+        executeGit(operation, cwd, args, outputLimits).pipe(
+          Effect.map((result) =>
+            result.exitCode === 0 && !result.stdoutTruncated ? result.stdout : null,
+          ),
+        );
+      const branchDiff = yield* readPatches("GitVcsDriver.listWorktreeStatuses.branchDiff", [
+        "diff",
+        ...diffFlags,
+        shas.mergeBase,
+        shas.tip,
+      ]);
+      const branchLog = yield* readPatches("GitVcsDriver.listWorktreeStatuses.branchLog", [
+        "log",
+        "-p",
+        "--no-merges",
+        ...diffFlags,
+        "--format=commit %H",
+        `${shas.mergeBase}..${shas.tip}`,
+      ]);
+      const baseLog = yield* readPatches("GitVcsDriver.listWorktreeStatuses.baseLog", [
+        "--literal-pathspecs",
+        "log",
+        "-p",
+        "--no-merges",
+        ...diffFlags,
+        "--format=commit %H",
+        `${shas.mergeBase}..${shas.base}`,
+        ...pathspec,
+      ]);
+      if (branchDiff === null || branchLog === null || baseLog === null) {
+        return null;
+      }
+      if (baseLog.trim().length === 0) {
+        return false;
+      }
+      // The branch diff goes first without a commit header, so patch-id
+      // reports it under the null object id. Output keeps input order, so
+      // base commits come newest first.
+      const patchIds = yield* executeGit(
+        "GitVcsDriver.listWorktreeStatuses.patchId",
+        cwd,
+        ["patch-id", "--stable"],
+        { ...outputLimits, stdin: `${branchDiff}\n${branchLog}\n${baseLog}` },
+      );
+      if (patchIds.exitCode !== 0 || patchIds.stdoutTruncated) {
+        return null;
+      }
+      const branchCommitIds = new Set(
+        Array.from(branchLog.matchAll(/^commit ([0-9a-f]+)$/gmu), (match) => match[1]),
+      );
+      let branchPatchId: string | null = null;
+      const branchCommitPatchIds: string[] = [];
+      const baseCommits: Array<{ readonly patchId: string; readonly commitId: string }> = [];
+      for (const line of patchIds.stdout.split("\n")) {
+        const [patchId, commitId] = line.trim().split(/\s+/u);
+        if (!patchId || !commitId) {
+          continue;
+        }
+        if (isNullObjectId(commitId)) {
+          branchPatchId = patchId;
+        } else if (branchCommitIds.has(commitId)) {
+          branchCommitPatchIds.push(patchId);
+        } else {
+          baseCommits.push({ patchId, commitId });
+        }
+      }
+
+      // Merging the branch onto `before` gives the files `after` has, for
+      // every file the branch touched.
+      const reproduces = (before: string, after: string) =>
+        Effect.gen(function* () {
+          const tree = yield* mergeOntoTree(before);
+          if (tree === null) {
+            return false;
+          }
+          const comparison = yield* executeGit(
+            "GitVcsDriver.listWorktreeStatuses.confirmShipped",
+            cwd,
+            ["--literal-pathspecs", "diff", "--quiet", ...diffFlags, tree, after, ...pathspec],
+            { timeoutMs: 10_000, allowNonZeroExit: true },
+          );
+          return comparison.exitCode === 0;
+        });
+
+      // A squash merge: one base commit carries the branch's whole diff.
+      const squashLeads = baseCommits
+        .filter((commit) => commit.patchId === branchPatchId)
+        .slice(0, 3);
+      for (const lead of squashLeads) {
+        if (yield* reproduces(`${lead.commitId}^`, lead.commitId)) {
+          return true;
+        }
+      }
+
+      // A rebase merge: every branch commit has a counterpart on the base.
+      // The span from the oldest to the newest counterpart has to reproduce
+      // the branch as a whole.
+      if (branchCommitPatchIds.length < 2) {
+        return false;
+      }
+      const counterpartIndexes = branchCommitPatchIds.map((patchId) =>
+        baseCommits.findIndex((commit) => commit.patchId === patchId),
+      );
+      if (counterpartIndexes.some((index) => index === -1)) {
+        return false;
+      }
+      const oldest = baseCommits[Math.max(...counterpartIndexes)];
+      const newest = baseCommits[Math.min(...counterpartIndexes)];
+      if (!oldest || !newest) {
+        return false;
+      }
+      return yield* reproduces(`${oldest.commitId}^`, newest.commitId);
+    }).pipe(Effect.catch(() => Effect.succeed(null)));
+
+  /**
+   * How much of `branch` the default branch is missing, counted in commits and
+   * then judged by content.
+   *
+   * A branch with no merge base against the default branch reports
    * `unrelatedHistory` and no count: `rev-list` would answer with the whole of
    * its history, which reads as a mountain of unshipped work when the truth is
    * that the two histories were never joined (checkouts predating a history
    * rewrite are the usual source).
+   *
+   * Verdicts are cached by commit ids, which pin both histories, so reopening
+   * the cleanup list does not repeat the content checks.
    */
-  const readUnmergedCommits = (
+  const readBranchShipping = (
     cwd: string,
     branch: string | null,
-  ): Effect.Effect<{ readonly count: number | null; readonly unrelatedHistory: boolean }> =>
+    freshenedBaseRefs: Map<string, string>,
+  ): Effect.Effect<BranchShipping> =>
     Effect.gen(function* () {
       if (branch === null) {
-        return { count: null, unrelatedHistory: false };
+        return UNKNOWN_BRANCH_SHIPPING;
       }
-      const baseRef = yield* resolveBaseBranchForNoUpstream(cwd, branch);
+      const baseRef = yield* resolveShippingBaseRef(cwd, branch, freshenedBaseRefs);
       if (!baseRef) {
-        return { count: null, unrelatedHistory: false };
+        return UNKNOWN_BRANCH_SHIPPING;
       }
+      const revParse = yield* executeGit(
+        "GitVcsDriver.listWorktreeStatuses.revParse",
+        cwd,
+        ["rev-parse", `${baseRef}^{commit}`, `${baseRef}^{tree}`, `refs/heads/${branch}^{commit}`],
+        { timeoutMs: 5_000, allowNonZeroExit: true },
+      );
+      const [base, baseTree, tip] = revParse.stdout.split("\n").map((line) => line.trim());
+      if (revParse.exitCode !== 0 || !base || !baseTree || !tip) {
+        return UNKNOWN_BRANCH_SHIPPING;
+      }
+      const cacheKey = `${base}:${tip}`;
+      const cached = branchShippingCache.get(cacheKey);
+      if (cached) {
+        return cached;
+      }
+
       const mergeBase = yield* executeGit(
         "GitVcsDriver.listWorktreeStatuses.mergeBase",
         cwd,
-        ["merge-base", baseRef, branch],
+        ["merge-base", base, tip],
         { timeoutMs: 10_000, allowNonZeroExit: true },
       );
       // Exit 1 is git's specific "no merge base"; anything higher is a broken
       // ref or a failed call, which says nothing about the histories.
       if (mergeBase.exitCode === 1) {
-        return { count: null, unrelatedHistory: true };
+        return rememberBranchShipping(cacheKey, {
+          count: null,
+          unrelatedHistory: true,
+          mergedByContent: false,
+        });
       }
-      if (mergeBase.exitCode !== 0 || mergeBase.stdout.trim().length === 0) {
-        return { count: null, unrelatedHistory: false };
+      const mergeBaseSha = mergeBase.stdout.trim();
+      if (mergeBase.exitCode !== 0 || mergeBaseSha.length === 0) {
+        return UNKNOWN_BRANCH_SHIPPING;
       }
-      const result = yield* executeGit(
+      const revList = yield* executeGit(
         "GitVcsDriver.listWorktreeStatuses.revList",
         cwd,
-        ["rev-list", "--count", `${baseRef}..${branch}`],
+        ["rev-list", "--count", `${base}..${tip}`],
         { timeoutMs: 10_000, allowNonZeroExit: true },
       );
-      if (result.exitCode !== 0) {
-        return { count: null, unrelatedHistory: false };
+      const parsed = Number.parseInt(revList.stdout.trim(), 10);
+      if (revList.exitCode !== 0 || !Number.isFinite(parsed)) {
+        return UNKNOWN_BRANCH_SHIPPING;
       }
-      const parsed = Number.parseInt(result.stdout.trim(), 10);
-      return {
-        count: Number.isFinite(parsed) ? Math.max(0, parsed) : null,
+      const count = Math.max(0, parsed);
+      if (count === 0) {
+        return rememberBranchShipping(cacheKey, {
+          count,
+          unrelatedHistory: false,
+          mergedByContent: false,
+        });
+      }
+      const mergedByContent = yield* isBranchContentOnBase(cwd, {
+        base,
+        baseTree,
+        tip,
+        mergeBase: mergeBaseSha,
+      });
+      const shipping = {
+        count,
         unrelatedHistory: false,
+        mergedByContent: mergedByContent === true,
       };
-    }).pipe(Effect.catch(() => Effect.succeed({ count: null, unrelatedHistory: false })));
+      // An unreadable content check is retried on the next listing.
+      return mergedByContent === null ? shipping : rememberBranchShipping(cacheKey, shipping);
+    }).pipe(Effect.catch(() => Effect.succeed(UNKNOWN_BRANCH_SHIPPING)));
 
   const listWorktreeStatuses: GitVcsDriver.GitVcsDriverShape["listWorktreeStatuses"] = Effect.fn(
     "listWorktreeStatuses",
   )(function* (input) {
-    const entries = yield* listWorktrees({ cwd: input.cwd });
-    if (entries.length === 0) {
+    const listing = yield* executeGit(
+      "GitVcsDriver.listWorktreeStatuses.list",
+      input.cwd,
+      ["worktree", "list", "--porcelain"],
+      { timeoutMs: 5_000, allowNonZeroExit: true },
+    ).pipe(Effect.catchIf(isMissingGitCwdError, () => Effect.succeed(null)));
+    if (listing === null || listing.exitCode !== 0) {
+      return { worktrees: [] };
+    }
+    const registrations = parseWorktreeRegistrations(listing.stdout);
+    if (registrations.length === 0) {
       return { worktrees: [] };
     }
     const mainWorktreePath = yield* resolveMainWorktreePath(input.cwd);
     const mainRealPath = mainWorktreePath === null ? null : yield* realPathOrSelf(mainWorktreePath);
+    const freshenedBaseRefs = new Map<string, string>();
 
-    const worktrees = [];
-    for (const entry of entries) {
-      const entryRealPath = yield* realPathOrSelf(entry.path);
-      const isRoot = mainRealPath !== null && entryRealPath === mainRealPath;
-      const unmerged = yield* readUnmergedCommits(entry.path, entry.branch);
-      worktrees.push({
-        path: entry.path,
-        refName: entry.branch,
-        isRoot,
-        dirty: yield* readWorktreeDirty(entry.path),
-        unmergedCommitCount: unmerged.count,
-        unrelatedHistory: unmerged.unrelatedHistory,
-      });
-    }
+    const worktrees = yield* Effect.forEach(
+      registrations,
+      (registration) =>
+        Effect.gen(function* () {
+          const isRoot =
+            mainRealPath !== null && (yield* realPathOrSelf(registration.path)) === mainRealPath;
+          const exists = yield* fileSystem
+            .exists(registration.path)
+            .pipe(Effect.catch(() => Effect.succeed(true)));
+          if (!exists) {
+            return {
+              path: registration.path,
+              refName: registration.branch,
+              isRoot,
+              dirty: false,
+              dirtyUnknown: false,
+              unmergedCommitCount: null,
+              unrelatedHistory: false,
+              mergedByContent: false,
+              missing: true,
+              lockReason: registration.lockReason,
+            } satisfies VcsWorktreeStatus;
+          }
+          // A registration git would prune has lost its `.git` link, so
+          // `git status` there would read whatever repository encloses it.
+          const dirty = registration.prunable ? null : yield* readWorktreeDirty(registration.path);
+          // Branches are shared by every checkout, so the repository answers
+          // for all of them, including a half-deleted one.
+          const shipping = yield* readBranchShipping(
+            input.cwd,
+            registration.branch,
+            freshenedBaseRefs,
+          );
+          return {
+            path: registration.path,
+            refName: registration.branch,
+            isRoot,
+            dirty: dirty !== false,
+            dirtyUnknown: dirty === null,
+            unmergedCommitCount: shipping.count,
+            unrelatedHistory: shipping.unrelatedHistory,
+            mergedByContent: shipping.mergedByContent,
+            missing: false,
+            lockReason: registration.lockReason,
+          } satisfies VcsWorktreeStatus;
+        }),
+      { concurrency: WORKTREE_STATUS_CONCURRENCY },
+    );
     return { worktrees };
   });
 
@@ -4610,6 +5006,30 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       input.branch,
     ]);
 
+  /**
+   * Folders whose worktree registration git dropped during one of this
+   * server's removals while files inside would not delete yet, keyed by path
+   * with the folder's identity (device, inode and creation time, since inode
+   * numbers get reused) at the time. A retry may
+   * finish deleting the same folder; anything else at that path, or any other
+   * unregistered folder, is not ours to touch.
+   */
+  const unfinishedWorktreeRemovals = new Map<string, string>();
+  const readFolderIdentity = (folder: string) =>
+    fileSystem.stat(folder).pipe(
+      Effect.map((info) =>
+        Option.match(info.ino, {
+          onNone: () => null,
+          onSome: (inode) =>
+            `${info.dev}:${inode}:${Option.match(info.birthtime, {
+              onNone: () => "",
+              onSome: (created) => String(created.getTime()),
+            })}`,
+        }),
+      ),
+      Effect.catch(() => Effect.succeed(null)),
+    );
+
   const removeWorktree: GitVcsDriver.GitVcsDriverShape["removeWorktree"] = Effect.fn(
     "removeWorktree",
   )(function* (input) {
@@ -4619,13 +5039,17 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     // leaving a dead folder that the app can no longer remove. The flag is a
     // no-op on other platforms.
     const args = ["-c", "core.longpaths=true", "worktree", "remove"];
-    if (input.force) {
+    // A locked checkout takes the flag twice: once for its changes, once for
+    // the lock.
+    const forceFlags = input.unlock ? 2 : input.force ? 1 : 0;
+    for (let flag = 0; flag < forceFlags; flag += 1) {
       args.push("--force");
     }
     args.push(input.path);
 
-    // git unregisters the worktree before it deletes the files, so a folder
-    // that something still holds open comes back as "failed to delete ...
+    // git deletes the checkout's files first and drops its registration
+    // afterwards, even when some files would not go. A folder that something
+    // still holds open therefore comes back as "failed to delete ...
     // Permission denied" with the registration already gone. Thread deletion
     // hits exactly that on Windows: the worktree's terminal shell is killed a
     // beat after removal starts, and until it exits its working directory
@@ -4658,35 +5082,70 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       },
     );
 
+    const removalKey = path.resolve(input.path);
     const recoverFailedRemoval = (cause: GitCommandError) =>
       Effect.gen(function* () {
         const registration = yield* readWorktreeRegistration(input.cwd, input.path);
+        if (registration === "registered") {
+          return yield* Effect.fail(cause);
+        }
         if (registration === "prunable") {
           yield* executeGit("GitVcsDriver.removeWorktree.prune", input.cwd, ["worktree", "prune"], {
             timeoutMs: 15_000,
             fallbackErrorMessage: "git worktree prune failed",
           });
-        } else if (registration !== "absent" || !/failed to delete/iu.test(cause.detail ?? "")) {
+        } else if (/is not a working tree/iu.test(cause.detail)) {
+          // Already unregistered: an earlier attempt finished, someone else
+          // removed it, or an earlier attempt of ours stopped partway. Only
+          // the last leaves a folder this server may delete.
+          const folderSurvived = yield* fileSystem
+            .exists(input.path)
+            .pipe(Effect.catch(() => Effect.succeed(true)));
+          if (!folderSurvived) {
+            unfinishedWorktreeRemovals.delete(removalKey);
+            return;
+          }
+          const remembered = unfinishedWorktreeRemovals.get(removalKey);
+          if (remembered === undefined || remembered !== (yield* readFolderIdentity(input.path))) {
+            return yield* Effect.fail(cause);
+          }
+        } else if (!/failed to delete/iu.test(cause.detail)) {
           return yield* Effect.fail(cause);
         }
-        if (!(yield* deleteLeftoverFolder())) {
-          return yield* Effect.fail(cause);
+        // Read before deleting: what is left afterwards is the same folder.
+        const identity = yield* readFolderIdentity(input.path);
+        if (yield* deleteLeftoverFolder()) {
+          unfinishedWorktreeRemovals.delete(removalKey);
+          return;
         }
+        // The registration is gone now, so the folder no longer lists as a
+        // worktree. Remember it, so a retry once the holder lets go can
+        // finish the job instead of finding an unknown folder.
+        if (identity !== null) {
+          unfinishedWorktreeRemovals.set(removalKey, identity);
+        }
+        return yield* Effect.fail(
+          /failed to delete/iu.test(cause.detail)
+            ? cause
+            : createGitCommandError(
+                "GitVcsDriver.removeWorktree",
+                input.cwd,
+                args,
+                `failed to delete '${input.path}': some files could not be removed`,
+              ),
+        );
       });
 
     yield* executeGit("GitVcsDriver.removeWorktree", input.cwd, args, {
-      timeoutMs: 15_000,
+      timeoutMs: WORKTREE_REMOVE_TIMEOUT_MS,
       fallbackErrorMessage: "git worktree remove failed",
     }).pipe(
+      Effect.tap(() => Effect.sync(() => unfinishedWorktreeRemovals.delete(removalKey))),
       Effect.catch(recoverFailedRemoval),
+      // Keep git's own words as the detail: clients turn it into a sentence,
+      // and wrapping it again only buries it under command lines and paths.
       Effect.mapError((error) =>
-        createGitCommandError(
-          "GitVcsDriver.removeWorktree",
-          input.cwd,
-          args,
-          `${quoteGitCommand(args)} failed (cwd: ${input.cwd}): ${error.message}`,
-          error,
-        ),
+        createGitCommandError("GitVcsDriver.removeWorktree", input.cwd, args, error.detail, error),
       ),
     );
   });
@@ -4716,16 +5175,19 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     if (result === null || result.exitCode !== 0) {
       return "registered" as const;
     }
-    const target = normalize(worktreePath);
-    for (const block of result.stdout.split("\n\n")) {
-      const lines = block.split("\n");
-      const header = lines.find((line) => line.startsWith("worktree "));
-      if (header === undefined || normalize(header.slice("worktree ".length)) !== target) {
+    // Git records the resolved path (macOS reports /var/... as
+    // /private/var/...), so match the caller's spelling or its resolved form.
+    // The folder itself may be gone; its parent still resolves.
+    const resolvedTarget = path.join(
+      yield* realPathOrSelf(path.dirname(worktreePath)),
+      path.basename(worktreePath),
+    );
+    const targets = new Set([normalize(worktreePath), normalize(resolvedTarget)]);
+    for (const registration of parseWorktreeRegistrations(result.stdout)) {
+      if (!targets.has(normalize(registration.path))) {
         continue;
       }
-      return lines.some((line) => line.startsWith("prunable"))
-        ? ("prunable" as const)
-        : ("registered" as const);
+      return registration.prunable ? ("prunable" as const) : ("registered" as const);
     }
     return "absent" as const;
   });

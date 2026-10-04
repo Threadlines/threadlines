@@ -2268,6 +2268,14 @@ const makeWsRpcLayer = (currentSession: {
                   .removeWorktree(input)
                   .pipe(Effect.tap(() => refreshGitStatus(input.cwd))),
               ),
+              // The client shows a one-line summary; the log keeps the rest.
+              Effect.tapError((error) =>
+                Effect.logWarning("worktree removal failed", {
+                  cwd: input.cwd,
+                  worktreePath: input.path,
+                  detail: error.message,
+                }),
+              ),
             ),
             { "rpc.aggregate": "vcs" },
           ),

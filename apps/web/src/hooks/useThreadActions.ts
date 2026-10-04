@@ -21,7 +21,11 @@ import {
 } from "../store";
 import { useTerminalStateStore } from "../terminalStateStore";
 import { buildThreadRouteParams, resolveThreadRouteRef } from "../threadRoutes";
-import { formatWorktreePathForDisplay, getOrphanedWorktreePathForThread } from "../worktreeCleanup";
+import {
+  describeWorktreeRemovalError,
+  formatWorktreePathForDisplay,
+  getOrphanedWorktreePathForThread,
+} from "../worktreeCleanup";
 import { stackedThreadToast, toastManager } from "../components/ui/toast";
 import { useSettings } from "./useSettings";
 
@@ -154,7 +158,6 @@ export function useThreadActions() {
         });
         await invalidateGitQueries(queryClient, { environmentId: input.environmentId });
       } catch (error) {
-        const message = error instanceof Error ? error.message : "Unknown error removing worktree.";
         console.error("Failed to remove orphaned worktree after thread deletion", {
           threadId: input.threadId,
           projectCwd: input.projectCwd,
@@ -165,7 +168,7 @@ export function useThreadActions() {
           stackedThreadToast({
             type: "error",
             title: "Thread deleted, but worktree removal failed",
-            description: `Could not remove ${formatWorktreePathForDisplay(input.worktreePath)}. ${message}`,
+            description: `Could not remove ${formatWorktreePathForDisplay(input.worktreePath)}. ${describeWorktreeRemovalError(error)}`,
           }),
         );
       }

@@ -1,3 +1,4 @@
+import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { NonNegativeInt, PositiveInt, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { SourceControlProviderError, SourceControlProviderInfo } from "./sourceControl.ts";
@@ -103,9 +104,12 @@ const VcsWorktree = Schema.Struct({
 });
 
 /**
- * One checkout of a repository plus the two facts a cleanup decision needs:
- * whether removing it drops uncommitted work, and whether it drops commits the
- * default branch never saw.
+ * One checkout of a repository plus the facts a cleanup decision needs:
+ * whether removing it drops uncommitted work, and whether its branch holds
+ * work the default branch never saw.
+ *
+ * Fields added after the first release decode with a default, so a client
+ * talking to an older server still reads its listing.
  */
 export const VcsWorktreeStatus = Schema.Struct({
   path: TrimmedNonEmptyStringSchema,
@@ -113,7 +117,14 @@ export const VcsWorktreeStatus = Schema.Struct({
   refName: Schema.NullOr(TrimmedNonEmptyStringSchema),
   /** The repository's main checkout, which is never removable. */
   isRoot: Schema.Boolean,
+  /**
+   * The checkout has uncommitted changes. Also true when git could not read it
+   * (see `dirtyUnknown`), so clients that predate that field still treat an
+   * unreadable checkout as having something to lose.
+   */
   dirty: Schema.Boolean,
+  /** `git status` failed or timed out, so nobody knows what is uncommitted. */
+  dirtyUnknown: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   /**
    * Commits on this checkout's branch that the default branch cannot reach.
    * Null when the repository has no resolvable default branch, when the
@@ -127,6 +138,24 @@ export const VcsWorktreeStatus = Schema.Struct({
    * left over from before a history rewrite.
    */
   unrelatedHistory: Schema.Boolean,
+  /**
+   * Every change the branch makes is already on the default branch even though
+   * its commits are not: the branch was squash- or rebase-merged, or its work
+   * was cherry-picked. The commits `unmergedCommitCount` counts are then copies
+   * of shipped work.
+   */
+  mergedByContent: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  /**
+   * Git still registers the checkout but its folder is gone. Removing it only
+   * drops the registration; the branch stays either way.
+   */
+  missing: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  /**
+   * Why `git worktree lock` pinned the checkout, empty when no reason was
+   * given; null when it is not locked. Tools lock a checkout while an agent
+   * works in it.
+   */
+  lockReason: Schema.NullOr(Schema.String).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
 });
 export type VcsWorktreeStatus = typeof VcsWorktreeStatus.Type;
 const GitResolvedPullRequest = Schema.Struct({
@@ -378,6 +407,11 @@ export const VcsRemoveWorktreeInput = Schema.Struct({
   cwd: TrimmedNonEmptyStringSchema,
   path: TrimmedNonEmptyStringSchema,
   force: Schema.optional(Schema.Boolean),
+  /**
+   * Also remove a checkout `git worktree lock` pinned. Sent only for a row the
+   * user ticked while it showed the lock.
+   */
+  unlock: Schema.optional(Schema.Boolean),
 });
 export type VcsRemoveWorktreeInput = typeof VcsRemoveWorktreeInput.Type;
 
