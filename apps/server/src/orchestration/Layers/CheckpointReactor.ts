@@ -1195,11 +1195,34 @@ const make = Effect.gen(function* () {
           thread: context.thread,
           targetTurnCount: event.payload.turnCount,
         });
-        yield* providerService.rollbackConversation({
+        const rollback = yield* providerService.rollbackConversation({
           threadId: event.payload.threadId,
           numTurns: rolledBackTurns,
           ...(targetUserMessageId !== undefined ? { targetUserMessageId } : {}),
         });
+        if (!rollback.conversationRolledBack) {
+          yield* orchestrationEngine
+            .dispatch({
+              type: "thread.activity.append",
+              commandId: serverCommandId("checkpoint-revert-rollback-unsupported"),
+              threadId: event.payload.threadId,
+              activity: {
+                id: EventId.make(crypto.randomUUID()),
+                tone: "warning",
+                kind: "checkpoint.revert.rollback-unsupported",
+                summary:
+                  "Files were reverted, but this agent can't forget the reverted turns: it still remembers them.",
+                payload: {
+                  turnCount: event.payload.turnCount,
+                  rolledBackTurns,
+                },
+                turnId: null,
+                createdAt: now,
+              },
+              createdAt: now,
+            })
+            .pipe(Effect.catch(() => Effect.void));
+        }
       } else {
         // Files can revert without a live session, but provider conversation
         // state cannot; surface it instead of failing the whole revert.

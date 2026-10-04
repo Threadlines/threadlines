@@ -26,7 +26,7 @@ import type {
   ProviderInstanceId,
   ServerProvider,
 } from "@threadlines/contracts";
-import { providerAuthReconnectCommand } from "@threadlines/shared/providerAuth";
+import { providerCanSignIn } from "@threadlines/shared/providerAuth";
 import * as Schema from "effect/Schema";
 import { useMemo } from "react";
 import { create } from "zustand";
@@ -255,12 +255,12 @@ export interface FirstRunProviderRow {
   readonly state: FirstRunProviderRowState;
   readonly dotClassName: string;
   /**
-   * The driver's login command. Threadlines runs it for the user in a
-   * server-side session rather than showing it, so this is really the test for
-   * "can this driver be signed in from here": null means the row falls back to
-   * the install guide instead of offering a sign-in that cannot run.
+   * Signed out, and Threadlines can run this provider's sign-in (a login
+   * command in a server-side session, or the agent's own browser sign-in).
+   * False falls back to the install guide instead of offering a sign-in that
+   * cannot run.
    */
-  readonly signInCommand: string | null;
+  readonly canSignIn: boolean;
   /**
    * The one-click install Threadlines can run for a missing CLI, or null when
    * it cannot (the CLI is already there, or the server found no package
@@ -371,10 +371,7 @@ export function deriveFirstRunProviderRows(
         description: providerRowDescription(provider, state),
         state,
         dotClassName: PROVIDER_ROW_DOT_CLASS_NAMES[state],
-        signInCommand:
-          state === "needsSignIn"
-            ? (providerAuthReconnectCommand(provider.driverKind) ?? null)
-            : null,
+        canSignIn: state === "needsSignIn" && providerCanSignIn(provider.driverKind),
         install: state === "notInstalled" ? deriveProviderInstallView(provider.snapshot) : null,
       } satisfies FirstRunProviderRow;
     })

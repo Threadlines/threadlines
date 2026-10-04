@@ -12,8 +12,10 @@
 import type {
   ModelCapabilities,
   ProviderDriverKind,
+  ProviderInteractionMode,
   ProviderOptionSelection,
   ProviderUserInputAnswers,
+  RuntimeMode,
   ServerProviderModel,
   ThreadId,
   TurnId,
@@ -24,6 +26,7 @@ import type * as Effect from "effect/Effect";
 import type * as FileSystem from "effect/FileSystem";
 import type * as Path from "effect/Path";
 import type * as Schema from "effect/Schema";
+import type * as Scope from "effect/Scope";
 import type { ChildProcessSpawner } from "effect/unstable/process";
 import type * as EffectAcpErrors from "effect-acp/errors";
 import type * as EffectAcpSchema from "effect-acp/schema";
@@ -33,7 +36,7 @@ import type {
   ProviderMaintenanceCommandDefinition,
 } from "../providerMaintenance.ts";
 import type { ProviderProbeResult, ServerProviderPresentation } from "../providerSnapshot.ts";
-import type { AcpPlanUpdate } from "./AcpRuntimeModel.ts";
+import type { AcpPlanUpdate, AcpToolCallState } from "./AcpRuntimeModel.ts";
 import type { AcpSessionRuntimeShape, AcpSpawnInput } from "./AcpSessionRuntime.ts";
 
 /** Settings fields every ACP provider config must carry. */
@@ -50,6 +53,40 @@ export interface AcpProviderProbeOutcome extends ProviderProbeResult {
    * confusing secondary error.
    */
   readonly skipModelDiscovery?: boolean;
+  /**
+   * A catalog the probe already knows (cached from the last session), used
+   * instead of discovery for agents that are too costly to start on every
+   * status check.
+   */
+  readonly models?: ReadonlyArray<ServerProviderModel>;
+}
+
+/**
+ * A permission request that is really a question for the user (Antigravity
+ * asks through `session/request_permission` with one option per answer).
+ * Never auto-approved, whatever the runtime mode.
+ */
+export interface AcpPermissionQuestion {
+  readonly questions: ReadonlyArray<UserInputQuestion>;
+  /** The option to select for the user's answers; `undefined` cancels. */
+  readonly optionIdForAnswers: (answers: ProviderUserInputAnswers) => string | undefined;
+}
+
+/**
+ * Plan mode for agents that plan through a prompt command and a plan file
+ * rather than an ACP session mode (Antigravity's `/plan`).
+ */
+export interface AcpPromptPlanMode {
+  /** Prepended to the turn's text in plan mode, e.g. `/plan `. */
+  readonly promptPrefix: string;
+  /**
+   * Whether this tool call writes the agent's own plan file. Such writes are
+   * approved without asking (they never touch the workspace) and are not
+   * shown as tool calls: the plan card stands for them.
+   */
+  readonly isPlanFile: (toolCall: AcpToolCallState) => boolean;
+  /** The plan's markdown, when this plan-file write carries it. */
+  readonly planMarkdown: (toolCall: AcpToolCallState) => string | undefined;
 }
 
 export interface AcpConfigUpdate {
@@ -117,11 +154,51 @@ export interface AcpProviderDescriptor<Settings extends AcpProviderSettings> {
    * install guide.
    */
   readonly install?: Partial<Record<NodeJS.Platform, ProviderMaintenanceCommandDefinition>>;
+  /**
+   * How to start one agent process. An Effect may set up per-process state
+   * (a private temp dir) that is torn down with the process's scope.
+   */
   readonly spawn: (
     settings: Settings,
     cwd: string,
     environment?: NodeJS.ProcessEnv,
-  ) => AcpSpawnInput;
+  ) => AcpSpawnInput | Effect.Effect<AcpSpawnInput, EffectAcpErrors.AcpError, Scope.Scope>;
+  /**
+   * The sign-in URL when an agent prints one on stderr. Outside a sign-in
+   * flow such a line fails the process at once instead of waiting on a
+   * browser nobody opened.
+   */
+  readonly signInUrlFromStderr?: (line: string) => string | undefined;
+  /**
+   * The agent mode for a runtime/interaction mode, for agents whose modes the
+   * alias matching cannot place (Antigravity's `yolo`, `auto_edit`).
+   */
+  readonly agentModeFor?: (input: {
+    readonly runtimeMode: RuntimeMode;
+    readonly interactionMode: ProviderInteractionMode | undefined;
+  }) => string | undefined;
+  readonly classifyPermissionRequest?: (
+    request: EffectAcpSchema.RequestPermissionRequest,
+  ) => AcpPermissionQuestion | undefined;
+  /** A risk the agent attached to a permission option, shown with the approval. */
+  readonly permissionOptionWarning?: (
+    option: EffectAcpSchema.PermissionOption,
+  ) => string | undefined;
+  /** Text the agent appends when a prompt is cancelled; dropped from the reply. */
+  readonly cancellationNotice?: string;
+  readonly planMode?: AcpPromptPlanMode;
+  /** Edit tool calls carry exact ACP `diff` content, trusted as file-change evidence. */
+  readonly diffEvidence?: boolean;
+  /**
+   * Run text generation in a fresh temp directory: workspace hooks and
+   * settings can act before a denied tool call would stop them.
+   */
+  readonly isolateTextGeneration?: boolean;
+  /** Called with each session's catalog options, e.g. to cache the model list. */
+  readonly onSessionConfigOptions?: (
+    settings: Settings,
+    configOptions: ReadonlyArray<EffectAcpSchema.SessionConfigOption>,
+  ) => Effect.Effect<void>;
   /**
    * Whether a bare `binaryPath` should be resolved to an absolute host path
    * before spawning (default true). Descriptors that run the binary inside
@@ -187,7 +264,25 @@ export interface AcpProviderDescriptor<Settings extends AcpProviderSettings> {
    * (fx through WSL) are fastest with one.
    */
   readonly modelCapabilityProbeSessions?: number;
-  /** Normalizes an app-side model slug into the agent's config value. */
-  readonly resolveModelId?: (model: string | null | undefined) => string | undefined;
+  /**
+   * Normalizes an app-side model slug into the agent's config value. With a
+   * context, the selection's options and the session's live options are
+   * known (Antigravity folds effort into the model id).
+   */
+  readonly resolveModelId?: (
+    model: string | null | undefined,
+    context?: {
+      readonly selections: ReadonlyArray<ProviderOptionSelection> | null | undefined;
+      readonly configOptions: ReadonlyArray<EffectAcpSchema.SessionConfigOption>;
+    },
+  ) => string | undefined;
+  /**
+   * Install and update actions that change with what is installed (a
+   * managed runtime), read before each status check. Overrides
+   * `maintenance` and `install`.
+   */
+  readonly resolveMaintenance?: (
+    settings: Settings,
+  ) => Effect.Effect<ProviderMaintenanceCapabilities>;
   readonly extensions?: AcpProviderExtensions;
 }

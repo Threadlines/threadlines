@@ -28,10 +28,13 @@ import {
   isProviderPlanGateMessage,
   isProviderPlanGateReply,
 } from "@threadlines/shared/providerPlan";
+import { renderThreadContextSeed, withContextSeedPreamble } from "@threadlines/shared/contextSeed";
+import { countTextReplacementStats } from "@threadlines/shared/diffStats";
 import { randomUUIDv4 } from "@threadlines/shared/uuid";
 import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
@@ -67,7 +70,11 @@ import {
 import { buildFileAttachmentNote } from "../fileAttachmentPrompt.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "../Layers/EventNdjsonLogger.ts";
 import type { ProviderAdapterShape } from "../Services/ProviderAdapter.ts";
-import { acpPermissionOutcome, mapAcpToAdapterError } from "./AcpAdapterSupport.ts";
+import {
+  acpAvailableDecisions,
+  acpPermissionOptionId,
+  mapAcpToAdapterError,
+} from "./AcpAdapterSupport.ts";
 import {
   makeAcpAssistantItemEvent,
   makeAcpContentDeltaEvent,
@@ -91,6 +98,7 @@ import {
   type AcpPlanUpdate,
   type AcpSessionMode,
   type AcpSessionModeState,
+  type AcpToolCallState,
   parsePermissionRequest,
 } from "./AcpRuntimeModel.ts";
 import { type AcpSessionRuntimeShape } from "./AcpSessionRuntime.ts";
@@ -98,6 +106,12 @@ import { type AcpSessionRuntimeShape } from "./AcpSessionRuntime.ts";
 const encodeUnknownJsonStringExit = Schema.encodeUnknownExit(Schema.fromJsonString(Schema.Unknown));
 
 const ACP_RESUME_VERSION = 1 as const;
+/**
+ * How long a cancelled prompt may take to return. Past it the turn settles
+ * as cancelled here and the process is recycled; the next turn resumes the
+ * conversation in a fresh one.
+ */
+const ACP_CANCEL_DEADLINE = Duration.seconds(15);
 const ACP_PLAN_MODE_ALIASES = ["plan", "architect"];
 const ACP_IMPLEMENT_MODE_ALIASES = ["code", "agent", "default", "chat", "implement"];
 const ACP_APPROVAL_MODE_ALIASES = ["ask"];
@@ -148,6 +162,14 @@ interface AcpSessionContext {
   lastContextUsageKey: string | undefined;
   /** The thought being streamed; closes when reply text, a tool call, or the turn end arrives. */
   activeReasoning: { readonly itemId: string; readonly turnId: TurnId; text: string } | undefined;
+  /** The session cwd and its real path: agents report real paths (macOS `/private/tmp`). */
+  readonly cwdRoots: ReadonlyArray<string>;
+  /** The turn a `session/cancel` was sent for, so the agent's cancel notice is dropped. */
+  cancelledTurnId: TurnId | undefined;
+  /** The plan the agent wrote this turn (prompt-command plan mode). */
+  planMarkdown: string | undefined;
+  /** Earlier conversation for an agent that starts without it, sent with the first turn. */
+  pendingContextPreamble: string | undefined;
   /** Held while a turn starts, so concurrent sends queue instead of racing. */
   readonly turnStartLock: Semaphore.Semaphore;
   stopped: boolean;
@@ -263,16 +285,59 @@ export function resolveRequestedAcpModeId(input: {
   );
 }
 
-function selectAutoApprovedPermissionOption(
-  request: EffectAcpSchema.RequestPermissionRequest,
+/**
+ * File-change evidence from a finished edit's ACP `diff` content: exact
+ * per-file +/- for paths inside the session's workspace. Only an edit that
+ * completed counts; a denied or failed one changed nothing. A relative path
+ * is the agent's, so it resolves against the session cwd (`cwdRoots[0]`).
+ */
+export function acpDiffFileChanges(
+  toolCall: AcpToolCallState,
+  cwdRoots: ReadonlyArray<string>,
+  pathApi: Pick<Path.Path, "relative" | "isAbsolute" | "resolve" | "sep">,
+): ReadonlyArray<{
+  readonly path: string;
+  readonly kind: "add" | "update" | "delete";
+  readonly additions: number;
+  readonly deletions: number;
+}> {
+  if (toolCall.status !== "completed") return [];
+  if (toolCall.kind !== "edit" && toolCall.kind !== "delete" && toolCall.kind !== "move") return [];
+  const content = toolCall.data.content;
+  if (!Array.isArray(content)) return [];
+  return content.flatMap((entry: unknown) => {
+    if (!isRecord(entry) || entry.type !== "diff") return [];
+    const { path: filePath, oldText, newText } = entry;
+    if (typeof filePath !== "string" || typeof newText !== "string") return [];
+    const sessionCwd = cwdRoots[0];
+    const absolute =
+      pathApi.isAbsolute(filePath) || sessionCwd === undefined
+        ? filePath
+        : pathApi.resolve(sessionCwd, filePath);
+    const relative = relativeToAnyRoot(absolute, cwdRoots, pathApi);
+    if (relative === undefined) return [];
+    const before = typeof oldText === "string" ? oldText : undefined;
+    const stats = countTextReplacementStats(before, newText);
+    const kind =
+      toolCall.kind === "delete" && newText.length === 0
+        ? "delete"
+        : before === undefined
+          ? "add"
+          : "update";
+    return [{ path: relative, kind, ...stats }];
+  });
+}
+
+function relativeToAnyRoot(
+  filePath: string,
+  roots: ReadonlyArray<string>,
+  pathApi: Pick<Path.Path, "relative" | "isAbsolute" | "sep">,
 ): string | undefined {
-  const allowAlwaysOption = request.options.find((option) => option.kind === "allow_always");
-  if (typeof allowAlwaysOption?.optionId === "string" && allowAlwaysOption.optionId.trim()) {
-    return allowAlwaysOption.optionId.trim();
-  }
-  const allowOnceOption = request.options.find((option) => option.kind === "allow_once");
-  if (typeof allowOnceOption?.optionId === "string" && allowOnceOption.optionId.trim()) {
-    return allowOnceOption.optionId.trim();
+  for (const root of roots) {
+    const relative = pathApi.relative(root, filePath);
+    if (relative.length > 0 && !relative.startsWith("..") && !pathApi.isAbsolute(relative)) {
+      return relative.split(pathApi.sep).join("/");
+    }
   }
   return undefined;
 }
@@ -301,6 +366,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
       options?.nativeEventLogger === undefined ? nativeEventLogger : undefined;
 
     const sessions = new Map<ThreadId, AcpSessionContext>();
+    const adapterScope = yield* Scope.Scope;
     const threadLocksRef = yield* SynchronizedRef.make(new Map<string, Semaphore.Semaphore>());
     const runtimeEventPubSub = yield* PubSub.unbounded<ProviderRuntimeEvent>();
 
@@ -500,11 +566,20 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
           });
         }
 
-        const requestedModeId = resolveRequestedAcpModeId({
-          interactionMode: input.interactionMode,
+        const modeState = yield* input.runtime.getModeState;
+        const mappedModeId = descriptor.agentModeFor?.({
           runtimeMode: input.runtimeMode,
-          modeState: yield* input.runtime.getModeState,
+          interactionMode: input.interactionMode,
         });
+        const requestedModeId =
+          mappedModeId !== undefined &&
+          modeState?.availableModes.some((mode) => mode.id === mappedModeId)
+            ? mappedModeId
+            : resolveRequestedAcpModeId({
+                interactionMode: input.interactionMode,
+                runtimeMode: input.runtimeMode,
+                modeState,
+              });
         if (!requestedModeId) {
           return;
         }
@@ -546,6 +621,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
           }
 
           const cwd = path.resolve(input.cwd.trim());
+          const realCwd = yield* fileSystem.realPath(cwd).pipe(Effect.orElseSucceed(() => cwd));
           const boundModelSelection =
             input.modelSelection?.instanceId === boundInstanceId ? input.modelSelection : undefined;
           const existing = sessions.get(input.threadId);
@@ -722,19 +798,58 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
             yield* acp.handleRequestPermission((params) =>
               Effect.gen(function* () {
                 yield* logNative(input.threadId, "session/request_permission", params);
-                if (input.runtimeMode === "full-access") {
-                  const autoApprovedOptionId = selectAutoApprovedPermissionOption(params);
-                  if (autoApprovedOptionId !== undefined) {
-                    return {
-                      outcome: { outcome: "selected" as const, optionId: autoApprovedOptionId },
-                    };
-                  }
+                const selected = (optionId: string | undefined) =>
+                  optionId === undefined
+                    ? { outcome: { outcome: "cancelled" as const } }
+                    : { outcome: { outcome: "selected" as const, optionId } };
+                // A question in permission clothing goes to the user, whatever
+                // the runtime mode: auto-approving would answer for them.
+                const question = descriptor.classifyPermissionRequest?.(params);
+                if (question) {
+                  const answers = yield* requestUserInput({
+                    method: "session/request_permission",
+                    payload: params,
+                    questions: question.questions,
+                  });
+                  return selected(question.optionIdForAnswers(answers));
                 }
                 const permissionRequest = parsePermissionRequest(params);
+                const planFileWrite =
+                  permissionRequest.toolCall !== undefined &&
+                  descriptor.planMode?.isPlanFile(permissionRequest.toolCall) === true;
+                if (planFileWrite && permissionRequest.toolCall) {
+                  const planMarkdown = descriptor.planMode?.planMarkdown(
+                    permissionRequest.toolCall,
+                  );
+                  if (planMarkdown !== undefined && ctx) ctx.planMarkdown = planMarkdown;
+                }
+                // Full access answers each request once: an "always" option
+                // would leave a standing rule behind in the agent's own store.
+                // A request with no "once" to give goes to the user instead.
+                if (input.runtimeMode === "full-access" || planFileWrite) {
+                  const once = acpPermissionOptionId("accept", params.options);
+                  if (once !== undefined) return selected(once);
+                }
                 const requestId = ApprovalRequestId.make(crypto.randomUUID());
                 const runtimeRequestId = RuntimeRequestId.make(requestId);
                 const decision = yield* Deferred.make<ProviderApprovalDecision>();
                 pendingApprovals.set(requestId, { decision, kind: permissionRequest.kind });
+                const warningFor = (kind: EffectAcpSchema.PermissionOption["kind"]) => {
+                  const option = params.options.find((candidate) => candidate.kind === kind);
+                  return option ? descriptor.permissionOptionWarning?.(option) : undefined;
+                };
+                const acceptForSessionWarning = warningFor("allow_always");
+                const acceptWarning = warningFor("allow_once");
+                const decisionWarnings =
+                  acceptForSessionWarning || acceptWarning
+                    ? {
+                        ...(acceptWarning ? { accept: acceptWarning } : {}),
+                        ...(acceptForSessionWarning
+                          ? { acceptForSession: acceptForSessionWarning }
+                          : {}),
+                      }
+                    : undefined;
+                const availableDecisions = acpAvailableDecisions(params.options);
                 yield* offerRuntimeEvent(
                   makeAcpRequestOpenedEvent({
                     stamp: yield* makeEventStamp(),
@@ -748,6 +863,8 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
                       encodeJsonStringForDiagnostics(params)?.slice(0, 2000) ??
                       "[unserializable params]",
                     args: params,
+                    ...(availableDecisions ? { availableDecisions } : {}),
+                    ...(decisionWarnings ? { decisionWarnings } : {}),
                     source: "acp.jsonrpc",
                     method: "session/request_permission",
                     rawPayload: params,
@@ -766,12 +883,9 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
                     decision: resolved,
                   }),
                 );
-                return {
-                  outcome:
-                    resolved === "cancel"
-                      ? ({ outcome: "cancelled" } as const)
-                      : { outcome: "selected" as const, optionId: acpPermissionOutcome(resolved) },
-                };
+                return resolved === "cancel"
+                  ? { outcome: { outcome: "cancelled" as const } }
+                  : selected(acpPermissionOptionId(resolved, params.options));
               }),
             );
             return yield* acp.start();
@@ -806,6 +920,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
             threadId: input.threadId,
             resumeCursor: { schemaVersion: ACP_RESUME_VERSION, sessionId: started.sessionId },
             ...(roomToolsRequested ? { roomTools: roomToolsAttached } : {}),
+            ...(started.resumeFailure !== undefined ? { resumeFailed: true } : {}),
             createdAt: now,
             updatedAt: now,
           };
@@ -826,6 +941,15 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
             lastProviderStatus: undefined,
             lastContextUsageKey: undefined,
             activeReasoning: undefined,
+            cwdRoots: realCwd === cwd ? [cwd] : [cwd, realCwd],
+            cancelledTurnId: undefined,
+            planMarkdown: undefined,
+            // A switch from another agent starts without the history: the
+            // thread hands it over. (A failed resume is seeded by the reactor.)
+            pendingContextPreamble:
+              input.contextSeed !== undefined && resumeSessionId === undefined
+                ? renderThreadContextSeed(input.contextSeed)
+                : undefined,
             turnStartLock: yield* Semaphore.make(1),
             stopped: false,
           };
@@ -911,21 +1035,42 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
                       "session/update",
                     );
                     return;
-                  case "ToolCallUpdated":
+                  case "ToolCallUpdated": {
                     yield* closeReasoning(ctx);
                     yield* logNative(ctx.threadId, "session/update", event.rawPayload);
+                    // The plan card stands for the agent's plan-file writes.
+                    if (descriptor.planMode?.isPlanFile(event.toolCall)) {
+                      const planMarkdown = descriptor.planMode.planMarkdown(event.toolCall);
+                      if (planMarkdown !== undefined) ctx.planMarkdown = planMarkdown;
+                      return;
+                    }
+                    const changes = descriptor.diffEvidence
+                      ? acpDiffFileChanges(event.toolCall, ctx.cwdRoots, path)
+                      : [];
                     yield* offerRuntimeEvent(
                       makeAcpToolCallEvent({
                         stamp: yield* makeEventStamp(),
                         provider: PROVIDER,
                         threadId: ctx.threadId,
                         turnId: ctx.activeTurnId,
-                        toolCall: event.toolCall,
+                        toolCall:
+                          changes.length > 0
+                            ? { ...event.toolCall, data: { ...event.toolCall.data, changes } }
+                            : event.toolCall,
                         rawPayload: event.rawPayload,
                       }),
                     );
                     return;
+                  }
                   case "ContentDelta":
+                    if (
+                      descriptor.cancellationNotice !== undefined &&
+                      ctx.cancelledTurnId !== undefined &&
+                      ctx.cancelledTurnId === ctx.activeTurnId &&
+                      event.text.trim() === descriptor.cancellationNotice
+                    ) {
+                      return;
+                    }
                     yield* closeReasoning(ctx);
                     if (ctx.activeTurnText.length < PLAN_GATE_SCAN_MAX_CHARS) {
                       ctx.activeTurnText += event.text;
@@ -979,6 +1124,24 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
             threadId: input.threadId,
             payload: { providerThreadId: started.sessionId },
           });
+          if (started.resumeFailure !== undefined) {
+            yield* offerRuntimeEvent({
+              type: "runtime.warning",
+              ...(yield* makeEventStamp()),
+              provider: PROVIDER,
+              threadId: input.threadId,
+              payload: {
+                message: `${descriptor.presentation.displayName} could not reopen its earlier conversation, so it starts a new one with this thread's history.`,
+                detail: started.resumeFailure,
+                warningKind: "resume-failed",
+              },
+            });
+          }
+          if (descriptor.onSessionConfigOptions) {
+            yield* descriptor
+              .onSessionConfigOptions(effectiveSettings, yield* acp.getConfigOptions)
+              .pipe(Effect.ignore);
+          }
 
           return session;
         }).pipe(Effect.scoped),
@@ -1014,9 +1177,20 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
         const model = turnModelSelection?.model ?? ctx.session.model;
         const resolvedModel = resolveModelId(model);
 
+        // Prompt-command plan mode (Antigravity's `/plan`) is a text prefix.
+        const planMode = input.interactionMode === "plan" ? descriptor.planMode : undefined;
+        const contextPreamble = ctx.pendingContextPreamble;
+        const userText = input.input?.trim() ?? "";
+        const seededText =
+          contextPreamble !== undefined
+            ? withContextSeedPreamble(contextPreamble, userText)
+            : userText;
         const promptParts: Array<EffectAcpSchema.ContentBlock> = [];
-        if (input.input?.trim()) {
-          promptParts.push({ type: "text", text: input.input.trim() });
+        if (seededText.length > 0 || planMode) {
+          promptParts.push({
+            type: "text",
+            text: planMode ? `${planMode.promptPrefix}${seededText}` : seededText,
+          });
         }
         for (const attachment of input.attachments ?? []) {
           const attachmentPath = resolveAttachmentPath({
@@ -1077,6 +1251,9 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
         ctx.lastPlanFingerprint = undefined;
         ctx.activeTurnText = "";
         ctx.lastProviderStatus = undefined;
+        ctx.cancelledTurnId = undefined;
+        ctx.planMarkdown = undefined;
+        ctx.pendingContextPreamble = undefined;
         ctx.session = { ...ctx.session, activeTurnId: turnId, updatedAt: yield* nowIso };
 
         yield* offerRuntimeEvent({
@@ -1098,6 +1275,17 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
           if (Exit.isSuccess(exit)) {
             const result = exit.value;
             ctx.turns.push({ id: turnId, items: [{ prompt: promptParts, result }] });
+            const planMarkdown = planMode ? ctx.planMarkdown?.trim() : undefined;
+            if (planMarkdown && result.stopReason !== "cancelled") {
+              yield* offerRuntimeEvent({
+                type: "turn.proposed.completed",
+                ...(yield* makeEventStamp()),
+                provider: PROVIDER,
+                threadId: input.threadId,
+                turnId,
+                payload: { planMarkdown },
+              });
+            }
             ctx.session = {
               ...ctx.session,
               updatedAt: yield* nowIso,
@@ -1182,9 +1370,45 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
         return { threadId: input.threadId, turnId, resumeCursor: ctx.session.resumeCursor };
       });
 
+    /**
+     * A prompt that outlived `ACP_CANCEL_DEADLINE` after `session/cancel`:
+     * the process is stopped and reaped first, so nothing it does lands after
+     * the turn is reported cancelled.
+     */
+    const recycleStuckTurn = (ctx: AcpSessionContext, turnId: TurnId) =>
+      withThreadLock(
+        ctx.threadId,
+        Effect.gen(function* () {
+          if (sessions.get(ctx.threadId) !== ctx || ctx.activeTurnId !== turnId) return;
+          yield* stopSessionInternal(ctx);
+          yield* offerRuntimeEvent({
+            type: "runtime.warning",
+            ...(yield* makeEventStamp()),
+            provider: PROVIDER,
+            threadId: ctx.threadId,
+            turnId,
+            payload: {
+              message: `${descriptor.presentation.displayName} did not stop in time, so it was restarted. The next message picks the conversation up again.`,
+              warningKind: "cancel-timeout",
+            },
+          });
+          yield* offerRuntimeEvent({
+            type: "turn.completed",
+            ...(yield* makeEventStamp()),
+            provider: PROVIDER,
+            threadId: ctx.threadId,
+            turnId,
+            payload: { state: "cancelled", stopReason: "cancelled" },
+          });
+        }),
+      );
+
     const interruptTurn: AcpAdapterShape["interruptTurn"] = (threadId) =>
       Effect.gen(function* () {
         const ctx = yield* requireSession(threadId);
+        const turnId = ctx.activeTurnId;
+        const promptFiber = ctx.promptFiber;
+        if (turnId !== undefined) ctx.cancelledTurnId = turnId;
         yield* settlePendingApprovalsAsCancelled(ctx.pendingApprovals);
         yield* settlePendingUserInputsAsEmptyAnswers(ctx.pendingUserInputs);
         yield* Effect.ignore(
@@ -1194,6 +1418,15 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
             ),
           ),
         );
+        if (turnId !== undefined && promptFiber !== undefined) {
+          yield* Fiber.await(promptFiber).pipe(
+            Effect.timeoutOption(ACP_CANCEL_DEADLINE),
+            Effect.flatMap((settled) =>
+              Option.isSome(settled) ? Effect.void : recycleStuckTurn(ctx, turnId),
+            ),
+            Effect.forkIn(adapterScope),
+          );
+        }
       });
 
     const respondToRequest: AcpAdapterShape["respondToRequest"] = (threadId, requestId, decision) =>
@@ -1257,8 +1490,11 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
         return c !== undefined && !c.stopped;
       });
 
+    // A snapshot per run: stopping a session removes it from the map.
     const stopAll: AcpAdapterShape["stopAll"] = () =>
-      Effect.forEach(sessions.values(), stopSessionInternal, { discard: true });
+      Effect.suspend(() =>
+        Effect.forEach(Array.from(sessions.values()), stopSessionInternal, { discard: true }),
+      );
 
     yield* Effect.addFinalizer(() =>
       Effect.forEach(sessions.values(), stopSessionInternal, { discard: true }).pipe(
@@ -1269,7 +1505,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
 
     return {
       provider: PROVIDER,
-      capabilities: { sessionModelSwitch: "in-session" },
+      capabilities: { sessionModelSwitch: "in-session", conversationRollback: "none" },
       startSession,
       sendTurn,
       interruptTurn,

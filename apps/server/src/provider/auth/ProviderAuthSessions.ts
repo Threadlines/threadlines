@@ -40,6 +40,8 @@ import {
   CLAUDE_LONG_LIVED_OAUTH_TOKEN_ENV,
   upsertClaudeLongLivedOAuthTokenEnvironment,
 } from "@threadlines/shared/providerAuthCommands";
+import { randomUUID } from "node:crypto";
+
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -51,6 +53,8 @@ import { ServerSettingsService, type ServerSettingsShape } from "../../serverSet
 import { resolveOpenCodeBinary } from "../opencode/OpenCodeBinary.ts";
 import { PtyAdapter, type PtyAdapterShape, type PtyProcess } from "../../terminal/Services/PTY.ts";
 import { ProviderRegistry } from "../Services/ProviderRegistry.ts";
+import { ProviderInstanceRegistry } from "../Services/ProviderInstanceRegistry.ts";
+import type { ProviderInstanceAuthFlows } from "../ProviderDriver.ts";
 import { deriveProviderInstanceConfigMap } from "../Layers/ProviderInstanceRegistryHydration.ts";
 
 const DEFAULT_COLS = 100;
@@ -189,6 +193,10 @@ export interface ProviderAuthSessionsOptions {
   readonly settings: ServerSettingsShape;
   /** The existing provider re-probe, run after a flow succeeds. */
   readonly refreshInstance: (instanceId: ProviderInstanceId) => Effect.Effect<void>;
+  /** Sign-in an instance runs itself (no PTY), when it has one. */
+  readonly getInstanceAuthFlows?: (
+    instanceId: ProviderInstanceId,
+  ) => Effect.Effect<ProviderInstanceAuthFlows | undefined>;
   readonly homeDir?: string;
   readonly env?: NodeJS.ProcessEnv;
   readonly partialFlushDelayMs?: number;
@@ -198,6 +206,13 @@ export interface ProviderAuthSessionsOptions {
 interface SessionState {
   readonly flow: ProviderAuthFlow;
   readonly command: string;
+  /** Names this run; writes and stops for another run are refused. */
+  readonly flowId: string;
+  /** The starting client's `requestId`, echoed on the command event. */
+  readonly requestId: string | undefined;
+  /** Set for a flow the instance runs itself (browser sign-in, sign-out). */
+  readonly instanceFlows: ProviderInstanceAuthFlows | null;
+  runFiber: Fiber.Fiber<void, never> | null;
   status: ProviderAuthStatus;
   exitCode: number | null;
   detail: string | null;
@@ -454,6 +469,75 @@ export const makeProviderAuthSessions = Effect.fn("makeProviderAuthSessions")(fu
         yield* Effect.sync(() => process.kill()).pipe(Effect.ignore);
       }
       sessions.delete(String(instanceId));
+      const runFiber = session.runFiber;
+      session.runFiber = null;
+      if (runFiber) yield* Fiber.interrupt(runFiber).pipe(Effect.ignore);
+    });
+
+  /** A flow the instance runs itself: progress lines in, its outcome as the status. */
+  const startInstanceFlow = (
+    instanceId: ProviderInstanceId,
+    flow: ProviderAuthFlow,
+    instanceFlows: ProviderInstanceAuthFlows,
+    requestId: string | undefined,
+  ) =>
+    Effect.gen(function* () {
+      const key = String(instanceId);
+      const session: SessionState = {
+        flow,
+        command: instanceFlows.describe(flow),
+        flowId: randomUUID(),
+        requestId,
+        instanceFlows,
+        runFiber: null,
+        status: "starting",
+        exitCode: null,
+        detail: null,
+        process: null,
+        unsubscribeData: null,
+        unsubscribeExit: null,
+        buffer: "",
+        scrollback: "",
+        captureBuffer: "",
+        flushFiber: null,
+        tokenCaptured: false,
+      };
+      sessions.set(key, session);
+      const current = () => sessions.get(key) === session;
+      yield* publish(instanceId, {
+        type: "command",
+        instanceId,
+        createdAt: yield* nowIso,
+        flow,
+        command: session.command,
+        flowId: session.flowId,
+        ...(session.requestId !== undefined ? { requestId: session.requestId } : {}),
+        surface: "browser",
+      });
+      yield* publishStatus(instanceId, session, "starting");
+      session.runFiber = runFork(
+        instanceFlows
+          .run({
+            flow,
+            report: (line) =>
+              current() ? emitOutput(instanceId, session, `${line}\r\n`) : Effect.void,
+          })
+          .pipe(
+            Effect.matchEffect({
+              onSuccess: () => (current() ? finishSuccess(instanceId, session) : Effect.void),
+              onFailure: (failure) =>
+                current()
+                  ? Effect.gen(function* () {
+                      session.detail = failure.message;
+                      yield* publishStatus(instanceId, session, "failed");
+                      // A failed sign-in can leave the agent signed out.
+                      yield* options.refreshInstance(instanceId);
+                    })
+                  : Effect.void,
+            }),
+          ),
+      );
+      yield* publishStatus(instanceId, session, "running");
     });
 
   const requireRunning = (instanceId: ProviderInstanceId) =>
@@ -490,6 +574,18 @@ export const makeProviderAuthSessions = Effect.fn("makeProviderAuthSessions")(fu
           );
         }
 
+        const instanceFlows = options.getInstanceAuthFlows
+          ? yield* options.getInstanceAuthFlows(instanceId)
+          : undefined;
+        if (instanceFlows) {
+          if (!instanceFlows.flows.includes(input.flow)) {
+            return yield* Effect.fail(
+              new ProviderAuthError({ instanceId: String(instanceId), reason: "unsupportedFlow" }),
+            );
+          }
+          return yield* startInstanceFlow(instanceId, input.flow, instanceFlows, input.requestId);
+        }
+
         const builtCommand = buildProviderAuthCommand({
           driver: String(instance.driver),
           flow: input.flow,
@@ -518,6 +614,10 @@ export const makeProviderAuthSessions = Effect.fn("makeProviderAuthSessions")(fu
         const session: SessionState = {
           flow: input.flow,
           command: command.display,
+          flowId: randomUUID(),
+          requestId: input.requestId,
+          instanceFlows: null,
+          runFiber: null,
           status: "starting",
           exitCode: null,
           detail: null,
@@ -539,6 +639,9 @@ export const makeProviderAuthSessions = Effect.fn("makeProviderAuthSessions")(fu
           createdAt,
           flow: input.flow,
           command: command.display,
+          flowId: session.flowId,
+          ...(session.requestId !== undefined ? { requestId: session.requestId } : {}),
+          surface: "terminal",
         });
         yield* publishStatus(instanceId, session, "starting");
 
@@ -605,12 +708,40 @@ export const makeProviderAuthSessions = Effect.fn("makeProviderAuthSessions")(fu
     write: (input) =>
       Effect.gen(function* () {
         const instanceId = ProviderInstanceId.make(input.instanceId);
+        const session = sessions.get(String(instanceId));
+        if (session && input.flowId !== undefined && input.flowId !== session.flowId) {
+          return yield* new ProviderAuthError({
+            instanceId: String(instanceId),
+            reason: "inputRejected",
+            detail: "That sign-in has ended. Start a new one.",
+          });
+        }
+        if (session?.instanceFlows) {
+          if (session.status !== "running") {
+            return yield* new ProviderAuthError({
+              instanceId: String(instanceId),
+              reason: "notRunning",
+            });
+          }
+          yield* session.instanceFlows.completeRedirect(input.data.trim()).pipe(
+            Effect.mapError(
+              (failure) =>
+                new ProviderAuthError({
+                  instanceId: String(instanceId),
+                  reason: "inputRejected",
+                  detail: failure.message,
+                }),
+            ),
+          );
+          return;
+        }
         const process = yield* requireRunning(instanceId);
         yield* Effect.sync(() => process.write(input.data));
       }),
     resize: (input) =>
       Effect.gen(function* () {
         const instanceId = ProviderInstanceId.make(input.instanceId);
+        if (sessions.get(String(instanceId))?.instanceFlows) return;
         const process = yield* requireRunning(instanceId);
         const session = sessions.get(String(instanceId));
         // The setup-token PTY stays at its extra-wide spawn size: resizing it
@@ -618,7 +749,14 @@ export const makeProviderAuthSessions = Effect.fn("makeProviderAuthSessions")(fu
         if (session?.flow === "claude-setup-token") return;
         yield* Effect.sync(() => process.resize(input.cols, input.rows));
       }),
-    stop: (input) => stopSession(ProviderInstanceId.make(input.instanceId)),
+    stop: (input) =>
+      Effect.gen(function* () {
+        const instanceId = ProviderInstanceId.make(input.instanceId);
+        const session = sessions.get(String(instanceId));
+        // A stale panel stops only its own run, never a newer one.
+        if (session && input.flowId !== undefined && input.flowId !== session.flowId) return;
+        yield* stopSession(instanceId);
+      }),
     subscribe: (instanceId, listener) =>
       Effect.gen(function* () {
         const key = String(instanceId);
@@ -635,6 +773,9 @@ export const makeProviderAuthSessions = Effect.fn("makeProviderAuthSessions")(fu
             createdAt,
             flow: session.flow,
             command: session.command,
+            flowId: session.flowId,
+            ...(session.requestId !== undefined ? { requestId: session.requestId } : {}),
+            surface: session.instanceFlows ? "browser" : "terminal",
           }).pipe(Effect.ignoreCause({ log: true }));
           if (session.scrollback.length > 0) {
             yield* listener({
@@ -680,11 +821,16 @@ export const ProviderAuthSessionsLive = Layer.effect(
     const ptyAdapter = yield* PtyAdapter;
     const settings = yield* ServerSettingsService;
     const providerRegistry = yield* ProviderRegistry;
+    const instanceRegistry = yield* ProviderInstanceRegistry;
     return yield* makeProviderAuthSessions({
       ptyAdapter,
       settings,
       refreshInstance: (instanceId) =>
         providerRegistry.refreshInstance(instanceId).pipe(Effect.asVoid),
+      getInstanceAuthFlows: (instanceId) =>
+        instanceRegistry
+          .getInstance(instanceId)
+          .pipe(Effect.map((instance) => instance?.authFlows)),
     });
   }),
 );

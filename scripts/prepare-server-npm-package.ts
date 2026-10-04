@@ -25,6 +25,8 @@ const SERVER_NPM_RUNTIME_DEPENDENCIES = new Set([
   "@effect/sql-sqlite-bun",
   "effect",
   "node-pty",
+  // CommonJS; Antigravity's managed runtime unpacks its download with it.
+  "yauzl",
 ]);
 
 interface PackageJson {

@@ -2692,7 +2692,7 @@ describe("deriveProviderSendPreflight", () => {
       ...overrides,
     }) satisfies ServerProvider;
 
-  it("interrupts a send to a signed-out instance and names the login command", () => {
+  it("interrupts a send to a signed-out instance and offers its sign-in", () => {
     expect(
       deriveProviderSendPreflight({
         instanceId: ProviderInstanceId.make("codex"),
@@ -2703,7 +2703,7 @@ describe("deriveProviderSendPreflight", () => {
       provider: ProviderDriverKind.make("codex"),
       instanceId: ProviderInstanceId.make("codex"),
       providerLabel: "Codex",
-      command: "codex login",
+      canSignIn: true,
     });
   });
 
@@ -2716,6 +2716,23 @@ describe("deriveProviderSendPreflight", () => {
         ],
       })?.reason,
     ).toBe("notInstalled");
+  });
+
+  it("offers sign-in for an agent that signs in through the browser", () => {
+    // Antigravity has no login command; its Google sign-in runs in the agent.
+    expect(
+      deriveProviderSendPreflight({
+        instanceId: ProviderInstanceId.make("antigravity"),
+        providers: [
+          makeProvider({
+            instanceId: ProviderInstanceId.make("antigravity"),
+            driver: ProviderDriverKind.make("antigravity"),
+            auth: { status: "unauthenticated" },
+            status: "warning",
+          }),
+        ],
+      }),
+    ).toMatchObject({ reason: "notAuthenticated", canSignIn: true });
   });
 
   it("lets a usable instance through", () => {

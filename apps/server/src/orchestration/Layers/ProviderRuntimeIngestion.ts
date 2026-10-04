@@ -896,7 +896,12 @@ function hasRenderableAssistantText(text: string | undefined): boolean {
 }
 
 /** Providers whose file-change items carry exact per-edit stats and no turn diff. */
-const PER_ITEM_DIFF_EVIDENCE_PROVIDERS: ReadonlySet<string> = new Set(["claudeAgent", "opencode"]);
+const PER_ITEM_DIFF_EVIDENCE_PROVIDERS: ReadonlySet<string> = new Set([
+  "claudeAgent",
+  "opencode",
+  // Exact old/new text on every finished edit (ACP `diff` content).
+  "antigravity",
+]);
 
 function providerThreadIdFromEvent(event: ProviderRuntimeEvent): string | undefined {
   const providerThreadId = event.providerRefs?.providerThreadId?.trim();

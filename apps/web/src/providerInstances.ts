@@ -35,6 +35,7 @@ export const MAINTAINED_PROVIDER_DRIVER_KINDS = [
   ProviderDriverKind.make("fx"),
   ProviderDriverKind.make("cursor"),
   ProviderDriverKind.make("opencode"),
+  ProviderDriverKind.make("antigravity"),
 ] as const;
 
 const MAINTAINED_PROVIDER_DRIVER_KIND_SET = new Set<string>(

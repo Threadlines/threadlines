@@ -113,6 +113,20 @@ describe("provider connect flow state", () => {
     expect(appendOutputPreview("done", "\nnext line\n")).toBe("next line");
   });
 
+  it("never runs a finished line into the next one", () => {
+    const state = replay([
+      event({ type: "output", data: "Starting Antigravity…\r\n" }),
+      event({ type: "output", data: "Finish signing in with Google in your browser.\r\n" }),
+    ]);
+    expect(state.lastLine).toBe("Finish signing in with Google in your browser.");
+    // A line still being written keeps growing across chunks.
+    const prompt = replay([
+      event({ type: "output", data: "Paste the code: " }),
+      event({ type: "output", data: "abc123" }),
+    ]);
+    expect(prompt.lastLine).toBe("Paste the code: abc123");
+  });
+
   it("opens the terminal on failure and after a long-running wait", () => {
     expect(shouldAutoExpandTerminal({ status: "running", runningForMs: 4_000 })).toBe(false);
     expect(shouldAutoExpandTerminal({ status: "running", runningForMs: 16_000 })).toBe(true);

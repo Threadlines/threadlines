@@ -190,6 +190,7 @@ describe("AcpRuntimeModel", () => {
                 },
               },
             ],
+            item: { command: "bun run typecheck" },
           },
         },
         rawPayload: {
@@ -360,6 +361,32 @@ describe("AcpRuntimeModel", () => {
         status: "pending",
         command: "cat package.json",
       },
+    });
+  });
+  it("reads a shell call's command, cwd, output and exit code in Antigravity's spellings", () => {
+    const update = (payload: Record<string, unknown>) =>
+      parseSessionUpdateEvent({
+        sessionId: "s",
+        update: { sessionUpdate: "tool_call_update", toolCallId: "c1", ...payload },
+      } as EffectAcpSchema.SessionNotification).events[0];
+    const started = update({
+      kind: "execute",
+      status: "in_progress",
+      rawInput: { command_line: "ls -1", working_dir: "/work" },
+    });
+    const finished = update({
+      status: "completed",
+      rawOutput: { commandLine: "ls -1", exitCode: 0, combinedOutput: "README.md\r\n" },
+    });
+    if (started?._tag !== "ToolCallUpdated" || finished?._tag !== "ToolCallUpdated") {
+      throw new Error("expected tool call updates");
+    }
+    expect(started.toolCall.command).toBe("ls -1");
+    expect(mergeToolCallState(started.toolCall, finished.toolCall).data.item).toEqual({
+      command: "ls -1",
+      cwd: "/work",
+      aggregatedOutput: "README.md\r\n",
+      exitCode: 0,
     });
   });
 });

@@ -35,7 +35,7 @@ import {
   type ThreadForkSeedOutcomePayload,
   type TurnId,
 } from "@threadlines/contracts";
-import { withContextSeedPreamble } from "@threadlines/shared/contextSeed";
+import { renderThreadContextSeed, withContextSeedPreamble } from "@threadlines/shared/contextSeed";
 import { agentInvitesMode } from "@threadlines/shared/serverSettings";
 import {
   hasAgentRecords,
@@ -468,6 +468,24 @@ const make = Effect.gen(function* () {
    * restart there is no live session left to move.
    */
   const threadsMovedAwayFromSession = new Set<ThreadId>();
+
+  /**
+   * Sessions that came up without their conversation (the provider couldn't
+   * reopen it), keyed by participant session key. Whichever path restarted
+   * the session (a send, an access-mode change, a checkout switch) notes the
+   * debt; the next send pays it with the thread's history. A send claims it
+   * while in flight (so a second send can't carry the same history), pays it
+   * once the provider takes the turn, and hands it back if the send fails. A
+   * start seeded with the history itself clears it. In memory only.
+   */
+  const owedHistorySeeds = new Map<
+    string,
+    {
+      readonly driverKind: ProviderDriverKind;
+      readonly cwd: string | undefined;
+      claimed: boolean;
+    }
+  >();
 
   /**
    * Checkout path most recently reported missing per thread, so the same dead
@@ -1072,6 +1090,19 @@ const make = Effect.gen(function* () {
           }),
         );
 
+    // A session that could not reopen its conversation owes the thread's
+    // history to its next turn (see `owedHistorySeeds`).
+    const noteResumeFailure = (session: ProviderSession) =>
+      Effect.sync(() => {
+        if (session.resumeFailed === true) {
+          owedHistorySeeds.set(sessionKey, {
+            driverKind: desiredDriverKind,
+            cwd: effectiveCwd,
+            claimed: false,
+          });
+        }
+      });
+
     const bindSessionToThread = (session: ProviderSession) =>
       Effect.gen(function* () {
         if (session.providerInstanceId === undefined) {
@@ -1165,6 +1196,7 @@ const make = Effect.gen(function* () {
         "handoff",
       );
       yield* bindSessionToThread(handoffSession);
+      if (contextSeed !== undefined) owedHistorySeeds.delete(sessionKey);
       return { sessionThreadId: handoffSession.threadId, nativeForkApplied: false };
     }
 
@@ -1328,6 +1360,7 @@ const make = Effect.gen(function* () {
         detail: "The provider session restarted before the request was answered.",
       });
       yield* bindSessionToThread(restartedSession);
+      yield* noteResumeFailure(restartedSession);
       return { sessionThreadId: restartedSession.threadId, nativeForkApplied: false };
     }
 
@@ -1360,6 +1393,7 @@ const make = Effect.gen(function* () {
 
     const startedSession = yield* startProviderSession(undefined);
     yield* bindSessionToThread(startedSession);
+    yield* noteResumeFailure(startedSession);
     return { sessionThreadId: startedSession.threadId, nativeForkApplied: false };
   });
 
@@ -1451,6 +1485,14 @@ const make = Effect.gen(function* () {
     const agentKey = roomAgentKey(input.participantId);
     const conversationId = activeSession?.providerThreadId ?? null;
     const storedCursor = thread.roomContext?.[agentKey] ?? null;
+    // A session that lost its conversation is owed the thread's history. In
+    // a room the catch-up note carries it, as a joining agent's note (who said
+    // what, own messages included); elsewhere the transcript seed does. The
+    // caller claims the debt as it hands the request to the provider: builds
+    // for one thread run one at a time, so the next build sees the claim.
+    const owed = owedHistorySeeds.get(sessionKey);
+    const owedSeed = owed !== undefined && !owed.claimed ? owed : undefined;
+    const roomPaysHistory = owedSeed !== undefined && isRoomThread(thread);
     const roomCatchUp = buildRoomCatchUp({
       thread,
       participantId: input.participantId,
@@ -1461,12 +1503,27 @@ const make = Effect.gen(function* () {
         storedCursor.conversationId === conversationId
           ? storedCursor
           : null,
+      ...(roomPaysHistory ? { fresh: true } : {}),
       lane: "main",
     });
     // A natively forked session already holds the full source history; the
     // context-seed preamble and re-sent source attachments would duplicate it.
     const forkContextText = !nativeForkApplied ? input.providerContext : undefined;
-    const providerContext = [forkContextText, roomCatchUp?.note]
+    const resumeSeed =
+      owedSeed === undefined || roomPaysHistory
+        ? undefined
+        : yield* seedBuilder
+            .build({
+              threadId: input.threadId,
+              fromProvider: owedSeed.driverKind,
+              toProvider: owedSeed.driverKind,
+              excludeMessageId: input.messageId,
+              ...(owedSeed.cwd ? { cwd: owedSeed.cwd } : {}),
+            })
+            .pipe(Effect.map(Option.getOrUndefined));
+    const resumeContextText =
+      resumeSeed !== undefined ? renderThreadContextSeed(resumeSeed) : undefined;
+    const providerContext = [resumeContextText, forkContextText, roomCatchUp?.note]
       .filter((part): part is string => part !== undefined && part.length > 0)
       .join("\n\n");
     const messageText =
@@ -1555,6 +1612,28 @@ const make = Effect.gen(function* () {
         ...(input.interactionMode !== undefined ? { interactionMode: input.interactionMode } : {}),
         ...(telemetryContext !== undefined ? { telemetryContext } : {}),
       },
+      historyDebtClaimed:
+        owedSeed === undefined
+          ? Effect.void
+          : Effect.sync(() => {
+              owedSeed.claimed = true;
+            }),
+      // Paid only once the provider has taken the turn; a newer debt stays.
+      historyDebtPaid:
+        owedSeed === undefined
+          ? Effect.void
+          : Effect.sync(() => {
+              if (owedHistorySeeds.get(sessionKey) === owedSeed) {
+                owedHistorySeeds.delete(sessionKey);
+              }
+            }),
+      // A send that failed before the provider took it delivered nothing.
+      historyDebtReturned:
+        owedSeed === undefined
+          ? Effect.void
+          : Effect.sync(() => {
+              owedSeed.claimed = false;
+            }),
       // Recorded only once the provider has taken the turn.
       roomContext:
         roomCatchUp !== undefined && conversationId !== null
@@ -2059,13 +2138,20 @@ const make = Effect.gen(function* () {
         ),
       );
 
+      const {
+        request: turnRequest,
+        roomContext,
+        recordedModel,
+        historyDebtClaimed,
+        historyDebtPaid,
+        historyDebtReturned,
+      } = sendTurnRequest.value;
+
       // Stop pressed while this turn was being prepared waited behind it in
       // this worker, but has already raised the chain epoch.
       if (yield* stoppedSinceRequested) {
         return;
       }
-
-      const { request: turnRequest, roomContext, recordedModel } = sendTurnRequest.value;
       // The turn request already recorded the model it expected to go out.
       // Only a turn that goes out on another one (settings moved while no
       // explicit model was asked for, or the live session is on a different
@@ -2081,7 +2167,11 @@ const make = Effect.gen(function* () {
           turnRequest.modelSelection,
         );
       }
+      yield* historyDebtClaimed;
       yield* providerService.sendTurn(turnRequest).pipe(
+        // The provider has the history now, whatever the bookkeeping below does.
+        Effect.tap(() => historyDebtPaid),
+        Effect.onError(() => historyDebtReturned),
         Effect.flatMap((turn) =>
           markProviderTurnAccepted({
             threadId: event.payload.threadId,

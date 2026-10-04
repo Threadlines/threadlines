@@ -89,6 +89,7 @@ export const PROVIDER_OPTIONS: Array<{
   },
   { value: ProviderDriverKind.make("cursor"), label: "Cursor", available: true },
   { value: ProviderDriverKind.make("opencode"), label: "OpenCode", available: true },
+  { value: ProviderDriverKind.make("antigravity"), label: "Antigravity", available: true },
 ];
 
 export interface WorkLogImagePreview {
@@ -240,6 +241,8 @@ export interface PendingApproval {
   createdAt: string;
   /** The answers the provider accepts. Absent: all of them. */
   availableDecisions?: ReadonlyArray<ProviderApprovalDecision>;
+  /** A risk the provider attached to an answer, shown with it. */
+  decisionWarnings?: Partial<Record<ProviderApprovalDecision, string>>;
   environmentId?: string;
   /** Provider tool being approved (e.g. "Bash", "Agent"). Claude only. */
   toolName?: string;
@@ -711,6 +714,19 @@ export function deriveActiveStatusLabel(input: {
 const isProviderRequestKind = Schema.is(ProviderRequestKind);
 const isProviderApprovalDecision = Schema.is(ProviderApprovalDecision);
 
+function readDecisionWarnings(
+  value: unknown,
+): Partial<Record<ProviderApprovalDecision, string>> | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const warnings: Partial<Record<ProviderApprovalDecision, string>> = {};
+  for (const [decision, warning] of Object.entries(value)) {
+    if (isProviderApprovalDecision(decision) && typeof warning === "string" && warning.trim()) {
+      warnings[decision] = warning.trim();
+    }
+  }
+  return Object.keys(warnings).length > 0 ? warnings : undefined;
+}
+
 /** The approval kind an activity carries, or derives from its request type. */
 function readApprovalRequestKind(payload: Record<string, unknown> | null) {
   return isProviderRequestKind(payload?.requestKind)
@@ -737,6 +753,7 @@ export function derivePendingApprovals(
       const availableDecisions = Array.isArray(payload?.availableDecisions)
         ? payload.availableDecisions.filter(isProviderApprovalDecision)
         : undefined;
+      const decisionWarnings = readDecisionWarnings(payload?.decisionWarnings);
       const detail = payload && typeof payload.detail === "string" ? payload.detail : undefined;
       const toolName =
         payload && typeof payload.toolName === "string" ? payload.toolName : undefined;
@@ -751,6 +768,7 @@ export function derivePendingApprovals(
           ...(toolName ? { toolName } : {}),
           ...(detail ? { detail } : {}),
           ...(availableDecisions && availableDecisions.length > 0 ? { availableDecisions } : {}),
+          ...(decisionWarnings ? { decisionWarnings } : {}),
         },
       ];
     });

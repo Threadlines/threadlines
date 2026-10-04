@@ -14,6 +14,7 @@ describe("deriveProviderInstanceConfigMap", () => {
     const configMap = deriveProviderInstanceConfigMap(DEFAULT_SERVER_SETTINGS);
 
     expect(Object.keys(configMap).toSorted()).toEqual([
+      "antigravity",
       "claudeAgent",
       "codex",
       "cursor",

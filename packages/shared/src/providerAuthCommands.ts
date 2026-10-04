@@ -20,6 +20,16 @@ export const CLAUDE_DRIVER_KIND = "claudeAgent";
 export const CURSOR_DRIVER_KIND = "cursor";
 export const FX_DRIVER_KIND = "fx";
 export const OPENCODE_DRIVER_KIND = "opencode";
+export const ANTIGRAVITY_DRIVER_KIND = "antigravity";
+
+/**
+ * Drivers whose sign-in runs in the browser, inside the agent itself, with no
+ * terminal command (Antigravity's Google sign-in). They also sign out.
+ */
+export const BROWSER_SIGN_IN_DRIVERS: ReadonlySet<string> = new Set([ANTIGRAVITY_DRIVER_KIND]);
+
+/** What a browser sign-in is called where a command would be shown. */
+export const BROWSER_SIGN_IN_LABEL = "Sign in with Google";
 
 export const CLAUDE_LONG_LIVED_OAUTH_TOKEN_ENV = "CLAUDE_CODE_OAUTH_TOKEN";
 
@@ -38,9 +48,10 @@ export const CLAUDE_OAUTH_TOKEN_PATTERN = /sk-ant-oat01-[A-Za-z0-9_-]+/;
 
 /**
  * Which auth flow to run for an instance. `login` resolves to the driver's
- * interactive sign-in; `claude-setup-token` mints a long-lived headless token.
+ * interactive sign-in; `claude-setup-token` mints a long-lived headless token;
+ * `logout` signs out (browser sign-in drivers only, run by the instance).
  */
-export type ProviderAuthFlow = "login" | "claude-setup-token";
+export type ProviderAuthFlow = "login" | "claude-setup-token" | "logout";
 
 export interface ProviderAuthCommandInput {
   readonly driver: string;

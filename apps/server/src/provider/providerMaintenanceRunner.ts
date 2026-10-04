@@ -8,6 +8,7 @@ import {
   type ServerProviderUpdateBlockerResolutionResult,
   type ServerProviderUpdatedPayload,
   type ServerProviderUpdateState,
+  PROVIDER_DISPLAY_NAMES,
 } from "@threadlines/contracts";
 import { hideWindowsConsole } from "@threadlines/shared/childProcess";
 import { refreshWindowsPath } from "@threadlines/shared/shell";
@@ -323,20 +324,7 @@ function parseWindowsClaudeProcessStopResult(
 }
 
 function providerDisplayName(provider: ProviderDriverKind): string {
-  switch (provider) {
-    case "claudeAgent":
-      return "Claude";
-    case "codex":
-      return "Codex";
-    case "cursor":
-      return "Cursor";
-    case "fx":
-      return "fx";
-    case "opencode":
-      return "OpenCode";
-    default:
-      return provider;
-  }
+  return PROVIDER_DISPLAY_NAMES[provider] ?? provider;
 }
 
 function formatProcessCount(count: number): string {
@@ -717,11 +705,32 @@ export const make = Effect.fn("ProviderMaintenanceRunner.make")(function* () {
               );
             }
 
-            const result = yield* runMaintenanceCommand(
-              update.executable,
-              update.args,
-              update.environmentPatch,
-            );
+            const result = update.run
+              ? yield* update.run.pipe(
+                  Effect.map(({ output }): ProviderMaintenanceCommandResult => ({
+                    stdout: output,
+                    stderr: "",
+                    exitCode: 0,
+                    timedOut: false,
+                    stdoutTruncated: false,
+                    stderrTruncated: false,
+                  })),
+                  Effect.catch((failure) =>
+                    Effect.succeed<ProviderMaintenanceCommandResult>({
+                      stdout: "",
+                      stderr: failure.message,
+                      exitCode: 1,
+                      timedOut: false,
+                      stdoutTruncated: false,
+                      stderrTruncated: false,
+                    }),
+                  ),
+                )
+              : yield* runMaintenanceCommand(
+                  update.executable,
+                  update.args,
+                  update.environmentPatch,
+                );
             const finishedAt = yield* nowIso;
             if (result.timedOut || result.exitCode !== 0) {
               return yield* finish(

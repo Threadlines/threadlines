@@ -654,6 +654,9 @@ export function projectRuntimeEventToActivities(
             ...(event.payload.availableDecisions
               ? { availableDecisions: event.payload.availableDecisions }
               : {}),
+            ...(event.payload.decisionWarnings
+              ? { decisionWarnings: event.payload.decisionWarnings }
+              : {}),
             // The approval panel shows this as the thing being approved, so
             // keep more of it than a one-line activity detail.
             ...(event.payload.detail

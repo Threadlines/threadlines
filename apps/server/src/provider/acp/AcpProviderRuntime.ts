@@ -31,25 +31,66 @@ import {
 
 export interface AcpProviderRuntimeInput<Settings extends AcpProviderSettings> extends Omit<
   AcpSessionRuntimeOptions,
-  "authMethodId" | "clientCapabilities" | "spawn"
+  "authMethodId" | "clientCapabilities" | "spawn" | "stderrFailure"
 > {
   readonly childProcessSpawner: ChildProcessSpawner.ChildProcessSpawner["Service"];
   readonly settings: Settings;
   readonly environment?: NodeJS.ProcessEnv;
+  /**
+   * Only a sign-in flow passes this: it receives the sign-in URL the agent
+   * prints. Every other runtime fails at once on such a line.
+   */
+  readonly onSignInUrl?: (url: string) => Effect.Effect<void>;
+  /** Overrides the descriptor's `authMethodId` (a sign-in flow names its method). */
+  readonly authMethodId?: string;
 }
+
+/** What a runtime that meets a sign-in prompt fails with. */
+export const acpSignInRequiredMessage = (displayName: string) =>
+  `Sign in to ${displayName} in Settings before you continue.`;
 
 export const makeAcpProviderRuntime = <Settings extends AcpProviderSettings>(
   descriptor: AcpProviderDescriptor<Settings>,
   input: AcpProviderRuntimeInput<Settings>,
 ): Effect.Effect<AcpSessionRuntimeShape, EffectAcpErrors.AcpError, Scope.Scope> =>
   Effect.gen(function* () {
-    const { childProcessSpawner, settings, environment, ...runtimeOptions } = input;
+    const {
+      childProcessSpawner,
+      settings,
+      environment,
+      onSignInUrl,
+      authMethodId,
+      onStderrLine,
+      ...runtimeOptions
+    } = input;
+    const planned = descriptor.spawn(settings, input.cwd, environment);
+    const spawn = Effect.isEffect(planned) ? yield* planned : planned;
+    const signInUrlFromStderr = descriptor.signInUrlFromStderr;
+    const resolvedAuthMethodId = authMethodId ?? descriptor.authMethodId;
     const acpContext = yield* Layer.build(
       AcpSessionRuntime.layer({
         ...runtimeOptions,
-        spawn: descriptor.spawn(settings, input.cwd, environment),
+        spawn,
         cwd: descriptor.resolveSessionCwd ? descriptor.resolveSessionCwd(input.cwd) : input.cwd,
-        ...(descriptor.authMethodId ? { authMethodId: descriptor.authMethodId } : {}),
+        ...(resolvedAuthMethodId ? { authMethodId: resolvedAuthMethodId } : {}),
+        ...(onStderrLine || (onSignInUrl && signInUrlFromStderr)
+          ? {
+              onStderrLine: (line: string) =>
+                Effect.gen(function* () {
+                  if (onStderrLine) yield* onStderrLine(line);
+                  const url = onSignInUrl ? signInUrlFromStderr?.(line) : undefined;
+                  if (url !== undefined && onSignInUrl) yield* onSignInUrl(url);
+                }),
+            }
+          : {}),
+        ...(signInUrlFromStderr && !onSignInUrl
+          ? {
+              stderrFailure: (line: string) =>
+                signInUrlFromStderr(line) === undefined
+                  ? undefined
+                  : acpSignInRequiredMessage(descriptor.presentation.displayName),
+            }
+          : {}),
         ...(descriptor.clientCapabilities
           ? { clientCapabilities: descriptor.clientCapabilities }
           : {}),
@@ -119,7 +160,10 @@ export function applyAcpModelSelection<E>(input: {
       .filter((update) => modelIndex >= 0 && indexOf(update.configId) < modelIndex);
     yield* applyUpdates(leadingUpdates);
 
-    const modelId = resolveModelId(input.model);
+    const modelId = resolveModelId(input.model, {
+      selections: input.selections,
+      configOptions: initialOptions,
+    });
     if (modelId !== undefined) {
       yield* input.runtime
         .setModel(modelId)

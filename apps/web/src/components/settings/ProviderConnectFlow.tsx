@@ -99,8 +99,6 @@ export interface ProviderConnectFlowProps {
   /** Command shown under the copy fallback before the server reports one. */
   readonly command: string;
   readonly description?: string | undefined;
-  /** Replaces the "finish in your browser" line while the flow runs. */
-  readonly runningHint?: string | undefined;
   /**
    * Status content (badges) rendered inline before the action, so the row
    * reads as one statement: state first, then what you can do about it.
@@ -120,6 +118,66 @@ export interface ProviderConnectFlowProps {
    * making them wait it out twice is the bug the hand-off exists to fix.
    */
   readonly autoShowTerminal?: boolean;
+  /** Replaces the "finish in your browser" line while the flow runs. */
+  readonly runningHint?: string | undefined;
+  /**
+   * `browser`: the flow signs in through a web page with no terminal
+   * (Antigravity). No terminal or command fallback; a field takes the
+   * page's final address when the browser ran on another device.
+   */
+  readonly surface?: "terminal" | "browser";
+}
+
+function BrowserRedirectField(props: { readonly onSubmit: (url: string) => Promise<void> }) {
+  const [value, setValue] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [pending, setPending] = useState(false);
+  const submit = () => {
+    const url = value.trim();
+    if (!url) return;
+    setPending(true);
+    setError(null);
+    props
+      .onSubmit(url)
+      .then(() => setValue(""))
+      .catch((cause: unknown) =>
+        setError(cause instanceof Error ? cause.message : "That address didn't work."),
+      )
+      .finally(() => setPending(false));
+  };
+  return (
+    <div className="grid gap-1.5" data-provider-card-toggle-ignore>
+      <p className="text-xs text-muted-foreground">
+        Signing in on another device? When the browser ends on a page that can't be reached, copy
+        that page's address and paste it here.
+      </p>
+      <div className="flex min-w-0 items-center gap-1.5">
+        <input
+          type="url"
+          value={value}
+          onChange={(event) => setValue(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") submit();
+          }}
+          placeholder="http://127.0.0.1:…"
+          aria-label="Address the browser ended on"
+          className="h-6 min-w-0 flex-1 rounded-sm border border-border/60 bg-background/80 px-2 font-mono text-[11px] text-foreground outline-none focus-visible:border-ring"
+        />
+        <Button
+          type="button"
+          size="xs"
+          variant="outline"
+          className="h-6 shrink-0 px-2 text-xs"
+          disabled={pending || value.trim().length === 0}
+          onClick={submit}
+        >
+          {pending ? <LoaderIcon className="size-2.5 animate-spin" /> : null}
+          Finish sign-in
+        </Button>
+      </div>
+      {error ? <p className="text-xs text-destructive">{error}</p> : null}
+    </div>
+  );
 }
 
 /**
@@ -137,10 +195,11 @@ export function ProviderConnectFlow({
   actionLabel,
   command,
   description,
-  runningHint,
   statusRow,
   buttonVariant = "default",
   autoShowTerminal = false,
+  runningHint,
+  surface = "terminal",
 }: ProviderConnectFlowProps) {
   const [showFallback, setShowFallback] = useState(false);
   const [showTerminal, setShowTerminal] = useState(false);
@@ -165,6 +224,7 @@ export function ProviderConnectFlow({
     terminalWriteRef,
     start,
     reset,
+    submitRedirect,
   } = useProviderConnectFlow({
     instanceId,
     flow,
@@ -179,7 +239,10 @@ export function ProviderConnectFlow({
     },
   });
 
+  const isBrowserFlow = surface === "browser" || state.surface === "browser";
+
   useEffect(() => {
+    if (isBrowserFlow) return;
     if (state.status === "succeeded") {
       // The job is done and, for token flows, the transcript is no longer
       // interesting — the panel collapses to its success line.
@@ -189,11 +252,12 @@ export function ProviderConnectFlow({
     if (needsTerminal || (autoShowTerminal && isProviderConnectFlowActive(state.status))) {
       setShowTerminal(true);
     }
-  }, [autoShowTerminal, needsTerminal, state.status]);
+  }, [autoShowTerminal, isBrowserFlow, needsTerminal, state.status]);
 
   // Open the printed sign-in page once per run. Most CLIs open the browser
   // themselves; the ones that cannot (fx inside WSL) print a device-code URL
-  // and wait, which would otherwise time out silently.
+  // and wait, which would otherwise time out silently. A browser sign-in's
+  // page is opened by the flow hook, for whichever surface started it.
   const openedSignInUrlRef = useRef<string | null>(null);
   const openSignInUrl = (url: string) => {
     openedSignInUrlRef.current = url;
@@ -205,11 +269,16 @@ export function ProviderConnectFlow({
   };
   useEffect(() => {
     const url = state.signInUrl;
-    if (!url || !isProviderConnectFlowActive(state.status) || openedSignInUrlRef.current === url) {
+    if (
+      isBrowserFlow ||
+      !url ||
+      !isProviderConnectFlowActive(state.status) ||
+      openedSignInUrlRef.current === url
+    ) {
       return;
     }
     openSignInUrl(url);
-  }, [state.signInUrl, state.status]);
+  }, [isBrowserFlow, state.signInUrl, state.status]);
 
   const startFlow = () => {
     setShowTerminal(false);
@@ -308,7 +377,7 @@ export function ProviderConnectFlow({
               >
                 {isActive ? "Cancel" : "Dismiss"}
               </Button>
-              {state.status === "succeeded" ? null : (
+              {state.status === "succeeded" || isBrowserFlow ? null : (
                 <Button
                   type="button"
                   size="sm"
@@ -331,41 +400,47 @@ export function ProviderConnectFlow({
             <p className="truncate font-mono text-[11px] text-muted-foreground">{state.lastLine}</p>
           ) : null}
 
-          {showTerminal ? (
+          {showTerminal && !isBrowserFlow ? (
             <ProviderConnectTerminal
               instanceId={instanceId}
               bufferRef={outputBufferRef}
               writeRef={terminalWriteRef}
             />
           ) : null}
+
+          {isBrowserFlow && isActive && state.signInUrl ? (
+            <BrowserRedirectField onSubmit={submitRedirect} />
+          ) : null}
         </div>
       ) : null}
 
-      <details
-        className="group"
-        open={showFallback}
-        onToggle={(event) => setShowFallback(event.currentTarget.open)}
-      >
-        <summary className="inline-flex cursor-pointer list-none items-center gap-1.5 text-xs text-muted-foreground marker:hidden">
-          <ChevronDownIcon className="size-3 transition-transform group-open:rotate-180" />
-          Prefer your own terminal?
-        </summary>
-        <div className="mt-1.5 flex min-w-0 items-center gap-1.5">
-          <code className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap rounded-sm border border-border/60 bg-background/80 px-2 py-1 font-mono text-[11px] text-foreground/85">
-            {displayCommand}
-          </code>
-          <Button
-            type="button"
-            size="xs"
-            variant="outline"
-            className="h-6 shrink-0 gap-1 px-2 text-xs"
-            onClick={() => copyToClipboard(displayCommand, "provider-auth-command")}
-          >
-            <CopyIcon className="size-2.5" />
-            {isCopied ? "Copied" : "Copy"}
-          </Button>
-        </div>
-      </details>
+      {isBrowserFlow ? null : (
+        <details
+          className="group"
+          open={showFallback}
+          onToggle={(event) => setShowFallback(event.currentTarget.open)}
+        >
+          <summary className="inline-flex cursor-pointer list-none items-center gap-1.5 text-xs text-muted-foreground marker:hidden">
+            <ChevronDownIcon className="size-3 transition-transform group-open:rotate-180" />
+            Prefer your own terminal?
+          </summary>
+          <div className="mt-1.5 flex min-w-0 items-center gap-1.5">
+            <code className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap rounded-sm border border-border/60 bg-background/80 px-2 py-1 font-mono text-[11px] text-foreground/85">
+              {displayCommand}
+            </code>
+            <Button
+              type="button"
+              size="xs"
+              variant="outline"
+              className="h-6 shrink-0 gap-1 px-2 text-xs"
+              onClick={() => copyToClipboard(displayCommand, "provider-auth-command")}
+            >
+              <CopyIcon className="size-2.5" />
+              {isCopied ? "Copied" : "Copy"}
+            </Button>
+          </div>
+        </details>
+      )}
     </div>
   );
 }

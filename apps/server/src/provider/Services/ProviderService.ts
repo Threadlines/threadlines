@@ -216,12 +216,14 @@ export interface ProviderServiceShape {
 
   /**
    * Roll back provider conversation state by a number of turns.
+   * `conversationRolledBack` is false when the provider cannot forget turns
+   * (see `ProviderAdapterCapabilities.conversationRollback`).
    */
   readonly rollbackConversation: (input: {
     readonly threadId: ThreadId;
     readonly numTurns: number;
     readonly targetUserMessageId?: MessageId;
-  }) => Effect.Effect<void, ProviderServiceError>;
+  }) => Effect.Effect<{ readonly conversationRolledBack: boolean }, ProviderServiceError>;
 
   /**
    * Read a spawned subagent's nested transcript for on-demand display.

@@ -16,6 +16,7 @@ import {
   findProviderAuthRetryUserMessageIndex,
   isProviderAuthErrorMessage,
   providerAuthReconnectCommand,
+  providerCanSignIn,
 } from "@threadlines/shared/providerAuth";
 import { isTemporaryWorktreeBranch } from "@threadlines/shared/git";
 import { isFilesystemPathWithin } from "@threadlines/shared/path";
@@ -1538,8 +1539,8 @@ export interface ProviderSendPreflightPrompt {
   readonly provider: ProviderDriverKind;
   readonly instanceId: ProviderInstanceId;
   readonly providerLabel: string;
-  /** Terminal login command, when this provider has one. */
-  readonly command: string | null;
+  /** Whether Threadlines can run this provider's sign-in itself. */
+  readonly canSignIn: boolean;
 }
 
 /**
@@ -1577,7 +1578,7 @@ export function deriveProviderSendPreflight(input: {
     provider: provider.driver,
     instanceId: provider.instanceId,
     providerLabel: provider.displayName?.trim() || formatProviderDriverKindLabel(provider.driver),
-    command: providerAuthReconnectCommand(provider.driver) ?? null,
+    canSignIn: providerCanSignIn(provider.driver),
   };
 }
 

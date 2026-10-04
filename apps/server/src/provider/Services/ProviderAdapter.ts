@@ -90,6 +90,13 @@ export interface ProviderAdapterCapabilities {
 
   /** Declares support for Codex-style thread realtime voice sessions. */
   readonly realtimeVoice?: ProviderRealtimeVoiceMode;
+
+  /**
+   * Whether `rollbackThread` rewinds the provider's own conversation. `none`
+   * (ACP agents) trims only Threadlines' turn list: the agent still
+   * remembers the reverted turns, and a revert says so. Default `native`.
+   */
+  readonly conversationRollback?: "native" | "none";
 }
 
 export interface ProviderThreadTurnSnapshot {

@@ -130,7 +130,7 @@ function providerRowAction(row: FirstRunProviderRow): ReactNode {
   if (row.state === "ready") {
     return null;
   }
-  if (row.state === "needsSignIn" && row.signInCommand) {
+  if (row.canSignIn) {
     return <ProviderSignInRowAction row={row} />;
   }
   if (row.install) {

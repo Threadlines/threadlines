@@ -232,9 +232,49 @@ function extractCommandFromTitle(title: string | undefined): string | undefined 
   return match?.[1]?.trim() || undefined;
 }
 
+/** The first present field among the spellings agents use for it. */
+function firstField(record: Record<string, unknown>, keys: ReadonlyArray<string>): unknown {
+  for (const key of keys) {
+    if (record[key] !== undefined && record[key] !== null) return record[key];
+  }
+  return undefined;
+}
+
+// Antigravity alone uses three spellings (`CommandLine` on the call,
+// `command_line` on updates, `commandLine` in results).
+const COMMAND_KEYS = ["command", "commandLine", "CommandLine", "command_line", "cmd"];
+const CWD_KEYS = ["cwd", "Cwd", "workingDir", "working_dir", "WorkingDirectory"];
+const OUTPUT_KEYS = ["aggregatedOutput", "combinedOutput", "combined_output", "output", "stdout"];
+const EXIT_CODE_KEYS = ["exitCode", "exit_code"];
+
+/**
+ * The command, cwd, output and exit code of a shell tool call in the shape
+ * Codex reports them (`data.item`), so the timeline shows exit codes the
+ * same way for every agent.
+ */
+function commandExecutionItem(
+  rawInput: unknown,
+  rawOutput: unknown,
+  command: string | undefined,
+): Record<string, unknown> | undefined {
+  const input = isRecord(rawInput) ? rawInput : {};
+  const output = isRecord(rawOutput) ? rawOutput : {};
+  const cwd = firstField(input, CWD_KEYS) ?? firstField(output, CWD_KEYS);
+  const aggregatedOutput =
+    firstField(output, OUTPUT_KEYS) ?? (typeof rawOutput === "string" ? rawOutput : undefined);
+  const exitCode = firstField(output, EXIT_CODE_KEYS);
+  const item = {
+    ...(command ? { command } : {}),
+    ...(typeof cwd === "string" && cwd.trim() ? { cwd: cwd.trim() } : {}),
+    ...(typeof aggregatedOutput === "string" ? { aggregatedOutput } : {}),
+    ...(typeof exitCode === "number" && Number.isInteger(exitCode) ? { exitCode } : {}),
+  };
+  return Object.keys(item).length > 0 ? item : undefined;
+}
+
 function extractToolCallCommand(rawInput: unknown, title: string | undefined): string | undefined {
   if (isRecord(rawInput)) {
-    const directCommand = normalizeCommandValue(rawInput.command);
+    const directCommand = normalizeCommandValue(firstField(rawInput, COMMAND_KEYS));
     if (directCommand) {
       return directCommand;
     }
@@ -335,6 +375,10 @@ function makeToolCallState(
   if (input.locations !== undefined) {
     data.locations = input.locations;
   }
+  if (kind === "execute") {
+    const item = commandExecutionItem(input.rawInput, input.rawOutput, command);
+    if (item) data.item = item;
+  }
   const fallbackDetail = command ?? normalizedTitle ?? textContent;
   const hasPresentationSeed =
     title !== undefined ||
@@ -384,6 +428,28 @@ function parseTypedToolCallState(
   );
 }
 
+/**
+ * Later updates override earlier ones field by field. A shell call's
+ * `item` is rebuilt from the merged input and output: a result often names
+ * neither the kind nor the command (Antigravity's completion does not).
+ */
+function mergeToolCallData(
+  previous: Record<string, unknown> | undefined,
+  next: Record<string, unknown>,
+  kind: string | undefined,
+  command: string | undefined,
+): Record<string, unknown> {
+  const data: Record<string, unknown> = { ...previous, ...next };
+  if (kind === "execute") {
+    const item = {
+      ...(isRecord(previous?.item) ? previous.item : {}),
+      ...commandExecutionItem(data.rawInput, data.rawOutput, command),
+    };
+    if (Object.keys(item).length > 0) data.item = item;
+  }
+  return data;
+}
+
 export function mergeToolCallState(
   previous: AcpToolCallState | undefined,
   next: AcpToolCallState,
@@ -401,11 +467,17 @@ export function mergeToolCallState(
     ...(status ? { status } : {}),
     ...(command ? { command } : {}),
     ...(detail ? { detail } : {}),
-    data: {
-      ...previous?.data,
-      ...next.data,
-    },
+    data: mergeToolCallData(previous?.data, next.data, kind, command),
   };
+}
+
+/** The paths an edit's ACP `diff` content touches, for naming it in an approval. */
+function diffContentPaths(
+  content: ReadonlyArray<EffectAcpSchema.ToolCallContent> | null | undefined,
+): ReadonlyArray<string> {
+  return (content ?? []).flatMap((entry) =>
+    entry.type === "diff" && entry.path.trim() ? [entry.path.trim()] : [],
+  );
 }
 
 export function parsePermissionRequest(
@@ -425,8 +497,11 @@ export function parsePermissionRequest(
     { fallbackStatus: "pending" },
   );
   const kind = normalizeToolKind(params.toolCall.kind) ?? "unknown";
+  // An edit is named by the files it changes, not its generic title.
+  const editedPaths = diffContentPaths(params.toolCall.content);
   const detail =
     toolCall?.command ??
+    (editedPaths.length > 0 ? editedPaths.join(", ") : undefined) ??
     toolCall?.title ??
     toolCall?.detail ??
     (typeof params.sessionId === "string" ? `Session ${params.sessionId}` : undefined);

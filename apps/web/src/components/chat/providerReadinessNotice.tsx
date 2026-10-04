@@ -133,9 +133,9 @@ export function buildProviderSendPreflightNotice({
   onDismiss: () => void;
 }): ComposerNotice {
   // A provider that isn't installed has nothing to sign in to yet, and one
-  // without a known login command has no flow we can start, so both fall back
-  // to the install-and-connect notice.
-  if (prompt.reason === "notInstalled" || !prompt.command) {
+  // whose sign-in Threadlines can't run has no flow we can start, so both fall
+  // back to the install-and-connect notice.
+  if (prompt.reason === "notInstalled" || !prompt.canSignIn) {
     return buildProviderNotInstalledNotice({
       id: "provider-send-preflight",
       severity: "warning",

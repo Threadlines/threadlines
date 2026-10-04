@@ -66,6 +66,12 @@ export const ProviderSession = Schema.Struct({
    * resume at its next turn.
    */
   roomTools: Schema.optional(Schema.Boolean),
+  /**
+   * A resume was asked for but the provider could not reopen that
+   * conversation, so this session starts without it. The next turn carries
+   * the thread's history (see ProviderCommandReactor).
+   */
+  resumeFailed: Schema.optional(Schema.Boolean),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
   lastError: Schema.optional(TrimmedNonEmptyString),
