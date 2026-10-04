@@ -2886,7 +2886,9 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
       // Read back from SQL, the way the engine rebuilds its read model at boot.
       const query = yield* ProjectionSnapshotQuery.pipe(
         Effect.provide(
-          OrchestrationProjectionSnapshotQueryLive.pipe(Layer.provide(RepositoryIdentityResolverLive)),
+          OrchestrationProjectionSnapshotQueryLive.pipe(
+            Layer.provide(RepositoryIdentityResolverLive),
+          ),
         ),
       );
       const readModel = yield* query.getCommandReadModel();

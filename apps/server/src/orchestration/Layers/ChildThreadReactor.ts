@@ -27,7 +27,10 @@ import {
   childDeliveryForQuietCandidate,
   isQuietCandidate,
 } from "../childThreadDelivery.ts";
-import { ChildThreadReactor, type ChildThreadReactorShape } from "../Services/ChildThreadReactor.ts";
+import {
+  ChildThreadReactor,
+  type ChildThreadReactorShape,
+} from "../Services/ChildThreadReactor.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
 import { ThreadBootstrap } from "../Services/ThreadBootstrap.ts";
@@ -54,7 +57,7 @@ type ReactorEvent = Extract<
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 
-const make = Effect.gen(function* () {
+export const makeChildThreadReactor = Effect.gen(function* () {
   const engine = yield* OrchestrationEngineService;
   const snapshots = yield* ProjectionSnapshotQuery;
   const bootstrap = yield* ThreadBootstrap;
@@ -72,7 +75,7 @@ const make = Effect.gen(function* () {
       Effect.asVoid,
       Effect.catch((error) =>
         Effect.logInfo(`child thread reactor could not ${what}`, {
-          threadId: command.type === "project.create" ? undefined : command.threadId,
+          threadId: "threadId" in command ? command.threadId : undefined,
           detail: String(error),
         }),
       ),
@@ -195,7 +198,8 @@ const make = Effect.gen(function* () {
         return;
       }
       const parent = yield* readThread(child.parentThreadId);
-      const owed = parent?.childRequests.open.filter((entry) => entry.childThreadId === childId) ?? [];
+      const owed =
+        parent?.childRequests.open.filter((entry) => entry.childThreadId === childId) ?? [];
       if (parent === undefined || owed.length === 0) {
         return;
       }
@@ -347,11 +351,17 @@ const make = Effect.gen(function* () {
           { ...delivery, threadId: parent.id, createdAt: yield* nowIso },
           "settle a child request after a restart",
         );
-        if ((child.queuedFollowUps ?? []).some((queued) => queued.messageId === request.childMessageId)) {
+        if (
+          (child.queuedFollowUps ?? []).some(
+            (queued) => queued.messageId === request.childMessageId,
+          )
+        ) {
           yield* dispatch(
             {
               type: "thread.follow-up.unqueue",
-              commandId: CommandId.make(`server:child-request:${request.requestId}:restart-unqueue`),
+              commandId: CommandId.make(
+                `server:child-request:${request.requestId}:restart-unqueue`,
+              ),
               threadId: child.id,
               messageId: request.childMessageId,
               createdAt: yield* nowIso,
@@ -399,9 +409,12 @@ const make = Effect.gen(function* () {
     const events = yield* engine.subscribeDomainEvents;
     yield* settleFromPreviousProcess.pipe(
       Effect.catchCause((cause) =>
-        Effect.logWarning("child thread reactor could not settle requests from the previous process", {
-          cause: Cause.pretty(cause),
-        }),
+        Effect.logWarning(
+          "child thread reactor could not settle requests from the previous process",
+          {
+            cause: Cause.pretty(cause),
+          },
+        ),
       ),
     );
     yield* Effect.forkScoped(
@@ -435,6 +448,6 @@ const make = Effect.gen(function* () {
   return { start, drain: worker.drain } satisfies ChildThreadReactorShape;
 });
 
-export const ChildThreadReactorLive = Layer.effect(ChildThreadReactor, make).pipe(
+export const ChildThreadReactorLive = Layer.effect(ChildThreadReactor, makeChildThreadReactor).pipe(
   Layer.provide(ProjectionTurnRepositoryLive),
 );
