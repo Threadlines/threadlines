@@ -6,6 +6,8 @@ import {
   holdFocusForAgent,
   installBrowserFocusGuard,
   noteBrowserUserIntent,
+  withAgentInputTurn,
+  withPageKeyboard,
 } from "./browserFocusGuard";
 
 const GUEST_ID = 7;
@@ -152,5 +154,170 @@ describe("browserFocusGuard", () => {
     expect(document.activeElement).toBe(webview);
     vi.advanceTimersByTime(200);
     expect(document.activeElement).toBe(webview);
+  });
+
+  /**
+   * Stands in for the IPC that carries the agent's keys: it is sent before the
+   * page takes focus, and its work happens once the message has crossed.
+   */
+  const keys =
+    (work: () => void = () => {}) =>
+    async () => {
+      await Promise.resolve();
+      work();
+    };
+
+  it("gives the page the keyboard for an agent's keys, then gives it back", async () => {
+    // Chromium sends a page's keystrokes to whatever holds focus in the
+    // window: a restore in the middle sends the agent's text to the composer.
+    releaseAgentHold = holdFocusForAgent();
+    input.focus();
+    await withPageKeyboard(
+      webview,
+      keys(() => {
+        expect(document.activeElement).toBe(webview);
+        vi.advanceTimersByTime(200);
+        expect(document.activeElement).toBe(webview);
+      }),
+    );
+    expect(document.activeElement).toBe(input);
+  });
+
+  it("returns the keyboard to the composer when the agent's click had just taken it", async () => {
+    releaseAgentHold = holdFocusForAgent();
+    input.focus();
+    // The click into the page's field pulls focus onto the webview, and the
+    // keys follow before the guard's restore has run; it comes due mid-keys.
+    webview.focus();
+    await withPageKeyboard(
+      webview,
+      keys(() => vi.advanceTimersByTime(1)),
+    );
+    vi.advanceTimersByTime(200);
+    expect(document.activeElement).toBe(input);
+  });
+
+  it("returns the keyboard to the composer when focus was still on its way into the page", async () => {
+    releaseAgentHold = holdFocusForAgent();
+    input.focus();
+    // Focus passes through nowhere on its way into a guest.
+    input.blur();
+    await withPageKeyboard(
+      webview,
+      keys(() => vi.advanceTimersByTime(1)),
+    );
+    expect(document.activeElement).toBe(input);
+  });
+
+  it("returns the keyboard to the composer after the guard gave up on the page", async () => {
+    releaseAgentHold = holdFocusForAgent();
+    input.focus();
+    // Agent clicks in quick succession use up the restores...
+    for (let grab = 0; grab < 5; grab += 1) {
+      webview.focus();
+      vi.advanceTimersByTime(100);
+    }
+    expect(document.activeElement).toBe(webview);
+    // ...but the composer is still where the user was.
+    await withPageKeyboard(webview, keys());
+    expect(document.activeElement).toBe(input);
+  });
+
+  it("leaves the page the keyboard only if the user pressed in it meanwhile", async () => {
+    releaseAgentHold = holdFocusForAgent();
+    input.focus();
+    // A press on the panel's own controls says nothing about this page.
+    await withPageKeyboard(webview, keys(noteBrowserUserIntent));
+    expect(document.activeElement).toBe(input);
+    await withPageKeyboard(
+      webview,
+      keys(() => reportGuestInput("pointer")),
+    );
+    expect(document.activeElement).toBe(webview);
+  });
+
+  it("returns the keyboard to wherever the user moved meanwhile", async () => {
+    releaseAgentHold = holdFocusForAgent();
+    const other = document.createElement("input");
+    document.body.append(other);
+    input.focus();
+    await withPageKeyboard(
+      webview,
+      keys(() => {
+        other.focus();
+        // The page takes focus back before the keys are done.
+        webview.focus();
+      }),
+    );
+    expect(document.activeElement).toBe(other);
+    other.remove();
+  });
+
+  it("returns the keyboard to the user when one page's loan cuts another's short", async () => {
+    releaseAgentHold = holdFocusForAgent();
+    const second = Object.assign(document.createElement("webview"), {
+      getWebContentsId: () => GUEST_ID + 1,
+    });
+    second.tabIndex = -1;
+    document.body.append(second);
+    input.focus();
+    let finishFirst = () => {};
+    const first = withPageKeyboard(
+      webview,
+      () =>
+        new Promise<void>((resolve) => {
+          finishFirst = resolve;
+        }),
+    );
+    await Promise.resolve();
+    // The guard's pending look at the first loan's focus change comes and goes.
+    vi.advanceTimersByTime(1);
+    await withPageKeyboard(second, keys());
+    expect(document.activeElement).toBe(input);
+    finishFirst();
+    await first;
+    expect(document.activeElement).toBe(input);
+    second.remove();
+  });
+
+  it("runs one agent input at a time, and a stuck one gives up its turn", async () => {
+    const order: string[] = [];
+    let finishFirst = () => {};
+    const first = withAgentInputTurn(async () => {
+      order.push("first");
+      await new Promise<void>((resolve) => {
+        finishFirst = resolve;
+      });
+    });
+    const second = withAgentInputTurn(async () => {
+      order.push("second");
+    });
+    await vi.advanceTimersByTimeAsync(999);
+    expect(order).toEqual(["first"]);
+    await vi.advanceTimersByTimeAsync(1);
+    await second;
+    expect(order).toEqual(["first", "second"]);
+    finishFirst();
+    await first;
+  });
+
+  it("takes the keyboard back from a page that does not finish", async () => {
+    releaseAgentHold = holdFocusForAgent();
+    input.focus();
+    let finish = () => {};
+    const sending = withPageKeyboard(
+      webview,
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    await Promise.resolve();
+    expect(document.activeElement).toBe(webview);
+    vi.advanceTimersByTime(1_000);
+    expect(document.activeElement).toBe(input);
+    finish();
+    await sending;
+    expect(document.activeElement).toBe(input);
   });
 });

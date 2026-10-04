@@ -499,6 +499,7 @@ describe("createPreviewAutomationHandler", () => {
     // Electron prefixes anything thrown across IPC, which buries the sentence
     // the agent actually needs under something that reads like a broken tool.
     const handle = handlerFor({
+      previewClick: () => Promise.resolve({ x: 1, y: 1 }),
       previewType: () =>
         Promise.reject(
           new Error(
@@ -510,6 +511,93 @@ describe("createPreviewAutomationHandler", () => {
     const response = await handle(request("type", { target: { ref: 1 }, text: "hi" }));
 
     expect(response.error).toBe("target is not editable");
+  });
+
+  it("sends an agent's keys only while the page holds the keyboard", async () => {
+    // Chromium delivers a page's keystrokes to whatever has focus in the
+    // window, so keys sent outside the hand-off land in the app instead.
+    const events: string[] = [];
+    let holding = false;
+    const handle = createPreviewAutomationHandler(
+      {
+        previewClick: async (input: { target: unknown }) => {
+          events.push(`click ${JSON.stringify(input.target)} holding=${holding}`);
+          return { x: 1, y: 1 };
+        },
+        previewType: async (input: { target?: unknown; text: string; controlEpoch?: number }) => {
+          events.push(
+            `type ${input.text} target=${"target" in input} epoch=${input.controlEpoch} holding=${holding}`,
+          );
+        },
+        previewPress: async (input: { key: string; controlEpoch?: number }) => {
+          events.push(`press ${input.key} epoch=${input.controlEpoch} holding=${holding}`);
+        },
+        previewStatus: () =>
+          Promise.resolve({ url: "http://x/", title: "X", loading: false, controlEpoch: 3 }),
+      } as unknown as DesktopBridge,
+      () => ({
+        webContentsId: 42,
+        navigate: () => Promise.resolve(),
+        viewport: () => ({ width: 800, height: 600 }),
+        setViewport: () => {},
+        onAgentPoint: () => {},
+        tabs: () => [],
+        selectTab: () => {},
+        onAgentActivity: () => {},
+        withKeyboard: async (send) => {
+          holding = true;
+          try {
+            return await send();
+          } finally {
+            holding = false;
+          }
+        },
+      }),
+    );
+
+    await handle(request("type", { target: { ref: "e1" }, text: "reviewer", submit: true }));
+    await handle(request("press", { key: "Enter" }));
+
+    // The keys carry the epoch from before the click, so the desktop stops
+    // them if the user takes the page over in between.
+    expect(events).toEqual([
+      'click {"ref":"e1"} holding=false',
+      "type reviewer target=false epoch=3 holding=true",
+      "press Enter epoch=3 holding=true",
+    ]);
+  });
+
+  it("names the user taking over as the reason an action failed", async () => {
+    let epoch = 3;
+    let takenOver = false;
+    const handle = createPreviewAutomationHandler(
+      {
+        previewPress: async () => {
+          epoch += 1;
+          throw new Error("the user took control of this tab, so nothing was typed; try again");
+        },
+        previewStatus: () =>
+          Promise.resolve({ url: "http://x/", title: "X", loading: false, controlEpoch: epoch }),
+      } as unknown as DesktopBridge,
+      () => ({
+        webContentsId: 42,
+        navigate: () => Promise.resolve(),
+        viewport: () => ({ width: 800, height: 600 }),
+        setViewport: () => {},
+        onAgentPoint: () => {},
+        tabs: () => [],
+        selectTab: () => {},
+        onAgentActivity: () => {},
+        onUserTakeover: () => {
+          takenOver = true;
+        },
+      }),
+    );
+
+    const response = await handle(request("press", { key: "Enter" }));
+
+    expect(response.error).toContain("user took control");
+    expect(takenOver).toBe(true);
   });
 
   it("answers instead of rejecting when the target itself cannot be read", async () => {

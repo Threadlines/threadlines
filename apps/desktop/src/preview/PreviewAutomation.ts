@@ -41,6 +41,8 @@ import type {
 import {
   isBrowserHostAllowed,
   normalizePreviewWaitForTimeoutMs,
+  PREVIEW_AGENT_KEYBOARD_HOLD_MS,
+  PREVIEW_AGENT_KEYS_DEADLINE_MS,
   type BrowserSiteAccess,
 } from "@threadlines/shared/preview";
 import { app, BrowserWindow, webContents, type WebContents } from "electron";
@@ -82,6 +84,12 @@ const DRAG_MOVE_STEPS = 10;
 const MAX_NETWORK_FAILURES = 100;
 /** See `sendCommand`: comfortably inside the broker's twenty second deadline. */
 const CDP_COMMAND_TIMEOUT = "15 seconds";
+/**
+ * How long an agent's keys wait for the page to take focus. The renderer
+ * focuses it straight after sending them, so this is normally one poll.
+ */
+const PAGE_FOCUS_WAIT_MS = 250;
+const PAGE_FOCUS_POLL = "4 millis";
 /**
  * An agent's script may wait on purpose (a promise that settles after an
  * animation, a fetch), so it gets nearly all of the broker's deadline.
@@ -125,7 +133,9 @@ interface AttachedTab {
    */
   requestUrls: Map<string, string>;
   controlEpoch: number;
-  expectedAgentInputs: Array<{ kind: "keyDown" | "mouseDown" | "mouseWheel"; expiresAt: number }>;
+  expectedAgentInputs: Array<{ kind: "mouseDown" | "mouseWheel"; expiresAt: number }>;
+  /** Until when the user's keys are kept out of the page; see `agentKeys`. */
+  holdUserKeysUntil: number;
   dispose: () => void;
 }
 
@@ -218,9 +228,7 @@ export class PreviewAutomation extends Context.Service<
     readonly drag: (
       input: DesktopPreviewDragInput,
     ) => Effect.Effect<DesktopPreviewDragResult, PreviewAutomationError>;
-    readonly type: (
-      input: DesktopPreviewTypeInput,
-    ) => Effect.Effect<DesktopPreviewPoint, PreviewAutomationError>;
+    readonly type: (input: DesktopPreviewTypeInput) => Effect.Effect<void, PreviewAutomationError>;
     readonly press: (
       input: DesktopPreviewPressInput,
     ) => Effect.Effect<void, PreviewAutomationError>;
@@ -387,9 +395,16 @@ export const make = Effect.sync(function PreviewAutomationMake() {
     method: string,
     params?: Record<string, unknown>,
     timeout: Duration.Input = CDP_COMMAND_TIMEOUT,
+    /** Asked in the same synchronous step as the send; a reason refuses it. */
+    refusal?: () => string | null,
   ) =>
     Effect.tryPromise({
-      try: () => contents.debugger.sendCommand(method, params ?? {}),
+      try: () => {
+        const reason = refusal?.() ?? null;
+        return reason === null
+          ? contents.debugger.sendCommand(method, params ?? {})
+          : Promise.reject(reason);
+      },
       catch: (cause) => new PreviewCommandError({ webContentsId: contents.id, method, cause }),
     }).pipe(
       Effect.timeoutOrElse({
@@ -404,6 +419,91 @@ export const make = Effect.sync(function PreviewAutomationMake() {
           ),
       }),
     );
+
+  /**
+   * One agent action's keystrokes into a page; `keys` sends them through the
+   * `send` it is given.
+   *
+   * Chromium does not deliver a guest's keystrokes to the guest. It delivers
+   * them to whatever holds keyboard focus in the window, and when that is the
+   * app -- the composer the user is typing in -- the agent's text and its Enter
+   * land there and send a message. So the renderer gives the page focus for
+   * the length of the keys (`withPageKeyboard` in the focus guard), just
+   * behind this request, and:
+   *
+   * - The user's keys are held out of the page from the moment the request
+   *   arrives for as long as the renderer may hold the loan, or until they
+   *   press in the page themselves: until then, focus is the page's only on
+   *   loan, and the renderer may be too busy to have handed it back yet.
+   * - Each key waits for the page to hold focus, and is refused if it does not,
+   *   if the renderer may be taking focus back by now, or if the user has
+   *   taken control of the page since the action began (`controlEpoch`): the
+   *   field the agent clicked may no longer be the one with focus. A loan that
+   *   failed or ran out is an error, never keys in the wrong place. The check
+   *   rides inside the send because Chromium picks the receiver synchronously
+   *   while the command is dispatched: nothing can move focus between the two.
+   */
+  const agentKeys = <A, E, R>(
+    webContentsId: number,
+    controlEpoch: number | undefined,
+    keys: (
+      send: (
+        method: string,
+        params: Record<string, unknown>,
+      ) => Effect.Effect<unknown, PreviewCommandError>,
+    ) => Effect.Effect<A, E, R>,
+  ) =>
+    Effect.suspend(() => {
+      const startedAt = Date.now();
+      const holdUserKeys = () => {
+        const tab = attached.get(webContentsId);
+        // Not for a page the user has taken over: these keys will be refused,
+        // and the user's own are for the page.
+        if (
+          tab === undefined ||
+          (controlEpoch !== undefined && tab.controlEpoch !== controlEpoch)
+        ) {
+          return;
+        }
+        tab.holdUserKeysUntil = startedAt + PREVIEW_AGENT_KEYBOARD_HOLD_MS;
+      };
+      // On arrival, before anything that waits: the focus is right behind.
+      holdUserKeys();
+      return resolveAttached(webContentsId).pipe(
+        Effect.flatMap((contents) =>
+          Effect.gen(function* () {
+            // Again, in case attaching just made the tab's record.
+            holdUserKeys();
+            while (contents.focusedFrame === null && Date.now() - startedAt < PAGE_FOCUS_WAIT_MS) {
+              yield* Effect.sleep(PAGE_FOCUS_POLL);
+            }
+            let sent = 0;
+            const send = (method: string, params: Record<string, unknown>) =>
+              sendCommand(contents, method, params, CDP_COMMAND_TIMEOUT, () => {
+                const tab = attached.get(webContentsId);
+                const refusal =
+                  controlEpoch !== undefined &&
+                  tab !== undefined &&
+                  tab.controlEpoch !== controlEpoch
+                    ? "the user took control of this tab"
+                    : contents.focusedFrame === null
+                      ? "the page did not have keyboard focus"
+                      : Date.now() - startedAt > PREVIEW_AGENT_KEYS_DEADLINE_MS
+                        ? "the page took too long to take the keys"
+                        : null;
+                if (refusal === null) {
+                  sent += 1;
+                  return null;
+                }
+                return sent === 0
+                  ? `${refusal}, so nothing was typed; try again`
+                  : `${refusal}, so only part of the input reached it; check the field before trying again`;
+              });
+            return yield* keys(send);
+          }),
+        ),
+      );
+    });
 
   const failCommand = (contents: WebContents, method: string, cause: string) =>
     Effect.fail(new PreviewCommandError({ webContentsId: contents.id, method, cause }));
@@ -897,6 +997,7 @@ export const make = Effect.sync(function PreviewAutomationMake() {
       requestUrls: new Map(),
       controlEpoch: 0,
       expectedAgentInputs: [],
+      holdUserKeysUntil: 0,
       dispose: () => {},
     };
 
@@ -916,7 +1017,7 @@ export const make = Effect.sync(function PreviewAutomationMake() {
       if (tab.console.length > MAX_CONSOLE_ENTRIES) tab.console.shift();
     };
 
-    const consumeExpectedAgentInput = (kind: "keyDown" | "mouseDown" | "mouseWheel") => {
+    const consumeExpectedAgentInput = (kind: "mouseDown" | "mouseWheel") => {
       const now = Date.now();
       tab.expectedAgentInputs = tab.expectedAgentInputs.filter((entry) => entry.expiresAt > now);
       const index = tab.expectedAgentInputs.findIndex((entry) => entry.kind === kind);
@@ -924,11 +1025,20 @@ export const make = Effect.sync(function PreviewAutomationMake() {
       tab.expectedAgentInputs.splice(index, 1);
       return true;
     };
-    const onBeforeInput = (_event: unknown, input: { type?: string }) => {
-      if (input.type === "keyDown" && !consumeExpectedAgentInput("keyDown")) {
-        tab.controlEpoch += 1;
-        reportUserControl(contents, "keyboard");
+    // Only the user's keys come through here: the agent's are CDP key events,
+    // a kind Electron does not report.
+    const onBeforeInput = (event: { preventDefault: () => void }, input: { type?: string }) => {
+      // The page holds focus only so the agent's keys reach it; a key the user
+      // typed meanwhile was meant for wherever they were typing, and in the
+      // page it could fire a shortcut or land in the middle of the agent's text.
+      // Releases too: a page may act on the keyup of an Enter pressed elsewhere.
+      if (Date.now() < tab.holdUserKeysUntil) {
+        event.preventDefault();
+        return;
       }
+      if (input.type !== "keyDown") return;
+      tab.controlEpoch += 1;
+      reportUserControl(contents, "keyboard");
     };
     const onBeforeMouse = (_event: unknown, input: { type?: string }) => {
       const kind =
@@ -938,6 +1048,8 @@ export const make = Effect.sync(function PreviewAutomationMake() {
             ? "mouseWheel"
             : null;
       if (kind !== null && !consumeExpectedAgentInput(kind)) {
+        // A press in the page is the user choosing it; their keys are for it.
+        if (kind === "mouseDown") tab.holdUserKeysUntil = 0;
         tab.controlEpoch += 1;
         reportUserControl(contents, kind === "mouseDown" ? "pointer" : "wheel");
       }
@@ -1179,10 +1291,7 @@ export const make = Effect.sync(function PreviewAutomationMake() {
     return yield* centerOf(contents, backendNodeId);
   });
 
-  const expectAgentInput = (
-    webContentsId: number,
-    kind: "keyDown" | "mouseDown" | "mouseWheel",
-  ) => {
+  const expectAgentInput = (webContentsId: number, kind: "mouseDown" | "mouseWheel") => {
     attached.get(webContentsId)?.expectedAgentInputs.push({ kind, expiresAt: Date.now() + 1_000 });
   };
 
@@ -1633,80 +1742,56 @@ export const make = Effect.sync(function PreviewAutomationMake() {
       });
       return { from, to };
     }),
+    // Into whatever the page has focused: the renderer clicks the field first,
+    // as its own step, so the page needs the keyboard only for the keys.
     type: Effect.fn("PreviewAutomation.type")(function* (input: DesktopPreviewTypeInput) {
-      const contents = yield* resolveAttached(input.webContentsId);
-      const point = yield* targetPoint(contents, input.target);
-      expectAgentInput(contents.id, "mouseDown");
-      yield* sendCommand(contents, "Input.dispatchMouseEvent", {
-        type: "mousePressed",
-        x: point.x,
-        y: point.y,
-        button: "left",
-        clickCount: 1,
-      });
-      yield* sendCommand(contents, "Input.dispatchMouseEvent", {
-        type: "mouseReleased",
-        x: point.x,
-        y: point.y,
-        button: "left",
-        clickCount: 1,
-      });
-      if (input.clear === true) {
-        expectAgentInput(contents.id, "keyDown");
-        // `commands` invokes the editing command directly, which is what a
-        // modifier chord ultimately triggers. Dispatching Meta+A as a raw key
-        // does not: the browser resolves shortcuts to editing commands above
-        // the layer CDP injects at, so the keypress arrives and selects
-        // nothing, and the insert below lands wherever the caret happened to
-        // be -- mid-word, since a click centres it.
-        yield* sendCommand(contents, "Input.dispatchKeyEvent", {
-          type: "keyDown",
-          key: "a",
-          code: "KeyA",
-          windowsVirtualKeyCode: 65,
-          commands: ["selectAll"],
-        });
-        yield* sendCommand(contents, "Input.dispatchKeyEvent", {
-          type: "keyUp",
-          key: "a",
-          code: "KeyA",
-          windowsVirtualKeyCode: 65,
-        });
-      }
-      yield* sendCommand(contents, "Input.insertText", { text: input.text });
-      if (input.submit === true) {
-        expectAgentInput(contents.id, "keyDown");
-        const enter = toCdpKeyDefinition("Enter");
-        yield* sendCommand(contents, "Input.dispatchKeyEvent", {
-          type: "keyDown",
-          ...enter,
-        });
-        const { text: _text, ...releasedEnter } = enter;
-        yield* sendCommand(contents, "Input.dispatchKeyEvent", {
-          type: "keyUp",
-          ...releasedEnter,
-        });
-      }
-      // The caret is where the agent is. Returned so the pointer travels to the
-      // field it is typing into rather than sitting on the last thing clicked.
-      return point;
+      yield* agentKeys(input.webContentsId, input.controlEpoch, (send) =>
+        Effect.gen(function* () {
+          if (input.clear === true) {
+            // `commands` invokes the editing command directly, which is what a
+            // modifier chord ultimately triggers. Dispatching Meta+A as a raw key
+            // does not: the browser resolves shortcuts to editing commands above
+            // the layer CDP injects at, so the keypress arrives and selects
+            // nothing, and the insert below lands wherever the caret happened to
+            // be -- mid-word, since a click centres it.
+            yield* send("Input.dispatchKeyEvent", {
+              type: "keyDown",
+              key: "a",
+              code: "KeyA",
+              windowsVirtualKeyCode: 65,
+              commands: ["selectAll"],
+            });
+            yield* send("Input.dispatchKeyEvent", {
+              type: "keyUp",
+              key: "a",
+              code: "KeyA",
+              windowsVirtualKeyCode: 65,
+            });
+          }
+          yield* send("Input.insertText", { text: input.text });
+          if (input.submit === true) {
+            const enter = toCdpKeyDefinition("Enter");
+            yield* send("Input.dispatchKeyEvent", { type: "keyDown", ...enter });
+            const { text: _text, ...releasedEnter } = enter;
+            yield* send("Input.dispatchKeyEvent", { type: "keyUp", ...releasedEnter });
+          }
+        }),
+      );
     }),
     press: Effect.fn("PreviewAutomation.press")(function* (input: DesktopPreviewPressInput) {
-      const contents = yield* resolveAttached(input.webContentsId);
       const definition = toCdpKeyDefinition(input.key);
       const modifiers = toCdpModifierBitmask(input.modifiers);
-      expectAgentInput(contents.id, "keyDown");
-      yield* sendCommand(contents, "Input.dispatchKeyEvent", {
-        type: "keyDown",
-        ...definition,
-        modifiers,
-      });
-      const { text: _text, ...releasedDefinition } = definition;
-      yield* sendCommand(contents, "Input.dispatchKeyEvent", {
-        type: "keyUp",
-        ...releasedDefinition,
-        modifiers,
-      });
+      yield* agentKeys(input.webContentsId, input.controlEpoch, (send) =>
+        Effect.gen(function* () {
+          yield* send("Input.dispatchKeyEvent", { type: "keyDown", ...definition, modifiers });
+          const { text: _text, ...releasedDefinition } = definition;
+          yield* send("Input.dispatchKeyEvent", {
+            type: "keyUp",
+            ...releasedDefinition,
+            modifiers,
+          });
+        }),
+      );
     }),
     scroll: Effect.fn("PreviewAutomation.scroll")(function* (input: DesktopPreviewScrollInput) {
       const contents = yield* resolveAttached(input.webContentsId);
