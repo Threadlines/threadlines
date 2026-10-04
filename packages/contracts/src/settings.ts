@@ -11,6 +11,7 @@ import {
 } from "./model.ts";
 import {
   AgentInvitesMode,
+  AgentThreadsMode,
   FollowUpDelivery,
   ModelSelection,
   RoomAgentRole,
@@ -96,6 +97,11 @@ export const ClientSettingsSchema = Schema.Struct({
   wrapUpThreadsOnPullRequestSettled: Schema.Boolean.pipe(
     Schema.withDecodingDefault(Effect.succeed(true)),
   ),
+  /**
+   * File a thread an agent started under Wrapped once its answer has gone back
+   * to that agent (docs/design/child-threads.md).
+   */
+  wrapUpChildThreadsOnFinish: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   dismissedProviderUpdateNotificationKeys: Schema.Array(TrimmedNonEmptyString).pipe(
     Schema.withDecodingDefault(Effect.succeed([])),
   ),
@@ -625,6 +631,12 @@ export const ServerSettings = Schema.Struct({
    */
   agentInvites: AgentInvitesMode.pipe(Schema.withDecodingDefault(Effect.succeed("ask" as const))),
   /**
+   * Whether the thread's agents may start threads of their own
+   * (AgentThreadsMode). Never chosen: `ask`, filled in when the file is read,
+   * like `agentInvites`. Independent of Rooms.
+   */
+  agentThreads: AgentThreadsMode.pipe(Schema.withDecodingDefault(Effect.succeed("ask" as const))),
+  /**
    * Rooms: more than one agent in a thread. Gates every entry point in the
    * clients (agents in the model picker, the Rooms filter) and agents
    * bringing in others; the server accepts room commands either way. It
@@ -769,6 +781,7 @@ export const ServerSettingsPatch = Schema.Struct({
   // The web UI sends a fully-formed map every time it edits this field.
   providerInstances: Schema.optionalKey(Schema.Record(ProviderInstanceId, ProviderInstanceConfig)),
   agentInvites: Schema.optionalKey(AgentInvitesMode),
+  agentThreads: Schema.optionalKey(AgentThreadsMode),
   enableRooms: Schema.optionalKey(Schema.Boolean),
   // Whole values, replaced as sent: a new default never keeps an old one's
   // reasoning, and the list is the whole list.
@@ -790,6 +803,7 @@ export const ClientSettingsPatch = Schema.Struct({
   confirmThreadArchive: Schema.optionalKey(Schema.Boolean),
   confirmThreadDelete: Schema.optionalKey(Schema.Boolean),
   wrapUpThreadsOnPullRequestSettled: Schema.optionalKey(Schema.Boolean),
+  wrapUpChildThreadsOnFinish: Schema.optionalKey(Schema.Boolean),
   dictationHoldToRecord: Schema.optionalKey(Schema.Boolean),
   dictationMicrophoneDeviceId: Schema.optionalKey(Schema.NullOr(TrimmedNonEmptyString)),
   diffChangesOnly: Schema.optionalKey(Schema.Boolean),

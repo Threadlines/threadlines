@@ -26,6 +26,7 @@ import {
   ThreadId,
   TurnId,
   OrchestrationAgentRequestState,
+  OrchestrationChildRequestState,
 } from "@threadlines/contracts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -122,6 +123,20 @@ export const ProjectionThread = Schema.Struct({
    * migration 061 decode; absent or null reads as none.
    */
   agentRequests: Schema.optional(Schema.NullOr(OrchestrationAgentRequestState)),
+  /**
+   * Child threads: lineage, family and hand-back; see
+   * `OrchestrationThread.parentThreadId` and the fields after it. Optional so
+   * rows written before migration 066 decode; absent reads as none.
+   */
+  parentThreadId: Schema.optional(Schema.NullOr(ThreadId)),
+  parentTurnId: Schema.optional(Schema.NullOr(TurnId)),
+  attachedToParent: Schema.optional(Schema.NullOr(NonNegativeInt)),
+  parentAttachmentEpoch: Schema.optional(Schema.NullOr(NonNegativeInt)),
+  handedBackAt: Schema.optional(Schema.NullOr(IsoDateTime)),
+  handedBackTurnId: Schema.optional(Schema.NullOr(TurnId)),
+  archivedWithParentAt: Schema.optional(Schema.NullOr(IsoDateTime)),
+  /** On a parent: see `OrchestrationThread.childRequests`. Absent or null reads as none. */
+  childRequests: Schema.optional(Schema.NullOr(OrchestrationChildRequestState)),
   /**
    * The user's explicit inbox filing and its stamp. Optional so rows written
    * before migration 042 decode; absent reads as "never filed". Kept as two

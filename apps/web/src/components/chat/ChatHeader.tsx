@@ -9,6 +9,7 @@ import {
 } from "@threadlines/contracts";
 import { memo } from "react";
 import {
+  CornerDownRightIcon,
   FolderInputIcon,
   FolderOpenIcon,
   GitForkIcon,
@@ -34,6 +35,12 @@ import { cn } from "../../lib/utils";
 export interface ForkHeaderContext {
   readonly sourceThreadId: ThreadId;
   readonly sourceThreadTitle: string;
+}
+
+/** Child threads: the thread whose agent started this one. */
+export interface ParentThreadHeaderContext {
+  readonly parentThreadId: ThreadId;
+  readonly parentThreadTitle: string;
 }
 
 interface ChatHeaderProps {
@@ -78,6 +85,8 @@ interface ChatHeaderProps {
   fileBrowserAvailable: boolean;
   taskProgress: ThreadTaskProgressState | null;
   forkContext: ForkHeaderContext | null;
+  /** Set on a thread another thread's agent started; it stays after separating. */
+  parentContext?: ParentThreadHeaderContext | null | undefined;
   backgroundRuns: ReadonlyArray<ThreadBackgroundRunItem>;
   /** The thread the background runs belong to; where their output is read from. */
   activeThreadRef: ScopedThreadRef | null;
@@ -91,6 +100,8 @@ interface ChatHeaderProps {
   onImplementProposedPlan?: (() => void) | undefined;
   onDismissProposedPlan?: (() => void) | undefined;
   onOpenForkSourceThread: (threadId: ThreadId) => void;
+  /** Opens the thread that started this one. */
+  onOpenParentThread?: ((threadId: ThreadId) => void) | undefined;
   onToggleTerminal: () => void;
   onToggleRail: () => void;
   onToggleBrowser: () => void;
@@ -190,6 +201,7 @@ export const ChatHeader = memo(function ChatHeader({
   fileBrowserAvailable,
   taskProgress,
   forkContext,
+  parentContext = null,
   backgroundRuns,
   activeThreadRef,
   onRunProjectScript,
@@ -202,6 +214,7 @@ export const ChatHeader = memo(function ChatHeader({
   onImplementProposedPlan,
   onDismissProposedPlan,
   onOpenForkSourceThread,
+  onOpenParentThread,
   onToggleTerminal,
   onToggleRail,
   onOpenSourceTab,
@@ -277,6 +290,24 @@ export const ChatHeader = memo(function ChatHeader({
               <span className="hidden sm:inline">Forked from</span>
               <span className="max-w-28 truncate text-foreground/80 sm:max-w-40">
                 {forkContext.sourceThreadTitle}
+              </span>
+            </span>
+          </button>
+        ) : null}
+        {parentContext && onOpenParentThread ? (
+          <button
+            type="button"
+            data-testid="chat-header-started-by"
+            className="translate-y-px inline-flex h-6 min-w-0 shrink-0 items-center rounded-md border border-border/70 bg-muted/45 px-1.5 text-[11px] leading-none text-muted-foreground transition-colors hover:border-border hover:bg-muted/70 hover:text-foreground"
+            onClick={() => onOpenParentThread(parentContext.parentThreadId)}
+            aria-label={`Open the thread that started this one: ${parentContext.parentThreadTitle}`}
+            title={`Started by ${parentContext.parentThreadTitle}`}
+          >
+            <span className="inline-flex min-w-0 items-center gap-1">
+              <CornerDownRightIcon aria-hidden="true" className="size-3 shrink-0" />
+              <span className="hidden sm:inline">Started by</span>
+              <span className="max-w-28 truncate text-foreground/80 sm:max-w-40">
+                {parentContext.parentThreadTitle}
               </span>
             </span>
           </button>

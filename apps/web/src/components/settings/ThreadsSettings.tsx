@@ -1,6 +1,7 @@
 import { InfoIcon, PlusIcon, XIcon } from "lucide-react";
 import {
   type AgentInvitesMode,
+  type AgentThreadsMode,
   type ModelSelection,
   type NewThreadRoomAgent,
   ProviderDriverKind,
@@ -9,7 +10,7 @@ import {
 } from "@threadlines/contracts";
 import { DEFAULT_UNIFIED_SETTINGS } from "@threadlines/contracts/settings";
 import { createModelSelection } from "@threadlines/shared/model";
-import { agentInvitesChoice } from "@threadlines/shared/serverSettings";
+import { agentInvitesChoice, agentThreadsMode } from "@threadlines/shared/serverSettings";
 import * as Equal from "effect/Equal";
 
 import { useSettings, useUpdateSettings } from "../../hooks/useSettings";
@@ -46,7 +47,7 @@ const PAIRED_COMPUTER_NOTE = "Applies to your paired computer.";
 
 /**
  * Settings › Threads: how a new thread starts (its agent, the agents beside
- * it, where it works), Rooms, the model that writes titles, and what happens
+ * it, where it works, whether its agent can start threads of its own), Rooms, the model that writes titles, and what happens
  * when a thread is done. The phone shows the same page; the computer's
  * settings there are the paired computer's.
  */
@@ -58,6 +59,7 @@ export function ThreadsSettingsPanel({ surface = "full" }: { surface?: "full" | 
         <NewThreadAgentRow />
         <NewThreadRoomRow />
         <DefaultThreadEnvModeRow />
+        <AgentThreadsRow />
       </SettingsSection>
 
       <SettingsSection title="Rooms" description={computerNote}>
@@ -71,6 +73,7 @@ export function ThreadsSettingsPanel({ surface = "full" }: { surface?: "full" | 
 
       <SettingsSection title="When a thread is done">
         <WrapUpMergedThreadsRow />
+        <WrapUpChildThreadsRow />
         <ConfirmArchiveRow />
         <ConfirmDeleteRow />
       </SettingsSection>
@@ -414,6 +417,61 @@ function AgentInvitesRow() {
   );
 }
 
+const AGENT_THREADS_LABELS: Record<AgentThreadsMode, string> = {
+  off: "Off",
+  ask: "Ask me first",
+  auto: "Automatic",
+};
+
+/**
+ * Whether the thread's agent may start threads of its own
+ * (docs/design/child-threads.md). A setting of this computer's server, like
+ * invites, but independent of Rooms: a thread with one agent can start them.
+ */
+function AgentThreadsRow() {
+  const mode = useSettings((settings) => agentThreadsMode(settings));
+  const { updateSettings } = useUpdateSettings();
+  return (
+    <SettingsRow
+      title="Agents can start threads"
+      description={
+        mode === "auto"
+          ? "The thread's agent can start threads of its own, each in its own worktree, without asking you."
+          : mode === "ask"
+            ? "The thread's agent can ask to start threads of its own, each in its own worktree, and you decide each time."
+            : "The thread's agent never starts threads of its own."
+      }
+      resetAction={
+        mode !== "ask" ? (
+          <SettingResetButton
+            label="agents can start threads"
+            onClick={() => updateSettings({ agentThreads: "ask" })}
+          />
+        ) : null
+      }
+      control={
+        <Select
+          value={mode}
+          onValueChange={(value) => {
+            if (value === "off" || value === "ask" || value === "auto") {
+              updateSettings({ agentThreads: value });
+            }
+          }}
+        >
+          <SelectTrigger className="w-full sm:w-44" aria-label="Agents can start threads">
+            <SelectValue>{AGENT_THREADS_LABELS[mode]}</SelectValue>
+          </SelectTrigger>
+          <SelectPopup align="end" alignItemWithTrigger={false}>
+            <SelectItem value="off">{AGENT_THREADS_LABELS.off}</SelectItem>
+            <SelectItem value="ask">{AGENT_THREADS_LABELS.ask}</SelectItem>
+            <SelectItem value="auto">{AGENT_THREADS_LABELS.auto}</SelectItem>
+          </SelectPopup>
+        </Select>
+      }
+    />
+  );
+}
+
 /** The model that writes thread titles (and source control text by default), and its backup. */
 function WritingModelRows() {
   const settings = useSettings();
@@ -581,6 +639,40 @@ function WrapUpMergedThreadsRow() {
             updateSettings({ wrapUpThreadsOnPullRequestSettled: Boolean(checked) })
           }
           aria-label="Wrap up merged threads"
+        />
+      }
+    />
+  );
+}
+
+function WrapUpChildThreadsRow() {
+  const settings = useSettings();
+  const { updateSettings } = useUpdateSettings();
+  return (
+    <SettingsRow
+      id="wrap-up-finished-child-threads"
+      title="Wrap up finished child threads"
+      description="File a thread an agent started under Wrapped once its answer went back to that agent, or once the thread that started it is wrapped."
+      resetAction={
+        settings.wrapUpChildThreadsOnFinish !==
+        DEFAULT_UNIFIED_SETTINGS.wrapUpChildThreadsOnFinish ? (
+          <SettingResetButton
+            label="wrap up finished child threads"
+            onClick={() =>
+              updateSettings({
+                wrapUpChildThreadsOnFinish: DEFAULT_UNIFIED_SETTINGS.wrapUpChildThreadsOnFinish,
+              })
+            }
+          />
+        ) : null
+      }
+      control={
+        <Switch
+          checked={settings.wrapUpChildThreadsOnFinish}
+          onCheckedChange={(checked) =>
+            updateSettings({ wrapUpChildThreadsOnFinish: Boolean(checked) })
+          }
+          aria-label="Wrap up finished child threads"
         />
       }
     />

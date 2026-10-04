@@ -290,14 +290,28 @@ export const withInviteChoice = (
     : { ...invite, choice: answer.choice, automatic: answer.automatic };
 
 /**
- * A message an agent queued (a reply) that was taken back before it was
- * sent: it stays in the chat, marked cancelled, and never started a turn.
- * The projections and the web store all apply it through this.
+ * Whether an agent wrote or queued this, not the user: a room agent's request
+ * or routed reply (`fromAgent`), or another thread's request or report
+ * (`fromThread`, child threads). Every "is this the user's" question asks
+ * this one, so the user's messages keep their priority, their place in the
+ * inbox order and their power to reset the agents' limits.
+ */
+export const isAgentOrigin = (entry: {
+  readonly fromAgent?: unknown;
+  readonly fromThread?: unknown;
+}): boolean => entry.fromAgent !== undefined || entry.fromThread !== undefined;
+
+/**
+ * A message an agent queued (a reply, or a child thread's report or request)
+ * that was taken back before it was sent: it stays in the chat, marked
+ * cancelled, and never started a turn. The projections and the web store all
+ * apply it through this.
  */
 export const withUnqueuedAgentMessage = <
   Message extends {
     readonly id: string;
     readonly fromAgent?: unknown;
+    readonly fromThread?: unknown;
     readonly requestOutcome?: RoomAgentRequestOutcome | undefined;
   },
 >(
@@ -306,17 +320,19 @@ export const withUnqueuedAgentMessage = <
 ): Message =>
   unqueued.reason === "cancelled" &&
   message.id === unqueued.messageId &&
-  message.fromAgent !== undefined &&
+  isAgentOrigin(message) &&
   message.requestOutcome === undefined
     ? { ...message, requestOutcome: "cancelled" }
     : message;
 
 /**
  * Whether the user wrote a message. In a room, an agent can write a user-role
- * message too (a request or a routed reply); those never count as the user's
- * activity (inbox order, "last message from you").
+ * message too (a request or a routed reply), and so can another thread's
+ * agent (child threads); those never count as the user's activity (inbox
+ * order, "last message from you").
  */
 export const isUserWrittenMessage = (message: {
   readonly role: string;
   readonly fromAgent?: unknown;
-}): boolean => message.role === "user" && message.fromAgent === undefined;
+  readonly fromThread?: unknown;
+}): boolean => message.role === "user" && !isAgentOrigin(message);

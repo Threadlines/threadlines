@@ -22,7 +22,7 @@ import {
   type UsageWindowDays,
 } from "@threadlines/contracts";
 import { scopeThreadRef } from "@threadlines/client-runtime";
-import { agentInvitesChoice } from "@threadlines/shared/serverSettings";
+import { agentInvitesChoice, agentThreadsMode } from "@threadlines/shared/serverSettings";
 import { DEFAULT_UNIFIED_SETTINGS } from "@threadlines/contracts/settings";
 import * as Duration from "effect/Duration";
 import * as Equal from "effect/Equal";
@@ -411,6 +411,11 @@ export function useSettingsRestore(onRestored?: () => void) {
         : []),
       ...(!roomsEnabledFor(settings) ? ["Rooms"] : []),
       ...(agentInvitesChoice(settings) !== "ask" ? ["Agents bringing in other agents"] : []),
+      ...(agentThreadsMode(settings) !== "ask" ? ["Agents can start threads"] : []),
+      ...(settings.wrapUpChildThreadsOnFinish !==
+      DEFAULT_UNIFIED_SETTINGS.wrapUpChildThreadsOnFinish
+        ? ["Wrap up finished child threads"]
+        : []),
       ...(isGitWritingModelDirty ? ["Writing model"] : []),
       ...(isGitWritingBackupModelDirty ? ["Backup writing model"] : []),
       ...(isSourceControlWritingStyleDirty ? ["Source control writing style"] : []),
@@ -430,6 +435,8 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.newThreadRoomAgents,
       settings.enableRooms,
       settings.agentInvites,
+      settings.agentThreads,
+      settings.wrapUpChildThreadsOnFinish,
       settings.addProjectBaseDirectory,
       settings.agentBrowserSitePolicy,
       settings.defaultThreadEnvMode,
@@ -481,6 +488,8 @@ export function useSettingsRestore(onRestored?: () => void) {
       agentBrowserSitePolicy: DEFAULT_UNIFIED_SETTINGS.agentBrowserSitePolicy,
       enableRooms: true,
       agentInvites: "ask",
+      agentThreads: "ask",
+      wrapUpChildThreadsOnFinish: DEFAULT_UNIFIED_SETTINGS.wrapUpChildThreadsOnFinish,
       textGenerationModelSelection: DEFAULT_UNIFIED_SETTINGS.textGenerationModelSelection,
       textGenerationBackupModelSelection:
         DEFAULT_UNIFIED_SETTINGS.textGenerationBackupModelSelection,

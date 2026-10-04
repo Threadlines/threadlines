@@ -4,6 +4,7 @@ import type {
   MessageId,
   OrchestrationAgentRequestState,
   OrchestrationCheckpointSummary,
+  OrchestrationChildRequestState,
   OrchestrationEvent,
   OrchestrationLatestTurn,
   OrchestrationMessage,
@@ -24,6 +25,7 @@ import type {
 } from "@threadlines/contracts";
 import {
   EMPTY_AGENT_REQUEST_STATE,
+  EMPTY_CHILD_REQUEST_STATE,
   isProviderDriverKind,
   ProviderDriverKind,
 } from "@threadlines/contracts";
@@ -78,6 +80,11 @@ import {
   withUnqueuedAgentMessage,
 } from "@threadlines/shared/roomAgentRequests";
 import { retainMessagesAfterRevert } from "@threadlines/shared/transcriptRevert";
+import {
+  awaitedChildRequestCount,
+  childRequestStateOn,
+  hasPendingChildApproval,
+} from "@threadlines/shared/childThreads";
 const isProviderDriverKindValue = Schema.is(ProviderDriverKind);
 
 export interface EnvironmentState {
@@ -120,6 +127,8 @@ export interface EnvironmentState {
   turnDiffSummaryByThreadId: Record<ThreadId, Record<TurnId, TurnDiffSummary>>;
   /** Room tools: open agent requests, the Stop hold and the limit's count. */
   agentRequestsByThreadId: Record<ThreadId, OrchestrationAgentRequestState>;
+  /** Child threads: what each thread's agent asked of the threads it started. */
+  childRequestsByThreadId: Record<ThreadId, OrchestrationChildRequestState>;
 
   // ---------------------------------------------------------------------------
   // Sidebar summary — written by the shell stream and provisionally by the
@@ -154,6 +163,7 @@ const initialEnvironmentState: EnvironmentState = {
   turnDiffIdsByThreadId: {},
   turnDiffSummaryByThreadId: {},
   agentRequestsByThreadId: {},
+  childRequestsByThreadId: {},
   sidebarThreadSummaryById: {},
   bootstrapComplete: false,
 };
@@ -264,7 +274,85 @@ function mapMessage(environmentId: EnvironmentId, message: OrchestrationMessage)
     ...(message.requestError ? { requestError: message.requestError } : {}),
     ...(message.reviewInput ? { reviewInput: message.reviewInput } : {}),
     ...(message.invite ? { invite: message.invite } : {}),
+    ...(message.fromThread ? { fromThread: message.fromThread } : {}),
     ...(message.agentModels ? { agentModels: message.agentModels } : {}),
+  };
+}
+
+/**
+ * A thread's place in a family of child threads, as every web copy of it
+ * carries it: normalized so a missing field and its empty value read alike.
+ */
+function threadLineage(thread: {
+  readonly parentThreadId?: ThreadId | null | undefined;
+  readonly parentTurnId?: TurnId | null | undefined;
+  readonly attachedToParent?: boolean | undefined;
+  readonly handedBackAt?: string | null | undefined;
+  readonly handedBackTurnId?: TurnId | null | undefined;
+}): Pick<
+  ThreadShell,
+  "parentThreadId" | "parentTurnId" | "attachedToParent" | "handedBackAt" | "handedBackTurnId"
+> {
+  return {
+    parentThreadId: thread.parentThreadId ?? null,
+    parentTurnId: thread.parentTurnId ?? null,
+    attachedToParent: thread.attachedToParent ?? false,
+    handedBackAt: thread.handedBackAt ?? null,
+    handedBackTurnId: thread.handedBackTurnId ?? null,
+  };
+}
+
+/**
+ * A parent's answers still owed and its pending approval. The detail stream
+ * knows its open requests and counts them the way the server does; without
+ * them, the shell's counts stand.
+ */
+function childRequestCounts(thread: {
+  readonly childRequests?: OrchestrationChildRequestState | undefined;
+  readonly awaitedChildThreadCount?: number | undefined;
+  readonly pendingChildApproval?: boolean | undefined;
+}): { awaitedChildThreadCount: number; pendingChildApproval: boolean } {
+  return thread.childRequests !== undefined
+    ? {
+        awaitedChildThreadCount: awaitedChildRequestCount(thread.childRequests),
+        pendingChildApproval: hasPendingChildApproval(thread.childRequests),
+      }
+    : {
+        awaitedChildThreadCount: thread.awaitedChildThreadCount ?? 0,
+        pendingChildApproval: thread.pendingChildApproval ?? false,
+      };
+}
+
+/** The child-thread fields a sidebar row reads, from a shell or a loaded thread. */
+function sidebarLineage(
+  thread: Pick<
+    ThreadShell,
+    | "parentThreadId"
+    | "parentTurnId"
+    | "attachedToParent"
+    | "handedBackTurnId"
+    | "awaitedChildThreadCount"
+    | "pendingChildApproval"
+    | "queuedFollowUps"
+  >,
+): Pick<
+  SidebarThreadSummary,
+  | "parentThreadId"
+  | "parentTurnId"
+  | "attachedToParent"
+  | "handedBackTurnId"
+  | "awaitedChildThreadCount"
+  | "pendingChildApproval"
+  | "queuedFollowUpCount"
+> {
+  return {
+    parentThreadId: thread.parentThreadId ?? null,
+    parentTurnId: thread.parentTurnId ?? null,
+    attachedToParent: thread.attachedToParent ?? false,
+    handedBackTurnId: thread.handedBackTurnId ?? null,
+    awaitedChildThreadCount: thread.awaitedChildThreadCount ?? 0,
+    pendingChildApproval: thread.pendingChildApproval ?? false,
+    queuedFollowUpCount: thread.queuedFollowUps?.length ?? 0,
   };
 }
 
@@ -347,6 +435,9 @@ function mapThread(thread: OrchestrationThread, environmentId: EnvironmentId): T
     sideTurn: thread.sideTurn ?? null,
     ...(thread.agentRole !== undefined ? { agentRole: thread.agentRole } : {}),
     agentRequests: thread.agentRequests,
+    childRequests: thread.childRequests,
+    ...threadLineage(thread),
+    ...childRequestCounts(thread),
     doneOverride: thread.doneOverride,
     lastSeenAt: thread.lastSeenAt,
     updatedAt: thread.updatedAt,
@@ -393,6 +484,9 @@ function mapThreadShell(
     participants: thread.participants ?? [],
     sideTurn: thread.sideTurn ?? null,
     ...(thread.agentRole !== undefined ? { agentRole: thread.agentRole } : {}),
+    ...threadLineage(thread),
+    awaitedChildThreadCount: thread.awaitedChildThreadCount,
+    pendingChildApproval: thread.pendingChildApproval,
     doneOverride: thread.doneOverride,
     lastSeenAt: thread.lastSeenAt,
     updatedAt: thread.updatedAt,
@@ -439,6 +533,7 @@ function mapThreadShell(
     roomSlotRole: roomSlotRole(thread),
     roomSideModelSelection: roomSideModelSelection(thread),
     roomSideRole: roomSideRole(thread),
+    ...sidebarLineage(shell),
   };
   return {
     shell,
@@ -469,6 +564,8 @@ function toThreadShell(thread: Thread): ThreadShell {
     participants: thread.participants ?? [],
     sideTurn: thread.sideTurn ?? null,
     ...(thread.agentRole !== undefined ? { agentRole: thread.agentRole } : {}),
+    ...threadLineage(thread),
+    ...childRequestCounts(thread),
     doneOverride: thread.doneOverride,
     lastSeenAt: thread.lastSeenAt,
     updatedAt: thread.updatedAt,
@@ -562,6 +659,11 @@ function toSidebarThreadSummary(
     roomSlotRole: roomSlotRole(thread),
     roomSideModelSelection: roomSideModelSelection(thread),
     roomSideRole: roomSideRole(thread),
+    ...sidebarLineage({
+      ...threadLineage(thread),
+      ...childRequestCounts(thread),
+      queuedFollowUps: thread.queuedFollowUps ?? [],
+    }),
   };
 }
 
@@ -749,7 +851,14 @@ function sidebarThreadSummariesEqual(
       (right.roomSideModelSelection?.model ?? null) &&
     (left.agentRole ?? null) === (right.agentRole ?? null) &&
     (left.roomSlotRole ?? null) === (right.roomSlotRole ?? null) &&
-    (left.roomSideRole ?? null) === (right.roomSideRole ?? null)
+    (left.roomSideRole ?? null) === (right.roomSideRole ?? null) &&
+    (left.parentThreadId ?? null) === (right.parentThreadId ?? null) &&
+    (left.parentTurnId ?? null) === (right.parentTurnId ?? null) &&
+    (left.attachedToParent ?? false) === (right.attachedToParent ?? false) &&
+    (left.handedBackTurnId ?? null) === (right.handedBackTurnId ?? null) &&
+    (left.awaitedChildThreadCount ?? 0) === (right.awaitedChildThreadCount ?? 0) &&
+    (left.pendingChildApproval ?? false) === (right.pendingChildApproval ?? false) &&
+    (left.queuedFollowUpCount ?? 0) === (right.queuedFollowUpCount ?? 0)
   );
 }
 
@@ -791,6 +900,13 @@ function threadShellsEqual(left: ThreadShell | undefined, right: ThreadShell): b
     participantsEqual(left.participants, right.participants) &&
     sideTurnsEqual(left.sideTurn, right.sideTurn) &&
     (left.agentRole ?? null) === (right.agentRole ?? null) &&
+    (left.parentThreadId ?? null) === (right.parentThreadId ?? null) &&
+    (left.parentTurnId ?? null) === (right.parentTurnId ?? null) &&
+    (left.attachedToParent ?? false) === (right.attachedToParent ?? false) &&
+    (left.handedBackAt ?? null) === (right.handedBackAt ?? null) &&
+    (left.handedBackTurnId ?? null) === (right.handedBackTurnId ?? null) &&
+    (left.awaitedChildThreadCount ?? 0) === (right.awaitedChildThreadCount ?? 0) &&
+    (left.pendingChildApproval ?? false) === (right.pendingChildApproval ?? false) &&
     doneOverridesEqual(left.doneOverride, right.doneOverride) &&
     left.lastSeenAt === right.lastSeenAt &&
     left.updatedAt === right.updatedAt &&
@@ -1086,6 +1202,19 @@ function writeThreadState(
     };
   }
 
+  if (
+    nextThread.childRequests !== undefined &&
+    previousThread?.childRequests !== nextThread.childRequests
+  ) {
+    nextState = {
+      ...nextState,
+      childRequestsByThreadId: {
+        ...nextState.childRequestsByThreadId,
+        [nextThread.id]: nextThread.childRequests,
+      },
+    };
+  }
+
   if (previousThread?.turnDiffSummaries !== nextThread.turnDiffSummaries) {
     const nextTurnDiffSlice = buildTurnDiffSlice(nextThread);
     nextState = {
@@ -1231,6 +1360,8 @@ function removeThreadState(state: EnvironmentState, threadId: ThreadId): Environ
     state.turnDiffSummaryByThreadId;
   const { [threadId]: _removedAgentRequests, ...agentRequestsByThreadId } =
     state.agentRequestsByThreadId;
+  const { [threadId]: _removedChildRequests, ...childRequestsByThreadId } =
+    state.childRequestsByThreadId;
   const { [threadId]: _removedSidebarSummary, ...sidebarThreadSummaryById } =
     state.sidebarThreadSummaryById;
 
@@ -1250,6 +1381,7 @@ function removeThreadState(state: EnvironmentState, threadId: ThreadId): Environ
     turnDiffIdsByThreadId,
     turnDiffSummaryByThreadId,
     agentRequestsByThreadId,
+    childRequestsByThreadId,
     sidebarThreadSummaryById,
   };
 }
@@ -1350,6 +1482,7 @@ function upsertThreadMessage(
     ...(message.requestKind !== undefined ? { requestKind: message.requestKind } : {}),
     ...(message.reviewInput !== undefined ? { reviewInput: message.reviewInput } : {}),
     ...(message.invite !== undefined ? { invite: message.invite } : {}),
+    ...(message.fromThread !== undefined ? { fromThread: message.fromThread } : {}),
     // The write that created the message stamps it; an optimistic copy has
     // none, so the server's first write fills it in.
     ...(existingMessage.agentModels === undefined && message.agentModels !== undefined
@@ -1521,6 +1654,19 @@ function updateAgentRequestState(
   });
 }
 
+/** Apply a change to one thread's child-thread request state. */
+function updateChildRequestState(
+  state: EnvironmentState,
+  threadId: ThreadId,
+  change: (current: OrchestrationChildRequestState) => OrchestrationChildRequestState,
+): EnvironmentState {
+  return updateThreadState(state, threadId, (thread) => {
+    const current = thread.childRequests ?? EMPTY_CHILD_REQUEST_STATE;
+    const next = change(current);
+    return next === current ? thread : { ...thread, childRequests: next };
+  });
+}
+
 function buildProjectState(
   projects: ReadonlyArray<Project>,
 ): Pick<EnvironmentState, "projectIds" | "projectById"> {
@@ -1594,6 +1740,7 @@ function syncEnvironmentShellSnapshot(
       nextThreadIds,
     ),
     agentRequestsByThreadId: retainThreadScopedRecord(state.agentRequestsByThreadId, nextThreadIds),
+    childRequestsByThreadId: retainThreadScopedRecord(state.childRequestsByThreadId, nextThreadIds),
     bootstrapComplete: true,
   };
 
@@ -1771,6 +1918,14 @@ function applyEnvironmentOrchestrationEvent(
           session: null,
           diffStatBaselineTurnCount: 0,
           agentRequests: EMPTY_AGENT_REQUEST_STATE,
+          parentThreadId: event.payload.parentThreadId ?? null,
+          parentTurnId: event.payload.parentTurnId ?? null,
+          attachedToParent: event.payload.attachedToParent ?? false,
+          parentAttachmentEpoch: 0,
+          handedBackAt: null,
+          handedBackTurnId: null,
+          archivedWithParentAt: null,
+          childRequests: EMPTY_CHILD_REQUEST_STATE,
         },
         environmentId,
       );
@@ -2123,6 +2278,9 @@ function applyEnvironmentOrchestrationEvent(
             ? { reviewInput: event.payload.reviewInput }
             : {}),
           ...(event.payload.invite !== undefined ? { invite: event.payload.invite } : {}),
+          ...(event.payload.fromThread !== undefined
+            ? { fromThread: event.payload.fromThread }
+            : {}),
           ...(event.payload.agentModels !== undefined
             ? { agentModels: event.payload.agentModels }
             : {}),
@@ -2498,6 +2656,57 @@ function applyEnvironmentOrchestrationEvent(
 
     case "thread.agent-requests-reset":
       return updateAgentRequestState(state, event.payload.threadId, agentRequestStateOn.reset);
+
+    // Child threads: what this thread's agent asked of the threads it
+    // started, folded through the reducer the server's projector uses.
+    case "thread.child-request-submitted":
+      return updateChildRequestState(state, event.payload.threadId, (current) =>
+        childRequestStateOn.submitted(current, event.payload.request),
+      );
+
+    case "thread.child-request-updated":
+      return updateChildRequestState(state, event.payload.threadId, (current) =>
+        childRequestStateOn.updated(current, event.payload),
+      );
+
+    case "thread.child-request-settled":
+      return updateChildRequestState(state, event.payload.threadId, (current) =>
+        childRequestStateOn.settled(current, event.payload.requestId, event.payload.note),
+      );
+
+    case "thread.child-notes-delivered":
+      return updateChildRequestState(state, event.payload.threadId, (current) =>
+        childRequestStateOn.notesDelivered(current, event.payload.requestIds),
+      );
+
+    case "thread.child-deliveries-cancelled":
+      return updateChildRequestState(state, event.payload.threadId, (current) =>
+        childRequestStateOn.deliveriesCancelled(current, event.payload.deliveryEpoch),
+      );
+
+    case "thread.child-requests-reset":
+      return updateChildRequestState(state, event.payload.threadId, childRequestStateOn.reset);
+
+    // On a child. Like a done mark, neither moves `updatedAt`: the inbox
+    // weighs both against real activity.
+    case "thread.handed-back":
+      return updateThreadState(state, event.payload.threadId, (thread) =>
+        thread.handedBackTurnId === event.payload.turnId &&
+        thread.handedBackAt === event.payload.handedBackAt
+          ? thread
+          : {
+              ...thread,
+              handedBackAt: event.payload.handedBackAt,
+              handedBackTurnId: event.payload.turnId,
+            },
+      );
+
+    case "thread.parent-attachment-set":
+      return updateThreadState(state, event.payload.threadId, (thread) =>
+        (thread.attachedToParent ?? false) === event.payload.attached
+          ? thread
+          : { ...thread, attachedToParent: event.payload.attached },
+      );
 
     case "thread.approval-response-requested":
     case "thread.user-input-response-requested":

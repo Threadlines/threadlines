@@ -3820,6 +3820,51 @@ describe("deriveWorkLogEntries", () => {
     });
   });
 
+  it("keeps what an MCP call answered, from Codex's item or Claude's tool_result", () => {
+    const answer = { outcome: "started", threads: [{ threadId: "thread-a", title: "A" }] };
+    const [codex, claude] = deriveWorkLogEntries([
+      makeActivity({
+        id: "codex-start",
+        sequence: 1,
+        kind: "tool.completed",
+        payload: {
+          itemType: "mcp_tool_call",
+          title: "MCP tool call",
+          detail: "threadlines_room.thread_start",
+          data: {
+            item: {
+              type: "mcpToolCall",
+              server: "threadlines_room",
+              tool: "thread_start",
+              result: { content: [], structuredContent: answer },
+            },
+          },
+        },
+      }),
+      makeActivity({
+        id: "claude-start",
+        sequence: 2,
+        kind: "tool.completed",
+        payload: {
+          itemType: "mcp_tool_call",
+          title: "MCP tool call",
+          detail: "threadlines_room · thread_start",
+          data: {
+            toolName: "mcp__threadlines_room__thread_start",
+            result: {
+              type: "tool_result",
+              tool_use_id: "toolu_start",
+              content: [{ type: "text", text: JSON.stringify(answer) }],
+            },
+          },
+        },
+      }),
+    ]);
+
+    expect(JSON.parse(codex!.toolResult!)).toEqual(answer);
+    expect(JSON.parse(claude!.toolResult!)).toEqual(answer);
+  });
+
   it("keeps a long Claude call to one step, without its stored still-running pings", () => {
     const call = {
       itemType: "mcp_tool_call",

@@ -27,6 +27,8 @@ import {
   getOrphanedWorktreePathForThread,
 } from "../worktreeCleanup";
 import { stackedThreadToast, toastManager } from "../components/ui/toast";
+import { confirmThreadDeleteWithChildren } from "../components/ThreadDeleteDialog";
+import type { Thread } from "../types";
 import { useSettings } from "./useSettings";
 
 /**
@@ -46,6 +48,44 @@ async function confirmOrphanedWorktreeDeletion(worktreePath: string): Promise<bo
       "Delete the worktree too?",
     ].join("\n"),
   );
+}
+
+/**
+ * The threads a delete "with its threads" takes along: the thread's attached
+ * children that are not archived, as this device knows them. The server
+ * deletes exactly these and separates archived ones, so the count the user
+ * is shown and what goes are the same.
+ */
+function selectDeletableChildThreads(target: ScopedThreadRef): Thread[] {
+  return selectThreadsForEnvironment(useStore.getState(), target.environmentId).filter(
+    (thread) =>
+      thread.parentThreadId === target.threadId &&
+      thread.attachedToParent === true &&
+      thread.archivedAt === null,
+  );
+}
+
+/** How many threads a delete "with its threads" would take along; see selectDeletableChildThreads. */
+export function countAttachedChildThreads(target: ScopedThreadRef): number {
+  return selectDeletableChildThreads(target).length;
+}
+
+/** Stops each thread's session and closes its terminals before the server deletes it. */
+async function windDownThreadsBeforeDelete(
+  api: NonNullable<ReturnType<typeof readEnvironmentApi>>,
+  environmentId: ScopedThreadRef["environmentId"],
+  threads: ReadonlyArray<Pick<Thread, "id" | "session">>,
+): Promise<void> {
+  for (const doomed of threads) {
+    if (doomed.session && doomed.session.status !== "closed") {
+      await stopThreadSession(scopeThreadRef(environmentId, doomed.id)).catch(() => undefined);
+    }
+    try {
+      await api.terminal.close({ threadId: doomed.id, deleteHistory: true });
+    } catch {
+      // Terminal may already be closed.
+    }
+  }
 }
 
 export function useThreadActions() {
@@ -176,8 +216,31 @@ export function useThreadActions() {
     [queryClient],
   );
 
+  /** Drops what this device keeps for deleted threads: drafts and terminal state. */
+  const forgetDeletedThreads = useCallback(
+    (
+      environmentId: ScopedThreadRef["environmentId"],
+      threads: ReadonlyArray<Pick<Thread, "id" | "projectId">>,
+    ) => {
+      for (const doomed of threads) {
+        const doomedRef = scopeThreadRef(environmentId, doomed.id);
+        clearComposerDraftForThread(doomedRef);
+        clearProjectDraftThreadById(scopeProjectRef(environmentId, doomed.projectId), doomedRef);
+        clearTerminalState(doomedRef);
+      }
+    },
+    [clearComposerDraftForThread, clearProjectDraftThreadById, clearTerminalState],
+  );
+
   const deleteThread = useCallback(
-    async (target: ScopedThreadRef, opts: { deletedThreadKeys?: ReadonlySet<string> } = {}) => {
+    async (
+      target: ScopedThreadRef,
+      opts: {
+        deletedThreadKeys?: ReadonlySet<string>;
+        /** Child threads: delete the threads in its family too, instead of separating them. */
+        withChildren?: boolean;
+      } = {},
+    ) => {
       const api = readEnvironmentApi(target.environmentId);
       if (!api) return;
       const resolved = resolveThreadTarget(target);
@@ -204,12 +267,24 @@ export function useThreadActions() {
           projectCwd !== undefined &&
           (await confirmOrphanedWorktreeDeletion(orphanedWorktreePath));
 
+        // An archived parent can still have live threads in its family.
+        const deletedChildren = opts.withChildren ? selectDeletableChildThreads(target) : [];
+        await windDownThreadsBeforeDelete(api, target.environmentId, deletedChildren);
         await api.orchestration.dispatchCommand({
           type: "thread.delete",
           commandId: newCommandId(),
           threadId: target.threadId,
+          ...(opts.withChildren ? { withChildren: true } : {}),
         });
         refreshArchivedThreadsForEnvironment(target.environmentId);
+        forgetDeletedThreads(target.environmentId, deletedChildren);
+        const currentRouteThreadRef = getCurrentRouteThreadRef();
+        if (
+          currentRouteThreadRef?.environmentId === target.environmentId &&
+          deletedChildren.some((child) => child.id === currentRouteThreadRef.threadId)
+        ) {
+          await router.navigate({ to: "/", replace: true });
+        }
 
         if (shouldDeleteWorktree && orphanedWorktreePath && projectCwd) {
           await removeOrphanedWorktree({
@@ -256,21 +331,20 @@ export function useThreadActions() {
         threadProject !== undefined &&
         (await confirmOrphanedWorktreeDeletion(orphanedWorktreePath));
 
-      if (thread.session && thread.session.status !== "closed") {
-        await stopThreadSession(threadRef).catch(() => undefined);
-      }
+      // Its family goes with it when asked: each child is wound down the way
+      // the thread itself is, before the server deletes them together.
+      const deletedChildren = opts.withChildren ? selectDeletableChildThreads(threadRef) : [];
+      await windDownThreadsBeforeDelete(api, threadRef.environmentId, [thread, ...deletedChildren]);
 
-      try {
-        await api.terminal.close({ threadId: threadRef.threadId, deleteHistory: true });
-      } catch {
-        // Terminal may already be closed.
-      }
-
-      const deletedThreadIds = deletedIds ?? new Set<ThreadId>();
+      const deletedThreadIds = new Set<ThreadId>([
+        ...(deletedIds ?? []),
+        ...deletedChildren.map((child) => child.id),
+      ]);
       const currentRouteThreadRef = getCurrentRouteThreadRef();
       const shouldNavigateToFallback =
-        currentRouteThreadRef?.threadId === threadRef.threadId &&
-        currentRouteThreadRef.environmentId === threadRef.environmentId;
+        currentRouteThreadRef?.environmentId === threadRef.environmentId &&
+        (currentRouteThreadRef.threadId === threadRef.threadId ||
+          deletedChildren.some((child) => child.id === currentRouteThreadRef.threadId));
       const fallbackThreadId = getFallbackThreadIdAfterDelete({
         threads,
         deletedThreadId: threadRef.threadId,
@@ -280,14 +354,10 @@ export function useThreadActions() {
         type: "thread.delete",
         commandId: newCommandId(),
         threadId: threadRef.threadId,
+        ...(opts.withChildren ? { withChildren: true } : {}),
       });
       refreshArchivedThreadsForEnvironment(threadRef.environmentId);
-      clearComposerDraftForThread(threadRef);
-      clearProjectDraftThreadById(
-        scopeProjectRef(threadRef.environmentId, thread.projectId),
-        threadRef,
-      );
-      clearTerminalState(threadRef);
+      forgetDeletedThreads(threadRef.environmentId, [thread, ...deletedChildren]);
 
       if (shouldNavigateToFallback) {
         if (fallbackThreadId) {
@@ -323,9 +393,7 @@ export function useThreadActions() {
       });
     },
     [
-      clearComposerDraftForThread,
-      clearProjectDraftThreadById,
-      clearTerminalState,
+      forgetDeletedThreads,
       getCurrentRouteThreadRef,
       removeOrphanedWorktree,
       router,
@@ -339,9 +407,22 @@ export function useThreadActions() {
       if (!api) return;
       const localApi = readLocalApi();
       const resolved = resolveThreadTarget(target);
+      const title = opts.title ?? resolved?.thread.title;
+      const childCount = countAttachedChildThreads(target);
+
+      if (confirmThreadDelete && childCount > 0) {
+        const answer = await confirmThreadDeleteWithChildren({
+          title: title ?? "this thread",
+          childCount,
+        });
+        if (answer === null) {
+          return;
+        }
+        await deleteThread(target, { withChildren: answer.withChildren });
+        return;
+      }
 
       if (confirmThreadDelete && localApi) {
-        const title = opts.title ?? resolved?.thread.title;
         const confirmed = await localApi.dialogs.confirm(
           [
             title ? `Delete thread "${title}"?` : "Delete this thread?",

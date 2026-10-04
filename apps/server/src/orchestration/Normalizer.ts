@@ -19,7 +19,7 @@ import {
   splitSeedEntriesByBudget,
   withContextSeedPreamble,
 } from "@threadlines/shared/contextSeed";
-import { agentInvitesMode } from "@threadlines/shared/serverSettings";
+import { agentInvitesMode, agentThreadsMode } from "@threadlines/shared/serverSettings";
 import { formatForkSourceExcerpt, truncate } from "@threadlines/shared/String";
 
 import { createAttachmentId, resolveAttachmentPath } from "../attachmentStore.ts";
@@ -152,6 +152,52 @@ export const normalizeDispatchCommand = (command: ClientOrchestrationCommand) =>
         );
         return copiedAttachment;
       });
+
+    // Child threads: only the server starts a thread as another thread's
+    // child (an agent's thread_start); a client can't claim that lineage.
+    const claimsLineage = (fields: {
+      readonly parentThreadId?: unknown;
+      readonly parentTurnId?: unknown;
+      readonly attachedToParent?: unknown;
+    }) =>
+      fields.parentThreadId !== undefined ||
+      fields.parentTurnId !== undefined ||
+      fields.attachedToParent !== undefined;
+    if (
+      (command.type === "thread.create" && claimsLineage(command)) ||
+      (command.type === "thread.turn.start" &&
+        command.bootstrap?.createThread !== undefined &&
+        claimsLineage(command.bootstrap.createThread))
+    ) {
+      return yield* new OrchestrationDispatchCommandError({
+        message: "Only an agent's request can start a thread as another thread's child.",
+      });
+    }
+
+    // Child threads: starting what an agent asked for needs the setting still
+    // on; the agents and the checkout are checked again as each one starts.
+    if (command.type === "thread.child-request.respond" && command.choice === "start") {
+      const settingsService = yield* Effect.serviceOption(ServerSettingsService);
+      if (Option.isNone(settingsService)) {
+        return yield* new OrchestrationDispatchCommandError({
+          message: "Could not check whether agents may start threads. Try again.",
+        });
+      }
+      const settings = yield* settingsService.value.getSettings.pipe(
+        Effect.mapError(
+          () =>
+            new OrchestrationDispatchCommandError({
+              message: "Could not check whether agents may start threads. Try again.",
+            }),
+        ),
+      );
+      if (agentThreadsMode(settings) === "off") {
+        return yield* new OrchestrationDispatchCommandError({
+          message: "Agents starting threads is turned off in Settings.",
+        });
+      }
+      return command;
+    }
 
     // The decider rules on the thread; whether the invited agent can still be
     // paid for the way the user was shown is checked here. A CLI-only server

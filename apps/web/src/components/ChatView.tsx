@@ -38,6 +38,7 @@ import { normalizeTerminalActivityCommand } from "@threadlines/shared/terminalCo
 import { projectScriptCwd, projectScriptRuntimeEnv } from "@threadlines/shared/projectScripts";
 import { resolveThreadWorkingCwd } from "@threadlines/shared/threadCwd";
 import { formatForkSourceExcerpt, truncate } from "@threadlines/shared/String";
+import { isAgentOrigin } from "@threadlines/shared/roomAgentRequests";
 import { Debouncer } from "@tanstack/react-pacer";
 import * as Option from "effect/Option";
 import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -245,7 +246,12 @@ import {
 import { DraftEmptyState } from "./chat/DraftEmptyState";
 import { useFirstRunSetupCard } from "./chat/FirstRunSetupCard";
 import { ProviderModelPicker } from "./chat/ProviderModelPicker";
-import { ChatHeader, type ForkHeaderContext } from "./chat/ChatHeader";
+import {
+  ChatHeader,
+  type ForkHeaderContext,
+  type ParentThreadHeaderContext,
+} from "./chat/ChatHeader";
+import { useThreadTitle } from "../childThreads";
 import type { DesktopPreviewPickedElement } from "@threadlines/contracts";
 import { appendDrawingContextsToPrompt } from "../lib/drawingContext";
 import {
@@ -578,9 +584,10 @@ function buildForkSourceExcerpt(message: ChatMessage): string {
   return formatForkSourceExcerpt(message.text, FORK_SOURCE_EXCERPT_CHARS);
 }
 
-/** A message an agent wrote to another is shown as an agent's words, not the user's. */
-const forkSourceRole = (message: Pick<ChatMessage, "role" | "fromAgent">): ChatMessage["role"] =>
-  message.fromAgent !== undefined ? "assistant" : message.role;
+/** A message an agent wrote (another room agent, another thread) is an agent's words, not the user's. */
+const forkSourceRole = (
+  message: Pick<ChatMessage, "role" | "fromAgent" | "fromThread">,
+): ChatMessage["role"] => (isAgentOrigin(message) ? "assistant" : message.role);
 
 function roleLabelForForkSource(role: ChatMessage["role"]): string {
   switch (role) {
@@ -1932,6 +1939,17 @@ export default function ChatView(props: ChatViewProps) {
       sourceThreadTitle: payload.sourceThreadTitle,
     };
   }, [forkContextEntries]);
+  // Child threads: the thread whose agent started this one, while this
+  // device knows it. "Started by" stays true after the thread is separated.
+  const parentThreadId = activeThread?.parentThreadId ?? null;
+  const parentThreadTitle = useThreadTitle(environmentId, parentThreadId);
+  const parentHeaderContext = useMemo<ParentThreadHeaderContext | null>(
+    () =>
+      parentThreadId !== null && parentThreadTitle !== null
+        ? { parentThreadId, parentThreadTitle }
+        : null,
+    [parentThreadId, parentThreadTitle],
+  );
   const pendingApprovals = useMemo(
     () => derivePendingApprovals(threadActivities),
     [threadActivities],
@@ -2481,9 +2499,12 @@ export default function ChatView(props: ChatViewProps) {
   const threadHasRoomHistory = hasRoomHistory(activeThread);
   // An agent's invite still open, or its review on the way back, would land
   // after a revert and talk about work that is gone; the server refuses it.
+  // The same holds for threads it started (their answers would land on a
+  // rewound chat) and for a parent's request waiting in this thread.
   const agentRequestsInFlight =
     (activeThread?.agentRequests?.open.length ?? 0) > 0 ||
-    (activeThread?.queuedFollowUps ?? []).some((queued) => queued.fromAgent !== undefined);
+    (activeThread?.childRequests?.open.length ?? 0) > 0 ||
+    (activeThread?.queuedFollowUps ?? []).some(isAgentOrigin);
   const revertTurnCountByUserMessageId = useMemo(() => {
     const byUserMessageId = new Map<MessageId, number>();
     // Rooms have no revert, even once their added agents left: rewinding one
@@ -2493,11 +2514,13 @@ export default function ChatView(props: ChatViewProps) {
       return byUserMessageId;
     }
     // Only the user's own messages offer a revert, never what agents wrote
-    // (an invite, its review, the review's way back).
+    // (an invite, its review, the review's way back, another thread's
+    // request or answer).
     const isUserWritten = (message: {
       readonly fromAgent?: unknown;
+      readonly fromThread?: unknown;
       readonly sideTurnId?: unknown;
-    }) => message.fromAgent === undefined && message.sideTurnId === undefined;
+    }) => !isAgentOrigin(message) && message.sideTurnId === undefined;
     for (let index = 0; index < timelineEntries.length; index += 1) {
       const entry = timelineEntries[index];
       if (
@@ -5464,8 +5487,9 @@ export default function ChatView(props: ChatViewProps) {
     const threadKeyAtStart = activeThreadKey;
     // The box holds one message for one agent. In a room, only the messages
     // for the first one's agent come back; the rest stay queued for theirs.
-    // What an agent queued (a hand-off, a reply) is never the user's to edit.
-    const usersOwn = followUps.filter((followUp) => followUp.fromAgent === undefined);
+    // What an agent queued (a hand-off, a reply, another thread's request or
+    // answer) is never the user's to edit.
+    const usersOwn = followUps.filter((followUp) => !isAgentOrigin(followUp));
     const firstAgentId = usersOwn[0]?.participantId ?? null;
     const returning = isRoom(activeThread)
       ? usersOwn.filter((followUp) => (followUp.participantId ?? null) === firstAgentId)
@@ -5869,7 +5893,7 @@ export default function ChatView(props: ChatViewProps) {
       // A side question is never the failed turn's message, and Retry sits on
       // the user's own message, not on one an agent wrote to another.
       messages: (activeThread?.messages ?? []).filter(
-        (message) => !isSideMessage(message) && message.fromAgent === undefined,
+        (message) => !isSideMessage(message) && !isAgentOrigin(message),
       ),
       sessionLastError: activeThread?.session?.lastError,
     });
@@ -7165,6 +7189,8 @@ export default function ChatView(props: ChatViewProps) {
           fileBrowserAvailable={!isGeneralChatThread}
           taskProgress={taskProgress}
           forkContext={forkHeaderContext}
+          parentContext={parentHeaderContext}
+          onOpenParentThread={onOpenForkSourceThread}
           backgroundRuns={backgroundRuns}
           activeThreadRef={activeThreadRef}
           onRunProjectScript={runProjectScript}
@@ -7293,6 +7319,7 @@ export default function ChatView(props: ChatViewProps) {
               proposedPlanState={timelineProposedPlanState}
               turnAgents={timelineTurnAgents}
               onOpenAgentsPanel={onOpenAgentsPanel}
+              onOpenThread={onOpenForkSourceThread}
             />
 
             {/* scroll to bottom button — shown when user has scrolled away from the bottom.
@@ -7375,6 +7402,7 @@ export default function ChatView(props: ChatViewProps) {
                       paused={!isWorking && !waitingOnBackgroundTasks}
                       attachmentOnlyPrompt={ATTACHMENT_ONLY_BOOTSTRAP_PROMPT}
                       roomAgents={roomAgentLabels}
+                      environmentId={environmentId}
                       onEdit={(followUp) => void returnQueuedFollowUpsToComposer([followUp])}
                       onRemove={removeQueuedFollowUp}
                     />

@@ -139,6 +139,13 @@ export interface WorkLogEntry {
   /** Tail of the streamed command output, retained for inline failure
    *  context and the expandable output view on command rows. */
   outputPreview?: string;
+  /**
+   * What an MCP tool call answered, as text: its structured result when the
+   * provider kept one (Codex), else its text content (Codex, Claude's
+   * `tool_result`). Set only for MCP calls; the chat reads Threadlines' own
+   * room tools' results from it.
+   */
+  toolResult?: string;
   exitCode?: number;
   changedFiles?: ReadonlyArray<string>;
   /** Exact per-file +/- counts reported by the provider for this tool call.
@@ -3138,6 +3145,12 @@ function toDerivedWorkLogEntry(
       }
     }
   }
+  if (itemType === "mcp_tool_call") {
+    const toolResult = extractMcpToolResultText(payload);
+    if (toolResult) {
+      entry.toolResult = toolResult;
+    }
+  }
   // Codex reports the exit code on the finished item, not in the output.
   const itemExitCode = asRecord(asRecord(payload?.data)?.item)?.exitCode;
   if (typeof itemExitCode === "number" && Number.isInteger(itemExitCode)) {
@@ -3681,6 +3694,7 @@ function mergeDerivedWorkLogEntries(
   const rawCommand = next.rawCommand ?? previous.rawCommand;
   const description = next.description ?? previous.description;
   const outputPreview = next.outputPreview ?? previous.outputPreview;
+  const toolResult = next.toolResult ?? previous.toolResult;
   const exitCode = next.exitCode ?? previous.exitCode;
   const images = mergeWorkLogImages(previous.images, next.images);
   const toolTitle = next.toolTitle ?? previous.toolTitle;
@@ -3713,6 +3727,7 @@ function mergeDerivedWorkLogEntries(
     ...(rawCommand ? { rawCommand } : {}),
     ...(description ? { description } : {}),
     ...(outputPreview ? { outputPreview } : {}),
+    ...(toolResult ? { toolResult } : {}),
     ...(exitCode !== undefined ? { exitCode } : {}),
     ...(changedFiles.length > 0 ? { changedFiles } : {}),
     ...(changedFileStats.length > 0 ? { changedFileStats } : {}),
@@ -4136,6 +4151,43 @@ function toLatestProposedPlanState(proposedPlan: ProposedPlan): LatestProposedPl
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : null;
+}
+
+/** The text blocks of an MCP or `tool_result` content field, joined. */
+function mcpContentText(content: unknown): string | null {
+  if (typeof content === "string") {
+    return asTrimmedString(content);
+  }
+  if (!Array.isArray(content)) {
+    return null;
+  }
+  const text = content
+    .flatMap((block) => {
+      const record = asRecord(block);
+      return record?.type === "text" && typeof record.text === "string" ? [record.text] : [];
+    })
+    .join("\n");
+  return asTrimmedString(text);
+}
+
+/**
+ * What an MCP tool call answered (see WorkLogEntry.toolResult). Codex keeps
+ * the call's result on its item (`data.item.result`, structured content
+ * first); Claude passes the `tool_result` block (`data.result`).
+ */
+function extractMcpToolResultText(payload: Record<string, unknown> | null): string | null {
+  const data = asRecord(payload?.data);
+  const result = asRecord(asRecord(data?.item)?.result) ?? asRecord(data?.result);
+  if (!result) {
+    return null;
+  }
+  const structured = result.structuredContent;
+  if (structured !== undefined && structured !== null) {
+    return typeof structured === "string"
+      ? asTrimmedString(structured)
+      : JSON.stringify(structured);
+  }
+  return mcpContentText(result.content);
 }
 
 function asTrimmedString(value: unknown): string | null {

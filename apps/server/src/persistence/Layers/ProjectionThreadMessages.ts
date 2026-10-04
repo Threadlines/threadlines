@@ -15,6 +15,7 @@ import {
   RoomAgentRef,
   RoomAgentRequestId,
   RoomAgentInvite,
+  ThreadMessageOrigin,
   RoomAgentRequestOutcome,
   RoomReviewInput,
   ThreadParticipantId,
@@ -46,6 +47,7 @@ const ProjectionThreadMessageDbRowSchema = ProjectionThreadMessage.mapFields(
     requestError: Schema.NullOr(TrimmedNonEmptyString),
     reviewInput: Schema.NullOr(Schema.fromJsonString(RoomReviewInput)),
     invite: Schema.NullOr(Schema.fromJsonString(RoomAgentInvite)),
+    fromThread: Schema.NullOr(Schema.fromJsonString(ThreadMessageOrigin)),
     agentModels: Schema.NullOr(
       Schema.fromJsonString(Schema.Record(Schema.String, MessageAgentModel)),
     ),
@@ -76,6 +78,7 @@ function toProjectionThreadMessage(
     ...(row.requestError !== null ? { requestError: row.requestError } : {}),
     ...(row.reviewInput !== null ? { reviewInput: row.reviewInput } : {}),
     ...(row.invite !== null ? { invite: row.invite } : {}),
+    ...(row.fromThread !== null ? { fromThread: row.fromThread } : {}),
     ...(row.agentModels !== null ? { agentModels: row.agentModels } : {}),
   };
 }
@@ -102,6 +105,7 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
           participant_id,
           side_turn_id,
           from_agent,
+          from_thread,
           request_id,
           request_kind,
           request_outcome,
@@ -139,6 +143,7 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
           ${row.participantId ?? null},
           ${row.sideTurnId ?? null},
           ${row.fromAgent !== undefined ? JSON.stringify(row.fromAgent) : null},
+          ${row.fromThread !== undefined ? JSON.stringify(row.fromThread) : null},
           ${row.requestId ?? null},
           ${row.requestKind ?? null},
           ${row.requestOutcome ?? null},
@@ -168,6 +173,7 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
           -- and lane are fixed by the write that created it. The room request
           -- fields are kept when a later write leaves them out.
           from_agent = COALESCE(excluded.from_agent, projection_thread_messages.from_agent),
+          from_thread = COALESCE(excluded.from_thread, projection_thread_messages.from_thread),
           request_id = COALESCE(excluded.request_id, projection_thread_messages.request_id),
           request_kind = COALESCE(excluded.request_kind, projection_thread_messages.request_kind),
           request_outcome = COALESCE(
@@ -203,6 +209,7 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
           participant_id AS "participantId",
           side_turn_id AS "sideTurnId",
           from_agent AS "fromAgent",
+          from_thread AS "fromThread",
           request_id AS "requestId",
           request_kind AS "requestKind",
           request_outcome AS "requestOutcome",
@@ -236,6 +243,7 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
           participant_id AS "participantId",
           side_turn_id AS "sideTurnId",
           from_agent AS "fromAgent",
+          from_thread AS "fromThread",
           request_id AS "requestId",
           request_kind AS "requestKind",
           request_outcome AS "requestOutcome",

@@ -60,6 +60,7 @@ import {
   type ProviderActivityStreamSnapshot,
 } from "./ProviderActivityProjection.ts";
 import { handOffReplyText } from "../agentRequestDecisions.ts";
+import { childDeliveryForTurnEnd } from "../childThreadDelivery.ts";
 import {
   carriedBackgroundTasks,
   NO_BACKGROUND_TASKS,
@@ -2674,6 +2675,63 @@ const make = Effect.gen(function* () {
       );
   });
 
+  /**
+   * Child threads: a child's turn ended and its words were just flushed. If
+   * that turn answers a request its parent's agent made (the request's message
+   * started it, or it is the follow-up its own background work started), the
+   * answer goes back in one decider step that settles the request, writes the
+   * report into the parent and queues it for the agent that asked. With
+   * background work still owed, the answer waits for it. Never on the session
+   * going idle, which comes before buffered text is final.
+   */
+  const routeChildReport = Effect.fn("routeChildReport")(function* (input: {
+    readonly threadId: ThreadId;
+    readonly turnId: TurnId;
+    readonly outcome: "completed" | "failed" | "interrupted";
+    readonly error: string | undefined;
+    readonly createdAt: string;
+  }) {
+    const child = yield* resolveThreadDetail(input.threadId);
+    if (child === undefined || child === null || child.parentThreadId === null) {
+      return;
+    }
+    const parent = yield* resolveThreadDetail(child.parentThreadId);
+    if (
+      parent === undefined ||
+      parent === null ||
+      !parent.childRequests.open.some((request) => request.childThreadId === child.id)
+    ) {
+      return;
+    }
+    const turn = yield* projectionTurnRepository
+      .getByTurnId({ threadId: input.threadId, turnId: input.turnId })
+      .pipe(
+        Effect.map(Option.getOrUndefined),
+        Effect.orElseSucceed(() => undefined),
+      );
+    const delivery = childDeliveryForTurnEnd({
+      parent,
+      child,
+      end: { turnId: input.turnId, outcome: input.outcome, error: input.error },
+      pendingMessageId: turn?.pendingMessageId ?? null,
+      awaitedBackgroundTaskCount: child.session?.awaitedBackgroundTaskCount ?? 0,
+    });
+    if (delivery === null) {
+      return;
+    }
+    yield* orchestrationEngine
+      .dispatch({ ...delivery, threadId: parent.id, createdAt: input.createdAt })
+      .pipe(
+        Effect.catch((error) =>
+          Effect.logInfo("provider runtime ingestion could not deliver a child thread's answer", {
+            threadId: input.threadId,
+            requestId: delivery.requestId,
+            detail: String(error),
+          }),
+        ),
+      );
+  });
+
   const processRuntimeEvent = (event: ProviderRuntimeEvent) =>
     Effect.gen(function* () {
       // Realtime audio/item traffic is intentionally in-memory only. Keep this
@@ -3604,6 +3662,26 @@ const make = Effect.gen(function* () {
             completed:
               event.type === "turn.completed" &&
               normalizeRuntimeTurnState(event.payload.state) === "completed",
+            createdAt: now,
+          });
+          // And a child thread's answer to its parent.
+          const endedState =
+            event.type === "turn.completed"
+              ? normalizeRuntimeTurnState(event.payload.state)
+              : "interrupted";
+          yield* routeChildReport({
+            threadId: thread.id,
+            turnId,
+            outcome:
+              endedState === "completed"
+                ? "completed"
+                : endedState === "failed"
+                  ? "failed"
+                  : "interrupted",
+            error:
+              event.type === "turn.completed" && endedState === "failed"
+                ? (event.payload.errorMessage ?? thread.session?.lastError ?? undefined)
+                : undefined,
             createdAt: now,
           });
 

@@ -154,6 +154,13 @@ function makeThreadShellSnapshot(params: {
         hasActionableProposedPlan: params.hasActionableProposedPlan ?? false,
         cumulativeDiffStat: null,
         diffStatBaselineTurnCount: 0,
+        parentThreadId: null,
+        parentTurnId: null,
+        attachedToParent: false,
+        handedBackAt: null,
+        handedBackTurnId: null,
+        awaitedChildThreadCount: 0,
+        pendingChildApproval: false,
       },
     ],
   };

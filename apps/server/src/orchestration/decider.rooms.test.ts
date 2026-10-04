@@ -17,6 +17,7 @@ import {
   type OrchestrationSession,
   type OrchestrationThread,
   EMPTY_AGENT_REQUEST_STATE,
+  EMPTY_CHILD_REQUEST_STATE,
 } from "@threadlines/contracts";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -77,6 +78,14 @@ function readModel(overrides: Partial<OrchestrationThread> = {}): OrchestrationR
         pullRequestAutoMerge: null,
         linkedPullRequests: [],
         agentRequests: EMPTY_AGENT_REQUEST_STATE,
+        parentThreadId: null,
+        parentTurnId: null,
+        attachedToParent: false,
+        parentAttachmentEpoch: 0,
+        handedBackAt: null,
+        handedBackTurnId: null,
+        archivedWithParentAt: null,
+        childRequests: EMPTY_CHILD_REQUEST_STATE,
         participants: [astra],
         doneOverride: null,
         lastSeenAt: null,
