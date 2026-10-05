@@ -68,20 +68,24 @@ export const HeaderAgentFaces = memo(function HeaderAgentFaces({
           />
         }
       >
-        {/* Side by side, never stacked: each face's status outline is drawn
-            inside its own circle, so no face covers a neighbor's mark. */}
-        <span aria-hidden="true" className="flex items-center gap-[3px]">
+        {/* A stack, first face on top. Each later face tucks 4px behind the
+            one before it and has a notch masked out of it there, so the faces
+            stay apart by a clear 1.5px on any background (hover included) and
+            no face's outline crosses a neighbor's mark. The notch stops where
+            the 9px mark begins, so marks are never clipped. */}
+        <span aria-hidden="true" className="flex items-center">
           {shown.map((agent, index) => (
             <span
               key={agent.id}
               data-agent-face={agent.waiting ? "waiting" : "running"}
               className={cn(
-                "inline-flex size-[18px] shrink-0 items-center justify-center rounded-full border-[1.5px] bg-muted",
+                "inline-flex size-5 shrink-0 items-center justify-center rounded-full border-[1.5px] bg-muted",
                 agent.waiting ? "border-amber-500" : "border-primary-graph",
-                index > 0 && "@max-xl/header-actions:hidden",
+                index > 0 &&
+                  "-ms-1 [mask-image:radial-gradient(circle_at_-6px_50%,transparent_11.5px,#000_12px)] @max-xl/header-actions:hidden",
               )}
             >
-              <ProviderIcon className="size-2.5" />
+              <ProviderIcon className="size-[9px]" />
             </span>
           ))}
         </span>
