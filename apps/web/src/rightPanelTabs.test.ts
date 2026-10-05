@@ -354,7 +354,7 @@ describe("reconcileRightPanelTabsState", () => {
 
 describe("autoOpenAgentsTabState", () => {
   it("opens the agents tab focused when the sidebar is hidden", () => {
-    const state = autoOpenAgentsTabState(EMPTY_RIGHT_PANEL_TABS_STATE);
+    const state = autoOpenAgentsTabState(EMPTY_RIGHT_PANEL_TABS_STATE, true);
 
     expect(state.visible).toBe(true);
     expect(state.openTabs).toEqual(["agents"]);
@@ -367,14 +367,14 @@ describe("autoOpenAgentsTabState", () => {
       visible: true,
     };
 
-    const state = autoOpenAgentsTabState(launcher);
+    const state = autoOpenAgentsTabState(launcher, true);
     expect(state.activeTab).toBe("agents");
   });
 
   it("joins the strip in the background while another tab has focus", () => {
     const onSource = openedOn("sourceControl");
 
-    const state = autoOpenAgentsTabState(onSource);
+    const state = autoOpenAgentsTabState(onSource, true);
     expect(state.openTabs).toEqual(["sourceControl", "agents"]);
     expect(state.activeTab).toBe("sourceControl");
   });
@@ -382,16 +382,37 @@ describe("autoOpenAgentsTabState", () => {
   it("changes nothing when the agents tab is already in the strip behind another", () => {
     const withAgents = focusRightPanelTabState(openedOn("agents"), "sourceControl");
 
-    expect(autoOpenAgentsTabState(withAgents)).toBe(withAgents);
+    expect(autoOpenAgentsTabState(withAgents, true)).toBe(withAgents);
   });
 
   it("re-shows a hidden sidebar focused on agents", () => {
     const hidden = hideRightPanelState(openedOn("sourceControl"));
 
-    const state = autoOpenAgentsTabState(hidden);
+    const state = autoOpenAgentsTabState(hidden, true);
     expect(state.visible).toBe(true);
     expect(state.activeTab).toBe("agents");
     expect(state.openTabs).toEqual(["sourceControl", "agents"]);
+  });
+
+  it("leaves a hidden sidebar and the launcher alone when the panel may not open itself", () => {
+    const launcher: RightPanelTabsState = {
+      ...EMPTY_RIGHT_PANEL_TABS_STATE,
+      visible: true,
+    };
+    const hidden = hideRightPanelState(openedOn("sourceControl"));
+
+    expect(autoOpenAgentsTabState(EMPTY_RIGHT_PANEL_TABS_STATE, false)).toBe(
+      EMPTY_RIGHT_PANEL_TABS_STATE,
+    );
+    expect(autoOpenAgentsTabState(launcher, false)).toBe(launcher);
+    expect(autoOpenAgentsTabState(hidden, false)).toBe(hidden);
+  });
+
+  it("still joins the strip behind another tab when the panel may not open itself", () => {
+    const state = autoOpenAgentsTabState(openedOn("sourceControl"), false);
+
+    expect(state.openTabs).toEqual(["sourceControl", "agents"]);
+    expect(state.activeTab).toBe("sourceControl");
   });
 });
 

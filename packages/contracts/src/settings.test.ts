@@ -19,9 +19,9 @@ const decodeServerSettingsPatch = Schema.decodeUnknownSync(ServerSettingsPatch);
 const encodeServerSettings = Schema.encodeSync(ServerSettings);
 
 describe("ClientSettings defaults", () => {
-  it("keeps the task panel closed by default", () => {
-    expect(DEFAULT_CLIENT_SETTINGS.autoOpenPlanSidebar).toBe(false);
-    expect(decodeClientSettings({}).autoOpenPlanSidebar).toBe(false);
+  it("leaves the Agents panel closed when subagents start by default", () => {
+    expect(DEFAULT_CLIENT_SETTINGS.autoOpenAgentsPanel).toBe(false);
+    expect(decodeClientSettings({}).autoOpenAgentsPanel).toBe(false);
   });
 
   it("shows diff changes only by default", () => {

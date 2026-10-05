@@ -546,14 +546,17 @@ function ChatThreadRouteView() {
     () => (agentsSource && hasRunningAgentActivity(agentsSource) ? ["agents"] : []),
     [agentsSource],
   );
-  // A fresh delegation surfaces the Agents tab: focused when the sidebar had
-  // nothing better to show, in the background (live node only) when the user is
-  // mid-something on another tab. The edge detector owns what counts as a
-  // fresh spawn; closing the tab or hiding the sidebar while those agents
-  // still run is a choice this effect does not override, and sheet layouts
-  // opt out entirely — there the panel would cover the conversation.
+  // A fresh delegation surfaces the Agents tab: in the background (live node
+  // only) when the user is mid-something on another tab, and focused when the
+  // sidebar had nothing better to show and the "Agents panel" setting lets the
+  // sidebar open itself. The edge detector owns what counts as a fresh spawn
+  // and runs whatever the setting says, so turning the setting on mid-batch
+  // opens nothing late; closing the tab or hiding the sidebar while those
+  // agents still run is a choice this effect does not override, and sheet
+  // layouts opt out entirely — there the panel would cover the conversation.
   const agentsRunning = liveTabs.includes("agents");
   const agentsKnown = agentsSource !== null && agentsSource.hydrated;
+  const autoOpenAgentsPanel = useSettings((settings) => settings.autoOpenAgentsPanel);
   const agentsAutoOpenRef = useRef<AgentsAutoOpenEdge>({ threadKey: null, sawIdle: false });
   useEffect(() => {
     const spawned = advanceAgentsAutoOpenEdge(agentsAutoOpenRef.current, {
@@ -564,12 +567,13 @@ function ChatThreadRouteView() {
     if (!spawned || shouldUseDiffSheet || !availableTabs.includes("agents")) {
       return;
     }
-    if (autoOpenAgentsTab(currentThreadKey) === "agents") {
+    if (autoOpenAgentsTab(currentThreadKey, autoOpenAgentsPanel) === "agents") {
       navigateToTab("agents");
     }
   }, [
     agentsKnown,
     agentsRunning,
+    autoOpenAgentsPanel,
     availableTabs,
     currentThreadKey,
     navigateToTab,

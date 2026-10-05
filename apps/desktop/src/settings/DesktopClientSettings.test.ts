@@ -15,7 +15,7 @@ const clientSettings: ClientSettings = {
   agentBrowserApprovedDomains: {},
   agentBrowserSitePolicy: "ask",
   agentBrowserProjectSitePolicy: {},
-  autoOpenPlanSidebar: false,
+  autoOpenAgentsPanel: false,
   chatChangedFilesDefaultExpanded: false,
   confirmThreadArchive: true,
   confirmThreadDelete: false,
