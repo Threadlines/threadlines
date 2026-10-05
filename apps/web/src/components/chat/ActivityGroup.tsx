@@ -6,6 +6,8 @@ import { cn } from "~/lib/utils";
 import { formatDuration } from "../../session-logic";
 import {
   activityLineItems,
+  liveStretchLines,
+  OPEN_TAIL_LINES,
   partitionActivitySteps,
   summarizeRoutineSteps,
   summarizeStretch,
@@ -14,6 +16,7 @@ import {
 } from "./activitySteps";
 import { activityStepIcon } from "./activityStepIcon";
 import { DiffStatLabel } from "./DiffStatLabel";
+import { detailEntranceRef } from "./timelineEntrance";
 
 /**
  * The shared shape of an agent's activity between two things it said, used by
@@ -27,13 +30,20 @@ import { DiffStatLabel } from "./DiffStatLabel";
  * Every line opens: the summary into its steps, a step into the exact command
  * and its output. Steps still running are not drawn here; the surface's live
  * line names them.
+ *
+ * The stretch the agent is on right now (`live`) is drawn as it happens
+ * instead, so work in progress reads as work: its newest steps each on a line,
+ * looking around included, and everything before them as one folded line.
+ *
+ *   › Read 19 files and searched 27 times      ← everything before, folded
+ *   ◉ Read Watcher.ts
+ *   ⌕ Searched for refreshStatus
+ *   ◉ Read Watcher.test.ts
+ *   ✎ Edited Watcher.ts  +31/-8                ← the step that just landed
  */
 
 /** Only long steps say how long they took; a 783ms search is noise. */
 const SHOW_DURATION_FROM_MS = 10_000;
-/** The stretch the agent is on shows only its newest lines; the ones before
- *  them read as one folded line above, so a long run of steps stops growing. */
-const OPEN_TAIL_LINES = 4;
 const OUTPUT_TAIL_LINES = 20;
 
 function toneTextClass(step: ActivityStep): string {
@@ -159,8 +169,9 @@ function ListedStep({
   );
 }
 
-/** A step worth noticing, on a line of its own. */
-function NotableLine({
+/** A step on a line of its own: one worth noticing, or any step the agent
+ *  just took in the stretch it is on. */
+function StepLine({
   step,
   open,
   onToggle,
@@ -328,31 +339,38 @@ function FoldedLine({
   );
 }
 
-export interface ActivityGroupProps {
-  /** Every step between two things the agent said, in order. Running steps
-   *  are skipped: the live line names them. */
-  steps: ReadonlyArray<ActivityStep>;
-  /** Anything a surface hangs under a step of its own: a sign-in card, the
-   *  images a step produced. */
-  renderExtras?: ((step: ActivityStep) => ReactNode) | undefined;
-  /** The agent has moved on from this stretch: it reads as one line that
-   *  opens into the group. A group that is one line anyway stays as it is. */
-  folded?: boolean | undefined;
-  /** How long the stretch took, shown on its folded line. */
-  durationMs?: number | null | undefined;
-  className?: string | undefined;
+/** Which of a group's steps stand open, and the toggle for one. The group
+ *  holds this, so a step stays open as its stretch goes from live to folded. */
+interface OpenSteps {
+  openIds: ReadonlySet<string>;
+  toggle: (id: string) => void;
 }
 
-export const ActivityGroup = memo(function ActivityGroup({
+/**
+ * Steps in their settled shape: the looking around as one sentence, then each
+ * step worth a line of its own. Folded, they read as one line that opens into
+ * that; steps that are one line anyway stay as they are.
+ */
+function SettledStretch({
   steps,
   renderExtras,
-  folded = false,
-  durationMs = null,
-  className,
-}: ActivityGroupProps) {
+  open: { openIds, toggle },
+  folded,
+  foldLoneLine = false,
+  durationMs,
+}: {
+  steps: ReadonlyArray<ActivityStep>;
+  renderExtras: ((step: ActivityStep) => ReactNode) | undefined;
+  open: OpenSteps;
+  folded: boolean;
+  /** Fold even a single step worth a line, so it drops its note and extras:
+   *  above the live lines, whatever came before is one plain line. */
+  foldLoneLine?: boolean;
+  durationMs: number | null;
+}) {
   const [summaryOpen, setSummaryOpen] = useState(false);
   const [foldOpen, setFoldOpen] = useState(false);
-  const [openIds, setOpenIds] = useState<ReadonlySet<string>>(() => new Set());
+  const [earlierOpen, setEarlierOpen] = useState(false);
   const { routine, notable } = useMemo(() => partitionActivitySteps(steps), [steps]);
   const summary = useMemo(
     () => (routine.length > 0 ? summarizeRoutineSteps(routine) : null),
@@ -360,11 +378,10 @@ export const ActivityGroup = memo(function ActivityGroup({
   );
   const lineItems = useMemo(() => activityLineItems(notable), [notable]);
   const lineCount = (summary !== null ? 1 : 0) + lineItems.length;
-  const stretch = useMemo(
-    () => (folded && lineCount > 1 ? summarizeStretch(steps) : null),
-    [folded, lineCount, steps],
-  );
-  const [earlierOpen, setEarlierOpen] = useState(false);
+  const folds = folded && (lineCount > 1 || (foldLoneLine && lineItems.length > 0));
+  const stretch = useMemo(() => (folds ? summarizeStretch(steps) : null), [folds, steps]);
+  // Neither folded nor live (the Agents tab's last run): the newest lines
+  // show, and the ones before them read as one folded line above.
   const earlierCount = stretch === null ? Math.max(0, lineItems.length - OPEN_TAIL_LINES) : 0;
   const earlier = useMemo(
     () =>
@@ -378,18 +395,6 @@ export const ActivityGroup = memo(function ActivityGroup({
     [earlierCount, lineItems],
   );
 
-  const toggle = useCallback((id: string) => {
-    setOpenIds((current) => {
-      const next = new Set(current);
-      if (next.has(id)) {
-        next.delete(id);
-      } else {
-        next.add(id);
-      }
-      return next;
-    });
-  }, []);
-
   if (summary === null && lineItems.length === 0) {
     return null;
   }
@@ -400,7 +405,7 @@ export const ActivityGroup = memo(function ActivityGroup({
 
   const renderItem = (item: (typeof lineItems)[number]) =>
     item.kind === "step" ? (
-      <NotableLine
+      <StepLine
         key={item.step.id}
         step={item.step}
         open={openIds.has(item.step.id)}
@@ -471,26 +476,138 @@ export const ActivityGroup = memo(function ActivityGroup({
     </>
   );
 
-  if (stretch !== null) {
-    return (
-      <div
-        className={cn("min-w-0", className)}
-        data-activity-group="true"
-        data-activity-folded="true"
-      >
-        <FoldedLine
-          parts={stretch}
-          durationMs={durationMs}
-          open={foldOpen}
-          onToggle={() => setFoldOpen((value) => !value)}
-        />
-        {foldOpen ? <div className="ml-[19px]">{lines}</div> : null}
-      </div>
-    );
+  if (stretch === null) {
+    return lines;
   }
   return (
-    <div className={cn("min-w-0", className)} data-activity-group="true">
-      {lines}
+    <>
+      <FoldedLine
+        parts={stretch}
+        durationMs={durationMs}
+        open={foldOpen}
+        onToggle={() => setFoldOpen((value) => !value)}
+      />
+      {foldOpen ? <div className="ml-[19px]">{lines}</div> : null}
+    </>
+  );
+}
+
+/** The stretch the agent is on, drawn as it happens: everything before its
+ *  newest steps as one folded line, then those steps, each on a line. */
+function LiveStretch({
+  earlier,
+  tail,
+  renderExtras,
+  open,
+}: {
+  earlier: ReadonlyArray<ActivityStep>;
+  tail: ReadonlyArray<ActivityStep>;
+  renderExtras: ((step: ActivityStep) => ReactNode) | undefined;
+  open: OpenSteps;
+}) {
+  // Lines already there when the stretch first draws stay put (a thread opened
+  // mid-turn, a row scrolled back into view); one that lands later fades in.
+  const [drawnAtMount] = useState<ReadonlySet<string>>(() => new Set(tail.map((step) => step.id)));
+  return (
+    <>
+      {earlier.length > 0 ? (
+        <div data-activity-earlier="true">
+          <SettledStretch
+            steps={earlier}
+            renderExtras={renderExtras}
+            open={open}
+            folded
+            foldLoneLine
+            durationMs={null}
+          />
+        </div>
+      ) : null}
+      {tail.map((step) => (
+        <div key={step.id} ref={drawnAtMount.has(step.id) ? undefined : detailEntranceRef}>
+          <StepLine
+            step={step}
+            open={open.openIds.has(step.id)}
+            onToggle={open.toggle}
+            extras={renderExtras?.(step) ?? null}
+          />
+        </div>
+      ))}
+    </>
+  );
+}
+
+export interface ActivityGroupProps {
+  /** Every step between two things the agent said, in order. Running steps
+   *  are skipped: the live line names them. */
+  steps: ReadonlyArray<ActivityStep>;
+  /** Anything a surface hangs under a step of its own: a sign-in card, the
+   *  images a step produced. */
+  renderExtras?: ((step: ActivityStep) => ReactNode) | undefined;
+  /** The agent has moved on from this stretch: it reads as one line that
+   *  opens into the group. A group that is one line anyway stays as it is. */
+  folded?: boolean | undefined;
+  /** The agent is on this stretch right now: its newest steps each take a
+   *  line as they land, and the ones before them fold above. A folded stretch
+   *  is never live. */
+  live?: boolean | undefined;
+  /** How long the stretch took, shown on its folded line. */
+  durationMs?: number | null | undefined;
+  className?: string | undefined;
+}
+
+export const ActivityGroup = memo(function ActivityGroup({
+  steps,
+  renderExtras,
+  folded = false,
+  live = false,
+  durationMs = null,
+  className,
+}: ActivityGroupProps) {
+  const [openIds, setOpenIds] = useState<ReadonlySet<string>>(() => new Set());
+  const toggle = useCallback((id: string) => {
+    setOpenIds((current) => {
+      const next = new Set(current);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  }, []);
+  const open = useMemo(() => ({ openIds, toggle }), [openIds, toggle]);
+  const liveLines = useMemo(
+    () => (live && !folded ? liveStretchLines(steps) : null),
+    [folded, live, steps],
+  );
+
+  if (!steps.some((step) => !step.running)) {
+    return null;
+  }
+  return (
+    <div
+      className={cn("min-w-0", className)}
+      data-activity-group="true"
+      data-activity-folded={folded ? "true" : undefined}
+    >
+      {/* Until a step worth a line lands (so far only a thought, a tool
+          load), a live stretch reads as its settled lines. */}
+      {liveLines !== null && liveLines.tail.length > 0 ? (
+        <LiveStretch
+          earlier={liveLines.earlier}
+          tail={liveLines.tail}
+          renderExtras={renderExtras}
+          open={open}
+        />
+      ) : (
+        <SettledStretch
+          steps={steps}
+          renderExtras={renderExtras}
+          open={open}
+          folded={folded}
+          durationMs={durationMs}
+        />
+      )}
     </div>
   );
 });

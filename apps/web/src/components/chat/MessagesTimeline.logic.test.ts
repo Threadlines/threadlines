@@ -1177,6 +1177,109 @@ describe("finished turns and the live step", () => {
     ]);
   });
 
+  it("folds a stretch once the agent takes newer steps past a receipt that split them", () => {
+    // A finished agent's receipt lands mid-turn and splits the steps in two.
+    // Only the newer half is the stretch the agent is on.
+    const receipt = {
+      id: "receipt",
+      kind: "subagent-result" as const,
+      createdAt: "2026-01-01T00:00:06Z",
+      result: {
+        id: "receipt",
+        createdAt: "2026-01-01T00:00:06Z",
+        turnId: "turn-1" as never,
+        agentThreadId: "agent-1",
+        label: "Explorer",
+        role: null,
+        objective: null,
+        body: "Done.",
+        model: null,
+        reasoningEffort: null,
+      },
+    };
+    const working = {
+      isWorking: true,
+      activeTurnInProgress: true,
+      activeTurnId: "turn-1" as never,
+      activeTurnStartedAt: "2026-01-01T00:00:00Z",
+    };
+    const folds = (rows: ReturnType<typeof derive>) =>
+      rows.flatMap((row) => (row.kind === "work" ? [[row.id, row.folded]] : []));
+    const before = [
+      userEntry("user-1", "2026-01-01T00:00:00Z"),
+      workEntry("read-1", "2026-01-01T00:00:04Z"),
+      receipt,
+    ];
+
+    // Until the agent does something more, the stretch before the receipt is
+    // still the one it is on.
+    expect(folds(derive(before, working))).toEqual([["read-1", false]]);
+    expect(
+      folds(derive([...before, workEntry("read-2", "2026-01-01T00:00:08Z")], working)),
+    ).toEqual([
+      ["read-1", true],
+      ["read-2", false],
+    ]);
+  });
+
+  it("folds the stretch an agent handed off from, and keeps open the one the next agent is on", () => {
+    // In a room, a hand-off is a message one agent writes to another inside
+    // your exchange: the writer is done with its steps the moment it is sent.
+    const handOff = {
+      ...userEntry("hand-off", "2026-01-01T00:00:06Z"),
+      message: {
+        ...userEntry("hand-off", "2026-01-01T00:00:06Z").message,
+        text: "Take the retry loop from here.",
+        fromAgent: { participantId: null },
+        requestKind: "hand_off" as const,
+      },
+    };
+    const working = {
+      isWorking: true,
+      activeTurnInProgress: true,
+      activeTurnId: "turn-2" as never,
+      activeTurnStartedAt: "2026-01-01T00:00:06Z",
+    };
+    const folds = (rows: ReturnType<typeof derive>) =>
+      rows.flatMap((row) => (row.kind === "work" ? [[row.id, row.folded]] : []));
+    const handedOff = [
+      userEntry("user-1", "2026-01-01T00:00:00Z"),
+      workEntry("read-1", "2026-01-01T00:00:04Z"),
+      handOff,
+    ];
+
+    expect(folds(derive(handedOff, working))).toEqual([["read-1", true]]);
+    // Another agent's reply landing while this one works is not its own
+    // words: it stays on its stretch until it takes a newer step.
+    const reply = {
+      ...handOff,
+      id: "reply-entry",
+      message: { ...handOff.message, id: "reply" as never, requestKind: "reply" as const },
+    };
+    expect(
+      folds(
+        derive([handedOff[0]!, handedOff[1]!, reply], {
+          ...working,
+          activeTurnId: "turn-1" as never,
+        }),
+      ),
+    ).toEqual([["read-1", false]]);
+    expect(
+      folds(
+        derive(
+          [
+            ...handedOff,
+            workEntry("read-2", "2026-01-01T00:00:08Z", { turnId: "turn-2" as never }),
+          ],
+          working,
+        ),
+      ),
+    ).toEqual([
+      ["read-1", true],
+      ["read-2", false],
+    ]);
+  });
+
   it("keeps the room above the agent's first line when the group above it draws nothing", () => {
     // Right after you send, the turn request (and then a step still running)
     // sit in a group that draws nothing, so the working row is the first line.

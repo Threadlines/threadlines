@@ -410,6 +410,24 @@ describe("side exchanges in the timeline", () => {
         "side-status:side-1 answering",
         "working-indicator-row",
       ]);
+      // Its steps are the stretch it is on for as long as it answers, notes
+      // already written or not: they keep landing under the same one answer.
+      // They fold once it is done.
+      const sideStepsFolded = (views: typeof asked) => {
+        const row = derive(entries, views).find((row) => row.id === "side-steps:side-1");
+        return row?.kind === "work" ? row.folded : undefined;
+      };
+      expect(sideStepsFolded(asked)).toBe(false);
+      expect(
+        sideStepsFolded([
+          exchange({
+            askedBy: { participantId: null },
+            question,
+            steps: [sideStep],
+            answeredAt: 9,
+          }),
+        ]),
+      ).toBe(true);
       // Set in under the question, from its name down into the line that
       // says it is answering, while the working agent's line runs past.
       expect(lines(derive(entries, asked))).toEqual([

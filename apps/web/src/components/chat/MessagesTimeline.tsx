@@ -3891,7 +3891,8 @@ function WorkingTimer({ createdAt }: { createdAt: string }) {
 /**
  * One stretch of the agent's steps between two things it said: the looking
  * around folded into one grey line, the steps worth noticing on lines of their
- * own. Steps still running are left to the working row's live line. A turn's
+ * own. The stretch the agent is still on shows its newest steps as they land
+ * instead. Steps still running are left to the working row's live line. A turn's
  * agents ride on its answer's footer; a turn that ended without an answer shows
  * them on its first group instead.
  */
@@ -3910,8 +3911,16 @@ const WorkGroupSection = memo(function WorkGroupSection({
   } = use(TimelineRowCtx);
   const { isWorking } = use(TimelineRowActivityCtx);
   const groupedEntries = useMemo(
-    () => coalesceFileChangeWorkEntries(row.groupedEntries, turnDiffSummaryByTurnId, workspaceRoot),
-    [row.groupedEntries, turnDiffSummaryByTurnId, workspaceRoot],
+    () =>
+      coalesceFileChangeWorkEntries(
+        row.groupedEntries,
+        turnDiffSummaryByTurnId,
+        workspaceRoot,
+        // The stretch the agent is on shows its newest steps: a file it just
+        // edited again is one of them.
+        row.folded ? "first" : "latest",
+      ),
+    [row.folded, row.groupedEntries, turnDiffSummaryByTurnId, workspaceRoot],
   );
   // Where the agent started threads of its own: shown as its own record with
   // each thread's live status, outside the steps so a folded group never
@@ -4007,6 +4016,7 @@ const WorkGroupSection = memo(function WorkGroupSection({
           steps={steps}
           renderExtras={renderExtras}
           folded={row.folded}
+          live={!row.folded}
           durationMs={row.folded ? stretchDurationMs(row.groupedEntries) : null}
         />
       ) : null}
@@ -4326,12 +4336,18 @@ function TurnAgentTrackerButton({
   );
 }
 
+/**
+ * Edits to the same file within a stretch read as one step. `placement` says
+ * where that step sits: where the file was first edited, or where it was
+ * edited last. Either way it keeps the first edit's id.
+ */
 function coalesceFileChangeWorkEntries(
   entries: ReadonlyArray<TimelineWorkEntry>,
   turnDiffSummaryByTurnId: ReadonlyMap<TurnId, TurnDiffSummary>,
   workspaceRoot: string | undefined,
+  placement: "first" | "latest",
 ): TimelineWorkEntry[] {
-  const coalesced: TimelineWorkEntry[] = [];
+  const coalesced: Array<TimelineWorkEntry | null> = [];
   const indexByKey = new Map<string, number>();
 
   for (const entry of entries) {
@@ -4354,10 +4370,17 @@ function coalesceFileChangeWorkEntries(
       coalesced.push(enrichedEntry);
       continue;
     }
-    coalesced[existingIndex] = mergeFileChangeWorkEntries(previous, enrichedEntry, workspaceRoot);
+    const merged = mergeFileChangeWorkEntries(previous, enrichedEntry, workspaceRoot);
+    if (placement === "first") {
+      coalesced[existingIndex] = merged;
+    } else {
+      coalesced[existingIndex] = null;
+      indexByKey.set(key, coalesced.length);
+      coalesced.push(merged);
+    }
   }
 
-  return coalesced;
+  return coalesced.filter((entry) => entry !== null);
 }
 
 function withInferredFileChangePaths(
