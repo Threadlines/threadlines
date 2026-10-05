@@ -22,8 +22,9 @@ const router = getRouter(history);
 
 if (isElectron) {
   document.documentElement.classList.add("electron");
-  // macOS draws its window controls over the app's top-left corner; Windows
-  // and Linux put them on the right, where they never meet the sidebar.
+  // macOS draws its window controls over the app's top-left corner, and
+  // every top bar starts past them (`html.electron.mac` in index.css).
+  // Windows and Linux put theirs on the right and report where (`.wco`).
   if (isMacPlatform(navigator.platform)) {
     document.documentElement.classList.add("mac");
   }

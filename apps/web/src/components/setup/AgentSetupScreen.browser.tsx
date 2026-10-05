@@ -262,4 +262,29 @@ describe("AgentSetupScreen", () => {
       "cursor",
     ]);
   });
+
+  it("keeps its top bar clear of the window's own buttons", async () => {
+    // Setup takes the whole window, outside the sidebar layout, so its bar
+    // meets the desktop window's buttons on both sides.
+    const root = document.documentElement;
+    setServerConfigSnapshot(serverConfig([]));
+    // macOS: buttons over the top-left corner. Windows and Linux: buttons on
+    // the right, as wide as the system reports (`.wco` computes this).
+    root.classList.add("electron", "mac");
+    root.style.setProperty("--workspace-controls-right", "150px");
+    try {
+      const rendered = renderSetup();
+      mounted = await rendered.mounted;
+
+      const bar = page.getByTestId("agent-setup").element().querySelector("header")!;
+      const wordmark = bar.firstElementChild!.getBoundingClientRect();
+      const close = page.getByTestId("setup-later").element().getBoundingClientRect();
+      // The three macOS buttons end about 70px in.
+      expect(wordmark.left).toBeGreaterThanOrEqual(80);
+      expect(close.right).toBeLessThanOrEqual(window.innerWidth - 150);
+    } finally {
+      root.classList.remove("electron", "mac");
+      root.style.removeProperty("--workspace-controls-right");
+    }
+  });
 });

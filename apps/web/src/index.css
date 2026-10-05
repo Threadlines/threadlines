@@ -45,6 +45,13 @@
   );
 }
 
+/* macOS draws the window's own buttons over the top-left corner and reports no
+   geometry for them, so every top bar starts past a fixed inset (Windows and
+   Linux report theirs: .wco above). Marketing captures have no buttons. */
+html.electron.mac:not([data-marketing-capture]) {
+  --workspace-controls-left: 88px;
+}
+
 @theme inline {
   --font-sans:
     "Schibsted Grotesk Variable", "Schibsted Grotesk", ui-sans-serif, system-ui, -apple-system,
