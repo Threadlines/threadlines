@@ -6,6 +6,7 @@ import {
 } from "@threadlines/contracts";
 
 import {
+  compactUsageMeters,
   deriveProviderAccountUsagePresentation,
   deriveProviderAccountUsagePresentationForProvider,
   formatProviderTokenCount,
@@ -479,6 +480,7 @@ describe("deriveProviderAccountUsagePresentation", () => {
       {
         key: "scoped-0",
         label: "Fable (weekly)",
+        shortLabel: "Fable",
         detail: "78% used · resets in 7d",
         usedPercent: 78,
         remainingPercent: 22,
@@ -531,6 +533,7 @@ describe("deriveProviderAccountUsagePresentation", () => {
       {
         key: "scoped-0",
         label: "Fable (weekly)",
+        shortLabel: "Fable",
         detail: "limit reached · resets in 7d",
         usedPercent: 100,
         remainingPercent: 0,
@@ -958,6 +961,76 @@ describe("isProviderUsageNearLimit", () => {
       ],
     };
     expect(isProviderUsageNearLimit(deriveProviderAccountUsagePresentation(usage))).toBe(true);
+  });
+});
+
+describe("compactUsageMeters", () => {
+  const window = (key: string, label: string, usedPercent: number, shortLabel?: string) => ({
+    key,
+    label,
+    ...(shortLabel ? { shortLabel } : {}),
+    detail: `${usedPercent}% used`,
+    usedPercent,
+    remainingPercent: 100 - usedPercent,
+    reachedLimit: false,
+    warning: false,
+  });
+
+  it("lists every window in order, with scoped windows under their short label", () => {
+    const lines = compactUsageMeters({
+      windows: [
+        window("primary", "5h", 29),
+        window("secondary", "Weekly", 49),
+        window("scoped-0", "Fable (weekly)", 0, "Fable"),
+      ],
+    });
+
+    expect(lines.map((line) => [line.label, line.usedPercent])).toEqual([
+      ["5h", 29],
+      ["Weekly", 49],
+      ["Fable", 0],
+    ]);
+  });
+
+  it("past the limit keeps the account-wide windows and the fullest of the rest", () => {
+    const lines = compactUsageMeters(
+      {
+        windows: [
+          window("primary", "5h", 1),
+          window("secondary", "Weekly", 2),
+          window("scoped-0", "Fable (weekly)", 10, "Fable"),
+          window("scoped-1", "Opus (weekly)", 80, "Opus"),
+          window("scoped-2", "Sonnet (weekly)", 40, "Sonnet"),
+        ],
+      },
+      4,
+    );
+
+    expect(lines.map((line) => line.label)).toEqual(["5h", "Weekly", "Opus", "Sonnet"]);
+  });
+
+  it("keeps 5h and Weekly when a spend control takes the first line", () => {
+    const lines = compactUsageMeters(
+      {
+        spendControl: {
+          label: "Monthly",
+          detail: "5% used",
+          usedPercent: 5,
+          remainingPercent: 95,
+          reachedLimit: false,
+          warning: false,
+        },
+        windows: [
+          window("primary", "5h", 1),
+          window("secondary", "Weekly", 2),
+          window("scoped-0", "Fable (weekly)", 10, "Fable"),
+          window("scoped-1", "Opus (weekly)", 80, "Opus"),
+        ],
+      },
+      4,
+    );
+
+    expect(lines.map((line) => line.label)).toEqual(["Monthly", "5h", "Weekly", "Opus"]);
   });
 });
 

@@ -8,7 +8,7 @@ import {
   Trash2Icon,
   XIcon,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link } from "@tanstack/react-router";
 import {
   type AntigravityAuthMethod,
@@ -48,8 +48,8 @@ import {
 import { LinkifiedText } from "../../lib/linkifiedText";
 import { cn } from "../../lib/utils";
 import {
+  compactUsageMeters,
   deriveProviderAccountUsagePresentationForProvider,
-  headlineUsageMeter,
   type ProviderAccountUsagePresentation,
   usageMeterColor,
 } from "../../lib/providerUsage";
@@ -66,7 +66,8 @@ import { Collapsible, CollapsibleContent } from "../ui/collapsible";
 import { DraftInput } from "../ui/draft-input";
 import { Input } from "../ui/input";
 import { toastManager } from "../ui/toast";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { Switch } from "../ui/switch";
+import { Tooltip, TooltipPopup, TooltipTrigger, TooltipWrapper } from "../ui/tooltip";
 import { AntigravitySignInMethods } from "./AntigravitySignInMethods";
 import { ProviderConnectFlow } from "./ProviderConnectFlow";
 import type { DriverOption } from "./providerDriverMeta";
@@ -1021,21 +1022,23 @@ function ProviderDetailsNav(props: {
 }
 
 /**
- * The row's compact usage: the tightest limit window as one small meter, plus
- * a reset-credit button when the account has credits. The full view (every
- * window, history, external resets) lives in the opened row's Usage tab.
+ * The row's compact usage: every limit the account reports as a short stack
+ * of meters (5h, Weekly, and scoped ones such as Fable), plus a reset-credit
+ * button when the account has credits. The stack is a button: hovering or
+ * focusing it says when each limit resets, and pressing it opens the row on
+ * its Usage tab, where the full view (history, external resets) lives.
  */
 function ProviderUsageMeter(props: {
   readonly usage: ProviderAccountUsagePresentation;
   readonly displayName: string;
   readonly onResetAccountUsage?: (() => void) | undefined;
   readonly accountUsageResetInFlight?: boolean | undefined;
+  readonly onOpenUsage: () => void;
 }) {
-  const meter = headlineUsageMeter(props.usage);
+  const lines = compactUsageMeters(props.usage);
   const resetCount = props.usage.resetCredits?.availableCount ?? 0;
   const canReset = props.onResetAccountUsage !== undefined && resetCount > 0;
-  if (!meter && !canReset) return null;
-  const meterColor = meter ? usageMeterColor(meter.usedPercent, meter.warning) : undefined;
+  if (lines.length === 0 && !canReset) return null;
 
   return (
     <span className="flex min-w-0 items-center gap-2.5 text-[11.5px] text-muted-foreground">
@@ -1054,26 +1057,47 @@ function ProviderUsageMeter(props: {
             : `${resetCount} ${resetCount === 1 ? "reset" : "resets"}`}
         </Button>
       ) : null}
-      {meter ? (
-        <span className="flex items-center gap-1.5">
-          <span>{meter.label}</span>
-          <span
-            role="meter"
-            aria-label={`${props.usage.label} ${meter.label} ${meter.usedPercent}% used`}
-            aria-valuemin={0}
-            aria-valuemax={100}
-            aria-valuenow={meter.usedPercent}
-            className="h-1 w-13 overflow-hidden rounded-full bg-muted/80"
+      {lines.length > 0 ? (
+        <TooltipWrapper
+          side="top"
+          tooltip={
+            <span className="grid grid-cols-[auto_auto] gap-x-3 gap-y-0.5 text-left">
+              {lines.map((line) => (
+                <Fragment key={line.key}>
+                  <span className="font-medium">{line.label}</span>
+                  <span className="text-muted-foreground">{line.detail}</span>
+                </Fragment>
+              ))}
+            </span>
+          }
+        >
+          <button
+            type="button"
+            aria-label={`${props.usage.label}: ${lines
+              .map((line) => `${line.label} ${line.detail}`)
+              .join(", ")}. Show usage details`}
+            className="-my-0.5 grid cursor-pointer grid-cols-[auto_3.5rem_auto] items-center gap-x-1.5 gap-y-[3px] rounded-md px-1 py-0.5 text-[11px] leading-3 transition-colors hover:bg-foreground/[0.04] focus-ring"
+            onClick={props.onOpenUsage}
           >
-            <span
-              className={cn("block h-full rounded-full", !meterColor && "bg-primary-graph")}
-              style={{ width: `${meter.usedPercent}%`, backgroundColor: meterColor }}
-            />
-          </span>
-          <span className="min-w-7 text-right font-mono text-[11px] text-foreground tabular-nums">
-            {meter.usedPercent}%
-          </span>
-        </span>
+            {lines.map((line) => {
+              const meterColor = usageMeterColor(line.usedPercent, line.warning);
+              return (
+                <Fragment key={line.key}>
+                  <span className="text-right whitespace-nowrap">{line.label}</span>
+                  <span aria-hidden className="h-1 w-14 overflow-hidden rounded-full bg-muted/80">
+                    <span
+                      className={cn("block h-full rounded-full", !meterColor && "bg-primary-graph")}
+                      style={{ width: `${line.usedPercent}%`, backgroundColor: meterColor }}
+                    />
+                  </span>
+                  <span className="min-w-7 text-right font-mono text-foreground tabular-nums">
+                    {line.usedPercent}%
+                  </span>
+                </Fragment>
+              );
+            })}
+          </button>
+        </TooltipWrapper>
       ) : null}
     </span>
   );
@@ -1187,8 +1211,16 @@ interface ProviderInstanceCardProps {
    * Turns the agent on or off through the shared enablement path. Resolves
    * once the server stored it, so "Install" on a turned-off agent can wait
    * for the server to offer the install.
+   *
+   * `holdInPlace` asks the page to keep the row where it is for now. The
+   * row's switch sets it, so the row does not jump away from under the
+   * pointer. Install does not: its button leaves the row as the agent turns
+   * on, so nothing would be left to let the row go.
    */
-  readonly onEnabledChange: (enabled: boolean) => Promise<void>;
+  readonly onEnabledChange: (
+    enabled: boolean,
+    options?: { readonly holdInPlace?: boolean },
+  ) => Promise<void>;
   /**
    * Pass `undefined` to hide Delete. Built-in default instance slots use
    * `undefined`: they can't be deleted without losing the slot. Explicit
@@ -1612,16 +1644,7 @@ export function ProviderInstanceCard({
           >
             Install
           </Button>
-        ) : (
-          <Button
-            size="xs"
-            variant="outline"
-            aria-label={`Turn on ${displayName}`}
-            onClick={() => void onEnabledChange(true)}
-          >
-            Turn on
-          </Button>
-        )}
+        ) : null}
       </>
     ) : providerInstallView && driverKind ? (
       <ProviderInstallAction
@@ -1661,8 +1684,24 @@ export function ProviderInstanceCard({
         displayName={displayName}
         onResetAccountUsage={onResetAccountUsage}
         accountUsageResetInFlight={accountUsageResetInFlight}
+        onOpenUsage={() => {
+          setDetailsSection("usage");
+          onExpandedChange(true);
+        }}
       />
     ) : null;
+
+  // The row's on/off switch. An agent that is not on this computer has
+  // nothing to switch on yet, so its row offers Install instead.
+  const toggleNode =
+    agentStatus.kind === "off" && offAgentAction(agentStatus.detection) === "install" ? null : (
+      <Switch
+        checked={enabled}
+        aria-label={`Use ${displayName}`}
+        className="ms-1"
+        onCheckedChange={(checked) => void onEnabledChange(checked, { holdInPlace: true })}
+      />
+    );
 
   const versionExtraNode = (
     <>
@@ -1709,7 +1748,13 @@ export function ProviderInstanceCard({
       status={statusNode}
       wrapStatus={showFullGuide}
       tone={enabled ? tone : "none"}
-      actions={actionsNode}
+      dimmed={!enabled}
+      actions={
+        <>
+          {actionsNode}
+          {toggleNode}
+        </>
+      }
       expanded={isExpanded}
       onToggle={() => onExpandedChange(!isExpanded)}
       trailing={
@@ -1863,48 +1908,45 @@ export function ProviderInstanceCard({
             </div>
           ) : null}
 
-          <div className="flex flex-wrap items-center justify-end gap-1.5 border-t border-group-divider px-3.5 py-2.5">
-            {onResetDefaults ? (
-              <Button size="xs" variant="outline" onClick={onResetDefaults}>
-                <RotateCcwIcon className="size-3" />
-                Reset to defaults
-              </Button>
-            ) : null}
-            {addAccount && !addingAccount ? (
-              <Button
-                size="xs"
-                variant="outline"
-                className="mr-auto"
-                onClick={() => setAddingAccount(true)}
-              >
-                <PlusIcon className="size-3" />
-                Add another {addAccount.agentName} account
-              </Button>
-            ) : null}
-            {onRemoveAccount ? (
-              <Button size="xs" variant="destructive-outline" onClick={onRemoveAccount}>
-                <Trash2Icon className="size-3" />
-                Remove account
-              </Button>
-            ) : onDelete ? (
-              <Button
-                size="xs"
-                variant="destructive-outline"
-                onClick={onDelete}
-                aria-label={`Delete provider instance ${instanceId}`}
-              >
-                <Trash2Icon className="size-3" />
-                Delete
-              </Button>
-            ) : null}
-            <Button
-              size="xs"
-              variant={enabled ? "destructive-outline" : "outline"}
-              onClick={() => void onEnabledChange(!enabled)}
-            >
-              {enabled ? `Turn off ${displayName}` : `Turn on ${displayName}`}
-            </Button>
-          </div>
+          {/* Turning the agent on or off is the row's switch; the footer holds
+              only what applies to this account or instance. */}
+          {onResetDefaults || (addAccount && !addingAccount) || onRemoveAccount || onDelete ? (
+            <div className="flex flex-wrap items-center justify-end gap-1.5 border-t border-group-divider px-3.5 py-2.5">
+              {onResetDefaults ? (
+                <Button size="xs" variant="outline" onClick={onResetDefaults}>
+                  <RotateCcwIcon className="size-3" />
+                  Reset to defaults
+                </Button>
+              ) : null}
+              {addAccount && !addingAccount ? (
+                <Button
+                  size="xs"
+                  variant="outline"
+                  className="mr-auto"
+                  onClick={() => setAddingAccount(true)}
+                >
+                  <PlusIcon className="size-3" />
+                  Add another {addAccount.agentName} account
+                </Button>
+              ) : null}
+              {onRemoveAccount ? (
+                <Button size="xs" variant="destructive-outline" onClick={onRemoveAccount}>
+                  <Trash2Icon className="size-3" />
+                  Remove account
+                </Button>
+              ) : onDelete ? (
+                <Button
+                  size="xs"
+                  variant="destructive-outline"
+                  onClick={onDelete}
+                  aria-label={`Delete provider instance ${instanceId}`}
+                >
+                  <Trash2Icon className="size-3" />
+                  Delete
+                </Button>
+              ) : null}
+            </div>
+          ) : null}
           {addAccount && addingAccount && driverKind ? (
             <AddProviderAccountForm
               driverKind={driverKind}

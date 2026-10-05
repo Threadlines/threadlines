@@ -43,6 +43,7 @@ export function AgentRow({
   status,
   wrapStatus = false,
   tone = "none",
+  dimmed = false,
   actions,
   trailing,
   expanded = false,
@@ -62,6 +63,8 @@ export function AgentRow({
   /** Let a long status (an install guide with its link) wrap instead of truncating. */
   readonly wrapStatus?: boolean;
   readonly tone?: AgentRowTone;
+  /** Quiets the logo and the name: an agent that is turned off. */
+  readonly dimmed?: boolean;
   readonly actions?: ReactNode;
   /** After the actions, e.g. the open/close chevron. */
   readonly trailing?: ReactNode;
@@ -95,10 +98,24 @@ export function AgentRow({
         )}
         onClick={handleClick}
       >
-        <span className="flex size-5 shrink-0 items-center justify-center">{icon}</span>
+        <span
+          className={cn(
+            "flex size-5 shrink-0 items-center justify-center transition-opacity",
+            dimmed && "opacity-60",
+          )}
+        >
+          {icon}
+        </span>
         <div className="min-w-48 flex-1">
           <div className="flex min-w-0 items-center gap-2">
-            <span className="truncate text-[13.5px] font-medium text-foreground">{name}</span>
+            <span
+              className={cn(
+                "truncate text-[13.5px] font-medium transition-colors",
+                dimmed ? "text-muted-foreground" : "text-foreground",
+              )}
+            >
+              {name}
+            </span>
             {label ? (
               <span className="shrink-0 text-[11.5px] text-muted-foreground">{label}</span>
             ) : null}

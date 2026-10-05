@@ -47,6 +47,10 @@ instance without recording its genre.
 - No auto-behaviour that moves or hides what the user arranged: no auto-hide,
   no auto-collapse, no reordering underfoot. Lifecycle transitions only.
   (Will: sidebar auto-collapse; T3: static sort.)
+- A control that moves its own row waits: a switch that regroups a list (an
+  agent turned off moves to "Not in use") keeps the row where it is until the
+  pointer or focus leaves the list, so a wrong click is one click to undo.
+  (Will: Providers switches.)
 - Nothing the user might be standing in disappears: collapsing a section keeps
   the routed row; hiding blocked-on-you work is forbidden everywhere.
 - Volume is managed by folding, never by flattening: when a list is too long,

@@ -100,7 +100,11 @@ import { thisComputerLabel } from "./agentStatus";
 import {
   buildProviderEnablementPatch,
   deriveMaintainedProviderRows,
+  groupProviderRows,
+  type HeldProviderRows,
+  holdProviderRow,
   isProviderRowEnabled,
+  pruneHeldProviderRows,
 } from "./providerEnablement";
 import { useProviderUpdateRunner } from "./useProviderUpdateRunner";
 import { usePrimaryEnvironmentDescriptor } from "../../environments/primary/context";
@@ -1126,8 +1130,17 @@ export function ProviderSettingsPanel({
   }, []);
 
   const rows = useMemo(() => deriveMaintainedProviderRows(settings), [settings]);
-  const inUseRows = rows.filter(isProviderRowEnabled);
-  const notInUseRows = rows.filter((row) => !isProviderRowEnabled(row));
+  // A row that was just switched stays in its group until the pointer or
+  // focus leaves the list, so it never jumps away from under the pointer.
+  const [heldRowsState, setHeldRows] = useState<HeldProviderRows>(() => new Map());
+  // A hold ends by itself once it no longer says anything: the row is gone, or
+  // it is back in the group it was held in (switched back, or a failed write
+  // rolled back). Adjusting state while rendering, so no stale hold is drawn.
+  const heldRows = pruneHeldProviderRows(heldRowsState, rows);
+  if (heldRows !== heldRowsState) setHeldRows(heldRows);
+  const pointerInListRef = useRef(false);
+  const releaseHeldRows = () => setHeldRows((held) => (held.size === 0 ? held : new Map()));
+  const { inUse: inUseRows, notInUse: notInUseRows } = groupProviderRows(rows, heldRows);
 
   const providerInstancePatch = (row: ProviderSettingsRow, next: ProviderInstanceConfig) =>
     buildProviderInstanceUpdatePatch({
@@ -1141,10 +1154,16 @@ export function ProviderSettingsPanel({
     updateSettings(providerInstancePatch(row, next));
   };
 
-  const setProviderInstanceEnabled = (row: ProviderSettingsRow, enabled: boolean) =>
-    updateSettingsAndPersist(
+  const setProviderInstanceEnabled = (
+    row: ProviderSettingsRow,
+    enabled: boolean,
+    options?: { readonly holdInPlace?: boolean },
+  ) => {
+    if (options?.holdInPlace) setHeldRows((held) => holdProviderRow(held, row, enabled));
+    return updateSettingsAndPersist(
       buildProviderEnablementPatch({ settings, changes: [{ row, enabled }] }),
     );
+  };
 
   const deleteProviderInstance = (id: ProviderInstanceId) => {
     updateSettings({
@@ -1320,7 +1339,7 @@ export function ProviderSettingsPanel({
         }
         onUpdate={(next) => updateProviderInstance(row, next)}
         onSaveInstance={(next) => updateSettingsAndPersist(providerInstancePatch(row, next))}
-        onEnabledChange={(enabled) => setProviderInstanceEnabled(row, enabled)}
+        onEnabledChange={(enabled, options) => setProviderInstanceEnabled(row, enabled, options)}
         onDelete={row.isDefault ? undefined : () => deleteProviderInstance(row.instanceId)}
         onRemoveAccount={
           !row.isDefault && supportsProviderAccounts(String(row.driver))
@@ -1441,7 +1460,22 @@ export function ProviderSettingsPanel({
       <SettingsGroup>
         <ProviderUsageLinkRow />
       </SettingsGroup>
-      <div className="flex flex-col">
+      <div
+        className="flex flex-col"
+        onPointerEnter={() => {
+          pointerInListRef.current = true;
+        }}
+        onPointerLeave={() => {
+          pointerInListRef.current = false;
+          releaseHeldRows();
+        }}
+        // Keyboard: let go once focus moves on, unless the pointer is still
+        // over the list (a click on a row's empty space blurs the switch too).
+        onBlur={(event) => {
+          if (pointerInListRef.current) return;
+          if (!event.currentTarget.contains(event.relatedTarget)) releaseHeldRows();
+        }}
+      >
         {/* One keyed list, headings included: a row that moves between the
             groups is reordered, not remounted, so it keeps its open state and
             a one-click install that is waiting for the server. Rows draw the

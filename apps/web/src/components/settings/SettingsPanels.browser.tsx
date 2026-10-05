@@ -2490,6 +2490,51 @@ describe("GeneralSettingsPanel observability", () => {
       .toBeVisible();
   });
 
+  it("turns an agent off from its row and keeps the row in place until the pointer leaves", async () => {
+    const updateSettings = vi
+      .fn<LocalApi["server"]["updateSettings"]>()
+      .mockResolvedValue(DEFAULT_SERVER_SETTINGS);
+    window.nativeApi = {
+      persistence: {
+        getClientSettings: vi.fn().mockResolvedValue(null),
+        setClientSettings: vi.fn().mockResolvedValue(undefined),
+      },
+      server: { updateSettings },
+    } as unknown as LocalApi;
+    setServerConfigSnapshot(createBaseServerConfig());
+
+    mounted = await renderWithTestRouter(
+      <TestAppProviders>
+        <ProviderSettingsPanel />
+      </TestAppProviders>,
+    );
+
+    const codexRow = () =>
+      document.querySelector<HTMLElement>('[data-provider-instance-id="codex"]')!;
+    const notInUseHeading = () =>
+      [...document.querySelectorAll("h2")].find((heading) => heading.textContent === "Not in use")!;
+    const sitsUnderNotInUse = () =>
+      Boolean(
+        notInUseHeading().compareDocumentPosition(codexRow()) & Node.DOCUMENT_POSITION_FOLLOWING,
+      );
+
+    const codexSwitch = page.getByRole("switch", { name: "Use Codex" });
+    await expect.element(codexSwitch).toBeChecked();
+    expect(sitsUnderNotInUse()).toBe(false);
+
+    await codexSwitch.click();
+
+    await expect.element(codexSwitch).not.toBeChecked();
+    expect(updateSettings).toHaveBeenCalled();
+    // Off, but still where it was: a wrong click is one click to undo.
+    expect(sitsUnderNotInUse()).toBe(false);
+
+    await userEvent.unhover(codexRow().parentElement!);
+    await vi.waitFor(() => {
+      expect(sitsUnderNotInUse()).toBe(true);
+    });
+  });
+
   it("runs verified native one-click updates for Windows Claude advisories", async () => {
     const updateProvider = vi.fn<LocalApi["server"]["updateProvider"]>().mockResolvedValue({
       providers: [createVerifiedNativeOutdatedClaudeProvider()],
