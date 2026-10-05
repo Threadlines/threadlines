@@ -1575,6 +1575,20 @@ describe("composerDraftStore project draft thread mapping", () => {
       worktreePath: null,
       envMode: "local",
     });
+
+    // A place named with the move is kept: the new computer's own "Start in".
+    store.setLogicalProjectDraftThreadId(scopedProjectKey(projectRef), projectRef, draftId, {
+      threadId,
+      branch: null,
+      worktreePath: null,
+      envMode: "worktree",
+    });
+
+    expect(useComposerDraftStore.getState().getDraftThread(draftId)).toMatchObject({
+      environmentId: TEST_ENVIRONMENT_ID,
+      worktreePath: null,
+      envMode: "worktree",
+    });
   });
 
   it("clears branch and worktree context when changing a draft thread project ref", () => {

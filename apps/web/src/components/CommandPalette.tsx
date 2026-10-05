@@ -902,11 +902,9 @@ function OpenCommandPaletteDialog() {
         return;
       }
 
-      await handleNewThread(scopeProjectRef(project.environmentId, project.id), {
-        envMode: settings.defaultThreadEnvMode,
-      });
+      await handleNewThread(scopeProjectRef(project.environmentId, project.id));
     },
-    [handleNewThread, navigate, settings.defaultThreadEnvMode, threads],
+    [handleNewThread, navigate, threads],
   );
 
   const projectSearchItems = useMemo(
@@ -946,21 +944,13 @@ function OpenCommandPaletteDialog() {
               activeDraftThread,
               activeThread,
               defaultProjectRef,
-              defaultThreadEnvMode: settings.defaultThreadEnvMode,
               handleNewThread,
             },
             scopeProjectRef(project.environmentId, project.id),
           );
         },
       }),
-    [
-      activeDraftThread,
-      activeThread,
-      defaultProjectRef,
-      handleNewThread,
-      projects,
-      settings.defaultThreadEnvMode,
-    ],
+    [activeDraftThread, activeThread, defaultProjectRef, handleNewThread, projects],
   );
 
   const allThreadItems = useMemo(
@@ -1596,7 +1586,6 @@ function OpenCommandPaletteDialog() {
             activeDraftThread,
             activeThread,
             defaultProjectRef,
-            defaultThreadEnvMode: settings.defaultThreadEnvMode,
             handleNewThread,
           });
         },
@@ -1859,9 +1848,9 @@ function OpenCommandPaletteDialog() {
             ),
           });
         } else {
-          await handleNewThread(scopeProjectRef(existing.environmentId, existing.id), {
-            envMode: settings.defaultThreadEnvMode,
-          }).catch(() => undefined);
+          await handleNewThread(scopeProjectRef(existing.environmentId, existing.id)).catch(
+            () => undefined,
+          );
         }
         closeIfGeneration(sessionGeneration);
         return;
@@ -1891,9 +1880,7 @@ function OpenCommandPaletteDialog() {
           closeIfGeneration(sessionGeneration);
           return;
         }
-        await handleNewThread(createdProjectRef, {
-          envMode: settings.defaultThreadEnvMode,
-        }).catch(() => undefined);
+        await handleNewThread(createdProjectRef).catch(() => undefined);
         closeIfGeneration(sessionGeneration);
       } catch (error) {
         toastManager.add(
@@ -1914,7 +1901,6 @@ function OpenCommandPaletteDialog() {
       navigate,
       projects,
       sessionGeneration,
-      settings.defaultThreadEnvMode,
       threads,
     ],
   );
