@@ -3,11 +3,9 @@ import { scopeThreadRef } from "@threadlines/client-runtime";
 import type { EnvironmentId, ThreadId } from "@threadlines/contracts";
 import { useNavigate } from "@tanstack/react-router";
 
-import { isElectron, isMarketingCaptureMode } from "../env";
 import { useCommandPaletteStore } from "../commandPaletteStore";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
 import { startNewThreadFromContext } from "../lib/chatThreadActions";
-import { isMacPlatform } from "../lib/utils";
 import { buildThreadRouteParams } from "../threadRoutes";
 import ThreadSidebar from "./Sidebar";
 import { Sidebar, SidebarProvider, SidebarRail, SidebarTrigger } from "./ui/sidebar";
@@ -22,7 +20,6 @@ const THREAD_SIDEBAR_MIN_WIDTH = 13 * 16;
 // grows if the user drags it wider (which is then persisted).
 const THREAD_SIDEBAR_DEFAULT_WIDTH = `${THREAD_SIDEBAR_MIN_WIDTH}px`;
 const THREAD_MAIN_CONTENT_MIN_WIDTH = 40 * 16;
-const MACOS_TRAFFIC_LIGHTS_LEFT_INSET = "88px";
 
 function SidebarControl() {
   return (
@@ -42,15 +39,7 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
   const navigate = useNavigate();
   const { activeDraftThread, activeThread, defaultProjectRef, handleNewThread } =
     useHandleNewThread();
-  const sidebarStyle = {
-    "--sidebar-width": THREAD_SIDEBAR_DEFAULT_WIDTH,
-    ...(isElectron &&
-    !isMarketingCaptureMode &&
-    typeof navigator !== "undefined" &&
-    isMacPlatform(navigator.platform)
-      ? { "--workspace-controls-left": MACOS_TRAFFIC_LIGHTS_LEFT_INSET }
-      : {}),
-  } as CSSProperties;
+  const sidebarStyle = { "--sidebar-width": THREAD_SIDEBAR_DEFAULT_WIDTH } as CSSProperties;
 
   useEffect(() => {
     const onWindowKeyDown = (event: KeyboardEvent) => {
