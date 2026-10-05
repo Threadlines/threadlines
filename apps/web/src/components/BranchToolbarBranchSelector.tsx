@@ -61,10 +61,17 @@ import {
   ComboboxStatus,
   ComboboxTrigger,
 } from "./ui/combobox";
+import { inlinePickerTriggerClassName } from "./ui/select";
 import { stackedThreadToast, toastManager } from "./ui/toast";
 
 interface BranchToolbarBranchSelectorProps {
   className?: string;
+  /**
+   * `sentence` sets the picker in running words: the branch name alone as
+   * underlined text, with the words around it saying whether the thread starts
+   * from it or works on it.
+   */
+  presentation?: "chip" | "sentence";
   environmentId: EnvironmentId;
   threadId: ThreadId;
   draftId?: DraftId;
@@ -103,6 +110,7 @@ function getBranchTriggerLabel(input: {
 
 export function BranchToolbarBranchSelector({
   className,
+  presentation = "chip",
   environmentId,
   threadId,
   draftId,
@@ -596,13 +604,16 @@ export function BranchToolbarBranchSelector({
   }, [refs.length, maybeFetchNextBranchPage, shouldVirtualizeBranchList]);
 
   const triggerLabel = annotateMissingCheckoutLabel(
-    getBranchTriggerLabel({
-      activeWorktreePath,
-      effectiveEnvMode,
-      resolvedActiveBranch,
-    }),
+    presentation === "sentence"
+      ? (resolvedActiveBranch ?? "pick a branch")
+      : getBranchTriggerLabel({
+          activeWorktreePath,
+          effectiveEnvMode,
+          resolvedActiveBranch,
+        }),
     selectedCheckoutMissing,
   );
+  const triggerDisabled = (isBranchesSearchPending && refs.length === 0) || isBranchActionPending;
 
   function renderPickerItem(itemValue: string, index: number) {
     if (checkoutPullRequestItemValue && itemValue === checkoutPullRequestItemValue) {
@@ -718,15 +729,28 @@ export function BranchToolbarBranchSelector({
         open={isBranchMenuOpen}
         value={resolvedActiveBranch}
       >
-        <ComboboxTrigger
-          render={<Button variant="ghost" size="xs" />}
-          className={cn("min-w-0 text-muted-foreground/70 hover:text-foreground/80", className)}
-          disabled={(isBranchesSearchPending && refs.length === 0) || isBranchActionPending}
+        {presentation === "sentence" ? (
+          <ComboboxTrigger
+            className={cn(inlinePickerTriggerClassName, className)}
+            disabled={triggerDisabled}
+          >
+            <span className="min-w-0 max-w-[240px] truncate">{triggerLabel}</span>
+          </ComboboxTrigger>
+        ) : (
+          <ComboboxTrigger
+            render={<Button variant="ghost" size="xs" />}
+            className={cn("min-w-0 text-muted-foreground/70 hover:text-foreground/80", className)}
+            disabled={triggerDisabled}
+          >
+            <span className="min-w-0 max-w-[240px] truncate">{triggerLabel}</span>
+            <ChevronDownIcon className="shrink-0" />
+          </ComboboxTrigger>
+        )}
+        <ComboboxPopup
+          align={presentation === "sentence" ? "start" : "end"}
+          side={presentation === "sentence" ? "bottom" : "top"}
+          className="w-80"
         >
-          <span className="min-w-0 max-w-[240px] truncate">{triggerLabel}</span>
-          <ChevronDownIcon className="shrink-0" />
-        </ComboboxTrigger>
-        <ComboboxPopup align="end" side="top" className="w-80">
           <div className="border-b p-1">
             <ComboboxInput
               className="[&_input]:font-sans rounded-md"

@@ -1910,8 +1910,10 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   if (rows.length === 0 && !isWorking) {
     if (emptyState) {
       return (
-        <div className="h-full overflow-x-hidden overflow-y-auto overscroll-y-contain">
-          <div className="flex min-h-full flex-col items-center justify-center px-4 py-8">
+        // In the new-thread hero the chat column scrolls as one, so this stops
+        // filling and scrolling on its own and takes the height of its content.
+        <div className="h-full overflow-x-hidden overflow-y-auto overscroll-y-contain draft-hero:h-auto draft-hero:overflow-visible">
+          <div className="flex min-h-full flex-col items-center justify-center px-4 py-8 draft-hero:min-h-0 draft-hero:pb-5">
             {emptyState}
           </div>
         </div>

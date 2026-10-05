@@ -112,6 +112,7 @@ import {
 } from "../ComposerPromptEditor";
 import { ProviderModelPicker } from "./ProviderModelPicker";
 import { type ComposerCommandItem, ComposerCommandMenu } from "./ComposerCommandMenu";
+import { useComposerMenuRoom } from "./useComposerMenuRoom";
 import { ComposerPendingApprovalActions } from "./ComposerPendingApprovalActions";
 import { CompactComposerControlsMenu } from "./CompactComposerControlsMenu";
 import { ComposerAttachmentMenu } from "./ComposerAttachmentMenu";
@@ -1495,6 +1496,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   ]);
 
   const composerMenuOpen = Boolean(composerTrigger);
+  const composerMenuAnchorRef = useRef<HTMLDivElement>(null);
+  const composerMenuRoom = useComposerMenuRoom(composerMenuAnchorRef, composerMenuOpen);
   const composerMenuSearchKey = composerTrigger
     ? `${composerTrigger.kind}:${composerTrigger.query.trim().toLowerCase()}`
     : null;
@@ -3722,6 +3725,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           ) : (
             <>
               <div
+                ref={composerMenuAnchorRef}
                 className={cn(
                   "relative px-3 pb-2 sm:px-4",
                   hasComposerHeader ? "pt-2.5 sm:pt-3" : "pt-3.5 sm:pt-4",
@@ -3731,6 +3735,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                 {composerMenuOpen && !isComposerApprovalState && (
                   <div className="absolute inset-x-0 bottom-full z-20 mb-2 px-1">
                     <ComposerCommandMenu
+                      maxListHeightPx={composerMenuRoom}
                       items={composerMenuItems}
                       resolvedTheme={resolvedTheme}
                       isLoading={isComposerMenuLoading}

@@ -2200,6 +2200,26 @@ async function waitForButtonByText(text: string): Promise<HTMLButtonElement> {
   return waitForElement(() => findButtonByText(text), `Unable to find "${text}" button.`);
 }
 
+/**
+ * A draft states where it will run as a sentence. The branch picker is the
+ * underlined branch name in it, and the word before it says how the branch is
+ * used: a new worktree starts "from" one, a checkout works "on" one.
+ */
+async function waitForDraftBranchPicker(input: {
+  preposition: "from" | "on";
+  branch: string;
+}): Promise<HTMLButtonElement> {
+  return waitForElement(() => {
+    const sentence = document.querySelector<HTMLElement>('[data-testid="branch-toolbar-sentence"]');
+    if (!sentence?.textContent?.includes(`${input.preposition} ${input.branch}.`)) {
+      return null;
+    }
+    return (Array.from(sentence.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === input.branch,
+    ) ?? null) as HTMLButtonElement | null;
+  }, `Unable to find the draft sentence reading "${input.preposition} ${input.branch}."`);
+}
+
 async function waitForButtonByAriaLabel(label: string): Promise<HTMLButtonElement> {
   return waitForElement(
     () => document.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`),
@@ -6276,13 +6296,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
     });
 
     try {
-      const branchButton = await waitForElement(
-        () =>
-          Array.from(document.querySelectorAll("button")).find(
-            (button) => button.textContent?.trim() === "From main",
-          ) as HTMLButtonElement | null,
-        'Unable to find branch selector button with "From main".',
-      );
+      const branchButton = await waitForDraftBranchPicker({ preposition: "from", branch: "main" });
       branchButton.click();
 
       await clickComboboxItemContainingText("release/next");
@@ -6299,15 +6313,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
         { timeout: 8_000, interval: 16 },
       );
 
-      await vi.waitFor(
-        () => {
-          const updatedButton = Array.from(document.querySelectorAll("button")).find((button) =>
-            button.textContent?.trim().includes("From release/next"),
-          );
-          expect(updatedButton).toBeTruthy();
-        },
-        { timeout: 8_000, interval: 16 },
-      );
+      await waitForDraftBranchPicker({ preposition: "from", branch: "release/next" });
     } finally {
       await mounted.cleanup();
     }
@@ -6381,13 +6387,10 @@ describe("ChatView timeline estimator parity (full app)", () => {
     });
 
     try {
-      const branchButton = await waitForElement(
-        () =>
-          Array.from(document.querySelectorAll("button")).find(
-            (button) => button.textContent?.trim() === "From feature/selected",
-          ) as HTMLButtonElement | null,
-        'Unable to find branch selector button with "From feature/selected".',
-      );
+      const branchButton = await waitForDraftBranchPicker({
+        preposition: "from",
+        branch: "feature/selected",
+      });
       branchButton.click();
 
       await waitForElement(
@@ -8928,6 +8931,100 @@ describe("ChatView timeline estimator parity (full app)", () => {
       await expect.element(confirmButton).toBeVisible();
     } finally {
       localStorage.removeItem(CLIENT_SETTINGS_STORAGE_KEY);
+      await mounted.cleanup();
+    }
+  });
+
+  it("puts a new thread's composer in the middle of the pane until its first turn starts", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-draft-hero-test" as MessageId,
+        targetText: "draft hero test",
+      }),
+    });
+
+    try {
+      const newThreadButton = page.getByTestId("new-thread-button");
+      await expect.element(newThreadButton).toBeInTheDocument();
+      await newThreadButton.click();
+
+      const newThreadPath = await waitForURL(
+        mounted.router,
+        (path) => UUID_ROUTE_RE.test(path),
+        "Route should have changed to a new draft thread UUID.",
+      );
+      const newThreadId = draftThreadIdFor(draftIdFromPath(newThreadPath));
+      const editor = await waitForComposerEditor();
+
+      // The question sits above the composer and the recent threads below
+      // it, with the pane's bottom edge well clear of both.
+      const column = await waitForElement(
+        () => document.querySelector<HTMLElement>("[data-chat-column]:has([data-draft-hero])"),
+        "Unable to find the chat column in its hero layout.",
+      );
+      await vi.waitFor(
+        () => {
+          const question = column.querySelector<HTMLElement>("[data-draft-hero]");
+          const recent = column.querySelector<HTMLElement>(
+            '[data-testid="draft-empty-recent-thread"]',
+          );
+          expect(question).not.toBeNull();
+          expect(recent).not.toBeNull();
+          const composer = editor.getBoundingClientRect();
+          expect(question!.getBoundingClientRect().bottom).toBeLessThanOrEqual(composer.top);
+          expect(recent!.getBoundingClientRect().top).toBeGreaterThanOrEqual(composer.bottom);
+          expect(column.getBoundingClientRect().bottom - composer.bottom).toBeGreaterThan(250);
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+
+      // The first turn starting ends the hero. The composer drops to the
+      // bottom of the pane, and it is the same editor: the layout changed
+      // around it without remounting it, so what was typed and focused stays.
+      await materializePromotedDraftThreadViaDomainEvent(newThreadId);
+      await setPromotedServerThreadRunningViaDomainEvent(newThreadId);
+      await vi.waitFor(
+        () => {
+          expect(document.querySelector("[data-draft-hero]")).toBeNull();
+          expect(
+            document
+              .querySelector<HTMLElement>('[data-testid="draft-empty-recent-thread"]')
+              ?.checkVisibility() ?? false,
+          ).toBe(false);
+          expect(document.querySelector('[contenteditable="true"]')).toBe(editor);
+          expect(
+            column.getBoundingClientRect().bottom - editor.getBoundingClientRect().bottom,
+          ).toBeLessThan(200);
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+
+      // Real turn activity promotes the draft: the route swaps to the server
+      // thread's own chat view. Its composer is a new one, and it has to land
+      // at the bottom of the pane too, with no hero left behind.
+      await addPromotedServerUserMessageViaDomainEvent(newThreadId);
+      await startPromotedServerTurnViaDomainEvent(newThreadId);
+      await waitForURL(
+        mounted.router,
+        (path) => path === serverThreadPath(newThreadId),
+        "Promoted drafts should canonicalize to the server thread route.",
+      );
+      await vi.waitFor(
+        () => {
+          const promotedColumn = document.querySelector<HTMLElement>("[data-chat-column]");
+          const promotedEditor = document.querySelector<HTMLElement>('[contenteditable="true"]');
+          expect(promotedColumn).not.toBeNull();
+          expect(promotedEditor).not.toBeNull();
+          expect(document.querySelector("[data-draft-hero]")).toBeNull();
+          expect(
+            promotedColumn!.getBoundingClientRect().bottom -
+              promotedEditor!.getBoundingClientRect().bottom,
+          ).toBeLessThan(200);
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+    } finally {
       await mounted.cleanup();
     }
   });

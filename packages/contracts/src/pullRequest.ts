@@ -130,6 +130,14 @@ export const PullRequestListProjectError = Schema.Struct({
 });
 export type PullRequestListProjectError = typeof PullRequestListProjectError.Type;
 
+/**
+ * How many merged or closed pull requests a listing carries per repository.
+ * The result has no "there were more" flag, so a reader that counts settled
+ * rows inside a time window uses this to tell an exact count from one the cap
+ * may have cut short.
+ */
+export const PULL_REQUEST_SETTLED_LIST_LIMIT = 30;
+
 export const PullRequestListInput = Schema.Struct({
   state: PullRequestListState,
   /** Limits the listing to one project; every eligible project otherwise. */

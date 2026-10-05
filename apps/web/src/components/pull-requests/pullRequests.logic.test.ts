@@ -34,6 +34,7 @@ import {
   parsePullRequestSelection,
   parsePullRequestsSearch,
   pullRequestEntryKey,
+  pullRequestsOnProjectRepositories,
   pullRequestFilterChips,
   pullRequestProjectFacets,
   pullRequestFiltersFromSearch,
@@ -339,6 +340,35 @@ describe("groupPullRequests", () => {
         entry({ number: 3 }),
       ]),
     ).toBe(1);
+  });
+});
+
+describe("pullRequestsOnProjectRepositories", () => {
+  it("scopes by repository, not by the project a row happens to name", () => {
+    // One pull request listed from another checkout of the same repository,
+    // one on a different repository, and one authored row that only borrowed
+    // this project's id from the checkout its host tool ran in.
+    const fromSibling = entry({ number: 1, projectId: WORKTREE_PROJECT_ID });
+    const elsewhere = entry({ number: 2, projectId: PROJECT_ID, repository: "other/repo" });
+    const authored = entry({
+      number: 3,
+      projectId: PROJECT_ID,
+      repository: "someone/else",
+      origin: "authored",
+    });
+
+    const scoped = pullRequestsOnProjectRepositories(
+      [fromSibling, elsewhere, authored],
+      [project({ id: PROJECT_ID, repository: "threadlines/threadlines" })],
+    );
+
+    expect(scoped.map((row) => row.number)).toEqual([1]);
+  });
+
+  it("offers nothing for a project with no readable remote", () => {
+    expect(
+      pullRequestsOnProjectRepositories([entry()], [project({ id: PROJECT_ID, repository: null })]),
+    ).toEqual([]);
   });
 });
 

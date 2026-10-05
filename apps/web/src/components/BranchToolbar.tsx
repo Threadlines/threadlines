@@ -23,6 +23,7 @@ import {
   resolveEnvModeLabel,
   resolveEffectiveEnvMode,
   resolveLockedWorkspaceLabel,
+  resolveRunSentence,
 } from "./BranchToolbar.logic";
 import { BranchToolbarBranchSelector } from "./BranchToolbarBranchSelector";
 import { BranchToolbarCheckoutSwitchChip } from "./BranchToolbarCheckoutSwitchChip";
@@ -261,8 +262,59 @@ export const BranchToolbar = memo(function BranchToolbar({
 
   if (!hasActiveThread || !activeProject) return null;
 
+  // A thread that has not started yet states where it will run as a sentence,
+  // each choice a picker set in the words. Once it is a real thread the row is
+  // status more than choice, and it goes back to compact chips.
+  if (serverThread === undefined && !isMobile) {
+    const sentence = resolveRunSentence({ effectiveEnvMode, activeWorktreePath });
+    return (
+      // Running text, not a flex row: the words and pickers wrap like a
+      // sentence and read as one to a screen reader or a copy.
+      <div
+        className="mx-auto w-full max-w-4xl px-3 pb-3 pt-2 text-xs leading-5 text-muted-foreground sm:px-3.5 draft-hero:max-w-[45rem]"
+        data-testid="branch-toolbar-sentence"
+      >
+        Runs{" "}
+        {showEnvironmentPicker && availableEnvironments && onEnvironmentChange ? (
+          <>
+            on{" "}
+            <BranchToolbarEnvironmentSelector
+              presentation="sentence"
+              envLocked={envLocked}
+              environmentId={environmentId}
+              availableEnvironments={availableEnvironments}
+              onEnvironmentChange={onEnvironmentChange}
+            />{" "}
+          </>
+        ) : null}
+        in{" "}
+        <BranchToolbarEnvModeSelector
+          presentation="sentence"
+          envLocked={envModeLocked}
+          effectiveEnvMode={effectiveEnvMode}
+          activeWorktreePath={displayWorktreePath}
+          onEnvModeChange={onEnvModeChange}
+        />{" "}
+        {sentence.branchPreposition}{" "}
+        <BranchToolbarBranchSelector
+          presentation="sentence"
+          environmentId={environmentId}
+          threadId={threadId}
+          {...(draftId ? { draftId } : {})}
+          envLocked={envLocked}
+          {...(effectiveEnvModeOverride ? { effectiveEnvModeOverride } : {})}
+          {...(activeThreadBranchOverride !== undefined ? { activeThreadBranchOverride } : {})}
+          {...(onActiveThreadBranchOverrideChange ? { onActiveThreadBranchOverrideChange } : {})}
+          {...(onCheckoutPullRequestRequest ? { onCheckoutPullRequestRequest } : {})}
+          {...(onComposerFocusRequest ? { onComposerFocusRequest } : {})}
+        />
+        .
+      </div>
+    );
+  }
+
   return (
-    <div className="mx-auto flex w-full max-w-4xl items-center gap-2 px-2.5 pb-3 pt-1 sm:px-3">
+    <div className="mx-auto flex w-full max-w-4xl items-center gap-2 px-2.5 pb-3 pt-1 sm:px-3 draft-hero:max-w-[45rem]">
       {isMobile ? (
         <MobileRunContextSelector
           envLocked={envLocked}
