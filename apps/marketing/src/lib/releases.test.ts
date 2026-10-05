@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { classifyAssets, type ReleaseAsset } from "./releases";
+import { classifyAssets, pickInstaller, type ReleaseAsset } from "./releases";
 
 function asset(name: string): ReleaseAsset {
   return { name, browser_download_url: `https://example.test/${name}`, size: 1 };
@@ -36,5 +36,27 @@ describe("classifyAssets", () => {
     ]);
 
     expect(installers).toEqual({});
+  });
+});
+
+describe("pickInstaller", () => {
+  const installers = classifyAssets([
+    asset("Threadlines-0.5.0-win-x64.exe"),
+    asset("Threadlines-0.5.0-mac-arm64.dmg"),
+    asset("Threadlines-0.5.0-mac-x64.dmg"),
+    asset("Threadlines-0.5.0-linux-x86_64.AppImage"),
+  ]);
+
+  it("hands a Mac the installer for its chip, and nothing when the chip is unknown", () => {
+    expect(pickInstaller(installers, "mac", "arm64")?.name).toBe("Threadlines-0.5.0-mac-arm64.dmg");
+    expect(pickInstaller(installers, "mac", "x64")?.name).toBe("Threadlines-0.5.0-mac-x64.dmg");
+    expect(pickInstaller(installers, "mac", undefined)).toBeUndefined();
+  });
+
+  it("never hands an installer to a phone or tablet", () => {
+    expect(pickInstaller(installers, "mobile", undefined)).toBeUndefined();
+    expect(pickInstaller(installers, "windows", undefined)?.name).toBe(
+      "Threadlines-0.5.0-win-x64.exe",
+    );
   });
 });
