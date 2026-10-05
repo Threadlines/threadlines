@@ -1027,6 +1027,9 @@ function ProviderDetailsNav(props: {
  * button when the account has credits. The stack is a button: hovering or
  * focusing it says when each limit resets, and pressing it opens the row on
  * its Usage tab, where the full view (history, external resets) lives.
+ *
+ * An account whose limits can't be read says so in place of the stack, and
+ * pressing that opens the row where the sign-in that fixes it lives.
  */
 function ProviderUsageMeter(props: {
   readonly usage: ProviderAccountUsagePresentation;
@@ -1034,11 +1037,13 @@ function ProviderUsageMeter(props: {
   readonly onResetAccountUsage?: (() => void) | undefined;
   readonly accountUsageResetInFlight?: boolean | undefined;
   readonly onOpenUsage: () => void;
+  readonly onOpenSignIn: () => void;
 }) {
   const lines = compactUsageMeters(props.usage);
   const resetCount = props.usage.resetCredits?.availableCount ?? 0;
   const canReset = props.onResetAccountUsage !== undefined && resetCount > 0;
-  if (lines.length === 0 && !canReset) return null;
+  const unavailable = props.usage.limitsUnavailable;
+  if (lines.length === 0 && !canReset && !unavailable) return null;
 
   return (
     <span className="flex min-w-0 items-center gap-2.5 text-[11.5px] text-muted-foreground">
@@ -1098,6 +1103,19 @@ function ProviderUsageMeter(props: {
             })}
           </button>
         </TooltipWrapper>
+      ) : unavailable ? (
+        <Button
+          type="button"
+          size="xs"
+          variant="ghost"
+          className="h-6 px-1.5 text-[11.5px] font-normal text-muted-foreground hover:text-foreground"
+          tooltip={<p className="max-w-64">{unavailable.detail}</p>}
+          tooltipSide="top"
+          onClick={props.onOpenSignIn}
+          aria-label={`${props.displayName} usage unavailable. ${unavailable.action}`}
+        >
+          Usage unavailable
+        </Button>
       ) : null}
     </span>
   );
@@ -1688,6 +1706,10 @@ export function ProviderInstanceCard({
           setDetailsSection("usage");
           onExpandedChange(true);
         }}
+        onOpenSignIn={() => {
+          setDetailsSection(terminalLoginCommand ? "account" : "usage");
+          onExpandedChange(true);
+        }}
       />
     ) : null;
 
@@ -1789,6 +1811,9 @@ export function ProviderInstanceCard({
                 displayName={displayName}
                 onResetAccountUsage={onResetAccountUsage}
                 accountUsageResetInFlight={accountUsageResetInFlight}
+                {...(terminalLoginCommand
+                  ? { onOpenSignIn: () => setDetailsSection("account") }
+                  : {})}
               />
               {usagePresentation.tokenUsage?.scope === "local" ? (
                 <div className="mt-4 border-t border-group-divider pt-3 text-[12.5px] text-muted-foreground">

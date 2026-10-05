@@ -72,7 +72,7 @@ export function RecentThreadsList({
 
   return (
     <div className={className}>
-      <div className="mb-2 text-center text-[10px] font-medium uppercase tracking-wider text-muted-foreground/55">
+      <div className="mb-2 text-center text-xs font-medium text-muted-foreground">
         {scope === "chats" ? "Active and recent chats" : "Active and recent"}
       </div>
       <div className="flex flex-col divide-y divide-border/50">
@@ -102,12 +102,12 @@ export function RecentThreadsList({
                 {thread.title}
               </span>
               {isGeneralChat && scope !== "chats" ? (
-                <span className="flex shrink-0 items-center gap-1.5 text-xs text-muted-foreground/60">
+                <span className="flex shrink-0 items-center gap-1.5 text-xs text-muted-foreground">
                   <MessagesSquareIcon className="size-3 shrink-0" />
                   General
                 </span>
               ) : project ? (
-                <span className="flex max-w-28 shrink-0 items-center gap-1.5 text-xs text-muted-foreground/60">
+                <span className="flex max-w-28 shrink-0 items-center gap-1.5 text-xs text-muted-foreground">
                   <ProjectFavicon
                     cwd={project.cwd}
                     environmentId={project.environmentId}
@@ -116,7 +116,7 @@ export function RecentThreadsList({
                   <span className="truncate">{project.name}</span>
                 </span>
               ) : null}
-              <span className="shrink-0 text-xs tabular-nums text-muted-foreground/50">
+              <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
                 {formatRelativeTimeLabel(
                   thread.latestUserMessageAt ?? thread.updatedAt ?? thread.createdAt,
                 )}

@@ -10,6 +10,7 @@ import {
   deriveProviderAccountUsagePresentation,
   deriveProviderAccountUsagePresentationForProvider,
   formatProviderTokenCount,
+  headlineUsageMeter,
   isProviderUsageNearLimit,
   providerRateLimitResetCreditsExpirationUrgency,
   providerRateLimitResetCreditExpirationUrgency,
@@ -751,7 +752,7 @@ describe("deriveProviderAccountUsagePresentation", () => {
 });
 
 describe("deriveProviderAccountUsagePresentationForProvider", () => {
-  it("shows empty Claude usage windows when authenticated usage is unavailable", () => {
+  it("says Claude limits can't be read instead of drawing empty windows", () => {
     const provider = {
       driver: ProviderDriverKind.make("claudeAgent"),
       auth: {
@@ -761,33 +762,69 @@ describe("deriveProviderAccountUsagePresentationForProvider", () => {
       },
     } satisfies Pick<ServerProvider, "accountUsage" | "auth" | "driver">;
 
-    expect(deriveProviderAccountUsagePresentationForProvider(provider)).toEqual({
+    const presentation = deriveProviderAccountUsagePresentationForProvider(provider);
+
+    expect(presentation).toEqual({
       label: "Claude usage",
       reachedLimit: false,
-      windows: [
-        {
-          key: "primary",
-          label: "5h",
-          detail: "Refresh sign-in",
-          usedPercent: 0,
-          remainingPercent: 100,
-          reachedLimit: false,
-          warning: false,
-        },
-        {
-          key: "secondary",
-          label: "Weekly",
-          detail: "Refresh sign-in",
-          usedPercent: 0,
-          remainingPercent: 100,
-          reachedLimit: false,
-          warning: false,
-        },
-      ],
+      windows: [],
+      limitsUnavailable: {
+        action: "Refresh sign-in",
+        detail:
+          "Plan limits can't be read right now. Signing in to Claude again usually brings them back.",
+      },
     });
+    // Nothing to mistake for a reading: no headline figure, no compact lines.
+    expect(headlineUsageMeter(presentation!)).toBeNull();
+    expect(compactUsageMeters(presentation!)).toEqual([]);
   });
 
-  it("does not show Claude subscription usage placeholders for API-key auth", () => {
+  it("keeps local token history when Claude limits can't be read", () => {
+    const provider = {
+      driver: ProviderDriverKind.make("claudeAgent"),
+      auth: {
+        status: "authenticated",
+        type: "maxplan",
+        capabilities: { usage: { status: "unavailable" } },
+      },
+      accountUsage: {
+        source: "claude-oauth-usage",
+        checkedAt: "2026-06-10T00:00:00.000Z",
+        limits: [],
+        tokenUsage: {
+          scope: "local",
+          checkedAt: "2026-06-10T00:00:00.000Z",
+          dailyBuckets: [{ startDate: "2026-06-09", tokens: 1_200 }],
+          summary: { lifetimeTokens: 1_200 },
+        },
+      },
+    } satisfies Pick<ServerProvider, "accountUsage" | "auth" | "driver">;
+
+    const presentation = deriveProviderAccountUsagePresentationForProvider(provider);
+
+    expect(presentation?.limitsUnavailable?.action).toBe("Refresh sign-in");
+    expect(presentation?.tokenUsage?.scope).toBe("local");
+    expect(presentation?.windows).toEqual([]);
+  });
+
+  it("leaves readable Claude limits alone", () => {
+    const provider = {
+      driver: ProviderDriverKind.make("claudeAgent"),
+      auth: {
+        status: "authenticated",
+        type: "maxplan",
+        capabilities: { usage: { status: "verified" } },
+      },
+      accountUsage: makeUsage(41),
+    } satisfies Pick<ServerProvider, "accountUsage" | "auth" | "driver">;
+
+    const presentation = deriveProviderAccountUsagePresentationForProvider(provider);
+
+    expect(presentation?.limitsUnavailable).toBeUndefined();
+    expect(presentation?.windows.map((window) => window.usedPercent)).toEqual([41]);
+  });
+
+  it("does not report missing Claude limits for API-key auth", () => {
     const provider = {
       driver: ProviderDriverKind.make("claudeAgent"),
       auth: {
@@ -810,26 +847,11 @@ describe("deriveProviderAccountUsagePresentationForProvider", () => {
       },
     } satisfies Pick<ServerProvider, "accountUsage" | "auth" | "driver">;
 
-    expect(deriveProviderAccountUsagePresentationForProvider(provider)?.windows).toEqual([
-      {
-        key: "primary",
-        label: "5h",
-        detail: "Normal sign-in needed",
-        usedPercent: 0,
-        remainingPercent: 100,
-        reachedLimit: false,
-        warning: false,
-      },
-      {
-        key: "secondary",
-        label: "Weekly",
-        detail: "Normal sign-in needed",
-        usedPercent: 0,
-        remainingPercent: 100,
-        reachedLimit: false,
-        warning: false,
-      },
-    ]);
+    expect(deriveProviderAccountUsagePresentationForProvider(provider)?.limitsUnavailable).toEqual({
+      action: "Normal sign-in needed",
+      detail:
+        "This sign-in token can't read plan limits. Sign in to Claude the normal way to see them.",
+    });
   });
 
   it("uses compact usage recovery copy when chat auth fails", () => {
@@ -848,16 +870,9 @@ describe("deriveProviderAccountUsagePresentationForProvider", () => {
       },
     } satisfies Pick<ServerProvider, "accountUsage" | "auth" | "driver">;
 
-    expect(deriveProviderAccountUsagePresentationForProvider(provider)?.windows).toEqual([
-      expect.objectContaining({
-        key: "primary",
-        detail: "Refresh sign-in",
-      }),
-      expect.objectContaining({
-        key: "secondary",
-        detail: "Refresh sign-in",
-      }),
-    ]);
+    expect(
+      deriveProviderAccountUsagePresentationForProvider(provider)?.limitsUnavailable?.action,
+    ).toBe("Refresh sign-in");
   });
 });
 

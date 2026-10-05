@@ -541,6 +541,11 @@ export function ContextWindowMeter(props: {
                   warning={window.warning}
                 />
               ))}
+              {accountUsage.limitsUnavailable ? (
+                <p className="text-xs text-muted-foreground">
+                  {accountUsage.limitsUnavailable.detail}
+                </p>
+              ) : null}
             </div>
           ) : null}
         </div>
