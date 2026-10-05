@@ -87,14 +87,27 @@ function renderWithTestRouter(children: ReactNode) {
 }
 
 /**
- * Waits for the collapsible panel around `inside` to finish opening. The
- * element can have stable bounds while its panel is still revealing it, and a
- * pointer click sent then can miss.
+ * Opens a provider's card and waits until its panel has finished opening. Use
+ * it rather than clicking the toggle: the next click belongs inside the card,
+ * and a panel that is still opening is a short clipping box whose content
+ * slides as it grows. An element in it can hold still for two frames and then
+ * move between a pointer's press and its release, which loses the click.
  */
-async function waitForPanelOpen(inside: Element | null) {
-  const panel = inside?.closest('[data-slot="collapsible-panel"]');
-  if (!panel) throw new Error("Expected the element inside a collapsible panel");
-  await Promise.all(panel.getAnimations().map((animation) => animation.finished));
+async function openProviderDetails(providerName: string) {
+  const toggle = page.getByLabelText(`Toggle ${providerName} details`);
+  await toggle.click();
+  const row = toggle.element().closest('[data-testid="provider-instance-row"]');
+  if (!row) throw new Error(`Expected the ${providerName} toggle inside its provider row`);
+  await vi.waitFor(
+    () => {
+      const panel = row.querySelector('[data-slot="collapsible-panel"]');
+      // Open means settled: past its zero-height start, with no height
+      // transition still running.
+      expect(panel?.clientHeight).toBeGreaterThan(0);
+      expect(panel?.getAnimations()).toHaveLength(0);
+    },
+    { timeout: 5_000, interval: 16 },
+  );
 }
 
 const authAccessHarness = vi.hoisted(() => {
@@ -1882,7 +1895,7 @@ describe("GeneralSettingsPanel observability", () => {
       </TestAppProviders>,
     );
 
-    await page.getByLabelText("Toggle Claude details").click();
+    await openProviderDetails("Claude");
     await page.getByRole("button", { name: "Configuration" }).click();
 
     await expect.element(page.getByText("Binary path")).toBeInTheDocument();
@@ -1923,14 +1936,13 @@ describe("GeneralSettingsPanel observability", () => {
     );
 
     await expect.element(page.getByText(/Credential configured · Claude Max/)).toBeInTheDocument();
-    await page.getByLabelText("Toggle Claude details").click();
+    await openProviderDetails("Claude");
     await expect.element(page.getByText("Chat configured")).toBeVisible();
     await expect.element(page.getByText("Usage verified")).toBeVisible();
     const advancedTokenLabel = page.getByText("Advanced: headless chat token");
     await expect.element(advancedTokenLabel).toBeVisible();
     const advancedTokenToggle = advancedTokenLabel.element().closest("summary");
     if (!advancedTokenToggle) throw new Error("Claude details panel did not render");
-    await waitForPanelOpen(advancedTokenToggle);
     await page.elementLocator(advancedTokenToggle).click();
     await expect.element(page.getByText(/Optional for remote or headless chat/)).toBeVisible();
   });
@@ -2027,10 +2039,9 @@ describe("GeneralSettingsPanel observability", () => {
       </TestAppProviders>,
     );
 
-    await page.getByLabelText("Toggle Claude details").click();
+    await openProviderDetails("Claude");
     const signIn = page.getByRole("button", { name: "Sign in", exact: true });
     await expect.element(signIn).toBeVisible();
-    await waitForPanelOpen(signIn.element());
     await signIn.click();
 
     await vi.waitFor(() => {
@@ -2140,7 +2151,7 @@ describe("GeneralSettingsPanel observability", () => {
       </TestAppProviders>,
     );
 
-    await page.getByLabelText("Toggle Antigravity details").click();
+    await openProviderDetails("Antigravity");
     await expect
       .element(page.getByRole("radio", { name: /Google account/ }))
       .toHaveAttribute("aria-checked", "true");
@@ -2205,7 +2216,7 @@ describe("GeneralSettingsPanel observability", () => {
       </TestAppProviders>,
     );
 
-    await page.getByLabelText("Toggle Codex details").click();
+    await openProviderDetails("Codex");
     await page.getByRole("button", { name: "Usage", exact: true }).click();
 
     const beforeFirstActivity = formatTokenActivityTestDate(utcDateKeyAtOffset(-41));
@@ -2233,7 +2244,7 @@ describe("GeneralSettingsPanel observability", () => {
       </TestAppProviders>,
     );
 
-    await page.getByLabelText("Toggle Claude details").click();
+    await openProviderDetails("Claude");
     await page.getByRole("button", { name: "Usage", exact: true }).click();
 
     await expect.element(page.getByText("Local token activity").first()).toBeVisible();
@@ -2289,7 +2300,7 @@ describe("GeneralSettingsPanel observability", () => {
       </TestAppProviders>,
     );
 
-    await page.getByLabelText("Toggle Claude details").click();
+    await openProviderDetails("Claude");
     await page.getByRole("button", { name: "Models" }).click();
     await page.getByRole("button", { name: "Add Claude Sonnet 4.6 to fallback chain" }).click();
 
@@ -2331,7 +2342,7 @@ describe("GeneralSettingsPanel observability", () => {
       </TestAppProviders>,
     );
 
-    await page.getByLabelText("Toggle Claude details").click();
+    await openProviderDetails("Claude");
     await page.getByRole("button", { name: "Models" }).click();
 
     // The details panel used to be a tooltip, which closed on press and could
