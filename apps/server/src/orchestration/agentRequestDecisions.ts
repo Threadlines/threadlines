@@ -30,6 +30,7 @@ import {
   isRoomThread,
   isValidParticipantId,
 } from "@threadlines/shared/threadParticipants";
+import { sameProviderOptionSelections } from "@threadlines/shared/model";
 import { currentAgentModel, messageAgentModels, sentAgentModel } from "./messageAgentModels.ts";
 
 type PlannedEvent = Omit<OrchestrationEvent, "sequence">;
@@ -260,7 +261,8 @@ function decideAgentInviteSubmit(
     return refuse("An invite brings in a new agent, named by a UUID.");
   }
   // The same model invited again reviews as the guest it was before, under
-  // the same name; a fresh review all the same.
+  // the same name; a fresh review all the same, with the options (reasoning)
+  // this invite names.
   const earlierGuest = thread.participants.find((participant) => participant.id === guestId);
   if (
     earlierGuest !== undefined &&
@@ -297,14 +299,23 @@ function decideAgentInviteSubmit(
   if (command.reviewInput === undefined) {
     return refuse("An invite carries the changes its review is of.");
   }
-  const guest: OrchestrationThreadParticipant = earlierGuest ?? {
-    id: guestId,
-    handle: invite.guest.handle,
-    modelSelection: invite.guest.modelSelection,
-    joinedAt: command.createdAt,
-    leftAt: command.createdAt,
-    guest: true,
-  };
+  const guest: OrchestrationThreadParticipant =
+    earlierGuest === undefined
+      ? {
+          id: guestId,
+          handle: invite.guest.handle,
+          modelSelection: invite.guest.modelSelection,
+          joinedAt: command.createdAt,
+          leftAt: command.createdAt,
+          guest: true,
+        }
+      : { ...earlierGuest, modelSelection: invite.guest.modelSelection };
+  const optionsChanged =
+    earlierGuest !== undefined &&
+    !sameProviderOptionSelections(
+      earlierGuest.modelSelection.options,
+      invite.guest.modelSelection.options,
+    );
   const request: OrchestrationAgentRequest = {
     requestId: command.requestId,
     kind: "invite",
@@ -326,7 +337,20 @@ function decideAgentInviteSubmit(
             payload: { threadId: thread.id, participant: guest, updatedAt: command.createdAt },
           },
         ]
-      : []),
+      : optionsChanged
+        ? [
+            {
+              ...base(),
+              type: "thread.participant-updated" as const,
+              payload: {
+                threadId: thread.id,
+                participantId: guestId,
+                modelSelection: guest.modelSelection,
+                updatedAt: command.createdAt,
+              },
+            },
+          ]
+        : []),
     {
       ...base(),
       type: "thread.message-sent",

@@ -17,6 +17,7 @@ import {
   getProviderOptionBooleanSelectionValue,
   getProviderOptionStringSelectionValue,
   normalizeModelSlug,
+  offersSelectedReasoning,
   resolveModelSlugForProvider,
   resolveSelectableModel,
   trimOrNull,
@@ -286,6 +287,20 @@ describe("descriptor helpers", () => {
         { id: "fastMode", value: true },
       ],
     });
+  });
+
+  it("tells whether a model still offers the reasoning level a selection names", () => {
+    expect(offersSelectedReasoning(codexCaps, [{ id: "reasoningEffort", value: "high" }])).toBe(
+      true,
+    );
+    // The level is gone, or the model lost the setting altogether.
+    expect(offersSelectedReasoning(codexCaps, [{ id: "reasoningEffort", value: "ultra" }])).toBe(
+      false,
+    );
+    expect(offersSelectedReasoning(null, [{ id: "reasoningEffort", value: "high" }])).toBe(false);
+    // Naming none leaves the choice to the provider, whatever else is picked.
+    expect(offersSelectedReasoning(codexCaps, [{ id: "fastMode", value: true }])).toBe(true);
+    expect(offersSelectedReasoning(null, undefined)).toBe(true);
   });
 
   it("reads typed option selection values", () => {

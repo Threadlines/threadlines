@@ -92,6 +92,7 @@ export const ComposerAgentInvitePanel = memo(function ComposerAgentInvitePanel(p
           </p>
         ) : null}
         <p className="font-mono text-[11px] text-muted-foreground">
+          {invite.toReasoning ? `${invite.toReasoning} reasoning · ` : ""}
           {invite.billing.label}
           {invite.billing.perUse ? " · billed per use" : ""}
         </p>

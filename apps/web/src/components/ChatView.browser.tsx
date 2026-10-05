@@ -8209,6 +8209,41 @@ describe("ChatView timeline estimator parity (full app)", () => {
     });
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
+      // The invited model offers reasoning levels, and the invite names one.
+      configureFixture: (nextFixture) => {
+        const [codexProvider] = nextFixture.serverConfig.providers;
+        if (!codexProvider) return;
+        nextFixture.serverConfig = {
+          ...nextFixture.serverConfig,
+          providers: [
+            {
+              ...codexProvider,
+              models: [
+                ...codexProvider.models,
+                {
+                  slug: "gpt-6-astra",
+                  name: "GPT-6 Astra",
+                  isCustom: false,
+                  capabilities: createModelCapabilities({
+                    optionDescriptors: [
+                      {
+                        id: "reasoningEffort",
+                        label: "Reasoning",
+                        type: "select" as const,
+                        options: [
+                          { id: "medium", label: "Medium", isDefault: true },
+                          { id: "xhigh", label: "Extra High" },
+                        ],
+                      },
+                    ],
+                  }),
+                },
+              ],
+            },
+            ...nextFixture.serverConfig.providers.slice(1),
+          ],
+        };
+      },
       snapshot: {
         ...base,
         threads: base.threads.map((thread) =>
@@ -8222,6 +8257,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
                     modelSelection: {
                       instanceId: ProviderInstanceId.make("codex"),
                       model: "gpt-6-astra",
+                      options: [{ id: "reasoningEffort", value: "xhigh" }],
                     },
                     joinedAt: NOW_ISO,
                     leftAt: NOW_ISO,
@@ -8283,7 +8319,10 @@ describe("ChatView timeline estimator parity (full app)", () => {
         "Unable to find the invite card.",
       );
       expect(panel.textContent).toContain("A second model should check the backoff.");
-      expect(panel.textContent).toContain("Codex · ChatGPT Pro");
+      // What the user is agreeing to pay for: the level, then who bills it.
+      await vi.waitFor(() =>
+        expect(panel.textContent).toContain("Extra High reasoning · Codex · ChatGPT Pro"),
+      );
       // Not a room yet: saying yes to a teammate is said to end revert.
       expect(panel.textContent).toContain("revert turns off for good");
       expect(

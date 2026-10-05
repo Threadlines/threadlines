@@ -161,6 +161,8 @@ export const RoomAvailableAgentsResult = Schema.Struct({
           name: Schema.String,
           /** Already in this thread: ask it with room_review instead. */
           inThread: Schema.Boolean,
+          /** Its reasoning levels, for room_invite's `reasoning`. */
+          reasoning: Schema.optional(Schema.Array(Schema.String)),
         }),
       ),
     }),
@@ -177,6 +179,8 @@ export const RoomInviteResult = Schema.Struct({
   outcome: Schema.Literals(["asked_user", "started", "failed", "busy", "limit", "refused"]),
   detail: Schema.optional(Schema.String),
   agent: Schema.optional(AgentLabel),
+  /** The reasoning level it reviews at, when the invite named one. */
+  reasoning: Schema.optional(Schema.String),
   requestId: Schema.optional(Schema.String),
 });
 export type RoomInviteResult = typeof RoomInviteResult.Type;
@@ -283,7 +287,7 @@ export const RoomDiffTool = readsRoom(
 export const RoomAvailableAgentsTool = readsRoom(
   Tool.make("room_available_agents", {
     description:
-      "Other agents the user could bring into this thread, for room_invite: each signed-in Codex and Claude provider, how it is paid for, and its models, with the ones already in this thread marked.",
+      "Other agents the user could bring into this thread, for room_invite: each signed-in Codex and Claude provider, how it is paid for, and its models, each with the reasoning levels it offers, with the ones already in this thread marked.",
     success: RoomAvailableAgentsResult,
     dependencies,
   }).annotate(Tool.Title, "List agents that could be brought in"),
@@ -292,7 +296,7 @@ export const RoomAvailableAgentsTool = readsRoom(
 export const RoomInviteTool = asksAgent(
   Tool.make("room_invite", {
     description:
-      "Ask the user to bring another agent into this thread for an independent review of your work, a second opinion from a different model. Use it when a review would really help (a risky change, a hard bug, a call the user should not take on one model's word), not for routine work. The reviewer starts fresh: it sees none of this conversation, only your request and the code. Put the goal, the user's requirements and what to check in `request`; leave out your own conclusions. `reason` is one short sentence the user sees when deciding. `suggestion`: `review` (default) for a one-off review, or `teammate` to suggest it joins the thread for good. `basis` is what it reviews: the uncommitted changes (default) or { base } for base..HEAD, captured now. Returns at once. Keep working or end your turn; do not wait. If the review runs, it comes back to you as a message. If the user says no, you will not hear back; do not ask again unless the user asks you to.",
+      "Ask the user to bring another agent into this thread for an independent review of your work, a second opinion from a different model. Use it when a review would really help (a risky change, a hard bug, a call the user should not take on one model's word), not for routine work. The reviewer starts fresh: it sees none of this conversation, only your request and the code. Put the goal, the user's requirements and what to check in `request`; leave out your own conclusions. `reason` is one short sentence the user sees when deciding. `suggestion`: `review` (default) for a one-off review, or `teammate` to suggest it joins the thread for good. `reasoning` sets how hard it thinks, when the user or the work calls for a level; the user sees it when deciding. `basis` is what it reviews: the uncommitted changes (default) or { base } for base..HEAD, captured now. Returns at once. Keep working or end your turn; do not wait. If the review runs, it comes back to you as a message. If the user says no, you will not hear back; do not ask again unless the user asks you to.",
     parameters: Schema.Struct({
       agent: Schema.String.annotate({
         description:
@@ -305,6 +309,12 @@ export const RoomInviteTool = asksAgent(
         description: "Why a second opinion helps here, in one short sentence, for the user.",
       }),
       suggestion: Schema.optional(Schema.Literals(["review", "teammate"])),
+      reasoning: Schema.optional(
+        Schema.String.annotate({
+          description:
+            "How hard the reviewer thinks: one of the model's `reasoning` levels from room_available_agents (\"xhigh\"). Leave out for the model's default.",
+        }),
+      ),
       basis: Schema.optional(RoomReviewBasisParameter),
     }),
     success: RoomInviteResult,

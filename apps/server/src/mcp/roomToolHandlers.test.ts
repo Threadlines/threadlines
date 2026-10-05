@@ -744,7 +744,11 @@ describe("room_available_agents and room_invite", () => {
     instanceId: ProviderInstanceId,
     driver: string,
     auth: ServerProvider["auth"],
-    models: ReadonlyArray<{ slug: string; shortName: string }>,
+    models: ReadonlyArray<{
+      slug: string;
+      shortName: string;
+      capabilities?: ServerProvider["models"][number]["capabilities"];
+    }>,
   ) =>
     ({
       instanceId,
@@ -842,6 +846,65 @@ describe("room_available_agents and room_invite", () => {
         to: { participantId: REVIEWER },
         invite: { guest: { handle: "Opus 5.5" } },
       });
+    }),
+  );
+
+  it.effect("invites at the reasoning level named, and refuses one the model lacks", () =>
+    Effect.gen(function* () {
+      const claude = provider(
+        CLAUDE,
+        "claudeAgent",
+        { status: "authenticated", type: "oauth", label: "Max" },
+        [
+          {
+            slug: "claude-opus-5-5",
+            shortName: "Opus 5.5",
+            capabilities: {
+              optionDescriptors: [
+                {
+                  id: "effort",
+                  label: "Reasoning",
+                  type: "select",
+                  options: [
+                    { id: "high", label: "High", isDefault: true },
+                    { id: "xhigh", label: "Extra High" },
+                  ],
+                },
+              ],
+            },
+          },
+        ],
+      );
+      const room = yield* makeRoom({ thread: plain, providers: [claude] });
+      const available = yield* room.handlers.room_available_agents(mainCaller());
+      expect(available.providers[0]?.models[0]?.reasoning).toEqual(["high", "xhigh"]);
+
+      const invite = {
+        agent: "Opus 5.5",
+        request: "Check the retry math.",
+        reason: "A second model should check this.",
+      };
+      // Named the way the model picker labels it.
+      const asked = yield* room.handlers.room_invite(mainCaller(), {
+        ...invite,
+        reasoning: "Extra High",
+      });
+      expect(asked).toMatchObject({ outcome: "asked_user", reasoning: "xhigh" });
+      expect(submits(room.dispatched)[0]?.invite?.guest.modelSelection).toEqual({
+        instanceId: CLAUDE,
+        model: "claude-opus-5-5",
+        options: [{ id: "effort", value: "xhigh" }],
+      });
+
+      // A name that fits no level is refused, never taken as "none named".
+      for (const reasoning of ["turbo", "!!!"]) {
+        const refused = yield* room.handlers.room_invite(mainCaller(), { ...invite, reasoning });
+        expect(refused).toMatchObject({
+          outcome: "refused",
+          detail: expect.stringContaining("high, xhigh"),
+        });
+      }
+      expect(submits(room.dispatched)).toHaveLength(1);
     }),
   );
 

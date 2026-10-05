@@ -41,6 +41,7 @@ import {
 } from "@threadlines/shared/threadParticipants";
 import { resolveThreadWorkingCwd } from "@threadlines/shared/threadCwd";
 import { agentInviteRefusal, agentRequestRefusal } from "@threadlines/shared/roomAgentRequests";
+import { findReasoningOptionDescriptor, offersSelectedReasoning } from "@threadlines/shared/model";
 import { randomUUID } from "node:crypto";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
@@ -885,6 +886,8 @@ export function makeRoomToolHandlers(deps: RoomToolDeps) {
     readonly modelSelection: ModelSelection;
     /** As the model picker shows it: "GPT-6 Astra". */
     readonly name: string;
+    /** Its reasoning setting, when it has one an invite can choose from. */
+    readonly reasoning: ReturnType<typeof findReasoningOptionDescriptor>;
   }
 
   const inviteCandidates = (providers: ReadonlyArray<ServerProvider>) =>
@@ -896,6 +899,7 @@ export function makeRoomToolHandlers(deps: RoomToolDeps) {
           provider,
           modelSelection: { instanceId: provider.instanceId, model: model.slug },
           name: model.shortName ?? model.name,
+          reasoning: findReasoningOptionDescriptor(model.capabilities?.optionDescriptors ?? []),
         })),
     );
 
@@ -938,6 +942,41 @@ export function makeRoomToolHandlers(deps: RoomToolDeps) {
     };
   };
 
+  /**
+   * The reasoning level an invite names, as the option its agent runs with:
+   * by id ("xhigh") or as the model picker labels it ("Extra High"). None
+   * named (absent or blank) leaves the choice to the model.
+   */
+  const resolveInviteReasoning = (
+    candidate: InviteCandidate,
+    input: string | undefined,
+  ): { readonly id: string; readonly value: string } | undefined | { readonly refused: string } => {
+    const trimmed = input?.trim() ?? "";
+    if (trimmed.length === 0) {
+      return undefined;
+    }
+    const wanted = normalizeAgentName(trimmed);
+    const levels = candidate.reasoning?.options ?? [];
+    if (candidate.reasoning === undefined || levels.length === 0) {
+      return {
+        refused: `${candidate.name} has no reasoning levels to choose from. Leave \`reasoning\` out.`,
+      };
+    }
+    const level =
+      wanted.length === 0
+        ? undefined
+        : levels.find((option) =>
+            [option.id, option.label].some((name) => normalizeAgentName(name) === wanted),
+          );
+    return level !== undefined
+      ? { id: candidate.reasoning.id, value: level.id }
+      : {
+          refused: `${candidate.name} has no reasoning level called "${trimmed}". Its levels: ${levels
+            .map((option) => option.id)
+            .join(", ")}.`,
+        };
+  };
+
   const roomAvailableAgents = (
     scope: McpInvocationScope,
   ): Effect.Effect<RoomAvailableAgentsResult> =>
@@ -972,6 +1011,9 @@ export function makeRoomToolHandlers(deps: RoomToolDeps) {
               inThread: present.some((entry) =>
                 sameModel(entry.modelSelection, candidate.modelSelection),
               ),
+              ...(candidate.reasoning !== undefined && candidate.reasoning.options.length > 0
+                ? { reasoning: candidate.reasoning.options.map((option) => option.id) }
+                : {}),
             })),
           };
         }),
@@ -987,6 +1029,7 @@ export function makeRoomToolHandlers(deps: RoomToolDeps) {
       readonly request: string;
       readonly reason: string;
       readonly suggestion?: "review" | "teammate" | undefined;
+      readonly reasoning?: string | undefined;
       readonly basis?: RoomReviewBasisRequest | undefined;
     },
   ): Effect.Effect<RoomInviteResult> =>
@@ -1014,6 +1057,15 @@ export function makeRoomToolHandlers(deps: RoomToolDeps) {
       if ("refused" in target) {
         return refused(target.refused) satisfies RoomInviteResult;
       }
+      const reasoning = resolveInviteReasoning(target, input.reasoning);
+      if (reasoning !== undefined && "refused" in reasoning) {
+        return refused(reasoning.refused) satisfies RoomInviteResult;
+      }
+      // The guest as this invite names it: a level, or the model's own choice.
+      const guestSelection: ModelSelection =
+        reasoning === undefined
+          ? target.modelSelection
+          : { ...target.modelSelection, options: [reasoning] };
       const alreadyHere = room.entries.find(
         (entry) =>
           entry.present &&
@@ -1045,9 +1097,15 @@ export function makeRoomToolHandlers(deps: RoomToolDeps) {
         input.basis === undefined || input.basis === "uncommitted"
           ? "uncommitted"
           : `base:${input.basis.base}`;
-      const key = [scope.threadId, callerTurnId, "invite", target.key, text, basisKey].join(
-        "\u0000",
-      );
+      const key = [
+        scope.threadId,
+        callerTurnId,
+        "invite",
+        target.key,
+        reasoning?.value ?? "",
+        text,
+        basisKey,
+      ].join("\u0000");
       return yield* deps.requests.join(key, () =>
         Effect.gen(function* () {
           const cwd = yield* checkoutOf(room.thread);
@@ -1088,12 +1146,24 @@ export function makeRoomToolHandlers(deps: RoomToolDeps) {
           const providerNow = (yield* deps.providers).find(
             (entry) => entry.instanceId === target.provider.instanceId,
           );
-          if (
-            providerNow === undefined ||
-            !inviteCandidates([providerNow]).some((candidate) => candidate.key === target.key)
-          ) {
+          const targetNow =
+            providerNow === undefined
+              ? undefined
+              : inviteCandidates([providerNow]).find((candidate) => candidate.key === target.key);
+          if (providerNow === undefined || targetNow === undefined) {
             return refused(
               `${target.name} is not available any more: its provider is off or signed out.`,
+            ) satisfies RoomInviteResult;
+          }
+          if (
+            !offersSelectedReasoning(
+              providerNow.models.find((model) => model.slug === target.modelSelection.model)
+                ?.capabilities,
+              guestSelection.options,
+            )
+          ) {
+            return refused(
+              `${target.name} no longer offers the reasoning level "${reasoning?.value}". See room_available_agents.`,
             ) satisfies RoomInviteResult;
           }
           // The same model invited before comes back as that guest, under its
@@ -1112,6 +1182,7 @@ export function makeRoomToolHandlers(deps: RoomToolDeps) {
             );
           const requestId = RoomAgentRequestId.make(randomUUID());
           const agent = { key: target.key, name: handle };
+          const named = reasoning === undefined ? {} : { reasoning: reasoning.value };
           const rejected = yield* deps.engine
             .dispatch({
               type: "thread.agent-request.submit",
@@ -1127,7 +1198,7 @@ export function makeRoomToolHandlers(deps: RoomToolDeps) {
               sideTurnId: SideTurnId.make(randomUUID()),
               reviewInput: captured.success,
               invite: {
-                guest: { handle, modelSelection: target.modelSelection },
+                guest: { handle, modelSelection: guestSelection },
                 reason,
                 suggestion,
                 billing: inviteBilling(providerNow),
@@ -1140,7 +1211,12 @@ export function makeRoomToolHandlers(deps: RoomToolDeps) {
               Effect.catch((error) => Effect.succeed(dispatchDetail(error))),
             );
           if (rejected !== undefined) {
-            return { outcome: "failed", detail: rejected, agent } satisfies RoomInviteResult;
+            return {
+              outcome: "failed",
+              detail: rejected,
+              agent,
+              ...named,
+            } satisfies RoomInviteResult;
           }
           return {
             outcome: modeNow === "auto" ? "started" : "asked_user",
@@ -1149,6 +1225,7 @@ export function makeRoomToolHandlers(deps: RoomToolDeps) {
                 ? `${handle} is reviewing${suggestion === "teammate" ? " and joined the thread" : ""}. Its review comes back to you as a message.`
                 : "The user will decide. If they agree, the review comes back to you as a message; if not, you will not hear back. Do not ask again unless the user asks you to.",
             agent,
+            ...named,
             requestId,
           } satisfies RoomInviteResult;
         }),

@@ -155,9 +155,15 @@ background work): a one-time cost per session. Two new tools:
 
 - `room_available_agents`: Codex and Claude providers that are enabled,
   installed and signed in, each with its models (picker names), how it is
-  paid (auth label, per use or plan), and which models are already in the
-  thread.
-- `room_invite`: `{ agent, request, reason, basis?, suggestion? }`. Captures
+  paid (auth label, per use or plan), which models are already in the
+  thread, and the reasoning levels each model offers.
+- `room_invite`: `{ agent, request, reason, basis?, suggestion?, reasoning? }`.
+  `reasoning` names one of the model's levels by id ("xhigh") or picker label
+  ("Extra High"); the guest is recorded with that option, the card shows it
+  next to who pays, and its review runs at it. Left out, the guest carries no
+  option and its provider picks. A level the model lacks is `refused` with
+  the levels it has. The same model invited again takes the new invite's
+  level. Captures
   the review basis like room_review, submits, and returns at once:
   `asked_user` ("The user will decide. If they agree, the review comes back to
   you as a message; if not, you will not hear back. Do not ask again unless
