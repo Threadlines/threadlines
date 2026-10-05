@@ -450,7 +450,7 @@ function liveAgentStep(item: SubagentProgressItem): string | null {
 export interface LiveAgentFace {
   readonly id: string;
   readonly name: string;
-  /** Blocked on the user; its face is ringed amber. */
+  /** Blocked on the user; its face is outlined in amber. */
   readonly waiting: boolean;
   readonly startedAt: string;
 }

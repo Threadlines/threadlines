@@ -32,8 +32,8 @@ export function formatLiveAgentsTooltip(
 }
 
 /**
- * The header's live subagents: one small face per agent, ringed in the accent
- * while it works and amber while it waits on the user. Clicking opens the
+ * The header's live subagents: one small face per agent, outlined in the
+ * accent while it works and amber while it waits on the user. Clicking opens the
  * Agents tab; hovering names them. Renders nothing worth reading on its own
  * when no agent is live, so the caller drops it then.
  */
@@ -68,15 +68,17 @@ export const HeaderAgentFaces = memo(function HeaderAgentFaces({
           />
         }
       >
-        <span aria-hidden="true" className="flex items-center">
+        {/* Side by side, never stacked: each face's status outline is drawn
+            inside its own circle, so no face covers a neighbor's mark. */}
+        <span aria-hidden="true" className="flex items-center gap-[3px]">
           {shown.map((agent, index) => (
             <span
               key={agent.id}
               data-agent-face={agent.waiting ? "waiting" : "running"}
               className={cn(
-                "relative inline-flex size-4 shrink-0 items-center justify-center rounded-full bg-muted ring-[1.5px] ring-offset-1 ring-offset-background",
-                agent.waiting ? "ring-amber-500" : "ring-primary-graph",
-                index > 0 && "-ms-1 @max-xl/header-actions:hidden",
+                "inline-flex size-[18px] shrink-0 items-center justify-center rounded-full border-[1.5px] bg-muted",
+                agent.waiting ? "border-amber-500" : "border-primary-graph",
+                index > 0 && "@max-xl/header-actions:hidden",
               )}
             >
               <ProviderIcon className="size-2.5" />
