@@ -386,6 +386,9 @@ export function useSettingsRestore(onRestored?: () => void) {
       DEFAULT_UNIFIED_SETTINGS.chatChangedFilesDefaultExpanded
         ? ["Changed files in chat"]
         : []),
+      ...(settings.autoOpenAgentsPanel !== DEFAULT_UNIFIED_SETTINGS.autoOpenAgentsPanel
+        ? ["Agents panel"]
+        : []),
       ...(settings.autoArchiveInactiveThreadsDays !==
       DEFAULT_UNIFIED_SETTINGS.autoArchiveInactiveThreadsDays
         ? ["Auto-archive inactive threads"]
@@ -447,6 +450,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       isSourceControlWriterModelDirty,
       isSourceControlWritingStyleDirty,
       settings.autoArchiveInactiveThreadsDays,
+      settings.autoOpenAgentsPanel,
       settings.chatChangedFilesDefaultExpanded,
       settings.confirmThreadArchive,
       settings.confirmThreadDelete,
@@ -491,6 +495,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       diffWordWrap: DEFAULT_UNIFIED_SETTINGS.diffWordWrap,
       diffIgnoreWhitespace: DEFAULT_UNIFIED_SETTINGS.diffIgnoreWhitespace,
       chatChangedFilesDefaultExpanded: DEFAULT_UNIFIED_SETTINGS.chatChangedFilesDefaultExpanded,
+      autoOpenAgentsPanel: DEFAULT_UNIFIED_SETTINGS.autoOpenAgentsPanel,
       sidebarThreadPreviewCount: DEFAULT_UNIFIED_SETTINGS.sidebarThreadPreviewCount,
       autoArchiveInactiveThreadsDays: DEFAULT_UNIFIED_SETTINGS.autoArchiveInactiveThreadsDays,
       enableAssistantStreaming: DEFAULT_UNIFIED_SETTINGS.enableAssistantStreaming,
@@ -859,6 +864,35 @@ export function GeneralSettingsPanel({ surface = "full" }: { surface?: "full" | 
             />
           }
         />
+
+        {/* Not on a phone: the panel covers the conversation there, so it never opens itself. */}
+        {!isPhoneSurface ? (
+          <SettingsRow
+            title="Agents panel"
+            description="Open it on the right when a thread starts subagents."
+            resetAction={
+              settings.autoOpenAgentsPanel !== DEFAULT_UNIFIED_SETTINGS.autoOpenAgentsPanel ? (
+                <SettingResetButton
+                  label="agents panel"
+                  onClick={() =>
+                    updateSettings({
+                      autoOpenAgentsPanel: DEFAULT_UNIFIED_SETTINGS.autoOpenAgentsPanel,
+                    })
+                  }
+                />
+              ) : null
+            }
+            control={
+              <Switch
+                checked={settings.autoOpenAgentsPanel}
+                onCheckedChange={(checked) =>
+                  updateSettings({ autoOpenAgentsPanel: Boolean(checked) })
+                }
+                aria-label="Open the Agents panel when a thread starts subagents"
+              />
+            }
+          />
+        ) : null}
 
         <SettingsRow
           title="Wrap diff lines"

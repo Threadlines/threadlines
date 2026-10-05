@@ -170,22 +170,28 @@ export function focusRightPanelTabState(
  * The first agent of a batch just spawned: surface the Agents tab without
  * taking anything away from the user.
  *
- * - Sidebar hidden, or open on the launcher: the Agents tab is the most useful
- *   thing to be looking at, so it opens focused.
  * - Sidebar open on another tab: the Agents tab joins the strip in the
  *   background — its live node advertises the running agent — and focus stays
- *   exactly where the user put it.
+ *   exactly where the user put it. Nothing on screen moves, so this happens
+ *   whatever `openPanel` says.
+ * - Sidebar hidden, or open on the launcher: with `openPanel` (the "Agents
+ *   panel" setting) the Agents tab opens focused. Without it nothing changes —
+ *   the header's agent faces and the launcher's Agents row already say an
+ *   agent is running, and opening the sidebar stays the user's move.
  *
  * Deciding *when* to call this (the 0→running edge, once per batch, wide
  * layouts only) is the caller's job; this is only what opening looks like.
  */
-export function autoOpenAgentsTabState(state: RightPanelTabsState): RightPanelTabsState {
+export function autoOpenAgentsTabState(
+  state: RightPanelTabsState,
+  openPanel: boolean,
+): RightPanelTabsState {
   if (state.visible && state.activeTab !== null && state.activeTab !== "agents") {
     return state.openTabs.includes("agents")
       ? state
       : { ...state, openTabs: withTab(state.openTabs, "agents") };
   }
-  return focusRightPanelTabState(state, "agents");
+  return openPanel ? focusRightPanelTabState(state, "agents") : state;
 }
 
 /** Mutable per-thread state for the auto-open trigger. */
@@ -557,10 +563,14 @@ export function focusRightPanelTab(threadKey: string | null, tab: RightPanelTab)
 }
 
 /** Returns "agents" when the tab came up focused and the URL should follow;
- *  null when it only joined the strip in the background (or was already up). */
-export function autoOpenAgentsTab(threadKey: string | null): RightPanelTab | null {
+ *  null when it only joined the strip in the background, was already up, or
+ *  `openPanel` is off and the sidebar was left as it was. */
+export function autoOpenAgentsTab(
+  threadKey: string | null,
+  openPanel: boolean,
+): RightPanelTab | null {
   const previous = readState(threadKey);
-  const next = mutate(threadKey, autoOpenAgentsTabState);
+  const next = mutate(threadKey, (state) => autoOpenAgentsTabState(state, openPanel));
   const focused =
     next.visible &&
     next.activeTab === "agents" &&

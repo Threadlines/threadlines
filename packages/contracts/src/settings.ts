@@ -87,7 +87,10 @@ export const ClientSettingsSchema = Schema.Struct({
   agentBrowserProjectSitePolicy: Schema.Record(ProjectId, AgentBrowserSitePolicy).pipe(
     Schema.withDecodingDefault(Effect.succeed({})),
   ),
-  autoOpenPlanSidebar: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  // Whether a thread's first subagent opens the right panel on its Agents tab.
+  // Off, only the user opens the panel. Per device: it is a choice about how
+  // much room this screen has.
+  autoOpenAgentsPanel: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   chatChangedFilesDefaultExpanded: Schema.Boolean.pipe(
     Schema.withDecodingDefault(Effect.succeed(false)),
   ),
@@ -850,7 +853,7 @@ export const ClientSettingsPatch = Schema.Struct({
   agentBrowserProjectSitePolicy: Schema.optionalKey(
     Schema.Record(ProjectId, AgentBrowserSitePolicy),
   ),
-  autoOpenPlanSidebar: Schema.optionalKey(Schema.Boolean),
+  autoOpenAgentsPanel: Schema.optionalKey(Schema.Boolean),
   chatChangedFilesDefaultExpanded: Schema.optionalKey(Schema.Boolean),
   confirmThreadArchive: Schema.optionalKey(Schema.Boolean),
   confirmThreadDelete: Schema.optionalKey(Schema.Boolean),
