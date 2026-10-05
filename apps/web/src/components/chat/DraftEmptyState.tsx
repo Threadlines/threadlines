@@ -160,7 +160,7 @@ export function DraftEmptyState({
             {/* Chrome never paints text-decoration under a replaced element, so
                 the dotted rule is a border on a flex wrapper — that's what keeps
                 the icon inside the underline instead of beside it. */}
-            <span className="inline-flex max-w-full min-w-0 items-center gap-1 border-b border-dotted border-muted-foreground/50 pb-0.5 align-middle leading-none transition-colors group-hover:border-foreground">
+            <span className="inline-flex max-w-full min-w-0 items-center gap-1 border-b border-dotted border-muted-foreground/50 pb-0.5 align-middle leading-none transition-colors group-hover:border-foreground group-data-popup-open:border-foreground">
               {isGeneralChat ? (
                 <MessagesSquareIcon className="size-3.5 shrink-0 text-muted-foreground/70" />
               ) : currentProject ? (
@@ -253,7 +253,7 @@ export function DraftEmptyState({
                             <CloudIcon className="size-3 text-muted-foreground/50" />
                           ) : null}
                           {remoteCount > 1 ? (
-                            <span className="font-mono text-[10px] leading-none text-muted-foreground/50">
+                            <span className="font-mono text-[10px] leading-none text-muted-foreground">
                               {remoteCount}
                             </span>
                           ) : null}

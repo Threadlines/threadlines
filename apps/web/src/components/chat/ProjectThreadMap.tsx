@@ -509,7 +509,7 @@ export function ProjectThreadMap({
           );
         })}
       </div>
-      <p className="mt-2 flex flex-wrap items-center justify-center gap-x-3.5 gap-y-1 text-xs text-muted-foreground/75">
+      <p className="mt-2 flex flex-wrap items-center justify-center gap-x-3.5 gap-y-1 text-xs text-muted-foreground">
         {map.caption.map((part) => (
           <span className="inline-flex items-center gap-1.5" key={part.group}>
             {part.group === "none" ? null : (

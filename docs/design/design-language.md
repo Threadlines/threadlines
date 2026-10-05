@@ -128,6 +128,7 @@ decide by what the control does:
 | Acts on the whole page or panel, in its header                    | plain                                          | Check again, Open setup, Restore defaults, a panel's view toggles                             |
 | Opens a row's detail                                              | plain chevron, or the whole row is the control | a plugin row, a provider row                                                                  |
 | Menu item                                                         | plain                                          | everything inside a menu                                                                      |
+| Sets a value inside a sentence                                    | inline picker (dotted underline)               | the new thread screen's setup line and its project name                                       |
 
 ### Toolbar and list controls: plain until hover
 
@@ -148,6 +149,19 @@ in the conversation, such as Copy, Retry, Revert), menu items.
 Page-level sections (Plugins / Skills, an agent's Account / Usage / Models)
 use underline tabs: plain text, the chosen tab in `--foreground` with a 2px
 underline, the rest in `--muted-foreground`. Not pills, not boxes.
+
+### Pickers inside a sentence
+
+Where a choice reads as part of a sentence ("What's next in _threadlines_?",
+"Runs in _a new worktree_ from _main_"), the picker is the chosen value as
+text with a dotted underline: no box, no chevron. Hover and open turn the
+underline and the text to `--foreground`; the menu it opens is a normal menu.
+Use `SelectInlineTrigger` (or `inlinePickerTriggerClassName` for a combobox
+or menu trigger) from `ui/select.tsx`.
+
+This is for a sentence the screen is built around, such as the new thread
+screen. A settings row, a form or a toolbar uses the solid dropdown or the
+plain chip, even when its label happens to read like a sentence.
 
 ## Type
 
@@ -270,6 +284,7 @@ a switch's off track and a field's edge must stay visible against the group
 - Groups and settings pages: `components/settings/settingsLayout.tsx`
   (`SettingsPageHeader`, `SettingsSection`, `SettingsRow`, `SettingsGroup`).
 - Underline tabs: `components/ui/page-tabs.tsx`.
+- Pickers inside a sentence: `SelectInlineTrigger` in `components/ui/select.tsx`.
 
 ## Exceptions kept on purpose
 
