@@ -6,6 +6,10 @@
 /* The primary pointer can hover (mouse/trackpad). Hide-until-hover affordances
    are gated on this, so touch screens get them permanently visible instead. */
 @custom-variant can-hover (@media (hover: hover));
+/* The new-thread hero: a chat column whose timeline is showing the roomy
+   empty state, which is the element marked data-draft-hero (see useDraftHero).
+   Matches the column itself and everything inside it. */
+@custom-variant draft-hero (&:is([data-chat-column]:has([data-draft-hero]), [data-chat-column]:has([data-draft-hero]) *));
 
 :root {
   --workspace-topbar-height: 52px;

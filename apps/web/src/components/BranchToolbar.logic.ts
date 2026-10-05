@@ -61,6 +61,51 @@ export function resolveLockedWorkspaceLabel(activeWorktreePath: string | null): 
   return activeWorktreePath ? "Worktree" : "Local checkout";
 }
 
+/**
+ * The new-thread screen states where a thread will run as a sentence, "Runs
+ * on <computer> in a new worktree from main.", with each choice a picker set
+ * in the words. These are the words around and inside those pickers.
+ */
+export interface RunSentence {
+  /** The workspace choice as it reads mid-sentence. */
+  readonly workspacePhrase: string;
+  /**
+   * A new worktree is cut from a branch; a checkout or an existing worktree
+   * works on one. The branch picker means something different in each case,
+   * and this word is what says so.
+   */
+  readonly branchPreposition: "from" | "on";
+}
+
+export function resolveWorkspacePhrase(mode: EnvMode, activeWorktreePath: string | null): string {
+  if (mode === "worktree") {
+    return "a new worktree";
+  }
+  return activeWorktreePath ? "the current worktree" : "the current checkout";
+}
+
+/** What picking each workspace does, for the line under its name in the menu. */
+export function resolveWorkspaceDescription(
+  mode: EnvMode,
+  activeWorktreePath: string | null,
+): string {
+  if (mode === "worktree") {
+    return "Its own copy of the project and a new branch";
+  }
+  return activeWorktreePath ? "Keeps working in this worktree" : "Works in the project folder";
+}
+
+export function resolveRunSentence(input: {
+  effectiveEnvMode: EnvMode;
+  activeWorktreePath: string | null;
+}): RunSentence {
+  const { effectiveEnvMode, activeWorktreePath } = input;
+  return {
+    workspacePhrase: resolveWorkspacePhrase(effectiveEnvMode, activeWorktreePath),
+    branchPreposition: effectiveEnvMode === "worktree" && !activeWorktreePath ? "from" : "on",
+  };
+}
+
 export function resolveActiveWorktreePath(
   projectCwd: string | null,
   worktreePath: string | null,

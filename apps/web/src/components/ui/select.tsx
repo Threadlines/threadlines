@@ -93,6 +93,27 @@ function SelectTrigger({
   );
 }
 
+/**
+ * A picker set inside running words: the chosen value as text with a dotted
+ * underline, no box and no chevron. The underline is the affordance, the way
+ * the new-thread question names its project. Shared with the combobox trigger
+ * that sits in the same sentence.
+ */
+const inlinePickerTriggerClassName =
+  "inline-flex min-w-0 max-w-full cursor-pointer items-baseline rounded-xs border-b align-baseline border-dotted border-muted-foreground/50 pb-px text-left text-foreground/85 outline-none transition-colors focus-ring hover:border-foreground hover:text-foreground data-popup-open:border-foreground data-popup-open:text-foreground data-disabled:pointer-events-none data-disabled:opacity-64";
+
+function SelectInlineTrigger({ className, children, ...props }: SelectPrimitive.Trigger.Props) {
+  return (
+    <SelectPrimitive.Trigger
+      className={cn(inlinePickerTriggerClassName, className)}
+      data-slot="select-inline-trigger"
+      {...props}
+    >
+      {children}
+    </SelectPrimitive.Trigger>
+  );
+}
+
 function SelectValue({ className, ...props }: SelectPrimitive.Value.Props) {
   return (
     <SelectPrimitive.Value
@@ -224,6 +245,8 @@ function SelectGroupLabel(props: SelectPrimitive.GroupLabel.Props) {
 export {
   Select,
   SelectTrigger,
+  SelectInlineTrigger,
+  inlinePickerTriggerClassName,
   SelectButton,
   selectTriggerVariants,
   SelectValue,

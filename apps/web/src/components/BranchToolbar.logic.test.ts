@@ -16,12 +16,30 @@ import {
   resolveBranchToolbarValue,
   resolveLockedWorkspaceLabel,
   resolvePendingCheckoutSwitch,
+  resolveRunSentence,
   queuedCheckoutSwitchToast,
   shouldIncludeBranchPickerItem,
 } from "./BranchToolbar.logic";
 
 const localEnvironmentId = EnvironmentId.make("environment-local");
 const remoteEnvironmentId = EnvironmentId.make("environment-remote");
+
+describe("resolveRunSentence", () => {
+  it("cuts a new worktree from a branch and works on one everywhere else", () => {
+    expect(resolveRunSentence({ effectiveEnvMode: "worktree", activeWorktreePath: null })).toEqual({
+      workspacePhrase: "a new worktree",
+      branchPreposition: "from",
+    });
+    expect(resolveRunSentence({ effectiveEnvMode: "local", activeWorktreePath: null })).toEqual({
+      workspacePhrase: "the current checkout",
+      branchPreposition: "on",
+    });
+    // A draft started inside an existing worktree stays in it: nothing is cut.
+    expect(
+      resolveRunSentence({ effectiveEnvMode: "local", activeWorktreePath: "/repo/.worktrees/a" }),
+    ).toEqual({ workspacePhrase: "the current worktree", branchPreposition: "on" });
+  });
+});
 
 describe("resolveDraftEnvModeAfterBranchChange", () => {
   it("switches to local mode when returning from an existing worktree to the main worktree", () => {

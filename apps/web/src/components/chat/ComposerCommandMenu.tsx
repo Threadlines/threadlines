@@ -156,6 +156,8 @@ export const ComposerCommandMenu = memo(function ComposerCommandMenu(props: {
   providerGroupLabel?: string;
   emptyStateText?: string;
   activeItemId: string | null;
+  /** Caps the list's height where the room above the composer is short. */
+  maxListHeightPx?: number | null;
   onHighlightedItemChange: (itemId: string | null) => void;
   onSelect: (item: ComposerCommandItem) => void;
 }) {
@@ -187,7 +189,12 @@ export const ComposerCommandMenu = memo(function ComposerCommandMenu(props: {
         ref={listRef}
         className="relative overflow-hidden rounded-xl border border-border/80 bg-popover/96 shadow-lg/8 backdrop-blur-xs"
       >
-        <CommandList className="max-h-72">
+        <CommandList
+          className="max-h-72"
+          {...(props.maxListHeightPx != null
+            ? { style: { maxHeight: props.maxListHeightPx } }
+            : {})}
+        >
           {groups.map((group, groupIndex) => (
             <div key={group.id}>
               {groupIndex > 0 ? <CommandSeparator className="my-0.5" /> : null}
