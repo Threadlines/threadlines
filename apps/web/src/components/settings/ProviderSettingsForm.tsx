@@ -169,11 +169,11 @@ function FieldFrame(props: {
   readonly children: ReactNode;
 }) {
   if (props.variant === "card") {
-    return <div className="border-t border-border/60 px-4 py-3 sm:px-5">{props.children}</div>;
+    return <div className="border-t border-group-divider px-4 py-3 sm:px-5">{props.children}</div>;
   }
   if (props.variant === "group") {
     return (
-      <div className="border-t border-border/50 py-3 first:border-t-0 first:pt-0 last:pb-0">
+      <div className="border-t border-group-divider py-3 first:border-t-0 first:pt-0 last:pb-0">
         {props.children}
       </div>
     );

@@ -1,6 +1,6 @@
 import type { ModelSelection, ServerProvider } from "@threadlines/contracts";
 import { ProviderDriverKind } from "@threadlines/contracts";
-import { CheckIcon, ChevronDownIcon, HistoryIcon } from "lucide-react";
+import { CheckIcon, HistoryIcon } from "lucide-react";
 import { type ReactNode, useState } from "react";
 import type { UnifiedSettings } from "@threadlines/contracts/settings";
 import { createModelSelection } from "@threadlines/shared/model";
@@ -14,6 +14,7 @@ import {
 } from "../../providerInstances";
 import { ProviderModelPicker } from "../chat/ProviderModelPicker";
 import { TraitsPicker } from "../chat/TraitsPicker";
+import { DropdownChevron } from "../ui/select";
 
 const DEFAULT_DRIVER_KIND = ProviderDriverKind.make("codex");
 const TEXT_GENERATION_OMITTED_OPTIONS = ["ultracode"] as const;
@@ -130,7 +131,7 @@ export function ModelSelectionControl({
                 <span className="flex items-center gap-2">
                   <HistoryIcon aria-hidden="true" className="size-4" />
                   <span>{leadingChoice.label}</span>
-                  <ChevronDownIcon aria-hidden="true" className="size-3 shrink-0 opacity-60" />
+                  <DropdownChevron solid={variant === "outline"} />
                 </span>
               ),
             }

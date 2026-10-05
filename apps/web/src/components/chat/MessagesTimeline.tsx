@@ -2489,7 +2489,7 @@ function ForkContextTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "fo
 
   return (
     <div className="mx-auto max-w-4xl px-1">
-      <div className="rounded-lg border border-border/70 bg-muted/35 px-3.5 py-3 text-sm">
+      <div className="surface-group px-3.5 py-3 text-sm">
         <div className="flex min-w-0 items-start gap-2.5">
           <SplitIcon className="mt-0.5 size-4 shrink-0 rotate-90 text-muted-foreground/70" />
           <div className="min-w-0 flex-1">
@@ -2504,7 +2504,7 @@ function ForkContextTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "fo
                 ? "Current files were used. Full conversation history carried over (native provider fork)."
                 : `Current files were used. Context carried over: ${contextCounts.join(", ") || "none"}.`}
             </p>
-            <div className="mt-2 rounded-md border border-border/60 bg-background/45 px-3 py-2">
+            <div className="mt-2 rounded-lg border border-group-divider px-3 py-2">
               <p className="mb-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground/55">
                 Source {sourceRole} message
               </p>
@@ -2658,7 +2658,7 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
         </div>
       ) : null}
       <div className="flex w-full justify-end">
-        <div className="group relative max-w-[80%] rounded-2xl rounded-br-sm border border-border bg-secondary px-4 py-3">
+        <div className="group relative max-w-[80%] rounded-4xl bg-secondary px-3.5 py-2.5">
           <TimelineFileAttachmentChips attachments={messageAttachments} className="mb-2" />
           <TimelineImagePreviewGrid
             images={userImages}
@@ -3109,7 +3109,8 @@ function RevertUserMessageButton({ messageId }: { messageId: MessageId }) {
     <Button
       type="button"
       size="xs"
-      variant="outline"
+      variant="ghost"
+      className="text-muted-foreground hover:text-foreground"
       disabled={activity.isRevertingCheckpoint || activity.isWorking}
       onClick={() => ctx.onRevertUserMessage(messageId)}
       aria-label="Revert to this message"
@@ -3132,6 +3133,8 @@ function RetryUserMessageButton() {
     <Button
       type="button"
       size="xs"
+      // Shown at rest under a failed message, so it is solid; the hover-only
+      // actions beside it are plain.
       variant="outline"
       disabled={retry.isRetrying || activity.isWorking}
       onClick={retry.onRetry}
@@ -3162,11 +3165,14 @@ function ContinueInNewThreadButton({
     <Button
       type="button"
       size="xs"
-      variant="outline"
+      variant="ghost"
       onClick={() => ctx.onContinueInNewThread?.(messageId)}
       aria-label="Branch from here"
       tooltip="Branch from here"
-      className={cn("enabled:cursor-pointer", className)}
+      className={cn(
+        "text-muted-foreground hover:text-foreground enabled:cursor-pointer",
+        className,
+      )}
     >
       <SplitIcon className="size-3 rotate-90" />
     </Button>
@@ -3225,7 +3231,7 @@ function FallbackAssistantResponseContainer({
   return (
     <div
       data-assistant-fallback-response="true"
-      className="max-w-full rounded-xl border border-warning/30 bg-warning/6 px-3 py-2.5 shadow-sm shadow-warning/5"
+      className="max-w-full rounded-3xl border border-warning/30 bg-warning/6 px-3 py-2.5"
     >
       <div className="mb-2 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-[11px] leading-tight">
         <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-warning/12 px-2 py-0.5 font-medium text-warning-foreground">
@@ -3428,7 +3434,7 @@ function AssistantTurnFooter({
         {row.message.text.trim().length > 0 ? (
           <ContinueInNewThreadButton
             messageId={row.message.id}
-            className="pointer-events-none border-border/50 bg-background/35 text-muted-foreground/45 opacity-0 shadow-none transition-opacity duration-200 hover:border-border/70 hover:bg-background/55 hover:text-muted-foreground/70 group-hover/assistant-message:pointer-events-auto group-hover/assistant-message:opacity-100 group-focus-within/assistant-message:pointer-events-auto group-focus-within/assistant-message:opacity-100"
+            className="pointer-events-none opacity-0 transition-opacity duration-200 group-hover/assistant-message:pointer-events-auto group-hover/assistant-message:opacity-100 group-focus-within/assistant-message:pointer-events-auto group-focus-within/assistant-message:opacity-100"
           />
         ) : null}
         <AssistantCopyButton row={row} />
@@ -3453,8 +3459,7 @@ function AssistantCopyButton({ row }: { row: Extract<TimelineRow, { kind: "messa
       <MessageCopyButton
         text={assistantCopyState.text ?? ""}
         size="icon-xs"
-        variant="outline"
-        className="border-border/50 bg-background/35 text-muted-foreground/45 shadow-none hover:border-border/70 hover:bg-background/55 hover:text-muted-foreground/70"
+        className="text-muted-foreground hover:text-foreground"
       />
     </div>
   );
@@ -4556,7 +4561,7 @@ function AssistantChangedFilesSectionInner({
   const changedFileCountLabel = String(checkpointFiles.length);
 
   return (
-    <div className="mt-2 rounded-lg border border-border/80 bg-card/45 p-2.5">
+    <div className="mt-2 surface-group p-2.5">
       {/* Wraps rather than overflowing. With the browser and source control
           both open the chat column gets narrow, and a row that cannot wrap
           pushes its buttons out of the card instead of under the label. */}

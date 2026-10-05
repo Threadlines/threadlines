@@ -1664,8 +1664,9 @@ describe("ProviderModelPicker", () => {
       if (!(button instanceof HTMLButtonElement)) {
         throw new Error("Expected picker trigger button to be rendered.");
       }
-      expect(button.className).toContain("border-input");
-      expect(button.className).toContain("bg-popover");
+      // The solid control face (the variant keeps its historical name).
+      expect(button.className).toContain("bg-control");
+      expect(button.className).toContain("shadow-(--control-shadow)");
     } finally {
       await mounted.cleanup();
     }

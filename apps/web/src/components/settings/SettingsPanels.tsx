@@ -124,12 +124,14 @@ import { useRelativeTimeTick } from "../../hooks/useRelativeTimeTick";
 import { DictationSettings } from "./DictationSettings";
 import {
   SettingResetButton,
+  SettingsGroup,
   SettingsPageContainer,
+  SettingsPageHeader,
   SettingsRow,
   SettingsSection,
 } from "./settingsLayout";
 import { useServerObservability, useServerProviders } from "../../rpc/serverState";
-import { newCommandId } from "../../lib/utils";
+import { cn, newCommandId } from "../../lib/utils";
 import { roomsEnabledFor } from "../../hooks/useRoomsEnabled";
 
 const THEME_OPTIONS = [
@@ -196,7 +198,7 @@ function ProviderLastChecked({ lastCheckedAt }: { lastCheckedAt: string | null }
   }
 
   return (
-    <span className="text-[11px] text-muted-foreground/60">
+    <span className="me-1 text-[11.5px] text-muted-foreground">
       {lastCheckedRelative.suffix ? (
         <>
           Checked <span className="font-mono tabular-nums">{lastCheckedRelative.value}</span>{" "}
@@ -750,6 +752,7 @@ export function GeneralSettingsPanel({ surface = "full" }: { surface?: "full" | 
 
   return (
     <SettingsPageContainer>
+      <SettingsPageHeader section="/settings/general" />
       <SettingsSection title="Appearance">
         <SettingsRow
           title="Theme"
@@ -998,21 +1001,21 @@ function ProviderUsageLinkRow() {
 
   return (
     <Link
-      className="group/usage-tile flex items-center gap-3 border-y border-border/60 px-1 py-2.5 transition-colors hover:bg-muted/[0.07] focus-ring"
+      className="group/usage-tile flex items-center gap-3 rounded-[inherit] px-3.5 py-2.5 transition-colors hover:bg-foreground/[0.03] focus-ring"
       data-testid="settings-usage-link"
       to="/usage"
     >
-      <span className="shrink-0 font-mono text-[10px] uppercase tracking-wider text-muted-foreground/55 select-none">
+      <span className="shrink-0 text-[13.5px] font-medium text-foreground select-none">
         Last {USAGE_SETTINGS_WINDOW_DAYS} days
       </span>
       {/* One typeface AND one color: mixing brightness on a line of small
           mono type erodes the dim glyphs' anti-aliased bottom edge. */}
       {merged ? (
-        <span className="min-w-0 flex-1 truncate font-mono text-[12.5px] text-foreground/90 tabular-nums">
+        <span className="min-w-0 flex-1 truncate font-mono text-[12px] text-muted-foreground tabular-nums">
           {formatTokens(merged.totalTokens)} tokens · {formatUsd(merged.costUsd)} API-equivalent
         </span>
       ) : (
-        <span className="min-w-0 flex-1 text-xs text-muted-foreground/55">
+        <span className="min-w-0 flex-1 text-[12.5px] text-muted-foreground">
           Reading provider transcripts…
         </span>
       )}
@@ -1024,13 +1027,20 @@ function ProviderUsageLinkRow() {
   );
 }
 
-function ProviderGroupHeading({ label, count }: { label: string; count: number }) {
+/** "In use" / "Not in use": a section title above its run of agent rows. */
+function ProviderGroupHeading({
+  label,
+  count,
+  first = false,
+}: {
+  label: string;
+  count: number;
+  first?: boolean;
+}) {
   return (
-    <div className="flex items-baseline gap-2 border-b border-border/60 px-1 pt-5 pb-1.5">
-      <span className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground/55">
-        {label}
-      </span>
-      <span className="font-mono text-[10px] text-muted-foreground/55">{count}</span>
+    <div className={cn("flex items-baseline gap-2 px-1 pb-2", first ? "pt-0" : "pt-7")}>
+      <h2 className="text-[15px] leading-5 font-semibold text-foreground">{label}</h2>
+      <span className="font-mono text-[11px] text-muted-foreground tabular-nums">{count}</span>
     </div>
   );
 }
@@ -1366,9 +1376,10 @@ export function ProviderSettingsPanel({
 
   return (
     <SettingsPageContainer>
-      <SettingsSection
-        title="Providers"
-        headerAction={
+      <SettingsPageHeader
+        section="/settings/providers"
+        description={`Agents run on ${primaryEnvironment?.label ?? computerLabel}. Favorites and model order are saved on this device.`}
+        actions={
           <div className="flex items-center gap-1">
             <ProviderLastChecked lastCheckedAt={lastCheckedAt} />
             <Button
@@ -1426,25 +1437,29 @@ export function ProviderSettingsPanel({
             </Menu>
           </div>
         }
-        headerClassName="px-1 sm:px-1"
-        contentClassName="overflow-visible"
-      >
-        <p className="px-1 pt-2.5 pb-3 text-xs leading-relaxed text-muted-foreground">
-          Agents run on {primaryEnvironment?.label ?? computerLabel}. Favorites and model order are
-          saved on this device.
-        </p>
+      />
+      <SettingsGroup>
         <ProviderUsageLinkRow />
+      </SettingsGroup>
+      <div className="flex flex-col">
         {/* One keyed list, headings included: a row that moves between the
             groups is reordered, not remounted, so it keeps its open state and
-            a one-click install that is waiting for the server. */}
+            a one-click install that is waiting for the server. Rows draw the
+            group behind each run (AgentRow, data-group-row). */}
         {[
-          <ProviderGroupHeading key="heading:in-use" label="In use" count={inUseRows.length} />,
+          <ProviderGroupHeading
+            key="heading:in-use"
+            label="In use"
+            count={inUseRows.length}
+            first
+          />,
           ...(inUseRows.length > 0
             ? inUseRows.map(renderRow)
             : [
                 <p
                   key="empty:in-use"
-                  className="border-b border-border/60 px-1 py-3 text-xs text-muted-foreground"
+                  data-group-row=""
+                  className="px-3.5 py-3 text-[12.5px] text-muted-foreground"
                 >
                   No agents are turned on. Turn one on below, or{" "}
                   <Link className="text-foreground hover:text-primary-readable" to="/setup">
@@ -1464,7 +1479,7 @@ export function ProviderSettingsPanel({
               ]
             : []),
         ]}
-      </SettingsSection>
+      </div>
 
       <AddProviderInstanceDialog
         open={isAddInstanceDialogOpen}
@@ -1566,7 +1581,7 @@ function AutoArchiveCandidatePreview({
 }) {
   if (groups.length === 0) {
     return (
-      <div className="mt-3 border-t border-border/60 py-2.5 text-xs text-muted-foreground/75">
+      <div className="mt-3 border-t border-group-divider py-2.5 text-xs text-muted-foreground">
         No threads are currently inactive for {days}+ days.
       </div>
     );
@@ -1576,7 +1591,7 @@ function AutoArchiveCandidatePreview({
   const remainingGroupCount = groups.length - visibleGroups.length;
 
   return (
-    <div className="mt-3 border-t border-border/60 py-2.5">
+    <div className="mt-3 border-t border-group-divider py-2.5">
       <div className="grid gap-1.5 text-xs">
         {visibleGroups.map((group) => (
           <div
@@ -1586,13 +1601,13 @@ function AutoArchiveCandidatePreview({
             <span className="min-w-0 truncate text-muted-foreground">
               {group.project?.name ?? "Unknown project"}
             </span>
-            <span className="shrink-0 font-mono text-[11px] text-muted-foreground/80">
+            <span className="shrink-0 font-mono text-[11px] text-muted-foreground">
               {formatThreadCount(group.count)}
             </span>
           </div>
         ))}
         {remainingGroupCount > 0 ? (
-          <div className="text-xs text-muted-foreground/70">
+          <div className="text-xs text-muted-foreground">
             {remainingGroupCount} more projects have eligible inactive threads.
           </div>
         ) : null}
@@ -1954,6 +1969,7 @@ export function ArchivedThreadsPanel({ hostedStatic }: { readonly hostedStatic: 
 
   return (
     <SettingsPageContainer>
+      <SettingsPageHeader section="/settings/archived" />
       <SettingsSection title="Thread cleanup">
         <SettingsRow
           title="Auto-archive inactive threads"

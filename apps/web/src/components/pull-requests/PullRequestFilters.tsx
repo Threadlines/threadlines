@@ -96,9 +96,9 @@ export function PullRequestSortMenu({
       <MenuTrigger
         render={
           <Button
-            variant="outline"
+            variant="ghost"
             size="sm"
-            className="h-7.5 shrink-0 sm:h-6.5"
+            className="h-7.5 shrink-0 text-muted-foreground hover:text-foreground sm:h-6.5"
             data-testid="pull-requests-sort"
           />
         }
@@ -138,9 +138,9 @@ export function PullRequestFiltersButton({
       <MenuTrigger
         render={
           <Button
-            variant="outline"
+            variant="ghost"
             size="sm"
-            className="h-7.5 shrink-0 sm:h-6.5"
+            className="h-7.5 shrink-0 text-muted-foreground hover:text-foreground sm:h-6.5"
             data-testid="pull-requests-filters"
           />
         }

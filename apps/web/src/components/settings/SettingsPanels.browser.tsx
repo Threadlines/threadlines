@@ -2910,8 +2910,8 @@ describe("SourceControlSettingsPanel discovery states", () => {
       </TestAppProviders>,
     );
 
-    await expect.element(page.getByText("Version Control")).toBeInTheDocument();
-    await expect.element(page.getByText("Source Control Providers")).toBeInTheDocument();
+    await expect.element(page.getByText("Version control")).toBeInTheDocument();
+    await expect.element(page.getByText("Source control providers")).toBeInTheDocument();
     await expect
       .element(page.getByRole("button", { name: "Rescan server environment" }))
       .toBeDisabled();

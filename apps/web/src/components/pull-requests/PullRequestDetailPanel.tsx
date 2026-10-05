@@ -791,7 +791,7 @@ function PullRequestCheckoutMenu({
       <MenuTrigger
         render={
           <Button
-            variant="outline"
+            variant="ghost"
             size="xs"
             className={PHONE_ACTION_CLASS}
             data-testid="pull-request-checkout"

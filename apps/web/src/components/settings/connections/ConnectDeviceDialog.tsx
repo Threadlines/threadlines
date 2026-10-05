@@ -226,7 +226,7 @@ export function ConnectDeviceDialog(props: {
     description = "A device typed your code. Check the number before you allow it.";
     body = (
       <div className="space-y-3">
-        <div className="flex items-center gap-4 border-y border-border/60 py-3.5">
+        <div className="flex items-center gap-4 border-y border-group-divider py-3.5">
           <span className="font-mono text-[28px] leading-none tracking-[0.1em] text-foreground">
             {request.matchNumber}
           </span>
@@ -340,7 +340,7 @@ export function ConnectDeviceDialog(props: {
               this code.
             </p>
           </div>
-          <div className="space-y-2.5 border-s border-border/60 ps-6">
+          <div className="space-y-2.5 border-s border-group-divider ps-6">
             <p className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
               <SmartphoneIcon aria-hidden className="size-3.5" />
               On a phone
@@ -370,7 +370,7 @@ export function ConnectDeviceDialog(props: {
         <span className="flex min-w-0 flex-1 items-center gap-2 text-xs text-muted-foreground">
           Waiting for a device
           {countdown ? (
-            <span className="font-mono text-[11px] text-muted-foreground/70">
+            <span className="font-mono text-[11px] text-muted-foreground">
               Code expires in {countdown} · works once
             </span>
           ) : null}

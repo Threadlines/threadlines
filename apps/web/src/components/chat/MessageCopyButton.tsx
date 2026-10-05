@@ -42,7 +42,7 @@ export const MessageCopyButton = memo(function MessageCopyButton({
   text,
   ariaLabel = "Copy link",
   size = "xs",
-  variant = "outline",
+  variant = "ghost",
   className,
 }: {
   text: string;

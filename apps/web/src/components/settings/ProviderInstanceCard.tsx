@@ -61,6 +61,7 @@ import {
 import { AddProviderAccountForm } from "./AddProviderAccountForm";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
+import { Checkbox } from "../ui/checkbox";
 import { Collapsible, CollapsibleContent } from "../ui/collapsible";
 import { DraftInput } from "../ui/draft-input";
 import { Input } from "../ui/input";
@@ -265,7 +266,7 @@ function ProviderAuthEmail(props: {
   return (
     <span className="inline-flex min-w-0 items-center gap-1.5">
       {props.separator ? <span aria-hidden>·</span> : null}
-      {props.prefix ? <span className="text-muted-foreground/80">{props.prefix}</span> : null}
+      {props.prefix ? <span className="text-muted-foreground">{props.prefix}</span> : null}
       <RedactedSensitiveText
         value={trimmed}
         ariaLabel="Toggle account email visibility"
@@ -356,7 +357,7 @@ function ProviderAccentColorPicker(props: {
                   "size-7 cursor-pointer rounded-full border transition",
                   selected
                     ? "border-foreground ring-2 ring-ring ring-offset-1 ring-offset-background"
-                    : "border-black/10 hover:scale-105 dark:border-white/20",
+                    : "border-black/10 hover:border-foreground/40 dark:border-white/20 dark:hover:border-white/50",
                 )}
                 style={{ backgroundColor: swatch }}
                 onClick={() => commitSwatch(swatch)}
@@ -490,7 +491,7 @@ function ProviderEnvironmentEditor(props: {
           {rows.map((variable, index) => (
             <div
               key={variable.id}
-              className="grid gap-2 rounded-md border border-border/70 bg-muted/20 p-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)_auto_auto] sm:items-center"
+              className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)_auto_auto] sm:items-center"
             >
               <DraftInput
                 value={variable.name}
@@ -511,12 +512,10 @@ function ProviderEnvironmentEditor(props: {
                 aria-label={`Environment variable value ${index + 1}`}
               />
               <label className="inline-flex h-8 items-center gap-2 text-xs text-muted-foreground">
-                <input
-                  type="checkbox"
-                  className="size-3.5"
+                <Checkbox
                   checked={variable.sensitive}
-                  onChange={(event) => {
-                    const sensitive = event.currentTarget.checked;
+                  onCheckedChange={(checked) => {
+                    const sensitive = checked === true;
                     updateVariable(variable.id, {
                       sensitive,
                       ...(sensitive && variable.valueRedacted === undefined
@@ -583,7 +582,7 @@ function ClaudeLongLivedAuthSection(props: {
 
   return (
     <details
-      className="group border-t border-border/50 pt-4"
+      className="group border-t border-group-divider pt-4"
       // React alone drives `open`: the summary click below prevents the
       // native toggle. Letting the browser toggle first creates a race where a
       // render committed before the onToggle state update re-applies the stale
@@ -1000,15 +999,15 @@ function ProviderDetailsNav(props: {
   readonly onSectionChange: (section: ProviderDetailsSection) => void;
 }) {
   return (
-    <div className="flex min-w-0 flex-wrap gap-x-4 border-b border-border/60">
+    <div className="flex min-w-0 flex-wrap gap-x-4 border-b border-group-divider">
       {props.sections.map((section) => (
         <button
           key={section}
           type="button"
           className={cn(
-            "relative h-8 shrink-0 cursor-pointer text-xs transition-colors",
+            "relative h-8 shrink-0 cursor-pointer text-[12.5px] font-medium transition-colors",
             props.activeSection === section
-              ? "text-foreground after:absolute after:inset-x-0 after:-bottom-px after:h-[1.5px] after:bg-primary-readable"
+              ? "text-foreground after:absolute after:inset-x-0 after:-bottom-px after:h-0.5 after:rounded-full after:bg-foreground"
               : "text-muted-foreground hover:text-foreground",
           )}
           onClick={() => props.onSectionChange(section)}
@@ -1087,12 +1086,12 @@ function ProviderConfigurationSection(props: {
   readonly children: ReactNode;
 }) {
   return (
-    <section className="border-t border-border/60 px-4 py-4 sm:px-5">
+    <section className="border-t border-group-divider px-3.5 py-3.5">
       <div className="mb-3 flex min-w-0 flex-wrap items-start justify-between gap-3">
         <div className="min-w-0 space-y-0.5">
-          <h4 className="text-xs font-semibold text-foreground">{props.title}</h4>
+          <h4 className="text-[13px] font-medium text-foreground">{props.title}</h4>
           {props.description ? (
-            <p className="text-xs text-muted-foreground">{props.description}</p>
+            <p className="text-[12.5px] text-muted-foreground">{props.description}</p>
           ) : null}
         </div>
         {props.action ? <div className="shrink-0">{props.action}</div> : null}
@@ -1121,7 +1120,7 @@ function ProviderAdvancedConfigurationSection(props: {
   if (props.fields.length === 0 && editableEnvironmentCount === 0) return null;
 
   return (
-    <section className="border-t border-border/60 px-4 py-3 sm:px-5">
+    <section className="border-t border-group-divider px-3.5 py-3">
       <Collapsible open={isOpen} onOpenChange={setIsOpen}>
         <button
           type="button"
@@ -1130,8 +1129,8 @@ function ProviderAdvancedConfigurationSection(props: {
           aria-expanded={isOpen}
         >
           <span className="min-w-0 space-y-0.5">
-            <span className="block text-xs font-semibold text-foreground">Advanced</span>
-            <span className="block text-xs text-muted-foreground">
+            <span className="block text-[13px] font-medium text-foreground">Advanced</span>
+            <span className="block text-[12.5px] text-muted-foreground">
               Home paths, environment variables, and low-level provider overrides.
             </span>
           </span>
@@ -1597,7 +1596,7 @@ export function ProviderInstanceCard({
     agentStatus.kind === "off" ? (
       <>
         {detectionLabel ? (
-          <span className="text-xs text-muted-foreground/62">{detectionLabel}</span>
+          <span className="text-xs text-muted-foreground">{detectionLabel}</span>
         ) : null}
         {showPendingInstall ? (
           <span className="text-xs text-muted-foreground">Starting install…</span>
@@ -1730,7 +1729,7 @@ export function ProviderInstanceCard({
     >
       <Collapsible open={isExpanded} onOpenChange={onExpandedChange}>
         <CollapsibleContent>
-          <div className="px-4 sm:px-5">
+          <div className="px-3.5">
             <ProviderDetailsNav
               sections={availableDetailsSections}
               activeSection={activeDetailsSection}
@@ -1739,7 +1738,7 @@ export function ProviderInstanceCard({
           </div>
 
           {activeDetailsSection === "usage" && usagePresentation ? (
-            <div className="px-4 py-4 sm:px-5">
+            <div className="px-3.5 py-3.5">
               <ProviderUsageDashboard
                 usage={usagePresentation}
                 displayName={displayName}
@@ -1747,7 +1746,7 @@ export function ProviderInstanceCard({
                 accountUsageResetInFlight={accountUsageResetInFlight}
               />
               {usagePresentation.tokenUsage?.scope === "local" ? (
-                <div className="mt-4 border-t border-border/60 pt-3 text-xs text-muted-foreground">
+                <div className="mt-4 border-t border-group-divider pt-3 text-[12.5px] text-muted-foreground">
                   This history is from the paired computer.{" "}
                   <Link className="text-foreground hover:text-primary-readable" to="/usage">
                     View all machines
@@ -1852,7 +1851,7 @@ export function ProviderInstanceCard({
                   onEnvironmentChange={updateEnvironment}
                 />
               ) : (
-                <div className="border-t border-border/60 px-4 py-3 sm:px-5">
+                <div className="border-t border-group-divider px-3.5 py-3">
                   <p className="text-xs text-muted-foreground">
                     This instance uses a driver (
                     <code className="text-foreground">{String(instance.driver)}</code>) that is not
@@ -1864,14 +1863,9 @@ export function ProviderInstanceCard({
             </div>
           ) : null}
 
-          <div className="flex flex-wrap items-center justify-end gap-1 border-t border-border/60 px-3 py-2">
+          <div className="flex flex-wrap items-center justify-end gap-1.5 border-t border-group-divider px-3.5 py-2.5">
             {onResetDefaults ? (
-              <Button
-                size="xs"
-                variant="ghost"
-                className="text-muted-foreground hover:text-foreground"
-                onClick={onResetDefaults}
-              >
+              <Button size="xs" variant="outline" onClick={onResetDefaults}>
                 <RotateCcwIcon className="size-3" />
                 Reset to defaults
               </Button>
@@ -1879,8 +1873,8 @@ export function ProviderInstanceCard({
             {addAccount && !addingAccount ? (
               <Button
                 size="xs"
-                variant="ghost"
-                className="mr-auto text-muted-foreground hover:text-foreground"
+                variant="outline"
+                className="mr-auto"
                 onClick={() => setAddingAccount(true)}
               >
                 <PlusIcon className="size-3" />
@@ -1888,20 +1882,14 @@ export function ProviderInstanceCard({
               </Button>
             ) : null}
             {onRemoveAccount ? (
-              <Button
-                size="xs"
-                variant="ghost"
-                className="text-muted-foreground hover:text-destructive"
-                onClick={onRemoveAccount}
-              >
+              <Button size="xs" variant="destructive-outline" onClick={onRemoveAccount}>
                 <Trash2Icon className="size-3" />
                 Remove account
               </Button>
             ) : onDelete ? (
               <Button
                 size="xs"
-                variant="ghost"
-                className="text-muted-foreground hover:text-destructive"
+                variant="destructive-outline"
                 onClick={onDelete}
                 aria-label={`Delete provider instance ${instanceId}`}
               >
@@ -1911,8 +1899,7 @@ export function ProviderInstanceCard({
             ) : null}
             <Button
               size="xs"
-              variant="ghost"
-              className="text-muted-foreground hover:text-foreground"
+              variant={enabled ? "destructive-outline" : "outline"}
               onClick={() => void onEnabledChange(!enabled)}
             >
               {enabled ? `Turn off ${displayName}` : `Turn on ${displayName}`}

@@ -2,7 +2,6 @@ import {
   BotIcon,
   ChevronDownIcon,
   ChevronRightIcon,
-  ChevronsUpDownIcon,
   CloudIcon,
   CopyIcon,
   DatabaseIcon,
@@ -22,7 +21,6 @@ import {
   SearchIcon,
   TerminalIcon,
   Trash2Icon,
-  WebhookIcon,
   WrenchIcon,
 } from "lucide-react";
 import { useNavigate, useSearch } from "@tanstack/react-router";
@@ -149,12 +147,26 @@ import {
   MenuTrigger,
 } from "../ui/menu";
 import { Skeleton } from "../ui/skeleton";
-import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
+import { SegmentedControl, SegmentedControlItem } from "../ui/segmented-control";
+import {
+  DropdownChevron,
+  Select,
+  SelectItem,
+  SelectPopup,
+  SelectTrigger,
+  SelectValue,
+} from "../ui/select";
 import { Switch } from "../ui/switch";
 import { Textarea } from "../ui/textarea";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
-import { SettingsPageContainer, SettingsRow, SettingsSection } from "./settingsLayout";
+import {
+  SETTINGS_GROUP_ROW_CLASS,
+  SettingsGroup,
+  SettingsPageContainer,
+  SettingsRow,
+  SettingsSection,
+} from "./settingsLayout";
 import { copyTextToClipboard } from "../../lib/clipboard";
 import { cn } from "../../lib/utils";
 
@@ -448,7 +460,7 @@ function ProviderNameGlyph({ driver }: { driver: string }) {
 }
 
 function EmptyList({ label }: { label: string }) {
-  return <p className="py-1 text-xs text-muted-foreground/70">{label}</p>;
+  return <p className="py-1 text-xs text-muted-foreground">{label}</p>;
 }
 
 function pluginExtensionItem(
@@ -1123,8 +1135,8 @@ function DetailRow({
   }
 
   return (
-    <div className="grid gap-1.5 border-t border-border/50 py-2.5 first:border-t-0 sm:grid-cols-[8rem_minmax(0,1fr)_auto] sm:items-start">
-      <dt className="text-[11px] font-semibold uppercase text-muted-foreground/70">{label}</dt>
+    <div className="grid gap-1.5 border-t border-group-divider py-2.5 first:border-t-0 sm:grid-cols-[8rem_minmax(0,1fr)_auto] sm:items-start">
+      <dt className="text-[11.5px] font-medium text-muted-foreground">{label}</dt>
       <dd className="min-w-0 wrap-break-word text-xs text-foreground">{value}</dd>
       {copyValue ? (
         <Tooltip>
@@ -1152,7 +1164,7 @@ function ExtensionActionOutput({ value }: { value: string | null }) {
   if (!value) return null;
 
   return (
-    <pre className="max-h-56 overflow-auto rounded-md border border-border/60 bg-background p-3 text-[11px] leading-relaxed text-muted-foreground">
+    <pre className="max-h-56 overflow-auto surface-group p-3 text-[11px] leading-relaxed text-muted-foreground">
       {value}
     </pre>
   );
@@ -1175,12 +1187,10 @@ function ExtensionActionSummary({ entry }: { entry?: ExtensionActionHistoryEntry
     entry.status === "success" ? "success" : entry.status === "error" ? "error" : "outline";
 
   return (
-    <div className="rounded-md border border-border/60 bg-background px-3 py-2">
+    <div className="surface-group px-3 py-2">
       <div className="flex min-w-0 flex-wrap items-center gap-2">
         <HistoryIcon className="size-3.5 shrink-0 text-muted-foreground/70" />
-        <span className="text-[11px] font-semibold uppercase text-muted-foreground/70">
-          Last action
-        </span>
+        <span className="text-[11.5px] font-medium text-muted-foreground">Last action</span>
         <Badge size="sm" variant={variant}>
           {entry.status === "running" ? "Running" : entry.status === "success" ? "Done" : "Failed"}
         </Badge>
@@ -1190,7 +1200,7 @@ function ExtensionActionSummary({ entry }: { entry?: ExtensionActionHistoryEntry
         </span>
       </div>
       {entry.output ? (
-        <div className="mt-1 truncate text-[11px] text-muted-foreground/70">{entry.output}</div>
+        <div className="mt-1 truncate text-[11px] text-muted-foreground">{entry.output}</div>
       ) : null}
     </div>
   );
@@ -1206,15 +1216,15 @@ function ExtensionToolsList({
   if (tools.length === 0) return null;
 
   return (
-    <div className="space-y-2 border-t border-border/50 pt-3">
-      <div className="text-[11px] font-semibold uppercase text-muted-foreground/70">Tools</div>
-      <div className="divide-y divide-border/50 rounded-md border border-border/60 bg-background">
+    <div className="space-y-2 border-t border-group-divider pt-3">
+      <div className="text-[11.5px] font-medium text-muted-foreground">Tools</div>
+      <div className="divide-y divide-group-divider surface-group">
         {tools.map((tool) => (
           <div key={tool.name} className="flex min-w-0 items-center gap-2 px-2.5 py-2">
             <div className="min-w-0 flex-1">
               <div className="truncate font-mono text-[11px] text-foreground/90">{tool.name}</div>
               {tool.description || tool.title ? (
-                <div className="truncate text-[11px] text-muted-foreground/70">
+                <div className="truncate text-[11px] text-muted-foreground">
                   {tool.description ?? tool.title}
                 </div>
               ) : null}
@@ -1270,16 +1280,16 @@ function ExtensionResourcesList({
   if (resources.length === 0 && templates.length === 0) return null;
 
   return (
-    <div className="space-y-2 border-t border-border/50 pt-3">
-      <div className="text-[11px] font-semibold uppercase text-muted-foreground/70">Resources</div>
-      <div className="divide-y divide-border/50 rounded-md border border-border/60 bg-background">
+    <div className="space-y-2 border-t border-group-divider pt-3">
+      <div className="text-[11.5px] font-medium text-muted-foreground">Resources</div>
+      <div className="divide-y divide-group-divider surface-group">
         {resources.map((resource) => (
           <div key={resource.uri} className="flex min-w-0 items-center gap-2 px-2.5 py-2">
             <div className="min-w-0 flex-1">
               <div className="truncate font-mono text-[11px] text-foreground/90">
                 {resource.name}
               </div>
-              <div className="truncate text-[11px] text-muted-foreground/70">{resource.uri}</div>
+              <div className="truncate text-[11px] text-muted-foreground">{resource.uri}</div>
             </div>
             <Tooltip>
               <TooltipTrigger
@@ -1305,7 +1315,7 @@ function ExtensionResourcesList({
               <div className="truncate font-mono text-[11px] text-foreground/90">
                 {template.name}
               </div>
-              <div className="truncate text-[11px] text-muted-foreground/70">
+              <div className="truncate text-[11px] text-muted-foreground">
                 {template.uriTemplate}
               </div>
             </div>
@@ -1350,7 +1360,7 @@ function PluginMetaLine({ parts }: { parts: ReadonlyArray<string | undefined> })
   if (present.length === 0) return null;
 
   return (
-    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[11px] text-muted-foreground/70">
+    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[11px] text-muted-foreground">
       {present.map((part, index) => (
         <span key={part} className="flex items-center gap-2">
           {index > 0 ? (
@@ -1388,7 +1398,7 @@ function PluginComponentRow({
     <>
       <span className="min-w-0 truncate text-xs text-foreground">{component.name}</span>
       {component.detail ? (
-        <span className="shrink-0 font-mono text-[11px] text-muted-foreground/70">
+        <span className="shrink-0 font-mono text-[11px] text-muted-foreground">
           {component.detail}
         </span>
       ) : null}
@@ -1402,7 +1412,7 @@ function PluginComponentRow({
 
   if (!onInvoke) {
     return (
-      <div className="flex min-w-0 items-center gap-2 border-t border-border/40 py-1.5 first:border-t-0">
+      <div className="flex min-w-0 items-center gap-2 border-t border-group-divider py-1.5 first:border-t-0">
         {body}
       </div>
     );
@@ -1411,7 +1421,7 @@ function PluginComponentRow({
   return (
     <button
       type="button"
-      className="group flex min-w-0 items-center gap-2 border-t border-border/40 py-1.5 text-left transition-colors first:border-t-0 hover:text-foreground focus-ring"
+      className="group flex min-w-0 items-center gap-2 border-t border-group-divider py-1.5 text-left transition-colors first:border-t-0 hover:text-foreground focus-ring"
       onClick={onInvoke}
     >
       {body}
@@ -1439,8 +1449,8 @@ function PluginComponents({
   if (state.status === "idle") return null;
 
   return (
-    <section className="space-y-2 border-t border-border/50 pt-3">
-      <h3 className="text-[11px] font-semibold uppercase text-muted-foreground/70">What it adds</h3>
+    <section className="space-y-2 border-t border-group-divider pt-3">
+      <h3 className="text-[11.5px] font-medium text-muted-foreground">What it adds</h3>
       {state.status === "loading" ? (
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
           <LoaderIcon className="size-3.5 animate-spin" />
@@ -1462,7 +1472,7 @@ function PluginComponents({
       ) : null}
       {groups.map((group) => (
         <div key={group.kind} className="grid gap-1 sm:grid-cols-[8rem_minmax(0,1fr)]">
-          <div className="pt-1.5 text-[11px] font-semibold uppercase text-muted-foreground/70">
+          <div className="pt-1.5 text-[11.5px] font-medium text-muted-foreground">
             {group.label}
             <span className="ml-1 font-mono font-normal text-muted-foreground/50">
               {group.components.length}
@@ -1973,14 +1983,14 @@ function ExtensionDetailDialog({
     >
       {item ? (
         <DialogPopup className="max-w-2xl overflow-hidden">
-          <DialogHeader className="border-b border-border/70 bg-background">
+          <DialogHeader className="border-b border-border/70">
             <div className="flex min-w-0 items-start gap-3 pr-8">
               <span className="mt-0.5 shrink-0">
                 <ExtensionItemGlyph
                   item={item}
                   environmentId={environmentId}
                   sizeClassName="size-8"
-                  containerClassName="inline-flex size-8 items-center justify-center rounded-md border border-border/70 bg-muted/40 text-muted-foreground"
+                  containerClassName="inline-flex size-8 items-center justify-center text-muted-foreground"
                 />
               </span>
               <div className="min-w-0 space-y-1">
@@ -2037,8 +2047,8 @@ function ExtensionDetailDialog({
                   onSelectTarget={selectComponentTarget}
                   onRetry={() => setPluginDetailAttempt((attempt) => attempt + 1)}
                 />
-                <details className="group border-t border-border/50 pt-3">
-                  <summary className="flex cursor-pointer list-none items-center gap-1.5 text-[11px] font-semibold uppercase text-muted-foreground/70 transition-colors hover:text-muted-foreground [&::-webkit-details-marker]:hidden">
+                <details className="group border-t border-group-divider pt-3">
+                  <summary className="flex cursor-pointer list-none items-center gap-1.5 text-[11.5px] font-medium text-muted-foreground transition-colors hover:text-muted-foreground [&::-webkit-details-marker]:hidden">
                     <ChevronRightIcon className="size-3 transition-transform group-open:rotate-90" />
                     Provenance
                   </summary>
@@ -2104,7 +2114,7 @@ function ExtensionDetailDialog({
               </div>
             ) : null}
             {item.kind !== "plugin" ? (
-              <dl className="rounded-md border border-border/60 bg-background px-3">
+              <dl className="surface-group px-3">
                 {item.kind === "skill" ? (
                   <>
                     <DetailRow label="Name" value={item.skill.name} copyValue={item.skill.name} />
@@ -2155,11 +2165,9 @@ function ExtensionDetailDialog({
               </dl>
             ) : null}
             {item.kind === "skill" ? (
-              <section className="space-y-2 border-t border-border/50 pt-3">
+              <section className="space-y-2 border-t border-group-divider pt-3">
                 <div className="flex items-center justify-between gap-2">
-                  <h3 className="text-[11px] font-semibold uppercase text-muted-foreground/70">
-                    Contents
-                  </h3>
+                  <h3 className="text-[11.5px] font-medium text-muted-foreground">Contents</h3>
                   {skillContents.status === "ready" ? (
                     <div className="flex items-center gap-1.5">
                       {skillContents.truncated ? (
@@ -2188,7 +2196,7 @@ function ExtensionDetailDialog({
                   <div className="text-xs text-muted-foreground">{skillContents.message}</div>
                 ) : null}
                 {skillContents.status === "ready" ? (
-                  <pre className="max-h-72 overflow-auto rounded-md border border-border/60 bg-background p-3 text-[11px] leading-relaxed whitespace-pre-wrap text-muted-foreground">
+                  <pre className="max-h-72 overflow-auto surface-group p-3 text-[11px] leading-relaxed whitespace-pre-wrap text-muted-foreground">
                     {skillContents.contents}
                   </pre>
                 ) : null}
@@ -2199,10 +2207,10 @@ function ExtensionDetailDialog({
                 <ExtensionToolsList tools={mcpTools} onSelectTool={selectTool} />
                 <ExtensionResourcesList server={item.server} onReadResource={readResource} />
                 {selectedTool ? (
-                  <div className="space-y-2 border-t border-border/50 pt-3">
+                  <div className="space-y-2 border-t border-group-divider pt-3">
                     <div className="flex items-center justify-between gap-2">
                       <div className="min-w-0">
-                        <div className="text-[11px] font-semibold uppercase text-muted-foreground/70">
+                        <div className="text-[11.5px] font-medium text-muted-foreground">
                           Tool call
                         </div>
                         <div className="truncate font-mono text-[11px] text-foreground/80">
@@ -2242,7 +2250,7 @@ function ExtensionDetailDialog({
                       </div>
                     ) : null}
                     {toolArgumentMode === "form" && selectedToolFormFields ? (
-                      <div className="grid gap-2 rounded-md border border-border/60 bg-background p-3">
+                      <div className="grid gap-2 surface-group p-3">
                         {selectedToolFormFields.map((field) => {
                           const value = toolFormValues[field.name];
                           return (
@@ -2258,7 +2266,7 @@ function ExtensionDetailDialog({
                                 ) : null}
                               </span>
                               {field.description ? (
-                                <span className="text-[11px] text-muted-foreground/70">
+                                <span className="text-[11px] text-muted-foreground">
                                   {field.description}
                                 </span>
                               ) : null}
@@ -2666,34 +2674,23 @@ function ExtensionPreviewSection({
   const hiddenCount = Math.max(0, items.length - visibleItems.length);
 
   return (
-    <div
-      id={panelId}
-      role="tabpanel"
-      className="min-w-0 rounded-md border border-border/60 bg-background/35"
-    >
-      <div className="flex min-h-10 items-center justify-between gap-3 border-b border-border/50 px-3 py-2">
-        <div className="min-w-0">
-          <div className="text-[11px] font-semibold uppercase text-muted-foreground/70">
-            {title}
-          </div>
-          {totalCount > 0 ? (
-            <div className="mt-0.5 text-[11px] text-muted-foreground/65">
-              {isFiltering
-                ? `${items.length} matching ${formatSectionTotal(totalCount, isTruncated)} total`
-                : `${formatSectionTotal(totalCount, isTruncated)} total`}
-            </div>
-          ) : null}
+    <SettingsGroup id={panelId} role="tabpanel" className="min-w-0 overflow-hidden">
+      <div className="flex min-h-9 items-center justify-between gap-3 border-b border-group-divider px-3.5 py-1.5">
+        <div className="min-w-0 text-xs text-muted-foreground">
+          {totalCount > 0
+            ? isFiltering
+              ? `${items.length} matching, ${formatSectionTotal(totalCount, isTruncated)} total`
+              : `${formatSectionTotal(totalCount, isTruncated)} ${title.toLowerCase()}`
+            : title}
         </div>
         {isLoading ? (
-          <span className="inline-flex items-center gap-1.5 font-mono text-[10px] text-muted-foreground/60">
+          <span className="inline-flex items-center gap-1.5 text-[11.5px] text-muted-foreground">
             <LoaderIcon className="size-3 animate-spin" />
             Loading
           </span>
-        ) : totalCount > 0 ? (
-          <span className="font-mono text-[10px] text-muted-foreground/60">
-            {visibleItems.length === items.length
-              ? `${items.length}`
-              : `${visibleItems.length}/${items.length}`}
+        ) : totalCount > 0 && visibleItems.length !== items.length ? (
+          <span className="font-mono text-[11px] text-muted-foreground tabular-nums">
+            {visibleItems.length}/{items.length}
           </span>
         ) : null}
       </div>
@@ -2705,17 +2702,20 @@ function ExtensionPreviewSection({
             {visibleItems.map((item) => (
               <button
                 key={`${item.kind}:${item.id}`}
-                className="group flex min-h-10 w-full min-w-0 items-center gap-2 border-t border-border/40 px-3 py-2 text-left transition-colors first:border-t-0 hover:bg-accent/55 focus-ring sm:[&:nth-child(2)]:border-t-0"
+                className={cn(
+                  GROUP_GRID_CELL_CLASS,
+                  "group flex min-h-12 w-full min-w-0 items-center gap-2.5 px-3.5 py-2 text-left transition-colors hover:bg-foreground/[0.03] focus-ring",
+                )}
                 onClick={() => onSelect(item)}
                 type="button"
               >
                 <ExtensionItemGlyph item={item} environmentId={environmentId} />
                 <div className="min-w-0 flex-1">
-                  <div className="truncate text-xs font-medium text-foreground">{item.title}</div>
+                  <div className="truncate text-[13.5px] font-medium text-foreground">
+                    {item.title}
+                  </div>
                   {item.detail ? (
-                    <div className="truncate text-[11px] text-muted-foreground/70">
-                      {item.detail}
-                    </div>
+                    <div className="truncate text-xs text-muted-foreground">{item.detail}</div>
                   ) : null}
                 </div>
                 <ExtensionItemBadges item={item} />
@@ -2725,7 +2725,7 @@ function ExtensionPreviewSection({
           </div>
           {items.length > 0 ? (
             <button
-              className="w-full border-t border-border/50 px-3 py-2 text-left text-[11px] text-muted-foreground transition-colors hover:bg-accent/55 hover:text-foreground focus-ring"
+              className="w-full border-t border-group-divider px-3.5 py-2 text-left text-xs text-muted-foreground transition-colors hover:bg-foreground/[0.03] hover:text-foreground focus-ring"
               onClick={onBrowse}
               type="button"
             >
@@ -2734,10 +2734,10 @@ function ExtensionPreviewSection({
           ) : null}
         </>
       ) : (
-        <div className="px-3 py-2">
+        <div className="px-3.5 py-2.5">
           <EmptyList label={isFiltering && totalCount > 0 ? "No matches." : emptyLabel} />
           {statusMessage && !isFiltering ? (
-            <div className="mt-1 text-[11px] text-muted-foreground/70">{statusMessage}</div>
+            <div className="mt-1 text-[11px] text-muted-foreground">{statusMessage}</div>
           ) : null}
           {loadLabel && !isFiltering ? (
             <Button
@@ -2762,7 +2762,7 @@ function ExtensionPreviewSection({
           ) : null}
         </div>
       )}
-    </div>
+    </SettingsGroup>
   );
 }
 
@@ -2829,11 +2829,14 @@ function ExtensionItemGlyph({
   item: ExtensionItem;
   environmentId: EnvironmentId | null;
   sizeClassName?: string;
-  /** Wraps the kind glyph only. Real plugin artwork brings its own tile. */
+  /**
+   * Footprint for the plain kind glyph, so it lines up with artwork of the same
+   * size. Never a tile: only a vendor's own artwork brings one.
+   */
   containerClassName?: string | undefined;
 }) {
   const glyphClassName = containerClassName
-    ? "size-4 shrink-0 text-muted-foreground/45"
+    ? "size-5 shrink-0 text-muted-foreground/60"
     : `${sizeClassName} shrink-0 text-muted-foreground/45`;
   const fallbackClassName = glyphClassName;
   const fallback =
@@ -2890,6 +2893,14 @@ function installedPluginDetail(plugin: ProviderExtensionPlugin): string | undefi
 }
 
 /**
+ * A cell in a two-column group list (installed plugins, apps): an inset hairline
+ * above every cell but the first (the first two, once they sit side by side),
+ * and a hairline between the columns.
+ */
+const GROUP_GRID_CELL_CLASS =
+  "relative not-first:before:pointer-events-none not-first:before:absolute not-first:before:top-0 not-first:before:right-3.5 not-first:before:left-3.5 not-first:before:h-px not-first:before:bg-group-divider lg:nth-2:before:hidden lg:odd:after:pointer-events-none lg:odd:after:absolute lg:odd:after:top-2.5 lg:odd:after:right-0 lg:odd:after:bottom-2.5 lg:odd:after:w-px lg:odd:after:bg-group-divider";
+
+/**
  * Installed plugins as rows rather than a strip of logos. The strip answered "what do I have" but
  * nothing else, so enabling or disabling one meant opening it first.
  */
@@ -2912,29 +2923,36 @@ function InstalledPluginRow({
   const providerName = providerTitle(item.provider);
 
   return (
-    <div className="group flex min-h-11 min-w-0 items-center gap-2 border-t border-border/40 px-3 py-2 first:border-t-0 sm:[&:nth-child(2)]:border-t-0">
+    <div
+      className={cn(
+        GROUP_GRID_CELL_CLASS,
+        "group flex min-h-12 min-w-0 items-center gap-2.5 px-3.5 py-2",
+      )}
+    >
       <button
         type="button"
-        className="-mx-1 flex min-w-0 flex-1 items-center gap-2 rounded-sm px-1 py-0.5 text-left transition-colors hover:text-foreground focus-ring"
+        className="-mx-1 flex min-w-0 flex-1 items-center gap-2.5 rounded-sm px-1 py-0.5 text-left transition-colors hover:text-foreground focus-ring"
         onClick={() => onSelect(item)}
       >
         <PluginIcon
           environmentId={environmentId}
           iconUrl={item.plugin.iconUrl}
           iconPath={item.plugin.iconPath}
-          sizeClassName="size-4"
-          fallback={<PlugIcon className="size-4 shrink-0 text-muted-foreground/45" />}
+          sizeClassName="size-[18px]"
+          fallback={<PlugIcon className="size-[18px] shrink-0 text-muted-foreground/60" />}
         />
         <span className="min-w-0 flex-1">
-          <span className="block truncate text-xs font-medium text-foreground">{item.title}</span>
+          <span className="block truncate text-[13.5px] font-medium text-foreground">
+            {item.title}
+          </span>
           {detail ? (
-            <span className="block truncate text-[11px] text-muted-foreground/70">{detail}</span>
+            <span className="block truncate text-xs text-muted-foreground">{detail}</span>
           ) : null}
         </span>
       </button>
       {ProviderGlyph ? (
         <span
-          className="flex shrink-0 items-center text-muted-foreground/60"
+          className="flex shrink-0 items-center text-muted-foreground"
           title={providerName}
           role="img"
           aria-label={providerName}
@@ -2943,6 +2961,7 @@ function InstalledPluginRow({
         </span>
       ) : null}
       <Switch
+        size="sm"
         checked={enabled}
         disabled={isBusy}
         aria-label={`${enabled ? "Disable" : "Enable"} ${item.title}`}
@@ -2966,10 +2985,16 @@ function InstalledPluginsList({
   onSelect: (item: ExtensionItem) => void;
   onToggle: (item: Extract<ExtensionItem, { kind: "plugin" }>, nextEnabled: boolean) => void;
 }) {
-  if (items.length === 0) return <EmptyList label="No plugins installed." />;
+  if (items.length === 0) {
+    return (
+      <SettingsGroup className="px-3.5 py-3">
+        <EmptyList label="No plugins installed." />
+      </SettingsGroup>
+    );
+  }
 
   return (
-    <div className="grid rounded-md border border-border/60 bg-background/35 lg:grid-cols-2">
+    <SettingsGroup className="grid lg:grid-cols-2">
       {items.map((item) => (
         <InstalledPluginRow
           key={`${item.provider.instanceId}:${item.id}`}
@@ -2980,21 +3005,21 @@ function InstalledPluginsList({
           onToggle={onToggle}
         />
       ))}
-    </div>
+    </SettingsGroup>
   );
 }
 
 function InstalledPluginsSkeleton() {
   return (
-    <div
-      className="grid rounded-md border border-border/60 bg-background/35 lg:grid-cols-2"
+    <SettingsGroup
+      className="grid lg:grid-cols-2"
       aria-hidden="true"
       data-testid="extensions-installed-plugins-skeleton"
     >
       {["first", "second", "third", "fourth"].map((key) => (
         <div
           key={key}
-          className="flex min-h-11 items-center gap-2 border-t border-border/40 px-3 py-2 first:border-t-0 sm:[&:nth-child(2)]:border-t-0"
+          className={cn(GROUP_GRID_CELL_CLASS, "flex min-h-12 items-center gap-2.5 px-3.5 py-2")}
         >
           <Skeleton className="size-4 shrink-0 rounded-sm" />
           <div className="min-w-0 flex-1 space-y-1.5">
@@ -3004,7 +3029,7 @@ function InstalledPluginsSkeleton() {
           <Skeleton className="h-4 w-8 rounded-full" />
         </div>
       ))}
-    </div>
+    </SettingsGroup>
   );
 }
 
@@ -3014,7 +3039,7 @@ function SkillListSkeleton() {
       {["first-skill", "second-skill", "third-skill", "fourth-skill"].map((rowKey) => (
         <div
           key={rowKey}
-          className="flex min-h-11 items-center gap-2.5 border-t border-border/40 px-4 py-2.5 first:border-t-0 sm:px-5"
+          className="flex min-h-11 items-center gap-2.5 border-t border-group-divider px-3.5 py-2.5 first:border-t-0"
         >
           <Skeleton className="size-3.5 shrink-0 rounded-sm" />
           <div className="min-w-0 flex-1 space-y-1.5">
@@ -3031,7 +3056,7 @@ function SkillListSkeleton() {
 function ConnectionsTableSkeleton() {
   return (
     <div aria-hidden="true" data-testid="extensions-connections-skeleton">
-      <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 border-b border-border/50 pb-1.5 sm:grid-cols-[minmax(0,1fr)_9rem_8rem]">
+      <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 border-b border-group-divider pb-1.5 sm:grid-cols-[minmax(0,1fr)_9rem_8rem]">
         <Skeleton className="h-2.5 w-20 max-w-full rounded-full" />
         <Skeleton className="hidden h-2.5 w-10 max-w-full rounded-full sm:block" />
         <Skeleton className="h-2.5 w-12 max-w-full rounded-full" />
@@ -3039,7 +3064,7 @@ function ConnectionsTableSkeleton() {
       {["first-connection", "second-connection"].map((rowKey) => (
         <div
           key={rowKey}
-          className="grid min-h-11 grid-cols-[minmax(0,1fr)_auto] items-center gap-3 border-t border-border/40 py-2 first:border-t-0 sm:grid-cols-[minmax(0,1fr)_9rem_8rem]"
+          className="grid min-h-11 grid-cols-[minmax(0,1fr)_auto] items-center gap-3 border-t border-group-divider py-2 first:border-t-0 sm:grid-cols-[minmax(0,1fr)_9rem_8rem]"
         >
           <span className="flex min-w-0 items-center gap-2">
             <Skeleton className="size-3.5 shrink-0 rounded-sm" />
@@ -3071,26 +3096,27 @@ function NeedsAttention({
   if (entries.length === 0) return null;
 
   return (
-    <section className="space-y-1">
-      <h3 className="text-[11px] font-semibold uppercase text-muted-foreground/70">
-        Needs attention
-      </h3>
-      <div>
+    <section className="space-y-2">
+      <h3 className="px-1 text-[13px] font-medium text-foreground">Needs attention</h3>
+      <SettingsGroup className="overflow-hidden">
         {entries.map((entry) => {
           const body = (
             <>
               <KeyRoundIcon className="size-3.5 shrink-0 text-warning-foreground/80" />
-              <span className="min-w-0 flex-1 truncate text-xs text-foreground">{entry.title}</span>
-              <span className="min-w-0 truncate text-[11px] text-muted-foreground/70">
-                {entry.detail}
+              <span className="min-w-0 flex-1 truncate text-[13px] text-foreground">
+                {entry.title}
               </span>
+              <span className="min-w-0 truncate text-xs text-muted-foreground">{entry.detail}</span>
             </>
           );
           return entry.item ? (
             <button
               key={entry.key}
               type="button"
-              className="flex w-full min-w-0 items-center gap-2 border-t border-border/40 py-2 text-left transition-colors first:border-t-0 hover:bg-accent/40 focus-ring"
+              className={cn(
+                SETTINGS_GROUP_ROW_CLASS,
+                "flex w-full min-w-0 items-center gap-2 px-3.5 py-2 text-left transition-colors hover:bg-foreground/[0.03] focus-ring",
+              )}
               onClick={() => entry.item && onSelect(entry.item)}
             >
               {body}
@@ -3099,13 +3125,16 @@ function NeedsAttention({
           ) : (
             <div
               key={entry.key}
-              className="flex min-w-0 items-center gap-2 border-t border-border/40 py-2 first:border-t-0"
+              className={cn(
+                SETTINGS_GROUP_ROW_CLASS,
+                "flex min-w-0 items-center gap-2 px-3.5 py-2",
+              )}
             >
               {body}
             </div>
           );
         })}
-      </div>
+      </SettingsGroup>
     </section>
   );
 }
@@ -3152,7 +3181,7 @@ function HooksList({ rows }: { rows: ReadonlyArray<ExtensionHookRow> }) {
   }
   return (
     <div>
-      <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 border-b border-border/50 pb-1.5 text-[11px] font-semibold uppercase text-muted-foreground/70 sm:grid-cols-[12rem_minmax(0,1fr)_10rem]">
+      <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 border-b border-group-divider pb-1.5 text-[11.5px] font-medium text-muted-foreground sm:grid-cols-[12rem_minmax(0,1fr)_10rem]">
         <span>Event</span>
         <span className="hidden sm:block">Runs</span>
         <span>Set in</span>
@@ -3162,13 +3191,13 @@ function HooksList({ rows }: { rows: ReadonlyArray<ExtensionHookRow> }) {
         return (
           <div
             key={`${provider.instanceId}:${hook.key}`}
-            className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 border-t border-border/40 py-2 first:border-t-0 sm:grid-cols-[12rem_minmax(0,1fr)_10rem]"
+            className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 border-t border-group-divider py-2 first:border-t-0 sm:grid-cols-[12rem_minmax(0,1fr)_10rem]"
             title={hook.sourcePath}
           >
             <span className="min-w-0">
               <span className="block truncate font-mono text-xs text-foreground">{hook.event}</span>
               {hook.matcher ? (
-                <span className="block truncate text-[11px] text-muted-foreground/70">
+                <span className="block truncate text-[11px] text-muted-foreground">
                   {hook.matcher}
                 </span>
               ) : null}
@@ -3222,7 +3251,7 @@ function ConnectionsTable({
   return (
     <div>
       {/* Type folds away below sm: three fixed columns starve the name column on a phone. */}
-      <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 border-b border-border/50 pb-1.5 text-[11px] font-semibold uppercase text-muted-foreground/70 sm:grid-cols-[minmax(0,1fr)_9rem_8rem]">
+      <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 border-b border-group-divider pb-1.5 text-[11.5px] font-medium text-muted-foreground sm:grid-cols-[minmax(0,1fr)_9rem_8rem]">
         <span>Connection</span>
         <span className="hidden sm:block">Type</span>
         <span>Status</span>
@@ -3235,7 +3264,7 @@ function ConnectionsTable({
           <button
             key={`${item.provider.instanceId}:${item.id}`}
             type="button"
-            className="grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-3 border-t border-border/40 py-2 text-left transition-colors first:border-t-0 hover:bg-accent/40 focus-ring sm:grid-cols-[minmax(0,1fr)_9rem_8rem]"
+            className="grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-3 border-t border-group-divider py-2 text-left transition-colors first:border-t-0 hover:bg-accent/40 focus-ring sm:grid-cols-[minmax(0,1fr)_9rem_8rem]"
             onClick={() => onSelect(item)}
           >
             <span className="flex min-w-0 items-center gap-2">
@@ -3247,7 +3276,7 @@ function ConnectionsTable({
               <span className="min-w-0">
                 <span className="block truncate text-xs text-foreground">{item.title}</span>
                 {origin?.kind === "plugin" ? (
-                  <span className="block truncate text-[11px] text-muted-foreground/70">
+                  <span className="block truncate text-[11px] text-muted-foreground">
                     Provided by the {origin.pluginName ?? origin.pluginId} plugin
                   </span>
                 ) : null}
@@ -3260,7 +3289,7 @@ function ConnectionsTable({
               </span>
               <span className="flex min-w-0 items-center gap-1.5">
                 {item.server.transport ? (
-                  <span className="truncate font-mono text-[11px] text-muted-foreground/70">
+                  <span className="truncate font-mono text-[11px] text-muted-foreground">
                     {item.server.transport}
                   </span>
                 ) : null}
@@ -3277,7 +3306,7 @@ function ConnectionsTable({
                   Needs auth
                 </Badge>
               ) : (
-                <span className="truncate text-[11px] text-muted-foreground/70">
+                <span className="truncate text-[11px] text-muted-foreground">
                   {item.server.status ?? "Ready"}
                 </span>
               )}
@@ -3343,9 +3372,9 @@ function MarketplacesBlock({
   };
 
   return (
-    <section className="space-y-2 border-t border-border/50 pt-3 first:border-t-0 first:pt-0">
+    <section className="space-y-2 border-t border-group-divider pt-3 first:border-t-0 first:pt-0">
       <div className="flex items-center justify-between gap-2">
-        <h3 className="flex items-center gap-1.5 text-[11px] font-semibold uppercase text-muted-foreground/70">
+        <h3 className="flex items-center gap-1.5 text-[11.5px] font-medium text-muted-foreground">
           <ProviderNameGlyph driver={String(provider.driver)} />
           {providerTitle(provider)}
         </h3>
@@ -3411,13 +3440,13 @@ function MarketplacesBlock({
           {provider.marketplaces.map((marketplace) => (
             <div
               key={marketplace.name}
-              className="flex min-w-0 items-center gap-3 border-t border-border/40 py-2 first:border-t-0"
+              className="flex min-w-0 items-center gap-3 border-t border-group-divider py-2 first:border-t-0"
             >
               <div className="min-w-0 flex-1">
                 <div className="truncate text-xs text-foreground">
                   {marketplace.displayName ?? marketplace.name}
                 </div>
-                <div className="truncate font-mono text-[11px] text-muted-foreground/70">
+                <div className="truncate font-mono text-[11px] text-muted-foreground">
                   {[
                     marketplace.remote ? "remote catalog" : marketplace.source,
                     marketplace.pluginCount !== undefined
@@ -3492,19 +3521,19 @@ function ExtensionBrowserItemRow({
         item={item}
         environmentId={environmentId}
         sizeClassName="size-8"
-        containerClassName="inline-flex size-8 items-center justify-center rounded-md border border-border/60 bg-muted/40"
+        containerClassName="inline-flex size-8 items-center justify-center"
       />
       <div className="min-w-0 space-y-1">
         <div className="flex min-w-0 items-center gap-2">
           <div className="truncate text-xs font-medium text-foreground">{item.title}</div>
           {groupLabel ? (
-            <span className="hidden max-w-44 shrink-0 truncate rounded-sm bg-muted/45 px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground/75 sm:inline-block">
+            <span className="hidden max-w-44 shrink-0 truncate rounded-sm bg-muted/45 px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground sm:inline-block">
               {groupLabel}
             </span>
           ) : null}
         </div>
         {item.detail ? (
-          <div className="truncate text-[11px] text-muted-foreground/70">{item.detail}</div>
+          <div className="truncate text-[11px] text-muted-foreground">{item.detail}</div>
         ) : null}
       </div>
       <ExtensionItemBadges item={item} showProvider={showProvider} />
@@ -3649,9 +3678,9 @@ function ExtensionBrowserDialog({
     >
       {section ? (
         <DialogPopup className="max-h-[min(86vh,54rem)] max-w-5xl overflow-hidden">
-          <DialogHeader className="shrink-0 border-b border-border/70 bg-background">
+          <DialogHeader className="shrink-0 border-b border-border/70">
             <div className="flex min-w-0 items-start gap-3 pr-8">
-              <span className="mt-0.5 inline-flex size-8 shrink-0 items-center justify-center rounded-md border border-border/70 bg-muted/40 text-muted-foreground">
+              <span className="mt-0.5 inline-flex size-8 shrink-0 items-center justify-center text-muted-foreground [&_svg]:size-5">
                 {section.icon}
               </span>
               <div className="min-w-0 space-y-1">
@@ -3755,7 +3784,7 @@ function ExtensionBrowserDialog({
             </div>
           </div>
           {isCurated ? (
-            <div className="flex shrink-0 flex-wrap items-center gap-x-1.5 gap-y-1 border-b border-border/60 bg-muted/10 px-6 py-2 text-[11px] text-muted-foreground">
+            <div className="flex shrink-0 flex-wrap items-center gap-x-1.5 gap-y-1 border-b border-group-divider bg-muted/10 px-6 py-2 text-[11px] text-muted-foreground">
               <span>
                 Showing {searchedItems.length} featured and most-installed plugins. Search, or
               </span>
@@ -3788,11 +3817,11 @@ function ExtensionBrowserDialog({
                               onClick={() => toggleGroup(group.key)}
                               aria-expanded={!collapsed}
                             >
-                              <span className="min-w-0 truncate text-[11px] font-semibold uppercase text-muted-foreground/70">
+                              <span className="min-w-0 truncate text-[11.5px] font-medium text-muted-foreground">
                                 {group.label}
                               </span>
                             </button>
-                            <span className="flex items-center gap-2 text-[10px] text-muted-foreground/60">
+                            <span className="flex items-center gap-2 text-[10px] text-muted-foreground">
                               <span className="font-mono tabular-nums">{group.items.length}</span>
                               <button
                                 type="button"
@@ -3844,7 +3873,7 @@ function ExtensionBrowserDialog({
                 )}
                 {hiddenCount > 0 ? (
                   <button
-                    className="w-full border-t border-border/50 px-4 py-2 text-left text-[11px] text-muted-foreground transition-colors hover:bg-accent/55 hover:text-foreground focus-ring"
+                    className="w-full border-t border-group-divider px-4 py-2 text-left text-[11px] text-muted-foreground transition-colors hover:bg-accent/55 hover:text-foreground focus-ring"
                     onClick={() =>
                       setVisibleLimit((current) =>
                         Math.min(browserItems.length, current + EXTENSION_BROWSER_PAGE_SIZE),
@@ -3858,12 +3887,12 @@ function ExtensionBrowserDialog({
                 {/* The rows already on screen are the connected ones; the catalog behind them can
                     take seconds, so the list has to say it is still filling. */}
                 {section.isLoading ? (
-                  <div className="flex items-center gap-2 border-t border-border/50 px-4 py-2 text-[11px] text-muted-foreground">
+                  <div className="flex items-center gap-2 border-t border-group-divider px-4 py-2 text-[11px] text-muted-foreground">
                     <LoaderIcon className="size-3 animate-spin" />
                     {`Loading more ${section.title.toLowerCase()}`}
                   </div>
                 ) : section.loadFailed ? (
-                  <div className="flex flex-wrap items-center gap-2 border-t border-border/50 px-4 py-2 text-[11px] text-muted-foreground">
+                  <div className="flex flex-wrap items-center gap-2 border-t border-group-divider px-4 py-2 text-[11px] text-muted-foreground">
                     <span>
                       {section.statusMessage ??
                         `Could not load all ${section.title.toLowerCase()}.`}
@@ -3924,7 +3953,7 @@ function SkillListRow({
   const description = item.skill.shortDescription ?? item.skill.description ?? item.skill.path;
 
   return (
-    <div className="group flex min-h-11 items-center gap-2.5 border-t border-border/40 px-4 first:border-t-0 sm:px-5">
+    <div className="group flex min-h-11 items-center gap-2.5 border-t border-group-divider px-3.5 first:border-t-0">
       <button
         className="-mx-1 flex min-w-0 flex-1 items-center gap-2.5 rounded-sm px-1 py-2.5 text-left transition-colors hover:text-foreground focus-ring"
         onClick={() => onSelect(item)}
@@ -3936,12 +3965,15 @@ function SkillListRow({
           <ExtensionItemGlyph item={item} environmentId={environmentId} sizeClassName="size-3.5" />
         )}
         <span className="min-w-0 flex-1">
-          <span className="block truncate text-xs font-medium text-foreground">{item.title}</span>
-          <span className="block truncate text-[11px] text-muted-foreground/70">{description}</span>
+          <span className="block truncate text-[13.5px] font-medium text-foreground">
+            {item.title}
+          </span>
+          <span className="block truncate text-xs text-muted-foreground">{description}</span>
         </span>
       </button>
       {item.skill.canToggle === true && onToggle ? (
         <Switch
+          size="sm"
           checked={enabled}
           disabled={isBusy}
           aria-label={`${enabled ? "Disable" : "Enable"} ${item.title}`}
@@ -3991,8 +4023,8 @@ function SkillPluginGroup({
       : `${bucket.matching.length} of ${bucket.total} matching`;
 
   return (
-    <div className="border-t border-border/40 first:border-t-0">
-      <div className="flex min-h-11 items-center gap-2.5 px-4 sm:px-5">
+    <div className="border-t border-group-divider first:border-t-0">
+      <div className="flex min-h-11 items-center gap-2.5 px-3.5">
         <button
           type="button"
           className="-mx-1 flex min-w-0 flex-1 items-center gap-2.5 rounded-sm px-1 py-2.5 text-left transition-colors hover:text-foreground focus-ring"
@@ -4013,17 +4045,15 @@ function SkillPluginGroup({
             fallback={<PlugIcon className="size-4 shrink-0 text-muted-foreground/45" />}
           />
           <span className="min-w-0 flex-1">
-            <span className="block truncate text-xs font-medium text-foreground">
+            <span className="block truncate text-[13.5px] font-medium text-foreground">
               {bucket.label}
             </span>
-            <span className="block truncate text-[11px] text-muted-foreground/70">
-              {countLabel}
-            </span>
+            <span className="block truncate text-xs text-muted-foreground">{countLabel}</span>
           </span>
         </button>
         {ProviderGlyph ? (
           <span
-            className="flex shrink-0 items-center text-muted-foreground/60"
+            className="flex shrink-0 items-center text-muted-foreground"
             title={providerName}
             role="img"
             aria-label={providerName}
@@ -4033,6 +4063,7 @@ function SkillPluginGroup({
         ) : null}
         {plugin ? (
           <Switch
+            size="sm"
             checked={enabled}
             disabled={isBusy}
             aria-label={`${enabled ? "Disable" : "Enable"} ${bucket.label}`}
@@ -4045,7 +4076,7 @@ function SkillPluginGroup({
         )}
       </div>
       {expanded ? (
-        <div className="pl-4 sm:pl-6">
+        <div className="pl-5">
           {bucket.matching.map((item) => (
             <SkillListRow
               key={item.skill.path}
@@ -4143,9 +4174,7 @@ function NewSkillDialog({
           <div className="space-y-3">
             {providers.length > 1 ? (
               <label className="block space-y-1">
-                <span className="text-[11px] font-semibold uppercase text-muted-foreground/70">
-                  Provider
-                </span>
+                <span className="text-[11.5px] font-medium text-muted-foreground">Provider</span>
                 <Select
                   value={providerInstanceId}
                   onValueChange={(value) => setProviderInstanceId(String(value))}
@@ -4170,9 +4199,7 @@ function NewSkillDialog({
               </label>
             ) : null}
             <label className="block space-y-1">
-              <span className="text-[11px] font-semibold uppercase text-muted-foreground/70">
-                Name
-              </span>
+              <span className="text-[11.5px] font-medium text-muted-foreground">Name</span>
               <Input
                 nativeInput
                 autoFocus
@@ -4180,14 +4207,12 @@ function NewSkillDialog({
                 placeholder="review-checklist"
                 onChange={(event) => setName(event.currentTarget.value)}
               />
-              <span className="block text-[11px] text-muted-foreground/70">
+              <span className="block text-[11px] text-muted-foreground">
                 Lower-case letters, digits, and single hyphens. This is the folder name too.
               </span>
             </label>
             <label className="block space-y-1">
-              <span className="text-[11px] font-semibold uppercase text-muted-foreground/70">
-                Description
-              </span>
+              <span className="text-[11.5px] font-medium text-muted-foreground">Description</span>
               <Textarea
                 value={description}
                 rows={3}
@@ -4217,6 +4242,70 @@ function MachineGlyph({ isPrimary }: { isPrimary: boolean }) {
     <MonitorIcon className="size-3.5 shrink-0 text-muted-foreground/70" />
   ) : (
     <CloudIcon className="size-3.5 shrink-0 text-muted-foreground/70" />
+  );
+}
+
+const ALL_PROVIDERS_FILTER_VALUE = "__all__";
+
+/**
+ * Which provider's plugins and skills the page shows. A segmented control while
+ * the choices fit (All plus up to three); a dropdown once a machine has more
+ * accounts than that, since provider accounts are open-ended.
+ */
+function ExtensionProviderFilter({
+  options,
+  value,
+  onChange,
+}: {
+  options: ReadonlyArray<{
+    readonly value: string;
+    readonly label: string;
+    readonly driver: string;
+  }>;
+  value: string | null;
+  onChange: (instanceId: string | null) => void;
+}) {
+  const selected = value ?? ALL_PROVIDERS_FILTER_VALUE;
+  const choose = (next: string) => onChange(next === ALL_PROVIDERS_FILTER_VALUE ? null : next);
+
+  if (options.length > 3) {
+    const selectedOption = options.find((option) => option.value === value);
+    return (
+      <Select value={selected} onValueChange={(next) => next !== null && choose(next)}>
+        <SelectTrigger size="sm" className="w-auto min-w-36 max-w-64" aria-label="Provider">
+          <SelectValue>{selectedOption?.label ?? "All providers"}</SelectValue>
+        </SelectTrigger>
+        <SelectPopup align="start" alignItemWithTrigger={false}>
+          <SelectItem value={ALL_PROVIDERS_FILTER_VALUE}>All providers</SelectItem>
+          {options.map((option) => {
+            const ProviderGlyph = providerIconForDriverLabel(option.driver);
+            return (
+              <SelectItem key={option.value} value={option.value}>
+                <span className="flex min-w-0 items-center gap-2">
+                  {ProviderGlyph ? <ProviderGlyph className="size-3.5 shrink-0" /> : null}
+                  <span className="min-w-0 truncate">{option.label}</span>
+                </span>
+              </SelectItem>
+            );
+          })}
+        </SelectPopup>
+      </Select>
+    );
+  }
+
+  return (
+    <SegmentedControl value={selected} onValueChange={choose} aria-label="Provider">
+      <SegmentedControlItem value={ALL_PROVIDERS_FILTER_VALUE}>All providers</SegmentedControlItem>
+      {options.map((option) => {
+        const ProviderGlyph = providerIconForDriverLabel(option.driver);
+        return (
+          <SegmentedControlItem key={option.value} value={option.value}>
+            {ProviderGlyph ? <ProviderGlyph className="size-3 shrink-0" /> : null}
+            <span className="min-w-0 truncate">{option.label}</span>
+          </SegmentedControlItem>
+        );
+      })}
+    </SegmentedControl>
   );
 }
 
@@ -4296,9 +4385,15 @@ function ExtensionScopePicker({
       <MenuTrigger
         data-testid="extension-scope-trigger"
         aria-label="Plugin scope"
-        // Sized to sit level with the xs provider chips beside it; capped so a
-        // long project or machine name truncates instead of wrapping the row.
-        className="flex h-7 min-w-32 max-w-64 cursor-pointer items-center gap-1.5 rounded-md border border-input bg-background px-1.5 text-xs text-muted-foreground/80 transition-colors select-none hover:bg-accent/60 hover:text-foreground focus-ring sm:h-6 dark:bg-input/32"
+        // Level with the provider filter beside it; capped so a long project or
+        // machine name truncates instead of wrapping the row.
+        render={
+          <Button
+            size="sm"
+            variant="outline"
+            className="min-w-32 max-w-64 justify-start gap-1.5 font-normal"
+          />
+        }
       >
         {selectedProject ? (
           <ProjectFavicon
@@ -4313,7 +4408,7 @@ function ExtensionScopePicker({
           <FolderIcon className="size-3.5 shrink-0 text-muted-foreground/60" />
         )}
         <span className="min-w-0 flex-1 truncate text-left">{triggerLabel}</span>
-        <ChevronsUpDownIcon className="size-3 shrink-0 text-muted-foreground/60" />
+        <DropdownChevron solid />
       </MenuTrigger>
       <MenuPopup align="start" side="bottom" className="min-w-56">
         {showMachineGroups ? (
@@ -5137,11 +5232,6 @@ export function ExtensionsSettingsPanel() {
     setIsBrowsingApps(true);
     if (appsCatalogPending && appsCatalogProvider) void loadApps(appsCatalogProvider);
   }, [appsCatalogPending, appsCatalogProvider, loadApps]);
-  // Apps are Codex-only, so the section header carries the provider's own glyph.
-  const CodexSectionGlyph = codexProviders[0]
-    ? providerIconForDriverLabel(String(codexProviders[0].driver))
-    : null;
-
   const searchedInstalledPlugins = useMemo(
     () =>
       sortExtensionItems(
@@ -5340,7 +5430,7 @@ export function ExtensionsSettingsPanel() {
 
   return (
     <ExtensionsScopeContext.Provider value={scopeContextValue}>
-      <SettingsPageContainer className="max-w-5xl">
+      <SettingsPageContainer wide>
         {isInitialInventoryLoading ? (
           <span className="sr-only" role="status">
             Loading plugins and connections
@@ -5364,7 +5454,7 @@ export function ExtensionsSettingsPanel() {
                 onClick={() => selectTab("skills")}
               />
             </div>
-            <div className="min-w-0 truncate pb-2 text-[11px] text-muted-foreground/70">
+            <div className="min-w-0 truncate pb-2 text-[11px] text-muted-foreground">
               {isLoading ? (
                 <span className="inline-flex items-center gap-1.5">
                   <LoaderIcon className="size-3 animate-spin" />
@@ -5387,34 +5477,18 @@ export function ExtensionsSettingsPanel() {
             aria-label={tab === "skills" ? "Search skills" : "Search plugins and connections"}
             onChange={(event) => setPageQuery(event.currentTarget.value)}
           />
-          <div className="flex flex-wrap items-center gap-1.5">
-            <Button
-              size="xs"
-              variant={providerInstanceId ? "outline" : "default"}
-              onClick={() => setProviderFilter(null)}
-            >
-              All providers
-            </Button>
-            {providerOptions.map((provider) => {
-              const ProviderGlyph = providerIconForDriverLabel(provider.driver);
-              return (
-                <Button
-                  key={provider.value}
-                  size="xs"
-                  variant={providerInstanceId === provider.value ? "default" : "outline"}
-                  onClick={() => {
-                    if (!scopeEnvironmentId) return;
-                    setProviderFilter({
-                      environmentId: scopeEnvironmentId,
-                      instanceId: provider.value,
-                    });
-                  }}
-                >
-                  {ProviderGlyph ? <ProviderGlyph className="size-3 shrink-0" /> : null}
-                  {provider.label}
-                </Button>
-              );
-            })}
+          <div className="flex flex-wrap items-center gap-2">
+            <ExtensionProviderFilter
+              options={providerOptions}
+              value={providerInstanceId || null}
+              onChange={(instanceId) => {
+                if (instanceId === null) {
+                  setProviderFilter(null);
+                } else if (scopeEnvironmentId) {
+                  setProviderFilter({ environmentId: scopeEnvironmentId, instanceId });
+                }
+              }}
+            />
             {scopeGroups.length > 0 ? (
               <ExtensionScopePicker
                 groups={scopeGroups}
@@ -5432,9 +5506,9 @@ export function ExtensionsSettingsPanel() {
         {tab === "plugins" ? (
           <>
             <SettingsSection
+              bare
               title="Installed plugins"
               description="Plugin packages installed on this machine for Codex and Claude. They can bundle skills, commands, and connections."
-              icon={<PlugIcon className="size-3.5" />}
               headerAction={
                 <Button
                   size="xs"
@@ -5449,11 +5523,7 @@ export function ExtensionsSettingsPanel() {
                 </Button>
               }
             >
-              <div
-                className="space-y-4 px-4 py-4 sm:px-5"
-                id="extensions-tab-plugins"
-                role="tabpanel"
-              >
+              <div className="space-y-4" id="extensions-tab-plugins" role="tabpanel">
                 {isInitialInventoryLoading ? (
                   <InstalledPluginsSkeleton />
                 ) : (
@@ -5471,11 +5541,11 @@ export function ExtensionsSettingsPanel() {
 
             {codexProviders.length > 0 ? (
               <SettingsSection
+                bare
                 title="Apps"
                 description="Apps connected to your ChatGPT account. They run on OpenAI's servers and only work with Codex."
-                icon={CodexSectionGlyph ? <CodexSectionGlyph className="size-3.5" /> : undefined}
               >
-                <div className="px-4 py-3.5 sm:px-5">
+                <div>
                   <ExtensionPreviewSection
                     environmentId={selectedEnvironmentId}
                     title={appsSection.title}
@@ -5502,7 +5572,6 @@ export function ExtensionsSettingsPanel() {
           <SettingsSection
             title="Skills"
             description="Instruction files that teach an agent one kind of task. Stored as folders on this machine."
-            icon={<FileTextIcon className="size-3.5" />}
             headerAction={
               <div className="flex items-center gap-2">
                 {hasInventory && isLoading ? (
@@ -5530,7 +5599,7 @@ export function ExtensionsSettingsPanel() {
                 <>
                   {skillGroups.map((group) => (
                     <div key={group.key}>
-                      <div className="border-t border-border/50 bg-muted/15 px-4 py-1.5 text-[11px] font-semibold uppercase text-muted-foreground/70 first:border-t-0 sm:px-5">
+                      <div className="border-t border-group-divider px-3.5 pt-2.5 pb-1 text-xs font-medium text-muted-foreground first:border-t-0">
                         {group.label}
                       </div>
                       {group.items.map((item) => (
@@ -5549,7 +5618,7 @@ export function ExtensionsSettingsPanel() {
                   ))}
                   {skillPluginBuckets.length > 0 ? (
                     <div>
-                      <div className="border-t border-border/50 bg-muted/15 px-4 py-1.5 text-[11px] font-semibold uppercase text-muted-foreground/70 sm:px-5">
+                      <div className="border-t border-group-divider px-3.5 pt-2.5 pb-1 text-xs font-medium text-muted-foreground">
                         {EXTENSION_SKILL_GROUP_LABELS.plugin}
                       </div>
                       {skillPluginBuckets.map((bucket) => {
@@ -5629,7 +5698,6 @@ export function ExtensionsSettingsPanel() {
           <>
             <SettingsSection
               title="Connections"
-              icon={<DatabaseIcon className="size-3.5" />}
               headerAction={
                 mcpAuthCheckProvider ? (
                   <Button
@@ -5648,7 +5716,7 @@ export function ExtensionsSettingsPanel() {
                 ) : null
               }
             >
-              <div className="px-4 py-3.5 sm:px-5">
+              <div className="px-3.5 py-2.5">
                 {isInitialInventoryLoading ? (
                   <ConnectionsTableSkeleton />
                 ) : (
@@ -5665,7 +5733,7 @@ export function ExtensionsSettingsPanel() {
                   />
                 )}
                 {mcpFailureMessages.map((message) => (
-                  <div key={message} className="mt-1 text-[11px] text-muted-foreground/70">
+                  <div key={message} className="mt-1 text-[11px] text-muted-foreground">
                     {message}
                   </div>
                 ))}
@@ -5678,12 +5746,11 @@ export function ExtensionsSettingsPanel() {
               <SettingsSection
                 title="Hooks"
                 description="Commands Codex and Claude run on their own at set points, like before a tool runs. They live in each provider's config files."
-                icon={<WebhookIcon className="size-3.5" />}
               >
-                <div className="px-4 py-3.5 sm:px-5">
+                <div className="px-3.5 py-2.5">
                   <HooksList rows={searchedHookRows} />
                   {hookMessages.map((message) => (
-                    <div key={message} className="mt-1 text-[11px] text-muted-foreground/70">
+                    <div key={message} className="mt-1 text-[11px] text-muted-foreground">
                       {message}
                     </div>
                   ))}
@@ -5691,7 +5758,7 @@ export function ExtensionsSettingsPanel() {
               </SettingsSection>
             ) : null}
 
-            <SettingsSection title="Advanced" icon={<PlugIcon className="size-3.5" />}>
+            <SettingsSection title="Advanced">
               {marketplaceSummary ? (
                 <SettingsRow
                   title="Marketplace sources"
@@ -5715,7 +5782,7 @@ export function ExtensionsSettingsPanel() {
                   }
                 >
                   {showMarketplaces ? (
-                    <div className="mt-3 space-y-3 border-t border-border/50 py-3">
+                    <div className="mt-3 space-y-3 border-t border-group-divider py-3">
                       {providerScopedInventory.map((provider) => (
                         <MarketplacesBlock
                           key={provider.instanceId}
@@ -5758,9 +5825,9 @@ export function ExtensionsSettingsPanel() {
                 }
               >
                 {showAdvancedContext ? (
-                  <div className="mt-3 grid gap-3 border-t border-border/50 py-3 sm:grid-cols-[minmax(0,1fr)_minmax(16rem,20rem)] sm:items-start">
+                  <div className="mt-3 grid gap-3 border-t border-group-divider py-3 sm:grid-cols-[minmax(0,1fr)_minmax(16rem,20rem)] sm:items-start">
                     <div className="min-w-0 space-y-1">
-                      <div className="text-[11px] font-semibold uppercase text-muted-foreground/70">
+                      <div className="text-[11.5px] font-medium text-muted-foreground">
                         Detected context
                       </div>
                       <div
@@ -5769,7 +5836,7 @@ export function ExtensionsSettingsPanel() {
                       >
                         {detectedProviderThreadId || "No active Codex thread detected"}
                       </div>
-                      <p className="text-[11px] text-muted-foreground/70">
+                      <p className="text-[11px] text-muted-foreground">
                         Leave the override empty to use the detected active session.
                       </p>
                     </div>

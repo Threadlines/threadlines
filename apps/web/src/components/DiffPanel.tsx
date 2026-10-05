@@ -90,7 +90,8 @@ import {
   MenuTrigger,
 } from "./ui/menu";
 import { toastManager } from "./ui/toast";
-import { ToggleGroup, Toggle } from "./ui/toggle-group";
+import { SegmentedControl, SegmentedControlItem } from "./ui/segmented-control";
+import { Toggle } from "./ui/toggle";
 import { TooltipWrapper } from "./ui/tooltip";
 
 type DiffThemeType = "light" | "dark";
@@ -1207,7 +1208,7 @@ export default function DiffPanel({ mode = "inline", onClose, embedded = false }
             render={
               <Button
                 type="button"
-                variant="outline"
+                variant="ghost"
                 size="xs"
                 className="h-8 w-full min-w-0 justify-between px-2 py-1 sm:h-8"
                 aria-label="Select diff source"
@@ -1288,30 +1289,23 @@ export default function DiffPanel({ mode = "inline", onClose, embedded = false }
         </Menu>
         <div className="flex shrink-0 items-center justify-end gap-1 [-webkit-app-region:no-drag]">
           {panelNarrow ? null : (
-            <ToggleGroup
-              className="shrink-0"
-              variant="outline"
-              size="xs"
-              value={[effectiveDiffRenderMode]}
-              onValueChange={(value) => {
-                const next = value[0];
-                if (next === "stacked" || next === "split") {
-                  setDiffRenderMode(next);
-                }
-              }}
+            <SegmentedControl
+              size="sm"
+              value={effectiveDiffRenderMode}
+              onValueChange={setDiffRenderMode}
+              aria-label="Diff layout"
             >
-              <Toggle aria-label="Stacked diff view" value="stacked">
+              <SegmentedControlItem aria-label="Stacked diff view" value="stacked">
                 <Rows3Icon className="size-3" />
-              </Toggle>
-              <Toggle aria-label="Split diff view" value="split">
+              </SegmentedControlItem>
+              <SegmentedControlItem aria-label="Split diff view" value="split">
                 <Columns2Icon className="size-3" />
-              </Toggle>
-            </ToggleGroup>
+              </SegmentedControlItem>
+            </SegmentedControl>
           )}
           <Toggle
             aria-label={diffChangesOnly ? "Show context lines" : "Show changes only"}
             tooltip={diffChangesOnly ? "Show context lines" : "Show changes only"}
-            variant="outline"
             size="xs"
             pressed={diffChangesOnly}
             onPressedChange={(pressed) => {
@@ -1323,7 +1317,6 @@ export default function DiffPanel({ mode = "inline", onClose, embedded = false }
           <Toggle
             aria-label={diffWordWrap ? "Disable diff line wrapping" : "Enable diff line wrapping"}
             tooltip={diffWordWrap ? "Disable line wrapping" : "Enable line wrapping"}
-            variant="outline"
             size="xs"
             pressed={diffWordWrap}
             onPressedChange={(pressed) => {
@@ -1337,7 +1330,6 @@ export default function DiffPanel({ mode = "inline", onClose, embedded = false }
               diffIgnoreWhitespace ? "Show whitespace changes" : "Hide whitespace changes"
             }
             tooltip={diffIgnoreWhitespace ? "Show whitespace changes" : "Hide whitespace changes"}
-            variant="outline"
             size="xs"
             pressed={diffIgnoreWhitespace}
             onPressedChange={(pressed) => {

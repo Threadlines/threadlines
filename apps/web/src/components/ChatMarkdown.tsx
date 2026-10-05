@@ -200,7 +200,6 @@ function MarkdownCodeBlock({ code, children }: { code: string; children: ReactNo
         text={code}
         ariaLabel="Copy code block"
         size="icon-xs"
-        variant="outline"
         className="chat-markdown-copy-button"
       />
       {children}

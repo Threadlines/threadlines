@@ -15,8 +15,9 @@ import {
 } from "@threadlines/shared/model";
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import type { VariantProps } from "class-variance-authority";
-import { ChevronDownIcon, SlidersHorizontalIcon, ZapIcon } from "lucide-react";
+import { SlidersHorizontalIcon, ZapIcon } from "lucide-react";
 import { Button, buttonVariants } from "../ui/button";
+import { DropdownChevron } from "../ui/select";
 import {
   Menu,
   MenuCheckboxItem,
@@ -665,9 +666,7 @@ export const TraitsPicker = memo(function TraitsPicker({
               +{extraTraitCount}
             </span>
           ) : null}
-          {!iconOnly ? (
-            <ChevronDownIcon aria-hidden="true" className="size-3 shrink-0 opacity-60" />
-          ) : null}
+          {!iconOnly ? <DropdownChevron solid={triggerVariant === "outline"} /> : null}
         </span>
       </MenuTrigger>
       <MenuPopup align="start">

@@ -39,7 +39,7 @@ export function ComposerDock({
     // layout that narrow widths depend on.
     <div
       data-composer-notice-dock="true"
-      className="rounded-t-xl border border-border border-b-0 bg-card [contain:inline-size]"
+      className="rounded-t-4xl border border-border border-b-0 bg-card [contain:inline-size]"
     >
       {pullRequests.map((pullRequest, index) => (
         <ComposerPullRequestRow

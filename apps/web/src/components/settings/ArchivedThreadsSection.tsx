@@ -1,13 +1,14 @@
 import { ArchiveIcon, SearchIcon, Trash2Icon, XIcon } from "lucide-react";
 import type { EnvironmentId, OrchestrationShellSnapshot, ProjectId } from "@threadlines/contracts";
 import { useMemo, useState } from "react";
+import { cn } from "../../lib/utils";
 import { formatRelativeTimeLabel } from "../../timestampFormat";
 import { ProjectFavicon } from "../ProjectFavicon";
 import { Button } from "../ui/button";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Skeleton } from "../ui/skeleton";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
-import { SettingsRow, SettingsSection } from "./settingsLayout";
+import { SETTINGS_GROUP_ROW_CLASS, SettingsRow, SettingsSection } from "./settingsLayout";
 import { ARCHIVED_THREADS_PAGE_SIZE, filterArchivedThreads } from "./SettingsPanels.logic";
 
 export interface ArchivedThreadProject {
@@ -37,7 +38,7 @@ function ArchivedThreadsSkeleton() {
         {["w-40", "w-52", "w-36"].map((titleWidth) => (
           <div
             key={titleWidth}
-            className="flex items-center gap-3 border-t border-border/60 px-4 py-2.5 first:border-t-0 sm:px-5"
+            className="flex items-center gap-3 border-t border-group-divider px-4 py-2.5 first:border-t-0 sm:px-5"
           >
             <Skeleton className={`h-3.5 max-w-full rounded-full ${titleWidth}`} />
             <Skeleton className="ml-auto h-3 w-24 rounded-full" />
@@ -106,7 +107,7 @@ export function ArchivedThreadsSection({
       title="Archived threads"
       headerAction={
         threads.length > 0 ? (
-          <span className="font-mono text-[11px] text-muted-foreground/70 tabular-nums">
+          <span className="font-mono text-[11px] text-muted-foreground tabular-nums">
             {isFiltered ? `${filteredThreads.length} of ${threads.length}` : threads.length}
           </span>
         ) : null
@@ -128,8 +129,8 @@ export function ArchivedThreadsSection({
         )
       ) : (
         <>
-          <div className="flex items-center gap-2 py-1.5 pr-2 pl-4 sm:pl-5">
-            <SearchIcon className="size-3.5 shrink-0 text-muted-foreground/60" />
+          <div className="flex items-center gap-2 py-1.5 pr-2 pl-3.5">
+            <SearchIcon className="size-3.5 shrink-0 text-muted-foreground" />
             <input
               type="text"
               value={query}
@@ -143,7 +144,7 @@ export function ArchivedThreadsSection({
               }}
               placeholder="Search archived threads"
               aria-label="Search archived threads"
-              className="h-7 min-w-0 flex-1 bg-transparent text-[13px] text-foreground outline-none placeholder:text-muted-foreground/60"
+              className="h-7 min-w-0 flex-1 bg-transparent text-[13px] text-foreground outline-none placeholder:text-muted-foreground"
             />
             {query.length > 0 ? (
               <Button
@@ -202,14 +203,22 @@ export function ArchivedThreadsSection({
             ) : null}
           </div>
           {visibleThreads.length === 0 ? (
-            <div className="border-t border-border/60 px-4 py-3.5 text-xs text-muted-foreground sm:px-5">
+            <div
+              className={cn(
+                SETTINGS_GROUP_ROW_CLASS,
+                "px-3.5 py-3 text-[12.5px] text-muted-foreground",
+              )}
+            >
               No archived threads match this search.
             </div>
           ) : (
             visibleThreads.map((thread) => (
               <div
                 key={`${thread.environmentId}:${thread.id}`}
-                className="group/archived-row relative flex min-h-10 items-center gap-3 border-t border-border/60 py-1.5 pr-4 pl-4 sm:pr-5 sm:pl-5 pointer-coarse:pr-2"
+                className={cn(
+                  SETTINGS_GROUP_ROW_CLASS,
+                  "group/archived-row flex min-h-10 items-center gap-3 py-1.5 pr-3.5 pl-3.5 pointer-coarse:pr-2",
+                )}
                 onContextMenu={(event) => {
                   event.preventDefault();
                   onContextMenu(thread, { x: event.clientX, y: event.clientY });
@@ -218,48 +227,52 @@ export function ArchivedThreadsSection({
                 <span className="min-w-0 flex-1 truncate text-[13px] text-foreground">
                   {thread.title}
                 </span>
-                <span className="flex shrink-0 items-center gap-1 text-[11px] text-muted-foreground transition-opacity group-hover/archived-row:opacity-0 group-focus-within/archived-row:opacity-0 pointer-coarse:opacity-100">
-                  {selectedProject === null ? (
-                    <>
-                      <ProjectFavicon
-                        environmentId={thread.project.environmentId}
-                        cwd={thread.project.cwd}
-                        name={thread.project.name}
+                {/* The date and the hover actions share one cell, sized to the wider
+                    of the two, so the actions never cover the title. Touch shows
+                    both, side by side. */}
+                <div className="grid shrink-0 items-center justify-items-end pointer-coarse:flex pointer-coarse:gap-2">
+                  <span className="col-start-1 row-start-1 flex items-center gap-1 text-[11px] text-muted-foreground transition-opacity group-hover/archived-row:opacity-0 group-focus-within/archived-row:opacity-0 pointer-coarse:opacity-100">
+                    {selectedProject === null ? (
+                      <>
+                        <ProjectFavicon
+                          environmentId={thread.project.environmentId}
+                          cwd={thread.project.cwd}
+                          name={thread.project.name}
+                        />
+                        <span>{thread.project.name} ·</span>
+                      </>
+                    ) : null}
+                    <span>{formatRelativeTimeLabel(thread.archivedAt ?? thread.createdAt)}</span>
+                  </span>
+                  <div className="col-start-1 row-start-1 -me-1.5 flex items-center gap-0.5 opacity-0 transition-opacity group-hover/archived-row:opacity-100 group-focus-within/archived-row:opacity-100 pointer-coarse:opacity-100">
+                    <Button
+                      type="button"
+                      size="xs"
+                      variant="ghost"
+                      className="h-6 px-2 text-[11px]"
+                      aria-label={`Unarchive ${thread.title}`}
+                      onClick={() => onUnarchive(thread)}
+                    >
+                      Unarchive
+                    </Button>
+                    <Tooltip>
+                      <TooltipTrigger
+                        render={
+                          <Button
+                            type="button"
+                            size="icon-xs"
+                            variant="ghost"
+                            className="size-6 text-muted-foreground hover:text-destructive-foreground"
+                            aria-label={`Delete archived thread ${thread.title}`}
+                            onClick={() => onDelete(thread)}
+                          >
+                            <Trash2Icon className="size-3.5" />
+                          </Button>
+                        }
                       />
-                      <span>{thread.project.name} ·</span>
-                    </>
-                  ) : null}
-                  <span>{formatRelativeTimeLabel(thread.archivedAt ?? thread.createdAt)}</span>
-                </span>
-                {/* Pointer devices get the actions over the date on hover; touch keeps them inline. */}
-                <div className="absolute inset-y-0 right-2 flex items-center gap-0.5 bg-card pl-3 opacity-0 transition-opacity group-hover/archived-row:opacity-100 group-focus-within/archived-row:opacity-100 pointer-coarse:static pointer-coarse:bg-transparent pointer-coarse:pl-0 pointer-coarse:opacity-100">
-                  <Button
-                    type="button"
-                    size="xs"
-                    variant="ghost"
-                    className="h-6 px-2 text-[11px]"
-                    aria-label={`Unarchive ${thread.title}`}
-                    onClick={() => onUnarchive(thread)}
-                  >
-                    Unarchive
-                  </Button>
-                  <Tooltip>
-                    <TooltipTrigger
-                      render={
-                        <Button
-                          type="button"
-                          size="icon-xs"
-                          variant="ghost"
-                          className="size-6 text-muted-foreground hover:text-destructive-foreground"
-                          aria-label={`Delete archived thread ${thread.title}`}
-                          onClick={() => onDelete(thread)}
-                        >
-                          <Trash2Icon className="size-3.5" />
-                        </Button>
-                      }
-                    />
-                    <TooltipPopup side="top">Delete thread</TooltipPopup>
-                  </Tooltip>
+                      <TooltipPopup side="top">Delete thread</TooltipPopup>
+                    </Tooltip>
+                  </div>
                 </div>
               </div>
             ))
@@ -267,7 +280,10 @@ export function ArchivedThreadsSection({
           {hiddenCount > 0 ? (
             <button
               type="button"
-              className="w-full cursor-pointer border-t border-border/60 px-4 py-2 text-center text-xs text-muted-foreground transition-colors hover:text-foreground focus-ring sm:px-5"
+              className={cn(
+                SETTINGS_GROUP_ROW_CLASS,
+                "w-full cursor-pointer px-3.5 py-2 text-center text-[12.5px] text-muted-foreground transition-colors hover:text-foreground focus-ring",
+              )}
               onClick={() => setVisibleCount((count) => count + ARCHIVED_THREADS_PAGE_SIZE)}
             >
               Show {Math.min(hiddenCount, ARCHIVED_THREADS_PAGE_SIZE)} more
