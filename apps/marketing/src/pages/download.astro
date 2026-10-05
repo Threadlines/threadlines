@@ -20,6 +20,14 @@ import Layout from "../layouts/Layout.astro";
           <span id="dl-primary-label">Download</span>
           <span class="dl-primary-size" id="dl-primary-size"></span>
         </a>
+        <button class="dl-primary" id="dl-share" type="button" hidden>Send the link to yourself</button>
+        <p class="dl-hint" id="dl-mac-hint" hidden>
+          Not sure which one? Open the Apple menu, then About This Mac. "Chip" means Apple
+          Silicon. "Processor" means Intel.
+        </p>
+        <p class="dl-hint" id="dl-mobile-hint" hidden>
+          <button class="dl-link" id="dl-show-installers" type="button">Show the installers anyway</button>
+        </p>
       </div>
 
       <div class="dl-list" id="dl-list" hidden>
@@ -110,31 +118,82 @@ import Layout from "../layouts/Layout.astro";
 </Layout>
 
 <script>
-  import { classifyAssets, fetchLatestRelease, formatAssetSize } from "../lib/releases";
+  import { detectDevice, detectMacArch, isTouchOnly } from "../lib/platform";
+  import {
+    classifyAssets,
+    fetchLatestRelease,
+    formatAssetSize,
+    pickInstaller,
+  } from "../lib/releases";
+  import { absoluteSiteUrl } from "../lib/site";
 
   const versionEl = document.getElementById("dl-version")!;
   const primary = document.getElementById("dl-primary") as HTMLAnchorElement;
   const primaryLabel = document.getElementById("dl-primary-label")!;
   const primarySize = document.getElementById("dl-primary-size")!;
+  const macHint = document.getElementById("dl-mac-hint")!;
   const list = document.getElementById("dl-list")!;
   const fallback = document.getElementById("dl-fallback")!;
 
-  const userAgent = navigator.userAgent.toLowerCase();
-  const platform = (
-    (navigator as { userAgentData?: { platform?: string } }).userAgentData?.platform ?? ""
-  ).toLowerCase();
-  const isMobile = /android|iphone|ipad|ipod/.test(userAgent);
-  const isWindows = platform.includes("win") || userAgent.includes("windows");
-  const isMac =
-    !isMobile && (platform.includes("mac") || userAgent.includes("macintosh"));
-  const isLinux =
-    !isMobile && (platform.includes("linux") || userAgent.includes("linux"));
+  const device = detectDevice(navigator, isTouchOnly(window));
+  const isMobile = device === "mobile";
+
+  if (isMobile) {
+    // A phone or tablet can't install Threadlines: offer the link to pass along,
+    // and keep the installers one tap away in case the detection is wrong.
+    const page = versionEl.closest(".dl-inner")!;
+    const share = document.getElementById("dl-share") as HTMLButtonElement;
+    const mobileHint = document.getElementById("dl-mobile-hint")!;
+    const url = absoluteSiteUrl("/download");
+    const about = "Threadlines is a desktop app for macOS, Windows, and Linux.";
+    const openIt = "Open threadlines.dev/download on your computer";
+    const canShare = "share" in navigator;
+    // Absent outside secure contexts and in some in-app browsers.
+    const canCopy = "clipboard" in navigator;
+
+    page.classList.add("dl-hold-installers");
+    mobileHint.hidden = false;
+    if (canShare || canCopy) {
+      versionEl.textContent = `${about} ${openIt}, or send yourself the link.`;
+      if (!canShare) share.textContent = "Copy the download link";
+      share.hidden = false;
+    } else {
+      versionEl.textContent = `${about} ${openIt}.`;
+    }
+
+    share.addEventListener("click", async () => {
+      if (canShare) {
+        try {
+          await navigator.share({ title: "Download Threadlines", url });
+          return;
+        } catch (error) {
+          // Closing the share sheet is a choice, not a failure.
+          if (error instanceof DOMException && error.name === "AbortError") return;
+        }
+      }
+      try {
+        await navigator.clipboard.writeText(url);
+        share.textContent = "Link copied";
+      } catch {
+        // Neither works here, so don't leave a button that does nothing.
+        share.hidden = true;
+        versionEl.textContent = `${about} ${openIt}.`;
+      }
+    });
+    document.getElementById("dl-show-installers")!.addEventListener("click", () => {
+      page.classList.remove("dl-hold-installers");
+      mobileHint.hidden = true;
+    });
+  }
 
   try {
-    const release = await fetchLatestRelease();
+    const [release, macArch] = await Promise.all([
+      fetchLatestRelease(),
+      device === "mac" ? detectMacArch(navigator) : undefined,
+    ]);
     const installers = classifyAssets(release.assets);
 
-    versionEl.textContent = `Latest release: ${release.tag_name}`;
+    if (!isMobile) versionEl.textContent = `Latest release: ${release.tag_name}`;
 
     const rows = list.querySelectorAll<HTMLElement>(".dl-row");
     let anyRow = false;
@@ -150,31 +209,34 @@ import Layout from "../layouts/Layout.astro";
     }
     list.hidden = !anyRow;
 
-    const primaryAsset = isWindows
-      ? (installers.winX64 ?? installers.winArm)
-      : isLinux
-        ? installers.linuxX64
-        : (installers.macArm ?? installers.macX64);
-    if (primaryAsset && (isMac || isWindows || isLinux)) {
+    // A Mac whose browser won't name its chip gets the common one, labelled, with a hint.
+    const chipUnknown = device === "mac" && macArch === undefined;
+    const primaryAsset =
+      pickInstaller(installers, device, macArch) ??
+      (chipUnknown ? (installers.macArm ?? installers.macX64) : undefined);
+    if (primaryAsset) {
       primary.href = primaryAsset.browser_download_url;
-      document.getElementById("dl-ico-mac")!.hidden = !isMac;
-      document.getElementById("dl-ico-win")!.hidden = !isWindows;
-      document.getElementById("dl-ico-linux")!.hidden = !isLinux;
-      primaryLabel.textContent = isWindows
-        ? "Download for Windows"
-        : isLinux
-          ? "Download for Linux"
-          : installers.macArm
-            ? "Download for macOS (Apple Silicon)"
-            : "Download for macOS (Intel)";
+      document.getElementById("dl-ico-mac")!.hidden = device !== "mac";
+      document.getElementById("dl-ico-win")!.hidden = device !== "windows";
+      document.getElementById("dl-ico-linux")!.hidden = device !== "linux";
+      primaryLabel.textContent =
+        device === "windows"
+          ? "Download for Windows"
+          : device === "linux"
+            ? "Download for Linux"
+            : primaryAsset === installers.macArm
+              ? "Download for macOS (Apple Silicon)"
+              : "Download for macOS (Intel)";
       primarySize.textContent = formatAssetSize(primaryAsset.size);
       primary.hidden = false;
+      macHint.hidden = !chipUnknown;
     }
 
     if (!anyRow) throw new Error("No installers in release");
   } catch {
-    versionEl.textContent = "Free and open source · macOS, Windows, and Linux";
+    if (!isMobile) versionEl.textContent = "Free and open source · macOS, Windows, and Linux";
     primary.hidden = true;
+    macHint.hidden = true;
     list.hidden = true;
     fallback.hidden = false;
   }
@@ -267,6 +329,32 @@ import Layout from "../layouts/Layout.astro";
     display: none;
   }
 
+  button.dl-primary {
+    border: 0;
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .dl-hint {
+    max-width: 420px;
+    margin: 14px auto 0;
+    color: var(--fg-muted);
+    font-size: 13px;
+    line-height: 1.5;
+    text-wrap: pretty;
+  }
+
+  .dl-hint .dl-link {
+    color: inherit;
+  }
+
+  /* Phones and tablets: installers stay out of the way until asked for. */
+  .dl-hold-installers .dl-list,
+  .dl-hold-installers #dl-fallback {
+    display: none;
+  }
+
   .dl-primary-size {
     font-size: 0.8rem;
     font-weight: 500;
@@ -295,6 +383,7 @@ import Layout from "../layouts/Layout.astro";
 
   .dl-row-ico {
     display: inline-flex;
+    flex: none;
     color: var(--fg-dim);
   }
 
@@ -402,5 +491,13 @@ import Layout from "../layouts/Layout.astro";
 
   .dl-link:hover {
     color: var(--fg);
+  }
+
+  button.dl-link {
+    padding: 0;
+    border: 0;
+    background: none;
+    font: inherit;
+    cursor: pointer;
   }
 </style>

@@ -1,3 +1,5 @@
+import type { Device, MacArch } from "./platform";
+
 const REPO = "Threadlines/threadlines";
 
 const LATEST_URL = `https://api.github.com/repos/${REPO}/releases/latest`;
@@ -70,6 +72,30 @@ export function classifyAssets(assets: ReadonlyArray<ReleaseAsset>): InstallerSe
     }
   }
   return set;
+}
+
+// The installer a visitor can be handed without asking. Undefined when they
+// have to choose (a Mac whose chip the browser won't reveal) or can't install
+// here at all (phones, tablets, anything unrecognized).
+export function pickInstaller(
+  installers: InstallerSet,
+  device: Device,
+  macArch: MacArch | undefined,
+): ReleaseAsset | undefined {
+  switch (device) {
+    case "windows":
+      return installers.winX64 ?? installers.winArm;
+    case "linux":
+      return installers.linuxX64;
+    case "mac":
+      return macArch === "arm64"
+        ? installers.macArm
+        : macArch === "x64"
+          ? installers.macX64
+          : undefined;
+    default:
+      return undefined;
+  }
 }
 
 export function formatAssetSize(bytes: number): string {
