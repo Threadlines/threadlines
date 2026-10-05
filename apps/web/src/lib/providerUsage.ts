@@ -146,6 +146,15 @@ export function providerExternalResetsLink(
   return usage?.source === "claude-oauth-usage" ? CLAUDE_EXTERNAL_RESETS_LINK : undefined;
 }
 
+/**
+ * Why an account's plan limits are missing, worded twice: `action` for a
+ * compact surface ("Refresh sign-in") and `detail` as a full sentence.
+ */
+export interface ProviderAccountUsageUnavailablePresentation {
+  readonly action: string;
+  readonly detail: string;
+}
+
 export interface ProviderAccountUsagePresentation {
   readonly label: string;
   readonly spendControl?: ProviderAccountUsageSpendControlPresentation;
@@ -154,6 +163,12 @@ export interface ProviderAccountUsagePresentation {
   readonly tokenUsage?: ProviderAccountTokenUsagePresentation;
   readonly windows: ReadonlyArray<ProviderAccountUsageWindowPresentation>;
   readonly reachedLimit: boolean;
+  /**
+   * Set when the account has plan limits but they cannot be read right now.
+   * There are no windows or spend control then, and a surface says so in
+   * words: an empty meter would read as "0% used".
+   */
+  readonly limitsUnavailable?: ProviderAccountUsageUnavailablePresentation;
 }
 
 type ProviderAccountUsagePresentationProvider = Pick<
@@ -667,9 +682,12 @@ export function deriveProviderAccountUsagePresentation(
   };
 }
 
-function shouldShowClaudeUsageUnavailablePlaceholder(
-  provider: ProviderAccountUsagePresentationProvider,
-): boolean {
+/**
+ * True for a Claude subscription sign-in whose plan limits did not come back:
+ * the server said so, or an older server signed in without reporting either
+ * way. API-key accounts have no plan limits to miss.
+ */
+function claudePlanLimitsUnreadable(provider: ProviderAccountUsagePresentationProvider): boolean {
   const usageStatus = provider.auth.capabilities?.usage?.status;
   return (
     provider.driver === "claudeAgent" &&
@@ -679,51 +697,46 @@ function shouldShowClaudeUsageUnavailablePlaceholder(
   );
 }
 
-function makeClaudeUsageUnavailablePresentation(
-  detail: string = "usage unavailable",
-): ProviderAccountUsagePresentation {
-  return {
-    label: PROVIDER_USAGE_SOURCE_LABELS["claude-oauth-usage"],
-    reachedLimit: false,
-    windows: [
-      {
-        key: "primary",
-        label: "5h",
-        detail,
-        usedPercent: 0,
-        remainingPercent: 100,
-        reachedLimit: false,
-        warning: false,
-      },
-      {
-        key: "secondary",
-        label: "Weekly",
-        detail,
-        usedPercent: 0,
-        remainingPercent: 100,
-        reachedLimit: false,
-        warning: false,
-      },
-    ],
-  };
-}
-
-function compactClaudeUsageUnavailableDetail(
+function claudeUsageUnavailablePresentation(
   provider: ProviderAccountUsagePresentationProvider,
-): string {
-  return provider.auth.type === "longLivedOAuthToken" ? "Normal sign-in needed" : "Refresh sign-in";
+): ProviderAccountUsageUnavailablePresentation {
+  return provider.auth.type === "longLivedOAuthToken"
+    ? {
+        action: "Normal sign-in needed",
+        detail:
+          "This sign-in token can't read plan limits. Sign in to Claude the normal way to see them.",
+      }
+    : {
+        action: "Refresh sign-in",
+        detail:
+          "Plan limits can't be read right now. Signing in to Claude again usually brings them back.",
+      };
 }
 
+/**
+ * The usage presentation for a provider as a whole, not just its usage
+ * payload: a Claude subscription whose limits could not be read comes back
+ * marked `limitsUnavailable` (keeping any local token history) instead of as
+ * nothing, so its surfaces can say why the meters are missing.
+ */
 export function deriveProviderAccountUsagePresentationForProvider(
   provider: ProviderAccountUsagePresentationProvider | null | undefined,
   nowMs: number = Date.now(),
 ): ProviderAccountUsagePresentation | null {
   const presentation = deriveProviderAccountUsagePresentation(provider?.accountUsage, nowMs);
-  if (presentation || !provider) return presentation;
-  if (shouldShowClaudeUsageUnavailablePlaceholder(provider)) {
-    return makeClaudeUsageUnavailablePresentation(compactClaudeUsageUnavailableDetail(provider));
-  }
-  return null;
+  if (!provider) return presentation;
+  const hasLimits =
+    presentation !== null &&
+    (presentation.windows.length > 0 || presentation.spendControl !== undefined);
+  if (hasLimits || !claudePlanLimitsUnreadable(provider)) return presentation;
+  return {
+    ...(presentation ?? {
+      label: PROVIDER_USAGE_SOURCE_LABELS["claude-oauth-usage"],
+      windows: [],
+      reachedLimit: false,
+    }),
+    limitsUnavailable: claudeUsageUnavailablePresentation(provider),
+  };
 }
 
 /**

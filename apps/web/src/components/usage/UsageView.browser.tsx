@@ -534,6 +534,17 @@ describe("UsageView", () => {
     expect(text).toContain("WeeklyNear limit81% used");
   });
 
+  it("says a plan's limits can't be read instead of drawing empty meters", async () => {
+    setServerConfigSnapshot(serverConfigWith([provider("claudeAgent")]));
+    registerEnvironments(async (input) => summaryFor(input, () => []));
+
+    renderWithProviders(<UsageView />);
+
+    const row = page.getByTestId("usage-plan-limit-row");
+    await expect.element(row).toHaveTextContent("Plan limits can't be read right now");
+    expect(row.element().textContent).not.toContain("% used");
+  });
+
   it("opens on 30 days and switches windows without another scan", async () => {
     const summary = vi.fn(async (input: UsageSummaryInput) =>
       summaryFor(input, (days) =>

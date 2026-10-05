@@ -72,6 +72,8 @@ type ModelPickerTab = {
   accentColor?: string | undefined;
   /** For an agent with several accounts: how close this one is to its limit. */
   usage?: { readonly usedPercent: number; readonly label: string; readonly warning: boolean };
+  /** This account has plan limits, but they can't be read: the tab shows no figure and says why on hover. */
+  usageUnavailable?: boolean;
 };
 
 /**
@@ -434,6 +436,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
               },
             }
           : {}),
+        ...(usagePresentation?.limitsUnavailable ? { usageUnavailable: true } : {}),
         modelCount: sortedModels.length,
         models: sortedModels,
       });
@@ -818,7 +821,9 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
                             tabModelCountLabel(tab.modelCount),
                             ...(tab.usage
                               ? [`${tab.usage.label} ${tab.usage.usedPercent}% used`]
-                              : []),
+                              : tab.usageUnavailable
+                                ? ["Usage unavailable"]
+                                : []),
                           ].join(" · ")}
                           className={cn(
                             "flex max-w-40 shrink-0 cursor-pointer items-center gap-1.5 rounded-md px-2.5 py-1 text-left text-xs font-medium transition-colors",

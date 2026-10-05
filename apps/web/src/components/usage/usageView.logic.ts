@@ -959,6 +959,8 @@ export interface UsagePlanLimitRow {
   readonly label: string;
   readonly provider: UsageProviderKind | null;
   readonly meters: readonly UsagePlanLimitMeter[];
+  /** Why this account has no meters, when its limits exist but can't be read. */
+  readonly unavailableDetail: string | null;
 }
 
 const USAGE_PROVIDER_BY_DRIVER: ReadonlyMap<ProviderDriverKind, UsageProviderKind> = new Map([
@@ -970,7 +972,8 @@ const USAGE_PROVIDER_BY_DRIVER: ReadonlyMap<ProviderDriverKind, UsageProviderKin
  * The subscription windows each enabled provider reports: the same meters the
  * provider cards in Settings and the composer's hover card draw, read through
  * the same presentation. Providers with nothing to meter (API keys) are left
- * out rather than shown as empty rows.
+ * out rather than shown as empty rows; one whose limits can't be read keeps
+ * its row and says why.
  */
 export function buildUsagePlanLimitRows(
   providers: ReadonlyArray<ServerProvider>,
@@ -998,7 +1001,8 @@ export function buildUsagePlanLimitRows(
         reachedLimit: presentation.spendControl.reachedLimit,
       });
     }
-    if (meters.length === 0) return [];
+    const unavailableDetail = presentation.limitsUnavailable?.detail ?? null;
+    if (meters.length === 0 && unavailableDetail === null) return [];
     return [
       {
         instanceId: provider.instanceId,
@@ -1006,6 +1010,7 @@ export function buildUsagePlanLimitRows(
         label: provider.displayName?.trim() || formatProviderDriverKindLabel(provider.driver),
         provider: USAGE_PROVIDER_BY_DRIVER.get(provider.driver) ?? null,
         meters,
+        unavailableDetail,
       },
     ];
   });

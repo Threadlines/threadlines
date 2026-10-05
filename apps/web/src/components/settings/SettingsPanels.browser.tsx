@@ -1935,6 +1935,43 @@ describe("GeneralSettingsPanel observability", () => {
     await expect.element(page.getByText(/Optional for remote or headless chat/)).toBeVisible();
   });
 
+  it("says a Claude row's usage is unavailable and opens its sign-in from there", async () => {
+    setServerConfigSnapshot({
+      ...createBaseServerConfig(),
+      providers: [
+        {
+          ...createClaudeProvider(),
+          auth: {
+            status: "authenticated",
+            type: "maxplan",
+            label: "Claude Max Subscription",
+            capabilities: {
+              chat: { status: "configured" },
+              usage: { status: "unavailable", detail: "Refresh Claude sign-in to restore usage." },
+            },
+          },
+        },
+      ],
+    });
+
+    mounted = await renderWithTestRouter(
+      <TestAppProviders>
+        <ProviderSettingsPanel />
+      </TestAppProviders>,
+    );
+
+    const unavailable = page.getByRole("button", {
+      name: "Claude usage unavailable. Refresh sign-in",
+    });
+    await expect.element(unavailable).toBeVisible();
+    // No empty meter stands in for a reading the app does not have.
+    const row = unavailable.element().closest('[data-testid="provider-instance-row"]');
+    expect(row?.textContent).not.toContain("0%");
+
+    await unavailable.click();
+    await expect.element(page.getByText("Account & Sign-in")).toBeVisible();
+  });
+
   it("signs a provider in without leaving settings", async () => {
     setServerConfigSnapshot({
       ...createBaseServerConfig(),
@@ -2131,7 +2168,7 @@ describe("GeneralSettingsPanel observability", () => {
     );
 
     await page.getByLabelText("Toggle Codex details").click();
-    await page.getByRole("button", { name: "Usage" }).click();
+    await page.getByRole("button", { name: "Usage", exact: true }).click();
 
     const beforeFirstActivity = formatTokenActivityTestDate(utcDateKeyAtOffset(-41));
     const missingActivityDate = formatTokenActivityTestDate(utcDateKeyAtOffset(-39));
@@ -2159,7 +2196,7 @@ describe("GeneralSettingsPanel observability", () => {
     );
 
     await page.getByLabelText("Toggle Claude details").click();
-    await page.getByRole("button", { name: "Usage" }).click();
+    await page.getByRole("button", { name: "Usage", exact: true }).click();
 
     await expect.element(page.getByText("Local token activity").first()).toBeVisible();
     await expect
