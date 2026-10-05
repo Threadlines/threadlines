@@ -141,8 +141,19 @@ export function providerExternalResetsLink(
   return usage?.source === "claude-oauth-usage" ? CLAUDE_EXTERNAL_RESETS_LINK : undefined;
 }
 
+/**
+ * What a usage surface says when the provider could not check usage just now.
+ * `signIn` is set only once the provider confirmed its sign-in is gone, so a
+ * surface offers Sign in for that and for nothing else.
+ */
+export interface ProviderAccountUsageNotice {
+  readonly text: string;
+  readonly signIn: boolean;
+}
+
 export interface ProviderAccountUsagePresentation {
   readonly label: string;
+  readonly notice?: ProviderAccountUsageNotice;
   readonly spendControl?: ProviderAccountUsageSpendControlPresentation;
   readonly resetCredits?: ProviderAccountUsageResetCreditsPresentation;
   readonly externalResets?: ProviderExternalResetsLink;
@@ -175,6 +186,28 @@ function formatRemainingDuration(untilMs: number, nowMs: number): string | null 
   const days = Math.floor(hours / 24);
   const remainingHours = hours % 24;
   return remainingHours > 0 ? `${days}d ${remainingHours}h` : `${days}d`;
+}
+
+/**
+ * A provider checks usage every few minutes, so a reading older than this was
+ * kept across failed checks and says so.
+ */
+const USAGE_READING_STALE_AFTER_MS = 10 * 60 * 1000;
+
+function isUsageReadingStale(checkedAt: string | undefined, nowMs: number): boolean {
+  const readAtMs = checkedAt === undefined ? Number.NaN : Date.parse(checkedAt);
+  return Number.isFinite(readAtMs) && nowMs - readAtMs >= USAGE_READING_STALE_AFTER_MS;
+}
+
+/** "as of 25m ago" for a reading kept across failed checks, else null. */
+function formatReadingAgeDetail(checkedAt: string | undefined, nowMs: number): string | null {
+  if (checkedAt === undefined || !isUsageReadingStale(checkedAt, nowMs)) return null;
+  const elapsedMinutes = Math.floor((nowMs - Date.parse(checkedAt)) / 60_000);
+  if (elapsedMinutes < 60) return `as of ${elapsedMinutes}m ago`;
+  const elapsedHours = Math.floor(elapsedMinutes / 60);
+  return elapsedHours < 24
+    ? `as of ${elapsedHours}h ago`
+    : `as of ${Math.floor(elapsedHours / 24)}d ago`;
 }
 
 function formatResetDetail(resetsAt: number | undefined, nowMs: number): string | null {
@@ -289,6 +322,7 @@ function formatUsageWindowPresentation(
     windowReachedLimit ? "limit reached" : `${usedPercent}% used`,
     blockedByLimitDetail,
     resetDetail,
+    formatReadingAgeDetail(window.checkedAt, nowMs),
   ].filter((part): part is string => Boolean(part));
 
   return {
@@ -319,9 +353,11 @@ function formatScopedUsageWindowPresentation(
   const severityWarning = window.severity !== undefined && window.severity !== "normal";
   const resetDetail = formatResetDetail(window.resetsAt, nowMs);
   const durationLabel = formatUsageWindowDurationLabel(window, "");
-  const detailParts = [reachedLimit ? "limit reached" : `${usedPercent}% used`, resetDetail].filter(
-    (part): part is string => Boolean(part),
-  );
+  const detailParts = [
+    reachedLimit ? "limit reached" : `${usedPercent}% used`,
+    resetDetail,
+    formatReadingAgeDetail(window.checkedAt, nowMs),
+  ].filter((part): part is string => Boolean(part));
 
   return {
     key: `scoped-${index}`,
@@ -599,51 +635,53 @@ export function deriveProviderAccountUsagePresentation(
   };
 }
 
-function shouldShowClaudeUsageUnavailablePlaceholder(
-  provider: ProviderAccountUsagePresentationProvider,
+function hasStaleUsageReading(
+  usage: ServerProviderAccountUsage | undefined,
+  nowMs: number,
 ): boolean {
-  const usageStatus = provider.auth.capabilities?.usage?.status;
-  return (
-    provider.driver === "claudeAgent" &&
-    provider.auth.type?.toLowerCase() !== "apikey" &&
-    (usageStatus === "unavailable" ||
-      (usageStatus === undefined && provider.auth.status === "authenticated"))
+  const limit = usage ? selectProviderUsageLimit(usage) : null;
+  if (!limit) return false;
+  return [limit.primary, limit.secondary, ...(limit.scoped ?? [])].some(
+    (window) => window !== undefined && isUsageReadingStale(window.checkedAt, nowMs),
   );
 }
 
-function makeClaudeUsageUnavailablePresentation(
-  detail: string = "usage unavailable",
-): ProviderAccountUsagePresentation {
-  return {
-    label: PROVIDER_USAGE_SOURCE_LABELS["claude-oauth-usage"],
-    reachedLimit: false,
-    windows: [
-      {
-        key: "primary",
-        label: "5h",
-        detail,
-        usedPercent: 0,
-        remainingPercent: 100,
-        reachedLimit: false,
-        warning: false,
-      },
-      {
-        key: "secondary",
-        label: "Weekly",
-        detail,
-        usedPercent: 0,
-        remainingPercent: 100,
-        reachedLimit: false,
-        warning: false,
-      },
-    ],
-  };
-}
-
-function compactClaudeUsageUnavailableDetail(
+/**
+ * What to say about a Claude usage check that produced no numbers. Sign-in is
+ * only offered when Claude reports the sign-in gone; a rate limit or a failed
+ * request fixes itself, and stays quiet while the kept numbers are recent.
+ * API-key auth has no subscription usage to speak of.
+ */
+function deriveClaudeUsageNotice(
   provider: ProviderAccountUsagePresentationProvider,
-): string {
-  return provider.auth.type === "longLivedOAuthToken" ? "Normal sign-in needed" : "Refresh sign-in";
+  hasNumbers: boolean,
+  hasStaleReading: boolean,
+): ProviderAccountUsageNotice | undefined {
+  if (provider.driver !== "claudeAgent" || provider.auth.type?.toLowerCase() === "apikey") {
+    return undefined;
+  }
+  const usage = provider.auth.capabilities?.usage;
+  if (usage?.status !== "unavailable") return undefined;
+  if (usage.reason === "signed_out") {
+    return {
+      signIn: true,
+      text: hasNumbers
+        ? "Claude is signed out. Usage updates only when you chat."
+        : "Claude is signed out. Sign in to see usage.",
+    };
+  }
+  if (hasNumbers && !hasStaleReading) return undefined;
+  switch (usage.reason) {
+    case "rate_limited":
+      return { signIn: false, text: "Claude is limiting usage checks. Trying again soon." };
+    case "unreachable":
+      return { signIn: false, text: "Couldn't check usage just now. Trying again soon." };
+    default:
+      // A server that gives no reason still gives its own words for it.
+      return hasNumbers
+        ? undefined
+        : { signIn: false, text: usage.detail ?? "Usage isn't available right now." };
+  }
 }
 
 export function deriveProviderAccountUsagePresentationForProvider(
@@ -651,11 +689,24 @@ export function deriveProviderAccountUsagePresentationForProvider(
   nowMs: number = Date.now(),
 ): ProviderAccountUsagePresentation | null {
   const presentation = deriveProviderAccountUsagePresentation(provider?.accountUsage, nowMs);
-  if (presentation || !provider) return presentation;
-  if (shouldShowClaudeUsageUnavailablePlaceholder(provider)) {
-    return makeClaudeUsageUnavailablePresentation(compactClaudeUsageUnavailableDetail(provider));
-  }
-  return null;
+  if (!provider) return presentation;
+  const hasNumbers =
+    presentation !== null &&
+    (presentation.windows.length > 0 || presentation.spendControl !== undefined);
+  const notice = deriveClaudeUsageNotice(
+    provider,
+    hasNumbers,
+    hasStaleUsageReading(provider.accountUsage, nowMs),
+  );
+  if (!notice) return presentation;
+  return presentation
+    ? { ...presentation, notice }
+    : {
+        label: PROVIDER_USAGE_SOURCE_LABELS["claude-oauth-usage"],
+        windows: [],
+        reachedLimit: false,
+        notice,
+      };
 }
 
 /**

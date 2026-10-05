@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { type ReactNode, useMemo, useState } from "react";
 import { GaugeIcon, RotateCcwIcon } from "lucide-react";
 
 import {
@@ -465,6 +465,8 @@ function UsageLimitBar(props: {
 export function ProviderUsageDashboard(props: {
   readonly usage: ProviderAccountUsagePresentation;
   readonly displayName: string;
+  /** The Sign in to offer beside a notice that asks for one. */
+  readonly signInAction?: ReactNode | undefined;
   readonly showLimits?: boolean | undefined;
   readonly onResetAccountUsage?: (() => void) | undefined;
   readonly accountUsageResetInFlight?: boolean | undefined;
@@ -487,7 +489,8 @@ export function ProviderUsageDashboard(props: {
     showLimits &&
     (props.usage.windows.length > 0 ||
       props.usage.spendControl !== undefined ||
-      props.usage.resetCredits !== undefined);
+      props.usage.resetCredits !== undefined ||
+      props.usage.notice !== undefined);
   const canReset =
     showLimits &&
     props.onResetAccountUsage !== undefined &&
@@ -544,7 +547,7 @@ export function ProviderUsageDashboard(props: {
               />
             ) : null}
           </div>
-          <div className="grid gap-3 sm:grid-cols-2">
+          <div className="grid gap-3 empty:hidden sm:grid-cols-2">
             {props.usage.spendControl ? (
               <div className="space-y-1.5 sm:col-span-2">
                 <div className="flex min-w-0 flex-wrap items-baseline justify-between gap-x-4 gap-y-1 text-xs">
@@ -584,6 +587,15 @@ export function ProviderUsageDashboard(props: {
               <UsageLimitBar key={window.key} usageLabel={props.usage.label} window={window} />
             ))}
           </div>
+          {props.usage.notice ? (
+            <div
+              className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1.5 text-xs text-muted-foreground"
+              data-usage-notice={props.usage.notice.signIn ? "sign-in" : "retrying"}
+            >
+              <span className="min-w-0">{props.usage.notice.text}</span>
+              {props.usage.notice.signIn ? props.signInAction : null}
+            </div>
+          ) : null}
         </section>
       ) : null}
 

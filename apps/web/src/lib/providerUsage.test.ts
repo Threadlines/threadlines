@@ -748,113 +748,160 @@ describe("deriveProviderAccountUsagePresentation", () => {
 });
 
 describe("deriveProviderAccountUsagePresentationForProvider", () => {
-  it("shows empty Claude usage windows when authenticated usage is unavailable", () => {
-    const provider = {
-      driver: ProviderDriverKind.make("claudeAgent"),
-      auth: {
-        status: "authenticated",
-        type: "maxplan",
-        label: "Claude Max Subscription",
+  const nowMs = Date.parse("2026-07-09T12:00:00.000Z");
+  const claude = ProviderDriverKind.make("claudeAgent");
+  const readingFrom = (checkedAt: string): ServerProviderAccountUsage => ({
+    source: "claude-oauth-usage",
+    checkedAt,
+    primaryLimitId: "claude",
+    limits: [
+      {
+        limitId: "claude",
+        primary: { usedPercent: 31, remainingPercent: 69, windowDurationMins: 300, checkedAt },
       },
-    } satisfies Pick<ServerProvider, "accountUsage" | "auth" | "driver">;
+    ],
+  });
+  const tokenAuth = (
+    reason?: "signed_out" | "rate_limited" | "unreachable",
+  ): ServerProvider["auth"] => ({
+    status: "authenticated",
+    type: "longLivedOAuthToken",
+    capabilities: { usage: { status: "unavailable", ...(reason ? { reason } : {}) } },
+  });
 
-    expect(deriveProviderAccountUsagePresentationForProvider(provider)).toEqual({
+  it("asks for sign-in only when Claude is signed out, and keeps the numbers it has", () => {
+    // Signed out with no numbers at all: one line and the offer, no empty meters.
+    expect(
+      deriveProviderAccountUsagePresentationForProvider(
+        { driver: claude, auth: tokenAuth("signed_out") },
+        nowMs,
+      ),
+    ).toEqual({
       label: "Claude usage",
       reachedLimit: false,
-      windows: [
-        {
-          key: "primary",
-          label: "5h",
-          detail: "Refresh sign-in",
-          usedPercent: 0,
-          remainingPercent: 100,
-          reachedLimit: false,
-          warning: false,
-        },
-        {
-          key: "secondary",
-          label: "Weekly",
-          detail: "Refresh sign-in",
-          usedPercent: 0,
-          remainingPercent: 100,
-          reachedLimit: false,
-          warning: false,
-        },
-      ],
+      windows: [],
+      notice: { signIn: true, text: "Claude is signed out. Sign in to see usage." },
+    });
+
+    // Signed out, but chats keep the meter fed.
+    const fed = deriveProviderAccountUsagePresentationForProvider(
+      {
+        driver: claude,
+        auth: tokenAuth("signed_out"),
+        accountUsage: readingFrom("2026-07-09T11:58:00.000Z"),
+      },
+      nowMs,
+    );
+    expect(fed?.windows).toEqual([expect.objectContaining({ key: "primary", detail: "31% used" })]);
+    expect(fed?.notice).toEqual({
+      signIn: true,
+      text: "Claude is signed out. Usage updates only when you chat.",
     });
   });
 
-  it("does not show Claude subscription usage placeholders for API-key auth", () => {
-    const provider = {
-      driver: ProviderDriverKind.make("claudeAgent"),
-      auth: {
-        status: "authenticated",
-        type: "apiKey",
-        label: "Claude API Key",
-      },
-    } satisfies Pick<ServerProvider, "accountUsage" | "auth" | "driver">;
+  it("stays quiet about a failed check while the kept numbers are recent", () => {
+    for (const reason of ["rate_limited", "unreachable"] as const) {
+      const recent = deriveProviderAccountUsagePresentationForProvider(
+        {
+          driver: claude,
+          auth: tokenAuth(reason),
+          accountUsage: readingFrom("2026-07-09T11:55:00.000Z"),
+        },
+        nowMs,
+      );
+      expect(recent?.notice).toBeUndefined();
+      expect(recent?.windows[0]?.detail).toBe("31% used");
+    }
 
-    expect(deriveProviderAccountUsagePresentationForProvider(provider)).toBeNull();
+    // Once the reading is old, each row says how old and the reason is named.
+    const old = deriveProviderAccountUsagePresentationForProvider(
+      {
+        driver: claude,
+        auth: tokenAuth("rate_limited"),
+        accountUsage: readingFrom("2026-07-09T09:00:00.000Z"),
+      },
+      nowMs,
+    );
+    expect(old?.windows[0]?.detail).toBe("31% used · as of 3h ago");
+    expect(old?.notice).toEqual({
+      signIn: false,
+      text: "Claude is limiting usage checks. Trying again soon.",
+    });
+
+    // Nothing to show yet: say it is temporary, and do not offer sign-in.
+    expect(
+      deriveProviderAccountUsagePresentationForProvider(
+        { driver: claude, auth: tokenAuth("unreachable") },
+        nowMs,
+      )?.notice,
+    ).toEqual({ signIn: false, text: "Couldn't check usage just now. Trying again soon." });
   });
 
-  it("explains Claude usage needs subscription sign-in for long-lived token auth", () => {
-    const provider = {
-      driver: ProviderDriverKind.make("claudeAgent"),
-      auth: {
-        status: "authenticated",
-        type: "longLivedOAuthToken",
-        label: "Chat-only token",
-      },
-    } satisfies Pick<ServerProvider, "accountUsage" | "auth" | "driver">;
-
-    expect(deriveProviderAccountUsagePresentationForProvider(provider)?.windows).toEqual([
+  it("shows the notice when only token history exists, which has no meters of its own", () => {
+    const presentation = deriveProviderAccountUsagePresentationForProvider(
       {
-        key: "primary",
-        label: "5h",
-        detail: "Normal sign-in needed",
-        usedPercent: 0,
-        remainingPercent: 100,
-        reachedLimit: false,
-        warning: false,
-      },
-      {
-        key: "secondary",
-        label: "Weekly",
-        detail: "Normal sign-in needed",
-        usedPercent: 0,
-        remainingPercent: 100,
-        reachedLimit: false,
-        warning: false,
-      },
-    ]);
-  });
-
-  it("uses compact usage recovery copy when chat auth fails", () => {
-    const provider = {
-      driver: ProviderDriverKind.make("claudeAgent"),
-      auth: {
-        status: "unauthenticated",
-        type: "maxplan",
-        capabilities: {
-          chat: { status: "unavailable" },
-          usage: {
-            status: "unavailable",
-            detail: "Refresh the normal Claude sign-in for subscription usage.",
+        driver: claude,
+        auth: tokenAuth("signed_out"),
+        accountUsage: {
+          source: "claude-oauth-usage",
+          checkedAt: "2026-07-09T11:58:00.000Z",
+          limits: [],
+          tokenUsage: {
+            checkedAt: "2026-07-09T11:58:00.000Z",
+            dailyBuckets: [{ startDate: "2026-07-08", tokens: 42 }],
+            summary: { lifetimeTokens: 42 },
           },
         },
       },
-    } satisfies Pick<ServerProvider, "accountUsage" | "auth" | "driver">;
+      nowMs,
+    );
 
-    expect(deriveProviderAccountUsagePresentationForProvider(provider)?.windows).toEqual([
-      expect.objectContaining({
-        key: "primary",
-        detail: "Refresh sign-in",
-      }),
-      expect.objectContaining({
-        key: "secondary",
-        detail: "Refresh sign-in",
-      }),
-    ]);
+    expect(presentation?.windows).toEqual([]);
+    expect(presentation?.tokenUsage).toBeDefined();
+    expect(presentation?.notice).toEqual({
+      signIn: true,
+      text: "Claude is signed out. Sign in to see usage.",
+    });
+  });
+
+  it("uses the server's own words when it gives no reason, and never for API keys", () => {
+    expect(
+      deriveProviderAccountUsagePresentationForProvider(
+        {
+          driver: claude,
+          auth: {
+            status: "unauthenticated",
+            type: "maxplan",
+            capabilities: {
+              chat: { status: "unavailable" },
+              usage: { status: "unavailable", detail: "Usage was not checked." },
+            },
+          },
+        },
+        nowMs,
+      )?.notice,
+    ).toEqual({ signIn: false, text: "Usage was not checked." });
+
+    // Nothing known to be wrong: no numbers and no claim about sign-in.
+    expect(
+      deriveProviderAccountUsagePresentationForProvider(
+        { driver: claude, auth: { status: "authenticated", type: "maxplan" } },
+        nowMs,
+      ),
+    ).toBeNull();
+    expect(
+      deriveProviderAccountUsagePresentationForProvider(
+        {
+          driver: claude,
+          auth: {
+            status: "authenticated",
+            type: "apiKey",
+            capabilities: { usage: { status: "unavailable" } },
+          },
+        },
+        nowMs,
+      ),
+    ).toBeNull();
   });
 });
 

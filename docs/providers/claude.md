@@ -63,6 +63,49 @@ credential variable in that provider, the Account section shows `Use long-lived 
 clears the provider-level Anthropic credentials and writes blank masks for those names so inherited
 shell environment variables cannot override `CLAUDE_CODE_OAUTH_TOKEN`.
 
+## Usage Numbers And The Normal Sign-In
+
+The 5h and Weekly meters are read with the normal Claude sign-in, even when chat runs on a
+long-lived token. Threadlines checks them every few minutes.
+
+- If a check fails because Claude is rate limiting it, or the request does not get through, the
+  meters keep their last numbers and the check is tried again. A row that is more than ten minutes
+  old says how old it is (`as of 25m ago`).
+- If the normal sign-in is signed out, the meters keep their last numbers and update each time you
+  chat. The meter says so and offers `Sign in`. Chat on a long-lived token keeps working either way.
+- The per-model weekly rows only update with the normal sign-in.
+
+Threadlines only says "signed out" when Claude's stored sign-in is really gone. It never asks you to
+sign in over a failed check.
+
+### How Threadlines Keeps The Sign-In Alive
+
+Claude Code renews its sign-in a few minutes before it expires, and each renewal replaces the saved
+token. A Claude process that is stopped in the middle of a renewal can leave the saved token dead,
+and then only signing in again brings it back. Threadlines works around that:
+
+- Its status check leaves Claude running until a renewal it started has been saved.
+- It reads the signed-in email from Claude's own account record instead of running
+  `claude auth status`, which starts a renewal and exits without waiting for it.
+
+Other tools on the same computer can still do this. If you script `claude` yourself, do not put a
+kill timeout on it.
+
+### Test Runs Use Their Own Claude Folder
+
+A Threadlines run whose data folder is inside a temp folder (`/tmp` or the system temp folder) is
+treated as a test run. It keeps Claude in `claude-config` inside that data folder, so it starts
+signed out and cannot read or renew your real sign-in. An account whose folder points outside the
+test run's data folder is not started.
+
+To use your real Claude sign-in in such a run on purpose, start it with:
+
+```bash
+THREADLINES_SHARE_CLAUDE_SIGN_IN=true
+```
+
+Setting `CLAUDE_CONFIG_DIR` yourself also turns this off.
+
 ## Add Another Claude Account
 
 Open `Settings -> Providers`, open the Claude row, and choose `Add another Claude account`. The `+`

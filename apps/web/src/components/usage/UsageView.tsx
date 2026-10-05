@@ -27,6 +27,7 @@ import { formatRelativeTimeLabel } from "../../timestampFormat";
 import { PageTitlebar } from "../PageTitlebar";
 import { ClaudeAI, OpenAI, type Icon } from "../Icons";
 import { PROVIDER_ICON_BY_PROVIDER } from "../chat/providerIconUtils";
+import { ProviderUsageSignIn } from "../chat/providerSignIn";
 import { Button } from "../ui/button";
 import { Checkbox } from "../ui/checkbox";
 import { Skeleton } from "../ui/skeleton";
@@ -447,6 +448,20 @@ function UsagePlanLimits({ nowMs }: { readonly nowMs: number }) {
                     </div>
                   </div>
                 ))}
+                {row.notice ? (
+                  <span
+                    className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1.5 text-xs text-muted-foreground @xl:col-span-2"
+                    data-usage-notice={row.notice.signIn ? "sign-in" : "retrying"}
+                  >
+                    <span className="min-w-0">{row.notice.text}</span>
+                    {row.notice.signIn ? (
+                      <ProviderUsageSignIn
+                        instanceId={row.instanceId}
+                        className="h-6 px-2 text-[11px]"
+                      />
+                    ) : null}
+                  </span>
+                ) : null}
               </div>
             </div>
           );

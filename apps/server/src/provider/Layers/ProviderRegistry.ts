@@ -266,9 +266,14 @@ export const mergeProviderSnapshot = (
         }
       : undefined);
   const preserveChatFailure = preserveChatAuth && previousChat?.status === "unavailable";
+  // A driver that reports its own usage state keeps it: restoring the
+  // previous one here would hide why the latest check has no numbers.
+  const preserveUsageCapability =
+    preserveAccountUsage &&
+    previousUsage !== undefined &&
+    nextProvider.auth.capabilities?.usage === undefined;
   const preserveCapabilities =
-    (preserveChatAuth && previousChat !== undefined) ||
-    (preserveAccountUsage && previousUsage !== undefined);
+    (preserveChatAuth && previousChat !== undefined) || preserveUsageCapability;
   const auth = preserveCapabilities
     ? {
         ...nextProvider.auth,
@@ -276,7 +281,7 @@ export const mergeProviderSnapshot = (
         capabilities: {
           ...nextProvider.auth.capabilities,
           ...(preserveChatAuth && previousChat ? { chat: previousChat } : {}),
-          ...(preserveAccountUsage && previousUsage ? { usage: previousUsage } : {}),
+          ...(preserveUsageCapability ? { usage: previousUsage } : {}),
         },
       }
     : nextProvider.auth;

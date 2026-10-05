@@ -26,11 +26,25 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
   readonly haveSettingsChanged: (previous: Settings, next: Settings) => boolean;
   readonly initialSnapshot: (settings: Settings) => Effect.Effect<ServerProvider>;
   readonly checkProvider: Effect.Effect<ServerProvider, ServerSettingsError>;
+  /**
+   * Folds what the previous snapshot knew into a freshly checked one. Runs
+   * inside the same atomic update that publishes the check, so a patch that
+   * landed while the check ran is seen rather than lost.
+   */
+  readonly reconcileSnapshot?: (previous: ServerProvider, next: ServerProvider) => ServerProvider;
   readonly enrichSnapshot?: (input: {
     readonly settings: Settings;
     readonly snapshot: ServerProvider;
     readonly getSnapshot: Effect.Effect<ServerProvider>;
     readonly publishSnapshot: (snapshot: ServerProvider) => Effect.Effect<void>;
+    /**
+     * Applies an enrichment to the snapshot as it is now, not as it was when
+     * the enrichment started. Use it to write only the fields the enrichment
+     * owns, so a patch that landed meanwhile survives.
+     */
+    readonly updateSnapshot: (
+      update: (current: ServerProvider) => ServerProvider,
+    ) => Effect.Effect<void>;
   }) => Effect.Effect<void>;
   readonly refreshInterval?: Duration.Input;
   /** Retry one transient snapshot sooner than the normal maintenance cadence. */
@@ -55,10 +69,14 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
 
   const publishEnrichedSnapshot = Effect.fn("publishEnrichedSnapshot")(function* (
     generation: number,
-    nextSnapshot: ServerProvider,
+    enrich: (current: ServerProvider) => ServerProvider,
   ) {
     const snapshotToPublish = yield* Ref.modify(snapshotStateRef, (state) => {
-      if (state.enrichmentGeneration !== generation || Equal.equals(state.snapshot, nextSnapshot)) {
+      if (state.enrichmentGeneration !== generation) {
+        return [null, state] as const;
+      }
+      const nextSnapshot = enrich(state.snapshot);
+      if (Equal.equals(state.snapshot, nextSnapshot)) {
         return [null, state] as const;
       }
       return [
@@ -94,7 +112,8 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
         settings,
         snapshot,
         getSnapshot: Ref.get(snapshotStateRef).pipe(Effect.map((state) => state.snapshot)),
-        publishSnapshot: (nextSnapshot) => publishEnrichedSnapshot(generation, nextSnapshot),
+        publishSnapshot: (nextSnapshot) => publishEnrichedSnapshot(generation, () => nextSnapshot),
+        updateSnapshot: (update) => publishEnrichedSnapshot(generation, update),
       })
       .pipe(Effect.ignoreCause({ log: true }), Effect.forkIn(scope));
 
@@ -112,15 +131,18 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
       return yield* Ref.get(snapshotStateRef).pipe(Effect.map((state) => state.snapshot));
     }
 
-    const nextSnapshot = yield* input.checkProvider;
-    const nextGeneration = yield* Ref.modify(snapshotStateRef, (state) => {
+    const checkedSnapshot = yield* input.checkProvider;
+    const [nextSnapshot, nextGeneration] = yield* Ref.modify(snapshotStateRef, (state) => {
       const generation = input.enrichSnapshot
         ? state.enrichmentGeneration + 1
         : state.enrichmentGeneration;
+      const snapshot = input.reconcileSnapshot
+        ? input.reconcileSnapshot(state.snapshot, checkedSnapshot)
+        : checkedSnapshot;
       return [
-        generation,
+        [snapshot, generation] as const,
         {
-          snapshot: nextSnapshot,
+          snapshot,
           enrichmentGeneration: generation,
         },
       ] as const;

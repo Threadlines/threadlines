@@ -21,8 +21,11 @@ import {
   normalizeClaudeUsageResetsAt,
   normalizeClaudeUsageWindow,
   parseClaudeUsageRetryAfter,
+  carryClaudeAccountUsageForward,
   claudeKeychainServiceName,
-  readClaudeOAuthCredential,
+  isClaudeSignInRenewalDue,
+  preferNewerClaudeUsageReadings,
+  readClaudeStoredSignIn,
 } from "./ClaudeUsage.ts";
 
 const encoder = new TextEncoder();
@@ -112,6 +115,8 @@ describe("extractClaudeOAuthCredential", () => {
       accessToken: "token",
       organizationUuid: "org-1",
       email: "claude@example.com",
+      expiresAt: 1,
+      renewable: false,
     });
   });
 
@@ -128,6 +133,7 @@ describe("extractClaudeOAuthCredential", () => {
     ).toEqual({
       accessToken: "token",
       email: "nested@example.com",
+      renewable: false,
     });
   });
 
@@ -137,7 +143,7 @@ describe("extractClaudeOAuthCredential", () => {
   });
 });
 
-describe("readClaudeOAuthCredential", () => {
+describe("readClaudeStoredSignIn", () => {
   it("does not use the provider long-lived OAuth token for usage credentials", async () => {
     const previousToken = process.env[CLAUDE_CODE_OAUTH_TOKEN_ENV];
     process.env[CLAUDE_CODE_OAUTH_TOKEN_ENV] = "env-token";
@@ -148,7 +154,7 @@ describe("readClaudeOAuthCredential", () => {
           const homePath = yield* fileSystem.makeTempDirectoryScoped({
             prefix: "threadlines-claude-usage-",
           });
-          return yield* readClaudeOAuthCredential(
+          return yield* readClaudeStoredSignIn(
             { homePath, accountFolder: "" },
             { platform: "linux" },
           );
@@ -164,7 +170,7 @@ describe("readClaudeOAuthCredential", () => {
           ),
         ),
       );
-      expect(credential).toBeUndefined();
+      expect(credential).toEqual({ _tag: "Absent" });
     } finally {
       if (previousToken === undefined) {
         delete process.env[CLAUDE_CODE_OAUTH_TOKEN_ENV];
@@ -188,7 +194,7 @@ describe("readClaudeOAuthCredential", () => {
           '{"claudeAiOauth":{"accessToken":"file-token","expiresAt":1},"account":{"email":"file@example.com"},"organizationUuid":"file-org"}',
         );
 
-        return yield* readClaudeOAuthCredential(
+        return yield* readClaudeStoredSignIn(
           { homePath, accountFolder: "" },
           { platform: "darwin" },
         );
@@ -205,9 +211,14 @@ describe("readClaudeOAuthCredential", () => {
     );
 
     expect(credential).toEqual({
-      accessToken: "file-token",
-      organizationUuid: "file-org",
-      email: "file@example.com",
+      _tag: "Present",
+      credential: {
+        accessToken: "file-token",
+        organizationUuid: "file-org",
+        email: "file@example.com",
+        expiresAt: 1,
+        renewable: false,
+      },
     });
   });
 
@@ -218,7 +229,7 @@ describe("readClaudeOAuthCredential", () => {
         const homePath = yield* fileSystem.makeTempDirectoryScoped({
           prefix: "threadlines-claude-usage-",
         });
-        return yield* readClaudeOAuthCredential(
+        return yield* readClaudeStoredSignIn(
           { homePath, accountFolder: "" },
           { platform: "darwin" },
         );
@@ -247,8 +258,13 @@ describe("readClaudeOAuthCredential", () => {
     );
 
     expect(credential).toEqual({
-      accessToken: "keychain-token",
-      organizationUuid: "keychain-org",
+      _tag: "Present",
+      credential: {
+        accessToken: "keychain-token",
+        organizationUuid: "keychain-org",
+        expiresAt: 1,
+        renewable: false,
+      },
     });
   });
 
@@ -260,7 +276,7 @@ describe("readClaudeOAuthCredential", () => {
         const homePath = yield* fileSystem.makeTempDirectoryScoped({
           prefix: "threadlines-claude-usage-",
         });
-        return yield* readClaudeOAuthCredential(
+        return yield* readClaudeStoredSignIn(
           { homePath, accountFolder: "" },
           { platform: "darwin" },
         );
@@ -294,8 +310,12 @@ describe("readClaudeOAuthCredential", () => {
       ["find-generic-password", "-w", "-s", CLAUDE_MACOS_KEYCHAIN_SERVICE],
     ]);
     expect(credential).toEqual({
-      accessToken: "service-token",
-      organizationUuid: "service-org",
+      _tag: "Present",
+      credential: {
+        accessToken: "service-token",
+        organizationUuid: "service-org",
+        renewable: false,
+      },
     });
   });
 
@@ -306,7 +326,7 @@ describe("readClaudeOAuthCredential", () => {
         const homePath = yield* fileSystem.makeTempDirectoryScoped({
           prefix: "threadlines-claude-usage-",
         });
-        return yield* readClaudeOAuthCredential(
+        return yield* readClaudeStoredSignIn(
           { homePath, accountFolder: "" },
           { platform: "linux" },
         );
@@ -323,7 +343,7 @@ describe("readClaudeOAuthCredential", () => {
       ),
     );
 
-    expect(credential).toBeUndefined();
+    expect(credential).toEqual({ _tag: "Absent" });
   });
 });
 
@@ -466,12 +486,14 @@ describe("normalizeClaudeAccountUsage", () => {
             remainingPercent: 69,
             resetsAt: Date.parse("2026-06-10T02:32:00.000Z"),
             windowDurationMins: 300,
+            checkedAt,
           },
           secondary: {
             usedPercent: 69,
             remainingPercent: 31,
             resetsAt: Date.parse("2026-06-10T20:48:00.000Z"),
             windowDurationMins: 10_080,
+            checkedAt,
           },
         },
       ],
@@ -498,6 +520,7 @@ describe("normalizeClaudeAccountUsage", () => {
             usedPercent: 12,
             remainingPercent: 88,
             windowDurationMins: 10_080,
+            checkedAt,
           },
         },
       ],
@@ -531,12 +554,14 @@ describe("normalizeClaudeAccountUsage", () => {
             remainingPercent: 0,
             resetsAt: Date.parse("2026-06-10T18:30:00.000Z"),
             windowDurationMins: 300,
+            checkedAt,
           },
           secondary: {
             usedPercent: 9,
             remainingPercent: 91,
             resetsAt: Date.parse("2026-06-12T03:00:00.000Z"),
             windowDurationMins: 10_080,
+            checkedAt,
           },
         },
       ],
@@ -590,12 +615,14 @@ describe("normalizeClaudeAccountUsage", () => {
             remainingPercent: 65,
             resetsAt: Date.parse("2026-07-04T05:30:00.000Z"),
             windowDurationMins: 300,
+            checkedAt,
           },
           secondary: {
             usedPercent: 39,
             remainingPercent: 61,
             resetsAt: Date.parse("2026-07-10T03:00:00.000Z"),
             windowDurationMins: 10_080,
+            checkedAt,
           },
           scoped: [
             {
@@ -604,6 +631,7 @@ describe("normalizeClaudeAccountUsage", () => {
               remainingPercent: 22,
               resetsAt: Date.parse("2026-07-10T03:00:00.000Z"),
               windowDurationMins: 10_080,
+              checkedAt,
               severity: "warning",
             },
           ],
@@ -642,6 +670,7 @@ describe("normalizeClaudeAccountUsage", () => {
               usedPercent: 78,
               remainingPercent: 22,
               windowDurationMins: 10_080,
+              checkedAt,
             },
           ],
         },
@@ -698,6 +727,7 @@ describe("applyClaudeRateLimitInfoToAccountUsage", () => {
             remainingPercent: 58,
             resetsAt: 1_783_000_000,
             windowDurationMins: 300,
+            checkedAt,
           },
         },
       ],
@@ -721,6 +751,7 @@ describe("applyClaudeRateLimitInfoToAccountUsage", () => {
             remainingPercent: 45,
             resetsAt: 1_783_111_111,
             windowDurationMins: 300,
+            checkedAt,
           },
         },
       ],
@@ -739,6 +770,7 @@ describe("applyClaudeRateLimitInfoToAccountUsage", () => {
       usedPercent: 79,
       remainingPercent: 21,
       windowDurationMins: 10_080,
+      checkedAt,
     });
     expect(next?.limits[0]?.primary).toEqual(baseUsage.limits[0]?.primary);
   });
@@ -768,12 +800,14 @@ describe("applyClaudeRateLimitInfoToAccountUsage", () => {
             remainingPercent: 87,
             resetsAt: 1_783_111_111,
             windowDurationMins: 300,
+            checkedAt,
           },
           secondary: {
             usedPercent: 72,
             remainingPercent: 28,
             resetsAt: 1_783_222_222,
             windowDurationMins: 10_080,
+            checkedAt,
           },
         },
       ],
@@ -793,6 +827,7 @@ describe("applyClaudeRateLimitInfoToAccountUsage", () => {
         remainingPercent: 38,
         resetsAt: 1_783_222_222,
         windowDurationMins: 10_080,
+        checkedAt,
       },
     ]);
     expect(next?.limits[0]?.primary).toEqual(baseUsage.limits[0]?.primary);
@@ -829,18 +864,21 @@ describe("applyClaudeRateLimitInfoToAccountUsage", () => {
     expect(applyClaudeRateLimitInfoToAccountUsage(baseUsage, {}, checkedAt)).toBeUndefined();
   });
 
-  it("skips events that would not change the stored window", () => {
+  it("skips events that repeat a recent reading, and confirms an old one", () => {
+    const sameReading = {
+      rateLimitType: "five_hour",
+      utilization: 0.31,
+      resetsAt: Date.parse("2026-07-09T02:32:00.000Z"),
+    };
+    // Read at 23:00: a minute later there is nothing new to publish.
     expect(
-      applyClaudeRateLimitInfoToAccountUsage(
-        baseUsage,
-        {
-          rateLimitType: "five_hour",
-          utilization: 0.31,
-          resetsAt: Date.parse("2026-07-09T02:32:00.000Z"),
-        },
-        checkedAt,
-      ),
+      applyClaudeRateLimitInfoToAccountUsage(baseUsage, sameReading, "2026-07-08T23:01:00.000Z"),
     ).toBeUndefined();
+    // An hour later the same numbers still say the reading is current.
+    expect(
+      applyClaudeRateLimitInfoToAccountUsage(baseUsage, sameReading, checkedAt)?.limits[0]?.primary
+        ?.checkedAt,
+    ).toBe(checkedAt);
   });
 });
 
@@ -871,8 +909,8 @@ describe("fetchClaudeAccountUsage", () => {
     );
   }
 
-  function credentialsJson(accessToken: string): string {
-    return JSON.stringify({ claudeAiOauth: { accessToken } });
+  function credentialsJson(accessToken: string, refreshToken: string | null = "refresh"): string {
+    return JSON.stringify({ claudeAiOauth: { accessToken, refreshToken } });
   }
 
   // An empty keychain (`security` exit 44): the login is read from the file.
@@ -911,7 +949,7 @@ describe("fetchClaudeAccountUsage", () => {
 
     expect(refreshRuns).toBe(1);
     expect(bearers).toEqual(["Bearer renew-stale-token", "Bearer renew-fresh-token"]);
-    expect(usage?.limits[0]?.primary?.usedPercent).toBe(18);
+    expect(usage._tag === "Fresh" ? usage.usage.limits[0]?.primary?.usedPercent : usage).toBe(18);
   });
 
   it("cools down after a refresh that does not rotate the credential", async () => {
@@ -947,7 +985,8 @@ describe("fetchClaudeAccountUsage", () => {
       ),
     );
 
-    expect(results).toEqual([undefined, undefined]);
+    const unreachable = { _tag: "Unavailable", reason: "unreachable" };
+    expect(results).toEqual([unreachable, unreachable]);
     expect(refreshRuns).toBe(1);
     expect(bearers).toEqual(["Bearer cooldown-stale-token", "Bearer cooldown-stale-token"]);
   });
@@ -979,8 +1018,279 @@ describe("fetchClaudeAccountUsage", () => {
       ),
     );
 
-    expect(usage).toBeUndefined();
+    expect(usage).toEqual({ _tag: "Unavailable", reason: "unreachable" });
     expect(bearers).toEqual(["Bearer failed-refresh-token"]);
+  });
+
+  it("uses a sign-in another process renewed instead of renewing it again", async () => {
+    const bearers: Array<string | undefined> = [];
+    const usage = await Effect.runPromise(
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const homePath = yield* fileSystem.makeTempDirectoryScoped({
+          prefix: "threadlines-claude-usage-",
+        });
+        const credentialsPath = path.join(homePath, ".claude", ".credentials.json");
+        yield* fileSystem.makeDirectory(path.join(homePath, ".claude"));
+        yield* fileSystem.writeFileString(credentialsPath, credentialsJson("raced-stale-token"));
+        // A Claude session elsewhere renews while the first request is out.
+        const renewedElsewhere = Layer.succeed(
+          HttpClient.HttpClient,
+          HttpClient.make((request) => {
+            const authorization = (request.headers as unknown as Record<string, string>)
+              .authorization;
+            bearers.push(authorization);
+            const fresh = authorization === "Bearer raced-fresh-token";
+            return (
+              fresh
+                ? Effect.void
+                : fileSystem
+                    .writeFileString(credentialsPath, credentialsJson("raced-fresh-token"))
+                    .pipe(Effect.orDie)
+            ).pipe(
+              Effect.as(
+                HttpClientResponse.fromWeb(
+                  request,
+                  fresh
+                    ? new Response(JSON.stringify({ five_hour: { utilization: 7 } }), {
+                        status: 200,
+                        headers: { "content-type": "application/json" },
+                      })
+                    : new Response("{}", { status: 401 }),
+                ),
+              ),
+            );
+          }),
+        );
+        return yield* fetchClaudeAccountUsage(
+          { homePath, accountFolder: "" },
+          {},
+          Effect.die("A sign-in that was already renewed must not be renewed again"),
+        ).pipe(Effect.provide(renewedElsewhere));
+      }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, noKeychainLayer()))),
+    );
+
+    expect(bearers).toEqual(["Bearer raced-stale-token", "Bearer raced-fresh-token"]);
+    expect(usage._tag === "Fresh" ? usage.usage.limits[0]?.primary?.usedPercent : usage).toBe(7);
+  });
+
+  it("says signed out only when the sign-in is gone or can never renew", async () => {
+    const bearers: Array<string | undefined> = [];
+    const results = await Effect.runPromise(
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const homePath = yield* fileSystem.makeTempDirectoryScoped({
+          prefix: "threadlines-claude-usage-",
+        });
+        const credentialsPath = path.join(homePath, ".claude", ".credentials.json");
+        yield* fileSystem.makeDirectory(path.join(homePath, ".claude"));
+        const check = (refresh: Effect.Effect<boolean>) =>
+          fetchClaudeAccountUsage({ homePath, accountFolder: "" }, {}, refresh);
+
+        // Nothing stored: no request is even made.
+        const nothingStored = yield* check(Effect.succeed(true));
+        // The CLI removes a sign-in whose renewal the server refused.
+        yield* fileSystem.writeFileString(credentialsPath, credentialsJson("refused-token"));
+        const removedByRenewal = yield* check(
+          fileSystem.remove(credentialsPath).pipe(Effect.as(false), Effect.orDie),
+        );
+        // Rejected, with no refresh token left to renew it.
+        yield* fileSystem.writeFileString(credentialsPath, credentialsJson("spent-token", null));
+        const cannotRenew = yield* check(Effect.succeed(false));
+        return [nothingStored, removedByRenewal, cannotRenew];
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          Layer.mergeAll(NodeServices.layer, noKeychainLayer(), usageEndpointLayer("", bearers)),
+        ),
+      ),
+    );
+
+    const signedOut = { _tag: "Unavailable", reason: "signed_out" };
+    expect(results).toEqual([signedOut, signedOut, signedOut]);
+    expect(bearers).toEqual(["Bearer refused-token", "Bearer spent-token"]);
+  });
+
+  it("treats a rate limit and a failed request as temporary, without renewing", async () => {
+    const check = (token: string, status: number) =>
+      Effect.runPromise(
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const homePath = yield* fileSystem.makeTempDirectoryScoped({
+            prefix: "threadlines-claude-usage-",
+          });
+          yield* fileSystem.makeDirectory(path.join(homePath, ".claude"));
+          yield* fileSystem.writeFileString(
+            path.join(homePath, ".claude", ".credentials.json"),
+            credentialsJson(token),
+          );
+          return yield* fetchClaudeAccountUsage(
+            { homePath, accountFolder: "" },
+            {},
+            Effect.die("A temporary failure must not start a renewal"),
+          );
+        }).pipe(
+          Effect.scoped,
+          Effect.provide(
+            Layer.mergeAll(
+              NodeServices.layer,
+              noKeychainLayer(),
+              Layer.succeed(
+                HttpClient.HttpClient,
+                HttpClient.make((request) =>
+                  Effect.succeed(
+                    HttpClientResponse.fromWeb(request, new Response("{}", { status })),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+
+    expect(await check("rate-limited-token", 429)).toEqual({
+      _tag: "Unavailable",
+      reason: "rate_limited",
+    });
+    expect(await check("server-error-token", 503)).toEqual({
+      _tag: "Unavailable",
+      reason: "unreachable",
+    });
+  });
+});
+
+describe("carryClaudeAccountUsageForward", () => {
+  it("starts a window over once its reset time has passed and keeps the rest as read", () => {
+    const readAt = "2026-07-09T00:00:00.000Z";
+    const usage = normalizeClaudeAccountUsage(
+      {
+        five_hour: { utilization: 80, resets_at: "2026-07-09T02:00:00.000Z" },
+        seven_day: { utilization: 40, resets_at: "2026-07-12T00:00:00.000Z" },
+        limits: [
+          {
+            group: "weekly",
+            percent: 90,
+            severity: "warning",
+            resets_at: "2026-07-09T01:00:00.000Z",
+            scope: { model: { display_name: "Fable" }, surface: null },
+          },
+        ],
+      },
+      readAt,
+    )!;
+
+    const carried = carryClaudeAccountUsageForward(usage, Date.parse("2026-07-09T03:00:00.000Z"));
+
+    expect(carried?.limits[0]).toEqual({
+      limitId: "claude",
+      // The 5h window ended an hour ago: nothing used yet, next reset unknown.
+      primary: {
+        usedPercent: 0,
+        remainingPercent: 100,
+        windowDurationMins: 300,
+        checkedAt: readAt,
+      },
+      secondary: usage.limits[0]?.secondary,
+      scoped: [
+        {
+          scopeLabel: "Fable",
+          usedPercent: 0,
+          remainingPercent: 100,
+          windowDurationMins: 10_080,
+          checkedAt: readAt,
+        },
+      ],
+    });
+    // An event's reset time is in seconds; it rolls over the same way.
+    const fromEvent = applyClaudeRateLimitInfoToAccountUsage(
+      undefined,
+      { rateLimitType: "five_hour", utilization: 0.5, resetsAt: Date.parse(readAt) / 1000 + 60 },
+      readAt,
+    );
+    expect(
+      carryClaudeAccountUsageForward(fromEvent, Date.parse(readAt) + 120_000)?.limits[0]?.primary
+        ?.usedPercent,
+    ).toBe(0);
+    expect(carryClaudeAccountUsageForward(undefined, 0)).toBeUndefined();
+  });
+
+  it("dates a reading saved before windows recorded their own time", () => {
+    const savedAt = "2026-07-09T00:00:00.000Z";
+    const carried = carryClaudeAccountUsageForward(
+      {
+        source: "claude-oauth-usage",
+        checkedAt: savedAt,
+        limits: [{ limitId: "claude", primary: { usedPercent: 12, remainingPercent: 88 } }],
+      },
+      Date.parse("2026-07-09T05:00:00.000Z"),
+    );
+
+    // Without this it would be shown as a current reading for as long as checks fail.
+    expect(carried?.limits[0]?.primary?.checkedAt).toBe(savedAt);
+  });
+});
+
+describe("preferNewerClaudeUsageReadings", () => {
+  it("keeps a reading a chat reply published while the check was running", () => {
+    const checkRead = normalizeClaudeAccountUsage(
+      {
+        five_hour: { utilization: 10 },
+        seven_day: { utilization: 40 },
+      },
+      "2026-07-09T00:00:00.000Z",
+    )!;
+    // The reply landed two seconds after the check read the endpoint.
+    const afterReply = applyClaudeRateLimitInfoToAccountUsage(
+      checkRead,
+      { rateLimitType: "five_hour", utilization: 0.2 },
+      "2026-07-09T00:00:02.000Z",
+    )!;
+
+    const published = preferNewerClaudeUsageReadings(afterReply, checkRead);
+
+    expect(published?.limits[0]?.primary?.usedPercent).toBe(20);
+    expect(published?.limits[0]?.secondary).toEqual(checkRead.limits[0]?.secondary);
+    // Nothing newer than the check: its reading stands untouched.
+    expect(preferNewerClaudeUsageReadings(checkRead, checkRead)).toBe(checkRead);
+    expect(preferNewerClaudeUsageReadings(undefined, checkRead)).toBe(checkRead);
+  });
+});
+
+describe("isClaudeSignInRenewalDue", () => {
+  const nowMs = Date.parse("2026-07-09T00:00:00.000Z");
+  const present = (expiresInMs: number | undefined, renewable = true) =>
+    ({
+      _tag: "Present",
+      credential: {
+        accessToken: "token",
+        renewable,
+        ...(expiresInMs === undefined ? {} : { expiresAt: nowMs + expiresInMs }),
+      },
+    }) as const;
+  const due = (
+    stored: Parameters<typeof isClaudeSignInRenewalDue>[0]["stored"],
+    environment: NodeJS.ProcessEnv = {},
+  ) => isClaudeSignInRenewalDue({ stored, environment, nowMs });
+
+  it("is due once a starting CLI would renew the stored sign-in", () => {
+    expect(due(present(-60_000))).toBe(true);
+    expect(due(present(4 * 60_000))).toBe(true);
+    expect(due(present(2 * 60 * 60_000))).toBe(false);
+    // Nothing the CLI could renew, or would: no expiry, no refresh token, no sign-in.
+    expect(due(present(undefined))).toBe(false);
+    expect(due(present(-60_000, false))).toBe(false);
+    expect(due({ _tag: "Absent" })).toBe(false);
+    // A read that timed out proves nothing; one the keychain refused does.
+    expect(due({ _tag: "Unreadable", transient: true })).toBe(true);
+    expect(due({ _tag: "Unreadable", transient: false })).toBe(false);
+  });
+
+  it("only a chat-only token keeps the CLI off the stored sign-in", () => {
+    expect(due(present(-60_000), { CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01-x" })).toBe(false);
+    expect(due(present(-60_000), { ANTHROPIC_API_KEY: "sk-ant-api03-x" })).toBe(true);
   });
 });
 
@@ -1006,7 +1316,7 @@ describe("Claude keychain item per account", () => {
   it("reads an account's own item and never falls back to the terminal's", async () => {
     const services: string[] = [];
     const credential = await Effect.runPromise(
-      readClaudeOAuthCredential(
+      readClaudeStoredSignIn(
         { homePath: "", accountFolder: "/tmp/work" },
         {
           platform: "darwin",
@@ -1025,7 +1335,7 @@ describe("Claude keychain item per account", () => {
       ),
     );
 
-    expect(credential).toBeUndefined();
+    expect(credential).toEqual({ _tag: "Absent" });
     expect(new Set(services)).toEqual(new Set(["Claude Code-credentials-f9be197a"]));
   });
 });

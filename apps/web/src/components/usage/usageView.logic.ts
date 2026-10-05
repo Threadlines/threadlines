@@ -2,6 +2,7 @@ import {
   ProviderDriverKind,
   USAGE_MAX_WINDOW_DAYS,
   USAGE_WINDOW_DAY_OPTIONS,
+  type ProviderInstanceId,
   type ServerProvider,
   type UsageProviderKind,
   type UsageSource,
@@ -29,7 +30,10 @@ import {
 } from "@threadlines/shared/usageMerge";
 
 import type { UsageEnvironmentReport } from "~/lib/usageReactQuery";
-import { deriveProviderAccountUsagePresentationForProvider } from "~/lib/providerUsage";
+import {
+  deriveProviderAccountUsagePresentationForProvider,
+  type ProviderAccountUsageNotice,
+} from "~/lib/providerUsage";
 import { formatProviderDriverKindLabel } from "~/providerModels";
 
 /** Product names, as the providers write them. */
@@ -954,11 +958,13 @@ export interface UsagePlanLimitMeter {
 }
 
 export interface UsagePlanLimitRow {
-  readonly instanceId: string;
+  readonly instanceId: ProviderInstanceId;
   readonly driver: ProviderDriverKind;
   readonly label: string;
   readonly provider: UsageProviderKind | null;
   readonly meters: readonly UsagePlanLimitMeter[];
+  /** Why the provider could not check usage just now, and whether signing in fixes it. */
+  readonly notice?: ProviderAccountUsageNotice;
 }
 
 const USAGE_PROVIDER_BY_DRIVER: ReadonlyMap<ProviderDriverKind, UsageProviderKind> = new Map([
@@ -998,7 +1004,7 @@ export function buildUsagePlanLimitRows(
         reachedLimit: presentation.spendControl.reachedLimit,
       });
     }
-    if (meters.length === 0) return [];
+    if (meters.length === 0 && !presentation.notice) return [];
     return [
       {
         instanceId: provider.instanceId,
@@ -1006,6 +1012,7 @@ export function buildUsagePlanLimitRows(
         label: provider.displayName?.trim() || formatProviderDriverKindLabel(provider.driver),
         provider: USAGE_PROVIDER_BY_DRIVER.get(provider.driver) ?? null,
         meters,
+        ...(presentation.notice ? { notice: presentation.notice } : {}),
       },
     ];
   });

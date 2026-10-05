@@ -113,6 +113,42 @@ describe("ContextWindowMeter", () => {
     }
   });
 
+  it("offers Sign in from the usage popout only when the provider is signed out", async () => {
+    const signIn = vi.fn();
+    const meter = (notice: NonNullable<ProviderAccountUsagePresentation["notice"]>) => (
+      <ContextWindowMeter
+        usage={TEST_CONTEXT_WINDOW}
+        accountUsage={{ label: "Claude usage", reachedLimit: false, windows: [], notice }}
+        accountUsageSignIn={
+          <button type="button" onClick={signIn}>
+            Sign in
+          </button>
+        }
+      />
+    );
+    const screen = await render(
+      meter({ signIn: true, text: "Claude is signed out. Sign in to see usage." }),
+    );
+
+    try {
+      await page.getByRole("button", { name: /Context window/ }).click();
+      await expect
+        .element(page.getByText("Claude is signed out. Sign in to see usage."))
+        .toBeVisible();
+      await page.getByRole("button", { name: "Sign in" }).click();
+      expect(signIn).toHaveBeenCalledTimes(1);
+
+      // A check that failed for another reason fixes itself: no sign-in offered.
+      await screen.rerender(
+        meter({ signIn: false, text: "Couldn't check usage just now. Trying again soon." }),
+      );
+      await expect.element(page.getByText(/Trying again soon/)).toBeVisible();
+      await expect.element(page.getByRole("button", { name: "Sign in" })).not.toBeInTheDocument();
+    } finally {
+      await screen.unmount();
+    }
+  });
+
   it("breaks the context window down by category behind a collapsed toggle", async () => {
     const screen = await render(
       <ContextWindowMeter

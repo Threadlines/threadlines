@@ -71,8 +71,21 @@ export const ServerProviderAuthCapabilityStatus = Schema.Literals([
 ]);
 export type ServerProviderAuthCapabilityStatus = typeof ServerProviderAuthCapabilityStatus.Type;
 
+/**
+ * Why a capability is `unavailable`, when the server knows. `signed_out` is
+ * only reported once the credential behind the capability is confirmed
+ * missing; the other reasons are temporary and clear on a later check.
+ */
+export const ServerProviderAuthCapabilityReason = Schema.Literals([
+  "signed_out",
+  "rate_limited",
+  "unreachable",
+]);
+export type ServerProviderAuthCapabilityReason = typeof ServerProviderAuthCapabilityReason.Type;
+
 export const ServerProviderAuthCapability = Schema.Struct({
   status: ServerProviderAuthCapabilityStatus,
+  reason: Schema.optional(ServerProviderAuthCapabilityReason),
   detail: Schema.optional(TrimmedNonEmptyString),
 });
 export type ServerProviderAuthCapability = typeof ServerProviderAuthCapability.Type;
@@ -98,6 +111,11 @@ export const ServerProviderUsageWindow = Schema.Struct({
   remainingPercent: NonNegativeInt,
   resetsAt: Schema.optional(NonNegativeInt),
   windowDurationMins: Schema.optional(NonNegativeInt),
+  /**
+   * When this window was last read from the provider. Set by providers that
+   * keep a reading across failed checks, so a client can say how old it is.
+   */
+  checkedAt: Schema.optional(IsoDateTime),
 });
 export type ServerProviderUsageWindow = typeof ServerProviderUsageWindow.Type;
 
@@ -116,6 +134,8 @@ export const ServerProviderScopedUsageWindow = Schema.Struct({
   // Provider-reported severity (e.g. "normal" | "warning"); anything other
   // than "normal" should surface ambient warning affordances.
   severity: Schema.optional(TrimmedNonEmptyString),
+  /** When this window was last read from the provider; see `ServerProviderUsageWindow`. */
+  checkedAt: Schema.optional(IsoDateTime),
 });
 export type ServerProviderScopedUsageWindow = typeof ServerProviderScopedUsageWindow.Type;
 

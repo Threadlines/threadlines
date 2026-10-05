@@ -77,6 +77,7 @@ import {
 } from "./ProviderSettingsForm";
 import { ProviderModelsSection } from "./ProviderModelsSection";
 import { ProviderInstanceIcon } from "../chat/ProviderInstanceIcon";
+import { ProviderUsageSignIn } from "../chat/providerSignIn";
 import { ProviderUsageDashboard } from "../ProviderUsageDashboard";
 import { RedactedSensitiveText } from "./RedactedSensitiveText";
 import {
@@ -724,6 +725,14 @@ export function claudeAuthCapabilityBadge(
     case "configured":
       return { label: `${prefix} configured`, variant: "secondary" };
     case "unavailable":
+      // Only a confirmed sign-out is the user's to fix. The rest clear up on
+      // a later check, so they do not get the warning color.
+      if (capability.reason === "signed_out") {
+        return { label: `${prefix} signed out`, variant: "warning" };
+      }
+      if (capability.reason === "rate_limited" || capability.reason === "unreachable") {
+        return { label: `${prefix} check paused`, variant: "secondary" };
+      }
       return { label: `${prefix} unavailable`, variant: "warning" };
     case "unknown":
       return { label: `${prefix} checking`, variant: "secondary" };
@@ -1035,7 +1044,13 @@ function ProviderUsageMeter(props: {
   const meter = headlineUsageMeter(props.usage);
   const resetCount = props.usage.resetCredits?.availableCount ?? 0;
   const canReset = props.onResetAccountUsage !== undefined && resetCount > 0;
-  if (!meter && !canReset) return null;
+  if (!meter && !canReset) {
+    // No numbers to draw. A sign-out is worth a word on the row; the Usage
+    // tab holds the Sign in.
+    return props.usage.notice?.signIn ? (
+      <span className="text-[11.5px] text-muted-foreground">Usage signed out</span>
+    ) : null;
+  }
   const meterColor = meter ? usageMeterColor(meter.usedPercent, meter.warning) : undefined;
 
   return (
@@ -1745,6 +1760,11 @@ export function ProviderInstanceCard({
                 displayName={displayName}
                 onResetAccountUsage={onResetAccountUsage}
                 accountUsageResetInFlight={accountUsageResetInFlight}
+                signInAction={
+                  usagePresentation.notice?.signIn ? (
+                    <ProviderUsageSignIn instanceId={instanceId} className="h-6 px-2 text-[11px]" />
+                  ) : undefined
+                }
               />
               {usagePresentation.tokenUsage?.scope === "local" ? (
                 <div className="mt-4 border-t border-border/60 pt-3 text-xs text-muted-foreground">
