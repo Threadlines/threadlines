@@ -79,6 +79,7 @@ import {
 } from "./ProviderSettingsForm";
 import { ProviderModelsSection } from "./ProviderModelsSection";
 import { ProviderInstanceIcon } from "../chat/ProviderInstanceIcon";
+import { ProviderUsageSignIn } from "../chat/providerSignIn";
 import { ProviderUsageDashboard } from "../ProviderUsageDashboard";
 import { RedactedSensitiveText } from "./RedactedSensitiveText";
 import {
@@ -724,6 +725,14 @@ export function claudeAuthCapabilityBadge(
     case "configured":
       return { label: `${prefix} configured`, variant: "secondary" };
     case "unavailable":
+      // Only a confirmed sign-out is the user's to fix. The rest clear up on
+      // a later check, so they do not get the warning color.
+      if (capability.reason === "signed_out") {
+        return { label: `${prefix} signed out`, variant: "warning" };
+      }
+      if (capability.reason === "rate_limited" || capability.reason === "unreachable") {
+        return { label: `${prefix} check paused`, variant: "secondary" };
+      }
       return { label: `${prefix} unavailable`, variant: "warning" };
     case "unknown":
       return { label: `${prefix} checking`, variant: "secondary" };
@@ -1028,8 +1037,9 @@ function ProviderDetailsNav(props: {
  * focusing it says when each limit resets, and pressing it opens the row on
  * its Usage tab, where the full view (history, external resets) lives.
  *
- * An account whose limits can't be read says so in place of the stack, and
- * pressing that opens the row where the sign-in that fixes it lives.
+ * An account with no numbers to draw says why in place of the stack. Pressing
+ * that opens the row: on the Account tab when signing in is what fixes it, on
+ * the Usage tab otherwise.
  */
 function ProviderUsageMeter(props: {
   readonly usage: ProviderAccountUsagePresentation;
@@ -1042,7 +1052,8 @@ function ProviderUsageMeter(props: {
   const lines = compactUsageMeters(props.usage);
   const resetCount = props.usage.resetCredits?.availableCount ?? 0;
   const canReset = props.onResetAccountUsage !== undefined && resetCount > 0;
-  const unavailable = props.usage.limitsUnavailable;
+  // A notice with no meters to hang it on is said on the row itself.
+  const unavailable = lines.length === 0 ? props.usage.notice : undefined;
   if (lines.length === 0 && !canReset && !unavailable) return null;
 
   return (
@@ -1109,12 +1120,13 @@ function ProviderUsageMeter(props: {
           size="xs"
           variant="ghost"
           className="h-6 px-1.5 text-[11.5px] font-normal text-muted-foreground hover:text-foreground"
-          tooltip={<p className="max-w-64">{unavailable.detail}</p>}
+          tooltip={<p className="max-w-64">{unavailable.text}</p>}
           tooltipSide="top"
-          onClick={props.onOpenSignIn}
-          aria-label={`${props.displayName} usage unavailable. ${unavailable.action}`}
+          // Only a sign-out is fixed on the Account tab; the rest is explained on Usage.
+          onClick={unavailable.signIn ? props.onOpenSignIn : props.onOpenUsage}
+          aria-label={`${props.displayName} usage. ${unavailable.text}`}
         >
-          Usage unavailable
+          {unavailable.signIn ? "Usage signed out" : "Usage unavailable"}
         </Button>
       ) : null}
     </span>
@@ -1811,9 +1823,11 @@ export function ProviderInstanceCard({
                 displayName={displayName}
                 onResetAccountUsage={onResetAccountUsage}
                 accountUsageResetInFlight={accountUsageResetInFlight}
-                {...(terminalLoginCommand
-                  ? { onOpenSignIn: () => setDetailsSection("account") }
-                  : {})}
+                signInAction={
+                  usagePresentation.notice?.signIn ? (
+                    <ProviderUsageSignIn instanceId={instanceId} className="h-6 px-2 text-[11px]" />
+                  ) : undefined
+                }
               />
               {usagePresentation.tokenUsage?.scope === "local" ? (
                 <div className="mt-4 border-t border-group-divider pt-3 text-[12.5px] text-muted-foreground">

@@ -72,7 +72,7 @@ type ModelPickerTab = {
   accentColor?: string | undefined;
   /** For an agent with several accounts: how close this one is to its limit. */
   usage?: { readonly usedPercent: number; readonly label: string; readonly warning: boolean };
-  /** This account has plan limits, but they can't be read: the tab shows no figure and says why on hover. */
+  /** This account's usage has nothing to draw right now: the tab shows no figure and says so on hover. */
   usageUnavailable?: boolean;
 };
 
@@ -436,7 +436,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
               },
             }
           : {}),
-        ...(usagePresentation?.limitsUnavailable ? { usageUnavailable: true } : {}),
+        ...(usagePresentation?.notice && !usage ? { usageUnavailable: true } : {}),
         modelCount: sortedModels.length,
         models: sortedModels,
       });

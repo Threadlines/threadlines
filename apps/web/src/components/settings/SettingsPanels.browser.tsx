@@ -1935,7 +1935,7 @@ describe("GeneralSettingsPanel observability", () => {
     await expect.element(page.getByText(/Optional for remote or headless chat/)).toBeVisible();
   });
 
-  it("says a Claude row's usage is unavailable and opens its sign-in from there", async () => {
+  it("says a Claude row is signed out of usage and opens its sign-in from there", async () => {
     setServerConfigSnapshot({
       ...createBaseServerConfig(),
       providers: [
@@ -1947,7 +1947,7 @@ describe("GeneralSettingsPanel observability", () => {
             label: "Claude Max Subscription",
             capabilities: {
               chat: { status: "configured" },
-              usage: { status: "unavailable", detail: "Refresh Claude sign-in to restore usage." },
+              usage: { status: "unavailable", reason: "signed_out" },
             },
           },
         },
@@ -1960,16 +1960,54 @@ describe("GeneralSettingsPanel observability", () => {
       </TestAppProviders>,
     );
 
-    const unavailable = page.getByRole("button", {
-      name: "Claude usage unavailable. Refresh sign-in",
+    const signedOut = page.getByRole("button", {
+      name: "Claude usage. Claude is signed out. Sign in to see usage.",
     });
-    await expect.element(unavailable).toBeVisible();
+    await expect.element(signedOut).toHaveTextContent("Usage signed out");
     // No empty meter stands in for a reading the app does not have.
-    const row = unavailable.element().closest('[data-testid="provider-instance-row"]');
+    const row = signedOut.element().closest('[data-testid="provider-instance-row"]');
     expect(row?.textContent).not.toContain("0%");
 
-    await unavailable.click();
+    await signedOut.click();
     await expect.element(page.getByText("Account & Sign-in")).toBeVisible();
+  });
+
+  it("does not send a Claude row to sign-in over a usage check that only failed", async () => {
+    setServerConfigSnapshot({
+      ...createBaseServerConfig(),
+      providers: [
+        {
+          ...createClaudeProvider(),
+          auth: {
+            status: "authenticated",
+            type: "maxplan",
+            label: "Claude Max Subscription",
+            capabilities: {
+              chat: { status: "configured" },
+              usage: { status: "unavailable", reason: "rate_limited" },
+            },
+          },
+        },
+      ],
+    });
+
+    mounted = await renderWithTestRouter(
+      <TestAppProviders>
+        <ProviderSettingsPanel />
+      </TestAppProviders>,
+    );
+
+    await page
+      .getByRole("button", {
+        name: "Claude usage. Claude is limiting usage checks. Trying again soon.",
+      })
+      .click();
+    // The row opens on its Usage tab, which explains it; nothing asks for a sign-in.
+    await expect
+      .element(page.getByText("Claude is limiting usage checks. Trying again soon."))
+      .toBeVisible();
+    await expect.element(page.getByText("Account & Sign-in")).not.toBeInTheDocument();
+    await expect.element(page.getByRole("button", { name: "Sign in" })).not.toBeInTheDocument();
   });
 
   it("signs a provider in without leaving settings", async () => {

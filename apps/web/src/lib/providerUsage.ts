@@ -147,28 +147,24 @@ export function providerExternalResetsLink(
 }
 
 /**
- * Why an account's plan limits are missing, worded twice: `action` for a
- * compact surface ("Refresh sign-in") and `detail` as a full sentence.
+ * What a usage surface says when the provider could not check usage just now.
+ * `signIn` is set only once the provider confirmed its sign-in is gone, so a
+ * surface offers Sign in for that and for nothing else.
  */
-export interface ProviderAccountUsageUnavailablePresentation {
-  readonly action: string;
-  readonly detail: string;
+export interface ProviderAccountUsageNotice {
+  readonly text: string;
+  readonly signIn: boolean;
 }
 
 export interface ProviderAccountUsagePresentation {
   readonly label: string;
+  readonly notice?: ProviderAccountUsageNotice;
   readonly spendControl?: ProviderAccountUsageSpendControlPresentation;
   readonly resetCredits?: ProviderAccountUsageResetCreditsPresentation;
   readonly externalResets?: ProviderExternalResetsLink;
   readonly tokenUsage?: ProviderAccountTokenUsagePresentation;
   readonly windows: ReadonlyArray<ProviderAccountUsageWindowPresentation>;
   readonly reachedLimit: boolean;
-  /**
-   * Set when the account has plan limits but they cannot be read right now.
-   * There are no windows or spend control then, and a surface says so in
-   * words: an empty meter would read as "0% used".
-   */
-  readonly limitsUnavailable?: ProviderAccountUsageUnavailablePresentation;
 }
 
 type ProviderAccountUsagePresentationProvider = Pick<
@@ -195,6 +191,28 @@ function formatRemainingDuration(untilMs: number, nowMs: number): string | null 
   const days = Math.floor(hours / 24);
   const remainingHours = hours % 24;
   return remainingHours > 0 ? `${days}d ${remainingHours}h` : `${days}d`;
+}
+
+/**
+ * A provider checks usage every few minutes, so a reading older than this was
+ * kept across failed checks and says so.
+ */
+const USAGE_READING_STALE_AFTER_MS = 10 * 60 * 1000;
+
+function isUsageReadingStale(checkedAt: string | undefined, nowMs: number): boolean {
+  const readAtMs = checkedAt === undefined ? Number.NaN : Date.parse(checkedAt);
+  return Number.isFinite(readAtMs) && nowMs - readAtMs >= USAGE_READING_STALE_AFTER_MS;
+}
+
+/** "as of 25m ago" for a reading kept across failed checks, else null. */
+function formatReadingAgeDetail(checkedAt: string | undefined, nowMs: number): string | null {
+  if (checkedAt === undefined || !isUsageReadingStale(checkedAt, nowMs)) return null;
+  const elapsedMinutes = Math.floor((nowMs - Date.parse(checkedAt)) / 60_000);
+  if (elapsedMinutes < 60) return `as of ${elapsedMinutes}m ago`;
+  const elapsedHours = Math.floor(elapsedMinutes / 60);
+  return elapsedHours < 24
+    ? `as of ${elapsedHours}h ago`
+    : `as of ${Math.floor(elapsedHours / 24)}d ago`;
 }
 
 function formatResetDetail(resetsAt: number | undefined, nowMs: number): string | null {
@@ -371,6 +389,7 @@ function formatUsageWindowPresentation(
     windowReachedLimit ? "limit reached" : `${usedPercent}% used`,
     blockedByLimitDetail,
     resetDetail,
+    formatReadingAgeDetail(window.checkedAt, nowMs),
   ].filter((part): part is string => Boolean(part));
 
   return {
@@ -401,9 +420,11 @@ function formatScopedUsageWindowPresentation(
   const severityWarning = window.severity !== undefined && window.severity !== "normal";
   const resetDetail = formatResetDetail(window.resetsAt, nowMs);
   const durationLabel = formatUsageWindowDurationLabel(window, "");
-  const detailParts = [reachedLimit ? "limit reached" : `${usedPercent}% used`, resetDetail].filter(
-    (part): part is string => Boolean(part),
-  );
+  const detailParts = [
+    reachedLimit ? "limit reached" : `${usedPercent}% used`,
+    resetDetail,
+    formatReadingAgeDetail(window.checkedAt, nowMs),
+  ].filter((part): part is string => Boolean(part));
 
   return {
     key: `scoped-${index}`,
@@ -682,42 +703,69 @@ export function deriveProviderAccountUsagePresentation(
   };
 }
 
-/**
- * True for a Claude subscription sign-in whose plan limits did not come back:
- * the server said so, or an older server signed in without reporting either
- * way. API-key accounts have no plan limits to miss.
- */
-function claudePlanLimitsUnreadable(provider: ProviderAccountUsagePresentationProvider): boolean {
-  const usageStatus = provider.auth.capabilities?.usage?.status;
-  return (
-    provider.driver === "claudeAgent" &&
-    provider.auth.type?.toLowerCase() !== "apikey" &&
-    (usageStatus === "unavailable" ||
-      (usageStatus === undefined && provider.auth.status === "authenticated"))
+function hasStaleUsageReading(
+  usage: ServerProviderAccountUsage | undefined,
+  nowMs: number,
+): boolean {
+  const limit = usage ? selectProviderUsageLimit(usage) : null;
+  if (!limit) return false;
+  return [limit.primary, limit.secondary, ...(limit.scoped ?? [])].some(
+    (window) => window !== undefined && isUsageReadingStale(window.checkedAt, nowMs),
   );
 }
 
-function claudeUsageUnavailablePresentation(
+/**
+ * What to say about a Claude usage check that produced no numbers. Sign-in is
+ * only offered when Claude reports the sign-in gone; a rate limit or a failed
+ * request fixes itself, and stays quiet while the kept numbers are recent.
+ * API-key auth has no subscription usage to speak of.
+ */
+function deriveClaudeUsageNotice(
   provider: ProviderAccountUsagePresentationProvider,
-): ProviderAccountUsageUnavailablePresentation {
-  return provider.auth.type === "longLivedOAuthToken"
-    ? {
-        action: "Normal sign-in needed",
-        detail:
-          "This sign-in token can't read plan limits. Sign in to Claude the normal way to see them.",
-      }
-    : {
-        action: "Refresh sign-in",
-        detail:
-          "Plan limits can't be read right now. Signing in to Claude again usually brings them back.",
-      };
+  hasNumbers: boolean,
+  hasStaleReading: boolean,
+): ProviderAccountUsageNotice | undefined {
+  if (provider.driver !== "claudeAgent" || provider.auth.type?.toLowerCase() === "apikey") {
+    return undefined;
+  }
+  const usage = provider.auth.capabilities?.usage;
+  if (usage === undefined) {
+    // A sign-in whose server said nothing about usage either way: with no
+    // numbers to show, say they are missing rather than show nothing.
+    return provider.auth.status === "authenticated" && !hasNumbers
+      ? { signIn: false, text: "Plan limits can't be read right now." }
+      : undefined;
+  }
+  if (usage.status !== "unavailable") return undefined;
+  if (usage.reason === "signed_out") {
+    return {
+      signIn: true,
+      text: hasNumbers
+        ? "Claude is signed out. Usage updates only when you chat."
+        : "Claude is signed out. Sign in to see usage.",
+    };
+  }
+  if (hasNumbers && !hasStaleReading) return undefined;
+  switch (usage.reason) {
+    case "rate_limited":
+      return { signIn: false, text: "Claude is limiting usage checks. Trying again soon." };
+    case "unreachable":
+      return { signIn: false, text: "Couldn't check usage just now. Trying again soon." };
+    default:
+      // A server that gives no reason still gives its own words for it.
+      return hasNumbers
+        ? undefined
+        : { signIn: false, text: usage.detail ?? "Plan limits can't be read right now." };
+  }
 }
 
 /**
  * The usage presentation for a provider as a whole, not just its usage
- * payload: a Claude subscription whose limits could not be read comes back
- * marked `limitsUnavailable` (keeping any local token history) instead of as
- * nothing, so its surfaces can say why the meters are missing.
+ * payload: a Claude subscription whose usage check produced no numbers comes
+ * back with a `notice` (keeping the numbers it has, and any local token
+ * history) instead of as nothing, so its surfaces can say what is wrong. A
+ * notice with no windows means there is nothing to draw: an empty meter
+ * would read as "0% used".
  */
 export function deriveProviderAccountUsagePresentationForProvider(
   provider: ProviderAccountUsagePresentationProvider | null | undefined,
@@ -725,18 +773,23 @@ export function deriveProviderAccountUsagePresentationForProvider(
 ): ProviderAccountUsagePresentation | null {
   const presentation = deriveProviderAccountUsagePresentation(provider?.accountUsage, nowMs);
   if (!provider) return presentation;
-  const hasLimits =
+  const hasNumbers =
     presentation !== null &&
     (presentation.windows.length > 0 || presentation.spendControl !== undefined);
-  if (hasLimits || !claudePlanLimitsUnreadable(provider)) return presentation;
-  return {
-    ...(presentation ?? {
-      label: PROVIDER_USAGE_SOURCE_LABELS["claude-oauth-usage"],
-      windows: [],
-      reachedLimit: false,
-    }),
-    limitsUnavailable: claudeUsageUnavailablePresentation(provider),
-  };
+  const notice = deriveClaudeUsageNotice(
+    provider,
+    hasNumbers,
+    hasStaleUsageReading(provider.accountUsage, nowMs),
+  );
+  if (!notice) return presentation;
+  return presentation
+    ? { ...presentation, notice }
+    : {
+        label: PROVIDER_USAGE_SOURCE_LABELS["claude-oauth-usage"],
+        windows: [],
+        reachedLimit: false,
+        notice,
+      };
 }
 
 /**

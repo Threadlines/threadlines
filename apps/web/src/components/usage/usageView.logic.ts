@@ -2,6 +2,7 @@ import {
   ProviderDriverKind,
   USAGE_MAX_WINDOW_DAYS,
   USAGE_WINDOW_DAY_OPTIONS,
+  type ProviderInstanceId,
   type ServerProvider,
   type UsageProviderKind,
   type UsageSource,
@@ -29,7 +30,10 @@ import {
 } from "@threadlines/shared/usageMerge";
 
 import type { UsageEnvironmentReport } from "~/lib/usageReactQuery";
-import { deriveProviderAccountUsagePresentationForProvider } from "~/lib/providerUsage";
+import {
+  deriveProviderAccountUsagePresentationForProvider,
+  type ProviderAccountUsageNotice,
+} from "~/lib/providerUsage";
 import { formatProviderDriverKindLabel } from "~/providerModels";
 
 /** Product names, as the providers write them. */
@@ -954,13 +958,13 @@ export interface UsagePlanLimitMeter {
 }
 
 export interface UsagePlanLimitRow {
-  readonly instanceId: string;
+  readonly instanceId: ProviderInstanceId;
   readonly driver: ProviderDriverKind;
   readonly label: string;
   readonly provider: UsageProviderKind | null;
   readonly meters: readonly UsagePlanLimitMeter[];
-  /** Why this account has no meters, when its limits exist but can't be read. */
-  readonly unavailableDetail: string | null;
+  /** Why the provider could not check usage just now, and whether signing in fixes it. */
+  readonly notice?: ProviderAccountUsageNotice;
 }
 
 const USAGE_PROVIDER_BY_DRIVER: ReadonlyMap<ProviderDriverKind, UsageProviderKind> = new Map([
@@ -972,8 +976,8 @@ const USAGE_PROVIDER_BY_DRIVER: ReadonlyMap<ProviderDriverKind, UsageProviderKin
  * The subscription windows each enabled provider reports: the same meters the
  * provider cards in Settings and the composer's hover card draw, read through
  * the same presentation. Providers with nothing to meter (API keys) are left
- * out rather than shown as empty rows; one whose limits can't be read keeps
- * its row and says why.
+ * out rather than shown as empty rows; one whose usage check has something to
+ * say keeps its row and says it.
  */
 export function buildUsagePlanLimitRows(
   providers: ReadonlyArray<ServerProvider>,
@@ -1001,8 +1005,7 @@ export function buildUsagePlanLimitRows(
         reachedLimit: presentation.spendControl.reachedLimit,
       });
     }
-    const unavailableDetail = presentation.limitsUnavailable?.detail ?? null;
-    if (meters.length === 0 && unavailableDetail === null) return [];
+    if (meters.length === 0 && !presentation.notice) return [];
     return [
       {
         instanceId: provider.instanceId,
@@ -1010,7 +1013,7 @@ export function buildUsagePlanLimitRows(
         label: provider.displayName?.trim() || formatProviderDriverKindLabel(provider.driver),
         provider: USAGE_PROVIDER_BY_DRIVER.get(provider.driver) ?? null,
         meters,
-        unavailableDetail,
+        ...(presentation.notice ? { notice: presentation.notice } : {}),
       },
     ];
   });

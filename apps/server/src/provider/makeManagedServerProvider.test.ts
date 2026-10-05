@@ -371,4 +371,59 @@ describe("makeManagedServerProvider", () => {
       }),
     ),
   );
+
+  it.effect("keeps a patch that lands while a check or its enrichment is running", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const releaseCheck = yield* Deferred.make<void>();
+        const releaseEnrichment = yield* Deferred.make<void>();
+        const usage = (usedPercent: number): NonNullable<ServerProvider["accountUsage"]> => ({
+          source: "claude-oauth-usage",
+          checkedAt: "2026-04-10T00:00:00.000Z",
+          limits: [
+            { limitId: "claude", primary: { usedPercent, remainingPercent: 100 - usedPercent } },
+          ],
+        });
+        const provider = yield* makeManagedServerProvider<TestSettings>({
+          maintenanceCapabilities,
+          getSettings: Effect.succeed({ enabled: true }),
+          streamSettings: Stream.empty,
+          haveSettingsChanged: (previous, next) => previous.enabled !== next.enabled,
+          initialSnapshot: () => Effect.succeed(initialSnapshot),
+          checkProvider: Deferred.await(releaseCheck).pipe(Effect.as(refreshedSnapshot)),
+          // The check itself read no usage: what the snapshot already holds stands.
+          reconcileSnapshot: (previous, next) =>
+            previous.accountUsage ? { ...next, accountUsage: previous.accountUsage } : next,
+          enrichSnapshot: ({ updateSnapshot }) =>
+            Deferred.await(releaseEnrichment).pipe(
+              Effect.flatMap(() =>
+                updateSnapshot((current) => ({ ...current, message: "enriched" })),
+              ),
+            ),
+          refreshInterval: "1 hour",
+        });
+        const settled = yield* Stream.take(provider.streamChanges, 4).pipe(
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+        yield* Effect.yieldNow;
+
+        // Lands while the check is still running.
+        yield* provider.patchSnapshot((current) => ({ ...current, accountUsage: usage(10) }));
+        yield* Deferred.succeed(releaseCheck, undefined);
+        while ((yield* provider.getSnapshot).version === null) yield* Effect.yieldNow;
+        // Lands while the enrichment that started from the checked snapshot runs.
+        yield* provider.patchSnapshot((current) => ({ ...current, accountUsage: usage(20) }));
+        yield* Deferred.succeed(releaseEnrichment, undefined);
+        const updates = Array.from(yield* Fiber.join(settled));
+
+        assert.deepStrictEqual(updates[1], { ...refreshedSnapshot, accountUsage: usage(10) });
+        assert.deepStrictEqual(yield* provider.getSnapshot, {
+          ...refreshedSnapshot,
+          accountUsage: usage(20),
+          message: "enriched",
+        });
+      }),
+    ),
+  );
 });

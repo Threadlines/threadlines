@@ -148,7 +148,9 @@ import {
   renderProviderTraitsMenuContent,
   renderProviderTraitsPicker,
 } from "./composerProviderState";
+import { usePrimaryEnvironmentId } from "../../environments/primary";
 import { ContextWindowMeter } from "./ContextWindowMeter";
+import { ProviderUsageSignIn } from "./providerSignIn";
 import { buildExpandedImagePreview, type ExpandedImagePreview } from "./ExpandedImagePreview";
 import type { FilePreviewRequest } from "./FilePreviewDialog";
 import { basenameOfPath } from "../../vscode-icons";
@@ -427,6 +429,7 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
   compact: boolean;
   activeContextWindow: ReturnType<typeof deriveLatestContextWindowSnapshot>;
   providerAccountUsage: ProviderAccountUsagePresentation | null;
+  providerUsageInstanceId: ProviderInstanceId | null;
   contextWindowLabel: string | null;
   isPreparingWorktree: boolean;
   isRunning: boolean;
@@ -458,6 +461,14 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
       <ContextWindowMeter
         usage={props.activeContextWindow}
         accountUsage={props.providerAccountUsage}
+        accountUsageSignIn={
+          props.providerAccountUsage?.notice?.signIn && props.providerUsageInstanceId ? (
+            <ProviderUsageSignIn
+              instanceId={props.providerUsageInstanceId}
+              className="h-5 shrink-0 px-1.5 text-[10px] sm:h-5 sm:text-[10px]"
+            />
+          ) : undefined
+        }
         contextWindowLabel={props.contextWindowLabel}
         onResetAccountUsage={props.onResetAccountUsage}
         accountUsageResetInFlight={props.accountUsageResetInFlight}
@@ -1043,6 +1054,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     requestRateLimitResetCredit,
     rateLimitResetCreditDialog,
   } = useProviderRateLimitResetCredit();
+  const primaryEnvironmentId = usePrimaryEnvironmentId();
   const selectedProviderModels = useMemo<ReadonlyArray<ServerProvider["models"][number]>>(
     () => selectedProviderEntry?.models ?? [],
     [selectedProviderEntry],
@@ -4163,6 +4175,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                       compact={isComposerPrimaryActionsCompact}
                       activeContextWindow={activeContextWindow}
                       providerAccountUsage={meterProviderAccountUsage}
+                      providerUsageInstanceId={
+                        // Sign-in runs on this computer. A thread that lives on
+                        // another one gets the notice without the offer.
+                        environmentId === primaryEnvironmentId ? meterInstanceId : null
+                      }
                       contextWindowLabel={meterContextWindowLabel}
                       isRunning={hasActiveTurn}
                       showPlanFollowUpPrompt={

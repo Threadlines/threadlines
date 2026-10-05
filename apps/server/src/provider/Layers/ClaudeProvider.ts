@@ -6,17 +6,20 @@ import {
   type ProviderOptionDescriptor,
   ProviderDriverKind,
   RUNTIME_MODES,
+  type ServerProvider,
   type ServerProviderAccountTokenUsage,
-  type ServerProviderAccountUsage,
   type ServerProviderAuthCapabilities,
   type ServerProviderModel,
   type ServerProviderSlashCommand,
 } from "@threadlines/contracts";
 import * as DateTime from "effect/DateTime";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Result from "effect/Result";
+import * as Schema from "effect/Schema";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { hideWindowsConsole } from "@threadlines/shared/childProcess";
 import { planCliSpawn } from "../../cliSpawn.ts";
@@ -48,8 +51,20 @@ import {
   type ServerProviderDraft,
 } from "../providerSnapshot.ts";
 import { detectProviderBinary } from "../providerDetection.ts";
-import { makeClaudeEnvironment } from "../Drivers/ClaudeHome.ts";
-import { CLAUDE_CODE_OAUTH_TOKEN_ENV } from "./ClaudeUsage.ts";
+import {
+  makeClaudeEnvironment,
+  resolveClaudeConfigDir,
+  resolveClaudeHomePath,
+} from "../Drivers/ClaudeHome.ts";
+import {
+  carryClaudeAccountUsageForward,
+  CLAUDE_CODE_OAUTH_TOKEN_ENV,
+  type ClaudeStoredSignIn,
+  type ClaudeUsageCheck,
+  type ClaudeUsageUnavailableReason,
+  checkClaudeSignInRenewalDue,
+  preferNewerClaudeUsageReadings,
+} from "./ClaudeUsage.ts";
 
 const DEFAULT_CLAUDE_MODEL_CAPABILITIES: ModelCapabilities = createModelCapabilities({
   optionDescriptors: [],
@@ -803,33 +818,144 @@ function claudeAuthMetadata(input: {
   return undefined;
 }
 
+/** What the Usage badge says for each reason a check produced no numbers. */
+const CLAUDE_USAGE_UNAVAILABLE_DETAIL: Record<ClaudeUsageUnavailableReason, string> = {
+  signed_out: "Claude is signed out. Sign in to check usage.",
+  rate_limited: "Claude is limiting how often usage can be checked. Trying again soon.",
+  unreachable: "Could not check usage just now. Trying again soon.",
+};
+
 export function claudeAuthCapabilities(input: {
   readonly isApiKeyAuth: boolean;
   readonly isLongLivedOAuthAuth: boolean;
-  readonly hasAccountUsage: boolean;
+  /** The usage check's outcome; `undefined` when no check ran. */
+  readonly usageCheck: ClaudeUsageCheck | undefined;
 }): ServerProviderAuthCapabilities {
   const chatDetail = input.isLongLivedOAuthAuth
     ? "Verified on the next chat."
     : "Sign-in found; verified on the next chat.";
-  const usage = input.hasAccountUsage
-    ? {
-        status: "verified" as const,
-        detail: "Usage verified.",
-      }
-    : {
-        status: "unavailable" as const,
-        detail: input.isApiKeyAuth
-          ? "Subscription usage is unavailable with an API key."
-          : input.isLongLivedOAuthAuth
-            ? "Normal Claude sign-in required for usage."
-            : "Refresh Claude sign-in to restore usage.",
-      };
+  const usage: NonNullable<ServerProviderAuthCapabilities["usage"]> =
+    input.usageCheck?._tag === "Fresh"
+      ? { status: "verified", detail: "Usage verified." }
+      : input.isApiKeyAuth
+        ? { status: "unavailable", detail: "Subscription usage is unavailable with an API key." }
+        : input.usageCheck === undefined
+          ? { status: "unavailable", detail: "Usage was not checked." }
+          : {
+              status: "unavailable",
+              reason: input.usageCheck.reason,
+              detail:
+                input.usageCheck.reason === "signed_out" && input.isLongLivedOAuthAuth
+                  ? "Claude is signed out. Chat still works on your saved token. Sign in to check usage."
+                  : CLAUDE_USAGE_UNAVAILABLE_DETAIL[input.usageCheck.reason],
+            };
   return {
     chat: {
       status: "configured",
       detail: chatDetail,
     },
     usage,
+  };
+}
+
+/**
+ * The account a snapshot's usage numbers belong to, when known: the normal
+ * sign-in's account for a chat-only token, else the chat account.
+ */
+function claudeUsageAccountKey(auth: ServerProvider["auth"]): string | undefined {
+  return auth.usageEmail ?? auth.email;
+}
+
+/**
+ * Whether chat runs on a different account than the one usage is read for.
+ * `usageEmail` is only set when it is not the chat email, so both being
+ * known means they differ. Chat usage events then describe another account
+ * and must not be folded into these numbers.
+ */
+export function claudeChatAndUsageAccountsDiffer(auth: ServerProvider["auth"]): boolean {
+  return auth.email !== undefined && auth.usageEmail !== undefined;
+}
+
+/**
+ * Folds the usage the previous snapshot knew into a freshly checked one, so
+ * one failed check (a rate limit, a slow network, a signed-out normal
+ * sign-in) does not blank the meters, and a check that did read usage does
+ * not roll back a newer reading a chat reply published while it ran. The
+ * check's own verdict stays on `auth.capabilities.usage`; only numbers move.
+ *
+ * Nothing is folded in once the numbers can no longer be this account's: the
+ * provider is off, signed out of chat, on an API key, or on a different
+ * account. A check that learned no account at all (a probe that timed out)
+ * keeps the previous owner as `usageEmail`, so the numbers stay tied to the
+ * account they were read for and a later account change is still seen.
+ */
+export function carryClaudeUsageAcrossChecks(
+  previous: ServerProvider,
+  next: ServerProvider,
+): ServerProvider {
+  if (!next.enabled || next.auth.status === "unauthenticated" || next.auth.type === "apiKey") {
+    return next;
+  }
+  const previousAccount = claudeUsageAccountKey(previous.auth);
+  const nextAccount = claudeUsageAccountKey(next.auth);
+  if (previousAccount && nextAccount && previousAccount !== nextAccount) return next;
+
+  if (next.auth.capabilities?.usage?.status === "verified") {
+    const accountUsage = preferNewerClaudeUsageReadings(previous.accountUsage, next.accountUsage);
+    return accountUsage === next.accountUsage || !accountUsage ? next : { ...next, accountUsage };
+  }
+
+  const checkedAtMs = Date.parse(next.checkedAt);
+  const carried = carryClaudeAccountUsageForward(
+    previous.accountUsage,
+    Number.isFinite(checkedAtMs) ? checkedAtMs : Date.now(),
+  );
+  if (!carried) return next;
+  const { tokenUsage: carriedTokenUsage, ...carriedLimits } = carried;
+  const tokenUsage = next.accountUsage?.tokenUsage ?? carriedTokenUsage;
+  return {
+    ...next,
+    auth:
+      nextAccount === undefined && previousAccount !== undefined
+        ? { ...next.auth, usageEmail: previousAccount }
+        : next.auth,
+    accountUsage: { ...carriedLimits, ...(tokenUsage ? { tokenUsage } : {}) },
+  };
+}
+
+/**
+ * The pending snapshot an instance starts from, carrying the usage its last
+ * run saved to the status cache so a restart does not blank the meters
+ * before the first check lands. The cached account identity comes along so
+ * `carryClaudeUsageAcrossChecks` can still tell a changed account.
+ */
+export function seedClaudeProviderUsage(
+  pending: ServerProvider,
+  cached: ServerProvider | undefined,
+): ServerProvider {
+  if (
+    !cached ||
+    !pending.enabled ||
+    cached.instanceId !== pending.instanceId ||
+    cached.driver !== pending.driver ||
+    cached.auth.type === "apiKey"
+  ) {
+    return pending;
+  }
+  const carried = carryClaudeAccountUsageForward(
+    cached.accountUsage,
+    Date.parse(pending.checkedAt),
+  );
+  if (!carried) return pending;
+  const { tokenUsage: _tokenUsage, ...limits } = carried;
+  return {
+    ...pending,
+    auth: {
+      ...pending.auth,
+      ...(cached.auth.email ? { email: cached.auth.email } : {}),
+      ...(cached.auth.usageEmail ? { usageEmail: cached.auth.usageEmail } : {}),
+    },
+    accountUsage: limits,
   };
 }
 
@@ -1059,16 +1185,80 @@ function waitForAbortSignal(signal: AbortSignal): Promise<void> {
 }
 
 /**
+ * How long a status check waits in line for a renewal to land before it
+ * hands the CLI to the background. Most renewals take well under a second,
+ * and a manual recheck waits on this.
+ */
+const SIGN_IN_RENEWAL_SETTLE_WAIT = Duration.seconds(3);
+/**
+ * How long a CLI that may still be renewing is kept running in the
+ * background. The CLI puts no limit of its own on a renewal request (one left
+ * unanswered was still open after two minutes), so this is the point past
+ * which an answer is not coming and an idle CLI is not worth keeping.
+ */
+const SIGN_IN_RENEWAL_KEEP_ALIVE = Duration.seconds(60);
+const SIGN_IN_RENEWAL_POLL_INTERVAL = Duration.millis(500);
+
+/**
+ * Stops a short-lived CLI without cutting off a sign-in renewal it may have
+ * started.
+ *
+ * A CLI started on a sign-in that is about to expire renews it during
+ * startup, and the server rotates the refresh token as it does. Claude Code
+ * 2.1.289 waits only two seconds for that renewal once it is told to stop,
+ * then exits without saving the new token, which leaves the stored sign-in
+ * dead. So while a renewal is due the CLI is left running until the store
+ * shows the renewal landed (or the sign-in is gone): first in line for
+ * `settleWait`, then in the background for up to `keepAlive`, so the caller
+ * is never held up for long. With no renewal due it stops at once. A renewal
+ * still unanswered after `keepAlive` is stopped all the same.
+ */
+export const stopClaudeCliAfterSignInRenewal = (input: {
+  readonly renewalDue: boolean;
+  /** Whether a CLI started now would still try to renew the stored sign-in. */
+  readonly isRenewalDue: Effect.Effect<boolean>;
+  readonly stop: Effect.Effect<void>;
+  readonly settleWait?: Duration.Input;
+  readonly keepAlive?: Duration.Input;
+}): Effect.Effect<void> => {
+  if (!input.renewalDue) return input.stop;
+  const settled = Effect.gen(function* () {
+    while (yield* input.isRenewalDue) {
+      yield* Effect.sleep(SIGN_IN_RENEWAL_POLL_INTERVAL);
+    }
+  });
+  return settled.pipe(
+    Effect.timeoutOption(input.settleWait ?? SIGN_IN_RENEWAL_SETTLE_WAIT),
+    Effect.flatMap((landed) =>
+      Option.isSome(landed)
+        ? input.stop
+        : settled.pipe(
+            Effect.timeoutOption(input.keepAlive ?? SIGN_IN_RENEWAL_KEEP_ALIVE),
+            Effect.ensuring(input.stop),
+            Effect.forkDetach,
+            Effect.asVoid,
+          ),
+    ),
+  );
+};
+
+/**
  * Probe account information by spawning a lightweight Claude Agent SDK
  * session and reading the initialization result.
  *
  * We pass a never-yielding AsyncIterable as the prompt so that no user
  * message is ever written to the subprocess stdin. This means the Claude
  * Code subprocess completes its local initialization IPC (returning
- * account info and slash commands) but never starts an API request to
- * Anthropic. We read the init data and then abort the subprocess.
+ * account info and slash commands) but never starts a model request. We
+ * read the init data and then stop the subprocess.
  *
- * The probe loads no MCP servers. It runs every few minutes and is killed
+ * Startup is not free of side effects, though: on a normal sign-in that is
+ * about to expire the CLI renews it, and stopping the CLI mid-renewal loses
+ * the new token. `readStoredSignIn` lets the probe see that coming and leave
+ * the CLI running until the renewal has landed (see
+ * `stopClaudeCliAfterSignInRenewal`).
+ *
+ * The probe loads no MCP servers. It runs every few minutes and is stopped
  * right after init, so a server it connected could be killed mid OAuth
  * refresh: the server rotates the refresh token, the new one dies with the
  * process, and the user has to sign in again. Init data doesn't depend on
@@ -1080,10 +1270,26 @@ function waitForAbortSignal(signal: AbortSignal): Promise<void> {
 const probeClaudeCapabilities = (
   claudeSettings: ClaudeSettings,
   environment: NodeJS.ProcessEnv = process.env,
+  options?: {
+    /** The instance's stored normal sign-in, for the renewal guard above. */
+    readonly readStoredSignIn?: Effect.Effect<ClaudeStoredSignIn>;
+  },
 ) => {
   const abort = new AbortController();
+  const stop = Effect.sync(() => {
+    if (!abort.signal.aborted) abort.abort();
+  });
   return Effect.gen(function* () {
     const claudeEnvironment = yield* makeClaudeEnvironment(claudeSettings, environment);
+    const isRenewalDue = options?.readStoredSignIn
+      ? checkClaudeSignInRenewalDue({
+          readStoredSignIn: options.readStoredSignIn,
+          environment: claudeEnvironment,
+        })
+      : Effect.succeed(false);
+    // Read before the CLI starts: this is the state it will act on.
+    const renewalDue = yield* isRenewalDue;
+    const stopAfterRenewal = stopClaudeCliAfterSignInRenewal({ renewalDue, isRenewalDue, stop });
     return yield* Effect.tryPromise(async () => {
       const q = claudeQuery({
         // Never yield — we only need initialization data, not a conversation.
@@ -1119,14 +1325,13 @@ const probeClaudeCapabilities = (
         models: init.models ?? [],
         slashCommands: parseClaudeInitializationCommands(init.commands),
       } satisfies ClaudeCapabilitiesProbe;
-    });
+    }).pipe(
+      Effect.timeoutOption(CAPABILITIES_PROBE_TIMEOUT_MS),
+      // Every way out goes through the renewal guard: a probe that failed,
+      // timed out or was interrupted may have started a renewal all the same.
+      Effect.onExit(() => stopAfterRenewal),
+    );
   }).pipe(
-    Effect.ensuring(
-      Effect.sync(() => {
-        if (!abort.signal.aborted) abort.abort();
-      }),
-    ),
-    Effect.timeoutOption(CAPABILITIES_PROBE_TIMEOUT_MS),
     Effect.result,
     Effect.map((result) => {
       if (Result.isFailure(result)) return undefined;
@@ -1153,21 +1358,6 @@ const runClaudeCommand = Effect.fn("runClaudeCommand")(function* (
   return yield* spawnAndCollect(claudeSettings.binaryPath, command);
 });
 
-export function parseClaudeAuthStatusEmail(stdout: string): string | undefined {
-  try {
-    const parsed = JSON.parse(stdout) as {
-      readonly loggedIn?: unknown;
-      readonly account?: { readonly email?: unknown } | null;
-    };
-    if (parsed.loggedIn === false) return undefined;
-    return typeof parsed.account?.email === "string"
-      ? nonEmptyProbeString(parsed.account.email)
-      : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
 /**
  * Copy of `environment` without any token/API-key overrides, so a spawned CLI
  * falls back to the normal Claude sign-in credential (macOS Keychain or
@@ -1181,25 +1371,57 @@ function stripClaudeTokenAuth(environment: NodeJS.ProcessEnv): NodeJS.ProcessEnv
   return normalAuthEnvironment;
 }
 
+const ClaudeGlobalConfigAccount = Schema.fromJsonString(
+  Schema.Struct({
+    oauthAccount: Schema.optional(
+      Schema.NullOr(Schema.Struct({ emailAddress: Schema.optional(Schema.NullOr(Schema.String)) })),
+    ),
+  }),
+);
+const decodeClaudeGlobalConfigAccount = Schema.decodeUnknownEffect(ClaudeGlobalConfigAccount);
+
+/**
+ * The email of the account behind an instance's normal Claude sign-in, read
+ * from the account record Claude Code keeps in its own config file
+ * (`.config.json` in the config folder on old installs, else `.claude.json`
+ * in `CLAUDE_CONFIG_DIR` or the home folder).
+ *
+ * Read from the file rather than `claude auth status`: that command starts a
+ * renewal of a sign-in that is about to expire and exits without waiting for
+ * it, which can lose the renewed token. The record outlives a sign-out, so
+ * callers only use this while a stored sign-in exists.
+ */
 export const readClaudeNormalAuthEmail = Effect.fn("readClaudeNormalAuthEmail")(function* (
   claudeSettings: ClaudeSettings,
   environment: NodeJS.ProcessEnv = process.env,
-) {
-  const normalAuthEnvironment = stripClaudeTokenAuth(environment);
-
-  const result = yield* runClaudeCommand(
-    claudeSettings,
-    ["auth", "status"],
-    normalAuthEnvironment,
-  ).pipe(Effect.timeoutOption(DEFAULT_TIMEOUT_MS), Effect.result);
-  if (Result.isFailure(result) || Option.isNone(result.success)) return undefined;
-  if (result.success.value.code !== 0) return undefined;
-  return parseClaudeAuthStatusEmail(result.success.value.stdout);
+): Effect.fn.Return<string | undefined, never, FileSystem.FileSystem | Path.Path> {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const claudeEnvironment = yield* makeClaudeEnvironment(claudeSettings, environment);
+  const configDir = yield* resolveClaudeConfigDir(claudeSettings, claudeEnvironment);
+  const explicitConfigDir = claudeEnvironment.CLAUDE_CONFIG_DIR?.trim() ?? "";
+  const candidates = [
+    path.join(configDir, ".config.json"),
+    path.join(
+      explicitConfigDir.length > 0 ? configDir : yield* resolveClaudeHomePath(claudeSettings),
+      ".claude.json",
+    ),
+  ];
+  for (const candidate of candidates) {
+    const exists = yield* fileSystem.exists(candidate).pipe(Effect.orElseSucceed(() => false));
+    if (!exists) continue;
+    return yield* fileSystem.readFileString(candidate).pipe(
+      Effect.flatMap((content) => decodeClaudeGlobalConfigAccount(content)),
+      Effect.map((config) => nonEmptyProbeString(config.oauthAccount?.emailAddress ?? "")),
+      Effect.orElseSucceed(() => undefined),
+    );
+  }
+  return undefined;
 });
 
-// A renewal needs a real API round trip: the CLI refreshes its OAuth
-// credential lazily when a turn needs a token, not on initialization (the
-// capabilities probe above never reaches the API, so it renews nothing).
+// A real turn renews on every CLI version: it cannot reach the model without
+// a working token. Startup alone renews too on recent CLIs (see
+// `probeClaudeCapabilities`), but that is not something to build a renewal on.
 const CREDENTIAL_REFRESH_TIMEOUT_MS = 60_000;
 const CREDENTIAL_REFRESH_PROMPT = "Reply with exactly: ok";
 const CLAUDE_VERSION_PROBE_TIMEOUT_MS = 30_000;
@@ -1210,19 +1432,37 @@ const CLAUDE_VERSION_PROBE_TIMEOUT_MS = 30_000;
  * the credential store (macOS Keychain or `~/.claude/.credentials.json`).
  * Threadlines never implements OAuth refresh itself — the CLI owns the store
  * and the refresh-token rotation; live-verified to persist immediately from
- * a short non-interactive run. Resolves to true when the turn completed,
- * i.e. the sign-in works and a renewed credential should now be stored.
+ * a short non-interactive run. Resolves to true when the turn got an answer,
+ * i.e. the sign-in works and a renewed credential should now be stored. A
+ * turn the API refused still ends in a `success` result, flagged `is_error`,
+ * so that flag decides. The CLI renews and saves before the model request, so
+ * stopping it once the result is in cannot cut the renewal off; every other
+ * way out goes through `stopClaudeCliAfterSignInRenewal`.
  */
 export const refreshClaudeOAuthCredential = (
   claudeSettings: ClaudeSettings,
   environment: NodeJS.ProcessEnv = process.env,
+  options?: {
+    /** The instance's stored normal sign-in, for the renewal guard. */
+    readonly readStoredSignIn?: Effect.Effect<ClaudeStoredSignIn>;
+  },
 ): Effect.Effect<boolean, never, Path.Path> => {
   const abort = new AbortController();
+  const stop = Effect.sync(() => {
+    if (!abort.signal.aborted) abort.abort();
+  });
   return Effect.gen(function* () {
     const claudeEnvironment = yield* makeClaudeEnvironment(
       claudeSettings,
       stripClaudeTokenAuth(environment),
     );
+    const isRenewalDue = options?.readStoredSignIn
+      ? checkClaudeSignInRenewalDue({
+          readStoredSignIn: options.readStoredSignIn,
+          environment: claudeEnvironment,
+        })
+      : Effect.succeed(false);
+    const renewalDue = yield* isRenewalDue;
     return yield* Effect.tryPromise(async () => {
       const q = claudeQuery({
         prompt: CREDENTIAL_REFRESH_PROMPT,
@@ -1245,17 +1485,17 @@ export const refreshClaudeOAuthCredential = (
         },
       });
       for await (const message of q) {
-        if (message.type === "result") return message.subtype === "success";
+        if (message.type === "result") return message.subtype === "success" && !message.is_error;
       }
       return false;
-    });
+    }).pipe(
+      Effect.timeoutOption(CREDENTIAL_REFRESH_TIMEOUT_MS),
+      // A turn that answered has renewed and saved already, so the guard
+      // stops the CLI at once. One that timed out or was interrupted (an
+      // instance rebuilt mid-turn) may be renewing right now, and waits.
+      Effect.onExit(() => stopClaudeCliAfterSignInRenewal({ renewalDue, isRenewalDue, stop })),
+    );
   }).pipe(
-    Effect.ensuring(
-      Effect.sync(() => {
-        if (!abort.signal.aborted) abort.abort();
-      }),
-    ),
-    Effect.timeoutOption(CREDENTIAL_REFRESH_TIMEOUT_MS),
     Effect.result,
     Effect.map(
       (result) =>
@@ -1301,13 +1541,17 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
     claudeSettings: ClaudeSettings,
   ) => Effect.Effect<ClaudeCapabilitiesProbe | undefined>,
   environment: NodeJS.ProcessEnv = process.env,
-  resolveAccountUsage?: (
-    claudeSettings: ClaudeSettings,
-  ) => Effect.Effect<ServerProviderAccountUsage | undefined>,
+  resolveAccountUsage?: (claudeSettings: ClaudeSettings) => Effect.Effect<ClaudeUsageCheck>,
   resolveUsageAuthEmail?: (claudeSettings: ClaudeSettings) => Effect.Effect<string | undefined>,
   resolveTokenUsage?: (
     claudeSettings: ClaudeSettings,
   ) => Effect.Effect<ServerProviderAccountTokenUsage | undefined>,
+  /**
+   * Whether a CLI started now would try to renew the stored sign-in. The
+   * `claude auth status` fallback below is skipped while it would: that
+   * command starts the renewal and exits without waiting for it.
+   */
+  isSignInRenewalDue?: (claudeSettings: ClaudeSettings) => Effect.Effect<boolean>,
 ): Effect.fn.Return<
   ServerProviderDraft,
   never,
@@ -1428,7 +1672,11 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
   )
     ? true
     : undefined;
-  if (authenticated === undefined) {
+  const renewalDue =
+    authenticated === undefined && isSignInRenewalDue
+      ? yield* isSignInRenewalDue(claudeSettings).pipe(Effect.orElseSucceed(() => true))
+      : false;
+  if (authenticated === undefined && !renewalDue) {
     const authProbe = yield* runClaudeCommand(claudeSettings, ["auth", "status"], environment).pipe(
       Effect.timeoutOption(DEFAULT_TIMEOUT_MS),
       Effect.result,
@@ -1485,15 +1733,20 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
   const isLongLivedOAuthAuth = authMetadata?.type === "longLivedOAuthToken";
   // Subscription usage comes from the Claude Code OAuth credential, which
   // does not exist for API-key auth — skip the lookup entirely there.
-  const [accountUsage, tokenUsage] = yield* Effect.all(
+  const [usageCheck, tokenUsage] = yield* Effect.all(
     [
       resolveAccountUsage && !isApiKeyAuth
-        ? resolveAccountUsage(claudeSettings).pipe(Effect.orElseSucceed(() => undefined))
+        ? resolveAccountUsage(claudeSettings).pipe(
+            Effect.orElseSucceed((): ClaudeUsageCheck | undefined => undefined),
+          )
         : Effect.succeed(undefined),
       tokenUsageEffect,
     ],
     { concurrency: "unbounded" },
   );
+  // A check without numbers leaves them out here; the driver folds the last
+  // reading back in when it publishes (`carryClaudeUsageAcrossChecks`).
+  const accountUsage = usageCheck?._tag === "Fresh" ? usageCheck.usage : undefined;
   const localTokenAccountUsage = tokenUsage
     ? {
         source: "claude-oauth-usage" as const,
@@ -1505,8 +1758,10 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
   const combinedAccountUsage = accountUsage
     ? { ...accountUsage, ...(tokenUsage ? { tokenUsage } : {}) }
     : localTokenAccountUsage;
+  // The usage account only matters while a normal sign-in exists to read it for.
+  const normalSignInGone = usageCheck?._tag === "Unavailable" && usageCheck.reason === "signed_out";
   const resolvedUsageEmail =
-    resolveUsageAuthEmail && isLongLivedOAuthAuth
+    resolveUsageAuthEmail && isLongLivedOAuthAuth && !normalSignInGone
       ? yield* resolveUsageAuthEmail(claudeSettings).pipe(Effect.orElseSucceed(() => undefined))
       : undefined;
   const usageEmail =
@@ -1529,11 +1784,7 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
         ...(capabilities.email ? { email: capabilities.email } : {}),
         ...(authMetadata ? authMetadata : {}),
         ...(usageEmail ? { usageEmail } : {}),
-        capabilities: claudeAuthCapabilities({
-          isApiKeyAuth,
-          isLongLivedOAuthAuth,
-          hasAccountUsage: accountUsage !== undefined,
-        }),
+        capabilities: claudeAuthCapabilities({ isApiKeyAuth, isLongLivedOAuthAuth, usageCheck }),
       },
       ...(combinedAccountUsage ? { accountUsage: combinedAccountUsage } : {}),
       ...(upgradeMessage ? { message: upgradeMessage } : {}),

@@ -32,16 +32,21 @@ import { ServerConfig } from "../../config.ts";
 import { ProviderDriverError } from "../Errors.ts";
 import { makeClaudeAdapter } from "../Layers/ClaudeAdapter.ts";
 import {
+  carryClaudeUsageAcrossChecks,
   checkClaudeProviderStatus,
+  claudeChatAndUsageAccountsDiffer,
   makePendingClaudeProvider,
   probeClaudeCapabilities,
   readClaudeNormalAuthEmail,
   refreshClaudeOAuthCredential,
+  seedClaudeProviderUsage,
 } from "../Layers/ClaudeProvider.ts";
 import { makeClaudeTokenUsageHistoryReader } from "../Layers/ClaudeTokenUsageHistory.ts";
 import {
   applyClaudeRateLimitInfoToAccountUsage,
+  checkClaudeSignInRenewalDue,
   fetchClaudeAccountUsage,
+  readClaudeStoredSignIn,
 } from "../Layers/ClaudeUsage.ts";
 import { ProviderEventLoggers } from "../Layers/ProviderEventLoggers.ts";
 import { makeManagedServerProvider } from "../makeManagedServerProvider.ts";
@@ -51,6 +56,7 @@ import {
   type ProviderInstance,
 } from "../ProviderDriver.ts";
 import type { ServerProviderDraft } from "../providerSnapshot.ts";
+import { readProviderStatusCache, resolveProviderStatusCachePath } from "../providerStatusCache.ts";
 import {
   mergeProviderInstanceEnvironment,
   refreshProviderInstanceEnvironment,
@@ -62,11 +68,13 @@ import {
   normalizeCommandPath,
   resolveProviderMaintenanceCapabilitiesEffect,
 } from "../providerMaintenance.ts";
+import { throwawayClaudeSpawnViolation } from "../claudeThrowawayIsolation.ts";
 import { materializeClaudeAccountFolder } from "./ClaudeAccountFolder.ts";
 import {
   claudeInstanceBaseEnvironment,
   makeClaudeCapabilitiesCacheKey,
   makeClaudeContinuationGroupKey,
+  makeClaudeEnvironment,
   resolveClaudeConfigDir,
   resolveClaudeMainConfigDir,
 } from "./ClaudeHome.ts";
@@ -333,6 +341,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
       const fileSystem = yield* FileSystem.FileSystem;
       const httpClient = yield* HttpClient.HttpClient;
       const eventLoggers = yield* ProviderEventLoggers;
+      const serverConfig = yield* ServerConfig;
       const processEnv = mergeProviderInstanceEnvironment(
         environment,
         claudeInstanceBaseEnvironment(config),
@@ -342,6 +351,18 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
         instanceId,
       });
       const effectiveConfig = { ...config, enabled } satisfies ClaudeSettings;
+      // Checked before the folder is touched: laying an account folder over a
+      // throwaway run's main folder would re-link a real account's history.
+      const isolationViolation = throwawayClaudeSpawnViolation(
+        yield* makeClaudeEnvironment(config, processEnv),
+      );
+      if (isolationViolation !== undefined) {
+        return yield* new ProviderDriverError({
+          driver: DRIVER_KIND,
+          instanceId,
+          detail: isolationViolation,
+        });
+      }
       // An account folder is laid over the main Claude folder before anything
       // runs in it, so the first turn already sees the user's settings and
       // writes its history where other Claude instances can resume it.
@@ -387,13 +408,27 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
 
       const textGeneration = yield* makeClaudeTextGeneration(effectiveConfig, processEnv);
 
+      // The normal sign-in this instance's CLI would act on. A status check
+      // reads it to avoid starting, or stopping, a CLI mid-renewal.
+      const readStoredSignIn = readClaudeStoredSignIn(effectiveConfig, {
+        environment: processEnv,
+      }).pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+        Effect.provideService(FileSystem.FileSystem, fileSystem),
+        Effect.provideService(Path.Path, path),
+      );
+      const isSignInRenewalDue = checkClaudeSignInRenewalDue({
+        readStoredSignIn,
+        environment: processEnv,
+      });
+
       // Per-instance capabilities cache: keyed on binary + resolved HOME so
       // account-specific probes never share auth metadata across instances.
       const capabilitiesProbeCache = yield* Cache.make({
         capacity: 1,
         timeToLive: CAPABILITIES_PROBE_TTL,
         lookup: () =>
-          probeClaudeCapabilities(effectiveConfig, processEnv).pipe(
+          probeClaudeCapabilities(effectiveConfig, processEnv, { readStoredSignIn }).pipe(
             Effect.provideService(Path.Path, path),
           ),
       });
@@ -410,7 +445,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
           fetchClaudeAccountUsage(
             settings,
             processEnv,
-            refreshClaudeOAuthCredential(settings, processEnv).pipe(
+            refreshClaudeOAuthCredential(settings, processEnv, { readStoredSignIn }).pipe(
               Effect.provideService(Path.Path, path),
             ),
           ).pipe(
@@ -421,13 +456,25 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
           ),
         (settings) =>
           readClaudeNormalAuthEmail(settings, processEnv).pipe(
-            Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+            Effect.provideService(FileSystem.FileSystem, fileSystem),
             Effect.provideService(Path.Path, path),
           ),
         readTokenUsage ? () => readTokenUsage : undefined,
+        () => isSignInRenewalDue,
       ).pipe(
         Effect.map(stampIdentity),
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+        Effect.provideService(Path.Path, path),
+      );
+
+      // The usage this instance last saved, so a restart (or a rebuild after a
+      // settings change) starts from the last reading instead of empty meters.
+      const cachedSnapshot = yield* resolveProviderStatusCachePath({
+        cacheDir: serverConfig.providerStatusCacheDir,
+        instanceId,
+      }).pipe(
+        Effect.flatMap(readProviderStatusCache),
+        Effect.provideService(FileSystem.FileSystem, fileSystem),
         Effect.provideService(Path.Path, path),
       );
 
@@ -452,12 +499,20 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
         streamSettings: Stream.never,
         haveSettingsChanged: () => false,
         initialSnapshot: (settings) =>
-          makePendingClaudeProvider(settings, processEnv).pipe(Effect.map(stampIdentity)),
+          makePendingClaudeProvider(settings, processEnv).pipe(
+            Effect.map(stampIdentity),
+            Effect.map((pending) => seedClaudeProviderUsage(pending, cachedSnapshot)),
+          ),
         checkProvider,
-        enrichSnapshot: ({ snapshot, publishSnapshot }) =>
+        reconcileSnapshot: carryClaudeUsageAcrossChecks,
+        // Only the advisory is this enrichment's to write. Usage and chat
+        // sign-in may have been patched since it started from `snapshot`.
+        enrichSnapshot: ({ snapshot, updateSnapshot }) =>
           enrichProviderSnapshotWithVersionAdvisory(snapshot, maintenanceCapabilities).pipe(
             Effect.provideService(HttpClient.HttpClient, httpClient),
-            Effect.flatMap((enrichedSnapshot) => publishSnapshot(enrichedSnapshot)),
+            Effect.flatMap(({ versionAdvisory }) =>
+              updateSnapshot((current) => ({ ...current, versionAdvisory })),
+            ),
           ),
         refreshInterval: SNAPSHOT_REFRESH_INTERVAL,
         shouldRetrySnapshot: (provider) => provider.statusReason === "provider_probe_timeout",
@@ -499,6 +554,9 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
           Effect.gen(function* () {
             const checkedAt = DateTime.formatIso(yield* DateTime.now);
             yield* snapshot.patchSnapshot((current) => {
+              // The event describes the chat account. When usage is read for
+              // another account, it is not these numbers' to change.
+              if (claudeChatAndUsageAccountsDiffer(current.auth)) return null;
               const accountUsage = applyClaudeRateLimitInfoToAccountUsage(
                 current.accountUsage,
                 rateLimitInfo,

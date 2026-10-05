@@ -20,7 +20,10 @@ import type { ReactNode } from "react";
 
 import { cn } from "../../lib/utils";
 import { useAntigravityNextStep } from "../settings/useAntigravityNextStep";
-import type { ProviderConnectFlowController } from "../settings/useProviderConnectFlow";
+import {
+  type ProviderConnectFlowController,
+  useProviderConnectFlow,
+} from "../settings/useProviderConnectFlow";
 import { Button } from "../ui/button";
 
 /**
@@ -165,6 +168,29 @@ export function ProviderSignInSettingsLink({
     >
       {label}
     </Button>
+  );
+}
+
+/**
+ * The Sign in a usage meter offers once the provider's sign-in is confirmed
+ * gone. It runs the provider's own sign-in right where it is shown, and
+ * reports the run in the same spot. Mount it only while the offer is on
+ * screen: it follows the instance's sign-in session for as long as it lives.
+ */
+export function ProviderUsageSignIn({
+  instanceId,
+  className,
+}: {
+  readonly instanceId: ProviderInstanceId;
+  readonly className?: string | undefined;
+}): ReactNode {
+  const controller = useProviderConnectFlow({ instanceId, flow: "login" });
+  const view = toProviderSignInFlowView({ instanceId, controller });
+  return (
+    <>
+      <ProviderSignInButton view={view} variant="outline" className={className} />
+      <ProviderSignInInlineStatus view={view} />
+    </>
   );
 }
 

@@ -41,13 +41,18 @@ import {
   parseCodexModelListResponse,
   type CodexAppServerProviderSnapshot,
 } from "./CodexProvider.ts";
-import { checkClaudeProviderStatus } from "./ClaudeProvider.ts";
+import {
+  carryClaudeUsageAcrossChecks,
+  checkClaudeProviderStatus,
+  readClaudeNormalAuthEmail,
+  stopClaudeCliAfterSignInRenewal,
+} from "./ClaudeProvider.ts";
 import { checkOpenCodeProviderStatus } from "./OpenCodeProvider.ts";
 import {
   makeClaudeTokenUsageHistoryReader,
   parseClaudeStatsTokenUsage,
 } from "./ClaudeTokenUsageHistory.ts";
-import { CLAUDE_CODE_OAUTH_TOKEN_ENV } from "./ClaudeUsage.ts";
+import { CLAUDE_CODE_OAUTH_TOKEN_ENV, type ClaudeUsageCheck } from "./ClaudeUsage.ts";
 import { NoOpProviderEventLoggers, ProviderEventLoggers } from "./ProviderEventLoggers.ts";
 import { ProviderInstanceRegistryHydrationLive } from "./ProviderInstanceRegistryHydration.ts";
 import {
@@ -1223,6 +1228,43 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
         assert.strictEqual(repairedByNextAssistantMessage?.status, "ready");
         assert.strictEqual(repairedByNextAssistantMessage?.statusReason, undefined);
         assert.strictEqual(repairedByNextAssistantMessage?.message, undefined);
+      });
+
+      it("keeps the usage state a driver reports while restoring its numbers", () => {
+        const usage: ServerProviderAccountUsage = {
+          source: "claude-oauth-usage",
+          checkedAt: "2026-06-10T15:00:00.000Z",
+          primaryLimitId: "claude",
+          limits: [{ limitId: "claude", primary: { usedPercent: 40, remainingPercent: 60 } }],
+        };
+        const previousProvider = {
+          instanceId: ProviderInstanceId.make("claudeAgent"),
+          driver: ProviderDriverKind.make("claudeAgent"),
+          status: "ready",
+          enabled: true,
+          installed: true,
+          auth: {
+            status: "authenticated",
+            type: "max",
+            capabilities: { usage: { status: "verified", detail: "Usage verified." } },
+          },
+          checkedAt: "2026-06-10T15:00:00.000Z",
+          version: "2.1.289",
+          accountUsage: usage,
+          models: [],
+          slashCommands: [],
+          skills: [],
+        } as const satisfies ServerProvider;
+        const { accountUsage: _accountUsage, ...withoutUsage } = previousProvider;
+        const signedOut = { status: "unavailable", reason: "signed_out" } as const;
+        const merged = mergeProviderSnapshot(previousProvider, {
+          ...withoutUsage,
+          auth: { ...withoutUsage.auth, capabilities: { usage: signedOut } },
+          checkedAt: "2026-06-10T15:05:00.000Z",
+        });
+
+        assert.deepStrictEqual(merged.accountUsage, usage);
+        assert.deepStrictEqual(merged.auth.capabilities?.usage, signedOut);
       });
 
       it("does not preserve usage when the usage auth email changes", () => {
@@ -2907,7 +2949,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
             defaultClaudeSettings,
             claudeCapabilities({ subscriptionType: "pro" }),
             process.env,
-            () => Effect.succeed(usage),
+            () => Effect.succeed({ _tag: "Fresh" as const, usage }),
           );
           assert.strictEqual(status.status, "ready");
           assert.deepStrictEqual(status.accountUsage, usage);
@@ -3053,7 +3095,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
             () =>
               Effect.sync(() => {
                 usageRequested = true;
-                return undefined;
+                return { _tag: "Unavailable" as const, reason: "unreachable" as const };
               }),
           );
           assert.strictEqual(status.status, "ready");
@@ -3149,7 +3191,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
             defaultClaudeSettings,
             claudeCapabilities(),
             { [CLAUDE_CODE_OAUTH_TOKEN_ENV]: "sk-ant-oat01-test" },
-            () => Effect.succeed(usage),
+            () => Effect.succeed({ _tag: "Fresh" as const, usage }),
           );
           assert.strictEqual(status.status, "ready");
           assert.strictEqual(status.auth.status, "authenticated");
@@ -3163,6 +3205,210 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
               const joined = args.join(" ");
               if (joined === "--version") return { stdout: "2.1.197\n", stderr: "", code: 0 };
               throw new Error(`Unexpected args: ${joined}`);
+            }),
+          ),
+        ),
+      );
+
+      it.effect("keeps the last usage reading and says why when a check has no numbers", () =>
+        Effect.gen(function* () {
+          const reading: ServerProviderAccountUsage = {
+            source: "claude-oauth-usage",
+            checkedAt: "2026-06-10T15:00:00.000Z",
+            primaryLimitId: "claude",
+            limits: [
+              {
+                limitId: "claude",
+                primary: {
+                  usedPercent: 31,
+                  remainingPercent: 69,
+                  windowDurationMins: 300,
+                  checkedAt: "2026-06-10T15:00:00.000Z",
+                },
+              },
+            ],
+          };
+          const check = (usageCheck: ClaudeUsageCheck) =>
+            checkClaudeProviderStatus(
+              defaultClaudeSettings,
+              claudeCapabilities(),
+              { [CLAUDE_CODE_OAUTH_TOKEN_ENV]: "sk-ant-oat01-test" },
+              () => Effect.succeed(usageCheck),
+              () => Effect.succeed("usage@example.com"),
+            ).pipe(
+              Effect.map(
+                (draft) =>
+                  ({
+                    ...draft,
+                    instanceId: ProviderInstanceId.make("claudeAgent"),
+                    driver: ProviderDriverKind.make("claudeAgent"),
+                  }) satisfies ServerProvider,
+              ),
+            );
+          const fresh = yield* check({ _tag: "Fresh", usage: reading });
+
+          // A rate limit: same numbers, and the check says what went wrong.
+          const rateLimited = carryClaudeUsageAcrossChecks(
+            fresh,
+            yield* check({ _tag: "Unavailable", reason: "rate_limited" }),
+          );
+          assert.deepStrictEqual(rateLimited.accountUsage?.limits, reading.limits);
+          assert.strictEqual(rateLimited.auth.capabilities?.usage?.status, "unavailable");
+          assert.strictEqual(rateLimited.auth.capabilities?.usage?.reason, "rate_limited");
+
+          // Signed out of the normal sign-in: chat stays ready, numbers stay.
+          const signedOut = carryClaudeUsageAcrossChecks(
+            rateLimited,
+            yield* check({ _tag: "Unavailable", reason: "signed_out" }),
+          );
+          assert.strictEqual(signedOut.status, "ready");
+          assert.strictEqual(signedOut.auth.capabilities?.usage?.reason, "signed_out");
+          assert.deepStrictEqual(signedOut.accountUsage?.limits, reading.limits);
+          // The kept numbers stay tied to the account they were read for.
+          assert.strictEqual(signedOut.auth.usageEmail, "usage@example.com");
+
+          // Another account's sign-in must not inherit these numbers.
+          const otherAccount = yield* check({ _tag: "Unavailable", reason: "unreachable" });
+          const asOtherAccount = {
+            ...otherAccount,
+            auth: { ...otherAccount.auth, usageEmail: "other@example.com" },
+          };
+          assert.strictEqual(
+            carryClaudeUsageAcrossChecks(fresh, asOtherAccount).accountUsage,
+            undefined,
+          );
+
+          // A check that learned no account (a probe that timed out) keeps the
+          // numbers tied to their owner, so the next account still cannot inherit them.
+          const { usageEmail: _usageEmail, ...unknownAuth } = otherAccount.auth;
+          const afterTimeout = carryClaudeUsageAcrossChecks(fresh, {
+            ...otherAccount,
+            auth: { ...unknownAuth, status: "unknown" },
+          });
+          assert.deepStrictEqual(afterTimeout.accountUsage?.limits, reading.limits);
+          assert.strictEqual(afterTimeout.auth.usageEmail, "usage@example.com");
+          assert.strictEqual(
+            carryClaudeUsageAcrossChecks(afterTimeout, asOtherAccount).accountUsage,
+            undefined,
+          );
+        }).pipe(
+          Effect.provide(
+            mockSpawnerLayer((args) => {
+              const joined = args.join(" ");
+              if (joined === "--version") return { stdout: "2.1.289\n", stderr: "", code: 0 };
+              throw new Error(`Unexpected args: ${joined}`);
+            }),
+          ),
+        ),
+      );
+
+      it.effect("does not run claude auth status while a sign-in renewal is due", () =>
+        Effect.gen(function* () {
+          const commands: string[] = [];
+          const check = (renewalDue: boolean) =>
+            checkClaudeProviderStatus(
+              defaultClaudeSettings,
+              // The probe gave no account fields, so sign-in has to be asked.
+              claudeCapabilities({ tokenSource: "none" }),
+              {},
+              undefined,
+              undefined,
+              undefined,
+              () => Effect.succeed(renewalDue),
+            ).pipe(
+              Effect.provide(
+                mockSpawnerLayer((args) => {
+                  const joined = args.join(" ");
+                  commands.push(joined);
+                  if (joined === "--version") return { stdout: "2.1.289\n", stderr: "", code: 0 };
+                  return { stdout: JSON.stringify({ loggedIn: false }), stderr: "", code: 1 };
+                }),
+              ),
+            );
+
+          // `auth status` starts the renewal and exits without waiting for it.
+          const whileDue = yield* check(true);
+          assert.deepStrictEqual(commands, ["--version"]);
+          assert.strictEqual(whileDue.auth.status, "unknown");
+
+          const afterwards = yield* check(false);
+          assert.deepStrictEqual(commands, ["--version", "--version", "auth status"]);
+          assert.strictEqual(afterwards.auth.status, "unauthenticated");
+        }),
+      );
+
+      it.effect("keeps a CLI that may be renewing the sign-in running until it has", () =>
+        Effect.gen(function* () {
+          const stopped = yield* Ref.make(false);
+          const due = yield* Ref.make(true);
+          const stopAfterRenewal = (renewalDue: boolean) =>
+            stopClaudeCliAfterSignInRenewal({
+              renewalDue,
+              isRenewalDue: Ref.get(due),
+              stop: Ref.set(stopped, true),
+            });
+
+          // Nothing to renew: stopped at once, as before.
+          yield* stopAfterRenewal(false);
+          assert.strictEqual(yield* Ref.get(stopped), true);
+
+          // A renewal that has not landed: the caller moves on, the CLI stays.
+          yield* Ref.set(stopped, false);
+          const waiting = yield* stopAfterRenewal(true).pipe(Effect.forkChild);
+          yield* TestClock.adjust("3 seconds");
+          yield* Fiber.join(waiting);
+          assert.strictEqual(yield* Ref.get(stopped), false);
+
+          // The store shows the renewed sign-in: now it is safe to stop.
+          yield* Ref.set(due, false);
+          yield* TestClock.adjust("1 second");
+          assert.strictEqual(yield* Ref.get(stopped), true);
+
+          // One that never lands is stopped once no renewal request can still be running.
+          yield* Ref.set(stopped, false);
+          yield* Ref.set(due, true);
+          const stuck = yield* stopAfterRenewal(true).pipe(Effect.forkChild);
+          yield* TestClock.adjust("3 seconds");
+          yield* Fiber.join(stuck);
+          yield* TestClock.adjust("59 seconds");
+          assert.strictEqual(yield* Ref.get(stopped), false);
+          yield* TestClock.adjust("2 seconds");
+          assert.strictEqual(yield* Ref.get(stopped), true);
+        }),
+      );
+
+      it.effect("reads the normal sign-in's email from Claude's own account record", () =>
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const homePath = yield* fileSystem.makeTempDirectoryScoped({
+            prefix: "threadlines-claude-account-",
+          });
+          const settings = { ...defaultClaudeSettings, homePath };
+          assert.strictEqual(yield* readClaudeNormalAuthEmail(settings, {}), undefined);
+
+          yield* fileSystem.writeFileString(
+            path.join(homePath, ".claude.json"),
+            JSON.stringify({ oauthAccount: { emailAddress: "main@example.com" } }),
+          );
+          assert.strictEqual(yield* readClaudeNormalAuthEmail(settings, {}), "main@example.com");
+
+          // An account folder keeps its own record beside its own sign-in.
+          const accountFolder = path.join(homePath, "work");
+          yield* fileSystem.makeDirectory(accountFolder);
+          yield* fileSystem.writeFileString(
+            path.join(accountFolder, ".claude.json"),
+            JSON.stringify({ oauthAccount: { emailAddress: "work@example.com" } }),
+          );
+          assert.strictEqual(
+            yield* readClaudeNormalAuthEmail({ ...settings, accountFolder }, {}),
+            "work@example.com",
+          );
+        }).pipe(
+          Effect.provide(
+            // No CLI is started for this: any spawn is a regression.
+            mockSpawnerLayer((args) => {
+              throw new Error(`Unexpected spawn: ${args.join(" ")}`);
             }),
           ),
         ),

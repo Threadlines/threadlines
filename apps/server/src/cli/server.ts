@@ -2,6 +2,7 @@ import * as Effect from "effect/Effect";
 import { Command, GlobalFlag } from "effect/unstable/cli";
 
 import { ServerConfig, type StartupPresentation } from "../config.ts";
+import { isolateThrowawayClaudeSignIn } from "../provider/claudeThrowawayIsolation.ts";
 import { runServer } from "../server.ts";
 import { type CliServerFlags, resolveServerConfig, sharedServerCommandFlags } from "./config.ts";
 
@@ -15,6 +16,9 @@ export const runServerCommand = (
   Effect.gen(function* () {
     const logLevel = yield* GlobalFlag.LogLevel;
     const config = yield* resolveServerConfig(flags, logLevel, options);
+    // Before any provider starts: a throwaway run must not touch the real
+    // Claude sign-in.
+    yield* isolateThrowawayClaudeSignIn(config.baseDir);
     return yield* runServer.pipe(Effect.provideService(ServerConfig, config));
   });
 

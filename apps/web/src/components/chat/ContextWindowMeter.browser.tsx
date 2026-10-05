@@ -113,28 +113,40 @@ describe("ContextWindowMeter", () => {
     }
   });
 
-  it("says plan limits can't be read instead of showing a bare usage heading", async () => {
-    const screen = await render(
+  it("offers Sign in from the usage popout only when the provider is signed out", async () => {
+    const signIn = vi.fn();
+    const meter = (notice: NonNullable<ProviderAccountUsagePresentation["notice"]>) => (
       <ContextWindowMeter
         usage={TEST_CONTEXT_WINDOW}
-        accountUsage={{
-          label: "Claude usage",
-          reachedLimit: false,
-          windows: [],
-          limitsUnavailable: {
-            action: "Refresh sign-in",
-            detail: "Plan limits can't be read right now.",
-          },
-        }}
-      />,
+        accountUsage={{ label: "Claude usage", reachedLimit: false, windows: [], notice }}
+        accountUsageSignIn={
+          <button type="button" onClick={signIn}>
+            Sign in
+          </button>
+        }
+      />
+    );
+    const screen = await render(
+      meter({ signIn: true, text: "Claude is signed out. Sign in to see usage." }),
     );
 
     try {
       await page.getByRole("button", { name: /Context window/ }).click();
-
       await expect.element(page.getByText("Claude usage")).toBeVisible();
-      await expect.element(page.getByText("Plan limits can't be read right now.")).toBeVisible();
+      await expect
+        .element(page.getByText("Claude is signed out. Sign in to see usage."))
+        .toBeVisible();
+      // Nothing to draw: an empty meter would read as "0% used".
       expect(document.querySelectorAll('[role="meter"]')).toHaveLength(0);
+      await page.getByRole("button", { name: "Sign in" }).click();
+      expect(signIn).toHaveBeenCalledTimes(1);
+
+      // A check that failed for another reason fixes itself: no sign-in offered.
+      await screen.rerender(
+        meter({ signIn: false, text: "Couldn't check usage just now. Trying again soon." }),
+      );
+      await expect.element(page.getByText(/Trying again soon/)).toBeVisible();
+      await expect.element(page.getByRole("button", { name: "Sign in" })).not.toBeInTheDocument();
     } finally {
       await screen.unmount();
     }

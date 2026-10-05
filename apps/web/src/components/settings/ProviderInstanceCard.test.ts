@@ -129,6 +129,22 @@ describe("Claude authentication presentation", () => {
     });
   });
 
+  it("only warns about usage when signing in is what fixes it", () => {
+    const usageBadge = (reason: "signed_out" | "rate_limited" | "unreachable") =>
+      claudeAuthCapabilityBadge({ status: "unavailable", reason }, "usage");
+
+    expect(usageBadge("signed_out")).toEqual({ label: "Usage signed out", variant: "warning" });
+    // These clear up on a later check; nothing for the user to do.
+    expect(usageBadge("rate_limited")).toEqual({
+      label: "Usage check paused",
+      variant: "secondary",
+    });
+    expect(usageBadge("unreachable")).toEqual({
+      label: "Usage check paused",
+      variant: "secondary",
+    });
+  });
+
   it("presents successful live chat and usage checks as verified", () => {
     const auth = {
       status: "authenticated" as const,

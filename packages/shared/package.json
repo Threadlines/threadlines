@@ -262,6 +262,14 @@
     "./telemetryConsent": {
       "types": "./src/telemetryConsent.ts",
       "import": "./src/telemetryConsent.ts"
+    },
+    "./throwawayRun": {
+      "types": "./src/throwawayRun.ts",
+      "import": "./src/throwawayRun.ts"
+    },
+    "./envFlag": {
+      "types": "./src/envFlag.ts",
+      "import": "./src/envFlag.ts"
     }
   },
   "scripts": {

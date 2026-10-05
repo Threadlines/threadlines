@@ -752,127 +752,189 @@ describe("deriveProviderAccountUsagePresentation", () => {
 });
 
 describe("deriveProviderAccountUsagePresentationForProvider", () => {
-  it("says Claude limits can't be read instead of drawing empty windows", () => {
-    const provider = {
-      driver: ProviderDriverKind.make("claudeAgent"),
-      auth: {
-        status: "authenticated",
-        type: "maxplan",
-        label: "Claude Max Subscription",
+  const nowMs = Date.parse("2026-07-09T12:00:00.000Z");
+  const claude = ProviderDriverKind.make("claudeAgent");
+  const readingFrom = (checkedAt: string): ServerProviderAccountUsage => ({
+    source: "claude-oauth-usage",
+    checkedAt,
+    primaryLimitId: "claude",
+    limits: [
+      {
+        limitId: "claude",
+        primary: { usedPercent: 31, remainingPercent: 69, windowDurationMins: 300, checkedAt },
       },
-    } satisfies Pick<ServerProvider, "accountUsage" | "auth" | "driver">;
+    ],
+  });
+  const tokenAuth = (
+    reason?: "signed_out" | "rate_limited" | "unreachable",
+  ): ServerProvider["auth"] => ({
+    status: "authenticated",
+    type: "longLivedOAuthToken",
+    capabilities: { usage: { status: "unavailable", ...(reason ? { reason } : {}) } },
+  });
 
-    const presentation = deriveProviderAccountUsagePresentationForProvider(provider);
-
-    expect(presentation).toEqual({
+  it("asks for sign-in only when Claude is signed out, and keeps the numbers it has", () => {
+    // Signed out with no numbers at all: one line and the offer, no empty meters.
+    const signedOut = deriveProviderAccountUsagePresentationForProvider(
+      { driver: claude, auth: tokenAuth("signed_out") },
+      nowMs,
+    );
+    expect(signedOut).toEqual({
       label: "Claude usage",
       reachedLimit: false,
       windows: [],
-      limitsUnavailable: {
-        action: "Refresh sign-in",
-        detail:
-          "Plan limits can't be read right now. Signing in to Claude again usually brings them back.",
-      },
+      notice: { signIn: true, text: "Claude is signed out. Sign in to see usage." },
     });
     // Nothing to mistake for a reading: no headline figure, no compact lines.
-    expect(headlineUsageMeter(presentation!)).toBeNull();
-    expect(compactUsageMeters(presentation!)).toEqual([]);
+    expect(headlineUsageMeter(signedOut!)).toBeNull();
+    expect(compactUsageMeters(signedOut!)).toEqual([]);
+
+    // Signed out, but chats keep the meter fed.
+    const fed = deriveProviderAccountUsagePresentationForProvider(
+      {
+        driver: claude,
+        auth: tokenAuth("signed_out"),
+        accountUsage: readingFrom("2026-07-09T11:58:00.000Z"),
+      },
+      nowMs,
+    );
+    expect(fed?.windows).toEqual([expect.objectContaining({ key: "primary", detail: "31% used" })]);
+    expect(fed?.notice).toEqual({
+      signIn: true,
+      text: "Claude is signed out. Usage updates only when you chat.",
+    });
   });
 
-  it("keeps local token history when Claude limits can't be read", () => {
-    const provider = {
-      driver: ProviderDriverKind.make("claudeAgent"),
-      auth: {
-        status: "authenticated",
-        type: "maxplan",
-        capabilities: { usage: { status: "unavailable" } },
+  it("stays quiet about a failed check while the kept numbers are recent", () => {
+    for (const reason of ["rate_limited", "unreachable"] as const) {
+      const recent = deriveProviderAccountUsagePresentationForProvider(
+        {
+          driver: claude,
+          auth: tokenAuth(reason),
+          accountUsage: readingFrom("2026-07-09T11:55:00.000Z"),
+        },
+        nowMs,
+      );
+      expect(recent?.notice).toBeUndefined();
+      expect(recent?.windows[0]?.detail).toBe("31% used");
+    }
+
+    // Once the reading is old, each row says how old and the reason is named.
+    const old = deriveProviderAccountUsagePresentationForProvider(
+      {
+        driver: claude,
+        auth: tokenAuth("rate_limited"),
+        accountUsage: readingFrom("2026-07-09T09:00:00.000Z"),
       },
-      accountUsage: {
-        source: "claude-oauth-usage",
-        checkedAt: "2026-06-10T00:00:00.000Z",
-        limits: [],
-        tokenUsage: {
-          scope: "local",
-          checkedAt: "2026-06-10T00:00:00.000Z",
-          dailyBuckets: [{ startDate: "2026-06-09", tokens: 1_200 }],
-          summary: { lifetimeTokens: 1_200 },
+      nowMs,
+    );
+    expect(old?.windows[0]?.detail).toBe("31% used · as of 3h ago");
+    expect(old?.notice).toEqual({
+      signIn: false,
+      text: "Claude is limiting usage checks. Trying again soon.",
+    });
+
+    // Nothing to show yet: say it is temporary, and do not offer sign-in.
+    expect(
+      deriveProviderAccountUsagePresentationForProvider(
+        { driver: claude, auth: tokenAuth("unreachable") },
+        nowMs,
+      )?.notice,
+    ).toEqual({ signIn: false, text: "Couldn't check usage just now. Trying again soon." });
+  });
+
+  it("keeps local token history beside the notice, which has no meters of its own", () => {
+    const presentation = deriveProviderAccountUsagePresentationForProvider(
+      {
+        driver: claude,
+        auth: tokenAuth("signed_out"),
+        accountUsage: {
+          source: "claude-oauth-usage",
+          checkedAt: "2026-07-09T11:58:00.000Z",
+          limits: [],
+          tokenUsage: {
+            scope: "local",
+            checkedAt: "2026-07-09T11:58:00.000Z",
+            dailyBuckets: [{ startDate: "2026-07-08", tokens: 1_200 }],
+            summary: { lifetimeTokens: 1_200 },
+          },
         },
       },
-    } satisfies Pick<ServerProvider, "accountUsage" | "auth" | "driver">;
+      nowMs,
+    );
 
-    const presentation = deriveProviderAccountUsagePresentationForProvider(provider);
-
-    expect(presentation?.limitsUnavailable?.action).toBe("Refresh sign-in");
-    expect(presentation?.tokenUsage?.scope).toBe("local");
     expect(presentation?.windows).toEqual([]);
+    expect(presentation?.tokenUsage?.scope).toBe("local");
+    expect(presentation?.notice).toEqual({
+      signIn: true,
+      text: "Claude is signed out. Sign in to see usage.",
+    });
   });
 
   it("leaves readable Claude limits alone", () => {
-    const provider = {
-      driver: ProviderDriverKind.make("claudeAgent"),
+    const presentation = deriveProviderAccountUsagePresentationForProvider({
+      driver: claude,
       auth: {
         status: "authenticated",
         type: "maxplan",
         capabilities: { usage: { status: "verified" } },
       },
       accountUsage: makeUsage(41),
-    } satisfies Pick<ServerProvider, "accountUsage" | "auth" | "driver">;
+    });
 
-    const presentation = deriveProviderAccountUsagePresentationForProvider(provider);
-
-    expect(presentation?.limitsUnavailable).toBeUndefined();
+    expect(presentation?.notice).toBeUndefined();
     expect(presentation?.windows.map((window) => window.usedPercent)).toEqual([41]);
   });
 
-  it("does not report missing Claude limits for API-key auth", () => {
-    const provider = {
-      driver: ProviderDriverKind.make("claudeAgent"),
-      auth: {
-        status: "authenticated",
-        type: "apiKey",
-        label: "Claude API Key",
-      },
-    } satisfies Pick<ServerProvider, "accountUsage" | "auth" | "driver">;
+  it("never blames the sign-in for limits a server gives no reason for", () => {
+    // A server that gives no reason still gives its own words for it.
+    expect(
+      deriveProviderAccountUsagePresentationForProvider(
+        {
+          driver: claude,
+          auth: {
+            status: "unauthenticated",
+            type: "maxplan",
+            capabilities: {
+              chat: { status: "unavailable" },
+              usage: { status: "unavailable", detail: "Usage was not checked." },
+            },
+          },
+        },
+        nowMs,
+      )?.notice,
+    ).toEqual({ signIn: false, text: "Usage was not checked." });
 
-    expect(deriveProviderAccountUsagePresentationForProvider(provider)).toBeNull();
-  });
-
-  it("explains Claude usage needs subscription sign-in for long-lived token auth", () => {
-    const provider = {
-      driver: ProviderDriverKind.make("claudeAgent"),
-      auth: {
-        status: "authenticated",
-        type: "longLivedOAuthToken",
-        label: "Chat-only token",
-      },
-    } satisfies Pick<ServerProvider, "accountUsage" | "auth" | "driver">;
-
-    expect(deriveProviderAccountUsagePresentationForProvider(provider)?.limitsUnavailable).toEqual({
-      action: "Normal sign-in needed",
-      detail:
-        "This sign-in token can't read plan limits. Sign in to Claude the normal way to see them.",
+    // A sign-in whose server said nothing about usage: say the limits are
+    // missing, and stop there.
+    expect(
+      deriveProviderAccountUsagePresentationForProvider(
+        { driver: claude, auth: { status: "authenticated", type: "maxplan" } },
+        nowMs,
+      ),
+    ).toEqual({
+      label: "Claude usage",
+      reachedLimit: false,
+      windows: [],
+      notice: { signIn: false, text: "Plan limits can't be read right now." },
     });
   });
 
-  it("uses compact usage recovery copy when chat auth fails", () => {
-    const provider = {
-      driver: ProviderDriverKind.make("claudeAgent"),
-      auth: {
-        status: "unauthenticated",
-        type: "maxplan",
-        capabilities: {
-          chat: { status: "unavailable" },
-          usage: {
-            status: "unavailable",
-            detail: "Refresh the normal Claude sign-in for subscription usage.",
+  it("does not report missing Claude limits for API-key auth", () => {
+    expect(
+      deriveProviderAccountUsagePresentationForProvider(
+        {
+          driver: claude,
+          auth: {
+            status: "authenticated",
+            type: "apiKey",
+            label: "Claude API Key",
+            capabilities: { usage: { status: "unavailable" } },
           },
         },
-      },
-    } satisfies Pick<ServerProvider, "accountUsage" | "auth" | "driver">;
-
-    expect(
-      deriveProviderAccountUsagePresentationForProvider(provider)?.limitsUnavailable?.action,
-    ).toBe("Refresh sign-in");
+        nowMs,
+      ),
+    ).toBeNull();
   });
 });
 

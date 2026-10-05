@@ -53,6 +53,7 @@ import * as Semaphore from "effect/Semaphore";
 
 import { expandHomePath } from "../../pathExpansion.ts";
 import { ServerSettingsService, type ServerSettingsShape } from "../../serverSettings.ts";
+import { throwawayClaudeSpawnViolation } from "../claudeThrowawayIsolation.ts";
 import { resolveOpenCodeBinary } from "../opencode/OpenCodeBinary.ts";
 import { PtyAdapter, type PtyAdapterShape, type PtyProcess } from "../../terminal/Services/PTY.ts";
 import { ProviderRegistry } from "../Services/ProviderRegistry.ts";
@@ -655,6 +656,21 @@ export const makeProviderAuthSessions = Effect.fn("makeProviderAuthSessions")(fu
           instanceEnvironment: instance.environment ?? [],
           commandEnv: builtCommand.env,
         });
+        // A throwaway run may not sign in to (or out of) a real Claude
+        // account its copied settings still point at.
+        const isolationViolation =
+          String(instance.driver) === CLAUDE_DRIVER_KIND
+            ? throwawayClaudeSpawnViolation(spawnEnv, baseEnv)
+            : undefined;
+        if (isolationViolation !== undefined) {
+          return yield* Effect.fail(
+            new ProviderAuthError({
+              instanceId: String(instanceId),
+              reason: "settingsFailed",
+              detail: isolationViolation,
+            }),
+          );
+        }
         // OpenCode's installer leaves the binary off this server's PATH until
         // a restart; sign-in right after a one-click install must still work.
         const command =

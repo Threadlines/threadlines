@@ -1,5 +1,5 @@
 import { ChevronDownIcon } from "lucide-react";
-import { useCallback, useLayoutEffect, useRef, useState } from "react";
+import { type ReactNode, useCallback, useLayoutEffect, useRef, useState } from "react";
 
 import { openExternalUrl } from "~/lib/externalLinks";
 import { cn } from "~/lib/utils";
@@ -151,6 +151,8 @@ function ContextBreakdownLegendRow(props: {
 export function ContextWindowMeter(props: {
   usage: ContextWindowSnapshot | null;
   accountUsage?: ProviderAccountUsagePresentation | null;
+  /** The Sign in to offer beside a usage notice that asks for one. */
+  accountUsageSignIn?: ReactNode | undefined;
   contextWindowLabel?: string | null;
   onResetAccountUsage?: (() => void) | undefined;
   accountUsageResetInFlight?: boolean | undefined;
@@ -541,10 +543,14 @@ export function ContextWindowMeter(props: {
                   warning={window.warning}
                 />
               ))}
-              {accountUsage.limitsUnavailable ? (
-                <p className="text-xs text-muted-foreground">
-                  {accountUsage.limitsUnavailable.detail}
-                </p>
+              {accountUsage.notice ? (
+                <div
+                  className="flex min-w-0 flex-wrap items-start gap-x-2 gap-y-1 text-muted-foreground text-xs"
+                  data-usage-notice={accountUsage.notice.signIn ? "sign-in" : "retrying"}
+                >
+                  <span className="min-w-0 flex-1 basis-40">{accountUsage.notice.text}</span>
+                  {accountUsage.notice.signIn ? props.accountUsageSignIn : null}
+                </div>
               ) : null}
             </div>
           ) : null}
