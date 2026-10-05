@@ -6,11 +6,9 @@ import { useNavigate } from "@tanstack/react-router";
 import { isElectron, isMarketingCaptureMode } from "../env";
 import { useCommandPaletteStore } from "../commandPaletteStore";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
-import { useSettings } from "../hooks/useSettings";
 import { startNewThreadFromContext } from "../lib/chatThreadActions";
 import { isMacPlatform } from "../lib/utils";
 import { buildThreadRouteParams } from "../threadRoutes";
-import { resolveSidebarNewThreadEnvMode } from "./Sidebar.logic";
 import ThreadSidebar from "./Sidebar";
 import { Sidebar, SidebarProvider, SidebarRail, SidebarTrigger } from "./ui/sidebar";
 import {
@@ -44,7 +42,6 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
   const navigate = useNavigate();
   const { activeDraftThread, activeThread, defaultProjectRef, handleNewThread } =
     useHandleNewThread();
-  const appSettings = useSettings();
   const sidebarStyle = {
     "--sidebar-width": THREAD_SIDEBAR_DEFAULT_WIDTH,
     ...(isElectron &&
@@ -114,9 +111,6 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
           activeDraftThread,
           activeThread,
           defaultProjectRef,
-          defaultThreadEnvMode: resolveSidebarNewThreadEnvMode({
-            defaultEnvMode: appSettings.defaultThreadEnvMode,
-          }),
           handleNewThread,
         });
       }
@@ -125,14 +119,7 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
     return () => {
       unsubscribe?.();
     };
-  }, [
-    activeDraftThread,
-    activeThread,
-    appSettings.defaultThreadEnvMode,
-    defaultProjectRef,
-    handleNewThread,
-    navigate,
-  ]);
+  }, [activeDraftThread, activeThread, defaultProjectRef, handleNewThread, navigate]);
 
   return (
     <SidebarProvider className="h-dvh! min-h-0!" defaultOpen style={sidebarStyle}>

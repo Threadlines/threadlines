@@ -2,8 +2,10 @@ import { scopedProjectKey, scopeProjectRef } from "@threadlines/client-runtime";
 import {
   DEFAULT_NEW_THREAD_RUNTIME_MODE,
   type ScopedProjectRef,
+  type ThreadEnvMode,
   type ThreadId,
 } from "@threadlines/contracts";
+import { DEFAULT_SERVER_SETTINGS } from "@threadlines/contracts/settings";
 import { useParams, useRouter } from "@tanstack/react-router";
 import { useCallback, useMemo } from "react";
 import { useShallow } from "zustand/react/shallow";
@@ -12,11 +14,17 @@ import {
   type DraftId,
   type DraftThreadEnvMode,
   type DraftThreadState,
+  isKnownMissingCheckout,
   useComposerDraftStore,
 } from "../composerDraftStore";
 import { preserveRightPanelSearchParamsForDraftNavigation } from "../diffRouteSearch";
+import { resolveNewThreadPlacement } from "../lib/chatThreadActions";
 import { newDraftId, newThreadId } from "../lib/utils";
-import { applyNewThreadDefaultsToDraft } from "../newThreadDefaults";
+import {
+  applyNewThreadDefaultsToDraft,
+  placeDraftFromSettings,
+  readComputerConfig,
+} from "../newThreadDefaults";
 import {
   orderItemsByPreferredIds,
   sortScopedProjectsByActivity,
@@ -29,6 +37,7 @@ import {
 import {
   selectProjectsAcrossEnvironments,
   selectSidebarThreadsAcrossEnvironments,
+  selectThreadByRef,
   selectWorkspaceProjectsAcrossEnvironments,
   useStore,
 } from "../store";
@@ -49,9 +58,15 @@ function useNewThreadState() {
     (
       projectRef: ScopedProjectRef,
       options?: {
+        /** Where the thread starts. Leave `branch`, `worktreePath` and
+         *  `envMode` all out and it starts where the computer's "Start in"
+         *  setting says (`resolveNewThreadPlacement`); pass any to pin it. */
         branch?: string | null;
         worktreePath?: string | null;
         envMode?: DraftThreadEnvMode;
+        /** False starts from the setting alone. By default a thread started
+         *  from one in the same project can continue in its checkout. */
+        continueActiveCheckout?: boolean;
         replace?: boolean;
         /** Words the draft opens with, for surfaces that hand work over. Only
          *  ever written into a draft with nothing of the user's in it. */
@@ -68,7 +83,6 @@ function useNewThreadState() {
         getDraftSessionByLogicalProjectKey,
         getDraftSession,
         getDraftThread,
-        setDraftThreadContext,
         setLogicalProjectDraftThreadId,
         setPrompt,
       } = useComposerDraftStore.getState();
@@ -115,23 +129,61 @@ function useNewThreadState() {
           ? getDraftThread(currentRouteTarget.threadRef)
           : getDraftSession(currentRouteTarget.draftId)
         : null;
+      // A caller that names where the thread starts is taken at its word.
+      // Every other new thread starts where its computer's "Start in" says,
+      // read here so no surface can leave the setting out.
+      const isPlacementPinned = hasBranchOption || hasWorktreePathOption || hasEnvModeOption;
+      const computerSettings = isPlacementPinned
+        ? null
+        : (readComputerConfig(projectRef.environmentId)?.settings ?? null);
+      const activeThread =
+        currentRouteTarget?.kind === "server"
+          ? selectThreadByRef(useStore.getState(), currentRouteTarget.threadRef)
+          : undefined;
+      const placementFor = (startIn: ThreadEnvMode) =>
+        resolveNewThreadPlacement({
+          projectRef,
+          startIn,
+          isGeneralChat: project?.kind === "general-chat",
+          continueActiveCheckout: options?.continueActiveCheckout ?? true,
+          activeThread,
+          activeDraftThread: latestActiveDraftThread,
+          isCheckoutMissing: (cwd) =>
+            isKnownMissingCheckout({ environmentId: projectRef.environmentId, cwd }),
+        });
+      const placement = isPlacementPinned
+        ? {
+            ...(options?.branch !== undefined ? { branch: options.branch } : {}),
+            ...(options?.worktreePath !== undefined ? { worktreePath: options.worktreePath } : {}),
+            ...(options?.envMode !== undefined ? { envMode: options.envMode } : {}),
+          }
+        : placementFor(
+            computerSettings?.defaultThreadEnvMode ?? DEFAULT_SERVER_SETTINGS.defaultThreadEnvMode,
+          );
+      // A draft can open before its computer's settings arrive (the first new
+      // thread at startup). It opens on the built-in default and takes its
+      // place when they come, unless the user has placed it by then.
+      const placeFromSettings = (draftId: DraftId) =>
+        placeDraftFromSettings(
+          draftId,
+          projectRef.environmentId,
+          isPlacementPinned || computerSettings !== null ? null : placementFor,
+        );
       if (emptyStoredDraftThread) {
         return (async () => {
-          if (hasBranchOption || hasWorktreePathOption || hasEnvModeOption) {
-            setDraftThreadContext(emptyStoredDraftThread.draftId, {
-              ...(hasBranchOption ? { branch: options?.branch ?? null } : {}),
-              ...(hasWorktreePathOption ? { worktreePath: options?.worktreePath ?? null } : {}),
-              ...(hasEnvModeOption ? { envMode: options?.envMode } : {}),
-            });
-          }
+          // The place goes in with the move: a draft reused from the same
+          // project on another computer would otherwise land on that
+          // computer's project root whatever was asked.
           setLogicalProjectDraftThreadId(
             logicalProjectKey,
             projectRef,
             emptyStoredDraftThread.draftId,
             {
               threadId: emptyStoredDraftThread.threadId,
+              ...placement,
             },
           );
+          placeFromSettings(emptyStoredDraftThread.draftId);
           writeInitialPrompt(emptyStoredDraftThread.draftId);
           // A reused draft can hold the model and agents it was set up with
           // long ago; "new thread" means today's, so the defaults are applied
@@ -167,22 +219,14 @@ function useNewThreadState() {
         !composerDraftHasUserContent(getComposerDraft(currentRouteTarget.draftId))
       ) {
         const currentDraftId = currentRouteTarget.draftId;
-        if (hasBranchOption || hasWorktreePathOption || hasEnvModeOption) {
-          setDraftThreadContext(currentDraftId, {
-            ...(hasBranchOption ? { branch: options?.branch ?? null } : {}),
-            ...(hasWorktreePathOption ? { worktreePath: options?.worktreePath ?? null } : {}),
-            ...(hasEnvModeOption ? { envMode: options?.envMode } : {}),
-          });
-        }
         setLogicalProjectDraftThreadId(logicalProjectKey, projectRef, currentDraftId, {
           threadId: latestActiveDraftThread.threadId,
           createdAt: latestActiveDraftThread.createdAt,
           runtimeMode: latestActiveDraftThread.runtimeMode,
           interactionMode: latestActiveDraftThread.interactionMode,
-          ...(hasBranchOption ? { branch: options?.branch ?? null } : {}),
-          ...(hasWorktreePathOption ? { worktreePath: options?.worktreePath ?? null } : {}),
-          ...(hasEnvModeOption ? { envMode: options?.envMode } : {}),
+          ...placement,
         });
+        placeFromSettings(currentDraftId);
         writeInitialPrompt(currentDraftId);
         return applyNewThreadDefaultsToDraft(currentDraftId, projectRef.environmentId);
       }
@@ -194,11 +238,13 @@ function useNewThreadState() {
         setLogicalProjectDraftThreadId(logicalProjectKey, projectRef, draftId, {
           threadId,
           createdAt,
-          branch: options?.branch ?? null,
-          worktreePath: options?.worktreePath ?? null,
-          envMode: options?.envMode ?? "local",
+          branch: null,
+          worktreePath: null,
+          envMode: "local",
+          ...placement,
           runtimeMode: DEFAULT_NEW_THREAD_RUNTIME_MODE,
         });
+        placeFromSettings(draftId);
         writeInitialPrompt(draftId);
         const defaultsApplied = applyNewThreadDefaultsToDraft(draftId, projectRef.environmentId);
 

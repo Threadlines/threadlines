@@ -9436,7 +9436,8 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
-  it("creates a new thread from the global chat.new shortcut", async () => {
+  // The open thread is on the project's own checkout; Start in still decides.
+  it("creates a new thread from the global chat.new shortcut, where Start in says", async () => {
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
       snapshot: createSnapshotForTargetUser({
@@ -9446,6 +9447,10 @@ describe("ChatView timeline estimator parity (full app)", () => {
       configureFixture: (nextFixture) => {
         nextFixture.serverConfig = {
           ...nextFixture.serverConfig,
+          settings: {
+            ...nextFixture.serverConfig.settings,
+            defaultThreadEnvMode: "worktree",
+          },
           keybindings: [
             {
               command: "chat.new",
@@ -9496,11 +9501,14 @@ describe("ChatView timeline estimator parity (full app)", () => {
       const composerEditor = await waitForComposerEditor();
       composerEditor.focus();
       await waitForLayout();
-      await triggerChatNewShortcutUntilPath(
+      const newThreadPath = await triggerChatNewShortcutUntilPath(
         mounted.router,
         (path) => UUID_ROUTE_RE.test(path),
         "Route should have changed to a new draft thread UUID from the shortcut.",
       );
+      expect(
+        useComposerDraftStore.getState().getDraftSession(draftIdFromPath(newThreadPath)),
+      ).toMatchObject({ envMode: "worktree", worktreePath: null });
     } finally {
       await mounted.cleanup();
     }

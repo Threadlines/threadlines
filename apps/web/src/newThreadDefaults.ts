@@ -3,7 +3,8 @@
  * computer's default model and the agents beside its own, checked against the
  * providers that computer has, and the draft step that applies them. Every
  * "new thread" surface goes through `useNewThreadState`, which calls
- * `applyNewThreadDefaultsToDraft`.
+ * `applyNewThreadDefaultsToDraft` and places the draft where the computer's
+ * "Start in" says (`placeDraftFromSettings` when it is not known yet).
  */
 import {
   type EnvironmentId,
@@ -13,6 +14,7 @@ import {
   type ServerConfig,
   type ServerProvider,
   type ThreadCreateParticipant,
+  type ThreadEnvMode,
   ThreadParticipantId,
 } from "@threadlines/contracts";
 import { roomsEnabled } from "@threadlines/shared/serverSettings";
@@ -22,6 +24,7 @@ import { getPickerModelName } from "./components/chat/providerIconUtils";
 import { type DraftId, type DraftRoom, useComposerDraftStore } from "./composerDraftStore";
 import { readPrimaryEnvironmentDescriptor } from "./environments/primary/context";
 import { useSavedEnvironmentRuntimeStore } from "./environments/runtime";
+import type { NewThreadPlacement } from "./lib/chatThreadActions";
 import { randomUUID } from "./lib/utils";
 import {
   deriveDisplayProviderInstanceEntries,
@@ -266,14 +269,105 @@ export async function applyNewThreadDefaultsToDraft(
   );
 }
 
+/** A draft waiting for its computer's "Start in". */
+interface PendingPlacement {
+  readonly environmentId: EnvironmentId;
+  /** Where the draft is now. Anywhere else by the time the settings come is
+   *  the user's own choice, and stands. */
+  readonly opened: NewThreadPlacement;
+  readonly placementFor: (startIn: ThreadEnvMode) => NewThreadPlacement;
+}
+
+const pendingPlacements = new Map<DraftId, PendingPlacement>();
+/** Set while any draft waits: one watch on the computers' settings for all. */
+let stopWatchingSettings: (() => void) | null = null;
+
+function settlePendingPlacements(): void {
+  const store = useComposerDraftStore.getState();
+  for (const [draftId, pending] of pendingPlacements) {
+    const session = store.getDraftSession(draftId);
+    if (
+      session === null ||
+      session.environmentId !== pending.environmentId ||
+      (session.promotedTo ?? null) !== null ||
+      session.branch !== pending.opened.branch ||
+      session.worktreePath !== pending.opened.worktreePath ||
+      session.envMode !== pending.opened.envMode
+    ) {
+      // Gone, moved, being sent, or placed by the user meanwhile.
+      pendingPlacements.delete(draftId);
+      continue;
+    }
+    const config = readComputerConfig(pending.environmentId);
+    if (config === null) {
+      continue;
+    }
+    pendingPlacements.delete(draftId);
+    store.setDraftThreadContext(
+      draftId,
+      pending.placementFor(config.settings.defaultThreadEnvMode),
+    );
+  }
+  if (pendingPlacements.size === 0) {
+    stopWatchingSettings?.();
+    stopWatchingSettings = null;
+  }
+}
+
+/**
+ * Places a draft where its computer's "Start in" says: now when the settings
+ * are known, else when they arrive (the first new thread at startup, or a
+ * computer still connecting). `placementFor` gives the place under each
+ * setting. A draft the user placed meanwhile keeps their choice. Unlike the
+ * model and the agents this never gives up waiting: the built-in default
+ * would start an agent in the project's own checkout on a computer set to
+ * "New worktree". `null` stops waiting, for a draft that has its place.
+ */
+export function placeDraftFromSettings(
+  draftId: DraftId,
+  environmentId: EnvironmentId,
+  placementFor: PendingPlacement["placementFor"] | null,
+): void {
+  const session = useComposerDraftStore.getState().getDraftSession(draftId);
+  if (placementFor === null || session === null) {
+    pendingPlacements.delete(draftId);
+  } else {
+    pendingPlacements.set(draftId, {
+      environmentId,
+      opened: {
+        branch: session.branch,
+        worktreePath: session.worktreePath,
+        envMode: session.envMode,
+      },
+      placementFor,
+    });
+    if (stopWatchingSettings === null) {
+      const stops = [
+        onServerConfigUpdated(settlePendingPlacements),
+        useSavedEnvironmentRuntimeStore.subscribe(settlePendingPlacements),
+      ];
+      stopWatchingSettings = () => {
+        for (const stop of stops) stop();
+      };
+    }
+  }
+  settlePendingPlacements();
+}
+
 /**
  * A draft moved to another computer before its first message takes that
- * computer's room, and its model too unless the user picked the model.
+ * computer's room and "Start in" (the move leaves the old computer's checkout
+ * behind), and its model too unless the user picked the model.
  */
 export function applyMovedDraftDefaults(
   draftId: DraftId,
   toEnvironmentId: EnvironmentId,
 ): Promise<void> {
   const picked = useComposerDraftStore.getState().getComposerDraft(draftId)?.modelPicked === true;
+  placeDraftFromSettings(draftId, toEnvironmentId, (startIn) => ({
+    branch: null,
+    worktreePath: null,
+    envMode: startIn,
+  }));
   return applyNewThreadDefaultsToDraft(draftId, toEnvironmentId, { keepModel: picked });
 }

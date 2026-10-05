@@ -671,10 +671,7 @@ export function AgentSetupScreen({ routeStep }: { readonly routeStep: SetupStep 
     const projectRef: ScopedProjectRef = scopeProjectRef(project.environmentId, project.id);
     dismissFirstRunSetup(environmentId);
     clearProgress(environmentId);
-    void handleNewThread(projectRef, {
-      envMode: settings.defaultThreadEnvMode,
-      replace: true,
-    });
+    void handleNewThread(projectRef, { replace: true });
   };
 
   const chooseFolder = () => {

@@ -1595,7 +1595,7 @@ function toProjectDraftSession(
  * path (never subscribed, still loading) answers false: a draft is only
  * redirected on positive knowledge, never on the absence of it.
  */
-function isKnownMissingCheckout(target: {
+export function isKnownMissingCheckout(target: {
   readonly environmentId: EnvironmentId;
   readonly cwd: string;
 }): boolean {
