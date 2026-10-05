@@ -1,14 +1,5 @@
 import type { ScopedThreadRef } from "@threadlines/contracts";
-import {
-  memo,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-  type CSSProperties,
-  type ReactElement,
-  type RefObject,
-} from "react";
+import { memo, useMemo, useState, type ReactElement } from "react";
 import {
   BotIcon,
   CheckIcon,
@@ -103,11 +94,22 @@ interface ActivityTriggerState {
   summary: string;
 }
 
-const ACTIVITY_POPOVER_MIN_WIDTH_PX = 256;
-const ACTIVITY_POPOVER_PREFERRED_MIN_WIDTH_PX = 320;
-const ACTIVITY_POPOVER_MAX_WIDTH_PX = 480;
-const ACTIVITY_POPOVER_VIEWPORT_WIDTH_RATIO = 0.36;
-const ACTIVITY_POPOVER_BOUNDARY_GUTTER_PX = 12;
+/** The closest the panel comes to a screen edge: the header's own side
+ *  padding on phones, so the panel lines up with what sits above it. */
+const ACTIVITY_POPOVER_EDGE_GUTTER_PX = 12;
+/** Slide along the button to stay on screen rather than flip to its other
+ *  edge, which on a phone left a narrow panel hanging off one side. */
+const ACTIVITY_POPOVER_COLLISION_AVOIDANCE = { align: "shift" } as const;
+/**
+ * The panel's width is CSS, not measured: on a phone it spans the screen
+ * between the gutters, otherwise about a third of the window (20rem to
+ * 30rem). The width then changes in the same layout the positioner reads, so
+ * the open panel stays put against its button while the window resizes,
+ * with no remount (which would replay its entrance and close any steps the
+ * reader unfolded).
+ */
+const ACTIVITY_POPOVER_WIDTH_CLASS_NAME =
+  "w-[clamp(20rem,36vw,30rem)] max-w-[calc(100vw-1.5rem)] max-sm:w-[calc(100vw-1.5rem)]";
 
 /** Plans up to this long draw one block per step on the top-bar button;
  *  longer ones draw a single bar. */
@@ -116,127 +118,6 @@ const TRIGGER_BLOCK_LIMIT = 10;
 const PANEL_BLOCK_LIMIT = 16;
 /** Plans at least this long fold their finished opening steps into one line. */
 const FOLD_DONE_FROM_STEPS = 7;
-
-type ActivityPopoverWidthStyle = CSSProperties & {
-  "--thread-activity-popover-width": string;
-};
-
-function clampNumber(value: number, minimum: number, maximum: number): number {
-  return Math.min(Math.max(value, minimum), maximum);
-}
-
-function quantizeLayoutValue(value: number): number {
-  return Math.round(value / 4) * 4;
-}
-
-function preferredActivityPopoverWidth(viewportWidth: number): number {
-  return clampNumber(
-    viewportWidth * ACTIVITY_POPOVER_VIEWPORT_WIDTH_RATIO,
-    ACTIVITY_POPOVER_PREFERRED_MIN_WIDTH_PX,
-    ACTIVITY_POPOVER_MAX_WIDTH_PX,
-  );
-}
-
-function resolveActivityPopoverWidth(input: {
-  triggerRight: number;
-  boundaryLeft: number;
-  viewportWidth: number;
-}): number {
-  const preferredWidth = preferredActivityPopoverWidth(input.viewportWidth);
-  const availableBeforeBoundary =
-    input.triggerRight - input.boundaryLeft - ACTIVITY_POPOVER_BOUNDARY_GUTTER_PX;
-  const usableWidth = Math.max(ACTIVITY_POPOVER_MIN_WIDTH_PX, availableBeforeBoundary);
-  return Math.round(Math.min(preferredWidth, usableWidth));
-}
-
-function useActivityPopoverAnchorLayout(open: boolean): {
-  triggerRef: RefObject<HTMLButtonElement | null>;
-  layoutKey: string;
-  widthStyle: ActivityPopoverWidthStyle;
-} {
-  const triggerRef = useRef<HTMLButtonElement | null>(null);
-  const [layout, setLayout] = useState(() => ({
-    key: "initial",
-    widthPx: ACTIVITY_POPOVER_MAX_WIDTH_PX,
-  }));
-
-  useLayoutEffect(() => {
-    if (!open || typeof window === "undefined") {
-      return;
-    }
-
-    let frameId: number | null = null;
-
-    const measure = () => {
-      frameId = null;
-      const trigger = triggerRef.current;
-      if (!trigger) {
-        return;
-      }
-      const triggerRect = trigger.getBoundingClientRect();
-      const boundaryRect = trigger.closest("main")?.getBoundingClientRect();
-      const viewportWidth = window.visualViewport?.width ?? window.innerWidth;
-      const boundaryLeft = boundaryRect?.left ?? ACTIVITY_POPOVER_BOUNDARY_GUTTER_PX;
-      const widthPx = resolveActivityPopoverWidth({
-        triggerRight: triggerRect.right,
-        boundaryLeft,
-        viewportWidth,
-      });
-      const key = [
-        quantizeLayoutValue(triggerRect.right),
-        quantizeLayoutValue(boundaryLeft),
-        quantizeLayoutValue(widthPx),
-      ].join(":");
-
-      setLayout((current) =>
-        current.key === key && current.widthPx === widthPx ? current : { key, widthPx },
-      );
-    };
-
-    const scheduleMeasure = () => {
-      if (frameId === null) {
-        frameId = window.requestAnimationFrame(measure);
-      }
-    };
-
-    measure();
-
-    const trigger = triggerRef.current;
-    const boundary = trigger?.closest("main") ?? null;
-    const resizeObserver =
-      typeof ResizeObserver === "undefined" ? null : new ResizeObserver(scheduleMeasure);
-    if (trigger) {
-      resizeObserver?.observe(trigger);
-    }
-    if (boundary) {
-      resizeObserver?.observe(boundary);
-    }
-    window.addEventListener("resize", scheduleMeasure);
-    window.visualViewport?.addEventListener("resize", scheduleMeasure);
-
-    return () => {
-      if (frameId !== null) {
-        window.cancelAnimationFrame(frameId);
-      }
-      resizeObserver?.disconnect();
-      window.removeEventListener("resize", scheduleMeasure);
-      window.visualViewport?.removeEventListener("resize", scheduleMeasure);
-    };
-  }, [open]);
-
-  const widthStyle = useMemo<ActivityPopoverWidthStyle>(
-    () => ({
-      "--thread-activity-popover-width": `${layout.widthPx}px`,
-    }),
-    [layout.widthPx],
-  );
-
-  return {
-    triggerRef,
-    layoutKey: layout.key,
-    widthStyle,
-  };
-}
 
 function toneTextClassName(tone: ActivityTone): string {
   if (tone === "active") return "text-primary-readable";
@@ -382,6 +263,15 @@ export function deriveThreadActivityTriggerState(input: {
   };
 }
 
+/**
+ * The counts on the button ("3/6", "2"). The text box is trimmed to the
+ * digits' own height (cap height to baseline), so centering it against an
+ * icon centers the glyphs rather than the font's line box, which sat bare
+ * digits like "1" a hair above the icon beside them.
+ */
+const TRIGGER_COUNT_CLASS_NAME =
+  "font-mono text-[10.5px] font-semibold leading-none tabular-nums [text-box:trim-both_cap_alphabetic]";
+
 function TriggerContent({ state }: { state: ActivityTriggerState }) {
   const { tasks, runCount } = state;
   return (
@@ -395,12 +285,7 @@ function TriggerContent({ state }: { state: ActivityTriggerState }) {
           ) : (
             <ListTodoIcon className="size-3" aria-hidden="true" />
           )}
-          <span
-            className={cn(
-              "font-mono text-[10.5px] font-semibold leading-none tabular-nums",
-              toneTextClassName(tasks.tone),
-            )}
-          >
+          <span className={cn(TRIGGER_COUNT_CLASS_NAME, toneTextClassName(tasks.tone))}>
             {tasks.label}
           </span>
         </span>
@@ -409,9 +294,7 @@ function TriggerContent({ state }: { state: ActivityTriggerState }) {
       {runCount > 0 ? (
         <span className="flex items-center gap-1" data-activity-trigger-part="runs">
           <RadioIcon className="size-3" aria-hidden="true" />
-          <span className="font-mono text-[10.5px] font-semibold leading-none tabular-nums">
-            {runCount}
-          </span>
+          <span className={TRIGGER_COUNT_CLASS_NAME}>{runCount}</span>
         </span>
       ) : null}
     </span>
@@ -796,8 +679,9 @@ const RUN_KIND_ICONS: Readonly<Record<BackgroundRunKind, (className: string) => 
   process: (className) => <CpuIcon className={className} aria-hidden="true" />,
 };
 
-/** The actions on a run show while it is hovered or focused, and always on
- *  touch screens, where there is no hover. */
+/** The open-terminal action shows while its run is hovered or focused, and
+ *  always on touch screens, where there is no hover. Stop always shows: it is
+ *  the action a reader comes to the list for, and should never need finding. */
 const RUN_ACTION_REVEAL_CLASS_NAME =
   "opacity-0 transition-opacity group-hover/run:opacity-100 group-focus-within/run:opacity-100 pointer-coarse:opacity-100";
 
@@ -892,10 +776,7 @@ function BackgroundRunRow({
           <TooltipWrapper tooltip={`Stop ${run.label}`}>
             <button
               type="button"
-              className={cn(
-                "inline-flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-md text-destructive transition-colors hover:bg-destructive/10 focus-ring",
-                RUN_ACTION_REVEAL_CLASS_NAME,
-              )}
+              className="inline-flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-md text-destructive transition-colors hover:bg-destructive/10 focus-ring"
               aria-label={`Stop ${run.label}`}
               onClick={() => onStop(run)}
             >
@@ -967,7 +848,6 @@ export const ThreadActivityPopover = memo(function ThreadActivityPopover({
   onDismissProposedPlan,
 }: ThreadActivityPopoverProps) {
   const [popoverOpen, setPopoverOpen] = useState(false);
-  const popoverLayout = useActivityPopoverAnchorLayout(popoverOpen);
   const triggerState = deriveThreadActivityTriggerState({
     taskProgress,
     backgroundRuns,
@@ -999,7 +879,6 @@ export const ThreadActivityPopover = memo(function ThreadActivityPopover({
                   type="button"
                   variant="ghost"
                   size="xs"
-                  ref={popoverLayout.triggerRef}
                   className="min-w-6 px-1.5 text-[11px] [-webkit-app-region:no-drag]"
                   aria-label={triggerState.ariaLabel}
                 />
@@ -1013,16 +892,22 @@ export const ThreadActivityPopover = memo(function ThreadActivityPopover({
           {triggerState.tooltipText}
         </TooltipPopup>
         <PopoverPopup
-          key={popoverLayout.layoutKey}
           align="end"
-          positionerClassName="transition-none"
+          collisionAvoidance={ACTIVITY_POPOVER_COLLISION_AVOIDANCE}
+          collisionPadding={ACTIVITY_POPOVER_EDGE_GUTTER_PX}
+          // The positioner sizes to the panel. Its default size is the panel's
+          // as measured once on open, which a later width change outgrew, and
+          // the panel then slid off its button.
+          positionerClassName="h-auto w-auto transition-none"
           side="bottom"
           sideOffset={8}
           // Keyboard users land on the first control; a click leaves focus on
           // the button, so no row opens already showing its actions.
           initialFocus={keyboardOpensIntoPopup}
-          className="max-h-[min(34rem,calc(100vh-5rem))] w-(--thread-activity-popover-width) max-w-[calc(100vw-1rem)] overflow-y-auto [&_[data-slot=popover-viewport]]:py-3 [&_[data-slot=popover-viewport]]:[--viewport-inline-padding:--spacing(2)]"
-          style={popoverLayout.widthStyle}
+          className={cn(
+            "max-h-[min(34rem,var(--available-height))] overflow-y-auto [&_[data-slot=popover-viewport]]:py-3 [&_[data-slot=popover-viewport]]:[--viewport-inline-padding:--spacing(2)]",
+            ACTIVITY_POPOVER_WIDTH_CLASS_NAME,
+          )}
         >
           <div className="min-w-0">
             {taskProgress && showsTasks ? (

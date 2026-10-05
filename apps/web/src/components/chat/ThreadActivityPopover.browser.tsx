@@ -118,6 +118,51 @@ describe("ThreadActivityPopover", () => {
     }
   });
 
+  it("spans a phone screen between even margins and follows its button as the window widens", async () => {
+    await page.viewport(390, 800);
+    const mounted = await render(
+      <main className="flex items-center gap-2 px-3">
+        <span className="min-w-0 flex-1">Thread title</span>
+        <ThreadActivityPopover
+          taskProgress={buildTaskProgress(THREE_STEPS)}
+          backgroundRuns={[]}
+          threadRef={null}
+          onToggleBackgroundRunTerminal={vi.fn()}
+          onStopBackgroundRun={vi.fn()}
+        />
+        <span className="size-7 shrink-0" />
+        <span className="size-7 shrink-0" />
+      </main>,
+    );
+    const trigger = page.getByRole("button", { name: TASK_BADGE.ariaLabel });
+    const popupBox = () =>
+      document.querySelector<HTMLElement>("[data-slot='popover-popup']")!.getBoundingClientRect();
+
+    try {
+      await trigger.click();
+      // On a phone the panel runs the width of the screen, the same distance
+      // from both edges, not a narrow card pushed against one side.
+      await vi.waitFor(() => {
+        const box = popupBox();
+        expect(Math.round(box.left)).toBe(12);
+        expect(Math.round(window.innerWidth - box.right)).toBe(12);
+      });
+
+      await page.viewport(1200, 800);
+      // Wider, it hangs from its button, and the open panel moves with it.
+      await vi.waitFor(() => {
+        const box = popupBox();
+        expect(Math.abs(box.right - trigger.element().getBoundingClientRect().right)).toBeLessThan(
+          2,
+        );
+        expect(box.width).toBeLessThanOrEqual(480);
+      });
+    } finally {
+      await mounted.unmount();
+      await page.viewport(1_600, 1_300);
+    }
+  });
+
   it("shows where each step stands, how long the finished ones took, and what the agent is on", async () => {
     const mounted = await renderOpenPopover(
       buildTaskProgress(THREE_STEPS, {
@@ -213,9 +258,9 @@ describe("ThreadActivityPopover", () => {
         .toBeVisible();
       await expect.element(page.getByText("ready in 412 ms")).toBeVisible();
       await expect.element(page.getByRole("link", { name: /localhost:5173/u })).toBeVisible();
-      await expect
-        .element(page.getByRole("button", { name: "Stop Start web dev server" }))
-        .toBeInTheDocument();
+      // Stop shows without hovering the row, on desktop as on phones.
+      const stop = page.getByRole("button", { name: "Stop Start web dev server" }).element();
+      expect(getComputedStyle(stop).opacity).toBe("1");
     } finally {
       await mounted.unmount();
     }

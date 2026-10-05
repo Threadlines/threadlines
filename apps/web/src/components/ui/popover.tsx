@@ -27,6 +27,8 @@ function PopoverPopup({
   alignOffset = 0,
   tooltipStyle = false,
   anchor,
+  collisionAvoidance,
+  collisionPadding,
   ...props
 }: PopoverPrimitive.Popup.Props & {
   /**
@@ -42,6 +44,11 @@ function PopoverPopup({
   alignOffset?: PopoverPrimitive.Positioner.Props["alignOffset"];
   tooltipStyle?: boolean;
   anchor?: PopoverPrimitive.Positioner.Props["anchor"];
+  /** How the popup moves when it would leave the screen; the positioner's
+   *  default flips it to the other alignment. */
+  collisionAvoidance?: PopoverPrimitive.Positioner.Props["collisionAvoidance"];
+  /** The closest the popup may come to a screen edge. */
+  collisionPadding?: PopoverPrimitive.Positioner.Props["collisionPadding"];
   positionerClassName?: string;
 }) {
   return (
@@ -50,6 +57,8 @@ function PopoverPopup({
         align={align}
         alignOffset={alignOffset}
         anchor={anchor}
+        collisionAvoidance={collisionAvoidance}
+        collisionPadding={collisionPadding}
         className={cn(
           "z-50 h-(--positioner-height) w-(--positioner-width) max-w-(--available-width) transition-[top,left,right,bottom,transform] data-instant:transition-none",
           positionerClassName,
