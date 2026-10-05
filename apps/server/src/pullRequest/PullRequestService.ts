@@ -6,6 +6,7 @@ import * as Layer from "effect/Layer";
 
 import {
   ProjectId,
+  PULL_REQUEST_SETTLED_LIST_LIMIT,
   PullRequestServiceError,
   type OrchestrationProjectShell,
   type PullRequestActionInput,
@@ -57,7 +58,6 @@ import {
 
 const PROJECT_CONCURRENCY = 4;
 const OPEN_LIST_LIMIT = 50;
-const SETTLED_LIST_LIMIT = 30;
 /** The page refreshes on an interval, so a short shared cache keeps the host quiet. */
 const LIST_CACHE_TTL = Duration.seconds(30);
 const LIST_CACHE_CAPACITY = 32;
@@ -568,7 +568,7 @@ export const make = Effect.fn("makePullRequestService")(function* () {
           cwd: input.project.workspaceRoot,
           repository: input.project.repository,
           state: input.state,
-          limit: input.state === "open" ? OPEN_LIST_LIMIT : SETTLED_LIST_LIMIT,
+          limit: input.state === "open" ? OPEN_LIST_LIMIT : PULL_REQUEST_SETTLED_LIST_LIMIT,
         })
         .pipe(
           Effect.map((rows): PullRequestProjectRead => ({
@@ -625,7 +625,7 @@ export const make = Effect.fn("makePullRequestService")(function* () {
             cwd: input.anchor.workspaceRoot,
             viewer,
             state: input.state,
-            limit: input.state === "open" ? OPEN_LIST_LIMIT : SETTLED_LIST_LIMIT,
+            limit: input.state === "open" ? OPEN_LIST_LIMIT : PULL_REQUEST_SETTLED_LIST_LIMIT,
           }).pipe(
             Effect.map((rows): PullRequestProjectRead => ({
               entries: rows.flatMap((row) =>

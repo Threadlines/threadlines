@@ -590,8 +590,8 @@ export function PublishRepositoryDialog(props: PublishRepositoryDialogProps) {
   return (
     <Dialog open={props.open} onOpenChange={handleOpenChange}>
       <DialogPopup className="max-w-xl overflow-hidden">
-        <div className="flex min-h-0 flex-col overflow-hidden border-foreground/10 bg-background shadow-2xl">
-          <DialogHeader className="border-b border-border/70 bg-background">
+        <div className="flex min-h-0 flex-col overflow-hidden">
+          <DialogHeader className="border-b border-border/70">
             <DialogTitle>Publish repository</DialogTitle>
             <DialogDescription>
               Pick where to host it, then point us at a repo to push to.
@@ -614,7 +614,7 @@ export function PublishRepositoryDialog(props: PublishRepositoryDialogProps) {
                       index === publishWizardStep
                         ? "border-primary bg-primary/10 ring-1 ring-primary/25"
                         : isComplete
-                          ? "border-border bg-background"
+                          ? "border-border"
                           : "border-border bg-muted/40",
                       !isClickable && "cursor-default",
                     )}
@@ -647,7 +647,7 @@ export function PublishRepositoryDialog(props: PublishRepositoryDialogProps) {
             </div>
           </DialogHeader>
 
-          <DialogPanel className="space-y-5 border-b border-border/70 bg-muted/20 px-6 py-5">
+          <DialogPanel className="space-y-5 border-b border-border/70 px-6 py-5">
             <AnimatedHeight>
               <div className={cn("space-y-2", publishWizardStep !== 0 && "hidden")}>
                 <span
@@ -712,8 +712,8 @@ export function PublishRepositoryDialog(props: PublishRepositoryDialogProps) {
                           "relative flex cursor-pointer items-center gap-3 rounded-lg border px-3 py-3 text-left outline-none transition-[background-color,border-color,box-shadow]",
                           "focus-ring",
                           isSelected
-                            ? "border-primary bg-background shadow-sm ring-2 ring-primary/35"
-                            : "border-border bg-background hover:border-foreground/20 hover:bg-muted/50",
+                            ? "border-primary bg-primary/5 ring-1 ring-primary"
+                            : "border-border hover:border-foreground/20 hover:bg-muted/50",
                         )}
                       >
                         <option.Icon className="size-5 shrink-0" aria-hidden />
@@ -803,8 +803,8 @@ export function PublishRepositoryDialog(props: PublishRepositoryDialogProps) {
                               "relative flex cursor-pointer items-center gap-3 rounded-lg border px-3 py-2.5 text-left outline-none transition-[background-color,border-color,box-shadow]",
                               "focus-ring",
                               isSelected
-                                ? "border-primary bg-background shadow-sm ring-2 ring-primary/35"
-                                : "border-border bg-background hover:border-foreground/20 hover:bg-muted/50",
+                                ? "border-primary bg-primary/5 ring-1 ring-primary"
+                                : "border-border hover:border-foreground/20 hover:bg-muted/50",
                             )}
                           >
                             <option.Icon

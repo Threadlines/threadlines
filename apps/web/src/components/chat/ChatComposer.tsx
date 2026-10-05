@@ -112,6 +112,7 @@ import {
 } from "../ComposerPromptEditor";
 import { ProviderModelPicker } from "./ProviderModelPicker";
 import { type ComposerCommandItem, ComposerCommandMenu } from "./ComposerCommandMenu";
+import { useComposerMenuRoom } from "./useComposerMenuRoom";
 import { ComposerPendingApprovalActions } from "./ComposerPendingApprovalActions";
 import { CompactComposerControlsMenu } from "./CompactComposerControlsMenu";
 import { ComposerAttachmentMenu } from "./ComposerAttachmentMenu";
@@ -1495,6 +1496,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   ]);
 
   const composerMenuOpen = Boolean(composerTrigger);
+  const composerMenuAnchorRef = useRef<HTMLDivElement>(null);
+  const composerMenuRoom = useComposerMenuRoom(composerMenuAnchorRef, composerMenuOpen);
   const composerMenuSearchKey = composerTrigger
     ? `${composerTrigger.kind}:${composerTrigger.query.trim().toLowerCase()}`
     : null;
@@ -3518,7 +3521,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           width the right panel's resize check reads. */}
       <div className="min-w-0 overflow-x-clip">{stackedAbove}</div>
       {!isComposerCollapsedMobile && goalBarVisible ? (
-        <div className="mx-auto w-[calc(100%-5rem)] overflow-hidden rounded-t-xl border border-b-0 border-border/55 bg-card/60 shadow-black/5 shadow-sm">
+        <div className="mx-auto w-[calc(100%-5rem)] overflow-hidden rounded-t-3xl border border-b-0 border-border/55 bg-card/60">
           <ComposerGoalBar
             goal={threadGoal}
             editorOpen={isGoalEditorOpen}
@@ -3538,7 +3541,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       ) : null}
       <div
         className={cn(
-          "group rounded-2xl p-px transition-[background-color,box-shadow] duration-200",
+          "group rounded-[13px] p-px transition-[background-color,box-shadow] duration-200",
           interactionMode === "plan" && "plan-mode-frame",
           composerProviderState.composerFrameClassName,
         )}
@@ -3557,7 +3560,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           ref={composerSurfaceRef}
           data-chat-composer-mobile-collapsed={isComposerCollapsedMobile ? "true" : "false"}
           className={cn(
-            "rounded-xl border bg-card elevate-raised transition-colors duration-200 has-focus-visible:border-focus-ring/45",
+            // The one raised box on the canvas: card fill and a border. In light
+            // mode a white box on the near-white canvas also needs the soft drop
+            // to read; in dark the lighter fill does that on its own.
+            "rounded-4xl border bg-card not-dark:elevate-raised transition-colors duration-200 has-focus-visible:border-focus-ring/45",
             !isComposerCollapsedMobile &&
               hasComposerDockContent({ pullRequests, notices: dockedNotices }) &&
               "rounded-t-none",
@@ -3586,14 +3592,14 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         >
           {!isComposerCollapsedMobile &&
             (activePendingApproval ? (
-              <div className="rounded-t-[19px] border-b border-border/65 bg-muted/20">
+              <div className="rounded-t-[11px] border-b border-border/65 bg-muted/20">
                 <ComposerPendingApprovalPanel
                   approval={activePendingApproval}
                   pendingCount={pendingApprovals.length}
                 />
               </div>
             ) : pendingUserInputs.length > 0 ? (
-              <div className="rounded-t-[19px] border-b border-border/65 bg-muted/20">
+              <div className="rounded-t-[11px] border-b border-border/65 bg-muted/20">
                 <ComposerPendingUserInputPanel
                   pendingUserInputs={pendingUserInputs}
                   respondingRequestIds={respondingUserInputRequestIds}
@@ -3610,7 +3616,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                 />
               </div>
             ) : pendingInvite !== null ? (
-              <div className="rounded-t-[19px] border-b border-border/65 bg-muted/20">
+              <div className="rounded-t-[11px] border-b border-border/65 bg-muted/20">
                 <ComposerAgentInvitePanel
                   key={pendingInvite.requestId}
                   threadRef={routeThreadRef}
@@ -3618,7 +3624,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                 />
               </div>
             ) : pendingChildThreadStarts !== null ? (
-              <div className="rounded-t-[19px] border-b border-border/65 bg-muted/20">
+              <div className="rounded-t-[11px] border-b border-border/65 bg-muted/20">
                 <ComposerChildThreadsPanel
                   key={pendingChildThreadStarts.batchId}
                   threadRef={routeThreadRef}
@@ -3626,7 +3632,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                 />
               </div>
             ) : showPlanFollowUpPrompt && activeProposedPlan ? (
-              <div className="rounded-t-[19px] border-b border-border/65 bg-muted/20">
+              <div className="rounded-t-[11px] border-b border-border/65 bg-muted/20">
                 <ComposerPlanFollowUpBanner
                   key={activeProposedPlan.id}
                   planTitle={proposedPlanTitle(activeProposedPlan.planMarkdown) ?? null}
@@ -3636,7 +3642,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
 
           {isComposerCollapsedMobile && activePendingApproval ? (
             <div
-              className="rounded-t-[19px] border-b border-border/65 bg-muted/20"
+              className="rounded-t-[11px] border-b border-border/65 bg-muted/20"
               data-chat-composer-collapsed-controls="true"
             >
               <ComposerPendingApprovalPanel
@@ -3677,7 +3683,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
               </button>
               <button
                 type="button"
-                className="flex size-8 shrink-0 items-center justify-center rounded-full bg-primary/90 text-primary-foreground disabled:opacity-30"
+                className="flex size-8 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground disabled:opacity-30"
                 disabled={collapsedComposerPrimaryActionDisabled}
                 aria-label={collapsedComposerPrimaryActionLabel}
                 onPointerDown={(event) => event.preventDefault()}
@@ -3722,6 +3728,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           ) : (
             <>
               <div
+                ref={composerMenuAnchorRef}
                 className={cn(
                   "relative px-3 pb-2 sm:px-4",
                   hasComposerHeader ? "pt-2.5 sm:pt-3" : "pt-3.5 sm:pt-4",
@@ -3731,6 +3738,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                 {composerMenuOpen && !isComposerApprovalState && (
                   <div className="absolute inset-x-0 bottom-full z-20 mb-2 px-1">
                     <ComposerCommandMenu
+                      maxListHeightPx={composerMenuRoom}
                       items={composerMenuItems}
                       resolvedTheme={resolvedTheme}
                       isLoading={isComposerMenuLoading}

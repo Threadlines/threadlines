@@ -10,6 +10,10 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   buildProviderEnablementPatch,
   deriveMaintainedProviderRows,
+  groupProviderRows,
+  type HeldProviderRows,
+  holdProviderRow,
+  pruneHeldProviderRows,
 } from "../settings/providerEnablement";
 import {
   deriveInitialPicks,
@@ -115,5 +119,54 @@ describe("agent setup", () => {
       driver: CODEX,
       enabled: true,
     });
+  });
+});
+
+describe("Providers page groups", () => {
+  const rows = deriveMaintainedProviderRows(SETTINGS);
+  const rowFor = (driver: ProviderDriverKind) => rows.find((row) => row.driver === driver)!;
+  const drivers = (group: ReadonlyArray<{ readonly driver: ProviderDriverKind }>) =>
+    group.map((row) => row.driver);
+  const NONE: HeldProviderRows = new Map();
+
+  it("keeps a switched row in its group until it is let go", () => {
+    // Codex is on by default. Switching it off holds it under "In use".
+    const held = holdProviderRow(NONE, rowFor(CODEX), false);
+    const switchedOff = rows.map((row) =>
+      row.driver === CODEX ? { ...row, instance: { ...row.instance, enabled: false } } : row,
+    );
+
+    expect(drivers(groupProviderRows(switchedOff, held).inUse)).toContain(CODEX);
+    // Let go (the pointer left the list): it settles under "Not in use".
+    expect(drivers(groupProviderRows(switchedOff, NONE).notInUse)).toContain(CODEX);
+  });
+
+  it("lets go of a row that is switched straight back", () => {
+    const held = holdProviderRow(NONE, rowFor(CODEX), false);
+    const switchedOff = {
+      ...rowFor(CODEX),
+      instance: { ...rowFor(CODEX).instance, enabled: false },
+    };
+
+    expect(holdProviderRow(held, switchedOff, true).size).toBe(0);
+  });
+
+  it("drops a hold once the row is back where it was held, or gone", () => {
+    const held = holdProviderRow(NONE, rowFor(CODEX), false);
+    const switchedOff = rows.map((row) =>
+      row.driver === CODEX ? { ...row, instance: { ...row.instance, enabled: false } } : row,
+    );
+
+    // Still switched off: the hold stands (and the map is not rebuilt).
+    expect(pruneHeldProviderRows(held, switchedOff)).toBe(held);
+    // The write failed and Codex is on again, where it was held: nothing to hold.
+    expect(pruneHeldProviderRows(held, rows).size).toBe(0);
+    // The row was deleted elsewhere.
+    expect(
+      pruneHeldProviderRows(
+        held,
+        switchedOff.filter((row) => row.driver !== CODEX),
+      ).size,
+    ).toBe(0);
   });
 });

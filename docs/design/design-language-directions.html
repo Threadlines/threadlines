@@ -1,0 +1,4153 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Threadlines · design language directions</title>
+    <style>
+      @font-face {
+        font-family: "Schibsted Grotesk Variable";
+        src: url(fonts/sg.woff2) format("woff2");
+        font-weight: 400 900;
+      }
+      @font-face {
+        font-family: "Cascadia Mono Variable";
+        src: url(fonts/cm.woff2) format("woff2");
+        font-weight: 200 700;
+      }
+      :root {
+        --fg: oklch(0.93 0 0);
+        --fg-2: oklch(0.93 0 0 / 0.82);
+        --muted: oklch(0.68 0 0);
+        --muted-2: oklch(0.68 0 0 / 0.7);
+        --muted-3: oklch(0.68 0 0 / 0.5);
+        --primary: #00347d;
+        --primary-on: #1f4fa8;
+        --primary-readable: oklch(0.65 0.19 264);
+        --sans: "Schibsted Grotesk Variable", ui-sans-serif, system-ui, -apple-system, sans-serif;
+        --mono: "Cascadia Mono Variable", "SF Mono", Menlo, monospace;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        background: #0f0f10;
+        color: var(--fg);
+        font-family: var(--sans);
+        -webkit-font-smoothing: antialiased;
+      }
+      svg.i {
+        width: 16px;
+        height: 16px;
+        fill: none;
+        stroke: currentColor;
+        stroke-width: 2;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+        flex: none;
+      }
+      svg.i.s12 {
+        width: 12px;
+        height: 12px;
+      }
+      svg.i.s14 {
+        width: 14px;
+        height: 14px;
+      }
+      svg.i.s18 {
+        width: 18px;
+        height: 18px;
+      }
+      svg.logo {
+        width: 15px;
+        height: 15px;
+        flex: none;
+      }
+      button {
+        font: inherit;
+        color: inherit;
+        background: none;
+        border: 0;
+        padding: 0;
+        cursor: default;
+      }
+
+      /* ---------- page chrome (not part of the design) ---------- */
+      .tabs {
+        position: sticky;
+        top: 0;
+        z-index: 50;
+        display: flex;
+        gap: 2px;
+        padding: 10px 24px;
+        background: #0f0f10ee;
+        backdrop-filter: blur(8px);
+        border-bottom: 1px solid #ffffff12;
+      }
+      .tabs a {
+        color: var(--muted);
+        text-decoration: none;
+        font-size: 13px;
+        padding: 6px 10px;
+        border-radius: 6px;
+        cursor: pointer;
+      }
+      .tabs a:hover {
+        color: var(--fg);
+      }
+      .tabs a.on {
+        color: var(--fg);
+        background: #ffffff12;
+      }
+      .tabs .rec {
+        font-family: var(--mono);
+        font-size: 9.5px;
+        letter-spacing: 0.06em;
+        color: #34d399;
+        margin-left: 6px;
+      }
+      .board {
+        display: none;
+        padding: 22px 24px 70px;
+      }
+      .board.on {
+        display: block;
+      }
+      .cap {
+        max-width: 1280px;
+        margin: 0 0 14px;
+      }
+      .cap h1 {
+        font-size: 18px;
+        font-weight: 600;
+        margin: 0 0 4px;
+        letter-spacing: -0.01em;
+      }
+      .cap p {
+        margin: 0;
+        color: var(--muted);
+        font-size: 13.5px;
+        line-height: 1.55;
+        max-width: 940px;
+      }
+      .label {
+        font-family: var(--mono);
+        font-size: 10px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--muted-3);
+        margin: 26px 0 10px;
+      }
+      .notes {
+        max-width: 1280px;
+        margin-top: 18px;
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 0 28px;
+      }
+      .notes h3 {
+        font-family: var(--mono);
+        font-size: 10px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--muted-3);
+        font-weight: 500;
+        margin: 0 0 8px;
+        padding-bottom: 6px;
+        border-bottom: 1px solid #ffffff14;
+      }
+      .notes ul {
+        margin: 0;
+        padding-left: 18px;
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.55;
+      }
+      .notes li {
+        margin-bottom: 5px;
+      }
+      .notes li b {
+        color: var(--fg);
+        font-weight: 500;
+      }
+      .today img {
+        width: 1280px;
+        border-radius: 12px;
+        display: block;
+        margin-bottom: 18px;
+      }
+      .sys {
+        max-width: 1280px;
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 16px;
+        margin-top: 8px;
+      }
+      .sys .cell {
+        padding: 14px 0;
+        border-top: 1px solid #ffffff14;
+      }
+      .sys .cell h4 {
+        margin: 0 0 8px;
+        font-size: 13px;
+        font-weight: 600;
+      }
+      .sys .cell p {
+        margin: 0;
+        font-size: 12.5px;
+        color: var(--muted);
+        line-height: 1.5;
+      }
+      .swatches {
+        display: flex;
+        gap: 6px;
+        margin-top: 10px;
+      }
+      .swatches span {
+        flex: 1;
+        height: 34px;
+        border-radius: 7px;
+        border: 1px solid #ffffff10;
+        font-family: var(--mono);
+        font-size: 9.5px;
+        color: var(--muted);
+        display: flex;
+        align-items: flex-end;
+        padding: 4px 6px;
+      }
+
+      /* ---------- shared app skeleton ---------- */
+      .frame {
+        width: 1280px;
+        height: 760px;
+        border-radius: 12px;
+        overflow: hidden;
+        border: 1px solid #ffffff14;
+        position: relative;
+        display: grid;
+        grid-template-columns: 248px 1fr;
+        box-shadow: 0 30px 80px #0009;
+      }
+      .frame.chat {
+        height: 640px;
+      }
+      .lights {
+        display: flex;
+        gap: 8px;
+        padding: 14px 16px 0;
+      }
+      .lights i {
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        display: block;
+        background: #ffffff1c;
+      }
+      .side {
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+      }
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 14px 16px 12px;
+        font-weight: 600;
+        font-size: 14.5px;
+        letter-spacing: -0.01em;
+      }
+      .nav {
+        display: flex;
+        flex-direction: column;
+        gap: 1px;
+        padding: 0 8px;
+      }
+      .nav a {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 7px 10px;
+        font-size: 13px;
+        text-decoration: none;
+        color: inherit;
+      }
+      .nav .gap {
+        height: 1px;
+        margin: 7px 10px;
+      }
+      .nav .tile {
+        display: none;
+      }
+      .spacer {
+        flex: 1;
+      }
+      .foot {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        padding: 8px;
+      }
+      .foot a {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 6px 10px;
+        font-size: 12.5px;
+      }
+      .foot a .r {
+        margin-left: auto;
+        font-family: var(--mono);
+        font-size: 11px;
+      }
+      .main {
+        display: flex;
+        flex-direction: column;
+        min-width: 0;
+        min-height: 0;
+        position: relative;
+      }
+      .topbar {
+        height: 46px;
+        flex: none;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 0 18px;
+        font-size: 13.5px;
+      }
+      .topbar .crumb {
+        color: var(--muted);
+      }
+      .topbar .acts {
+        margin-left: auto;
+        display: flex;
+        gap: 6px;
+        align-items: center;
+      }
+      .ib {
+        width: 28px;
+        height: 26px;
+        display: grid;
+        place-items: center;
+        color: var(--muted);
+      }
+      .scroll {
+        flex: 1;
+        overflow-y: auto;
+        min-height: 0;
+      }
+      .col {
+        width: 720px;
+        margin: 0 auto;
+        padding: 26px 0 60px;
+      }
+      .page-h {
+        margin-bottom: 22px;
+      }
+      .page-h h1 {
+        margin: 0;
+        font-size: 20px;
+        font-weight: 600;
+        letter-spacing: -0.015em;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      .page-h p {
+        margin: 4px 0 0;
+        font-size: 13px;
+        color: var(--muted);
+      }
+      .page-h .ptile {
+        display: none;
+      }
+      .sect {
+        margin-bottom: 26px;
+      }
+      .sect-h h2 {
+        margin: 0;
+        font-size: 13px;
+        font-weight: 600;
+      }
+      .sect-h p {
+        margin: 2px 0 0;
+        font-size: 12.5px;
+        color: var(--muted);
+      }
+      .row {
+        display: flex;
+        align-items: center;
+        gap: 20px;
+        padding: 12px 14px;
+        position: relative;
+      }
+      .row .txt {
+        flex: 1;
+        min-width: 0;
+      }
+      .row h3 {
+        margin: 0;
+        font-size: 13.5px;
+        font-weight: 550;
+        letter-spacing: -0.005em;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .row h3 .reset {
+        color: var(--muted-3);
+        display: inline-grid;
+      }
+      .row p {
+        margin: 2px 0 0;
+        font-size: 12.5px;
+        color: var(--muted);
+        line-height: 1.45;
+        max-width: 440px;
+      }
+      .row .ctl {
+        flex: none;
+        display: flex;
+        gap: 6px;
+        align-items: center;
+      }
+      .row .rtile {
+        display: none;
+      }
+      .sub {
+        padding: 0 14px 12px 14px;
+        margin-top: -4px;
+      }
+      .agent {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 6px 0 6px 12px;
+      }
+      .agent .rm {
+        margin-left: auto;
+        color: var(--muted-3);
+        width: 24px;
+        height: 24px;
+        display: grid;
+        place-items: center;
+      }
+      .note {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 12px;
+        color: oklch(0.72 0 0);
+        padding: 8px 0 0 0;
+      }
+      .ctrl {
+        height: 28px;
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        padding: 0 9px;
+        font-size: 12.5px;
+        white-space: nowrap;
+      }
+      .ctrl .chev {
+        color: var(--muted-3);
+      }
+      .sel {
+        min-width: 150px;
+        justify-content: space-between;
+      }
+      .name {
+        width: 110px;
+        color: var(--fg-2);
+      }
+      .sw {
+        width: 30px;
+        height: 18px;
+        border-radius: 9px;
+        position: relative;
+        flex: none;
+      }
+      .sw::after {
+        content: "";
+        position: absolute;
+        top: 2px;
+        left: 2px;
+        width: 14px;
+        height: 14px;
+        border-radius: 50%;
+      }
+      .sw.on::after {
+        left: 14px;
+      }
+      .btn {
+        height: 28px;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 0 10px;
+        font-size: 12.5px;
+        font-weight: 500;
+      }
+
+      /* chat */
+      .threads {
+        padding: 6px 8px;
+        display: flex;
+        flex-direction: column;
+        gap: 1px;
+      }
+      .search {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin: 2px 8px 10px;
+        padding: 6px 9px;
+        font-size: 13px;
+        color: var(--muted);
+      }
+      .search kbd {
+        margin-left: auto;
+        font-family: var(--mono);
+        font-size: 10.5px;
+        padding: 1px 5px;
+        border-radius: 4px;
+        background: #ffffff12;
+      }
+      .proj {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 10px 10px 3px;
+        font-size: 11.5px;
+        color: var(--muted);
+      }
+      .proj .fav {
+        width: 13px;
+        height: 13px;
+        border-radius: 3px;
+        display: grid;
+        place-items: center;
+        font-size: 8px;
+        font-weight: 700;
+        color: #fff;
+      }
+      .t {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 10px;
+        font-size: 13px;
+      }
+      .t .when {
+        margin-left: auto;
+        font-family: var(--mono);
+        font-size: 10.5px;
+        color: var(--muted-3);
+      }
+      .t .dot {
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: #3b82f6;
+        flex: none;
+      }
+      .body {
+        flex: 1;
+        display: grid;
+        grid-template-columns: 1fr 300px;
+        min-height: 0;
+      }
+      .convo {
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+        min-width: 0;
+      }
+      .msgs {
+        flex: 1;
+        overflow: hidden;
+        padding: 22px 36px 10px;
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+      }
+      .um {
+        align-self: flex-end;
+        max-width: 70%;
+        padding: 9px 13px;
+        font-size: 13.5px;
+        line-height: 1.5;
+      }
+      .am {
+        font-size: 13.5px;
+        line-height: 1.6;
+        color: var(--fg-2);
+        max-width: 640px;
+      }
+      .am .who {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        font-size: 12px;
+        color: var(--muted);
+        margin-bottom: 6px;
+      }
+      .tray {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 12.5px;
+        color: var(--muted);
+        padding: 7px 10px;
+        margin-bottom: 8px;
+      }
+      .files {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        font-size: 12.5px;
+        padding: 8px 10px;
+        margin-top: 10px;
+        color: var(--muted);
+      }
+      .files .add {
+        color: #34d399;
+        font-family: var(--mono);
+        font-size: 11.5px;
+      }
+      .files .del {
+        color: #f87171;
+        font-family: var(--mono);
+        font-size: 11.5px;
+      }
+      .composer {
+        margin: 8px 28px 16px;
+        padding: 12px 14px 10px;
+        display: flex;
+        flex-direction: column;
+        gap: 18px;
+      }
+      .composer .ph {
+        color: var(--muted-3);
+        font-size: 13.5px;
+      }
+      .composer .bar {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        font-size: 12.5px;
+        color: var(--muted);
+      }
+      .composer .bar .chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 4px 8px;
+      }
+      .composer .send {
+        margin-left: auto;
+        width: 26px;
+        height: 26px;
+        border-radius: 50%;
+        display: grid;
+        place-items: center;
+        color: #fff;
+      }
+      .panel-r {
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+      }
+      .panel-r .ph {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 12px 14px 8px;
+        font-size: 12.5px;
+        font-weight: 600;
+      }
+      .panel-r .ph .n {
+        font-family: var(--mono);
+        font-size: 11px;
+        color: var(--muted);
+        font-weight: 400;
+      }
+      .file {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 14px;
+        font-size: 12.5px;
+      }
+      .file .p {
+        color: var(--muted);
+        flex: 1;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .file .add {
+        color: #34d399;
+        font-family: var(--mono);
+        font-size: 11px;
+      }
+      .file .del {
+        color: #f87171;
+        font-family: var(--mono);
+        font-size: 11px;
+      }
+      .commit {
+        margin: auto 14px 14px;
+        padding: 9px 10px;
+        font-size: 12.5px;
+        color: var(--muted-3);
+      }
+
+      /* =========================================================
+   A · Canvas & panels
+   ========================================================= */
+      .dA {
+        background: oklch(0.175 0 0);
+      }
+      .dA .lights i {
+        background: #ffffff1a;
+      }
+      .dA .nav a {
+        color: oklch(0.68 0 0 / 0.85);
+        border-radius: 7px;
+      }
+      .dA .nav a svg {
+        color: oklch(0.68 0 0 / 0.65);
+      }
+      .dA .nav a.on {
+        background: rgb(255 255 255 / 7%);
+        color: var(--fg);
+        font-weight: 500;
+      }
+      .dA .nav a.on svg {
+        color: var(--primary-readable);
+      }
+      .dA .nav .gap {
+        background: rgb(255 255 255 / 6%);
+      }
+      .dA .foot a {
+        color: var(--muted);
+      }
+      .dA .foot a .r {
+        color: var(--muted-3);
+      }
+      .dA .main {
+        margin: 8px 8px 8px 0;
+        background: oklch(0.212 0 0);
+        border: 1px solid rgb(255 255 255 / 7%);
+        border-radius: 12px;
+        overflow: hidden;
+      }
+      .dA .topbar {
+        border-bottom: 1px solid rgb(255 255 255 / 6%);
+      }
+      .dA .sect-h {
+        padding: 0 2px 8px;
+      }
+      .dA .sect-h h2 {
+        color: var(--fg-2);
+      }
+      .dA .group {
+        background: rgb(255 255 255 / 3.4%);
+        border-radius: 10px;
+      }
+      .dA .row + .row::before,
+      .dA .sub + .row::before {
+        content: "";
+        position: absolute;
+        left: 14px;
+        right: 14px;
+        top: 0;
+        height: 1px;
+        background: rgb(255 255 255 / 6%);
+      }
+      .dA .agent {
+        border-left: 1px solid rgb(255 255 255 / 10%);
+      }
+      .dA .ctrl,
+      .dA .btn {
+        background: rgb(255 255 255 / 5%);
+        border: 1px solid rgb(255 255 255 / 8%);
+        border-radius: 7px;
+      }
+      .dA .ctrl.ghost {
+        background: none;
+        border-color: transparent;
+      }
+      .dA .name {
+        background: rgb(0 0 0 / 18%);
+      }
+      .dA .sw {
+        background: rgb(255 255 255 / 14%);
+      }
+      .dA .sw::after {
+        background: #1a1a1a;
+      }
+      .dA .sw.on {
+        background: var(--primary-on);
+      }
+      /* chat */
+      .dA .search {
+        background: rgb(255 255 255 / 4%);
+        border-radius: 8px;
+      }
+      .dA .t {
+        border-radius: 7px;
+        color: var(--fg-2);
+      }
+      .dA .t.on {
+        background: rgb(255 255 255 / 7%);
+        color: var(--fg);
+      }
+      .dA .chatmain {
+        margin: 8px 8px 8px 0;
+        display: grid;
+        grid-template-columns: 1fr 300px;
+        gap: 8px;
+        min-height: 0;
+      }
+      .dA .chatmain .pane {
+        background: oklch(0.212 0 0);
+        border: 1px solid rgb(255 255 255 / 7%);
+        border-radius: 12px;
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+      }
+      .dA .um {
+        background: rgb(255 255 255 / 6%);
+        border-radius: 12px 12px 4px 12px;
+      }
+      .dA .tray {
+        background: rgb(255 255 255 / 3.4%);
+        border-radius: 8px;
+      }
+      .dA .files {
+        background: rgb(255 255 255 / 3.4%);
+        border-radius: 8px;
+      }
+      .dA .composer {
+        background: oklch(0.245 0 0);
+        border: 1px solid rgb(255 255 255 / 8%);
+        border-radius: 12px;
+      }
+      .dA .composer .bar .chip {
+        border-radius: 6px;
+      }
+      .dA .composer .bar .chip:first-child {
+        background: rgb(255 255 255 / 5%);
+      }
+      .dA .composer .send {
+        background: var(--primary-on);
+      }
+      .dA .file {
+        color: var(--fg-2);
+      }
+      .dA .commit {
+        background: rgb(255 255 255 / 4%);
+        border: 1px solid rgb(255 255 255 / 7%);
+        border-radius: 8px;
+      }
+
+      /* =========================================================
+   B · Ledger (two-column, type-led)
+   ========================================================= */
+      .dB {
+        background: oklch(0.212 0 0);
+      }
+      .dB .side {
+        background: oklch(0.235 0 0);
+        border-right: 1px solid rgb(255 255 255 / 8%);
+      }
+      .dB .nav a {
+        color: oklch(0.68 0 0 / 0.85);
+        border-radius: 6px;
+      }
+      .dB .nav a svg {
+        color: oklch(0.68 0 0 / 0.6);
+      }
+      .dB .nav a.on {
+        color: var(--fg);
+        font-weight: 500;
+        background: none;
+        box-shadow: inset 2px 0 0 var(--primary-readable);
+        border-radius: 0 6px 6px 0;
+      }
+      .dB .nav a.on svg {
+        color: var(--fg);
+      }
+      .dB .nav .gap {
+        background: rgb(255 255 255 / 7%);
+      }
+      .dB .foot a {
+        color: var(--muted);
+      }
+      .dB .foot a .r {
+        color: var(--muted-3);
+      }
+      .dB .topbar {
+        border-bottom: 1px solid rgb(255 255 255 / 8%);
+      }
+      .dB .col {
+        width: 940px;
+        padding-top: 34px;
+      }
+      .dB .page-h {
+        padding-bottom: 22px;
+        border-bottom: 1px solid rgb(255 255 255 / 10%);
+        margin-bottom: 0;
+      }
+      .dB .page-h h1 {
+        font-size: 24px;
+        letter-spacing: -0.02em;
+      }
+      .dB .sect {
+        display: grid;
+        grid-template-columns: 240px 1fr;
+        gap: 40px;
+        margin: 0;
+        padding: 26px 0;
+        border-bottom: 1px solid rgb(255 255 255 / 7%);
+      }
+      .dB .sect-h h2 {
+        font-size: 14px;
+      }
+      .dB .sect-h p {
+        max-width: 220px;
+        line-height: 1.45;
+        margin-top: 4px;
+      }
+      .dB .row {
+        padding: 12px 0;
+      }
+      .dB .row + .row,
+      .dB .sub + .row {
+        border-top: 1px solid rgb(255 255 255 / 7%);
+      }
+      .dB .row:first-child {
+        padding-top: 0;
+      }
+      .dB .sub {
+        padding: 0 0 12px;
+      }
+      .dB .agent {
+        border-left: 1px solid rgb(255 255 255 / 12%);
+      }
+      .dB .ctrl,
+      .dB .btn {
+        border: 1px solid rgb(255 255 255 / 12%);
+        border-radius: 6px;
+      }
+      .dB .ctrl.ghost {
+        border-color: transparent;
+      }
+      .dB .name {
+        border-color: rgb(255 255 255 / 10%);
+      }
+      .dB .sw {
+        background: rgb(255 255 255 / 16%);
+      }
+      .dB .sw::after {
+        background: #1c1c1c;
+      }
+      .dB .sw.on {
+        background: var(--primary-on);
+      }
+      .dB .row p {
+        max-width: 380px;
+      }
+      /* chat */
+      .dB .search {
+        border: 1px solid rgb(255 255 255 / 9%);
+        border-radius: 6px;
+      }
+      .dB .t {
+        color: var(--fg-2);
+        border-radius: 0 6px 6px 0;
+      }
+      .dB .t.on {
+        color: var(--fg);
+        box-shadow: inset 2px 0 0 var(--primary-readable);
+      }
+      .dB .chatmain {
+        display: grid;
+        grid-template-columns: 1fr 300px;
+        min-height: 0;
+      }
+      .dB .chatmain .pane {
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+      }
+      .dB .chatmain .pane + .pane {
+        border-left: 1px solid rgb(255 255 255 / 8%);
+        background: oklch(0.225 0 0);
+      }
+      .dB .um {
+        border: 1px solid rgb(255 255 255 / 11%);
+        border-radius: 10px;
+      }
+      .dB .tray {
+        border-left: 2px solid rgb(255 255 255 / 14%);
+        padding-left: 10px;
+        border-radius: 0;
+      }
+      .dB .files {
+        border-top: 1px solid rgb(255 255 255 / 8%);
+        border-bottom: 1px solid rgb(255 255 255 / 8%);
+        padding-left: 0;
+      }
+      .dB .composer {
+        border: 1px solid rgb(255 255 255 / 13%);
+        border-radius: 10px;
+      }
+      .dB .composer .send {
+        background: var(--primary-on);
+      }
+      .dB .panel-r .ph {
+        border-bottom: 1px solid rgb(255 255 255 / 8%);
+        padding-bottom: 10px;
+      }
+      .dB .file {
+        color: var(--fg-2);
+        border-bottom: 1px solid rgb(255 255 255 / 5%);
+      }
+      .dB .commit {
+        border: 1px solid rgb(255 255 255 / 11%);
+        border-radius: 6px;
+      }
+
+      /* =========================================================
+   C · Native grouped (macOS-style)
+   ========================================================= */
+      .dC {
+        background: oklch(0.2 0 0);
+      }
+      .dC .side {
+        background: oklch(0.235 0 0);
+      }
+      .dC .nav a {
+        color: var(--fg-2);
+        border-radius: 8px;
+        padding: 5px 8px;
+      }
+      .dC .nav a > svg.i {
+        display: none;
+      }
+      .dC .nav .tile {
+        display: grid;
+        width: 22px;
+        height: 22px;
+        border-radius: 6px;
+        place-items: center;
+        color: #fff;
+        flex: none;
+        box-shadow: inset 0 0 0 1px rgb(255 255 255 / 10%);
+      }
+      .dC .nav .tile svg {
+        width: 13px;
+        height: 13px;
+      }
+      .dC .nav a.on {
+        background: rgb(255 255 255 / 10%);
+        color: var(--fg);
+      }
+      .dC .nav .gap {
+        background: transparent;
+        height: 8px;
+        margin: 0;
+      }
+      .dC .foot a {
+        color: var(--muted);
+      }
+      .dC .foot a .r {
+        color: var(--muted-3);
+      }
+      .dC .topbar {
+        justify-content: center;
+        font-weight: 600;
+        font-size: 13px;
+      }
+      .dC .topbar .crumb {
+        display: none;
+      }
+      .dC .col {
+        width: 640px;
+        padding-top: 18px;
+      }
+      .dC .page-h {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        text-align: center;
+        margin-bottom: 20px;
+      }
+      .dC .page-h .ptile {
+        display: grid;
+        width: 44px;
+        height: 44px;
+        border-radius: 11px;
+        place-items: center;
+        color: #fff;
+        margin-bottom: 8px;
+        box-shadow: inset 0 0 0 1px rgb(255 255 255 / 12%);
+      }
+      .dC .page-h .ptile svg {
+        width: 24px;
+        height: 24px;
+      }
+      .dC .page-h h1 {
+        font-size: 18px;
+      }
+      .dC .sect-h {
+        padding: 0 12px 6px;
+      }
+      .dC .sect-h h2 {
+        font-size: 12px;
+        color: var(--muted);
+        font-weight: 600;
+      }
+      .dC .sect-h p {
+        display: none;
+      }
+      .dC .group {
+        background: oklch(0.255 0 0);
+        border-radius: 12px;
+        box-shadow: inset 0 0 0 1px rgb(255 255 255 / 5%);
+      }
+      .dC .row {
+        padding: 10px 12px;
+        gap: 12px;
+      }
+      .dC .row .rtile {
+        display: grid;
+        width: 26px;
+        height: 26px;
+        border-radius: 7px;
+        place-items: center;
+        color: #fff;
+        flex: none;
+      }
+      .dC .row .rtile svg {
+        width: 15px;
+        height: 15px;
+      }
+      .dC .row + .row::before,
+      .dC .sub + .row::before {
+        content: "";
+        position: absolute;
+        left: 50px;
+        right: 0;
+        top: 0;
+        height: 1px;
+        background: rgb(255 255 255 / 7%);
+      }
+      .dC .row p {
+        font-size: 12px;
+      }
+      .dC .sub {
+        padding-left: 50px;
+      }
+      .dC .agent {
+        background: rgb(0 0 0 / 14%);
+        border-radius: 8px;
+        margin-bottom: 4px;
+        padding: 4px 6px;
+      }
+      .dC .ctrl,
+      .dC .btn {
+        background: rgb(255 255 255 / 9%);
+        border-radius: 6px;
+        box-shadow: inset 0 0.5px 0 rgb(255 255 255 / 12%);
+        height: 24px;
+      }
+      .dC .ctrl.ghost {
+        background: none;
+        box-shadow: none;
+      }
+      .dC .ctrl .chev {
+        transform: scaleY(1.1);
+      }
+      .dC .name {
+        background: rgb(0 0 0 / 22%);
+        box-shadow: none;
+      }
+      .dC .sw {
+        width: 34px;
+        height: 20px;
+        border-radius: 10px;
+        background: rgb(255 255 255 / 18%);
+      }
+      .dC .sw::after {
+        background: #f2f2f2;
+        width: 16px;
+        height: 16px;
+        box-shadow: 0 1px 2px #0006;
+      }
+      .dC .sw.on {
+        background: #2f6fed;
+      }
+      .dC .sw.on::after {
+        left: 16px;
+      }
+      .dC .note {
+        padding-left: 2px;
+      }
+      /* chat */
+      .dC .search {
+        background: rgb(255 255 255 / 7%);
+        border-radius: 8px;
+      }
+      .dC .t {
+        border-radius: 8px;
+        color: var(--fg-2);
+      }
+      .dC .t.on {
+        background: #2f6fed;
+        color: #fff;
+      }
+      .dC .t.on .when {
+        color: #ffffffb0;
+      }
+      .dC .proj .fav {
+        width: 16px;
+        height: 16px;
+        border-radius: 4px;
+      }
+      .dC .chatmain {
+        display: grid;
+        grid-template-columns: 1fr 300px;
+        min-height: 0;
+      }
+      .dC .chatmain .pane {
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+      }
+      .dC .chatmain .pane + .pane {
+        background: oklch(0.225 0 0);
+        border-left: 1px solid rgb(0 0 0 / 40%);
+      }
+      .dC .um {
+        background: #2f6fed;
+        color: #fff;
+        border-radius: 16px 16px 4px 16px;
+      }
+      .dC .tray,
+      .dC .files {
+        background: oklch(0.255 0 0);
+        border-radius: 10px;
+        box-shadow: inset 0 0 0 1px rgb(255 255 255 / 5%);
+      }
+      .dC .composer {
+        background: oklch(0.255 0 0);
+        border-radius: 16px;
+        box-shadow:
+          inset 0 0 0 1px rgb(255 255 255 / 7%),
+          0 6px 20px #0005;
+      }
+      .dC .composer .bar .chip {
+        background: rgb(255 255 255 / 8%);
+        border-radius: 7px;
+      }
+      .dC .composer .send {
+        background: #2f6fed;
+      }
+      .dC .panel-r .ph {
+        font-size: 12px;
+        color: var(--muted);
+      }
+      .dC .file {
+        color: var(--fg-2);
+      }
+      .dC .commit {
+        background: oklch(0.255 0 0);
+        border-radius: 10px;
+      }
+
+      /* =========================================================
+   D · Glass
+   ========================================================= */
+      .dD {
+        background:
+          radial-gradient(900px 500px at 12% -10%, oklch(0.36 0.09 264 / 0.75), transparent 60%),
+          radial-gradient(700px 500px at 100% 110%, oklch(0.32 0.08 300 / 0.55), transparent 60%),
+          oklch(0.15 0.01 264);
+      }
+      .dD .side {
+        background: rgb(255 255 255 / 3%);
+        border-right: 1px solid rgb(255 255 255 / 8%);
+        backdrop-filter: blur(30px) saturate(140%);
+      }
+      .dD .nav a {
+        color: oklch(0.85 0 0 / 0.8);
+        border-radius: 999px;
+        padding: 7px 12px;
+      }
+      .dD .nav a svg {
+        color: oklch(0.85 0 0 / 0.6);
+      }
+      .dD .nav a.on {
+        background: linear-gradient(180deg, rgb(255 255 255 / 14%), rgb(255 255 255 / 6%));
+        color: #fff;
+        box-shadow:
+          inset 0 1px 0 rgb(255 255 255 / 18%),
+          0 0 0 1px rgb(255 255 255 / 8%);
+      }
+      .dD .nav a.on svg {
+        color: oklch(0.8 0.12 264);
+      }
+      .dD .nav .gap {
+        background: rgb(255 255 255 / 8%);
+      }
+      .dD .foot a {
+        color: oklch(0.85 0 0 / 0.7);
+      }
+      .dD .foot a .r {
+        color: oklch(0.85 0 0 / 0.45);
+      }
+      .dD .main {
+        margin: 10px 10px 10px 0;
+        background: rgb(24 24 30 / 55%);
+        border: 1px solid rgb(255 255 255 / 10%);
+        border-radius: 18px;
+        overflow: hidden;
+        backdrop-filter: blur(40px) saturate(150%);
+        box-shadow:
+          inset 0 1px 0 rgb(255 255 255 / 8%),
+          0 20px 60px #0007;
+      }
+      .dD .topbar {
+        border-bottom: 1px solid rgb(255 255 255 / 7%);
+      }
+      .dD .sect-h {
+        padding: 0 6px 8px;
+      }
+      .dD .group {
+        background: rgb(255 255 255 / 4.5%);
+        border-radius: 16px;
+        box-shadow:
+          inset 0 1px 0 rgb(255 255 255 / 6%),
+          0 0 0 1px rgb(255 255 255 / 6%);
+      }
+      .dD .row {
+        padding: 13px 16px;
+      }
+      .dD .row + .row::before,
+      .dD .sub + .row::before {
+        content: "";
+        position: absolute;
+        left: 16px;
+        right: 16px;
+        top: 0;
+        height: 1px;
+        background: rgb(255 255 255 / 7%);
+      }
+      .dD .agent {
+        background: rgb(255 255 255 / 4%);
+        border-radius: 999px;
+        padding: 4px 6px 4px 10px;
+        margin-bottom: 4px;
+      }
+      .dD .ctrl,
+      .dD .btn {
+        background: rgb(255 255 255 / 8%);
+        border-radius: 999px;
+        box-shadow:
+          inset 0 1px 0 rgb(255 255 255 / 10%),
+          0 0 0 1px rgb(255 255 255 / 8%);
+        padding: 0 12px;
+      }
+      .dD .ctrl.ghost {
+        background: none;
+        box-shadow: none;
+      }
+      .dD .name {
+        background: rgb(0 0 0 / 20%);
+      }
+      .dD .sw {
+        width: 34px;
+        height: 20px;
+        border-radius: 10px;
+        background: rgb(255 255 255 / 15%);
+      }
+      .dD .sw::after {
+        background: #fff;
+        width: 16px;
+        height: 16px;
+      }
+      .dD .sw.on {
+        background: linear-gradient(180deg, oklch(0.62 0.19 264), oklch(0.5 0.2 264));
+        box-shadow: 0 0 14px oklch(0.6 0.2 264 / 55%);
+      }
+      .dD .sw.on::after {
+        left: 16px;
+      }
+      /* chat */
+      .dD .search {
+        background: rgb(255 255 255 / 6%);
+        border-radius: 999px;
+        box-shadow: inset 0 0 0 1px rgb(255 255 255 / 8%);
+      }
+      .dD .t {
+        border-radius: 999px;
+        color: oklch(0.88 0 0 / 0.85);
+      }
+      .dD .t.on {
+        background: linear-gradient(180deg, rgb(255 255 255 / 13%), rgb(255 255 255 / 5%));
+        color: #fff;
+        box-shadow: inset 0 1px 0 rgb(255 255 255 / 16%);
+      }
+      .dD .chatmain {
+        margin: 10px 10px 10px 0;
+        display: grid;
+        grid-template-columns: 1fr 300px;
+        gap: 10px;
+        min-height: 0;
+      }
+      .dD .chatmain .pane {
+        background: rgb(24 24 30 / 55%);
+        border: 1px solid rgb(255 255 255 / 10%);
+        border-radius: 18px;
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+        backdrop-filter: blur(40px) saturate(150%);
+        box-shadow: inset 0 1px 0 rgb(255 255 255 / 8%);
+      }
+      .dD .um {
+        background: linear-gradient(180deg, oklch(0.5 0.15 264 / 70%), oklch(0.42 0.15 264 / 70%));
+        border-radius: 18px 18px 6px 18px;
+        box-shadow: inset 0 1px 0 rgb(255 255 255 / 18%);
+      }
+      .dD .tray,
+      .dD .files {
+        background: rgb(255 255 255 / 5%);
+        border-radius: 12px;
+        box-shadow: inset 0 0 0 1px rgb(255 255 255 / 7%);
+      }
+      .dD .composer {
+        background: rgb(40 40 48 / 70%);
+        border-radius: 22px;
+        box-shadow:
+          inset 0 1px 0 rgb(255 255 255 / 12%),
+          0 0 0 1px rgb(255 255 255 / 10%),
+          0 16px 40px #0008;
+        backdrop-filter: blur(30px);
+      }
+      .dD .composer .bar .chip {
+        background: rgb(255 255 255 / 7%);
+        border-radius: 999px;
+      }
+      .dD .composer .send {
+        background: linear-gradient(180deg, oklch(0.62 0.19 264), oklch(0.5 0.2 264));
+        box-shadow: 0 0 16px oklch(0.6 0.2 264 / 60%);
+      }
+      .dD .file {
+        color: oklch(0.88 0 0 / 0.85);
+      }
+      .dD .commit {
+        background: rgb(255 255 255 / 5%);
+        border-radius: 12px;
+        box-shadow: inset 0 0 0 1px rgb(255 255 255 / 8%);
+      }
+
+      /* =========================================================
+   E · Quiet workspace (Sol's hybrid: option 1's groups in option 2's workspace)
+   ========================================================= */
+      .dE {
+        background: oklch(0.228 0 0);
+      }
+      .dE .side {
+        background: oklch(0.26 0 0);
+        border-right: 1px solid rgb(255 255 255 / 10%);
+      }
+      .dE .brand {
+        font-size: 15px;
+      }
+      .dE .nav a {
+        color: oklch(0.8 0 0);
+        border-radius: 6px;
+        padding: 7px 10px;
+        font-size: 13.5px;
+        position: relative;
+        min-height: 32px;
+      }
+      .dE .nav a svg {
+        color: oklch(0.68 0 0);
+      }
+      .dE .nav a.on {
+        background: rgb(255 255 255 / 8%);
+        color: var(--fg);
+        font-weight: 500;
+      }
+      .dE .nav a.on::before {
+        content: "";
+        position: absolute;
+        left: 0;
+        top: 9px;
+        bottom: 9px;
+        width: 2px;
+        border-radius: 2px;
+        background: oklch(0.65 0.19 264);
+      }
+      .dE .nav a.on svg {
+        color: var(--fg);
+      }
+      .dE .nav .gap {
+        background: rgb(255 255 255 / 8%);
+      }
+      .dE .foot a {
+        color: oklch(0.72 0 0);
+      }
+      .dE .foot a .r {
+        color: oklch(0.6 0 0);
+      }
+      .dE .topbar {
+        border-bottom: 1px solid rgb(255 255 255 / 8%);
+        height: 48px;
+      }
+      .dE .col {
+        width: 760px;
+        padding-top: 30px;
+      }
+      .dE .page-h {
+        margin-bottom: 26px;
+      }
+      .dE .page-h h1 {
+        font-size: 22px;
+        line-height: 28px;
+        letter-spacing: -0.015em;
+      }
+      .dE .page-h p {
+        font-size: 13px;
+        color: oklch(0.72 0 0);
+      }
+      .dE .sect {
+        margin-bottom: 28px;
+      }
+      .dE .sect-h {
+        padding: 0 2px 10px;
+      }
+      .dE .sect-h h2 {
+        font-size: 16px;
+        line-height: 22px;
+        font-weight: 600;
+      }
+      .dE .sect-h p {
+        font-size: 13px;
+        color: oklch(0.72 0 0);
+      }
+      .dE .group {
+        background: oklch(0.26 0 0);
+        border-radius: 10px;
+      }
+      .dE .row {
+        padding: 12px 16px;
+        min-height: 60px;
+      }
+      .dE .row h3 {
+        font-size: 14px;
+        line-height: 20px;
+        font-weight: 500;
+      }
+      .dE .row p {
+        font-size: 13px;
+        line-height: 19px;
+        color: oklch(0.72 0 0);
+      }
+      .dE .row + .row::before,
+      .dE .sub + .row::before {
+        content: "";
+        position: absolute;
+        left: 16px;
+        right: 16px;
+        top: 0;
+        height: 1px;
+        background: rgb(255 255 255 / 8%);
+      }
+      .dE .sub {
+        padding: 0 16px 12px;
+      }
+      .dE .agent {
+        border-left: 1px solid rgb(255 255 255 / 14%);
+      }
+      .dE .ctrl {
+        height: 32px;
+        font-size: 13px;
+        background: oklch(0.292 0 0);
+        border: 1px solid rgb(255 255 255 / 10%);
+        border-radius: 6px;
+      }
+      .dE .ctrl.ghost {
+        background: none;
+        border-color: transparent;
+      }
+      .dE .btn {
+        height: 32px;
+        font-size: 13px;
+        background: none;
+        border: 1px solid rgb(255 255 255 / 14%);
+        border-radius: 6px;
+      }
+      .dE .name {
+        border-radius: 8px;
+        background: oklch(0.228 0 0);
+        border-color: oklch(0.58 0 0);
+      }
+      .dE .sw {
+        width: 34px;
+        height: 20px;
+        border-radius: 10px;
+        background: rgb(255 255 255 / 18%);
+      }
+      .dE .sw::after {
+        width: 16px;
+        height: 16px;
+        background: #f2f2f2;
+      }
+      .dE .sw.on {
+        background: #2563eb;
+      }
+      .dE .sw.on::after {
+        left: 16px;
+      }
+      .dE .row h3 .reset {
+        color: oklch(0.6 0 0);
+      }
+      /* chat */
+      .dE .search {
+        background: oklch(0.228 0 0);
+        border: 1px solid rgb(255 255 255 / 10%);
+        border-radius: 8px;
+        height: 32px;
+      }
+      .dE .proj {
+        color: oklch(0.72 0 0);
+      }
+      .dE .t {
+        border-radius: 6px;
+        color: oklch(0.85 0 0);
+        position: relative;
+        min-height: 32px;
+      }
+      .dE .t.on {
+        background: rgb(255 255 255 / 8%);
+        color: var(--fg);
+      }
+      .dE .t.on::before {
+        content: "";
+        position: absolute;
+        left: 0;
+        top: 9px;
+        bottom: 9px;
+        width: 2px;
+        border-radius: 2px;
+        background: oklch(0.65 0.19 264);
+      }
+      .dE .t .when {
+        color: oklch(0.6 0 0);
+      }
+      .dE .chatmain {
+        display: grid;
+        grid-template-columns: 1fr 320px;
+        min-height: 0;
+      }
+      .dE .chatmain .pane {
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+      }
+      .dE .chatmain .pane + .pane {
+        background: oklch(0.26 0 0);
+        border-left: 1px solid rgb(255 255 255 / 14%);
+      }
+      .dE .msgs {
+        padding: 26px 0 10px;
+        align-items: center;
+        gap: 24px;
+      }
+      .dE .msgs > * {
+        width: 100%;
+        max-width: 680px;
+      }
+      .dE .um {
+        align-self: center;
+        max-width: 680px;
+        display: flex;
+        justify-content: flex-end;
+        background: none;
+        padding: 0;
+      }
+      .dE .um .bubble {
+        background: oklch(0.26 0 0);
+        border-radius: 12px;
+        padding: 10px 14px;
+        max-width: 75%;
+        font-size: 15px;
+        line-height: 23px;
+      }
+      .dE .am {
+        font-size: 15px;
+        line-height: 23px;
+        color: oklch(0.88 0 0);
+      }
+      .dE .am .who {
+        font-size: 12px;
+        color: oklch(0.72 0 0);
+      }
+      .dE .tray {
+        padding: 0;
+        margin-bottom: 10px;
+        color: oklch(0.72 0 0);
+        font-size: 12.5px;
+      }
+      .dE .files {
+        background: oklch(0.26 0 0);
+        border-radius: 8px;
+        margin-top: 12px;
+        padding: 9px 12px;
+        color: oklch(0.8 0 0);
+      }
+      .dE .composer {
+        width: calc(100% - 56px);
+        max-width: 720px;
+        align-self: center;
+        margin: 8px auto 16px;
+        background: oklch(0.292 0 0);
+        border: 1px solid rgb(255 255 255 / 10%);
+        border-radius: 12px;
+      }
+      .dE .composer .ph {
+        color: oklch(0.6 0 0);
+        font-size: 15px;
+      }
+      .dE .composer .bar .chip {
+        border-radius: 6px;
+        color: oklch(0.8 0 0);
+      }
+      .dE .composer .send {
+        background: #2563eb;
+        width: 28px;
+        height: 28px;
+      }
+      .dE .panel-r .ph {
+        font-size: 13px;
+        border-bottom: 1px solid rgb(255 255 255 / 8%);
+        padding-bottom: 10px;
+      }
+      .dE .file {
+        color: oklch(0.85 0 0);
+        min-height: 30px;
+      }
+      .dE .file:nth-of-type(3) {
+        background: rgb(255 255 255 / 6%);
+      }
+      .dE .commit {
+        background: oklch(0.228 0 0);
+        border: 1px solid oklch(0.58 0 0 / 60%);
+        border-radius: 8px;
+        color: oklch(0.6 0 0);
+      }
+
+      /* =========================================================
+   F · Quiet native: E's workspace with C's native controls, no color
+   ========================================================= */
+      .dF {
+        background: oklch(0.228 0 0);
+      }
+      .dF .side {
+        background: oklch(0.255 0 0);
+        border-right: 1px solid rgb(0 0 0 / 38%);
+      }
+      .dF .brand {
+        font-size: 15px;
+      }
+      .dF .nav a {
+        color: oklch(0.86 0 0);
+        border-radius: 8px;
+        padding: 6px 8px;
+        font-size: 13.5px;
+        min-height: 32px;
+      }
+      .dF .nav a > svg.i {
+        color: oklch(0.7 0 0);
+      }
+      .dF .nav a.on {
+        background: rgb(255 255 255 / 10%);
+        color: var(--fg);
+      }
+      .dF .nav a.on > svg.i {
+        color: var(--fg);
+      }
+      .dF .nav .gap {
+        background: transparent;
+        height: 8px;
+        margin: 0;
+      }
+      .dF .nav .tile {
+        display: none;
+      }
+      .dF.tiles-on .nav a > svg.i {
+        display: none;
+      }
+      .dF.tiles-on .nav .tile {
+        display: grid;
+        width: 22px;
+        height: 22px;
+        border-radius: 6px;
+        place-items: center;
+        flex: none;
+        background: rgb(255 255 255 / 9%) !important;
+        color: oklch(0.88 0 0);
+        box-shadow: inset 0 0 0 1px rgb(255 255 255 / 7%);
+      }
+      .dF.tiles-on .nav .tile svg {
+        width: 13px;
+        height: 13px;
+      }
+      .dF.tiles-on .nav a.on .tile {
+        background: #2f6fed !important;
+        color: #fff;
+        box-shadow: inset 0 0.5px 0 rgb(255 255 255 / 25%);
+      }
+      .dF .foot a {
+        color: oklch(0.72 0 0);
+      }
+      .dF .foot a .r {
+        color: oklch(0.6 0 0);
+      }
+      .dF .topbar {
+        border-bottom: 1px solid rgb(255 255 255 / 7%);
+        height: 48px;
+      }
+      .dF .col {
+        width: 720px;
+        padding-top: 30px;
+      }
+      .dF .page-h {
+        margin-bottom: 24px;
+      }
+      .dF .page-h h1 {
+        font-size: 22px;
+        line-height: 28px;
+        letter-spacing: -0.015em;
+      }
+      .dF .page-h p {
+        font-size: 13px;
+        color: oklch(0.72 0 0);
+      }
+      .dF .sect {
+        margin-bottom: 26px;
+      }
+      .dF .sect-h {
+        padding: 0 4px 8px;
+      }
+      .dF .sect-h h2 {
+        font-size: 15px;
+        line-height: 20px;
+        font-weight: 600;
+      }
+      .dF .sect-h p {
+        font-size: 12.5px;
+        color: oklch(0.72 0 0);
+      }
+      .dF .group {
+        background: oklch(0.26 0 0);
+        border-radius: 10px;
+        box-shadow: inset 0 0 0 1px rgb(255 255 255 / 5%);
+      }
+      .dF .row {
+        padding: 10px 14px;
+        min-height: 56px;
+        gap: 12px;
+      }
+      .dF .row h3 {
+        font-size: 13.5px;
+        line-height: 19px;
+        font-weight: 500;
+      }
+      .dF .row p {
+        font-size: 12.5px;
+        line-height: 18px;
+        color: oklch(0.72 0 0);
+      }
+      .dF .row h3 .reset {
+        color: oklch(0.6 0 0);
+      }
+      .dF .row + .row::before,
+      .dF .sub + .row::before {
+        content: "";
+        position: absolute;
+        left: 14px;
+        right: 0;
+        top: 0;
+        height: 1px;
+        background: rgb(255 255 255 / 7%);
+      }
+      .dF.tiles-on .row .rtile {
+        display: grid;
+        width: 26px;
+        height: 26px;
+        border-radius: 7px;
+        place-items: center;
+        flex: none;
+        background: rgb(255 255 255 / 7%) !important;
+        color: oklch(0.82 0 0);
+        box-shadow: inset 0 0 0 1px rgb(255 255 255 / 6%);
+      }
+      .dF.tiles-on .row .rtile svg {
+        width: 15px;
+        height: 15px;
+      }
+      .dF.tiles-on .row + .row::before,
+      .dF.tiles-on .sub + .row::before {
+        left: 52px;
+      }
+      .dF .sub {
+        padding: 0 14px 10px;
+      }
+      .dF.tiles-on .sub {
+        padding-left: 52px;
+      }
+      .dF .agent {
+        background: rgb(0 0 0 / 16%);
+        border-radius: 8px;
+        margin-bottom: 4px;
+        padding: 4px 6px;
+      }
+      /* the native controls */
+      .dF .ctrl,
+      .dF .btn {
+        height: 26px;
+        font-size: 13px;
+        padding: 0 9px;
+        background: rgb(255 255 255 / 10%);
+        border: 0;
+        border-radius: 6px;
+        box-shadow:
+          inset 0 0.5px 0 rgb(255 255 255 / 16%),
+          0 1px 1.5px rgb(0 0 0 / 35%);
+        color: var(--fg);
+      }
+      .dF .ctrl .chev {
+        color: oklch(0.75 0 0);
+        transform: scaleY(1.1);
+      }
+      .dF .ctrl.ghost {
+        background: none;
+        box-shadow: none;
+      }
+      .dF .ctrl.ghost:hover {
+        background: rgb(255 255 255 / 8%);
+      }
+      .dF .name {
+        background: rgb(0 0 0 / 24%);
+        box-shadow:
+          inset 0 0 0 1px rgb(255 255 255 / 9%),
+          inset 0 1px 2px rgb(0 0 0 / 30%);
+        color: var(--fg);
+      }
+      .dF .sw {
+        width: 34px;
+        height: 20px;
+        border-radius: 10px;
+        background: rgb(255 255 255 / 18%);
+        box-shadow: inset 0 0 0 0.5px rgb(0 0 0 / 30%);
+      }
+      .dF .sw::after {
+        background: #f2f2f2;
+        width: 16px;
+        height: 16px;
+        box-shadow: 0 1px 2px #0007;
+      }
+      .dF .sw.on {
+        background: #2f6fed;
+      }
+      .dF .sw.on::after {
+        left: 16px;
+      }
+      /* chat */
+      .dF .search {
+        background: rgb(0 0 0 / 22%);
+        border-radius: 8px;
+        box-shadow: inset 0 0 0 1px rgb(255 255 255 / 7%);
+        height: 30px;
+      }
+      .dF .proj {
+        color: oklch(0.7 0 0);
+      }
+      .dF .t {
+        border-radius: 8px;
+        color: oklch(0.86 0 0);
+        min-height: 32px;
+      }
+      .dF .t.on {
+        background: rgb(255 255 255 / 10%);
+        color: var(--fg);
+      }
+      .dF .t .when {
+        color: oklch(0.6 0 0);
+      }
+      .dF .chatmain {
+        display: grid;
+        grid-template-columns: 1fr 320px;
+        min-height: 0;
+      }
+      .dF .chatmain .pane {
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+      }
+      .dF .chatmain .pane + .pane {
+        background: oklch(0.255 0 0);
+        border-left: 1px solid rgb(0 0 0 / 38%);
+      }
+      .dF .msgs {
+        padding: 26px 0 10px;
+        align-items: center;
+        gap: 22px;
+      }
+      .dF .msgs > * {
+        width: 100%;
+        max-width: 680px;
+      }
+      .dF .um {
+        align-self: center;
+        max-width: 680px;
+        display: flex;
+        justify-content: flex-end;
+        background: none;
+        padding: 0;
+      }
+      .dF .um .bubble {
+        background: oklch(0.275 0 0);
+        border-radius: 12px;
+        padding: 9px 13px;
+        max-width: 75%;
+        font-size: 14.5px;
+        line-height: 22px;
+        box-shadow: inset 0 0.5px 0 rgb(255 255 255 / 8%);
+      }
+      .dF .am {
+        font-size: 14.5px;
+        line-height: 22px;
+        color: oklch(0.88 0 0);
+      }
+      .dF .am .who {
+        font-size: 12px;
+        color: oklch(0.72 0 0);
+      }
+      .dF .tray {
+        padding: 0;
+        margin-bottom: 10px;
+        color: oklch(0.72 0 0);
+        font-size: 12.5px;
+      }
+      .dF .files {
+        background: oklch(0.26 0 0);
+        border-radius: 10px;
+        margin-top: 12px;
+        padding: 9px 12px;
+        color: oklch(0.8 0 0);
+        box-shadow: inset 0 0 0 1px rgb(255 255 255 / 5%);
+      }
+      .dF .composer {
+        width: calc(100% - 56px);
+        max-width: 720px;
+        align-self: center;
+        margin: 8px auto 16px;
+        background: oklch(0.275 0 0);
+        border-radius: 14px;
+        box-shadow:
+          inset 0 0 0 1px rgb(255 255 255 / 8%),
+          inset 0 0.5px 0 rgb(255 255 255 / 10%);
+      }
+      .dF .composer .ph {
+        color: oklch(0.6 0 0);
+        font-size: 14.5px;
+      }
+      .dF .composer .bar .chip {
+        border-radius: 6px;
+        color: var(--fg);
+        background: rgb(255 255 255 / 9%);
+        box-shadow:
+          inset 0 0.5px 0 rgb(255 255 255 / 14%),
+          0 1px 1.5px rgb(0 0 0 / 30%);
+        height: 26px;
+      }
+      .dF .composer .send {
+        background: #2f6fed;
+        width: 28px;
+        height: 28px;
+        box-shadow: inset 0 0.5px 0 rgb(255 255 255 / 25%);
+      }
+      .dF .panel-r .ph {
+        font-size: 13px;
+        border-bottom: 1px solid rgb(255 255 255 / 7%);
+        padding-bottom: 10px;
+      }
+      .dF .file {
+        color: oklch(0.86 0 0);
+        min-height: 30px;
+        margin: 0 6px;
+        padding: 6px 8px;
+        border-radius: 6px;
+      }
+      .dF .file:nth-of-type(3) {
+        background: rgb(255 255 255 / 9%);
+      }
+      .dF .commit {
+        background: rgb(0 0 0 / 24%);
+        border-radius: 8px;
+        box-shadow:
+          inset 0 0 0 1px rgb(255 255 255 / 9%),
+          inset 0 1px 2px rgb(0 0 0 / 30%);
+        color: oklch(0.6 0 0);
+      }
+      /* =========================================================
+   G · base copied from E
+   ========================================================= */
+      .dG {
+        background: oklch(0.228 0 0);
+      }
+      .dG .side {
+        background: oklch(0.26 0 0);
+        border-right: 1px solid rgb(255 255 255 / 10%);
+      }
+      .dG .brand {
+        font-size: 15px;
+      }
+      .dG .nav a {
+        color: oklch(0.8 0 0);
+        border-radius: 6px;
+        padding: 7px 10px;
+        font-size: 13.5px;
+        position: relative;
+        min-height: 32px;
+      }
+      .dG .nav a svg {
+        color: oklch(0.68 0 0);
+      }
+      .dG .nav a.on {
+        background: rgb(255 255 255 / 8%);
+        color: var(--fg);
+        font-weight: 500;
+      }
+      .dG .nav a.on::before {
+        content: "";
+        position: absolute;
+        left: 0;
+        top: 9px;
+        bottom: 9px;
+        width: 2px;
+        border-radius: 2px;
+        background: oklch(0.65 0.19 264);
+      }
+      .dG .nav a.on svg {
+        color: var(--fg);
+      }
+      .dG .nav .gap {
+        background: rgb(255 255 255 / 8%);
+      }
+      .dG .foot a {
+        color: oklch(0.72 0 0);
+      }
+      .dG .foot a .r {
+        color: oklch(0.6 0 0);
+      }
+      .dG .topbar {
+        border-bottom: 1px solid rgb(255 255 255 / 8%);
+        height: 48px;
+      }
+      .dG .col {
+        width: 760px;
+        padding-top: 30px;
+      }
+      .dG .page-h {
+        margin-bottom: 26px;
+      }
+      .dG .page-h h1 {
+        font-size: 22px;
+        line-height: 28px;
+        letter-spacing: -0.015em;
+      }
+      .dG .page-h p {
+        font-size: 13px;
+        color: oklch(0.72 0 0);
+      }
+      .dG .sect {
+        margin-bottom: 28px;
+      }
+      .dG .sect-h {
+        padding: 0 2px 10px;
+      }
+      .dG .sect-h h2 {
+        font-size: 16px;
+        line-height: 22px;
+        font-weight: 600;
+      }
+      .dG .sect-h p {
+        font-size: 13px;
+        color: oklch(0.72 0 0);
+      }
+      .dG .group {
+        background: oklch(0.26 0 0);
+        border-radius: 10px;
+      }
+      .dG .row {
+        padding: 12px 16px;
+        min-height: 60px;
+      }
+      .dG .row h3 {
+        font-size: 14px;
+        line-height: 20px;
+        font-weight: 500;
+      }
+      .dG .row p {
+        font-size: 13px;
+        line-height: 19px;
+        color: oklch(0.72 0 0);
+      }
+      .dG .row + .row::before,
+      .dG .sub + .row::before {
+        content: "";
+        position: absolute;
+        left: 16px;
+        right: 16px;
+        top: 0;
+        height: 1px;
+        background: rgb(255 255 255 / 8%);
+      }
+      .dG .sub {
+        padding: 0 16px 12px;
+      }
+      .dG .agent {
+        border-left: 1px solid rgb(255 255 255 / 14%);
+      }
+      .dG .ctrl {
+        height: 32px;
+        font-size: 13px;
+        background: oklch(0.292 0 0);
+        border: 1px solid rgb(255 255 255 / 10%);
+        border-radius: 6px;
+      }
+      .dG .ctrl.ghost {
+        background: none;
+        border-color: transparent;
+      }
+      .dG .btn {
+        height: 32px;
+        font-size: 13px;
+        background: none;
+        border: 1px solid rgb(255 255 255 / 14%);
+        border-radius: 6px;
+      }
+      .dG .name {
+        border-radius: 8px;
+        background: oklch(0.228 0 0);
+        border-color: oklch(0.58 0 0);
+      }
+      .dG .sw {
+        width: 34px;
+        height: 20px;
+        border-radius: 10px;
+        background: rgb(255 255 255 / 18%);
+      }
+      .dG .sw::after {
+        width: 16px;
+        height: 16px;
+        background: #f2f2f2;
+      }
+      .dG .sw.on {
+        background: #2563eb;
+      }
+      .dG .sw.on::after {
+        left: 16px;
+      }
+      .dG .row h3 .reset {
+        color: oklch(0.6 0 0);
+      }
+      /* chat */
+      .dG .search {
+        background: oklch(0.228 0 0);
+        border: 1px solid rgb(255 255 255 / 10%);
+        border-radius: 8px;
+        height: 32px;
+      }
+      .dG .proj {
+        color: oklch(0.72 0 0);
+      }
+      .dG .t {
+        border-radius: 6px;
+        color: oklch(0.85 0 0);
+        position: relative;
+        min-height: 32px;
+      }
+      .dG .t.on {
+        background: rgb(255 255 255 / 8%);
+        color: var(--fg);
+      }
+      .dG .t.on::before {
+        content: "";
+        position: absolute;
+        left: 0;
+        top: 9px;
+        bottom: 9px;
+        width: 2px;
+        border-radius: 2px;
+        background: oklch(0.65 0.19 264);
+      }
+      .dG .t .when {
+        color: oklch(0.6 0 0);
+      }
+      .dG .chatmain {
+        display: grid;
+        grid-template-columns: 1fr 320px;
+        min-height: 0;
+      }
+      .dG .chatmain .pane {
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+      }
+      .dG .chatmain .pane + .pane {
+        background: oklch(0.26 0 0);
+        border-left: 1px solid rgb(255 255 255 / 14%);
+      }
+      .dG .msgs {
+        padding: 26px 0 10px;
+        align-items: center;
+        gap: 24px;
+      }
+      .dG .msgs > * {
+        width: 100%;
+        max-width: 680px;
+      }
+      .dG .um {
+        align-self: center;
+        max-width: 680px;
+        display: flex;
+        justify-content: flex-end;
+        background: none;
+        padding: 0;
+      }
+      .dG .um .bubble {
+        background: oklch(0.26 0 0);
+        border-radius: 12px;
+        padding: 10px 14px;
+        max-width: 75%;
+        font-size: 15px;
+        line-height: 23px;
+      }
+      .dG .am {
+        font-size: 15px;
+        line-height: 23px;
+        color: oklch(0.88 0 0);
+      }
+      .dG .am .who {
+        font-size: 12px;
+        color: oklch(0.72 0 0);
+      }
+      .dG .tray {
+        padding: 0;
+        margin-bottom: 10px;
+        color: oklch(0.72 0 0);
+        font-size: 12.5px;
+      }
+      .dG .files {
+        background: oklch(0.26 0 0);
+        border-radius: 8px;
+        margin-top: 12px;
+        padding: 9px 12px;
+        color: oklch(0.8 0 0);
+      }
+      .dG .composer {
+        width: calc(100% - 56px);
+        max-width: 720px;
+        align-self: center;
+        margin: 8px auto 16px;
+        background: oklch(0.292 0 0);
+        border: 1px solid rgb(255 255 255 / 10%);
+        border-radius: 12px;
+      }
+      .dG .composer .ph {
+        color: oklch(0.6 0 0);
+        font-size: 15px;
+      }
+      .dG .composer .bar .chip {
+        border-radius: 6px;
+        color: oklch(0.8 0 0);
+      }
+      .dG .composer .send {
+        background: #2563eb;
+        width: 28px;
+        height: 28px;
+      }
+      .dG .panel-r .ph {
+        font-size: 13px;
+        border-bottom: 1px solid rgb(255 255 255 / 8%);
+        padding-bottom: 10px;
+      }
+      .dG .file {
+        color: oklch(0.85 0 0);
+        min-height: 30px;
+      }
+      .dG .file:nth-of-type(3) {
+        background: rgb(255 255 255 / 6%);
+      }
+      .dG .commit {
+        background: oklch(0.228 0 0);
+        border: 1px solid oklch(0.58 0 0 / 60%);
+        border-radius: 8px;
+        color: oklch(0.6 0 0);
+      }
+
+      /* G · form controls from F (settings only); toolbars and nav stay E's plain style */
+      .dG .col {
+        width: 720px;
+        padding-top: 30px;
+      }
+      .dG .page-h {
+        margin-bottom: 24px;
+      }
+      .dG .sect {
+        margin-bottom: 26px;
+      }
+      .dG .sect-h {
+        padding: 0 4px 8px;
+      }
+      .dG .sect-h h2 {
+        font-size: 15px;
+        line-height: 20px;
+        font-weight: 600;
+      }
+      .dG .sect-h p {
+        font-size: 12.5px;
+        color: oklch(0.72 0 0);
+      }
+      .dG .group {
+        background: oklch(0.26 0 0);
+        border-radius: 10px;
+        box-shadow: inset 0 0 0 1px rgb(255 255 255 / 5%);
+      }
+      .dG .row {
+        padding: 10px 14px;
+        min-height: 56px;
+        gap: 12px;
+      }
+      .dG .row h3 {
+        font-size: 13.5px;
+        line-height: 19px;
+        font-weight: 500;
+      }
+      .dG .row p {
+        font-size: 12.5px;
+        line-height: 18px;
+        color: oklch(0.72 0 0);
+      }
+      .dG .row + .row::before,
+      .dG .sub + .row::before {
+        left: 14px;
+        right: 0;
+        background: rgb(255 255 255 / 7%);
+      }
+      .dG .sub {
+        padding: 0 14px 10px;
+      }
+      .dG .agent {
+        background: rgb(0 0 0 / 16%);
+        border-radius: 8px;
+        margin-bottom: 4px;
+        padding: 4px 6px;
+        border-left: 0;
+      }
+      .dG .ctrl,
+      .dG .btn {
+        height: 26px;
+        font-size: 13px;
+        padding: 0 9px;
+        background: rgb(255 255 255 / 10%);
+        border: 0;
+        border-radius: 6px;
+        box-shadow:
+          inset 0 0.5px 0 rgb(255 255 255 / 16%),
+          0 1px 1.5px rgb(0 0 0 / 35%);
+        color: var(--fg);
+      }
+      .dG .ctrl .chev {
+        color: oklch(0.75 0 0);
+        transform: scaleY(1.1);
+      }
+      .dG .ctrl.ghost {
+        background: none;
+        box-shadow: none;
+      }
+      .dG .name {
+        background: rgb(0 0 0 / 24%);
+        border: 0;
+        border-radius: 6px;
+        box-shadow:
+          inset 0 0 0 1px rgb(255 255 255 / 9%),
+          inset 0 1px 2px rgb(0 0 0 / 30%);
+        color: var(--fg);
+      }
+      .dG .sw {
+        width: 34px;
+        height: 20px;
+        border-radius: 10px;
+        background: rgb(255 255 255 / 18%);
+        box-shadow: inset 0 0 0 0.5px rgb(0 0 0 / 30%);
+      }
+      .dG .sw::after {
+        background: #f2f2f2;
+        width: 16px;
+        height: 16px;
+        box-shadow: 0 1px 2px #0007;
+      }
+      .dG .sw.on {
+        background: #2f6fed;
+      }
+      .dG .sw.on::after {
+        left: 16px;
+      }
+      .dG .topbar .btn {
+        background: none;
+        box-shadow: none;
+        border: 1px solid rgb(255 255 255 / 12%);
+      }
+      /* G · the composer and sidebar keep E's plain toolbar style */
+      .dG .composer .bar .chip {
+        background: none;
+        box-shadow: none;
+      }
+      .dG .composer .bar .chip:hover {
+        background: rgb(255 255 255 / 7%);
+      }
+      .dG .chatmain .pane + .pane {
+        border-left: 1px solid rgb(255 255 255 / 12%);
+      }
+
+      /* G · settings menu: selected item turns its icon blue (no left mark) */
+      .dG .nav a.on::before {
+        display: none;
+      }
+      .dG .nav a.on svg {
+        color: var(--primary-readable);
+      }
+      /* G · thread sidebar = today's inbox sidebar, unchanged */
+      .dG .ibx-search {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin: 2px 10px 8px;
+        padding: 0 9px;
+        height: 28px;
+        border-radius: 7px;
+        background: rgb(255 255 255 / 5%);
+        border: 1px solid rgb(255 255 255 / 8%);
+        font-size: 12px;
+        color: oklch(0.68 0 0);
+      }
+      .dG .ibx-search kbd {
+        margin-left: auto;
+        font-family: var(--mono);
+        font-size: 10px;
+        padding: 0 5px;
+        border-radius: 3px;
+        background: rgb(255 255 255 / 10%);
+      }
+      .dG .ibx-links {
+        padding: 4px 8px 0;
+        margin-bottom: 14px;
+        display: flex;
+        flex-direction: column;
+        gap: 1px;
+      }
+      .dG .ibx-links a {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        padding: 6px 8px;
+        border-radius: 6px;
+        font-size: 13px;
+        color: oklch(0.88 0 0);
+      }
+      .dG .ibx-links a svg {
+        color: oklch(0.68 0 0);
+      }
+      .dG .ibx-proj {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 0 10px 6px;
+      }
+      .dG .ibx-proj .sel {
+        flex: 1;
+        height: 28px;
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        padding: 0 8px;
+        border-radius: 7px;
+        border: 1px solid rgb(255 255 255 / 12%);
+        font-size: 12.5px;
+        color: oklch(0.8 0 0);
+      }
+      .dG .ibx-proj .sel .chev {
+        margin-left: auto;
+      }
+      .dG .ibx-proj .ib {
+        width: 28px;
+        height: 28px;
+        border-radius: 7px;
+        color: oklch(0.68 0 0);
+      }
+      .dG .ibx-rows {
+        padding: 2px 8px;
+        display: flex;
+        flex-direction: column;
+        gap: 1px;
+      }
+      .dG .ibx-row {
+        padding: 6px 8px 7px;
+        border-radius: 7px;
+      }
+      .dG .ibx-row.on {
+        background: rgb(255 255 255 / 10%);
+      }
+      .dG .ibx-row .top {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 11.5px;
+        color: oklch(0.68 0 0);
+      }
+      .dG .ibx-row .fav {
+        width: 13px;
+        height: 13px;
+        border-radius: 3px;
+        display: grid;
+        place-items: center;
+        font-size: 8px;
+        font-weight: 700;
+        color: #fff;
+        flex: none;
+      }
+      .dG .ibx-row .br {
+        font-family: var(--mono);
+        font-size: 10.5px;
+        color: oklch(0.6 0 0);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .dG .ibx-row .when {
+        margin-left: auto;
+        font-family: var(--mono);
+        font-size: 10.5px;
+        color: oklch(0.6 0 0);
+        flex: none;
+      }
+      .dG .ibx-row .title {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        margin-top: 2px;
+        font-size: 13px;
+        color: oklch(0.93 0 0);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .dG .ibx-row .dot {
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: #3b82f6;
+        flex: none;
+      }
+      .dG .ibx-row .status {
+        margin-left: auto;
+        font-size: 11.5px;
+        color: #60a5fa;
+        flex: none;
+      }
+      .dG .ibx-row.done .title {
+        color: oklch(0.8 0 0);
+      }
+      .dG .ibx-row.done .chk {
+        color: oklch(0.6 0 0);
+      }
+      .dG .ibx-sect {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 10px 12px 6px;
+        font-size: 11px;
+        font-weight: 500;
+        color: oklch(0.68 0 0 / 0.7);
+      }
+      .dG .ibx-sect i {
+        flex: 1;
+        height: 1px;
+        background: rgb(255 255 255 / 14%);
+        display: block;
+        min-width: 12px;
+      }
+      .dG .ibx-sect svg {
+        color: oklch(0.68 0 0 / 0.5);
+      }
+
+      /* G · Plugins & Skills */
+      .dG .tabsbar {
+        display: flex;
+        align-items: flex-end;
+        gap: 22px;
+        border-bottom: 1px solid rgb(255 255 255 / 8%);
+        margin-bottom: 16px;
+      }
+      .dG .tabsbar .tb {
+        font-size: 17px;
+        font-weight: 600;
+        padding: 0 0 10px;
+        color: oklch(0.6 0 0);
+        position: relative;
+        display: flex;
+        align-items: baseline;
+        gap: 6px;
+      }
+      .dG .tabsbar .tb small {
+        font-family: var(--mono);
+        font-size: 11px;
+        color: oklch(0.6 0 0);
+        font-weight: 400;
+      }
+      .dG .tabsbar .tb.on {
+        color: var(--fg);
+      }
+      .dG .tabsbar .tb.on::after {
+        content: "";
+        position: absolute;
+        left: 0;
+        right: 0;
+        bottom: -1px;
+        height: 2px;
+        border-radius: 2px;
+        background: var(--fg);
+      }
+      .dG .tabsbar .meta {
+        margin-left: auto;
+        font-size: 11.5px;
+        color: oklch(0.6 0 0);
+        padding-bottom: 12px;
+      }
+      .dG .field {
+        height: 30px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 0 10px;
+        border-radius: 7px;
+        background: rgb(0 0 0 / 24%);
+        box-shadow:
+          inset 0 0 0 1px rgb(255 255 255 / 9%),
+          inset 0 1px 2px rgb(0 0 0 / 30%);
+        font-size: 13px;
+        color: oklch(0.6 0 0);
+        margin-bottom: 10px;
+      }
+      .dG .filters {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 22px;
+      }
+      .dG .seg {
+        display: inline-flex;
+        padding: 2px;
+        border-radius: 7px;
+        background: rgb(0 0 0 / 24%);
+        box-shadow: inset 0 0 0 1px rgb(255 255 255 / 7%);
+      }
+      .dG .seg span {
+        height: 22px;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 0 10px;
+        border-radius: 5px;
+        font-size: 12.5px;
+        color: oklch(0.78 0 0);
+      }
+      .dG .seg span.on {
+        background: rgb(255 255 255 / 13%);
+        color: var(--fg);
+        box-shadow:
+          inset 0 0.5px 0 rgb(255 255 255 / 16%),
+          0 1px 1.5px rgb(0 0 0 / 35%);
+      }
+      .dG .seg svg.logo {
+        width: 13px;
+        height: 13px;
+      }
+      .dG .sect-h.withact {
+        display: flex;
+        align-items: flex-end;
+        gap: 12px;
+      }
+      .dG .sect-h.withact > div {
+        flex: 1;
+      }
+      .dG .pgrid {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      }
+      .dG .col.wide {
+        width: 960px;
+      }
+      .dG .pcell {
+        display: flex;
+        align-items: center;
+        gap: 11px;
+        padding: 10px 14px;
+        position: relative;
+        min-height: 54px;
+      }
+      .dG .pcell::before {
+        content: "";
+        position: absolute;
+        left: 14px;
+        right: 14px;
+        top: 0;
+        height: 1px;
+        background: rgb(255 255 255 / 7%);
+      }
+      .dG .pcell:nth-child(-n + 2)::before {
+        display: none;
+      }
+      .dG .pcell:nth-child(odd)::after {
+        content: "";
+        position: absolute;
+        right: 0;
+        top: 10px;
+        bottom: 10px;
+        width: 1px;
+        background: rgb(255 255 255 / 6%);
+      }
+      .dG .pcell .gl {
+        width: 18px;
+        display: grid;
+        place-items: center;
+        flex: none;
+      }
+      .dG .pcell .gl svg {
+        width: 17px;
+        height: 17px;
+      }
+      .dG .pcell .txt {
+        flex: 1;
+        min-width: 0;
+      }
+      .dG .pcell .nm {
+        font-size: 13.5px;
+        font-weight: 500;
+      }
+      .dG .pcell .ds {
+        font-size: 12px;
+        color: oklch(0.72 0 0);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        margin-top: 1px;
+      }
+      .dG .pcell .pv {
+        opacity: 0.55;
+        display: grid;
+        place-items: center;
+      }
+      .dG .pcell .pv svg.logo {
+        width: 13px;
+        height: 13px;
+      }
+      .dG .pcell .sw.sm {
+        width: 28px;
+        height: 17px;
+        border-radius: 9px;
+      }
+      .dG .pcell .sw.sm::after {
+        width: 13px;
+        height: 13px;
+      }
+      .dG .pcell .sw.sm.on::after {
+        left: 13px;
+      }
+      .dG .pcell .go {
+        color: oklch(0.55 0 0);
+      }
+      /* G · Providers (the merged In use / Not in use page) */
+      .dG .ph-acts {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        margin-left: auto;
+      }
+      .dG .ph-acts .muted {
+        font-size: 12px;
+        color: oklch(0.6 0 0);
+        margin-right: 6px;
+      }
+      .dG .tbtn {
+        height: 26px;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 0 8px;
+        border-radius: 6px;
+        font-size: 12.5px;
+        color: oklch(0.78 0 0);
+      }
+      .dG .tbtn:hover {
+        background: rgb(255 255 255 / 7%);
+        color: var(--fg);
+      }
+      .dG .page-h.row-h {
+        display: flex;
+        align-items: flex-start;
+        gap: 12px;
+      }
+      .dG .page-h.row-h > div {
+        flex: 1;
+      }
+      .dG .usage {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        padding: 12px 14px;
+      }
+      .dG .usage .k {
+        font-size: 12.5px;
+        color: oklch(0.72 0 0);
+      }
+      .dG .usage .v {
+        font-family: var(--mono);
+        font-size: 12.5px;
+        color: var(--fg);
+      }
+      .dG .usage .go2 {
+        margin-left: auto;
+        display: inline-flex;
+        align-items: center;
+        gap: 2px;
+        font-size: 12.5px;
+        color: oklch(0.78 0 0);
+      }
+      .dG .prow {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 11px 14px;
+        position: relative;
+        min-height: 58px;
+      }
+      .dG .prow + .prow::before,
+      .dG .pdetail + .prow::before {
+        content: "";
+        position: absolute;
+        left: 14px;
+        right: 14px;
+        top: 0;
+        height: 1px;
+        background: rgb(255 255 255 / 7%);
+      }
+      .dG .prow .lg {
+        width: 20px;
+        display: grid;
+        place-items: center;
+        flex: none;
+      }
+      .dG .prow .lg svg.logo {
+        width: 18px;
+        height: 18px;
+      }
+      .dG .prow .pbody {
+        flex: 1;
+        min-width: 0;
+      }
+      .dG .prow .t1 {
+        display: flex;
+        align-items: baseline;
+        gap: 8px;
+        font-size: 13.5px;
+        font-weight: 500;
+      }
+      .dG .prow .t1 .ver {
+        font-family: var(--mono);
+        font-size: 11px;
+        color: oklch(0.6 0 0);
+        font-weight: 400;
+      }
+      .dG .prow .t1 .exp {
+        font-size: 11.5px;
+        color: oklch(0.6 0 0);
+        font-weight: 400;
+      }
+      .dG .prow .t1 .upd {
+        font-family: var(--mono);
+        font-size: 10.5px;
+        color: var(--primary-readable);
+      }
+      .dG .prow .t2 {
+        font-size: 12px;
+        color: oklch(0.72 0 0);
+        margin-top: 2px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .dG .prow .blur {
+        filter: blur(3px);
+      }
+      .dG .prow .act {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        flex: none;
+      }
+      .dG .prow .chv {
+        color: oklch(0.55 0 0);
+      }
+      .dG .meter {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        font-size: 11.5px;
+        color: oklch(0.72 0 0);
+      }
+      .dG .meter .b {
+        width: 56px;
+        height: 4px;
+        border-radius: 2px;
+        background: rgb(255 255 255 / 10%);
+        overflow: hidden;
+      }
+      .dG .meter .b i {
+        display: block;
+        height: 100%;
+        background: oklch(0.7 0.17 264);
+        border-radius: 2px;
+      }
+      .dG .meter .pct {
+        font-family: var(--mono);
+        font-size: 11px;
+        color: var(--fg);
+      }
+      .dG .prow.open {
+        background: rgb(255 255 255 / 3%);
+      }
+      .dG .pdetail {
+        background: rgb(255 255 255 / 3%);
+        padding: 0 14px 12px 46px;
+      }
+      .dG .dtabs {
+        display: flex;
+        gap: 18px;
+        border-bottom: 1px solid rgb(255 255 255 / 8%);
+        margin-bottom: 4px;
+      }
+      .dG .dtabs span {
+        font-size: 12.5px;
+        color: oklch(0.65 0 0);
+        padding: 6px 0 8px;
+        position: relative;
+      }
+      .dG .dtabs span.on {
+        color: var(--fg);
+      }
+      .dG .dtabs span.on::after {
+        content: "";
+        position: absolute;
+        left: 0;
+        right: 0;
+        bottom: -1px;
+        height: 2px;
+        border-radius: 2px;
+        background: var(--fg);
+      }
+      .dG .kv {
+        display: grid;
+        grid-template-columns: 110px 1fr auto;
+        align-items: center;
+        gap: 12px;
+        padding: 9px 0;
+        font-size: 12.5px;
+      }
+      .dG .kv + .kv {
+        border-top: 1px solid rgb(255 255 255 / 6%);
+      }
+      .dG .kv .k {
+        color: oklch(0.72 0 0);
+      }
+      .dG .kv .ksub {
+        color: oklch(0.65 0 0);
+        font-size: 11.5px;
+        margin-top: 3px;
+      }
+      .dG .dfoot {
+        display: flex;
+        justify-content: flex-end;
+        padding-top: 8px;
+      }
+      .dG .btn.danger {
+        color: #fca5a5;
+      }
+
+      /* board-level icon switch (page chrome) */
+      .iconswitch {
+        display: inline-flex;
+        gap: 2px;
+        padding: 3px;
+        border-radius: 8px;
+        background: #ffffff0d;
+        margin: 6px 0 2px;
+      }
+      .iconswitch button {
+        font-size: 12.5px;
+        color: var(--muted);
+        padding: 5px 10px;
+        border-radius: 6px;
+        cursor: pointer;
+      }
+      .iconswitch button.on {
+        background: #ffffff1a;
+        color: var(--fg);
+      }
+    </style>
+  </head>
+  <body>
+    <svg width="0" height="0" style="position: absolute">
+      <defs>
+        <symbol id="l-codex" viewBox="0 0 256 260">
+          <path
+            fill="#fff"
+            d="M239.184 106.203a64.716 64.716 0 0 0-5.576-53.103C219.452 28.459 191 15.784 163.213 21.74A65.586 65.586 0 0 0 52.096 45.22a64.716 64.716 0 0 0-43.23 31.36c-14.31 24.602-11.061 55.634 8.033 76.74a64.665 64.665 0 0 0 5.525 53.102c14.174 24.65 42.644 37.324 70.446 31.36a64.72 64.72 0 0 0 48.754 21.744c28.481.025 53.714-18.361 62.414-45.481a64.767 64.767 0 0 0 43.229-31.36c14.137-24.558 10.875-55.423-8.083-76.483Zm-97.56 136.338a48.397 48.397 0 0 1-31.105-11.255l1.535-.87 51.67-29.825a8.595 8.595 0 0 0 4.247-7.367v-72.85l21.845 12.636c.218.111.37.32.409.563v60.367c-.056 26.818-21.783 48.545-48.601 48.601Zm-104.466-44.61a48.345 48.345 0 0 1-5.781-32.589l1.534.921 51.722 29.826a8.339 8.339 0 0 0 8.441 0l63.181-36.425v25.221a.87.87 0 0 1-.358.665l-52.335 30.184c-23.257 13.398-52.97 5.431-66.404-17.803ZM23.549 85.38a48.499 48.499 0 0 1 25.58-21.333v61.39a8.288 8.288 0 0 0 4.195 7.316l62.874 36.272-21.845 12.636a.819.819 0 0 1-.767 0L41.353 151.53c-23.211-13.454-31.171-43.144-17.804-66.405v.256Zm179.466 41.695-63.08-36.63L161.73 77.86a.819.819 0 0 1 .768 0l52.233 30.184a48.6 48.6 0 0 1-7.316 87.635v-61.391a8.544 8.544 0 0 0-4.4-7.213Zm21.742-32.69-1.535-.922-51.619-30.081a8.39 8.39 0 0 0-8.492 0L99.98 99.808V74.587a.716.716 0 0 1 .307-.665l52.233-30.133a48.652 48.652 0 0 1 72.236 50.391v.205ZM88.061 139.097l-21.845-12.585a.87.87 0 0 1-.41-.614V65.685a48.652 48.652 0 0 1 79.757-37.346l-1.535.87-51.67 29.825a8.595 8.595 0 0 0-4.246 7.367l-.051 72.697Zm11.868-25.58 28.138-16.217 28.188 16.218v32.434l-28.086 16.218-28.188-16.218-.052-32.434Z"
+          />
+        </symbol>
+        <symbol id="l-claude" viewBox="0 0 256 257">
+          <path
+            fill="#d97757"
+            d="m50.228 170.321 50.357-28.257.843-2.463-.843-1.361h-2.462l-8.426-.518-28.775-.778-24.952-1.037-24.175-1.296-6.092-1.297L0 125.796l.583-3.759 5.12-3.434 7.324.648 16.202 1.101 24.304 1.685 17.629 1.037 26.118 2.722h4.148l.583-1.685-1.426-1.037-1.101-1.037-25.147-17.045-27.22-18.017-14.258-10.37-7.713-5.25-3.888-4.925-1.685-10.758 7-7.713 9.397.649 2.398.648 9.527 7.323 20.35 15.75L94.817 91.9l3.889 3.24 1.555-1.102.195-.777-1.75-2.917-14.453-26.118-15.425-26.572-6.87-11.018-1.814-6.61c-.648-2.723-1.102-4.991-1.102-7.778l7.972-10.823L71.42 0 82.05 1.426l4.472 3.888 6.61 15.101 10.694 23.786 16.591 32.34 4.861 9.592 2.592 8.879.973 2.722h1.685v-1.556l1.36-18.211 2.528-22.36 2.463-28.776.843-8.1 4.018-9.722 7.971-5.25 6.222 2.981 5.12 7.324-.713 4.73-3.046 19.768-5.962 30.98-3.889 20.739h2.268l2.593-2.593 10.499-13.934 17.628-22.036 7.778-8.749 9.073-9.657 5.833-4.601h11.018l8.1 12.055-3.628 12.443-11.342 14.388-9.398 12.184-13.48 18.147-8.426 14.518.778 1.166 2.01-.194 30.46-6.481 16.462-2.982 19.637-3.37 8.88 4.148.971 4.213-3.5 8.62-20.998 5.184-24.628 4.926-36.682 8.685-.454.324.519.648 16.526 1.555 7.065.389h17.304l32.21 2.398 8.426 5.574 5.055 6.805-.843 5.184-12.962 6.611-17.498-4.148-40.83-9.721-14-3.5h-1.944v1.167l11.666 11.406 21.387 19.314 26.767 24.887 1.36 6.157-3.434 4.86-3.63-.518-23.526-17.693-9.073-7.972-20.545-17.304h-1.36v1.814l4.73 6.935 25.017 37.59 1.296 11.536-1.814 3.76-6.481 2.268-7.13-1.297-14.647-20.544-15.1-23.138-12.185-20.739-1.49.843-7.194 77.448-3.37 3.953-7.778 2.981-6.48-4.925-3.436-7.972 3.435-15.749 4.148-20.544 3.37-16.333 3.046-20.285 1.815-6.74-.13-.454-1.49.194-15.295 20.999-23.267 31.433-18.406 19.702-4.407 1.75-7.648-3.954.713-7.064 4.277-6.286 25.47-32.405 15.36-20.092 9.917-11.6-.065-1.686h-.583L44.07 198.125l-12.055 1.555-5.185-4.86.648-7.972 2.463-2.593 20.35-13.999-.064.065Z"
+          />
+        </symbol>
+        <symbol id="l-cursor" viewBox="0 0 466.73 532.09">
+          <path
+            fill="#EDECEC"
+            d="M457.43,125.94L244.42,2.96c-6.84-3.950-15.28-3.95-22.12,0L9.3,125.94c-5.75,3.32-9.3,9.46-9.3,16.11v247.99c0,6.65,3.55,12.79,9.3,16.11l213.01,122.98c6.84,3.950,15.28,3.95,22.12,0l213.01-122.98c5.75-3.32,9.3-9.46,9.3-16.11v-247.99c0-6.65-3.55-12.79-9.3-16.11h-.01ZM444.05,151.990l-205.63,356.16c-1.39,2.4-5.06,1.42-5.06-1.36v-233.21c0-4.66-2.49-8.970-6.53-11.31L24.87,145.67c-2.4-1.39-1.42-5.06,1.36-5.06h411.26c5.84,0,9.49,6.33,6.57,11.39h-.01Z"
+          />
+        </symbol>
+        <symbol id="l-opencode" viewBox="0 0 16 16">
+          <path
+            fill="#EDEDED"
+            fill-rule="evenodd"
+            clip-rule="evenodd"
+            d="M13 14H3V2H13V14ZM10.5 4.4H5.5V11.6H10.5V4.4Z"
+          />
+        </symbol>
+        <symbol id="l-fx" viewBox="166.241 0 155.861 156">
+          <path
+            fill="#fff"
+            d="M237.89 0C243.18 0 249.38 1.42 253.03 3.07L255.09 4.01L250.08 18.63L247.68 17.75C244.9 16.72 241.94 15.8 238.49 15.8C234.98 15.8 232.79 16.56 231.08 18.32C229.23 20.23 227.63 23.64 226.23 29.76L226.23 29.76L226.23 29.76L225.14 34.85H241.67L260.43 34.95L260.69 34.95L260.84 35.17L278.85 61.63L296.74 34.95H320.87L291.68 76.74L322.1 119.75H299.33L299.18 119.55L241.14 40.48L239.35 49.4H222.07L205.69 127.21C203.93 135.71 201.19 142.84 196.78 147.87C192.27 153.010 186.2 155.75 178.34 155.75C174.18 155.75 170.75 155.11 167.91 154.11L166.24 153.52V137.18L166.9 137.4L169.53 138.28C172.18 139.16 174.41 139.8 177.14 139.8C178.53 139.8 179.7 139.53 180.73 138.98C181.76 138.43 182.68 137.6 183.52 136.44C185.3 133.99 186.72 130.13 187.9 124.67L203.76 49.4H189.87L191.76 39.44L192.04 39.35L206.82 34.47L208.15 28.64C210.52 18.21 213.77 10.94 218.71 6.32C223.74 1.61 230.13 0 237.89 0ZM273.99 99.08L260.07 120.25H234.54L261 82.02L273.99 99.08Z"
+          />
+        </symbol>
+        <symbol id="l-agy" viewBox="0 0 128 128">
+          <image href="antigravity.png" width="128" height="128" />
+        </symbol>
+
+        <symbol id="i-chev" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6" /></symbol>
+        <symbol id="i-chevs" viewBox="0 0 24 24">
+          <path d="m7 15 5 5 5-5" />
+          <path d="m7 9 5-5 5 5" />
+        </symbol>
+        <symbol id="i-plus" viewBox="0 0 24 24">
+          <path d="M5 12h14" />
+          <path d="M12 5v14" />
+        </symbol>
+        <symbol id="i-x" viewBox="0 0 24 24">
+          <path d="M18 6 6 18" />
+          <path d="m6 6 12 12" />
+        </symbol>
+        <symbol id="i-undo" viewBox="0 0 24 24">
+          <path d="M9 14 4 9l5-5" />
+          <path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5a5.5 5.5 0 0 1-5.5 5.5H11" />
+        </symbol>
+        <symbol id="i-info" viewBox="0 0 24 24">
+          <circle cx="12" cy="12" r="10" />
+          <path d="M12 16v-4" />
+          <path d="M12 8h.01" />
+        </symbol>
+        <symbol id="i-sliders" viewBox="0 0 24 24">
+          <line x1="21" x2="14" y1="4" y2="4" />
+          <line x1="10" x2="3" y1="4" y2="4" />
+          <line x1="21" x2="12" y1="12" y2="12" />
+          <line x1="8" x2="3" y1="12" y2="12" />
+          <line x1="21" x2="16" y1="20" y2="20" />
+          <line x1="12" x2="3" y1="20" y2="20" />
+          <line x1="14" x2="14" y1="2" y2="6" />
+          <line x1="8" x2="8" y1="10" y2="14" />
+          <line x1="16" x2="16" y1="18" y2="22" />
+        </symbol>
+        <symbol id="i-settings" viewBox="0 0 24 24">
+          <path d="M20 7h-9" />
+          <path d="M14 17H5" />
+          <circle cx="17" cy="17" r="3" />
+          <circle cx="7" cy="7" r="3" />
+        </symbol>
+        <symbol id="i-threads" viewBox="0 0 24 24">
+          <path d="M14 9a2 2 0 0 1-2 2H6l-4 4V4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2z" />
+          <path d="M18 9h2a2 2 0 0 1 2 2v11l-4-4h-6a2 2 0 0 1-2-2v-1" />
+        </symbol>
+        <symbol id="i-archive" viewBox="0 0 24 24">
+          <rect width="20" height="5" x="2" y="3" rx="1" />
+          <path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8" />
+          <path d="M10 12h4" />
+        </symbol>
+        <symbol id="i-bot" viewBox="0 0 24 24">
+          <path d="M12 8V4H8" />
+          <rect width="16" height="12" x="4" y="8" rx="2" />
+          <path d="M2 14h2" />
+          <path d="M20 14h2" />
+          <path d="M15 13v2" />
+          <path d="M9 13v2" />
+        </symbol>
+        <symbol id="i-plug" viewBox="0 0 24 24">
+          <path d="M12 22v-5" />
+          <path d="M9 8V2" />
+          <path d="M15 8V2" />
+          <path d="M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8Z" />
+        </symbol>
+        <symbol id="i-file" viewBox="0 0 24 24">
+          <path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z" />
+          <path d="M14 2v4a2 2 0 0 0 2 2h4" />
+          <path d="M16 13H8" />
+          <path d="M16 17H8" />
+        </symbol>
+        <symbol id="i-git" viewBox="0 0 24 24">
+          <line x1="6" x2="6" y1="3" y2="15" />
+          <circle cx="18" cy="6" r="3" />
+          <circle cx="6" cy="18" r="3" />
+          <path d="M18 9a9 9 0 0 1-9 9" />
+        </symbol>
+        <symbol id="i-phone" viewBox="0 0 24 24">
+          <rect width="14" height="20" x="5" y="2" rx="2" ry="2" />
+          <path d="M12 18h.01" />
+        </symbol>
+        <symbol id="i-keys" viewBox="0 0 24 24">
+          <path d="M10 8h.01" />
+          <path d="M12 12h.01" />
+          <path d="M14 8h.01" />
+          <path d="M16 12h.01" />
+          <path d="M18 8h.01" />
+          <path d="M6 8h.01" />
+          <path d="M7 16h10" />
+          <path d="M8 12h.01" />
+          <rect width="20" height="16" x="2" y="4" rx="2" />
+        </symbol>
+        <symbol id="i-back" viewBox="0 0 24 24">
+          <path d="m12 19-7-7 7-7" />
+          <path d="M19 12H5" />
+        </symbol>
+        <symbol id="i-gauge" viewBox="0 0 24 24">
+          <path d="m12 14 4-4" />
+          <path d="M3.34 19a10 10 0 1 1 17.32 0" />
+        </symbol>
+        <symbol id="i-tl" viewBox="0 0 24 24">
+          <path d="M2 7c3 0 4 3 7 3s4-3 7-3" />
+          <path d="M9 10v7c0 2 1 3 3 3h10" />
+        </symbol>
+        <symbol id="i-search" viewBox="0 0 24 24">
+          <circle cx="11" cy="11" r="8" />
+          <path d="m21 21-4.3-4.3" />
+        </symbol>
+        <symbol id="i-users" viewBox="0 0 24 24">
+          <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
+          <circle cx="9" cy="7" r="4" />
+          <path d="M22 21v-2a4 4 0 0 0-3-3.87" />
+          <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+        </symbol>
+        <symbol id="i-pr" viewBox="0 0 24 24">
+          <circle cx="18" cy="18" r="3" />
+          <circle cx="6" cy="6" r="3" />
+          <path d="M13 6h3a2 2 0 0 1 2 2v7" />
+          <line x1="6" x2="6" y1="9" y2="21" />
+        </symbol>
+        <symbol id="i-up" viewBox="0 0 24 24">
+          <path d="m5 12 7-7 7 7" />
+          <path d="M12 19V5" />
+        </symbol>
+        <symbol id="i-mic" viewBox="0 0 24 24">
+          <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" />
+          <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+          <line x1="12" x2="12" y1="19" y2="22" />
+        </symbol>
+        <symbol id="i-hammer" viewBox="0 0 24 24">
+          <path d="m15 12-8.373 8.373a1 1 0 1 1-3-3L12 9" />
+          <path d="m18 15 4-4" />
+          <path
+            d="m21.5 11.5-1.914-1.914A2 2 0 0 1 19 8.172V7l-2.26-2.26a6 6 0 0 0-4.202-1.756L9 2.96l.92.82A6.18 6.18 0 0 1 12 8.4V10l2 2h1.172a2 2 0 0 1 1.414.586L18.5 14.5"
+          />
+        </symbol>
+        <symbol id="i-shield" viewBox="0 0 24 24">
+          <path
+            d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"
+          />
+        </symbol>
+        <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5" /></symbol>
+        <symbol id="i-panel" viewBox="0 0 24 24">
+          <rect width="18" height="18" x="3" y="3" rx="2" />
+          <path d="M15 3v18" />
+        </symbol>
+        <symbol id="i-term" viewBox="0 0 24 24">
+          <path d="m7 11 2-2-2-2" />
+          <path d="M11 13h4" />
+          <rect width="18" height="18" x="3" y="3" rx="2" />
+        </symbol>
+        <symbol id="i-edit" viewBox="0 0 24 24">
+          <path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+          <path
+            d="M18.375 2.625a1 1 0 0 1 3 3l-9.013 9.014a2 2 0 0 1-.853.505l-2.873.84a.5.5 0 0 1-.62-.62l.84-2.873a2 2 0 0 1 .506-.852z"
+          />
+        </symbol>
+        <symbol id="i-folder" viewBox="0 0 24 24">
+          <path
+            d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"
+          />
+        </symbol>
+        <symbol id="i-globe" viewBox="0 0 24 24">
+          <circle cx="12" cy="12" r="10" />
+          <path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20" />
+          <path d="M2 12h20" />
+        </symbol>
+        <symbol id="i-monitor" viewBox="0 0 24 24">
+          <rect width="20" height="14" x="2" y="3" rx="2" />
+          <line x1="8" x2="16" y1="21" y2="21" />
+          <line x1="12" x2="12" y1="17" y2="21" />
+        </symbol>
+        <symbol id="i-mail" viewBox="0 0 24 24">
+          <rect width="20" height="16" x="2" y="4" rx="2" />
+          <path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7" />
+        </symbol>
+        <symbol id="i-cal" viewBox="0 0 24 24">
+          <rect width="18" height="18" x="3" y="4" rx="2" />
+          <path d="M16 2v4" />
+          <path d="M8 2v4" />
+          <path d="M3 10h18" />
+        </symbol>
+        <symbol id="i-grid" viewBox="0 0 24 24">
+          <rect width="7" height="7" x="3" y="3" rx="1" />
+          <rect width="7" height="7" x="14" y="3" rx="1" />
+          <rect width="7" height="7" x="14" y="14" rx="1" />
+          <rect width="7" height="7" x="3" y="14" rx="1" />
+        </symbol>
+        <symbol id="i-chart" viewBox="0 0 24 24">
+          <path d="M3 3v16a2 2 0 0 0 2 2h16" />
+          <path d="M18 17V9" />
+          <path d="M13 17V5" />
+          <path d="M8 17v-3" />
+        </symbol>
+        <symbol id="i-game" viewBox="0 0 24 24">
+          <line x1="6" x2="10" y1="12" y2="12" />
+          <line x1="8" x2="8" y1="10" y2="14" />
+          <line x1="15" x2="15.01" y1="13" y2="13" />
+          <line x1="18" x2="18.01" y1="11" y2="11" />
+          <rect width="20" height="12" x="2" y="6" rx="2" />
+        </symbol>
+        <symbol id="i-chevr" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6" /></symbol>
+        <symbol id="i-sparkle" viewBox="0 0 24 24">
+          <path
+            d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"
+          />
+        </symbol>
+      </defs>
+    </svg>
+
+    <nav class="tabs">
+      <a data-b="A">A · Canvas &amp; panels<span class="rec">RECOMMENDED</span></a>
+      <a data-b="B">B · Ledger</a>
+      <a data-b="C">C · Native grouped</a>
+      <a data-b="D">D · Glass</a>
+      <a data-b="E"
+        >E · Quiet workspace<span class="rec" style="color: #93c5fd">SOL'S PICK</span></a
+      >
+      <a data-b="F">F · Quiet native</a>
+      <a data-b="G" class="on"
+        >G · Quiet workspace + native controls<span class="rec" style="color: #fbbf24"
+          >APPROVED</span
+        ></a
+      >
+    </nav>
+
+    <section class="board" id="b-A">
+      <div class="cap">
+        <h1>
+          A · Canvas &amp; panels: the work sits on a soft raised panel, settings come in quiet
+          grouped blocks
+        </h1>
+        <p>
+          The window frame becomes the darkest layer and the sidebar sits right on it. The page
+          you're working in (a settings page, a thread, the side panels) is a rounded panel lifted
+          one step lighter. Inside settings, each section is a softly tinted block with no border.
+          Every page gets a real title. The colors already exist in the app: it has a five-step
+          ladder of greys that today's screens barely use.
+        </p>
+      </div>
+      <div class="label">Settings › Threads</div>
+      <div class="frame dA" data-kind="settings"></div>
+      <div class="label">Same language in a thread</div>
+      <div class="frame chat dA" data-kind="chat"></div>
+      <div class="notes">
+        <div>
+          <h3>What it feels like</h3>
+          <ul>
+            <li>
+              <b>Calm and current</b>: close to where Linear, Figma and the newer desktop AI apps
+              have landed.
+            </li>
+            <li>
+              <b>Depth without decoration</b>: layers come from shades of grey, not shadows or
+              borders.
+            </li>
+          </ul>
+        </div>
+        <div>
+          <h3>Will it age?</h3>
+          <ul>
+            <li><b>Well</b>: it's how real surfaces stack, not a trend effect.</li>
+            <li>No blur, glow or gradient to fall out of fashion.</li>
+          </ul>
+        </div>
+        <div>
+          <h3>Across the app</h3>
+          <ul>
+            <li>
+              <b>Thread, side panels, settings, usage, pull requests</b> all become panels on the
+              same frame.
+            </li>
+            <li>Lists inside panels use the tinted block; menus float one step lighter again.</li>
+          </ul>
+        </div>
+        <div>
+          <h3>Cost and risk</h3>
+          <ul>
+            <li>
+              <b>Medium</b>: mostly shared layout and a few building blocks. The colors already
+              exist.
+            </li>
+            <li>The panel edge costs about 8px of width on each side.</li>
+          </ul>
+        </div>
+      </div>
+      <div class="label">The system in three rules</div>
+      <div class="sys">
+        <div class="cell">
+          <h4>Three heights</h4>
+          <p>
+            Frame (darkest) holds the sidebar. Panels hold the work. Blocks group things inside a
+            panel. Menus and popups float above.
+          </p>
+          <div class="swatches">
+            <span style="background: oklch(0.175 0 0)">frame</span
+            ><span style="background: oklch(0.212 0 0)">panel</span
+            ><span style="background: oklch(0.245 0 0)">block</span
+            ><span style="background: oklch(0.312 0 0)">menu</span>
+          </div>
+        </div>
+        <div class="cell">
+          <h4>Three corner sizes</h4>
+          <p>
+            12px for panels and the composer, 10px for blocks inside a panel, 7px for buttons,
+            inputs and chips. Nothing else.
+          </p>
+        </div>
+        <div class="cell">
+          <h4>Type does the rest</h4>
+          <p>
+            Page title 20px. Section title 13px in normal case (no tiny all-caps labels). Row title
+            13.5px, description 12.5px grey. One accent blue, only for "on", "selected" and the main
+            button.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <section class="board" id="b-B">
+      <div class="cap">
+        <h1>B · Ledger: two columns, led by type, almost no surfaces</h1>
+        <p>
+          Each section gets a left column with its name and one line about it, and the settings sit
+          to the right on thin lines. It uses the empty width that today's page wastes, and reads
+          like a well-set document. In a thread it stays flat, with crisp lines and an outlined
+          composer.
+        </p>
+      </div>
+      <div class="label">Settings › Threads</div>
+      <div class="frame dB" data-kind="settings"></div>
+      <div class="label">Same language in a thread</div>
+      <div class="frame chat dB" data-kind="chat"></div>
+      <div class="notes">
+        <div>
+          <h3>What it feels like</h3>
+          <ul>
+            <li><b>Precise, editorial</b>: like Stripe's or Vercel's dashboard settings.</li>
+            <li>Very scannable: section names line up down the left.</li>
+          </ul>
+        </div>
+        <div>
+          <h3>Will it age?</h3>
+          <ul>
+            <li><b>Well on settings</b>, but it's still the flat look you said feels thin.</li>
+          </ul>
+        </div>
+        <div>
+          <h3>Across the app</h3>
+          <ul>
+            <li>
+              <b>Great for settings, usage and lists.</b> Says little about threads, which stay
+              flat.
+            </li>
+          </ul>
+        </div>
+        <div>
+          <h3>Cost and risk</h3>
+          <ul>
+            <li><b>Low</b>: layout change on settings pages only.</li>
+            <li>Needs a wide window; on narrow ones it falls back to one column.</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section class="board" id="b-C">
+      <div class="cap">
+        <h1>
+          C · Native grouped: rounded grouped lists and colored icon tiles, like macOS System
+          Settings
+        </h1>
+        <p>
+          Rows sit in rounded grey groups with a small colored icon tile on each. The sidebar uses
+          colored tiles too, and the thread view borrows Messages-style bubbles. It feels at home on
+          a Mac.
+        </p>
+      </div>
+      <div class="label">Settings › Threads</div>
+      <div class="frame dC" data-kind="settings"></div>
+      <div class="label">Same language in a thread</div>
+      <div class="frame chat dC" data-kind="chat"></div>
+      <div class="notes">
+        <div>
+          <h3>What it feels like</h3>
+          <ul>
+            <li><b>Friendly, Apple-native.</b> Instantly familiar to Mac users.</li>
+          </ul>
+        </div>
+        <div>
+          <h3>Will it age?</h3>
+          <ul>
+            <li>
+              <b>Tied to Apple's look</b>: it ages when macOS changes, and looks off on Windows.
+            </li>
+          </ul>
+        </div>
+        <div>
+          <h3>Across the app</h3>
+          <ul>
+            <li>
+              Colored tiles and blue bubbles add a lot of color to a tool that's read all day.
+            </li>
+          </ul>
+        </div>
+        <div>
+          <h3>Cost and risk</h3>
+          <ul>
+            <li><b>Medium</b>, plus an icon and color set to maintain.</li>
+            <li>Less dense: fewer rows fit on screen.</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section class="board" id="b-D">
+      <div class="cap">
+        <h1>D · Glass: see-through panels, pill shapes and soft glows</h1>
+        <p>
+          Panels let a deep tinted backdrop show through. Controls become pills, "on" states glow,
+          and corners get bigger. It's the most striking of the four, and the closest to Apple's
+          2025 "Liquid Glass" look.
+        </p>
+      </div>
+      <div class="label">Settings › Threads</div>
+      <div class="frame dD" data-kind="settings"></div>
+      <div class="label">Same language in a thread</div>
+      <div class="frame chat dD" data-kind="chat"></div>
+      <div class="notes">
+        <div>
+          <h3>What it feels like</h3>
+          <ul>
+            <li><b>Showy, premium</b> at first sight.</li>
+          </ul>
+        </div>
+        <div>
+          <h3>Will it age?</h3>
+          <ul>
+            <li><b>Fastest of the four.</b> Glass and glow are this year's trend.</li>
+          </ul>
+        </div>
+        <div>
+          <h3>Across the app</h3>
+          <ul>
+            <li>Hard to read long chats and diffs on see-through surfaces; contrast drops.</li>
+          </ul>
+        </div>
+        <div>
+          <h3>Cost and risk</h3>
+          <ul>
+            <li>
+              <b>High</b>: background blur costs GPU on every frame you scroll, which our rules
+              guard against.
+            </li>
+            <li>Worth borrowing in small doses only (a menu, the composer), if at all.</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section class="board" id="b-E">
+      <div class="cap">
+        <h1>
+          E · Quiet workspace: option A's grouped blocks inside option B's continuous workspace
+          (Sol's recommendation)
+        </h1>
+        <p>
+          No floating panels. The thread is one continuous reading area, and the sidebar and side
+          panels are docked on a slightly lighter surface with a single dividing line. Depth only
+          shows up where it means something: grouped settings, the composer (where you type), and
+          menus floating on top. Type is a size larger and grey text never drops below comfortable
+          contrast. Chat text is 15px in a column about 72 characters wide.
+        </p>
+      </div>
+      <div class="label">Settings › Threads</div>
+      <div class="frame dE" data-kind="settings"></div>
+      <div class="label">Same language in a thread</div>
+      <div class="frame chat dE" data-kind="chat"></div>
+      <div class="notes">
+        <div>
+          <h3>What Sol liked</h3>
+          <ul>
+            <li>
+              <b>Long reading stays calm</b>: no rounded bands stacking up through a 50-message
+              thread.
+            </li>
+            <li><b>Diffs keep their width</b>: no gutters around the panes.</li>
+          </ul>
+        </div>
+        <div>
+          <h3>Will it age?</h3>
+          <ul>
+            <li>
+              <b>Well</b>: filled blocks group things, a line marks a boundary, a shadow means
+              something floats on top. Nothing decorative.
+            </li>
+          </ul>
+        </div>
+        <div>
+          <h3>Across the app</h3>
+          <ul>
+            <li>
+              <b>Same rules everywhere</b>; on a phone the side panels become their own screens and
+              touch targets grow to about 44px.
+            </li>
+          </ul>
+        </div>
+        <div>
+          <h3>Trade-offs</h3>
+          <ul>
+            <li><b>Less dense</b>: larger type and 32px controls fit fewer rows than today.</li>
+            <li>Less of a visible change in the thread view than A.</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section class="board" id="b-F">
+      <div class="cap">
+        <h1>F · Quiet native: E's calm layout with C's controls, and no rainbow</h1>
+        <p>
+          The structure is E: one continuous reading area, docked side panels, quiet grouped
+          settings. The controls come from C: solid grey buttons and dropdowns with a faint top
+          highlight and a small shadow, macOS-style up-and-down arrows on dropdowns, the white-knob
+          switch, and text fields that look slightly pressed in. Color stays for meaning only: blue
+          for "on", the selected item and the send button. Use the switch below to compare icons.
+        </p>
+        <div class="iconswitch" id="iconswitch">
+          <button data-i="tiles" class="on">Grey icon tiles</button
+          ><button data-i="none">No icon tiles</button>
+        </div>
+      </div>
+      <div class="label">Settings › Threads</div>
+      <div class="frame dF tiles-on" data-kind="settings"></div>
+      <div class="label">Same language in a thread</div>
+      <div class="frame chat dF tiles-on" data-kind="chat"></div>
+      <div class="notes">
+        <div>
+          <h3>What it borrows</h3>
+          <ul>
+            <li><b>From E</b>: the layout, the calm thread view, readable grey text.</li>
+            <li>
+              <b>From C</b>: buttons, dropdowns, switch and fields that feel like real controls you
+              can press.
+            </li>
+          </ul>
+        </div>
+        <div>
+          <h3>Color</h3>
+          <ul>
+            <li><b>One accent</b>: blue only means on, selected, or send.</li>
+            <li>With grey tiles, the page you're on is the only blue icon.</li>
+          </ul>
+        </div>
+        <div>
+          <h3>Windows and phone</h3>
+          <ul>
+            <li>
+              The controls are custom, so they look the same on Windows (not copying any system).
+            </li>
+            <li>On a phone the same controls just get taller (about 44px).</li>
+          </ul>
+        </div>
+        <div>
+          <h3>Density</h3>
+          <ul>
+            <li>
+              <b>Close to today</b>: 26px controls and 13.5px row text, slightly bigger chat text.
+            </li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section class="board on" id="b-G">
+      <div class="cap">
+        <h1>G · Quiet workspace with native form controls: one system, two weights of control</h1>
+        <p>
+          The rule that makes E and F one system: controls inside a form (the settings rows) are
+          solid and pressable, because they sit next to text and need to be found. Controls inside a
+          toolbar or list (the sidebar, the message box, the panel headers) stay plain until you
+          hover, because their area already frames them. Icons never get boxes. This is how macOS
+          itself works: toolbar buttons are borderless, settings dropdowns are filled.
+        </p>
+      </div>
+      <div class="label">Settings › Threads</div>
+      <div class="frame dG" data-kind="settings"></div>
+      <div class="label">Same language in a thread</div>
+      <div class="frame chat dG" data-kind="chat"></div>
+      <div class="label">Settings › Plugins &amp; Skills (a page full of switches)</div>
+      <div class="frame dG" data-kind="plugins"></div>
+      <div class="label">
+        Settings › Providers (the new In use / Not in use page from main, in G)
+      </div>
+      <div class="frame dG" data-kind="providers"></div>
+      <div class="notes">
+        <div>
+          <h3>Solid (form controls)</h3>
+          <ul>
+            <li><b>Settings</b> dropdowns, buttons, switches and text fields.</li>
+            <li>Dialogs and setup screens too: anywhere you fill something in.</li>
+          </ul>
+        </div>
+        <div>
+          <h3>Plain (toolbar controls)</h3>
+          <ul>
+            <li><b>Sidebar, message box, panel headers, menus</b>: no box until you hover.</li>
+            <li>
+              The thread sidebar stays exactly as today: inbox rows, Wrapped section, soft fill on
+              the open thread.
+            </li>
+            <li>In the settings menu the selected page's icon turns blue.</li>
+          </ul>
+        </div>
+        <div>
+          <h3>Icons</h3>
+          <ul>
+            <li><b>Always plain glyphs</b>, one grey, never in tiles.</li>
+            <li>Color only for provider logos and real status.</li>
+          </ul>
+        </div>
+        <div>
+          <h3>Why it holds together</h3>
+          <ul>
+            <li>
+              Same greys, same corners, same type everywhere; only the control weight changes, and
+              it changes for a reason you can state.
+            </li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <script>
+      const ic = (id, cls = "") => `<svg class="i ${cls}"><use href="#i-${id}"/></svg>`;
+      const logo = (p) => `<svg class="logo"><use href="#l-${p}"/></svg>`;
+      const chev = (double) =>
+        `<svg class="i s12 chev"><use href="#i-${double ? "chevs" : "chev"}"/></svg>`;
+
+      const NAV = [
+        ["General", "settings", "#8e8e93"],
+        ["Threads", "threads", "#2f6fed", true],
+        ["Archives", "archive", "#b7791f"],
+        null,
+        ["Providers", "bot", "#7c5cff"],
+        ["Plugins & Skills", "plug", "#1f9d6b"],
+        ["Agent Instructions", "file", "#e0732f"],
+        null,
+        ["Source Control", "git", "#e5484d"],
+        ["Connections", "phone", "#12a594"],
+        ["Keybindings", "keys", "#6b7a99"],
+      ];
+
+      function sidebarSettings() {
+        return `<aside class="side">
+    <div class="lights"><i></i><i></i><i></i></div>
+    <div class="brand">${ic("tl")}Threadlines</div>
+    <div class="nav">${NAV.map((n) =>
+      n === null
+        ? `<div class="gap"></div>`
+        : `<a class="${n[3] ? "on" : ""}"><span class="tile" style="background:${n[2]}">${ic(n[1])}</span>${ic(n[1])}${n[0]}</a>`,
+    ).join("")}</div>
+    <div class="spacer"></div>
+    <div class="foot"><a>${ic("gauge", "s14")}Usage<span class="r">0 today</span></a><a>${ic("back", "s14")}Back<span class="r">v0.5.1</span></a></div>
+  </aside>`;
+      }
+
+      const ctrl = (inner, cls = "") => `<span class="ctrl ${cls}">${inner}</span>`;
+      const sel = (v, d) => ctrl(`${v}${chev(d)}`, "sel");
+      const sw = (on) => `<span class="sw ${on ? "on" : ""}"></span>`;
+      const reset = `<span class="reset">${ic("undo", "s12")}</span>`;
+      const rtile = (icon, color) =>
+        `<span class="rtile" style="background:${color}">${ic(icon)}</span>`;
+      const row = (o) =>
+        `<div class="row">${rtile(o.icon, o.color)}<div class="txt"><h3>${o.t}${o.reset ? reset : ""}</h3><p>${o.d}</p></div><div class="ctl">${o.c}</div></div>`;
+
+      function settingsPage(d) {
+        const double = d === "C" || d === "F" || d === "G";
+        const model = (p, n, e, ghost) =>
+          ctrl(`${logo(p)}${n}${chev(double)}`, ghost ? "ghost" : "") +
+          ctrl(`${ic("sliders", "s14")}${e}${chev(double)}`, ghost ? "ghost" : "");
+        const sections = [
+          {
+            t: "New threads",
+            d: "How a new thread starts.",
+            rows: [
+              row({
+                icon: "sparkle",
+                color: "#d97757",
+                t: "Agent",
+                reset: true,
+                d: "Every new thread starts with this model and reasoning.",
+                c: model("claude", "Opus 5.5", "Extra High"),
+              }),
+              row({
+                icon: "users",
+                color: "#2f6fed",
+                t: "Room",
+                reset: true,
+                d: "Other agents every new thread starts with. They stay quiet until asked.",
+                c: `<span class="btn">${ic("plus", "s12")}Add agent</span>`,
+              }) +
+                `<div class="sub"><div class="agent">${model("codex", "GPT-6.1 Sol", "Extra High", true)}<span class="ctrl name">Reviewer</span><span class="rm">${ic("x", "s14")}</span></div><div class="note">${ic("info", "s12")}Threads that start with other agents can't be reverted.</div></div>`,
+              row({
+                icon: "git",
+                color: "#12a594",
+                t: "Start in",
+                reset: true,
+                d: "Work in the project folder, or give each new thread its own worktree.",
+                c: sel("New worktree", double),
+              }),
+              row({
+                icon: "threads",
+                color: "#7c5cff",
+                t: "Agents can start threads",
+                d: "The agent can ask to start threads of its own, each in its own worktree.",
+                c: sel("Ask me first", double),
+              }),
+            ],
+          },
+          {
+            t: "Rooms",
+            d: "More than one agent in a thread.",
+            rows: [
+              row({
+                icon: "users",
+                color: "#1f9d6b",
+                t: "Rooms",
+                d: "Let a thread hold more than one agent. Rooms have no revert.",
+                c: sw(true),
+              }),
+              row({
+                icon: "bot",
+                color: "#e0732f",
+                t: "Agents bringing in other agents",
+                d: "The agent can ask to bring in another model to review its work.",
+                c: sel("Ask me first", double),
+              }),
+            ],
+          },
+          {
+            t: "Titles & writing",
+            d: "The model that writes for you.",
+            rows: [
+              row({
+                icon: "edit",
+                color: "#6b7a99",
+                t: "Writing model",
+                d: "Writes thread titles. Also commit and PR text, unless Source Control picks its own.",
+                c: model("codex", "GPT-5.6 Luna", "Medium"),
+              }),
+              row({
+                icon: "edit",
+                color: "#8e8e93",
+                t: "Backup writing model",
+                reset: true,
+                d: "Takes over when the writing model's provider fails.",
+                c: model("claude", "Haiku 4.5", "Thinking off"),
+              }),
+            ],
+          },
+        ];
+        return `${sidebarSettings()}
+  <main class="main">
+    <div class="topbar"><span class="crumb">Settings</span><div class="acts"><span class="btn">${ic("undo", "s12")}Restore defaults</span></div></div>
+    <div class="scroll"><div class="col">
+      <div class="page-h"><span class="ptile" style="background:#2f6fed">${ic("threads")}</span><h1>Threads</h1><p>How new threads start, who's in them, and what happens when they're done.</p></div>
+      ${sections.map((s) => `<div class="sect"><div class="sect-h"><h2>${s.t}</h2><p>${s.d}</p></div><div class="group">${s.rows.join("")}</div></div>`).join("")}
+    </div></div>
+  </main>`;
+      }
+
+      function settingsFrame(navOn, body, wide) {
+        const nav = NAV.map((n) =>
+          n === null
+            ? `<div class="gap"></div>`
+            : `<a class="${n[0] === navOn ? "on" : ""}">${ic(n[1])}${n[0]}</a>`,
+        ).join("");
+        return `<aside class="side">
+    <div class="lights"><i></i><i></i><i></i></div>
+    <div class="brand">${ic("tl")}Threadlines</div>
+    <div class="nav">${nav}</div>
+    <div class="spacer"></div>
+    <div class="foot"><a>${ic("gauge", "s14")}Usage<span class="r">101M today</span></a><a>${ic("back", "s14")}Back<span class="r">v0.5.1</span></a></div>
+  </aside>
+  <main class="main"><div class="topbar"><span class="crumb">Settings</span></div><div class="scroll"><div class="col ${wide ? "wide" : ""}">${body}</div></div></main>`;
+      }
+
+      function pluginsPage() {
+        const P = [
+          ["Alpaca", "Stop watching the markets.", "chart", "#e5b53a", "codex"],
+          ["Browser", "Control the in-app browser", "globe", "#d4d4d4", "codex"],
+          ["Chrome", "Control Chrome with ChatGPT", "globe", "#4f8ef7", "codex"],
+          ["Code Review", "Review and manage GitHub pull requests", "pr", "#d4d4d4", "codex"],
+          [
+            "Codex Security Cloud",
+            "Find and fix vulnerabilities across your repositories",
+            "shield",
+            "#9ca3af",
+            "codex",
+          ],
+          ["codex-app-tools", "v0.1.5 · openai-bundled", "plug", "#9ca3af", "codex"],
+          ["Computer Use", "Control Mac apps from ChatGPT", "monitor", "#a78bfa", "codex"],
+          [
+            "Default templates",
+            "Templates for documents, spreadsheets and slides",
+            "grid",
+            "#f59e0b",
+            "codex",
+          ],
+          [
+            "frontend-design",
+            "Frontend design skill for UI/UX work",
+            "sparkle",
+            "#d4d4d4",
+            "claude",
+          ],
+          ["Game Studio", "Design, prototype, and ship browser games", "game", "#d4d4d4", "codex"],
+          ["GitHub", "Triage PRs, issues, CI, and publish flows", "git", "#d4d4d4", "codex"],
+          ["Gmail", "Read and manage Gmail", "mail", "#ef4444", "codex"],
+          ["Google Calendar", "Manage Google Calendar events", "cal", "#3b82f6", "codex"],
+          ["Google Contacts", "Reference saved contact details", "users", "#3b82f6", "codex"],
+          ["Google Drive", "Drive, Docs, Sheets or Slides", "archive", "#22c55e", "codex"],
+          ["Pages", "Create and edit pages and spaces", "file", "#d4d4d4", "codex"],
+        ];
+        const cells = P.map(
+          ([n, d, g, c, p], i) =>
+            `<div class="pcell"><span class="gl" style="color:${c}">${ic(g)}</span><div class="txt"><div class="nm">${n}</div><div class="ds">${d}</div></div><span class="pv">${logo(p)}</span><span class="sw sm ${i === 4 ? "" : "on"}"></span><span class="go">${ic("chevr", "s14")}</span></div>`,
+        ).join("");
+        return settingsFrame(
+          "Plugins & Skills",
+          `
+    <div class="tabsbar"><span class="tb on">Plugins <small>31</small></span><span class="tb">Skills <small>204</small></span><span class="meta">Loaded 1:21 AM in 2.8 s</span></div>
+    <div class="field">${ic("search", "s14")}Search plugins and connections</div>
+    <div class="filters"><span class="seg"><span class="on">All providers</span><span>${logo("codex")}Codex</span><span>${logo("claude")}Claude</span></span>${ctrl(`${ic("folder", "s14")}All projects${chev(true)}`, "sel")}</div>
+    <div class="sect"><div class="sect-h withact"><div><h2>Installed plugins</h2><p>Plugin packages installed on this machine for Codex and Claude. They can bundle skills, commands and connections.</p></div><span class="btn">${ic("search", "s12")}Browse catalog</span></div>
+    <div class="group pgrid">${cells}</div></div>`,
+          true,
+        );
+      }
+
+      function providersPage() {
+        const prow = (o) =>
+          `<div class="prow ${o.open ? "open" : ""}"><span class="lg">${logo(o.p)}</span><div class="pbody"><div class="t1">${o.n}${o.exp ? `<span class="exp">Experimental</span>` : ""}<span class="ver">${o.v}</span>${o.upd ? `<span class="upd">↑ ${o.upd}</span>` : ""}</div><div class="t2">${o.a}</div></div><div class="act">${o.m ? `<span class="meter">${o.m[0]}<span class="b"><i style="width:${o.m[1]}%"></i></span><span class="pct">${o.m[1]}%</span></span>` : ""}<span class="chv">${ic(o.open ? "chev" : "chevr", "s14")}</span></div></div>`;
+        const detail = `<div class="pdetail">
+    <div class="dtabs"><span class="on">Account</span><span>Usage</span><span>Models</span><span>Configuration</span></div>
+    <div class="kv"><span class="k">Signed in</span><span><span class="blur">c***@****.com</span> · ChatGPT Pro 5x</span><span class="btn">Sign out</span></div>
+    <div class="kv"><span class="k">Resets</span><span>2 available<div class="ksub">Next one expires in 17d 15h</div></span><span class="btn">${ic("undo", "s12")}Use a reset</span></div>
+    <div class="kv"><span class="k">Weekly</span><span>14% used<div class="ksub">Resets in 4d 21h</div></span><span class="meter"><span class="b"><i style="width:14%"></i></span></span></div>
+    <div class="dfoot"><span class="btn danger">Turn off Codex</span></div>
+  </div>`;
+        return settingsFrame(
+          "Providers",
+          `
+    <div class="page-h row-h"><div><h1>Providers</h1><p>Agents run on Will's MacBook Pro. Favorites and model order are saved on this device.</p></div>
+      <div class="ph-acts"><span class="muted">Checked just now</span><span class="tbtn">${ic("undo", "s12")}Check again</span><span class="tbtn">Open setup</span><span class="tbtn">${ic("plus", "s14")}</span></div></div>
+    <div class="sect"><div class="group"><div class="usage"><span class="k">Last 30 days</span><span class="v">8.55B tokens · $2,914.92 API-equivalent</span><span class="go2">View usage${ic("chevr", "s14")}</span></div></div></div>
+    <div class="sect"><div class="sect-h"><h2>In use</h2><p>5 agents. Turn one off from its row.</p></div>
+    <div class="group">
+      ${prow({ p: "codex", n: "Codex", v: "v0.160.0", a: '<span class="blur">c***@****.com</span> · ChatGPT Pro 5x', m: ["Weekly", 14], open: true })}${detail}
+      ${prow({ p: "claude", n: "Claude", v: "v2.1.289", upd: "2.1.301", a: "Chat-only token · verified by a live chat", m: ["Session", 38] })}
+      ${prow({ p: "fx", n: "fx", exp: true, v: "v0.0.13", a: "Vercel AI Gateway · badcubans-projects" })}
+      ${prow({ p: "cursor", n: "Cursor", exp: true, v: "v2026.05.05", a: '<span class="blur">j***@****.com</span> · Cursor Free' })}
+      ${prow({ p: "opencode", n: "OpenCode", exp: true, v: "v2.0.22", a: "Free models only" })}
+    </div></div>`,
+        );
+      }
+
+      function inboxSidebar() {
+        const row = (o) => `<div class="ibx-row ${o.on ? "on" : ""} ${o.done ? "done" : ""}">
+    <div class="top"><span class="fav" style="background:${o.c}">${o.p[0].toUpperCase()}</span>${o.p}<span class="br">${o.b}</span><span class="when">${o.w}</span></div>
+    <div class="title">${o.done ? `<span class="chk">${ic("check", "s12")}</span>` : o.dot ? `<span class="dot"></span>` : ""}${o.t}${o.s ? `<span class="status">${o.s}</span>` : ""}</div></div>`;
+        return `<aside class="side">
+    <div class="lights"><i></i><i></i><i></i></div>
+    <div class="brand">${ic("tl")}Threadlines</div>
+    <div class="ibx-search">${ic("search", "s14")}Search<kbd>⌘K</kbd></div>
+    <div class="ibx-links"><a>${ic("threads")}General Chats</a><a>${ic("pr")}Pull Requests</a><a>${ic("users")}Rooms</a></div>
+    <div class="ibx-proj"><span class="sel">${ic("folder", "s14")}All projects${chev(false)}</span><span class="ib">${ic("plus", "s14")}</span><span class="ib">${ic("edit", "s14")}</span></div>
+    <div class="ibx-rows">
+      ${row({ p: "threadlines", c: "#1f6f5c", b: "feat/settings-design", w: "now", t: "Settings design language", on: true, dot: true, s: "Working" })}
+      ${row({ p: "threadlines", c: "#1f6f5c", b: "fix/flaky-worktree-test", w: "2h", t: "Fix flaky worktree test" })}
+      ${row({ p: "marketing", c: "#7c3aed", b: "main", w: "3d", t: "Trim the hero video" })}
+    </div>
+    <div class="ibx-sect">Wrapped (2)<i></i>${ic("chev", "s14")}</div>
+    <div class="ibx-rows">
+      ${row({ p: "threadlines", c: "#1f6f5c", b: "rooms/late-answers", w: "1d", t: "Rooms: late answers", done: true })}
+      ${row({ p: "threadlines", c: "#1f6f5c", b: "fix/relay-close-code", w: "2d", t: "Relay close code", done: true })}
+    </div>
+    <div class="spacer"></div>
+    <div class="foot"><a>${ic("gauge", "s14")}Usage<span class="r">42k today</span></a><a>${ic("settings", "s14")}Settings<span class="r">v0.5.1</span></a></div>
+  </aside>`;
+      }
+
+      function chatPage(d) {
+        return `${
+          d === "G"
+            ? inboxSidebar()
+            : `<aside class="side">
+    <div class="lights"><i></i><i></i><i></i></div>
+    <div class="brand">${ic("tl")}Threadlines</div>
+    <div class="search">${ic("search", "s14")}Search<kbd>⌘K</kbd></div>
+    <div class="nav"><a><span class="tile" style="background:#2f6fed">${ic("threads")}</span>${ic("threads")}General Chats</a><a><span class="tile" style="background:#1f9d6b">${ic("pr")}</span>${ic("pr")}Pull Requests</a><a><span class="tile" style="background:#7c5cff">${ic("users")}</span>${ic("users")}Rooms</a></div>
+    <div class="threads">
+      <div class="proj"><span class="fav" style="background:#1f6f5c">T</span>threadlines</div>
+      <div class="t on"><span class="dot"></span>Settings design language<span class="when">now</span></div>
+      <div class="t">Fix flaky worktree test<span class="when">2h</span></div>
+      <div class="t">Rooms: late answers<span class="when">1d</span></div>
+      <div class="proj"><span class="fav" style="background:#7c3aed">M</span>marketing</div>
+      <div class="t">Trim the hero video<span class="when">3d</span></div>
+    </div>
+    <div class="spacer"></div>
+    <div class="foot"><a>${ic("gauge", "s14")}Usage<span class="r">42k today</span></a><a>${ic("settings", "s14")}Settings<span class="r">v0.5.1</span></a></div>
+  </aside>`
+        }
+  <div class="chatmain">
+    <div class="pane convo">
+      <div class="topbar"><span class="crumb">threadlines</span><span class="crumb">/</span><span>Settings design language</span><div class="acts"><span class="ib">${ic("term", "s14")}</span><span class="ib">${ic("panel", "s14")}</span></div></div>
+      <div class="msgs">
+        <div class="um"><span class="bubble">Can you add a default model and room for new threads?</span></div>
+        <div class="am">
+          <div class="who">${logo("claude")}Opus 5.5 · Extra High</div>
+          <div class="tray">${ic("check", "s14")}Worked for 3m 12s · 6 steps${chev(false)}</div>
+          Done. New threads now start with your default model and room, and the timing edge cases each have a test. The settings move is in the same commit.
+          <div class="files">${ic("file", "s14")}4 files changed<span class="add">+212</span><span class="del">−88</span></div>
+        </div>
+      </div>
+      <div class="composer">
+        <div class="ph">Message Opus 5.5 · @ agents or files, / commands</div>
+        <div class="bar"><span class="chip">${logo("claude")}Opus 5.5${chev(d === "C" || d === "F")}</span><span class="chip">${ic("sliders", "s14")}Extra High</span><span class="chip">${ic("hammer", "s14")}Build</span><span class="chip">${ic("shield", "s14")}Auto</span><span class="ib">${ic("mic", "s14")}</span><span class="send">${ic("up", "s14")}</span></div>
+      </div>
+    </div>
+    <div class="pane panel-r">
+      <div class="ph">Source control<span class="n">4 files</span></div>
+      <div class="file">${ic("file", "s14")}<span class="p">settingsLayout.tsx</span><span class="add">+64</span><span class="del">−22</span></div>
+      <div class="file">${ic("file", "s14")}<span class="p">ThreadsSettings.tsx</span><span class="add">+81</span><span class="del">−30</span></div>
+      <div class="file">${ic("file", "s14")}<span class="p">index.css</span><span class="add">+41</span><span class="del">−12</span></div>
+      <div class="file">${ic("file", "s14")}<span class="p">AppShell.tsx</span><span class="add">+26</span><span class="del">−24</span></div>
+      <div class="commit">Commit message</div>
+    </div>
+  </div>`;
+      }
+
+      document.querySelectorAll(".frame").forEach((f) => {
+        const d = [...f.classList].find((c) => /^d[A-G]$/.test(c)).slice(1);
+        f.innerHTML =
+          f.dataset.kind === "chat"
+            ? chatPage(d)
+            : f.dataset.kind === "plugins"
+              ? pluginsPage()
+              : f.dataset.kind === "providers"
+                ? providersPage()
+                : settingsPage(d);
+      });
+      document.querySelectorAll(".frame.chat").forEach((f) => {
+        f.style.gridTemplateColumns = "248px 1fr";
+      });
+
+      document.querySelectorAll(".tabs a").forEach((a) =>
+        a.addEventListener("click", () => {
+          document.querySelectorAll(".tabs a").forEach((x) => x.classList.toggle("on", x === a));
+          document
+            .querySelectorAll(".board")
+            .forEach((b) => b.classList.toggle("on", b.id === "b-" + a.dataset.b));
+          history.replaceState(null, "", "#" + a.dataset.b);
+          window.scrollTo(0, 0);
+        }),
+      );
+      document.querySelectorAll("#iconswitch button").forEach((b) =>
+        b.addEventListener("click", () => {
+          document
+            .querySelectorAll("#iconswitch button")
+            .forEach((x) => x.classList.toggle("on", x === b));
+          document
+            .querySelectorAll(".frame.dF")
+            .forEach((f) => f.classList.toggle("tiles-on", b.dataset.i === "tiles"));
+        }),
+      );
+      const start = location.hash.slice(1);
+      if (start) document.querySelector(`.tabs a[data-b="${start}"]`)?.click();
+    </script>
+  </body>
+</html>

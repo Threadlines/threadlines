@@ -147,7 +147,7 @@ export function CompactVersionAdvisory({
         <Button
           type="button"
           size="xs"
-          variant="default"
+          variant="outline"
           className="h-6 px-2 text-[11px]"
           disabled={isUpdating}
           onClick={runUpdate}

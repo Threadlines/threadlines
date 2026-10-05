@@ -1348,7 +1348,7 @@ function FileViewerOpenInControl({
     <Group aria-label="Open file in editor" className="shrink-0">
       <Button
         size="icon-xs"
-        variant="outline"
+        variant="ghost"
         disabled={!preferredEditor}
         onClick={() => {
           if (preferredEditor) {
@@ -1366,7 +1366,7 @@ function FileViewerOpenInControl({
       </Button>
       <Menu>
         <MenuTrigger
-          render={<Button aria-label="Open file options" size="icon-xs" variant="outline" />}
+          render={<Button aria-label="Open file options" size="icon-xs" variant="ghost" />}
         >
           <ChevronDownIcon aria-hidden="true" className="size-3.5" />
         </MenuTrigger>
@@ -1432,7 +1432,6 @@ function FileViewerLayout({ context }: { context: FileViewerContext }) {
           <Toggle
             aria-label={editMode ? "Done editing" : "Edit file"}
             tooltip={editMode ? "Done editing" : "Edit file"}
-            variant="outline"
             size="xs"
             className="shrink-0 gap-1 px-1.5"
             pressed={editMode}
@@ -1448,7 +1447,6 @@ function FileViewerLayout({ context }: { context: FileViewerContext }) {
           <Toggle
             aria-label={wordWrap ? "Disable line wrapping" : "Enable line wrapping"}
             tooltip={wordWrap ? "Disable line wrapping" : "Enable line wrapping"}
-            variant="outline"
             size="xs"
             className="shrink-0"
             pressed={wordWrap}

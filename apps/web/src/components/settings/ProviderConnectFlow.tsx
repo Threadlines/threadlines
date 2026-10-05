@@ -166,7 +166,7 @@ export function BrowserRedirectField(props: { readonly onSubmit: (url: string) =
           }}
           placeholder="http://127.0.0.1:…"
           aria-label="Address the browser ended on"
-          className="h-6 min-w-0 flex-1 rounded-sm border border-border/60 bg-background/80 px-2 font-mono text-[11px] text-foreground outline-none focus-visible:border-ring"
+          className="h-6 min-w-0 flex-1 rounded-sm border border-group-divider bg-background/80 px-2 font-mono text-[11px] text-foreground outline-none focus-visible:border-ring"
         />
         <Button
           type="button"
@@ -339,7 +339,7 @@ export function ProviderConnectFlow({
       ) : null}
 
       {panelOpen ? (
-        <div className="grid gap-2 border-t border-border/60 pt-2">
+        <div className="grid gap-2 border-t border-group-divider pt-2">
           <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
             <span
               className={cn(
@@ -430,7 +430,7 @@ export function ProviderConnectFlow({
             Prefer your own terminal?
           </summary>
           <div className="mt-1.5 flex min-w-0 items-center gap-1.5">
-            <code className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap rounded-sm border border-border/60 bg-background/80 px-2 py-1 font-mono text-[11px] text-foreground/85">
+            <code className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap rounded-sm border border-group-divider bg-background/80 px-2 py-1 font-mono text-[11px] text-foreground/85">
               {displayCommand}
             </code>
             <Button

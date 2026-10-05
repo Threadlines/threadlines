@@ -17,6 +17,11 @@ import type {
 export interface ProviderAccountUsageWindowPresentation {
   readonly key: string;
   readonly label: string;
+  /**
+   * The label without its window length, for compact stacks ("Fable" for
+   * "Fable (weekly)"). Unset when the label is already as short as it gets.
+   */
+  readonly shortLabel?: string;
   readonly detail: string;
   readonly usedPercent: number;
   readonly remainingPercent: number;
@@ -141,6 +146,15 @@ export function providerExternalResetsLink(
   return usage?.source === "claude-oauth-usage" ? CLAUDE_EXTERNAL_RESETS_LINK : undefined;
 }
 
+/**
+ * Why an account's plan limits are missing, worded twice: `action` for a
+ * compact surface ("Refresh sign-in") and `detail` as a full sentence.
+ */
+export interface ProviderAccountUsageUnavailablePresentation {
+  readonly action: string;
+  readonly detail: string;
+}
+
 export interface ProviderAccountUsagePresentation {
   readonly label: string;
   readonly spendControl?: ProviderAccountUsageSpendControlPresentation;
@@ -149,6 +163,12 @@ export interface ProviderAccountUsagePresentation {
   readonly tokenUsage?: ProviderAccountTokenUsagePresentation;
   readonly windows: ReadonlyArray<ProviderAccountUsageWindowPresentation>;
   readonly reachedLimit: boolean;
+  /**
+   * Set when the account has plan limits but they cannot be read right now.
+   * There are no windows or spend control then, and a surface says so in
+   * words: an empty meter would read as "0% used".
+   */
+  readonly limitsUnavailable?: ProviderAccountUsageUnavailablePresentation;
 }
 
 type ProviderAccountUsagePresentationProvider = Pick<
@@ -213,6 +233,68 @@ export function headlineUsageMeter(
     (worst, window) => (worst === null || window.usedPercent > worst.usedPercent ? window : worst),
     null,
   );
+}
+
+/** One line of a compact usage stack: a short label and how full that limit is. */
+export interface ProviderUsageMeterLine {
+  readonly key: string;
+  readonly label: string;
+  /** "29% used · resets in 2h 5m", for the hover. */
+  readonly detail: string;
+  readonly usedPercent: number;
+  readonly warning: boolean;
+  /** Covers the whole account (spend control, 5h, Weekly) rather than one model. */
+  readonly accountWide: boolean;
+}
+
+/** How many lines a compact usage stack shows before it starts dropping the emptiest. */
+export const COMPACT_USAGE_METER_LIMIT = 4;
+
+/**
+ * Every limit an account reports, for a surface with room for a short stack
+ * (a Providers row): the spend control when there is one, then each window in
+ * the provider's order. Where `headlineUsageMeter` answers "how close am I to
+ * any limit", this answers "where do I stand on each one".
+ *
+ * Past `limit` lines the emptiest scoped ones are dropped. The account-wide
+ * lines (spend control, 5h, Weekly) always stay: a reader expects to find them.
+ */
+export function compactUsageMeters(
+  usage: Pick<ProviderAccountUsagePresentation, "spendControl" | "windows">,
+  limit: number = COMPACT_USAGE_METER_LIMIT,
+): ReadonlyArray<ProviderUsageMeterLine> {
+  const lines: ReadonlyArray<ProviderUsageMeterLine> = [
+    ...(usage.spendControl
+      ? [
+          {
+            key: "spend-control",
+            label: usage.spendControl.label,
+            detail: usage.spendControl.detail,
+            usedPercent: usage.spendControl.usedPercent,
+            warning: usage.spendControl.warning,
+            accountWide: true,
+          },
+        ]
+      : []),
+    ...usage.windows.map((window) => ({
+      key: window.key,
+      label: window.shortLabel ?? window.label,
+      detail: window.detail,
+      usedPercent: window.usedPercent,
+      warning: window.warning,
+      accountWide: window.key === "primary" || window.key === "secondary",
+    })),
+  ];
+  if (lines.length <= limit) return lines;
+  const kept = new Set(lines.filter((line) => line.accountWide));
+  const scopedFullestFirst = lines
+    .filter((line) => !line.accountWide)
+    .toSorted((a, b) => b.usedPercent - a.usedPercent);
+  for (const line of scopedFullestFirst) {
+    if (kept.size >= limit) break;
+    kept.add(line);
+  }
+  return lines.filter((line) => kept.has(line));
 }
 
 /** Usage at or above this is "near limit": bars turn amber and the composer dot appears. */
@@ -328,6 +410,7 @@ function formatScopedUsageWindowPresentation(
     label: durationLabel
       ? `${window.scopeLabel} (${durationLabel.toLowerCase()})`
       : window.scopeLabel,
+    ...(durationLabel ? { shortLabel: window.scopeLabel } : {}),
     detail: detailParts.join(" · "),
     usedPercent,
     remainingPercent,
@@ -599,9 +682,12 @@ export function deriveProviderAccountUsagePresentation(
   };
 }
 
-function shouldShowClaudeUsageUnavailablePlaceholder(
-  provider: ProviderAccountUsagePresentationProvider,
-): boolean {
+/**
+ * True for a Claude subscription sign-in whose plan limits did not come back:
+ * the server said so, or an older server signed in without reporting either
+ * way. API-key accounts have no plan limits to miss.
+ */
+function claudePlanLimitsUnreadable(provider: ProviderAccountUsagePresentationProvider): boolean {
   const usageStatus = provider.auth.capabilities?.usage?.status;
   return (
     provider.driver === "claudeAgent" &&
@@ -611,51 +697,46 @@ function shouldShowClaudeUsageUnavailablePlaceholder(
   );
 }
 
-function makeClaudeUsageUnavailablePresentation(
-  detail: string = "usage unavailable",
-): ProviderAccountUsagePresentation {
-  return {
-    label: PROVIDER_USAGE_SOURCE_LABELS["claude-oauth-usage"],
-    reachedLimit: false,
-    windows: [
-      {
-        key: "primary",
-        label: "5h",
-        detail,
-        usedPercent: 0,
-        remainingPercent: 100,
-        reachedLimit: false,
-        warning: false,
-      },
-      {
-        key: "secondary",
-        label: "Weekly",
-        detail,
-        usedPercent: 0,
-        remainingPercent: 100,
-        reachedLimit: false,
-        warning: false,
-      },
-    ],
-  };
-}
-
-function compactClaudeUsageUnavailableDetail(
+function claudeUsageUnavailablePresentation(
   provider: ProviderAccountUsagePresentationProvider,
-): string {
-  return provider.auth.type === "longLivedOAuthToken" ? "Normal sign-in needed" : "Refresh sign-in";
+): ProviderAccountUsageUnavailablePresentation {
+  return provider.auth.type === "longLivedOAuthToken"
+    ? {
+        action: "Normal sign-in needed",
+        detail:
+          "This sign-in token can't read plan limits. Sign in to Claude the normal way to see them.",
+      }
+    : {
+        action: "Refresh sign-in",
+        detail:
+          "Plan limits can't be read right now. Signing in to Claude again usually brings them back.",
+      };
 }
 
+/**
+ * The usage presentation for a provider as a whole, not just its usage
+ * payload: a Claude subscription whose limits could not be read comes back
+ * marked `limitsUnavailable` (keeping any local token history) instead of as
+ * nothing, so its surfaces can say why the meters are missing.
+ */
 export function deriveProviderAccountUsagePresentationForProvider(
   provider: ProviderAccountUsagePresentationProvider | null | undefined,
   nowMs: number = Date.now(),
 ): ProviderAccountUsagePresentation | null {
   const presentation = deriveProviderAccountUsagePresentation(provider?.accountUsage, nowMs);
-  if (presentation || !provider) return presentation;
-  if (shouldShowClaudeUsageUnavailablePlaceholder(provider)) {
-    return makeClaudeUsageUnavailablePresentation(compactClaudeUsageUnavailableDetail(provider));
-  }
-  return null;
+  if (!provider) return presentation;
+  const hasLimits =
+    presentation !== null &&
+    (presentation.windows.length > 0 || presentation.spendControl !== undefined);
+  if (hasLimits || !claudePlanLimitsUnreadable(provider)) return presentation;
+  return {
+    ...(presentation ?? {
+      label: PROVIDER_USAGE_SOURCE_LABELS["claude-oauth-usage"],
+      windows: [],
+      reachedLimit: false,
+    }),
+    limitsUnavailable: claudeUsageUnavailablePresentation(provider),
+  };
 }
 
 /**

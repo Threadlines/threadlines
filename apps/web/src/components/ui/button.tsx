@@ -31,17 +31,22 @@ const buttonVariants = cva(
         xs: "h-7 gap-1 rounded-md px-[calc(--spacing(2)-1px)] text-sm before:rounded-[calc(var(--radius-md)-1px)] sm:h-6 sm:text-xs [&_svg:not([class*='size-'])]:size-4 sm:[&_svg:not([class*='size-'])]:size-3.5",
       },
       variant: {
+        // Solid accent: the one action that completes a form, or Send.
         default:
-          "not-disabled:inset-shadow-[0_1px_--theme(--color-white/16%)] border-primary bg-primary text-primary-foreground shadow-primary/24 shadow-xs [:active,[data-pressed]]:inset-shadow-[0_1px_--theme(--color-black/8%)] [:disabled,:active,[data-pressed]]:shadow-none [:hover,[data-pressed]]:bg-primary/90",
+          "border-transparent bg-primary text-primary-foreground shadow-[inset_0_0.5px_0_rgb(255_255_255/0.25),0_1px_1.5px_rgb(0_0_0/0.25)] disabled:shadow-none [:hover,[data-pressed]]:bg-primary-hover",
         destructive:
-          "not-disabled:inset-shadow-[0_1px_--theme(--color-white/16%)] border-destructive bg-destructive text-white shadow-destructive/24 shadow-xs [:active,[data-pressed]]:inset-shadow-[0_1px_--theme(--color-black/8%)] [:disabled,:active,[data-pressed]]:shadow-none [:hover,[data-pressed]]:bg-destructive/90",
+          "border-transparent bg-destructive text-white shadow-[inset_0_0.5px_0_rgb(255_255_255/0.2),0_1px_1.5px_rgb(0_0_0/0.25)] disabled:shadow-none [:hover,[data-pressed]]:bg-destructive/90",
+        // The solid button with red text: Turn off, Remove, Sign out of everything.
         "destructive-outline":
-          "border-input bg-popover not-dark:bg-clip-padding text-destructive-foreground shadow-xs/5 not-disabled:not-active:not-data-pressed:before:shadow-[0_1px_--theme(--color-black/4%)] dark:bg-input/32 dark:not-disabled:before:shadow-[0_-1px_--theme(--color-white/2%)] dark:not-disabled:not-active:not-data-pressed:before:shadow-[0_-1px_--theme(--color-white/6%)] [:disabled,:active,[data-pressed]]:shadow-none [:hover,[data-pressed]]:border-destructive/32 [:hover,[data-pressed]]:bg-destructive/4",
+          "border-transparent bg-control text-destructive-foreground shadow-(--control-shadow) hover:bg-control-hover [:active,[data-pressed]]:not-disabled:bg-control-pressed [:active,[data-pressed]]:not-disabled:shadow-(--control-shadow-pressed)",
+        // Toolbar and list controls: plain until hover.
         ghost:
           "border-transparent text-foreground data-pressed:bg-accent [:hover,[data-pressed]]:bg-accent",
         link: "border-transparent underline-offset-4 [:hover,[data-pressed]]:underline",
+        // The solid button for controls in content (settings, dialogs, panel
+        // bodies, notices). The name is historical; there is no outline.
         outline:
-          "border-input bg-popover not-dark:bg-clip-padding text-foreground shadow-xs/5 not-disabled:not-active:not-data-pressed:before:shadow-[0_1px_--theme(--color-black/4%)] dark:bg-input/32 dark:not-disabled:before:shadow-[0_-1px_--theme(--color-white/2%)] dark:not-disabled:not-active:not-data-pressed:before:shadow-[0_-1px_--theme(--color-white/6%)] [:disabled,:active,[data-pressed]]:shadow-none [:hover,[data-pressed]]:bg-accent/50 dark:[:hover,[data-pressed]]:bg-input/64",
+          "border-transparent bg-control text-foreground shadow-(--control-shadow) hover:bg-control-hover [:active,[data-pressed]]:not-disabled:bg-control-pressed [:active,[data-pressed]]:not-disabled:shadow-(--control-shadow-pressed)",
         secondary:
           "border-transparent bg-secondary text-secondary-foreground [:active,[data-pressed]]:bg-secondary/80 [:hover,[data-pressed]]:bg-secondary/90",
       },

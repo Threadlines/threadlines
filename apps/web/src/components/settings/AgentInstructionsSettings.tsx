@@ -20,7 +20,12 @@ import { Button } from "../ui/button";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
-import { SettingsPageContainer, SettingsRow, SettingsSection } from "./settingsLayout";
+import {
+  SettingsPageContainer,
+  SettingsPageHeader,
+  SettingsRow,
+  SettingsSection,
+} from "./settingsLayout";
 import { deriveSettingsProjectOptions } from "./settingsProjectOptions";
 
 interface InstructionDraft {
@@ -121,7 +126,7 @@ function InstructionFileButton({
           {status.label}
         </Badge>
       </span>
-      <span className="truncate text-[11px] text-muted-foreground/70" title={file.path}>
+      <span className="truncate text-[11px] text-muted-foreground" title={file.path}>
         {file.path}
       </span>
     </button>
@@ -150,10 +155,10 @@ function InstructionFileEditor({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex flex-col gap-3 border-b border-border/60 px-4 py-3.5 sm:flex-row sm:items-center sm:justify-between sm:px-5">
+      <div className="flex flex-col gap-3 border-b border-group-divider px-3.5 py-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="min-w-0 space-y-1">
           <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-            <h3 className="truncate text-[13px] font-semibold text-foreground">{title}</h3>
+            <h3 className="truncate text-[13.5px] font-medium text-foreground">{title}</h3>
             <Badge variant="outline" size="sm">
               {provider}
             </Badge>
@@ -161,14 +166,13 @@ function InstructionFileEditor({
               {status.label}
             </Badge>
           </div>
-          <p className="truncate text-xs text-muted-foreground/80" title={file.path}>
+          <p className="truncate text-xs text-muted-foreground" title={file.path}>
             {file.path}
           </p>
           <p className="text-[11px] text-muted-foreground">{instructionFileDescription(file)}</p>
         </div>
         <Button
           size="xs"
-          variant="outline"
           className="w-full shrink-0 sm:w-auto"
           disabled={!dirty || saving || !file.editable}
           onClick={onSave}
@@ -183,11 +187,11 @@ function InstructionFileEditor({
       </div>
 
       {file.editable ? (
-        <div className="flex min-h-0 flex-1 p-3 sm:p-4">
+        <div className="flex min-h-0 flex-1 p-3.5">
           <textarea
             value={draft.contents}
             onChange={(event) => onChange(event.currentTarget.value)}
-            className="h-full min-h-0 w-full resize-none rounded-lg border border-input bg-background px-3 py-2 font-mono text-xs leading-relaxed text-foreground shadow-xs/5 outline-none transition-shadow placeholder:text-muted-foreground focus-visible:border-focus-ring focus-ring dark:bg-input/32"
+            className="h-full min-h-0 w-full resize-none rounded-lg bg-field px-3 py-2 font-mono text-xs leading-relaxed text-foreground shadow-(--field-shadow) outline-none transition-shadow placeholder:text-muted-foreground focus-ring"
             spellCheck={false}
             aria-label={`${provider} instruction file contents`}
           />
@@ -426,18 +430,17 @@ export function AgentInstructionsSettingsPanel() {
   );
 
   return (
-    <SettingsPageContainer className="max-w-5xl">
-      <SettingsSection
-        title="Agent Instructions"
-        icon={<FileTextIcon className="size-3.5" />}
-        headerAction={
+    <SettingsPageContainer wide>
+      <SettingsPageHeader
+        section="/settings/instructions"
+        actions={
           <Tooltip>
             <TooltipTrigger
               render={
                 <Button
                   size="icon-xs"
                   variant="ghost"
-                  className="size-5 rounded-sm p-0 text-muted-foreground hover:text-foreground"
+                  className="text-muted-foreground hover:text-foreground"
                   disabled={isLoading}
                   onClick={() => void refresh()}
                   aria-label="Refresh instruction files"
@@ -453,7 +456,8 @@ export function AgentInstructionsSettingsPanel() {
             <TooltipPopup side="top">Refresh instruction files</TooltipPopup>
           </Tooltip>
         }
-      >
+      />
+      <SettingsSection>
         <SettingsRow
           title="Project"
           description={
@@ -519,8 +523,7 @@ export function AgentInstructionsSettingsPanel() {
       </SettingsSection>
 
       <SettingsSection
-        title="Instruction Files"
-        icon={<FileTextIcon className="size-3.5" />}
+        title="Instruction files"
         headerAction={
           instructionFiles.length > 0 ? (
             <span className="text-[11px] text-muted-foreground">
@@ -533,7 +536,7 @@ export function AgentInstructionsSettingsPanel() {
       >
         {instructionFiles.length > 0 ? (
           <div className="grid h-[58dvh] min-h-[22rem] max-h-[32rem] grid-rows-[auto_minmax(0,1fr)] sm:h-[min(42rem,calc(100dvh-16rem))] sm:min-h-120 sm:max-h-none lg:grid-cols-[15rem_minmax(0,1fr)] lg:grid-rows-1">
-            <div className="min-w-0 border-b border-border/60 bg-muted/10 lg:border-b-0 lg:border-r">
+            <div className="min-w-0 border-b border-group-divider lg:border-b-0 lg:border-r">
               <div className="p-2 sm:hidden">
                 <Select
                   value={activeFile ? instructionFileKey(activeFile) : ""}

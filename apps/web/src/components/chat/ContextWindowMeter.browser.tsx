@@ -113,6 +113,33 @@ describe("ContextWindowMeter", () => {
     }
   });
 
+  it("says plan limits can't be read instead of showing a bare usage heading", async () => {
+    const screen = await render(
+      <ContextWindowMeter
+        usage={TEST_CONTEXT_WINDOW}
+        accountUsage={{
+          label: "Claude usage",
+          reachedLimit: false,
+          windows: [],
+          limitsUnavailable: {
+            action: "Refresh sign-in",
+            detail: "Plan limits can't be read right now.",
+          },
+        }}
+      />,
+    );
+
+    try {
+      await page.getByRole("button", { name: /Context window/ }).click();
+
+      await expect.element(page.getByText("Claude usage")).toBeVisible();
+      await expect.element(page.getByText("Plan limits can't be read right now.")).toBeVisible();
+      expect(document.querySelectorAll('[role="meter"]')).toHaveLength(0);
+    } finally {
+      await screen.unmount();
+    }
+  });
+
   it("breaks the context window down by category behind a collapsed toggle", async () => {
     const screen = await render(
       <ContextWindowMeter

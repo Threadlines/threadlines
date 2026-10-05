@@ -419,6 +419,11 @@ function UsagePlanLimits({ nowMs }: { readonly nowMs: number }) {
                 <span className="truncate">{row.label}</span>
               </span>
               <div className="grid grid-cols-1 gap-x-8 gap-y-2.5 @xl:grid-cols-2">
+                {row.unavailableDetail ? (
+                  <p className="text-xs text-muted-foreground @xl:col-span-2">
+                    {row.unavailableDetail}
+                  </p>
+                ) : null}
                 {row.meters.map((meter) => (
                   <div key={meter.key} className="flex min-w-0 flex-col gap-1.5">
                     <span className="flex min-w-0 items-baseline gap-2 text-xs">

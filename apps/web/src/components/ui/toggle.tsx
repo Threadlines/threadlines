@@ -23,8 +23,9 @@ const toggleVariants = cva(
       },
       variant: {
         default: "border-transparent",
+        // Solid toggle for content (keybinding modifier chips); on is a flat darker fill.
         outline:
-          "border-input bg-background not-dark:bg-clip-padding shadow-xs/5 not-disabled:not-active:not-data-pressed:before:shadow-[0_1px_--theme(--color-black/4%)] data-pressed:border-foreground/16 dark:bg-input/32 dark:hover:bg-input/64 dark:data-pressed:border-foreground/18 dark:data-pressed:bg-control-active dark:not-disabled:not-active:not-data-pressed:before:shadow-[0_-1px_--theme(--color-white/6%)] dark:not-disabled:not-data-pressed:before:shadow-[0_-1px_--theme(--color-white/2%)] [:disabled,:active,[data-pressed]]:shadow-none",
+          "border-transparent bg-control shadow-(--control-shadow) hover:bg-control-hover data-pressed:border-transparent data-pressed:bg-control-active data-pressed:shadow-none dark:data-pressed:border-transparent",
       },
     },
   },

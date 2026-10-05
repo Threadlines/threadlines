@@ -1935,6 +1935,43 @@ describe("GeneralSettingsPanel observability", () => {
     await expect.element(page.getByText(/Optional for remote or headless chat/)).toBeVisible();
   });
 
+  it("says a Claude row's usage is unavailable and opens its sign-in from there", async () => {
+    setServerConfigSnapshot({
+      ...createBaseServerConfig(),
+      providers: [
+        {
+          ...createClaudeProvider(),
+          auth: {
+            status: "authenticated",
+            type: "maxplan",
+            label: "Claude Max Subscription",
+            capabilities: {
+              chat: { status: "configured" },
+              usage: { status: "unavailable", detail: "Refresh Claude sign-in to restore usage." },
+            },
+          },
+        },
+      ],
+    });
+
+    mounted = await renderWithTestRouter(
+      <TestAppProviders>
+        <ProviderSettingsPanel />
+      </TestAppProviders>,
+    );
+
+    const unavailable = page.getByRole("button", {
+      name: "Claude usage unavailable. Refresh sign-in",
+    });
+    await expect.element(unavailable).toBeVisible();
+    // No empty meter stands in for a reading the app does not have.
+    const row = unavailable.element().closest('[data-testid="provider-instance-row"]');
+    expect(row?.textContent).not.toContain("0%");
+
+    await unavailable.click();
+    await expect.element(page.getByText("Account & Sign-in")).toBeVisible();
+  });
+
   it("signs a provider in without leaving settings", async () => {
     setServerConfigSnapshot({
       ...createBaseServerConfig(),
@@ -2131,7 +2168,7 @@ describe("GeneralSettingsPanel observability", () => {
     );
 
     await page.getByLabelText("Toggle Codex details").click();
-    await page.getByRole("button", { name: "Usage" }).click();
+    await page.getByRole("button", { name: "Usage", exact: true }).click();
 
     const beforeFirstActivity = formatTokenActivityTestDate(utcDateKeyAtOffset(-41));
     const missingActivityDate = formatTokenActivityTestDate(utcDateKeyAtOffset(-39));
@@ -2159,7 +2196,7 @@ describe("GeneralSettingsPanel observability", () => {
     );
 
     await page.getByLabelText("Toggle Claude details").click();
-    await page.getByRole("button", { name: "Usage" }).click();
+    await page.getByRole("button", { name: "Usage", exact: true }).click();
 
     await expect.element(page.getByText("Local token activity").first()).toBeVisible();
     await expect
@@ -2488,6 +2525,51 @@ describe("GeneralSettingsPanel observability", () => {
     await expect
       .element(page.getByRole("link", { name: "https://claude.com/product/claude-code" }))
       .toBeVisible();
+  });
+
+  it("turns an agent off from its row and keeps the row in place until the pointer leaves", async () => {
+    const updateSettings = vi
+      .fn<LocalApi["server"]["updateSettings"]>()
+      .mockResolvedValue(DEFAULT_SERVER_SETTINGS);
+    window.nativeApi = {
+      persistence: {
+        getClientSettings: vi.fn().mockResolvedValue(null),
+        setClientSettings: vi.fn().mockResolvedValue(undefined),
+      },
+      server: { updateSettings },
+    } as unknown as LocalApi;
+    setServerConfigSnapshot(createBaseServerConfig());
+
+    mounted = await renderWithTestRouter(
+      <TestAppProviders>
+        <ProviderSettingsPanel />
+      </TestAppProviders>,
+    );
+
+    const codexRow = () =>
+      document.querySelector<HTMLElement>('[data-provider-instance-id="codex"]')!;
+    const notInUseHeading = () =>
+      [...document.querySelectorAll("h2")].find((heading) => heading.textContent === "Not in use")!;
+    const sitsUnderNotInUse = () =>
+      Boolean(
+        notInUseHeading().compareDocumentPosition(codexRow()) & Node.DOCUMENT_POSITION_FOLLOWING,
+      );
+
+    const codexSwitch = page.getByRole("switch", { name: "Use Codex" });
+    await expect.element(codexSwitch).toBeChecked();
+    expect(sitsUnderNotInUse()).toBe(false);
+
+    await codexSwitch.click();
+
+    await expect.element(codexSwitch).not.toBeChecked();
+    expect(updateSettings).toHaveBeenCalled();
+    // Off, but still where it was: a wrong click is one click to undo.
+    expect(sitsUnderNotInUse()).toBe(false);
+
+    await userEvent.unhover(codexRow().parentElement!);
+    await vi.waitFor(() => {
+      expect(sitsUnderNotInUse()).toBe(true);
+    });
   });
 
   it("runs verified native one-click updates for Windows Claude advisories", async () => {
@@ -2910,8 +2992,8 @@ describe("SourceControlSettingsPanel discovery states", () => {
       </TestAppProviders>,
     );
 
-    await expect.element(page.getByText("Version Control")).toBeInTheDocument();
-    await expect.element(page.getByText("Source Control Providers")).toBeInTheDocument();
+    await expect.element(page.getByText("Version control")).toBeInTheDocument();
+    await expect.element(page.getByText("Source control providers")).toBeInTheDocument();
     await expect
       .element(page.getByRole("button", { name: "Rescan server environment" }))
       .toBeDisabled();
