@@ -63,7 +63,7 @@ export function AddProviderAccountForm(props: {
 
   return (
     <form
-      className="border-t border-border/60 px-4 py-3 sm:px-5"
+      className="border-t border-group-divider px-4 py-3 sm:px-5"
       data-testid="add-provider-account-form"
       onSubmit={(event) => {
         event.preventDefault();

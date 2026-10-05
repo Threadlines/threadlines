@@ -126,22 +126,43 @@ Docs:
 - `packages/effect-acp`: Agent Client Protocol (ACP) bindings, used by the Cursor driver.
 - `packages/ssh`, `packages/tailscale`: remote-connection helpers.
 
-## Design System (marketing site and web UI)
+## Design System
 
-Threadlines is dense and flat. When building or changing any user-facing surface:
+The app (web, desktop, phone view) follows `docs/design/design-language.md`: a quiet
+continuous workspace with native-feeling controls. Read it before touching any user-facing
+surface. Its three rules:
 
-- Structure comes from typography, spacing, and hairline dividers (`--border`), not boxes.
-  Never wrap content in a bordered/rounded/filled card unless it's a clickable tile or an
-  input surface. A list of items is dividers between rows, not a stack of cards.
-- Compact type scale: one display-size element per page (~40px max), section headings
-  18–20px, body 15–16px. If a heading feels impressive, it's too big.
-- Tight vertical rhythm: list rows 16–20px padding, section gaps under 40px. If the page
-  scrolls mostly through whitespace, shrink the gaps, not the content.
-- Copy is scannable: lead with the feature name, keep descriptions to one sentence
-  (about two rendered lines). Users skim changelogs and UIs; they don't read them.
+- Quiet fills group related things; borders mark only necessary boundaries; shadows mean
+  something floats above. Settings sections and lists of like items sit in a quiet group
+  (`SettingsSection` / `SettingsGroup`), not in bordered cards and not loose on the page.
+  Cards remain only for clickable tiles and input surfaces (the composer).
+- Controls in content are solid: settings, dialogs, setup, panel bodies, notices (raised
+  buttons, dropdowns with up-down chevrons, white-knob switches, pressed-in text fields).
+  Controls in toolbars and lists are plain until hover: chat header, composer chips, sidebar,
+  panel headers, row actions, menus.
+- Icons are plain glyphs, never in tiles. Color means something: on, selected, send, a
+  provider's mark, or a status. Nothing is colored for decoration.
+
+In the app, also:
+
+- Compact type scale: one page title per page (22px), section titles 15px, rows 13.5px.
+- Secondary text is opaque `--muted-foreground`, never faded with opacity.
+- Reuse the existing tokens and primitives (`components/ui`, `settingsLayout.tsx`); mono
+  `--font-mono` for meta labels like versions and dates. No new colors, radii, or shadows
+  without agreement. Check light and dark before shipping.
+
+Everywhere (app and marketing site):
+
+- If a heading feels impressive, it's too big.
+- Tight vertical rhythm. If the page scrolls mostly through whitespace, shrink the gaps, not
+  the content.
+- Copy is scannable: lead with the feature name, keep descriptions to one sentence (about
+  two rendered lines). Users skim changelogs and UIs; they don't read them.
 - Hover feedback is a color shift only — no translateY lifts, scale, or shadows.
-- Reuse the existing tokens (`--border`, `--surface`, `--fg-*`, mono `--font-mono` for
-  meta labels like versions and dates). No new colors, radii, or shadows without agreement.
+
+The marketing site keeps its flat style: structure from type, spacing and hairlines, no
+cards except clickable tiles, one display-size element per page (~40px max), body 15–16px,
+its own tokens (`--surface`, `--fg-*`).
 
 ## Taste
 

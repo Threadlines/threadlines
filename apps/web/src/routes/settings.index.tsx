@@ -1,10 +1,15 @@
 import { ChevronRightIcon } from "lucide-react";
 import { Link, createFileRoute } from "@tanstack/react-router";
 
-import { SettingsPageContainer, SettingsSection } from "../components/settings/settingsLayout";
+import {
+  SETTINGS_GROUP_ROW_CLASS,
+  SettingsGroup,
+  SettingsPageContainer,
+} from "../components/settings/settingsLayout";
 import {
   HOSTED_STATIC_SETTINGS_NAV_ITEMS,
   SETTINGS_NAV_ITEMS,
+  type SettingsNavItem,
   startsSettingsNavGroup,
 } from "../components/settings/settingsNavigation";
 import { cn } from "../lib/utils";
@@ -23,31 +28,40 @@ function SettingsIndexRoute() {
       ? HOSTED_STATIC_SETTINGS_NAV_ITEMS
       : SETTINGS_NAV_ITEMS;
 
+  // One group per cluster of the menu (you and your threads, what agents can
+  // use, this computer's tools), the way the desktop rail draws lines.
+  const clusters: SettingsNavItem[][] = [];
+  navItems.forEach((item, index) => {
+    if (index === 0 || startsSettingsNavGroup(navItems, index)) clusters.push([]);
+    clusters.at(-1)?.push(item);
+  });
+
   return (
     <SettingsPageContainer>
-      <SettingsSection>
-        {navItems.map((item, index) => {
-          const Icon = item.icon;
-          return (
-            <Link
-              key={item.to}
-              to={item.to}
-              replace
-              className={cn(
-                "flex items-center gap-3 border-t border-border/60 px-4 py-3.5 transition-colors first:border-t-0 hover:bg-accent/50 active:bg-accent sm:px-5",
-                // A new cluster of the menu: a full line and a little room.
-                startsSettingsNavGroup(navItems, index) && "mt-3 border-border",
-              )}
-            >
-              <Icon className="size-4 shrink-0 text-muted-foreground/70" />
-              <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-foreground">
-                {item.label}
-              </span>
-              <ChevronRightIcon className="size-4 shrink-0 text-muted-foreground/50" />
-            </Link>
-          );
-        })}
-      </SettingsSection>
+      {clusters.map((cluster) => (
+        <SettingsGroup key={cluster[0]?.to}>
+          {cluster.map((item) => {
+            const Icon = item.icon;
+            return (
+              <Link
+                key={item.to}
+                to={item.to}
+                replace
+                className={cn(
+                  SETTINGS_GROUP_ROW_CLASS,
+                  "flex items-center gap-3 px-3.5 py-3 transition-colors first:rounded-t-[inherit] last:rounded-b-[inherit] hover:bg-foreground/[0.03] active:bg-foreground/[0.06]",
+                )}
+              >
+                <Icon className="size-4 shrink-0 text-muted-foreground" />
+                <span className="min-w-0 flex-1 truncate text-[13.5px] font-medium text-foreground">
+                  {item.label}
+                </span>
+                <ChevronRightIcon className="size-4 shrink-0 text-muted-foreground" />
+              </Link>
+            );
+          })}
+        </SettingsGroup>
+      ))}
     </SettingsPageContainer>
   );
 }

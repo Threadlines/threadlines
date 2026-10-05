@@ -53,34 +53,75 @@ export interface SettingsNavItem {
    * can use, then this computer's tools. A thin line separates clusters.
    */
   readonly group: "threads" | "agents" | "computer";
+  /** One line under the page title (and under the label in the phone index). */
+  readonly description: string;
 }
 
 export const SETTINGS_NAV_ITEMS: ReadonlyArray<SettingsNavItem> = [
-  { label: "General", to: "/settings/general", icon: Settings2Icon, group: "threads" },
-  { label: "Threads", to: "/settings/threads", icon: MessagesSquareIcon, group: "threads" },
-  { label: "Archives", to: "/settings/archived", icon: ArchiveIcon, group: "threads" },
-  { label: "Providers", to: "/settings/providers", icon: BotIcon, group: "agents" },
+  {
+    label: "General",
+    to: "/settings/general",
+    icon: Settings2Icon,
+    group: "threads",
+    description: "How Threadlines looks, how chats show, and this computer.",
+  },
+  {
+    label: "Threads",
+    to: "/settings/threads",
+    icon: MessagesSquareIcon,
+    group: "threads",
+    description: "How new threads start, who's in them, and what happens when they're done.",
+  },
+  {
+    label: "Archives",
+    to: "/settings/archived",
+    icon: ArchiveIcon,
+    group: "threads",
+    description: "Threads you've put away, and when old ones get archived for you.",
+  },
+  {
+    label: "Providers",
+    to: "/settings/providers",
+    icon: BotIcon,
+    group: "agents",
+    description: "The agents you can run, their accounts and their models.",
+  },
   // The route stays /settings/plugins: links, panel memory, and the tab search param all key off it.
-  { label: "Plugins & Skills", to: "/settings/plugins", icon: PlugIcon, group: "agents" },
+  {
+    label: "Plugins & Skills",
+    to: "/settings/plugins",
+    icon: PlugIcon,
+    group: "agents",
+    description: "Plugins, skills and connections your agents can use.",
+  },
   {
     label: "Agent Instructions",
     to: "/settings/instructions",
     icon: FileTextIcon,
     group: "agents",
+    description: "The instruction files agents read before they start work.",
   },
   {
     label: "Source Control",
     to: "/settings/source-control",
     icon: SourceControlIcon,
     group: "computer",
+    description: "How Threadlines works with Git and the sites that host your code.",
   },
   {
     label: "Connections",
     to: CONNECTIONS_SETTINGS_SECTION_PATH,
     icon: SmartphoneIcon,
     group: "computer",
+    description: "Use this computer from your phone, or other computers from here.",
   },
-  { label: "Keybindings", to: "/settings/keybindings", icon: KeyboardIcon, group: "computer" },
+  {
+    label: "Keybindings",
+    to: "/settings/keybindings",
+    icon: KeyboardIcon,
+    group: "computer",
+    description: "Keyboard shortcuts for commands, and when each one applies.",
+  },
 ];
 
 /** Whether a menu item opens a new cluster, so a line goes above it. */
@@ -96,7 +137,11 @@ export const HOSTED_STATIC_SETTINGS_NAV_ITEMS = SETTINGS_NAV_ITEMS.filter((item)
 );
 
 export function settingsSectionLabelForPath(pathname: string): string | null {
-  return SETTINGS_NAV_ITEMS.find((item) => item.to === pathname)?.label ?? null;
+  return settingsNavItemForPath(pathname)?.label ?? null;
+}
+
+export function settingsNavItemForPath(pathname: string): SettingsNavItem | null {
+  return SETTINGS_NAV_ITEMS.find((item) => item.to === pathname) ?? null;
 }
 
 /**

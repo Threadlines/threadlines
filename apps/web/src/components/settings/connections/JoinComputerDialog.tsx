@@ -231,7 +231,7 @@ export function JoinComputerDialog(props: {
     );
   } else if (outcome?.state === "waiting") {
     body = (
-      <div className="flex items-center gap-4 border-y border-border/60 py-3.5">
+      <div className="flex items-center gap-4 border-y border-group-divider py-3.5">
         <span className="font-mono text-[28px] leading-none tracking-[0.1em] text-foreground">
           {outcome.matchNumber}
         </span>
@@ -348,7 +348,7 @@ export function JoinComputerDialog(props: {
               />
               Other ways to connect
               {props.otherWaysSummary ? (
-                <span className="text-muted-foreground/60">· {props.otherWaysSummary}</span>
+                <span className="text-muted-foreground">· {props.otherWaysSummary}</span>
               ) : null}
             </button>
             {showOtherWays ? props.otherWays : null}

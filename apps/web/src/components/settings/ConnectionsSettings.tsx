@@ -32,7 +32,13 @@ import { ConnectDeviceDialog } from "./connections/ConnectDeviceDialog";
 import { JoinComputerDialog } from "./connections/JoinComputerDialog";
 import { useRelayAccess } from "./connections/useRelayAccess";
 import { resolveDesktopPairingUrl, resolveHostedPairingUrl } from "./pairingUrls";
-import { SettingsPageContainer, SettingsRow, SettingsSection } from "./settingsLayout";
+import {
+  SETTINGS_GROUP_ROW_CLASS,
+  SettingsPageContainer,
+  SettingsPageHeader,
+  SettingsRow,
+  SettingsSection,
+} from "./settingsLayout";
 import { Input } from "../ui/input";
 import {
   Dialog,
@@ -326,9 +332,9 @@ function formatDesktopSshConnectionError(error: unknown): string {
   return withoutTaggedErrorPrefix.trim() || fallback;
 }
 
-/** Direct row in the card – same pattern as the Provider / ACP-agent list rows. */
-const ITEM_ROW_CLASSNAME = "border-t border-border/60 px-4 py-4 first:border-t-0 sm:px-5";
-const ENDPOINT_ROW_CLASSNAME = "border-t border-border/60 px-4 py-2.5 first:border-t-0 sm:px-5";
+/** A row directly in a settings group: the group's inset divider and row padding. */
+const ITEM_ROW_CLASSNAME = cn(SETTINGS_GROUP_ROW_CLASS, "px-3.5 py-3");
+const ENDPOINT_ROW_CLASSNAME = cn(SETTINGS_GROUP_ROW_CLASS, "px-3.5 py-2.5");
 
 const ITEM_ROW_INNER_CLASSNAME =
   "flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between";
@@ -341,10 +347,7 @@ function accessRowClassName(_presentation: AccessSectionPresentation) {
 
 function endpointRowClassName(presentation: AccessSectionPresentation, isAvailable: boolean) {
   if (presentation === "endpoint-rail") {
-    return cn(
-      "relative border-t border-border/60 px-4 py-3 first:border-t-0 sm:px-5",
-      !isAvailable && "bg-muted/20",
-    );
+    return cn(SETTINGS_GROUP_ROW_CLASS, "px-3.5 py-3", !isAvailable && "bg-muted/20");
   }
 
   return cn(ENDPOINT_ROW_CLASSNAME, !isAvailable && "bg-muted/24");
@@ -769,7 +772,7 @@ const PairingLinkListRow = memo(function PairingLinkListRow({
             {[roleLabel, formatExpiresInLabel(pairingLink.expiresAt, nowMs)].join(" · ")}
           </p>
           {shareablePairingUrl === null ? (
-            <p className="text-[11px] text-muted-foreground/70">
+            <p className="text-[11px] text-muted-foreground">
               Open Threadlines at this computer&apos;s network address to get a link a phone can
               scan. From localhost there is no address a phone can reach, so pair with the code
               instead.
@@ -852,7 +855,7 @@ const PairingLinkListRow = memo(function PairingLinkListRow({
                   />
                 </label>
                 {shareablePairingUrl ? (
-                  <div className="flex justify-center rounded-xl border border-border/60 bg-muted/30 p-4">
+                  <div className="flex justify-center rounded-xl border border-group-divider bg-muted/30 p-4">
                     <QRCodeSvg
                       value={shareablePairingUrl}
                       size={132}
@@ -969,7 +972,7 @@ const DeviceAccessRow = memo(function DeviceAccessRow({
             <KindIcon aria-hidden className="size-3.5 shrink-0 text-muted-foreground" />
             <h3 className="truncate text-[13px] font-semibold text-foreground">{primaryLabel}</h3>
           </div>
-          <p className="text-xs text-muted-foreground/80">{metaBits.join(" · ")}</p>
+          <p className="text-xs text-muted-foreground">{metaBits.join(" · ")}</p>
         </div>
         <div className="flex w-full shrink-0 items-center gap-2 sm:w-auto sm:justify-end">
           <Button
@@ -1238,7 +1241,7 @@ function SavedBackendListRow({
             <LaptopIcon aria-hidden className="size-3.5 shrink-0 text-muted-foreground" />
             <h3 className="truncate text-[13px] font-semibold text-foreground">{displayLabel}</h3>
           </div>
-          <p className="text-xs text-muted-foreground/80">{description}</p>
+          <p className="text-xs text-muted-foreground">{description}</p>
           {versionMismatch ? (
             <p className="flex items-center gap-1 text-xs text-warning">
               <TriangleAlertIcon className="size-3.5 shrink-0" />
@@ -1312,7 +1315,7 @@ const DesktopSshHostRow = memo(function DesktopSshHostRow({
   const buttonLabel = connectingHostAlias === target.alias ? "Adding..." : "Add";
 
   return (
-    <div className="border-t border-border/60 px-4 py-3 first:border-t-0 sm:px-5">
+    <div className={cn(SETTINGS_GROUP_ROW_CLASS, "px-3.5 py-3")}>
       <div className={ITEM_ROW_INNER_CLASSNAME}>
         <div className="min-w-0 flex-1">
           <h3 className="truncate text-sm font-medium text-foreground">{target.alias}</h3>
@@ -2236,7 +2239,7 @@ export function ConnectionsSettings({ surface = "full" }: { surface?: "full" | "
         </label>
       </div>
       {unsavedDiscoveredSshHosts.length > 0 || isLoadingDiscoveredSshHosts ? (
-        <div className="border-t border-border/60 pt-2">
+        <div className="border-t border-group-divider pt-2">
           <div className="flex items-center justify-between gap-3 py-1">
             <p className="text-xs text-muted-foreground">From your SSH config and known hosts</p>
             <Button
@@ -2336,7 +2339,7 @@ export function ConnectionsSettings({ surface = "full" }: { surface?: "full" | "
           <Button
             size="xs"
             variant="ghost"
-            className="h-5 rounded-sm px-1 text-[11px] font-normal text-muted-foreground/70 hover:text-muted-foreground"
+            className="h-5 rounded-sm px-1 text-[11px] font-normal text-muted-foreground hover:text-muted-foreground"
             disabled={isRevokingOtherDesktopClients}
             onClick={() => setConfirmRemoveAllOpen(true)}
           >
@@ -2439,7 +2442,7 @@ export function ConnectionsSettings({ surface = "full" }: { surface?: "full" | "
         <Button
           size="xs"
           variant="ghost"
-          className="h-5 gap-1 rounded-sm px-1 text-[11px] font-normal text-muted-foreground/70 hover:text-muted-foreground"
+          className="h-5 gap-1 rounded-sm px-1 text-[11px] font-normal text-muted-foreground hover:text-muted-foreground"
           aria-expanded={connectionOptionsOpen}
           onClick={() => setConnectionOptionsOpen((value) => !value)}
         >
@@ -2549,6 +2552,7 @@ export function ConnectionsSettings({ surface = "full" }: { surface?: "full" | "
 
   return (
     <SettingsPageContainer>
+      <SettingsPageHeader section="/settings/connections" />
       {retiredPhoneLinkNotice ? (
         <SettingsSection title="Phone links changed">
           <SettingsRow

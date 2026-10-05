@@ -1,5 +1,4 @@
 import {
-  ChevronDownIcon,
   CircleXIcon,
   EllipsisIcon,
   FileJsonIcon,
@@ -40,7 +39,14 @@ import { Kbd, KbdGroup } from "../ui/kbd";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
 import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
 import { ScrollArea } from "../ui/scroll-area";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
+import {
+  DropdownChevron,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "../ui/select";
 import { Toggle } from "../ui/toggle";
 import { toastManager } from "../ui/toast";
 import {
@@ -59,7 +65,7 @@ import {
   unknownWhenVariables,
   whenAstToExpression,
 } from "./KeybindingsSettings.logic";
-import { SettingsPageContainer, SettingsSection } from "./settingsLayout";
+import { SettingsPageContainer, SettingsPageHeader, SettingsSection } from "./settingsLayout";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 
 function KeybindingPill({ value }: { value: string }) {
@@ -802,7 +808,7 @@ function KeybindingTableRow({
   };
 
   return (
-    <div className="grid grid-cols-[minmax(190px,1.1fr)_minmax(220px,0.85fr)_minmax(210px,1fr)_60px] items-center px-4 py-1.5 text-sm even:bg-muted/15 hover:bg-accent/40">
+    <div className="grid grid-cols-[minmax(190px,1.1fr)_minmax(220px,0.85fr)_minmax(210px,1fr)_60px] items-center px-3.5 py-1.5 text-[13px] hover:bg-foreground/[0.03]">
       <div className="min-w-0 pr-4">
         <div className="flex min-w-0 items-center gap-1.5">
           <div className="truncate text-[13px] font-medium text-foreground" title={row.command}>
@@ -854,13 +860,13 @@ function KeybindingTableRow({
         <Popover>
           <PopoverTrigger
             className={cn(
-              "inline-flex h-7 w-full items-center justify-between gap-2 rounded-md border border-input bg-background px-2.5 text-left font-mono text-[12px] text-foreground shadow-xs/5 outline-none transition-colors hover:bg-accent focus-visible:border-focus-ring focus-ring",
+              "inline-flex h-7 w-full cursor-pointer items-center justify-between gap-2 rounded-lg bg-control px-2.5 text-left font-mono text-[12px] text-foreground shadow-(--control-shadow) outline-none transition-colors hover:bg-control-hover focus-ring",
               !whenDraftExpression && "text-muted-foreground",
             )}
             aria-label={`Edit when clause for ${commandLabel(row.command)}`}
           >
             <span className="truncate">{whenDraftExpression || "Always"}</span>
-            <ChevronDownIcon className="size-3.5 shrink-0 opacity-60" />
+            <DropdownChevron solid />
           </PopoverTrigger>
           <PopoverContent align="start" sideOffset={6}>
             <WhenExpressionBuilder
@@ -963,7 +969,7 @@ function NewKeybindingTableRow({
   };
 
   return (
-    <div className="grid grid-cols-[minmax(190px,1.1fr)_minmax(220px,0.85fr)_minmax(210px,1fr)_60px] items-center px-4 py-1.5 text-sm even:bg-muted/15 hover:bg-accent/40">
+    <div className="grid grid-cols-[minmax(190px,1.1fr)_minmax(220px,0.85fr)_minmax(210px,1fr)_60px] items-center px-3.5 py-1.5 text-[13px] hover:bg-foreground/[0.03]">
       <div className="min-w-0 pr-4">
         <Select
           value={commandDraft}
@@ -1015,13 +1021,13 @@ function NewKeybindingTableRow({
         <Popover>
           <PopoverTrigger
             className={cn(
-              "inline-flex h-7 w-full items-center justify-between gap-2 rounded-md border border-input bg-background px-2.5 text-left font-mono text-[12px] text-foreground shadow-xs/5 outline-none transition-colors hover:bg-accent focus-visible:border-focus-ring focus-ring",
+              "inline-flex h-7 w-full cursor-pointer items-center justify-between gap-2 rounded-lg bg-control px-2.5 text-left font-mono text-[12px] text-foreground shadow-(--control-shadow) outline-none transition-colors hover:bg-control-hover focus-ring",
               !whenDraftExpression && "text-muted-foreground",
             )}
             aria-label={`Edit when clause for ${commandLabelText}`}
           >
             <span className="truncate">{whenDraftExpression || "Always"}</span>
-            <ChevronDownIcon className="size-3.5 shrink-0 opacity-60" />
+            <DropdownChevron solid />
           </PopoverTrigger>
           <PopoverContent align="start" sideOffset={6}>
             <WhenExpressionBuilder
@@ -1173,10 +1179,10 @@ export function KeybindingsSettingsPanel() {
   );
 
   return (
-    <SettingsPageContainer className="max-w-5xl">
-      <SettingsSection
-        title="Keybindings"
-        headerAction={
+    <SettingsPageContainer wide>
+      <SettingsPageHeader
+        section="/settings/keybindings"
+        actions={
           <div className="flex items-center gap-1.5">
             <ExpandableHeaderSearch
               query={query}
@@ -1193,7 +1199,7 @@ export function KeybindingsSettingsPanel() {
                     type="button"
                     size="icon-xs"
                     variant="ghost"
-                    className="size-5 rounded-sm p-0 text-muted-foreground hover:text-foreground"
+                    className="text-muted-foreground hover:text-foreground"
                     onClick={() => setIsAddingBinding(true)}
                     aria-label="Add keybinding"
                   >
@@ -1210,7 +1216,7 @@ export function KeybindingsSettingsPanel() {
                     type="button"
                     size="icon-xs"
                     variant="ghost"
-                    className="size-5 rounded-sm p-0 text-muted-foreground hover:text-foreground"
+                    className="text-muted-foreground hover:text-foreground"
                     disabled={!keybindingsConfigPath}
                     onClick={openKeybindingsFile}
                     aria-label="Open keybindings.json"
@@ -1223,9 +1229,10 @@ export function KeybindingsSettingsPanel() {
             </Tooltip>
           </div>
         }
-      >
+      />
+      <SettingsSection contentClassName="overflow-hidden">
         {!isElectron ? (
-          <div className="flex items-start gap-2 border-b border-warning/20 bg-warning/5 px-3 py-2.5 text-[12px] leading-relaxed text-muted-foreground sm:px-4">
+          <div className="flex items-start gap-2 border-b border-warning/20 bg-warning/5 px-3.5 py-2.5 text-[12px] leading-relaxed text-muted-foreground">
             <InfoIcon className="mt-0.5 size-3.5 shrink-0 text-warning" />
             <p>
               Some shortcuts may be claimed by the browser before Threadlines sees them. Use the
@@ -1240,13 +1247,13 @@ export function KeybindingsSettingsPanel() {
           hideScrollbars
           className="w-full max-w-full rounded-none"
         >
-          <div className="grid min-w-[680px] grid-cols-[minmax(190px,1.1fr)_minmax(220px,0.85fr)_minmax(210px,1fr)_60px] border-b border-border/70 bg-muted/25 px-4 py-2 text-[11px] font-semibold uppercase tracking-[0.07em] text-muted-foreground">
+          <div className="grid min-w-[680px] grid-cols-[minmax(190px,1.1fr)_minmax(220px,0.85fr)_minmax(210px,1fr)_60px] border-b border-group-divider px-3.5 py-2 text-[11.5px] font-medium text-muted-foreground">
             <div>Command</div>
             <div>Keybinding</div>
             <div>When</div>
             <div>Status</div>
           </div>
-          <div className="min-w-[680px] divide-y divide-border/60">
+          <div className="min-w-[680px] divide-y divide-group-divider">
             {isAddingBinding ? (
               <NewKeybindingTableRow
                 commandOptions={commandOptions}

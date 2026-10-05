@@ -34,12 +34,13 @@ import {
 } from "../../rpc/requestLatencyPresentation";
 import { useSlowRpcAckRequests } from "../../rpc/requestLatencyState";
 import { Button } from "../ui/button";
+import { SegmentedControl, SegmentedControlItem } from "../ui/segmented-control";
 import { InfoPopover } from "../ui/info-popover";
 import { ScrollArea } from "../ui/scroll-area";
 import { Skeleton } from "../ui/skeleton";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { toastManager } from "../ui/toast";
-import { SettingsPageContainer, SettingsSection } from "./settingsLayout";
+import { SettingsPageContainer, SettingsPageHeader, SettingsSection } from "./settingsLayout";
 
 const NUMBER_FORMAT = new Intl.NumberFormat();
 
@@ -143,8 +144,8 @@ function StatBlock({
   tone?: "default" | "warning" | "danger";
 }) {
   return (
-    <div className="min-w-0 border-border/60 px-4 py-3 sm:px-5">
-      <div className="flex min-w-0 items-center gap-1.5 text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground/70">
+    <div className="min-w-0 border-group-divider px-4 py-3 sm:px-5">
+      <div className="flex min-w-0 items-center gap-1.5 text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground">
         <span className="min-w-0 truncate">{label}</span>
         {tooltip ? (
           <InfoPopover
@@ -219,11 +220,11 @@ const DIAGNOSTICS_SKELETON_ROW_WIDTHS = [
 function DiagnosticsSectionSkeleton() {
   return (
     <div
-      className="overflow-hidden border-t border-border/60"
+      className="overflow-hidden border-t border-group-divider"
       data-testid="diagnostics-loading-skeleton"
       aria-hidden="true"
     >
-      <div className="grid grid-cols-[minmax(0,2fr)_minmax(0,1fr)_minmax(0,1fr)] gap-4 border-b border-border/50 px-4 py-2.5 sm:px-5">
+      <div className="grid grid-cols-[minmax(0,2fr)_minmax(0,1fr)_minmax(0,1fr)] gap-4 border-b border-group-divider px-4 py-2.5 sm:px-5">
         <Skeleton className="h-2.5 w-20 max-w-full rounded-full" />
         <Skeleton className="h-2.5 w-14 max-w-full rounded-full" />
         <Skeleton className="h-2.5 w-16 max-w-full rounded-full" />
@@ -231,7 +232,7 @@ function DiagnosticsSectionSkeleton() {
       {DIAGNOSTICS_SKELETON_ROW_WIDTHS.map((row) => (
         <div
           key={row.id}
-          className="grid grid-cols-[minmax(0,2fr)_minmax(0,1fr)_minmax(0,1fr)] items-center gap-4 border-b border-border/40 px-4 py-3 last:border-b-0 sm:px-5"
+          className="grid grid-cols-[minmax(0,2fr)_minmax(0,1fr)_minmax(0,1fr)] items-center gap-4 border-b border-group-divider px-4 py-3 last:border-b-0 sm:px-5"
         >
           {row.widths.map((width) => (
             <Skeleton key={width} className={cn("h-3 max-w-full rounded-full", width)} />
@@ -244,7 +245,7 @@ function DiagnosticsSectionSkeleton() {
 
 function DiagnosticsChartSkeleton() {
   return (
-    <div className="border-t border-border/60 px-4 py-3 sm:px-5" aria-hidden="true">
+    <div className="border-t border-group-divider px-4 py-3 sm:px-5" aria-hidden="true">
       <div className="h-28 overflow-hidden rounded-sm bg-muted/10 p-2">
         <Skeleton className="h-full w-full rounded-none opacity-60 [clip-path:polygon(0_82%,9%_68%,18%_76%,27%_42%,36%_65%,45%_54%,54%_72%,63%_34%,72%_58%,81%_24%,90%_50%,100%_18%,100%_100%,0_100%)]" />
       </div>
@@ -317,7 +318,7 @@ function DiagnosticsTable({
             ))}
           </colgroup>
         ) : null}
-        <thead className="border-b border-border/60 text-[11px] uppercase tracking-[0.08em] text-muted-foreground/70">
+        <thead className="border-b border-group-divider text-[11px] uppercase tracking-[0.08em] text-muted-foreground">
           <tr>
             {headers.map((header, index) => (
               <th
@@ -408,7 +409,7 @@ function PendingRequestsSection() {
   const summary = requests.length > 0 ? describeSlowRpcAckToast(requests) : null;
 
   return (
-    <SettingsSection title="Slow Requests">
+    <SettingsSection title="Slow requests">
       <StatsGrid>
         <StatBlock
           label="Waiting"
@@ -429,7 +430,7 @@ function PendingRequestsSection() {
         />
       </StatsGrid>
       {summary ? (
-        <div className="flex items-start gap-2 border-t border-border/60 px-4 py-3 text-xs text-muted-foreground sm:px-5">
+        <div className="flex items-start gap-2 border-t border-group-divider px-4 py-3 text-xs text-muted-foreground sm:px-5">
           <AlertTriangleIcon className="mt-0.5 size-3.5 shrink-0 text-amber-600 dark:text-amber-400" />
           <span>{summary}</span>
         </div>
@@ -472,7 +473,7 @@ function PendingRequestsSection() {
 
 function TraceSpanCategoryBadge({ name }: { name: string }) {
   return (
-    <span className="inline-flex shrink-0 rounded-sm border border-border/60 bg-muted/30 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-[0.08em] text-muted-foreground">
+    <span className="inline-flex shrink-0 rounded-sm border border-group-divider bg-muted/30 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-[0.08em] text-muted-foreground">
       {traceSpanCategory(name)}
     </span>
   );
@@ -656,7 +657,7 @@ function ProcessDiagnosticsTable({
       chainVerticalScroll
       scrollFade
       hideScrollbars
-      className="max-h-[min(64vh,44rem)] w-full max-w-full rounded-none border-t border-border/60"
+      className="max-h-[min(64vh,44rem)] w-full max-w-full rounded-none border-t border-group-divider"
     >
       <table className="w-full min-w-[1040px] table-fixed text-left text-xs">
         <colgroup>
@@ -668,7 +669,7 @@ function ProcessDiagnosticsTable({
           <col className="w-[11%]" />
           <col className="w-[6%]" />
         </colgroup>
-        <thead className="sticky top-0 z-10 border-b border-border/60 bg-card text-[11px] uppercase tracking-[0.08em] text-muted-foreground/70">
+        <thead className="sticky top-0 z-10 border-b border-group-divider bg-rail text-[11px] uppercase tracking-[0.08em] text-muted-foreground">
           <tr>
             <th className="px-4 py-2 font-semibold sm:pl-5">Name</th>
             <th className="px-3 py-2 text-right font-semibold">CPU</th>
@@ -804,7 +805,7 @@ function ProcessResourceHistoryChart({
   const maxCpuPercent = Math.max(1, ...buckets.map((bucket) => bucket.maxCpuPercent));
 
   return (
-    <div className="border-t border-border/60 px-4 py-3 sm:px-5">
+    <div className="border-t border-group-divider px-4 py-3 sm:px-5">
       <div className="flex h-28 items-end gap-1 overflow-hidden rounded-sm bg-muted/10 p-2">
         {buckets.map((bucket) => {
           const peakHeight = Math.max(2, (bucket.maxCpuPercent / maxCpuPercent) * 100);
@@ -849,21 +850,18 @@ function ResourceHistoryWindowSelector({
   onSelect: (windowMs: number) => void;
 }) {
   return (
-    <div className="flex items-center rounded-md border border-border/60 p-0.5">
+    <SegmentedControl
+      size="sm"
+      value={String(selectedWindowMs)}
+      onValueChange={(value) => onSelect(Number(value))}
+      aria-label="History window"
+    >
       {RESOURCE_HISTORY_WINDOWS.map((option) => (
-        <button
-          key={option.windowMs}
-          type="button"
-          className={cn(
-            "h-6 rounded-sm px-2 text-[11px] font-medium text-muted-foreground hover:text-foreground",
-            selectedWindowMs === option.windowMs && "bg-muted text-foreground",
-          )}
-          onClick={() => onSelect(option.windowMs)}
-        >
+        <SegmentedControlItem key={option.windowMs} value={String(option.windowMs)}>
           {option.label}
-        </button>
+        </SegmentedControlItem>
       ))}
-    </div>
+    </SegmentedControl>
   );
 }
 
@@ -884,7 +882,7 @@ function ProcessResourceHistoryTable({
       chainVerticalScroll
       scrollFade
       hideScrollbars
-      className="max-h-[min(64vh,44rem)] w-full max-w-full border-t border-border/60"
+      className="max-h-[min(64vh,44rem)] w-full max-w-full border-t border-group-divider"
     >
       <table className="w-full min-w-[980px] table-fixed text-left text-xs">
         <colgroup>
@@ -897,7 +895,7 @@ function ProcessResourceHistoryTable({
           <col className="w-[16%]" />
           <col className="w-[10%]" />
         </colgroup>
-        <thead className="sticky top-0 z-10 border-b border-border/60 bg-card text-[11px] uppercase tracking-[0.08em] text-muted-foreground/70">
+        <thead className="sticky top-0 z-10 border-b border-group-divider bg-rail text-[11px] uppercase tracking-[0.08em] text-muted-foreground">
           <tr>
             <th className="px-4 py-2 font-semibold sm:pl-5">Process</th>
             <th className="px-3 py-2 text-right font-semibold">CPU Time</th>
@@ -977,7 +975,7 @@ function DiagnosticsLastChecked({ checkedAt }: { checkedAt: DateTime.Utc | null 
   }
 
   return (
-    <span className="text-[11px] text-muted-foreground/60">
+    <span className="text-[11px] text-muted-foreground">
       {relative.suffix ? (
         <>
           Checked <span className="font-mono tabular-nums">{relative.value}</span> {relative.suffix}
@@ -1135,13 +1133,17 @@ export function DiagnosticsSettingsPanel() {
 
   return (
     <SettingsPageContainer>
+      <SettingsPageHeader
+        title="Diagnostics"
+        description="What Threadlines is running and how long things take, for troubleshooting."
+      />
       {isProcessInitialLoading || isResourceInitialLoading || isInitialLoading ? (
         <span className="sr-only" role="status">
           Loading diagnostics
         </span>
       ) : null}
       <SettingsSection
-        title="Live Processes"
+        title="Live processes"
         headerAction={
           <div className="flex items-center gap-1.5">
             <DiagnosticsLastChecked checkedAt={processData?.readAt ?? null} />
@@ -1178,7 +1180,7 @@ export function DiagnosticsSettingsPanel() {
           </StatsGrid>
         )}
         {processDiagnosticsError || processError ? (
-          <div className="space-y-2 border-t border-border/60 px-4 py-3 text-xs text-muted-foreground sm:px-5">
+          <div className="space-y-2 border-t border-group-divider px-4 py-3 text-xs text-muted-foreground sm:px-5">
             {processDiagnosticsError ? (
               <div className="flex items-start gap-2 text-destructive">
                 <AlertTriangleIcon className="mt-0.5 size-3.5 shrink-0" />
@@ -1206,7 +1208,7 @@ export function DiagnosticsSettingsPanel() {
       </SettingsSection>
 
       <SettingsSection
-        title="Resource History"
+        title="Resource history"
         headerAction={
           <div className="flex items-center gap-1.5">
             <ResourceHistoryWindowSelector
@@ -1247,7 +1249,7 @@ export function DiagnosticsSettingsPanel() {
           </StatsGrid>
         )}
         {processResourceError || resourceError ? (
-          <div className="space-y-2 border-t border-border/60 px-4 py-3 text-xs text-muted-foreground sm:px-5">
+          <div className="space-y-2 border-t border-group-divider px-4 py-3 text-xs text-muted-foreground sm:px-5">
             {processResourceError ? (
               <div className="flex items-start gap-2 text-destructive">
                 <AlertTriangleIcon className="mt-0.5 size-3.5 shrink-0" />
@@ -1281,7 +1283,7 @@ export function DiagnosticsSettingsPanel() {
       <PendingRequestsSection />
 
       <SettingsSection
-        title="Trace Diagnostics"
+        title="Trace diagnostics"
         headerAction={
           <div className="flex items-center gap-1.5">
             <DiagnosticsLastChecked checkedAt={data?.readAt ?? null} />
@@ -1343,7 +1345,7 @@ export function DiagnosticsSettingsPanel() {
           </StatsGrid>
         )}
         {openLogsDirectoryError || traceDiagnosticsError || error ? (
-          <div className="space-y-2 border-t border-border/60 px-4 py-3 text-xs text-muted-foreground sm:px-5">
+          <div className="space-y-2 border-t border-group-divider px-4 py-3 text-xs text-muted-foreground sm:px-5">
             {openLogsDirectoryError ? (
               <div className="flex items-start gap-2 text-destructive">
                 <AlertTriangleIcon className="mt-0.5 size-3.5 shrink-0" />
@@ -1377,7 +1379,7 @@ export function DiagnosticsSettingsPanel() {
         ) : null}
       </SettingsSection>
 
-      <SettingsSection title="Latest Failures">
+      <SettingsSection title="Latest failures">
         {data && data.latestFailures.length > 0 ? (
           <DiagnosticsTable headers={["Span", "Cause", "Duration", "Ended"]}>
             {data.latestFailures.map((failure) => (
@@ -1404,7 +1406,7 @@ export function DiagnosticsSettingsPanel() {
         )}
       </SettingsSection>
 
-      <SettingsSection title="Most Common Failures">
+      <SettingsSection title="Most common failures">
         {data && data.commonFailures.length > 0 ? (
           <DiagnosticsTable
             headers={["Span", "Count", "Cause", "Last Seen"]}
@@ -1436,7 +1438,7 @@ export function DiagnosticsSettingsPanel() {
         )}
       </SettingsSection>
 
-      <SettingsSection title="Slow Span Groups">
+      <SettingsSection title="Slow span groups">
         {data && slowSpansByName.length > 0 ? (
           <DiagnosticsTable
             headers={["Span", "Category", "Count", "Average", "Max", "Total"]}
@@ -1475,7 +1477,7 @@ export function DiagnosticsSettingsPanel() {
         )}
       </SettingsSection>
 
-      <SettingsSection title="Slow Traces">
+      <SettingsSection title="Slow traces">
         {data && slowTraces.length > 0 ? (
           <DiagnosticsTable
             headers={["Trace", "Slow Spans", "Spans", "Total", "Max", "Last Seen"]}
@@ -1514,7 +1516,7 @@ export function DiagnosticsSettingsPanel() {
         )}
       </SettingsSection>
 
-      <SettingsSection title="Slowest Spans">
+      <SettingsSection title="Slowest spans">
         {data && data.slowestSpans.length > 0 ? (
           <DiagnosticsTable
             headers={["Span", "Duration", "Ended", "Trace"]}
@@ -1545,7 +1547,7 @@ export function DiagnosticsSettingsPanel() {
         )}
       </SettingsSection>
 
-      <SettingsSection title="Longest Subscriptions">
+      <SettingsSection title="Longest subscriptions">
         {data && longestSubscriptionSpans.length > 0 ? (
           <DiagnosticsTable
             headers={["Span", "Duration", "Ended", "Trace"]}
@@ -1582,7 +1584,7 @@ export function DiagnosticsSettingsPanel() {
         )}
       </SettingsSection>
 
-      <SettingsSection title="Span Logs">
+      <SettingsSection title="Span logs">
         {data && data.latestWarningAndErrorLogs.length > 0 ? (
           <ScrollArea
             chainVerticalScroll
@@ -1598,7 +1600,7 @@ export function DiagnosticsSettingsPanel() {
                 <col className="w-[26%]" />
                 <col className="w-[30%]" />
               </colgroup>
-              <thead className="border-b border-border/60 text-[11px] uppercase tracking-[0.08em] text-muted-foreground/70">
+              <thead className="border-b border-group-divider text-[11px] uppercase tracking-[0.08em] text-muted-foreground">
                 <tr>
                   <th className="whitespace-nowrap px-4 py-2.5 font-semibold sm:pl-5">Time</th>
                   <th className="whitespace-nowrap px-4 py-2.5 font-semibold">Level</th>
@@ -1648,7 +1650,7 @@ export function DiagnosticsSettingsPanel() {
         )}
       </SettingsSection>
 
-      <SettingsSection title="Top Span Names">
+      <SettingsSection title="Top span names">
         {data && data.topSpansByCount.length > 0 ? (
           <DiagnosticsTable
             headers={["Span", "Category", "Count", "Failures", "Average", "Max"]}

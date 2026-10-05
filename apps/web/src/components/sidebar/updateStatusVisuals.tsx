@@ -17,7 +17,8 @@ export type UpdateStatusTone = "neutral" | "progress" | "success" | "warning" | 
  * rail) so a finished update doesn't flood the footer with green.
  */
 export const UPDATE_STATUS_SURFACE_STYLES: Record<Exclude<UpdateStatusTone, "neutral">, string> = {
-  progress: "border-primary/25 bg-sidebar-accent/55 shadow-[0_1px_0_rgb(255_255_255_/_0.04)_inset]",
+  progress:
+    "border-brand-navy/25 bg-sidebar-accent/55 shadow-[0_1px_0_rgb(255_255_255_/_0.04)_inset]",
   success: "border-success/25 bg-sidebar-accent/50 shadow-[0_1px_0_rgb(255_255_255_/_0.04)_inset]",
   warning: "border-warning/28 bg-sidebar-accent/50 shadow-[0_1px_0_rgb(255_255_255_/_0.04)_inset]",
   error:
@@ -36,7 +37,7 @@ export const UPDATE_STATUS_TEXT_STYLES: Record<UpdateStatusTone, string> = {
 // source on an updater card, so a busy corner never strobes.
 export const UPDATE_STATUS_DOT_STYLES: Record<UpdateStatusTone, string> = {
   neutral: "bg-muted-foreground/45",
-  progress: "bg-primary-readable ring-2 ring-primary/15",
+  progress: "bg-primary-readable ring-2 ring-brand-navy/15",
   success: "bg-success",
   warning: "bg-warning",
   error: "bg-destructive",
@@ -44,7 +45,7 @@ export const UPDATE_STATUS_DOT_STYLES: Record<UpdateStatusTone, string> = {
 
 const UPDATE_STATUS_BADGE_STYLES: Record<UpdateStatusTone, string> = {
   neutral: "border-muted-foreground/20 bg-muted-foreground/8 text-muted-foreground",
-  progress: "border-primary/18 bg-primary/8 text-primary-readable",
+  progress: "border-brand-navy/18 bg-brand-navy/8 text-primary-readable",
   success: "border-success/20 bg-success/8 text-success",
   warning: "border-warning/24 bg-warning/8 text-warning",
   error: "border-destructive/24 bg-destructive/8 text-destructive",

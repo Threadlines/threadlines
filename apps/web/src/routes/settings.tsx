@@ -35,7 +35,8 @@ function RestoreDefaultsButton({ onRestored }: { onRestored: () => void }) {
   return (
     <Button
       size="xs"
-      variant="outline"
+      variant="ghost"
+      className="text-muted-foreground hover:text-foreground"
       disabled={changedSettingLabels.length === 0}
       onClick={() => void restoreDefaults()}
     >

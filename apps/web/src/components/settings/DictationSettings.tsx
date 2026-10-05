@@ -80,7 +80,7 @@ export function DictationSettings() {
             return (
               <div
                 key={modelId}
-                className="flex flex-col gap-2 border-border/30 border-t py-2.5 ps-3 first:border-t-0 sm:flex-row sm:items-start sm:justify-between sm:gap-4 sm:ps-4"
+                className="flex flex-col gap-2 border-group-divider border-t py-2.5 first:border-t-0 sm:flex-row sm:items-start sm:justify-between sm:gap-4"
               >
                 <div className="flex min-w-0 flex-1 items-start gap-2">
                   <Radio
@@ -98,7 +98,9 @@ export function DictationSettings() {
                         {presentation.meta}
                       </span>
                     </div>
-                    <p className="text-muted-foreground/80 text-xs">{presentation.description}</p>
+                    <p className="text-[12.5px] text-muted-foreground">
+                      {presentation.description}
+                    </p>
                     {modelStatus?.error ? (
                       <p className="text-[12px] text-destructive-foreground">{modelStatus.error}</p>
                     ) : null}
@@ -119,7 +121,7 @@ export function DictationSettings() {
                       </span>
                       <Button
                         size="xs"
-                        variant="ghost"
+                        variant="outline"
                         onClick={() =>
                           runDictationCommand((api) =>
                             api.dictation.cancelDownload({ model: modelId }),
@@ -136,7 +138,7 @@ export function DictationSettings() {
                       </span>
                       <Button
                         size="xs"
-                        variant="ghost"
+                        variant="outline"
                         onClick={() =>
                           runDictationCommand((api) =>
                             api.dictation.removeModel({ model: modelId }),
@@ -149,7 +151,7 @@ export function DictationSettings() {
                   ) : (
                     <Button
                       size="xs"
-                      variant="ghost"
+                      variant="outline"
                       disabled={statusUnknown}
                       onClick={() =>
                         runDictationCommand((api) =>

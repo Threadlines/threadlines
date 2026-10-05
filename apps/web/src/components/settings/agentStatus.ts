@@ -148,9 +148,10 @@ export function agentDetectionLabel(
 }
 
 /**
- * The one button a turned-off agent offers. "Install" turns it on and then
- * installs it; everything else (found, can't tell, never looked) only turns it
- * on, and the full check that follows says what is still missing.
+ * What a turned-off agent's row offers. "install": an Install button, which
+ * turns it on and then installs it. "turnOn" (found, can't tell, never looked):
+ * the row's switch, which only turns it on; the full check that follows says
+ * what is still missing.
  */
 export function offAgentAction(detection: ServerProviderDetection | null): "install" | "turnOn" {
   return detection?.status === "notFound" ? "install" : "turnOn";

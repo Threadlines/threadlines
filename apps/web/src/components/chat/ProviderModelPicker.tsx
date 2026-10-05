@@ -17,6 +17,7 @@ import { codexModelRetirementNotice } from "@threadlines/shared/model";
 import type { VariantProps } from "class-variance-authority";
 import { ChevronDownIcon } from "lucide-react";
 import { Button, buttonVariants } from "../ui/button";
+import { DropdownChevron } from "../ui/select";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { cn } from "~/lib/utils";
@@ -308,7 +309,7 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
               </TooltipTrigger>
               <TooltipPopup side="top">{triggerLabel}</TooltipPopup>
             </Tooltip>
-            <ChevronDownIcon aria-hidden="true" className="size-3 shrink-0 opacity-60" />
+            <DropdownChevron solid={props.triggerVariant === "outline"} />
           </span>
         )}
       </PopoverTrigger>
