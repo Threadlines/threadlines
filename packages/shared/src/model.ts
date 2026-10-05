@@ -296,6 +296,59 @@ export function getProviderOptionCurrentLabel(
   return descriptor.options.find((option) => option.id === currentValue)?.label;
 }
 
+/** The option each provider keeps its reasoning level in. */
+const REASONING_OPTION_IDS: ReadonlySet<string> = new Set([
+  "reasoningEffort",
+  "effort",
+  "reasoning",
+]);
+
+/**
+ * A model's reasoning setting among its options: Codex calls it
+ * `reasoningEffort`, Claude `effort`. Undefined for a model without one.
+ */
+export function findReasoningOptionDescriptor(
+  descriptors: ReadonlyArray<ProviderOptionDescriptor>,
+): Extract<ProviderOptionDescriptor, { type: "select" }> | undefined {
+  return descriptors.find(
+    (descriptor): descriptor is Extract<ProviderOptionDescriptor, { type: "select" }> =>
+      descriptor.type === "select" && REASONING_OPTION_IDS.has(descriptor.id),
+  );
+}
+
+/**
+ * Whether a model still offers the reasoning level a selection names. True
+ * for a selection that names none: its provider picks.
+ */
+export function offersSelectedReasoning(
+  caps: ModelCapabilities | null | undefined,
+  selections: ReadonlyArray<ProviderOptionSelection> | null | undefined,
+): boolean {
+  const chosen = selections?.find((selection) => REASONING_OPTION_IDS.has(selection.id));
+  if (chosen === undefined) {
+    return true;
+  }
+  const descriptor = findReasoningOptionDescriptor(caps?.optionDescriptors ?? []);
+  return (
+    descriptor !== undefined &&
+    descriptor.id === chosen.id &&
+    descriptor.options.some((option) => option.id === chosen.value)
+  );
+}
+
+/** Whether two option lists pick the same values, in any order. */
+export function sameProviderOptionSelections(
+  left: ReadonlyArray<ProviderOptionSelection> | null | undefined,
+  right: ReadonlyArray<ProviderOptionSelection> | null | undefined,
+): boolean {
+  const a = left ?? [];
+  const b = right ?? [];
+  return (
+    a.length === b.length &&
+    a.every((selection) => getRawSelectionValueById(b, selection.id) === selection.value)
+  );
+}
+
 export function buildProviderOptionSelectionsFromDescriptors(
   descriptors: ReadonlyArray<ProviderOptionDescriptor> | null | undefined,
 ): Array<ProviderOptionSelection> | undefined {

@@ -1401,6 +1401,38 @@ describe("decider rooms", () => {
         expect(Exit.isFailure(await decide(revert, model))).toBe(true);
       });
 
+      it("invites an earlier guest again at the reasoning the new invite names", async () => {
+        const astra = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6-astra" };
+        const model = readModel({
+          participants: [
+            {
+              id: guestId,
+              handle: "GPT-6 Astra",
+              modelSelection: astra,
+              joinedAt: now,
+              leftAt: now,
+              guest: true,
+            },
+          ],
+          session: working(),
+        });
+        const atExtraHigh = { ...astra, options: [{ id: "reasoningEffort", value: "xhigh" }] };
+        const events = await decideEvents(
+          invite({
+            guest: { handle: "GPT-6 Astra", modelSelection: atExtraHigh },
+            autoChoice: "review",
+          }),
+          model,
+        );
+        // The review runs at the new level, and the guest keeps it.
+        expect(
+          events.find((event) => event.type === "thread.side-turn-started")?.payload,
+        ).toMatchObject({ modelSelection: atExtraHigh });
+        expect(threadOf(await apply(model, events)).participants).toMatchObject([
+          { id: guestId, guest: true, modelSelection: atExtraHigh },
+        ]);
+      });
+
       it("hears no more invites after not now, until the user writes", async () => {
         let model = plainThread();
         const ask = invite();

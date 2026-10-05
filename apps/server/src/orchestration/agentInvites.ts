@@ -5,8 +5,9 @@
  *
  * The decider rules on the thread (the invite is still waiting, Stop, voice,
  * a side answer running). What it cannot see lives here: the setting, and
- * whether the invited agent's provider is still signed in and paid for the
- * way the user was shown when the agent asked.
+ * whether the invited agent's provider is still signed in, paid for the way
+ * the user was shown when the agent asked, and offering the reasoning level
+ * the invite named.
  */
 import {
   type AgentInvitesMode,
@@ -17,6 +18,7 @@ import {
   type RoomAgentRequestId,
   type ServerProvider,
 } from "@threadlines/contracts";
+import { offersSelectedReasoning } from "@threadlines/shared/model";
 
 /**
  * Drivers an agent can invite: only Codex and Claude run the locked-down
@@ -97,8 +99,12 @@ export function inviteAnswerRefusal(input: {
   if (provider === undefined || !isInvitableProvider(provider)) {
     return `${guest.handle} is not available right now: its provider is off or signed out.`;
   }
-  if (!provider.models.some((model) => model.slug === guest.modelSelection.model)) {
+  const model = provider.models.find((entry) => entry.slug === guest.modelSelection.model);
+  if (model === undefined) {
     return `${guest.handle} is no longer offered by its provider.`;
+  }
+  if (!offersSelectedReasoning(model.capabilities, guest.modelSelection.options)) {
+    return `${guest.handle} no longer offers the reasoning level the agent asked for. Ask it to invite again.`;
   }
   const now = inviteBilling(provider);
   if (now.label !== shown.label || now.perUse !== shown.perUse) {

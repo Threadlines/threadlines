@@ -33,6 +33,7 @@ import {
 } from "@threadlines/shared/threadParticipants";
 import { awaitingInvite } from "@threadlines/shared/roomAgentRequests";
 import {
+  findReasoningOptionDescriptor,
   getProviderOptionCurrentLabel,
   getProviderOptionDescriptors,
 } from "@threadlines/shared/model";
@@ -453,13 +454,6 @@ export function buildOwnAgentLabels(
   return { byTurn, unrecorded: byTurn.values().next().value ?? latest, latest };
 }
 
-/** The option each provider keeps its reasoning level in. */
-const REASONING_OPTION_IDS: ReadonlySet<string> = new Set([
-  "reasoningEffort",
-  "effort",
-  "reasoning",
-]);
-
 /**
  * A model's reasoning level as the model picker names it ("High"), from the
  * selection's own choice or the model's default. Null when the model has no
@@ -470,8 +464,8 @@ export function roomReasoningLabel(
   entry: ProviderInstanceEntry,
 ): string | null {
   const caps = getProviderModelCapabilities(entry.models, selection.model, entry.driverKind);
-  const descriptor = getProviderOptionDescriptors({ caps, selections: selection.options }).find(
-    (candidate) => candidate.type === "select" && REASONING_OPTION_IDS.has(candidate.id),
+  const descriptor = findReasoningOptionDescriptor(
+    getProviderOptionDescriptors({ caps, selections: selection.options }),
   );
   return getProviderOptionCurrentLabel(descriptor) ?? null;
 }
@@ -724,6 +718,8 @@ export interface PendingRoomInvite {
   readonly requestId: RoomAgentRequestId;
   readonly fromName: string;
   readonly toName: string;
+  /** How hard the invited agent will reason ("Extra High"), when its model says. */
+  readonly toReasoning: string | null;
   readonly reason: string;
   /** What the invited agent will be asked. */
   readonly requestText: string;
@@ -755,6 +751,7 @@ export function pendingRoomInvite(
     requestId: request.requestId,
     fromName: nameOf(request.from.participantId),
     toName: nameOf(request.to.participantId),
+    toReasoning: labels?.get(roomAgentKey(request.to.participantId))?.reasoning ?? null,
     reason: message.invite.reason,
     requestText: message.text,
     billing: message.invite.billing,
