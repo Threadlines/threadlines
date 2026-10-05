@@ -243,6 +243,9 @@ export function sideExchangeRows(plan: SideExchangePlan): {
             isLive: live,
             liveStartedAt: live ? view.question.createdAt : null,
             inActiveExchange: live,
+            // Its steps stay the stretch it is on for as long as it answers:
+            // the answer is one message that takes its notes as it goes, so
+            // steps keep landing after the writing starts.
             folded: !live,
             padTop,
           },

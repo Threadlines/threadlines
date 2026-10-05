@@ -387,6 +387,77 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain("Deleted .scratch-5");
   });
 
+  it("shows looking around as it happens in the stretch the agent is on", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const markup = renderTimeline(
+      <MessagesTimeline
+        {...buildProps()}
+        {...OPEN_STRETCH}
+        timelineEntries={Array.from({ length: 6 }, (_, index) => ({
+          id: `entry-${index}`,
+          kind: "work" as const,
+          createdAt: `2026-03-17T19:12:2${index}.000Z`,
+          entry: {
+            id: `work-${index}`,
+            createdAt: `2026-03-17T19:12:2${index}.000Z`,
+            label: "Ran command",
+            tone: "tool" as const,
+            requestKind: "command" as const,
+            executionState: "completed" as const,
+            command: `cat src/file-${index}.ts`,
+          },
+        }))}
+      />,
+    );
+
+    // The newest four reads each take a line; the two before them are the
+    // sentence above.
+    expect(markup.match(/data-activity-line="true"/gu)).toHaveLength(4);
+    expect(markup).toContain("Read file-5.ts");
+    expect(markup).toContain("Read 2 files");
+    expect(markup).not.toContain("Read file-1.ts");
+  });
+
+  it("shows a file edited again as the newest step of the stretch the agent is on", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const edit = {
+      label: "File change",
+      itemType: "file_change" as const,
+      changedFiles: ["src/a.ts"],
+    };
+    const read = (name: string) => ({
+      label: "Ran command",
+      requestKind: "command" as const,
+      command: `cat src/${name}.ts`,
+    });
+    const markup = renderTimeline(
+      <MessagesTimeline
+        {...buildProps()}
+        {...OPEN_STRETCH}
+        timelineEntries={[edit, read("b"), read("c"), read("d"), read("e"), edit].map(
+          (step, index) => ({
+            id: `entry-${index}`,
+            kind: "work" as const,
+            createdAt: `2026-03-17T19:12:2${index}.000Z`,
+            entry: {
+              id: `work-${index}`,
+              createdAt: `2026-03-17T19:12:2${index}.000Z`,
+              tone: "tool" as const,
+              executionState: "completed" as const,
+              ...step,
+            },
+          }),
+        )}
+      />,
+    );
+
+    // The two edits are one step, placed where the file was last edited:
+    // after the reads, not folded away above them.
+    expect(markup.match(/Edited a\.ts/gu)).toHaveLength(1);
+    expect(markup.indexOf("Edited a.ts")).toBeGreaterThan(markup.indexOf("Read e.ts"));
+    expect(markup.match(/data-activity-line="true"/gu)).toHaveLength(4);
+  });
+
   it("folds a finished stretch into one line that says what it did", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
     const markup = renderTimeline(
@@ -731,7 +802,7 @@ describe("MessagesTimeline", () => {
     expect(markup).not.toContain('data-agent-response-body="true"');
   });
 
-  it("names the running step on the working line while settled steps sum up above it", async () => {
+  it("names the running step on the working line while the steps before it show above", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
     const markup = renderTimeline(
       <MessagesTimeline
@@ -776,7 +847,10 @@ describe("MessagesTimeline", () => {
       />,
     );
 
-    expect(markup).toContain("Read session-logic.ts, searched once, and checked git");
+    // The agent is still on this stretch, so each finished step has its line.
+    expect(markup.match(/data-activity-line="true"/gu)).toHaveLength(4);
+    expect(markup).toContain("Searched for isWorking");
+    expect(markup).toContain("Read session-logic.ts");
     expect(markup).not.toContain("git status --short");
     expect(markup).not.toContain("rg -n");
     // The running typecheck lives on the working line, not in the group, so it

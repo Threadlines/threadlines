@@ -26,6 +26,7 @@ import {
   isSilentWorkLogEntry,
   liveActivityLabel,
   liveThoughtText,
+  OPEN_TAIL_LINES,
 } from "./activitySteps";
 import {
   breaksWithin,
@@ -656,32 +657,43 @@ export function stretchDurationMs(entries: ReadonlyArray<WorkLogEntry>): number 
 }
 
 /**
- * Folds each stretch of work the agent has moved on from: it wrote again after
- * the stretch, or the stretch's exchange is over. The stretch it is still on
- * stays open. The last stretch of a turn folds when the answer starts, so the
- * turn ending folds nothing above the answer.
+ * Folds each stretch of work its agent has moved on from: it wrote again after
+ * the stretch (a note, or in a room the hand-off that ends its turn), newer
+ * steps landed past whatever split them from the stretch (a finished agent's
+ * receipt, a side question, another agent's reply), or the stretch's exchange
+ * is over. The one stretch the working agent is still on stays open. The last
+ * stretch of a turn folds when the answer starts, so the turn ending folds
+ * nothing above the answer.
  */
 function foldFinishedStretches(
   rows: ReadonlyArray<MessagesTimelineRow>,
   isWorking: boolean,
 ): MessagesTimelineRow[] {
   const folded = [...rows];
-  let agentWroteAfter = false;
+  let agentMovedOn = false;
   for (let index = rows.length - 1; index >= 0; index -= 1) {
     const row = rows[index]!;
-    // Walking back from the end: the agent's words fold what came before them
-    // in that exchange; your message starts an earlier exchange.
+    // Walking back from the end: the agent's own words (a note, an answer, a
+    // hand-off) and newer steps fold what came before them in that exchange;
+    // your message starts an earlier exchange. Any other message between
+    // agents (an invite, a reply that arrives while it works) leaves the
+    // working agent on its stretch.
     if (row.kind === "message") {
-      if (row.message.role === "assistant") agentWroteAfter = true;
-      else if (startsExchange(row.message)) agentWroteAfter = false;
+      if (startsExchange(row.message)) agentMovedOn = false;
+      else if (row.message.role === "assistant" || row.message.requestKind === "hand_off") {
+        agentMovedOn = true;
+      }
       continue;
     }
     if (row.kind !== "work") {
       continue;
     }
-    const fold = agentWroteAfter || !(isWorking && row.inActiveExchange);
+    const fold = agentMovedOn || !(isWorking && row.inActiveExchange);
     if (row.folded !== fold) {
       folded[index] = { ...row, folded: fold };
+    }
+    if (row.groupedEntries.some((entry) => !isSilentWorkLogEntry(entry))) {
+      agentMovedOn = true;
     }
   }
   return folded;
@@ -1940,18 +1952,29 @@ function estimateRowContentHeight(row: MessagesTimelineRow, width: number): numb
       return 0;
     }
     case "work": {
-      // A running step shows on the working row, not here, and the looking
-      // around folds into one line, so a group rarely shows more than three.
-      // A folded stretch is one line.
-      let settledSteps = 0;
+      // A running step shows on the working row, not here. A folded stretch
+      // is one line. The one the agent is on shows its newest steps, each on a
+      // line, under one line for whatever came before them; a finished thought
+      // never takes a line of its own.
+      let steps = 0;
+      let thoughts = 0;
       for (const entry of row.groupedEntries) {
-        if (entry.executionState !== "running" && !isSilentWorkLogEntry(entry)) {
-          settledSteps += 1;
+        if (entry.executionState === "running" || isSilentWorkLogEntry(entry)) {
+          continue;
+        }
+        if (entry.tone === "thinking") {
+          thoughts += 1;
+        } else {
+          steps += 1;
         }
       }
-      return settledSteps === 0
-        ? 0
-        : 10 + STEP_LINE_PX * (row.folded ? 1 : Math.min(settledSteps, 3));
+      if (steps + thoughts === 0) {
+        return 0;
+      }
+      const lines = row.folded
+        ? 1
+        : Math.min(steps, OPEN_TAIL_LINES) + (steps > OPEN_TAIL_LINES || thoughts > 0 ? 1 : 0);
+      return 10 + STEP_LINE_PX * lines;
     }
     case "working":
       return row.thought ? 46 : 30;
