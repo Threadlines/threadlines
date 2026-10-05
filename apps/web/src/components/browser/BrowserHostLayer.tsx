@@ -17,7 +17,7 @@ import {
   type LiveThreadBrowser as LiveThreadBrowserRecord,
 } from "../../browserLiveStore";
 import { useComposerDraftStore } from "../../composerDraftStore";
-import { ensureEnvironmentApi } from "../../environmentApi";
+import { readEnvironmentApi, useEnvironmentApiAvailable } from "../../environmentApi";
 import { usePrimaryEnvironmentDescriptor } from "../../environments/primary";
 import { useSavedEnvironmentRuntimeStore } from "../../environments/runtime/catalog";
 import { useSettings } from "../../hooks/useSettings";
@@ -84,8 +84,11 @@ const hostByEnvironment = new Map<string, { hostId: string; clientHosts: boolean
 export function claimThreadBrowser(threadRef: ScopedThreadRef): void {
   const host = hostByEnvironment.get(threadRef.environmentId);
   if (host === undefined || !host.clientHosts) return;
-  void ensureEnvironmentApi(threadRef.environmentId)
-    .previewAutomation.claim({ hostId: host.hostId, threadId: threadRef.threadId })
+  // A connection being rebuilt is gone a moment before its host entry is.
+  // Skipping loses nothing: the host that replaces this one claims the thread
+  // on screen as it connects.
+  void readEnvironmentApi(threadRef.environmentId)
+    ?.previewAutomation.claim({ hostId: host.hostId, threadId: threadRef.threadId })
     .catch(() => undefined);
 }
 
@@ -128,70 +131,79 @@ function useConnectedEnvironments(): ReadonlyArray<ConnectedEnvironment> {
   }, [primary, saved]);
 }
 
-/** One browser connection per connected environment, kept for as long as it is connected. */
-function useEnvironmentBrowserHosts(): void {
-  // The connections are keyed on what they are, not on the array: a re-render
-  // listing the same environments must not tear them down and back up.
-  const signature = JSON.stringify(useConnectedEnvironments());
+/**
+ * This client's browser connection to one environment, held while the
+ * environment can take calls. Each environment has its own, so one computer
+ * dropping or coming back leaves the requests of the others alone.
+ */
+function EnvironmentBrowserHost({
+  environmentId,
+  machineLocal,
+  clientHosts,
+}: ConnectedEnvironment) {
+  // Connected is not yet callable: a saved computer reads as connected from
+  // the moment its socket opens, before its connection is registered.
+  const callable = useEnvironmentApiAvailable(environmentId);
   useEffect(() => {
-    const environments = JSON.parse(signature) as ReadonlyArray<ConnectedEnvironment>;
-    const disconnects = environments.map((environment) => {
-      const connection = connectEnvironmentBrowserHost({
-        environmentId: environment.environmentId,
-        machineLocal: environment.machineLocal,
-        clientHosts: environment.clientHosts,
-        resolveTarget: resolveThreadBrowserTarget,
-        prepare: prepareThreadBrowser,
-        onReconnect: () => {
+    // Read again rather than trusted from the render: the connection can go in
+    // between, and the change that took it brings this effect round again.
+    if (!callable || readEnvironmentApi(environmentId) === undefined) return;
+    const connection = connectEnvironmentBrowserHost({
+      environmentId,
+      machineLocal,
+      clientHosts,
+      resolveTarget: resolveThreadBrowserTarget,
+      prepare: prepareThreadBrowser,
+      onReconnect: () => {
+        const shown = useBrowserLiveStore.getState().shownThreadKey;
+        const live =
+          shown === null ? undefined : useBrowserLiveStore.getState().liveByThreadKey[shown];
+        if (live !== undefined && live.threadRef.environmentId === environmentId) {
+          claimThreadBrowser(live.threadRef);
+        }
+      },
+      onRelease: (threadRef) => {
+        // Another client has this thread's browser now. Pages on screen here
+        // stay: the user is looking at them, and opening the thread here
+        // claims it back.
+        if (useBrowserLiveStore.getState().shownThreadKey !== scopedThreadKey(threadRef)) {
+          closeThreadBrowser(threadRef);
+        }
+      },
+      shownThread: {
+        current: () => {
           const shown = useBrowserLiveStore.getState().shownThreadKey;
           const live =
             shown === null ? undefined : useBrowserLiveStore.getState().liveByThreadKey[shown];
-          if (live !== undefined && live.threadRef.environmentId === environment.environmentId) {
-            claimThreadBrowser(live.threadRef);
-          }
+          return live !== undefined && live.threadRef.environmentId === environmentId
+            ? (live.threadRef.threadId as ThreadId)
+            : null;
         },
-        onRelease: (threadRef) => {
-          // Another client has this thread's browser now. Pages on screen here
-          // stay: the user is looking at them, and opening the thread here
-          // claims it back.
-          if (useBrowserLiveStore.getState().shownThreadKey !== scopedThreadKey(threadRef)) {
-            closeThreadBrowser(threadRef);
-          }
-        },
-        shownThread: {
-          current: () => {
-            const shown = useBrowserLiveStore.getState().shownThreadKey;
-            const live =
-              shown === null ? undefined : useBrowserLiveStore.getState().liveByThreadKey[shown];
-            return live !== undefined && live.threadRef.environmentId === environment.environmentId
-              ? (live.threadRef.threadId as ThreadId)
-              : null;
-          },
-          subscribe: (listener) => useBrowserLiveStore.subscribe(listener),
-        },
-      });
-      hostByEnvironment.set(environment.environmentId, {
-        hostId: connection.hostId,
-        clientHosts: environment.clientHosts,
-      });
-      // A thread already on screen in this environment was opened here.
-      const shown = useBrowserLiveStore.getState().shownThreadKey;
-      const live =
-        shown === null ? undefined : useBrowserLiveStore.getState().liveByThreadKey[shown];
-      if (live !== undefined && live.threadRef.environmentId === environment.environmentId) {
-        claimThreadBrowser(live.threadRef);
-      }
-      return () => {
-        if (hostByEnvironment.get(environment.environmentId)?.hostId === connection.hostId) {
-          hostByEnvironment.delete(environment.environmentId);
-        }
-        connection.disconnect();
-      };
+        subscribe: (listener) => useBrowserLiveStore.subscribe(listener),
+      },
     });
+    hostByEnvironment.set(environmentId, { hostId: connection.hostId, clientHosts });
+    // A thread already on screen in this environment was opened here.
+    const shown = useBrowserLiveStore.getState().shownThreadKey;
+    const live = shown === null ? undefined : useBrowserLiveStore.getState().liveByThreadKey[shown];
+    if (live !== undefined && live.threadRef.environmentId === environmentId) {
+      claimThreadBrowser(live.threadRef);
+    }
     return () => {
-      for (const disconnect of disconnects) disconnect();
+      if (hostByEnvironment.get(environmentId)?.hostId === connection.hostId) {
+        hostByEnvironment.delete(environmentId);
+      }
+      connection.disconnect();
     };
-  }, [signature]);
+  }, [callable, clientHosts, environmentId, machineLocal]);
+  return null;
+}
+
+/** One browser connection per connected environment, kept for as long as it is connected. */
+export function EnvironmentBrowserHosts() {
+  return useConnectedEnvironments().map((environment) => (
+    <EnvironmentBrowserHost key={environment.environmentId} {...environment} />
+  ));
 }
 
 /** Every attached page, with the thread it belongs to. */
@@ -352,7 +364,6 @@ function useBrowserLifecycleLoop(): void {
 
 export function BrowserHostLayer() {
   const navigate = useNavigate();
-  useEnvironmentBrowserHosts();
   useBrowserPageWatchers();
   useBrowserLifecycleLoop();
   usePruneGoneThreadBrowsers();
@@ -367,13 +378,18 @@ export function BrowserHostLayer() {
   }, [navigate]);
 
   const live = useBrowserLiveStore((store) => store.liveByThreadKey);
-  return createPortal(
-    <div data-testid="browser-host-layer">
-      {Object.entries(live).map(([key, browser]) => (
-        <LiveThreadBrowserView key={`${key}:${browser.projectId}`} browser={browser} />
-      ))}
-    </div>,
-    document.body,
+  return (
+    <>
+      <EnvironmentBrowserHosts />
+      {createPortal(
+        <div data-testid="browser-host-layer">
+          {Object.entries(live).map(([key, browser]) => (
+            <LiveThreadBrowserView key={`${key}:${browser.projectId}`} browser={browser} />
+          ))}
+        </div>,
+        document.body,
+      )}
+    </>
   );
 }
 

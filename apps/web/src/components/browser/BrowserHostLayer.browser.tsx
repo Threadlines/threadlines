@@ -1,16 +1,36 @@
 import { scopeThreadRef, scopedThreadKey } from "@threadlines/client-runtime";
-import { EnvironmentId, type ProjectId, ThreadId } from "@threadlines/contracts";
+import {
+  type EnvironmentApi,
+  EnvironmentId,
+  type ProjectId,
+  ThreadId,
+} from "@threadlines/contracts";
+import { flushSync } from "react-dom";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { render } from "vitest-browser-react";
 
 import { makeBrowserTab, useBrowserPanelStore } from "../../browserPanelStore";
 import { resetBrowserLiveStoreForTests, useBrowserLiveStore } from "../../browserLiveStore";
+import {
+  __resetEnvironmentApiOverridesForTests,
+  __setEnvironmentApiOverrideForTests,
+} from "../../environmentApi";
+import { subscribeEnvironmentConnections } from "../../environments/runtime";
+import {
+  resetSavedEnvironmentRuntimeStoreForTests,
+  useSavedEnvironmentRuntimeStore,
+} from "../../environments/runtime/catalog";
 import { useStore } from "../../store";
 import {
   BROWSER_SLOT_ANCHOR,
+  EnvironmentBrowserHosts,
   LiveThreadBrowserView,
   usePruneGoneThreadBrowsers,
 } from "./BrowserHostLayer";
+
+// The runtime keeps its own behaviour; spying is how the test reaches the
+// listeners its connection registry was given.
+vi.mock("../../environments/runtime", { spy: true });
 
 const ENVIRONMENT = EnvironmentId.make("env-layer");
 const SHOWN = scopeThreadRef(ENVIRONMENT, ThreadId.make("thread-shown"));
@@ -139,6 +159,81 @@ describe("LiveThreadBrowserView", () => {
     } finally {
       screen.unmount();
       useStore.setState({ environmentStateById: {}, activeEnvironmentId: null });
+    }
+  });
+});
+
+/**
+ * A saved computer reads as connected a moment before its connection is
+ * registered and can take calls, and again while one is being rebuilt. The
+ * registry is the real one; a stand-in connection is put in its place and the
+ * registry's own listeners are told, as they are when a real one registers.
+ */
+describe("EnvironmentBrowserHosts", () => {
+  const OTHER = EnvironmentId.make("env-layer-other");
+  const registered = new Map<EnvironmentId, EnvironmentApi>();
+
+  const appearConnected = (environmentId: EnvironmentId) =>
+    useSavedEnvironmentRuntimeStore.getState().patch(environmentId, {
+      connectionState: "connected",
+      descriptor: {
+        environmentId,
+        label: "Other computer",
+        platform: { os: "darwin", arch: "arm64" },
+        serverVersion: "0.0.0-test",
+        capabilities: { repositoryIdentity: false, browserClientHosts: true },
+      },
+    });
+  const standInConnection = () => {
+    const disconnect = vi.fn();
+    const connectClient = vi.fn(() => disconnect);
+    const api = { previewAutomation: { connectClient } } as unknown as EnvironmentApi;
+    return { api, connectClient, disconnect };
+  };
+  const announceRegistry = () => {
+    __resetEnvironmentApiOverridesForTests();
+    for (const [environmentId, api] of registered) {
+      __setEnvironmentApiOverrideForTests(environmentId, api);
+    }
+    flushSync(() => {
+      for (const [listener] of vi.mocked(subscribeEnvironmentConnections).mock.calls) listener();
+    });
+  };
+
+  afterEach(() => {
+    registered.clear();
+    resetSavedEnvironmentRuntimeStoreForTests();
+    __resetEnvironmentApiOverridesForTests();
+    vi.mocked(subscribeEnvironmentConnections).mockClear();
+    Reflect.deleteProperty(window, "desktopBridge");
+  });
+
+  it("holds each computer's connection while it can take calls, apart from the others'", async () => {
+    window.desktopBridge = {} as NonNullable<typeof window.desktopBridge>;
+    const first = standInConnection();
+    const second = standInConnection();
+
+    appearConnected(ENVIRONMENT);
+    const screen = await render(<EnvironmentBrowserHosts />);
+    try {
+      registered.set(ENVIRONMENT, first.api);
+      announceRegistry();
+      expect(first.connectClient).toHaveBeenCalledOnce();
+
+      flushSync(() => appearConnected(OTHER));
+      registered.set(OTHER, second.api);
+      announceRegistry();
+      expect(second.connectClient).toHaveBeenCalledOnce();
+      expect(first.connectClient).toHaveBeenCalledOnce();
+      expect(first.disconnect).not.toHaveBeenCalled();
+
+      // The first computer's connection is being rebuilt; it still reads as connected.
+      registered.delete(ENVIRONMENT);
+      announceRegistry();
+      expect(first.disconnect).toHaveBeenCalledOnce();
+      expect(second.disconnect).not.toHaveBeenCalled();
+    } finally {
+      screen.unmount();
     }
   });
 });
