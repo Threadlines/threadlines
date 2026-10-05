@@ -53,8 +53,8 @@ Invalid rules are ignored. Invalid config files are ignored. Warnings are logged
 - `terminal.new`: create new terminal (in focused terminal context by default)
 - `terminal.close`: close/kill the focused terminal (in focused terminal context by default)
 - `commandPalette.toggle`: open or close the global command palette
-- `chat.new`: create a new chat thread preserving the active thread's branch/worktree state
-- `chat.newLocal`: create a new chat thread for the active project in a new environment (local/worktree determined by app settings (default `local`))
+- `chat.new`: create a new chat thread where the "Start in" setting says (Settings › Threads, default `local`). With `local`, a thread started from one in a worktree stays in that worktree
+- `chat.newLocal`: create a new chat thread for the active project from the "Start in" setting alone, never continuing the active thread's worktree
 - `composer.stash`: stash the composer's prompt for later; with an empty composer, open the stash list
 - `editor.openFavorite`: open current project/worktree in the last-used editor
 - `script.{id}.run`: run a project script by id (for example `script.test.run`)

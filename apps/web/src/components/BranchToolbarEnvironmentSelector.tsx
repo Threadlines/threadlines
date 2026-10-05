@@ -7,6 +7,7 @@ import {
   Select,
   SelectGroup,
   SelectGroupLabel,
+  SelectInlineTrigger,
   SelectItem,
   SelectPopup,
   SelectTrigger,
@@ -14,6 +15,8 @@ import {
 } from "./ui/select";
 
 interface BranchToolbarEnvironmentSelectorProps {
+  /** `sentence` sets the picker in running words: plain text, dotted underline. */
+  presentation?: "chip" | "sentence";
   envLocked: boolean;
   environmentId: EnvironmentId;
   availableEnvironments: readonly EnvironmentOption[];
@@ -21,6 +24,7 @@ interface BranchToolbarEnvironmentSelectorProps {
 }
 
 export const BranchToolbarEnvironmentSelector = memo(function BranchToolbarEnvironmentSelector({
+  presentation = "chip",
   envLocked,
   environmentId,
   availableEnvironments,
@@ -38,6 +42,10 @@ export const BranchToolbarEnvironmentSelector = memo(function BranchToolbarEnvir
       })),
     [availableEnvironments],
   );
+
+  if (envLocked && presentation === "sentence") {
+    return <span className="text-foreground/85">{activeEnvironment?.label ?? "this device"}</span>;
+  }
 
   if (envLocked) {
     return (
@@ -59,15 +67,25 @@ export const BranchToolbarEnvironmentSelector = memo(function BranchToolbarEnvir
       onValueChange={(value) => onEnvironmentChange(value as EnvironmentId)}
       items={environmentItems}
     >
-      <SelectTrigger variant="ghost" size="xs" className="font-medium" aria-label="Run on">
-        {activeEnvironment?.isPrimary ? (
-          <MonitorIcon className="size-3" />
-        ) : (
-          <CloudIcon className="size-3" />
-        )}
-        <SelectValue />
-      </SelectTrigger>
-      <SelectPopup>
+      {presentation === "sentence" ? (
+        <SelectInlineTrigger aria-label="Run on">
+          <SelectValue />
+        </SelectInlineTrigger>
+      ) : (
+        <SelectTrigger variant="ghost" size="xs" className="font-medium" aria-label="Run on">
+          {activeEnvironment?.isPrimary ? (
+            <MonitorIcon className="size-3" />
+          ) : (
+            <CloudIcon className="size-3" />
+          )}
+          <SelectValue />
+        </SelectTrigger>
+      )}
+      <SelectPopup
+        {...(presentation === "sentence"
+          ? { alignItemWithTrigger: false, matchTriggerWidth: false }
+          : {})}
+      >
         <SelectGroup>
           <SelectGroupLabel>Run on</SelectGroupLabel>
           {availableEnvironments.map((env) => (

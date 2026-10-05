@@ -392,6 +392,40 @@ function projectRepositoryScope(project: Project): string | null {
   return provider === null || repository === null ? null : repositoryScopeKey(provider, repository);
 }
 
+/** The repository a listed pull request is on, spelled the way a project's is. */
+export function pullRequestRepositoryScope(
+  entry: Pick<PullRequestEntry, "provider" | "repository">,
+): string {
+  return repositoryScopeKey(entry.provider, entry.repository);
+}
+
+/**
+ * The listed pull requests on these projects' repositories.
+ *
+ * Scoped by repository and host, not by the project a row names. One pull
+ * request listed by two checkouts is kept as a single row naming one of them,
+ * and an authored row borrows the project its host tool ran in while sitting
+ * on a repository no project here points at, so the project a row names says
+ * nothing reliable about where it belongs.
+ */
+export function pullRequestsOnProjectRepositories(
+  entries: readonly PullRequestEntry[],
+  projects: readonly Project[],
+): readonly PullRequestEntry[] {
+  const scopes = new Set(
+    projects.flatMap((project) => {
+      const scope = projectRepositoryScope(project);
+      return scope === null ? [] : [scope];
+    }),
+  );
+  if (scopes.size === 0) {
+    return [];
+  }
+  return entries.filter(
+    (entry) => entry.origin !== "authored" && scopes.has(pullRequestRepositoryScope(entry)),
+  );
+}
+
 function updatedAtMs(value: string): number {
   const parsed = Date.parse(value);
   return Number.isNaN(parsed) ? 0 : parsed;

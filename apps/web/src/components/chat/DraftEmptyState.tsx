@@ -16,6 +16,7 @@ import { ProjectFavicon } from "../ProjectFavicon";
 import { RecentThreadsList } from "../RecentThreadsList";
 import { OpenSourceSupportLinks } from "../OpenSourceSupportLinks";
 import { riseDelay, ThreadlinesFigure } from "../ThreadlinesFigure";
+import { ProjectThreadMap } from "./ProjectThreadMap";
 import { TooltipWrapper } from "../ui/tooltip";
 import {
   Menu,
@@ -29,16 +30,41 @@ import {
   MenuTrigger,
 } from "../ui/menu";
 
+/**
+ * How the new-thread screen is arranged. `hero` is the roomy layout: only the
+ * drawing and the question sit above the composer, and {@link DraftRecentThreads}
+ * is rendered beneath it by the chat view. `stacked` keeps everything in one
+ * column above a bottom composer, for phones and panes too small for the hero.
+ */
+export type DraftEmptyStateLayout = "hero" | "stacked";
+
 interface DraftEmptyStateProps {
   currentProjectRef: ScopedProjectRef | null;
   currentProjectName: string | null;
   isGeneralChat: boolean;
+  layout: DraftEmptyStateLayout;
+}
+
+/** What follows the question: where the user left off, and the repository links. */
+export function DraftRecentThreads({ isGeneralChat }: { isGeneralChat: boolean }) {
+  return (
+    <>
+      <RecentThreadsList
+        className="no-thread-rise mt-10 w-full [--no-thread-delay:0.26s]"
+        limit={5}
+        scope={isGeneralChat ? "chats" : "projects"}
+        testId="draft-empty-recent-thread"
+      />
+      <OpenSourceSupportLinks />
+    </>
+  );
 }
 
 export function DraftEmptyState({
   currentProjectRef,
   currentProjectName,
   isGeneralChat,
+  layout,
 }: DraftEmptyStateProps) {
   const { handleNewThread, orderedProjects } = useHandleNewThread();
   const activeEnvironmentId = useStore((state) => state.activeEnvironmentId);
@@ -87,9 +113,35 @@ export function DraftEmptyState({
     [orderedProjects, projectSnapshots],
   );
 
+  // The map draws one logical project, every checkout of it: the same grouping
+  // the menu above and the sidebar use. A project the sidebar does not know
+  // (still loading, or gone) has nothing to draw, and an empty map would read
+  // as "no threads yet", so it gets the plain figure instead.
+  const mapProjectRefs = useMemo(
+    () =>
+      currentProjectKey === null || isGeneralChat
+        ? null
+        : (projectSnapshots.find((snapshot) =>
+            snapshot.memberProjectRefs.some(
+              (memberRef) => scopedProjectKey(memberRef) === currentProjectKey,
+            ),
+          )?.memberProjectRefs ?? null),
+    [currentProjectKey, isGeneralChat, projectSnapshots],
+  );
+
   return (
-    <div className="flex w-full min-w-0 max-w-xl flex-col items-center">
-      <ThreadlinesFigure />
+    <div
+      className="flex w-full min-w-0 max-w-xl flex-col items-center"
+      // The chat view's hero layout keys off this marker: it is in the page
+      // exactly while the timeline is showing this state in the roomy layout.
+      {...(layout === "hero" ? { "data-draft-hero": "" } : {})}
+    >
+      {/* Chats have no branches to draw, so they keep the plain figure. */}
+      {mapProjectRefs ? (
+        <ProjectThreadMap memberProjectRefs={mapProjectRefs} />
+      ) : (
+        <ThreadlinesFigure />
+      )}
 
       <h2
         className="no-thread-rise max-w-full text-center text-xl tracking-tight text-foreground"
@@ -108,7 +160,7 @@ export function DraftEmptyState({
             {/* Chrome never paints text-decoration under a replaced element, so
                 the dotted rule is a border on a flex wrapper — that's what keeps
                 the icon inside the underline instead of beside it. */}
-            <span className="inline-flex max-w-full min-w-0 items-center gap-1 border-b border-dotted border-muted-foreground/50 pb-0.5 align-middle leading-none transition-colors group-hover:border-foreground">
+            <span className="inline-flex max-w-full min-w-0 items-center gap-1 border-b border-dotted border-muted-foreground/50 pb-0.5 align-middle leading-none transition-colors group-hover:border-foreground group-data-popup-open:border-foreground">
               {isGeneralChat ? (
                 <MessagesSquareIcon className="size-3.5 shrink-0 text-muted-foreground/70" />
               ) : currentProject ? (
@@ -201,7 +253,7 @@ export function DraftEmptyState({
                             <CloudIcon className="size-3 text-muted-foreground/50" />
                           ) : null}
                           {remoteCount > 1 ? (
-                            <span className="font-mono text-[10px] leading-none text-muted-foreground/50">
+                            <span className="font-mono text-[10px] leading-none text-muted-foreground">
                               {remoteCount}
                             </span>
                           ) : null}
@@ -217,14 +269,7 @@ export function DraftEmptyState({
         ?
       </h2>
 
-      <RecentThreadsList
-        className="no-thread-rise mt-10 w-full [--no-thread-delay:0.26s]"
-        limit={5}
-        scope={isGeneralChat ? "chats" : "projects"}
-        testId="draft-empty-recent-thread"
-      />
-
-      <OpenSourceSupportLinks />
+      {layout === "stacked" ? <DraftRecentThreads isGeneralChat={isGeneralChat} /> : null}
     </div>
   );
 }

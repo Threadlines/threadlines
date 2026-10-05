@@ -17,6 +17,11 @@ import type {
 export interface ProviderAccountUsageWindowPresentation {
   readonly key: string;
   readonly label: string;
+  /**
+   * The label without its window length, for compact stacks ("Fable" for
+   * "Fable (weekly)"). Unset when the label is already as short as it gets.
+   */
+  readonly shortLabel?: string;
   readonly detail: string;
   readonly usedPercent: number;
   readonly remainingPercent: number;
@@ -248,6 +253,68 @@ export function headlineUsageMeter(
   );
 }
 
+/** One line of a compact usage stack: a short label and how full that limit is. */
+export interface ProviderUsageMeterLine {
+  readonly key: string;
+  readonly label: string;
+  /** "29% used · resets in 2h 5m", for the hover. */
+  readonly detail: string;
+  readonly usedPercent: number;
+  readonly warning: boolean;
+  /** Covers the whole account (spend control, 5h, Weekly) rather than one model. */
+  readonly accountWide: boolean;
+}
+
+/** How many lines a compact usage stack shows before it starts dropping the emptiest. */
+export const COMPACT_USAGE_METER_LIMIT = 4;
+
+/**
+ * Every limit an account reports, for a surface with room for a short stack
+ * (a Providers row): the spend control when there is one, then each window in
+ * the provider's order. Where `headlineUsageMeter` answers "how close am I to
+ * any limit", this answers "where do I stand on each one".
+ *
+ * Past `limit` lines the emptiest scoped ones are dropped. The account-wide
+ * lines (spend control, 5h, Weekly) always stay: a reader expects to find them.
+ */
+export function compactUsageMeters(
+  usage: Pick<ProviderAccountUsagePresentation, "spendControl" | "windows">,
+  limit: number = COMPACT_USAGE_METER_LIMIT,
+): ReadonlyArray<ProviderUsageMeterLine> {
+  const lines: ReadonlyArray<ProviderUsageMeterLine> = [
+    ...(usage.spendControl
+      ? [
+          {
+            key: "spend-control",
+            label: usage.spendControl.label,
+            detail: usage.spendControl.detail,
+            usedPercent: usage.spendControl.usedPercent,
+            warning: usage.spendControl.warning,
+            accountWide: true,
+          },
+        ]
+      : []),
+    ...usage.windows.map((window) => ({
+      key: window.key,
+      label: window.shortLabel ?? window.label,
+      detail: window.detail,
+      usedPercent: window.usedPercent,
+      warning: window.warning,
+      accountWide: window.key === "primary" || window.key === "secondary",
+    })),
+  ];
+  if (lines.length <= limit) return lines;
+  const kept = new Set(lines.filter((line) => line.accountWide));
+  const scopedFullestFirst = lines
+    .filter((line) => !line.accountWide)
+    .toSorted((a, b) => b.usedPercent - a.usedPercent);
+  for (const line of scopedFullestFirst) {
+    if (kept.size >= limit) break;
+    kept.add(line);
+  }
+  return lines.filter((line) => kept.has(line));
+}
+
 /** Usage at or above this is "near limit": bars turn amber and the composer dot appears. */
 export const USAGE_WARNING_THRESHOLD_PERCENT = 75;
 
@@ -364,6 +431,7 @@ function formatScopedUsageWindowPresentation(
     label: durationLabel
       ? `${window.scopeLabel} (${durationLabel.toLowerCase()})`
       : window.scopeLabel,
+    ...(durationLabel ? { shortLabel: window.scopeLabel } : {}),
     detail: detailParts.join(" · "),
     usedPercent,
     remainingPercent,
@@ -661,7 +729,14 @@ function deriveClaudeUsageNotice(
     return undefined;
   }
   const usage = provider.auth.capabilities?.usage;
-  if (usage?.status !== "unavailable") return undefined;
+  if (usage === undefined) {
+    // A sign-in whose server said nothing about usage either way: with no
+    // numbers to show, say they are missing rather than show nothing.
+    return provider.auth.status === "authenticated" && !hasNumbers
+      ? { signIn: false, text: "Plan limits can't be read right now." }
+      : undefined;
+  }
+  if (usage.status !== "unavailable") return undefined;
   if (usage.reason === "signed_out") {
     return {
       signIn: true,
@@ -680,10 +755,18 @@ function deriveClaudeUsageNotice(
       // A server that gives no reason still gives its own words for it.
       return hasNumbers
         ? undefined
-        : { signIn: false, text: usage.detail ?? "Usage isn't available right now." };
+        : { signIn: false, text: usage.detail ?? "Plan limits can't be read right now." };
   }
 }
 
+/**
+ * The usage presentation for a provider as a whole, not just its usage
+ * payload: a Claude subscription whose usage check produced no numbers comes
+ * back with a `notice` (keeping the numbers it has, and any local token
+ * history) instead of as nothing, so its surfaces can say what is wrong. A
+ * notice with no windows means there is nothing to draw: an empty meter
+ * would read as "0% used".
+ */
 export function deriveProviderAccountUsagePresentationForProvider(
   provider: ProviderAccountUsagePresentationProvider | null | undefined,
   nowMs: number = Date.now(),

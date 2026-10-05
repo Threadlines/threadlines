@@ -31,7 +31,7 @@ import { cn } from "~/lib/utils";
 // the dismiss affordance) is hovered, hence the has selector.
 const PROVIDER_UPDATE_SURFACE_HOVER_STYLES: Record<Exclude<UpdateStatusTone, "neutral">, string> = {
   progress:
-    "has-[button.provider-update-main:hover]:border-primary/40 has-[button.provider-update-main:hover]:bg-sidebar-accent/75",
+    "has-[button.provider-update-main:hover]:border-brand-navy/40 has-[button.provider-update-main:hover]:bg-sidebar-accent/75",
   success:
     "has-[button.provider-update-main:hover]:border-success/40 has-[button.provider-update-main:hover]:bg-sidebar-accent/72",
   warning:

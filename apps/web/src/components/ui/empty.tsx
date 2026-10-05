@@ -34,7 +34,8 @@ const emptyMediaVariants = cva(
     variants: {
       variant: {
         default: "bg-transparent",
-        icon: "relative flex size-9 shrink-0 items-center justify-center rounded-md border bg-card not-dark:bg-clip-padding text-foreground shadow-sm/5 before:pointer-events-none before:absolute before:inset-0 before:rounded-[calc(var(--radius-md)-1px)] before:shadow-[0_1px_--theme(--color-black/4%)] dark:before:shadow-[0_-1px_--theme(--color-white/6%)] [&_svg:not([class*='size-'])]:size-4.5",
+        // A plain glyph: icons are never put in tiles (docs/design/design-language.md).
+        icon: "text-muted-foreground [&_svg:not([class*='size-'])]:size-6",
       },
     },
   },
@@ -47,29 +48,11 @@ function EmptyMedia({
 }: React.ComponentProps<"div"> & VariantProps<typeof emptyMediaVariants>) {
   return (
     <div
-      className={cn("relative mb-6", className)}
+      className={cn("relative mb-4", className)}
       data-slot="empty-media"
       data-variant={variant}
       {...props}
     >
-      {variant === "icon" && (
-        <>
-          <div
-            aria-hidden="true"
-            className={cn(
-              emptyMediaVariants({ className, variant }),
-              "-translate-x-0.5 -rotate-10 pointer-events-none absolute bottom-px origin-bottom-left scale-84 shadow-none",
-            )}
-          />
-          <div
-            aria-hidden="true"
-            className={cn(
-              emptyMediaVariants({ className, variant }),
-              "pointer-events-none absolute bottom-px origin-bottom-right translate-x-0.5 rotate-10 scale-84 shadow-none",
-            )}
-          />
-        </>
-      )}
       <div className={cn(emptyMediaVariants({ className, variant }))} {...props} />
     </div>
   );

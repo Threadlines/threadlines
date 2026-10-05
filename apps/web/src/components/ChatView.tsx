@@ -243,7 +243,8 @@ import {
   type TimelineProposedPlanState,
   type TimelineTurnAgentsState,
 } from "./chat/MessagesTimeline";
-import { DraftEmptyState } from "./chat/DraftEmptyState";
+import { DraftEmptyState, DraftRecentThreads } from "./chat/DraftEmptyState";
+import { useDraftHeroCapable, useDraftHeroComposerSlide } from "./chat/useDraftHero";
 import { ProviderModelPicker } from "./chat/ProviderModelPicker";
 import {
   ChatHeader,
@@ -1486,6 +1487,20 @@ export default function ChatView(props: ChatViewProps) {
     [composerRef],
   );
 
+  // The new-thread hero: the composer in the middle of the column, sliding to
+  // the bottom on the first send. Held as elements rather than refs so the
+  // hooks start measuring when the column mounts, not only when props change.
+  const [chatColumnElement, setChatColumnElement] = useState<HTMLDivElement | null>(null);
+  const [inputBarElement, setInputBarElement] = useState<HTMLDivElement | null>(null);
+  const draftHeroCapable = useDraftHeroCapable(chatColumnElement, isLocalDraftThread);
+  useDraftHeroComposerSlide({
+    column: chatColumnElement,
+    inputBar: inputBarElement,
+    threadKey: `${environmentId}:${threadId}`,
+    isLocalDraft: isLocalDraftThread,
+    heroCapable: draftHeroCapable,
+  });
+
   const draftTimelineEmptyState = useMemo(
     () =>
       isLocalDraftThread && draftThread ? (
@@ -1493,10 +1508,12 @@ export default function ChatView(props: ChatViewProps) {
           currentProjectRef={scopeProjectRef(draftThread.environmentId, draftThread.projectId)}
           currentProjectName={activeProject?.name ?? null}
           isGeneralChat={isGeneralChatThread}
+          layout={draftHeroCapable ? "hero" : "stacked"}
         />
       ) : undefined,
     [
       activeProject?.name,
+      draftHeroCapable,
       draftThread?.environmentId,
       draftThread?.projectId,
       isGeneralChatThread,
@@ -7277,16 +7294,20 @@ export default function ChatView(props: ChatViewProps) {
       {/* Main content area. The browser splits the centre beside the chat; the
           bottom edge belongs to the terminal. Expanding hides the chat. */}
       <div className="flex min-h-0 min-w-0 flex-1">
-        {/* Chat column */}
+        {/* Chat column. On a pristine draft with room for it (the `draft-hero`
+            variant, see useDraftHero) the timeline shrinks to the question, the
+            composer rises to the middle and the column scrolls as one. */}
         <div
+          ref={setChatColumnElement}
+          data-chat-column=""
           className={cn(
-            "flex min-h-0 min-w-0 flex-col",
+            "flex min-h-0 min-w-0 flex-col draft-hero:overflow-y-auto draft-hero:overscroll-y-contain",
             browserOpen && browserExpanded && "hidden",
           )}
           style={browserOpen ? { flex: `${splitChatFraction} 1 0%` } : { flex: "1 1 0%" }}
         >
           {/* Messages Wrapper */}
-          <div className="relative flex min-h-0 flex-1 flex-col">
+          <div className="relative flex min-h-0 flex-1 flex-col draft-hero:mt-auto draft-hero:flex-none">
             {/* Messages — LegendList handles virtualization and scrolling internally */}
             <MessagesTimeline
               key={activeThread.id}
@@ -7364,6 +7385,7 @@ export default function ChatView(props: ChatViewProps) {
 
           {/* Input bar */}
           <div
+            ref={setInputBarElement}
             className={cn(
               "pl-[calc(env(safe-area-inset-left)+0.75rem)] pr-[calc(env(safe-area-inset-right)+0.75rem)] sm:pl-[calc(env(safe-area-inset-left)+1.25rem)] sm:pr-[calc(env(safe-area-inset-right)+1.25rem)]",
               isGitRepo
@@ -7371,7 +7393,7 @@ export default function ChatView(props: ChatViewProps) {
                 : "pb-[calc(env(safe-area-inset-bottom)+0.75rem)] sm:pb-[calc(env(safe-area-inset-bottom)+1rem)]",
             )}
           >
-            <div className="relative isolate">
+            <div className="relative isolate mx-auto w-full draft-hero:max-w-[45rem]">
               <div className="relative z-10">
                 <ChatComposer
                   composerRef={composerRef}
@@ -7546,6 +7568,17 @@ export default function ChatView(props: ChatViewProps) {
               />
             )}
           </div>
+
+          {/* Under the hero's composer: where the user left off. Mounted for
+              any roomy draft and shown by the marker, so it appears and leaves
+              in the same frame as the hero itself. */}
+          {isLocalDraftThread && draftHeroCapable ? (
+            <div className="hidden w-full flex-col items-center px-4 pb-8 draft-hero:mb-auto draft-hero:flex">
+              <div className="flex w-full max-w-[45rem] flex-col items-center">
+                <DraftRecentThreads isGeneralChat={isGeneralChatThread} />
+              </div>
+            </div>
+          ) : null}
 
           {pullRequestDialogState ? (
             <PullRequestThreadDialog

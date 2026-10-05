@@ -6,6 +6,7 @@ import {
   activityStepFromWorkLogEntry,
   currentWorkLine,
   liveActivityLabel,
+  liveStretchLines,
   newestThoughtSentence,
   partitionActivitySteps,
   plainAgentStep,
@@ -549,6 +550,31 @@ describe("groups", () => {
       ["couldn't take the screenshots", "fail", null],
       ["auto mode blocked a step", "warning", null],
     ]);
+  });
+
+  it("draws the stretch the agent is on as its newest steps, in order, and leaves the rest to fold", () => {
+    const steps = [
+      command("cat a.ts"),
+      command("rg foo src"),
+      command("cat b.ts"),
+      activityStepFromWorkLogEntry(
+        entry({ label: "Thinking", tone: "thinking", detail: "The caller passes it in." }),
+      ),
+      command("pnpm install"),
+      command("cat c.ts"),
+      command("cat d.ts", { executionState: "running" }),
+    ].filter((step) => step !== null);
+    const { earlier, tail } = liveStretchLines(steps);
+
+    // Looking around takes a line like any other step. A finished thought
+    // does not, and a running step is the live line's.
+    expect(tail.map((step) => step.label)).toEqual([
+      "Searched for foo",
+      "Read b.ts",
+      "Installed dependencies",
+      "Read c.ts",
+    ]);
+    expect(earlier.map((step) => step.label)).toEqual(["Read a.ts", "The caller passes it in."]);
   });
 
   it("keeps a live thought to its newest sentence, without dropping to a word or two", () => {

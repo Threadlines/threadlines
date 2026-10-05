@@ -976,7 +976,8 @@ const USAGE_PROVIDER_BY_DRIVER: ReadonlyMap<ProviderDriverKind, UsageProviderKin
  * The subscription windows each enabled provider reports: the same meters the
  * provider cards in Settings and the composer's hover card draw, read through
  * the same presentation. Providers with nothing to meter (API keys) are left
- * out rather than shown as empty rows.
+ * out rather than shown as empty rows; one whose usage check has something to
+ * say keeps its row and says it.
  */
 export function buildUsagePlanLimitRows(
   providers: ReadonlyArray<ServerProvider>,

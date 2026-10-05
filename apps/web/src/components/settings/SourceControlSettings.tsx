@@ -67,8 +67,10 @@ import {
 } from "../Icons";
 import { RedactedSensitiveText } from "./RedactedSensitiveText";
 import {
+  SETTINGS_GROUP_ROW_CLASS,
   SettingResetButton,
   SettingsPageContainer,
+  SettingsPageHeader,
   SettingsRow,
   SettingsSection,
 } from "./settingsLayout";
@@ -260,18 +262,13 @@ function DiscoveryItemRow({
   const hasDetails = children !== undefined;
 
   return (
-    <div
-      className={cn(
-        "border-t border-border/60 first:border-t-0",
-        isVcsNotReady(item) && "opacity-80",
-      )}
-    >
-      <div className="px-4 py-3.5 sm:px-5">
+    <div className={cn(SETTINGS_GROUP_ROW_CLASS, isVcsNotReady(item) && "opacity-80")}>
+      <div className="px-3.5 py-2.5">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="min-w-0 flex-1 space-y-1">
             <div className="flex min-w-0 flex-wrap items-center gap-2">
               <SourceControlItemMark item={item} />
-              <span className="truncate text-[13px] font-semibold tracking-[-0.01em] text-foreground">
+              <span className="truncate text-[13.5px] font-medium text-foreground">
                 {item.label}
               </span>
               {version ? <code className="text-xs text-muted-foreground">{version}</code> : null}
@@ -289,7 +286,7 @@ function DiscoveryItemRow({
               ) : null}
               {isVcsNotReady(item) ? (
                 <Badge variant="warning" size="sm">
-                  Coming Soon
+                  Coming soon
                 </Badge>
               ) : null}
               {authStatus?.badge ? (
@@ -298,7 +295,7 @@ function DiscoveryItemRow({
                 </Badge>
               ) : null}
             </div>
-            <p className="flex min-w-0 flex-wrap items-center gap-x-1 text-xs text-muted-foreground/80">
+            <p className="flex min-w-0 flex-wrap items-center gap-x-1 text-[12.5px] text-muted-foreground">
               {itemSummary({ item, auth, authAccount })}
             </p>
           </div>
@@ -338,7 +335,7 @@ function DiscoveryItemRow({
       {hasDetails ? (
         <Collapsible open={isExpanded} onOpenChange={setIsExpanded}>
           <CollapsibleContent>
-            <div className="border-t border-border/60 px-4 py-3 sm:px-5">{children}</div>
+            <div className="border-t border-group-divider px-3.5 py-3">{children}</div>
           </CollapsibleContent>
         </Collapsible>
       ) : null}
@@ -640,7 +637,7 @@ function SourceControlSectionSkeleton({
   return (
     <SettingsSection title={title} headerAction={headerAction}>
       {SOURCE_CONTROL_SKELETON_ROWS.map((row) => (
-        <div key={row} className="border-t border-border/60 px-4 py-3.5 first:border-t-0 sm:px-5">
+        <div key={row} className={cn(SETTINGS_GROUP_ROW_CLASS, "px-3.5 py-3")}>
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div className="min-w-0 flex-1 space-y-2">
               <div className="flex items-center gap-2">
@@ -744,16 +741,17 @@ export function SourceControlSettingsPanel() {
 
   return (
     <SettingsPageContainer>
+      <SettingsPageHeader section="/settings/source-control" />
       <SourceControlPanelSection />
       {isInitialScanPending ? (
         <>
-          <SourceControlSectionSkeleton title="Version Control" headerAction={scanButton} />
-          <SourceControlSectionSkeleton title="Source Control Providers" />
+          <SourceControlSectionSkeleton title="Version control" headerAction={scanButton} />
+          <SourceControlSectionSkeleton title="Source control providers" />
         </>
       ) : hasDiscoveryItems ? (
         <>
           {result.versionControlSystems.length > 0 ? (
-            <SettingsSection title="Version Control" headerAction={scanButton}>
+            <SettingsSection title="Version control" headerAction={scanButton}>
               {result.versionControlSystems.map((item) => (
                 <DiscoveryItemRow
                   key={`vcs:${item.kind}`}
@@ -768,7 +766,7 @@ export function SourceControlSettingsPanel() {
 
           {result.sourceControlProviders.length > 0 ? (
             <SettingsSection
-              title="Source Control Providers"
+              title="Source control providers"
               headerAction={result.versionControlSystems.length === 0 ? scanButton : null}
             >
               {result.sourceControlProviders.map((item) => (

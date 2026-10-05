@@ -10,12 +10,7 @@ import {
 import { ThreadlinesGlyph } from "./Icons";
 import React, { useCallback, useEffect, memo, useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
-import {
-  type ScopedProjectRef,
-  type ScopedThreadRef,
-  type ThreadEnvMode,
-  ThreadId,
-} from "@threadlines/contracts";
+import { type ScopedProjectRef, type ScopedThreadRef, ThreadId } from "@threadlines/contracts";
 import {
   parseScopedThreadKey,
   scopedProjectKey,
@@ -23,7 +18,7 @@ import {
   scopeProjectRef,
   scopeThreadRef,
 } from "@threadlines/client-runtime";
-import { Link, useLocation, useNavigate, useParams, useRouter } from "@tanstack/react-router";
+import { Link, useLocation, useNavigate, useParams } from "@tanstack/react-router";
 import { usePrimaryEnvironmentId } from "../environments/primary";
 import type { EnvironmentId } from "@threadlines/contracts";
 import { isElectron } from "../env";
@@ -105,8 +100,6 @@ import {
   mergeThreadLastSeenAt,
   resolveAdjacentThreadId,
   resolveDoneTimestamp,
-  resolveSidebarNewThreadSeedContext,
-  resolveSidebarNewThreadEnvMode,
   resolveThreadStatusPill,
   shouldClearThreadSelectionOnMouseDown,
   sortDoneThreads,
@@ -497,7 +490,6 @@ export default function Sidebar() {
   const inboxEnvironmentScopeId = useUiStateStore((store) => store.inboxEnvironmentScopeId);
   const setInboxEnvironmentScope = useUiStateStore((store) => store.setInboxEnvironmentScope);
   const navigate = useNavigate();
-  const router = useRouter();
   const pathname = useLocation({ select: (loc) => loc.pathname });
   const isOnSettings = pathname.startsWith("/settings");
   const isOnChats = pathname.startsWith("/chats");
@@ -514,9 +506,6 @@ export default function Sidebar() {
   );
   const appSettingsConfirmThreadDelete = useSettings<boolean>(
     (settings) => settings.confirmThreadDelete,
-  );
-  const defaultThreadEnvMode = useSettings<ThreadEnvMode>(
-    (settings) => settings.defaultThreadEnvMode,
   );
   // The full hook (rather than `useNewThreadHandler`) because compose has to
   // resolve the same default project and draft context the app menu's "New
@@ -1588,54 +1577,6 @@ export default function Sidebar() {
     ],
   );
 
-  const createThreadForProjectRef = useCallback(
-    (projectRef: ScopedProjectRef) => {
-      const currentRouteParams =
-        router.state.matches[router.state.matches.length - 1]?.params ?? {};
-      const currentRouteTarget = resolveThreadRouteTarget(currentRouteParams);
-      const currentActiveThread =
-        currentRouteTarget?.kind === "server"
-          ? (selectThreadByRef(useStore.getState(), currentRouteTarget.threadRef) ?? null)
-          : null;
-      const draftStore = useComposerDraftStore.getState();
-      const currentActiveDraftThread =
-        currentRouteTarget?.kind === "server"
-          ? (draftStore.getDraftThread(currentRouteTarget.threadRef) ?? null)
-          : currentRouteTarget?.kind === "draft"
-            ? (draftStore.getDraftSession(currentRouteTarget.draftId) ?? null)
-            : null;
-      const seedContext = resolveSidebarNewThreadSeedContext({
-        projectId: projectRef.projectId,
-        defaultEnvMode: resolveSidebarNewThreadEnvMode({ defaultEnvMode: defaultThreadEnvMode }),
-        activeThread:
-          currentActiveThread && currentActiveThread.projectId === projectRef.projectId
-            ? {
-                projectId: currentActiveThread.projectId,
-                branch: currentActiveThread.branch,
-                worktreePath: currentActiveThread.worktreePath,
-              }
-            : null,
-        activeDraftThread:
-          currentActiveDraftThread && currentActiveDraftThread.projectId === projectRef.projectId
-            ? {
-                projectId: currentActiveDraftThread.projectId,
-                branch: currentActiveDraftThread.branch,
-                worktreePath: currentActiveDraftThread.worktreePath,
-                envMode: currentActiveDraftThread.envMode,
-              }
-            : null,
-      });
-      void handleNewThread(projectRef, {
-        ...(seedContext.branch !== undefined ? { branch: seedContext.branch } : {}),
-        ...(seedContext.worktreePath !== undefined
-          ? { worktreePath: seedContext.worktreePath }
-          : {}),
-        envMode: seedContext.envMode,
-      });
-    },
-    [defaultThreadEnvMode, handleNewThread, router],
-  );
-
   // Compose follows the thread you are in. While the list is scoped to a
   // single project, that project wins instead: filtering to it and then
   // getting a thread somewhere else reads as the button ignoring you.
@@ -1657,9 +1598,6 @@ export default function Sidebar() {
           activeDraftThread,
           activeThread,
           defaultProjectRef,
-          defaultThreadEnvMode: resolveSidebarNewThreadEnvMode({
-            defaultEnvMode: defaultThreadEnvMode,
-          }),
           handleNewThread,
         });
     if (!projectRef) {
@@ -1671,13 +1609,11 @@ export default function Sidebar() {
       void startNewGeneralChatThread(handleNewThread, projectRef);
       return;
     }
-    createThreadForProjectRef(projectRef);
+    void handleNewThread(projectRef);
   }, [
     activeDraftThread,
     activeThread,
-    createThreadForProjectRef,
     defaultProjectRef,
-    defaultThreadEnvMode,
     generalChatProjectKeys,
     handleNewThread,
     isMobile,

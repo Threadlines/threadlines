@@ -202,12 +202,7 @@ export const ProposedPlanCard = memo(function ProposedPlanCard({
   };
 
   return (
-    <div
-      className={cn(
-        "rounded-2xl border border-border/80 bg-card/70 p-4 sm:p-5",
-        status === "superseded" && "border-border/50 opacity-80",
-      )}
-    >
+    <div className={cn("surface-group p-4 sm:p-5", status === "superseded" && "opacity-80")}>
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex min-w-0 items-center gap-2">
           <Badge variant="secondary">Plan</Badge>
@@ -222,7 +217,7 @@ export const ProposedPlanCard = memo(function ProposedPlanCard({
           ) : null}
           <Menu>
             <MenuTrigger
-              render={<Button aria-label="Plan actions" size="icon-xs" variant="outline" />}
+              render={<Button aria-label="Plan actions" size="icon-xs" variant="ghost" />}
             >
               <EllipsisIcon aria-hidden="true" className="size-4" />
             </MenuTrigger>

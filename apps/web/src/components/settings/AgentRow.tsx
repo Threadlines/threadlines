@@ -4,9 +4,10 @@
  * the Providers settings page draw agents with this, so an agent looks the
  * same wherever it appears.
  *
- * Rows are hairline dividers, not boxes. Color appears only when the user has
- * to act (an amber or red dot before the status line); a healthy agent has
- * none.
+ * Consecutive rows draw one quiet group between them (`data-group-row`, see
+ * index.css), so a list split by headings stays a single keyed list. Color
+ * appears only when the user has to act (an amber or red dot before the
+ * status line); a healthy agent has none.
  *
  * @module AgentRow
  */
@@ -42,6 +43,7 @@ export function AgentRow({
   status,
   wrapStatus = false,
   tone = "none",
+  dimmed = false,
   actions,
   trailing,
   expanded = false,
@@ -61,6 +63,8 @@ export function AgentRow({
   /** Let a long status (an install guide with its link) wrap instead of truncating. */
   readonly wrapStatus?: boolean;
   readonly tone?: AgentRowTone;
+  /** Quiets the logo and the name: an agent that is turned off. */
+  readonly dimmed?: boolean;
   readonly actions?: ReactNode;
   /** After the actions, e.g. the open/close chevron. */
   readonly trailing?: ReactNode;
@@ -80,30 +84,43 @@ export function AgentRow({
 
   return (
     <div
-      className={cn("border-b border-border/60", expanded && "bg-muted/[0.07]", className)}
+      className={className}
+      data-group-row=""
       data-agent-row-expanded={expanded ? "true" : "false"}
       {...rest}
     >
       <div
         className={cn(
-          "flex min-h-13 flex-wrap items-center gap-x-3 gap-y-2 px-1 py-2.5",
-          onToggle && "cursor-pointer transition-colors hover:bg-muted/[0.07]",
+          // The hover fill follows the row's rounded ends.
+          "flex min-h-13 flex-wrap items-center gap-x-3 gap-y-2 rounded-t-[inherit] px-3.5 py-2.5",
+          !expanded && "rounded-b-[inherit]",
+          onToggle && "cursor-pointer transition-colors hover:bg-foreground/[0.03]",
         )}
         onClick={handleClick}
       >
-        <span className="flex size-5 shrink-0 items-center justify-center">{icon}</span>
+        <span
+          className={cn(
+            "flex size-5 shrink-0 items-center justify-center transition-opacity",
+            dimmed && "opacity-60",
+          )}
+        >
+          {icon}
+        </span>
         <div className="min-w-48 flex-1">
           <div className="flex min-w-0 items-center gap-2">
-            <span className="truncate text-[13.5px] font-semibold tracking-[-0.01em] text-foreground">
+            <span
+              className={cn(
+                "truncate text-[13.5px] font-medium transition-colors",
+                dimmed ? "text-muted-foreground" : "text-foreground",
+              )}
+            >
               {name}
             </span>
             {label ? (
-              <span className="shrink-0 font-mono text-[9.5px] uppercase tracking-[0.07em] text-muted-foreground/55">
-                {label}
-              </span>
+              <span className="shrink-0 text-[11.5px] text-muted-foreground">{label}</span>
             ) : null}
             {version ? (
-              <span className="shrink-0 font-mono text-[11px] text-muted-foreground/62">
+              <span className="shrink-0 font-mono text-[11px] text-muted-foreground">
                 {version}
               </span>
             ) : null}
@@ -111,7 +128,7 @@ export function AgentRow({
           </div>
           <div
             className={cn(
-              "mt-0.5 flex min-w-0 gap-1.5 text-xs text-muted-foreground",
+              "mt-0.5 flex min-w-0 gap-1.5 text-[12.5px] text-muted-foreground",
               wrapStatus ? "items-start" : "items-center",
             )}
             data-agent-row-status={tone}

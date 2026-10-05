@@ -32,6 +32,7 @@ import { Switch } from "../ui/switch";
 import {
   SettingResetButton,
   SettingsPageContainer,
+  SettingsPageHeader,
   SettingsRow,
   SettingsSection,
 } from "./settingsLayout";
@@ -55,6 +56,7 @@ export function ThreadsSettingsPanel({ surface = "full" }: { surface?: "full" | 
   const computerNote = surface === "phone" ? PAIRED_COMPUTER_NOTE : undefined;
   return (
     <SettingsPageContainer>
+      <SettingsPageHeader section="/settings/threads" />
       <SettingsSection title="New threads" description={computerNote}>
         <NewThreadAgentRow />
         <NewThreadRoomRow />
@@ -221,14 +223,17 @@ function NewThreadRoomRow() {
         ) : null
       }
     >
-      <div className={roomsOn ? "pt-2 pb-3" : "pointer-events-none pt-2 pb-3 opacity-50"}>
+      <div className={roomsOn ? "pt-1.5 pb-2.5" : "pointer-events-none pt-1.5 pb-2.5 opacity-50"}>
         {agents.length === 0 ? (
-          <p className="border-l border-border py-1.5 ps-3 text-xs text-muted-foreground/80">
+          <p className="py-1 text-[12.5px] text-muted-foreground">
             No other agents. New threads start with one agent.
           </p>
         ) : (
           <>
-            <ul className="border-l border-border" aria-label="Agents new threads start with">
+            <ul
+              className="divide-y divide-group-divider"
+              aria-label="Agents new threads start with"
+            >
               {withListKeys(agents).map(({ agent, key, index }) => {
                 const unusable = unusableDefaultNote(
                   serverProviders,
@@ -236,7 +241,7 @@ function NewThreadRoomRow() {
                   "New threads start without this agent until it's back.",
                 );
                 return (
-                  <li key={key} className="flex flex-col gap-0.5 py-1 ps-2">
+                  <li key={key} className="flex flex-col gap-0.5 py-1">
                     <div className="flex flex-wrap items-center gap-1.5">
                       <ModelSelectionControl
                         variant="ghost"
@@ -274,13 +279,13 @@ function NewThreadRoomRow() {
                       </Button>
                     </div>
                     {unusable ? (
-                      <p className="ps-2 text-[11px] text-muted-foreground">{unusable}</p>
+                      <p className="ps-2 text-[11.5px] text-muted-foreground">{unusable}</p>
                     ) : null}
                   </li>
                 );
               })}
             </ul>
-            <p className="flex items-center gap-1.5 pt-2 text-[11px] text-muted-foreground/80">
+            <p className="flex items-center gap-1.5 pt-1.5 text-[11.5px] text-muted-foreground">
               <InfoIcon aria-hidden="true" className="size-3 shrink-0" />
               Threads that start with other agents can't be reverted.
             </p>

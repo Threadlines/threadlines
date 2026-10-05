@@ -199,8 +199,8 @@ export function AddProviderInstanceDialog({ open, onOpenChange }: AddProviderIns
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogPopup className="max-w-xl overflow-hidden">
-        <div className="flex min-h-0 flex-col overflow-hidden border-foreground/10 bg-background shadow-2xl">
-          <DialogHeader className="border-b border-border/70 bg-background">
+        <div className="flex min-h-0 flex-col overflow-hidden">
+          <DialogHeader className="border-b border-border/70">
             <DialogTitle>Add provider instance</DialogTitle>
             <DialogDescription>
               Configure an additional provider instance — for example, a second Codex install
@@ -216,7 +216,7 @@ export function AddProviderInstanceDialog({ open, onOpenChange }: AddProviderIns
                     index === wizardStep
                       ? "border-primary bg-primary/10 ring-1 ring-primary/25"
                       : index < wizardStep
-                        ? "border-border bg-background"
+                        ? "border-border"
                         : "border-border bg-muted/40",
                   )}
                   onClick={() => setWizardStep(index)}
@@ -248,10 +248,7 @@ export function AddProviderInstanceDialog({ open, onOpenChange }: AddProviderIns
             </div>
           </DialogHeader>
 
-          <div
-            data-slot="dialog-panel"
-            className="space-y-4 border-b border-border/70 bg-muted/20 px-6 py-5"
-          >
+          <div data-slot="dialog-panel" className="space-y-4 border-b border-border/70 px-6 py-5">
             <AnimatedHeight>
               <div className={cn("grid gap-2", wizardStep !== 0 && "hidden")}>
                 <span
@@ -277,8 +274,8 @@ export function AddProviderInstanceDialog({ open, onOpenChange }: AddProviderIns
                           "relative flex cursor-pointer items-center gap-3 rounded-lg border px-3 py-3 text-left outline-none transition-[background-color,border-color,box-shadow]",
                           "focus-ring",
                           isSelected
-                            ? "border-primary bg-background shadow-sm ring-2 ring-primary/35"
-                            : "border-border bg-background hover:border-foreground/20 hover:bg-muted/50",
+                            ? "border-primary bg-primary/5 ring-1 ring-primary"
+                            : "border-border hover:border-foreground/20 hover:bg-muted/50",
                         )}
                       >
                         <IconComponent className="size-5 shrink-0" aria-hidden />
@@ -346,7 +343,7 @@ export function AddProviderInstanceDialog({ open, onOpenChange }: AddProviderIns
                             "size-6 cursor-pointer rounded-full border transition",
                             selected
                               ? "scale-110 border-foreground ring-2 ring-ring ring-offset-1 ring-offset-background"
-                              : "border-black/10 hover:scale-105 dark:border-white/20",
+                              : "border-black/10 hover:border-foreground/40 dark:border-white/20 dark:hover:border-white/50",
                           )}
                           style={{ backgroundColor: swatch }}
                           onClick={() => setAccentColor(swatch)}
@@ -392,7 +389,7 @@ export function AddProviderInstanceDialog({ open, onOpenChange }: AddProviderIns
             </AnimatedHeight>
           </div>
 
-          <DialogFooter className="border-t bg-background">
+          <DialogFooter className="border-t">
             <Button
               variant="outline"
               size="sm"

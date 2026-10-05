@@ -7,7 +7,9 @@
  * - looking around (reads, searches, lookups) folds into one summary sentence;
  * - edits, check results, failures, and commands that change something get a
  *   line of their own;
- * - whatever is running right now becomes the live label.
+ * - whatever is running right now becomes the live label;
+ * - the stretch the agent is still on shows its newest steps as they land,
+ *   looking around included, and folds once the agent moves on.
  *
  * Claude writes a plain label for each shell command it runs; when a provider
  * does not (Codex), the label is read off the command itself. The exact call
@@ -1381,6 +1383,31 @@ export function activityLineItems(notable: ReadonlyArray<ActivityStep>): Activit
   }
   flush();
   return items;
+}
+
+/** How many of its newest lines a stretch that has not folded shows; the ones
+ *  before them read as one folded line above, so a long run stops growing. */
+export const OPEN_TAIL_LINES = 4;
+
+/**
+ * A stretch the agent is still on, drawn as it happens: its newest steps each
+ * on a line of their own, looking around included, in the order they landed,
+ * and everything before them left to fold into one line above. A line only
+ * ever arrives at the bottom and leaves at the top, so edits are not gathered
+ * into runs here. Steps the summary sentence never counts (a finished thought,
+ * a tool load) take no line: they wait in the fold, where the opened summary
+ * lists them.
+ */
+export function liveStretchLines(steps: ReadonlyArray<ActivityStep>): {
+  readonly earlier: ReadonlyArray<ActivityStep>;
+  readonly tail: ReadonlyArray<ActivityStep>;
+} {
+  const settled = steps.filter((step) => !step.running);
+  const tail = settled
+    .filter((step) => !step.routine || step.tallies.length > 0)
+    .slice(-OPEN_TAIL_LINES);
+  const shown = new Set(tail);
+  return { earlier: settled.filter((step) => !shown.has(step)), tail };
 }
 
 /** One piece of a folded stretch's line. */

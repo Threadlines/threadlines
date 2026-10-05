@@ -6,9 +6,11 @@ import {
 } from "@threadlines/contracts";
 
 import {
+  compactUsageMeters,
   deriveProviderAccountUsagePresentation,
   deriveProviderAccountUsagePresentationForProvider,
   formatProviderTokenCount,
+  headlineUsageMeter,
   isProviderUsageNearLimit,
   providerRateLimitResetCreditsExpirationUrgency,
   providerRateLimitResetCreditExpirationUrgency,
@@ -479,6 +481,7 @@ describe("deriveProviderAccountUsagePresentation", () => {
       {
         key: "scoped-0",
         label: "Fable (weekly)",
+        shortLabel: "Fable",
         detail: "78% used · resets in 7d",
         usedPercent: 78,
         remainingPercent: 22,
@@ -531,6 +534,7 @@ describe("deriveProviderAccountUsagePresentation", () => {
       {
         key: "scoped-0",
         label: "Fable (weekly)",
+        shortLabel: "Fable",
         detail: "limit reached · resets in 7d",
         usedPercent: 100,
         remainingPercent: 0,
@@ -771,17 +775,19 @@ describe("deriveProviderAccountUsagePresentationForProvider", () => {
 
   it("asks for sign-in only when Claude is signed out, and keeps the numbers it has", () => {
     // Signed out with no numbers at all: one line and the offer, no empty meters.
-    expect(
-      deriveProviderAccountUsagePresentationForProvider(
-        { driver: claude, auth: tokenAuth("signed_out") },
-        nowMs,
-      ),
-    ).toEqual({
+    const signedOut = deriveProviderAccountUsagePresentationForProvider(
+      { driver: claude, auth: tokenAuth("signed_out") },
+      nowMs,
+    );
+    expect(signedOut).toEqual({
       label: "Claude usage",
       reachedLimit: false,
       windows: [],
       notice: { signIn: true, text: "Claude is signed out. Sign in to see usage." },
     });
+    // Nothing to mistake for a reading: no headline figure, no compact lines.
+    expect(headlineUsageMeter(signedOut!)).toBeNull();
+    expect(compactUsageMeters(signedOut!)).toEqual([]);
 
     // Signed out, but chats keep the meter fed.
     const fed = deriveProviderAccountUsagePresentationForProvider(
@@ -837,7 +843,7 @@ describe("deriveProviderAccountUsagePresentationForProvider", () => {
     ).toEqual({ signIn: false, text: "Couldn't check usage just now. Trying again soon." });
   });
 
-  it("shows the notice when only token history exists, which has no meters of its own", () => {
+  it("keeps local token history beside the notice, which has no meters of its own", () => {
     const presentation = deriveProviderAccountUsagePresentationForProvider(
       {
         driver: claude,
@@ -847,9 +853,10 @@ describe("deriveProviderAccountUsagePresentationForProvider", () => {
           checkedAt: "2026-07-09T11:58:00.000Z",
           limits: [],
           tokenUsage: {
+            scope: "local",
             checkedAt: "2026-07-09T11:58:00.000Z",
-            dailyBuckets: [{ startDate: "2026-07-08", tokens: 42 }],
-            summary: { lifetimeTokens: 42 },
+            dailyBuckets: [{ startDate: "2026-07-08", tokens: 1_200 }],
+            summary: { lifetimeTokens: 1_200 },
           },
         },
       },
@@ -857,14 +864,30 @@ describe("deriveProviderAccountUsagePresentationForProvider", () => {
     );
 
     expect(presentation?.windows).toEqual([]);
-    expect(presentation?.tokenUsage).toBeDefined();
+    expect(presentation?.tokenUsage?.scope).toBe("local");
     expect(presentation?.notice).toEqual({
       signIn: true,
       text: "Claude is signed out. Sign in to see usage.",
     });
   });
 
-  it("uses the server's own words when it gives no reason, and never for API keys", () => {
+  it("leaves readable Claude limits alone", () => {
+    const presentation = deriveProviderAccountUsagePresentationForProvider({
+      driver: claude,
+      auth: {
+        status: "authenticated",
+        type: "maxplan",
+        capabilities: { usage: { status: "verified" } },
+      },
+      accountUsage: makeUsage(41),
+    });
+
+    expect(presentation?.notice).toBeUndefined();
+    expect(presentation?.windows.map((window) => window.usedPercent)).toEqual([41]);
+  });
+
+  it("never blames the sign-in for limits a server gives no reason for", () => {
+    // A server that gives no reason still gives its own words for it.
     expect(
       deriveProviderAccountUsagePresentationForProvider(
         {
@@ -882,13 +905,22 @@ describe("deriveProviderAccountUsagePresentationForProvider", () => {
       )?.notice,
     ).toEqual({ signIn: false, text: "Usage was not checked." });
 
-    // Nothing known to be wrong: no numbers and no claim about sign-in.
+    // A sign-in whose server said nothing about usage: say the limits are
+    // missing, and stop there.
     expect(
       deriveProviderAccountUsagePresentationForProvider(
         { driver: claude, auth: { status: "authenticated", type: "maxplan" } },
         nowMs,
       ),
-    ).toBeNull();
+    ).toEqual({
+      label: "Claude usage",
+      reachedLimit: false,
+      windows: [],
+      notice: { signIn: false, text: "Plan limits can't be read right now." },
+    });
+  });
+
+  it("does not report missing Claude limits for API-key auth", () => {
     expect(
       deriveProviderAccountUsagePresentationForProvider(
         {
@@ -896,6 +928,7 @@ describe("deriveProviderAccountUsagePresentationForProvider", () => {
           auth: {
             status: "authenticated",
             type: "apiKey",
+            label: "Claude API Key",
             capabilities: { usage: { status: "unavailable" } },
           },
         },
@@ -1005,6 +1038,76 @@ describe("isProviderUsageNearLimit", () => {
       ],
     };
     expect(isProviderUsageNearLimit(deriveProviderAccountUsagePresentation(usage))).toBe(true);
+  });
+});
+
+describe("compactUsageMeters", () => {
+  const window = (key: string, label: string, usedPercent: number, shortLabel?: string) => ({
+    key,
+    label,
+    ...(shortLabel ? { shortLabel } : {}),
+    detail: `${usedPercent}% used`,
+    usedPercent,
+    remainingPercent: 100 - usedPercent,
+    reachedLimit: false,
+    warning: false,
+  });
+
+  it("lists every window in order, with scoped windows under their short label", () => {
+    const lines = compactUsageMeters({
+      windows: [
+        window("primary", "5h", 29),
+        window("secondary", "Weekly", 49),
+        window("scoped-0", "Fable (weekly)", 0, "Fable"),
+      ],
+    });
+
+    expect(lines.map((line) => [line.label, line.usedPercent])).toEqual([
+      ["5h", 29],
+      ["Weekly", 49],
+      ["Fable", 0],
+    ]);
+  });
+
+  it("past the limit keeps the account-wide windows and the fullest of the rest", () => {
+    const lines = compactUsageMeters(
+      {
+        windows: [
+          window("primary", "5h", 1),
+          window("secondary", "Weekly", 2),
+          window("scoped-0", "Fable (weekly)", 10, "Fable"),
+          window("scoped-1", "Opus (weekly)", 80, "Opus"),
+          window("scoped-2", "Sonnet (weekly)", 40, "Sonnet"),
+        ],
+      },
+      4,
+    );
+
+    expect(lines.map((line) => line.label)).toEqual(["5h", "Weekly", "Opus", "Sonnet"]);
+  });
+
+  it("keeps 5h and Weekly when a spend control takes the first line", () => {
+    const lines = compactUsageMeters(
+      {
+        spendControl: {
+          label: "Monthly",
+          detail: "5% used",
+          usedPercent: 5,
+          remainingPercent: 95,
+          reachedLimit: false,
+          warning: false,
+        },
+        windows: [
+          window("primary", "5h", 1),
+          window("secondary", "Weekly", 2),
+          window("scoped-0", "Fable (weekly)", 10, "Fable"),
+          window("scoped-1", "Opus (weekly)", 80, "Opus"),
+        ],
+      },
+      4,
+    );
+
+    expect(lines.map((line) => line.label)).toEqual(["Monthly", "5h", "Weekly", "Opus"]);
   });
 });
 

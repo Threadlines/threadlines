@@ -13,6 +13,7 @@ import {
 } from "../lib/providerUsage";
 import { cn } from "../lib/utils";
 import { Button } from "./ui/button";
+import { SegmentedControl, SegmentedControlItem } from "./ui/segmented-control";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 import { ProviderExternalResetsButton } from "./ProviderRateLimitResetCredit";
 
@@ -607,7 +608,7 @@ export function ProviderUsageDashboard(props: {
           }
         >
           {tokenUsage.summary.length > 0 ? (
-            <div className="grid grid-cols-2 overflow-hidden rounded-lg border border-border/70 sm:grid-cols-5">
+            <div className="grid grid-cols-2 sm:grid-cols-5">
               {tokenUsage.summary.map((entry, index) => {
                 const isFirstMobileRow = index < 2;
                 const isRightMobileColumn = index % 2 === 1;
@@ -617,7 +618,7 @@ export function ProviderUsageDashboard(props: {
                   <div
                     key={entry.key}
                     className={cn(
-                      "min-w-0 border-border/60 px-3 py-3 sm:col-span-1 sm:border-t-0 sm:border-l sm:px-4 sm:first:border-l-0",
+                      "min-w-0 border-group-divider px-3 py-2 sm:col-span-1 sm:border-t-0 sm:border-l sm:px-4 sm:first:border-l-0 sm:first:ps-0",
                       !isFirstMobileRow && "border-t",
                       isRightMobileColumn && "border-l",
                       isLastUnpairedEntry && "col-span-2",
@@ -647,47 +648,30 @@ export function ProviderUsageDashboard(props: {
                   </p>
                 ) : null}
               </div>
-              <div className="inline-flex rounded-md border border-border/70 bg-muted/20 p-0.5">
+              <SegmentedControl
+                value={activityMode}
+                onValueChange={setActivityMode}
+                aria-label="Token activity view"
+              >
                 {(["daily", "weekly", "cumulative"] as const).map((mode) => (
-                  <button
-                    key={mode}
-                    type="button"
-                    className={cn(
-                      "h-7 cursor-pointer rounded px-2.5 text-xs transition-colors",
-                      activityMode === mode
-                        ? "bg-background text-foreground shadow-xs"
-                        : "text-muted-foreground hover:text-foreground",
-                    )}
-                    onClick={() => setActivityMode(mode)}
-                    aria-pressed={activityMode === mode}
-                  >
+                  <SegmentedControlItem key={mode} value={mode}>
                     {ACTIVITY_MODE_LABELS[mode]}
-                  </button>
+                  </SegmentedControlItem>
                 ))}
-              </div>
+              </SegmentedControl>
             </div>
-            <div
-              role="group"
-              className="inline-flex w-fit rounded-md border border-border/70 bg-muted/20 p-0.5 sm:hidden"
+            <SegmentedControl
+              className="sm:hidden"
+              value={activityRange}
+              onValueChange={setActivityRange}
               aria-label="Token activity range"
             >
               {(["13-weeks", "1-year"] as const).map((range) => (
-                <button
-                  key={range}
-                  type="button"
-                  className={cn(
-                    "h-7 cursor-pointer rounded px-2.5 text-xs transition-colors",
-                    activityRange === range
-                      ? "bg-background text-foreground shadow-xs"
-                      : "text-muted-foreground hover:text-foreground",
-                  )}
-                  onClick={() => setActivityRange(range)}
-                  aria-pressed={activityRange === range}
-                >
+                <SegmentedControlItem key={range} value={range}>
                   {range === "13-weeks" ? "13 weeks" : "1 year"}
-                </button>
+                </SegmentedControlItem>
               ))}
-            </div>
+            </SegmentedControl>
             {activityWeeks.length > 0 ? (
               <>
                 <div className="overflow-x-auto sm:hidden">

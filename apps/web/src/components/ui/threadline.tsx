@@ -263,7 +263,6 @@ export {
   CurrentMarker,
   LiveNode,
   SectionLabel,
-  SectionTick,
   SpineNode,
   SpineRow,
   spineAccentRowStyle,

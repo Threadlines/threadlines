@@ -242,7 +242,7 @@ export function ProviderModelsSection({
   };
 
   return (
-    <div className="border-t border-border/60 px-4 py-3 sm:px-5">
+    <div className="border-t border-group-divider px-4 py-3 sm:px-5">
       <div className="text-xs font-medium text-foreground">Models</div>
       <div className="mt-1 text-xs text-muted-foreground">
         {models.length} model{models.length === 1 ? "" : "s"} available.
@@ -251,7 +251,7 @@ export function ProviderModelsSection({
         <div className="mt-2 flex min-w-0 flex-wrap items-center gap-1.5">
           <span className="text-[11px] font-medium text-muted-foreground">Fallback</span>
           {normalizedFallbackModels.length === 0 ? (
-            <span className="text-[11px] text-muted-foreground/70">None</span>
+            <span className="text-[11px] text-muted-foreground">None</span>
           ) : (
             normalizedFallbackModels.map((slug, index) => {
               const canMoveEarlier = index > 0;
@@ -382,7 +382,7 @@ export function ProviderModelsSection({
                   </Badge>
                 ) : null}
                 {metaLabel ? (
-                  <span className="hidden shrink-0 font-mono text-[10px] text-muted-foreground/70 sm:inline">
+                  <span className="hidden shrink-0 font-mono text-[10px] text-muted-foreground sm:inline">
                     {metaLabel}
                   </span>
                 ) : null}

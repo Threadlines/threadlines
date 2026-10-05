@@ -152,6 +152,7 @@ import {
   AlertDialogTitle,
 } from "../ui/alert-dialog";
 import { Badge } from "../ui/badge";
+import { DropdownChevron } from "../ui/select";
 import { Button } from "../ui/button";
 import { Checkbox } from "../ui/checkbox";
 import {
@@ -1850,7 +1851,7 @@ function SourceControlBranchMenu({
               <GitBranchIcon className="size-3 shrink-0" />
               <span className="truncate">{currentBranch ?? "Select branch"}</span>
             </span>
-            <ChevronDownIcon className="size-3 shrink-0 opacity-60" />
+            <DropdownChevron solid />
           </MenuTrigger>
           <MenuPopup align="start" side="top" className="w-72">
             <MenuGroup>

@@ -132,9 +132,12 @@ describe("ContextWindowMeter", () => {
 
     try {
       await page.getByRole("button", { name: /Context window/ }).click();
+      await expect.element(page.getByText("Claude usage")).toBeVisible();
       await expect
         .element(page.getByText("Claude is signed out. Sign in to see usage."))
         .toBeVisible();
+      // Nothing to draw: an empty meter would read as "0% used".
+      expect(document.querySelectorAll('[role="meter"]')).toHaveLength(0);
       await page.getByRole("button", { name: "Sign in" }).click();
       expect(signIn).toHaveBeenCalledTimes(1);
 

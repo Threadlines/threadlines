@@ -21,7 +21,7 @@ const badgeVariants = cva(
         sm: "h-5 min-w-5 rounded-[var(--app-radius-badge)] px-[calc(--spacing(1)-1px)] text-xs sm:h-4 sm:min-w-4 sm:text-[.625rem]",
       },
       variant: {
-        default: "bg-primary text-primary-foreground [button&,a&]:hover:bg-primary/90",
+        default: "bg-primary text-primary-foreground [button&,a&]:hover:bg-primary-hover",
         destructive: "bg-destructive text-white [button&,a&]:hover:bg-destructive/90",
         error: "bg-destructive/8 text-destructive-foreground dark:bg-destructive/16",
         info: "bg-info/8 text-info-foreground dark:bg-info/16",

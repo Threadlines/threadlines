@@ -28,7 +28,6 @@ import {
 import { OpenSourceSupportLinks } from "./OpenSourceSupportLinks";
 import { ProjectFavicon } from "./ProjectFavicon";
 import { RecentThreadsList } from "./RecentThreadsList";
-import { resolveSidebarNewThreadEnvMode } from "./Sidebar.logic";
 import { riseDelay, ThreadlinesFigure } from "./ThreadlinesFigure";
 import { Button } from "./ui/button";
 import { Empty, EmptyDescription, EmptyTitle } from "./ui/empty";
@@ -43,14 +42,12 @@ import {
   MenuTrigger,
 } from "./ui/menu";
 import { SidebarInset, SidebarOpenTrigger } from "./ui/sidebar";
-import { useSettings } from "~/hooks/useSettings";
 import { cn } from "~/lib/utils";
 import { COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS } from "../workspaceTitlebar";
 
 export function NoActiveThreadState() {
   const { activeDraftThread, activeThread, defaultProjectRef, handleNewThread, orderedProjects } =
     useHandleNewThread();
-  const appSettings = useSettings();
   const setCommandPaletteOpen = useCommandPaletteStore((store) => store.setOpen);
   const openAddProject = useCommandPaletteStore((store) => store.openAddProject);
   const activeEnvironmentId = useStore((state) => state.activeEnvironmentId);
@@ -77,9 +74,6 @@ export function NoActiveThreadState() {
     activeDraftThread,
     activeThread,
     defaultProjectRef,
-    defaultThreadEnvMode: resolveSidebarNewThreadEnvMode({
-      defaultEnvMode: appSettings.defaultThreadEnvMode,
-    }),
     handleNewThread,
   };
   const handleNewThreadClick = () => {

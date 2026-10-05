@@ -20,6 +20,7 @@ import {
   applyMovedDraftDefaults,
   applyNewThreadDefaultsToDraft,
   buildNewThreadParticipants,
+  placeDraftFromSettings,
   readComputerConfig,
   resolveNewThreadDefaults,
 } from "./newThreadDefaults";
@@ -225,13 +226,48 @@ describe("new thread defaults on a draft", () => {
     expect(useComposerDraftStore.getState().getDraftThread(draftId)?.room).toBeUndefined();
   });
 
-  it("gives a moved draft the new computer's model, unless the user picked one", async () => {
+  // The first new thread at startup opens before its computer's settings.
+  it("places a draft that opened early where the computer's Start in says", () => {
+    const store = useComposerDraftStore.getState();
+    const openEarly = (draft: DraftId, computer: EnvironmentId) => {
+      store.setProjectDraftThreadId(scopeProjectRef(computer, projectId), draft, {
+        threadId: ThreadId.make(`thread-${draft}`),
+        envMode: "local",
+      });
+      placeDraftFromSettings(draft, computer, (startIn) => ({
+        branch: null,
+        worktreePath: null,
+        envMode: startIn,
+      }));
+    };
+    const session = (draft: DraftId) => useComposerDraftStore.getState().getDraftSession(draft);
+    openEarly(draftId, desktop);
+    // On this one the user picks a branch before the settings come.
+    const pickedId = DraftId.make("draft-picked");
+    openEarly(pickedId, studio);
+    store.setDraftThreadContext(pickedId, { branch: "release" });
+    expect(session(draftId)?.envMode).toBe("local");
+
+    for (const computer of [desktop, studio]) {
+      useSavedEnvironmentRuntimeStore.getState().patch(computer, {
+        serverConfig: computerConfig(computer, { defaultThreadEnvMode: "worktree" }),
+      });
+    }
+
+    expect(session(draftId)?.envMode).toBe("worktree");
+    expect(session(pickedId)).toMatchObject({ branch: "release", envMode: "local" });
+  });
+
+  it("gives a moved draft the new computer's model and Start in, unless the user picked a model", async () => {
     const store = useComposerDraftStore.getState();
     useSavedEnvironmentRuntimeStore.getState().patch(desktop, {
       serverConfig: computerConfig(desktop),
     });
     useSavedEnvironmentRuntimeStore.getState().patch(studio, {
-      serverConfig: computerConfig(studio, { newThreadModelSelection: opus }),
+      serverConfig: computerConfig(studio, {
+        newThreadModelSelection: opus,
+        defaultThreadEnvMode: "worktree",
+      }),
     });
     store.setStickyModelSelection(astra);
     store.setProjectDraftThreadId(scopeProjectRef(desktop, projectId), draftId, {
@@ -245,6 +281,8 @@ describe("new thread defaults on a draft", () => {
     store.setDraftThreadContext(draftId, { projectRef: scopeProjectRef(studio, projectId) });
     await applyMovedDraftDefaults(draftId, studio);
     expect(draft()?.activeProvider).toBe(CLAUDE);
+    // The studio's Start in comes with the move too.
+    expect(useComposerDraftStore.getState().getDraftSession(draftId)?.envMode).toBe("worktree");
 
     store.setModelSelection(draftId, astra);
     store.setDraftThreadContext(draftId, { projectRef: scopeProjectRef(desktop, projectId) });

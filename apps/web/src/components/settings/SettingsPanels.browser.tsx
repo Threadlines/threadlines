@@ -1935,6 +1935,81 @@ describe("GeneralSettingsPanel observability", () => {
     await expect.element(page.getByText(/Optional for remote or headless chat/)).toBeVisible();
   });
 
+  it("says a Claude row is signed out of usage and opens its sign-in from there", async () => {
+    setServerConfigSnapshot({
+      ...createBaseServerConfig(),
+      providers: [
+        {
+          ...createClaudeProvider(),
+          auth: {
+            status: "authenticated",
+            type: "maxplan",
+            label: "Claude Max Subscription",
+            capabilities: {
+              chat: { status: "configured" },
+              usage: { status: "unavailable", reason: "signed_out" },
+            },
+          },
+        },
+      ],
+    });
+
+    mounted = await renderWithTestRouter(
+      <TestAppProviders>
+        <ProviderSettingsPanel />
+      </TestAppProviders>,
+    );
+
+    const signedOut = page.getByRole("button", {
+      name: "Claude usage. Claude is signed out. Sign in to see usage.",
+    });
+    await expect.element(signedOut).toHaveTextContent("Usage signed out");
+    // No empty meter stands in for a reading the app does not have.
+    const row = signedOut.element().closest('[data-testid="provider-instance-row"]');
+    expect(row?.textContent).not.toContain("0%");
+
+    await signedOut.click();
+    await expect.element(page.getByText("Account & Sign-in")).toBeVisible();
+  });
+
+  it("does not send a Claude row to sign-in over a usage check that only failed", async () => {
+    setServerConfigSnapshot({
+      ...createBaseServerConfig(),
+      providers: [
+        {
+          ...createClaudeProvider(),
+          auth: {
+            status: "authenticated",
+            type: "maxplan",
+            label: "Claude Max Subscription",
+            capabilities: {
+              chat: { status: "configured" },
+              usage: { status: "unavailable", reason: "rate_limited" },
+            },
+          },
+        },
+      ],
+    });
+
+    mounted = await renderWithTestRouter(
+      <TestAppProviders>
+        <ProviderSettingsPanel />
+      </TestAppProviders>,
+    );
+
+    await page
+      .getByRole("button", {
+        name: "Claude usage. Claude is limiting usage checks. Trying again soon.",
+      })
+      .click();
+    // The row opens on its Usage tab, which explains it; nothing asks for a sign-in.
+    await expect
+      .element(page.getByText("Claude is limiting usage checks. Trying again soon."))
+      .toBeVisible();
+    await expect.element(page.getByText("Account & Sign-in")).not.toBeInTheDocument();
+    await expect.element(page.getByRole("button", { name: "Sign in" })).not.toBeInTheDocument();
+  });
+
   it("signs a provider in without leaving settings", async () => {
     setServerConfigSnapshot({
       ...createBaseServerConfig(),
@@ -2131,7 +2206,7 @@ describe("GeneralSettingsPanel observability", () => {
     );
 
     await page.getByLabelText("Toggle Codex details").click();
-    await page.getByRole("button", { name: "Usage" }).click();
+    await page.getByRole("button", { name: "Usage", exact: true }).click();
 
     const beforeFirstActivity = formatTokenActivityTestDate(utcDateKeyAtOffset(-41));
     const missingActivityDate = formatTokenActivityTestDate(utcDateKeyAtOffset(-39));
@@ -2159,7 +2234,7 @@ describe("GeneralSettingsPanel observability", () => {
     );
 
     await page.getByLabelText("Toggle Claude details").click();
-    await page.getByRole("button", { name: "Usage" }).click();
+    await page.getByRole("button", { name: "Usage", exact: true }).click();
 
     await expect.element(page.getByText("Local token activity").first()).toBeVisible();
     await expect
@@ -2488,6 +2563,51 @@ describe("GeneralSettingsPanel observability", () => {
     await expect
       .element(page.getByRole("link", { name: "https://claude.com/product/claude-code" }))
       .toBeVisible();
+  });
+
+  it("turns an agent off from its row and keeps the row in place until the pointer leaves", async () => {
+    const updateSettings = vi
+      .fn<LocalApi["server"]["updateSettings"]>()
+      .mockResolvedValue(DEFAULT_SERVER_SETTINGS);
+    window.nativeApi = {
+      persistence: {
+        getClientSettings: vi.fn().mockResolvedValue(null),
+        setClientSettings: vi.fn().mockResolvedValue(undefined),
+      },
+      server: { updateSettings },
+    } as unknown as LocalApi;
+    setServerConfigSnapshot(createBaseServerConfig());
+
+    mounted = await renderWithTestRouter(
+      <TestAppProviders>
+        <ProviderSettingsPanel />
+      </TestAppProviders>,
+    );
+
+    const codexRow = () =>
+      document.querySelector<HTMLElement>('[data-provider-instance-id="codex"]')!;
+    const notInUseHeading = () =>
+      [...document.querySelectorAll("h2")].find((heading) => heading.textContent === "Not in use")!;
+    const sitsUnderNotInUse = () =>
+      Boolean(
+        notInUseHeading().compareDocumentPosition(codexRow()) & Node.DOCUMENT_POSITION_FOLLOWING,
+      );
+
+    const codexSwitch = page.getByRole("switch", { name: "Use Codex" });
+    await expect.element(codexSwitch).toBeChecked();
+    expect(sitsUnderNotInUse()).toBe(false);
+
+    await codexSwitch.click();
+
+    await expect.element(codexSwitch).not.toBeChecked();
+    expect(updateSettings).toHaveBeenCalled();
+    // Off, but still where it was: a wrong click is one click to undo.
+    expect(sitsUnderNotInUse()).toBe(false);
+
+    await userEvent.unhover(codexRow().parentElement!);
+    await vi.waitFor(() => {
+      expect(sitsUnderNotInUse()).toBe(true);
+    });
   });
 
   it("runs verified native one-click updates for Windows Claude advisories", async () => {
@@ -2910,8 +3030,8 @@ describe("SourceControlSettingsPanel discovery states", () => {
       </TestAppProviders>,
     );
 
-    await expect.element(page.getByText("Version Control")).toBeInTheDocument();
-    await expect.element(page.getByText("Source Control Providers")).toBeInTheDocument();
+    await expect.element(page.getByText("Version control")).toBeInTheDocument();
+    await expect.element(page.getByText("Source control providers")).toBeInTheDocument();
     await expect
       .element(page.getByRole("button", { name: "Rescan server environment" }))
       .toBeDisabled();

@@ -6,6 +6,10 @@
 /* The primary pointer can hover (mouse/trackpad). Hide-until-hover affordances
    are gated on this, so touch screens get them permanently visible instead. */
 @custom-variant can-hover (@media (hover: hover));
+/* The new-thread hero: a chat column whose timeline is showing the roomy
+   empty state, which is the element marked data-draft-hero (see useDraftHero).
+   Matches the column itself and everything inside it. */
+@custom-variant draft-hero (&:is([data-chat-column]:has([data-draft-hero]), [data-chat-column]:has([data-draft-hero]) *));
 
 :root {
   --workspace-topbar-height: 52px;
@@ -85,7 +89,17 @@
   --color-primary-graph: var(--primary-graph);
   --color-primary-readable: var(--primary-readable);
   --color-primary-foreground: var(--primary-foreground);
+  --color-primary-hover: var(--primary-hover);
   --color-primary: var(--primary);
+  --color-brand-navy: var(--brand-navy);
+  --color-group: var(--group);
+  --color-group-divider: var(--group-divider);
+  --color-control: var(--control);
+  --color-control-hover: var(--control-hover);
+  --color-control-pressed: var(--control-pressed);
+  --color-field: var(--field);
+  --color-switch-off: var(--switch-off);
+  --color-segmented-track: var(--segmented-track);
   --color-popover-foreground: var(--popover-foreground);
   --color-popover: var(--popover);
   --color-card-foreground: var(--card-foreground);
@@ -198,8 +212,15 @@
   --app-window-resize-edge-inset: 0px;
   --app-scrollbar-hit-size: 10px;
   --app-scrollbar-thumb-inset: 2px;
-  --app-accent-blue: #00347d;
-  /* Surfaces are fully neutral grey in both modes; the navy accent is the only hue in
+  /* The brand navy. Deliberately darker than the blue most apps use. */
+  --brand-navy: #00347d;
+  /* The accent ("deep navy"): the brand navy itself in light mode, and the same
+     navy turned up one step in dark mode (see the dark block), where navy as
+     is sinks into the dark surfaces and an "on" switch reads as off. The thread
+     sidebar's multi-select tint and update card use --brand-navy directly, so
+     they look the same in both modes. See docs/design/design-language.md. */
+  --app-accent-blue: var(--brand-navy);
+  /* Surfaces are fully neutral grey in both modes; the blue accent is the only hue in
      the palette, and neutral-vs-warm is itself the differentiator from comparable
      tools. Light is a soft-grey canvas with white raised surfaces (chrome 0.95 <
      rail 0.965 < background 0.98 < card/popover white); dark inverts it (see below). */
@@ -219,6 +240,9 @@
   --popover: var(--color-white);
   --popover-foreground: var(--foreground);
   --primary: var(--app-accent-blue);
+  /* Hover and pressed fill of anything filled with the accent: an opaque step
+     lighter, never a translucent fill that lets the surface show through. */
+  --primary-hover: oklch(0.4 0.15 260);
   --primary-readable: oklch(0.488 0.217 264);
   --primary-graph: oklch(0.488 0.217 264);
   /* The two providers charted on the usage page, and the only brand hues in the
@@ -244,6 +268,7 @@
   --secondary-foreground: var(--foreground);
   --muted: --alpha(var(--color-black) / 4%);
   --muted-foreground: oklch(0.5 0 0);
+  --group-muted-foreground: var(--muted-foreground);
   --accent: --alpha(var(--color-black) / 4%);
   --accent-foreground: var(--foreground);
   /* Resting fill of the chosen row in value pickers. Kept faint on purpose:
@@ -251,6 +276,27 @@
      inset ring (--border), a difference in structure rather than in shade. */
   --pick-selected: --alpha(var(--color-black) / 3%);
   --control-active: --alpha(var(--color-black) / 9%);
+  /* Groups: the quiet filled blocks settings sections and lists of like items sit
+     in. Translucent, so a group reads the same on the canvas, a panel or a dialog. */
+  --group: --alpha(var(--color-black) / 3.5%);
+  --group-ring: --alpha(var(--color-black) / 5%);
+  --group-divider: --alpha(var(--color-black) / 7%);
+  /* Solid controls (buttons, dropdowns, checkboxes in content). Light draws them
+     the way macOS does: white, a hairline ring and a soft drop. */
+  --control: var(--color-white);
+  --control-hover: oklch(0.975 0 0);
+  --control-pressed: oklch(0.95 0 0);
+  --control-shadow: 0 0 0 0.5px rgb(0 0 0 / 0.16), 0 1px 1.5px rgb(0 0 0 / 0.1);
+  /* Pressed (and open-menu) face: the edge stays, the drop goes. */
+  --control-shadow-pressed: 0 0 0 0.5px rgb(0 0 0 / 0.16);
+  /* Pressed-in text fields. */
+  --field: var(--color-white);
+  --field-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.18), inset 0 1px 1px rgb(0 0 0 / 0.05);
+  --switch-off: --alpha(var(--color-black) / 20%);
+  /* Segmented-control track: grey under the white chosen piece in light (a white
+     field would swallow it), pressed in like a field in dark. */
+  --segmented-track: --alpha(var(--color-black) / 6%);
+  --segmented-track-shadow: inset 0 0 0 0.5px rgb(0 0 0 / 0.08);
   --destructive: var(--color-red-500);
   --border: --alpha(var(--color-black) / 8%);
   --input: --alpha(var(--color-black) / 10%);
@@ -308,7 +354,12 @@
     --sidebar-accent-foreground: var(--foreground);
     --popover: oklch(0.312 0 0);
     --popover-foreground: var(--foreground);
+    /* Navy turned up one step: enough for an "on" switch to stand out from the
+       dark group behind it (2.2:1), still darker than typical app blue. White
+       text on it is 6.8:1. */
+    --app-accent-blue: oklch(0.48 0.18 261);
     --primary: var(--app-accent-blue);
+    --primary-hover: oklch(0.53 0.19 261);
     --primary-readable: oklch(0.65 0.19 264);
     --primary-graph: oklch(0.7 0.17 264);
     --provider-claude: #e08b66;
@@ -329,6 +380,24 @@
     --accent-foreground: var(--foreground);
     --pick-selected: --alpha(var(--color-white) / 4%);
     --control-active: --alpha(var(--color-white) / 17%);
+    --group: --alpha(var(--color-white) / 4.5%);
+    --group-ring: --alpha(var(--color-white) / 5%);
+    --group-divider: --alpha(var(--color-white) / 7%);
+    /* Group descriptions: a step brighter than --muted-foreground, which falls
+       under 4.5:1 on a group inside a dialog. Groups re-declare
+       --muted-foreground with it. */
+    --group-muted-foreground: oklch(0.74 0 0);
+    --control: --alpha(var(--color-white) / 10%);
+    --control-hover: --alpha(var(--color-white) / 14%);
+    --control-pressed: --alpha(var(--color-white) / 7%);
+    /* Dark solidity comes from a 0.5px top highlight plus a 1px drop. */
+    --control-shadow: inset 0 0.5px 0 rgb(255 255 255 / 0.16), 0 1px 1.5px rgb(0 0 0 / 0.35);
+    --control-shadow-pressed: inset 0 0.5px 0 rgb(255 255 255 / 0.08);
+    --field: --alpha(var(--color-black) / 24%);
+    --field-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.12), inset 0 1px 2px rgb(0 0 0 / 0.3);
+    --switch-off: --alpha(var(--color-white) / 22%);
+    --segmented-track: var(--field);
+    --segmented-track-shadow: var(--field-shadow);
     --destructive: color-mix(in srgb, var(--color-red-500) 90%, var(--color-white));
     --border: --alpha(var(--color-white) / 14%);
     --input: --alpha(var(--color-white) / 13%);
@@ -502,6 +571,54 @@ code {
 
 @utility recess {
   box-shadow: var(--recess);
+}
+
+/* A group: the quiet filled block settings sections and lists of like items sit
+   in (docs/design/design-language.md). Rows inside draw their own inset
+   dividers in --group-divider. Secondary text inside steps up to keep 4.5:1. */
+@utility surface-group {
+  background-color: var(--group);
+  border-radius: var(--app-radius-large);
+  box-shadow: inset 0 0 0 1px var(--group-ring);
+  --muted-foreground: var(--group-muted-foreground);
+}
+
+/* A group drawn per run of rows, for lists that must stay one keyed list while
+   headings split them into groups (the Providers page's In use / Not in use: a
+   row moving between them is reordered, not remounted). Rows carry
+   data-group-row; anything else, such as a heading, ends the run. Same look as
+   .surface-group: fill, ring, inset dividers, rounded ends. */
+[data-group-row] {
+  --group-run-top: 0 0 #0000;
+  --group-run-bottom: 0 0 #0000;
+  --muted-foreground: var(--group-muted-foreground);
+  position: relative;
+  background-color: var(--group);
+  box-shadow:
+    inset 1px 0 0 var(--group-ring),
+    inset -1px 0 0 var(--group-ring),
+    var(--group-run-top),
+    var(--group-run-bottom);
+}
+[data-group-row]:not([data-group-row] + [data-group-row]) {
+  --group-run-top: inset 0 1px 0 var(--group-ring);
+  border-top-left-radius: var(--app-radius-large);
+  border-top-right-radius: var(--app-radius-large);
+}
+[data-group-row]:not(:has(+ [data-group-row])) {
+  --group-run-bottom: inset 0 -1px 0 var(--group-ring);
+  border-bottom-left-radius: var(--app-radius-large);
+  border-bottom-right-radius: var(--app-radius-large);
+}
+[data-group-row] + [data-group-row]::before {
+  content: "";
+  pointer-events: none;
+  position: absolute;
+  top: 0;
+  left: 0.875rem;
+  right: 0;
+  height: 1px;
+  background-color: var(--group-divider);
 }
 
 /* Scrollbar styling */
@@ -879,10 +996,9 @@ label:has(> select#reasoning-effort) select {
   top: 0.5rem;
   right: 0.5rem;
   z-index: 1;
-  border-color: color-mix(in srgb, var(--border) 50%, transparent);
+  /* A plain row action, with a faint backing so it stays legible over code. */
   background: color-mix(in srgb, var(--background) 75%, transparent);
   color: var(--muted-foreground);
-  box-shadow: none;
 }
 
 .chat-markdown .chat-markdown-shiki .shiki {
@@ -1781,10 +1897,11 @@ label:has(> select#reasoning-effort) select {
 
 .plan-mode-frame {
   background-color: color-mix(in srgb, var(--primary) 36%, transparent);
+  /* Rings only: Plan mode is an "on" state, drawn in the accent. No glow; the
+     composer sits in the page and does not float. */
   box-shadow:
     0 0 0 1px color-mix(in srgb, var(--primary) 32%, transparent),
-    0 0 0 5px color-mix(in srgb, var(--primary) 12%, transparent),
-    0 8px 28px color-mix(in srgb, var(--primary) 10%, transparent);
+    0 0 0 4px color-mix(in srgb, var(--primary) 12%, transparent);
 }
 
 /* Ultracode accent. Base rules target light mode — deep violet reads against

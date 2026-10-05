@@ -21,7 +21,7 @@ const selectTriggerVariants = cva(
     variants: {
       variant: {
         default:
-          "w-full min-w-36 border-input bg-background not-dark:bg-clip-padding text-foreground shadow-xs/5 before:pointer-events-none before:absolute before:inset-0 before:rounded-[calc(var(--radius-lg)-1px)] not-data-disabled:not-focus-visible:not-aria-invalid:not-data-pressed:before:shadow-[0_1px_--theme(--color-black/4%)] pointer-coarse:after:absolute pointer-coarse:after:size-full pointer-coarse:after:min-h-11 focus-visible:border-focus-ring focus-ring aria-invalid:border-destructive/36 focus-visible:aria-invalid:border-destructive/64 focus-visible:aria-invalid:ring-destructive/16 dark:bg-input/32 dark:aria-invalid:ring-destructive/24 dark:not-data-disabled:not-focus-visible:not-aria-invalid:not-data-pressed:before:shadow-[0_-1px_--theme(--color-white/6%)] [&_svg:not([class*='opacity-'])]:opacity-80 [[data-disabled],:focus-visible,[aria-invalid],[data-pressed]]:shadow-none",
+          "w-full min-w-36 border-transparent bg-control text-foreground shadow-(--control-shadow) pointer-coarse:after:absolute pointer-coarse:after:size-full pointer-coarse:after:min-h-11 focus-ring aria-invalid:border-destructive/40 focus-visible:aria-invalid:border-destructive/64 focus-visible:aria-invalid:ring-destructive/16 dark:aria-invalid:ring-destructive/24 hover:bg-control-hover [:active,[data-pressed]]:not-data-disabled:bg-control-pressed [:active,[data-pressed]]:not-data-disabled:shadow-(--control-shadow-pressed) [&_svg:not([class*='opacity-'])]:opacity-80",
         ghost:
           "border-transparent text-muted-foreground/70 focus-ring data-pressed:bg-accent [:hover,[data-pressed]]:bg-accent [:hover,[data-pressed]]:text-foreground/80",
       },
@@ -35,7 +35,20 @@ const selectTriggerVariants = cva(
   },
 );
 
-const selectTriggerIconClassName = "-me-1 size-4.5 opacity-80 sm:size-4";
+const selectTriggerIconClassName = "-me-1 size-3.5 shrink-0 opacity-70";
+
+/**
+ * The chevron a dropdown trigger ends with: up-down chevrons on a solid
+ * trigger (content, macOS style), a small down chevron on a plain one
+ * (toolbars). Custom triggers (model and reasoning pickers) use it too.
+ */
+function DropdownChevron({ solid }: { solid: boolean }) {
+  return solid ? (
+    <ChevronsUpDownIcon aria-hidden="true" className={selectTriggerIconClassName} />
+  ) : (
+    <ChevronDownIcon aria-hidden="true" className="size-3 shrink-0 opacity-60" />
+  );
+}
 
 interface SelectButtonProps extends useRender.ComponentProps<"button"> {
   size?: VariantProps<typeof selectTriggerVariants>["size"];
@@ -53,11 +66,7 @@ function SelectButton({ className, size, variant, render, children, ...props }: 
         <span className="flex-1 truncate in-data-placeholder:text-muted-foreground/72">
           {children}
         </span>
-        {variant === "ghost" ? (
-          <ChevronDownIcon className="size-3 opacity-50" />
-        ) : (
-          <ChevronsUpDownIcon className={selectTriggerIconClassName} />
-        )}
+        <DropdownChevron solid={variant !== "ghost"} />
       </>
     ),
     className: cn(selectTriggerVariants({ size, variant }), "min-w-none", className),
@@ -87,8 +96,29 @@ function SelectTrigger({
     >
       {children}
       <SelectPrimitive.Icon data-slot="select-icon">
-        <ChevronDownIcon className="size-3 opacity-50" />
+        <DropdownChevron solid={variant !== "ghost"} />
       </SelectPrimitive.Icon>
+    </SelectPrimitive.Trigger>
+  );
+}
+
+/**
+ * A picker set inside running words: the chosen value as text with a dotted
+ * underline, no box and no chevron. The underline is the affordance, the way
+ * the new-thread question names its project. Shared with the combobox trigger
+ * that sits in the same sentence.
+ */
+const inlinePickerTriggerClassName =
+  "inline-flex min-w-0 max-w-full cursor-pointer items-baseline rounded-xs border-b align-baseline border-dotted border-muted-foreground/50 pb-px text-left text-foreground/85 outline-none transition-colors focus-ring hover:border-foreground hover:text-foreground data-popup-open:border-foreground data-popup-open:text-foreground data-disabled:pointer-events-none data-disabled:opacity-64";
+
+function SelectInlineTrigger({ className, children, ...props }: SelectPrimitive.Trigger.Props) {
+  return (
+    <SelectPrimitive.Trigger
+      className={cn(inlinePickerTriggerClassName, className)}
+      data-slot="select-inline-trigger"
+      {...props}
+    >
+      {children}
     </SelectPrimitive.Trigger>
   );
 }
@@ -224,8 +254,11 @@ function SelectGroupLabel(props: SelectPrimitive.GroupLabel.Props) {
 export {
   Select,
   SelectTrigger,
+  SelectInlineTrigger,
+  inlinePickerTriggerClassName,
   SelectButton,
   selectTriggerVariants,
+  DropdownChevron,
   SelectValue,
   SelectPopup,
   SelectPopup as SelectContent,

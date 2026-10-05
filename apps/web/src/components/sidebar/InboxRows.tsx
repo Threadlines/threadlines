@@ -63,7 +63,7 @@ export const ROW_SURFACE_CLASS_NAME =
 /** Hover and selection are colour shifts only — nothing moves under the cursor. */
 export function resolveRowSurfaceTone(input: { isActive: boolean; isSelected: boolean }): string {
   if (input.isSelected) {
-    return "bg-primary/15 dark:bg-primary/22 hover:bg-primary/19 dark:hover:bg-primary/28";
+    return "bg-brand-navy/15 dark:bg-brand-navy/22 hover:bg-brand-navy/19 dark:hover:bg-brand-navy/28";
   }
   if (input.isActive) {
     return "bg-sidebar-accent";
@@ -79,7 +79,7 @@ export function resolveRowSurfaceTone(input: { isActive: boolean; isSelected: bo
  */
 function resolveRowHoverFillTone(input: { isActive: boolean; isSelected: boolean }): string {
   if (input.isSelected) {
-    return "bg-primary/19 dark:bg-primary/28";
+    return "bg-brand-navy/19 dark:bg-brand-navy/28";
   }
   if (input.isActive) {
     return "bg-sidebar-accent";
