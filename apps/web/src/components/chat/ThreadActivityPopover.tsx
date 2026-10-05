@@ -263,6 +263,15 @@ export function deriveThreadActivityTriggerState(input: {
   };
 }
 
+/**
+ * The counts on the button ("3/6", "2"). The text box is trimmed to the
+ * digits' own height (cap height to baseline), so centering it against an
+ * icon centers the glyphs rather than the font's line box, which sat bare
+ * digits like "1" a hair above the icon beside them.
+ */
+const TRIGGER_COUNT_CLASS_NAME =
+  "font-mono text-[10.5px] font-semibold leading-none tabular-nums [text-box:trim-both_cap_alphabetic]";
+
 function TriggerContent({ state }: { state: ActivityTriggerState }) {
   const { tasks, runCount } = state;
   return (
@@ -276,12 +285,7 @@ function TriggerContent({ state }: { state: ActivityTriggerState }) {
           ) : (
             <ListTodoIcon className="size-3" aria-hidden="true" />
           )}
-          <span
-            className={cn(
-              "font-mono text-[10.5px] font-semibold leading-none tabular-nums",
-              toneTextClassName(tasks.tone),
-            )}
-          >
+          <span className={cn(TRIGGER_COUNT_CLASS_NAME, toneTextClassName(tasks.tone))}>
             {tasks.label}
           </span>
         </span>
@@ -290,9 +294,7 @@ function TriggerContent({ state }: { state: ActivityTriggerState }) {
       {runCount > 0 ? (
         <span className="flex items-center gap-1" data-activity-trigger-part="runs">
           <RadioIcon className="size-3" aria-hidden="true" />
-          <span className="font-mono text-[10.5px] font-semibold leading-none tabular-nums">
-            {runCount}
-          </span>
+          <span className={TRIGGER_COUNT_CLASS_NAME}>{runCount}</span>
         </span>
       ) : null}
     </span>
