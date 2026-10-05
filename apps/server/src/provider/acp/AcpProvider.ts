@@ -45,7 +45,7 @@ import {
   buildAcpModelsFromConfigOptions,
   EMPTY_ACP_MODEL_CAPABILITIES,
   flattenSessionConfigSelectOptions,
-  GENERIC_ACP_MODEL_OPTION_MAPPING,
+  acpModelOptionMappingFor,
   hasAcpModelCapabilities,
   selectConfigOptionCurrentValue,
 } from "./AcpProviderModels.ts";
@@ -66,7 +66,7 @@ type ProbeEnv =
 function mappingFor<Settings extends AcpProviderSettings>(
   descriptor: AcpProviderDescriptor<Settings>,
 ) {
-  return descriptor.modelOptions ?? GENERIC_ACP_MODEL_OPTION_MAPPING;
+  return acpModelOptionMappingFor(descriptor);
 }
 
 export function getAcpFallbackModels<Settings extends AcpProviderSettings>(
@@ -204,10 +204,12 @@ const startProbeSession = <Settings extends AcpProviderSettings>(
   acp: AcpSessionRuntimeShape,
 ) =>
   Effect.gen(function* () {
-    const started = yield* acp
+    yield* acp
       .start()
       .pipe(Effect.timeout(descriptor.modelDiscoveryTimeoutMs ?? ACP_MODEL_DISCOVERY_TIMEOUT_MS));
-    let configOptions = started.sessionSetupResult.configOptions ?? [];
+    // The runtime's view, not the raw response: for native controls it also
+    // holds the stand-ins for the older `modes` / `models` fields.
+    let configOptions = yield* acp.getConfigOptions;
     for (const update of mappingFor(descriptor).configUpdatesFromSelections(configOptions, [])) {
       const response = yield* acp.setConfigOption(update.configId, update.value);
       configOptions = response.configOptions ?? configOptions;
@@ -238,6 +240,7 @@ export const discoverAcpModels = <Settings extends AcpProviderSettings>(
             configOptions,
             mapping: mappingFor(descriptor),
             sharedCapabilities: descriptor.modelCapabilitiesVaryByModel !== true,
+            defaultModelWhenNone: descriptor.sessionControls === "native",
           }),
         ),
       ),

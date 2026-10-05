@@ -15,6 +15,11 @@ import {
 const isAcpProcessExitedError = Schema.is(EffectAcpErrors.AcpProcessExitedError);
 const isAcpRequestError = Schema.is(EffectAcpErrors.AcpRequestError);
 
+/** ACP's `auth_required`: the agent wants a sign-in before it goes on. */
+export function isAcpAuthRequiredError(error: unknown): boolean {
+  return isAcpRequestError(error) && error.code === -32000;
+}
+
 export function mapAcpToAdapterError(
   provider: ProviderDriverKind,
   threadId: ThreadId,

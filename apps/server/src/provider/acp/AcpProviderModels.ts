@@ -21,8 +21,13 @@ import {
 import type * as EffectAcpSchema from "effect-acp/schema";
 
 import { buildBooleanOptionDescriptor, buildSelectOptionDescriptor } from "../providerSnapshot.ts";
-import type { AcpConfigUpdate, AcpModelOptionMapping } from "./AcpProviderDescriptor.ts";
-import { findModelConfigOption } from "./AcpRuntimeModel.ts";
+import type {
+  AcpConfigUpdate,
+  AcpModelOptionMapping,
+  AcpProviderDescriptor,
+  AcpProviderSettings,
+} from "./AcpProviderDescriptor.ts";
+import { findModelConfigOption, isModeConfigOption } from "./AcpRuntimeModel.ts";
 
 export const EMPTY_ACP_MODEL_CAPABILITIES: ModelCapabilities = createModelCapabilities({
   optionDescriptors: [],
@@ -58,88 +63,115 @@ export function selectConfigOptionCurrentValue(
   return configOption.currentValue?.trim() || undefined;
 }
 
-/** Mode-style options are driven by the runtime mode, never by the model picker. */
-function isSessionControlOption(option: EffectAcpSchema.SessionConfigOption): boolean {
-  return option.category === "mode" || option.id.trim().toLowerCase() === "mode";
-}
-
-export const GENERIC_ACP_MODEL_OPTION_MAPPING: AcpModelOptionMapping = {
-  capabilitiesFromConfigOptions: (configOptions) => {
-    const modelOption = findModelConfigOption(configOptions);
-    const optionDescriptors: Array<ProviderOptionDescriptor> = [];
-    for (const option of configOptions) {
-      if (option === modelOption || isSessionControlOption(option)) {
-        continue;
-      }
-      const label = option.name.trim() || option.id;
-      const description = option.description?.trim() || undefined;
-      if (option.type === "boolean") {
+/**
+ * Mirrors every option but the model one-to-one. `modeOptions: "hidden"`
+ * leaves out mode-style options (driven by the runtime mode, never by the
+ * model picker); `"shown"` keeps them, for agents driven through their own
+ * controls.
+ */
+const makeAcpModelOptionMapping = (modeOptions: "hidden" | "shown"): AcpModelOptionMapping => {
+  const isSessionControlOption = (option: EffectAcpSchema.SessionConfigOption) =>
+    modeOptions === "hidden" && isModeConfigOption(option);
+  return {
+    capabilitiesFromConfigOptions: (configOptions) => {
+      const modelOption = findModelConfigOption(configOptions);
+      const optionDescriptors: Array<ProviderOptionDescriptor> = [];
+      for (const option of configOptions) {
+        if (option === modelOption || isSessionControlOption(option)) {
+          continue;
+        }
+        const label = option.name.trim() || option.id;
+        const description = option.description?.trim() || undefined;
+        if (option.type === "boolean") {
+          optionDescriptors.push(
+            buildBooleanOptionDescriptor({
+              id: option.id,
+              label,
+              currentValue: option.currentValue,
+              ...(description ? { description } : {}),
+            }),
+          );
+          continue;
+        }
+        if (option.type !== "select") {
+          continue;
+        }
+        const choices = flattenSessionConfigSelectOptions(option);
+        if (choices.length === 0) {
+          continue;
+        }
+        const currentValue = selectConfigOptionCurrentValue(option);
         optionDescriptors.push(
-          buildBooleanOptionDescriptor({
+          buildSelectOptionDescriptor({
             id: option.id,
             label,
-            currentValue: option.currentValue,
+            options: choices.map((choice) => ({
+              value: choice.value,
+              label: choice.name || choice.value,
+              ...(choice.value === currentValue ? { isDefault: true } : {}),
+            })),
             ...(description ? { description } : {}),
           }),
         );
-        continue;
       }
-      if (option.type !== "select") {
-        continue;
+      return createModelCapabilities({ optionDescriptors });
+    },
+    configUpdatesFromSelections: (configOptions, selections) => {
+      if (!selections || selections.length === 0) {
+        return [];
       }
-      const choices = flattenSessionConfigSelectOptions(option);
-      if (choices.length === 0) {
-        continue;
-      }
-      const currentValue = selectConfigOptionCurrentValue(option);
-      optionDescriptors.push(
-        buildSelectOptionDescriptor({
-          id: option.id,
-          label,
-          options: choices.map((choice) => ({
-            value: choice.value,
-            label: choice.name || choice.value,
-            ...(choice.value === currentValue ? { isDefault: true } : {}),
-          })),
-          ...(description ? { description } : {}),
-        }),
-      );
-    }
-    return createModelCapabilities({ optionDescriptors });
-  },
-  configUpdatesFromSelections: (configOptions, selections) => {
-    if (!selections || selections.length === 0) {
-      return [];
-    }
-    const modelOption = findModelConfigOption(configOptions);
-    const updates: Array<AcpConfigUpdate> = [];
-    for (const option of configOptions) {
-      if (option === modelOption || isSessionControlOption(option)) {
-        continue;
-      }
-      const requested = getProviderOptionSelectionValue(selections, option.id);
-      if (requested === undefined) {
-        continue;
-      }
-      if (option.type === "boolean") {
-        if (typeof requested === "boolean") {
-          updates.push({ configId: option.id, value: requested });
+      const modelOption = findModelConfigOption(configOptions);
+      const updates: Array<AcpConfigUpdate> = [];
+      for (const option of configOptions) {
+        if (option === modelOption || isSessionControlOption(option)) {
+          continue;
         }
-        continue;
+        const requested = getProviderOptionSelectionValue(selections, option.id);
+        if (requested === undefined) {
+          continue;
+        }
+        if (option.type === "boolean") {
+          if (typeof requested === "boolean") {
+            updates.push({ configId: option.id, value: requested });
+          }
+          continue;
+        }
+        if (option.type !== "select" || typeof requested !== "string") {
+          continue;
+        }
+        const match = flattenSessionConfigSelectOptions(option).find(
+          (choice) => choice.value === requested.trim(),
+        );
+        if (match) {
+          updates.push({ configId: option.id, value: match.value });
+        }
       }
-      if (option.type !== "select" || typeof requested !== "string") {
-        continue;
-      }
-      const match = flattenSessionConfigSelectOptions(option).find(
-        (choice) => choice.value === requested.trim(),
-      );
-      if (match) {
-        updates.push({ configId: option.id, value: match.value });
-      }
-    }
-    return updates;
-  },
+      return updates;
+    },
+  };
 };
+
+export const GENERIC_ACP_MODEL_OPTION_MAPPING = makeAcpModelOptionMapping("hidden");
+/** For `sessionControls: "native"`: the agent's mode options are options like any other. */
+export const NATIVE_ACP_MODEL_OPTION_MAPPING = makeAcpModelOptionMapping("shown");
+
+/** A descriptor's own mapping, else the generic one for its kind of session controls. */
+export function acpModelOptionMappingFor(
+  descriptor: Pick<AcpProviderDescriptor<AcpProviderSettings>, "modelOptions" | "sessionControls">,
+): AcpModelOptionMapping {
+  return (
+    descriptor.modelOptions ??
+    (descriptor.sessionControls === "native"
+      ? NATIVE_ACP_MODEL_OPTION_MAPPING
+      : GENERIC_ACP_MODEL_OPTION_MAPPING)
+  );
+}
+
+/**
+ * The one model of an agent that offers no model choice
+ * (`sessionControls: "native"`). Selecting it sends the agent nothing.
+ */
+export const ACP_DEFAULT_MODEL_SLUG = "default";
 
 export function hasAcpModelCapabilities(model: Pick<ServerProviderModel, "capabilities">): boolean {
   return (model.capabilities?.optionDescriptors?.length ?? 0) > 0;
@@ -174,18 +206,28 @@ export function buildAcpDiscoveredModels(
  * Models advertised by a session's `configOptions`. The current model gets
  * the capabilities derived from the live option set; other entries share
  * them when `sharedCapabilities` is set, otherwise they wait for a per-model
- * probe.
+ * probe. With `defaultModelWhenNone`, an agent that lists no model gets the
+ * single "Default" model carrying the session's options.
  */
 export function buildAcpModelsFromConfigOptions(input: {
   readonly configOptions: ReadonlyArray<EffectAcpSchema.SessionConfigOption> | null | undefined;
   readonly mapping: AcpModelOptionMapping;
   readonly sharedCapabilities: boolean;
+  readonly defaultModelWhenNone?: boolean;
 }): ReadonlyArray<ServerProviderModel> {
   const configOptions = input.configOptions ?? [];
   const modelOption = findModelConfigOption(configOptions);
   const choices = flattenSessionConfigSelectOptions(modelOption);
   if (!modelOption || choices.length === 0) {
-    return [];
+    return input.defaultModelWhenNone
+      ? buildAcpDiscoveredModels([
+          {
+            slug: ACP_DEFAULT_MODEL_SLUG,
+            name: "Default",
+            capabilities: input.mapping.capabilitiesFromConfigOptions(configOptions),
+          },
+        ])
+      : [];
   }
   const currentValue = selectConfigOptionCurrentValue(modelOption);
   const currentCapabilities = input.mapping.capabilitiesFromConfigOptions(configOptions);

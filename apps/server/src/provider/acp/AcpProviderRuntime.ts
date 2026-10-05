@@ -21,8 +21,12 @@ import type {
   AcpProviderDescriptor,
   AcpProviderSettings,
 } from "./AcpProviderDescriptor.ts";
-import { GENERIC_ACP_MODEL_OPTION_MAPPING } from "./AcpProviderModels.ts";
-import { findModelConfigOption } from "./AcpRuntimeModel.ts";
+import {
+  ACP_DEFAULT_MODEL_SLUG,
+  acpModelOptionMappingFor,
+  flattenSessionConfigSelectOptions,
+} from "./AcpProviderModels.ts";
+import { findModelConfigOption, findSessionConfigOption } from "./AcpRuntimeModel.ts";
 import {
   AcpSessionRuntime,
   type AcpSessionRuntimeOptions,
@@ -31,7 +35,7 @@ import {
 
 export interface AcpProviderRuntimeInput<Settings extends AcpProviderSettings> extends Omit<
   AcpSessionRuntimeOptions,
-  "authMethodId" | "clientCapabilities" | "spawn" | "stderrFailure"
+  "authMethodId" | "clientCapabilities" | "sessionControls" | "spawn" | "stderrFailure"
 > {
   readonly childProcessSpawner: ChildProcessSpawner.ChildProcessSpawner["Service"];
   readonly settings: Settings;
@@ -73,6 +77,7 @@ export const makeAcpProviderRuntime = <Settings extends AcpProviderSettings>(
         spawn,
         cwd: descriptor.resolveSessionCwd ? descriptor.resolveSessionCwd(input.cwd) : input.cwd,
         ...(resolvedAuthMethodId ? { authMethodId: resolvedAuthMethodId } : {}),
+        ...(descriptor.sessionControls ? { sessionControls: descriptor.sessionControls } : {}),
         ...(onStderrLine || (onSignInUrl && signInUrlFromStderr)
           ? {
               onStderrLine: (line: string) =>
@@ -124,27 +129,45 @@ export function defaultResolveAcpModelId(model: string | null | undefined): stri
 export function applyAcpModelSelection<E>(input: {
   readonly descriptor: Pick<
     AcpProviderDescriptor<AcpProviderSettings>,
-    "modelOptions" | "resolveModelId"
+    "modelOptions" | "resolveModelId" | "sessionControls"
   >;
   readonly runtime: AcpModelSelectionRuntime;
   readonly model: string | null | undefined;
   readonly selections: ReadonlyArray<ProviderOptionSelection> | null | undefined;
   readonly mapError: (context: AcpModelSelectionErrorContext) => E;
 }): Effect.Effect<void, E> {
-  const mapping = input.descriptor.modelOptions ?? GENERIC_ACP_MODEL_OPTION_MAPPING;
+  const mapping = acpModelOptionMappingFor(input.descriptor);
   const resolveModelId = input.descriptor.resolveModelId ?? defaultResolveAcpModelId;
 
+  const native = input.descriptor.sessionControls === "native";
+  // Native controls: setting one option can retire another (or one of its
+  // values), so each write is checked against what the agent offers now and
+  // a retired one is skipped rather than failing the turn.
+  const stillOffered = (update: AcpConfigUpdate) =>
+    input.runtime.getConfigOptions.pipe(
+      Effect.map((configOptions) => {
+        const option = findSessionConfigOption(configOptions, update.configId);
+        if (!option) return false;
+        if (option.type !== "select") return typeof update.value === "boolean";
+        return flattenSessionConfigSelectOptions(option).some(
+          (choice) => choice.value === update.value,
+        );
+      }),
+    );
   const applyUpdates = (updates: ReadonlyArray<AcpConfigUpdate>) =>
     Effect.forEach(
       updates,
       (update) =>
-        input.runtime
-          .setConfigOption(update.configId, update.value)
-          .pipe(
-            Effect.mapError((cause) =>
-              input.mapError({ cause, step: "set-config-option", configId: update.configId }),
-            ),
-          ),
+        Effect.gen(function* () {
+          if (native && !(yield* stillOffered(update))) return;
+          yield* input.runtime
+            .setConfigOption(update.configId, update.value)
+            .pipe(
+              Effect.mapError((cause) =>
+                input.mapError({ cause, step: "set-config-option", configId: update.configId }),
+              ),
+            );
+        }),
       { discard: true },
     );
 
@@ -164,7 +187,17 @@ export function applyAcpModelSelection<E>(input: {
       selections: input.selections,
       configOptions: initialOptions,
     });
-    if (modelId !== undefined) {
+    // Native controls: "Default" is the stand-in model of an agent with no
+    // model choice, so it is only ever sent when the agent really offers a
+    // model by that name. And an agent with nothing to choose from is never
+    // asked to set a model: that would fail the turn.
+    const modelChoices = flattenSessionConfigSelectOptions(modelOption);
+    const hasModelControl =
+      !native ||
+      (modelChoices.length > 0 &&
+        (modelId !== ACP_DEFAULT_MODEL_SLUG ||
+          modelChoices.some((choice) => choice.value === ACP_DEFAULT_MODEL_SLUG)));
+    if (modelId !== undefined && hasModelControl) {
       yield* input.runtime
         .setModel(modelId)
         .pipe(Effect.mapError((cause) => input.mapError({ cause, step: "set-model" })));

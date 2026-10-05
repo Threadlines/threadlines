@@ -21,8 +21,18 @@ const emitThoughts = process.env.T3_ACP_EMIT_THOUGHTS === "1";
 const advertiseHttpMcp = process.env.T3_ACP_ADVERTISE_HTTP_MCP === "1";
 const emitAskQuestion = process.env.T3_ACP_EMIT_ASK_QUESTION === "1";
 const failSetConfigOption = process.env.T3_ACP_FAIL_SET_CONFIG_OPTION === "1";
+// Refuses every option change until the user signs in.
+const authRequiredOnSetConfigOption = process.env.T3_ACP_FAIL_SET_CONFIG_OPTION === "auth";
 const exitOnSetConfigOption = process.env.T3_ACP_EXIT_ON_SET_CONFIG_OPTION === "1";
 const promptResponseText = process.env.T3_ACP_PROMPT_RESPONSE_TEXT;
+// An agent that lists sign-in methods and refuses a session until signed in.
+const authRequired = process.env.T3_ACP_AUTH_REQUIRED === "1";
+// The older API shape: `modes` / `models` fields, no config options.
+const legacyControls = process.env.T3_ACP_LEGACY_CONTROLS === "1";
+// An agent with a permission-style mode option and no model choice.
+const noModelChoice = process.env.T3_ACP_NO_MODEL === "1";
+// Announces a changed option list at the start of each prompt.
+const emitConfigOptionUpdate = process.env.T3_ACP_EMIT_CONFIG_OPTION_UPDATE === "1";
 const sessionId = "mock-session-1";
 
 let currentModeId = "ask";
@@ -55,6 +65,18 @@ process.once("exit", (code) => {
 });
 
 function configOptions(): ReadonlyArray<AcpSchema.SessionConfigOption> {
+  if (noModelChoice) {
+    return [
+      {
+        id: "permission",
+        name: "Permissions",
+        category: "mode",
+        type: "select",
+        currentValue: currentModeId,
+        options: availableModes.map((mode) => ({ value: mode.id, name: mode.name })),
+      },
+    ];
+  }
   if (parameterizedModelPicker) {
     const baseOptions: Array<AcpSchema.SessionConfigOption> = [
       {
@@ -223,6 +245,7 @@ const program = Effect.gen(function* () {
           loadSession: true,
           ...(advertiseHttpMcp ? { mcpCapabilities: { http: true } } : {}),
         },
+        ...(authRequired ? { authMethods: [{ id: "mock-login", name: "Log in to Mock" }] } : {}),
       };
     }),
   );
@@ -230,10 +253,33 @@ const program = Effect.gen(function* () {
   yield* agent.handleAuthenticate(() => Effect.succeed({}));
 
   yield* agent.handleCreateSession(() =>
-    Effect.succeed({
-      sessionId,
-      modes: modeState(),
-      configOptions: configOptions(),
+    authRequired
+      ? Effect.fail(AcpError.AcpRequestError.authRequired())
+      : Effect.succeed(
+          legacyControls
+            ? {
+                sessionId,
+                modes: modeState(),
+                models: {
+                  currentModelId: currentModelId,
+                  availableModels: [
+                    { modelId: "default", name: "Auto" },
+                    { modelId: "composer-2", name: "Composer 2" },
+                  ],
+                },
+              }
+            : {
+                sessionId,
+                modes: modeState(),
+                configOptions: configOptions(),
+              },
+        ),
+  );
+
+  yield* agent.handleSetSessionModel((request) =>
+    Effect.sync(() => {
+      currentModelId = request.modelId;
+      return {};
     }),
   );
 
@@ -261,6 +307,9 @@ const program = Effect.gen(function* () {
           process.exit(7);
         });
       }
+      if (authRequiredOnSetConfigOption) {
+        return yield* AcpError.AcpRequestError.authRequired();
+      }
       if (failSetConfigOption) {
         return yield* AcpError.AcpRequestError.invalidParams(
           "Mock invalid params for session/set_config_option",
@@ -270,7 +319,10 @@ const program = Effect.gen(function* () {
           },
         );
       }
-      if (request.configId === "mode" && typeof request.value === "string") {
+      if (
+        (request.configId === "mode" || request.configId === "permission") &&
+        typeof request.value === "string"
+      ) {
         currentModeId = request.value;
       }
       if (request.configId === "model" && typeof request.value === "string") {
@@ -300,6 +352,28 @@ const program = Effect.gen(function* () {
   yield* agent.handlePrompt((request) =>
     Effect.gen(function* () {
       const requestedSessionId = String(request.sessionId ?? sessionId);
+
+      if (emitConfigOptionUpdate) {
+        yield* agent.client.sessionUpdate({
+          sessionId: requestedSessionId,
+          update: {
+            sessionUpdate: "config_option_update",
+            configOptions: [
+              {
+                id: "effort",
+                name: "Effort",
+                category: "thought_level",
+                type: "select",
+                currentValue: "high",
+                options: [
+                  { value: "low", name: "Low" },
+                  { value: "high", name: "High" },
+                ],
+              },
+            ],
+          },
+        });
+      }
 
       if (emitInterleavedAssistantToolCalls) {
         const toolCallId = "tool-call-1";
@@ -545,7 +619,7 @@ const program = Effect.gen(function* () {
   );
 
   yield* agent.handleUnknownExtRequest((method, params) => {
-    if (method !== "session/mode/set") {
+    if (method !== "session/mode/set" && method !== "session/set_mode") {
       return Effect.fail(AcpError.AcpRequestError.methodNotFound(method));
     }
 

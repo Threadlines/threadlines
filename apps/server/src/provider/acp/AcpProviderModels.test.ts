@@ -5,6 +5,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   buildAcpModelsFromConfigOptions,
   GENERIC_ACP_MODEL_OPTION_MAPPING,
+  NATIVE_ACP_MODEL_OPTION_MAPPING,
 } from "./AcpProviderModels.ts";
 
 // Shape of fx's `session/new` response: a provider picker filed under the
@@ -92,5 +93,57 @@ describe("buildAcpModelsFromConfigOptions", () => {
       "anthropic/claude-sonnet-5",
     ]);
     expect(models.every((model) => model.capabilities?.optionDescriptors?.length === 1)).toBe(true);
+  });
+});
+
+describe("NATIVE_ACP_MODEL_OPTION_MAPPING", () => {
+  // dirac's shape (recorded 2026-10-05): several options carry the `mode` category.
+  const diracLikeOptions = [
+    {
+      id: "mode",
+      name: "Mode",
+      category: "mode",
+      type: "select",
+      currentValue: "act",
+      options: [
+        { value: "plan", name: "Plan" },
+        { value: "act", name: "Act" },
+      ],
+    },
+    { id: "yolo", name: "YOLO", category: "mode", type: "boolean", currentValue: false },
+  ] satisfies ReadonlyArray<EffectAcpSchema.SessionConfigOption>;
+
+  it("shows the agent's mode options, which the user sets and Threadlines never does", () => {
+    const ids = (mapping: typeof GENERIC_ACP_MODEL_OPTION_MAPPING) =>
+      mapping
+        .capabilitiesFromConfigOptions(diracLikeOptions)
+        .optionDescriptors?.map((descriptor) => descriptor.id);
+    expect(ids(NATIVE_ACP_MODEL_OPTION_MAPPING)).toEqual(["mode", "yolo"]);
+    expect(ids(GENERIC_ACP_MODEL_OPTION_MAPPING)).toEqual([]);
+    expect(
+      NATIVE_ACP_MODEL_OPTION_MAPPING.configUpdatesFromSelections(diracLikeOptions, [
+        { id: "mode", value: "plan" },
+        // No longer offered by the agent: dropped, not sent.
+        { id: "effort", value: "high" },
+      ]),
+    ).toEqual([{ configId: "mode", value: "plan" }]);
+  });
+
+  it("gives an agent with no model choice one Default model that carries its options", () => {
+    const build = (defaultModelWhenNone: boolean) =>
+      buildAcpModelsFromConfigOptions({
+        configOptions: diracLikeOptions,
+        mapping: NATIVE_ACP_MODEL_OPTION_MAPPING,
+        sharedCapabilities: true,
+        defaultModelWhenNone,
+      });
+    expect(build(false)).toEqual([]);
+    const [model, ...rest] = build(true);
+    expect(rest).toEqual([]);
+    expect(model?.slug).toBe("default");
+    expect(model?.capabilities?.optionDescriptors?.map((descriptor) => descriptor.id)).toEqual([
+      "mode",
+      "yolo",
+    ]);
   });
 });
