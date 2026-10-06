@@ -627,6 +627,13 @@ code {
   height: 1px;
   background-color: var(--group-divider);
 }
+/* Rows inside a group that draws itself (a list that scrolls within a
+   SettingsGroup) keep only their dividers: the fill and the ring are the
+   group's, and stay put while the rows move under them. */
+.surface-group [data-group-row] {
+  background-color: transparent;
+  box-shadow: none;
+}
 
 /* Scrollbar styling */
 :root {

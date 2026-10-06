@@ -3760,6 +3760,47 @@ describe("ProviderSettingsPanel community agents", () => {
     expect(addAcpRegistryAgent).toHaveBeenCalledTimes(1);
   });
 
+  it("scrolls a long list inside its own box, which keeps its height while a search narrows it", async () => {
+    const agents = Array.from({ length: 16 }, (_, index) => {
+      const number = String(index).padStart(2, "0");
+      return createCommunityCatalogAgent({ agentId: `agent-${number}`, name: `Agent ${number}` });
+    });
+    stubServer({
+      listAcpRegistryAgents: vi.fn().mockResolvedValue(createCommunityCatalog(agents)),
+    });
+    setServerConfigSnapshot(createBaseServerConfig());
+
+    await mountProviders();
+
+    await expect.element(page.getByTestId("community-agent-agent-00")).toBeVisible();
+    const box = page.getByTestId("community-agent-list").element();
+    const viewport = box.querySelector('[data-slot="scroll-area-viewport"]');
+    if (viewport === null) throw new Error("The community list has no scrolling part.");
+    // More rows than the box shows: they scroll in it, and never sideways.
+    expect(viewport.scrollHeight).toBeGreaterThan(viewport.clientHeight);
+    expect(viewport.scrollWidth).toBe(viewport.clientWidth);
+    const height = box.getBoundingClientRect().height;
+
+    // The install question of the last row opens below the box's edge and is brought into view.
+    const last = page.getByTestId("community-agent-agent-15");
+    await last.getByRole("button", { name: "Install", exact: true }).click();
+    const cancel = last.getByRole("button", { name: "Cancel" });
+    await expect.element(cancel).toBeVisible();
+    await vi.waitFor(() => {
+      expect(cancel.element().getBoundingClientRect().bottom).toBeLessThanOrEqual(
+        viewport.getBoundingClientRect().bottom,
+      );
+    });
+
+    // A search starts at its first match and leaves the box as tall as it was.
+    await page.getByLabelText("Search community agents").fill("Agent 03");
+    await expect.element(page.getByTestId("community-agent-agent-03")).toBeVisible();
+    await expect.element(page.getByTestId("community-agent-agent-15")).not.toBeInTheDocument();
+    await expect.element(page.getByText("1 of 16")).toBeVisible();
+    expect(viewport.scrollTop).toBe(0);
+    expect(box.getBoundingClientRect().height).toBe(height);
+  });
+
   it("offers no install while the registry's quarantine list is unknown", async () => {
     const addAcpRegistryAgent = vi.fn();
     stubServer({

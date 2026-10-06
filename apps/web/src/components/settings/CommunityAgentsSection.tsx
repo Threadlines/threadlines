@@ -8,6 +8,9 @@
  * listing moved in between. Once added, the agent leaves this list and shows
  * as a row under "In use", where its install runs.
  *
+ * The rows sit in one box that scrolls on its own, so a long registry doesn't
+ * stretch the page; the search row stays at the top of that box.
+ *
  * Everything shown here comes from the registry and is drawn as text; an
  * agent's icon is drawn as a mask (see `ProviderGlyph`).
  *
@@ -25,22 +28,33 @@ import {
   acpRegistrySourceText,
   filterAcpRegistryAgents,
 } from "@threadlines/shared/acpRegistry";
-import { LoaderIcon, SearchIcon } from "lucide-react";
+import { LoaderIcon, SearchIcon, XIcon } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { openExternalUrl } from "../../lib/externalLinks";
+import { cn } from "../../lib/utils";
 import { ensureLocalApi } from "../../localApi";
 import { ProviderGlyph } from "../chat/ProviderInstanceIcon";
 import { Button } from "../ui/button";
-import { Input } from "../ui/input";
+import { ScrollArea } from "../ui/scroll-area";
 import { toastManager } from "../ui/toast";
 import { AgentRow } from "./AgentRow";
 import { communityAgentErrorText } from "./communityAgents";
 import { ProviderGroupHeading } from "./ProviderGroupHeading";
+import { SettingsGroup } from "./settingsLayout";
 
 const REGISTRY_URL = "https://github.com/agentclientprotocol/registry";
 /** Below this many agents a search field is more clutter than help. */
 const SEARCH_MIN_AGENTS = 8;
+/**
+ * The scrolling part of the list's box: six rows and half of the next, so a
+ * longer list visibly runs on, and never more than most of a short window. A
+ * list long enough to search always fills it, so it keeps that height while a
+ * search narrows the rows; a shorter list only grows to it (an install
+ * question can).
+ */
+const LIST_HEIGHT_CLASS = "h-[min(24.75rem,60vh)]";
+const LIST_MAX_HEIGHT_CLASS = "max-h-[min(24.75rem,60vh)]";
 
 const WHAT_WORKS: ReadonlyArray<{ readonly title: string; readonly items: ReadonlyArray<string> }> =
   [
@@ -104,6 +118,7 @@ export function CommunityAgentsSection(props: {
   // Only the newest request may write the list.
   const loadSeq = useRef(0);
   const sectionRef = useRef<HTMLElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
   // When the page was opened for this group: once as it opens, and once
   // more when the list has arrived and the page has its final height.
   const revealStep = props.revealOnArrival
@@ -167,6 +182,22 @@ export function CommunityAgentsSection(props: {
     () => acpRegistryAmbiguousAgentIds(catalog?.agents ?? []),
     [catalog],
   );
+  const searchable = available.length >= SEARCH_MIN_AGENTS;
+
+  // An install question that opens below the edge of the list's box is
+  // brought into view, in the box and on the page.
+  useEffect(() => {
+    if (confirmingAgentId === null) return;
+    listRef.current
+      ?.querySelector('[data-agent-row-expanded="true"]')
+      ?.scrollIntoView({ block: "nearest" });
+  }, [confirmingAgentId]);
+
+  const search = (value: string) => {
+    setQuery(value);
+    // A new search starts at its first match, wherever the list was scrolled to.
+    listRef.current?.closest('[data-slot="scroll-area-viewport"]')?.scrollTo({ top: 0 });
+  };
 
   const install = (agent: AcpRegistryCatalogAgent) => {
     if (addingAgentId !== null) return;
@@ -195,7 +226,13 @@ export function CommunityAgentsSection(props: {
     <section ref={sectionRef} aria-label="Community agents" data-testid="community-agents">
       <ProviderGroupHeading
         label="Community agents"
-        count={catalog ? available.length : undefined}
+        count={
+          catalog === null
+            ? undefined
+            : query.trim().length > 0
+              ? `${shown.length} of ${available.length}`
+              : available.length
+        }
       />
       <div className="px-1 pb-3 text-[12.5px] leading-5 text-muted-foreground">
         <p>
@@ -267,91 +304,125 @@ export function CommunityAgentsSection(props: {
               </button>
             </p>
           )}
-          {available.length >= SEARCH_MIN_AGENTS ? (
-            <div className="relative mb-2">
-              <SearchIcon
-                aria-hidden
-                className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground"
-              />
-              <Input
-                type="search"
-                size="sm"
-                className="pl-8"
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
-                placeholder="Search community agents"
-                aria-label="Search community agents"
-              />
-            </div>
-          ) : null}
-
-          {shown.map((agent) => {
-            const confirming = confirmingAgentId === agent.agentId;
-            const adding = addingAgentId === agent.agentId;
-            return (
-              <AgentRow
-                key={agent.agentId}
-                data-testid={`community-agent-${agent.agentId}`}
-                icon={
-                  <ProviderGlyph
-                    instanceId={null}
-                    driverKind={null}
-                    iconSvg={agent.iconSvg}
-                    className="size-5 shrink-0"
-                  />
-                }
-                name={agent.name}
-                label={ambiguousIds.has(agent.agentId) ? agent.agentId : undefined}
-                version={agent.version}
-                status={<span className="truncate">{acpRegistryRowSubtitle(agent)}</span>}
-                expanded={confirming}
-                actions={
-                  confirming ? null : (
-                    <Button
-                      size="xs"
-                      variant="outline"
-                      disabled={!catalog.quarantineKnown || addingAgentId !== null}
-                      onClick={() => setConfirmingAgentId(agent.agentId)}
-                    >
-                      Install
-                    </Button>
-                  )
-                }
-              >
-                {confirming ? (
-                  <div className="px-3.5 pt-1 pb-3.5 pl-[46px]">
-                    <p className="max-w-[68ch] text-[13px] leading-5 text-foreground">
-                      {acpRegistryInstallConfirmText({ agent, computer: props.computerName })}
-                    </p>
-                    <p className="mt-1 max-w-[68ch] text-[12.5px] leading-5 text-muted-foreground">
-                      {acpRegistrySourceText(agent)}
-                    </p>
-                    <div className="mt-3 flex items-center gap-2">
-                      <Button size="xs" disabled={adding} onClick={() => install(agent)}>
-                        {adding ? "Installing…" : "Install"}
-                      </Button>
-                      <Button
-                        size="xs"
-                        variant="ghost"
-                        disabled={adding}
-                        onClick={() => setConfirmingAgentId(null)}
-                      >
-                        Cancel
-                      </Button>
-                    </div>
-                  </div>
+          <SettingsGroup data-testid="community-agent-list">
+            {searchable ? (
+              // Lined up with the rows under it: the icon in their logo
+              // column, the text where their names start.
+              <div className="flex items-center gap-3 py-1.5 pr-2 pl-3.5">
+                <span className="flex size-5 shrink-0 items-center justify-center">
+                  <SearchIcon aria-hidden className="size-3.5 text-muted-foreground" />
+                </span>
+                <input
+                  type="text"
+                  value={query}
+                  onChange={(event) => search(event.currentTarget.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Escape" && query.length > 0) {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      search("");
+                    }
+                  }}
+                  placeholder="Search community agents"
+                  aria-label="Search community agents"
+                  className="h-7 min-w-0 flex-1 bg-transparent text-[13px] text-foreground outline-none placeholder:text-muted-foreground"
+                />
+                {query.length > 0 ? (
+                  <Button
+                    type="button"
+                    size="icon-xs"
+                    variant="ghost"
+                    className="size-6 shrink-0 text-muted-foreground hover:text-foreground"
+                    aria-label="Clear search"
+                    onClick={() => search("")}
+                  >
+                    <XIcon className="size-3.5" />
+                  </Button>
                 ) : null}
-              </AgentRow>
-            );
-          })}
-
-          {shown.length === 0 ? (
-            <p data-group-row="" className="px-3.5 py-3 text-[12.5px] text-muted-foreground">
-              {available.length === 0
-                ? "Every listed agent is already added."
-                : `No community agent matches "${query.trim()}".`}
-            </p>
-          ) : null}
+              </div>
+            ) : null}
+            <ScrollArea
+              scrollFade
+              chainVerticalScroll
+              observeContentResize
+              // The rows never scroll sideways: they shrink and cut their text short.
+              contentClassName="min-w-0!"
+              className={cn(
+                searchable
+                  ? ["rounded-t-none border-t border-group-divider", LIST_HEIGHT_CLASS]
+                  : LIST_MAX_HEIGHT_CLASS,
+              )}
+            >
+              <div ref={listRef}>
+                {shown.map((agent) => {
+                  const confirming = confirmingAgentId === agent.agentId;
+                  const adding = addingAgentId === agent.agentId;
+                  return (
+                    <AgentRow
+                      key={agent.agentId}
+                      data-testid={`community-agent-${agent.agentId}`}
+                      icon={
+                        <ProviderGlyph
+                          instanceId={null}
+                          driverKind={null}
+                          iconSvg={agent.iconSvg}
+                          className="size-5 shrink-0"
+                        />
+                      }
+                      name={agent.name}
+                      label={ambiguousIds.has(agent.agentId) ? agent.agentId : undefined}
+                      version={agent.version}
+                      status={<span className="truncate">{acpRegistryRowSubtitle(agent)}</span>}
+                      expanded={confirming}
+                      actions={
+                        confirming ? null : (
+                          <Button
+                            size="xs"
+                            variant="outline"
+                            disabled={!catalog.quarantineKnown || addingAgentId !== null}
+                            onClick={() => setConfirmingAgentId(agent.agentId)}
+                          >
+                            Install
+                          </Button>
+                        )
+                      }
+                    >
+                      {confirming ? (
+                        <div className="px-3.5 pt-1 pb-3.5 pl-[46px]">
+                          <p className="max-w-[68ch] text-[13px] leading-5 text-foreground">
+                            {acpRegistryInstallConfirmText({ agent, computer: props.computerName })}
+                          </p>
+                          <p className="mt-1 max-w-[68ch] text-[12.5px] leading-5 text-muted-foreground">
+                            {acpRegistrySourceText(agent)}
+                          </p>
+                          <div className="mt-3 flex items-center gap-2">
+                            <Button size="xs" disabled={adding} onClick={() => install(agent)}>
+                              {adding ? "Installing…" : "Install"}
+                            </Button>
+                            <Button
+                              size="xs"
+                              variant="ghost"
+                              disabled={adding}
+                              onClick={() => setConfirmingAgentId(null)}
+                            >
+                              Cancel
+                            </Button>
+                          </div>
+                        </div>
+                      ) : null}
+                    </AgentRow>
+                  );
+                })}
+                {shown.length === 0 ? (
+                  <p className="py-3 pr-3.5 pl-[46px] text-[12.5px] text-muted-foreground">
+                    {available.length === 0
+                      ? "Every listed agent is already added."
+                      : `No community agent matches "${query.trim()}".`}
+                  </p>
+                ) : null}
+              </div>
+            </ScrollArea>
+          </SettingsGroup>
 
           <p className="px-1 pt-2.5 text-[12.5px] leading-5 text-muted-foreground">
             {catalog.unsupportedCount > 0
