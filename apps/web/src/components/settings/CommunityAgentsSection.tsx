@@ -128,11 +128,11 @@ export function CommunityAgentsSection(props: {
       );
   }, []);
 
-  const firstLoad = useRef(true);
+  // The first look takes the server's saved copy; "Check again" asks for a fresh one.
+  const { refreshRequest } = props;
   useEffect(() => {
-    load(!firstLoad.current);
-    firstLoad.current = false;
-  }, [load, props.refreshRequest]);
+    load(refreshRequest > 0);
+  }, [load, refreshRequest]);
 
   const catalog = state.kind === "loaded" ? state.catalog : null;
   const available = useMemo(

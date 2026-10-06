@@ -110,6 +110,12 @@ export function ProviderUpdatePopover({
             >
               {versionAdvisory.detail}
             </p>
+            {liveProvider?.community ? (
+              // A community agent: the new version is as unreviewed as the old.
+              <p className="text-xs leading-snug text-muted-foreground">
+                Threadlines hasn't reviewed this version.
+              </p>
+            ) : null}
           </div>
           {updateMessage ? (
             <div

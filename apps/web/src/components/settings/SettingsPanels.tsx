@@ -139,7 +139,7 @@ import {
   SettingsSection,
 } from "./settingsLayout";
 import { useServerObservability, useServerProviders } from "../../rpc/serverState";
-import { cn, newCommandId } from "../../lib/utils";
+import { newCommandId } from "../../lib/utils";
 import { roomsEnabledFor } from "../../hooks/useRoomsEnabled";
 
 const THEME_OPTIONS = [
