@@ -7,8 +7,8 @@ export function ProviderGroupHeading({
   first = false,
 }: {
   label: string;
-  /** Left out while the number isn't known yet. */
-  count?: number | undefined;
+  /** Left out while the number isn't known yet. Text for a narrowed list ("3 of 29"). */
+  count?: number | string | undefined;
   first?: boolean;
 }) {
   return (
