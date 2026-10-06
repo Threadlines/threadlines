@@ -58,7 +58,7 @@ import {
   readAntigravityCatalog,
   writeAntigravityCatalog,
 } from "../antigravity/AntigravityProfile.ts";
-import type { AntigravityAuthGate } from "../antigravity/AntigravityAuth.ts";
+import { holdLaunchGate, type LaunchGate } from "../managedRuntime/LaunchGate.ts";
 import {
   antigravityCredentialEnvironment,
   antigravityCredentialFingerprint,
@@ -436,7 +436,7 @@ export interface AntigravityDescriptorInput {
   readonly runtime: AntigravityRuntime | undefined;
   readonly release: AntigravityPlatformRelease | undefined;
   /** While busy (signing in or out), no agent process starts; each one holds it while it runs. */
-  readonly gate?: AntigravityAuthGate;
+  readonly gate?: LaunchGate;
   /** The instance's sign-in method, project and key (fixed for an instance build). */
   readonly signIn: AntigravitySignInConfig;
 }
@@ -485,22 +485,10 @@ export function makeAntigravityDescriptor(
         // Checked and taken in one step, and held for the process's lifetime
         // (this runs in the runtime's scope), so a sign-in can wait it out.
         if (gate) {
-          yield* Effect.acquireRelease(
-            Effect.suspend(() => {
-              if (gate.busy) {
-                return Effect.fail(
-                  spawnFailure(
-                    new Error("Antigravity is signing in or out. Try again when that's done."),
-                  ),
-                );
-              }
-              gate.holds += 1;
-              return Effect.void;
-            }),
-            () =>
-              Effect.sync(() => {
-                gate.holds -= 1;
-              }),
+          yield* holdLaunchGate(gate, () =>
+            spawnFailure(
+              new Error("Antigravity is signing in or out. Try again when that's done."),
+            ),
           );
         }
         const custom = settings.binaryPath.trim();
