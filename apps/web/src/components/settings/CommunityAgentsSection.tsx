@@ -106,11 +106,14 @@ export function CommunityAgentsSection(props: {
   const sectionRef = useRef<HTMLElement>(null);
   // When the page was opened for this group: once as it opens, and once
   // more when the list has arrived and the page has its final height.
-  const revealOnArrival = props.revealOnArrival ?? false;
-  const isLoading = state.kind === "loading";
+  const revealStep = props.revealOnArrival
+    ? state.kind === "loading"
+      ? "opening"
+      : "settled"
+    : null;
   useEffect(() => {
-    if (revealOnArrival) sectionRef.current?.scrollIntoView({ block: "start" });
-  }, [revealOnArrival, isLoading]);
+    if (revealStep !== null) sectionRef.current?.scrollIntoView({ block: "start" });
+  }, [revealStep]);
 
   const load = useCallback((refresh: boolean) => {
     const seq = ++loadSeq.current;
