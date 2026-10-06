@@ -63,6 +63,7 @@ import {
   resolveRoomDelivery,
   resolveRoomSend,
   roomAgentKey,
+  useRoomAgentNames,
   useRoomRecipientStore,
 } from "../rooms";
 import { ELECTRON_HEADER_HEIGHT_CLASS } from "../desktopChrome";
@@ -1853,6 +1854,7 @@ export default function ChatView(props: ChatViewProps) {
         : null,
     [activeThread, providerInstanceEntries],
   );
+  const roomAgentNames = useRoomAgentNames(roomAgentLabels);
   // Names each agent on a message the way the message recorded it. Kept across
   // streamed words: only the agents' names and the providers change it.
   const labelParticipants = activeThread?.participants;
@@ -2830,10 +2832,11 @@ export default function ChatView(props: ChatViewProps) {
       taskPlanLive
         ? currentWorkLine(workLogEntries, {
             workspaceRoot: activeWorkspaceRoot,
+            roomAgentNames,
             sinceMs: taskCurrentStepStartedAt ? Date.parse(taskCurrentStepStartedAt) : null,
           })
         : null,
-    [activeWorkspaceRoot, taskCurrentStepStartedAt, taskPlanLive, workLogEntries],
+    [activeWorkspaceRoot, roomAgentNames, taskCurrentStepStartedAt, taskPlanLive, workLogEntries],
   );
   const taskProgress = useMemo(
     () =>

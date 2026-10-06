@@ -24,6 +24,7 @@ import {
   resolveRoomRecipient,
   roomActivityAgent,
   roomAgentKey,
+  roomAgentNames,
   roomTurnOwners,
   useRoomRecipientStore,
 } from "./rooms";
@@ -148,6 +149,34 @@ describe("rooms", () => {
     expect(labels?.get(roomAgentKey(null))?.name).toBe("opus-9");
     expect(labels?.get(roomAgentKey(astraId))?.name).toBe("GPT-6 Astra");
     expect(labels?.get(roomAgentKey(secondAstraId))?.name).toBe("GPT-6 Astra 2");
+  });
+
+  it("keeps the same names until an agent's name changes", () => {
+    // Every thread and provider update rebuilds the labels from fresh copies.
+    const build = (change: { readonly role?: string; readonly leftAt?: string } = {}) =>
+      buildRoomAgentLabels(
+        {
+          modelSelection: { instanceId: ProviderInstanceId.make("claudeAgent"), model: "opus-9" },
+          participants: [{ ...astra, ...change }],
+        },
+        [
+          {
+            instanceId: ProviderInstanceId.make("codex"),
+            models: [{ slug: "gpt-6-astra", name: "GPT-6 Astra" }],
+          },
+        ] as unknown as ReadonlyArray<ProviderInstanceEntry>,
+        (model) => model.name,
+      );
+    const names = roomAgentNames(build());
+
+    expect(names?.get(roomAgentKey(astraId))).toBe("GPT-6 Astra");
+    expect(roomAgentNames(build(), names)).toBe(names);
+    // Leaving changes no name.
+    expect(roomAgentNames(build({ leftAt: "2026-10-05T00:00:00.000Z" }), names)).toBe(names);
+    const renamed = roomAgentNames(build({ role: "Reviewer" }), names);
+    expect(renamed).not.toBe(names);
+    expect(renamed?.get(roomAgentKey(astraId))).toBe("GPT-6 Astra (Reviewer)");
+    expect(roomAgentNames(null, names)).toBeNull();
   });
 
   it("names how hard each agent's model reasons, as the model picker does", () => {

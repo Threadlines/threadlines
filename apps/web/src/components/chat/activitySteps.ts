@@ -15,8 +15,11 @@
  * does not (Codex), the label is read off the command itself. The exact call
  * stays one click away in `detail`.
  */
+import { isRoomAgentKey, isValidParticipantId } from "@threadlines/shared/threadParticipants";
+
 import type { WorkLogEntry, WorkLogStepBlock } from "../../session-logic";
 import { formatWorkspaceRelativePath } from "../../filePathDisplay";
+import { type RoomAgentNames, roomAgentNameByKey } from "../../rooms";
 import {
   basePhrase,
   blockedPhrase,
@@ -136,7 +139,13 @@ export interface ActivityStepOptions {
   /** Diff stats for an edit, when the caller has a better source than the
    *  entry's own (the turn's checkpoint diff). */
   readonly diff?: { readonly additions: number; readonly deletions: number } | null | undefined;
+  /** What the room calls each agent, to name the one a room tool call is
+   *  aimed at. Null or absent outside a room. */
+  readonly roomAgentNames?: RoomAgentNames | null | undefined;
 }
+
+/** What a step's wording takes from the place it is shown. */
+type StepWordingOptions = Pick<ActivityStepOptions, "workspaceRoot" | "roomAgentNames">;
 
 interface StepDraft {
   readonly routine: boolean;
@@ -445,8 +454,9 @@ export function threadlinesRoomToolOf(entry: WorkLogEntry): string | null {
   return null;
 }
 
-/** The agent a call names, from its argument preview: `agent=GPT-6-Astra 2 text=…`
- *  (Claude, Codex steps) or `{"agent":"GPT-6-Astra 2",…}` (Codex transcripts). */
+/** The agent a call names, as the call wrote it, from its argument preview:
+ *  `agent=GPT-6-Astra 2 text=…` (Claude, Codex steps) or
+ *  `{"agent":"GPT-6-Astra 2",…}` (Codex transcripts). */
 function agentArgument(args: string | null): string | null {
   if (!args) return null;
   // A JSON preview is read by its key, so `agent=` inside the request text
@@ -454,7 +464,29 @@ function agentArgument(args: string | null): string | null {
   const match = args.trimStart().startsWith("{")
     ? /"agent"\s*:\s*"([^"]+)"/u.exec(args)
     : /(?:^|\s)agent=(.+?)(?=\s+\w+=|$)/su.exec(args);
-  return match ? truncate(match[1]!.trim(), 40) : null;
+  return match ? match[1]!.trim() || null : null;
+}
+
+/**
+ * The agent a room tool call is aimed at, in words. A call may give the
+ * agent's key instead of a name (room_agents lists both): a key means one
+ * agent for good, so it reads as the room's name for that agent, and goes
+ * unnamed where the room cannot place it rather than showing an id. A name
+ * stays as the call wrote it. The room may have changed since, and matching
+ * the name again could land on a different agent.
+ */
+function roomToolAgent(
+  args: string | null,
+  roomAgentNames: ActivityStepOptions["roomAgentNames"],
+): string | null {
+  const named = agentArgument(args);
+  if (named === null) return null;
+  // An id in quotes or before a stray comma is still an id to whoever reads
+  // it. Only an id is read that loosely: "primary!" can be an agent's name.
+  const bare = named.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "");
+  const key = isValidParticipantId(bare) ? bare : named;
+  const name = isRoomAgentKey(key) ? roomAgentNameByKey(roomAgentNames, key) : named;
+  return name === null ? null : truncate(name, 40);
 }
 
 function words(identifier: string): string {
@@ -516,7 +548,10 @@ export function mcpCallLiveLabel(name: string): string | null {
   return draft.liveLabel ?? draft.label;
 }
 
-function mcpDraft(call: { server: string; tool: string; args: string | null }): StepDraft {
+function mcpDraft(
+  call: { server: string; tool: string; args: string | null },
+  options: StepWordingOptions = {},
+): StepDraft {
   const tool = call.tool.toLowerCase();
   if (/browser$/iu.test(call.server) || tool.startsWith("browser_")) {
     const url = call.args ? /url=(\S+)/u.exec(call.args)?.[1] : undefined;
@@ -535,7 +570,7 @@ function mcpDraft(call: { server: string; tool: string; args: string | null }): 
     };
   }
   if (call.server === "threadlines_room") {
-    const room = roomToolDraft(tool, agentArgument(call.args));
+    const room = roomToolDraft(tool, roomToolAgent(call.args, options.roomAgentNames));
     if (room) {
       return {
         ...room,
@@ -682,7 +717,11 @@ function searchDraft(detail: string | undefined): StepDraft {
 }
 
 /** A tool call the provider named but we have no wording for. */
-function genericToolDraft(title: string, detail: string | undefined): StepDraft {
+function genericToolDraft(
+  title: string,
+  detail: string | undefined,
+  options: StepWordingOptions = {},
+): StepDraft {
   const named = /^([\w.-]+):\s*(.*)$/su.exec(detail?.trim() ?? "");
   // A raw MCP id (`mcp__server__tool`, `threadlines_room-room_ask`) is never
   // shown as is.
@@ -690,7 +729,7 @@ function genericToolDraft(title: string, detail: string | undefined): StepDraft 
   const rawMcp = rawName.includes("·") ? null : parseMcpCall(rawName);
   if (rawMcp) {
     const args = named ? named[2]!.trim() : detail?.trim();
-    return mcpDraft({ ...rawMcp, args: args || null });
+    return mcpDraft({ ...rawMcp, args: args || null }, options);
   }
   const tool = truncate(named?.[1] ?? title, 40);
   // A provider's placeholder title names no tool at all.
@@ -771,7 +810,7 @@ function dynamicToolDraft(entry: WorkLogEntry, options: ActivityStepOptions): St
       };
     }
     default:
-      return genericToolDraft(title, entry.detail);
+      return genericToolDraft(title, entry.detail, options);
   }
 }
 
@@ -960,8 +999,8 @@ function entryDraft(entry: WorkLogEntry, options: ActivityStepOptions, failed: b
     const call = entry.detail ? parseMcpCall(entry.detail) : null;
     return withOutcome(
       call
-        ? mcpDraft(call)
-        : genericToolDraft(toolTitleText(entry.toolTitle ?? label), entry.detail),
+        ? mcpDraft(call, options)
+        : genericToolDraft(toolTitleText(entry.toolTitle ?? label), entry.detail, options),
       outcome,
     );
   }
@@ -1045,7 +1084,7 @@ function entryDraft(entry: WorkLogEntry, options: ActivityStepOptions, failed: b
 
   if (entry.tone === "tool") {
     return withOutcome(
-      genericToolDraft(toolTitleText(entry.toolTitle ?? label), entry.detail),
+      genericToolDraft(toolTitleText(entry.toolTitle ?? label), entry.detail, options),
       outcome,
     );
   }
@@ -1078,7 +1117,7 @@ export interface TranscriptToolCall {
 
 export function activityStepFromTranscriptTool(
   call: TranscriptToolCall,
-  options: { readonly workspaceRoot?: string | undefined } = {},
+  options: StepWordingOptions = {},
 ): ActivityStep {
   const name = call.name.trim();
   const lower = name.toLowerCase();
@@ -1118,7 +1157,7 @@ function transcriptToolDraft(
   name: string,
   summary: string,
   failed: boolean,
-  options: { readonly workspaceRoot?: string | undefined },
+  options: StepWordingOptions,
 ): StepDraft {
   const lower = name.toLowerCase();
   if (/^(?:read|read_file|view)$/u.test(lower)) {
@@ -1195,9 +1234,9 @@ function transcriptToolDraft(
   }
   const mcp = parseMcpCall(name);
   if (mcp) {
-    return mcpDraft({ ...mcp, args: summary && summary !== name ? summary : null });
+    return mcpDraft({ ...mcp, args: summary && summary !== name ? summary : null }, options);
   }
-  return genericToolDraft(name, undefined);
+  return genericToolDraft(name, undefined, options);
 }
 
 /** Output whose call the reader cannot see (it is on an earlier transcript
@@ -1576,7 +1615,10 @@ export function currentWorkLine(
     if (entry.sourceAgentThreadId !== undefined) {
       continue;
     }
-    const step = activityStepFromWorkLogEntry(entry, { workspaceRoot: options.workspaceRoot });
+    const step = activityStepFromWorkLogEntry(entry, {
+      workspaceRoot: options.workspaceRoot,
+      roomAgentNames: options.roomAgentNames,
+    });
     if (!step) {
       continue;
     }

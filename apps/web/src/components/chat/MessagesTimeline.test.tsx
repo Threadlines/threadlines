@@ -2132,6 +2132,50 @@ describe("MessagesTimeline", () => {
       expect(answered).toContain("Sent GPT-6 Astra 2&#x27;s answer to Opus 5.5");
     });
 
+    it("names an agent a room tool call gave by its id, on the step and on the working line", async () => {
+      const { MessagesTimeline } = await import("./MessagesTimeline");
+      const solId = "3b978ce5-f00c-44e6-9bda-6caee5545ba2";
+      const roomCall = (id: string, second: number, running: boolean, detail: string) => ({
+        id: `entry-${id}`,
+        kind: "work" as const,
+        createdAt: `2026-03-17T19:12:2${second}.000Z`,
+        entry: {
+          id,
+          createdAt: `2026-03-17T19:12:2${second}.000Z`,
+          label: "Tool call",
+          tone: "tool" as const,
+          itemType: "mcp_tool_call" as const,
+          executionState: running ? ("running" as const) : ("completed" as const),
+          detail,
+        },
+      });
+      const markup = renderTimeline(
+        <MessagesTimeline
+          {...buildProps()}
+          {...OPEN_STRETCH}
+          activeTurnStartedAt="2026-03-17T19:12:20.000Z"
+          timelineEntries={[
+            roomCall("asked", 1, false, `threadlines_room · room_ask: agent=${solId} text=Safe?`),
+            roomCall("asking", 2, true, `threadlines_room · room_review: agent=${solId}`),
+          ]}
+          roomAgents={
+            new Map([
+              ...roomAgents,
+              [
+                solId,
+                { ...roomAgents.get("primary")!, name: "GPT-6.1-Sol", modelName: "GPT-6.1-Sol" },
+              ],
+            ])
+          }
+        />,
+      );
+
+      expect(markup).toContain("Asked GPT-6.1-Sol");
+      expect(markup).toContain("Asking GPT-6.1-Sol for a review");
+      expect(markup).not.toContain(`Asked ${solId}`);
+      expect(markup).not.toContain(`Asking ${solId}`);
+    });
+
     it("says a hand-off ended without a reply under its message", async () => {
       const { MessagesTimeline } = await import("./MessagesTimeline");
       const markup = renderTimeline(
