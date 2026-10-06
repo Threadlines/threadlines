@@ -1174,6 +1174,36 @@ describe("composerDraftStore project draft thread mapping", () => {
     expect(reloaded.getDraftSessionByLogicalProjectKey(folderKey)?.draftId).toBe(draftId);
   });
 
+  it("still takes an older draft's environment from the project key it was saved under", () => {
+    const persistApi = useComposerDraftStore.persist as unknown as {
+      getOptions: () => {
+        merge: (
+          persistedState: unknown,
+          currentState: ReturnType<typeof useComposerDraftStore.getState>,
+        ) => ReturnType<typeof useComposerDraftStore.getState>;
+      };
+    };
+    const projectKey = scopedProjectKey(projectRef);
+    const mergedState = persistApi.getOptions().merge(
+      {
+        draftsByThreadId: {},
+        draftThreadsByThreadId: {
+          [`environment-old:${threadId}`]: {
+            projectId,
+            environmentId: TEST_ENVIRONMENT_ID,
+            logicalProjectKey: projectKey,
+          },
+        },
+        projectDraftThreadIdByProjectKey: { [projectKey]: `environment-old:${threadId}` },
+      },
+      useComposerDraftStore.getInitialState(),
+    );
+
+    expect(Object.values(mergedState.draftThreadsByThreadKey)).toMatchObject([
+      { threadId, environmentId: TEST_ENVIRONMENT_ID, projectId },
+    ]);
+  });
+
   it("stores and reads project draft thread ids via actions", () => {
     const store = useComposerDraftStore.getState();
     expect(store.getDraftThreadByProjectRef(projectRef)).toBeNull();
