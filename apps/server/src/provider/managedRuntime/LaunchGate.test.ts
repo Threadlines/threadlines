@@ -6,7 +6,12 @@ import * as Fiber from "effect/Fiber";
 import * as Scope from "effect/Scope";
 import { TestClock } from "effect/testing";
 
-import { holdLaunchGate, makeLaunchGate, withLaunchGateClosed } from "./LaunchGate.ts";
+import {
+  closeLaunchGate,
+  holdLaunchGate,
+  makeLaunchGate,
+  withLaunchGateClosed,
+} from "./LaunchGate.ts";
 
 describe("LaunchGate", () => {
   it.effect("waits out a running process, and lets nothing start or close it meanwhile", () =>
@@ -76,6 +81,33 @@ describe("LaunchGate", () => {
 
       assert.equal(yield* Fiber.join(closing), "still held");
       assert.isFalse(ran);
+      assert.isFalse(gate.busy);
+    }),
+  );
+  it.effect("stays closed past the effect that closed it, until told to reopen", () =>
+    Effect.gen(function* () {
+      const gate = makeLaunchGate();
+      const options = {
+        whenAlreadyClosed: () => "already closed" as const,
+        whenStillHeld: () => "still held" as const,
+        stop: Effect.void,
+      };
+
+      // A login command the user types into: closed for as long as it runs.
+      const reopen = yield* closeLaunchGate(gate, options);
+      assert.equal(
+        yield* Effect.flip(Effect.scoped(holdLaunchGate(gate, () => "closed" as const))),
+        "closed",
+      );
+      assert.equal(yield* Effect.flip(closeLaunchGate(gate, options)), "already closed");
+      yield* reopen;
+      yield* Effect.scoped(holdLaunchGate(gate, () => "closed" as const));
+
+      // A process that never ends: the close fails and leaves the gate open.
+      yield* holdLaunchGate(gate, () => "closed" as const);
+      const closing = yield* closeLaunchGate(gate, options).pipe(Effect.flip, Effect.forkScoped);
+      yield* TestClock.adjust(Duration.seconds(46));
+      assert.equal(yield* Fiber.join(closing), "still held");
       assert.isFalse(gate.busy);
     }),
   );
