@@ -159,6 +159,7 @@ export function makeAcpProviderDriver<Settings extends AcpProviderSettings>(
           ...(displayName ? { displayName } : {}),
           ...(accentColor ? { accentColor } : {}),
           continuation: { groupKey: continuationIdentity.continuationKey },
+          ...descriptor.snapshotExtras?.(),
         });
         // A bare binary name is resolved once against the server's PATH plus
         // the known CLI install folders, so a CLI installed after the process

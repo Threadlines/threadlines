@@ -88,6 +88,8 @@ export interface AcpSessionRuntimeOptions {
    * contain this id the call is skipped rather than failed.
    */
   readonly authMethodId?: string;
+  /** Limit for that `authenticate`; past it the start fails as `auth_required`. */
+  readonly authenticateTimeoutMs?: number;
   /**
    * MCP servers Threadlines offers the session (the browser panel tools).
    * HTTP/SSE entries are dropped unless the agent's `initialize` says it
@@ -630,11 +632,19 @@ const makeAcpSessionRuntime = (
           methodId: options.authMethodId,
         } satisfies EffectAcpSchema.AuthenticateRequest;
 
-        yield* runLoggedRequest(
+        const authenticate = runLoggedRequest(
           "authenticate",
           authenticatePayload,
           acp.agent.authenticate(authenticatePayload),
         );
+        yield* options.authenticateTimeoutMs === undefined
+          ? authenticate
+          : authenticate.pipe(
+              Effect.timeoutOrElse({
+                duration: options.authenticateTimeoutMs,
+                orElse: () => Effect.fail(EffectAcpErrors.AcpRequestError.authRequired()),
+              }),
+            );
       }
 
       const mcpServers = supportedMcpServers(

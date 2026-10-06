@@ -16,6 +16,7 @@ import type {
   ProviderOptionSelection,
   ProviderUserInputAnswers,
   RuntimeMode,
+  ServerProvider,
   ServerProviderDetection,
   ServerProviderModel,
   ThreadId,
@@ -250,6 +251,22 @@ export interface AcpProviderDescriptor<Settings extends AcpProviderSettings> {
   readonly reachesHostLoopback?: (platform: NodeJS.Platform) => boolean;
   /** Auth method to call after `initialize`; omit for agents that log in outside ACP. */
   readonly authMethodId?: string;
+  /**
+   * The same, read at each launch: for agents whose method is only known
+   * once a sign-in has completed. Wins over `authMethodId`.
+   */
+  readonly resolveAuthMethodId?: () => string | undefined;
+  /**
+   * How long `authenticate` may take outside a sign-in flow. An agent that
+   * starts a browser sign-in there would otherwise hang the launch; past the
+   * limit the launch fails as `auth_required`.
+   */
+  readonly authenticateTimeoutMs?: number;
+  /**
+   * Fields this agent adds to every snapshot of its instance, read when the
+   * snapshot is built. Must be cheap and never throw.
+   */
+  readonly snapshotExtras?: () => Partial<Pick<ServerProvider, "community">>;
   readonly clientCapabilities?: EffectAcpSchema.InitializeRequest["clientCapabilities"];
   /** Message shown when the binary cannot be spawned. */
   readonly notInstalledMessage: string;
