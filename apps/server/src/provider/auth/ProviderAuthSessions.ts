@@ -464,7 +464,7 @@ export const makeProviderAuthSessions = Effect.fn("makeProviderAuthSessions")(fu
   /** Answers every page the agent is still waiting on with "no". */
   const declinePageRequests = (instanceId: ProviderInstanceId, session: SessionState) =>
     Effect.gen(function* () {
-      for (const [pageRequestId, pending] of [...session.pageRequests]) {
+      for (const [pageRequestId, pending] of session.pageRequests) {
         session.pageRequests.delete(pageRequestId);
         yield* publish(instanceId, {
           type: "pageRequest",
