@@ -31,6 +31,7 @@ import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 
 import { type LaunchGate, makeLaunchGate } from "../managedRuntime/LaunchGate.ts";
+import type { AcpRegistryInstalledAgent } from "./AcpRegistryInstaller.ts";
 
 /** How long a health result stands before the next status check starts the agent again. */
 export const ACP_REGISTRY_HEALTH_MAX_AGE_MS = 60 * 60 * 1000;
@@ -88,6 +89,12 @@ export interface AcpRegistryAgentState {
   checkRequested: boolean;
   /** The registry's newer listing for this agent, if any. Memory only. */
   updateCandidate: { readonly version: string; readonly recipeDigest: string } | undefined;
+  /** What the last status check found on disk, for the snapshot (built without I/O). */
+  lastInstalled: AcpRegistryInstalledAgent | undefined;
+  /** The recipe to name when installing again: the installed one, else the last confirmed. */
+  confirmedRecipeDigest: string | undefined;
+  /** The recipe a confirmed install or update is about to use; read when its action runs. */
+  requestedRecipeDigest: string | undefined;
 }
 
 const states = new Map<string, AcpRegistryAgentState>();
@@ -106,6 +113,9 @@ export function acpRegistryAgentState(agentId: string): AcpRegistryAgentState {
       offersLoaded: false,
       checkRequested: true,
       updateCandidate: undefined,
+      lastInstalled: undefined,
+      confirmedRecipeDigest: undefined,
+      requestedRecipeDigest: undefined,
     };
     states.set(agentId, state);
   }
