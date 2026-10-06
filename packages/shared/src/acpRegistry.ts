@@ -48,8 +48,15 @@ const joinNames = (names: ReadonlyArray<string>): string => {
  * An author as a sentence names them. The registry sometimes writes
  * "Name <address>": the name alone. An address with no name stays.
  */
-const authorName = (author: string): string =>
-  author.replace(/\s*<[^<>]*>\s*$/u, "").trim() || author.trim();
+const authorName = (author: string): string => {
+  const written = author.trim();
+  const open = written.lastIndexOf("<");
+  // Only a closing "<...>" with a name in front of it is taken off.
+  if (open <= 0 || !written.endsWith(">") || written.indexOf(">", open) !== written.length - 1) {
+    return written;
+  }
+  return written.slice(0, open).trim() || written;
+};
 
 /** "Block", "Block and Square", or "" when the registry names nobody. */
 export const acpRegistryAuthorLine = (authors: ReadonlyArray<string>): string =>

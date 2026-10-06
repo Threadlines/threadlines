@@ -51,6 +51,21 @@ describe("community agent wording", () => {
         computer: "this Mac",
       }),
     ).toContain("Fast is made by enquiries@fast-agent.ai.");
+    // Only a closing "<...>" after a name is taken off; anything else stays as written.
+    for (const [written, said] of [
+      ["Ada  <ada@example.com> ", "Ada"],
+      ["<ada@example.com>", "<ada@example.com>"],
+      ["Ada <not closed", "Ada <not closed"],
+      ["Ada <a>b>", "Ada <a>b>"],
+      ["A > B", "A > B"],
+    ] as const) {
+      expect(
+        acpRegistryInstallConfirmText({
+          agent: { name: "X", authors: [written] },
+          computer: "this Mac",
+        }),
+      ).toContain(`X is made by ${said}.`);
+    }
     expect(
       acpRegistryInstallConfirmText({ agent: { name: "Solo", authors: [] }, computer: "this PC" }),
     ).toBe(
