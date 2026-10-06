@@ -56,6 +56,7 @@ import { ProviderRegistry } from "../Services/ProviderRegistry.ts";
 import { forgetAcpRegistryAgentState } from "./AcpRegistryAgentState.ts";
 import {
   type AcpRegistryCatalogEntry,
+  type AcpRegistryCatalogShape,
   type AcpRegistryCatalogSnapshot,
   makeAcpRegistryCatalog,
   toAcpRegistryCatalog,
@@ -112,7 +113,10 @@ const listingOf = (entry: AcpRegistryCatalogEntry) => ({
   host: entry.agent.host,
 });
 
-export const makeAcpRegistryAgents = Effect.fn("makeAcpRegistryAgents")(function* () {
+export const makeAcpRegistryAgents = Effect.fn("makeAcpRegistryAgents")(function* (options?: {
+  /** Test seam: the registry's list. Default: read from the registry, cached under the state folder. */
+  readonly catalog?: AcpRegistryCatalogShape;
+}) {
   const settingsService = yield* ServerSettingsService;
   const instanceRegistry = yield* ProviderInstanceRegistry;
   const providerRegistry = yield* ProviderRegistry;
@@ -121,11 +125,13 @@ export const makeAcpRegistryAgents = Effect.fn("makeAcpRegistryAgents")(function
   const serverConfig = yield* ServerConfig;
   const analytics = yield* AnalyticsService;
 
-  const catalog = makeAcpRegistryCatalog({
-    cacheDir: NodePath.join(serverConfig.stateDir, "caches", "acp-registry"),
-    platform: process.platform,
-    arch: process.arch,
-  });
+  const catalog =
+    options?.catalog ??
+    makeAcpRegistryCatalog({
+      cacheDir: NodePath.join(serverConfig.stateDir, "caches", "acp-registry"),
+      platform: process.platform,
+      arch: process.arch,
+    });
 
   /** The community agents in settings, by instance id. Fails when settings can't be read. */
   const readCommunityInstances = settingsService.getSettings.pipe(
@@ -234,6 +240,10 @@ export const makeAcpRegistryAgents = Effect.fn("makeAcpRegistryAgents")(function
         return yield* fail("staleRecipe", "The listing changed since you looked. Look again.");
       }
       const instanceId = acpRegistryInstanceId(input.agentId);
+      // Before anything is recorded: an agent that is here is updated, not added.
+      if ((yield* communityInstances).some(([id]) => id === instanceId)) {
+        return yield* fail("alreadyAdded", `${entry.agent.name} is already added.`);
+      }
       const context = contextFor(input.agentId, entry.agent.name);
 
       // Recorded before anything is fetched: what the user agreed to install.

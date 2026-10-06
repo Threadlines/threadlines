@@ -1,7 +1,11 @@
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { ExecutionEnvironmentDescriptor } from "./environment.ts";
-import { AcpRegistryRecipeDigest, ServerProviderCommunity } from "./acpRegistry.ts";
+import {
+  ACP_REGISTRY_DRIVER_KIND,
+  AcpRegistryRecipeDigest,
+  ServerProviderCommunity,
+} from "./acpRegistry.ts";
 import { ServerAuthDescriptor } from "./auth.ts";
 import {
   IsoDateTime,
@@ -918,6 +922,9 @@ export class ServerProviderUpdateError extends Schema.TaggedError<ServerProvider
   },
 ) {
   override get message(): string {
-    return `Provider update failed for ${this.provider}: ${this.reason}`;
+    // A community agent goes by its own name, and its reason says it.
+    return this.provider === ACP_REGISTRY_DRIVER_KIND
+      ? this.reason
+      : `Provider update failed for ${this.provider}: ${this.reason}`;
   }
 }

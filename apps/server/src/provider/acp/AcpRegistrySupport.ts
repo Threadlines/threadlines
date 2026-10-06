@@ -263,6 +263,9 @@ export function makeAcpRegistryDescriptor(
       fs: { readTextFile: false, writeTextFile: false },
       terminal: false,
       auth: { terminal: true },
+      // A page to open is only ever shown by the sign-in panel, which asks
+      // first. A chat has nowhere to ask, so it doesn't offer to.
+      ...(purpose.kind === "signIn" ? { elicitation: { url: {} } } : {}),
       _meta: { "terminal-auth": true },
     },
     // Some agents load a saved sign-in only when asked to authenticate.
