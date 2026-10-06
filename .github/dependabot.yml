@@ -42,6 +42,13 @@ updates:
       # upstream lexical spellcheck PR lands.
       - dependency-name: "lexical"
       - dependency-name: "@lexical/*"
+      # @legendapp/list is patched for chat scrolling
+      # (patches/@legendapp__list@3.3.9.patch) and pinned to that exact
+      # version. pnpm refuses to resolve a bump while the patch names the old
+      # version (ERR_PNPM_UNUSED_PATCH), which failed the whole
+      # production-dependencies job on every run. Bump manually, re-cutting
+      # the patch, and check the chat timeline in a browser.
+      - dependency-name: "@legendapp/list"
       # TypeScript majors (7.x) and @types/node majors are coordinated
       # migrations: TS 7 needs its own investigation pass, and @types/node
       # must track the Node 22 engines floor, not the newest release.
