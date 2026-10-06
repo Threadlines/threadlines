@@ -11,6 +11,7 @@ export * from "./terminal.ts";
 export * from "./provider.ts";
 export * from "./providerAuth.ts";
 export * from "./providerAccounts.ts";
+export * from "./acpRegistry.ts";
 export * from "./providerExtensions.ts";
 export * from "./providerInstance.ts";
 export * from "./providerRuntime.ts";

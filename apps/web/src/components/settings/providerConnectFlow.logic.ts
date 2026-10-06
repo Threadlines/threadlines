@@ -38,6 +38,16 @@ export interface ProviderConnectFlowState {
    * taken once something follows it.
    */
   readonly urlScanTail: string;
+  /**
+   * A page the agent asked to have opened, waiting for the user's click.
+   * Never opened by itself: the address comes from an agent Threadlines
+   * hasn't tested.
+   */
+  readonly pageRequest: {
+    readonly requestId: string;
+    readonly url: string;
+    readonly message: string | null;
+  } | null;
 }
 
 export const initialProviderConnectFlowState: ProviderConnectFlowState = {
@@ -51,6 +61,7 @@ export const initialProviderConnectFlowState: ProviderConnectFlowState = {
   openLine: "",
   signInUrl: null,
   urlScanTail: "",
+  pageRequest: null,
 };
 
 const OPEN_LINE_CHARS = 2048;
@@ -135,6 +146,18 @@ export function applyProviderAuthEvent(
         ...(event.status === "starting"
           ? { lastLine: "", openLine: "", signInUrl: null, urlScanTail: "" }
           : {}),
+        // A request belongs to the run that made it.
+        ...(event.status === "running" ? {} : { pageRequest: null }),
+      };
+    case "pageRequest":
+      if (event.settled) {
+        return state.pageRequest?.requestId === event.requestId
+          ? { ...state, pageRequest: null }
+          : state;
+      }
+      return {
+        ...state,
+        pageRequest: { requestId: event.requestId, url: event.url, message: event.message },
       };
   }
 }

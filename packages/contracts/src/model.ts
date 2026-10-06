@@ -147,6 +147,7 @@ const CURSOR_DRIVER_KIND = ProviderDriverKind.make("cursor");
 const OPENCODE_DRIVER_KIND = ProviderDriverKind.make("opencode");
 const FX_DRIVER_KIND = ProviderDriverKind.make("fx");
 const ANTIGRAVITY_DRIVER_KIND = ProviderDriverKind.make("antigravity");
+const ACP_REGISTRY_DRIVER_KIND = ProviderDriverKind.make("acpRegistry");
 
 /**
  * Offline Antigravity fallback: the Gemini model family the live catalog
@@ -289,4 +290,6 @@ export const PROVIDER_DISPLAY_NAMES: Partial<Record<ProviderDriverKind, string>>
   [OPENCODE_DRIVER_KIND]: "OpenCode",
   [FX_DRIVER_KIND]: "fx",
   [ANTIGRAVITY_DRIVER_KIND]: "Antigravity",
+  // Each community agent shows under its own name; this names the kind.
+  [ACP_REGISTRY_DRIVER_KIND]: "Community agent",
 };

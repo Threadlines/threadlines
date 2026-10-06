@@ -40,6 +40,8 @@ import {
   ProjectWriteFileError,
   OrchestrationReplayEventsError,
   FilesystemBrowseError,
+  AcpRegistryError,
+  ProviderAuthError,
   type ProviderAuthEvent,
   ProviderExtensionsError,
   ProviderExternalThreadError,
@@ -1150,6 +1152,28 @@ const makeWsRpcLayer = (currentSession: {
           observeRpcEffect(WS_METHODS.serverRemoveProviderAccount, providerAccounts.remove(input), {
             "rpc.aggregate": "server",
           }),
+        // Community agents: filled in with the feature.
+        [WS_METHODS.serverListAcpRegistryAgents]: (_input) =>
+          Effect.fail(
+            new AcpRegistryError({
+              reason: "catalogUnavailable",
+              detail: "Community agents aren't available in this build.",
+            }),
+          ),
+        [WS_METHODS.serverAddAcpRegistryAgent]: (_input) =>
+          Effect.fail(
+            new AcpRegistryError({
+              reason: "catalogUnavailable",
+              detail: "Community agents aren't available in this build.",
+            }),
+          ),
+        [WS_METHODS.serverRemoveAcpRegistryAgent]: (_input) =>
+          Effect.fail(
+            new AcpRegistryError({
+              reason: "unknownInstance",
+              detail: "Community agents aren't available in this build.",
+            }),
+          ),
         [WS_METHODS.serverDiscoverSourceControl]: (_input) =>
           observeRpcEffect(
             WS_METHODS.serverDiscoverSourceControl,
@@ -2187,6 +2211,10 @@ const makeWsRpcLayer = (currentSession: {
           observeRpcEffect(WS_METHODS.providerAuthStop, providerAuthSessions.stop(input), {
             "rpc.aggregate": "providerAuth",
           }),
+        [WS_METHODS.providerAuthRespond]: (input) =>
+          Effect.fail(
+            new ProviderAuthError({ instanceId: input.instanceId, reason: "notRunning" }),
+          ),
         [WS_METHODS.providerAuthSubscribe]: (input) =>
           observeRpcStream(
             WS_METHODS.providerAuthSubscribe,

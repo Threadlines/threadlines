@@ -1,6 +1,7 @@
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { ExecutionEnvironmentDescriptor } from "./environment.ts";
+import { AcpRegistryRecipeDigest, ServerProviderCommunity } from "./acpRegistry.ts";
 import { ServerAuthDescriptor } from "./auth.ts";
 import {
   IsoDateTime,
@@ -420,6 +421,8 @@ export const ServerProvider = Schema.Struct({
   versionAdvisory: Schema.optionalKey(ServerProviderVersionAdvisory),
   updateState: Schema.optionalKey(ServerProviderUpdateState),
   detection: Schema.optionalKey(ServerProviderDetection),
+  /** Set for a community agent (driver `acpRegistry`): where it came from and how it signs in. */
+  community: Schema.optionalKey(ServerProviderCommunity),
 });
 export type ServerProvider = typeof ServerProvider.Type;
 
@@ -875,6 +878,12 @@ export const ServerProviderUpdateInput = Schema.Struct({
   provider: ProviderDriverKind,
   instanceId: Schema.optionalKey(ProviderInstanceId),
   action: Schema.optionalKey(ServerProviderMaintenanceAction),
+  /**
+   * Community agents only, and required for them: the recipe the user was
+   * shown. Install names the one they confirmed; update names the newer
+   * listing on the snapshot. Refused when the listing has moved on.
+   */
+  recipeDigest: Schema.optionalKey(AcpRegistryRecipeDigest),
 });
 export type ServerProviderUpdateInput = typeof ServerProviderUpdateInput.Type;
 

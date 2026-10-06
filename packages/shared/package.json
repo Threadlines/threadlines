@@ -163,6 +163,10 @@
       "types": "./src/antigravitySignIn.ts",
       "import": "./src/antigravitySignIn.ts"
     },
+    "./acpRegistry": {
+      "types": "./src/acpRegistry.ts",
+      "import": "./src/acpRegistry.ts"
+    },
     "./providerAccounts": {
       "types": "./src/providerAccounts.ts",
       "import": "./src/providerAccounts.ts"
