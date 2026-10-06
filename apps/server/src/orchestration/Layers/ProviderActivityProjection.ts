@@ -324,6 +324,40 @@ function baseActivity(
   };
 }
 
+/**
+ * The session that reported a child agent: its provider, and the instance of
+ * it when known. Every activity the subagent roster is built from carries
+ * this, because the roster only reads activity payloads and an agent tool call
+ * does not otherwise say whose session made it. A launcher that runs another
+ * provider's agent names that one itself (`agentProvider`); the two are kept
+ * apart.
+ */
+export function subagentSessionProviderStamp(
+  event: Pick<ProviderRuntimeEvent, "provider" | "providerInstanceId">,
+): {
+  readonly sessionProvider: ProviderRuntimeEvent["provider"];
+  readonly sessionProviderInstanceId?: NonNullable<ProviderRuntimeEvent["providerInstanceId"]>;
+} {
+  return {
+    sessionProvider: event.provider,
+    ...(event.providerInstanceId === undefined
+      ? {}
+      : { sessionProviderInstanceId: event.providerInstanceId }),
+  };
+}
+
+/** The stamp for a tool activity: only an agent tool call builds the roster. */
+function subagentSessionProvider(
+  event: Extract<
+    ProviderRuntimeEvent,
+    { type: "item.started" | "item.updated" | "item.completed" }
+  >,
+): ReturnType<typeof subagentSessionProviderStamp> | Record<never, never> {
+  return event.payload.itemType === "collab_agent_tool_call"
+    ? subagentSessionProviderStamp(event)
+    : {};
+}
+
 function compactUnknownDetail(value: unknown): string | undefined {
   if (typeof value === "string") {
     const trimmed = value.trim();
@@ -581,7 +615,7 @@ export function projectRuntimeEventToActivities(
           tone: "info",
           kind: "subagent.metadata",
           summary: "Subagent metadata updated",
-          payload: event.payload,
+          payload: { ...event.payload, ...subagentSessionProviderStamp(event) },
         }),
       ];
 
@@ -1046,6 +1080,7 @@ export function projectRuntimeEventToActivities(
           summary: event.payload.title ?? "Tool updated",
           payload: {
             itemType: event.payload.itemType,
+            ...subagentSessionProvider(event),
             ...(event.itemId ? { toolCallId: event.itemId } : {}),
             ...(event.payload.status ? { status: event.payload.status } : {}),
             ...(event.payload.title ? { title: event.payload.title } : {}),
@@ -1081,6 +1116,7 @@ export function projectRuntimeEventToActivities(
           summary: event.payload.title ?? "Tool",
           payload: {
             itemType: event.payload.itemType,
+            ...subagentSessionProvider(event),
             ...(event.itemId ? { toolCallId: event.itemId } : {}),
             ...(event.payload.status ? { status: event.payload.status } : {}),
             ...(event.payload.title ? { title: event.payload.title } : {}),
@@ -1125,6 +1161,7 @@ export function projectRuntimeEventToActivities(
           summary: `${event.payload.title ?? "Tool"} started`,
           payload: {
             itemType: event.payload.itemType,
+            ...subagentSessionProvider(event),
             ...(event.itemId ? { toolCallId: event.itemId } : {}),
             ...(event.payload.status ? { status: event.payload.status } : {}),
             ...(event.payload.title ? { title: event.payload.title } : {}),

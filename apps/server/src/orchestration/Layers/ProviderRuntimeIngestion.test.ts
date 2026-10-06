@@ -945,6 +945,65 @@ describe("ProviderRuntimeIngestion", () => {
     expect(settled?.status).toBe("completed");
   });
 
+  it("records who reported each subagent and the provider a launcher named", async () => {
+    const harness = await createHarness();
+
+    // The session's own agent: nobody names a provider, so it is the reporter's.
+    harness.emit({
+      type: "subagent.metadata.updated",
+      eventId: asEventId("evt-subagent-own-provider"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:01.000Z",
+      payload: {
+        callId: "call-claude-agent",
+        agentThreadId: "claude-agent-1",
+        agentRole: "Explore",
+        status: "running",
+      },
+    });
+    // A Codex agent the same Claude session launched, and a later report on it
+    // that names no provider.
+    harness.emit({
+      type: "subagent.metadata.updated",
+      eventId: asEventId("evt-subagent-foreign-provider"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:02.000Z",
+      payload: {
+        callId: "call-codex-exec",
+        agentRole: "codex",
+        agentProvider: ProviderDriverKind.make("codex"),
+        status: "running",
+      },
+    });
+    harness.emit({
+      type: "subagent.metadata.updated",
+      eventId: asEventId("evt-subagent-foreign-provider-settled"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:03.000Z",
+      payload: {
+        callId: "call-codex-exec",
+        status: "completed",
+      },
+    });
+
+    const thread = await waitForThread(harness.readModel, (entry) =>
+      (entry.subagents ?? []).some(
+        (subagent) => subagent.spawnCallId === "call-codex-exec" && subagent.status === "completed",
+      ),
+    );
+    const agent = (spawnCallId: string) =>
+      (thread.subagents ?? []).find((subagent) => subagent.spawnCallId === spawnCallId);
+    expect(agent("call-claude-agent")).toMatchObject({ sessionProvider: "claudeAgent" });
+    expect(agent("call-claude-agent")?.agentProvider).toBeUndefined();
+    expect(agent("call-codex-exec")).toMatchObject({
+      agentProvider: "codex",
+      sessionProvider: "claudeAgent",
+    });
+  });
+
   it("records and clears the session's observed cwd divergence", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
@@ -1934,11 +1993,15 @@ describe("ProviderRuntimeIngestion", () => {
       thread.activities.some((activity) => {
         const payload = activity.payload as {
           sourceAgentThreadId?: string;
+          sessionProvider?: string;
           data?: { subagentLiveText?: string };
         };
         return (
           activity.kind === "subagent.result" &&
           payload.sourceAgentThreadId === "agent-live-before-abort" &&
+          // A child's own output can be the first the roster hears of it, so
+          // this activity names the session too.
+          payload.sessionProvider === "codex" &&
           payload.data?.subagentLiveText === "First chunk. "
         );
       }),

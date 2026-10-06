@@ -72,7 +72,7 @@ import {
   parseThreadSegmentFromAttachmentId,
   toSafeThreadAttachmentSegment,
 } from "../../attachmentStore.ts";
-import { projectSubagentActivity } from "../subagentProjection.ts";
+import { keepKnownSubagentProviders, projectSubagentActivity } from "../subagentProjection.ts";
 import { carriedBackgroundTasks } from "../sessionBackgroundTasks.ts";
 
 export const ORCHESTRATION_PROJECTOR_NAMES = {
@@ -1621,9 +1621,12 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
               }),
             [],
           );
+          const knownSubagents = yield* projectionThreadSubagentRepository.listByThreadId({
+            threadId: event.payload.threadId,
+          });
           yield* projectionThreadSubagentRepository.replaceByThreadId(
             event.payload.threadId,
-            rebuiltSubagents,
+            keepKnownSubagentProviders(rebuiltSubagents, knownSubagents),
           );
           return;
         }

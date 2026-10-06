@@ -1,4 +1,4 @@
-import { EnvironmentId } from "@threadlines/contracts";
+import { EnvironmentId, ProviderDriverKind } from "@threadlines/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ComponentProps } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -163,12 +163,19 @@ describe("ChatHeader", () => {
 
   it("draws a face per live agent, waiting ones first, and folds the rest into a count", () => {
     const agents: LiveAgentIndicator["agents"] = [
-      { id: "a", name: "Review", waiting: true, startedAt: "2026-08-11T10:00:00.000Z" },
+      {
+        id: "a",
+        name: "Review",
+        waiting: true,
+        startedAt: "2026-08-11T10:00:00.000Z",
+        provider: null,
+      },
       ...["b", "c", "d", "e"].map((id) => ({
         id,
         name: `Agent ${id}`,
         waiting: false,
         startedAt: "2026-08-11T10:01:00.000Z",
+        provider: null,
       })),
     ];
     const markup = renderChatHeader({
@@ -185,6 +192,38 @@ describe("ChatHeader", () => {
     expect(markup).toContain(
       'aria-label="4 agents running, 1 waiting on you. Open the Agents tab."',
     );
+  });
+
+  it("draws each face with the mark of the provider that runs its agent", () => {
+    const face = (id: string, driverKind: string | null) => ({
+      id,
+      name: id,
+      waiting: false,
+      startedAt: "2026-08-11T10:00:00.000Z",
+      provider:
+        driverKind === null
+          ? null
+          : { driverKind: ProviderDriverKind.make(driverKind), instanceId: null },
+    });
+    // The header says the thread is on Codex (the composer moved there), while
+    // one agent has nothing on record, one ran on Claude and one on Codex.
+    const markup = renderChatHeader({
+      agentProviderDriverKind: ProviderDriverKind.make("codex"),
+      liveAgents: {
+        count: 3,
+        waitingCount: 0,
+        agents: [face("unrecorded", null), face("claude", "claudeAgent"), face("codex", "codex")],
+      },
+    });
+
+    const marks = [...markup.matchAll(/data-agent-face="\w+"[^>]*>(<svg[^>]*>)/g)].map(
+      (match) => match[1] ?? "",
+    );
+    // Claude's mark is its brand orange; Codex's follows the text color.
+    const isClaude = (mark: string) => mark.includes("fill-[#d97757]");
+    expect(marks.map(isClaude)).toEqual([false, true, false]);
+    expect(marks[0]).toContain("dark:fill-white");
+    expect(marks[2]).toContain("dark:fill-white");
   });
 
   it("draws no faces while no agent is live", () => {

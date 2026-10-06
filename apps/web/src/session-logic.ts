@@ -8,6 +8,8 @@ import {
   isToolLifecycleItemType,
   type MessageId,
   ModelSelection,
+  isProviderDriverKind,
+  isProviderInstanceId,
   type OrchestrationAwaitedBackgroundTask,
   type OrchestrationBackgroundTaskKind,
   type OrchestrationLatestTurn,
@@ -346,6 +348,14 @@ export interface SubagentProgressItem {
    *  stream under the same id, which is how the plain run row is matched to
    *  this record. */
   spawnCallId?: string | null;
+  /** Who runs this agent, as the server records it (see OrchestrationSubagent):
+   *  the provider its launcher named when that is not the launching session's
+   *  own (a Claude thread launching a Codex agent), and the provider and
+   *  instance of the session that reported it. All absent on agents recorded
+   *  before this was tracked; those ran on their thread's provider. */
+  agentProvider?: ProviderDriverKind | null;
+  sessionProvider?: ProviderDriverKind | null;
+  sessionProviderInstanceId?: ProviderInstanceId | null;
   /** Stable V2 hierarchy path (for example `/root/research/database`). */
   agentPath?: string | null;
   parentAgentPath?: string | null;
@@ -1145,7 +1155,63 @@ export function hasActionableProposedPlan(
   );
 }
 
-interface InternalSubagentRecord extends SubagentProgressItem {
+/** The three facts about who runs an agent, each known or null. */
+interface SubagentProviders {
+  agentProvider: ProviderDriverKind | null;
+  sessionProvider: ProviderDriverKind | null;
+  sessionProviderInstanceId: ProviderInstanceId | null;
+}
+/** The same three as a record may carry them: any may be missing. */
+type KnownSubagentProviders = Pick<SubagentProgressItem, keyof SubagentProviders>;
+
+/**
+ * Who runs an agent after one more activity, mirroring the server roster: the
+ * launcher-named provider and the reporting session's provider and instance
+ * are three independent facts, each kept until an activity states it again.
+ * Only a metadata activity can name the agent's provider.
+ */
+function mergeSubagentProviders(
+  previous: KnownSubagentProviders | undefined,
+  input: {
+    readonly payload: Record<string, unknown> | null;
+    readonly namesAgentProvider?: boolean;
+  },
+): SubagentProviders {
+  const kind = (value: unknown) => {
+    const text = asTrimmedString(value);
+    return text !== null && isProviderDriverKind(text) ? text : null;
+  };
+  const instance = asTrimmedString(input.payload?.sessionProviderInstanceId);
+  return {
+    agentProvider:
+      (input.namesAgentProvider ? kind(input.payload?.agentProvider) : null) ??
+      previous?.agentProvider ??
+      null,
+    sessionProvider: kind(input.payload?.sessionProvider) ?? previous?.sessionProvider ?? null,
+    sessionProviderInstanceId:
+      (instance !== null && isProviderInstanceId(instance) ? instance : null) ??
+      previous?.sessionProviderInstanceId ??
+      null,
+  };
+}
+
+/** When a placeholder record takes over an agent's record, what either knew
+ *  about who runs the agent is kept: the placeholder's first, then the
+ *  record's it replaces. */
+function keepSubagentProviders(
+  incoming: KnownSubagentProviders,
+  replaced: KnownSubagentProviders | undefined,
+): SubagentProviders {
+  return {
+    agentProvider: incoming.agentProvider ?? replaced?.agentProvider ?? null,
+    sessionProvider: incoming.sessionProvider ?? replaced?.sessionProvider ?? null,
+    sessionProviderInstanceId:
+      incoming.sessionProviderInstanceId ?? replaced?.sessionProviderInstanceId ?? null,
+  };
+}
+
+interface InternalSubagentRecord
+  extends Omit<SubagentProgressItem, keyof SubagentProviders>, SubagentProviders {
   resultEventSequence?: number | undefined;
   liveEventSequence?: number | undefined;
   /** Exact model id from the agent's own messages, as opposed to the alias a
@@ -1672,6 +1738,12 @@ function collectSubagentActivityRecords(
       role: subagent.role,
       nickname: null,
     });
+    // A roster row still waiting on its agent id is a placeholder like any
+    // other: the activity that names the id must take it over, even when the
+    // spawn activity that would have registered it has left the window.
+    if (agentId.startsWith("pending:") && subagent.spawnCallId) {
+      pendingSpawnKeysByCallId.set(subagent.spawnCallId, agentId);
+    }
     byAgentId.set(agentId, {
       id: agentId,
       agentThreadId: subagent.agentThreadId,
@@ -1681,6 +1753,9 @@ function collectSubagentActivityRecords(
       parentAgentPath: subagent.parentAgentPath,
       treeDepth: subagent.treeDepth,
       ...(subagent.isBackgrounded !== undefined ? { isBackgrounded: subagent.isBackgrounded } : {}),
+      agentProvider: subagent.agentProvider ?? null,
+      sessionProvider: subagent.sessionProvider ?? null,
+      sessionProviderInstanceId: subagent.sessionProviderInstanceId ?? null,
       turnId: subagent.turnId,
       label,
       ...(subagent.nickname ? { nickname: subagent.nickname } : {}),
@@ -1852,6 +1927,7 @@ function collectSubagentActivityRecords(
         tool,
         itemStatus,
         state: agentStates.get(toolCallId) ?? null,
+        reportedBy: mergeSubagentProviders(undefined, { payload: payload ?? null }),
       });
       continue;
     }
@@ -1865,6 +1941,7 @@ function collectSubagentActivityRecords(
       if (pendingRecord) {
         byAgentId.set(firstConcreteAgentId, {
           ...pendingRecord,
+          ...keepSubagentProviders(pendingRecord, byAgentId.get(firstConcreteAgentId)),
           id: firstConcreteAgentId,
           agentThreadId: firstConcreteAgentId,
           updatedAt: activity.createdAt,
@@ -1956,6 +2033,7 @@ function collectSubagentActivityRecords(
         agentPath: pathMetadata?.agentPath ?? null,
         parentAgentPath: pathMetadata?.parentAgentPath ?? null,
         treeDepth: pathMetadata?.treeDepth ?? 0,
+        ...mergeSubagentProviders(previous, { payload: payload ?? null }),
         turnId,
         label,
         ...(nickname ? { nickname } : {}),
@@ -2259,6 +2337,9 @@ function applySubagentReceipt(
     readonly tool: string | null;
     readonly itemStatus: string | null;
     readonly state: CollabAgentStateSnapshot | null;
+    /** The session the receipt came from. Mirrors the server roster: it only
+     *  fills a gap, on an agent recorded before sessions were tracked. */
+    readonly reportedBy: SubagentProviders;
   },
 ): void {
   const stateStatus = input.state?.status ?? null;
@@ -2275,6 +2356,7 @@ function applySubagentReceipt(
   });
   byAgentId.set(record.id, {
     ...record,
+    ...keepSubagentProviders(record, { ...input.reportedBy, agentProvider: null }),
     status,
     statusLabel: subagentProgressStatusLabel(status),
     liveBody: terminalResult ? null : record.liveBody,
@@ -2321,6 +2403,7 @@ function applySubagentMetadataActivity(
       if (pendingRecord) {
         byAgentId.set(agentThreadId, {
           ...pendingRecord,
+          ...keepSubagentProviders(pendingRecord, byAgentId.get(agentThreadId)),
           id: agentThreadId,
           agentThreadId,
           updatedAt: activity.createdAt,
@@ -2394,6 +2477,7 @@ function applySubagentMetadataActivity(
     parentAgentPath: asTrimmedString(payload.parentAgentPath) ?? previous?.parentAgentPath ?? null,
     treeDepth: previous?.treeDepth ?? 0,
     ...(previous?.isBackgrounded !== undefined ? { isBackgrounded: previous.isBackgrounded } : {}),
+    ...mergeSubagentProviders(previous, { payload, namesAgentProvider: true }),
     turnId: activity.turnId ?? previous?.turnId ?? null,
     label: subagentDisplayLabel({ role, nickname: null }),
     ...(nickname ? { nickname } : {}),

@@ -1,6 +1,7 @@
 import {
   EventId,
   MessageId,
+  ProviderDriverKind,
   ThreadId,
   TurnId,
   type OrchestrationAwaitedBackgroundTask,
@@ -5183,6 +5184,90 @@ describe("subagent.metadata promoted-run lifecycle", () => {
     expect(history[0]?.item.status).toBe("running");
     expect(history[0]?.item.objective).toBe("Run sol second-opinion review of sanitizer commit");
     expect(history[0]?.item.reasoningEffort).toBe("medium");
+  });
+
+  it("keeps the provider a launcher named apart from the session reporting the agent", () => {
+    // Live: Claude's session reports the run and names Codex as its provider.
+    // The reports that follow name only the session.
+    const reportedBy = (activity: typeof spawnMetadata, agentProvider?: string) => ({
+      ...activity,
+      payload: {
+        ...(activity.payload as object),
+        ...(agentProvider ? { agentProvider } : {}),
+        sessionProvider: "claudeAgent",
+        sessionProviderInstanceId: "claude-work",
+      },
+    });
+    const [launched] = deriveThreadSubagentHistory([
+      reportedBy(spawnMetadata, "codex"),
+      reportedBy(linkMetadata),
+      reportedBy(completionMetadata),
+    ]);
+    expect(launched?.item).toMatchObject({
+      agentProvider: "codex",
+      sessionProvider: "claudeAgent",
+      sessionProviderInstanceId: "claude-work",
+    });
+
+    // The provider is named only once the agent id is known: the placeholder
+    // record the call started as must not wipe it when it takes over.
+    const [linkedLate] = deriveThreadSubagentHistory([
+      reportedBy(
+        {
+          ...linkMetadata,
+          payload: { agentThreadId: "codex-exec:01a00cbf", status: "running" },
+        },
+        "codex",
+      ),
+      reportedBy({ ...spawnMetadata, createdAt: "2026-08-16T22:44:46.000Z" }),
+      reportedBy({ ...linkMetadata, createdAt: "2026-08-16T22:44:47.000Z" }),
+    ]);
+    expect(linkedLate?.item.agentProvider).toBe("codex");
+  });
+
+  it("links a roster placeholder to its agent id after the spawn left the window", () => {
+    // The roster still holds the run under its spawn call; the spawn activity
+    // itself is gone. The link must take that row over, not add a second one.
+    const state = deriveSubagentProgressState({
+      activities: [linkMetadata],
+      latestTurnId: TurnId.make("76441666-8b1e-471f-973f-9a4df8c68929"),
+      latestTurnSettled: false,
+      subagents: [
+        {
+          id: "pending:toolu_01VFJG1vAyYoJLjP3U38mFfk",
+          agentThreadId: null,
+          parentAgentThreadId: null,
+          spawnCallId: "toolu_01VFJG1vAyYoJLjP3U38mFfk",
+          transcriptAgentId: null,
+          turnId: TurnId.make("76441666-8b1e-471f-973f-9a4df8c68929"),
+          agentPath: null,
+          parentAgentPath: null,
+          treeDepth: 0,
+          agentProvider: ProviderDriverKind.make("codex"),
+          sessionProvider: ProviderDriverKind.make("claudeAgent"),
+          nickname: null,
+          role: "codex",
+          objective: "Run sol second-opinion review of sanitizer commit",
+          status: "running",
+          requestedModel: null,
+          resolvedModel: null,
+          reasoningEffort: "medium",
+          modelProvenance: null,
+          reasoningEffortProvenance: "explicit",
+          resultBody: null,
+          resultCreatedAt: null,
+          createdAt: "2026-08-16T22:44:40.796Z",
+          updatedAt: "2026-08-16T22:44:40.796Z",
+        },
+      ],
+    });
+
+    expect(state?.items).toHaveLength(1);
+    expect(state?.items[0]).toMatchObject({
+      agentThreadId: "codex-exec:01a00cbf",
+      agentProvider: "codex",
+      sessionProvider: "claudeAgent",
+    });
   });
 
   it("migrates the pending record onto the agent id and settles with the result", () => {

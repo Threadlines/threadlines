@@ -5,6 +5,7 @@ import {
   ProjectId,
   ThreadId,
   TurnId,
+  ProviderDriverKind,
   ProviderInstanceId,
   EMPTY_AGENT_REQUEST_STATE,
   EMPTY_CHILD_REQUEST_STATE,
@@ -1249,14 +1250,16 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           thread_id, subagent_id, agent_thread_id, parent_agent_thread_id, spawn_call_id, transcript_agent_id,
           turn_id, agent_path, parent_agent_path, tree_depth, nickname, role, objective,
           status, requested_model, resolved_model, reasoning_effort, model_provenance,
-          reasoning_effort_provenance, result_body, result_created_at, created_at, updated_at
+          reasoning_effort_provenance, result_body, result_created_at, created_at, updated_at,
+          agent_provider, session_provider, session_provider_instance_id
         )
         VALUES (
           'thread-activity-cap', 'agent-durable', 'agent-durable', NULL, 'spawn-durable',
           'agent-durable', NULL, '/root/agent-durable', '/root', 0, 'researcher',
           'Researcher', 'Inspect the projection', 'running', 'gpt-5.6-sol', NULL,
           'high', 'explicit', 'explicit', NULL, NULL,
-          '2026-04-01T00:00:01.500Z', '2026-04-01T00:00:01.500Z'
+          '2026-04-01T00:00:01.500Z', '2026-04-01T00:00:01.500Z',
+          'codex', 'claudeAgent', 'not a valid id'
         )
       `;
 
@@ -1284,6 +1287,11 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
             agentPath: "/root/agent-durable",
             parentAgentPath: "/root",
             treeDepth: 0,
+            // Who runs the agent is read back. The instance id stored above is
+            // not a valid one, so it reads as unknown rather than failing the
+            // whole snapshot.
+            agentProvider: ProviderDriverKind.make("codex"),
+            sessionProvider: ProviderDriverKind.make("claudeAgent"),
             nickname: "researcher",
             role: "Researcher",
             objective: "Inspect the projection",

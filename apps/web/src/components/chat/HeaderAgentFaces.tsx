@@ -5,7 +5,7 @@ import { cn } from "../../lib/utils";
 import { formatWorkingDurationLabel } from "../../timestampFormat";
 import { Button } from "../ui/button";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
-import type { LiveAgentIndicator } from "./agentsPanel.logic";
+import type { LiveAgentIndicator, SubagentProviderRef } from "./agentsPanel.logic";
 import { ProviderGlyph } from "./ProviderInstanceIcon";
 
 /** Faces drawn before the rest fold into "+N"; a narrow header draws one. */
@@ -43,7 +43,7 @@ export const HeaderAgentFaces = memo(function HeaderAgentFaces({
   onOpenAgents,
 }: {
   liveAgents: LiveAgentIndicator;
-  /** The thread's provider: its subagents run on it, so their faces carry its mark. */
+  /** The thread's provider: the mark for an agent with no provider on record. */
   providerInstanceId: ProviderInstanceId | null;
   providerDriverKind: ProviderDriverKind | null;
   onOpenAgents: () => void;
@@ -83,10 +83,10 @@ export const HeaderAgentFaces = memo(function HeaderAgentFaces({
                   "-ms-1 [mask-image:radial-gradient(circle_at_-6px_50%,transparent_11.5px,#000_12px)] @max-xl/header-actions:hidden",
               )}
             >
-              <ProviderGlyph
-                instanceId={providerInstanceId}
-                driverKind={providerDriverKind}
-                className="size-[9px]"
+              <AgentFaceGlyph
+                agentProvider={agent.provider}
+                threadInstanceId={providerInstanceId}
+                threadDriverKind={providerDriverKind}
               />
             </span>
           ))}
@@ -116,6 +116,31 @@ export const HeaderAgentFaces = memo(function HeaderAgentFaces({
     </Tooltip>
   );
 });
+
+/**
+ * One face's mark: the provider recorded as running the agent, drawn through
+ * its instance when one is known so an instance with an icon of its own (a
+ * community agent, a second account) keeps it. An agent with nothing recorded
+ * carries the thread's mark. Any provider with a mark shows it; one without
+ * shows the generic glyph.
+ */
+function AgentFaceGlyph({
+  agentProvider,
+  threadInstanceId,
+  threadDriverKind,
+}: {
+  agentProvider: SubagentProviderRef | null;
+  threadInstanceId: ProviderInstanceId | null;
+  threadDriverKind: ProviderDriverKind | null;
+}) {
+  return (
+    <ProviderGlyph
+      instanceId={agentProvider === null ? threadInstanceId : agentProvider.instanceId}
+      driverKind={agentProvider === null ? threadDriverKind : agentProvider.driverKind}
+      className="size-[9px]"
+    />
+  );
+}
 
 /** Mounted only while the tooltip is open, so each agent's time is read then
  *  rather than whenever the header last rendered. */
