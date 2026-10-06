@@ -52,6 +52,41 @@ describe("provider connect flow state", () => {
     expect(restarted.signInUrl).toBeNull();
   });
 
+  it("holds a page the agent asks for until it is answered or the run ends", () => {
+    const asked = event({
+      type: "pageRequest",
+      flowId: "flow-1",
+      requestId: "page-1",
+      url: "https://agent.example/login",
+      message: "Sign in to Example",
+      settled: false,
+    });
+    const running = [
+      event({ type: "status", status: "starting", exitCode: null, detail: null }),
+      event({ type: "status", status: "running", exitCode: null, detail: null }),
+      asked,
+    ];
+    expect(replay(running).pageRequest).toEqual({
+      requestId: "page-1",
+      url: "https://agent.example/login",
+      message: "Sign in to Example",
+    });
+
+    // Answered on any device: every panel lets go of it. An answer to an
+    // older request leaves the current one alone.
+    const settled = (requestId: string) =>
+      event({ ...asked, type: "pageRequest", requestId, settled: true } as ProviderAuthEventBody);
+    expect(replay([...running, settled("page-0")]).pageRequest).not.toBeNull();
+    expect(replay([...running, settled("page-1")]).pageRequest).toBeNull();
+    // The run ending takes its request with it.
+    expect(
+      replay([
+        ...running,
+        event({ type: "status", status: "failed", exitCode: null, detail: "Timed out." }),
+      ]).pageRequest,
+    ).toBeNull();
+  });
+
   it("waits for a URL split across output chunks to finish before taking it", () => {
     const state = replay([
       event({ type: "status", status: "starting", exitCode: null, detail: null }),

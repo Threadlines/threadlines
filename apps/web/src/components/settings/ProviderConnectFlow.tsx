@@ -16,6 +16,8 @@ import {
   isProviderConnectFlowActive,
   providerConnectStatusLine,
 } from "./providerConnectFlow.logic";
+import { useIsCommunityAgent } from "./communityAgents";
+import type { ProviderConnectFlowState } from "./providerConnectFlow.logic";
 import { useProviderConnectFlow } from "./useProviderConnectFlow";
 
 interface ProviderConnectTerminalProps {
@@ -193,6 +195,64 @@ export function BrowserRedirectField(props: { readonly onSubmit: (url: string) =
  * "Show details" toggle reveals the real terminal for flows that need a
  * pasted code or a menu choice.
  */
+/**
+ * A page the agent asked to have opened, shown as text until the user opens
+ * it. Opening it is also the answer the agent is waiting for.
+ */
+function ProviderPageRequest(props: {
+  readonly displayName: string;
+  readonly request: NonNullable<ProviderConnectFlowState["pageRequest"]>;
+  readonly onAnswer: (accept: boolean) => Promise<void>;
+}) {
+  const { copyToClipboard, isCopied } = useCopyToClipboard<"provider-auth-page">();
+  const { url, message } = props.request;
+  return (
+    <div className="grid gap-1.5 rounded-sm border border-group-divider px-2.5 py-2">
+      <p className="text-xs text-foreground">
+        {message ?? `${props.displayName} wants you to open a page to sign in.`}
+      </p>
+      <code className="block overflow-x-auto whitespace-nowrap font-mono text-[11px] text-muted-foreground">
+        {url}
+      </code>
+      <div className="flex flex-wrap items-center gap-1.5">
+        <Button
+          type="button"
+          size="xs"
+          className="h-6 gap-1 px-2 text-xs"
+          onClick={() => {
+            void ensureLocalApi()
+              .shell.openExternal(url)
+              .catch(() => {});
+            void props.onAnswer(true).catch(() => {});
+          }}
+        >
+          <ExternalLinkIcon className="size-3" aria-hidden />
+          Open sign-in page
+        </Button>
+        <Button
+          type="button"
+          size="xs"
+          variant="outline"
+          className="h-6 gap-1 px-2 text-xs"
+          onClick={() => copyToClipboard(url, "provider-auth-page")}
+        >
+          <CopyIcon className="size-2.5" />
+          {isCopied ? "Copied" : "Copy link"}
+        </Button>
+        <Button
+          type="button"
+          size="xs"
+          variant="ghost"
+          className="h-6 px-2 text-xs text-muted-foreground"
+          onClick={() => void props.onAnswer(false).catch(() => {})}
+        >
+          Don't open
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 export function ProviderConnectFlow({
   instanceId,
   flow,
@@ -230,6 +290,7 @@ export function ProviderConnectFlow({
     start,
     reset,
     submitRedirect,
+    answerPageRequest,
   } = useProviderConnectFlow({
     instanceId,
     flow,
@@ -245,6 +306,9 @@ export function ProviderConnectFlow({
   });
 
   const isBrowserFlow = surface === "browser" || state.surface === "browser";
+  // A community agent's links wait for a click: Threadlines hasn't tested
+  // the agent, and the address is the agent's own.
+  const isCommunityAgent = useIsCommunityAgent(instanceId);
 
   useEffect(() => {
     if (isBrowserFlow) return;
@@ -276,6 +340,7 @@ export function ProviderConnectFlow({
     const url = state.signInUrl;
     if (
       isBrowserFlow ||
+      isCommunityAgent ||
       !url ||
       !isProviderConnectFlowActive(state.status) ||
       openedSignInUrlRef.current === url
@@ -283,7 +348,7 @@ export function ProviderConnectFlow({
       return;
     }
     openSignInUrl(url);
-  }, [isBrowserFlow, state.signInUrl, state.status]);
+  }, [isBrowserFlow, isCommunityAgent, state.signInUrl, state.status]);
 
   const startFlow = () => {
     setShowTerminal(false);
@@ -413,7 +478,15 @@ export function ProviderConnectFlow({
             />
           ) : null}
 
-          {isBrowserFlow && isActive && state.signInUrl ? (
+          {isActive && state.pageRequest ? (
+            <ProviderPageRequest
+              displayName={displayName}
+              request={state.pageRequest}
+              onAnswer={answerPageRequest}
+            />
+          ) : null}
+
+          {isBrowserFlow && !isCommunityAgent && isActive && state.signInUrl ? (
             <BrowserRedirectField onSubmit={submitRedirect} />
           ) : null}
         </div>
