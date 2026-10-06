@@ -1582,6 +1582,7 @@ export function ProviderInstanceCard({
 
   const iconNode = driverKind ? (
     <ProviderInstanceIcon
+      instanceId={instanceId}
       driverKind={driverKind}
       displayName={displayName}
       accentColor={accentColor}

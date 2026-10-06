@@ -1,7 +1,18 @@
-import { type CSSProperties, memo } from "react";
-import { type ProviderDriverKind } from "@threadlines/contracts";
+import { type CSSProperties, memo, type ReactNode, useMemo } from "react";
+import {
+  type ProviderDriverKind,
+  type ProviderInstanceId,
+  type ServerProvider,
+} from "@threadlines/contracts";
+import { BotIcon } from "lucide-react";
 
-import { PROVIDER_ICON_BY_PROVIDER } from "./providerIconUtils";
+import { useSavedEnvironmentRuntimeStore } from "../../environments/runtime";
+import { useServerProviders } from "../../rpc/serverState";
+import {
+  PROVIDER_ICON_BY_PROVIDER,
+  providerIconMaskImage,
+  resolveProviderGlyph,
+} from "./providerIconUtils";
 import { cn } from "~/lib/utils";
 
 function labelWords(label: string): string[] {
@@ -9,16 +20,6 @@ function labelWords(label: string): string[] {
     .replace(/[_-]+/g, " ")
     .split(/\s+/u)
     .filter((word) => /[\p{L}\p{N}]/u.test(word));
-}
-
-export function providerInstanceInitials(label: string): string {
-  const words = labelWords(label);
-  if (words.length === 0) return "";
-  if (words.length === 1) return words[0]!.slice(0, 2).toUpperCase();
-  return words
-    .slice(0, 2)
-    .map((word) => word[0]?.toUpperCase() ?? "")
-    .join("");
 }
 
 /**
@@ -35,7 +36,78 @@ export function providerInstanceBadgeLetters(label: string): string {
     .join("");
 }
 
+/**
+ * Every provider snapshot the app holds: this computer's first, then each
+ * connected computer's, so a thread that lives on another computer still
+ * finds its agent's icon.
+ */
+function useKnownServerProviders(): ReadonlyArray<ServerProvider> {
+  const local = useServerProviders();
+  const savedEnvironments = useSavedEnvironmentRuntimeStore((state) => state.byId);
+  return useMemo(() => {
+    const remote = Object.values(savedEnvironments).flatMap(
+      (environment) => environment.serverConfig?.providers ?? [],
+    );
+    return remote.length === 0 ? local : [...local, ...remote];
+  }, [local, savedEnvironments]);
+}
+
+/**
+ * A provider's mark, sized and coloured by `className` like any icon. Pass the
+ * `instanceId` wherever one is known: an instance with an icon of its own (a
+ * community agent) is drawn with it. `driverKind` alone is enough for a
+ * built-in provider, and is all there is where no instance exists yet (pass
+ * a null `instanceId` there).
+ *
+ * A registry icon is third-party SVG. It is drawn as a CSS mask over the text
+ * colour, the way the built-in glyphs take theirs, and never inserted as
+ * markup.
+ */
+export const ProviderGlyph = memo(function ProviderGlyph(props: {
+  instanceId: ProviderInstanceId | null | undefined;
+  /** A driver kind, or a raw driver label off the wire. */
+  driverKind: string | null | undefined;
+  className?: string | undefined;
+  /** Drawn instead of the generic glyph when the provider has no mark of its own. */
+  fallback?: ReactNode;
+}) {
+  const providers = useKnownServerProviders();
+  const glyph = useMemo(
+    () =>
+      resolveProviderGlyph({
+        instanceId: props.instanceId,
+        driver: props.driverKind,
+        providers,
+      }),
+    [props.driverKind, props.instanceId, providers],
+  );
+  const svg = glyph.kind === "svg" ? glyph.svg : null;
+  const maskImage = useMemo(() => providerIconMaskImage(svg), [svg]);
+
+  if (maskImage !== null) {
+    return (
+      <span
+        aria-hidden="true"
+        // `block` is what the base stylesheet gives every <svg>, so the mask
+        // sits in a row exactly where a built-in glyph would.
+        className={cn("block bg-current mask-contain mask-center mask-no-repeat", props.className)}
+        style={{ WebkitMaskImage: maskImage, maskImage }}
+      />
+    );
+  }
+  const Icon = glyph.kind === "driver" ? PROVIDER_ICON_BY_PROVIDER[glyph.driver] : undefined;
+  if (Icon) {
+    return <Icon className={props.className} aria-hidden="true" />;
+  }
+  if (props.fallback !== undefined) {
+    return props.fallback;
+  }
+  return <BotIcon className={props.className} aria-hidden="true" />;
+});
+
 export const ProviderInstanceIcon = memo(function ProviderInstanceIcon(props: {
+  /** Null only where the instance does not exist yet (a new account's preview). */
+  instanceId: ProviderInstanceId | null;
   driverKind: ProviderDriverKind;
   displayName: string;
   accentColor?: string | undefined;
@@ -45,7 +117,6 @@ export const ProviderInstanceIcon = memo(function ProviderInstanceIcon(props: {
   badgeClassName?: string;
   statusDotClassName?: string;
 }) {
-  const Icon = PROVIDER_ICON_BY_PROVIDER[props.driverKind] ?? null;
   const accentStyle = props.accentColor
     ? ({ "--provider-accent": props.accentColor } as CSSProperties)
     : undefined;
@@ -59,13 +130,11 @@ export const ProviderInstanceIcon = memo(function ProviderInstanceIcon(props: {
       style={accentStyle}
       data-provider-accent-color={props.accentColor}
     >
-      {Icon ? (
-        <Icon className={cn("size-5 shrink-0", props.iconClassName)} aria-hidden />
-      ) : (
-        <span className={cn("text-[10px] font-semibold leading-none", props.iconClassName)}>
-          {providerInstanceInitials(props.displayName)}
-        </span>
-      )}
+      <ProviderGlyph
+        instanceId={props.instanceId}
+        driverKind={props.driverKind}
+        className={cn("size-5 shrink-0", props.iconClassName)}
+      />
       {props.statusDotClassName ? (
         <span
           className={cn(

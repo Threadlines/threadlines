@@ -273,6 +273,7 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
           >
             {activeEntry ? (
               <ProviderInstanceIcon
+                instanceId={activeEntry.instanceId}
                 driverKind={activeEntry.driverKind}
                 displayName={activeEntry.displayName}
                 accentColor={activeEntry.accentColor}
@@ -443,6 +444,7 @@ function RoomPickerTriggerContent(props: { room: RoomAgents; compact: boolean })
           >
             {row.entry ? (
               <ProviderInstanceIcon
+                instanceId={row.entry.instanceId}
                 driverKind={row.entry.driverKind}
                 displayName={row.entry.displayName}
                 accentColor={row.entry.accentColor}

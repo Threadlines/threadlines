@@ -1,6 +1,6 @@
-import type { EnvironmentId, ThreadId } from "@threadlines/contracts";
+import type { EnvironmentId, ProviderInstanceId, ThreadId } from "@threadlines/contracts";
 import { ChevronRightIcon, XIcon } from "lucide-react";
-import { memo, useCallback, useMemo, type CSSProperties } from "react";
+import { memo, useCallback, useMemo, type CSSProperties, type ReactNode } from "react";
 
 import type {
   SubagentProgressItem,
@@ -13,10 +13,9 @@ import {
   useAgentsPanelWorkEntries,
   useSelectedAgentId,
 } from "../../agentsPanelStore";
-import type { Icon } from "../Icons";
 import { Button } from "../ui/button";
 import { LiveNode, SectionLabel } from "../ui/threadline";
-import { providerIconForDriverLabel } from "./providerIconUtils";
+import { ProviderGlyph } from "./ProviderInstanceIcon";
 import { SubagentInspector } from "./SubagentInspector";
 import { deriveSubagentDisplayDetails, type ThreadBackgroundRunItem } from "./threadActivity";
 import {
@@ -45,7 +44,10 @@ export interface AgentsPanelProps {
   /** Work attributed to spawned children. These rows are intentionally absent
    *  from the main conversation and belong in the selected child's inspector. */
   workEntries?: ReadonlyArray<WorkLogEntry> | undefined;
-  /** Drives the trunk hue, the branch glyphs and the provenance chip, e.g. `codex`. */
+  /** The instance the thread runs on: a spawned agent's row carries its glyph. */
+  providerInstanceId?: ProviderInstanceId | null | undefined;
+  /** Drives the trunk hue and the provenance chip, e.g. `codex`; the glyph's
+   *  fallback when the instance has no icon of its own. */
   providerLabel?: string | null | undefined;
   /** Whether a turn is running right now. Only changes the empty state: a turn
    *  that has not reached the provider yet may still spawn agents, so the panel
@@ -191,7 +193,7 @@ function RowDisclosure({ visible }: { visible: boolean }) {
 function BranchRow({
   branch,
   variant,
-  providerGlyph: ProviderGlyph,
+  providerGlyph,
   onSelect,
   onStop,
 }: {
@@ -199,7 +201,7 @@ function BranchRow({
   variant: BranchRowVariant;
   /** The thread provider's mark, drawn ahead of a spawned agent's name. Runs
    *  are not the provider's own work, so they keep their text tag instead. */
-  providerGlyph: Icon | null;
+  providerGlyph: ReactNode;
   onSelect: (branch: AgentBranch) => void;
   onStop: (branch: AgentBranch) => void;
 }) {
@@ -232,12 +234,12 @@ function BranchRow({
             always cut off. It gets the full width underneath instead, paid for
             out of the row's vertical padding rather than its height. */}
         <span className={cn("flex min-w-0 items-baseline gap-2", canStop && "pr-9")}>
-          {branch.kind === "subagent" && ProviderGlyph ? (
+          {branch.kind === "subagent" && providerGlyph ? (
             <span
               className="translate-y-px shrink-0 text-muted-foreground/70"
               data-agent-branch-provider="true"
             >
-              <ProviderGlyph className="size-3" aria-hidden="true" />
+              {providerGlyph}
             </span>
           ) : null}
           <span className="min-w-0 flex-1 truncate text-[13px] leading-5 font-medium text-foreground/90">
@@ -362,6 +364,7 @@ export const AgentsPanel = memo(function AgentsPanel({
   subagentRuns,
   history,
   workEntries,
+  providerInstanceId,
   providerLabel,
   turnInFlight = false,
   threadCwd,
@@ -381,7 +384,17 @@ export const AgentsPanel = memo(function AgentsPanel({
     () => formatAgentsPanelSummary(view, providerLabel),
     [providerLabel, view],
   );
-  const providerGlyph = useMemo(() => providerIconForDriverLabel(providerLabel), [providerLabel]);
+  const providerGlyph = useMemo(
+    () =>
+      providerInstanceId || providerLabel?.trim() ? (
+        <ProviderGlyph
+          instanceId={providerInstanceId}
+          driverKind={providerLabel}
+          className="size-3"
+        />
+      ) : null,
+    [providerInstanceId, providerLabel],
+  );
   const anyRunning = hasRunningAgentActivity({ subagents });
   const selectedSubagent = findAgentsPanelSubagent(view, selectedAgentId);
 

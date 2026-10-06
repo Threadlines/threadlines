@@ -17,7 +17,7 @@ import {
 } from "lucide-react";
 import { createContext, useContext, useMemo, useState, type ReactNode } from "react";
 
-import { PROVIDER_ICON_BY_PROVIDER } from "../chat/providerIconUtils";
+import { ProviderGlyph } from "../chat/ProviderInstanceIcon";
 import { describedAwaitedTasks, formatAwaitedTasks, PROVIDER_OPTIONS } from "../../session-logic";
 import {
   useSavedEnvironmentRegistryStore,
@@ -195,7 +195,6 @@ function ThreadHoverCardContent({ thread, status, lineage }: ThreadHoverCardPayl
   const environmentLabel = runtimeLabel ?? savedLabel ?? (isRemote ? "Remote" : null);
 
   const provider = thread.session?.provider ?? null;
-  const ProviderIcon = provider ? (PROVIDER_ICON_BY_PROVIDER[provider] ?? null) : null;
   // The driver kind is an internal identifier ("claudeAgent"); show what the
   // model picker shows. The model itself is only known once the thread's shell
   // has loaded, so the provider is the fallback rather than the default.
@@ -310,8 +309,14 @@ function ThreadHoverCardContent({ thread, status, lineage }: ThreadHoverCardPayl
             ) : null}
           </HoverCardDetailRow>
         ) : null}
-        {ProviderIcon || modelLabel || providerLabel ? (
-          <HoverCardDetailRow icon={ProviderIcon ? <ProviderIcon className="size-3.5" /> : null}>
+        {modelLabel || providerLabel ? (
+          <HoverCardDetailRow
+            icon={
+              provider ? (
+                <ProviderGlyph instanceId={instanceId} driverKind={provider} className="size-3.5" />
+              ) : null
+            }
+          >
             {modelLabel ?? providerLabel}
             {accountName ? (
               <span className="text-muted-foreground/70">{` · ${accountName}`}</span>

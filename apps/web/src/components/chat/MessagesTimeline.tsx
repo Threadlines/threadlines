@@ -5402,6 +5402,7 @@ function AgentAuthorLine({
     <div className="relative mb-1 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs">
       {label.entry ? (
         <ProviderInstanceIcon
+          instanceId={label.entry.instanceId}
           driverKind={label.entry.driverKind}
           displayName={label.entry.displayName}
           accentColor={label.entry.accentColor}

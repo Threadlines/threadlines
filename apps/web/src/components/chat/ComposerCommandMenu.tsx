@@ -279,6 +279,7 @@ const ComposerCommandMenuItem = memo(function ComposerCommandMenuItem(props: {
     >
       {props.item.type === "room-agent" && props.item.entry ? (
         <ProviderInstanceIcon
+          instanceId={props.item.entry.instanceId}
           driverKind={props.item.entry.driverKind}
           displayName={props.item.entry.displayName}
           accentColor={props.item.entry.accentColor}

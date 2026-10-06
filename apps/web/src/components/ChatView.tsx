@@ -3635,6 +3635,7 @@ export default function ChatView(props: ChatViewProps) {
       subagents: subagentProgress?.items ?? EMPTY_SUBAGENT_ITEMS,
       subagentRuns: promotedSubagentRuns,
       history: subagentHistory,
+      providerInstanceId: activeProviderInstanceId,
       providerLabel: activeProviderDriver,
       turnInFlight: activeTurnInProgress,
       hydrated: threadDetailHydrated,
@@ -3643,6 +3644,7 @@ export default function ChatView(props: ChatViewProps) {
     });
   }, [
     activeProviderDriver,
+    activeProviderInstanceId,
     activeThreadId,
     activeTurnInProgress,
     environmentId,
@@ -7223,6 +7225,7 @@ export default function ChatView(props: ChatViewProps) {
           workingTreeChanges={workingTreeChanges}
           remoteBehindCount={remoteBehindCount}
           liveAgents={headerLiveAgents}
+          agentProviderInstanceId={activeProviderInstanceId}
           agentProviderDriverKind={activeProviderDriver}
           fileBrowserAvailable={!isGeneralChatThread}
           taskProgress={taskProgress}

@@ -6,8 +6,8 @@ import {
   getProviderScopedDisplayModelLabel,
   getTriggerDisplayModelLabel,
   type ModelEsque,
-  PROVIDER_ICON_BY_PROVIDER,
 } from "./providerIconUtils";
+import { ProviderGlyph } from "./ProviderInstanceIcon";
 import { ComboboxItem } from "../ui/combobox";
 import { Kbd } from "../ui/kbd";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -18,7 +18,7 @@ export const ModelListRow = memo(function ModelListRow(props: {
   model: ModelEsque;
   /** Instance the model belongs to — the routing key used in combobox values. */
   instanceId: ProviderInstanceId;
-  /** Driver kind of the instance — used for the provider icon glyph. */
+  /** Driver kind of the instance: the glyph's fallback, and how the model is named. */
   driverKind: ProviderDriverKind;
   /**
    * Display name to show in the secondary line (provider footer). Usually
@@ -39,7 +39,6 @@ export const ModelListRow = memo(function ModelListRow(props: {
   disabledReason?: string | null;
   onToggleFavorite: () => void;
 }) {
-  const ProviderIcon = PROVIDER_ICON_BY_PROVIDER[props.driverKind] ?? null;
   const providerLabel = props.model.subProvider
     ? `${props.providerDisplayName} · ${props.model.subProvider}`
     : props.providerDisplayName;
@@ -159,7 +158,11 @@ export const ModelListRow = memo(function ModelListRow(props: {
         ) : null}
         {props.showProvider && (
           <div className="flex items-center gap-1 mt-0.5">
-            {ProviderIcon ? <ProviderIcon className="size-3 shrink-0" /> : null}
+            <ProviderGlyph
+              instanceId={props.instanceId}
+              driverKind={props.driverKind}
+              className="size-3 shrink-0"
+            />
             {props.providerAccentColor ? (
               <span
                 className="size-1.5 shrink-0 rounded-full"

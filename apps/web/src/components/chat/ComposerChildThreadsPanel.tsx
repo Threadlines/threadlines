@@ -72,6 +72,7 @@ export const ComposerChildThreadsPanel = memo(function ComposerChildThreadsPanel
               <span className="ms-auto flex shrink-0 items-center gap-1.5 font-mono text-[11px] text-muted-foreground">
                 {thread.entry ? (
                   <ProviderInstanceIcon
+                    instanceId={thread.entry.instanceId}
                     driverKind={thread.entry.driverKind}
                     displayName={thread.entry.displayName}
                     accentColor={thread.entry.accentColor}

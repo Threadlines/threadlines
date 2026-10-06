@@ -26,7 +26,7 @@ import { useServerProviders } from "../../rpc/serverState";
 import { formatRelativeTimeLabel } from "../../timestampFormat";
 import { PageTitlebar } from "../PageTitlebar";
 import { ClaudeAI, OpenAI, type Icon } from "../Icons";
-import { PROVIDER_ICON_BY_PROVIDER } from "../chat/providerIconUtils";
+import { ProviderGlyph } from "../chat/ProviderInstanceIcon";
 import { ProviderUsageSignIn } from "../chat/providerSignIn";
 import { Button } from "../ui/button";
 import { Checkbox } from "../ui/checkbox";
@@ -407,7 +407,6 @@ function UsagePlanLimits({ nowMs }: { readonly nowMs: number }) {
       <h2 className={SECTION_LABEL_CLASS}>Plan limits</h2>
       <div className="mt-1 flex flex-col divide-y divide-border/50">
         {rows.map((row) => {
-          const ProviderIcon = PROVIDER_ICON_BY_PROVIDER[row.driver];
           const fill = row.provider ? USAGE_PROVIDER_COLORS[row.provider] : "var(--foreground)";
           return (
             <div
@@ -416,7 +415,11 @@ function UsagePlanLimits({ nowMs }: { readonly nowMs: number }) {
               data-testid="usage-plan-limit-row"
             >
               <span className="flex min-w-0 items-center gap-2 text-sm text-foreground/90">
-                {ProviderIcon ? <ProviderIcon className="size-3.5 shrink-0" /> : null}
+                <ProviderGlyph
+                  instanceId={row.instanceId}
+                  driverKind={row.driver}
+                  className="size-3.5 shrink-0"
+                />
                 <span className="truncate">{row.label}</span>
               </span>
               <div className="grid grid-cols-1 gap-x-8 gap-y-2.5 @xl:grid-cols-2">
