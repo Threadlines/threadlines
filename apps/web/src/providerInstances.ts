@@ -332,3 +332,17 @@ export function resolveProviderDriverKindForInstanceSelection(
   }
   return undefined;
 }
+
+/**
+ * Whether an instance's icon carries the small letter badge that tells it
+ * from the other instances of its driver ("Claude · Work" beside "Claude").
+ * A community agent has an icon of its own, so it gets one only for a color
+ * the user picked.
+ */
+export function providerInstanceShowsBadge(
+  entry: Pick<ProviderInstanceEntry, "isDefault" | "driverKind" | "accentColor">,
+): boolean {
+  return entry.driverKind === ACP_REGISTRY_DRIVER_KIND
+    ? Boolean(entry.accentColor)
+    : !entry.isDefault;
+}

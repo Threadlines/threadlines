@@ -60,6 +60,11 @@ export interface AcpRegistrySignInInput {
   readonly install: AcpRegistrySignInInstall;
   /** Whether `path` is a regular file (not a link). */
   readonly isFile: (path: string) => boolean;
+  /**
+   * Where `path` really leads once every link on the way is followed, or
+   * undefined when it leads nowhere. Default: the path as written.
+   */
+  readonly realPath?: (path: string) => string | undefined;
   /** Whether an agent may set this environment variable (the registry's filter). */
   readonly allowsEnvName: (name: string) => boolean;
   readonly platform?: NodeJS.Platform;
@@ -120,24 +125,35 @@ function legacyCommand(
   }
   const pathApi = platform === "win32" ? NodePath.win32 : NodePath.posix;
   const { payloadDir } = input.install;
-  const insideInstall = (path: string) =>
-    pathApi.isAbsolute(path) && isInside(pathApi.normalize(path), payloadDir, platform)
-      ? input.isFile(pathApi.normalize(path))
-      : false;
+  const realPath = input.realPath ?? ((path: string) => path);
+  const realPayloadDir = realPath(payloadDir) ?? payloadDir;
+  /**
+   * The file as Threadlines names it, when `path` is one of the agent's
+   * installed files. Judged by where the path really leads: an agent names
+   * its files by their real path, and the folder Threadlines knows may be
+   * reached through a link (macOS `/tmp`, a home folder that is one). A
+   * link that leads out of the install is not one of its files.
+   */
+  const installedFile = (path: string): string | undefined => {
+    if (!pathApi.isAbsolute(path)) return undefined;
+    const real = realPath(pathApi.normalize(path));
+    if (real === undefined || !isInside(real, realPayloadDir, platform)) return undefined;
+    return input.isFile(real)
+      ? pathApi.join(payloadDir, pathApi.relative(realPayloadDir, real))
+      : undefined;
+  };
   const environment = filteredEnv(env, input.allowsEnvName);
-  if (insideInstall(command)) {
-    return { program: pathApi.normalize(command), args, env: environment };
-  }
+  const program = installedFile(command);
+  if (program !== undefined) return { program, args, env: environment };
   const [script, ...rest] = args;
-  if (
-    isNodeRunner(command, platform) &&
-    input.install.nodeProgram !== null &&
-    script !== undefined &&
-    insideInstall(script)
-  ) {
+  const installedScript =
+    isNodeRunner(command, platform) && input.install.nodeProgram !== null && script !== undefined
+      ? installedFile(script)
+      : undefined;
+  if (installedScript !== undefined && input.install.nodeProgram !== null) {
     return {
       program: input.install.nodeProgram,
-      args: [pathApi.normalize(script), ...rest],
+      args: [installedScript, ...rest],
       env: environment,
     };
   }

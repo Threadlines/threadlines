@@ -36,6 +36,21 @@ describe("community agent wording", () => {
     ).toBe(
       "Duo is made by Ada, Grace and Linus. Threadlines hasn't reviewed it. It runs on Will's Mac mini and can read and change files in your projects.",
     );
+    // The registry sometimes writes an author with an address: the name is what is said.
+    expect(
+      acpRegistryInstallConfirmText({
+        agent: { name: "Auggie", authors: ["Augment Code <support@augmentcode.com>"] },
+        computer: "this Mac",
+      }),
+    ).toBe(
+      "Auggie is made by Augment Code. Threadlines hasn't reviewed it. It runs on this Mac and can read and change files in your projects.",
+    );
+    expect(
+      acpRegistryInstallConfirmText({
+        agent: { name: "Fast", authors: ["enquiries@fast-agent.ai"] },
+        computer: "this Mac",
+      }),
+    ).toContain("Fast is made by enquiries@fast-agent.ai.");
     expect(
       acpRegistryInstallConfirmText({ agent: { name: "Solo", authors: [] }, computer: "this PC" }),
     ).toBe(

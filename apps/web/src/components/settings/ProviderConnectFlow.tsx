@@ -494,7 +494,9 @@ export function ProviderConnectFlow({
         </div>
       ) : null}
 
-      {isBrowserFlow ? null : (
+      {/* A community agent's login command lives in Threadlines' own tools
+          folder: there is nothing to copy into another terminal. */}
+      {isBrowserFlow || isCommunityAgent ? null : (
         <details
           className="group"
           open={showFallback}

@@ -130,12 +130,15 @@ export function makeAcpRegistryAuthFlows(input: AcpRegistryAuthInput): ProviderI
 
   const withScratchDir = <A, E>(use: (dir: string) => Effect.Effect<A, E, Scope.Scope>) =>
     Effect.acquireUseRelease(
-      Effect.promise(() =>
-        NodeFS.mkdtemp(NodePath.join(NodeOS.tmpdir(), "threadlines-agent-sign-in-")),
-      ),
+      Effect.tryPromise({
+        try: () => NodeFS.mkdtemp(NodePath.join(NodeOS.tmpdir(), "threadlines-agent-sign-in-")),
+        catch: () => new Error(`Couldn't make a folder to start ${displayName} in.`),
+      }),
       (dir) => use(dir).pipe(Effect.scoped),
       (dir) =>
-        Effect.promise(() => NodeFS.rm(dir, { recursive: true, force: true })).pipe(Effect.ignore),
+        Effect.promise(() =>
+          NodeFS.rm(dir, { recursive: true, force: true }).catch(() => undefined),
+        ),
     );
 
   const runtime = (cwd: string, authMethodId?: string) =>

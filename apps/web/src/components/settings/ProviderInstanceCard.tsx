@@ -2002,7 +2002,18 @@ export function ProviderInstanceCard({
                 </ProviderConfigurationSection>
               ) : null}
 
-              {driverOption ? (
+              {isCommunityAgent ? (
+                // In the open, not folded away: a key in a variable is how
+                // some of these agents sign in, and the Account tab sends
+                // people here to set it.
+                <section className="border-t border-group-divider px-3.5 py-3">
+                  <ProviderEnvironmentEditor
+                    environment={instance.environment ?? []}
+                    reservedNames={reservedEnvironmentNames}
+                    onChange={updateEnvironment}
+                  />
+                </section>
+              ) : driverOption ? (
                 <ProviderAdvancedConfigurationSection
                   fields={providerSettingsFieldGroups.advancedFields}
                   value={instance.config}

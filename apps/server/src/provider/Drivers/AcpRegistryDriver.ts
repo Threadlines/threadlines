@@ -10,6 +10,7 @@
  *
  * @module provider/Drivers/AcpRegistryDriver
  */
+import { randomBytes } from "node:crypto";
 import * as NodeFS from "node:fs/promises";
 import * as NodePath from "node:path";
 
@@ -131,15 +132,27 @@ export function forgetAcpRegistryAgentContext(stateDir: string, agentId: string)
   contexts.delete(`${stateDir}\u0000${agentId}`);
 }
 
-/** Saves what the Providers page shows about where the agent came from. Best effort. */
-export const writeAcpRegistryListing = (root: string, listing: AcpRegistryListing) =>
+/**
+ * Saves what the Providers page shows about where the agent came from. Best
+ * effort, and it never fails: two clients reading the list at once both
+ * write it.
+ */
+export const writeAcpRegistryListing = (
+  root: string,
+  listing: AcpRegistryListing,
+): Effect.Effect<void> =>
   Effect.promise(async () => {
-    await NodeFS.mkdir(root, { recursive: true });
     const target = NodePath.join(root, LISTING_FILE);
-    const temp = `${target}.${process.pid}.tmp`;
-    await NodeFS.writeFile(temp, `${encodeListing(listing)}\n`, { mode: 0o600 });
-    await NodeFS.rename(temp, target);
-  }).pipe(Effect.ignore);
+    // A name of its own, so writers at the same moment don't share one.
+    const temp = `${target}.${randomBytes(4).toString("hex")}.tmp`;
+    try {
+      await NodeFS.mkdir(root, { recursive: true });
+      await NodeFS.writeFile(temp, `${encodeListing(listing)}\n`, { mode: 0o600 });
+      await NodeFS.rename(temp, target);
+    } catch {
+      await NodeFS.rm(temp, { force: true }).catch(() => undefined);
+    }
+  });
 
 const readAcpRegistryListing = (root: string): Effect.Effect<AcpRegistryListing | null> =>
   Effect.promise(() =>

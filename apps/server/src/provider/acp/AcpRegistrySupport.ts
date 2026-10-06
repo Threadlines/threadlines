@@ -16,7 +16,7 @@
  *
  * @module provider/acp/AcpRegistrySupport
  */
-import { lstatSync } from "node:fs";
+import { lstatSync, realpathSync } from "node:fs";
 import * as NodeFS from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
@@ -134,6 +134,14 @@ const isRegularFile = (path: string) => {
   }
 };
 
+const realPath = (path: string) => {
+  try {
+    return realpathSync.native(path);
+  } catch {
+    return undefined;
+  }
+};
+
 /** The sign-in methods an installed agent offers, each with how Threadlines can run it. */
 export function acpRegistrySignInPlans(input: {
   readonly installed: AcpRegistryInstalledAgent;
@@ -155,6 +163,7 @@ export function acpRegistrySignInPlans(input: {
       nodeProgram: input.installed.node?.node ?? null,
     },
     isFile: isRegularFile,
+    realPath,
     allowsEnvName: input.allowsEnvName,
   });
 }
@@ -406,34 +415,37 @@ export function makeAcpRegistryDescriptor(
         recipeDigest: installed.receipt.recipeDigest,
         authGeneration: state.authGeneration,
       };
-      const scratch = yield* Effect.promise(() =>
-        NodeFS.mkdtemp(NodePath.join(NodeOS.tmpdir(), "threadlines-agent-check-")),
-      );
-      const outcome = yield* Effect.gen(function* () {
-        const acp = yield* makeAcpProviderRuntime(descriptor, {
-          settings,
-          environment,
-          childProcessSpawner: spawner,
-          cwd: scratch,
-          clientInfo: { name: "threadlines-provider-probe", version: "0.0.0" },
-        });
-        const started = yield* acp
-          .start()
-          .pipe(Effect.timeoutOption(HEALTH_CHECK_TIMEOUT), Effect.exit);
-        return {
-          started,
-          initialize: yield* acp.getInitializeResult,
-          configOptions: yield* acp.getConfigOptions,
-        };
-      }).pipe(
-        Effect.scoped,
-        Effect.exit,
-        Effect.ensuring(
-          Effect.promise(() => NodeFS.rm(scratch, { recursive: true, force: true })).pipe(
-            Effect.ignore,
+      const startOnce = (scratch: string) =>
+        Effect.gen(function* () {
+          const acp = yield* makeAcpProviderRuntime(descriptor, {
+            settings,
+            environment,
+            childProcessSpawner: spawner,
+            cwd: scratch,
+            clientInfo: { name: "threadlines-provider-probe", version: "0.0.0" },
+          });
+          const started = yield* acp
+            .start()
+            .pipe(Effect.timeoutOption(HEALTH_CHECK_TIMEOUT), Effect.exit);
+          return {
+            started,
+            initialize: yield* acp.getInitializeResult,
+            configOptions: yield* acp.getConfigOptions,
+          };
+        }).pipe(Effect.scoped);
+      // A folder that can't be made ends as a failed check below, like an
+      // agent that can't start: a status check never fails by itself.
+      const outcome = yield* Effect.acquireUseRelease(
+        Effect.tryPromise({
+          try: () => NodeFS.mkdtemp(NodePath.join(NodeOS.tmpdir(), "threadlines-agent-check-")),
+          catch: () => new Error(`Couldn't make a folder to start ${displayName} in.`),
+        }),
+        startOnce,
+        (scratch) =>
+          Effect.promise(() =>
+            NodeFS.rm(scratch, { recursive: true, force: true }).catch(() => undefined),
           ),
-        ),
-      );
+      ).pipe(Effect.exit);
 
       const verdict = (
         status: AcpRegistryHealth["status"],

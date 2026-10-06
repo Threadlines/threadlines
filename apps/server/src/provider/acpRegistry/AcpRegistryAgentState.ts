@@ -21,6 +21,7 @@
  *
  * @module provider/acpRegistry/AcpRegistryAgentState
  */
+import { randomBytes } from "node:crypto";
 import * as NodeFS from "node:fs/promises";
 import * as NodePath from "node:path";
 
@@ -180,7 +181,8 @@ export const writeAcpRegistryOffers = (
     };
     state.offersLoaded = true;
     const target = NodePath.join(agentRoot, OFFERS_FILE);
-    const temp = `${target}.${process.pid}.tmp`;
+    // A name of its own, so two writers at the same moment don't share one.
+    const temp = `${target}.${randomBytes(4).toString("hex")}.tmp`;
     await NodeFS.writeFile(temp, `${encodeOffers(state.offers)}\n`, { mode: 0o600 })
       .then(() => NodeFS.rename(temp, target))
       .catch(() => NodeFS.rm(temp, { force: true }).catch(() => undefined));

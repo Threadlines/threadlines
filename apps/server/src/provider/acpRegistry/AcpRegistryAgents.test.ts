@@ -302,7 +302,10 @@ it.layer(NodeServices.layer)("AcpRegistryAgents", (it) => {
       assert.isUndefined(context.state.updateCandidate);
 
       world.list(snapshotOf([newer]));
-      const listed = yield* agents.list({});
+      // Two clients read the list at the same moment: both get it.
+      const [listed] = yield* Effect.all([agents.list({}), agents.list({})], {
+        concurrency: "unbounded",
+      });
       assert.deepStrictEqual(
         listed.agents.map((agent) => agent.version),
         ["1.1.0"],

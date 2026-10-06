@@ -445,4 +445,50 @@ it.layer(NodeServices.layer)("effect-acp client", (it) => {
       yield* Scope.close(scope, Exit.void);
     }),
   );
+
+  it.effect(
+    "reads the error of an agent that isn't built on this library, code and data included",
+    () =>
+      Effect.gen(function* () {
+        const { stdio, input, output } = yield* makeInMemoryStdio();
+        const scope = yield* Scope.make();
+        const acp = yield* AcpClient.make(stdio).pipe(Effect.provideService(Scope.Scope, scope));
+
+        const answer = (error: unknown) =>
+          Effect.gen(function* () {
+            const fiber = yield* acp.agent
+              .createSession({ cwd: "/tmp", mcpServers: [] })
+              .pipe(Effect.flip, Effect.forkScoped);
+            const request = JSON.parse(yield* Queue.take(output)) as {
+              readonly id: number | string;
+            };
+            // A bare JSON-RPC error object, as any other implementation sends it.
+            yield* Queue.offer(
+              input,
+              new TextEncoder().encode(
+                `${JSON.stringify({ jsonrpc: "2.0", id: request.id, error })}\n`,
+              ),
+            );
+            return yield* Fiber.join(fiber);
+          });
+
+        // "Sign in first": callers tell it from every other failure by its code.
+        const signedOut = yield* answer({
+          code: -32000,
+          message: "Authentication required",
+          data: "authentication required",
+        });
+        assert.instanceOf(signedOut, AcpError.AcpRequestError);
+        assert.deepInclude(signedOut, {
+          code: -32000,
+          errorMessage: "Authentication required",
+          data: "authentication required",
+        });
+
+        const withoutData = yield* answer({ code: -32601, message: "Method not found" });
+        assert.instanceOf(withoutData, AcpError.AcpRequestError);
+        assert.deepInclude(withoutData, { code: -32601, errorMessage: "Method not found" });
+        yield* Scope.close(scope, Exit.void);
+      }),
+  );
 });

@@ -56,6 +56,33 @@ describe("planAcpRegistrySignIn", () => {
     }
   });
 
+  it("knows the agent's files by where their path really leads", () => {
+    // The install folder is reached through a link (macOS `/tmp`, a linked
+    // home folder), and the agent names its program by the real path.
+    const REAL_PAYLOAD = `/private${PAYLOAD}`;
+    const realPath = (path: string) =>
+      path === `${PAYLOAD}/leaves-the-install`
+        ? "/bin/sh"
+        : path.startsWith(PAYLOAD)
+          ? `/private${path}`
+          : path;
+    const linked: Partial<AcpRegistrySignInInput> = {
+      realPath,
+      isFile: (path) => path === `${REAL_PAYLOAD}/agent` || path === "/bin/sh",
+    };
+    // Run by the name Threadlines knows the file by.
+    expect(plan([legacy(`${REAL_PAYLOAD}/agent`, ["--setup"])], linked)[0]?.command).toEqual({
+      program: NATIVE,
+      args: ["--setup"],
+      env: {},
+    });
+    expect(plan([legacy(NATIVE, ["--setup"])], linked)[0]?.command?.program).toBe(NATIVE);
+    // A link inside the install that leads out of it is not one of its files.
+    expect(plan([legacy(`${PAYLOAD}/leaves-the-install`, [])], linked)[0]?.method.kind).toBe(
+      "unsupported",
+    );
+  });
+
   it("refuses a command line that names anything else", () => {
     const refused = [
       // autohand, kilo: another program from PATH.

@@ -44,9 +44,16 @@ const joinNames = (names: ReadonlyArray<string>): string => {
   return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
 };
 
+/**
+ * An author as a sentence names them. The registry sometimes writes
+ * "Name <address>": the name alone. An address with no name stays.
+ */
+const authorName = (author: string): string =>
+  author.replace(/\s*<[^<>]*>\s*$/u, "").trim() || author.trim();
+
 /** "Block", "Block and Square", or "" when the registry names nobody. */
 export const acpRegistryAuthorLine = (authors: ReadonlyArray<string>): string =>
-  joinNames(authors.map((author) => author.trim()).filter((author) => author.length > 0));
+  joinNames(authors.map(authorName).filter((author) => author.length > 0));
 
 /**
  * What the user agrees to before an agent is installed. `computer` is where
