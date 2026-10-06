@@ -759,7 +759,7 @@ describe("ClaudeAdapterLive", () => {
       assert.equal(createInput?.options.enableFileCheckpointing, true);
       assert.equal(createInput?.options.promptSuggestions, true);
       assert.equal(createInput?.options.persistSession, true);
-      assert.equal(createInput?.options.permissionMode, undefined);
+      assert.equal(createInput?.options.permissionMode, "default");
       assert.equal(createInput?.options.allowDangerouslySkipPermissions, undefined);
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
