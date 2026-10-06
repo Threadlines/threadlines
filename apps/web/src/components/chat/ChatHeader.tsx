@@ -15,6 +15,7 @@ import {
   FolderOpenIcon,
   GitForkIcon,
   GlobeIcon,
+  MessagesSquareIcon,
   PanelRightIcon,
   TerminalSquareIcon,
 } from "lucide-react";
@@ -51,8 +52,11 @@ interface ChatHeaderProps {
   isGitRepo: boolean;
   /** The folder the project crumb's menu acts on: the thread's worktree when it
    *  has one. Null for General Chats and threads without a project, whose
-   *  crumb is plain text. */
+   *  crumb is a label rather than a menu. */
   openInCwd: string | null;
+  /** The project's own folder, which the crumb's icon is read from. Null
+   *  wherever `openInCwd` is. */
+  projectCwd: string | null;
   activeProjectScripts: ProjectScript[] | undefined;
   preferredScriptId: string | null;
   keybindings: ResolvedKeybindingsConfig;
@@ -183,6 +187,7 @@ export const ChatHeader = memo(function ChatHeader({
   activeProjectName,
   isGitRepo,
   openInCwd,
+  projectCwd,
   activeProjectScripts,
   preferredScriptId,
   keybindings,
@@ -253,20 +258,25 @@ export const ChatHeader = memo(function ChatHeader({
           // Hidden, not unmounted, on phones: the crumb menu owns the
           // open-favorite shortcut, which should still work there.
           <div className="hidden min-w-0 shrink items-center gap-1.5 sm:flex">
-            {openInCwd !== null ? (
+            {openInCwd !== null && projectCwd !== null ? (
               <ProjectCrumbMenu
                 projectName={activeProjectName}
+                environmentId={activeThreadEnvironmentId}
+                projectCwd={projectCwd}
                 cwd={openInCwd}
                 canOpenInEditor={canOpenInEditor}
                 keybindings={keybindings}
                 availableEditors={availableEditors}
               />
             ) : (
+              // General Chats carry the chat glyph wherever a project would
+              // carry its icon.
               <span
-                className="min-w-0 max-w-48 truncate text-sm text-muted-foreground"
+                className="flex min-w-0 max-w-48 items-center gap-1.5 text-sm text-muted-foreground"
                 title={activeProjectName}
               >
-                {activeProjectName}
+                <MessagesSquareIcon aria-hidden="true" className="size-3.5 shrink-0" />
+                <span className="min-w-0 truncate">{activeProjectName}</span>
               </span>
             )}
             <span aria-hidden="true" className="select-none text-muted-foreground/40">
