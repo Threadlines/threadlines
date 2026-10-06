@@ -104,6 +104,8 @@ export function AddProviderAccountForm(props: {
           ))}
           <span className="ml-2" aria-hidden>
             <ProviderInstanceIcon
+              // A preview of the account being made: there is no instance yet.
+              instanceId={null}
               driverKind={props.driverKind}
               displayName={trimmedName || "?"}
               accentColor={color}

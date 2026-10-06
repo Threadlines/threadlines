@@ -1,5 +1,4 @@
-import type { ProviderDriverKind } from "@threadlines/contracts";
-import { BotIcon } from "lucide-react";
+import type { ProviderDriverKind, ProviderInstanceId } from "@threadlines/contracts";
 import { memo, useState } from "react";
 
 import { cn } from "../../lib/utils";
@@ -7,7 +6,7 @@ import { formatWorkingDurationLabel } from "../../timestampFormat";
 import { Button } from "../ui/button";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import type { LiveAgentIndicator } from "./agentsPanel.logic";
-import { PROVIDER_ICON_BY_PROVIDER } from "./providerIconUtils";
+import { ProviderGlyph } from "./ProviderInstanceIcon";
 
 /** Faces drawn before the rest fold into "+N"; a narrow header draws one. */
 const MAX_FACES = 3;
@@ -39,17 +38,16 @@ export function formatLiveAgentsTooltip(
  */
 export const HeaderAgentFaces = memo(function HeaderAgentFaces({
   liveAgents,
+  providerInstanceId,
   providerDriverKind,
   onOpenAgents,
 }: {
   liveAgents: LiveAgentIndicator;
   /** The thread's provider: its subagents run on it, so their faces carry its mark. */
+  providerInstanceId: ProviderInstanceId | null;
   providerDriverKind: ProviderDriverKind | null;
   onOpenAgents: () => void;
 }) {
-  const ProviderIcon = providerDriverKind
-    ? (PROVIDER_ICON_BY_PROVIDER[providerDriverKind] ?? BotIcon)
-    : BotIcon;
   const shown = liveAgents.agents.slice(0, MAX_FACES);
   const summary = formatLiveAgentsTooltip(liveAgents);
 
@@ -85,7 +83,11 @@ export const HeaderAgentFaces = memo(function HeaderAgentFaces({
                   "-ms-1 [mask-image:radial-gradient(circle_at_-6px_50%,transparent_11.5px,#000_12px)] @max-xl/header-actions:hidden",
               )}
             >
-              <ProviderIcon className="size-[9px]" />
+              <ProviderGlyph
+                instanceId={providerInstanceId}
+                driverKind={providerDriverKind}
+                className="size-[9px]"
+              />
             </span>
           ))}
         </span>

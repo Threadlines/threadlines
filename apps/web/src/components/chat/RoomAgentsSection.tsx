@@ -95,6 +95,7 @@ export const RoomAgentsSection = memo(function RoomAgentsSection(props: {
               >
                 {row.entry ? (
                   <ProviderInstanceIcon
+                    instanceId={row.entry.instanceId}
                     driverKind={row.entry.driverKind}
                     displayName={row.entry.displayName}
                     accentColor={row.entry.accentColor}

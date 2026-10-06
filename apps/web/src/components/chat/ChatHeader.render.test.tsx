@@ -32,6 +32,7 @@ function renderChatHeader(overrides: Partial<ComponentProps<typeof ChatHeader>> 
     workingTreeChanges: null,
     remoteBehindCount: null,
     liveAgents: null,
+    agentProviderInstanceId: null,
     agentProviderDriverKind: null,
     fileBrowserAvailable: false,
     taskProgress: null,

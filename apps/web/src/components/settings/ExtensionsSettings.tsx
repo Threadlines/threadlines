@@ -54,7 +54,7 @@ import {
 import { useShallow } from "zustand/react/shallow";
 
 import { openInPreferredEditor } from "../../editorPreferences";
-import { providerIconForDriverLabel } from "../chat/providerIconUtils";
+import { ProviderGlyph } from "../chat/ProviderInstanceIcon";
 import { ProjectFavicon } from "../ProjectFavicon";
 import {
   resolveEnvironmentHttpUrl,
@@ -454,9 +454,14 @@ function formatBoolean(value: boolean | undefined): string | undefined {
  * chips and read as one more filter, which is exactly what these are not.
  */
 /** The provider's own mark, for rows and headers that belong to exactly one provider. */
-function ProviderNameGlyph({ driver }: { driver: string }) {
-  const Glyph = providerIconForDriverLabel(driver);
-  return Glyph ? <Glyph className="size-3 shrink-0 text-muted-foreground/70" /> : null;
+function ProviderNameGlyph({ provider }: { provider: ProviderExtensionProviderInventory }) {
+  return (
+    <ProviderGlyph
+      instanceId={provider.instanceId}
+      driverKind={String(provider.driver)}
+      className="size-3 shrink-0 text-muted-foreground/70"
+    />
+  );
 }
 
 function EmptyList({ label }: { label: string }) {
@@ -855,15 +860,16 @@ function ExtensionItemBadges({
   item: ExtensionItem;
   showProvider?: boolean;
 }) {
-  const ProviderGlyph = showProvider
-    ? providerIconForDriverLabel(String(item.provider.driver))
-    : null;
   return (
     <div className="flex shrink-0 flex-wrap justify-end gap-1">
       {/* Both providers ship a "figma"; without this the rows are indistinguishable. */}
       {showProvider ? (
         <Badge size="sm" variant="outline">
-          {ProviderGlyph ? <ProviderGlyph className="size-2.5" /> : null}
+          <ProviderGlyph
+            instanceId={item.provider.instanceId}
+            driverKind={String(item.provider.driver)}
+            className="size-2.5"
+          />
           {providerTitle(item.provider)}
         </Badge>
       ) : null}
@@ -2919,7 +2925,6 @@ function InstalledPluginRow({
 }) {
   const enabled = item.plugin.enabled !== false;
   const detail = installedPluginDetail(item.plugin);
-  const ProviderGlyph = providerIconForDriverLabel(String(item.provider.driver));
   const providerName = providerTitle(item.provider);
 
   return (
@@ -2950,16 +2955,18 @@ function InstalledPluginRow({
           ) : null}
         </span>
       </button>
-      {ProviderGlyph ? (
-        <span
-          className="flex shrink-0 items-center text-muted-foreground"
-          title={providerName}
-          role="img"
-          aria-label={providerName}
-        >
-          <ProviderGlyph className="size-3.5" />
-        </span>
-      ) : null}
+      <span
+        className="flex shrink-0 items-center text-muted-foreground"
+        title={providerName}
+        role="img"
+        aria-label={providerName}
+      >
+        <ProviderGlyph
+          instanceId={item.provider.instanceId}
+          driverKind={String(item.provider.driver)}
+          className="size-3.5"
+        />
+      </span>
       <Switch
         size="sm"
         checked={enabled}
@@ -3206,7 +3213,7 @@ function HooksList({ rows }: { rows: ReadonlyArray<ExtensionHookRow> }) {
               {hook.command ?? hook.handler}
             </span>
             <span className="flex min-w-0 items-center gap-1.5 text-xs text-foreground/90">
-              <ProviderNameGlyph driver={String(provider.driver)} />
+              <ProviderNameGlyph provider={provider} />
               <span className="truncate">{hookSourceLabel(hook)}</span>
               {inactive ? (
                 <Badge size="sm" variant="outline">
@@ -3270,7 +3277,7 @@ function ConnectionsTable({
             <span className="flex min-w-0 items-center gap-2">
               {/* The type column is hidden on a phone, so the provider mark rides with the name. */}
               <span className="sm:hidden">
-                <ProviderNameGlyph driver={String(item.provider.driver)} />
+                <ProviderNameGlyph provider={item.provider} />
               </span>
               <ExtensionItemGlyph item={item} environmentId={environmentId} />
               <span className="min-w-0">
@@ -3284,7 +3291,7 @@ function ConnectionsTable({
             </span>
             <span className="hidden min-w-0 flex-col gap-0.5 sm:flex">
               <span className="flex min-w-0 items-center gap-1.5 text-xs text-foreground/90">
-                <ProviderNameGlyph driver={String(item.provider.driver)} />
+                <ProviderNameGlyph provider={item.provider} />
                 <span className="truncate">{providerTitle(item.provider)}</span>
               </span>
               <span className="flex min-w-0 items-center gap-1.5">
@@ -3375,7 +3382,7 @@ function MarketplacesBlock({
     <section className="space-y-2 border-t border-group-divider pt-3 first:border-t-0 first:pt-0">
       <div className="flex items-center justify-between gap-2">
         <h3 className="flex items-center gap-1.5 text-[11.5px] font-medium text-muted-foreground">
-          <ProviderNameGlyph driver={String(provider.driver)} />
+          <ProviderNameGlyph provider={provider} />
           {providerTitle(provider)}
         </h3>
         <div className="flex gap-1">
@@ -3948,7 +3955,6 @@ function SkillListRow({
     | ((item: Extract<ExtensionItem, { kind: "skill" }>, nextEnabled: boolean) => void)
     | undefined;
 }) {
-  const ProviderGlyph = providerIconForDriverLabel(String(item.provider.driver));
   const enabled = item.skill.enabled !== false;
   const description = item.skill.shortDescription ?? item.skill.description ?? item.skill.path;
 
@@ -3959,11 +3965,18 @@ function SkillListRow({
         onClick={() => onSelect(item)}
         type="button"
       >
-        {ProviderGlyph ? (
-          <ProviderGlyph className="size-3.5 shrink-0 text-muted-foreground/60" />
-        ) : (
-          <ExtensionItemGlyph item={item} environmentId={environmentId} sizeClassName="size-3.5" />
-        )}
+        <ProviderGlyph
+          instanceId={item.provider.instanceId}
+          driverKind={String(item.provider.driver)}
+          className="size-3.5 shrink-0 text-muted-foreground/60"
+          fallback={
+            <ExtensionItemGlyph
+              item={item}
+              environmentId={environmentId}
+              sizeClassName="size-3.5"
+            />
+          }
+        />
         <span className="min-w-0 flex-1">
           <span className="block truncate text-[13.5px] font-medium text-foreground">
             {item.title}
@@ -4015,7 +4028,6 @@ function SkillPluginGroup({
   const enabled = plugin?.enabled !== false;
   // Buckets are only built from matching skills, so the first one names the provider.
   const provider = bucket.matching[0]?.provider ?? null;
-  const ProviderGlyph = provider ? providerIconForDriverLabel(String(provider.driver)) : null;
   const providerName = provider ? providerTitle(provider) : "";
   const countLabel =
     bucket.matching.length === bucket.total
@@ -4051,14 +4063,18 @@ function SkillPluginGroup({
             <span className="block truncate text-xs text-muted-foreground">{countLabel}</span>
           </span>
         </button>
-        {ProviderGlyph ? (
+        {provider ? (
           <span
             className="flex shrink-0 items-center text-muted-foreground"
             title={providerName}
             role="img"
             aria-label={providerName}
           >
-            <ProviderGlyph className="size-3.5" />
+            <ProviderGlyph
+              instanceId={provider.instanceId}
+              driverKind={String(provider.driver)}
+              className="size-3.5"
+            />
           </span>
         ) : null}
         {plugin ? (
@@ -4277,17 +4293,18 @@ function ExtensionProviderFilter({
         </SelectTrigger>
         <SelectPopup align="start" alignItemWithTrigger={false}>
           <SelectItem value={ALL_PROVIDERS_FILTER_VALUE}>All providers</SelectItem>
-          {options.map((option) => {
-            const ProviderGlyph = providerIconForDriverLabel(option.driver);
-            return (
-              <SelectItem key={option.value} value={option.value}>
-                <span className="flex min-w-0 items-center gap-2">
-                  {ProviderGlyph ? <ProviderGlyph className="size-3.5 shrink-0" /> : null}
-                  <span className="min-w-0 truncate">{option.label}</span>
-                </span>
-              </SelectItem>
-            );
-          })}
+          {options.map((option) => (
+            <SelectItem key={option.value} value={option.value}>
+              <span className="flex min-w-0 items-center gap-2">
+                <ProviderGlyph
+                  instanceId={option.value as ProviderInstanceId}
+                  driverKind={option.driver}
+                  className="size-3.5 shrink-0"
+                />
+                <span className="min-w-0 truncate">{option.label}</span>
+              </span>
+            </SelectItem>
+          ))}
         </SelectPopup>
       </Select>
     );
@@ -4296,15 +4313,16 @@ function ExtensionProviderFilter({
   return (
     <SegmentedControl value={selected} onValueChange={choose} aria-label="Provider">
       <SegmentedControlItem value={ALL_PROVIDERS_FILTER_VALUE}>All providers</SegmentedControlItem>
-      {options.map((option) => {
-        const ProviderGlyph = providerIconForDriverLabel(option.driver);
-        return (
-          <SegmentedControlItem key={option.value} value={option.value}>
-            {ProviderGlyph ? <ProviderGlyph className="size-3 shrink-0" /> : null}
-            <span className="min-w-0 truncate">{option.label}</span>
-          </SegmentedControlItem>
-        );
-      })}
+      {options.map((option) => (
+        <SegmentedControlItem key={option.value} value={option.value}>
+          <ProviderGlyph
+            instanceId={option.value as ProviderInstanceId}
+            driverKind={option.driver}
+            className="size-3 shrink-0"
+          />
+          <span className="min-w-0 truncate">{option.label}</span>
+        </SegmentedControlItem>
+      ))}
     </SegmentedControl>
   );
 }
