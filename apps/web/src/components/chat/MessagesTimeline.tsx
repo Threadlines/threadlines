@@ -190,7 +190,9 @@ import {
   messageAgentLabels,
   type OwnAgentLabels,
   type RoomAgentLabel,
+  type RoomAgentNames,
   roomAgentKey,
+  useRoomAgentNames,
 } from "../../rooms";
 import { RoomReviewTag } from "./RoomReviewTag";
 import { type SideAnswerView } from "./sideAnswers";
@@ -207,6 +209,8 @@ interface TimelineRowSharedState {
   timestampFormat: TimestampFormat;
   /** Room agents by `roomAgentKey`; null outside rooms. */
   roomAgents: ReadonlyMap<string, RoomAgentLabel> | null;
+  /** Their names alone, unchanged until one changes: what steps are worded from. */
+  roomAgentNames: RoomAgentNames | null;
   /** Names an agent the way a message recorded it; null when unavailable. */
   agentModelLabeler: AgentModelLabeler | null;
   /** Agent messages that start a new speaker's stretch and carry an author line. */
@@ -872,6 +876,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       return next;
     });
   }, []);
+  const roomAgentNames = useRoomAgentNames(roomAgents);
   // In a room with teammates each agent goes by its name there. Anywhere else
   // (a guest brought in for one review included), the thread's own agent goes
   // by the model each of its turns ran on.
@@ -909,9 +914,11 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         sideAnswers,
         expandedSideTurnIds,
         workingParticipantId,
+        roomAgentNames,
       }),
     [
       workingParticipantId,
+      roomAgentNames,
       sideAnswers,
       expandedSideTurnIds,
       timelineEntries,
@@ -1805,6 +1812,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     () => ({
       timestampFormat,
       roomAgents,
+      roomAgentNames,
       agentModelLabeler,
       authorLineMessageIds,
       sideAnswerContext,
@@ -1846,6 +1854,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     [
       timestampFormat,
       roomAgents,
+      roomAgentNames,
       agentModelLabeler,
       authorLineMessageIds,
       sideAnswerContext,
@@ -3903,6 +3912,7 @@ const WorkGroupSection = memo(function WorkGroupSection({
 }) {
   const {
     workspaceRoot,
+    roomAgentNames,
     turnDiffSummaryByTurnId,
     onOpenAgentsPanel,
     anchorOwnsLiveAgents,
@@ -3946,13 +3956,14 @@ const WorkGroupSection = memo(function WorkGroupSection({
         if (threadStartEntries.includes(entry)) return [];
         const step = activityStepFromWorkLogEntry(entry, {
           workspaceRoot,
+          roomAgentNames,
           ...(isFileChangeWorkEntry(entry)
             ? { diff: summarizeWorkEntryDiffStat(entry, turnDiffSummaryByTurnId) }
             : {}),
         });
         return step ? [step] : [];
       }),
-    [groupedEntries, threadStartEntries, turnDiffSummaryByTurnId, workspaceRoot],
+    [groupedEntries, roomAgentNames, threadStartEntries, turnDiffSummaryByTurnId, workspaceRoot],
   );
   const entriesById = useMemo(
     () => new Map(groupedEntries.map((entry) => [entry.id, entry] as const)),

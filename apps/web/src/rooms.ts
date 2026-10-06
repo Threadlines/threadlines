@@ -37,7 +37,9 @@ import {
   getProviderOptionCurrentLabel,
   getProviderOptionDescriptors,
 } from "@threadlines/shared/model";
+import { useState } from "react";
 import { create } from "zustand";
+import { shallow } from "zustand/vanilla/shallow";
 
 import type { ProviderInstanceEntry } from "./providerInstances";
 import { getProviderModelCapabilities } from "./providerModels";
@@ -217,6 +219,59 @@ export interface RoomAgentLabel {
 /** "GPT-6 Astra 2 (Reviewer)": the model stays visible next to the user's name. */
 export const roomAgentDisplayName = (modelName: string, role: string | null | undefined) =>
   role ? `${modelName} (${role})` : modelName;
+
+/** What the room calls each agent, by `roomAgentKey`. */
+export type RoomAgentNames = ReadonlyMap<string, string>;
+
+/**
+ * The names alone out of a room's labels. Handed the names it gave last time,
+ * it gives the same map back while no agent's name changed, so work that only
+ * words things by name is not redone when the labels are rebuilt (which every
+ * thread and provider update does).
+ */
+export function roomAgentNames(
+  labels: ReadonlyMap<string, RoomAgentLabel> | null,
+  previous: RoomAgentNames | null = null,
+): RoomAgentNames | null {
+  if (labels === null) {
+    return null;
+  }
+  const names = new Map([...labels].map(([key, label]) => [key, label.name] as const));
+  return previous !== null && shallow(previous, names) ? previous : names;
+}
+
+/** `roomAgentNames`, kept across renders. */
+export function useRoomAgentNames(
+  labels: ReadonlyMap<string, RoomAgentLabel> | null,
+): RoomAgentNames | null {
+  const [kept, setKept] = useState(() => roomAgentNames(labels));
+  const names = roomAgentNames(labels, kept);
+  if (names !== kept) {
+    setKept(names);
+  }
+  return names;
+}
+
+/**
+ * What the room calls the agent with this `roomAgentKey`, in whatever case a
+ * room tool call wrote it (room_agents lists every agent's key). An agent
+ * that left keeps its name. Null for a key the room does not know.
+ */
+export function roomAgentNameByKey(
+  names: RoomAgentNames | null | undefined,
+  key: string,
+): string | null {
+  if (!names) {
+    return null;
+  }
+  const wanted = key.toLowerCase();
+  for (const [candidate, name] of names) {
+    if (candidate.toLowerCase() === wanted) {
+      return name;
+    }
+  }
+  return null;
+}
 
 /** Which agent's turn each turn was, from its messages; see roomActivityAgent. */
 export function roomTurnOwners(
