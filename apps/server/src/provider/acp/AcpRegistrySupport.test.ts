@@ -1,9 +1,6 @@
-// @effect-diagnostics nodeBuiltinImport:off - builds a download that runs the mock agent
-import * as NodeFS from "node:fs/promises";
+// @effect-diagnostics nodeBuiltinImport:off - a folder to start the agent in
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
-import * as zlib from "node:zlib";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
@@ -13,22 +10,9 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import { HttpClient } from "effect/unstable/http";
 
-import { acpRegistryAgentState } from "../acpRegistry/AcpRegistryAgentState.ts";
-import {
-  acpRegistryAgentRoot,
-  makeAcpRegistryInstaller,
-} from "../acpRegistry/AcpRegistryInstaller.ts";
-import {
-  type AcpRegistryDownloadRecipe,
-  acpRegistryRecipeDigest,
-} from "../acpRegistry/AcpRegistryRecipe.ts";
-import { makeTar } from "../testUtils/archiveFixtures.ts";
+import { makeAcpRegistryTestAgent } from "../testUtils/acpRegistryAgentFixture.ts";
 import { makeAcpRegistryDescriptor } from "./AcpRegistrySupport.ts";
 
-const mockAgentPath = path.join(
-  path.dirname(fileURLToPath(import.meta.url)),
-  "../../../scripts/acp-mock-agent.ts",
-);
 const settings = Schema.decodeSync(AcpRegistrySettings)({});
 /** Real processes and files; a status check never has a reason to reach the network. */
 const services = Layer.mergeAll(
@@ -39,73 +23,14 @@ const services = Layer.mergeAll(
   ),
 );
 
-const tempDir = Effect.acquireRelease(
-  Effect.promise(() => NodeFS.mkdtemp(path.join(os.tmpdir(), "threadlines-acp-descriptor-"))),
-  (dir) => Effect.promise(() => NodeFS.rm(dir, { recursive: true, force: true })),
-);
-
-let agentCount = 0;
-
-/**
- * A community agent whose download is a script that runs the mock agent,
- * with its installer and the descriptor a driver would build for it. Every
- * start of the agent adds an `initialize` line to its request log.
- */
+/** The agent with the descriptor a driver would build for it. */
 const makeAgent = (mockEnv: Readonly<Record<string, string>> = {}) =>
   Effect.gen(function* () {
-    const dir = yield* tempDir;
-    agentCount += 1;
-    const agentId = `descriptor-test-${process.pid}-${agentCount}`;
-    const requestLog = path.join(dir, "requests.ndjson");
-    const exports = Object.entries({ ...mockEnv, T3_ACP_REQUEST_LOG_PATH: requestLog })
-      .map(([name, value]) => `export ${name}=${JSON.stringify(value)}`)
-      .join("\n");
-    const program = `#!/bin/sh\n${exports}\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(mockAgentPath)} "$@"\n`;
-    const archive = zlib.gzipSync(makeTar([{ name: "bin/agent", data: Buffer.from(program) }]));
-    const recipe: AcpRegistryDownloadRecipe = {
-      kind: "download",
-      agentId,
-      version: "1.0.0",
-      args: [],
-      env: {},
-      url: "https://downloads.test/agent.tar.gz",
-      sha256: null,
-      format: "tar.gz",
-      cmd: "bin/agent",
-    };
-    const toolsDir = path.join(dir, "acp");
-    const installer = makeAcpRegistryInstaller({
-      agentId,
-      label: "Test Agent",
-      toolsDir,
-      nodeToolsDir: path.join(dir, "node"),
-      fetch: async () => new Response(new Uint8Array(archive)),
-    });
-    const state = acpRegistryAgentState(agentId);
-    const descriptor = makeAcpRegistryDescriptor({
-      agentId,
-      displayName: "Test Agent",
-      agentRoot: acpRegistryAgentRoot(toolsDir, agentId),
-      installer,
-      state,
-      instanceVariableNames: new Set(),
-      listing: null,
-      authMethodId: "",
-      allowsEnvName: () => true,
-    });
-    const starts = Effect.promise(() =>
-      NodeFS.readFile(requestLog, "utf8").then(
-        (log) => log.split("\n").filter((line) => line.includes('"initialize"')).length,
-        () => 0,
-      ),
-    );
+    const agent = yield* makeAcpRegistryTestAgent(mockEnv);
+    const descriptor = makeAcpRegistryDescriptor(agent.descriptorInput);
     return {
-      recipe,
-      digest: acpRegistryRecipeDigest(recipe),
-      installer,
-      state,
+      ...agent,
       descriptor,
-      starts,
       probe: descriptor.probe(settings, process.env),
       community: () => descriptor.snapshotExtras?.().community,
       maintenance: Effect.suspend(

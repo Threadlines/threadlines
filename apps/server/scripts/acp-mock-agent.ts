@@ -26,7 +26,13 @@ const authRequiredOnSetConfigOption = process.env.T3_ACP_FAIL_SET_CONFIG_OPTION 
 const exitOnSetConfigOption = process.env.T3_ACP_EXIT_ON_SET_CONFIG_OPTION === "1";
 const promptResponseText = process.env.T3_ACP_PROMPT_RESPONSE_TEXT;
 // An agent that lists sign-in methods and refuses a session until signed in.
+// "1": signing in never helps. "until-authenticated": it does, for the life
+// of the process, so a start that authenticates first gets a session; this
+// agent can also sign out.
 const authRequired = process.env.T3_ACP_AUTH_REQUIRED === "1";
+const authUntilSignedIn = process.env.T3_ACP_AUTH_REQUIRED === "until-authenticated";
+// While signing in, asks a client that can open pages to open this one first.
+const authPageUrl = process.env.T3_ACP_AUTH_PAGE_URL;
 // The older API shape: `modes` / `models` fields, no config options.
 const legacyControls = process.env.T3_ACP_LEGACY_CONTROLS === "1";
 // An agent with a permission-style mode option and no model choice.
@@ -35,6 +41,8 @@ const noModelChoice = process.env.T3_ACP_NO_MODEL === "1";
 const emitConfigOptionUpdate = process.env.T3_ACP_EMIT_CONFIG_OPTION_UPDATE === "1";
 const sessionId = "mock-session-1";
 
+let signedIn = false;
+let clientOpensPages = false;
 let currentModeId = "ask";
 let currentModelId = "default";
 let parameterizedModelPicker = false;
@@ -239,21 +247,57 @@ const program = Effect.gen(function* () {
     Effect.sync(() => {
       parameterizedModelPicker =
         request.clientCapabilities?._meta?.parameterizedModelPicker === true;
+      clientOpensPages =
+        request.clientCapabilities?.elicitation?.url !== undefined &&
+        request.clientCapabilities.elicitation.url !== null;
       return {
         protocolVersion: 1,
         agentCapabilities: {
           loadSession: true,
           ...(advertiseHttpMcp ? { mcpCapabilities: { http: true } } : {}),
+          ...(authUntilSignedIn ? { auth: { logout: {} } } : {}),
         },
-        ...(authRequired ? { authMethods: [{ id: "mock-login", name: "Log in to Mock" }] } : {}),
+        ...(authRequired || authUntilSignedIn
+          ? { authMethods: [{ id: "mock-login", name: "Log in to Mock" }] }
+          : {}),
       };
     }),
   );
 
-  yield* agent.handleAuthenticate(() => Effect.succeed({}));
+  yield* agent.handleAuthenticate(() =>
+    Effect.gen(function* () {
+      if (authPageUrl && clientOpensPages) {
+        const answer = yield* agent.client.extRequest("elicitation/create", {
+          mode: "url",
+          url: authPageUrl,
+          message: "Open this page to sign in to Mock.",
+        });
+        const accepted =
+          typeof answer === "object" &&
+          answer !== null &&
+          "action" in answer &&
+          answer.action === "accept";
+        if (!accepted) {
+          return yield* AcpError.AcpRequestError.invalidParams(
+            "The sign-in page was not opened",
+            {},
+          );
+        }
+      }
+      signedIn = true;
+      return {};
+    }),
+  );
+
+  yield* agent.handleLogout(() =>
+    Effect.sync(() => {
+      signedIn = false;
+      return {};
+    }),
+  );
 
   yield* agent.handleCreateSession(() =>
-    authRequired
+    authRequired || (authUntilSignedIn && !signedIn)
       ? Effect.fail(AcpError.AcpRequestError.authRequired())
       : Effect.succeed(
           legacyControls
