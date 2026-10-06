@@ -9,6 +9,7 @@ import {
   createRootRouteWithContext,
   type ErrorComponentProps,
   useLocation,
+  useMatches,
   useNavigate,
 } from "@tanstack/react-router";
 import { useEffect, useEffectEvent, useRef } from "react";
@@ -128,6 +129,15 @@ export const Route = createRootRouteWithContext<{
 
 function RootRouteView() {
   const pathname = useLocation({ select: (location) => location.pathname });
+  // The page the outlet is drawing: the root's child route, or none while it
+  // draws the not-found page (an unmatched address keeps the nearest route as
+  // a match). A navigation moves the location first and swaps the page only
+  // once the next one has loaded, so the shell around the outlet follows
+  // this: picked from the location, it would be taken away from under a page
+  // that still needs it.
+  const shownRouteId = useMatches({
+    select: (matches) => (matches[0]?._notFound ? undefined : matches[1]?.routeId),
+  });
   const { authGateState } = Route.useRouteContext();
   const primaryEnvironmentAuthenticated = authGateState.status === "authenticated";
 
@@ -140,7 +150,7 @@ function RootRouteView() {
     };
   }, [pathname]);
 
-  if (pathname === "/pair") {
+  if (shownRouteId === "/pair") {
     return <Outlet />;
   }
 
@@ -152,7 +162,7 @@ function RootRouteView() {
   // and command palette (its folder picker runs there).
   const appShell = (
     <CommandPalette>
-      {pathname === "/setup" ? (
+      {shownRouteId === "/setup" ? (
         <Outlet />
       ) : (
         <AppSidebarLayout>
