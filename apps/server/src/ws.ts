@@ -40,7 +40,7 @@ import {
   ProjectWriteFileError,
   OrchestrationReplayEventsError,
   FilesystemBrowseError,
-  AcpRegistryError,
+  ACP_REGISTRY_DRIVER_KIND,
   type ProviderAuthEvent,
   ProviderExtensionsError,
   ProviderExternalThreadError,
@@ -116,6 +116,7 @@ import { ServerLifecycleEvents } from "./serverLifecycleEvents.ts";
 import { ServerRuntimeStartup } from "./serverRuntimeStartup.ts";
 import { redactServerSettingsForClient, ServerSettingsService } from "./serverSettings.ts";
 import { ProviderAccounts } from "./provider/accounts/ProviderAccounts.ts";
+import { AcpRegistryAgents } from "./provider/acpRegistry/AcpRegistryAgents.ts";
 import { ProviderAuthSessions } from "./provider/auth/ProviderAuthSessions.ts";
 import { TerminalManager } from "./terminal/Services/Manager.ts";
 import { realtimeAudioHub } from "./realtime/RealtimeAudioHub.ts";
@@ -311,6 +312,7 @@ const makeWsRpcLayer = (currentSession: {
       const terminalManager = yield* TerminalManager;
       const providerAuthSessions = yield* ProviderAuthSessions;
       const providerAccounts = yield* ProviderAccounts;
+      const acpRegistryAgents = yield* AcpRegistryAgents;
       const dictation = yield* DictationService;
       const providerRegistry = yield* ProviderRegistry;
       const providerService = yield* ProviderService;
@@ -990,7 +992,10 @@ const makeWsRpcLayer = (currentSession: {
             Effect.sync(() => refreshWindowsPath()).pipe(
               Effect.andThen(
                 input.instanceId !== undefined
-                  ? providerRegistry.refreshInstance(input.instanceId)
+                  ? // "Check again" on a community agent starts it, whatever it last found.
+                    acpRegistryAgents
+                      .requestCheck(input.instanceId)
+                      .pipe(Effect.andThen(providerRegistry.refreshInstance(input.instanceId)))
                   : providerRegistry.refresh(),
               ),
               Effect.map((providers) => ({ providers })),
@@ -1096,7 +1101,26 @@ const makeWsRpcLayer = (currentSession: {
         [WS_METHODS.serverUpdateProvider]: (input) =>
           observeRpcEffect(
             WS_METHODS.serverUpdateProvider,
-            providerMaintenanceRunner.updateProvider(input),
+            // A community agent is installed or updated only to the recipe
+            // the user was shown; anything else is refused before it queues.
+            (input.provider === ACP_REGISTRY_DRIVER_KIND && input.instanceId !== undefined
+              ? acpRegistryAgents
+                  .prepareMaintenance({
+                    instanceId: input.instanceId,
+                    action: input.action ?? "update",
+                    recipeDigest: input.recipeDigest,
+                  })
+                  .pipe(
+                    Effect.mapError(
+                      (failure) =>
+                        new ServerProviderUpdateError({
+                          provider: input.provider,
+                          reason: failure.message,
+                        }),
+                    ),
+                  )
+              : Effect.void
+            ).pipe(Effect.andThen(providerMaintenanceRunner.updateProvider(input))),
             {
               "rpc.aggregate": "server",
             },
@@ -1151,27 +1175,19 @@ const makeWsRpcLayer = (currentSession: {
           observeRpcEffect(WS_METHODS.serverRemoveProviderAccount, providerAccounts.remove(input), {
             "rpc.aggregate": "server",
           }),
-        // Community agents: filled in with the feature.
-        [WS_METHODS.serverListAcpRegistryAgents]: (_input) =>
-          Effect.fail(
-            new AcpRegistryError({
-              reason: "catalogUnavailable",
-              detail: "Community agents aren't available in this build.",
-            }),
-          ),
-        [WS_METHODS.serverAddAcpRegistryAgent]: (_input) =>
-          Effect.fail(
-            new AcpRegistryError({
-              reason: "catalogUnavailable",
-              detail: "Community agents aren't available in this build.",
-            }),
-          ),
-        [WS_METHODS.serverRemoveAcpRegistryAgent]: (_input) =>
-          Effect.fail(
-            new AcpRegistryError({
-              reason: "unknownInstance",
-              detail: "Community agents aren't available in this build.",
-            }),
+        [WS_METHODS.serverListAcpRegistryAgents]: (input) =>
+          observeRpcEffect(WS_METHODS.serverListAcpRegistryAgents, acpRegistryAgents.list(input), {
+            "rpc.aggregate": "server",
+          }),
+        [WS_METHODS.serverAddAcpRegistryAgent]: (input) =>
+          observeRpcEffect(WS_METHODS.serverAddAcpRegistryAgent, acpRegistryAgents.add(input), {
+            "rpc.aggregate": "server",
+          }),
+        [WS_METHODS.serverRemoveAcpRegistryAgent]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverRemoveAcpRegistryAgent,
+            acpRegistryAgents.remove(input),
+            { "rpc.aggregate": "server" },
           ),
         [WS_METHODS.serverDiscoverSourceControl]: (_input) =>
           observeRpcEffect(

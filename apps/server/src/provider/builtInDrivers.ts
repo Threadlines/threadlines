@@ -20,6 +20,7 @@
  *
  * @module provider/builtInDrivers
  */
+import { AcpRegistryDriver, type AcpRegistryDriverEnv } from "./Drivers/AcpRegistryDriver.ts";
 import { AntigravityDriver, type AntigravityDriverEnv } from "./Drivers/AntigravityDriver.ts";
 import { ClaudeDriver, type ClaudeDriverEnv } from "./Drivers/ClaudeDriver.ts";
 import { CodexDriver, type CodexDriverEnv } from "./Drivers/CodexDriver.ts";
@@ -39,7 +40,8 @@ export type BuiltInDriversEnv =
   | CursorDriverEnv
   | FxDriverEnv
   | OpenCodeDriverEnv
-  | AntigravityDriverEnv;
+  | AntigravityDriverEnv
+  | AcpRegistryDriverEnv;
 
 /**
  * Ordered list of built-in drivers. Order matters only for tie-breaking in
@@ -47,7 +49,8 @@ export type BuiltInDriversEnv =
  * iteration order has no functional effect on instance lookup.
  *
  * Codex, Claude and OpenCode are native drivers; fx, Cursor and Antigravity
- * are ACP descriptors on the shared `acp/AcpProviderDriver` core.
+ * are ACP descriptors on the shared `acp/AcpProviderDriver` core, and so is
+ * every community agent (`AcpRegistryDriver`, one instance per agent).
  */
 export const BUILT_IN_DRIVERS: ReadonlyArray<AnyProviderDriver<BuiltInDriversEnv>> = [
   CodexDriver,
@@ -56,4 +59,5 @@ export const BUILT_IN_DRIVERS: ReadonlyArray<AnyProviderDriver<BuiltInDriversEnv
   CursorDriver,
   OpenCodeDriver,
   AntigravityDriver,
+  AcpRegistryDriver,
 ];
