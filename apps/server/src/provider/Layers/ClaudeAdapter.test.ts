@@ -2125,6 +2125,296 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  // The messages a CLI (2.1.289) sent when the Claude API refused one request
+  // in the middle of a turn, usage figures trimmed.
+  const API_REFUSAL_TEXT =
+    "Failed to authenticate. API Error: 403 Access to this model requires an access grant your request does not have.";
+  const apiErrorNote = (input: {
+    readonly text: string;
+    readonly error?: string;
+    readonly flagged?: boolean;
+  }) =>
+    ({
+      type: "assistant",
+      message: {
+        id: "0834383b-142e-40fe-b0d0-7306ecfe0112",
+        model: "<synthetic>",
+        role: "assistant",
+        stop_reason: "stop_sequence",
+        stop_sequence: "",
+        type: "message",
+        usage: { input_tokens: 0, output_tokens: 0 },
+        content: [{ type: "text", text: input.text }],
+      },
+      parent_tool_use_id: null,
+      session_id: "sdk-session-api-error",
+      uuid: "0375bc39-ca97-4b27-9cd1-56064d6689ad",
+      ...(input.error !== undefined ? { error: input.error } : {}),
+      request_id: "req_011Cfk9YTEuVxGUw3WJ4rFPz",
+      ...(input.flagged === false ? {} : { is_api_error_message: true }),
+    }) as unknown as SDKMessage;
+  const apiErrorResult = (input: {
+    readonly result: string;
+    readonly status?: number;
+    readonly uuid?: string;
+  }) =>
+    ({
+      type: "result",
+      subtype: "success",
+      is_error: true,
+      ...(input.status !== undefined ? { api_error_status: input.status } : {}),
+      result: input.result,
+      stop_reason: "stop_sequence",
+      terminal_reason: "api_error",
+      num_turns: 191,
+      permission_denials: [],
+      session_id: "sdk-session-api-error",
+      uuid: input.uuid ?? "c0891134-a8d0-4355-951b-9b7a759260e9",
+    }) as unknown as SDKMessage;
+
+  it.effect("fails a turn the service ended with an API error, in the service's words", () => {
+    const authStates: Array<"verified" | "unauthenticated"> = [];
+    const harness = makeHarness({
+      onChatAuthStateChanged: (state) =>
+        Effect.sync(() => {
+          authStates.push(state);
+        }),
+    });
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const failedTurnEventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.takeUntil((event) => event.type === "turn.completed"),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      const failedTurn = yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "hello",
+        attachments: [],
+      });
+
+      // Claude was mid-work: a progress note had already been written.
+      harness.query.emit({
+        type: "assistant",
+        session_id: "sdk-session-api-error",
+        uuid: "assistant-progress-note",
+        parent_tool_use_id: null,
+        message: {
+          id: "assistant-message-progress-note",
+          content: [{ type: "text", text: "Fixing a few type mismatches, then running it." }],
+        },
+      } as unknown as SDKMessage);
+      harness.query.emit(apiErrorNote({ error: "authentication_failed", text: API_REFUSAL_TEXT }));
+      harness.query.emit(apiErrorResult({ result: API_REFUSAL_TEXT, status: 403 }));
+
+      const failedTurnEvents = Array.from(yield* Fiber.join(failedTurnEventsFiber));
+
+      // The service's error is the turn's error, not something Claude said.
+      const writtenText = failedTurnEvents.flatMap((event) =>
+        event.type === "content.delta" ? [event.payload.delta] : [],
+      );
+      assert.deepEqual(writtenText, ["Fixing a few type mismatches, then running it."]);
+
+      const runtimeError = failedTurnEvents.find((event) => event.type === "runtime.error");
+      assert.equal(runtimeError?.type, "runtime.error");
+      if (runtimeError?.type === "runtime.error") {
+        // A 403 is not a lost sign-in, so nothing sends the user to sign in.
+        assert.equal(runtimeError.payload.message, API_REFUSAL_TEXT);
+        assert.equal(runtimeError.payload.class, "provider_error");
+        assert.equal(String(runtimeError.turnId), String(failedTurn.turnId));
+      }
+
+      const turnCompleted = failedTurnEvents.at(-1);
+      assert.equal(turnCompleted?.type, "turn.completed");
+      if (turnCompleted?.type === "turn.completed") {
+        assert.equal(String(turnCompleted.turnId), String(failedTurn.turnId));
+        assert.equal(turnCompleted.payload.state, "failed");
+        assert.equal(turnCompleted.payload.errorMessage, API_REFUSAL_TEXT);
+      }
+      assert.deepEqual(authStates, ["verified"]);
+
+      // The session is still there, and the next message runs as usual.
+      const nextTurnCompletedFiber = yield* Stream.filter(
+        adapter.streamEvents,
+        (event) => event.type === "turn.completed",
+      ).pipe(Stream.runHead, Effect.forkChild);
+      const nextTurn = yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "carry on",
+        attachments: [],
+      });
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        errors: [],
+        session_id: "sdk-session-api-error",
+        uuid: "result-after-api-error",
+      } as unknown as SDKMessage);
+
+      const nextTurnCompleted = yield* Fiber.join(nextTurnCompletedFiber);
+      assert.equal(nextTurnCompleted._tag, "Some");
+      if (nextTurnCompleted._tag === "Some" && nextTurnCompleted.value.type === "turn.completed") {
+        assert.equal(String(nextTurnCompleted.value.turnId), String(nextTurn.turnId));
+        assert.equal(nextTurnCompleted.value.payload.state, "completed");
+      }
+      assert.equal(harness.query.closeCalls, 0);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("fails a turn on any kind of API error, even when the result has no text", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const turnCompletedFiber = yield* Stream.filter(
+        adapter.streamEvents,
+        (event) => event.type === "turn.completed",
+      ).pipe(Stream.runHead, Effect.forkChild);
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "hello",
+        attachments: [],
+      });
+
+      const overloadedText = "API Error: 529 Overloaded. Try again in a moment.";
+      // Marked by its error kind alone, as the SDK types describe it.
+      harness.query.emit(
+        apiErrorNote({ error: "overloaded", text: overloadedText, flagged: false }),
+      );
+      harness.query.emit(apiErrorResult({ result: "", status: 529 }));
+
+      const turnCompleted = yield* Fiber.join(turnCompletedFiber);
+      assert.equal(turnCompleted._tag, "Some");
+      if (turnCompleted._tag === "Some" && turnCompleted.value.type === "turn.completed") {
+        assert.equal(turnCompleted.value.payload.state, "failed");
+        assert.equal(turnCompleted.value.payload.errorMessage, overloadedText);
+      }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("fails a turn whose stream ends on an API error before any result", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const turnCompletedFiber = yield* Stream.filter(
+        adapter.streamEvents,
+        (event) => event.type === "turn.completed",
+      ).pipe(Stream.runHead, Effect.forkChild);
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "hello",
+        attachments: [],
+      });
+
+      harness.query.emit(apiErrorNote({ error: "authentication_failed", text: API_REFUSAL_TEXT }));
+      harness.query.finish();
+
+      const turnCompleted = yield* Fiber.join(turnCompletedFiber);
+      assert.equal(turnCompleted._tag, "Some");
+      if (turnCompleted._tag === "Some" && turnCompleted.value.type === "turn.completed") {
+        assert.equal(turnCompleted.value.payload.state, "failed");
+        assert.equal(turnCompleted.value.payload.errorMessage, API_REFUSAL_TEXT);
+      }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("completes a turn that carried on after an API error", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const turnEventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.takeUntil((event) => event.type === "turn.completed"),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "hello",
+        attachments: [],
+      });
+
+      // Marked by the flag alone, with no error kind.
+      harness.query.emit(
+        apiErrorNote({
+          text: "API Error: Claude's response exceeded the 32000 output token maximum.",
+        }),
+      );
+      harness.query.emit({
+        type: "assistant",
+        session_id: "sdk-session-api-error",
+        uuid: "assistant-after-api-error",
+        parent_tool_use_id: null,
+        message: {
+          id: "assistant-message-after-api-error",
+          content: [{ type: "text", text: "Picking up where I left off." }],
+        },
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        result: "Picking up where I left off.",
+        errors: [],
+        session_id: "sdk-session-api-error",
+        uuid: "result-recovered",
+      } as unknown as SDKMessage);
+
+      const turnEvents = Array.from(yield* Fiber.join(turnEventsFiber));
+      assert.notInclude(
+        turnEvents.map((event) => event.type),
+        "runtime.error",
+      );
+      assert.deepEqual(
+        turnEvents.flatMap((event) =>
+          event.type === "content.delta" ? [event.payload.delta] : [],
+        ),
+        ["Picking up where I left off."],
+      );
+      const turnCompleted = turnEvents.at(-1);
+      assert.equal(turnCompleted?.type, "turn.completed");
+      if (turnCompleted?.type === "turn.completed") {
+        assert.equal(turnCompleted.payload.state, "completed");
+        assert.equal(turnCompleted.payload.errorMessage, undefined);
+      }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("maps Claude reasoning deltas, streamed tool inputs, and tool results", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {

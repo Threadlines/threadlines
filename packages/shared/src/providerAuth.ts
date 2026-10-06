@@ -16,7 +16,6 @@ const AUTH_ERROR_PATTERNS = [
   /\baccess token expired\b/u,
   /\bauthentication credentials\b/u,
   /\bexpired credential\b/u,
-  /\bfailed to authenticate\b/u,
   /\binvalid api key\b/u,
   /\binvalid authentication\b/u,
   /\binvalid authorization\b/u,
@@ -24,6 +23,15 @@ const AUTH_ERROR_PATTERNS = [
   /\brefresh token (?:has been |is |was )?revoked\b/u,
   /\brequires openai auth\b/u,
 ] as const;
+
+/**
+ * Claude Code words every request the service refused as "Failed to
+ * authenticate", a 401 and a 403 alike. A 403 is the service refusing an
+ * account it recognized (a model the account has no access to, an
+ * organization rule), so signing in again does not fix it.
+ */
+const FAILED_TO_AUTHENTICATE_PATTERN = /\bfailed to authenticate\b/u;
+const FORBIDDEN_API_ERROR_PATTERN = /\bapi error: 403\b/u;
 
 const GENERIC_AUTH_STATUS_PATTERNS = [
   /^(?:error:\s*)?(?:(?:codex(?: cli)?|claude(?: code)?|cursor agent|openai(?: cli)?|provider|model provider)\s+is\s+)?not authenticated[.!]?(?:\s*(?:[•·-]\s*)?(?:please\s+)?run\s+(?:\/login|`[^`]+`)(?: in a terminal)?(?:, then retry| and try again)?\.?)?$/u,
@@ -79,6 +87,8 @@ export function isProviderAuthErrorMessage(message: string | null | undefined): 
   const normalized = trimmed.toLowerCase();
   return (
     AUTH_ERROR_PATTERNS.some((pattern) => pattern.test(normalized)) ||
+    (FAILED_TO_AUTHENTICATE_PATTERN.test(normalized) &&
+      !FORBIDDEN_API_ERROR_PATTERN.test(normalized)) ||
     GENERIC_AUTH_STATUS_PATTERNS.some((pattern) => pattern.test(normalized))
   );
 }

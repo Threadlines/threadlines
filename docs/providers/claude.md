@@ -63,6 +63,16 @@ credential variable in that provider, the Account section shows `Use long-lived 
 clears the provider-level Anthropic credentials and writes blank masks for those names so inherited
 shell environment variables cannot override `CLAUDE_CODE_OAUTH_TOKEN`.
 
+## When Claude's Service Ends A Turn With An Error
+
+If Claude's service refuses or drops a request in the middle of a turn (an access error, a usage
+limit, an overloaded service), the turn is marked failed and the chat shows the service's own
+message. It offers `Retry` when sending the message again can help. Your next message starts a new
+turn as usual.
+
+Threadlines offers `Sign in` only when the message says the sign-in itself was rejected. A `403`
+means the service knew the account and refused the request, so signing in again would not help.
+
 ## Usage Numbers And The Normal Sign-In
 
 The 5h and Weekly meters are read with the normal Claude sign-in, even when chat runs on a

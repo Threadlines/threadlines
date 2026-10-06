@@ -281,6 +281,9 @@ interface ClaudeTurnState {
   readonly capturedProposedPlanKeys: Set<string>;
   nextSyntheticAssistantBlockIndex: number;
   thinkingTokensEstimate?: number;
+  /** The service's error text, while the turn's newest message is the note
+   *  the CLI writes in place of a reply when an API request fails. */
+  apiErrorText?: string | undefined;
 }
 
 /** A thinking block as a reasoning item. With summaries on, Claude streams a
@@ -885,13 +888,66 @@ function isInterruptedResult(result: SDKResultMessage): boolean {
   );
 }
 
+/** An API error can carry a whole response body; its start says what happened. */
+const API_ERROR_TEXT_MAX_CHARS = 2_000;
+
+function boundedApiErrorText(text: string | undefined): string | undefined {
+  const trimmed = text?.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  return trimmed.length > API_ERROR_TEXT_MAX_CHARS
+    ? `${trimmed.slice(0, API_ERROR_TEXT_MAX_CHARS - 1)}…`
+    : trimmed;
+}
+
+/**
+ * Whether Claude's service ended the turn with an API error (a refused
+ * request, a usage limit, an overloaded service). The CLI reports that as a
+ * `success` result with `is_error` set and the error text as its `result`,
+ * right after an assistant message that carries the same text.
+ */
+function isApiErrorResult(result: SDKResultMessage): boolean {
+  return result.subtype === "success" && result.is_error === true;
+}
+
+/**
+ * Whether an assistant message is the note the CLI writes in place of a reply
+ * when an API request fails. It says what kind of error in `error`; CLIs that
+ * also flag the note itself use `is_api_error_message`. Its text is the
+ * service's error, not something Claude said.
+ */
+function isApiErrorAssistantMessage(message: SDKMessage): boolean {
+  if (message.type !== "assistant") {
+    return false;
+  }
+  return (
+    typeof message.error === "string" ||
+    (message as { readonly is_api_error_message?: unknown }).is_api_error_message === true
+  );
+}
+
 /**
  * The first error worth showing a user. `[ede_diagnostic]` lines are CLI
- * bookkeeping that Claude's own clients strip before display.
+ * bookkeeping that Claude's own clients strip before display. A turn the
+ * service ended with an API error shows the service's own words, taken from
+ * the result or, failing that, from the note that came before it.
  */
-function resultDisplayError(result: SDKResultMessage): string | undefined {
+function resultDisplayError(
+  result: SDKResultMessage,
+  apiErrorText: string | undefined,
+): string | undefined {
   if (result.subtype === "success") {
-    return undefined;
+    if (!isApiErrorResult(result)) {
+      return undefined;
+    }
+    return (
+      boundedApiErrorText(result.result) ??
+      apiErrorText ??
+      (typeof result.api_error_status === "number"
+        ? `Claude's service ended the turn with an error (HTTP ${result.api_error_status}).`
+        : "Claude's service ended the turn with an error.")
+    );
   }
   return result.errors.find((error) => !error.startsWith("[ede_diagnostic]"));
 }
@@ -2182,7 +2238,7 @@ function buildSlashCommandUserMessage(command: string): SDKUserMessage {
 }
 
 function turnStatusFromResult(result: SDKResultMessage): ProviderRuntimeTurnStatus {
-  if (result.subtype === "success") {
+  if (result.subtype === "success" && !isApiErrorResult(result)) {
     return "completed";
   }
 
@@ -5226,7 +5282,10 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     if (message.type !== "assistant") {
       return;
     }
-    if (options?.onChatAuthStateChanged) {
+    // A reply proves the sign-in works. The service's error in place of one
+    // proves nothing either way; the result that follows settles the turn.
+    const isApiError = isApiErrorAssistantMessage(message);
+    if (!isApiError && options?.onChatAuthStateChanged) {
       yield* options.onChatAuthStateChanged("verified").pipe(Effect.ignoreCause({ log: true }));
     }
 
@@ -5277,7 +5336,17 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
 
     if (context.turnState) {
       context.turnState.items.push(message.message);
-      yield* backfillAssistantTextBlocksFromSnapshot(context, message);
+      if (isApiError) {
+        // Kept out of the transcript: it would read as Claude's answer. If the
+        // turn ends here, the result reports it as the turn's error.
+        context.turnState.apiErrorText = boundedApiErrorText(
+          extractAssistantTextBlocks(message).join("\n"),
+        );
+      } else {
+        // Claude carried on, so an earlier API error did not end the turn.
+        context.turnState.apiErrorText = undefined;
+        yield* backfillAssistantTextBlocksFromSnapshot(context, message);
+      }
     }
 
     context.lastAssistantUuid = message.uuid;
@@ -5302,7 +5371,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     }
 
     const status = turnStatusFromResult(message);
-    const errorMessage = resultDisplayError(message);
+    const errorMessage = resultDisplayError(message, context.turnState?.apiErrorText);
 
     if (status === "failed") {
       yield* emitRuntimeError(context, errorMessage ?? "Claude turn failed.");
@@ -6312,7 +6381,15 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         yield* completeTurn(context, "failed", message);
       }
     } else if (context.turnState) {
-      yield* completeTurn(context, "interrupted", "Claude runtime stream ended.");
+      // The stream can end on the service's error before the result that
+      // reports it. The error is why the turn ended, so it must not be lost.
+      const apiErrorText = context.turnState.apiErrorText;
+      if (apiErrorText) {
+        yield* emitRuntimeError(context, apiErrorText);
+        yield* completeTurn(context, "failed", apiErrorText);
+      } else {
+        yield* completeTurn(context, "interrupted", "Claude runtime stream ended.");
+      }
     }
 
     yield* stopSessionInternal(context, {
