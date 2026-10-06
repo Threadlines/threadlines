@@ -88,6 +88,7 @@ export interface WsRpcClient {
     readonly write: RpcUnaryMethod<typeof WS_METHODS.providerAuthWrite>;
     readonly resize: RpcUnaryMethod<typeof WS_METHODS.providerAuthResize>;
     readonly stop: RpcUnaryMethod<typeof WS_METHODS.providerAuthStop>;
+    readonly respond: RpcUnaryMethod<typeof WS_METHODS.providerAuthRespond>;
     readonly subscribe: RpcInputStreamMethod<typeof WS_METHODS.providerAuthSubscribe>;
   };
   readonly realtime: {
@@ -240,6 +241,9 @@ export interface WsRpcClient {
     readonly updateProvider: RpcUnaryMethod<typeof WS_METHODS.serverUpdateProvider>;
     readonly addProviderAccount: RpcUnaryMethod<typeof WS_METHODS.serverAddProviderAccount>;
     readonly removeProviderAccount: RpcUnaryMethod<typeof WS_METHODS.serverRemoveProviderAccount>;
+    readonly listAcpRegistryAgents: RpcUnaryMethod<typeof WS_METHODS.serverListAcpRegistryAgents>;
+    readonly addAcpRegistryAgent: RpcUnaryMethod<typeof WS_METHODS.serverAddAcpRegistryAgent>;
+    readonly removeAcpRegistryAgent: RpcUnaryMethod<typeof WS_METHODS.serverRemoveAcpRegistryAgent>;
     readonly resolveProviderUpdateBlockers: RpcUnaryMethod<
       typeof WS_METHODS.serverResolveProviderUpdateBlockers
     >;
@@ -446,6 +450,8 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
       resize: (input) =>
         transport.request((client) => client[WS_METHODS.providerAuthResize](input)),
       stop: (input) => transport.request((client) => client[WS_METHODS.providerAuthStop](input)),
+      respond: (input) =>
+        transport.request((client) => client[WS_METHODS.providerAuthRespond](input)),
       subscribe: (input, listener, options) =>
         transport.subscribe((client) => client[WS_METHODS.providerAuthSubscribe](input), listener, {
           tag: WS_METHODS.providerAuthSubscribe,
@@ -712,6 +718,12 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
         transport.request((client) => client[WS_METHODS.serverAddProviderAccount](input)),
       removeProviderAccount: (input) =>
         transport.request((client) => client[WS_METHODS.serverRemoveProviderAccount](input)),
+      listAcpRegistryAgents: (input) =>
+        transport.request((client) => client[WS_METHODS.serverListAcpRegistryAgents](input)),
+      addAcpRegistryAgent: (input) =>
+        transport.request((client) => client[WS_METHODS.serverAddAcpRegistryAgent](input)),
+      removeAcpRegistryAgent: (input) =>
+        transport.request((client) => client[WS_METHODS.serverRemoveAcpRegistryAgent](input)),
       resolveProviderUpdateBlockers: (input) =>
         transport.request((client) =>
           client[WS_METHODS.serverResolveProviderUpdateBlockers](input),
