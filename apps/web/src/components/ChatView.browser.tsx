@@ -2959,6 +2959,30 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
+  it("keeps the sidebar around the not-found page for an unknown address under setup", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-setup-not-found" as MessageId,
+        targetText: "setup not found",
+      }),
+      initialPath: "/setup/unknown/address",
+    });
+
+    try {
+      await waitForElement(
+        () =>
+          Array.from(document.querySelectorAll("p")).find(
+            (paragraph) => paragraph.textContent === "Not Found",
+          ) ?? null,
+        "Unable to find the not-found page.",
+      );
+      expect(document.querySelector('[data-slot="sidebar-wrapper"]')).not.toBeNull();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("swaps the sidebar Usage action for a history-aware Back action on Usage", async () => {
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
