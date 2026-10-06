@@ -57,7 +57,7 @@ overrides:
   js-yaml@4: 4.3.2
   nanoid@3: 3.3.18
   postcss: 8.5.23
-  sharp: 0.35.4
+  sharp: 0.35.5
   tar: 7.5.21
   tinypool@2.1.0: 2.1.2
   undici@7: 7.29.1
