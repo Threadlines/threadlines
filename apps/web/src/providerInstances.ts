@@ -13,6 +13,7 @@
  * @module providerInstances
  */
 import {
+  ACP_REGISTRY_DRIVER_KIND,
   defaultInstanceIdForDriver,
   PROVIDER_DISPLAY_NAMES,
   ProviderDriverKind,
@@ -25,9 +26,10 @@ import {
 import { formatProviderDriverKindLabel } from "./providerModels";
 
 /**
- * Drivers the client renders in pickers and settings rows. Must match the
- * client definitions in `components/settings/providerDriverMeta.ts`
- * (`DRIVER_OPTIONS`) — a test keeps the two lists in sync.
+ * Drivers the client renders in pickers and settings rows: the client
+ * definitions in `components/settings/providerDriverMeta.ts`
+ * (`DRIVER_OPTIONS`), then community agents, which have no tile of their own
+ * (they are added from the community list). A test keeps the lists in sync.
  */
 export const MAINTAINED_PROVIDER_DRIVER_KINDS = [
   ProviderDriverKind.make("codex"),
@@ -36,6 +38,7 @@ export const MAINTAINED_PROVIDER_DRIVER_KINDS = [
   ProviderDriverKind.make("cursor"),
   ProviderDriverKind.make("opencode"),
   ProviderDriverKind.make("antigravity"),
+  ACP_REGISTRY_DRIVER_KIND,
 ] as const;
 
 const MAINTAINED_PROVIDER_DRIVER_KIND_SET = new Set<string>(

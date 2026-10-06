@@ -154,23 +154,24 @@ export function deriveProviderSettingsRows(input: {
             config: legacyConfig,
           } satisfies ProviderInstanceConfig)
         : undefined);
-    if (effectiveInstance === undefined) {
-      continue;
-    }
-    const isDirty =
-      explicitInstance !== undefined
-        ? !isDefaultEquivalentInstance(explicitInstance, defaultLegacyConfig)
-        : legacyConfig !== undefined &&
-          defaultLegacyConfig !== undefined &&
-          !Equal.equals(withoutEnabled(legacyConfig), withoutEnabled(defaultLegacyConfig));
+    // A driver with no row of its own (community agents) still lists the
+    // instances it has.
+    if (effectiveInstance !== undefined) {
+      const isDirty =
+        explicitInstance !== undefined
+          ? !isDefaultEquivalentInstance(explicitInstance, defaultLegacyConfig)
+          : legacyConfig !== undefined &&
+            defaultLegacyConfig !== undefined &&
+            !Equal.equals(withoutEnabled(legacyConfig), withoutEnabled(defaultLegacyConfig));
 
-    rows.push({
-      instanceId: defaultInstanceId,
-      instance: effectiveInstance,
-      driver,
-      isDefault: true,
-      isDirty,
-    });
+      rows.push({
+        instanceId: defaultInstanceId,
+        instance: effectiveInstance,
+        driver,
+        isDefault: true,
+        isDirty,
+      });
+    }
 
     for (const [id, instance] of instancesByDriver.get(driver) ?? []) {
       if (id === defaultInstanceId) continue;
