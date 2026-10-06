@@ -34,6 +34,7 @@ import type { ChildProcessSpawner } from "effect/unstable/process";
 
 import type { AcpProviderDescriptor } from "../acp/AcpProviderDescriptor.ts";
 import { makeAcpProviderRuntime } from "../acp/AcpProviderRuntime.ts";
+import { type LaunchGate, withLaunchGateClosed } from "../managedRuntime/LaunchGate.ts";
 import type { ProviderInstanceAuthFlows } from "../ProviderDriver.ts";
 import {
   antigravityCredentialFingerprint,
@@ -48,18 +49,6 @@ import {
 const SIGN_IN_TIMEOUT = Duration.minutes(5);
 const SIGN_OUT_TIMEOUT = Duration.seconds(90);
 const REDIRECT_REPLAY_TIMEOUT_MS = 10_000;
-const DRAIN_TIMEOUT_MS = 45_000;
-const DRAIN_POLL = Duration.millis(250);
-
-/**
- * Shared by an instance's agent processes and its auth flows. Every process
- * holds the gate while it runs; a sign-in or sign-out closes it (`busy`) and
- * waits for the holds to reach zero.
- */
-export interface AntigravityAuthGate {
-  busy: boolean;
-  holds: number;
-}
 
 interface PendingSignIn {
   readonly redirect: URL;
@@ -142,7 +131,7 @@ export function makeAntigravityAuthFlows(input: {
   readonly environment: NodeJS.ProcessEnv;
   readonly childProcessSpawner: ChildProcessSpawner.ChildProcessSpawner["Service"];
   readonly profileDir: string;
-  readonly gate: AntigravityAuthGate;
+  readonly gate: LaunchGate;
   /** Stops every session of the instance. */
   readonly stopSessions: Effect.Effect<void>;
   readonly signIn: AntigravitySignInConfig;
@@ -154,44 +143,26 @@ export function makeAntigravityAuthFlows(input: {
   let pending: PendingSignIn | undefined;
   let report: ((line: string) => Effect.Effect<void>) | undefined;
 
-  // Sessions stop again on every poll: one that was still starting when the
-  // gate closed only becomes stoppable once it has registered.
-  const drain = (emit: (line: string) => Effect.Effect<void>) =>
-    Effect.gen(function* () {
-      const deadline = Date.now() + DRAIN_TIMEOUT_MS;
-      let told = false;
-      while (true) {
-        yield* input.stopSessions;
-        if (input.gate.holds <= 0) return;
-        if (Date.now() >= deadline) {
-          return yield* Effect.fail(
-            failure("Antigravity is still busy with other work. Try again in a moment."),
-          );
-        }
-        if (!told) {
-          told = true;
-          yield* emit("Waiting for Antigravity to finish its current work…");
-        }
-        yield* Effect.sleep(DRAIN_POLL);
-      }
-    });
-
+  // The instance closed and every process of it gone, for as long as
+  // `effect` runs.
   const closed = <A, E>(emit: (line: string) => Effect.Effect<void>, effect: Effect.Effect<A, E>) =>
-    Effect.acquireUseRelease(
-      Effect.suspend(() => {
-        if (input.gate.busy) {
-          return Effect.fail(failure("Antigravity is already signing in or out."));
-        }
-        input.gate.busy = true;
-        return Effect.void;
-      }),
-      () => drain(emit).pipe(Effect.andThen(effect)),
-      () =>
-        Effect.sync(() => {
-          input.gate.busy = false;
-          pending = undefined;
-          report = undefined;
-        }),
+    withLaunchGateClosed(
+      input.gate,
+      {
+        whenAlreadyClosed: () => failure("Antigravity is already signing in or out."),
+        whenStillHeld: () =>
+          failure("Antigravity is still busy with other work. Try again in a moment."),
+        stop: input.stopSessions,
+        onWaiting: emit("Waiting for Antigravity to finish its current work…"),
+      },
+      effect.pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            pending = undefined;
+            report = undefined;
+          }),
+        ),
+      ),
     );
 
   const runtime = (options: {
