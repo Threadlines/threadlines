@@ -29,7 +29,7 @@ import {
   type ServerProviderMaintenanceAction,
 } from "@threadlines/contracts";
 import { acpRegistryInstanceId } from "@threadlines/shared/acpRegistry";
-import { compareSemver } from "@threadlines/shared/semver";
+import { compareSemverVersions } from "@threadlines/shared/semver";
 import * as Context from "effect/Context";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -162,7 +162,7 @@ export const makeAcpRegistryAgents = Effect.fn("makeAcpRegistryAgents")(function
           entry !== undefined &&
           installed !== undefined &&
           entry.agent.recipeDigest !== installed.receipt.recipeDigest &&
-          compareSemver(entry.agent.version, installed.receipt.recipe.version) > 0;
+          compareSemverVersions(entry.agent.version, installed.receipt.recipe.version) > 0;
         context.state.updateCandidate = newer
           ? { version: entry.agent.version, recipeDigest: entry.agent.recipeDigest }
           : undefined;

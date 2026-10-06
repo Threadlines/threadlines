@@ -19,6 +19,7 @@ import {
   AcpRegistryAgentId,
   AcpRegistryCatalogAgent,
   AcpRegistrySettings,
+  TextGenerationError,
 } from "@threadlines/contracts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -26,7 +27,6 @@ import * as Schema from "effect/Schema";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
 import { ServerConfig } from "../../config.ts";
-import { TextGenerationError } from "../../textGeneration/TextGeneration.ts";
 import type { TextGenerationShape } from "../../textGeneration/TextGeneration.ts";
 import { type AcpProviderDriverEnv, makeAcpProviderDriver } from "../acp/AcpProviderDriver.ts";
 import {
@@ -39,7 +39,7 @@ import {
   acpRegistryAgentState,
 } from "../acpRegistry/AcpRegistryAgentState.ts";
 import { makeAcpRegistryAuthFlows } from "../acpRegistry/AcpRegistryAuth.ts";
-import { isAcpRegistryEnvNameAllowed } from "../acpRegistry/AcpRegistryCatalog.ts";
+import { isReservedAcpRegistryEnvName } from "../acpRegistry/AcpRegistryCatalog.ts";
 import {
   type AcpRegistryInstaller,
   makeAcpRegistryInstaller,
@@ -54,6 +54,8 @@ const LISTING_FILE = "listing.json";
 
 const decodeSettings = Schema.decodeSync(AcpRegistrySettings);
 const isAgentId = Schema.is(AcpRegistryAgentId);
+/** What the registry, or an agent's sign-in method, may set in an agent's environment. */
+const allowsEnvName = (name: string) => !isReservedAcpRegistryEnvName(name);
 
 const ListingJson = Schema.fromJsonString(
   Schema.Struct({
@@ -198,7 +200,7 @@ export const AcpRegistryDriver: ProviderDriver<AcpRegistrySettings, AcpRegistryD
         instanceVariableNames: new Set(input.environment.map((variable) => variable.name)),
         listing,
         authMethodId: input.config.authMethodId,
-        allowsEnvName: isAcpRegistryEnvNameAllowed,
+        allowsEnvName,
         requestRefresh: Effect.suspend(() => refresh),
       };
       // A rebuild is a settings change: look at the agent again.
@@ -219,7 +221,7 @@ export const AcpRegistryDriver: ProviderDriver<AcpRegistrySettings, AcpRegistryD
         settings: { ...input.config, enabled: input.enabled },
         environment: mergeProviderInstanceEnvironment(input.environment),
         instanceVariableNames: descriptorInput.instanceVariableNames,
-        allowsEnvName: isAcpRegistryEnvNameAllowed,
+        allowsEnvName,
         childProcessSpawner: yield* ChildProcessSpawner.ChildProcessSpawner,
         signInDescriptor: (purpose) => makeAcpRegistryDescriptor({ ...descriptorInput, purpose }),
         // Built per run: a closing gate stops sessions on every poll.

@@ -62,6 +62,7 @@ import * as McpRoomServer from "./mcp/McpRoomServer.ts";
 import { DictationLive } from "./dictation/DictationService.ts";
 import * as PreviewAutomationBroker from "./preview/PreviewAutomationBroker.ts";
 import { ProviderAccountsLive } from "./provider/accounts/ProviderAccounts.ts";
+import { AcpRegistryAgentsLive } from "./provider/acpRegistry/AcpRegistryAgents.ts";
 import { ProviderAuthSessionsLive } from "./provider/auth/ProviderAuthSessions.ts";
 import { ProviderRegistryLive } from "./provider/Layers/ProviderRegistry.ts";
 import { ServerSettingsLive } from "./serverSettings.ts";
@@ -472,6 +473,9 @@ export const makeRoutesLayer = Layer.mergeAll(
   // Build setup services once for the HTTP server, not once per WebSocket.
   Layer.provide(SourceControlToolMaintenance.layer.pipe(Layer.provide(VcsProcess.layer))),
   Layer.provide(GitHubAuth.layer),
+  // Community agents: the list, add, update and remove. Its installs run
+  // through the maintenance runner below (the same layer, so built once).
+  Layer.provide(AcpRegistryAgentsLive.pipe(Layer.provide(ProviderMaintenanceRunner.layer))),
   Layer.provide(ProviderMaintenanceRunner.layer),
   // One registry for the whole server: a retried bootstrap turn start must
   // find the run in flight even when it arrives on a different socket. The

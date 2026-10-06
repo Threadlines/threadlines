@@ -42,6 +42,7 @@ import {
   FilesystemBrowseError,
   ACP_REGISTRY_DRIVER_KIND,
   type ProviderAuthEvent,
+  ServerProviderUpdateError,
   ProviderExtensionsError,
   ProviderExternalThreadError,
   type ProviderInstanceId,
