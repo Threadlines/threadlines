@@ -1,14 +1,17 @@
 import { EnvironmentId } from "@threadlines/contracts";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ComponentProps } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vite-plus/test";
 
+import { projectQueryKeys } from "../../lib/projectReactQuery";
 import { SidebarProvider } from "../ui/sidebar";
 import type { LiveAgentIndicator } from "./agentsPanel.logic";
 import { ChatHeader } from "./ChatHeader";
 import { formatLiveAgentsTooltip } from "./HeaderAgentFaces";
 
 const TEST_ENVIRONMENT_ID = EnvironmentId.make("environment-local");
+const renderHeaderQueryClient = new QueryClient();
 
 function renderChatHeader(overrides: Partial<ComponentProps<typeof ChatHeader>> = {}) {
   const props = {
@@ -17,6 +20,7 @@ function renderChatHeader(overrides: Partial<ComponentProps<typeof ChatHeader>> 
     activeProjectName: "General Chats",
     isGitRepo: false,
     openInCwd: null,
+    projectCwd: null,
     activeProjectScripts: undefined,
     preferredScriptId: null,
     keybindings: [],
@@ -55,9 +59,11 @@ function renderChatHeader(overrides: Partial<ComponentProps<typeof ChatHeader>> 
   } satisfies ComponentProps<typeof ChatHeader>;
 
   return renderToStaticMarkup(
-    <SidebarProvider>
-      <ChatHeader {...props} />
-    </SidebarProvider>,
+    <QueryClientProvider client={renderHeaderQueryClient}>
+      <SidebarProvider>
+        <ChatHeader {...props} />
+      </SidebarProvider>
+    </QueryClientProvider>,
   );
 }
 
@@ -94,12 +100,32 @@ describe("ChatHeader", () => {
   });
 
   it("makes the project crumb a menu only where there is a folder to act on", () => {
-    const project = renderChatHeader({ activeProjectName: "Orbit", openInCwd: "/repo/orbit" });
+    const project = renderChatHeader({
+      activeProjectName: "Orbit",
+      openInCwd: "/repo/orbit",
+      projectCwd: "/repo/orbit",
+    });
     expect(project).toContain('aria-label="Orbit, project options"');
 
     const generalChat = renderChatHeader({ activeProjectName: "General chats", openInCwd: null });
     expect(generalChat).toContain("General chats");
     expect(generalChat).not.toContain("project options");
+  });
+
+  it("leads the project crumb with the project's icon, not its worktree's", () => {
+    const icon = "data:image/png;base64,b3JiaXQ=";
+    renderHeaderQueryClient.setQueryData(
+      projectQueryKeys.favicon(TEST_ENVIRONMENT_ID, "/repo/orbit"),
+      icon,
+    );
+
+    const markup = renderChatHeader({
+      activeProjectName: "Orbit",
+      openInCwd: "/worktrees/orbit-feature",
+      projectCwd: "/repo/orbit",
+    });
+    const crumb = /<button[^>]*aria-label="Orbit, project options".*?<\/button>/s.exec(markup)?.[0];
+    expect(crumb).toContain(`<img src="${icon}"`);
   });
 
   it("shows uncommitted changes as their own button, even with a Source tab open", () => {

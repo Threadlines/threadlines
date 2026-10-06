@@ -1,4 +1,4 @@
-import type { EditorId, ResolvedKeybindingsConfig } from "@threadlines/contracts";
+import type { EditorId, EnvironmentId, ResolvedKeybindingsConfig } from "@threadlines/contracts";
 import { memo, useCallback, useEffect, useMemo } from "react";
 import { ChevronDownIcon, CopyIcon } from "lucide-react";
 import { isOpenFavoriteEditorShortcut, shortcutLabelForCommand } from "../../keybindings";
@@ -21,6 +21,7 @@ import {
   editorOpenActionLabel,
   useEditorOpenOptions,
 } from "../EditorOpenOptions";
+import { ProjectFavicon } from "../ProjectFavicon";
 import { readLocalApi } from "~/localApi";
 
 /**
@@ -32,12 +33,18 @@ import { readLocalApi } from "~/localApi";
  */
 export const ProjectCrumbMenu = memo(function ProjectCrumbMenu({
   projectName,
+  environmentId,
+  projectCwd,
   cwd,
   canOpenInEditor,
   keybindings,
   availableEditors,
 }: {
   projectName: string;
+  environmentId: EnvironmentId;
+  /** The project's own folder, which its icon is read from. Not the worktree:
+   *  the sidebar asks by this folder too, so the two always show the same icon. */
+  projectCwd: string;
   /** The folder the thread works in: its worktree when it has one. */
   cwd: string;
   /** Editors run on the machine hosting the server, so only the primary
@@ -100,6 +107,12 @@ export const ProjectCrumbMenu = memo(function ProjectCrumbMenu({
           />
         }
       >
+        <ProjectFavicon
+          environmentId={environmentId}
+          cwd={projectCwd}
+          name={projectName}
+          className="me-1"
+        />
         <span className="truncate">{projectName}</span>
         <ChevronDownIcon aria-hidden="true" className="size-3 shrink-0 opacity-60" />
       </MenuTrigger>
