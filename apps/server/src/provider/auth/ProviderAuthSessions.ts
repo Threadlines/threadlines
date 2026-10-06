@@ -25,6 +25,7 @@ import {
   type ProviderAuthEvent,
   type ProviderAuthFlow,
   type ProviderAuthResizeInput,
+  type ProviderAuthRespondInput,
   type ProviderAuthStartInput,
   type ProviderAuthStatus,
   type ProviderAuthStopInput,
@@ -46,6 +47,7 @@ import * as NodePath from "node:path";
 
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
@@ -58,7 +60,7 @@ import { resolveOpenCodeBinary } from "../opencode/OpenCodeBinary.ts";
 import { PtyAdapter, type PtyAdapterShape, type PtyProcess } from "../../terminal/Services/PTY.ts";
 import { ProviderRegistry } from "../Services/ProviderRegistry.ts";
 import { ProviderInstanceRegistry } from "../Services/ProviderInstanceRegistry.ts";
-import type { ProviderInstanceAuthFlows } from "../ProviderDriver.ts";
+import type { ProviderAuthTerminalCommand, ProviderInstanceAuthFlows } from "../ProviderDriver.ts";
 import { deriveProviderInstanceConfigMap } from "../Layers/ProviderInstanceRegistryHydration.ts";
 
 const DEFAULT_COLS = 100;
@@ -179,6 +181,8 @@ export interface ProviderAuthSessionsShape {
   readonly write: (input: ProviderAuthWriteInput) => Effect.Effect<void, ProviderAuthError>;
   readonly resize: (input: ProviderAuthResizeInput) => Effect.Effect<void, ProviderAuthError>;
   readonly stop: (input: ProviderAuthStopInput) => Effect.Effect<void, ProviderAuthError>;
+  /** The user's answer to an agent's request to open a page. */
+  readonly respond: (input: ProviderAuthRespondInput) => Effect.Effect<void, ProviderAuthError>;
   /**
    * Attach to one instance's event stream. Replays the current command and
    * status (plus buffered scrollback for a live run) before streaming, so a
@@ -219,6 +223,19 @@ interface SessionState {
   readonly requestId: string | undefined;
   /** Set for a flow the instance runs itself (browser sign-in, sign-out). */
   readonly instanceFlows: ProviderInstanceAuthFlows | null;
+  /** `terminal`: a command in the PTY. `browser`: the instance's own `run`. */
+  readonly surface: "terminal" | "browser";
+  /** An instance's terminal command: told once how it ended. */
+  terminalFinished: ((exitCode: number | null) => Effect.Effect<void>) | null;
+  /** Pages the agent asked to have opened, waiting for the user's answer. */
+  readonly pageRequests: Map<
+    string,
+    {
+      readonly url: string;
+      readonly message: string | null;
+      readonly answered: Deferred.Deferred<boolean>;
+    }
+  >;
   runFiber: Fiber.Fiber<void, never> | null;
   status: ProviderAuthStatus;
   exitCode: number | null;
@@ -436,6 +453,33 @@ export const makeProviderAuthSessions = Effect.fn("makeProviderAuthSessions")(fu
       session.process = null;
     });
 
+  /** Tells an instance's terminal command how it ended. Once. */
+  const finishTerminal = (session: SessionState, exitCode: number | null) =>
+    Effect.suspend(() => {
+      const finished = session.terminalFinished;
+      session.terminalFinished = null;
+      return finished ? finished(exitCode) : Effect.void;
+    });
+
+  /** Answers every page the agent is still waiting on with "no". */
+  const declinePageRequests = (instanceId: ProviderInstanceId, session: SessionState) =>
+    Effect.gen(function* () {
+      for (const [pageRequestId, pending] of [...session.pageRequests]) {
+        session.pageRequests.delete(pageRequestId);
+        yield* publish(instanceId, {
+          type: "pageRequest",
+          instanceId,
+          createdAt: yield* nowIso,
+          flowId: session.flowId,
+          requestId: pageRequestId,
+          url: pending.url,
+          message: pending.message,
+          settled: true,
+        });
+        yield* Deferred.succeed(pending.answered, false);
+      }
+    });
+
   const handleExit = (instanceId: ProviderInstanceId, session: SessionState, exitCode: number) =>
     Effect.gen(function* () {
       if (session.flushFiber) {
@@ -448,6 +492,9 @@ export const makeProviderAuthSessions = Effect.fn("makeProviderAuthSessions")(fu
       yield* disposeProcess(session);
       session.scrollback = "";
       session.captureBuffer = "";
+      // Before the status: the instance reopens itself, so the re-probe a
+      // success triggers can start it.
+      yield* finishTerminal(session, exitCode);
 
       if (session.status === "succeeded" || session.status === "failed") {
         return;
@@ -484,9 +531,11 @@ export const makeProviderAuthSessions = Effect.fn("makeProviderAuthSessions")(fu
         yield* Effect.sync(() => process.kill()).pipe(Effect.ignore);
       }
       sessions.delete(String(instanceId));
+      yield* declinePageRequests(instanceId, session);
       const runFiber = session.runFiber;
       session.runFiber = null;
       if (runFiber) yield* Fiber.interrupt(runFiber).pipe(Effect.ignore);
+      yield* finishTerminal(session, null);
     });
 
   /** A flow the instance runs itself: progress lines in, its outcome as the status. */
@@ -504,6 +553,9 @@ export const makeProviderAuthSessions = Effect.fn("makeProviderAuthSessions")(fu
         flowId: randomUUID(),
         requestId,
         instanceFlows,
+        surface: "browser",
+        terminalFinished: null,
+        pageRequests: new Map(),
         runFiber: null,
         status: "starting",
         exitCode: null,
@@ -536,6 +588,24 @@ export const makeProviderAuthSessions = Effect.fn("makeProviderAuthSessions")(fu
             flow,
             report: (line) =>
               current() ? emitOutput(instanceId, session, `${line}\r\n`) : Effect.void,
+            requestPage: ({ url, message }) =>
+              Effect.gen(function* () {
+                if (!current() || !/^https?:\/\//iu.test(url) || url.length > 4096) return false;
+                const pageRequestId = randomUUID();
+                const answered = yield* Deferred.make<boolean>();
+                session.pageRequests.set(pageRequestId, { url, message, answered });
+                yield* publish(instanceId, {
+                  type: "pageRequest",
+                  instanceId,
+                  createdAt: yield* nowIso,
+                  flowId: session.flowId,
+                  requestId: pageRequestId,
+                  url,
+                  message: message === null ? null : message.slice(0, 1024),
+                  settled: false,
+                });
+                return yield* Deferred.await(answered);
+              }),
           })
           .pipe(
             Effect.matchEffect({
@@ -625,7 +695,31 @@ export const makeProviderAuthSessions = Effect.fn("makeProviderAuthSessions")(fu
               new ProviderAuthError({ instanceId: String(instanceId), reason: "unsupportedFlow" }),
             );
           }
-          return yield* startInstanceFlow(instanceId, input.flow, instanceFlows, input.requestId);
+          const instanceTerminal = instanceFlows.terminalCommand
+            ? yield* instanceFlows.terminalCommand(input.flow).pipe(
+                Effect.mapError(
+                  (failure) =>
+                    new ProviderAuthError({
+                      instanceId: String(instanceId),
+                      reason: "spawnFailed",
+                      detail: failure.message,
+                    }),
+                ),
+              )
+            : undefined;
+          if (!instanceTerminal) {
+            return yield* startInstanceFlow(instanceId, input.flow, instanceFlows, input.requestId);
+          }
+          return yield* startTerminal(instanceId, input, {
+            command: {
+              file: instanceTerminal.file,
+              args: instanceTerminal.args,
+              display: instanceTerminal.display,
+            },
+            spawnEnv: instanceTerminal.env,
+            instanceFlows,
+            terminalFinished: instanceTerminal.finished,
+          });
         }
 
         const builtCommand = buildProviderAuthCommand({
@@ -677,13 +771,42 @@ export const makeProviderAuthSessions = Effect.fn("makeProviderAuthSessions")(fu
           String(instance.driver) === "opencode"
             ? { ...builtCommand, file: resolveOpenCodeBinary(builtCommand.file, spawnEnv) }
             : builtCommand;
+        return yield* startTerminal(instanceId, input, {
+          command,
+          spawnEnv,
+          instanceFlows: null,
+          terminalFinished: null,
+        });
+      }),
+    );
 
+  /** Runs a sign-in command in the PTY and streams it to the panel. */
+  const startTerminal = (
+    instanceId: ProviderInstanceId,
+    input: ProviderAuthStartInput,
+    prepared: {
+      readonly command: {
+        readonly file: string;
+        readonly args: ReadonlyArray<string>;
+        readonly display: string;
+      };
+      readonly spawnEnv: NodeJS.ProcessEnv;
+      readonly instanceFlows: ProviderInstanceAuthFlows | null;
+      readonly terminalFinished: ProviderAuthTerminalCommand["finished"] | null;
+    },
+  ) =>
+    Effect.gen(function* () {
+      const { command, spawnEnv } = prepared;
+      {
         const session: SessionState = {
           flow: input.flow,
           command: command.display,
           flowId: randomUUID(),
           requestId: input.requestId,
-          instanceFlows: null,
+          instanceFlows: prepared.instanceFlows,
+          surface: "terminal",
+          terminalFinished: prepared.terminalFinished,
+          pageRequests: new Map(),
           runFiber: null,
           status: "starting",
           exitCode: null,
@@ -728,6 +851,7 @@ export const makeProviderAuthSessions = Effect.fn("makeProviderAuthSessions")(fu
 
         if (spawned._tag === "Failure") {
           sessions.delete(String(instanceId));
+          yield* finishTerminal(session, null);
           session.detail = spawned.failure.message;
           yield* publishStatus(instanceId, session, "failed");
           return yield* Effect.fail(
@@ -767,8 +891,8 @@ export const makeProviderAuthSessions = Effect.fn("makeProviderAuthSessions")(fu
         });
 
         yield* publishStatus(instanceId, session, "running");
-      }),
-    );
+      }
+    });
 
   const shape: ProviderAuthSessionsShape = {
     start,
@@ -783,7 +907,7 @@ export const makeProviderAuthSessions = Effect.fn("makeProviderAuthSessions")(fu
             detail: "That sign-in has ended. Start a new one.",
           });
         }
-        if (session?.instanceFlows) {
+        if (session?.instanceFlows && session.surface === "browser") {
           if (session.status !== "running") {
             return yield* new ProviderAuthError({
               instanceId: String(instanceId),
@@ -808,7 +932,7 @@ export const makeProviderAuthSessions = Effect.fn("makeProviderAuthSessions")(fu
     resize: (input) =>
       Effect.gen(function* () {
         const instanceId = ProviderInstanceId.make(input.instanceId);
-        if (sessions.get(String(instanceId))?.instanceFlows) return;
+        if (sessions.get(String(instanceId))?.surface === "browser") return;
         const process = yield* requireRunning(instanceId);
         const session = sessions.get(String(instanceId));
         // The setup-token PTY stays at its extra-wide spawn size: resizing it
@@ -834,6 +958,31 @@ export const makeProviderAuthSessions = Effect.fn("makeProviderAuthSessions")(fu
           detail: null,
         });
       }),
+    respond: (input) =>
+      Effect.gen(function* () {
+        const instanceId = ProviderInstanceId.make(input.instanceId);
+        const session = sessions.get(String(instanceId));
+        const pending =
+          session?.flowId === input.flowId ? session.pageRequests.get(input.requestId) : undefined;
+        if (!session || !pending) {
+          return yield* new ProviderAuthError({
+            instanceId: String(instanceId),
+            reason: "notRunning",
+          });
+        }
+        session.pageRequests.delete(input.requestId);
+        yield* publish(instanceId, {
+          type: "pageRequest",
+          instanceId,
+          createdAt: yield* nowIso,
+          flowId: session.flowId,
+          requestId: input.requestId,
+          url: pending.url,
+          message: pending.message,
+          settled: true,
+        });
+        yield* Deferred.succeed(pending.answered, input.accept);
+      }),
     subscribe: (instanceId, listener) =>
       Effect.gen(function* () {
         const key = String(instanceId);
@@ -852,7 +1001,7 @@ export const makeProviderAuthSessions = Effect.fn("makeProviderAuthSessions")(fu
             command: session.command,
             flowId: session.flowId,
             ...(session.requestId !== undefined ? { requestId: session.requestId } : {}),
-            surface: session.instanceFlows ? "browser" : "terminal",
+            surface: session.surface,
           }).pipe(Effect.ignoreCause({ log: true }));
           if (session.scrollback.length > 0) {
             yield* listener({
@@ -871,6 +1020,19 @@ export const makeProviderAuthSessions = Effect.fn("makeProviderAuthSessions")(fu
           exitCode: session?.exitCode ?? null,
           detail: session?.detail ?? null,
         }).pipe(Effect.ignoreCause({ log: true }));
+        // A panel that opens late still sees what the agent is waiting on.
+        for (const [pageRequestId, pending] of session?.pageRequests ?? []) {
+          yield* listener({
+            type: "pageRequest",
+            instanceId,
+            createdAt,
+            flowId: session!.flowId,
+            requestId: pageRequestId,
+            url: pending.url,
+            message: pending.message,
+            settled: false,
+          }).pipe(Effect.ignoreCause({ log: true }));
+        }
 
         return () => {
           const current = listeners.get(key);

@@ -95,7 +95,27 @@ export interface ProviderInstanceAuthFlows {
   readonly run: (input: {
     readonly flow: ProviderAuthFlow;
     readonly report: (line: string) => Effect.Effect<void>;
+    /**
+     * Asks the user to open a web page the agent named. Nothing opens by
+     * itself; resolves true once the user chose to open it, false when they
+     * cancelled or the flow was stopped.
+     */
+    readonly requestPage: (request: {
+      readonly url: string;
+      readonly message: string | null;
+    }) => Effect.Effect<boolean>;
   }) => Effect.Effect<void, { readonly message: string }>;
+  /**
+   * For a flow that is the agent's own login command: what to run in the
+   * sign-in terminal instead of `run`, or undefined when the flow isn't one.
+   * The effect prepares for it first (the instance's processes are stopped
+   * and kept from starting) and fails with a plain reason when it can't.
+   * `finished` is called exactly once: with the exit code when the command
+   * ends, or null when it was stopped or never started.
+   */
+  readonly terminalCommand?: (
+    flow: ProviderAuthFlow,
+  ) => Effect.Effect<ProviderAuthTerminalCommand | undefined, { readonly message: string }>;
   /** The address a browser on another device ended on, for the pending sign-in. */
   readonly completeRedirect: (url: string) => Effect.Effect<void, { readonly message: string }>;
   /**
@@ -105,6 +125,16 @@ export interface ProviderInstanceAuthFlows {
    * (a check would test the old key).
    */
   readonly builtFrom?: (entry: ProviderInstanceConfig) => boolean;
+}
+
+export interface ProviderAuthTerminalCommand {
+  readonly file: string;
+  readonly args: ReadonlyArray<string>;
+  /** The whole environment of the command. */
+  readonly env: NodeJS.ProcessEnv;
+  /** Shown under the panel's "copy command" disclosure. */
+  readonly display: string;
+  readonly finished: (exitCode: number | null) => Effect.Effect<void>;
 }
 
 export interface ProviderAccountUsageActions {

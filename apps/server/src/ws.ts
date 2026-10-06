@@ -41,7 +41,6 @@ import {
   OrchestrationReplayEventsError,
   FilesystemBrowseError,
   AcpRegistryError,
-  ProviderAuthError,
   type ProviderAuthEvent,
   ProviderExtensionsError,
   ProviderExternalThreadError,
@@ -2212,9 +2211,9 @@ const makeWsRpcLayer = (currentSession: {
             "rpc.aggregate": "providerAuth",
           }),
         [WS_METHODS.providerAuthRespond]: (input) =>
-          Effect.fail(
-            new ProviderAuthError({ instanceId: input.instanceId, reason: "notRunning" }),
-          ),
+          observeRpcEffect(WS_METHODS.providerAuthRespond, providerAuthSessions.respond(input), {
+            "rpc.aggregate": "providerAuth",
+          }),
         [WS_METHODS.providerAuthSubscribe]: (input) =>
           observeRpcStream(
             WS_METHODS.providerAuthSubscribe,
