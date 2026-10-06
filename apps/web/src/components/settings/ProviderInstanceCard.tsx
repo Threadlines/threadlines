@@ -90,6 +90,7 @@ import {
   getProviderVersionLabel,
 } from "./providerStatus";
 import { deriveProviderInstallView } from "./providerInstall";
+import { CommunityAgentAbout, CommunityAgentAccount } from "./CommunityAgentAccount";
 import { ProviderInstallAction, startProviderInstall } from "./ProviderInstallAction";
 import { ProviderSignInAction } from "./ProviderSignInAction";
 import { AgentRow, AgentUpdateTag, type AgentRowTone } from "./AgentRow";
@@ -981,6 +982,9 @@ function ProviderAccountSignInSection(props: {
 
 type ProviderDetailsSection = "account" | "usage" | "models" | "configuration";
 
+/** Stands in for a login command on a community agent's row: its Account tab always shows. */
+const COMMUNITY_SIGN_IN_LABEL = "Sign in";
+
 const PROVIDER_DETAILS_SECTION_LABELS: Record<ProviderDetailsSection, string> = {
   account: "Account",
   usage: "Usage",
@@ -1280,6 +1284,11 @@ interface ProviderInstanceCardProps {
   readonly onRemoveAccount?: (() => void) | undefined;
   /** What the remove button says. Default "Remove account". */
   readonly removeLabel?: string | undefined;
+  /**
+   * The name of the computer the agents run on, when this client is another
+   * device: some sign-ins can only be finished there.
+   */
+  readonly remoteComputerName?: string | undefined;
   /** A just-added account: start its sign-in as soon as the row offers it. */
   readonly autoSignIn?: boolean | undefined;
   /** The auto sign-in started, or there was nothing to start. */
@@ -1342,6 +1351,7 @@ export function ProviderInstanceCard({
   addAccount,
   onRemoveAccount,
   removeLabel,
+  remoteComputerName,
   autoSignIn = false,
   onAutoSignInSettled,
 }: ProviderInstanceCardProps) {
@@ -1421,7 +1431,11 @@ export function ProviderInstanceCard({
       }),
     [instance.config],
   );
+  const community = isCommunityAgent ? liveProvider?.community : undefined;
   const terminalLoginCommand = useMemo(() => {
+    // A community agent always has an Account tab: it says how the agent
+    // signs in, whether or not Threadlines can run that.
+    if (isCommunityAgent) return COMMUNITY_SIGN_IN_LABEL;
     if (driverKind === CODEX_DRIVER_KIND) {
       return buildCodexLoginCommand({
         binaryPath: readProviderConfigString(instance.config, "binaryPath"),
@@ -1456,7 +1470,7 @@ export function ProviderInstanceCard({
       return BROWSER_SIGN_IN_LABEL;
     }
     return null;
-  }, [driverKind, instance.config]);
+  }, [driverKind, instance.config, isCommunityAgent]);
   // Antigravity's next step follows its sign-in method: some can only be
   // fixed on the Account tab (a missing key or project).
   const antigravitySetup =
@@ -1467,6 +1481,12 @@ export function ProviderInstanceCard({
         ...(liveProvider ? { snapshot: liveProvider } : {}),
       })
     : null;
+  // A community agent whose sign-in Threadlines can't run: the Account tab
+  // says how the agent does it.
+  const communityRowStep =
+    community && community.signIn.selected === null
+      ? ({ kind: "settings", label: "How to sign in" } as const)
+      : null;
   // Installed but signed out: the next step belongs on the row, like Install.
   const showRowSignIn =
     enabled &&
@@ -1657,7 +1677,7 @@ export function ProviderInstanceCard({
         {diagnosis ? (
           <>
             {" · "}
-            <LinkifiedText text={diagnosis} />
+            {isCommunityAgent ? diagnosis : <LinkifiedText text={diagnosis} />}
           </>
         ) : null}
       </span>
@@ -1666,7 +1686,7 @@ export function ProviderInstanceCard({
         <span className="shrink-0">{summary.headline}</span>
         {diagnosis ? (
           <span className="min-w-0 truncate">
-            · <LinkifiedText text={diagnosis} />
+            · {isCommunityAgent ? diagnosis : <LinkifiedText text={diagnosis} />}
           </span>
         ) : null}
       </span>
@@ -1705,7 +1725,7 @@ export function ProviderInstanceCard({
         view={providerInstallView}
         statusClassName="max-w-64"
       />
-    ) : showRowSignIn && antigravityRowStep?.kind === "settings" ? (
+    ) : showRowSignIn && (antigravityRowStep?.kind === "settings" || communityRowStep) ? (
       <Button
         size="xs"
         onClick={() => {
@@ -1713,7 +1733,7 @@ export function ProviderInstanceCard({
           onExpandedChange(true);
         }}
       >
-        {antigravityRowStep.label}
+        {communityRowStep?.label ?? antigravityRowStep?.label}
       </Button>
     ) : showRowSignIn ? (
       <ProviderSignInAction
@@ -1798,6 +1818,7 @@ export function ProviderInstanceCard({
       data-agent-status={agentStatus.kind}
       icon={iconNode}
       name={displayName}
+      label={isCommunityAgent ? "Community" : undefined}
       version={enabled ? versionLabel : null}
       versionExtra={versionExtraNode}
       status={statusNode}
@@ -1861,7 +1882,35 @@ export function ProviderInstanceCard({
             </div>
           ) : null}
 
-          {activeDetailsSection === "account" && terminalLoginCommand ? (
+          {activeDetailsSection === "account" && isCommunityAgent ? (
+            <ProviderConfigurationSection
+              title="Account & Sign-in"
+              description="Runs the sign-in this agent offers."
+            >
+              {community ? (
+                <CommunityAgentAccount
+                  instanceId={instanceId}
+                  displayName={displayName}
+                  liveProvider={liveProvider}
+                  community={community}
+                  onPickMethod={(methodId) => {
+                    const { config: _omit, ...rest } = instance;
+                    onUpdate({
+                      ...rest,
+                      config: nextConfigBlobWithValue(instance.config, "authMethodId", methodId),
+                    } as ProviderInstanceConfig);
+                  }}
+                  onOpenConfiguration={() => setDetailsSection("configuration")}
+                  remoteComputerName={remoteComputerName}
+                  signInHandoffActive={signInHandoffActive}
+                />
+              ) : (
+                <p className="text-xs text-muted-foreground">Checking {displayName}…</p>
+              )}
+            </ProviderConfigurationSection>
+          ) : null}
+
+          {activeDetailsSection === "account" && terminalLoginCommand && !isCommunityAgent ? (
             <div className="space-y-0">
               <ProviderAccountSignInSection
                 instanceId={instanceId}
@@ -1902,6 +1951,14 @@ export function ProviderInstanceCard({
 
           {activeDetailsSection === "configuration" ? (
             <div className="space-y-0">
+              {community ? (
+                <ProviderConfigurationSection
+                  title="About"
+                  description="A community agent from the open ACP registry. Threadlines hasn't tested it."
+                >
+                  <CommunityAgentAbout community={community} version={liveProvider?.version} />
+                </ProviderConfigurationSection>
+              ) : null}
               <ProviderConfigurationSection
                 title="Appearance"
                 description="Names and colors used to distinguish provider instances in Threadlines."

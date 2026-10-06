@@ -1373,10 +1373,11 @@ export function ProviderSettingsPanel({
   );
   // "this Mac" where the agents run on the computer in front of the user;
   // from a phone or another computer, that computer's name.
-  const agentComputerName =
-    window.desktopBridge !== undefined || isLoopbackHostname(window.location.hostname)
-      ? computerLabel
-      : (primaryEnvironment?.label ?? "the computer Threadlines runs on");
+  const agentsRunHere =
+    window.desktopBridge !== undefined || isLoopbackHostname(window.location.hostname);
+  const agentComputerName = agentsRunHere
+    ? computerLabel
+    : (primaryEnvironment?.label ?? "the computer Threadlines runs on");
 
   const renderRow = (row: ProviderSettingsRow) => {
     const isCommunityAgent = row.driver === ACP_REGISTRY_DRIVER_KIND;
@@ -1430,6 +1431,7 @@ export function ProviderSettingsPanel({
               : undefined
         }
         removeLabel={isCommunityAgent ? "Remove" : undefined}
+        remoteComputerName={agentsRunHere ? undefined : agentComputerName}
         addAccount={addAccountControlsFor(row)}
         autoSignIn={autoSignInIds.has(row.instanceId)}
         onAutoSignInSettled={settleAutoSignIn}

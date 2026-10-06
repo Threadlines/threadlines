@@ -66,7 +66,13 @@ export function deriveAgentStatus(input: {
     return { kind: "notInstalled", install };
   }
   if (getModelPickerProviderAvailability(snapshot) === "notAuthenticated") {
-    return { kind: "needsSignIn", canSignIn: providerCanSignIn(input.driverKind) };
+    return {
+      kind: "needsSignIn",
+      // A community agent: whether Threadlines can run a sign-in it offers.
+      canSignIn:
+        providerCanSignIn(input.driverKind) ||
+        (snapshot.community?.signIn.selected ?? null) !== null,
+    };
   }
   if (snapshot.status === "error") {
     const summary = getProviderSummary(snapshot);
