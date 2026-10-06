@@ -342,6 +342,54 @@ describe("other steps", () => {
     expect(room("package.json")).toMatchObject({ label: "Used a tool" });
   });
 
+  it("names the agent a room tool call gave by its id the way the room does", () => {
+    const sol = "3b978ce5-f00c-44e6-9bda-6caee5545ba2";
+    const gone = "6f1d2a0c-58b7-4c0e-9a51-0d5c3a9b7e44";
+    const roomAgentNames = new Map([
+      ["primary", "Opus 5.5"],
+      // Left the room since.
+      [gone, "GPT-6.1-Sol"],
+      [sol, "GPT-6.1-Sol 2 (Reviewer)"],
+    ]);
+    const review = (agent: string, names: typeof roomAgentNames | null = roomAgentNames) =>
+      activityStepFromWorkLogEntry(
+        entry({
+          itemType: "mcp_tool_call",
+          executionState: "running",
+          detail: `threadlines_room · room_review: agent=${agent} request=Check the stop bypass`,
+        }),
+        { roomAgentNames: names },
+      )?.liveLabel;
+
+    expect(review(sol)).toBe("Asking GPT-6.1-Sol 2 (Reviewer) for a review");
+    expect(review(sol.toUpperCase())).toBe("Asking GPT-6.1-Sol 2 (Reviewer) for a review");
+    expect(review(`"${sol}",`)).toBe("Asking GPT-6.1-Sol 2 (Reviewer) for a review");
+    expect(review("primary")).toBe("Asking Opus 5.5 for a review");
+    // An agent that left keeps its name on the steps that asked it.
+    expect(review(gone)).toBe("Asking GPT-6.1-Sol for a review");
+    // An id the room cannot place is never shown.
+    expect(review("0a1b2c3d-0000-4000-8000-123456789abc")).toBe(
+      "Asking another agent for a review",
+    );
+    expect(review(sol, null)).toBe("Asking another agent for a review");
+    // A name stays as the call wrote it, even one a different agent goes by now.
+    expect(review("gpt-6.1-sol")).toBe("Asking gpt-6.1-sol for a review");
+    expect(review("primary!")).toBe("Asking primary! for a review");
+    // The line under a plan's current step names it the same way.
+    expect(
+      currentWorkLine(
+        [
+          entry({
+            itemType: "mcp_tool_call",
+            executionState: "running",
+            detail: `threadlines_room.room_ask: agent=${sol} text=Is the retry safe?`,
+          }),
+        ],
+        { roomAgentNames },
+      ),
+    ).toMatchObject({ label: "Asking GPT-6.1-Sol 2 (Reviewer)" });
+  });
+
   it("words the browser panel the same for every provider", () => {
     // Codex reports its MCP calls as items with the server, tool and arguments.
     const [codexOpen] = deriveWorkLogEntries([

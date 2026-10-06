@@ -9,7 +9,7 @@ import {
 } from "../../session-logic";
 import { isUserWrittenMessage } from "@threadlines/shared/roomAgentRequests";
 import { type ChatMessage, type ProposedPlan, type TurnDiffSummary } from "../../types";
-import { roomAgentKey, roomTurnOwners } from "../../rooms";
+import { type RoomAgentNames, roomAgentKey, roomTurnOwners } from "../../rooms";
 import {
   type MessageAgentModel,
   type MessageId,
@@ -376,6 +376,9 @@ export function deriveMessagesTimelineRows(input: {
   /** The agent holding the thread: it owns work no message names yet. Null
    *  (the default) for the thread's own. */
   workingParticipantId?: ThreadParticipantId | null | undefined;
+  /** What the room calls each agent, for the name the working row gives the
+   *  one a room tool call is aimed at. */
+  roomAgentNames?: RoomAgentNames | null | undefined;
 }): MessagesTimelineRow[] {
   const nextRows: MessagesTimelineRow[] = [];
   const visibleTimelineEntries = hoistTrailingTurnWorkAboveResponse(
@@ -592,7 +595,12 @@ export function deriveMessagesTimelineRows(input: {
       kind: "working",
       id: "working-indicator-row",
       createdAt: input.activeTurnStartedAt,
-      label: resolveLiveAnchorLabel(nextRows, visibleTimelineEntries, input.activeStatusLabel),
+      label: resolveLiveAnchorLabel(
+        nextRows,
+        visibleTimelineEntries,
+        input.activeStatusLabel,
+        input.roomAgentNames,
+      ),
       thought: resolveLiveThought(visibleTimelineEntries),
     });
   } else if (liveAgentCount > 0) {
@@ -1422,6 +1430,7 @@ function resolveLiveAnchorLabel(
   rows: ReadonlyArray<MessagesTimelineRow>,
   visibleTimelineEntries: ReadonlyArray<TimelineEntry>,
   activeStatusLabel: string | undefined,
+  roomAgentNames: RoomAgentNames | null | undefined,
 ): string {
   const label = resolveWorkingAnchorLabel(visibleTimelineEntries, activeStatusLabel);
   if (label !== "Working") {
@@ -1434,7 +1443,7 @@ function resolveLiveAnchorLabel(
     row.kind === "work"
       ? row.groupedEntries.flatMap((entry) => {
           if (entry.executionState !== "running") return [];
-          const step = activityStepFromWorkLogEntry(entry);
+          const step = activityStepFromWorkLogEntry(entry, { roomAgentNames });
           return step ? [step] : [];
         })
       : [],

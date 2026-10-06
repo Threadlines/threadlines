@@ -198,6 +198,10 @@ export function findActiveParticipantByHandle(
 export const roomAgentKey = (participantId: ThreadParticipantId | null | undefined): string =>
   participantId ?? "primary";
 
+/** Whether `value` is a `roomAgentKey` rather than a name: an agent id or `primary`. */
+export const isRoomAgentKey = (value: string): boolean =>
+  isValidParticipantId(value) || value.toLowerCase() === roomAgentKey(null);
+
 /**
  * `sentModels` after a turn is asked of an agent: the model asked for, else
  * the one its turns were last sent with, else its own setting. The reactor
