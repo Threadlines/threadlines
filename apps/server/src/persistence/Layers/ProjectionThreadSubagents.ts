@@ -1,4 +1,9 @@
-import { NonNegativeInt, type OrchestrationSubagent } from "@threadlines/contracts";
+import {
+  NonNegativeInt,
+  isProviderDriverKind,
+  isProviderInstanceId,
+  type OrchestrationSubagent,
+} from "@threadlines/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
@@ -14,10 +19,16 @@ import {
   type ProjectionThreadSubagentRepositoryShape,
 } from "../Services/ProjectionThreadSubagents.ts";
 
-/** SQLite keeps the optional flag as NULL/0/1. */
+/** SQLite keeps the optional flag as NULL/0/1, and each unknown provider fact
+ *  as NULL. The provider columns are read as plain text and checked after: a
+ *  value that is not a valid id is an unknown fact, not an unreadable row,
+ *  which would fail the whole snapshot. */
 export const ProjectionThreadSubagentDbRowSchema = ProjectionThreadSubagent.mapFields(
   Struct.assign({
     isBackgrounded: Schema.NullOr(Schema.Number),
+    agentProvider: Schema.NullOr(Schema.String),
+    sessionProvider: Schema.NullOr(Schema.String),
+    sessionProviderInstanceId: Schema.NullOr(Schema.String),
     resultEventSequence: Schema.NullOr(NonNegativeInt),
     liveEventSequence: Schema.NullOr(NonNegativeInt),
   }),
@@ -26,10 +37,21 @@ export const ProjectionThreadSubagentDbRowSchema = ProjectionThreadSubagent.mapF
 export function toProjectionThreadSubagent(
   row: Schema.Schema.Type<typeof ProjectionThreadSubagentDbRowSchema>,
 ): ProjectionThreadSubagent {
-  const { isBackgrounded, resultEventSequence, liveEventSequence, ...rest } = row;
+  const {
+    isBackgrounded,
+    agentProvider,
+    sessionProvider,
+    sessionProviderInstanceId,
+    resultEventSequence,
+    liveEventSequence,
+    ...rest
+  } = row;
   return {
     ...rest,
     ...(isBackgrounded !== null ? { isBackgrounded: isBackgrounded === 1 } : {}),
+    ...(isProviderDriverKind(agentProvider) ? { agentProvider } : {}),
+    ...(isProviderDriverKind(sessionProvider) ? { sessionProvider } : {}),
+    ...(isProviderInstanceId(sessionProviderInstanceId) ? { sessionProviderInstanceId } : {}),
     ...(resultEventSequence !== null ? { resultEventSequence } : {}),
     ...(liveEventSequence !== null ? { liveEventSequence } : {}),
   };
@@ -52,6 +74,8 @@ const makeProjectionThreadSubagentRepository = Effect.gen(function* () {
         spawn_call_id AS "spawnCallId", transcript_agent_id AS "transcriptAgentId",
         turn_id AS "turnId", agent_path AS "agentPath", parent_agent_path AS "parentAgentPath",
         tree_depth AS "treeDepth", is_backgrounded AS "isBackgrounded",
+        agent_provider AS "agentProvider", session_provider AS "sessionProvider",
+        session_provider_instance_id AS "sessionProviderInstanceId",
         nickname, role, objective, status,
         requested_model AS "requestedModel", resolved_model AS "resolvedModel",
         reasoning_effort AS "reasoningEffort", model_provenance AS "modelProvenance",
@@ -94,6 +118,9 @@ const makeProjectionThreadSubagentRepository = Effect.gen(function* () {
             parent_agent_path: row.parentAgentPath,
             tree_depth: row.treeDepth,
             is_backgrounded: subagentBackgroundedColumn(row),
+            agent_provider: row.agentProvider ?? null,
+            session_provider: row.sessionProvider ?? null,
+            session_provider_instance_id: row.sessionProviderInstanceId ?? null,
             nickname: row.nickname,
             role: row.role,
             objective: row.objective,

@@ -7,6 +7,7 @@
 import {
   PROVIDER_DISPLAY_NAMES,
   type ProviderDriverKind,
+  type ProviderInstanceId,
   type TurnId,
 } from "@threadlines/contracts";
 import { formatDiffLineStats } from "@threadlines/shared/diffStats";
@@ -453,6 +454,41 @@ export interface LiveAgentFace {
   /** Blocked on the user; its face is outlined in amber. */
   readonly waiting: boolean;
   readonly startedAt: string;
+  /** Who runs this agent, for its face's mark; null when nothing recorded
+   *  says, which leaves the thread's own provider. */
+  readonly provider: SubagentProviderRef | null;
+}
+
+/** A provider to draw a mark for: the driver, and the exact instance of it
+ *  when one is known (an account, a community agent with its own icon). */
+export interface SubagentProviderRef {
+  readonly driverKind: ProviderDriverKind;
+  readonly instanceId: ProviderInstanceId | null;
+}
+
+/**
+ * The provider that runs an agent, from what the server recorded about it.
+ *
+ * A launcher that runs another provider's agent names it (a Claude thread
+ * launching `codex exec`); that provider has no instance here, so only its
+ * driver is known. Otherwise the agent runs on the session that reported it,
+ * instance included. An agent recorded before either was tracked resolves to
+ * null and the caller falls back to the thread's provider.
+ */
+export function resolveSubagentProvider(
+  item: Pick<
+    SubagentProgressItem,
+    "agentProvider" | "sessionProvider" | "sessionProviderInstanceId"
+  >,
+): SubagentProviderRef | null {
+  const named = item.agentProvider ?? null;
+  const session = item.sessionProvider ?? null;
+  if (named !== null && named !== session) {
+    return { driverKind: named, instanceId: null };
+  }
+  return session === null
+    ? null
+    : { driverKind: session, instanceId: item.sessionProviderInstanceId ?? null };
 }
 
 export interface LiveAgentIndicator {
@@ -488,6 +524,7 @@ export function summarizeLiveAgents(input: {
           name: formatSubagentDisplayName(item),
           waiting: status === "waiting",
           startedAt: item.createdAt,
+          provider: resolveSubagentProvider(item),
         },
       ];
     })

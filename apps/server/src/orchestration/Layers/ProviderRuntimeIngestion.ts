@@ -57,6 +57,7 @@ import { toOrchestrationThreadGoal } from "../threadGoalLifecycle.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import {
   projectRuntimeEventToActivities,
+  subagentSessionProviderStamp,
   type ProviderActivityStreamSnapshot,
 } from "./ProviderActivityProjection.ts";
 import { handOffReplyText } from "../agentRequestDecisions.ts";
@@ -1036,6 +1037,10 @@ function subagentResultActivity(input: {
       input.status === "completed" ? "Subagent response ready" : "Subagent response streaming",
     payload: {
       itemType: "collab_agent_tool_call",
+      // Built here rather than by the activity projection, so it carries the
+      // roster's session stamp itself: a child first seen through its own
+      // output would otherwise be filed under no provider.
+      ...subagentSessionProviderStamp(input.event),
       status: input.status,
       sourceAgentThreadId: input.childProviderThreadId,
       data: {

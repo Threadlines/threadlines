@@ -1,9 +1,13 @@
-import type {
-  OrchestrationSubagent,
-  OrchestrationSubagentSettingProvenance,
-  OrchestrationSubagentStatus,
-  OrchestrationThreadActivity,
-  TurnId,
+import {
+  isProviderDriverKind,
+  isProviderInstanceId,
+  type OrchestrationSubagent,
+  type OrchestrationSubagentSettingProvenance,
+  type OrchestrationSubagentStatus,
+  type OrchestrationThreadActivity,
+  type ProviderDriverKind,
+  type ProviderInstanceId,
+  type TurnId,
 } from "@threadlines/contracts";
 import {
   claudeSubagentActivityItem,
@@ -26,6 +30,50 @@ function text(value: unknown): string | null {
 
 function integer(value: unknown): number | null {
   return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : null;
+}
+
+function driverKind(value: unknown): ProviderDriverKind | null {
+  const kind = text(value);
+  return kind !== null && isProviderDriverKind(kind) ? kind : null;
+}
+
+function instanceId(value: unknown): ProviderInstanceId | null {
+  const id = text(value);
+  return id !== null && isProviderInstanceId(id) ? id : null;
+}
+
+/** Who runs an agent, as three independent facts: the provider its launcher
+ *  named, and the provider and instance of the session that reported it. Each
+ *  merges on its own like any other field, so none can displace another. */
+interface SubagentProviderFields {
+  readonly agentProvider?: ProviderDriverKind | null;
+  readonly sessionProvider?: ProviderDriverKind | null;
+  readonly sessionProviderInstanceId?: ProviderInstanceId | null;
+}
+
+/** The session stamp ProviderActivityProjection puts on the activities the
+ *  roster is built from. */
+function sessionProviderFields(payload: UnknownRecord | null): SubagentProviderFields {
+  return {
+    sessionProvider: driverKind(payload?.sessionProvider),
+    sessionProviderInstanceId: instanceId(payload?.sessionProviderInstanceId),
+  };
+}
+
+/** The three as object spreads, so an unknown one stays absent instead of
+ *  becoming `undefined` under exact optional property types. */
+function providerFields(input: {
+  readonly agentProvider: ProviderDriverKind | null;
+  readonly sessionProvider: ProviderDriverKind | null;
+  readonly sessionProviderInstanceId: ProviderInstanceId | null;
+}): Pick<OrchestrationSubagent, "agentProvider" | "sessionProvider" | "sessionProviderInstanceId"> {
+  return {
+    ...(input.agentProvider === null ? {} : { agentProvider: input.agentProvider }),
+    ...(input.sessionProvider === null ? {} : { sessionProvider: input.sessionProvider }),
+    ...(input.sessionProviderInstanceId === null
+      ? {}
+      : { sessionProviderInstanceId: input.sessionProviderInstanceId }),
+  };
 }
 
 function settingProvenance(value: unknown): OrchestrationSubagentSettingProvenance | null {
@@ -87,7 +135,7 @@ function treeDepth(agentPath: string | null): number {
   return Math.max(0, (agentPath?.split("/").filter(Boolean).length ?? 1) - 2);
 }
 
-interface SubagentPatch {
+interface SubagentPatch extends SubagentProviderFields {
   readonly id: string;
   readonly agentThreadId?: string | null;
   readonly parentAgentThreadId?: string | null;
@@ -146,6 +194,8 @@ function metadataPatch(activity: OrchestrationThreadActivity): SubagentPatch | n
     ...backgroundedField(
       typeof payload.isBackgrounded === "boolean" ? payload.isBackgrounded : undefined,
     ),
+    agentProvider: driverKind(payload.agentProvider),
+    ...sessionProviderFields(payload),
     nickname: text(payload.nickname) ?? text(payload.agentNickname),
     role: text(payload.role) ?? text(payload.agentRole) ?? text(payload.taskName),
     objective: text(payload.objective) ?? text(payload.prompt),
@@ -220,6 +270,7 @@ function collabPatches(activity: OrchestrationThreadActivity): SubagentPatch[] {
       agentPath,
       parentAgentPath: parentPath(agentPath),
       treeDepth: treeDepth(agentPath),
+      ...sessionProviderFields(payload),
       nickname: text(item.agentNickname) ?? text(item.agent_nickname) ?? text(item.nickname),
       role: text(item.agentRole) ?? text(item.role),
       objective: text(item.prompt),
@@ -280,6 +331,14 @@ function mergeSubagent(
     parentAgentPath: mergeValue(patch.parentAgentPath, current?.parentAgentPath ?? null),
     treeDepth: patch.treeDepth ?? current?.treeDepth ?? 0,
     ...backgroundedField(patch.isBackgrounded ?? current?.isBackgrounded),
+    ...providerFields({
+      agentProvider: mergeValue(patch.agentProvider, current?.agentProvider ?? null),
+      sessionProvider: mergeValue(patch.sessionProvider, current?.sessionProvider ?? null),
+      sessionProviderInstanceId: mergeValue(
+        patch.sessionProviderInstanceId,
+        current?.sessionProviderInstanceId ?? null,
+      ),
+    }),
     nickname: mergeValue(patch.nickname, current?.nickname ?? null),
     role: mergeValue(patch.role, current?.role ?? null),
     objective: mergeValue(patch.objective, current?.objective ?? null),
@@ -456,6 +515,12 @@ export function projectSubagentActivity(
           {
             id: row.id,
             ...(patch.status === undefined ? {} : { status: patch.status }),
+            // The session reporting the result is the one running the agent.
+            // It only fills a gap (an agent recorded before sessions were
+            // tracked), never replaces what the row already says.
+            sessionProvider: row.sessionProvider ?? patch.sessionProvider ?? null,
+            sessionProviderInstanceId:
+              row.sessionProviderInstanceId ?? patch.sessionProviderInstanceId ?? null,
             resultBody: patch.resultBody ?? null,
             resultCreatedAt: patch.resultCreatedAt ?? null,
           },
@@ -493,6 +558,39 @@ export function projectSubagentActivity(
   return next.toSorted((left, right) => left.createdAt.localeCompare(right.createdAt));
 }
 
+/**
+ * Carries what a roster knew about who runs each agent onto a roster rebuilt
+ * from its activities. A rebuild only recovers what the activities say, and
+ * the ones recorded before providers were tracked say nothing: without this, a
+ * revert would forget the provider a migration filled in for those agents.
+ * Only fills gaps; whatever the rebuild did recover stands.
+ */
+export function keepKnownSubagentProviders(
+  rebuilt: ReadonlyArray<OrchestrationSubagent>,
+  previous: ReadonlyArray<OrchestrationSubagent>,
+): ReadonlyArray<OrchestrationSubagent> {
+  return rebuilt.map((row) => {
+    // Matched the way patches are: a rebuild that stops before the agent's id
+    // was learned leaves a `pending:` row for the same spawn call.
+    const known = previous.find(
+      (entry) =>
+        entry.id === row.id ||
+        (row.agentThreadId !== null && row.agentThreadId === entry.agentThreadId) ||
+        (row.spawnCallId !== null && row.spawnCallId === entry.spawnCallId),
+    );
+    if (!known) return row;
+    return {
+      ...row,
+      ...providerFields({
+        agentProvider: row.agentProvider ?? known.agentProvider ?? null,
+        sessionProvider: row.sessionProvider ?? known.sessionProvider ?? null,
+        sessionProviderInstanceId:
+          row.sessionProviderInstanceId ?? known.sessionProviderInstanceId ?? null,
+      }),
+    };
+  });
+}
+
 /** Reshapes an absorbed duplicate row into a patch so its learned fields fold
  *  into the surviving row through the same merge path patches use. */
 function duplicatePatchFrom(duplicate: OrchestrationSubagent): SubagentPatch {
@@ -507,6 +605,9 @@ function duplicatePatchFrom(duplicate: OrchestrationSubagent): SubagentPatch {
     parentAgentPath: duplicate.parentAgentPath,
     treeDepth: duplicate.treeDepth,
     ...backgroundedField(duplicate.isBackgrounded),
+    agentProvider: duplicate.agentProvider ?? null,
+    sessionProvider: duplicate.sessionProvider ?? null,
+    sessionProviderInstanceId: duplicate.sessionProviderInstanceId ?? null,
     nickname: duplicate.nickname,
     role: duplicate.role,
     objective: duplicate.objective,

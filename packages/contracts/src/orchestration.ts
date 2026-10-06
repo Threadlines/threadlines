@@ -26,7 +26,7 @@ import {
   TrimmedNonEmptyString,
   TurnId,
 } from "./baseSchemas.ts";
-import { ProviderInstanceId } from "./providerInstance.ts";
+import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
 import { PullRequestMergeMethod } from "./pullRequest.ts";
 
 export const ORCHESTRATION_WS_METHODS = {
@@ -952,6 +952,18 @@ export const OrchestrationSubagent = Schema.Struct({
    *  once instead of blocking the turn. Absent when the provider does not say
    *  (Codex agents always block their parent). */
   isBackgrounded: Schema.optional(Schema.Boolean),
+  /** The provider that runs this agent, named by its launcher when it is not
+   *  the launching session's own: a Claude session running `codex exec` names
+   *  Codex. Absent for an agent its session's provider runs. */
+  agentProvider: Schema.optional(ProviderDriverKind),
+  /** The provider, and the exact instance of it (an account, a community
+   *  agent), of the session that reported this agent. That is who runs the
+   *  agent unless `agentProvider` names another. Recorded when the agent is
+   *  reported, so it stays right after the thread moves to another provider.
+   *  Absent on agents recorded before this was tracked; those ran on their
+   *  thread's provider. */
+  sessionProvider: Schema.optional(ProviderDriverKind),
+  sessionProviderInstanceId: Schema.optional(ProviderInstanceId),
   nickname: Schema.NullOr(TrimmedNonEmptyString),
   role: Schema.NullOr(TrimmedNonEmptyString),
   objective: Schema.NullOr(TrimmedNonEmptyString),

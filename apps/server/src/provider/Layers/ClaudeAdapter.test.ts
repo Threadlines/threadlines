@@ -9693,11 +9693,13 @@ describe("ClaudeAdapterLive codex exec promotion", () => {
         [["command"], ["agent"]],
       );
       const metadata = subagentMetadata(runtimeEvents);
-      // Row first, identity second, settlement last.
+      // Row first, identity second, settlement last. Claude reports the row;
+      // Codex is named as the provider running it.
       assert.deepEqual(metadata[0], {
         callId: "tool-codex-exec",
         status: "running",
         agentRole: "codex",
+        agentProvider: ProviderDriverKind.make("codex"),
         objective: "Review the adapter",
         model: "gpt-5.6-sol",
         modelSource: "explicit",
@@ -9706,6 +9708,7 @@ describe("ClaudeAdapterLive codex exec promotion", () => {
         callId: "tool-codex-exec",
         agentThreadId: `codex-exec:${CODEX_SESSION_ID}`,
         transcriptAgentId: `codex-exec:${CODEX_SESSION_ID}`,
+        agentProvider: ProviderDriverKind.make("codex"),
         status: "running",
         model: "gpt-5.6-sol",
         resolvedModel: "gpt-5.6-sol",

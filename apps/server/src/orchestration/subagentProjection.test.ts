@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vite-plus/test";
-import { EventId, TurnId, type OrchestrationThreadActivity } from "@threadlines/contracts";
+import {
+  EventId,
+  ProviderDriverKind,
+  TurnId,
+  type OrchestrationThreadActivity,
+} from "@threadlines/contracts";
 
-import { projectSubagentActivity } from "./subagentProjection.ts";
+import { keepKnownSubagentProviders, projectSubagentActivity } from "./subagentProjection.ts";
 
 const TURN_ID = TurnId.make("11111111-1111-4111-8111-111111111111");
 const RESUME_TURN_ID = TurnId.make("22222222-2222-4222-8222-222222222222");
@@ -648,6 +653,182 @@ describe("projectSubagentActivity", () => {
     expect(roster).toHaveLength(1);
     expect(roster[0]?.agentThreadId).toBe("agent-codex-1");
     expect(roster[0]?.spawnCallId).toBe("call-1");
+  });
+
+  it("records the session that reported an agent, and its instance", () => {
+    const spawn = claudeSpawnActivity({
+      id: "p1",
+      kind: "tool.started",
+      status: "inProgress",
+      turnId: TURN_ID,
+    });
+    const roster = projectSubagentActivity([], {
+      ...spawn,
+      payload: {
+        ...(spawn.payload as object),
+        sessionProvider: "claudeAgent",
+        sessionProviderInstanceId: "claude-work",
+      },
+    });
+
+    expect(roster[0]).toMatchObject({
+      sessionProvider: "claudeAgent",
+      sessionProviderInstanceId: "claude-work",
+    });
+    expect(roster[0] && "agentProvider" in roster[0]).toBe(false);
+  });
+
+  it("keeps the provider a launcher named apart from the session that reports the agent", () => {
+    // A Claude session launching `codex exec`: Claude reports the row, Codex runs it.
+    let roster = projectSubagentActivity(
+      [],
+      activity({
+        id: "x1",
+        kind: "subagent.metadata",
+        turnId: TURN_ID,
+        payload: {
+          callId: "toolu_codex_exec",
+          status: "running",
+          agentRole: "codex",
+          agentProvider: "codex",
+          sessionProvider: "claudeAgent",
+        },
+      }),
+    );
+    roster = projectSubagentActivity(
+      roster,
+      activity({
+        id: "x2",
+        kind: "subagent.metadata",
+        payload: {
+          callId: "toolu_codex_exec",
+          status: "completed",
+          sessionProvider: "claudeAgent",
+        },
+        createdAt: "2026-08-15T00:01:00.000Z",
+      }),
+    );
+
+    expect(roster).toHaveLength(1);
+    expect(roster[0]).toMatchObject({
+      status: "completed",
+      agentProvider: "codex",
+      sessionProvider: "claudeAgent",
+    });
+  });
+
+  it("keeps a named provider when two rows for one agent are merged", () => {
+    // The call is first seen as the session's own; the agent id row names
+    // Codex; a later report links the two without naming a provider.
+    let roster = projectSubagentActivity(
+      [],
+      activity({
+        id: "d1",
+        kind: "subagent.metadata",
+        payload: { callId: "call-1", status: "running", sessionProvider: "claudeAgent" },
+      }),
+    );
+    roster = projectSubagentActivity(
+      roster,
+      activity({
+        id: "d2",
+        kind: "subagent.metadata",
+        payload: {
+          agentThreadId: "agent-1",
+          status: "running",
+          agentProvider: "codex",
+          sessionProvider: "claudeAgent",
+        },
+        createdAt: "2026-08-15T00:00:01.000Z",
+      }),
+    );
+    expect(roster).toHaveLength(2);
+    roster = projectSubagentActivity(
+      roster,
+      activity({
+        id: "d3",
+        kind: "subagent.metadata",
+        payload: { callId: "call-1", agentThreadId: "agent-1", status: "running" },
+        createdAt: "2026-08-15T00:00:02.000Z",
+      }),
+    );
+
+    expect(roster).toHaveLength(1);
+    expect(roster[0]).toMatchObject({ agentProvider: "codex", sessionProvider: "claudeAgent" });
+  });
+});
+
+it("lets a replayed report name the session of an agent recorded without one", () => {
+  // An agent recorded before sessions were tracked, linked to its task id.
+  let roster = projectSubagentActivity(
+    [],
+    claudeSpawnActivity({ id: "s1", kind: "tool.started", status: "inProgress" }),
+  );
+  roster = projectSubagentActivity(
+    roster,
+    activity({
+      id: "s2",
+      kind: "task.progress",
+      payload: { taskId: "task-legacy", toolUseId: SPAWN_TOOL_USE_ID },
+    }),
+  );
+  const receipt = notificationReceipt({
+    id: "s3",
+    toolCallId: "toolu_resume_call",
+    taskId: "task-legacy",
+    text: "Done.",
+  });
+  roster = projectSubagentActivity(roster, {
+    ...receipt,
+    payload: { ...(receipt.payload as object), sessionProvider: "claudeAgent" },
+  });
+
+  expect(roster).toHaveLength(1);
+  expect(roster[0]?.sessionProvider).toBe("claudeAgent");
+});
+
+describe("keepKnownSubagentProviders", () => {
+  it("fills what a rebuild could not recover and leaves what it did", () => {
+    const spawn = claudeSpawnActivity({ id: "k1", kind: "tool.started", status: "inProgress" });
+    // Activities recorded before providers were tracked say nothing about them.
+    const [rebuilt] = projectSubagentActivity([], spawn);
+    const [recovered] = projectSubagentActivity([], {
+      ...spawn,
+      payload: { ...(spawn.payload as object), sessionProvider: "claudeAgent" },
+    });
+    if (!rebuilt || !recovered) throw new Error("expected a roster row");
+    const known = { ...rebuilt, agentProvider: ProviderDriverKind.make("codex") };
+
+    expect(keepKnownSubagentProviders([rebuilt], [known])[0]?.agentProvider).toBe("codex");
+    expect(keepKnownSubagentProviders([recovered], [known])[0]).toMatchObject({
+      agentProvider: "codex",
+      sessionProvider: "claudeAgent",
+    });
+    // A row the rebuild no longer has is not brought back.
+    expect(keepKnownSubagentProviders([], [known])).toEqual([]);
+  });
+
+  it("finds an agent whose rebuilt row is back to its spawn-call placeholder", () => {
+    // Stored: the linked row. Rebuilt after a revert that dropped the link:
+    // the same spawn call, keyed by its placeholder id again.
+    const [placeholder] = projectSubagentActivity(
+      [],
+      activity({
+        id: "r1",
+        kind: "subagent.metadata",
+        payload: { callId: "call-1", status: "running" },
+      }),
+    );
+    if (!placeholder) throw new Error("expected a roster row");
+    const stored = {
+      ...placeholder,
+      id: "codex-exec:8f0e",
+      agentThreadId: "codex-exec:8f0e",
+      agentProvider: ProviderDriverKind.make("codex"),
+    };
+
+    expect(placeholder.id).toBe("pending:call-1");
+    expect(keepKnownSubagentProviders([placeholder], [stored])[0]?.agentProvider).toBe("codex");
   });
 });
 

@@ -377,6 +377,11 @@ export const SubagentMetadataUpdatedPayload = Schema.Struct({
   isBackgrounded: Schema.optional(Schema.Boolean),
   agentNickname: Schema.optional(TrimmedNonEmptyStringSchema),
   agentRole: Schema.optional(TrimmedNonEmptyStringSchema),
+  /** The provider that runs this agent, when it is not the one reporting it:
+   *  a Claude session that launches `codex exec` reports a Codex agent. Absent
+   *  means the reporting provider runs it. See
+   *  OrchestrationSubagent.agentProvider. */
+  agentProvider: Schema.optional(ProviderDriverKind),
   taskName: Schema.optional(TrimmedNonEmptyStringSchema),
   objective: Schema.optional(TrimmedNonEmptyStringSchema),
   /** Lifecycle state, for providers whose subagents have no separate activity

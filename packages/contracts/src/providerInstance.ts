@@ -82,6 +82,10 @@ export const isProviderDriverKind = (value: unknown): value is ProviderDriverKin
 export const ProviderInstanceId = slugSchema.pipe(Schema.brand("ProviderInstanceId"));
 export type ProviderInstanceId = typeof ProviderInstanceId.Type;
 
+const isProviderInstanceIdValue = Schema.is(ProviderInstanceId);
+export const isProviderInstanceId = (value: unknown): value is ProviderInstanceId =>
+  isProviderInstanceIdValue(value);
+
 /**
  * Lightweight reference identifying which driver implements an instance.
  * Carried alongside `ProviderInstanceId` on wire shapes so consumers can

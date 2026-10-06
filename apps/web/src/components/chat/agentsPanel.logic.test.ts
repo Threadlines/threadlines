@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { TurnId } from "@threadlines/contracts";
+import { ProviderDriverKind, ProviderInstanceId, TurnId } from "@threadlines/contracts";
 
 import type { SubagentProgressItem } from "../../session-logic";
 import type { ThreadBackgroundRunItem } from "./threadActivity";
@@ -11,6 +11,7 @@ import {
   findAgentsPanelSubagent,
   formatAgentsHeaderMeta,
   formatLiveAgentStatusRows,
+  resolveSubagentProvider,
   selectSubagentsForTurns,
   selectTurnAgents,
   summarizeLiveAgents,
@@ -667,6 +668,43 @@ describe("summarizeLiveAgents", () => {
       ["older", false],
       ["newer", false],
     ]);
+  });
+
+  it("resolves who runs each agent from what the server recorded", () => {
+    const claude = ProviderDriverKind.make("claudeAgent");
+    const summary = summarizeLiveAgents({
+      subagents: [
+        buildSubagent({ id: "unrecorded" }),
+        buildSubagent({
+          id: "own",
+          sessionProvider: claude,
+          sessionProviderInstanceId: ProviderInstanceId.make("claude-work"),
+        }),
+        // A Codex agent a Claude session launched: no instance of Codex here.
+        buildSubagent({
+          id: "launched",
+          agentProvider: ProviderDriverKind.make("codex"),
+          sessionProvider: claude,
+          sessionProviderInstanceId: ProviderInstanceId.make("claude-work"),
+        }),
+      ],
+    });
+
+    expect(summary?.agents.map((agent) => [agent.id, agent.provider])).toEqual([
+      ["unrecorded", null],
+      ["own", { driverKind: "claudeAgent", instanceId: "claude-work" }],
+      ["launched", { driverKind: "codex", instanceId: null }],
+    ]);
+
+    // A launcher naming its own provider changes nothing: the agent still
+    // runs on the session's instance, whose own icon must not be lost.
+    expect(
+      resolveSubagentProvider({
+        agentProvider: claude,
+        sessionProvider: claude,
+        sessionProviderInstanceId: ProviderInstanceId.make("claude-work"),
+      }),
+    ).toEqual({ driverKind: "claudeAgent", instanceId: "claude-work" });
   });
 
   it("says nothing when the thread is idle", () => {

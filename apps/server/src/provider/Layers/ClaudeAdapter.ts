@@ -2400,6 +2400,9 @@ const SEND_MESSAGE_TOOL_NAME = "SendMessage";
 /** Role recorded on a promoted `codex exec` row. The agents panel renders the
  *  role as the row's name, so this is what the row reads as. */
 const CODEX_EXEC_SUBAGENT_ROLE = "codex";
+/** A promoted `codex exec` run is a Codex agent this Claude session launched,
+ *  so its row is filed under Codex rather than under the session's provider. */
+const CODEX_EXEC_SUBAGENT_PROVIDER = ProviderDriverKind.make("codex");
 /** Shell commands remembered per session for task correlation; oldest evict
  *  first. A turn issues a handful of Bash calls, so this is generous. */
 const CODEX_EXEC_COMMAND_MAX_ENTRIES = 32;
@@ -4694,6 +4697,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       callId: run.toolUseId,
       agentThreadId: agentId,
       transcriptAgentId: agentId,
+      agentProvider: CODEX_EXEC_SUBAGENT_PROVIDER,
       status: "running",
       ...(turnContext?.model
         ? {
@@ -4772,6 +4776,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       callId: input.toolUseId,
       status: "running",
       agentRole: CODEX_EXEC_SUBAGENT_ROLE,
+      agentProvider: CODEX_EXEC_SUBAGENT_PROVIDER,
       ...(objective ? { objective } : {}),
       ...(model ? { model, modelSource: "explicit" as const } : {}),
       ...(reasoningEffort ? { reasoningEffort, reasoningEffortSource: "explicit" as const } : {}),

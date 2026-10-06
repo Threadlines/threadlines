@@ -72,9 +72,31 @@ describe("ProviderActivityProjection", () => {
           reasoningEffort: "high",
           modelSource: "provider",
           reasoningEffortSource: "provider",
+          // The roster files the agent under the session that reported it.
+          sessionProvider: "codex",
         },
       }),
     ]);
+  });
+
+  it("names the session's provider on agent tool calls and on no other tool", () => {
+    const toolStarted = (itemType: "collab_agent_tool_call" | "command_execution") =>
+      projectRuntimeEventToActivities({
+        type: "item.started",
+        eventId: EventId.make(`evt-${itemType}`),
+        provider: ProviderDriverKind.make("claudeAgent"),
+        providerInstanceId: ProviderInstanceId.make("claude-work"),
+        threadId: ThreadId.make("thread-1"),
+        createdAt: "2026-08-13T20:00:00.000Z",
+        payload: { itemType, title: "Tool" },
+      } satisfies ProviderRuntimeEvent)[0]?.payload;
+
+    // The instance too: it is what tells one account or community agent from another.
+    expect(toolStarted("collab_agent_tool_call")).toMatchObject({
+      sessionProvider: "claudeAgent",
+      sessionProviderInstanceId: "claude-work",
+    });
+    expect(toolStarted("command_execution")).not.toHaveProperty("sessionProvider");
   });
 
   it("projects model fallback reroutes with explicit fallback wording", () => {
