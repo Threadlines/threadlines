@@ -1742,6 +1742,11 @@ export function deriveProviderAuthReconnectPrompt(input: {
         message: authMessage,
       };
     }
+    // The newest runtime error is the failure the thread is showing. When it
+    // is not a sign-in problem, an older one that was must not make it one.
+    if (threadError && activity.kind === "runtime.error") {
+      return null;
+    }
   }
 
   const messages = input.messages ?? [];

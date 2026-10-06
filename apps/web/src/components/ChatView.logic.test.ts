@@ -415,6 +415,53 @@ describe("deriveProviderAuthReconnectPrompt", () => {
     });
   });
 
+  it("does not ask to sign in over a request Claude's service refused with a 403", () => {
+    const threadError =
+      "Failed to authenticate. API Error: 403 Access to this model requires an access grant your request does not have.";
+    const activity: OrchestrationThreadActivity = {
+      id: EventId.make("evt-refused"),
+      tone: "error",
+      kind: "runtime.error",
+      summary: "Runtime error",
+      payload: { message: threadError, class: "provider_error", provider: claudeProvider },
+      turnId: null,
+      createdAt: "2026-10-06T01:52:59.846Z",
+    };
+
+    expect(
+      deriveProviderAuthReconnectPrompt({
+        provider: claudeProvider,
+        threadError,
+        activities: [activity],
+      }),
+    ).toBeNull();
+    // Nothing is wrong with the sign-in, so sending the message again is the way on.
+    expect(isRetryableThreadError({ threadError, activities: [activity] })).toBe(true);
+
+    // A sign-in problem earlier in the same thread does not change that.
+    const earlierSignInFailure: OrchestrationThreadActivity = {
+      id: EventId.make("evt-earlier-auth"),
+      tone: "error",
+      kind: "runtime.error",
+      summary: "Authentication required",
+      payload: {
+        message: "Not logged in · Please run /login",
+        class: "authentication_error",
+        provider: claudeProvider,
+      },
+      turnId: null,
+      createdAt: "2026-10-05T12:00:00.000Z",
+    };
+    expect(
+      deriveProviderAuthReconnectPrompt({
+        provider: claudeProvider,
+        threadError,
+        activities: [earlierSignInFailure, activity],
+        messages: [{ role: "assistant", text: "Not logged in · Please run /login" }],
+      }),
+    ).toBeNull();
+  });
+
   it("detects structured authentication runtime activities", () => {
     const activity: OrchestrationThreadActivity = {
       id: EventId.make("evt-auth"),

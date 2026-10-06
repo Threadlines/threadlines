@@ -50,6 +50,13 @@ describe("provider auth helpers", () => {
     ).toBe(false);
   });
 
+  it("does not send the user to sign in over a request the service refused with a 403", () => {
+    const refused =
+      "Failed to authenticate. API Error: 403 Access to this model requires an access grant your request does not have.";
+    expect(isProviderAuthErrorMessage(refused)).toBe(false);
+    expect(addProviderAuthHint(ProviderDriverKind.make("claudeAgent"), refused)).toBe(refused);
+  });
+
   it("targets only the user message immediately followed by a terminal auth response", () => {
     expect(
       findProviderAuthRetryUserMessageIndex([
