@@ -7,9 +7,11 @@ import { assert, it } from "@effect/vitest";
 import {
   ACP_REGISTRY_DRIVER_KIND,
   type AcpRegistryCatalogAgent,
+  ProviderDriverKind,
   type ProviderInstanceId,
 } from "@threadlines/contracts";
 import { acpRegistryInstanceId } from "@threadlines/shared/acpRegistry";
+import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -23,7 +25,11 @@ import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { AnalyticsService } from "../../telemetry/Services/AnalyticsService.ts";
 import { ProviderAuthSessions } from "../auth/ProviderAuthSessions.ts";
-import { acpRegistryAgentContext, acpRegistryToolsDirs } from "../Drivers/AcpRegistryDriver.ts";
+import {
+  acpRegistryAgentContext,
+  acpRegistryToolsDirs,
+  writeAcpRegistryListing,
+} from "../Drivers/AcpRegistryDriver.ts";
 import { deriveProviderInstanceConfigMap } from "../Layers/ProviderInstanceRegistryHydration.ts";
 import { holdLaunchGate } from "../managedRuntime/LaunchGate.ts";
 import { ProviderMaintenanceRunner } from "../providerMaintenanceRunner.ts";
@@ -99,7 +105,16 @@ function makeWorld(initial: AcpRegistryCatalogSnapshot) {
     get: () => Effect.sync(() => snapshot),
     peek: Effect.sync(() => snapshot),
   };
-  const installs: Array<{ readonly instanceId: unknown; readonly action: unknown }> = [];
+  const installs: Array<{
+    readonly instanceId: unknown;
+    readonly action: unknown;
+    /** What the agent's maintenance action would install: the digest it was handed. */
+    readonly recipeDigest: string | undefined;
+  }> = [];
+  const run: {
+    /** What a maintenance run does after taking its digest, given the state folder. */
+    during: (stateDir: string) => Effect.Effect<void>;
+  } = { during: () => Effect.void };
   const events: Array<readonly [string, unknown]> = [];
   const refreshed: Array<ProviderInstanceId> = [];
   const stopped: Array<string> = [];
@@ -109,6 +124,7 @@ function makeWorld(initial: AcpRegistryCatalogSnapshot) {
       snapshot = next;
     },
     installs,
+    run,
     events,
     refreshed,
     stopped,
@@ -161,15 +177,35 @@ function makeLayer(world: ReturnType<typeof makeWorld>) {
       }),
     ),
     Layer.provideMerge(
-      Layer.mock(ProviderMaintenanceRunner)({
-        updateProvider: (target) =>
-          Effect.sync(() => {
-            if (typeof target === "object") {
-              world.installs.push({ instanceId: target.instanceId, action: target.action });
-            }
-            return {} as never;
-          }),
-      }),
+      // Stands in for the maintenance runner and the agent's own action:
+      // like that action, a run takes the digest it was handed, once.
+      Layer.effect(
+        ProviderMaintenanceRunner,
+        Effect.gen(function* () {
+          const config = yield* ServerConfig;
+          return ProviderMaintenanceRunner.of({
+            updateProvider: (target) =>
+              Effect.gen(function* () {
+                if (typeof target !== "object") return {} as never;
+                const { state } = acpRegistryAgentContext({
+                  stateDir: config.stateDir,
+                  agentId: AGENT_ID,
+                  displayName: "Test Agent",
+                });
+                const recipeDigest = state.requestedRecipeDigest;
+                state.requestedRecipeDigest = undefined;
+                world.installs.push({
+                  instanceId: target.instanceId,
+                  action: target.action,
+                  recipeDigest,
+                });
+                yield* world.run.during(config.stateDir);
+                return {} as never;
+              }),
+            resolveUpdateBlockers: () => Effect.die("unused"),
+          });
+        }),
+      ),
     ),
     Layer.provideMerge(
       Layer.succeed(AnalyticsService, {
@@ -198,9 +234,11 @@ const agentContext = Effect.gen(function* () {
 
 /** Installs a version the way a finished install leaves it, without the network. */
 const installOnDisk = (version: string) =>
+  ServerConfig.pipe(Effect.flatMap((config) => installOnDiskAt(config.stateDir, version)));
+
+const installOnDiskAt = (stateDir: string, version: string) =>
   Effect.gen(function* () {
-    const config = yield* ServerConfig;
-    const dirs = acpRegistryToolsDirs(config.stateDir);
+    const dirs = acpRegistryToolsDirs(stateDir);
     const recipe = recipeFor(version);
     const installer = makeAcpRegistryInstaller({
       agentId: AGENT_ID,
@@ -248,9 +286,10 @@ it.layer(NodeServices.layer)("AcpRegistryAgents", (it) => {
         (yield* context.installer.confirmed).map((confirmed) => confirmed.recipeDigest),
         [entry.agent.recipeDigest],
       );
-      assert.equal(context.state.requestedRecipeDigest, entry.agent.recipeDigest);
       yield* waitFor(() => world.installs.length > 0);
-      assert.deepStrictEqual(world.installs, [{ instanceId: INSTANCE_ID, action: "install" }]);
+      assert.deepStrictEqual(world.installs, [
+        { instanceId: INSTANCE_ID, action: "install", recipeDigest: entry.agent.recipeDigest },
+      ]);
 
       const again = yield* Effect.flip(
         agents.add({ agentId: entry.agent.agentId, recipeDigest: entry.agent.recipeDigest }),
@@ -318,35 +357,100 @@ it.layer(NodeServices.layer)("AcpRegistryAgents", (it) => {
       assert.include(world.refreshed, INSTANCE_ID);
       assert.equal((yield* context.installer.installed)?.receipt.recipe.version, "1.0.0");
 
-      const update = (recipeDigest: string | undefined) =>
-        agents.prepareMaintenance({ instanceId: INSTANCE_ID, action: "update", recipeDigest });
-      // Not the notice the user saw.
-      assert.deepStrictEqual(yield* Effect.flip(update(installed.agent.recipeDigest)), {
-        message: "A newer version was listed. Look again.",
-      });
-      assert.deepStrictEqual(yield* Effect.flip(update(undefined)), {
-        message: "A newer version was listed. Look again.",
-      });
+      yield* waitFor(() => world.installs.length === 1);
+      const run = (
+        action: "install" | "update",
+        recipeDigest: string | undefined,
+        provider = "acpRegistry",
+      ) =>
+        agents.updateProvider({
+          provider: ProviderDriverKind.make(provider),
+          instanceId: INSTANCE_ID,
+          action,
+          ...(recipeDigest === undefined ? {} : { recipeDigest }),
+        });
+      const lookAgain = "A newer version was listed. Look again.";
+      // Not the notice the user saw, or no digest at all: refused before anything runs.
+      assert.equal(
+        (yield* Effect.flip(run("update", installed.agent.recipeDigest))).message,
+        lookAgain,
+      );
+      assert.equal((yield* Effect.flip(run("update", undefined))).message, lookAgain);
+      // Calling the agent by another driver's name doesn't get around the check.
+      assert.equal((yield* Effect.flip(run("update", undefined, "codex"))).message, lookAgain);
+      // A repair installs only something that was confirmed before.
+      assert.equal(
+        (yield* Effect.flip(run("install", acpRegistryRecipeDigest(recipeFor("9.9.9"))))).message,
+        lookAgain,
+      );
+      assert.lengthOf(world.installs, 1);
       assert.lengthOf(yield* context.installer.confirmed, 1);
 
-      yield* update(newer.agent.recipeDigest);
-      assert.equal(context.state.requestedRecipeDigest, newer.agent.recipeDigest);
+      // Two requests at once: each run installs what its own request named.
+      const firstRunning = yield* Deferred.make<void>();
+      const finishFirst = yield* Deferred.make<void>();
+      world.run.during = () =>
+        Deferred.succeed(firstRunning, undefined).pipe(Effect.andThen(Deferred.await(finishFirst)));
+      const update = yield* run("update", newer.agent.recipeDigest).pipe(Effect.forkChild);
+      yield* Deferred.await(firstRunning);
+      world.run.during = () => Effect.void;
+      const repair = yield* run("install", installed.agent.recipeDigest).pipe(Effect.forkChild);
+      // The repair waits its turn: it hasn't touched what the update is installing.
+      yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 30)));
+      assert.lengthOf(world.installs, 2);
+      yield* Deferred.succeed(finishFirst, undefined);
+      yield* Fiber.join(update);
+      yield* Fiber.join(repair);
+      assert.deepStrictEqual(world.installs.slice(1), [
+        { instanceId: INSTANCE_ID, action: "update", recipeDigest: newer.agent.recipeDigest },
+        { instanceId: INSTANCE_ID, action: "install", recipeDigest: installed.agent.recipeDigest },
+      ]);
+      // Nothing is left for a run that nobody checked a digest for.
+      assert.isUndefined(context.state.requestedRecipeDigest);
       assert.deepStrictEqual(
         (yield* context.installer.confirmed).map((confirmed) => confirmed.recipe.version),
         ["1.0.0", "1.1.0"],
       );
 
-      // A repair installs only something that was confirmed before.
-      const repair = (recipeDigest: string) =>
-        agents.prepareMaintenance({ instanceId: INSTANCE_ID, action: "install", recipeDigest });
-      yield* repair(installed.agent.recipeDigest);
-      assert.equal(context.state.requestedRecipeDigest, installed.agent.recipeDigest);
-      assert.isDefined(yield* Effect.flip(repair(acpRegistryRecipeDigest(recipeFor("9.9.9")))));
-
       // A listing that went backward offers nothing.
       world.list(snapshotOf([entryFor("0.9.0")]));
       yield* agents.list({});
       assert.isUndefined(context.state.updateCandidate);
+    }).pipe(Effect.provide(makeLayer(world)));
+  });
+
+  it.effect("counts an install once, when it is the retry that succeeds", () => {
+    const entry = entryFor("1.0.0");
+    const world = makeWorld(snapshotOf([entry]));
+    return Effect.gen(function* () {
+      const agents = yield* AcpRegistryAgents;
+      // The first try fails to download: nothing is installed, nothing is counted.
+      yield* agents.add({ agentId: entry.agent.agentId, recipeDigest: entry.agent.recipeDigest });
+      yield* waitFor(() => world.installs.length === 1);
+      assert.deepStrictEqual(world.events, []);
+
+      // "Try again" works.
+      world.run.during = (stateDir) => installOnDiskAt(stateDir, "1.0.0").pipe(Effect.orDie);
+      yield* agents.updateProvider({
+        provider: ProviderDriverKind.make("acpRegistry"),
+        instanceId: INSTANCE_ID,
+        action: "install",
+        recipeDigest: entry.agent.recipeDigest,
+      });
+      const installed = [
+        "provider.community_agent.installed",
+        { agentId: AGENT_ID, version: "1.0.0" },
+      ] as const;
+      assert.deepStrictEqual(world.events, [installed]);
+
+      // A repair of what is already installed is not another install.
+      yield* agents.updateProvider({
+        provider: ProviderDriverKind.make("acpRegistry"),
+        instanceId: INSTANCE_ID,
+        action: "install",
+        recipeDigest: entry.agent.recipeDigest,
+      });
+      assert.deepStrictEqual(world.events, [installed]);
     }).pipe(Effect.provide(makeLayer(world)));
   });
 
@@ -382,6 +486,17 @@ it.layer(NodeServices.layer)("AcpRegistryAgents", (it) => {
       yield* agents.remove({ instanceId: INSTANCE_ID });
       assert.isUndefined((yield* settings.getSettings).providerInstances[INSTANCE_ID]);
       assert.isFalse(existsSync(context.root));
+      // A read of the list that was under way saves its listing late: not into a new folder.
+      yield* writeAcpRegistryListing(context.root, {
+        authors: ["Someone"],
+        website: null,
+        repository: null,
+        iconSvg: null,
+        source: "download",
+        packageSpec: null,
+        host: "downloads.test",
+      });
+      assert.isFalse(existsSync(context.root));
       assert.deepInclude(world.events, [
         "provider.community_agent.removed",
         { agentId: AGENT_ID, version: "1.0.0" },
@@ -391,6 +506,30 @@ it.layer(NodeServices.layer)("AcpRegistryAgents", (it) => {
         (yield* Effect.flip(agents.remove({ instanceId: INSTANCE_ID }))).reason,
         "unknownInstance",
       );
+    }).pipe(Effect.provide(makeLayer(world)));
+  });
+
+  it.effect("a removal whose client goes away is not left half done", () => {
+    const entry = entryFor("1.0.0");
+    const world = makeWorld(snapshotOf([entry]));
+    return Effect.gen(function* () {
+      const agents = yield* AcpRegistryAgents;
+      const settings = yield* ServerSettingsService;
+      yield* agents.add({ agentId: entry.agent.agentId, recipeDigest: entry.agent.recipeDigest });
+      yield* installOnDisk("1.0.0");
+      const context = yield* agentContext;
+
+      const removal = yield* agents.remove({ instanceId: INSTANCE_ID }).pipe(Effect.forkChild);
+      // Its sessions were told to stop: the agent is closed, the removal under way.
+      yield* waitFor(() => world.stopped.length > 0);
+      yield* Fiber.interrupt(removal);
+
+      // Either it finished, or the agent can be used and removed again: never
+      // a row whose agent stays closed to everything.
+      const rowIsThere = (yield* settings.getSettings).providerInstances[INSTANCE_ID] !== undefined;
+      assert.isFalse(rowIsThere && context.state.gate.busy);
+      assert.isFalse(rowIsThere);
+      assert.isFalse(existsSync(context.root));
       // Added again, it starts from nothing: what was confirmed before is gone with it.
       assert.deepStrictEqual(yield* (yield* agentContext).installer.confirmed, []);
     }).pipe(Effect.provide(makeLayer(world)));

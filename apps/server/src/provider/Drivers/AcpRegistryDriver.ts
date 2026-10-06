@@ -37,6 +37,7 @@ import {
 import {
   type AcpRegistryAgentState,
   acpRegistryAgentState,
+  loadAcpRegistryOffers,
 } from "../acpRegistry/AcpRegistryAgentState.ts";
 import { makeAcpRegistryAuthFlows } from "../acpRegistry/AcpRegistryAuth.ts";
 import { isReservedAcpRegistryEnvName } from "../acpRegistry/AcpRegistryCatalog.ts";
@@ -133,9 +134,9 @@ export function forgetAcpRegistryAgentContext(stateDir: string, agentId: string)
 }
 
 /**
- * Saves what the Providers page shows about where the agent came from. Best
- * effort, and it never fails: two clients reading the list at once both
- * write it.
+ * Saves what the Providers page shows about where the agent came from, for
+ * an agent whose folder exists (its first confirm made it). Best effort, and
+ * it never fails: two clients reading the list at once both write it.
  */
 export const writeAcpRegistryListing = (
   root: string,
@@ -146,7 +147,8 @@ export const writeAcpRegistryListing = (
     // A name of its own, so writers at the same moment don't share one.
     const temp = `${target}.${randomBytes(4).toString("hex")}.tmp`;
     try {
-      await NodeFS.mkdir(root, { recursive: true });
+      // Into the agent's folder as it is, never a new one: a list read that
+      // was under way while the agent was removed must not bring it back.
       await NodeFS.writeFile(temp, `${encodeListing(listing)}\n`, { mode: 0o600 });
       await NodeFS.rename(temp, target);
     } catch {
@@ -222,6 +224,9 @@ export const AcpRegistryDriver: ProviderDriver<AcpRegistrySettings, AcpRegistryD
       };
       // A rebuild is a settings change: look at the agent again.
       context.state.checkRequested = true;
+      // Before a session or a check starts it: the saved sign-in method is
+      // what such a start signs in with.
+      yield* loadAcpRegistryOffers(context.state, context.root);
       // Leftovers of interrupted installs; best effort, off the start path.
       yield* Effect.forkDetach(context.installer.prune.pipe(Effect.ignore));
 

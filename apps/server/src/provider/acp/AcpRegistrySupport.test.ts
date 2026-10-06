@@ -69,6 +69,11 @@ describe.skipIf(process.platform === "win32")("makeAcpRegistryDescriptor", () =>
       assert.deepStrictEqual(yield* install?.run ?? Effect.void, {
         output: "Test Agent 1.0.0 is installed.",
       });
+      // The digest was for that one run: a run nobody checked a digest for installs nothing.
+      assert.isUndefined(agent.state.requestedRecipeDigest);
+      assert.deepStrictEqual(yield* Effect.flip(install?.run ?? Effect.void), {
+        message: "Look at Test Agent again before installing it.",
+      });
 
       const ready = yield* agent.probe;
       assert.deepInclude(ready, { installed: true, version: "1.0.0", status: "ready" });
@@ -128,6 +133,15 @@ describe.skipIf(process.platform === "win32")("makeAcpRegistryDescriptor", () =>
         selected: "mock-login",
         canSignOut: false,
       });
+
+      // A sign-in that was saved and no longer works: the check signs in
+      // with it, is still refused, and forgets it, so no later check asks
+      // the agent to sign in by itself.
+      assert.isDefined(agent.state.offers);
+      agent.state.offers = { ...agent.state.offers!, verifiedAuthMethodId: "mock-login" };
+      agent.state.checkRequested = true;
+      assert.deepStrictEqual((yield* agent.probe).auth, { status: "unauthenticated" });
+      assert.isNull(agent.state.offers?.verifiedAuthMethodId);
     }).pipe(Effect.provide(services)),
   );
 
@@ -154,12 +168,25 @@ describe.skipIf(process.platform === "win32")("makeAcpRegistryDescriptor", () =>
       const spawn = yield* Effect.scoped(
         Effect.gen(function* () {
           const input = yield* agent.spawn;
-          // Held for as long as the process runs.
+          // Held for as long as the process runs, and known by the version it runs.
           assert.equal(agent.state.gate.holds, 1);
+          assert.deepStrictEqual([...agent.state.sessionRecipes], [[agent.digest, 1]]);
           return input;
         }),
       );
       assert.equal(agent.state.gate.holds, 0);
+      assert.deepStrictEqual([...agent.state.sessionRecipes], []);
+
+      // "Sign in first" from a thread still on the version before an update
+      // says nothing about the installed one: that one is checked instead.
+      assert.deepInclude(yield* agent.probe, { status: "ready" });
+      agent.state.sessionRecipes.set("the-version-before", 1);
+      yield* agent.descriptor.onAuthRequired?.(settings) ?? Effect.void;
+      assert.equal(agent.state.health?.status, "ready");
+      assert.isTrue(agent.state.checkRequested);
+      agent.state.sessionRecipes.clear();
+      yield* agent.descriptor.onAuthRequired?.(settings) ?? Effect.void;
+      assert.equal(agent.state.health?.status, "signedOut");
       assert.isTrue(spawn.command.endsWith(path.join("payload", "bin", "agent")));
       assert.isFalse(spawn.inheritEnv);
     }).pipe(Effect.provide(services)),

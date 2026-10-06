@@ -27,6 +27,9 @@ import {
   type ProviderInstanceConfig,
   type ProviderInstanceId,
   type ServerProviderMaintenanceAction,
+  type ServerProviderUpdatedPayload,
+  ServerProviderUpdateError,
+  type ServerProviderUpdateInput,
 } from "@threadlines/contracts";
 import { acpRegistryInstanceId } from "@threadlines/shared/acpRegistry";
 import { compareSemverVersions } from "@threadlines/shared/semver";
@@ -77,15 +80,16 @@ export interface AcpRegistryAgentsShape {
   ) => Effect.Effect<AcpRegistryAddResult, AcpRegistryError>;
   readonly remove: (input: AcpRegistryRemoveInput) => Effect.Effect<void, AcpRegistryError>;
   /**
-   * For `server.updateProvider` on a community agent: checks the recipe the
-   * client named and makes it the one the install or update will use. Fails
-   * with a message to show when the listing has moved on.
+   * `server.updateProvider`, for every provider. An instance that is a
+   * community agent (whatever driver the request names) is installed or
+   * updated only to the recipe the request names, after that digest has
+   * been checked; one such run per agent at a time, and it finishes even
+   * if the client goes away. Anything else goes straight to the
+   * maintenance runner.
    */
-  readonly prepareMaintenance: (input: {
-    readonly instanceId: ProviderInstanceId;
-    readonly action: ServerProviderMaintenanceAction;
-    readonly recipeDigest: string | undefined;
-  }) => Effect.Effect<void, { readonly message: string }>;
+  readonly updateProvider: (
+    input: ServerProviderUpdateInput,
+  ) => Effect.Effect<ServerProviderUpdatedPayload, ServerProviderUpdateError>;
   /** "Check again": the next status check starts the agent whatever it last found. */
   readonly requestCheck: (instanceId: ProviderInstanceId) => Effect.Effect<void>;
 }
@@ -251,7 +255,6 @@ export const makeAcpRegistryAgents = Effect.fn("makeAcpRegistryAgents")(function
         .confirm(entry.recipe)
         .pipe(Effect.catch((error) => fail("filesFailed", error.message)));
       yield* writeAcpRegistryListing(context.root, listingOf(entry));
-      context.state.requestedRecipeDigest = entry.agent.recipeDigest;
 
       yield* settingsService
         .updateSettingsWith((latest) =>
@@ -279,22 +282,13 @@ export const makeAcpRegistryAgents = Effect.fn("makeAcpRegistryAgents")(function
       // The install runs here, on the server: it doesn't need the client
       // that asked to stay connected, and it shows on the agent's row.
       if (yield* waitForInstance(instanceId, true)) {
-        yield* maintenanceRunner
-          .updateProvider({ provider: ACP_REGISTRY_DRIVER_KIND, instanceId, action: "install" })
-          .pipe(
-            Effect.andThen(context.installer.installed),
-            // The registry's public id and version: which community agents get used.
-            Effect.tap((installed) =>
-              installed
-                ? analytics.record("provider.community_agent.installed", {
-                    agentId: input.agentId,
-                    version: installed.receipt.recipe.version,
-                  })
-                : Effect.void,
-            ),
-            Effect.ignore,
-            Effect.forkDetach,
-          );
+        yield* runMaintenance({
+          instanceId,
+          agentId: input.agentId,
+          displayName: entry.agent.name,
+          action: "install",
+          recipeDigest: entry.agent.recipeDigest,
+        }).pipe(Effect.ignore, Effect.forkDetach);
       } else {
         yield* Effect.logWarning("community agent added but its instance isn't running yet", {
           instanceId,
@@ -304,6 +298,15 @@ export const makeAcpRegistryAgents = Effect.fn("makeAcpRegistryAgents")(function
     });
 
   const remove: AcpRegistryAgentsShape["remove"] = (input) =>
+    // Waiting for the agent to stop can be given up. Past that, the removal
+    // runs to its end whoever asked: a client that goes away halfway must
+    // not leave the agent closed to everything and half removed.
+    Effect.uninterruptibleMask((restore) => removeAgent(input, restore));
+
+  const removeAgent = (
+    input: AcpRegistryRemoveInput,
+    restore: <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>,
+  ) =>
     Effect.gen(function* () {
       const instanceId = input.instanceId;
       const found = (yield* communityInstances).find(([id]) => id === instanceId);
@@ -324,11 +327,13 @@ export const makeAcpRegistryAgents = Effect.fn("makeAcpRegistryAgents")(function
         const running = yield* instanceRegistry.getInstance(instanceId);
         if (running) yield* running.adapter.stopAll().pipe(Effect.ignore);
       });
-      const reopen = yield* closeLaunchGate(context.state.gate, {
-        whenAlreadyClosed: stillRunning,
-        whenStillHeld: stillRunning,
-        stop: stopSessions,
-      });
+      const reopen = yield* restore(
+        closeLaunchGate(context.state.gate, {
+          whenAlreadyClosed: stillRunning,
+          whenStillHeld: stillRunning,
+          stop: stopSessions,
+        }),
+      );
 
       const version = (yield* context.installer.installed)?.receipt.recipe.version;
       const removed = yield* Effect.gen(function* () {
@@ -383,42 +388,130 @@ export const makeAcpRegistryAgents = Effect.fn("makeAcpRegistryAgents")(function
       yield* pruneNode.pipe(Effect.forkDetach);
     });
 
-  const prepareMaintenance: AcpRegistryAgentsShape["prepareMaintenance"] = (input) =>
+  interface MaintenanceTarget {
+    readonly instanceId: ProviderInstanceId;
+    readonly agentId: string;
+    readonly displayName: string;
+    readonly action: ServerProviderMaintenanceAction;
+    readonly recipeDigest: string | undefined;
+  }
+
+  /**
+   * Whether the recipe a request names may be installed now. An install
+   * (first try, try again, repair) takes only a recipe the user already
+   * confirmed. An update takes the notice the user saw, as it is now, and
+   * confirms a copy of its recipe so the run uses that one even if the
+   * registry moves meanwhile. Fails with the sentence to show.
+   */
+  const checkRecipe = (context: AcpRegistryAgentContext, target: MaintenanceTarget) =>
     Effect.gen(function* () {
-      const found = (yield* communityInstances).find(([id]) => id === input.instanceId);
-      if (!found) return yield* Effect.fail({ message: "That agent is no longer here." });
-      const [, instance, agentId] = found;
-      const displayName = instance.displayName ?? agentId;
-      const context = contextFor(agentId, displayName);
       const lookAgain = { message: "A newer version was listed. Look again." };
-      const { recipeDigest } = input;
+      const { recipeDigest } = target;
       if (!recipeDigest) return yield* Effect.fail(lookAgain);
 
-      if (input.action === "install") {
-        // Try again, repair: only something the user already confirmed.
+      if (target.action === "install") {
         const confirmed = yield* context.installer.confirmed;
         if (!confirmed.some((entry) => entry.recipeDigest === recipeDigest)) {
           return yield* Effect.fail(lookAgain);
         }
-      } else {
-        // The notice the user saw, taken as it is now: a copy of the recipe
-        // is confirmed here, so the install uses it even if the registry
-        // moves while it waits its turn.
-        if (context.state.updateCandidate?.recipeDigest !== recipeDigest) {
-          return yield* Effect.fail(lookAgain);
-        }
-        const peeked = yield* catalog.peek;
-        const snapshot = peeked && installable(peeked);
-        const entry = snapshot?.entries.find(
-          (candidate) =>
-            candidate.agent.agentId === agentId && candidate.agent.recipeDigest === recipeDigest,
-        );
-        if (!entry || !snapshot?.quarantineKnown) return yield* Effect.fail(lookAgain);
-        yield* context.installer
-          .confirm(entry.recipe)
-          .pipe(Effect.mapError((error) => ({ message: error.message })));
+        return recipeDigest;
       }
-      context.state.requestedRecipeDigest = recipeDigest;
+      if (context.state.updateCandidate?.recipeDigest !== recipeDigest) {
+        return yield* Effect.fail(lookAgain);
+      }
+      const peeked = yield* catalog.peek;
+      const snapshot = peeked && installable(peeked);
+      const entry = snapshot?.entries.find(
+        (candidate) =>
+          candidate.agent.agentId === target.agentId &&
+          candidate.agent.recipeDigest === recipeDigest,
+      );
+      if (!entry || !snapshot?.quarantineKnown) return yield* Effect.fail(lookAgain);
+      yield* context.installer
+        .confirm(entry.recipe)
+        .pipe(Effect.mapError((error) => ({ message: error.message })));
+      return recipeDigest;
+    });
+
+  /**
+   * One install or update of a community agent, from the check of its
+   * digest to the end of its run. The digest is handed to the run under the
+   * agent's lock and taken back when the run is over, so no other request
+   * can change what this one installs, and nothing installs without a
+   * check. Not interruptible: the run goes on in the maintenance runner
+   * whether or not its caller stays, and the lock is its.
+   */
+  const runMaintenance = (target: MaintenanceTarget) => {
+    const context = contextFor(target.agentId, target.displayName);
+    const { state } = context;
+    return state.maintenanceLock
+      .withPermit(
+        Effect.gen(function* () {
+          const recipeDigest = yield* checkRecipe(context, target).pipe(
+            Effect.mapError(
+              ({ message }) =>
+                new ServerProviderUpdateError({
+                  provider: ACP_REGISTRY_DRIVER_KIND,
+                  reason: message,
+                }),
+            ),
+          );
+          const wasInstalled = (yield* context.installer.installed) !== undefined;
+          state.requestedRecipeDigest = recipeDigest;
+          const result = yield* maintenanceRunner
+            .updateProvider({
+              provider: ACP_REGISTRY_DRIVER_KIND,
+              instanceId: target.instanceId,
+              action: target.action,
+            })
+            .pipe(
+              Effect.ensuring(
+                Effect.sync(() => {
+                  state.requestedRecipeDigest = undefined;
+                }),
+              ),
+            );
+          const installed = yield* context.installer.installed;
+          if (!wasInstalled && installed) {
+            // The registry's public id and version: which community agents get used.
+            yield* analytics
+              .record("provider.community_agent.installed", {
+                agentId: target.agentId,
+                version: installed.receipt.recipe.version,
+              })
+              .pipe(Effect.ignore);
+          }
+          return result;
+        }),
+      )
+      .pipe(Effect.uninterruptible);
+  };
+
+  const updateProvider: AcpRegistryAgentsShape["updateProvider"] = (input) =>
+    Effect.gen(function* () {
+      // By the instance, not by the driver the request names: a community
+      // agent's install goes through the digest check whatever it is called.
+      const found =
+        input.instanceId === undefined
+          ? undefined
+          : (yield* communityInstances).find(([id]) => id === input.instanceId);
+      if (found) {
+        const [instanceId, instance, agentId] = found;
+        return yield* runMaintenance({
+          instanceId,
+          agentId,
+          displayName: instance.displayName ?? agentId,
+          action: input.action ?? "update",
+          recipeDigest: input.recipeDigest,
+        });
+      }
+      if (input.provider === ACP_REGISTRY_DRIVER_KIND) {
+        return yield* new ServerProviderUpdateError({
+          provider: input.provider,
+          reason: "That agent is no longer here.",
+        });
+      }
+      return yield* maintenanceRunner.updateProvider(input);
     });
 
   const requestCheck: AcpRegistryAgentsShape["requestCheck"] = (instanceId) =>
@@ -446,7 +539,7 @@ export const makeAcpRegistryAgents = Effect.fn("makeAcpRegistryAgents")(function
     list: (input) => readCatalog(input.refresh === true).pipe(Effect.map(toAcpRegistryCatalog)),
     add,
     remove,
-    prepareMaintenance,
+    updateProvider,
     requestCheck,
   } satisfies AcpRegistryAgentsShape;
 });

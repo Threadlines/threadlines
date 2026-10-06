@@ -695,31 +695,42 @@ export const makeProviderAuthSessions = Effect.fn("makeProviderAuthSessions")(fu
               new ProviderAuthError({ instanceId: String(instanceId), reason: "unsupportedFlow" }),
             );
           }
-          const instanceTerminal = instanceFlows.terminalCommand
-            ? yield* instanceFlows.terminalCommand(input.flow).pipe(
-                Effect.mapError(
-                  (failure) =>
-                    new ProviderAuthError({
-                      instanceId: String(instanceId),
-                      reason: "spawnFailed",
-                      detail: failure.message,
-                    }),
-                ),
-              )
-            : undefined;
-          if (!instanceTerminal) {
-            return yield* startInstanceFlow(instanceId, input.flow, instanceFlows, input.requestId);
-          }
-          return yield* startTerminal(instanceId, input, {
-            command: {
-              file: instanceTerminal.file,
-              args: instanceTerminal.args,
-              display: instanceTerminal.display,
-            },
-            spawnEnv: instanceTerminal.env,
-            instanceFlows,
-            terminalFinished: instanceTerminal.finished,
-          });
+          const terminalCommand = instanceFlows.terminalCommand;
+          // A login command comes with its agent closed to everything else
+          // until `finished` is called. From asking for the command to the
+          // session that will call it, nothing may cut in: a client that
+          // goes away in between must not leave the agent closed.
+          return yield* Effect.uninterruptibleMask((restore) =>
+            Effect.gen(function* () {
+              const instanceTerminal = terminalCommand
+                ? yield* terminalCommand(input.flow).pipe(
+                    Effect.mapError(
+                      (failure) =>
+                        new ProviderAuthError({
+                          instanceId: String(instanceId),
+                          reason: "spawnFailed",
+                          detail: failure.message,
+                        }),
+                    ),
+                  )
+                : undefined;
+              if (!instanceTerminal) {
+                return yield* restore(
+                  startInstanceFlow(instanceId, input.flow, instanceFlows, input.requestId),
+                );
+              }
+              return yield* startTerminal(instanceId, input, {
+                command: {
+                  file: instanceTerminal.file,
+                  args: instanceTerminal.args,
+                  display: instanceTerminal.display,
+                },
+                spawnEnv: instanceTerminal.env,
+                instanceFlows,
+                terminalFinished: instanceTerminal.finished,
+              });
+            }),
+          );
         }
 
         const builtCommand = buildProviderAuthCommand({

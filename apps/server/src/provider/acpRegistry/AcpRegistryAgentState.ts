@@ -39,6 +39,13 @@ export const ACP_REGISTRY_HEALTH_MAX_AGE_MS = 60 * 60 * 1000;
 
 const OFFERS_FILE = "offers.json";
 const MAX_REPORTED_TEXT = 2000;
+/** What is kept of an agent's own catalog: it is saved, sent to every client and drawn. */
+const MAX_MODELS = 200;
+const MAX_MODEL_OPTIONS = 32;
+const MAX_OPTION_CHOICES = 200;
+const MAX_ID_LENGTH = 256;
+const MAX_LABEL_LENGTH = 160;
+const MAX_DESCRIPTION_LENGTH = 1024;
 
 const AcpRegistryOffers = Schema.Struct({
   /** The recipe these were read from. Offers of another recipe are not used. */
@@ -94,8 +101,17 @@ export interface AcpRegistryAgentState {
   lastInstalled: AcpRegistryInstalledAgent | undefined;
   /** The recipe to name when installing again: the installed one, else the last confirmed. */
   confirmedRecipeDigest: string | undefined;
-  /** The recipe a confirmed install or update is about to use; read when its action runs. */
+  /**
+   * The recipe the one install or update in progress is to use. Set under
+   * `maintenanceLock` once the request's digest has been checked, and taken
+   * (read and cleared) by the action when it runs: a run that nobody
+   * checked a digest for finds nothing here.
+   */
   requestedRecipeDigest: string | undefined;
+  /** One install or update of the agent at a time, from its digest check to the end of its run. */
+  readonly maintenanceLock: Semaphore.Semaphore;
+  /** The recipes of the agent's running session processes, with how many run each. */
+  readonly sessionRecipes: Map<string, number>;
 }
 
 const states = new Map<string, AcpRegistryAgentState>();
@@ -117,6 +133,8 @@ export function acpRegistryAgentState(agentId: string): AcpRegistryAgentState {
       lastInstalled: undefined,
       confirmedRecipeDigest: undefined,
       requestedRecipeDigest: undefined,
+      maintenanceLock: Semaphore.makeUnsafe(1),
+      sessionRecipes: new Map(),
     };
     states.set(agentId, state);
   }
@@ -138,6 +156,28 @@ export function boundAgentText(value: unknown, max = MAX_REPORTED_TEXT): string 
   return line ? line.slice(0, max) : null;
 }
 
+/** Reads the saved offers into `state`, once per process. Never throws. */
+async function loadOffers(state: AcpRegistryAgentState, agentRoot: string): Promise<void> {
+  if (state.offersLoaded) return;
+  state.offersLoaded = true;
+  const raw = await NodeFS.readFile(NodePath.join(agentRoot, OFFERS_FILE), "utf8").catch(
+    () => undefined,
+  );
+  const decoded = raw === undefined ? undefined : Option.getOrUndefined(decodeOffers(raw));
+  // What a check in this run already learned is newer than the file.
+  state.offers ??= decoded;
+}
+
+/**
+ * Brings what the agent last said about itself back from disk. Run it before
+ * anything starts the agent: a start reads the saved sign-in method from
+ * `state`, and a start that doesn't know it finds the agent signed out.
+ */
+export const loadAcpRegistryOffers = (
+  state: AcpRegistryAgentState,
+  agentRoot: string,
+): Effect.Effect<void> => Effect.promise(() => loadOffers(state, agentRoot));
+
 /** The offers that apply to `recipeDigest`: the saved ones, read once, if they are of that recipe. */
 export const readAcpRegistryOffers = (
   state: AcpRegistryAgentState,
@@ -145,15 +185,7 @@ export const readAcpRegistryOffers = (
   recipeDigest: string,
 ): Effect.Effect<AcpRegistryOffers | undefined> =>
   Effect.promise(async () => {
-    if (!state.offersLoaded) {
-      state.offersLoaded = true;
-      const raw = await NodeFS.readFile(NodePath.join(agentRoot, OFFERS_FILE), "utf8").catch(
-        () => undefined,
-      );
-      const decoded = raw === undefined ? undefined : Option.getOrUndefined(decodeOffers(raw));
-      // What a check in this run already learned is newer than the file.
-      state.offers ??= decoded;
-    }
+    await loadOffers(state, agentRoot);
     return state.offers?.recipeDigest === recipeDigest ? state.offers : undefined;
   });
 
@@ -171,6 +203,8 @@ export const writeAcpRegistryOffers = (
   ) => Omit<AcpRegistryOffers, "recipeDigest" | "firstReportedVersion">,
 ): Effect.Effect<void> =>
   Effect.promise(async () => {
+    // What is saved comes first: an update of it must not start from nothing.
+    await loadOffers(state, agentRoot);
     if (stamp.authGeneration !== state.authGeneration) return;
     const current = state.offers?.recipeDigest === stamp.recipeDigest ? state.offers : undefined;
     const next = update(current);
@@ -228,4 +262,98 @@ export function currentAcpRegistryHealth(
     return undefined;
   }
   return nowMs - health.checkedAtMs <= ACP_REGISTRY_HEALTH_MAX_AGE_MS ? health : undefined;
+}
+
+type AgentModel = typeof ServerProviderModel.Type;
+
+/**
+ * An agent's catalog, cut down to what a catalog needs. The names, labels
+ * and lists come from a program Threadlines never tested: a model or a
+ * choice whose id is too long to be one is left out, and the rest is
+ * bounded in count and in length.
+ */
+export function boundAcpRegistryModels(
+  models: ReadonlyArray<AgentModel>,
+): ReadonlyArray<AgentModel> {
+  const text = <T extends string>(value: T, max: number) => value.slice(0, max).trim() as T;
+  const optional = <T extends string>(value: T | undefined, max: number) => {
+    const bounded = value === undefined ? "" : text(value, max);
+    return bounded.length > 0 ? bounded : undefined;
+  };
+  return models
+    .filter((model) => model.slug.length <= MAX_ID_LENGTH)
+    .slice(0, MAX_MODELS)
+    .map((model): AgentModel => {
+      const description = optional(model.description, MAX_DESCRIPTION_LENGTH);
+      const descriptors = model.capabilities?.optionDescriptors;
+      return {
+        slug: model.slug,
+        name: text(model.name, MAX_LABEL_LENGTH) || model.slug,
+        ...(description ? { description } : {}),
+        isCustom: model.isCustom,
+        ...(model.isDefault === undefined ? {} : { isDefault: model.isDefault }),
+        capabilities:
+          model.capabilities === null
+            ? null
+            : {
+                ...model.capabilities,
+                ...(descriptors
+                  ? {
+                      optionDescriptors: descriptors
+                        .filter((descriptor) => descriptor.id.length <= MAX_ID_LENGTH)
+                        .slice(0, MAX_MODEL_OPTIONS)
+                        .map((descriptor) => {
+                          const label = text(descriptor.label, MAX_LABEL_LENGTH) || descriptor.id;
+                          const optionDescription = optional(
+                            descriptor.description,
+                            MAX_DESCRIPTION_LENGTH,
+                          );
+                          const base = {
+                            id: descriptor.id,
+                            label,
+                            ...(optionDescription ? { description: optionDescription } : {}),
+                          };
+                          if (descriptor.type === "boolean") {
+                            return {
+                              ...base,
+                              type: descriptor.type,
+                              ...(descriptor.currentValue === undefined
+                                ? {}
+                                : { currentValue: descriptor.currentValue }),
+                            };
+                          }
+                          const choices = descriptor.options
+                            .filter((choice) => choice.id.length <= MAX_ID_LENGTH)
+                            .slice(0, MAX_OPTION_CHOICES)
+                            .map((choice) => {
+                              const choiceDescription = optional(
+                                choice.description,
+                                MAX_DESCRIPTION_LENGTH,
+                              );
+                              return {
+                                id: choice.id,
+                                label: text(choice.label, MAX_LABEL_LENGTH) || choice.id,
+                                ...(choiceDescription ? { description: choiceDescription } : {}),
+                                ...(choice.isDefault === undefined
+                                  ? {}
+                                  : { isDefault: choice.isDefault }),
+                              };
+                            });
+                          const current = descriptor.currentValue;
+                          return {
+                            ...base,
+                            type: descriptor.type,
+                            options: choices,
+                            // A current value that isn't among the kept choices says nothing.
+                            ...(current !== undefined &&
+                            choices.some((choice) => choice.id === current)
+                              ? { currentValue: current }
+                              : {}),
+                          };
+                        }),
+                    }
+                  : {}),
+              },
+      };
+    });
 }

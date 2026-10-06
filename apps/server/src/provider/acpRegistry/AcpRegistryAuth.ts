@@ -292,18 +292,30 @@ export function makeAcpRegistryAuthFlows(input: AcpRegistryAuthInput): ProviderI
           );
         }
         // Closed for as long as the command runs: reopened by `finished`.
-        const reopen = yield* closeLaunchGate(state.gate, {
-          whenAlreadyClosed: () => failure(`${displayName} is already signing in or out.`),
-          whenStillHeld: () =>
-            failure(`${displayName} is still busy with other work. Try again in a moment.`),
-          stop: input.stopSessions,
-        });
-        // The agent's files stay leased while its login command runs from them.
-        const lease = yield* Scope.make();
-        yield* installer.acquire.pipe(
-          Scope.provide(lease),
-          Effect.mapError((error) => failure(error.message)),
-          Effect.tapError(() => Scope.close(lease, Exit.void).pipe(Effect.andThen(reopen))),
+        // Waiting for the agent's other work to stop can be given up; from
+        // the moment the gate is closed until the command is handed over,
+        // nothing can cut in and leave it closed with nobody to reopen it.
+        const { reopen, lease } = yield* Effect.uninterruptibleMask((restore) =>
+          Effect.gen(function* () {
+            const reopenGate = yield* restore(
+              closeLaunchGate(state.gate, {
+                whenAlreadyClosed: () => failure(`${displayName} is already signing in or out.`),
+                whenStillHeld: () =>
+                  failure(`${displayName} is still busy with other work. Try again in a moment.`),
+                stop: input.stopSessions,
+              }),
+            );
+            // The agent's files stay leased while its login command runs from them.
+            const leaseScope = yield* Scope.make();
+            yield* installer.acquire.pipe(
+              Scope.provide(leaseScope),
+              Effect.mapError((error) => failure(error.message)),
+              Effect.tapError(() =>
+                Scope.close(leaseScope, Exit.void).pipe(Effect.andThen(reopenGate)),
+              ),
+            );
+            return { reopen: reopenGate, lease: leaseScope };
+          }),
         );
         return {
           file: launch.command,

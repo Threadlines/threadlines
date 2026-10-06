@@ -40,8 +40,10 @@ import {
   type AcpRegistryAgentState,
   type AcpRegistryHealth,
   boundAgentText,
+  boundAcpRegistryModels,
   bumpAcpRegistryAuthGeneration,
   currentAcpRegistryHealth,
+  loadAcpRegistryOffers,
   readAcpRegistryOffers,
   recordAcpRegistryHealth,
   writeAcpRegistryOffers,
@@ -187,7 +189,10 @@ export function makeAcpRegistryDescriptor(
     args: [],
     lockKey: `acp-registry-${input.agentId}`,
     run: Effect.suspend(() => {
+      // Taken, not just read: the digest was checked for one request, and a
+      // run that comes without such a check must find nothing to install.
       const recipeDigest = state.requestedRecipeDigest;
+      state.requestedRecipeDigest = undefined;
       if (!recipeDigest) {
         return Effect.fail({ message: `Look at ${displayName} again before installing it.` });
       }
@@ -244,6 +249,22 @@ export function makeAcpRegistryDescriptor(
           );
         }
         const installed = yield* installer.acquire.pipe(Effect.mapError(spawnFailure));
+        if (purpose.kind === "session") {
+          // Known for as long as the process runs: an update can leave a
+          // thread on the version before it.
+          const digest = installed.receipt.recipeDigest;
+          yield* Effect.acquireRelease(
+            Effect.sync(() => {
+              state.sessionRecipes.set(digest, (state.sessionRecipes.get(digest) ?? 0) + 1);
+            }),
+            () =>
+              Effect.sync(() => {
+                const left = (state.sessionRecipes.get(digest) ?? 1) - 1;
+                if (left > 0) state.sessionRecipes.set(digest, left);
+                else state.sessionRecipes.delete(digest);
+              }),
+          );
+        }
         const plan = planAcpRegistryLaunch({
           launch: installed.launch,
           args:
@@ -284,6 +305,15 @@ export function makeAcpRegistryDescriptor(
       Effect.gen(function* () {
         const installed = yield* installer.installed;
         if (!installed) return;
+        const { recipeDigest } = installed.receipt;
+        // Which process answered isn't known here. While a thread still runs
+        // the version before an update, its answer says nothing about the
+        // installed one: that one is checked instead.
+        if ([...state.sessionRecipes.keys()].some((digest) => digest !== recipeDigest)) {
+          state.checkRequested = true;
+          if (input.requestRefresh) yield* input.requestRefresh;
+          return;
+        }
         const stamp = {
           recipeDigest: installed.receipt.recipeDigest,
           authGeneration: state.authGeneration + 1,
@@ -328,6 +358,8 @@ export function makeAcpRegistryDescriptor(
         }
         const { recipeDigest } = installed.receipt;
         const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+        // Before the check: it starts the agent with the sign-in method that was saved.
+        yield* loadAcpRegistryOffers(state, input.agentRoot);
         const known = () => currentAcpRegistryHealth(state, recipeDigest, Date.now());
         let health = known();
         if (!health) {
@@ -460,6 +492,8 @@ export function makeAcpRegistryDescriptor(
       } else {
         const { started, initialize, configOptions } = outcome.value;
         const opened = Exit.isSuccess(started) && Option.isSome(started.value);
+        const signedOut =
+          Exit.isFailure(started) && isAcpAuthRequiredError(failureOf(started.cause));
         if (initialize) {
           // Kept whether or not a session then opened: a signed-out agent
           // still says how to sign in.
@@ -471,25 +505,29 @@ export function makeAcpRegistryDescriptor(
               "logout" in initialize.agentCapabilities.auth,
             reportedVersion: boundAgentText(initialize.agentInfo?.version, 64),
             models: opened
-              ? buildAcpModelsFromConfigOptions({
-                  configOptions,
-                  mapping: NATIVE_ACP_MODEL_OPTION_MAPPING,
-                  sharedCapabilities: true,
-                  defaultModelWhenNone: true,
-                })
+              ? boundAcpRegistryModels(
+                  buildAcpModelsFromConfigOptions({
+                    configOptions,
+                    mapping: NATIVE_ACP_MODEL_OPTION_MAPPING,
+                    sharedCapabilities: true,
+                    defaultModelWhenNone: true,
+                  }),
+                )
               : (current?.models ?? null),
-            verifiedAuthMethodId: current?.verifiedAuthMethodId ?? null,
+            // The check signed in with the saved method first. Still signed
+            // out: that sign-in is over, and it isn't tried again by itself
+            // (asking an agent to sign in can open a browser).
+            verifiedAuthMethodId: signedOut ? null : (current?.verifiedAuthMethodId ?? null),
           }));
         }
         if (opened) {
           health = verdict("ready", null);
+        } else if (signedOut) {
+          health = verdict("signedOut", null);
         } else if (Exit.isSuccess(started)) {
           health = verdict("problem", `${displayName} didn't answer in time.`);
         } else {
-          const failure = failureOf(started.cause);
-          health = isAcpAuthRequiredError(failure)
-            ? verdict("signedOut", null)
-            : verdict("problem", boundAgentText(messageOf(failure), 300));
+          health = verdict("problem", boundAgentText(messageOf(failureOf(started.cause)), 300));
         }
       }
       recordAcpRegistryHealth(state, health);

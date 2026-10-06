@@ -9,6 +9,7 @@ import { ChildProcessSpawner } from "effect/unstable/process";
 
 import { makeAcpRegistryDescriptor } from "../acp/AcpRegistrySupport.ts";
 import { makeAcpRegistryTestAgent } from "../testUtils/acpRegistryAgentFixture.ts";
+import { acpRegistryAgentState, forgetAcpRegistryAgentState } from "./AcpRegistryAgentState.ts";
 import { makeAcpRegistryAuthFlows } from "./AcpRegistryAuth.ts";
 
 const settings = Schema.decodeSync(AcpRegistrySettings)({});
@@ -118,6 +119,19 @@ describe.skipIf(process.platform === "win32")("makeAcpRegistryAuthFlows", () => 
       assert.deepInclude(ready, { status: "ready" });
       assert.lengthOf(agent.pages, 2);
       assert.isTrue(agent.community()?.signIn.canSignOut);
+
+      // Threadlines restarts: nothing is left in memory. The first look reads
+      // what was saved before it starts the agent, so the agent is signed in
+      // with the same method and the sign-in is not lost.
+      forgetAcpRegistryAgentState(agent.descriptorInput.agentId);
+      const restarted = acpRegistryAgentState(agent.descriptorInput.agentId);
+      const afterRestart = yield* makeAcpRegistryDescriptor({
+        ...agent.descriptorInput,
+        state: restarted,
+      }).probe(settings, process.env);
+      assert.deepInclude(afterRestart, { status: "ready" });
+      assert.equal(restarted.offers?.verifiedAuthMethodId, "mock-login");
+      assert.lengthOf(agent.pages, 2);
 
       yield* agent.run("logout", true);
       assert.equal(agent.lines.at(-1), "Signed out.");

@@ -40,9 +40,7 @@ import {
   ProjectWriteFileError,
   OrchestrationReplayEventsError,
   FilesystemBrowseError,
-  ACP_REGISTRY_DRIVER_KIND,
   type ProviderAuthEvent,
-  ServerProviderUpdateError,
   ProviderExtensionsError,
   ProviderExternalThreadError,
   type ProviderInstanceId,
@@ -1100,28 +1098,12 @@ const makeWsRpcLayer = (currentSession: {
             },
           ),
         [WS_METHODS.serverUpdateProvider]: (input) =>
+          // Through the community agents service: it sends everything but a
+          // community agent straight on, and gives a community agent only
+          // the recipe the user was shown.
           observeRpcEffect(
             WS_METHODS.serverUpdateProvider,
-            // A community agent is installed or updated only to the recipe
-            // the user was shown; anything else is refused before it queues.
-            (input.provider === ACP_REGISTRY_DRIVER_KIND && input.instanceId !== undefined
-              ? acpRegistryAgents
-                  .prepareMaintenance({
-                    instanceId: input.instanceId,
-                    action: input.action ?? "update",
-                    recipeDigest: input.recipeDigest,
-                  })
-                  .pipe(
-                    Effect.mapError(
-                      (failure) =>
-                        new ServerProviderUpdateError({
-                          provider: input.provider,
-                          reason: failure.message,
-                        }),
-                    ),
-                  )
-              : Effect.void
-            ).pipe(Effect.andThen(providerMaintenanceRunner.updateProvider(input))),
+            acpRegistryAgents.updateProvider(input),
             {
               "rpc.aggregate": "server",
             },
