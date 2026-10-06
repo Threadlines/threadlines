@@ -31,6 +31,9 @@ export const PROVIDER_ICON_BY_PROVIDER: Partial<Record<ProviderDriverKind, Icon>
 
 /** The longest registry icon the contract allows (`ServerProviderCommunity.iconSvg`). */
 const PROVIDER_ICON_SVG_MAX_LENGTH = 32 * 1024;
+/** An `<svg>` start tag with `xmlns="http://www.w3.org/2000/svg"` among its attributes. */
+const SVG_ELEMENT_WITH_NAMESPACE =
+  /<svg\s[^>]*?\bxmlns\s*=\s*(["'])http:\/\/www\.w3\.org\/2000\/svg\1/i;
 
 /**
  * A registry icon as a CSS `mask-image` value. The SVG text comes from a third
@@ -43,9 +46,10 @@ export function providerIconMaskImage(svg: string | null | undefined): string | 
   if (!svg || svg.length > PROVIDER_ICON_SVG_MAX_LENGTH) {
     return null;
   }
-  // A document without the SVG namespace does not load as an image, and a
-  // mask that fails to load hides the glyph entirely.
-  if (!/<svg[\s>]/i.test(svg) || !svg.includes("http://www.w3.org/2000/svg")) {
+  // A document whose `<svg>` element doesn't declare the SVG namespace does
+  // not load as an image, and a mask that fails to load hides the glyph
+  // entirely.
+  if (!SVG_ELEMENT_WITH_NAMESPACE.test(svg)) {
     return null;
   }
   try {

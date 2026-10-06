@@ -77,6 +77,13 @@ describe("providerIconMaskImage", () => {
     expect(providerIconMaskImage("   ")).toBeNull();
     expect(providerIconMaskImage("<svg viewBox='0 0 16 16'></svg>")).toBeNull();
     expect(providerIconMaskImage(`<html xmlns="${SVG_NAMESPACE}"></html>`)).toBeNull();
+    // The namespace has to be the svg element's own, wherever among its attributes.
+    expect(
+      providerIconMaskImage(`<svg width="16" fill="none"\n  xmlns='${SVG_NAMESPACE}'></svg>`),
+    ).not.toBeNull();
+    expect(
+      providerIconMaskImage(`<svg viewBox="0 0 16 16"><!-- ${SVG_NAMESPACE} --></svg>`),
+    ).toBeNull();
     // A lone surrogate cannot be percent-encoded.
     expect(providerIconMaskImage(`${opening}\uD800</svg>`)).toBeNull();
   });
