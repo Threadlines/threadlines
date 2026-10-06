@@ -11,6 +11,7 @@
  * @module ServerSettings
  */
 import {
+  ACP_REGISTRY_DRIVER_KIND,
   DEFAULT_GIT_TEXT_GENERATION_MODEL,
   DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_PROVIDER,
   DEFAULT_SERVER_SETTINGS,
@@ -249,11 +250,17 @@ function resolveEnabledInstanceDriver(
   return null;
 }
 
+/**
+ * The driver that would write text for a selection, or null when it can't:
+ * turned off, unknown, or a community agent. What an agent Threadlines
+ * hasn't tested would write is not known, so one is never the writing model.
+ */
 function resolveTextGenerationDriver(
   settings: ServerSettings,
   selection: ModelSelection,
 ): ProviderDriverKind | null {
-  return resolveEnabledInstanceDriver(settings, selection.instanceId);
+  const driver = resolveEnabledInstanceDriver(settings, selection.instanceId);
+  return driver === ACP_REGISTRY_DRIVER_KIND ? null : driver;
 }
 
 function textGenerationSelectionIsEnabled(
@@ -278,7 +285,7 @@ function fallbackTextGenerationSelection(
   for (const key of [...defaultIds, ...customIds]) {
     const instanceId = ProviderInstanceId.make(key);
     const driver = resolveEnabledInstanceDriver(settings, instanceId);
-    if (driver === null) continue;
+    if (driver === null || driver === ACP_REGISTRY_DRIVER_KIND) continue;
     if (options.excludeDriver !== undefined && driver === options.excludeDriver) continue;
     return {
       instanceId,
