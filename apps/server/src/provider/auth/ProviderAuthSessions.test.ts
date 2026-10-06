@@ -35,7 +35,11 @@ class FakePtyProcess implements PtyProcess {
   private readonly dataListeners = new Set<(data: string) => void>();
   private readonly exitListeners = new Set<(event: PtyExitEvent) => void>();
 
-  write(): void {}
+  readonly writes: string[] = [];
+
+  write(data: string): void {
+    this.writes.push(data);
+  }
   resize(): void {}
   kill(): void {
     this.killed = true;
@@ -331,6 +335,120 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("ProviderAuthSession
         harness.sessions.start({ instanceId: CODEX_INSTANCE, flow: "claude-setup-token" }),
       );
       expect(error).toMatchObject({ _tag: "ProviderAuthError", reason: "unsupportedFlow" });
+    }).pipe(Effect.provide(settingsLayer)),
+  );
+
+  it.effect("runs an instance's own login command in the terminal and tells it how it ended", () =>
+    Effect.gen(function* () {
+      const endings: Array<number | null> = [];
+      const flows: ProviderInstanceAuthFlows = {
+        flows: ["login"],
+        describe: () => "Log in",
+        run: () => Effect.fail({ message: "the terminal command should have run instead" }),
+        completeRedirect: () => Effect.void,
+        terminalCommand: () =>
+          Effect.succeed({
+            file: "/tools/agent",
+            args: ["login", "--device"],
+            env: { PATH: "/tools", AGENT_HOME: "/tmp/agent" },
+            display: "agent login --device",
+            finished: (exitCode) => Effect.sync(() => void endings.push(exitCode)),
+          }),
+      };
+      const harness = yield* createSessions(() => Effect.succeed(flows));
+      yield* harness.subscribeTo(CODEX_INSTANCE);
+
+      yield* harness.sessions.start({ instanceId: CODEX_INSTANCE, flow: "login" });
+      // The agent's command line and environment, as given: nothing of the
+      // built-in login commands is mixed in.
+      expect(harness.ptyAdapter.spawnInputs[0]).toMatchObject({
+        shell: "/tools/agent",
+        args: ["login", "--device"],
+        env: { PATH: "/tools", AGENT_HOME: "/tmp/agent" },
+      });
+      const command = (yield* harness.getEvents).find((event) => event.type === "command");
+      expect(command).toMatchObject({ surface: "terminal", command: "agent login --device" });
+      // Keystrokes reach the command, like any terminal sign-in.
+      yield* harness.sessions.write({ instanceId: CODEX_INSTANCE, data: "1234\r" });
+      expect(harness.ptyAdapter.processes[0]!.writes).toEqual(["1234\r"]);
+
+      harness.ptyAdapter.processes[0]!.emitExit(0);
+      yield* waitFor(
+        harness.getEvents.pipe(Effect.map((events) => statusesOf(events).includes("succeeded"))),
+      );
+      // Told before the re-probe, so the instance is open again for it.
+      expect(endings).toEqual([0]);
+      expect(yield* harness.getRefreshed).toEqual([String(CODEX_INSTANCE)]);
+
+      // Stopped by the user: told too, with no exit code, and only once.
+      yield* harness.sessions.start({ instanceId: CODEX_INSTANCE, flow: "login" });
+      yield* harness.sessions.stop({ instanceId: CODEX_INSTANCE });
+      expect(endings).toEqual([0, null]);
+    }).pipe(Effect.provide(settingsLayer)),
+  );
+
+  it.effect("shows a page the agent asks for and answers it only with the user's choice", () =>
+    Effect.gen(function* () {
+      const answers: Array<boolean> = [];
+      const flows: ProviderInstanceAuthFlows = {
+        flows: ["login"],
+        describe: () => "Sign in",
+        run: ({ requestPage }) =>
+          Effect.gen(function* () {
+            answers.push(
+              yield* requestPage({ url: "https://agent.example/login?code=1", message: "Sign in" }),
+            );
+            // Not a web address: refused without asking anyone.
+            answers.push(yield* requestPage({ url: "file:///etc/passwd", message: null }));
+            answers.push(yield* requestPage({ url: "https://agent.example/again", message: null }));
+          }),
+        completeRedirect: () => Effect.void,
+      };
+      const harness = yield* createSessions(() => Effect.succeed(flows));
+      yield* harness.subscribeTo(CODEX_INSTANCE);
+      const pageRequests = harness.getEvents.pipe(
+        Effect.map((events) =>
+          events.flatMap((event) => (event.type === "pageRequest" ? [event] : [])),
+        ),
+      );
+
+      yield* harness.sessions.start({ instanceId: CODEX_INSTANCE, flow: "login" });
+      yield* waitFor(pageRequests.pipe(Effect.map((requests) => requests.length === 1)));
+      const [first] = yield* pageRequests;
+      expect(first).toMatchObject({
+        url: "https://agent.example/login?code=1",
+        message: "Sign in",
+        settled: false,
+      });
+      expect(answers).toEqual([]);
+
+      // An answer for another run is refused; the right one reaches the agent.
+      const stale = yield* Effect.flip(
+        harness.sessions.respond({
+          instanceId: CODEX_INSTANCE,
+          flowId: "another-run",
+          requestId: first!.requestId,
+          accept: true,
+        }),
+      );
+      expect(stale.reason).toBe("notRunning");
+      yield* harness.sessions.respond({
+        instanceId: CODEX_INSTANCE,
+        flowId: first!.flowId,
+        requestId: first!.requestId,
+        accept: true,
+      });
+      yield* waitFor(pageRequests.pipe(Effect.map((requests) => requests.length === 3)));
+      expect(answers).toEqual([true, false]);
+
+      // Stopping the sign-in declines what the agent is still waiting on.
+      yield* harness.sessions.stop({ instanceId: CODEX_INSTANCE });
+      expect((yield* pageRequests).map((request) => request.settled)).toEqual([
+        false,
+        true,
+        false,
+        true,
+      ]);
     }).pipe(Effect.provide(settingsLayer)),
   );
 

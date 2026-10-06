@@ -35,7 +35,12 @@ import {
 
 export interface AcpProviderRuntimeInput<Settings extends AcpProviderSettings> extends Omit<
   AcpSessionRuntimeOptions,
-  "authMethodId" | "clientCapabilities" | "sessionControls" | "spawn" | "stderrFailure"
+  | "authMethodId"
+  | "authenticateTimeoutMs"
+  | "clientCapabilities"
+  | "sessionControls"
+  | "spawn"
+  | "stderrFailure"
 > {
   readonly childProcessSpawner: ChildProcessSpawner.ChildProcessSpawner["Service"];
   readonly settings: Settings;
@@ -70,13 +75,18 @@ export const makeAcpProviderRuntime = <Settings extends AcpProviderSettings>(
     const planned = descriptor.spawn(settings, input.cwd, environment);
     const spawn = Effect.isEffect(planned) ? yield* planned : planned;
     const signInUrlFromStderr = descriptor.signInUrlFromStderr;
-    const resolvedAuthMethodId = authMethodId ?? descriptor.authMethodId;
+    const resolvedAuthMethodId =
+      authMethodId ?? descriptor.resolveAuthMethodId?.() ?? descriptor.authMethodId;
     const acpContext = yield* Layer.build(
       AcpSessionRuntime.layer({
         ...runtimeOptions,
         spawn,
         cwd: descriptor.resolveSessionCwd ? descriptor.resolveSessionCwd(input.cwd) : input.cwd,
         ...(resolvedAuthMethodId ? { authMethodId: resolvedAuthMethodId } : {}),
+        // A sign-in flow names its method and waits for the user as long as it takes.
+        ...(authMethodId === undefined && descriptor.authenticateTimeoutMs !== undefined
+          ? { authenticateTimeoutMs: descriptor.authenticateTimeoutMs }
+          : {}),
         ...(descriptor.sessionControls ? { sessionControls: descriptor.sessionControls } : {}),
         ...(onStderrLine || (onSignInUrl && signInUrlFromStderr)
           ? {

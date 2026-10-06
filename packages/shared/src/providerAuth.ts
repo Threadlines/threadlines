@@ -1,4 +1,4 @@
-import type { ProviderDriverKind } from "@threadlines/contracts";
+import type { ProviderDriverKind, ServerProvider } from "@threadlines/contracts";
 
 import { BROWSER_SIGN_IN_DRIVERS } from "./providerAuthCommands.ts";
 
@@ -48,6 +48,20 @@ export function providerCanSignIn(provider: ProviderDriverKind): boolean {
   return (
     providerAuthReconnectCommand(provider) !== undefined ||
     BROWSER_SIGN_IN_DRIVERS.has(String(provider))
+  );
+}
+
+/**
+ * The same, for a provider as the server reports it. A community agent says
+ * for itself how it signs in: Threadlines can when one of the methods it
+ * offers is one Threadlines can run.
+ */
+export function serverProviderCanSignIn(provider: {
+  readonly driver: ServerProvider["driver"];
+  readonly community?: ServerProvider["community"] | undefined;
+}): boolean {
+  return (
+    providerCanSignIn(provider.driver) || (provider.community?.signIn.selected ?? null) !== null
   );
 }
 

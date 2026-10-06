@@ -26,7 +26,8 @@ import { ModelListRow } from "./ModelListRow";
 import { resolveModelPickerEmptyState } from "./modelPickerEmptyState";
 import { buildModelPickerSearchText, scoreModelPickerSearch } from "./modelPickerSearch";
 import { Combobox, ComboboxEmpty, ComboboxInput, ComboboxListVirtualized } from "../ui/combobox";
-import { ModelEsque, PROVIDER_ICON_BY_PROVIDER } from "./providerIconUtils";
+import { ModelEsque } from "./providerIconUtils";
+import { ProviderGlyph } from "./ProviderInstanceIcon";
 import {
   modelPickerJumpCommandForIndex,
   modelPickerJumpIndexFromCommand,
@@ -68,6 +69,8 @@ type ModelPickerTab = {
   kind: "favorites" | "instance";
   modelCount: number;
   models: ReadonlyArray<ModelPickerItem>;
+  /** Set on an instance tab: whose glyph it draws. */
+  instanceId?: ProviderInstanceId;
   driverKind?: ProviderDriverKind;
   accentColor?: string | undefined;
   /** For an agent with several accounts: how close this one is to its limit. */
@@ -425,6 +428,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
         kind: "instance",
         id: entry.instanceId,
         label: entry.displayName,
+        instanceId: entry.instanceId,
         driverKind: entry.driverKind,
         ...(entry.accentColor ? { accentColor: entry.accentColor } : {}),
         ...(usage
@@ -560,12 +564,13 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
     if (tab.kind === "favorites") {
       return <StarIcon className="size-3.5 fill-current text-yellow-500/80" />;
     }
-    const ProviderIcon = tab.driverKind
-      ? (PROVIDER_ICON_BY_PROVIDER[tab.driverKind] ?? null)
-      : null;
     return (
       <>
-        {ProviderIcon ? <ProviderIcon className="size-3.5 opacity-70" /> : null}
+        <ProviderGlyph
+          instanceId={tab.instanceId}
+          driverKind={tab.driverKind}
+          className="size-3.5 opacity-70"
+        />
         {tab.accentColor ? (
           <span
             aria-hidden
@@ -630,18 +635,15 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
     focusSearchInput();
   }, [focusSearchInput]);
 
-  const LockedProviderIcon =
-    isLocked && props.lockedProvider ? PROVIDER_ICON_BY_PROVIDER[props.lockedProvider] : null;
-  // Header label for locked mode. Use the active instance's displayName
-  // when the lock narrows to exactly one instance (so "Codex Personal"
-  // shows instead of the generic driver label); fall back to the first
-  // matching entry otherwise.
-  const lockedHeaderLabel = useMemo(() => {
+  // The instance the header names in locked mode. The active one when the
+  // lock narrows to exactly one instance (so "Codex Personal" shows, with its
+  // own glyph, instead of the generic driver label); the first matching entry
+  // otherwise.
+  const lockedHeaderEntry = useMemo(() => {
     if (!isLocked || !props.lockedProvider) return null;
     const matches = instanceEntries.filter((entry) => matchesLockedProvider(entry));
-    if (matches.length === 0) return null;
     const active = matches.find((entry) => entry.instanceId === props.activeInstanceId);
-    return (active ?? matches[0])?.displayName ?? null;
+    return active ?? matches[0] ?? null;
   }, [
     isLocked,
     matchesLockedProvider,
@@ -855,10 +857,16 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
                       );
                     })}
                   </div>
-                ) : lockedToSingleInstance && LockedProviderIcon && lockedHeaderLabel ? (
+                ) : lockedToSingleInstance && lockedHeaderEntry ? (
                   <div className="flex min-w-0 flex-1 items-center gap-2 px-1.5">
-                    <LockedProviderIcon className="size-4 shrink-0" />
-                    <span className="truncate text-sm font-medium">{lockedHeaderLabel}</span>
+                    <ProviderGlyph
+                      instanceId={lockedHeaderEntry.instanceId}
+                      driverKind={lockedHeaderEntry.driverKind}
+                      className="size-4 shrink-0"
+                    />
+                    <span className="truncate text-sm font-medium">
+                      {lockedHeaderEntry.displayName}
+                    </span>
                   </div>
                 ) : (
                   <div className="min-w-0 flex-1" />
@@ -949,13 +957,14 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
                   ? (() => {
                       let modelIndex = -1;
                       return searchGroups.map((group) => {
-                        const GroupIcon = PROVIDER_ICON_BY_PROVIDER[group.driverKind] ?? null;
                         return (
                           <Fragment key={group.instanceId}>
                             <div className="flex items-center gap-1.5 px-2.5 pb-1 pt-2 text-[11px] font-medium text-muted-foreground">
-                              {GroupIcon ? (
-                                <GroupIcon className="size-3 shrink-0 opacity-70" />
-                              ) : null}
+                              <ProviderGlyph
+                                instanceId={group.instanceId}
+                                driverKind={group.driverKind}
+                                className="size-3 shrink-0 opacity-70"
+                              />
                               {group.accentColor ? (
                                 <span
                                   aria-hidden

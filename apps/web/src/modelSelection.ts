@@ -1,4 +1,5 @@
 import {
+  ACP_REGISTRY_DRIVER_KIND,
   DEFAULT_GIT_TEXT_GENERATION_MODEL,
   DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_PROVIDER,
   DEFAULT_MODEL_BY_PROVIDER,
@@ -291,10 +292,23 @@ export function getCustomModelOptionsByInstance(
   return out;
 }
 
+/**
+ * The providers a writing model (thread titles, commit messages) can come
+ * from. A community agent is never one: the server won't write with an
+ * agent Threadlines hasn't tested, so it is neither offered nor fallen
+ * back to.
+ */
+export function writingModelProviders(
+  providers: ReadonlyArray<ServerProvider>,
+): ReadonlyArray<ServerProvider> {
+  return providers.filter((provider) => provider.driver !== ACP_REGISTRY_DRIVER_KIND);
+}
+
 export function resolveAppModelSelectionState(
   settings: UnifiedSettings,
-  providers: ReadonlyArray<ServerProvider>,
+  allProviders: ReadonlyArray<ServerProvider>,
 ): ModelSelection {
+  const providers = writingModelProviders(allProviders);
   const selection = settings.textGenerationModelSelection ?? {
     instanceId: DEFAULT_TEXT_GENERATION_INSTANCE_ID,
     model: DEFAULT_GIT_TEXT_GENERATION_MODEL,
@@ -384,7 +398,7 @@ function resolveBackupTextGenerationModelSelection(input: {
   readonly primarySelection: ModelSelection;
   readonly backupSelection: ModelSelection | null;
 }): ModelSelection | null {
-  const entries = deriveProviderInstanceEntries(input.providers);
+  const entries = deriveProviderInstanceEntries(writingModelProviders(input.providers));
   const primaryEntry = entries.find(
     (entry) => entry.instanceId === input.primarySelection.instanceId,
   );

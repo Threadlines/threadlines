@@ -67,6 +67,15 @@ export const ProviderAuthStopInput = Schema.Struct({
 });
 export type ProviderAuthStopInput = Schema.Codec.Encoded<typeof ProviderAuthStopInput>;
 
+/** The user's answer to a `pageRequest`: opened the page (`accept`), or cancelled. */
+export const ProviderAuthRespondInput = Schema.Struct({
+  instanceId: ProviderInstanceId,
+  flowId: Schema.String,
+  requestId: Schema.String,
+  accept: Schema.Boolean,
+});
+export type ProviderAuthRespondInput = Schema.Codec.Encoded<typeof ProviderAuthRespondInput>;
+
 export const ProviderAuthSubscribeInput = Schema.Struct({
   instanceId: ProviderInstanceId,
 });
@@ -119,10 +128,29 @@ const ProviderAuthStatusEvent = Schema.Struct({
   detail: Schema.NullOr(Schema.String),
 });
 
+/**
+ * The agent asked for a web page to be opened to finish signing in. Nothing
+ * opens by itself: the panel shows the address, and the user's click is
+ * answered with `providerAuth.respond`. A second event with `settled: true`
+ * tells every panel the request was answered or withdrawn.
+ */
+const ProviderAuthPageRequestEvent = Schema.Struct({
+  ...ProviderAuthEventBase.fields,
+  type: Schema.Literal("pageRequest"),
+  flowId: Schema.String,
+  requestId: Schema.String,
+  /** Always http or https. */
+  url: Schema.String.check(Schema.isMaxLength(4096)),
+  /** What the agent says the page is for. */
+  message: Schema.NullOr(Schema.String.check(Schema.isMaxLength(1024))),
+  settled: Schema.Boolean,
+});
+
 export const ProviderAuthEvent = Schema.Union([
   ProviderAuthCommandEvent,
   ProviderAuthOutputEvent,
   ProviderAuthStatusEvent,
+  ProviderAuthPageRequestEvent,
 ]);
 export type ProviderAuthEvent = typeof ProviderAuthEvent.Type;
 

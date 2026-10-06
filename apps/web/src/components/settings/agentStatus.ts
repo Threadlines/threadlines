@@ -17,7 +17,7 @@ import type {
   ServerProvider,
   ServerProviderDetection,
 } from "@threadlines/contracts";
-import { providerCanSignIn } from "@threadlines/shared/providerAuth";
+import { serverProviderCanSignIn } from "@threadlines/shared/providerAuth";
 
 import { getModelPickerProviderAvailability } from "../chat/modelPickerEmptyState";
 import { deriveProviderInstallView, type ProviderInstallView } from "./providerInstall";
@@ -66,7 +66,13 @@ export function deriveAgentStatus(input: {
     return { kind: "notInstalled", install };
   }
   if (getModelPickerProviderAvailability(snapshot) === "notAuthenticated") {
-    return { kind: "needsSignIn", canSignIn: providerCanSignIn(input.driverKind) };
+    return {
+      kind: "needsSignIn",
+      canSignIn: serverProviderCanSignIn({
+        driver: input.driverKind,
+        community: snapshot.community,
+      }),
+    };
   }
   if (snapshot.status === "error") {
     const summary = getProviderSummary(snapshot);

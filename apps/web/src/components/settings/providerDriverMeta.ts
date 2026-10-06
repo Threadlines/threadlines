@@ -1,4 +1,6 @@
 import {
+  ACP_REGISTRY_DRIVER_KIND,
+  AcpRegistrySettings,
   ClaudeSettings,
   CodexSettings,
   CursorSettings,
@@ -8,6 +10,7 @@ import {
   ProviderDriverKind,
 } from "@threadlines/contracts";
 import type * as Schema from "effect/Schema";
+import { BotIcon } from "lucide-react";
 import {
   AntigravityIcon,
   ClaudeAI,
@@ -93,6 +96,20 @@ export const PROVIDER_CLIENT_DEFINITION_BY_VALUE: Partial<
   PROVIDER_CLIENT_DEFINITIONS.map((definition) => [definition.value, definition]),
 );
 
+/**
+ * Community agents (driver `acpRegistry`). Not in `DRIVER_OPTIONS`: nobody
+ * picks "a community agent" from a list of kinds, each one is added from the
+ * community list and shows under its own name and icon. Its settings are all
+ * owned by other controls, so the generic form has nothing to draw.
+ */
+const COMMUNITY_AGENT_DEFINITION: ProviderClientDefinition = {
+  value: ACP_REGISTRY_DRIVER_KIND,
+  label: "Community agent",
+  icon: BotIcon,
+  settingsSchema: AcpRegistrySettings,
+  needs: "",
+};
+
 export const DRIVER_OPTIONS = PROVIDER_CLIENT_DEFINITIONS;
 export const DRIVER_OPTION_BY_VALUE = PROVIDER_CLIENT_DEFINITION_BY_VALUE;
 export type DriverOption = ProviderClientDefinition;
@@ -104,5 +121,6 @@ export type DriverOption = ProviderClientDefinition;
  */
 export function getDriverOption(driver: ProviderDriverKind | undefined): DriverOption | undefined {
   if (driver === undefined) return undefined;
+  if (driver === ACP_REGISTRY_DRIVER_KIND) return COMMUNITY_AGENT_DEFINITION;
   return PROVIDER_CLIENT_DEFINITION_BY_VALUE[driver];
 }

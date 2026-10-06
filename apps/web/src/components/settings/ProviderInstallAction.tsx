@@ -40,10 +40,17 @@ export function startProviderInstall(input: {
   readonly instanceId: ProviderInstanceId;
   readonly driverKind: ProviderDriverKind;
   readonly displayName: string | undefined;
+  /** A community agent: the version the user confirmed (`community.confirmedRecipeDigest`). */
+  readonly recipeDigest?: string | null | undefined;
 }): Promise<void> {
-  const { instanceId, driverKind, displayName } = input;
+  const { instanceId, driverKind, displayName, recipeDigest } = input;
   return ensureLocalApi()
-    .server.updateProvider({ provider: driverKind, instanceId, action: "install" })
+    .server.updateProvider({
+      provider: driverKind,
+      instanceId,
+      action: "install",
+      ...(recipeDigest ? { recipeDigest } : {}),
+    })
     .then(
       () => undefined,
       (error: unknown) => {
@@ -65,8 +72,9 @@ function useProviderInstallStart(input: {
   readonly instanceId: ProviderInstanceId;
   readonly driverKind: ProviderDriverKind;
   readonly displayName: string | undefined;
+  readonly recipeDigest: string | null | undefined;
 }): { readonly isStarting: boolean; readonly start: () => void } {
-  const { instanceId, driverKind, displayName } = input;
+  const { instanceId, driverKind, displayName, recipeDigest } = input;
   const [isStarting, setIsStarting] = useState(false);
 
   const start = useCallback(() => {
@@ -74,10 +82,10 @@ function useProviderInstallStart(input: {
       return;
     }
     setIsStarting(true);
-    void startProviderInstall({ instanceId, driverKind, displayName }).finally(() => {
+    void startProviderInstall({ instanceId, driverKind, displayName, recipeDigest }).finally(() => {
       setIsStarting(false);
     });
-  }, [displayName, driverKind, instanceId, isStarting]);
+  }, [displayName, driverKind, instanceId, isStarting, recipeDigest]);
 
   return { isStarting, start };
 }
@@ -86,6 +94,7 @@ export function ProviderInstallAction({
   instanceId,
   driverKind,
   displayName,
+  recipeDigest,
   view,
   statusClassName,
   buttonVariant,
@@ -93,6 +102,8 @@ export function ProviderInstallAction({
   readonly instanceId: ProviderInstanceId;
   readonly driverKind: ProviderDriverKind;
   readonly displayName?: string | undefined;
+  /** A community agent: the version the user confirmed. */
+  readonly recipeDigest?: string | null | undefined;
   readonly view: ProviderInstallView;
   readonly statusClassName?: string | undefined;
   readonly buttonVariant?: "default" | "outline" | undefined;
@@ -101,6 +112,7 @@ export function ProviderInstallAction({
     instanceId,
     driverKind,
     displayName,
+    recipeDigest,
   });
   const name = displayName ?? PROVIDER_DISPLAY_NAMES[driverKind] ?? String(driverKind);
   const statusText = providerInstallStatusText({ view, isStarting });

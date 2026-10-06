@@ -229,6 +229,31 @@ describe("deriveProviderSettingsRows", () => {
     ]);
   });
 
+  it("lists the instances of a driver that has no row of its own", () => {
+    // Community agents: one instance per agent, and no "community agent" row.
+    const community = ProviderDriverKind.make("acpRegistry");
+    const goose = ProviderInstanceId.make("acp_goose");
+    const rows = deriveProviderSettingsRows({
+      settings: {
+        ...DEFAULT_SERVER_SETTINGS,
+        providerInstances: {
+          [goose]: {
+            driver: community,
+            displayName: "goose",
+            enabled: true,
+            config: { agentId: "goose" },
+          },
+        },
+      },
+      maintainedDriverKinds: [ProviderDriverKind.make("codex"), community],
+    });
+
+    expect(rows.map((row) => [row.instanceId, row.isDefault])).toEqual([
+      [ProviderInstanceId.make("codex"), true],
+      [goose, false],
+    ]);
+  });
+
   it("offers reset for real setting changes, not for the on/off switch alone", () => {
     const fx = ProviderDriverKind.make("fx");
     const fxId = ProviderInstanceId.make("fx");

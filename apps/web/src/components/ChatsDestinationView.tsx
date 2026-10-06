@@ -17,7 +17,7 @@ import {
 import { buildThreadRouteParams } from "../threadRoutes";
 import { formatRelativeTimeLabel } from "../timestampFormat";
 import { PageTitlebar } from "./PageTitlebar";
-import { PROVIDER_ICON_BY_PROVIDER } from "./chat/providerIconUtils";
+import { ProviderGlyph } from "./chat/ProviderInstanceIcon";
 import { PROVIDER_OPTIONS } from "../session-logic";
 import { resolveThreadStatusPill } from "./Sidebar.logic";
 import { ThreadHoverCard, ThreadHoverCardProvider } from "./sidebar/ThreadHoverCard";
@@ -185,7 +185,6 @@ export function ChatsDestinationView() {
 
 function ChatRow({ thread, onOpen }: { thread: SidebarThreadSummary; onOpen: () => void }) {
   const provider = thread.session?.provider ?? null;
-  const ProviderIcon = provider ? (PROVIDER_ICON_BY_PROVIDER[provider] ?? null) : null;
   // The listing carries no message text and this page adds no fetching of its
   // own, so the provider is what the second line can honestly say.
   const providerLabel = provider
@@ -212,8 +211,12 @@ function ChatRow({ thread, onOpen }: { thread: SidebarThreadSummary; onOpen: () 
           <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground/55">
             {providerLabel}
           </span>
-          {ProviderIcon ? (
-            <ProviderIcon aria-hidden className="size-3 shrink-0 text-muted-foreground/45" />
+          {provider ? (
+            <ProviderGlyph
+              instanceId={thread.session?.providerInstanceId}
+              driverKind={provider}
+              className="size-3 shrink-0 text-muted-foreground/45"
+            />
           ) : null}
         </span>
       </button>

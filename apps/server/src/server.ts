@@ -62,6 +62,7 @@ import * as McpRoomServer from "./mcp/McpRoomServer.ts";
 import { DictationLive } from "./dictation/DictationService.ts";
 import * as PreviewAutomationBroker from "./preview/PreviewAutomationBroker.ts";
 import { ProviderAccountsLive } from "./provider/accounts/ProviderAccounts.ts";
+import { AcpRegistryAgentsLive } from "./provider/acpRegistry/AcpRegistryAgents.ts";
 import { ProviderAuthSessionsLive } from "./provider/auth/ProviderAuthSessions.ts";
 import { ProviderRegistryLive } from "./provider/Layers/ProviderRegistry.ts";
 import { ServerSettingsLive } from "./serverSettings.ts";
@@ -388,7 +389,15 @@ const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
   // never-persisted sessions rather than going through TerminalManager.
   // One-click extra accounts sit on top: they create and remove instances
   // and their folders, and stop a removed account's sign-in run.
-  Layer.provideMerge(ProviderAccountsLive.pipe(Layer.provideMerge(ProviderAuthSessionsLive))),
+  // Community agents sit there too: the list, add, update and remove. Their
+  // installs go through the maintenance runner the routes use (the same
+  // layer, so it is built once).
+  Layer.provideMerge(
+    Layer.mergeAll(
+      ProviderAccountsLive,
+      AcpRegistryAgentsLive.pipe(Layer.provide(ProviderMaintenanceRunner.layer)),
+    ).pipe(Layer.provideMerge(ProviderAuthSessionsLive)),
+  ),
   Layer.provideMerge(TerminalLayerLive),
   // The browser side of the agent's tools. Holds no resources of its own --
   // it is a rendezvous between a provider turn and whichever client is showing

@@ -178,6 +178,13 @@ import type {
 } from "./terminal.ts";
 import type { ServerRemoveKeybindingInput, ServerUpsertKeybindingInput } from "./server.ts";
 import type {
+  AcpRegistryAddInput,
+  AcpRegistryAddResult,
+  AcpRegistryCatalog,
+  AcpRegistryListInput,
+  AcpRegistryRemoveInput,
+} from "./acpRegistry.ts";
+import type {
   ProviderAccountAddInput,
   ProviderAccountAddResult,
   ProviderAccountRemoveInput,
@@ -1264,6 +1271,12 @@ export interface LocalApi {
     addProviderAccount: (input: ProviderAccountAddInput) => Promise<ProviderAccountAddResult>;
     /** Stops, signs out and removes an extra account. */
     removeProviderAccount: (input: ProviderAccountRemoveInput) => Promise<void>;
+    /** The community agents that could be added, as the server would install them. */
+    listAcpRegistryAgents: (input: AcpRegistryListInput) => Promise<AcpRegistryCatalog>;
+    /** Adds a community agent and starts its install on the server. */
+    addAcpRegistryAgent: (input: AcpRegistryAddInput) => Promise<AcpRegistryAddResult>;
+    /** Stops a community agent, deletes its files and removes its row. */
+    removeAcpRegistryAgent: (input: AcpRegistryRemoveInput) => Promise<void>;
     resolveProviderUpdateBlockers: (
       input: ServerProviderUpdateInput,
     ) => Promise<ServerProviderUpdateBlockerResolutionResult>;

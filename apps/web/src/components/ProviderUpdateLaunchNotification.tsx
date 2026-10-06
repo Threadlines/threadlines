@@ -1,7 +1,11 @@
 import { useNavigate } from "@tanstack/react-router";
 import { DownloadIcon } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, type ReactNode } from "react";
-import { type ProviderDriverKind, type ProviderInstanceId } from "@threadlines/contracts";
+import {
+  ACP_REGISTRY_DRIVER_KIND,
+  type ProviderDriverKind,
+  type ProviderInstanceId,
+} from "@threadlines/contracts";
 
 import { ensureLocalApi } from "../localApi";
 import { useDismissedProviderUpdateNotificationKeys } from "../providerUpdateDismissal";
@@ -168,7 +172,15 @@ export function ProviderUpdateLaunchNotification() {
   // Setup owns the screen while it is pending or open; this prompt waits.
   const heldForSetup = useHoldLaunchPromptsForSetup();
 
-  const updateProviders = useMemo(() => collectProviderUpdateCandidates(providers), [providers]);
+  // Community agents are left out of this prompt: a version Threadlines
+  // hasn't reviewed is offered on the agent's own row, where that is said.
+  const updateProviders = useMemo(
+    () =>
+      collectProviderUpdateCandidates(providers).filter(
+        (provider) => provider.driver !== ACP_REGISTRY_DRIVER_KIND,
+      ),
+    [providers],
+  );
   const notificationKey = useMemo(
     () => providerUpdateNotificationKey(updateProviders),
     [updateProviders],

@@ -11,7 +11,6 @@
  */
 import {
   PROVIDER_DISPLAY_NAMES,
-  type ProviderDriverKind,
   type ProviderInstanceId,
   type ServerProvider,
 } from "@threadlines/contracts";
@@ -24,6 +23,7 @@ import {
   hasOneClickUpdateProviderCandidate,
   isProviderUpdateActive,
   type ProviderUpdateCandidate,
+  providerUpdateGroupKey,
 } from "../ProviderUpdateLaunchNotification.logic";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 
@@ -57,9 +57,9 @@ export interface ProviderUpdateRunner {
 export function useProviderUpdateRunner(
   providers: ReadonlyArray<ServerProvider>,
 ): ProviderUpdateRunner {
-  const [startingDrivers, setStartingDrivers] = useState<ReadonlySet<ProviderDriverKind>>(
-    () => new Set(),
-  );
+  // By update group: a driver's instances share one program and one update;
+  // a community agent is its own.
+  const [startingGroups, setStartingGroups] = useState<ReadonlySet<string>>(() => new Set());
   const [resolvingInstances, setResolvingInstances] = useState<ReadonlySet<ProviderInstanceId>>(
     () => new Set(),
   );
@@ -76,23 +76,28 @@ export function useProviderUpdateRunner(
   );
 
   const runUpdate = useCallback(async (candidate: ProviderUpdateCandidate) => {
+    const group = providerUpdateGroupKey(candidate);
     let started = false;
-    setStartingDrivers((previous) => {
-      if (previous.has(candidate.driver)) return previous;
+    setStartingGroups((previous) => {
+      if (previous.has(group)) return previous;
       started = true;
-      return withMember(previous, candidate.driver);
+      return withMember(previous, group);
     });
     if (!started) return;
+    // A community agent is updated to the listing the user was shown, named
+    // by its digest; the server refuses if the registry has moved on.
+    const recipeDigest = candidate.community?.updateCandidate?.recipeDigest;
     try {
       await ensureLocalApi().server.updateProvider({
         provider: candidate.driver,
         instanceId: candidate.instanceId,
+        ...(recipeDigest ? { recipeDigest } : {}),
       });
     } catch (error) {
       toastManager.add(
         stackedThreadToast({
           type: "error",
-          title: `Could not update ${PROVIDER_DISPLAY_NAMES[candidate.driver] ?? candidate.driver}`,
+          title: `Could not update ${candidate.community ? (candidate.displayName ?? "the agent") : (PROVIDER_DISPLAY_NAMES[candidate.driver] ?? candidate.driver)}`,
           description:
             error instanceof Error
               ? error.message
@@ -100,7 +105,7 @@ export function useProviderUpdateRunner(
         }),
       );
     } finally {
-      setStartingDrivers((previous) => withoutMember(previous, candidate.driver));
+      setStartingGroups((previous) => withoutMember(previous, group));
     }
   }, []);
 
@@ -155,10 +160,12 @@ export function useProviderUpdateRunner(
         };
       }
       const oneClick = hasOneClickUpdateProviderCandidate(candidate, providers);
+      const group = providerUpdateGroupKey(candidate);
       const isUpdating =
-        startingDrivers.has(candidate.driver) ||
+        startingGroups.has(group) ||
         providers.some(
-          (provider) => provider.driver === candidate.driver && isProviderUpdateActive(provider),
+          (provider) =>
+            providerUpdateGroupKey(provider) === group && isProviderUpdateActive(provider),
         );
       const isResolvingBlockers = resolvingInstances.has(candidate.instanceId);
       return {
@@ -170,7 +177,7 @@ export function useProviderUpdateRunner(
           ? () => {
               if (
                 !canOneClickUpdateProviderCandidate(candidate, providers) ||
-                startingDrivers.has(candidate.driver)
+                startingGroups.has(group)
               ) {
                 return;
               }
@@ -191,7 +198,7 @@ export function useProviderUpdateRunner(
       resolveBlockers,
       resolvingInstances,
       runUpdate,
-      startingDrivers,
+      startingGroups,
     ],
   );
 

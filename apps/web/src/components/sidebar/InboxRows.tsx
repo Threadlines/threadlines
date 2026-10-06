@@ -29,7 +29,8 @@ import { selectThreadTerminalState, useTerminalStateStore } from "../../terminal
 import { useThreadSelectionStore } from "../../threadSelectionStore";
 import { useRelativeTimeTick } from "../../hooks/useRelativeTimeTick";
 import { formatRelativeTimeLabel, formatWorkingDurationLabel } from "../../timestampFormat";
-import { getPickerModelName, PROVIDER_ICON_BY_PROVIDER } from "../chat/providerIconUtils";
+import { getPickerModelName } from "../chat/providerIconUtils";
+import { ProviderGlyph } from "../chat/ProviderInstanceIcon";
 import { isRoom, roomAgentDisplayName } from "../../rooms";
 import { useServerProviders } from "../../rpc/serverState";
 import { prStatusIndicator, terminalStatusFromRunningIds } from "../ThreadStatusIndicators";
@@ -337,12 +338,17 @@ function RoomSlotAgentName({
 }
 
 export function ThreadProviderGlyph({ thread }: { thread: SidebarThreadSummary }) {
-  const provider = thread.session?.provider;
-  const Icon = provider ? PROVIDER_ICON_BY_PROVIDER[provider] : undefined;
-  if (!Icon) {
+  const session = thread.session;
+  if (!session) {
     return null;
   }
-  return <Icon aria-hidden="true" className="size-3 shrink-0 text-muted-foreground/45" />;
+  return (
+    <ProviderGlyph
+      instanceId={session.providerInstanceId}
+      driverKind={session.provider}
+      className="size-3 shrink-0 text-muted-foreground/45"
+    />
+  );
 }
 
 /**

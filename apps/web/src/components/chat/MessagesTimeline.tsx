@@ -197,6 +197,7 @@ import {
 import { RoomReviewTag } from "./RoomReviewTag";
 import { type SideAnswerView } from "./sideAnswers";
 import { detailEntranceRef, rowEntranceRef } from "./timelineEntrance";
+import { providerInstanceShowsBadge } from "../../providerInstances";
 
 // ---------------------------------------------------------------------------
 // Context — shared state consumed by every row component via Context.
@@ -5413,12 +5414,13 @@ function AgentAuthorLine({
     <div className="relative mb-1 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs">
       {label.entry ? (
         <ProviderInstanceIcon
+          instanceId={label.entry.instanceId}
           driverKind={label.entry.driverKind}
           displayName={label.entry.displayName}
           accentColor={label.entry.accentColor}
           // An extra account wears its colored letter, so a reply says which
           // account wrote it even when two accounts run the same model.
-          showBadge={!label.entry.isDefault}
+          showBadge={providerInstanceShowsBadge(label.entry)}
           badgeClassName="right-[-0.3rem] bottom-[-0.2rem] h-2.5 min-w-2.5 px-0 text-[6px] shadow-none"
           // Centered on the line, 24px left of the text (the lane's 20px and
           // the section's 4px), 1px down to center on the name.

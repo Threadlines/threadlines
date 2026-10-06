@@ -74,9 +74,11 @@ describe("filterMaintainedProviderInstanceEntries", () => {
   });
 
   it("agrees with the settings client definitions about which drivers are maintained", () => {
-    expect([...MAINTAINED_PROVIDER_DRIVER_KINDS]).toEqual(
-      DRIVER_OPTIONS.map((definition) => definition.value),
-    );
+    // Community agents are maintained too, with no tile to pick them from.
+    expect([...MAINTAINED_PROVIDER_DRIVER_KINDS]).toEqual([
+      ...DRIVER_OPTIONS.map((definition) => definition.value),
+      ProviderDriverKind.make("acpRegistry"),
+    ]);
   });
 });
 

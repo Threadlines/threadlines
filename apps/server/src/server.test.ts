@@ -75,6 +75,10 @@ import {
   ProviderAccounts,
   type ProviderAccountsShape,
 } from "./provider/accounts/ProviderAccounts.ts";
+import {
+  AcpRegistryAgents,
+  type AcpRegistryAgentsShape,
+} from "./provider/acpRegistry/AcpRegistryAgents.ts";
 import { DictationLive } from "./dictation/DictationService.ts";
 import { answerRequestsWhileStarting, makeRoutesLayer } from "./server.ts";
 import { RelayHost, type RelayHostShape } from "./relay/RelayHost.ts";
@@ -459,6 +463,7 @@ const buildAppUnderTest = (options?: {
     terminalManager?: Partial<TerminalManagerShape>;
     providerAuthSessions?: Partial<ProviderAuthSessionsShape>;
     providerAccounts?: Partial<ProviderAccountsShape>;
+    acpRegistryAgents?: Partial<AcpRegistryAgentsShape>;
     orchestrationEngine?: Partial<OrchestrationEngineShape>;
     projectionSnapshotQuery?: Partial<ProjectionSnapshotQueryShape>;
     threadSearch?: Partial<ThreadSearchShape>;
@@ -855,6 +860,9 @@ const buildAppUnderTest = (options?: {
           }),
           Layer.mock(ProviderAccounts)({
             ...options?.layers?.providerAccounts,
+          }),
+          Layer.mock(AcpRegistryAgents)({
+            ...options?.layers?.acpRegistryAgents,
           }),
         ),
       ),

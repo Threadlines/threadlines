@@ -147,6 +147,14 @@ export interface ManagedRuntimeStore<Marker extends ManagedVersionMarker> {
   /** The active version, if it is complete on disk. Never fails. */
   readonly installed: Effect.Effect<ManagedVersion<Marker> | undefined>;
   /**
+   * What the folder of a version says it holds, whether or not its files are
+   * still intact: its marker, `"unreadable"` when the folder is there without
+   * a marker that decodes, undefined when there is no such folder. For a
+   * caller that keeps its own record of installs and has to tell "never
+   * installed" from "installed, and damaged since". Never fails.
+   */
+  readonly describe: (releaseId: string) => Effect.Effect<Marker | "unreadable" | undefined>;
+  /**
    * Installs and activates a version, then prunes. A complete copy already
    * on disk is validated again and reused. Interruptible until the final
    * activation.
@@ -449,6 +457,18 @@ export function makeManagedRuntimeStore<Marker extends ManagedVersionMarker>(
     if (!active) return undefined;
     return yield* readComplete(releaseDirOf(active.releaseId), active.releaseId);
   });
+
+  const describe: ManagedRuntimeStore<Marker>["describe"] = (releaseId) =>
+    Effect.promise(async () => {
+      if (!MANAGED_RELEASE_ID_PATTERN.test(releaseId)) return undefined;
+      const versionDir = releaseDirOf(releaseId);
+      const raw = await readFileIfExists(NodePath.join(versionDir, MARKER_FILE)).catch(
+        () => undefined,
+      );
+      const marker = raw === undefined ? undefined : options.marker.decode(raw);
+      if (marker?.releaseId === releaseId) return marker;
+      return existsSync(versionDir) ? ("unreadable" as const) : undefined;
+    });
 
   /** Points `active.json` at a release: written beside it, then renamed over it. */
   const writeActive = (releaseId: string, version: string) =>
@@ -774,5 +794,5 @@ export function makeManagedRuntimeStore<Marker extends ManagedVersionMarker>(
     }),
   );
 
-  return { installed, install, acquire, prune, remove };
+  return { installed, describe, install, acquire, prune, remove };
 }

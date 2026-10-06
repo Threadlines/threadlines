@@ -136,6 +136,10 @@ function createBrowserLocalApi(resolveRpcClient?: () => WsRpcClient | null): Loc
       updateProvider: (input) => withServer((server) => server.updateProvider(input)),
       addProviderAccount: (input) => withServer((server) => server.addProviderAccount(input)),
       removeProviderAccount: (input) => withServer((server) => server.removeProviderAccount(input)),
+      listAcpRegistryAgents: (input) => withServer((server) => server.listAcpRegistryAgents(input)),
+      addAcpRegistryAgent: (input) => withServer((server) => server.addAcpRegistryAgent(input)),
+      removeAcpRegistryAgent: (input) =>
+        withServer((server) => server.removeAcpRegistryAgent(input)),
       resolveProviderUpdateBlockers: (input) =>
         withServer((server) => server.resolveProviderUpdateBlockers(input)),
       upsertKeybinding: (input) => withServer((server) => server.upsertKeybinding(input)),

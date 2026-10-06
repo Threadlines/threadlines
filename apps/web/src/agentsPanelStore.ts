@@ -10,7 +10,7 @@
  */
 import { create } from "zustand";
 
-import type { EnvironmentId, ThreadId } from "@threadlines/contracts";
+import type { EnvironmentId, ProviderInstanceId, ThreadId } from "@threadlines/contracts";
 
 import type {
   SubagentProgressItem,
@@ -30,6 +30,8 @@ export interface AgentsPanelSource {
    *  the live items so the panel and the conversation's receipts resolve the
    *  same set of agents. */
   history: ReadonlyArray<ThreadSubagentHistoryEntry>;
+  /** The instance the thread runs on; a spawned agent's row carries its glyph. */
+  providerInstanceId: ProviderInstanceId | null;
   /** Provider driver label, e.g. `codex`; drives the trunk hue and run chips. */
   providerLabel: string | null;
   /** True from the moment a turn is dispatched until it settles. Lets the panel

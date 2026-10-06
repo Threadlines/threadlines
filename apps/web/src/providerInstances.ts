@@ -13,6 +13,7 @@
  * @module providerInstances
  */
 import {
+  ACP_REGISTRY_DRIVER_KIND,
   defaultInstanceIdForDriver,
   PROVIDER_DISPLAY_NAMES,
   ProviderDriverKind,
@@ -25,9 +26,10 @@ import {
 import { formatProviderDriverKindLabel } from "./providerModels";
 
 /**
- * Drivers the client renders in pickers and settings rows. Must match the
- * client definitions in `components/settings/providerDriverMeta.ts`
- * (`DRIVER_OPTIONS`) — a test keeps the two lists in sync.
+ * Drivers the client renders in pickers and settings rows: the client
+ * definitions in `components/settings/providerDriverMeta.ts`
+ * (`DRIVER_OPTIONS`), then community agents, which have no tile of their own
+ * (they are added from the community list). A test keeps the lists in sync.
  */
 export const MAINTAINED_PROVIDER_DRIVER_KINDS = [
   ProviderDriverKind.make("codex"),
@@ -36,6 +38,7 @@ export const MAINTAINED_PROVIDER_DRIVER_KINDS = [
   ProviderDriverKind.make("cursor"),
   ProviderDriverKind.make("opencode"),
   ProviderDriverKind.make("antigravity"),
+  ACP_REGISTRY_DRIVER_KIND,
 ] as const;
 
 const MAINTAINED_PROVIDER_DRIVER_KIND_SET = new Set<string>(
@@ -110,10 +113,21 @@ export function formatProviderInstanceName(input: {
   readonly agentName: string;
   readonly displayName: string | undefined;
   readonly isDefault: boolean;
+  /**
+   * The instance is an agent of its own rather than an account of
+   * `agentName` (a community agent): its name stands alone.
+   */
+  readonly ownsName?: boolean | undefined;
 }): string {
   const name = input.displayName?.trim();
   if (!name) return input.agentName;
-  if (input.isDefault || name.toLowerCase().includes(input.agentName.toLowerCase())) return name;
+  if (
+    input.isDefault ||
+    input.ownsName === true ||
+    name.toLowerCase().includes(input.agentName.toLowerCase())
+  ) {
+    return name;
+  }
   return `${input.agentName} · ${name}`;
 }
 
@@ -161,6 +175,7 @@ function resolveInstanceDisplayName(
       agentName: kindLabel,
       displayName: trimmedSnapshotName,
       isDefault,
+      ownsName: driverKind === ACP_REGISTRY_DRIVER_KIND,
     });
   }
   if (!isDefault) {
@@ -316,4 +331,18 @@ export function resolveProviderDriverKindForInstanceSelection(
     return matchedEntry.driverKind;
   }
   return undefined;
+}
+
+/**
+ * Whether an instance's icon carries the small letter badge that tells it
+ * from the other instances of its driver ("Claude · Work" beside "Claude").
+ * A community agent has an icon of its own, so it gets one only for a color
+ * the user picked.
+ */
+export function providerInstanceShowsBadge(
+  entry: Pick<ProviderInstanceEntry, "isDefault" | "driverKind" | "accentColor">,
+): boolean {
+  return entry.driverKind === ACP_REGISTRY_DRIVER_KIND
+    ? Boolean(entry.accentColor)
+    : !entry.isDefault;
 }

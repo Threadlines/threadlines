@@ -31,6 +31,7 @@ import {
 import { getPrimaryEnvironmentConnection } from "../../environments/runtime";
 import { randomUUID } from "../../lib/utils";
 import { ensureLocalApi } from "../../localApi";
+import { useIsCommunityAgent } from "./communityAgents";
 import {
   applyProviderAuthEvent,
   initialProviderConnectFlowState,
@@ -82,6 +83,11 @@ export interface ProviderConnectFlowController {
   readonly state: ProviderConnectFlowState;
   /** Finishes a browser sign-in with the address the browser ended on. */
   readonly submitRedirect: (url: string) => Promise<void>;
+  /**
+   * Answers the page the agent asked to have opened (`state.pageRequest`):
+   * `true` once the user chose to open it, `false` to refuse.
+   */
+  readonly answerPageRequest: (accept: boolean) => Promise<void>;
   /** True between the start click and the server's first status event. */
   readonly isStarting: boolean;
   /** True while the server reports the flow starting or running. */
@@ -204,13 +210,18 @@ export function useProviderConnectFlow(input: {
 
   const isActive = isProviderConnectFlowActive(state.status);
 
+  // A community agent's links are never opened for the user: Threadlines
+  // hasn't tested the agent, and the address is the agent's own.
+  const opensLinksItself = !useIsCommunityAgent(instanceId);
+
   // A browser sign-in has no CLI to open the page and no terminal to show it
   // in: whichever surface the user started it from, the page opens here.
   useEffect(() => {
+    if (!opensLinksItself) return;
     if (!isActive || state.surface !== "browser" || state.signInUrl === null) return;
     if (state.flowId === null || state.flowId !== ownedFlowIdRef.current) return;
     openProviderSignInUrlOnce(state.signInUrl);
-  }, [isActive, state.flowId, state.signInUrl, state.surface]);
+  }, [isActive, opensLinksItself, state.flowId, state.signInUrl, state.surface]);
 
   useEffect(() => {
     if (!isActive) {
@@ -305,6 +316,18 @@ export function useProviderConnectFlow(input: {
     [flowId, instanceId],
   );
 
+  const pageRequestId = state.pageRequest?.requestId ?? null;
+  const answerPageRequest = useCallback(
+    async (accept: boolean) => {
+      const client = readProviderAuthClient();
+      if (instanceId === null || client === null || flowId === null || pageRequestId === null) {
+        return;
+      }
+      await client.respond({ instanceId, flowId, requestId: pageRequestId, accept });
+    },
+    [flowId, instanceId, pageRequestId],
+  );
+
   const needsTerminal = shouldAutoExpandTerminal({ status: state.status, runningForMs });
 
   // Stable identity: consumers feed this straight into notice `useMemo`s that
@@ -323,8 +346,10 @@ export function useProviderConnectFlow(input: {
       reset,
       stopAnyRun,
       submitRedirect,
+      answerPageRequest,
     }),
     [
+      answerPageRequest,
       hasRun,
       isActive,
       isStarting,

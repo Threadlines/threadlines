@@ -78,7 +78,8 @@ export function ProviderUpdatePopover({
   if (!versionAdvisory) {
     return null;
   }
-  const updateCommand = versionAdvisory.updateCommand;
+  // A community agent is updated by Threadlines alone: it has no command to copy.
+  const updateCommand = liveProvider?.community ? null : versionAdvisory.updateCommand;
   const updateState = liveProvider?.updateState ?? null;
   const updateMessage = updateState?.message?.trim() ?? "";
   const updateOutput = updateState?.output?.trim() ?? "";
@@ -110,6 +111,12 @@ export function ProviderUpdatePopover({
             >
               {versionAdvisory.detail}
             </p>
+            {liveProvider?.community ? (
+              // A community agent: the new version is as unreviewed as the old.
+              <p className="text-xs leading-snug text-muted-foreground">
+                Threadlines hasn't reviewed this version.
+              </p>
+            ) : null}
           </div>
           {updateMessage ? (
             <div

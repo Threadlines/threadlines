@@ -32,6 +32,7 @@ import {
   scopeProjectRef,
   scopeThreadRef,
 } from "@threadlines/client-runtime";
+import { isAcpRegistryInstanceId } from "@threadlines/shared/acpRegistry";
 import { createModelSelection, normalizeModelSlug } from "@threadlines/shared/model";
 import { isProviderAuthErrorMessage } from "@threadlines/shared/providerAuth";
 import { normalizeTerminalActivityCommand } from "@threadlines/shared/terminalCommandTracker";
@@ -3638,6 +3639,7 @@ export default function ChatView(props: ChatViewProps) {
       subagents: subagentProgress?.items ?? EMPTY_SUBAGENT_ITEMS,
       subagentRuns: promotedSubagentRuns,
       history: subagentHistory,
+      providerInstanceId: activeProviderInstanceId,
       providerLabel: activeProviderDriver,
       turnInFlight: activeTurnInProgress,
       hydrated: threadDetailHydrated,
@@ -3646,6 +3648,7 @@ export default function ChatView(props: ChatViewProps) {
     });
   }, [
     activeProviderDriver,
+    activeProviderInstanceId,
     activeThreadId,
     activeTurnInProgress,
     environmentId,
@@ -6068,7 +6071,10 @@ export default function ChatView(props: ChatViewProps) {
     return {
       id: `removed-instance:${String(boundInstanceId)}`,
       severity: "info",
-      lead: "The account this chat used was removed.",
+      // An extra account, or a community agent that was removed.
+      lead: isAcpRegistryInstanceId(String(boundInstanceId))
+        ? "The agent this chat used was removed."
+        : "The account this chat used was removed.",
       detail:
         "Your next message continues it on the agent picked below, which picks up from a recap of the conversation.",
     };
@@ -7226,6 +7232,7 @@ export default function ChatView(props: ChatViewProps) {
           workingTreeChanges={workingTreeChanges}
           remoteBehindCount={remoteBehindCount}
           liveAgents={headerLiveAgents}
+          agentProviderInstanceId={activeProviderInstanceId}
           agentProviderDriverKind={activeProviderDriver}
           fileBrowserAvailable={!isGeneralChatThread}
           taskProgress={taskProgress}

@@ -5,7 +5,7 @@ import { type ReactNode, useState } from "react";
 import type { UnifiedSettings } from "@threadlines/contracts/settings";
 import { createModelSelection } from "@threadlines/shared/model";
 
-import { getCustomModelOptionsByInstance } from "../../modelSelection";
+import { getCustomModelOptionsByInstance, writingModelProviders } from "../../modelSelection";
 import {
   deriveProviderInstanceEntries,
   filterMaintainedProviderInstanceEntries,
@@ -24,7 +24,9 @@ export function textGenerationInstanceEntries(
   serverProviders: ReadonlyArray<ServerProvider>,
 ): ReadonlyArray<ProviderInstanceEntry> {
   return sortProviderInstanceEntries(
-    filterMaintainedProviderInstanceEntries(deriveProviderInstanceEntries(serverProviders)),
+    filterMaintainedProviderInstanceEntries(
+      deriveProviderInstanceEntries(writingModelProviders(serverProviders)),
+    ),
   );
 }
 

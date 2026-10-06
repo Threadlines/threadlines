@@ -2,6 +2,7 @@ import {
   type EnvironmentId,
   type EditorId,
   type ProviderDriverKind,
+  type ProviderInstanceId,
   type ThreadId,
   type ProjectScript,
   type ResolvedKeybindingsConfig,
@@ -80,6 +81,7 @@ interface ChatHeaderProps {
   /** Subagents running right now, drawn as faces. Null when nothing is live. */
   liveAgents: LiveAgentIndicator | null;
   /** The provider the thread's subagents run on; their faces carry its mark. */
+  agentProviderInstanceId: ProviderInstanceId | null;
   agentProviderDriverKind: ProviderDriverKind | null;
   /** False for General Chats: their scratch workspace has no files worth browsing. */
   fileBrowserAvailable: boolean;
@@ -197,6 +199,7 @@ export const ChatHeader = memo(function ChatHeader({
   workingTreeChanges,
   remoteBehindCount,
   liveAgents,
+  agentProviderInstanceId,
   agentProviderDriverKind,
   fileBrowserAvailable,
   taskProgress,
@@ -449,6 +452,7 @@ export const ChatHeader = memo(function ChatHeader({
         {liveAgents ? (
           <HeaderAgentFaces
             liveAgents={liveAgents}
+            providerInstanceId={agentProviderInstanceId}
             providerDriverKind={agentProviderDriverKind}
             onOpenAgents={onOpenAgentsTab}
           />

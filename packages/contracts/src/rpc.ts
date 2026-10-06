@@ -231,9 +231,18 @@ import {
   ProjectWriteFileResult,
 } from "./project.ts";
 import {
+  AcpRegistryAddInput,
+  AcpRegistryAddResult,
+  AcpRegistryCatalog,
+  AcpRegistryError,
+  AcpRegistryListInput,
+  AcpRegistryRemoveInput,
+} from "./acpRegistry.ts";
+import {
   ProviderAuthError,
   ProviderAuthEvent,
   ProviderAuthResizeInput,
+  ProviderAuthRespondInput,
   ProviderAuthStartInput,
   ProviderAuthStopInput,
   ProviderAuthSubscribeInput,
@@ -389,6 +398,7 @@ export const WS_METHODS = {
   providerAuthWrite: "providerAuth.write",
   providerAuthResize: "providerAuth.resize",
   providerAuthStop: "providerAuth.stop",
+  providerAuthRespond: "providerAuth.respond",
   providerAuthSubscribe: "providerAuth.subscribe",
 
   // Realtime audio methods
@@ -420,6 +430,9 @@ export const WS_METHODS = {
   serverUpdateSettings: "server.updateSettings",
   serverAddProviderAccount: "server.addProviderAccount",
   serverRemoveProviderAccount: "server.removeProviderAccount",
+  serverListAcpRegistryAgents: "server.listAcpRegistryAgents",
+  serverAddAcpRegistryAgent: "server.addAcpRegistryAgent",
+  serverRemoveAcpRegistryAgent: "server.removeAcpRegistryAgent",
   serverDiscoverSourceControl: "server.discoverSourceControl",
   serverUpdateSourceControlTool: "server.updateSourceControlTool",
   serverGetSourceControlSetup: "server.getSourceControlSetup",
@@ -597,6 +610,24 @@ export const WsServerRemoveProviderAccountRpc = Rpc.make(WS_METHODS.serverRemove
   payload: ProviderAccountRemoveInput,
   success: Schema.Void,
   error: ProviderAccountError,
+});
+
+export const WsServerListAcpRegistryAgentsRpc = Rpc.make(WS_METHODS.serverListAcpRegistryAgents, {
+  payload: AcpRegistryListInput,
+  success: AcpRegistryCatalog,
+  error: AcpRegistryError,
+});
+
+export const WsServerAddAcpRegistryAgentRpc = Rpc.make(WS_METHODS.serverAddAcpRegistryAgent, {
+  payload: AcpRegistryAddInput,
+  success: AcpRegistryAddResult,
+  error: AcpRegistryError,
+});
+
+export const WsServerRemoveAcpRegistryAgentRpc = Rpc.make(WS_METHODS.serverRemoveAcpRegistryAgent, {
+  payload: AcpRegistryRemoveInput,
+  success: Schema.Void,
+  error: AcpRegistryError,
 });
 
 export const WsServerDiscoverSourceControlRpc = Rpc.make(WS_METHODS.serverDiscoverSourceControl, {
@@ -1393,6 +1424,12 @@ export const WsProviderAuthStopRpc = Rpc.make(WS_METHODS.providerAuthStop, {
   error: ProviderAuthError,
 });
 
+export const WsProviderAuthRespondRpc = Rpc.make(WS_METHODS.providerAuthRespond, {
+  payload: ProviderAuthRespondInput,
+  success: Schema.Void,
+  error: ProviderAuthError,
+});
+
 export const WsProviderAuthSubscribeRpc = Rpc.make(WS_METHODS.providerAuthSubscribe, {
   payload: ProviderAuthSubscribeInput,
   success: ProviderAuthEvent,
@@ -1520,6 +1557,9 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerUpdateSettingsRpc,
   WsServerAddProviderAccountRpc,
   WsServerRemoveProviderAccountRpc,
+  WsServerListAcpRegistryAgentsRpc,
+  WsServerAddAcpRegistryAgentRpc,
+  WsServerRemoveAcpRegistryAgentRpc,
   WsServerDiscoverSourceControlRpc,
   WsServerUpdateSourceControlToolRpc,
   WsServerGetSourceControlSetupRpc,
@@ -1626,6 +1666,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsProviderAuthWriteRpc,
   WsProviderAuthResizeRpc,
   WsProviderAuthStopRpc,
+  WsProviderAuthRespondRpc,
   WsProviderAuthSubscribeRpc,
   WsRealtimeAppendAudioRpc,
   WsRealtimeSubscribeAudioRpc,

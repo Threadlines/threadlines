@@ -61,17 +61,8 @@ export interface CloseLaunchGateOptions<E> {
   readonly onWaiting?: Effect.Effect<void>;
 }
 
-/**
- * Runs `use` with the gate closed and every hold gone, then reopens it. Fails
- * without running `use` when the gate is already closed, or when the holds
- * don't drain in time.
- */
-export const withLaunchGateClosed = <A, E, E2>(
-  gate: LaunchGate,
-  options: CloseLaunchGateOptions<E2>,
-  use: Effect.Effect<A, E>,
-): Effect.Effect<A, E | E2> => {
-  const drain = Effect.gen(function* () {
+const drainLaunchGate = <E>(gate: LaunchGate, options: CloseLaunchGateOptions<E>) =>
+  Effect.gen(function* () {
     const deadline = (yield* Clock.currentTimeMillis) + DRAIN_TIMEOUT_MS;
     let told = false;
     while (true) {
@@ -87,16 +78,50 @@ export const withLaunchGateClosed = <A, E, E2>(
       yield* Effect.sleep(DRAIN_POLL);
     }
   });
-  return Effect.acquireUseRelease(
-    Effect.suspend(() => {
-      if (gate.busy) return Effect.fail(options.whenAlreadyClosed());
-      gate.busy = true;
-      return Effect.void;
-    }),
-    () => drain.pipe(Effect.andThen(use)),
-    () =>
-      Effect.sync(() => {
-        gate.busy = false;
-      }),
+
+const takeLaunchGate = <E>(gate: LaunchGate, options: CloseLaunchGateOptions<E>) =>
+  Effect.suspend(() => {
+    if (gate.busy) return Effect.fail(options.whenAlreadyClosed());
+    gate.busy = true;
+    return Effect.void;
+  });
+
+const reopenLaunchGate = (gate: LaunchGate) =>
+  Effect.sync(() => {
+    gate.busy = false;
+  });
+
+/**
+ * Runs `use` with the gate closed and every hold gone, then reopens it. Fails
+ * without running `use` when the gate is already closed, or when the holds
+ * don't drain in time.
+ */
+export const withLaunchGateClosed = <A, E, E2>(
+  gate: LaunchGate,
+  options: CloseLaunchGateOptions<E2>,
+  use: Effect.Effect<A, E>,
+): Effect.Effect<A, E | E2> =>
+  Effect.acquireUseRelease(
+    takeLaunchGate(gate, options),
+    () => drainLaunchGate(gate, options).pipe(Effect.andThen(use)),
+    () => reopenLaunchGate(gate),
   );
-};
+
+/**
+ * The same, for work that outlives one effect (a login command the user
+ * types into): closes the gate, waits for every hold to go, and returns the
+ * effect that reopens it, to be run exactly once. When it fails or is
+ * interrupted, the gate is open again.
+ */
+export const closeLaunchGate = <E>(
+  gate: LaunchGate,
+  options: CloseLaunchGateOptions<E>,
+): Effect.Effect<Effect.Effect<void>, E> =>
+  takeLaunchGate(gate, options).pipe(
+    Effect.andThen(
+      drainLaunchGate(gate, options).pipe(
+        Effect.onExit((exit) => (exit._tag === "Failure" ? reopenLaunchGate(gate) : Effect.void)),
+      ),
+    ),
+    Effect.as(reopenLaunchGate(gate)),
+  );

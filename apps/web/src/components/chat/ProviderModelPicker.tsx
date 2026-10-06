@@ -1,4 +1,5 @@
 import {
+  ACP_REGISTRY_DRIVER_KIND,
   type ProviderInstanceId,
   type ProviderDriverKind,
   type ResolvedKeybindingsConfig,
@@ -31,7 +32,7 @@ import {
 } from "./providerIconUtils";
 import { setModelPickerOpen } from "../../modelPickerOpenState";
 import { useOnScreenKeyboardInset } from "~/hooks/useOnScreenKeyboardInset";
-import type { ProviderInstanceEntry } from "../../providerInstances";
+import { type ProviderInstanceEntry, providerInstanceShowsBadge } from "../../providerInstances";
 import { useRoomRecipientStore } from "../../rooms";
 import { THREAD_STATUS_DOT_CLASSES } from "../Sidebar.logic";
 import { toastManager } from "../ui/toast";
@@ -136,7 +137,10 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
   const duplicateDriverCount = props.instanceEntries.filter(
     (entry) => activeEntry !== null && entry.driverKind === activeEntry.driverKind,
   ).length;
-  const showInstanceBadge = Boolean(activeEntry?.accentColor) || duplicateDriverCount > 1;
+  // Community agents share a driver but not an icon: several of them aren't "duplicates".
+  const showInstanceBadge =
+    Boolean(activeEntry?.accentColor) ||
+    (duplicateDriverCount > 1 && activeEntry?.driverKind !== ACP_REGISTRY_DRIVER_KIND);
 
   const setIsMenuOpen = (open: boolean) => {
     props.onOpenChange?.(open);
@@ -273,6 +277,7 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
           >
             {activeEntry ? (
               <ProviderInstanceIcon
+                instanceId={activeEntry.instanceId}
                 driverKind={activeEntry.driverKind}
                 displayName={activeEntry.displayName}
                 accentColor={activeEntry.accentColor}
@@ -443,12 +448,13 @@ function RoomPickerTriggerContent(props: { room: RoomAgents; compact: boolean })
           >
             {row.entry ? (
               <ProviderInstanceIcon
+                instanceId={row.entry.instanceId}
                 driverKind={row.entry.driverKind}
                 displayName={row.entry.displayName}
                 accentColor={row.entry.accentColor}
                 // An extra account wears its letter, so two accounts on one
                 // model can be told apart.
-                showBadge={!row.entry.isDefault}
+                showBadge={providerInstanceShowsBadge(row.entry)}
                 badgeClassName="right-[-0.3rem] bottom-[-0.2rem] h-2.5 min-w-2.5 px-0 text-[6px] shadow-none"
                 // Faded behind the one in front, with a notch cut where it
                 // sits. Only the icon fades: the dot stays whole and bright.

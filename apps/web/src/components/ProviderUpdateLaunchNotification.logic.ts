@@ -1,4 +1,5 @@
 import {
+  ACP_REGISTRY_DRIVER_KIND,
   defaultInstanceIdForDriver,
   PROVIDER_DISPLAY_NAMES,
   type ProviderDriverKind,
@@ -86,17 +87,31 @@ function chooseRepresentativeProvider(
   return candidate.checkedAt.localeCompare(current.checkedAt) >= 0 ? candidate : current;
 }
 
+/**
+ * Which instances one update covers. Every instance of a driver runs the same
+ * program, so they update together; a community agent is a program of its
+ * own, and updates alone.
+ */
+export function providerUpdateGroupKey(
+  provider: Pick<ServerProvider, "driver" | "instanceId">,
+): string {
+  return provider.driver === ACP_REGISTRY_DRIVER_KIND
+    ? `${provider.driver}:${provider.instanceId}`
+    : provider.driver;
+}
+
 function dedupeProvidersByDriver<T extends ServerProvider>(providers: ReadonlyArray<T>): T[] {
-  const latestProviderByDriver = new Map<ProviderDriverKind, T>();
+  const latestProviderByGroup = new Map<string, T>();
 
   for (const provider of providers) {
-    latestProviderByDriver.set(
-      provider.driver,
-      chooseRepresentativeProvider(latestProviderByDriver.get(provider.driver), provider) as T,
+    const key = providerUpdateGroupKey(provider);
+    latestProviderByGroup.set(
+      key,
+      chooseRepresentativeProvider(latestProviderByGroup.get(key), provider) as T,
     );
   }
 
-  return [...latestProviderByDriver.values()];
+  return [...latestProviderByGroup.values()];
 }
 
 function dedupeProvidersByInstanceId<T extends ServerProvider>(providers: ReadonlyArray<T>): T[] {
@@ -144,7 +159,11 @@ function getProviderAttemptedVersionTitle(
   return attemptedVersion ? `${providerName} ${formatVersion(attemptedVersion)}` : providerName;
 }
 
-function getProviderDisplayName(provider: Pick<ServerProvider, "driver">): string {
+/** The agent's name: a community agent's own, the driver's for the rest. */
+function getProviderDisplayName(provider: Pick<ServerProvider, "driver" | "displayName">): string {
+  if (provider.driver === ACP_REGISTRY_DRIVER_KIND && provider.displayName) {
+    return provider.displayName;
+  }
   return PROVIDER_DISPLAY_NAMES[provider.driver] ?? provider.driver;
 }
 
@@ -179,7 +198,10 @@ export function hasOneClickUpdateProviderCandidate(
     return false;
   }
 
-  const driverProviders = providers.filter((provider) => provider.driver === candidate.driver);
+  const groupKey = providerUpdateGroupKey(candidate);
+  const driverProviders = providers.filter(
+    (provider) => providerUpdateGroupKey(provider) === groupKey,
+  );
   if (driverProviders.length === 0) {
     return false;
   }
@@ -214,7 +236,7 @@ export function providerUpdateNotificationKey(
   const parts = dedupeProvidersByDriver(providers)
     .map((provider) => {
       const advisory = provider.versionAdvisory;
-      return [provider.driver, advisory.latestVersion].join(":");
+      return [providerUpdateGroupKey(provider), advisory.latestVersion].join(":");
     })
     .toSorted();
 
@@ -253,10 +275,10 @@ export function providerUpdateCandidateKey(provider: ProviderUpdateCandidate): s
   return providerUpdateNotificationKey([provider])!;
 }
 
-export function formatProviderList(providers: ReadonlyArray<Pick<ServerProvider, "driver">>) {
-  const names = providers.map(
-    (provider) => PROVIDER_DISPLAY_NAMES[provider.driver] ?? provider.driver,
-  );
+export function formatProviderList(
+  providers: ReadonlyArray<Pick<ServerProvider, "driver" | "displayName">>,
+) {
+  const names = providers.map(getProviderDisplayName);
   if (names.length <= 2) {
     return names.join(" and ");
   }
@@ -533,7 +555,7 @@ function collectProviderUpdateSidebarItems(
       {
         // Providers are deduped by driver, so the driver is a stable row
         // identity that survives status transitions within an update batch.
-        key: provider.driver,
+        key: providerUpdateGroupKey(provider),
         label: getProviderDisplayName(provider),
         status,
         statusLabel: getProviderUpdateSidebarStatusLabel(provider, status),
@@ -609,10 +631,7 @@ export function getProviderUpdateSidebarPillView(
     return {
       // Keyed by batch membership only: status transitions within the batch
       // morph the card in place instead of re-keying (and re-animating) it.
-      key: `updating:${visibleProviders
-        .map((provider) => provider.driver)
-        .toSorted()
-        .join("|")}`,
+      key: `updating:${visibleProviders.map(providerUpdateGroupKey).toSorted().join("|")}`,
       tone: "loading",
       title: items.length === 1 ? getProviderDisplayName(activeProviders[0]!) : "Provider updates",
       statusChipLabel: chip.label,
@@ -638,7 +657,7 @@ export function getProviderUpdateSidebarPillView(
   const key = `done:${recentTerminalProviders
     .map(
       (provider) =>
-        `${provider.driver}:${provider.updateState?.status ?? "idle"}:${provider.updateState?.finishedAt ?? "pending"}`,
+        `${providerUpdateGroupKey(provider)}:${provider.updateState?.status ?? "idle"}:${provider.updateState?.finishedAt ?? "pending"}`,
     )
     .toSorted()
     .join("|")}`;

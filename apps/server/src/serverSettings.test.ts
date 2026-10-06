@@ -400,6 +400,29 @@ it.layer(NodeServices.layer)("server settings", (it) => {
     }).pipe(Effect.provide(makeServerSettingsLayer())),
   );
 
+  it.effect("never lets a community agent be the writing model", () =>
+    Effect.gen(function* () {
+      const serverSettings = yield* ServerSettingsService;
+      const community = ProviderInstanceId.make("acp_goose");
+
+      // Picked directly, and the only other agent turned on: still not used.
+      const next = yield* serverSettings.updateSettings({
+        providers: { codex: { enabled: false }, claudeAgent: { enabled: true } },
+        providerInstances: {
+          [community]: {
+            driver: ProviderDriverKind.make("acpRegistry"),
+            enabled: true,
+            config: { agentId: "goose" },
+          },
+        },
+        textGenerationModelSelection: { instanceId: community, model: "default" },
+      });
+
+      assert.equal(next.textGenerationModelSelection.instanceId, "claudeAgent");
+      assert.isNull(next.textGenerationBackupModelSelection);
+    }).pipe(Effect.provide(makeServerSettingsLayer())),
+  );
+
   it.effect("drops stale text generation options when resetting model selection", () =>
     Effect.gen(function* () {
       const serverSettings = yield* ServerSettingsService;

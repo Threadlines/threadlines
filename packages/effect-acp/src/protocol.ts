@@ -308,8 +308,9 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
     return Queue.offer(serverQueue, message).pipe(Effect.asVoid);
   };
 
-  const handleExitEncoded = (message: RpcMessage.ResponseExitEncoded) =>
-    Ref.get(extPending).pipe(
+  const handleExitEncoded = (received: RpcMessage.ResponseExitEncoded) => {
+    const message = asRequestFailure(received);
+    return Ref.get(extPending).pipe(
       Effect.flatMap((pending) => {
         if (!pending.has(message.requestId)) {
           return Queue.offer(clientQueue, message).pipe(Effect.asVoid);
@@ -330,6 +331,7 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
         );
       }),
     );
+  };
 
   const routeDecodedMessage = (
     message: RpcMessage.FromClientEncoded | RpcMessage.FromServerEncoded,
@@ -506,6 +508,35 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
     notify: sendNotification,
   } satisfies AcpPatchedProtocol;
 });
+
+/**
+ * An error answer as the RPC client should see it. The JSON-RPC parser takes
+ * every error object that isn't in its own encoding for a defect, and a
+ * defect keeps only its message. A peer that isn't built on this library
+ * answers with exactly such an object: it is the failure of the request,
+ * with the code callers tell failures apart by (`-32000`, sign in first).
+ */
+function asRequestFailure(message: RpcMessage.ResponseExitEncoded): RpcMessage.ResponseExitEncoded {
+  if (message.exit._tag !== "Failure") return message;
+  return {
+    ...message,
+    exit: {
+      ...message.exit,
+      cause: message.exit.cause.map((entry) =>
+        entry._tag === "Die" && isProtocolError(entry.defect)
+          ? {
+              _tag: "Fail" as const,
+              error: {
+                code: entry.defect.code,
+                message: entry.defect.message,
+                ...(entry.defect.data !== undefined ? { data: entry.defect.data } : {}),
+              },
+            }
+          : entry,
+      ),
+    },
+  };
+}
 
 function isProtocolError(
   value: unknown,

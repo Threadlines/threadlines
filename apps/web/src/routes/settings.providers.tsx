@@ -4,8 +4,13 @@ import { ProviderSettingsPanel } from "../components/settings/SettingsPanels";
 import { parseProviderSettingsSearch } from "../components/settings/settingsNavigation";
 
 function SettingsProvidersRoute() {
-  const { instance } = Route.useSearch();
-  return <ProviderSettingsPanel focusedInstanceId={instance ?? null} />;
+  const { instance, section } = Route.useSearch();
+  return (
+    <ProviderSettingsPanel
+      focusedInstanceId={instance ?? null}
+      showCommunityAgents={section === "community"}
+    />
+  );
 }
 
 export const Route = createFileRoute("/settings/providers")({

@@ -148,16 +148,23 @@ export function settingsNavItemForPath(pathname: string): SettingsNavItem | null
  * `?instance=` on the providers page names the card to open on arrival. It is
  * how a surface elsewhere in the app hands a half-finished provider sign-in
  * over to the settings panel, which owns the interactive terminal.
+ *
+ * `?section=community` brings the Community agents group into view: the
+ * list of agents to add sits below every agent already in use.
  */
 export interface ProviderSettingsSearch {
   readonly instance?: string;
+  readonly section?: "community";
 }
 
 export function parseProviderSettingsSearch(
   search: Record<string, unknown>,
 ): ProviderSettingsSearch {
   const instance = search["instance"];
-  return typeof instance === "string" && instance.length > 0 ? { instance } : {};
+  return {
+    ...(typeof instance === "string" && instance.length > 0 ? { instance } : {}),
+    ...(search["section"] === "community" ? { section: "community" as const } : {}),
+  };
 }
 
 /**

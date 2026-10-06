@@ -447,4 +447,45 @@ describe("instance-scoped model selection", () => {
       resolveTextGenerationBackupModelSelectionState(settings, providers, primarySelection),
     ).toBeNull();
   });
+
+  it("never picks a community agent to write titles or commit messages", () => {
+    const providers = [
+      // Listed first, and the only other agent besides the writing model.
+      provider({
+        provider: ProviderDriverKind.make("acpRegistry"),
+        instanceId: "acp_some-agent",
+        models: ["default"],
+      }),
+      provider({
+        provider: ProviderDriverKind.make("claudeAgent"),
+        instanceId: "claudeAgent",
+        models: ["claude-haiku-4-5"],
+      }),
+    ];
+
+    // The default writing model (Codex) isn't here: the fallback skips the community agent.
+    const primarySelection = resolveAppModelSelectionState(DEFAULT_UNIFIED_SETTINGS, providers);
+    expect(primarySelection.instanceId).toBe("claudeAgent");
+    // A saved choice of one is not honored either.
+    expect(
+      resolveAppModelSelectionState(
+        {
+          ...DEFAULT_UNIFIED_SETTINGS,
+          textGenerationModelSelection: {
+            instanceId: ProviderInstanceId.make("acp_some-agent"),
+            model: "default",
+          },
+        },
+        providers,
+      ).instanceId,
+    ).toBe("claudeAgent");
+    // And it is no backup: nothing else is left on another provider.
+    expect(
+      resolveDefaultTextGenerationBackupModelSelectionState(
+        DEFAULT_UNIFIED_SETTINGS,
+        providers,
+        primarySelection,
+      ),
+    ).toBeNull();
+  });
 });

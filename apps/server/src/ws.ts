@@ -115,6 +115,7 @@ import { ServerLifecycleEvents } from "./serverLifecycleEvents.ts";
 import { ServerRuntimeStartup } from "./serverRuntimeStartup.ts";
 import { redactServerSettingsForClient, ServerSettingsService } from "./serverSettings.ts";
 import { ProviderAccounts } from "./provider/accounts/ProviderAccounts.ts";
+import { AcpRegistryAgents } from "./provider/acpRegistry/AcpRegistryAgents.ts";
 import { ProviderAuthSessions } from "./provider/auth/ProviderAuthSessions.ts";
 import { TerminalManager } from "./terminal/Services/Manager.ts";
 import { realtimeAudioHub } from "./realtime/RealtimeAudioHub.ts";
@@ -310,6 +311,7 @@ const makeWsRpcLayer = (currentSession: {
       const terminalManager = yield* TerminalManager;
       const providerAuthSessions = yield* ProviderAuthSessions;
       const providerAccounts = yield* ProviderAccounts;
+      const acpRegistryAgents = yield* AcpRegistryAgents;
       const dictation = yield* DictationService;
       const providerRegistry = yield* ProviderRegistry;
       const providerService = yield* ProviderService;
@@ -989,7 +991,10 @@ const makeWsRpcLayer = (currentSession: {
             Effect.sync(() => refreshWindowsPath()).pipe(
               Effect.andThen(
                 input.instanceId !== undefined
-                  ? providerRegistry.refreshInstance(input.instanceId)
+                  ? // "Check again" on a community agent starts it, whatever it last found.
+                    acpRegistryAgents
+                      .requestCheck(input.instanceId)
+                      .pipe(Effect.andThen(providerRegistry.refreshInstance(input.instanceId)))
                   : providerRegistry.refresh(),
               ),
               Effect.map((providers) => ({ providers })),
@@ -1093,9 +1098,12 @@ const makeWsRpcLayer = (currentSession: {
             },
           ),
         [WS_METHODS.serverUpdateProvider]: (input) =>
+          // Through the community agents service: it sends everything but a
+          // community agent straight on, and gives a community agent only
+          // the recipe the user was shown.
           observeRpcEffect(
             WS_METHODS.serverUpdateProvider,
-            providerMaintenanceRunner.updateProvider(input),
+            acpRegistryAgents.updateProvider(input),
             {
               "rpc.aggregate": "server",
             },
@@ -1150,6 +1158,20 @@ const makeWsRpcLayer = (currentSession: {
           observeRpcEffect(WS_METHODS.serverRemoveProviderAccount, providerAccounts.remove(input), {
             "rpc.aggregate": "server",
           }),
+        [WS_METHODS.serverListAcpRegistryAgents]: (input) =>
+          observeRpcEffect(WS_METHODS.serverListAcpRegistryAgents, acpRegistryAgents.list(input), {
+            "rpc.aggregate": "server",
+          }),
+        [WS_METHODS.serverAddAcpRegistryAgent]: (input) =>
+          observeRpcEffect(WS_METHODS.serverAddAcpRegistryAgent, acpRegistryAgents.add(input), {
+            "rpc.aggregate": "server",
+          }),
+        [WS_METHODS.serverRemoveAcpRegistryAgent]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverRemoveAcpRegistryAgent,
+            acpRegistryAgents.remove(input),
+            { "rpc.aggregate": "server" },
+          ),
         [WS_METHODS.serverDiscoverSourceControl]: (_input) =>
           observeRpcEffect(
             WS_METHODS.serverDiscoverSourceControl,
@@ -2185,6 +2207,10 @@ const makeWsRpcLayer = (currentSession: {
           }),
         [WS_METHODS.providerAuthStop]: (input) =>
           observeRpcEffect(WS_METHODS.providerAuthStop, providerAuthSessions.stop(input), {
+            "rpc.aggregate": "providerAuth",
+          }),
+        [WS_METHODS.providerAuthRespond]: (input) =>
+          observeRpcEffect(WS_METHODS.providerAuthRespond, providerAuthSessions.respond(input), {
             "rpc.aggregate": "providerAuth",
           }),
         [WS_METHODS.providerAuthSubscribe]: (input) =>

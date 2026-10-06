@@ -13,6 +13,7 @@ import { toastManager } from "../ui/toast";
 import { ProviderInstanceIcon } from "./ProviderInstanceIcon";
 import { roomAgentKey } from "../../rooms";
 import type { RoomAgentRow, RoomAgents } from "./useRoomAgents";
+import { providerInstanceShowsBadge } from "../../providerInstances";
 
 const ROW_CLASS =
   "group/agent flex h-7 w-full cursor-pointer items-center gap-2 rounded-sm px-2 text-left text-xs outline-none hover:bg-accent focus-visible:bg-accent pointer-coarse:h-10 pointer-coarse:text-sm";
@@ -95,12 +96,13 @@ export const RoomAgentsSection = memo(function RoomAgentsSection(props: {
               >
                 {row.entry ? (
                   <ProviderInstanceIcon
+                    instanceId={row.entry.instanceId}
                     driverKind={row.entry.driverKind}
                     displayName={row.entry.displayName}
                     accentColor={row.entry.accentColor}
                     // An extra account wears its letter, so two accounts on one
                     // model can be told apart.
-                    showBadge={!row.entry.isDefault}
+                    showBadge={providerInstanceShowsBadge(row.entry)}
                     badgeClassName="right-[-0.3rem] bottom-[-0.2rem] h-2.5 min-w-2.5 px-0 text-[6px] shadow-none"
                     className="size-3.5 pointer-coarse:size-4"
                     iconClassName="size-3.5 pointer-coarse:size-4"
