@@ -73,6 +73,7 @@ import type { ProviderAdapterShape } from "../Services/ProviderAdapter.ts";
 import {
   acpAvailableDecisions,
   acpPermissionOptionId,
+  isAcpAuthRequiredError,
   mapAcpToAdapterError,
 } from "./AcpAdapterSupport.ts";
 import {
@@ -542,6 +543,27 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
         });
       });
 
+    /**
+     * Tells the descriptor when the agent answered `auth_required`, given the
+     * ACP error or the adapter error that wraps it. Never fails or dies: a
+     * turn must complete whatever the hook does.
+     */
+    const notifyAuthRequired = (error: unknown): Effect.Effect<void> => {
+      const onAuthRequired = descriptor.onAuthRequired;
+      if (!onAuthRequired) return Effect.void;
+      const wrapped =
+        typeof error === "object" && error !== null && "cause" in error ? error.cause : undefined;
+      if (!isAcpAuthRequiredError(error) && !isAcpAuthRequiredError(wrapped)) return Effect.void;
+      return Effect.suspend(() => onAuthRequired(settings)).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("ACP onAuthRequired hook failed", {
+            provider: PROVIDER,
+            cause: Cause.pretty(cause),
+          }),
+        ),
+      );
+    };
+
     const applyRequestedSessionConfiguration = (input: {
       readonly runtime: AcpSessionRuntimeShape;
       readonly threadId: ThreadId;
@@ -566,6 +588,11 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
           });
         }
 
+        // Native controls: the agent's mode is the user's to pick (an option),
+        // never inferred from the runtime mode.
+        if (descriptor.sessionControls === "native") {
+          return;
+        }
         const modeState = yield* input.runtime.getModeState;
         const mappedModeId = descriptor.agentModeFor?.({
           runtimeMode: input.runtimeMode,
@@ -590,7 +617,8 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
               mapAcpToAdapterError(PROVIDER, input.threadId, "session/set_mode", cause),
             ),
           );
-      });
+        // An agent can also answer `auth_required` to a model or option change.
+      }).pipe(Effect.tapError(notifyAuthRequired));
 
     const startSession: AcpAdapterShape["startSession"] = (input) =>
       withThreadLock(
@@ -890,6 +918,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
             );
             return yield* acp.start();
           }).pipe(
+            Effect.tapError(notifyAuthRequired),
             Effect.mapError((error) =>
               mapAcpToAdapterError(PROVIDER, input.threadId, "session/start", error),
             ),
@@ -1333,6 +1362,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
             return;
           }
           const failure = Cause.squash(exit.cause);
+          yield* notifyAuthRequired(failure);
           const detail =
             failure instanceof Error
               ? mapAcpToAdapterError(
