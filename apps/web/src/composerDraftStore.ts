@@ -1748,6 +1748,9 @@ function normalizePersistedDraftThreads(
   "draftThreadsByThreadKey" | "logicalProjectDraftThreadKeyByLogicalProjectKey"
 > {
   const draftThreadsByThreadKey: Record<string, PersistedDraftThreadState> = {};
+  // Drafts saved with the key they are filed under. Those carry their own
+  // project and environment; older records left both to the key.
+  const selfFiledThreadKeys = new Set<string>();
   const environmentIdByThreadId = new Map<ThreadId, EnvironmentId>();
   if (
     rawProjectDraftThreadIdByProjectKey &&
@@ -1821,17 +1824,23 @@ function normalizePersistedDraftThreads(
         continue;
       }
       const normalizedEnvironmentId = environmentId as EnvironmentId;
+      const savedLogicalProjectKey =
+        typeof candidateDraftThread.logicalProjectKey === "string" &&
+        candidateDraftThread.logicalProjectKey.length > 0
+          ? candidateDraftThread.logicalProjectKey
+          : null;
+      if (savedLogicalProjectKey !== null) {
+        selfFiledThreadKeys.add(threadKey);
+      }
       draftThreadsByThreadKey[threadKey] = {
         threadId,
         environmentId: normalizedEnvironmentId,
         projectId: projectId as ProjectId,
         logicalProjectKey:
-          typeof candidateDraftThread.logicalProjectKey === "string" &&
-          candidateDraftThread.logicalProjectKey.length > 0
-            ? candidateDraftThread.logicalProjectKey
-            : parsedThreadRef
-              ? projectDraftKey(scopeProjectRef(normalizedEnvironmentId, projectId as ProjectId))
-              : threadKeyOrId,
+          savedLogicalProjectKey ??
+          (parsedThreadRef
+            ? projectDraftKey(scopeProjectRef(normalizedEnvironmentId, projectId as ProjectId))
+            : threadKeyOrId),
         createdAt:
           typeof createdAt === "string" && createdAt.length > 0
             ? createdAt
@@ -1896,8 +1905,13 @@ function normalizePersistedDraftThreads(
           promotedTo: null,
         };
       } else if (
-        draftThreadsByThreadKey[threadKey]?.projectId !== projectRef.projectId ||
-        draftThreadsByThreadKey[threadKey]?.environmentId !== projectRef.environmentId
+        // The key repairs only records too old to know their own project. It
+        // is not always a project id: a project is filed under its repository
+        // or, with none, its folder, and a folder key read back as an id
+        // would point the draft at a project that does not exist.
+        !selfFiledThreadKeys.has(threadKey) &&
+        (draftThreadsByThreadKey[threadKey]?.projectId !== projectRef.projectId ||
+          draftThreadsByThreadKey[threadKey]?.environmentId !== projectRef.environmentId)
       ) {
         draftThreadsByThreadKey[threadKey] = {
           ...draftThreadsByThreadKey[threadKey]!,

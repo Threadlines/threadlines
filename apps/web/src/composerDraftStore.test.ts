@@ -1144,6 +1144,36 @@ describe("composerDraftStore project draft thread mapping", () => {
     expect(useComposerDraftStore.getState().getDraftThread(draftId)?.room).toBeUndefined();
   });
 
+  // A project with no repository is filed under its folder, so the key a
+  // draft is filed under is not always the project's id.
+  it("keeps a draft's project across a reload when it is filed under a folder", () => {
+    const folderKey = `${TEST_ENVIRONMENT_ID}:/users/me/notes`;
+    useComposerDraftStore
+      .getState()
+      .setLogicalProjectDraftThreadId(folderKey, projectRef, draftId, { threadId });
+
+    const persistApi = useComposerDraftStore.persist as unknown as {
+      getOptions: () => {
+        partialize: (state: ReturnType<typeof useComposerDraftStore.getState>) => unknown;
+        merge: (
+          persistedState: unknown,
+          currentState: ReturnType<typeof useComposerDraftStore.getState>,
+        ) => ReturnType<typeof useComposerDraftStore.getState>;
+      };
+    };
+    const persisted = JSON.parse(
+      JSON.stringify(persistApi.getOptions().partialize(useComposerDraftStore.getState())),
+    );
+    resetComposerDraftStore();
+    useComposerDraftStore.setState(
+      persistApi.getOptions().merge(persisted, useComposerDraftStore.getState()),
+    );
+
+    const reloaded = useComposerDraftStore.getState();
+    expect(reloaded.getDraftThread(draftId)?.projectId).toBe(projectId);
+    expect(reloaded.getDraftSessionByLogicalProjectKey(folderKey)?.draftId).toBe(draftId);
+  });
+
   it("stores and reads project draft thread ids via actions", () => {
     const store = useComposerDraftStore.getState();
     expect(store.getDraftThreadByProjectRef(projectRef)).toBeNull();
