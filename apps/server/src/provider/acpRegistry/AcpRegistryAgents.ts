@@ -38,6 +38,7 @@ import * as Schedule from "effect/Schedule";
 
 import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
+import { AnalyticsService } from "../../telemetry/Services/AnalyticsService.ts";
 import { ProviderAuthSessions } from "../auth/ProviderAuthSessions.ts";
 import {
   type AcpRegistryAgentContext,
@@ -115,6 +116,7 @@ export const makeAcpRegistryAgents = Effect.fn("makeAcpRegistryAgents")(function
   const authSessions = yield* ProviderAuthSessions;
   const maintenanceRunner = yield* ProviderMaintenanceRunner;
   const serverConfig = yield* ServerConfig;
+  const analytics = yield* AnalyticsService;
 
   const catalog = makeAcpRegistryCatalog({
     cacheDir: NodePath.join(serverConfig.stateDir, "caches", "acp-registry"),
@@ -236,7 +238,20 @@ export const makeAcpRegistryAgents = Effect.fn("makeAcpRegistryAgents")(function
       if (yield* waitForInstance(instanceId, true)) {
         yield* maintenanceRunner
           .updateProvider({ provider: ACP_REGISTRY_DRIVER_KIND, instanceId, action: "install" })
-          .pipe(Effect.ignore, Effect.forkDetach);
+          .pipe(
+            Effect.andThen(context.installer.installed),
+            // The registry's public id and version: which community agents get used.
+            Effect.tap((installed) =>
+              installed
+                ? analytics.record("provider.community_agent.installed", {
+                    agentId: input.agentId,
+                    version: installed.receipt.recipe.version,
+                  })
+                : Effect.void,
+            ),
+            Effect.ignore,
+            Effect.forkDetach,
+          );
       } else {
         yield* Effect.logWarning("community agent added but its instance isn't running yet", {
           instanceId,
@@ -272,6 +287,7 @@ export const makeAcpRegistryAgents = Effect.fn("makeAcpRegistryAgents")(function
         stop: stopSessions,
       });
 
+      const version = (yield* context.installer.installed)?.receipt.recipe.version;
       const removed = yield* Effect.gen(function* () {
         // Off first, so nothing restarts it while its files go.
         yield* settingsService
@@ -316,6 +332,9 @@ export const makeAcpRegistryAgents = Effect.fn("makeAcpRegistryAgents")(function
       }
       forgetAcpRegistryAgentState(agentId);
       forgetAcpRegistryAgentContext(serverConfig.stateDir, agentId);
+      yield* analytics
+        .record("provider.community_agent.removed", { agentId, version: version ?? "unknown" })
+        .pipe(Effect.ignore);
       yield* waitForInstance(instanceId, false);
     });
 

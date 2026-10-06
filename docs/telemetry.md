@@ -15,6 +15,8 @@ Threadlines sends product and reliability events such as:
   turned on, installed, and signed in (yes, no, or unknown), and whether its
   startup check timed out. This is sent once the startup checks finish and
   again when an answer changes;
+- when a community agent (one from the open ACP registry) is installed or
+  removed, with its public registry id and version;
 - provider session start, stop, and recovery;
 - turn sent, steered, interrupted, and compact-requested events;
 - selected model family and sanitized model slug for provider turns;
