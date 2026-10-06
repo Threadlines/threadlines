@@ -10,7 +10,6 @@
  *
  * @module provider/Drivers/AcpRegistryDriver
  */
-import { createHash } from "node:crypto";
 import * as NodeFS from "node:fs/promises";
 import * as NodePath from "node:path";
 
@@ -42,8 +41,10 @@ import { makeAcpRegistryAuthFlows } from "../acpRegistry/AcpRegistryAuth.ts";
 import { isReservedAcpRegistryEnvName } from "../acpRegistry/AcpRegistryCatalog.ts";
 import {
   type AcpRegistryInstaller,
+  acpRegistryAgentRoot,
   makeAcpRegistryInstaller,
 } from "../acpRegistry/AcpRegistryInstaller.ts";
+import { acpRegistryNodes } from "../acpRegistry/AcpRegistryNodes.ts";
 import { ProviderDriverError } from "../Errors.ts";
 import { mergeProviderInstanceEnvironment } from "../ProviderInstanceEnvironment.ts";
 import type { ProviderDriver } from "../ProviderDriver.ts";
@@ -88,13 +89,6 @@ export const acpRegistryToolsDirs = (stateDir: string) => ({
   node: NodePath.join(stateDir, "tools", "node"),
 });
 
-/** An agent's folder. Never named after a registry string: an id is not always a safe folder name. */
-export const acpRegistryAgentRoot = (stateDir: string, agentId: string) =>
-  NodePath.join(
-    acpRegistryToolsDirs(stateDir).agents,
-    createHash("sha256").update(agentId).digest("hex").slice(0, 16),
-  );
-
 /** The agent's installer and state in this process, created on first use. */
 export function acpRegistryAgentContext(input: {
   readonly stateDir: string;
@@ -106,15 +100,25 @@ export function acpRegistryAgentContext(input: {
   let context = contexts.get(key);
   if (!context) {
     const dirs = acpRegistryToolsDirs(input.stateDir);
+    // Node.js is shared: every agent's installer goes through the same
+    // manager of a release, and an install keeps the releases from being
+    // pruned while it runs.
+    const nodes = acpRegistryNodes(dirs.node);
+    const installer = makeAcpRegistryInstaller({
+      agentId: input.agentId,
+      label: input.displayName,
+      toolsDir: dirs.agents,
+      nodeToolsDir: dirs.node,
+      makeNode: nodes.nodeFor,
+    });
     context = {
       agentId: input.agentId,
-      root: acpRegistryAgentRoot(input.stateDir, input.agentId),
-      installer: makeAcpRegistryInstaller({
-        agentId: input.agentId,
-        label: input.displayName,
-        toolsDir: dirs.agents,
-        nodeToolsDir: dirs.node,
-      }),
+      root: acpRegistryAgentRoot(dirs.agents, input.agentId),
+      installer: {
+        ...installer,
+        install: (recipeDigest, onProgress) =>
+          nodes.whileInstalling(installer.install(recipeDigest, onProgress)),
+      },
       state: acpRegistryAgentState(input.agentId),
     };
     contexts.set(key, context);

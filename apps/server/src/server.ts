@@ -389,7 +389,15 @@ const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
   // never-persisted sessions rather than going through TerminalManager.
   // One-click extra accounts sit on top: they create and remove instances
   // and their folders, and stop a removed account's sign-in run.
-  Layer.provideMerge(ProviderAccountsLive.pipe(Layer.provideMerge(ProviderAuthSessionsLive))),
+  // Community agents sit there too: the list, add, update and remove. Their
+  // installs go through the maintenance runner the routes use (the same
+  // layer, so it is built once).
+  Layer.provideMerge(
+    Layer.mergeAll(
+      ProviderAccountsLive,
+      AcpRegistryAgentsLive.pipe(Layer.provide(ProviderMaintenanceRunner.layer)),
+    ).pipe(Layer.provideMerge(ProviderAuthSessionsLive)),
+  ),
   Layer.provideMerge(TerminalLayerLive),
   // The browser side of the agent's tools. Holds no resources of its own --
   // it is a rendezvous between a provider turn and whichever client is showing
@@ -473,9 +481,6 @@ export const makeRoutesLayer = Layer.mergeAll(
   // Build setup services once for the HTTP server, not once per WebSocket.
   Layer.provide(SourceControlToolMaintenance.layer.pipe(Layer.provide(VcsProcess.layer))),
   Layer.provide(GitHubAuth.layer),
-  // Community agents: the list, add, update and remove. Its installs run
-  // through the maintenance runner below (the same layer, so built once).
-  Layer.provide(AcpRegistryAgentsLive.pipe(Layer.provide(ProviderMaintenanceRunner.layer))),
   Layer.provide(ProviderMaintenanceRunner.layer),
   // One registry for the whole server: a retried bootstrap turn start must
   // find the run in flight even when it arrives on a different socket. The

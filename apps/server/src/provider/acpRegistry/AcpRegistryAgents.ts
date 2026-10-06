@@ -43,11 +43,13 @@ import { ProviderAuthSessions } from "../auth/ProviderAuthSessions.ts";
 import {
   type AcpRegistryAgentContext,
   acpRegistryAgentContext,
+  acpRegistryToolsDirs,
   forgetAcpRegistryAgentContext,
   writeAcpRegistryListing,
 } from "../Drivers/AcpRegistryDriver.ts";
 import { deriveProviderInstanceConfigMap } from "../Layers/ProviderInstanceRegistryHydration.ts";
 import { closeLaunchGate } from "../managedRuntime/LaunchGate.ts";
+import { managedNodeReleaseFor } from "../managedRuntime/ManagedNode.ts";
 import { ProviderMaintenanceRunner } from "../providerMaintenanceRunner.ts";
 import { ProviderInstanceRegistry } from "../Services/ProviderInstanceRegistry.ts";
 import { ProviderRegistry } from "../Services/ProviderRegistry.ts";
@@ -58,6 +60,7 @@ import {
   makeAcpRegistryCatalog,
   toAcpRegistryCatalog,
 } from "./AcpRegistryCatalog.ts";
+import { acpRegistryNodes } from "./AcpRegistryNodes.ts";
 
 /** How often the registry is read again for update notices, while a community agent is installed. */
 const UPDATE_CHECK_INTERVAL = Duration.hours(6);
@@ -124,8 +127,8 @@ export const makeAcpRegistryAgents = Effect.fn("makeAcpRegistryAgents")(function
     arch: process.arch,
   });
 
-  /** The community agents in settings, by instance id. */
-  const communityInstances = settingsService.getSettings.pipe(
+  /** The community agents in settings, by instance id. Fails when settings can't be read. */
+  const readCommunityInstances = settingsService.getSettings.pipe(
     Effect.map((settings) =>
       Object.entries(deriveProviderInstanceConfigMap(settings)).flatMap(
         ([instanceId, instance]): Array<
@@ -138,11 +141,38 @@ export const makeAcpRegistryAgents = Effect.fn("makeAcpRegistryAgents")(function
         },
       ),
     ),
-    Effect.orElseSucceed(() => []),
   );
+  const communityInstances = readCommunityInstances.pipe(Effect.orElseSucceed(() => []));
 
   const contextFor = (agentId: string, displayName: string): AcpRegistryAgentContext =>
     acpRegistryAgentContext({ stateDir: serverConfig.stateDir, agentId, displayName });
+
+  // npm agents run on a Node.js that Threadlines installs. Where there is
+  // none for this computer they can't be installed, so they aren't listed.
+  const hasManagedNode = managedNodeReleaseFor(process.platform, process.arch) !== undefined;
+  const installable = (snapshot: AcpRegistryCatalogSnapshot): AcpRegistryCatalogSnapshot => {
+    if (hasManagedNode) return snapshot;
+    const entries = snapshot.entries.filter((entry) => entry.recipe.kind !== "npm");
+    return {
+      ...snapshot,
+      entries,
+      unsupportedCount: snapshot.unsupportedCount + snapshot.entries.length - entries.length,
+    };
+  };
+
+  /** Deletes the Node.js releases that no installed community agent runs on any more. */
+  const pruneNode = acpRegistryNodes(acpRegistryToolsDirs(serverConfig.stateDir).node).prune(
+    Effect.gen(function* () {
+      const releases = [];
+      for (const [, instance, agentId] of yield* readCommunityInstances) {
+        const installed = yield* contextFor(agentId, instance.displayName ?? agentId).installer
+          .installed;
+        if (installed?.receipt.node) releases.push(installed.receipt.node);
+      }
+      return releases;
+      // Settings that can't be read say nothing about which agents are there.
+    }).pipe(Effect.orElseSucceed(() => undefined)),
+  );
 
   /**
    * Compares what is installed with the listing: a newer version becomes the
@@ -174,7 +204,10 @@ export const makeAcpRegistryAgents = Effect.fn("makeAcpRegistryAgents")(function
     });
 
   const readCatalog = (refresh: boolean) =>
-    catalog.get({ refresh }).pipe(Effect.tap((snapshot) => noteUpdates(snapshot)));
+    catalog.get({ refresh }).pipe(
+      Effect.map(installable),
+      Effect.tap((snapshot) => noteUpdates(snapshot)),
+    );
 
   const waitForInstance = (instanceId: ProviderInstanceId, present: boolean) =>
     Effect.gen(function* () {
@@ -336,6 +369,8 @@ export const makeAcpRegistryAgents = Effect.fn("makeAcpRegistryAgents")(function
         .record("provider.community_agent.removed", { agentId, version: version ?? "unknown" })
         .pipe(Effect.ignore);
       yield* waitForInstance(instanceId, false);
+      // Its Node.js goes too, when it was the last agent on that release.
+      yield* pruneNode.pipe(Effect.forkDetach);
     });
 
   const prepareMaintenance: AcpRegistryAgentsShape["prepareMaintenance"] = (input) =>
@@ -362,7 +397,8 @@ export const makeAcpRegistryAgents = Effect.fn("makeAcpRegistryAgents")(function
         if (context.state.updateCandidate?.recipeDigest !== recipeDigest) {
           return yield* Effect.fail(lookAgain);
         }
-        const snapshot = yield* catalog.peek;
+        const peeked = yield* catalog.peek;
+        const snapshot = peeked && installable(peeked);
         const entry = snapshot?.entries.find(
           (candidate) =>
             candidate.agent.agentId === agentId && candidate.agent.recipeDigest === recipeDigest,
@@ -383,8 +419,10 @@ export const makeAcpRegistryAgents = Effect.fn("makeAcpRegistryAgents")(function
     });
 
   // Update notices: read the registry now and then, but only while a
-  // community agent is there to have one.
+  // community agent is there to have one. The same round clears Node.js
+  // releases an update or a removal left without an agent.
   yield* Effect.gen(function* () {
+    yield* pruneNode;
     if ((yield* communityInstances).length === 0) return;
     yield* readCatalog(true).pipe(Effect.ignore);
   }).pipe(
