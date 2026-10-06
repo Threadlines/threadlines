@@ -19,6 +19,7 @@ import { LoaderIcon } from "lucide-react";
 import type { ReactNode } from "react";
 
 import { cn } from "../../lib/utils";
+import { useIsCommunityAgent } from "../settings/communityAgents";
 import { useAntigravityNextStep } from "../settings/useAntigravityNextStep";
 import {
   type ProviderConnectFlowController,
@@ -116,6 +117,12 @@ export function ProviderSignInButton({
     );
   }
   const buttonLabel = antigravityStep?.label ?? label;
+  // A community agent's sign-in may ask for a page to be opened, or be a
+  // command to type into: both need the room its Account tab has.
+  const isCommunityAgent = useIsCommunityAgent(view.instanceId);
+  if (isCommunityAgent) {
+    return <ProviderSignInSettingsLink instanceId={view.instanceId} className={className} />;
+  }
   if (view.needsTerminal && !view.hasFailed) {
     return <ProviderSignInSettingsLink instanceId={view.instanceId} className={className} />;
   }

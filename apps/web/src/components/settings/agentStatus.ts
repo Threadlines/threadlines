@@ -17,7 +17,7 @@ import type {
   ServerProvider,
   ServerProviderDetection,
 } from "@threadlines/contracts";
-import { providerCanSignIn } from "@threadlines/shared/providerAuth";
+import { serverProviderCanSignIn } from "@threadlines/shared/providerAuth";
 
 import { getModelPickerProviderAvailability } from "../chat/modelPickerEmptyState";
 import { deriveProviderInstallView, type ProviderInstallView } from "./providerInstall";
@@ -68,10 +68,10 @@ export function deriveAgentStatus(input: {
   if (getModelPickerProviderAvailability(snapshot) === "notAuthenticated") {
     return {
       kind: "needsSignIn",
-      // A community agent: whether Threadlines can run a sign-in it offers.
-      canSignIn:
-        providerCanSignIn(input.driverKind) ||
-        (snapshot.community?.signIn.selected ?? null) !== null,
+      canSignIn: serverProviderCanSignIn({
+        driver: input.driverKind,
+        community: snapshot.community,
+      }),
     };
   }
   if (snapshot.status === "error") {

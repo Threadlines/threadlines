@@ -91,6 +91,8 @@ export function CommunityAgentsSection(props: {
   readonly computerName: string;
   /** Bumped by the page's "Check again": the list is read from the registry again. */
   readonly refreshRequest: number;
+  /** The page was opened for this group: bring it into view. */
+  readonly revealOnArrival?: boolean;
   readonly onAdded: (instanceId: ProviderInstanceId) => void;
 }) {
   const [state, setState] = useState<CatalogState>({ kind: "loading" });
@@ -100,6 +102,14 @@ export function CommunityAgentsSection(props: {
   const [addingAgentId, setAddingAgentId] = useState<string | null>(null);
   // Only the newest request may write the list.
   const loadSeq = useRef(0);
+  const sectionRef = useRef<HTMLElement>(null);
+  // When the page was opened for this group: once as it opens, and once
+  // more when the list has arrived and the page has its final height.
+  const revealOnArrival = props.revealOnArrival ?? false;
+  const isLoading = state.kind === "loading";
+  useEffect(() => {
+    if (revealOnArrival) sectionRef.current?.scrollIntoView({ block: "start" });
+  }, [revealOnArrival, isLoading]);
 
   const load = useCallback((refresh: boolean) => {
     const seq = ++loadSeq.current;
@@ -176,7 +186,7 @@ export function CommunityAgentsSection(props: {
   };
 
   return (
-    <section aria-label="Community agents" data-testid="community-agents">
+    <section ref={sectionRef} aria-label="Community agents" data-testid="community-agents">
       <ProviderGroupHeading
         label="Community agents"
         count={catalog ? available.length : undefined}

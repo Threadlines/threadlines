@@ -1071,6 +1071,7 @@ function ProviderUsageLinkRow() {
 
 export function ProviderSettingsPanel({
   focusedInstanceId = null,
+  showCommunityAgents = false,
 }: {
   /**
    * The row to open on arrival, from the route's `?instance=`. It is how a
@@ -1078,6 +1079,8 @@ export function ProviderSettingsPanel({
    * the interactive terminal those surfaces have no room for.
    */
   readonly focusedInstanceId?: string | null;
+  /** Arrive at the Community agents group, from the route's `?section=community`. */
+  readonly showCommunityAgents?: boolean;
 } = {}) {
   const settings = useSettings();
   const { updateSettings } = useUpdateSettings();
@@ -1605,6 +1608,7 @@ export function ProviderSettingsPanel({
         addedAgentIds={communityAgentIds}
         computerName={agentComputerName}
         refreshRequest={communityRefreshRequest}
+        revealOnArrival={showCommunityAgents}
         onAdded={openProviderRow}
       />
 

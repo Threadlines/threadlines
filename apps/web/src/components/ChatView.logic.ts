@@ -17,7 +17,7 @@ import {
   findProviderAuthRetryUserMessageIndex,
   isProviderAuthErrorMessage,
   providerAuthReconnectCommand,
-  providerCanSignIn,
+  serverProviderCanSignIn,
 } from "@threadlines/shared/providerAuth";
 import { isTemporaryWorktreeBranch } from "@threadlines/shared/git";
 import { isFilesystemPathWithin } from "@threadlines/shared/path";
@@ -1663,7 +1663,7 @@ export function deriveProviderSendPreflight(input: {
     provider: provider.driver,
     instanceId: provider.instanceId,
     providerLabel: provider.displayName?.trim() || formatProviderDriverKindLabel(provider.driver),
-    canSignIn: providerCanSignIn(provider.driver),
+    canSignIn: serverProviderCanSignIn(provider),
   };
 }
 

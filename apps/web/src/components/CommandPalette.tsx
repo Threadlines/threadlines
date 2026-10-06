@@ -1763,6 +1763,17 @@ function OpenCommandPaletteDialog() {
 
   actionItems.push({
     kind: "action",
+    value: "action:community-agents",
+    searchTerms: ["community", "agents", "add agent", "install agent", "acp", "registry"],
+    title: "Browse community agents",
+    icon: <BotIcon className={ITEM_ICON_CLASS} />,
+    run: async () => {
+      await navigate({ to: "/settings/providers", search: { section: "community" } });
+    },
+  });
+
+  actionItems.push({
+    kind: "action",
     value: "action:skills",
     searchTerms: ["skills", "plugins", "extensions", "agents", "capabilities"],
     title: "Open skills",

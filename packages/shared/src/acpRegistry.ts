@@ -22,6 +22,13 @@ const INSTANCE_ID_PREFIX = "acp_";
 export const acpRegistryInstanceId = (agentId: string): ProviderInstanceId =>
   ProviderInstanceId.make(`${INSTANCE_ID_PREFIX}${agentId}`);
 
+/**
+ * Whether an instance id is a community agent's. For an instance that is
+ * gone: one that is still there says so itself (driver `acpRegistry`).
+ */
+export const isAcpRegistryInstanceId = (instanceId: string): boolean =>
+  instanceId.startsWith(INSTANCE_ID_PREFIX);
+
 /** What the wording below reads from a listed or installed agent. */
 export interface AcpRegistryAgentWording {
   readonly name: string;

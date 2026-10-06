@@ -727,6 +727,16 @@ export function AgentSetupScreen({ routeStep }: { readonly routeStep: SetupStep 
               ? "Not sure where to start? OpenCode's free models work without an account."
               : "Agents you don't pick stay in Settings › Providers, ready to add later."}
           </p>
+          <p className="mt-1.5 text-center text-xs text-muted-foreground/62">
+            Use a different agent?{" "}
+            <Link
+              to="/settings/providers"
+              search={{ section: "community" }}
+              className="text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+            >
+              Browse community agents
+            </Link>
+          </p>
         </>
       );
       footer = (
