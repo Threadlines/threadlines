@@ -12,6 +12,7 @@ import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "
 import { Link } from "@tanstack/react-router";
 import {
   type AntigravityAuthMethod,
+  ACP_REGISTRY_DRIVER_KIND,
   isProviderDriverKind,
   PROVIDER_DISPLAY_NAMES,
   ProviderDriverKind,
@@ -1373,10 +1374,12 @@ export function ProviderInstanceCard({
     driverOption?.label ||
     (driverKind ? PROVIDER_DISPLAY_NAMES[driverKind] : undefined) ||
     String(instance.driver);
+  const isCommunityAgent = instance.driver === ACP_REGISTRY_DRIVER_KIND;
   const displayName = formatProviderInstanceName({
     agentName,
     displayName: instance.displayName,
     isDefault: String(instanceId) === String(instance.driver),
+    ownsName: isCommunityAgent,
   });
   const [addingAccount, setAddingAccount] = useState(false);
   const [seenAddAccountRequest, setSeenAddAccountRequest] = useState(addAccount?.openRequest ?? 0);

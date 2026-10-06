@@ -113,10 +113,21 @@ export function formatProviderInstanceName(input: {
   readonly agentName: string;
   readonly displayName: string | undefined;
   readonly isDefault: boolean;
+  /**
+   * The instance is an agent of its own rather than an account of
+   * `agentName` (a community agent): its name stands alone.
+   */
+  readonly ownsName?: boolean | undefined;
 }): string {
   const name = input.displayName?.trim();
   if (!name) return input.agentName;
-  if (input.isDefault || name.toLowerCase().includes(input.agentName.toLowerCase())) return name;
+  if (
+    input.isDefault ||
+    input.ownsName === true ||
+    name.toLowerCase().includes(input.agentName.toLowerCase())
+  ) {
+    return name;
+  }
   return `${input.agentName} · ${name}`;
 }
 
@@ -164,6 +175,7 @@ function resolveInstanceDisplayName(
       agentName: kindLabel,
       displayName: trimmedSnapshotName,
       isDefault,
+      ownsName: driverKind === ACP_REGISTRY_DRIVER_KIND,
     });
   }
   if (!isDefault) {
