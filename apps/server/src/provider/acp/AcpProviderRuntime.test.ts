@@ -177,4 +177,110 @@ describe("applyAcpModelSelection", () => {
 
     expect(calls).toEqual([]);
   });
+  it("native controls send no model to an agent that offers no model choice", async () => {
+    const permissionOnly: ReadonlyArray<EffectAcpSchema.SessionConfigOption> = [
+      {
+        id: "permission",
+        name: "Permissions",
+        category: "mode",
+        type: "select",
+        currentValue: "ask",
+        options: [
+          { value: "ask", name: "Ask" },
+          { value: "code", name: "Code" },
+        ],
+      },
+    ];
+    const { calls, runtime } = makeRecordingRuntime(permissionOnly);
+    await Effect.runPromise(
+      applyAcpModelSelection({
+        descriptor: { sessionControls: "native" },
+        runtime,
+        model: "default",
+        // The agent's own mode is an option the user set.
+        selections: [{ id: "permission", value: "code" }],
+        mapError,
+      }),
+    );
+    expect(calls).toEqual([{ type: "config", configId: "permission", value: "code" }]);
+  });
+  it("native controls never send the stand-in Default model as if it were one of the agent's", async () => {
+    const realModels: ReadonlyArray<EffectAcpSchema.SessionConfigOption> = [
+      {
+        id: "sigit-model",
+        name: "Model",
+        category: "model",
+        type: "select",
+        currentValue: "small",
+        options: [
+          { value: "small", name: "Small" },
+          { value: "large", name: "Large" },
+        ],
+      },
+    ];
+    const run = async (model: string) => {
+      const { calls, runtime } = makeRecordingRuntime(realModels);
+      await Effect.runPromise(
+        applyAcpModelSelection({
+          descriptor: { sessionControls: "native" },
+          runtime,
+          model,
+          selections: [],
+          mapError,
+        }),
+      );
+      return calls;
+    };
+    expect(await run("default")).toEqual([]);
+    expect(await run("large")).toEqual([{ type: "model", value: "large" }]);
+  });
+
+  it("native controls skip a saved option that an earlier change retired", async () => {
+    const permission = {
+      id: "permission",
+      name: "Permissions",
+      category: "mode",
+      type: "select",
+      currentValue: "ask",
+      options: [
+        { value: "ask", name: "Ask" },
+        { value: "code", name: "Code" },
+      ],
+    } satisfies EffectAcpSchema.SessionConfigOption;
+    const effort = {
+      id: "effort",
+      name: "Effort",
+      category: "thought_level",
+      type: "select",
+      currentValue: "low",
+      options: [
+        { value: "low", name: "Low" },
+        { value: "high", name: "High" },
+      ],
+    } satisfies EffectAcpSchema.SessionConfigOption;
+    // Like a real agent: choosing "code" takes the effort option away.
+    let offered: ReadonlyArray<EffectAcpSchema.SessionConfigOption> = [permission, effort];
+    const calls: Array<RecordedCall> = [];
+    await Effect.runPromise(
+      applyAcpModelSelection({
+        descriptor: { sessionControls: "native" },
+        runtime: {
+          getConfigOptions: Effect.sync(() => offered),
+          setModel: (value: string) => Effect.sync(() => void calls.push({ type: "model", value })),
+          setConfigOption: (configId: string, value: string | boolean) =>
+            Effect.sync(() => {
+              calls.push({ type: "config", configId, value });
+              if (configId === "permission") offered = [permission];
+            }),
+        },
+        model: "default",
+        selections: [
+          { id: "permission", value: "code" },
+          { id: "effort", value: "high" },
+        ],
+        mapError,
+      }),
+    );
+    expect(calls).toEqual([{ type: "config", configId: "permission", value: "code" }]);
+  });
 });

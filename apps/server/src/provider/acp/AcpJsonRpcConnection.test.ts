@@ -394,4 +394,139 @@ describe("AcpSessionRuntime", () => {
       Effect.ensuring(Effect.sync(() => rmSync(tempDir, { recursive: true, force: true }))),
     );
   });
+
+  it.effect("keeps what the agent said about itself when it then refuses a session", () =>
+    Effect.gen(function* () {
+      const runtime = yield* AcpSessionRuntime;
+      const error = yield* runtime.start().pipe(Effect.flip);
+      expect(error._tag === "AcpRequestError" && error.code).toBe(-32000);
+      // A signed-out agent's sign-in methods are in the answer it did give.
+      expect((yield* runtime.getInitializeResult)?.authMethods).toEqual([
+        { id: "mock-login", name: "Log in to Mock" },
+      ]);
+    }).pipe(
+      Effect.provide(
+        AcpSessionRuntime.layer({
+          spawn: { command: nodeExe, args: [mockAgentPath], env: { T3_ACP_AUTH_REQUIRED: "1" } },
+          cwd: process.cwd(),
+          clientInfo: { name: "t3-test", version: "0.0.0" },
+        }),
+      ),
+      Effect.scoped,
+      Effect.provide(NodeServices.layer),
+    ),
+  );
+
+  it.effect("native controls drive the older modes and models fields as options", () => {
+    const requests: Array<{ method: string; payload: unknown }> = [];
+    return Effect.gen(function* () {
+      const runtime = yield* AcpSessionRuntime;
+      yield* runtime.start();
+      const optionIds = (yield* runtime.getConfigOptions).map((option) => [
+        option.id,
+        option.category,
+        option.currentValue,
+      ]);
+      expect(optionIds).toEqual([
+        ["mode", "mode", "ask"],
+        ["model", "model", "default"],
+      ]);
+
+      yield* runtime.setConfigOption("mode", "code");
+      yield* runtime.setModel("composer-2");
+
+      // Each goes out the way that field is set, never as a config option.
+      const sent = requests.filter((request) => request.method.startsWith("session/set_"));
+      expect(sent).toEqual([
+        { method: "session/set_mode", payload: { sessionId: "mock-session-1", modeId: "code" } },
+        {
+          method: "session/set_model",
+          payload: { sessionId: "mock-session-1", modelId: "composer-2" },
+        },
+      ]);
+      expect((yield* runtime.getConfigOptions).map((option) => option.currentValue)).toEqual([
+        "code",
+        "composer-2",
+      ]);
+    }).pipe(
+      Effect.provide(
+        AcpSessionRuntime.layer({
+          spawn: { command: nodeExe, args: [mockAgentPath], env: { T3_ACP_LEGACY_CONTROLS: "1" } },
+          cwd: process.cwd(),
+          clientInfo: { name: "t3-test", version: "0.0.0" },
+          sessionControls: "native",
+          requestLogger: (event) =>
+            Effect.sync(() => {
+              if (event.status === "started") {
+                requests.push({ method: event.method, payload: event.payload });
+              }
+            }),
+        }),
+      ),
+      Effect.scoped,
+      Effect.provide(NodeServices.layer),
+    );
+  });
+
+  it.effect("native controls take the agent's own option updates; mapped ones don't", () => {
+    const optionIdsAfterPrompt = (sessionControls: "native" | "mapped") =>
+      Effect.gen(function* () {
+        const runtime = yield* AcpSessionRuntime;
+        yield* runtime.start();
+        yield* runtime.prompt({ prompt: [{ type: "text", text: "hi" }] });
+        return (yield* runtime.getConfigOptions).map((option) => option.id);
+      }).pipe(
+        Effect.provide(
+          AcpSessionRuntime.layer({
+            spawn: {
+              command: nodeExe,
+              args: [mockAgentPath],
+              env: { T3_ACP_EMIT_CONFIG_OPTION_UPDATE: "1" },
+            },
+            cwd: process.cwd(),
+            clientInfo: { name: "t3-test", version: "0.0.0" },
+            sessionControls,
+          }),
+        ),
+        Effect.scoped,
+        Effect.provide(NodeServices.layer),
+      );
+    return Effect.gen(function* () {
+      // The update lists only "effort"; the legacy mode stand-in is kept
+      // because the agent still lists no mode option of its own.
+      expect(yield* optionIdsAfterPrompt("native")).toEqual(["effort", "mode"]);
+      expect(yield* optionIdsAfterPrompt("mapped")).toEqual(["model"]);
+    });
+  });
+  it.effect("native controls set the mode through the agent's own option, whatever its id", () => {
+    const requests: Array<{ method: string; payload: unknown }> = [];
+    return Effect.gen(function* () {
+      const runtime = yield* AcpSessionRuntime;
+      yield* runtime.start();
+      yield* runtime.setMode("code");
+      expect(requests.filter((request) => request.method.startsWith("session/set_"))).toEqual([
+        {
+          method: "session/set_config_option",
+          payload: { sessionId: "mock-session-1", configId: "permission", value: "code" },
+        },
+      ]);
+    }).pipe(
+      Effect.provide(
+        AcpSessionRuntime.layer({
+          spawn: { command: nodeExe, args: [mockAgentPath], env: { T3_ACP_NO_MODEL: "1" } },
+          cwd: process.cwd(),
+          clientInfo: { name: "t3-test", version: "0.0.0" },
+          sessionControls: "native",
+          requestLogger: (event) =>
+            Effect.sync(() => {
+              if (event.status === "started") {
+                requests.push({ method: event.method, payload: event.payload });
+              }
+            }),
+        }),
+      ),
+      Effect.scoped,
+      Effect.provide(NodeServices.layer),
+    );
+  });
 });

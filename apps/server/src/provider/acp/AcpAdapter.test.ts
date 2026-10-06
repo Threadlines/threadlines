@@ -28,6 +28,7 @@ import {
 import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { type AcpAdapterShape, acpDiffFileChanges, makeAcpAdapter } from "./AcpAdapter.ts";
+import { discoverAcpModels } from "./AcpProvider.ts";
 import { CURSOR_ACP_DESCRIPTOR } from "./CursorAcpSupport.ts";
 const decodeCursorSettings = Schema.decodeSync(CursorSettings);
 
@@ -179,6 +180,176 @@ const cursorAdapterTestLayer = it.layer(
     Layer.provideMerge(NodeServices.layer),
   ),
 );
+
+// An agent driven through its own controls (the ACP registry's kind): the
+// Cursor descriptor, flagged native.
+class NativeControlsAdapter extends Context.Service<NativeControlsAdapter, AcpAdapterShape>()(
+  "test/NativeControlsAdapter",
+) {}
+let authRequiredNotices = 0;
+
+const nativeControlsAdapterTestLayer = it.layer(
+  Layer.effect(
+    NativeControlsAdapter,
+    Effect.gen(function* () {
+      const resolveSettings = yield* makeResolveCursorSettings;
+      return yield* makeAcpAdapter(
+        {
+          ...CURSOR_ACP_DESCRIPTOR,
+          sessionControls: "native",
+          // Counts the notice, then breaks: a driver's mistake here must never
+          // replace the agent's own answer.
+          onAuthRequired: () =>
+            Effect.sync(() => {
+              authRequiredNotices += 1;
+              throw new Error("the driver's sign-in hook broke");
+            }),
+        },
+        decodeCursorSettings({}),
+        { resolveSettings },
+      );
+    }),
+  ).pipe(
+    Layer.provideMerge(ServerSettingsService.layerTest()),
+    Layer.provideMerge(
+      ServerConfig.layerTest(process.cwd(), {
+        prefix: "threadlines-native-controls-adapter-test-",
+      }),
+    ),
+    Layer.provideMerge(NodeServices.layer),
+  ),
+);
+
+nativeControlsAdapterTestLayer("an agent driven through its own controls", (it) => {
+  it.effect("never has its mode changed for it, in plan mode or full access", () =>
+    Effect.gen(function* () {
+      const adapter = yield* NativeControlsAdapter;
+      const serverSettings = yield* ServerSettingsService;
+      const threadId = ThreadId.make("native-controls-mode");
+      const tempDir = yield* Effect.promise(() => mkdtemp(path.join(os.tmpdir(), "native-acp-")));
+      const requestLogPath = path.join(tempDir, "requests.ndjson");
+      yield* Effect.promise(() => writeFile(requestLogPath, "", "utf8"));
+      const wrapperPath = yield* Effect.promise(() =>
+        makeProbeWrapper(requestLogPath, path.join(tempDir, "argv.txt")),
+      );
+      yield* serverSettings.updateSettings({ providers: { cursor: { binaryPath: wrapperPath } } });
+
+      yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("cursor"),
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+        modelSelection: { instanceId: ProviderInstanceId.make("cursor"), model: "composer-2" },
+      });
+      // The same turn makes a mapped agent switch to its plan mode (see
+      // "maps app plan mode onto the ACP plan session mode").
+      yield* adapter.sendTurn({
+        threadId,
+        input: "plan this change",
+        attachments: [],
+        interactionMode: "plan",
+      });
+      yield* adapter.stopSession(threadId);
+
+      const requests = yield* Effect.promise(() => readJsonLines(requestLogPath));
+      const modeRequests = requests.filter(
+        (entry) =>
+          entry.method === "session/set_mode" ||
+          (entry.method === "session/set_config_option" &&
+            (entry.params as Record<string, unknown> | undefined)?.configId === "mode"),
+      );
+      assert.deepStrictEqual(modeRequests, []);
+      // The model the user picked still goes through.
+      assert.isTrue(
+        requests.some(
+          (entry) =>
+            entry.method === "session/set_config_option" &&
+            (entry.params as Record<string, unknown> | undefined)?.configId === "model",
+        ),
+      );
+    }),
+  );
+
+  it.effect("lists the models and mode of an agent that only speaks the older API", () =>
+    Effect.gen(function* () {
+      const wrapperPath = yield* Effect.promise(() =>
+        makeMockAgentWrapper({ T3_ACP_LEGACY_CONTROLS: "1" }),
+      );
+      const {
+        modelOptions: _modelOptions,
+        modelCapabilitiesVaryByModel: _varies,
+        ...cursorBase
+      } = CURSOR_ACP_DESCRIPTOR;
+      const models = yield* discoverAcpModels(
+        { ...cursorBase, sessionControls: "native" },
+        { ...decodeCursorSettings({}), binaryPath: wrapperPath },
+      );
+      // Its `models` field is the catalog, and its `modes` field an option on each.
+      assert.deepStrictEqual(
+        models.map((model) => [
+          model.slug,
+          model.name,
+          model.capabilities?.optionDescriptors?.map((descriptor) => descriptor.id),
+        ]),
+        [
+          ["default", "Auto", ["mode"]],
+          ["composer-2", "Composer 2", ["mode"]],
+        ],
+      );
+    }),
+  );
+
+  it.effect("tells its driver when it wants a sign-in before it starts", () =>
+    Effect.gen(function* () {
+      const adapter = yield* NativeControlsAdapter;
+      const serverSettings = yield* ServerSettingsService;
+      const wrapperPath = yield* Effect.promise(() =>
+        makeMockAgentWrapper({ T3_ACP_AUTH_REQUIRED: "1" }),
+      );
+      yield* serverSettings.updateSettings({ providers: { cursor: { binaryPath: wrapperPath } } });
+      const before = authRequiredNotices;
+
+      // `result` only catches the adapter's own error: a hook that got loose
+      // would fail this test as a defect.
+      const result = yield* adapter
+        .startSession({
+          threadId: ThreadId.make("native-controls-auth"),
+          provider: ProviderDriverKind.make("cursor"),
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+        })
+        .pipe(Effect.result);
+
+      assert.equal(result._tag, "Failure");
+      assert.equal(authRequiredNotices - before, 1);
+    }),
+  );
+
+  it.effect("tells its driver when a model change is refused until sign-in", () =>
+    Effect.gen(function* () {
+      const adapter = yield* NativeControlsAdapter;
+      const serverSettings = yield* ServerSettingsService;
+      const wrapperPath = yield* Effect.promise(() =>
+        makeMockAgentWrapper({ T3_ACP_FAIL_SET_CONFIG_OPTION: "auth" }),
+      );
+      yield* serverSettings.updateSettings({ providers: { cursor: { binaryPath: wrapperPath } } });
+      const before = authRequiredNotices;
+
+      const result = yield* adapter
+        .startSession({
+          threadId: ThreadId.make("native-controls-auth-on-model"),
+          provider: ProviderDriverKind.make("cursor"),
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+          modelSelection: { instanceId: ProviderInstanceId.make("cursor"), model: "composer-2" },
+        })
+        .pipe(Effect.result);
+
+      assert.equal(result._tag, "Failure");
+      assert.equal(authRequiredNotices - before, 1);
+    }),
+  );
+});
 
 cursorAdapterTestLayer("CursorAdapterLive", (it) => {
   it.effect("starts a session and maps mock ACP prompt flow to runtime events", () =>

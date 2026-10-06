@@ -124,6 +124,69 @@ export function extractModelConfigId(sessionResponse: AcpSessionSetupResponse): 
   return findModelConfigOption(sessionResponse.configOptions)?.id.trim();
 }
 
+/** Ids of the config options that stand in for the older `modes` / `models` fields. */
+export const LEGACY_MODE_OPTION_ID = "mode";
+export const LEGACY_MODEL_OPTION_ID = "model";
+
+/** An option that lets the user choose the agent's mode (its id or category says so). */
+export function isModeConfigOption(option: EffectAcpSchema.SessionConfigOption): boolean {
+  return option.category === "mode" || option.id.trim().toLowerCase() === LEGACY_MODE_OPTION_ID;
+}
+
+/**
+ * The older `modes` and `models` session fields as config options, each only
+ * where the agent lists no option of its own for it. Agents driven through
+ * their own controls (`sessionControls: "native"`) then need one code path:
+ * options. The runtime routes a change of these two to `session/set_mode` /
+ * `session/set_model`. A stand-in never shares an id with an option the
+ * agent lists.
+ */
+export function legacyControlConfigOptions(input: {
+  readonly configOptions: ReadonlyArray<EffectAcpSchema.SessionConfigOption>;
+  readonly modeState: AcpSessionModeState | undefined;
+  readonly modelState: EffectAcpSchema.SessionModelState | null | undefined;
+}): ReadonlyArray<EffectAcpSchema.SessionConfigOption> {
+  const legacy: Array<EffectAcpSchema.SessionConfigOption> = [];
+  if (input.modeState && !input.configOptions.some(isModeConfigOption)) {
+    legacy.push({
+      type: "select",
+      id: LEGACY_MODE_OPTION_ID,
+      name: "Mode",
+      category: "mode",
+      currentValue: input.modeState.currentModeId,
+      options: input.modeState.availableModes.map((mode) => ({
+        value: mode.id,
+        name: mode.name,
+        ...(mode.description ? { description: mode.description } : {}),
+      })),
+    });
+  }
+  const models = (input.modelState?.availableModels ?? []).flatMap((model) => {
+    const value = model.modelId.trim();
+    return value ? [{ value, name: model.name.trim() || value }] : [];
+  });
+  const currentModel = input.modelState?.currentModelId.trim();
+  const modelIdTaken = input.configOptions.some(
+    (option) => option.id.trim().toLowerCase() === LEGACY_MODEL_OPTION_ID,
+  );
+  if (
+    currentModel &&
+    models.length > 0 &&
+    !modelIdTaken &&
+    !findModelConfigOption(input.configOptions)
+  ) {
+    legacy.push({
+      type: "select",
+      id: LEGACY_MODEL_OPTION_ID,
+      name: "Model",
+      category: "model",
+      currentValue: currentModel,
+      options: models,
+    });
+  }
+  return legacy;
+}
+
 export function findSessionConfigOption(
   configOptions: ReadonlyArray<EffectAcpSchema.SessionConfigOption> | null | undefined,
   configId: string,

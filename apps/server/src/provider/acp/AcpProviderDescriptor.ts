@@ -187,6 +187,27 @@ export interface AcpProviderDescriptor<Settings extends AcpProviderSettings> {
     readonly runtimeMode: RuntimeMode;
     readonly interactionMode: ProviderInteractionMode | undefined;
   }) => string | undefined;
+  /**
+   * `"native"` for agents Threadlines has never been tested with (the ACP
+   * registry's), which it drives through their own controls instead of
+   * guessing:
+   * - the agent's mode is never changed from the runtime mode. Its mode
+   *   options show with the other options, for the user to pick. (Mapping by
+   *   name can land on a mode that never asks.) Permission requests are still
+   *   answered by runtime mode;
+   * - mode and model go through whichever API the agent offers: config
+   *   options, else `session/set_mode` / `session/set_model`;
+   * - an agent with no model choice gets one "Default" model that is never
+   *   sent to it.
+   * Default `"mapped"`: today's behaviour.
+   */
+  readonly sessionControls?: "mapped" | "native";
+  /**
+   * The agent refused a session or a turn with ACP's `auth_required`
+   * (-32000). Lets a driver whose sign-in state is only known from such
+   * answers mark the instance signed out at once.
+   */
+  readonly onAuthRequired?: (settings: Settings) => Effect.Effect<void>;
   readonly classifyPermissionRequest?: (
     request: EffectAcpSchema.RequestPermissionRequest,
   ) => AcpPermissionQuestion | undefined;

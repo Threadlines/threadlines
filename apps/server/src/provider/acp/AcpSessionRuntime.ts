@@ -19,7 +19,11 @@ import { hideWindowsConsole } from "@threadlines/shared/childProcess";
 import {
   collectSessionConfigOptionValues,
   extractModelConfigId,
+  findModelConfigOption,
   findSessionConfigOption,
+  isModeConfigOption,
+  LEGACY_MODE_OPTION_ID,
+  legacyControlConfigOptions,
   mergeToolCallState,
   parseSessionModeState,
   parseSessionUpdateEvent,
@@ -104,6 +108,14 @@ export interface AcpSessionRuntimeOptions {
     readonly logOutgoing?: boolean;
     readonly logger?: (event: EffectAcpProtocol.AcpProtocolLogEvent) => Effect.Effect<void, never>;
   };
+  /**
+   * `"native"` for agents Threadlines drives through their own controls
+   * (see `AcpProviderDescriptor.sessionControls`): the older `modes` and
+   * `models` session fields show up as config options and are set with
+   * `session/set_mode` / `session/set_model`, and the agent's own
+   * `config_option_update`s replace the option list.
+   */
+  readonly sessionControls?: "mapped" | "native";
 }
 
 export interface AcpSessionRequestLogEvent {
@@ -153,6 +165,12 @@ export interface AcpSessionRuntimeShape {
    * completion be reported strictly after the deltas it produced.
    */
   readonly flushEvents: Effect.Effect<void>;
+  /**
+   * What the agent answered to `initialize`, as soon as it has: still there
+   * when the session is then refused (an agent that wants a sign-in first
+   * lists its sign-in methods here).
+   */
+  readonly getInitializeResult: Effect.Effect<EffectAcpSchema.InitializeResponse | undefined>;
   readonly getModeState: Effect.Effect<AcpSessionModeState | undefined>;
   readonly getConfigOptions: Effect.Effect<ReadonlyArray<EffectAcpSchema.SessionConfigOption>>;
   readonly prompt: (
@@ -236,8 +254,31 @@ const makeAcpSessionRuntime = (
     const modeStateRef = yield* Ref.make<AcpSessionModeState | undefined>(undefined);
     const toolCallsRef = yield* Ref.make(new Map<string, AcpToolCallState>());
     const assistantSegmentRef = yield* Ref.make<AcpAssistantSegmentState>({ nextSegmentIndex: 0 });
+    // The options the agent lists itself. Readers go through
+    // `readConfigOptions`, which adds the legacy stand-ins for native controls.
     const configOptionsRef = yield* Ref.make(sessionConfigOptionsFromSetup(undefined));
+    const legacyModelStateRef = yield* Ref.make<EffectAcpSchema.SessionModelState | undefined>(
+      undefined,
+    );
+    const initializeResultRef = yield* Ref.make<EffectAcpSchema.InitializeResponse | undefined>(
+      undefined,
+    );
     const startStateRef = yield* Ref.make<AcpStartState>({ _tag: "NotStarted" });
+    const nativeControls = options.sessionControls === "native";
+    const readLegacyConfigOptions = nativeControls
+      ? Effect.gen(function* () {
+          return legacyControlConfigOptions({
+            configOptions: yield* Ref.get(configOptionsRef),
+            modeState: yield* Ref.get(modeStateRef),
+            modelState: yield* Ref.get(legacyModelStateRef),
+          });
+        })
+      : Effect.succeed<ReadonlyArray<EffectAcpSchema.SessionConfigOption>>([]);
+    const readConfigOptions = Effect.gen(function* () {
+      const listed = yield* Ref.get(configOptionsRef);
+      const legacy = yield* readLegacyConfigOptions;
+      return legacy.length === 0 ? listed : [...listed, ...legacy];
+    });
 
     const logRequest = (event: AcpSessionRequestLogEvent) =>
       options.requestLogger ? options.requestLogger(event) : Effect.void;
@@ -373,6 +414,7 @@ const makeAcpSessionRuntime = (
         promptInFlightRef,
         itemIdScope,
         params: notification,
+        ...(nativeControls ? { configOptionsRef } : {}),
       }),
     );
 
@@ -406,7 +448,7 @@ const makeAcpSessionRuntime = (
       value: string | boolean,
     ): Effect.Effect<void, EffectAcpErrors.AcpError> =>
       Effect.gen(function* () {
-        const configOption = findSessionConfigOption(yield* Ref.get(configOptionsRef), configId);
+        const configOption = findSessionConfigOption(yield* readConfigOptions, configId);
         if (!configOption) {
           return;
         }
@@ -469,6 +511,31 @@ const makeAcpSessionRuntime = (
         current ? { ...current, currentModeId: modeId } : current,
       );
 
+    /** A change of a legacy stand-in option, sent the way that field is set. */
+    const setLegacyControl = (
+      sessionId: string,
+      configId: string,
+      value: string,
+    ): Effect.Effect<EffectAcpSchema.SetSessionConfigOptionResponse, EffectAcpErrors.AcpError> =>
+      Effect.gen(function* () {
+        if (configId === LEGACY_MODE_OPTION_ID) {
+          const payload = { sessionId, modeId: value };
+          yield* runLoggedRequest(
+            "session/set_mode",
+            payload,
+            acp.raw.request("session/set_mode", payload),
+          );
+          yield* updateCurrentModeId(value);
+        } else {
+          const payload = { sessionId, modelId: value };
+          yield* runLoggedRequest("session/set_model", payload, acp.agent.setSessionModel(payload));
+          yield* Ref.update(legacyModelStateRef, (current) =>
+            current ? { ...current, currentModelId: value } : current,
+          );
+        }
+        return { configOptions: [...(yield* readConfigOptions)] };
+      });
+
     const setConfigOption = (
       configId: string,
       value: string | boolean,
@@ -476,13 +543,16 @@ const makeAcpSessionRuntime = (
       validateConfigOptionValue(configId, value).pipe(
         Effect.flatMap(() => getStartedState),
         Effect.flatMap((started) =>
-          Ref.get(configOptionsRef).pipe(
-            Effect.flatMap((configOptions) => {
+          Effect.all([readConfigOptions, readLegacyConfigOptions]).pipe(
+            Effect.flatMap(([configOptions, legacy]) => {
               const existing = findSessionConfigOption(configOptions, configId);
               if (existing && configOptionCurrentValueMatches(existing, value)) {
                 return Effect.succeed({
                   configOptions,
                 } satisfies EffectAcpSchema.SetSessionConfigOptionResponse);
+              }
+              if (legacy.some((option) => option.id === configId) && typeof value === "string") {
+                return setLegacyControl(started.sessionId, configId, value);
               }
               const requestPayload =
                 typeof value === "boolean"
@@ -501,11 +571,44 @@ const makeAcpSessionRuntime = (
                 "session/set_config_option",
                 requestPayload,
                 acp.agent.setSessionConfigOption(requestPayload),
-              ).pipe(Effect.tap((response) => updateConfigOptions(response)));
+              ).pipe(
+                Effect.tap((response) => updateConfigOptions(response)),
+                Effect.flatMap((response) =>
+                  nativeControls
+                    ? readConfigOptions.pipe(
+                        Effect.map((composed) => ({ ...response, configOptions: composed })),
+                      )
+                    : Effect.succeed(response),
+                ),
+              );
             }),
           ),
         ),
       );
+
+    // Native controls: the option ids are the agent's own (`permission`,
+    // `sigit-model`) and can change with its updates, so they are looked up
+    // when used. Mapped controls keep the conventional ids.
+    const modeConfigId = nativeControls
+      ? readConfigOptions.pipe(
+          Effect.map(
+            (configOptions) =>
+              (
+                configOptions.find(
+                  (option) => option.id.trim().toLowerCase() === LEGACY_MODE_OPTION_ID,
+                ) ??
+                configOptions.find(
+                  (option) => option.type === "select" && isModeConfigOption(option),
+                )
+              )?.id ?? LEGACY_MODE_OPTION_ID,
+          ),
+        )
+      : Effect.succeed(LEGACY_MODE_OPTION_ID);
+    const currentModelConfigId = nativeControls
+      ? readConfigOptions.pipe(
+          Effect.map((configOptions) => findModelConfigOption(configOptions)?.id.trim()),
+        )
+      : Effect.succeed<string | undefined>(undefined);
 
     const startOnce = Effect.gen(function* () {
       const initializePayload = {
@@ -519,6 +622,8 @@ const makeAcpSessionRuntime = (
         initializePayload,
         acp.agent.initialize(initializePayload),
       );
+
+      yield* Ref.set(initializeResultRef, initializeResult);
 
       if (shouldAuthenticate(options.authMethodId, initializeResult.authMethods)) {
         const authenticatePayload = {
@@ -597,7 +702,17 @@ const makeAcpSessionRuntime = (
       }
 
       yield* Ref.set(modeStateRef, parseSessionModeState(sessionSetupResult));
-      yield* Ref.set(configOptionsRef, sessionConfigOptionsFromSetup(sessionSetupResult));
+      // Native controls: an agent may send its options as a notification
+      // while the session opens and answer without any (`session/load`);
+      // an answer that lists none must not wipe those.
+      const setupListsOptions =
+        sessionSetupResult.configOptions !== undefined && sessionSetupResult.configOptions !== null;
+      if (!nativeControls || setupListsOptions) {
+        yield* Ref.set(configOptionsRef, sessionConfigOptionsFromSetup(sessionSetupResult));
+      }
+      if (nativeControls) {
+        yield* Ref.set(legacyModelStateRef, sessionSetupResult.models ?? undefined);
+      }
 
       const nextState = {
         sessionId,
@@ -664,8 +779,9 @@ const makeAcpSessionRuntime = (
         yield* Queue.offer(eventQueue, { _tag: "EventStreamBarrier", acknowledge });
         yield* Deferred.await(acknowledge).pipe(Effect.timeout(EVENT_FLUSH_TIMEOUT), Effect.ignore);
       }),
+      getInitializeResult: Ref.get(initializeResultRef),
       getModeState: Ref.get(modeStateRef),
-      getConfigOptions: Ref.get(configOptionsRef),
+      getConfigOptions: readConfigOptions,
       prompt: (payload) =>
         getStartedState.pipe(
           Effect.flatMap((started) => {
@@ -704,7 +820,8 @@ const makeAcpSessionRuntime = (
             if (modeState?.currentModeId === modeId) {
               return Effect.succeed({} satisfies EffectAcpSchema.SetSessionModeResponse);
             }
-            return setConfigOption("mode", modeId).pipe(
+            return modeConfigId.pipe(
+              Effect.flatMap((configId) => setConfigOption(configId, modeId)),
               Effect.tap(() => updateCurrentModeId(modeId)),
               Effect.as({} satisfies EffectAcpSchema.SetSessionModeResponse),
             );
@@ -712,8 +829,10 @@ const makeAcpSessionRuntime = (
         ),
       setConfigOption,
       setModel: (model) =>
-        getStartedState.pipe(
-          Effect.flatMap((started) => setConfigOption(started.modelConfigId ?? "model", model)),
+        Effect.all([getStartedState, currentModelConfigId]).pipe(
+          Effect.flatMap(([started, currentId]) =>
+            setConfigOption(currentId ?? started.modelConfigId ?? "model", model),
+          ),
           Effect.asVoid,
         ),
       request: (method, payload) =>
@@ -777,6 +896,7 @@ const handleSessionUpdate = ({
   promptInFlightRef,
   itemIdScope,
   params,
+  configOptionsRef,
 }: {
   readonly queue: Queue.Queue<AcpSessionRuntimeEvent>;
   readonly modeStateRef: Ref.Ref<AcpSessionModeState | undefined>;
@@ -786,8 +906,13 @@ const handleSessionUpdate = ({
   /** Suffix keeping item ids unique across resumes (segment numbering restarts per process). */
   readonly itemIdScope: string;
   readonly params: EffectAcpSchema.SessionNotification;
+  /** Given for native controls only: the agent's own option updates land here. */
+  readonly configOptionsRef?: Ref.Ref<ReadonlyArray<EffectAcpSchema.SessionConfigOption>>;
 }): Effect.Effect<void> =>
   Effect.gen(function* () {
+    if (configOptionsRef && params.update.sessionUpdate === "config_option_update") {
+      yield* Ref.set(configOptionsRef, params.update.configOptions);
+    }
     const parsed = parseSessionUpdateEvent(params);
     if (parsed.modeId) {
       yield* Ref.update(modeStateRef, (current) =>
