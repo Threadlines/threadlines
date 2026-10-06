@@ -54,7 +54,7 @@
     "@vitejs/plugin-react": "^6.1.1",
     "@vitest/browser-playwright": "catalog:",
     "babel-plugin-react-compiler": "1.0.0",
-    "msw": "2.15.0",
+    "msw": "3.0.2",
     "playwright": "^1.62.1",
     "tailwindcss": "^4.3.3",
     "typescript": "catalog:",
