@@ -54,6 +54,7 @@ import {
   type SubagentMetadataUpdatedPayload,
   type RuntimeContentStreamKind,
   RuntimeItemId,
+  type RuntimeMode,
   RuntimeRequestId,
   RuntimeTaskId,
   ThreadId,
@@ -7081,7 +7082,12 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       const fallbackModelIds = splitClaudeFallbackModelOption(fallbackModel);
       const flagSettings = deriveClaudeFlagSettings(modelSelection, modelCapabilities);
       const effectiveEffort = flagSettings.effortLevel;
-      const runtimeModeToPermission: Record<string, PermissionMode> = {
+      // Every mode names its permission mode. Since SDK 0.3.286 an omitted
+      // one is left to the CLI, which applies the user's or project's
+      // `defaultMode` (or auto mode on third-party providers), so "ask before
+      // changes" would stop asking.
+      const runtimeModeToPermission: Record<RuntimeMode, PermissionMode> = {
+        "approval-required": "default",
         "auto-accept-edits": "acceptEdits",
         auto: "auto",
         "full-access": "bypassPermissions",
@@ -7196,7 +7202,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
               effort: effectiveEffort,
             }
           : {}),
-        ...(permissionMode ? { permissionMode } : {}),
+        permissionMode,
         ...(permissionMode === "bypassPermissions"
           ? { allowDangerouslySkipPermissions: true }
           : {}),
@@ -7258,7 +7264,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         "claude.query.model": apiModelId ?? "",
         "claude.query.fallback_model": fallbackModel ?? "",
         "claude.query.effort": effectiveEffort ?? "",
-        "claude.query.permission_mode": permissionMode ?? "",
+        "claude.query.permission_mode": permissionMode,
         "claude.query.auto_mode_clamped": autoModeClamped,
         "claude.query.allow_dangerously_skip_permissions": permissionMode === "bypassPermissions",
         "claude.query.resume": existingResumeSessionId ?? "",
@@ -7407,7 +7413,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             ...(fallbackModel ? { fallbackModel } : {}),
             ...(input.cwd ? { cwd: input.cwd } : {}),
             ...(effectiveEffort ? { effort: effectiveEffort } : {}),
-            ...(permissionMode ? { permissionMode } : {}),
+            permissionMode,
             ...(flagSettings.fastMode ? { fastMode: true } : {}),
             fileCheckpointing: true,
             promptSuggestions: true,

@@ -1306,6 +1306,9 @@ const probeClaudeCapabilities = (
           mcpServers: {},
           strictMcpConfig: true,
           allowedTools: [],
+          // Named so the probe never picks up a settings `defaultMode` (the
+          // SDK stopped filling in "default" in 0.3.286).
+          permissionMode: "default",
           env: claudeEnvironment,
           stderr: () => {},
         },
@@ -1478,6 +1481,9 @@ export const refreshClaudeOAuthCredential = (
           mcpServers: {},
           strictMcpConfig: true,
           allowedTools: [],
+          // Named so third-party providers or telemetry-off setups don't
+          // start this run in auto mode (SDK 0.3.286 left it to the CLI).
+          permissionMode: "default",
           maxTurns: 1,
           model: "haiku",
           env: claudeEnvironment,
