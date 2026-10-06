@@ -426,7 +426,9 @@ export function ProviderConnectFlow({
               )}
             </span>
             <div className="flex shrink-0 items-center gap-1.5">
-              {state.signInUrl && isActive ? (
+              {/* A page the agent asked for has its own box below, and its own
+                  button: not a second one here for a different address. */}
+              {state.signInUrl && isActive && !state.pageRequest ? (
                 <Button
                   type="button"
                   size="sm"

@@ -35,6 +35,7 @@ import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { toastManager } from "../ui/toast";
 import { AgentRow } from "./AgentRow";
+import { communityAgentErrorText } from "./communityAgents";
 import { ProviderGroupHeading } from "./ProviderGroupHeading";
 
 const REGISTRY_URL = "https://github.com/agentclientprotocol/registry";
@@ -114,8 +115,10 @@ export function CommunityAgentsSection(props: {
   const load = useCallback((refresh: boolean) => {
     const seq = ++loadSeq.current;
     setState((current) => (current.kind === "loaded" ? current : { kind: "loading" }));
-    void ensureLocalApi()
-      .server.listAcpRegistryAgents({ refresh })
+    // Inside the chain, so a list that can't even be asked for (an older
+    // server) ends as a message here and never takes the page down.
+    void Promise.resolve()
+      .then(() => ensureLocalApi().server.listAcpRegistryAgents({ refresh }))
       .then(
         (catalog) => {
           if (loadSeq.current === seq) setState({ kind: "loaded", catalog });
@@ -128,10 +131,10 @@ export function CommunityAgentsSection(props: {
               ? current
               : {
                   kind: "failed",
-                  message:
-                    error instanceof Error
-                      ? error.message
-                      : "Couldn't read the community agent list.",
+                  message: communityAgentErrorText(
+                    error,
+                    "Couldn't read the community agent list.",
+                  ),
                 },
           );
         },
@@ -176,7 +179,7 @@ export function CommunityAgentsSection(props: {
           toastManager.add({
             type: "error",
             title: `Could not install ${agent.name}`,
-            description: error instanceof Error ? error.message : "Try again in a moment.",
+            description: communityAgentErrorText(error, "Try again in a moment."),
           });
           // The usual reason is a listing that moved on: show the new one.
           load(true);

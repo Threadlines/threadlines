@@ -78,7 +78,8 @@ export function ProviderUpdatePopover({
   if (!versionAdvisory) {
     return null;
   }
-  const updateCommand = versionAdvisory.updateCommand;
+  // A community agent is updated by Threadlines alone: it has no command to copy.
+  const updateCommand = liveProvider?.community ? null : versionAdvisory.updateCommand;
   const updateState = liveProvider?.updateState ?? null;
   const updateMessage = updateState?.message?.trim() ?? "";
   const updateOutput = updateState?.output?.trim() ?? "";

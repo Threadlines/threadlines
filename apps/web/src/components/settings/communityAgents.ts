@@ -22,3 +22,19 @@ export function useCommunityAgent(
 export function useIsCommunityAgent(instanceId: ProviderInstanceId | null): boolean {
   return useCommunityAgent(instanceId) !== undefined;
 }
+
+/**
+ * What a failed community agent request says on screen: the server's own
+ * sentence when it sent one (`AcpRegistryError`), else `fallback`. Anything
+ * else is a transport error, whose text isn't written for a user.
+ */
+export function communityAgentErrorText(error: unknown, fallback: string): string {
+  const isRegistryError =
+    typeof error === "object" &&
+    error !== null &&
+    "_tag" in error &&
+    error._tag === "AcpRegistryError";
+  return isRegistryError && error instanceof Error && error.message.trim() !== ""
+    ? error.message
+    : fallback;
+}

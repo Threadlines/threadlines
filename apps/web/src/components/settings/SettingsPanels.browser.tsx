@@ -1,6 +1,8 @@
 import "../../index.css";
 
 import {
+  type AcpRegistryCatalog,
+  type AcpRegistryCatalogAgent,
   type AuthAccessStreamEvent,
   type AuthAccessSnapshot,
   AuthSessionId,
@@ -21,6 +23,7 @@ import {
   type ServerConfig,
   type ServerProcessResourceHistoryResult,
   type ServerProvider,
+  type ServerProviderCommunity,
   type SourceControlDiscoveryResult,
   type SourceControlSetupState,
 } from "@threadlines/contracts";
@@ -213,13 +216,27 @@ const providerAuthHarness = vi.hoisted(() => {
     readonly instanceId: string;
     readonly createdAt: string;
   } & (
-    | { readonly type: "command"; readonly flow: string; readonly command: string }
+    | {
+        readonly type: "command";
+        readonly flow: string;
+        readonly command: string;
+        readonly flowId?: string;
+        readonly surface?: "terminal" | "browser";
+      }
     | { readonly type: "output"; readonly data: string }
     | {
         readonly type: "status";
         readonly status: string;
         readonly exitCode: number | null;
         readonly detail: string | null;
+      }
+    | {
+        readonly type: "pageRequest";
+        readonly flowId: string;
+        readonly requestId: string;
+        readonly url: string;
+        readonly message: string | null;
+        readonly settled: boolean;
       }
   );
 
@@ -231,12 +248,20 @@ const providerAuthHarness = vi.hoisted(() => {
     readonly listener: (event: AuthEvent) => void;
   }>();
   const startCalls: Array<{ instanceId: string; flow: string }> = [];
+  const respondCalls: Array<{
+    instanceId: string;
+    flowId: string;
+    requestId: string;
+    accept: boolean;
+  }> = [];
 
   return {
     startCalls,
+    respondCalls,
     reset() {
       listeners.clear();
       startCalls.length = 0;
+      respondCalls.length = 0;
     },
     emit(event: AuthEvent) {
       for (const entry of listeners) {
@@ -253,6 +278,15 @@ const providerAuthHarness = vi.hoisted(() => {
       write: () => Promise.resolve(),
       resize: () => Promise.resolve(),
       stop: () => Promise.resolve(),
+      respond: (input: {
+        instanceId: string;
+        flowId: string;
+        requestId: string;
+        accept: boolean;
+      }) => {
+        respondCalls.push({ ...input });
+        return Promise.resolve();
+      },
       subscribe: (input: { instanceId: string }, listener: (event: AuthEvent) => void) => {
         const entry = { instanceId: input.instanceId, listener };
         listeners.add(entry);
@@ -3500,5 +3534,413 @@ describe("SourceControlSettingsPanel discovery states", () => {
 
     await expect.element(page.getByRole("switch", { name: "Git availability" })).toBeDisabled();
     expect(calls).toBe(1);
+  });
+});
+
+const COMMUNITY_DRIVER = ProviderDriverKind.make("acpRegistry");
+const PI_INSTANCE_ID = ProviderInstanceId.make("acp_pi-acp");
+const digestOf = (seed: string) => seed.repeat(64).slice(0, 64);
+
+function createCommunityCatalogAgent(
+  overrides: Partial<Record<keyof AcpRegistryCatalogAgent, unknown>> & { readonly agentId: string },
+): AcpRegistryCatalogAgent {
+  return {
+    name: overrides.agentId,
+    version: "1.0.0",
+    recipeDigest: digestOf("a"),
+    description: "A coding agent.",
+    authors: ["Someone"],
+    license: "MIT",
+    website: null,
+    repository: null,
+    iconSvg: null,
+    source: "npm",
+    packageSpec: `${overrides.agentId}@1.0.0`,
+    host: null,
+    integrity: "package",
+    ...overrides,
+  } as AcpRegistryCatalogAgent;
+}
+
+function createCommunityCatalog(
+  agents: ReadonlyArray<AcpRegistryCatalogAgent>,
+  overrides: Partial<AcpRegistryCatalog> = {},
+): AcpRegistryCatalog {
+  return {
+    agents,
+    fetchedAt: "2026-10-05T10:00:00.000Z",
+    stale: false,
+    quarantineKnown: true,
+    unsupportedCount: 0,
+    ...overrides,
+  } as AcpRegistryCatalog;
+}
+
+const PI_CATALOG_AGENT = createCommunityCatalogAgent({
+  agentId: "pi-acp",
+  name: "Pi",
+  authors: ["Mario Zechner"],
+  recipeDigest: digestOf("b"),
+  packageSpec: "pi-acp@0.3.0",
+  version: "0.3.0",
+});
+
+/** An installed community agent, as the server reports it and as settings hold it. */
+function createCommunityProvider(
+  overrides: Omit<Partial<ServerProvider>, "community"> & {
+    readonly community?: Partial<ServerProviderCommunity>;
+  } = {},
+): ServerProvider {
+  const { community, ...provider } = overrides;
+  return {
+    instanceId: PI_INSTANCE_ID,
+    driver: COMMUNITY_DRIVER,
+    displayName: "Pi",
+    enabled: true,
+    installed: true,
+    version: "0.3.0",
+    status: "ready",
+    auth: { status: "unknown" },
+    checkedAt: "2026-10-05T10:00:00.000Z",
+    models: [],
+    slashCommands: [],
+    skills: [],
+    ...provider,
+    community: {
+      agentId: "pi-acp",
+      authors: ["Mario Zechner"],
+      website: null,
+      repository: null,
+      iconSvg: null,
+      source: "npm",
+      packageSpec: "pi-acp@0.3.0",
+      host: null,
+      verification: "packageRegistry",
+      confirmedRecipeDigest: digestOf("b"),
+      updateCandidate: null,
+      reportedVersionChanged: false,
+      signIn: { methods: [], selected: null, canSignOut: false },
+      ...community,
+    } as ServerProviderCommunity,
+  } as ServerProvider;
+}
+
+function communityServerConfig(provider: ServerProvider): ServerConfig {
+  const base = createBaseServerConfig();
+  return {
+    ...base,
+    providers: [provider],
+    settings: {
+      ...base.settings,
+      providerInstances: {
+        ...base.settings.providerInstances,
+        [PI_INSTANCE_ID]: {
+          driver: COMMUNITY_DRIVER,
+          displayName: "Pi",
+          enabled: true,
+          config: { agentId: "pi-acp" },
+        },
+      },
+    },
+  };
+}
+
+describe("ProviderSettingsPanel community agents", () => {
+  let mounted:
+    | (Awaited<ReturnType<typeof render>> & {
+        cleanup?: () => Promise<void>;
+        unmount?: () => Promise<void>;
+      })
+    | null = null;
+
+  const mountProviders = async () => {
+    mounted = await renderWithTestRouter(
+      <TestAppProviders>
+        <ProviderSettingsPanel />
+      </TestAppProviders>,
+    );
+  };
+
+  const stubServer = (server: Record<string, unknown>) => {
+    const openExternal = vi.fn().mockResolvedValue(undefined);
+    window.nativeApi = {
+      persistence: {
+        getClientSettings: vi.fn().mockResolvedValue(null),
+        setClientSettings: vi.fn().mockResolvedValue(undefined),
+      },
+      shell: { openExternal },
+      server,
+    } as unknown as LocalApi;
+    return { openExternal };
+  };
+
+  beforeEach(async () => {
+    resetAppAtomRegistryForTests();
+    resetServerStateForTests();
+    await __resetLocalApiForTests();
+    providerAuthHarness.reset();
+    document.body.innerHTML = "";
+  });
+
+  afterEach(async () => {
+    if (mounted) {
+      const teardown = mounted.cleanup ?? mounted.unmount;
+      await teardown?.call(mounted).catch(() => {});
+    }
+    mounted = null;
+    Reflect.deleteProperty(window, "nativeApi");
+    document.body.innerHTML = "";
+    resetServerStateForTests();
+    await __resetLocalApiForTests();
+  });
+
+  it("lists the agents that aren't added yet, filters them, and installs only what was confirmed", async () => {
+    const others = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf"].map(
+      (agentId) => createCommunityCatalogAgent({ agentId, name: `Agent ${agentId}` }),
+    );
+    const listAcpRegistryAgents = vi.fn().mockResolvedValue(
+      createCommunityCatalog([
+        PI_CATALOG_AGENT,
+        ...others,
+        // Already has a row above: not offered again.
+        createCommunityCatalogAgent({ agentId: "added-agent", name: "Added Agent" }),
+      ]),
+    );
+    const addAcpRegistryAgent = vi.fn().mockResolvedValue({ instanceId: PI_INSTANCE_ID });
+    stubServer({ listAcpRegistryAgents, addAcpRegistryAgent });
+    const base = createBaseServerConfig();
+    setServerConfigSnapshot({
+      ...base,
+      settings: {
+        ...base.settings,
+        providerInstances: {
+          [ProviderInstanceId.make("acp_added-agent")]: {
+            driver: COMMUNITY_DRIVER,
+            displayName: "Added Agent",
+            enabled: true,
+            config: { agentId: "added-agent" },
+          },
+        },
+      },
+    });
+
+    await mountProviders();
+
+    const piRow = page.getByTestId("community-agent-pi-acp");
+    await expect.element(piRow).toBeVisible();
+    await expect.element(piRow).toHaveTextContent("Pi");
+    await expect.element(page.getByTestId("community-agent-alpha")).toBeVisible();
+    await expect.element(page.getByTestId("community-agent-added-agent")).not.toBeInTheDocument();
+    // The first look takes the server's saved copy.
+    expect(listAcpRegistryAgents).toHaveBeenCalledWith({ refresh: false });
+
+    await page.getByLabelText("Search community agents").fill("pi");
+    await expect.element(page.getByTestId("community-agent-alpha")).not.toBeInTheDocument();
+    await expect.element(piRow).toBeVisible();
+
+    // Install asks first, in the row, and says who made it and what it can do.
+    await piRow.getByRole("button", { name: "Install", exact: true }).click();
+    await expect
+      .element(
+        page.getByText(
+          "Pi is made by Mario Zechner. Threadlines hasn't reviewed it. It runs on this computer and can read and change files in your projects.",
+        ),
+      )
+      .toBeVisible();
+    expect(addAcpRegistryAgent).not.toHaveBeenCalled();
+
+    await piRow.getByRole("button", { name: "Install", exact: true }).click();
+    // Named by what was on screen: the listing's digest goes with the id.
+    await vi.waitFor(() => {
+      expect(addAcpRegistryAgent).toHaveBeenCalledWith({
+        agentId: "pi-acp",
+        recipeDigest: digestOf("b"),
+      });
+    });
+    expect(addAcpRegistryAgent).toHaveBeenCalledTimes(1);
+  });
+
+  it("offers no install while the registry's quarantine list is unknown", async () => {
+    const addAcpRegistryAgent = vi.fn();
+    stubServer({
+      listAcpRegistryAgents: vi
+        .fn()
+        .mockResolvedValue(createCommunityCatalog([PI_CATALOG_AGENT], { quarantineKnown: false })),
+      addAcpRegistryAgent,
+    });
+    setServerConfigSnapshot(createBaseServerConfig());
+
+    await mountProviders();
+
+    await expect
+      .element(
+        page.getByText(
+          "Couldn't check the registry's quarantine list, so nothing can be installed yet.",
+        ),
+      )
+      .toBeVisible();
+    await expect
+      .element(page.getByTestId("community-agent-pi-acp").getByRole("button", { name: "Install" }))
+      .toBeDisabled();
+    expect(addAcpRegistryAgent).not.toHaveBeenCalled();
+  });
+
+  it("keeps the rest of the page when the community list can't be read", async () => {
+    // A server from before community agents: it has no such request at all.
+    stubServer({});
+    setServerConfigSnapshot({ ...createBaseServerConfig(), providers: [createClaudeProvider()] });
+
+    await mountProviders();
+
+    await expect.element(page.getByText("Couldn't read the community agent list.")).toBeVisible();
+    await expect.element(page.getByLabelText("Toggle Claude details")).toBeVisible();
+  });
+
+  it("updates an added agent to the listing it showed, and removes it only after asking", async () => {
+    const updateProvider = vi.fn().mockResolvedValue({ providers: [] });
+    const removeAcpRegistryAgent = vi.fn().mockResolvedValue(undefined);
+    stubServer({
+      listAcpRegistryAgents: vi.fn().mockResolvedValue(createCommunityCatalog([])),
+      updateProvider,
+      removeAcpRegistryAgent,
+    });
+    setServerConfigSnapshot(
+      communityServerConfig(
+        createCommunityProvider({
+          versionAdvisory: {
+            status: "behind_latest",
+            currentVersion: "0.3.0",
+            latestVersion: "0.4.0",
+            message: "Update available.",
+            checkedAt: "2026-10-05T10:00:00.000Z",
+            updateCommand: "Update Pi (Threadlines downloads it)",
+            canUpdate: true,
+            installCommand: null,
+            canInstall: false,
+          },
+          community: { updateCandidate: { version: "0.4.0", recipeDigest: digestOf("c") } },
+        }),
+      ),
+    );
+
+    await mountProviders();
+
+    // The tag that sets it apart from the agents Threadlines tests.
+    await expect
+      .element(page.getByTestId("provider-instance-row").filter({ hasText: "Community" }))
+      .toHaveTextContent("Pi");
+    await page.getByRole("button", { name: /^Update Pi to / }).click();
+    // The new version is as unreviewed as the old, and there is no command to copy.
+    await expect.element(page.getByText("Threadlines hasn't reviewed this version.")).toBeVisible();
+    await expect.element(page.getByText("or, update manually using")).not.toBeInTheDocument();
+    await page.getByRole("button", { name: "Update now" }).click();
+    await vi.waitFor(() => {
+      expect(updateProvider).toHaveBeenCalledWith({
+        provider: "acpRegistry",
+        instanceId: PI_INSTANCE_ID,
+        recipeDigest: digestOf("c"),
+      });
+    });
+
+    await openProviderDetails("Pi");
+    await page.getByRole("button", { name: "Remove", exact: true }).click();
+    await expect.element(page.getByRole("alertdialog")).toHaveTextContent("Remove Pi?");
+    expect(removeAcpRegistryAgent).not.toHaveBeenCalled();
+    await page
+      .getByRole("alertdialog")
+      .getByRole("button", { name: "Remove", exact: true })
+      .click();
+    await vi.waitFor(() => {
+      expect(removeAcpRegistryAgent).toHaveBeenCalledWith({ instanceId: PI_INSTANCE_ID });
+    });
+  });
+
+  it("shows a page an agent's sign-in asks for, and opens it only on a click", async () => {
+    const { openExternal } = stubServer({
+      listAcpRegistryAgents: vi.fn().mockResolvedValue(createCommunityCatalog([])),
+    });
+    setServerConfigSnapshot(
+      communityServerConfig(
+        createCommunityProvider({
+          status: "error",
+          auth: { status: "unauthenticated" },
+          message: "Sign in to Pi to use it.",
+          community: {
+            signIn: {
+              methods: [
+                {
+                  id: "oauth",
+                  name: "Sign in with Pi",
+                  description: null,
+                  kind: "agent",
+                  envVars: [],
+                },
+              ],
+              selected: "oauth",
+              canSignOut: false,
+            },
+          },
+        }),
+      ),
+    );
+
+    await mountProviders();
+    await openProviderDetails("Pi");
+    await page.getByRole("button", { name: "Sign in", exact: true }).click();
+    await vi.waitFor(() => {
+      expect(providerAuthHarness.startCalls).toEqual([
+        { instanceId: PI_INSTANCE_ID, flow: "login" },
+      ]);
+    });
+
+    const at = "2026-10-05T10:00:00.000Z";
+    providerAuthHarness.emit({
+      instanceId: PI_INSTANCE_ID,
+      createdAt: at,
+      type: "command",
+      flow: "login",
+      command: "Sign in with Pi",
+      flowId: "flow-1",
+      surface: "browser",
+    });
+    providerAuthHarness.emit({
+      instanceId: PI_INSTANCE_ID,
+      createdAt: at,
+      type: "status",
+      status: "running",
+      exitCode: null,
+      detail: null,
+    });
+    // An address the agent printed is shown, never opened for it.
+    providerAuthHarness.emit({
+      instanceId: PI_INSTANCE_ID,
+      createdAt: at,
+      type: "output",
+      data: "Visit https://pi.example/printed to continue\r\n",
+    });
+    providerAuthHarness.emit({
+      instanceId: PI_INSTANCE_ID,
+      createdAt: at,
+      type: "pageRequest",
+      flowId: "flow-1",
+      requestId: "request-1",
+      url: "https://pi.example/device?code=ABCD",
+      message: "Open this page to sign in to Pi.",
+      settled: false,
+    });
+
+    await expect.element(page.getByText("Open this page to sign in to Pi.")).toBeVisible();
+    await expect.element(page.getByText("https://pi.example/device?code=ABCD")).toBeVisible();
+    expect(openExternal).not.toHaveBeenCalled();
+    expect(providerAuthHarness.respondCalls).toEqual([]);
+
+    await page.getByRole("button", { name: "Open sign-in page" }).click();
+    await vi.waitFor(() => {
+      expect(providerAuthHarness.respondCalls).toEqual([
+        { instanceId: PI_INSTANCE_ID, flowId: "flow-1", requestId: "request-1", accept: true },
+      ]);
+    });
+    expect(openExternal).toHaveBeenCalledTimes(1);
+    expect(openExternal).toHaveBeenCalledWith("https://pi.example/device?code=ABCD");
   });
 });

@@ -98,6 +98,7 @@ import { addAccountMenuLabel, isThreadlinesAccountFolder } from "./providerAccou
 import { formatProviderInstanceName } from "../../providerInstances";
 import { getDriverOption } from "./providerDriverMeta";
 import { ProviderGroupHeading } from "./ProviderGroupHeading";
+import { communityAgentErrorText } from "./communityAgents";
 import { CommunityAgentsSection } from "./CommunityAgentsSection";
 import { isLoopbackHostname } from "../../environments/primary/target";
 import { thisComputerLabel } from "./agentStatus";
@@ -1354,7 +1355,7 @@ export function ProviderSettingsPanel({
       toastManager.add({
         type: "error",
         title: `Could not remove ${row.instance.displayName ?? "the agent"}`,
-        description: error instanceof Error ? error.message : "Try again in a moment.",
+        description: communityAgentErrorText(error, "Try again in a moment."),
       });
     } finally {
       setIsRemovingCommunityAgent(false);
