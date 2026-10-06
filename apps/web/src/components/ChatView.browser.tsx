@@ -2919,6 +2919,46 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
+  it("opens setup from a thread without the error screen showing in between", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-open-setup" as MessageId,
+        targetText: "open setup",
+      }),
+    });
+
+    try {
+      // The error screen lasted a frame at most, so look for it ever being
+      // added to the page rather than for it being there at some later moment.
+      let errorScreenShown = false;
+      const noteErrorScreen = (records: MutationRecord[]) => {
+        errorScreenShown ||= records.some((record) =>
+          Array.from(record.addedNodes).some((node) =>
+            node.textContent?.includes("Something went wrong."),
+          ),
+        );
+      };
+      const observer = new MutationObserver(noteErrorScreen);
+      observer.observe(document.body, { childList: true, subtree: true });
+
+      await mounted.router.navigate({ to: "/setup" });
+      await waitForElement(
+        () =>
+          Array.from(document.querySelectorAll("h1")).find(
+            (heading) => heading.textContent === "Which agents do you use?",
+          ) ?? null,
+        "Unable to find the setup screen.",
+      );
+      noteErrorScreen(observer.takeRecords());
+      observer.disconnect();
+
+      expect(errorScreenShown).toBe(false);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("swaps the sidebar Usage action for a history-aware Back action on Usage", async () => {
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
