@@ -34,6 +34,7 @@ import {
   antigravitySignInConfig,
   writeAntigravityProfileSettings,
 } from "../antigravity/AntigravitySignInMethod.ts";
+import { makeLaunchGate } from "../managedRuntime/LaunchGate.ts";
 import { mergeProviderInstanceEnvironment } from "../ProviderInstanceEnvironment.ts";
 import {
   type AntigravityRuntime,
@@ -108,7 +109,7 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
       );
       // Sign-in and sign-out close the instance while they run; their own
       // process starts from a descriptor that ignores the gate.
-      const gate = { busy: false, holds: 0 };
+      const gate = makeLaunchGate();
       const descriptor = makeAntigravityDescriptor({
         paths,
         runtime,

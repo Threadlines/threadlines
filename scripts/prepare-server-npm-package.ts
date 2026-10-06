@@ -25,6 +25,9 @@ const SERVER_NPM_RUNTIME_DEPENDENCIES = new Set([
   "@effect/sql-sqlite-bun",
   "effect",
   "node-pty",
+  // The archive extractor behind managed installs reads tar and tar.bz2 with these.
+  "tar",
+  "unbzip2-stream",
   // CommonJS; Antigravity's managed runtime unpacks its download with it.
   "yauzl",
 ]);
