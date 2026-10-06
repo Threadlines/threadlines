@@ -11,6 +11,7 @@ import { Link } from "@tanstack/react-router";
 import { formatTokens, formatUsd } from "@threadlines/shared/usageFormat";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  ACP_REGISTRY_DRIVER_KIND,
   AUTO_ARCHIVE_INACTIVE_THREADS_DAY_OPTIONS,
   type AutoArchiveInactiveThreadsDays,
   defaultInstanceIdForDriver,
@@ -96,6 +97,9 @@ import { ProviderInstanceCard, type ProviderAddAccountControls } from "./Provide
 import { addAccountMenuLabel, isThreadlinesAccountFolder } from "./providerAccounts.logic";
 import { formatProviderInstanceName } from "../../providerInstances";
 import { getDriverOption } from "./providerDriverMeta";
+import { ProviderGroupHeading } from "./ProviderGroupHeading";
+import { CommunityAgentsSection } from "./CommunityAgentsSection";
+import { isLoopbackHostname } from "../../environments/primary/target";
 import { thisComputerLabel } from "./agentStatus";
 import {
   buildProviderEnablementPatch,
@@ -1065,24 +1069,6 @@ function ProviderUsageLinkRow() {
   );
 }
 
-/** "In use" / "Not in use": a section title above its run of agent rows. */
-function ProviderGroupHeading({
-  label,
-  count,
-  first = false,
-}: {
-  label: string;
-  count: number;
-  first?: boolean;
-}) {
-  return (
-    <div className={cn("flex items-baseline gap-2 px-1 pb-2", first ? "pt-0" : "pt-7")}>
-      <h2 className="text-[15px] leading-5 font-semibold text-foreground">{label}</h2>
-      <span className="font-mono text-[11px] text-muted-foreground tabular-nums">{count}</span>
-    </div>
-  );
-}
-
 export function ProviderSettingsPanel({
   focusedInstanceId = null,
 }: {
@@ -1108,6 +1094,13 @@ export function ProviderSettingsPanel({
   const [addAccountRequests, setAddAccountRequests] = useState<Record<string, number>>({});
   const [accountToRemove, setAccountToRemove] = useState<ProviderSettingsRow | null>(null);
   const [isRemovingAccount, setIsRemovingAccount] = useState(false);
+  // Community agents: the one waiting for its removal to be confirmed, and a
+  // counter that makes the community list read the registry again.
+  const [communityAgentToRemove, setCommunityAgentToRemove] = useState<ProviderSettingsRow | null>(
+    null,
+  );
+  const [isRemovingCommunityAgent, setIsRemovingCommunityAgent] = useState(false);
+  const [communityRefreshRequest, setCommunityRefreshRequest] = useState(0);
   const settleAutoSignIn = useCallback((instanceId: ProviderInstanceId) => {
     setAutoSignInIds((existing) => {
       if (!existing.has(instanceId)) return existing;
@@ -1152,6 +1145,7 @@ export function ProviderSettingsPanel({
     if (refreshingRef.current) return;
     refreshingRef.current = true;
     setIsRefreshingProviders(true);
+    setCommunityRefreshRequest((request) => request + 1);
     void ensureLocalApi()
       .server.refreshProviders()
       .catch((error: unknown) => {
@@ -1338,7 +1332,54 @@ export function ProviderSettingsPanel({
     }
   };
 
+  const confirmRemoveCommunityAgent = async () => {
+    const row = communityAgentToRemove;
+    if (!row || isRemovingCommunityAgent) return;
+    setIsRemovingCommunityAgent(true);
+    try {
+      await ensureLocalApi().server.removeAcpRegistryAgent({ instanceId: row.instanceId });
+      // Favorites and model order live on this device; the server removed the rest.
+      updateSettings({
+        providerModelPreferences: withoutProviderInstanceKey(
+          settings.providerModelPreferences,
+          row.instanceId,
+        ),
+        favorites: withoutProviderInstanceFavorites(settings.favorites ?? [], row.instanceId),
+      });
+      setCommunityAgentToRemove(null);
+    } catch (error) {
+      toastManager.add({
+        type: "error",
+        title: `Could not remove ${row.instance.displayName ?? "the agent"}`,
+        description: error instanceof Error ? error.message : "Try again in a moment.",
+      });
+    } finally {
+      setIsRemovingCommunityAgent(false);
+    }
+  };
+
+  const communityAgentIds = useMemo(
+    () =>
+      new Set(
+        rows.flatMap((row) => {
+          const agentId =
+            row.driver === ACP_REGISTRY_DRIVER_KIND
+              ? (row.instance.config as { readonly agentId?: unknown } | undefined)?.agentId
+              : undefined;
+          return typeof agentId === "string" ? [agentId] : [];
+        }),
+      ),
+    [rows],
+  );
+  // "this Mac" where the agents run on the computer in front of the user;
+  // from a phone or another computer, that computer's name.
+  const agentComputerName =
+    window.desktopBridge !== undefined || isLoopbackHostname(window.location.hostname)
+      ? computerLabel
+      : (primaryEnvironment?.label ?? "the computer Threadlines runs on");
+
   const renderRow = (row: ProviderSettingsRow) => {
+    const isCommunityAgent = row.driver === ACP_REGISTRY_DRIVER_KIND;
     const driverOption = getDriverOption(row.driver);
     const liveProvider = serverProviders.find(
       (candidate) => candidate.instanceId === row.instanceId,
@@ -1374,12 +1415,21 @@ export function ProviderSettingsPanel({
         onUpdate={(next) => updateProviderInstance(row, next)}
         onSaveInstance={(next) => updateSettingsAndPersist(providerInstancePatch(row, next))}
         onEnabledChange={(enabled, options) => setProviderInstanceEnabled(row, enabled, options)}
-        onDelete={row.isDefault ? undefined : () => deleteProviderInstance(row.instanceId)}
-        onRemoveAccount={
-          !row.isDefault && supportsProviderAccounts(String(row.driver))
-            ? () => setAccountToRemove(row)
-            : undefined
+        // A community agent is removed by the server (its files go too),
+        // never just dropped from settings.
+        onDelete={
+          row.isDefault || isCommunityAgent
+            ? undefined
+            : () => deleteProviderInstance(row.instanceId)
         }
+        onRemoveAccount={
+          isCommunityAgent
+            ? () => setCommunityAgentToRemove(row)
+            : !row.isDefault && supportsProviderAccounts(String(row.driver))
+              ? () => setAccountToRemove(row)
+              : undefined
+        }
+        removeLabel={isCommunityAgent ? "Remove" : undefined}
         addAccount={addAccountControlsFor(row)}
         autoSignIn={autoSignInIds.has(row.instanceId)}
         onAutoSignInSettled={settleAutoSignIn}
@@ -1549,10 +1599,55 @@ export function ProviderSettingsPanel({
         ]}
       </div>
 
+      <CommunityAgentsSection
+        addedAgentIds={communityAgentIds}
+        computerName={agentComputerName}
+        refreshRequest={communityRefreshRequest}
+        onAdded={openProviderRow}
+      />
+
       <AddProviderInstanceDialog
         open={isAddInstanceDialogOpen}
         onOpenChange={setIsAddInstanceDialogOpen}
       />
+      <AlertDialog
+        open={communityAgentToRemove !== null}
+        onOpenChange={(open) => {
+          if (!open && !isRemovingCommunityAgent) setCommunityAgentToRemove(null);
+        }}
+      >
+        <AlertDialogPopup>
+          {communityAgentToRemove ? (
+            <>
+              <AlertDialogHeader>
+                <AlertDialogTitle>
+                  Remove {communityAgentToRemove.instance.displayName ?? "this agent"}?
+                </AlertDialogTitle>
+                <AlertDialogDescription>
+                  Threadlines stops it and deletes the files it installed on {agentComputerName}.
+                  Threads that used it keep their history. The agent's own settings and sign-in,
+                  wherever it keeps them, are left as they are.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogClose
+                  render={<Button variant="outline" />}
+                  disabled={isRemovingCommunityAgent}
+                >
+                  Cancel
+                </AlertDialogClose>
+                <Button
+                  variant="destructive"
+                  disabled={isRemovingCommunityAgent}
+                  onClick={() => void confirmRemoveCommunityAgent()}
+                >
+                  {isRemovingCommunityAgent ? "Removing…" : "Remove"}
+                </Button>
+              </AlertDialogFooter>
+            </>
+          ) : null}
+        </AlertDialogPopup>
+      </AlertDialog>
       <AlertDialog
         open={accountToRemove !== null}
         onOpenChange={(open) => {

@@ -1277,6 +1277,8 @@ interface ProviderInstanceCardProps {
   readonly addAccount?: ProviderAddAccountControls | undefined;
   /** Removes this extra account (the caller confirms first). Shown instead of Delete. */
   readonly onRemoveAccount?: (() => void) | undefined;
+  /** What the remove button says. Default "Remove account". */
+  readonly removeLabel?: string | undefined;
   /** A just-added account: start its sign-in as soon as the row offers it. */
   readonly autoSignIn?: boolean | undefined;
   /** The auto sign-in started, or there was nothing to start. */
@@ -1338,6 +1340,7 @@ export function ProviderInstanceCard({
   accountUsageResetInFlight,
   addAccount,
   onRemoveAccount,
+  removeLabel,
   autoSignIn = false,
   onAutoSignInSettled,
 }: ProviderInstanceCardProps) {
@@ -1986,7 +1989,7 @@ export function ProviderInstanceCard({
               {onRemoveAccount ? (
                 <Button size="xs" variant="destructive-outline" onClick={onRemoveAccount}>
                   <Trash2Icon className="size-3" />
-                  Remove account
+                  {removeLabel ?? "Remove account"}
                 </Button>
               ) : onDelete ? (
                 <Button
