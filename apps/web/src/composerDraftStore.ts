@@ -1748,6 +1748,10 @@ function normalizePersistedDraftThreads(
   "draftThreadsByThreadKey" | "logicalProjectDraftThreadKeyByLogicalProjectKey"
 > {
   const draftThreadsByThreadKey: Record<string, PersistedDraftThreadState> = {};
+  // The key each draft says it is filed under, when that key is not the
+  // draft's own `environment:projectId`. It is then a grouping key, a
+  // repository or a folder, and names no project.
+  const groupingKeyByThreadKey = new Map<string, string>();
   const environmentIdByThreadId = new Map<ThreadId, EnvironmentId>();
   if (
     rawProjectDraftThreadIdByProjectKey &&
@@ -1790,12 +1794,15 @@ function normalizePersistedDraftThreads(
         candidateDraftThread.threadId.length > 0
           ? (candidateDraftThread.threadId as ThreadId)
           : (threadKeyOrId as ThreadId));
-      const environmentId =
-        parsedThreadRef?.environmentId ??
-        (typeof candidateDraftThread.environmentId === "string" &&
+      const savedEnvironmentId =
+        typeof candidateDraftThread.environmentId === "string" &&
         candidateDraftThread.environmentId.length > 0
           ? (candidateDraftThread.environmentId as EnvironmentId)
-          : environmentIdByThreadId.get(threadKeyOrId as ThreadId));
+          : null;
+      const environmentId =
+        parsedThreadRef?.environmentId ??
+        savedEnvironmentId ??
+        environmentIdByThreadId.get(threadKeyOrId as ThreadId);
       const projectId = candidateDraftThread.projectId;
       const createdAt = candidateDraftThread.createdAt;
       const branch = candidateDraftThread.branch;
@@ -1821,17 +1828,28 @@ function normalizePersistedDraftThreads(
         continue;
       }
       const normalizedEnvironmentId = environmentId as EnvironmentId;
+      const savedLogicalProjectKey =
+        typeof candidateDraftThread.logicalProjectKey === "string" &&
+        candidateDraftThread.logicalProjectKey.length > 0
+          ? candidateDraftThread.logicalProjectKey
+          : null;
+      if (
+        savedLogicalProjectKey !== null &&
+        savedEnvironmentId !== null &&
+        savedLogicalProjectKey !==
+          projectDraftKey(scopeProjectRef(savedEnvironmentId, projectId as ProjectId))
+      ) {
+        groupingKeyByThreadKey.set(threadKey, savedLogicalProjectKey);
+      }
       draftThreadsByThreadKey[threadKey] = {
         threadId,
         environmentId: normalizedEnvironmentId,
         projectId: projectId as ProjectId,
         logicalProjectKey:
-          typeof candidateDraftThread.logicalProjectKey === "string" &&
-          candidateDraftThread.logicalProjectKey.length > 0
-            ? candidateDraftThread.logicalProjectKey
-            : parsedThreadRef
-              ? projectDraftKey(scopeProjectRef(normalizedEnvironmentId, projectId as ProjectId))
-              : threadKeyOrId,
+          savedLogicalProjectKey ??
+          (parsedThreadRef
+            ? projectDraftKey(scopeProjectRef(normalizedEnvironmentId, projectId as ProjectId))
+            : threadKeyOrId),
         createdAt:
           typeof createdAt === "string" && createdAt.length > 0
             ? createdAt
@@ -1896,8 +1914,12 @@ function normalizePersistedDraftThreads(
           promotedTo: null,
         };
       } else if (
-        draftThreadsByThreadKey[threadKey]?.projectId !== projectRef.projectId ||
-        draftThreadsByThreadKey[threadKey]?.environmentId !== projectRef.environmentId
+        // A draft filed under a grouping key keeps the project it saved. A
+        // folder key looks like `environment:projectId` and, read back as
+        // one, would point the draft at a project that does not exist.
+        groupingKeyByThreadKey.get(threadKey) !== logicalProjectKey &&
+        (draftThreadsByThreadKey[threadKey]?.projectId !== projectRef.projectId ||
+          draftThreadsByThreadKey[threadKey]?.environmentId !== projectRef.environmentId)
       ) {
         draftThreadsByThreadKey[threadKey] = {
           ...draftThreadsByThreadKey[threadKey]!,
