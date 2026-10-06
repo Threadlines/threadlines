@@ -112,6 +112,40 @@ describe("provider update launch notification logic", () => {
     ).toHaveLength(2);
   });
 
+  it("treats each community agent as a program of its own", () => {
+    const communityAgent = (id: string, name: string) => ({
+      ...provider({
+        driver: driver("acpRegistry"),
+        instanceId: instanceId(`acp_${id}`),
+        updateCommand: `Update ${name} (Threadlines downloads it)`,
+      }),
+      displayName: name,
+    });
+    const goose = communityAgent("goose", "goose") as ProviderUpdateCandidate;
+    const gemini = communityAgent("gemini", "Gemini CLI") as ProviderUpdateCandidate;
+
+    // Two agents on one driver, two updates: neither stands in for the other,
+    // and their different commands don't rule out a one-click update.
+    expect(collectProviderUpdateCandidates([goose, gemini])).toHaveLength(2);
+    expect(canOneClickUpdateProviderCandidate(goose, [goose, gemini])).toBe(true);
+    expect(providerUpdateNotificationKey([goose, gemini])).toBe(
+      "acpRegistry:acp_gemini:1.1.0|acpRegistry:acp_goose:1.1.0",
+    );
+    // Named as themselves, not as their driver.
+    expect(
+      getSingleProviderUpdateProgressToastView({
+        ...gemini,
+        updateState: {
+          status: "running",
+          startedAt: checkedAt,
+          finishedAt: null,
+          message: null,
+          output: null,
+        },
+      }).title,
+    ).toBe("Updating Gemini CLI");
+  });
+
   it("disables one-click updates when provider instances disagree on the update command", () => {
     const candidate = updateCandidate({
       driver: driver("claudeAgent"),

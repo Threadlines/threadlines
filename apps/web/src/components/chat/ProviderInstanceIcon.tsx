@@ -67,6 +67,11 @@ export const ProviderGlyph = memo(function ProviderGlyph(props: {
   instanceId: ProviderInstanceId | null | undefined;
   /** A driver kind, or a raw driver label off the wire. */
   driverKind: string | null | undefined;
+  /**
+   * A registry icon to draw when there is no instance to read it from: an
+   * agent in the community list that isn't installed yet.
+   */
+  iconSvg?: string | null | undefined;
   className?: string | undefined;
   /** Drawn instead of the generic glyph when the provider has no mark of its own. */
   fallback?: ReactNode;
@@ -81,7 +86,7 @@ export const ProviderGlyph = memo(function ProviderGlyph(props: {
       }),
     [props.driverKind, props.instanceId, providers],
   );
-  const svg = glyph.kind === "svg" ? glyph.svg : null;
+  const svg = glyph.kind === "svg" ? glyph.svg : (props.iconSvg ?? null);
   const maskImage = useMemo(() => providerIconMaskImage(svg), [svg]);
 
   if (maskImage !== null) {

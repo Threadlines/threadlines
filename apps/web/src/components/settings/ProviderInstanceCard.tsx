@@ -1484,6 +1484,7 @@ export function ProviderInstanceCard({
   // anything else (installing, already there, nothing to install) the row
   // shows that instead, and a bounded timeout ends the wait.
   const installStartedRef = useRef(false);
+  const confirmedRecipeDigest = liveProvider?.community?.confirmedRecipeDigest;
   const showPendingInstall =
     pendingInstall && (agentStatus.kind === "checking" || agentStatus.kind === "off");
   useEffect(() => {
@@ -1494,11 +1495,23 @@ export function ProviderInstanceCard({
       return;
     }
     installStartedRef.current = true;
-    void startProviderInstall({ instanceId, driverKind, displayName }).finally(() => {
+    void startProviderInstall({
+      instanceId,
+      driverKind,
+      displayName,
+      recipeDigest: confirmedRecipeDigest,
+    }).finally(() => {
       installStartedRef.current = false;
       setPendingInstall(false);
     });
-  }, [displayName, driverKind, instanceId, pendingInstall, providerInstallView]);
+  }, [
+    confirmedRecipeDigest,
+    displayName,
+    driverKind,
+    instanceId,
+    pendingInstall,
+    providerInstallView,
+  ]);
   useEffect(() => {
     if (!pendingInstall) return;
     const timeout = window.setTimeout(() => setPendingInstall(false), PENDING_INSTALL_TIMEOUT_MS);
@@ -1682,6 +1695,7 @@ export function ProviderInstanceCard({
         instanceId={instanceId}
         driverKind={driverKind}
         displayName={displayName}
+        recipeDigest={confirmedRecipeDigest}
         view={providerInstallView}
         statusClassName="max-w-64"
       />
