@@ -260,7 +260,12 @@ export const MODEL_SLUG_ALIASES_BY_PROVIDER: Partial<
     "sonnet-4.6": "claude-sonnet-4-6",
     "claude-sonnet-4.6": "claude-sonnet-4-6",
     "claude-sonnet-4-6-20251117": "claude-sonnet-4-6",
+    // Bare `haiku` stays on Haiku 4.5: Claude Code before 2.1.293 has no
+    // Haiku 5.5, and claude.ai plans may resolve the alias later than the API.
     haiku: "claude-haiku-4-5",
+    "haiku-5.5": "claude-haiku-5-5",
+    "claude-haiku-5.5": "claude-haiku-5-5",
+    "claude-haiku-5-5[1m]": "claude-haiku-5-5",
     "haiku-4.5": "claude-haiku-4-5",
     "claude-haiku-4.5": "claude-haiku-4-5",
     "claude-haiku-4-5-20251001": "claude-haiku-4-5",

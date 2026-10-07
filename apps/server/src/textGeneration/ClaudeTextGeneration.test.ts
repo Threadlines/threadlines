@@ -418,6 +418,39 @@ it.layer(ClaudeTextGenerationTestLayer)("ClaudeTextGeneration", (it) => {
     ),
   );
 
+  // Haiku 5.5 thinks at medium unless told otherwise; titles and commit
+  // messages say so explicitly instead of leaving it to the CLI.
+  it.effect("forwards Claude Haiku 5.5 model with its default effort", () =>
+    withFakeClaudeEnv(
+      {
+        output: JSON.stringify({
+          structured_output: {
+            title: "Use Haiku 5.5",
+            body: "Body",
+          },
+        }),
+        argsMustContain: "--model claude-haiku-5-5 --effort medium",
+      },
+      (textGeneration) =>
+        Effect.gen(function* () {
+          const generated = yield* textGeneration.generatePrContent({
+            cwd: process.cwd(),
+            baseBranch: "main",
+            headBranch: "feature/haiku-5-5",
+            commitSummary: "Use Haiku 5.5",
+            diffSummary: "1 file changed",
+            diffPatch: "diff --git a/README.md b/README.md",
+            modelSelection: createModelSelection(
+              ProviderInstanceId.make("claudeAgent"),
+              "claude-haiku-5-5",
+            ),
+          });
+
+          expect(generated.title).toBe("Use Haiku 5.5");
+        }),
+    ),
+  );
+
   it.effect("generates thread titles through the Claude provider", () =>
     withFakeClaudeEnv(
       {

@@ -90,6 +90,7 @@ const CLAUDE_AUTO_MODE_UNSUPPORTED_SLUGS: ReadonlySet<string> = new Set([
 export function claudeModelSupportsAutoRuntimeMode(modelSlug: string | null | undefined): boolean {
   return modelSlug ? !CLAUDE_AUTO_MODE_UNSUPPORTED_SLUGS.has(modelSlug) : true;
 }
+const MINIMUM_CLAUDE_HAIKU_5_5_VERSION = "2.1.293";
 const MINIMUM_CLAUDE_SONNET_5_5_VERSION = "2.1.284";
 // Claude Code 2.1.284 made Ultracode its own setting that works at any effort
 // level. Older CLIs only know it as an effort level that forces Extra High.
@@ -124,6 +125,14 @@ const CLAUDE_EFFORT_OPTIONS = {
   ],
   // Claude Code runs Sonnet 5.5 at medium effort unless told otherwise.
   sonnet55: [
+    { value: "low", label: "Low" },
+    { value: "medium", label: "Medium", isDefault: true },
+    { value: "high", label: "High" },
+    { value: "xhigh", label: "Extra High" },
+    { value: "max", label: "Max" },
+  ],
+  // Claude Code runs Haiku 5.5 at medium effort unless told otherwise.
+  haiku55: [
     { value: "low", label: "Low" },
     { value: "medium", label: "Medium", isDefault: true },
     { value: "high", label: "High" },
@@ -416,6 +425,21 @@ const BUILT_IN_MODEL_DEFINITIONS: ReadonlyArray<ServerProviderModel> = [
     }),
   },
   {
+    slug: "claude-haiku-5-5",
+    name: "Claude Haiku 5.5",
+    isCustom: false,
+    capabilities: createModelCapabilities({
+      optionDescriptors: [
+        buildSelectOptionDescriptor({
+          id: "effort",
+          label: "Reasoning",
+          options: CLAUDE_EFFORT_OPTIONS.haiku55,
+        }),
+        CLAUDE_ULTRACODE_OPTION,
+      ],
+    }),
+  },
+  {
     slug: "claude-haiku-4-5",
     name: "Claude Haiku 4.5",
     isCustom: false,
@@ -459,6 +483,10 @@ function supportsClaudeFable51(version: string | null | undefined): boolean {
 
 function supportsClaudeSonnet55(version: string | null | undefined): boolean {
   return version ? compareSemverVersions(version, MINIMUM_CLAUDE_SONNET_5_5_VERSION) >= 0 : false;
+}
+
+function supportsClaudeHaiku55(version: string | null | undefined): boolean {
+  return version ? compareSemverVersions(version, MINIMUM_CLAUDE_HAIKU_5_5_VERSION) >= 0 : false;
 }
 
 function supportsClaudeSonnet5(version: string | null | undefined): boolean {
@@ -559,6 +587,9 @@ function getBuiltInClaudeModelsForVersion(
     if (model.slug === "claude-sonnet-5-5") {
       return supportsClaudeSonnet55(version);
     }
+    if (model.slug === "claude-haiku-5-5") {
+      return supportsClaudeHaiku55(version);
+    }
     if (model.slug === "claude-sonnet-5") {
       return supportsClaudeSonnet5(version);
     }
@@ -650,6 +681,13 @@ function formatClaudeUpgradeMessage(version: string | null): string | undefined 
       version,
       modelName: "Claude Sonnet 5.5",
       minimumVersion: MINIMUM_CLAUDE_SONNET_5_5_VERSION,
+    });
+  }
+  if (!supportsClaudeHaiku55(version)) {
+    return formatClaudeModelUpgradeMessage({
+      version,
+      modelName: "Claude Haiku 5.5",
+      minimumVersion: MINIMUM_CLAUDE_HAIKU_5_5_VERSION,
     });
   }
   return undefined;
@@ -987,6 +1025,7 @@ const CLAUDE_NATIVE_1M_MODEL_SLUGS: ReadonlySet<string> = new Set([
   "claude-opus-5",
   "claude-sonnet-5-5",
   "claude-sonnet-5",
+  "claude-haiku-5-5",
 ]);
 
 function canonicalClaudeDiscoveredModelSlug(model: ClaudeModelInfo): string | undefined {
