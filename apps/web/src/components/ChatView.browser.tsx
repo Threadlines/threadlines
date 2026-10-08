@@ -9,6 +9,7 @@ import {
   EventId,
   ORCHESTRATION_WS_METHODS,
   EnvironmentId,
+  GENERAL_CHATS_PROJECT_ID,
   type EnvironmentApi,
   type DesktopPreviewUserControl,
   type DesktopPreviewTarget,
@@ -828,6 +829,7 @@ function toShellSnapshot(snapshot: OrchestrationReadModel) {
     snapshotSequence: snapshot.snapshotSequence,
     projects: snapshot.projects.map((project) => ({
       id: project.id,
+      kind: project.kind,
       title: project.title,
       workspaceRoot: project.workspaceRoot,
       repositoryIdentity: project.repositoryIdentity ?? null,
@@ -7328,6 +7330,141 @@ describe("ChatView timeline estimator parity (full app)", () => {
         (pathname) => pathname === "/chats",
         "General Chats should open the chats page.",
       );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("gives a live general chat a line under General Chats that opens it", async () => {
+    const workingChatId = "thread-general-chat-working" as ThreadId;
+    const quietChatId = "thread-general-chat-quiet" as ThreadId;
+    const withChats = addThreadToSnapshot(
+      addThreadToSnapshot(
+        createSnapshotForTargetUser({
+          targetMessageId: "msg-user-general-chat-lines" as MessageId,
+          targetText: "general chat lines target",
+        }),
+        workingChatId,
+      ),
+      quietChatId,
+    );
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...withChats,
+        projects: [
+          ...withChats.projects,
+          {
+            id: GENERAL_CHATS_PROJECT_ID,
+            kind: "general-chat" as const,
+            title: "General Chats",
+            workspaceRoot: "/repo/general-chats",
+            defaultModelSelection: null,
+            scripts: [],
+            createdAt: NOW_ISO,
+            updatedAt: NOW_ISO,
+            deletedAt: null,
+          },
+        ],
+        threads: withChats.threads.map((thread) =>
+          thread.id === workingChatId
+            ? {
+                ...thread,
+                projectId: GENERAL_CHATS_PROJECT_ID,
+                title: "Best way to store passkeys",
+                latestTurn: {
+                  turnId: "turn-general-chat-working" as TurnId,
+                  state: "running" as const,
+                  requestedAt: NOW_ISO,
+                  startedAt: NOW_ISO,
+                  completedAt: null,
+                  assistantMessageId: null,
+                },
+                session: thread.session
+                  ? {
+                      ...thread.session,
+                      status: "running" as const,
+                      activeTurnId: "turn-general-chat-working" as TurnId,
+                    }
+                  : thread.session,
+              }
+            : thread.id === quietChatId
+              ? { ...thread, projectId: GENERAL_CHATS_PROJECT_ID, title: "Draft reply" }
+              : thread,
+        ),
+      },
+    });
+
+    try {
+      const line = page.getByTestId(`sidebar-general-chat-${workingChatId}`);
+      await expect.element(line).toBeInTheDocument();
+      await expect
+        .element(page.getByTestId(`sidebar-general-chat-status-${workingChatId}`))
+        .toHaveTextContent(/^working/);
+      expect(
+        document.querySelector(`[data-testid="sidebar-general-chat-${quietChatId}"]`),
+        "A quiet chat nobody has open has nothing to say, so it gets no line.",
+      ).toBeNull();
+      expect(
+        document.querySelector(`[data-testid="thread-row-${workingChatId}"]`),
+        "General chats still stay out of the inbox.",
+      ).toBeNull();
+
+      await line.click();
+      await waitForURL(
+        mounted.router,
+        (pathname) => pathname.endsWith(`/${workingChatId}`),
+        "The line should open its chat.",
+      );
+      await expect.element(line).toHaveAttribute("aria-current", "page");
+
+      // The General Chats page says the same thing in the same words.
+      await page.getByTestId("sidebar-general-chats").click();
+      await waitForURL(
+        mounted.router,
+        (pathname) => pathname === "/chats",
+        "General Chats should open the chats page.",
+      );
+      await expect
+        .element(
+          page
+            .getByTestId("chats-view-row")
+            .filter({ hasText: "Best way to store passkeys" })
+            .getByTestId("chats-view-row-status"),
+        )
+        .toHaveTextContent(/^working/);
+
+      // The chat settles while the pointer is still over the sidebar (it just
+      // clicked General Chats): its line holds still rather than pulling the
+      // rows below out from under the pointer, and leaves once it moves away.
+      useStore.setState((state) => {
+        const environment = state.environmentStateById[LOCAL_ENVIRONMENT_ID]!;
+        const summary = environment.sidebarThreadSummaryById[workingChatId]!;
+        return {
+          environmentStateById: {
+            ...state.environmentStateById,
+            [LOCAL_ENVIRONMENT_ID]: {
+              ...environment,
+              sidebarThreadSummaryById: {
+                ...environment.sidebarThreadSummaryById,
+                [workingChatId]: {
+                  ...summary,
+                  latestTurn: null,
+                  session: summary.session
+                    ? { ...summary.session, status: "ready", orchestrationStatus: "ready" }
+                    : null,
+                },
+              },
+            },
+          },
+        };
+      });
+      await expect
+        .element(page.getByTestId(`sidebar-general-chat-status-${workingChatId}`))
+        .not.toHaveTextContent(/^working/);
+      await expect.element(line).toBeInTheDocument();
+      await page.getByTestId("chats-view-row").first().hover();
+      await expect.element(line).not.toBeInTheDocument();
     } finally {
       await mounted.cleanup();
     }

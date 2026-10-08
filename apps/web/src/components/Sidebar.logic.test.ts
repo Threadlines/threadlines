@@ -12,7 +12,9 @@ import {
   isContextMenuPointerDown,
   orderItemsByPreferredIds,
   THREAD_STATUS_DOT_CLASSES,
+  resolveSeenThreadStatus,
   resolveThreadStatusPill,
+  selectGeneralChatLines,
   shouldClearThreadSelectionOnMouseDown,
   sortProjectsForSidebar,
   THREAD_JUMP_HINT_SHOW_DELAY_MS,
@@ -1691,5 +1693,93 @@ describe("child thread status and wrap-up", () => {
     const asking = { ...seenParent, pendingChildApproval: true };
     expect(resolveThreadStatusPill({ thread: asking })?.label).toBe("Pending Approval");
     expect(canMarkThreadDone(asking, { now: NOW })).toBe(false);
+  });
+});
+
+describe("general chat lines", () => {
+  const pill = (label: ThreadStatusPill["label"]): ThreadStatusPill => ({
+    label,
+    colorClass: "",
+    dotClass: "",
+    pulse: false,
+  });
+  const chat = (key: string, status: ThreadStatusPill | null, createdAt: string) => ({
+    threadKey: key,
+    thread: { id: ThreadId.make(key), createdAt },
+    status,
+  });
+
+  it("draws live chats and the open one, most urgent first", () => {
+    const { lines, hiddenCount } = selectGeneralChatLines({
+      chats: [
+        chat("quiet", null, "2026-10-08T09:00:00.000Z"),
+        chat("open", null, "2026-10-08T08:00:00.000Z"),
+        chat("unread", pill("Completed"), "2026-10-08T10:00:00.000Z"),
+        chat("older-working", pill("Working"), "2026-10-08T07:00:00.000Z"),
+        chat("newer-working", pill("Waiting"), "2026-10-08T11:00:00.000Z"),
+        chat("asking", pill("Awaiting Input"), "2026-10-08T06:00:00.000Z"),
+      ],
+      activeThreadKey: "open",
+      limit: 10,
+    });
+
+    // A quiet chat nobody has open has nothing to say, so it gets no line.
+    expect(lines.map((line) => line.threadKey)).toEqual([
+      "asking",
+      "newer-working",
+      "older-working",
+      "unread",
+      "open",
+    ]);
+    expect(hiddenCount).toBe(0);
+  });
+
+  it("folds the overflow but never a chat waiting on the user or the open one", () => {
+    const { lines, hiddenCount } = selectGeneralChatLines({
+      chats: [
+        chat("working-1", pill("Working"), "2026-10-08T12:00:00.000Z"),
+        chat("working-2", pill("Working"), "2026-10-08T11:00:00.000Z"),
+        chat("approval", pill("Pending Approval"), "2026-10-08T10:00:00.000Z"),
+        chat("input", pill("Awaiting Input"), "2026-10-08T09:00:00.000Z"),
+        chat("open", null, "2026-10-08T08:00:00.000Z"),
+      ],
+      activeThreadKey: "open",
+      limit: 3,
+    });
+
+    // Three seats, all taken by chats that must stay in view: the work in
+    // flight folds behind "2 more" rather than hiding a question.
+    expect(lines.map((line) => line.threadKey)).toEqual(["approval", "input", "open"]);
+    expect(hiddenCount).toBe(2);
+  });
+
+  it("reads a finished chat as new only until it has been seen", () => {
+    const thread = {
+      hasActionableProposedPlan: false,
+      hasPendingApprovals: false,
+      hasPendingUserInput: false,
+      interactionMode: "default" as const,
+      latestTurn: makeLatestTurn({ completedAt: "2026-10-08T10:00:00.000Z" }),
+      session: null,
+      lastSeenAt: null,
+    };
+    const noVisits = { seenThreadOverlays: {}, threadSeedVisitedAtById: {} };
+
+    expect(resolveSeenThreadStatus(thread, "key", noVisits).status?.label).toBe("Completed");
+    // Seen on another device: the server's word is enough.
+    expect(
+      resolveSeenThreadStatus(
+        { ...thread, lastSeenAt: "2026-10-08T10:01:00.000Z" },
+        "key",
+        noVisits,
+      ).status,
+    ).toBeNull();
+    // Opened here a moment ago, before the server has heard.
+    expect(
+      resolveSeenThreadStatus(thread, "key", {
+        seenThreadOverlays: { key: { at: "2026-10-08T10:02:00.000Z" } },
+        threadSeedVisitedAtById: {},
+      }).status,
+    ).toBeNull();
   });
 });

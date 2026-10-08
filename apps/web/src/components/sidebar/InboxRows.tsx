@@ -262,7 +262,7 @@ function useThreadProject(thread: SidebarThreadSummary): { cwd: string; name: st
  * contested space, and the machine's name lives one hover away in the tooltip
  * and the hover card, which use the same cloud glyph for the same fact.
  */
-function ThreadEnvironmentBadge(props: { thread: SidebarThreadSummary }) {
+export function ThreadEnvironmentBadge(props: { thread: SidebarThreadSummary }) {
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const runtimeLabel = useSavedEnvironmentRuntimeStore(
     (state) => state.byId[props.thread.environmentId]?.descriptor?.label ?? null,
@@ -438,17 +438,20 @@ function RowLiveStatus({ word, clockStartedAt }: { word: string; clockStartedAt:
 /**
  * A thread's status words the way the inbox writes them ("input", "working ·
  * 4m"), in its status colour, for a thread shown outside its own row. At rest
- * it shows `resting`, or else when it was last at work.
+ * it shows `resting`, or else when it was last at work, in `restingClassName`
+ * (the inbox's faded meta unless a surface asks for the opaque muted tone).
  */
 export function ThreadStatusText({
   thread,
   status,
   resting,
+  restingClassName = "text-muted-foreground/50",
   testId,
 }: {
   thread: SidebarThreadSummary;
   status: ThreadStatusPill | null;
   resting?: React.ReactNode;
+  restingClassName?: string;
   testId?: string | undefined;
 }) {
   const { statusWord, isLive, liveWord, liveClockStartedAt, hasStatusLabel } =
@@ -458,9 +461,7 @@ export function ThreadStatusText({
       data-testid={testId}
       className={cn(
         "shrink-0 font-mono text-[11px] leading-none tabular-nums",
-        hasStatusLabel
-          ? (status?.colorClass ?? "text-muted-foreground/50")
-          : "text-muted-foreground/50",
+        hasStatusLabel ? (status?.colorClass ?? restingClassName) : restingClassName,
       )}
     >
       {statusWord !== null ? (

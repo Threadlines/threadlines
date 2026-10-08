@@ -402,6 +402,33 @@ export function inboxStatusWord(status: ThreadStatusPill | null): string | null 
   return status === null ? null : (INBOX_STATUS_WORDS[status.label] ?? null);
 }
 
+/** Where a list learns when each thread was last seen: the ui state store's two maps. */
+export interface ThreadSeenSources {
+  readonly seenThreadOverlays: Readonly<Record<string, { readonly at: string }>>;
+  readonly threadSeedVisitedAtById: Readonly<Record<string, string>>;
+}
+
+/**
+ * A thread's status the way every list shows it, and when the user last saw
+ * it. A finished turn reads as new until it has been seen, on this device or
+ * another, so a list that skipped the visit would call every chat unread.
+ */
+export function resolveSeenThreadStatus(
+  thread: ThreadStatusInput & { readonly lastSeenAt?: string | null | undefined },
+  threadKey: string,
+  sources: ThreadSeenSources,
+): { readonly lastVisitedAt: string | undefined; readonly status: ThreadStatusPill | null } {
+  const lastVisitedAt = mergeThreadLastSeenAt({
+    overlayAt: sources.seenThreadOverlays[threadKey]?.at,
+    serverLastSeenAt: thread.lastSeenAt,
+    seedAt: sources.threadSeedVisitedAtById[threadKey],
+  });
+  const status = resolveThreadStatusPill({
+    thread: { ...thread, ...(lastVisitedAt !== undefined ? { lastVisitedAt } : {}) },
+  });
+  return { lastVisitedAt, status };
+}
+
 export function getFallbackThreadIdAfterDelete<
   T extends Pick<Thread, "id" | "projectId" | "createdAt" | "updatedAt"> & ThreadSortInput,
 >(input: {
@@ -1166,4 +1193,78 @@ export function childThreadsHoverLine(summary: ChildThreadsSummary): string {
   return summary.highlight === null
     ? `Threads: ${summary.count}`
     : `Threads: ${summary.count} · ${formatChildThreadsHighlight(summary.highlight)}`;
+}
+
+// ── General chats ────────────────────────────────────────────────────
+//
+// General chats have their own page and never join the inbox. The live ones
+// get a short line under the General Chats row instead, so a chat that needs
+// the user, is at work, or finished unread is one click away.
+
+/** Lines under General Chats before the rest fold into "N more". */
+export const GENERAL_CHAT_LINE_LIMIT = 3;
+
+/** What the line rules read about each general chat. */
+export interface GeneralChatLineEntry {
+  readonly threadKey: string;
+  readonly thread: Pick<SidebarThreadSummary, "id" | "createdAt">;
+  readonly status: ThreadStatusPill | null;
+}
+
+/**
+ * Line order: what stopped for the user, then a ready plan, then work in
+ * flight, then a result nobody has read. A quiet chat only has a line while
+ * it is open, and goes last.
+ */
+function generalChatLineRank(status: ThreadStatusPill | null): number {
+  if (status === null) return 4;
+  switch (status.label) {
+    case "Pending Approval":
+    case "Awaiting Input":
+    case "Failed":
+      return 0;
+    case "Plan Ready":
+      return 1;
+    case "Working":
+    case "Starting":
+    case "Answering":
+    case "Waiting":
+      return 2;
+    case "Completed":
+      return 3;
+  }
+}
+
+/**
+ * The general chats drawn as lines, in order, and how many live ones fold
+ * behind "N more". Every chat with a status qualifies, and so does the chat
+ * open in the main view, so the sidebar always says where the user is. Like
+ * the inbox, a chat blocked on the user never folds away, and neither does
+ * the open one; both take their seats first.
+ */
+export function selectGeneralChatLines<E extends GeneralChatLineEntry>(input: {
+  readonly chats: readonly E[];
+  readonly activeThreadKey: string | null;
+  readonly limit: number;
+}): { readonly lines: E[]; readonly hiddenCount: number } {
+  const ranked = input.chats
+    .filter((chat) => chat.status !== null || chat.threadKey === input.activeThreadKey)
+    .toSorted((left, right) => {
+      const byRank = generalChatLineRank(left.status) - generalChatLineRank(right.status);
+      if (byRank !== 0) return byRank;
+      const byCreated =
+        (toSortableTimestamp(right.thread.createdAt) ?? 0) -
+        (toSortableTimestamp(left.thread.createdAt) ?? 0);
+      return byCreated !== 0 ? byCreated : left.threadKey.localeCompare(right.threadKey);
+    });
+  const keepsSeat = (chat: E) =>
+    isNeedsUserStatus(chat.status) || chat.threadKey === input.activeThreadKey;
+  let freeSeats = Math.max(0, input.limit - ranked.filter(keepsSeat).length);
+  const lines = ranked.filter((chat) => {
+    if (keepsSeat(chat)) return true;
+    if (freeSeats === 0) return false;
+    freeSeats -= 1;
+    return true;
+  });
+  return { lines, hiddenCount: ranked.length - lines.length };
 }

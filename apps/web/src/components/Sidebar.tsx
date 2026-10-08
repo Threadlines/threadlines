@@ -2,8 +2,6 @@ import {
   ChevronDownIcon,
   ChevronsUpIcon,
   ArrowLeftIcon,
-  MessageCirclePlusIcon,
-  MessagesSquareIcon,
   SearchIcon,
   SettingsIcon,
 } from "lucide-react";
@@ -97,10 +95,12 @@ import {
   INBOX_AUTO_DONE_AFTER_DAYS,
   isThreadDone,
   mergeThreadDoneOverride,
-  mergeThreadLastSeenAt,
   resolveAdjacentThreadId,
   resolveDoneTimestamp,
+  resolveSeenThreadStatus,
   resolveThreadStatusPill,
+  GENERAL_CHAT_LINE_LIMIT,
+  selectGeneralChatLines,
   shouldClearThreadSelectionOnMouseDown,
   sortDoneThreads,
   sortInboxThreads,
@@ -131,6 +131,7 @@ import { resolveEnvironmentOptionLabel } from "./BranchToolbar.logic";
 import { SidebarHoverCardGroup } from "./sidebar/hoverCard";
 import { ThreadHoverCardProvider } from "./sidebar/ThreadHoverCard";
 import { resolveThreadActionProjectRef, startNewGeneralChatThread } from "../lib/chatThreadActions";
+import { SidebarGeneralChats, type SidebarGeneralChatEntry } from "./sidebar/SidebarGeneralChats";
 import { SidebarPullRequestsRow } from "./sidebar/SidebarPullRequestsRow";
 import { isRoom } from "../rooms";
 import {
@@ -640,6 +641,15 @@ export default function Sidebar() {
       ),
     [sidebarProjects],
   );
+  // ...and get their own lines under the General Chats row instead.
+  const generalChatThreads = useMemo(
+    () =>
+      sidebarThreads.filter(
+        (thread) =>
+          thread.archivedAt === null && generalChatProjectKeys.has(resolveThreadProjectKey(thread)),
+      ),
+    [generalChatProjectKeys, resolveThreadProjectKey, sidebarThreads],
+  );
   const inboxThreads = useMemo(
     () =>
       sidebarThreads.filter(
@@ -717,16 +727,9 @@ export default function Sidebar() {
   const entries = useMemo<InboxEntry[]>(() => {
     const prepared = inboxThreads.map((thread) => {
       const threadKey = scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
-      const lastVisitedAt = mergeThreadLastSeenAt({
-        overlayAt: seenThreadOverlays[threadKey]?.at,
-        serverLastSeenAt: thread.lastSeenAt,
-        seedAt: threadSeedVisitedAtById[threadKey],
-      });
-      const status = resolveThreadStatusPill({
-        thread: {
-          ...thread,
-          ...(lastVisitedAt !== undefined ? { lastVisitedAt } : {}),
-        },
+      const { lastVisitedAt, status } = resolveSeenThreadStatus(thread, threadKey, {
+        seenThreadOverlays,
+        threadSeedVisitedAtById,
       });
       const override = mergeThreadDoneOverride(doneThreadOverlays[threadKey], thread.doneOverride);
       return { thread, threadKey, lastVisitedAt, status, override };
@@ -810,6 +813,31 @@ export default function Sidebar() {
     threadSeedVisitedAtById,
     threadWrapUpOnPullRequestSettledById,
   ]);
+
+  // The general chats' lines under their row: each chat's status read the
+  // same seen-aware way as the inbox's, then the live ones and the open one
+  // picked out.
+  const generalChatEntries = useMemo(
+    () =>
+      generalChatThreads.map((thread): SidebarGeneralChatEntry => {
+        const threadKey = scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
+        const { status } = resolveSeenThreadStatus(thread, threadKey, {
+          seenThreadOverlays,
+          threadSeedVisitedAtById,
+        });
+        return { threadKey, thread, status };
+      }),
+    [generalChatThreads, seenThreadOverlays, threadSeedVisitedAtById],
+  );
+  const generalChatLines = useMemo(
+    () =>
+      selectGeneralChatLines({
+        chats: generalChatEntries,
+        activeThreadKey: routeThreadKey,
+        limit: GENERAL_CHAT_LINE_LIMIT,
+      }),
+    [generalChatEntries, routeThreadKey],
+  );
 
   // Every machine the inbox knows about: this device, plus whatever has been
   // added under Settings › Connections. Ordered with this device first, the rest by
@@ -1093,8 +1121,8 @@ export default function Sidebar() {
     setRevealedDoneCount(0);
   }, [scopedEnvironmentIdValue, scopedProjectKeyValue]);
 
-  // Exactly the rows drawn, in order: jump labels, prewarming, previous/next
-  // and shift-range selection all walk this list.
+  // Exactly the inbox rows drawn, in order: jump labels and shift-range
+  // selection walk this list.
   const orderedThreadKeys = useMemo(
     () => [
       ...visibleLiveEntries.flatMap(inboxLiveRowThreadKeys),
@@ -1103,6 +1131,13 @@ export default function Sidebar() {
       ),
     ],
     [renderedDoneEntries, visibleLiveEntries],
+  );
+  // Every thread drawn, the general chats' lines above the inbox: previous/next
+  // and prewarming walk this. The numbered jumps stay with the inbox, whose
+  // numbers must not shift each time a chat starts or stops work.
+  const traversalThreadKeys = useMemo(
+    () => [...generalChatLines.lines.map((line) => line.threadKey), ...orderedThreadKeys],
+    [generalChatLines.lines, orderedThreadKeys],
   );
 
   const navigateToThread = useCallback(
@@ -1735,11 +1770,11 @@ export default function Sidebar() {
 
   const prewarmedSidebarThreadRefs = useMemo(
     () =>
-      getSidebarThreadIdsToPrewarm(orderedThreadKeys).flatMap((threadKey) => {
+      getSidebarThreadIdsToPrewarm(traversalThreadKeys).flatMap((threadKey) => {
         const ref = parseScopedThreadKey(threadKey);
         return ref ? [ref] : [];
       }),
-    [orderedThreadKeys],
+    [traversalThreadKeys],
   );
 
   useEffect(() => {
@@ -1773,7 +1808,7 @@ export default function Sidebar() {
       const traversalDirection = threadTraversalDirectionFromCommand(command);
       if (traversalDirection !== null) {
         const targetThreadKey = resolveAdjacentThreadId({
-          threadIds: orderedThreadKeys,
+          threadIds: traversalThreadKeys,
           currentThreadId: routeThreadKey,
           direction: traversalDirection,
         });
@@ -1819,11 +1854,11 @@ export default function Sidebar() {
     getCurrentSidebarShortcutContext,
     keybindings,
     navigateToThread,
-    orderedThreadKeys,
     platform,
     routeThreadKey,
     sidebarThreadByKey,
     threadJumpThreadKeys,
+    traversalThreadKeys,
   ]);
 
   useEffect(() => {
@@ -1887,44 +1922,16 @@ export default function Sidebar() {
                       belongs under the pair rather than between the two rows,
                       and it survives an environment that has no pull requests. */}
                   <div className="mb-4">
-                    <div className="group/chats-row relative mt-1 px-2 pt-1 pb-0.5">
-                      <button
-                        type="button"
-                        data-testid="sidebar-general-chats"
-                        aria-current={isOnChats ? "page" : undefined}
-                        className={cn(
-                          "flex h-7 w-full cursor-pointer items-center gap-2 rounded-md px-1 text-xs transition-colors select-none focus-ring",
-                          // The fill answers to the wrapper, not to this button:
-                          // reaching for the new-chat icon leaves the row element,
-                          // and the row should not go dark under your cursor.
-                          isOnChats
-                            ? "bg-sidebar-accent text-foreground"
-                            : "text-foreground/85 group-hover/chats-row:bg-sidebar-accent/60 group-hover/chats-row:text-foreground",
-                        )}
-                        onClick={handleOpenChats}
-                      >
-                        <MessagesSquareIcon className="size-3.5 shrink-0" />
-                        <span className="min-w-0 truncate">General Chats</span>
-                      </button>
-                      {/* A sibling, not a child: a button inside a button is invalid,
-                      and starting a chat should not first walk you to the page. */}
-                      <Tooltip>
-                        <TooltipTrigger
-                          render={
-                            <button
-                              type="button"
-                              data-testid="sidebar-new-general-chat"
-                              aria-label="New general chat"
-                              className="absolute top-1/2 right-3 inline-flex size-5 -translate-y-1/2 cursor-pointer items-center justify-center rounded-sm text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus-ring group-hover/chats-row:opacity-100 group-focus-within/chats-row:opacity-100 pointer-coarse:opacity-100"
-                              onClick={handleNewGeneralChat}
-                            />
-                          }
-                        >
-                          <MessageCirclePlusIcon className="size-3.5" />
-                        </TooltipTrigger>
-                        <TooltipPopup side="bottom">New general chat</TooltipPopup>
-                      </Tooltip>
-                    </div>
+                    <SidebarGeneralChats
+                      entries={generalChatEntries}
+                      lines={generalChatLines.lines}
+                      hiddenCount={generalChatLines.hiddenCount}
+                      activeThreadKey={routeThreadKey}
+                      isOnChatsPage={isOnChats}
+                      onOpenChats={handleOpenChats}
+                      onNewChat={handleNewGeneralChat}
+                      onOpenChat={navigateToThread}
+                    />
 
                     <SidebarPullRequestsRow snapshot={openPullRequests} />
                   </div>
