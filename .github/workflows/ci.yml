@@ -96,10 +96,21 @@ jobs:
 
       # Hosted runners point apt at azure.archive.ubuntu.com, which
       # intermittently stalls for 20+ minutes and starves the job timeout.
-      # Ubuntu 24.04 keeps the active mirror in apt-mirrors.txt, while older
-      # images use .list or .sources files, so update every supported format.
-      - name: Use main Ubuntu mirror for apt
-        run: sudo find /etc/apt -type f \( -name "*.list" -o -name "*.sources" -o -name "apt-mirrors.txt" \) -exec sed -i 's|azure.archive.ubuntu.com|archive.ubuntu.com|g' {} +
+      # Plain HTTP to archive.ubuntu.com can stall too (every request waited
+      # 30 s on 2026-10-07 while HTTPS answered at once), so Ubuntu's archive
+      # is fetched over HTTPS, and a stuck connection gives up after 10 s and
+      # retries once. Ubuntu 24.04 keeps the active mirror in apt-mirrors.txt,
+      # while older images use .list or .sources files, so update every
+      # supported format. The config file sorts last so the image's own
+      # settings can't override it.
+      - name: Use main Ubuntu mirror for apt, over HTTPS
+        run: |
+          sudo find /etc/apt -type f \( -name "*.list" -o -name "*.sources" -o -name "apt-mirrors.txt" \) \
+            -exec sed -i -E 's|https?://(azure\.)?archive\.ubuntu\.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' {} +
+          printf '%s\n' 'Acquire::http::Timeout "10";' 'Acquire::https::Timeout "10";' 'Acquire::Retries "1";' \
+            | sudo tee /etc/apt/apt.conf.d/zz-threadlines-ci >/dev/null
+          apt-config dump | grep -E '^Acquire::(Retries|https?::Timeout) '
+          grep -rhoE 'https?://[a-z.]*ubuntu\.com/ubuntu' /etc/apt | sort | uniq -c
 
       - name: Install browser test runtime
         timeout-minutes: 10
