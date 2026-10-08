@@ -198,10 +198,10 @@ const playGlyphs = `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="tr
     </div>
     <figure class="pv-app-frame pv-rise" style="--pv-d: 0.95s">
       <div
-        class="pv-frame pv-frame-hero"
+        class="pv-frame pv-frame-swap"
       >
         <video
-          class="pv-video pv-hero-wide"
+          class="pv-video pv-clip-wide"
           muted
           playsinline
           loop
@@ -214,7 +214,7 @@ const playGlyphs = `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="tr
           <source src="/Screenshots/rooms/rooms.mp4" type="video/mp4" />
         </video>
         <video
-          class="pv-video pv-hero-tall"
+          class="pv-video pv-clip-tall"
           muted
           playsinline
           loop
@@ -232,6 +232,54 @@ const playGlyphs = `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="tr
       <figcaption>
         A 46-second demo: Opus and Astra track down a double-charge bug in one thread. A recreated
         conversation in the current app.
+      </figcaption>
+    </figure>
+  </section>
+
+  <section class="pv-section" id="threads">
+    <div class="pv-wrap pv-center pv-reveal">
+      <p class="pv-kicker">Agents start threads</p>
+      <h2>Split a big job across threads</h2>
+      <p class="pv-lede">
+        An agent can hand parts of a job to new threads, each on the model it picks, and carry on as
+        their answers come back. By default it asks you first, and the new threads sit under it in
+        the sidebar.
+      </p>
+    </div>
+    <figure class="pv-showcase pv-reveal">
+      <div class="pv-frame pv-frame-swap">
+        <video
+          class="pv-video pv-clip-wide"
+          muted
+          playsinline
+          loop
+          preload="none"
+          poster="/Screenshots/threads/threads.webp"
+          width="1600"
+          height="934"
+          aria-label="Opus 5.5 asks to start three threads to find out why checkout got slow: Sonnet 5.5 times the payment service, GPT-6.1-Sol counts the database queries, and Opus 5.5 measures the page. The answers come back to Opus, and it fixes the cause."
+        >
+          <source src="/Screenshots/threads/threads.mp4" type="video/mp4" />
+        </video>
+        <video
+          class="pv-video pv-clip-tall"
+          muted
+          playsinline
+          loop
+          preload="none"
+          poster="/Screenshots/threads/threads-tall.webp"
+          width="800"
+          height="1000"
+          aria-label="Opus 5.5 asks to start three threads to find out why checkout got slow: Sonnet 5.5 times the payment service, GPT-6.1-Sol counts the database queries, and Opus 5.5 measures the page. The answers come back to Opus, and it fixes the cause."
+        >
+          <source src="/Screenshots/threads/threads-tall.mp4" type="video/mp4" />
+        </video>
+        <button class="pv-expand" type="button" aria-label="Expand the threads demo"><span>Expand</span></button>
+        <button class="pv-play" type="button" aria-label="Play video" set:html={playGlyphs} />
+      </div>
+      <figcaption>
+        A 44-second demo: Opus starts three threads to find out why checkout got slow, and
+        their answers come back. A recreated conversation in the current app.
       </figcaption>
     </figure>
   </section>
@@ -398,8 +446,8 @@ const playGlyphs = `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="tr
   const inView = new WeakSet<Element>();
   const manuallyPaused = new WeakSet<HTMLVideoElement>();
   const videos = [...document.querySelectorAll<HTMLVideoElement>("video.pv-video")];
-  // A tab's active pane, or the clip this screen width shows (the hero has a
-  // wide clip and a tall one for phones; the other is display: none).
+  // A tab's active pane, or the clip this screen width shows (the hero and the
+  // threads demo have a wide clip and a tall one for phones; the other is display: none).
   const shown = (element: Element) => element.getClientRects().length > 0;
   const activeVideo = (frame: HTMLElement) =>
     frame.querySelector<HTMLVideoElement>("video.pv-active") ??
@@ -722,7 +770,7 @@ const playGlyphs = `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="tr
   }
   .pv-provider svg,
   .pv-provider img { width: 20px; height: 20px; }
-  .pv-frame .pv-hero-tall { display: none; }
+  .pv-frame .pv-clip-tall { display: none; }
 
   .pv-new {
     display: inline-flex;
@@ -750,7 +798,8 @@ const playGlyphs = `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="tr
   }
 
   .pv-app-frame { width: min(1400px, 94vw); margin: 32px auto 0; padding: 0; }
-  .pv-app-frame figcaption { margin-top: 12px; font-size: 0.85rem; color: var(--fg-muted); }
+  .pv-app-frame figcaption,
+  .pv-showcase figcaption { margin-top: 12px; font-size: 0.85rem; color: var(--fg-muted); }
   .pv-showcase { width: min(1240px, 94vw); margin: 24px auto 0; }
   .pv-frame {
     position: relative;
@@ -898,14 +947,15 @@ const playGlyphs = `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="tr
     .pv-grid { grid-template-columns: 1fr; gap: 16px; }
   }
   @media (max-width: 640px) {
-    .pv-frame-hero { aspect-ratio: 800 / 1000; }
-    .pv-frame .pv-hero-wide { display: none; }
-    .pv-frame .pv-hero-tall { display: block; }
+    .pv-frame-swap { aspect-ratio: 800 / 1000; }
+    .pv-frame .pv-clip-wide { display: none; }
+    .pv-frame .pv-clip-tall { display: block; }
   }
   @media (max-width: 520px) {
     .pv-wrap { padding: 0 16px; }
     .pv-providers { gap: 10px 16px; }
-    .pv-app-frame figcaption { padding: 0 8px; }
+    .pv-app-frame figcaption,
+    .pv-showcase figcaption { padding: 0 8px; }
   }
   @media (prefers-reduced-motion: reduce) {
     .pv-rise,
