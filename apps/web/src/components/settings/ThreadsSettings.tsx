@@ -622,7 +622,7 @@ function WrapUpMergedThreadsRow() {
     <SettingsRow
       id="wrap-up-merged-threads"
       title="Wrap up merged threads"
-      description="Move a thread to Wrapped when its pull request merges or closes. A new message brings it back, and a thread's pull request row can say otherwise."
+      description="Move a thread to Wrapped when its pull request merges or closes, unless it's pinned. A new message brings it back, and a thread's pull request row can say otherwise."
       resetAction={
         settings.wrapUpThreadsOnPullRequestSettled !==
         DEFAULT_UNIFIED_SETTINGS.wrapUpThreadsOnPullRequestSettled ? (

@@ -691,8 +691,8 @@ turn is started; the user sends.
   a second fallback so a thread whose checkout moved on still learns its branch merged.
 - `isThreadDone` in `Sidebar.logic.ts` gains `options.pullRequestSettled?: boolean`. After the
   override check and before the idle rule: a settled pull request files the thread unless it is
-  moving (in-flight turn) or holds an unseen completion. Pins do not block it; a merged branch is
-  finished even when pinned. Test it.
+  moving (in-flight turn), holds an unseen completion, or is pinned. A pin is the user's own
+  placement, so only the user files a pinned thread. Test it.
 - The Done row keeps the badge (violet or grey), so the reason it moved is visible.
 - Command palette needs nothing new.
 

@@ -1122,29 +1122,23 @@ describe("inbox done lifecycle", () => {
     ).toBe(true);
   });
 
-  it("files a thread at once when its pull request lands, pin and timer aside", () => {
-    // A merged branch is finished work: it does not wait out the idle timer,
-    // and a pin does not hold it in the live list.
-    const pinnedAndFresh = {
-      ...base,
-      pinnedAt: "2026-07-27T12:00:00.000Z",
-      latestUserMessageAt: "2026-07-28T11:00:00.000Z",
+  it("files a thread at once when its pull request lands, unless it is pinned", () => {
+    // A merged branch is finished work: it does not wait out the idle timer.
+    const fresh = { ...base, latestUserMessageAt: "2026-07-28T11:00:00.000Z" };
+    const options = {
+      now: NOW,
+      autoDoneAfterDays: 2,
+      pullRequestSettledAt: "2026-07-28T11:30:00.000Z",
     };
-    expect(
-      isThreadDone(pinnedAndFresh, null, {
-        now: NOW,
-        autoDoneAfterDays: 2,
-        pullRequestSettledAt: "2026-07-28T11:30:00.000Z",
-      }),
-    ).toBe(true);
+    expect(isThreadDone(fresh, null, options)).toBe(true);
     // A thread that is still moving was never eligible in the first place.
-    expect(
-      isThreadDone({ ...pinnedAndFresh, session: { status: "running" } as never }, null, {
-        now: NOW,
-        autoDoneAfterDays: 2,
-        pullRequestSettledAt: "2026-07-28T11:30:00.000Z",
-      }),
-    ).toBe(false);
+    expect(isThreadDone({ ...fresh, session: { status: "running" } as never }, null, options)).toBe(
+      false,
+    );
+    // A pin keeps it at hand through the landing; only the user files it.
+    const pinned = { ...fresh, pinnedAt: "2026-07-27T12:00:00.000Z" };
+    expect(isThreadDone(pinned, null, options)).toBe(false);
+    expect(isThreadDone(pinned, { state: "done", at: NOW }, options)).toBe(true);
   });
 
   it("files a landing once: a later message or a later keep-active brings the thread back", () => {
@@ -1633,6 +1627,13 @@ describe("child thread status and wrap-up", () => {
     expect(isThreadDone(seen, null, { now: NOW, childWrapUp: { parentDone: true } })).toBe(true);
     expect(isThreadDone(seen, null, { now: NOW, childWrapUp: { parentDone: false } })).toBe(false);
     expect(isThreadDone(base, null, { now: NOW, childWrapUp: { parentDone: true } })).toBe(false);
+    // A pinned child stays at hand when its parent wraps.
+    expect(
+      isThreadDone({ ...seen, pinnedAt: "2026-10-04T11:07:00.000Z" }, null, {
+        now: NOW,
+        childWrapUp: { parentDone: true },
+      }),
+    ).toBe(false);
     const working = {
       ...seen,
       session: { ...base.session, status: "running", orchestrationStatus: "running" } as const,
