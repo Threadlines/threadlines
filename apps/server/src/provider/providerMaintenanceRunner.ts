@@ -477,6 +477,38 @@ function makeUpdateState(input: {
   };
 }
 
+/** Stopping the Claude processes that block an update failed; keeps what the command printed. */
+class WindowsClaudeStopError extends Error {
+  readonly output: string | null;
+
+  constructor(message: string, output: string | null) {
+    super(message);
+    this.output = output;
+  }
+}
+
+/**
+ * The maintenance state the UI shows lives only in memory, and the next
+ * attempt replaces it. An outcome other than success also goes to the server
+ * log, so what the user saw (exit code, command output) can still be read
+ * after a retry.
+ */
+function logUnsuccessfulMaintenance(input: {
+  readonly provider: ProviderDriverKind;
+  readonly instanceId: ProviderInstanceId;
+  readonly action: ServerProviderMaintenanceAction | "resolve-update-blockers";
+  readonly state: ServerProviderUpdateState;
+}) {
+  return Effect.logWarning("Provider maintenance did not succeed", {
+    provider: input.provider,
+    instanceId: input.instanceId,
+    action: input.action,
+    status: input.state.status,
+    message: input.state.message,
+    output: input.state.output,
+  });
+}
+
 export const make = Effect.fn("ProviderMaintenanceRunner.make")(function* () {
   const scope = yield* Effect.scope;
   const providerRegistry = yield* ProviderRegistry;
@@ -574,16 +606,11 @@ export const make = Effect.fn("ProviderMaintenanceRunner.make")(function* () {
       powershellEncodedArgs(WINDOWS_CLAUDE_PROCESS_QUERY_SCRIPT),
     );
     if (result.timedOut || result.exitCode !== 0) {
-      yield* Effect.logWarning("Provider update preflight process query failed", {
-        provider,
-        message: failureMessage(provider, result),
-        output: commandOutput(result),
-      });
       return {
         status: "blocked",
         message:
           "Threadlines could not check whether Claude is still running before updating. Stop Claude processes or close Claude manually, then try again.",
-        output: null,
+        output: commandOutput(result),
       } satisfies ProviderUpdateSessionPreflight;
     }
 
@@ -606,24 +633,28 @@ export const make = Effect.fn("ProviderMaintenanceRunner.make")(function* () {
 
   const stopWindowsClaudeProcesses = Effect.fn(
     "ProviderMaintenanceRunner.stopWindowsClaudeProcesses",
-  )(function* (provider: ProviderDriverKind) {
+  )(function* () {
     const result = yield* runMaintenanceCommand(
       POWERSHELL_EXECUTABLE,
       powershellEncodedArgs(WINDOWS_CLAUDE_PROCESS_STOP_SCRIPT),
     );
     if (result.timedOut || result.exitCode !== 0) {
-      return yield* new ServerProviderUpdateError({
-        provider,
-        reason: "Threadlines could not stop Claude processes. Close Claude manually and try again.",
-      });
+      return yield* Effect.fail(
+        new WindowsClaudeStopError(
+          "Threadlines could not stop Claude processes. Close Claude manually and try again.",
+          commandOutput(result),
+        ),
+      );
     }
 
     const stopResult = parseWindowsClaudeProcessStopResult(commandStdout(result));
     if (!stopResult) {
-      return yield* new ServerProviderUpdateError({
-        provider,
-        reason: "Threadlines could not read the Claude process stop result. Try the update again.",
-      });
+      return yield* Effect.fail(
+        new WindowsClaudeStopError(
+          "Threadlines could not read the Claude process stop result. Try the update again.",
+          commandOutput(result),
+        ),
+      );
     }
     return stopResult;
   });
@@ -670,7 +701,13 @@ export const make = Effect.fn("ProviderMaintenanceRunner.make")(function* () {
     const runProviderUpdate = Effect.fn("ProviderMaintenanceRunner.runProviderUpdate")(
       function* () {
         const finish = (state: ServerProviderUpdateState) =>
-          setUpdateState(state).pipe(Effect.map((providers) => ({ providers })));
+          (state.status === "succeeded"
+            ? Effect.void
+            : logUnsuccessfulMaintenance({ provider, instanceId, action, state })
+          ).pipe(
+            Effect.andThen(setUpdateState(state)),
+            Effect.map((providers) => ({ providers })),
+          );
         const startedAtRef = yield* Ref.make<string | null>(null);
 
         const runCommandAndVerify = Effect.fn("ProviderMaintenanceRunner.runCommandAndVerify")(
@@ -851,15 +888,23 @@ export const make = Effect.fn("ProviderMaintenanceRunner.make")(function* () {
       result: WindowsClaudeProcessStopResult,
     ) {
       const message = windowsClaudeProcessStopMessage(provider, result);
-      const providers = yield* setUpdateState(
-        makeUpdateState({
-          status: result.remainingProcessCount > 0 ? "failed" : "unchanged",
-          startedAt,
-          finishedAt: yield* nowIso,
-          message,
-          output: null,
-        }),
-      );
+      const state = makeUpdateState({
+        status: result.remainingProcessCount > 0 ? "failed" : "unchanged",
+        startedAt,
+        finishedAt: yield* nowIso,
+        message,
+        output: null,
+      });
+      // "unchanged" here means the blockers are gone and the update can run.
+      if (state.status === "failed") {
+        yield* logUnsuccessfulMaintenance({
+          provider,
+          instanceId,
+          action: "resolve-update-blockers",
+          state,
+        });
+      }
+      const providers = yield* setUpdateState(state);
       return {
         providers,
         stoppedProcessCount: result.stoppedProcessCount,
@@ -868,26 +913,29 @@ export const make = Effect.fn("ProviderMaintenanceRunner.make")(function* () {
       } satisfies ServerProviderUpdateBlockerResolutionResult;
     });
 
-    return yield* stopWindowsClaudeProcesses(provider).pipe(
+    return yield* stopWindowsClaudeProcesses().pipe(
       Effect.flatMap(finish),
       Effect.catchCause((cause) =>
         Effect.gen(function* () {
           const failure = Cause.squash(cause);
           const reason =
-            failure instanceof ServerProviderUpdateError
-              ? failure.reason
-              : failure instanceof Error
-                ? failure.message
-                : "Threadlines could not stop provider update blockers.";
-          yield* setUpdateState(
-            makeUpdateState({
-              status: "failed",
-              startedAt,
-              finishedAt: yield* nowIso,
-              message: reason,
-              output: null,
-            }),
-          );
+            failure instanceof Error
+              ? failure.message
+              : "Threadlines could not stop provider update blockers.";
+          const state = makeUpdateState({
+            status: "failed",
+            startedAt,
+            finishedAt: yield* nowIso,
+            message: reason,
+            output: failure instanceof WindowsClaudeStopError ? failure.output : null,
+          });
+          yield* logUnsuccessfulMaintenance({
+            provider,
+            instanceId,
+            action: "resolve-update-blockers",
+            state,
+          });
+          yield* setUpdateState(state);
           return yield* new ServerProviderUpdateError({
             provider,
             reason,
