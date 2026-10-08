@@ -85,10 +85,16 @@ const makeStorageMaintenance = Effect.gen(function* () {
     );
   });
 
+  // Reads that pick thread events by type (here and in
+  // pruneActivityEventsBeyondCap) name `idx_orch_events_thread_maintenance`
+  // (migration 068) with INDEXED BY. The planner's saved statistics (`PRAGMA
+  // optimize` on shutdown) can go stale enough that it walks every thread
+  // event instead: a multi-second synchronous read that stalls the event
+  // loop long enough for clients to drop the socket.
   const readDeletedThreads = (minAppliedSequence: number) =>
     sql<{ readonly threadId: string; readonly deletedSequence: number }>`
       SELECT stream_id AS "threadId", sequence AS "deletedSequence"
-      FROM orchestration_events
+      FROM orchestration_events INDEXED BY idx_orch_events_thread_maintenance
       WHERE aggregate_kind = 'thread'
         AND event_type = 'thread.deleted'
         AND sequence <= ${minAppliedSequence}
@@ -139,7 +145,7 @@ const makeStorageMaintenance = Effect.gen(function* () {
     Effect.gen(function* () {
       const overCapThreads = yield* sql<{ readonly threadId: string }>`
         SELECT stream_id AS "threadId"
-        FROM orchestration_events
+        FROM orchestration_events INDEXED BY idx_orch_events_thread_maintenance
         WHERE aggregate_kind = 'thread'
           AND event_type = 'thread.activity-appended'
         GROUP BY stream_id
@@ -150,7 +156,7 @@ const makeStorageMaintenance = Effect.gen(function* () {
       for (const thread of overCapThreads) {
         const cutoffRows = yield* sql<{ readonly sequence: number }>`
           SELECT sequence
-          FROM orchestration_events
+          FROM orchestration_events INDEXED BY idx_orch_events_thread_maintenance
           WHERE aggregate_kind = 'thread'
             AND stream_id = ${thread.threadId}
             AND event_type = 'thread.activity-appended'
@@ -167,7 +173,7 @@ const makeStorageMaintenance = Effect.gen(function* () {
             DELETE FROM orchestration_events
             WHERE sequence IN (
               SELECT sequence
-              FROM orchestration_events
+              FROM orchestration_events INDEXED BY idx_orch_events_thread_maintenance
               WHERE aggregate_kind = 'thread'
                 AND stream_id = ${thread.threadId}
                 AND event_type = 'thread.activity-appended'

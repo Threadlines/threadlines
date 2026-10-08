@@ -11,6 +11,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Sink from "effect/Sink";
@@ -545,8 +546,14 @@ describe("providerMaintenanceRunner", () => {
     );
   });
 
-  it.effect("records command failure output in provider update state", () =>
-    Effect.gen(function* () {
+  it.effect("records command failure output in provider update state and the server log", () => {
+    // The update state is memory-only and a retry replaces it; the log keeps it.
+    const warnings: Array<string> = [];
+    const logger = Logger.make(({ logLevel, message }) => {
+      if (logLevel === "Warn") warnings.push(JSON.stringify(message));
+    });
+
+    return Effect.gen(function* () {
       const { registry } = yield* makeRegistry();
       const updater = yield* makeTestRunner(registry);
 
@@ -556,15 +563,23 @@ describe("providerMaintenanceRunner", () => {
       assert.strictEqual(updateState?.status, "failed");
       assert.strictEqual(updateState?.message, "Update command exited with code 1.");
       assert.include(updateState?.output ?? "", "permission denied");
+      assert.isTrue(
+        warnings.some(
+          (warning) =>
+            warning.includes("Update command exited with code 1.") &&
+            warning.includes("permission denied"),
+        ),
+      );
     }).pipe(
       Effect.provide(
         Layer.mergeAll(
           latestVersionHttpClient("0.0.0"),
           mockSpawnerLayer(() => ({ stderr: "permission denied", code: 1 })),
+          Logger.layer([logger], { mergeWithExisting: false }),
         ),
       ),
-    ),
-  );
+    );
+  });
 
   it.effect("explains a command that WSL refused to start", () =>
     Effect.gen(function* () {
@@ -755,6 +770,35 @@ describe("providerMaintenanceRunner", () => {
       ),
     );
   });
+
+  it.effect("keeps the stop command's output when Claude processes cannot be stopped", () =>
+    withProcessPlatform(
+      "win32",
+      Effect.gen(function* () {
+        const { registry } = yield* makeRegistry(baseClaudeProvider);
+        const updater = yield* makeTestRunner({
+          ...registry,
+          getProviderMaintenanceCapabilitiesForInstance: () =>
+            Effect.succeed(claudeWindowsUpdateCapabilities()),
+        });
+
+        const exit = yield* Effect.exit(updater.resolveUpdateBlockers(CLAUDE_DRIVER));
+        const updateState = (yield* registry.getProviders)[0]?.updateState;
+
+        assert.isTrue(Exit.isFailure(exit));
+        assert.strictEqual(updateState?.status, "failed");
+        assert.include(updateState?.message ?? "", "could not stop Claude processes");
+        assert.include(updateState?.output ?? "", "Access is denied");
+      }),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          latestVersionHttpClient("0.0.0"),
+          mockSpawnerLayer(() => ({ stderr: "Access is denied", code: 1 })),
+        ),
+      ),
+    ),
+  );
 
   it.effect("applies provider-owned environment to update commands", () => {
     const calls: Array<{
