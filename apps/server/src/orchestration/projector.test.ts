@@ -785,6 +785,84 @@ describe("orchestration projector", () => {
     expect(afterStopped.threads[0]?.session?.status).toBe("stopped");
   });
 
+  it("settles the running turn when a turn ends without a checkpoint", async () => {
+    const at = "2026-02-23T08:00:00.000Z";
+    const created = await Effect.runPromise(
+      projectEvent(
+        createEmptyReadModel(at),
+        makeEvent({
+          sequence: 1,
+          type: "thread.created",
+          aggregateKind: "thread",
+          aggregateId: "thread-1",
+          occurredAt: at,
+          commandId: "cmd-create",
+          payload: {
+            threadId: "thread-1",
+            projectId: "project-1",
+            title: "demo",
+            modelSelection: { provider: ProviderDriverKind.make("codex"), model: "gpt-5.3-codex" },
+            runtimeMode: "full-access",
+            branch: null,
+            worktreePath: null,
+            createdAt: at,
+            updatedAt: at,
+          },
+        }),
+      ),
+    );
+    const running = await Effect.runPromise(
+      projectEvent(
+        created,
+        makeEvent({
+          sequence: 2,
+          type: "thread.session-set",
+          aggregateKind: "thread",
+          aggregateId: "thread-1",
+          occurredAt: at,
+          commandId: "cmd-running",
+          payload: {
+            threadId: "thread-1",
+            session: {
+              threadId: "thread-1",
+              status: "running",
+              providerName: "codex",
+              runtimeMode: "approval-required",
+              activeTurnId: "turn-1",
+              lastError: null,
+              updatedAt: at,
+            },
+          },
+        }),
+      ),
+    );
+    const turnCompleted = (sequence: number, turnId: string, occurredAt: string) =>
+      makeEvent({
+        sequence,
+        type: "thread.turn-completed",
+        aggregateKind: "thread",
+        aggregateId: "thread-1",
+        occurredAt,
+        commandId: `cmd-turn-completed-${sequence}`,
+        payload: { threadId: "thread-1", turnId, state: "error", completedAt: occurredAt },
+      });
+
+    // An end for some other turn leaves the running one alone.
+    const stale = await Effect.runPromise(
+      projectEvent(running, turnCompleted(3, "turn-0", "2026-02-23T08:00:05.000Z")),
+    );
+    expect(stale.threads[0]?.latestTurn?.state).toBe("running");
+
+    const ended = await Effect.runPromise(
+      projectEvent(stale, turnCompleted(4, "turn-1", "2026-02-23T08:00:06.000Z")),
+    );
+    expect(ended.threads[0]?.latestTurn).toMatchObject({
+      turnId: "turn-1",
+      state: "error",
+      completedAt: "2026-02-23T08:00:06.000Z",
+    });
+  });
+
   it("keeps the room agent that holds the session until a turn hands it over", async () => {
     const at = "2026-02-23T09:00:00.000Z";
     const apply = (

@@ -60,6 +60,7 @@ import { RuntimeReceiptBus } from "../Services/RuntimeReceiptBus.ts";
 import type { CheckpointStoreError } from "../../checkpointing/Errors.ts";
 import type { OrchestrationDispatchError } from "../Errors.ts";
 import { isGitRepository } from "../../git/Utils.ts";
+import { checkoutEndsTurnsWithCheckpoints, turnEndStateFromRuntime } from "../turnEnd.ts";
 import { VcsStatusBroadcaster } from "../../vcs/VcsStatusBroadcaster.ts";
 import { WorkspaceEntries } from "../../workspace/Services/WorkspaceEntries.ts";
 
@@ -836,6 +837,30 @@ const make = Effect.gen(function* () {
       .capture(input.threadId, input.turnId, captureAndDispatchCheckpointUnguarded(input))
       .pipe(Effect.asVoid);
 
+  /**
+   * Ends a turn whose final capture did not happen after all. A turn ends with
+   * its final capture (the capture's turn-diff event carries `completesTurn`),
+   * and ingestion ends the turns of a checkout without git; this covers the
+   * rest: a capture that failed, and a session running outside its thread's
+   * git checkout. Without it the turn stays "running" for good. The
+   * projections settle only the turn still running, so a late end is a no-op.
+   */
+  const settleTurnWithoutCheckpoint = (input: {
+    readonly threadId: ThreadId;
+    readonly turnId: TurnId;
+    readonly runtimeState: string | undefined;
+    readonly createdAt: string;
+  }) =>
+    orchestrationEngine.dispatch({
+      type: "thread.turn.complete",
+      commandId: serverCommandId("turn-complete-without-checkpoint"),
+      threadId: input.threadId,
+      turnId: input.turnId,
+      state: turnEndStateFromRuntime(input.runtimeState),
+      completedAt: input.createdAt,
+      createdAt: input.createdAt,
+    });
+
   const captureCheckpointFromTurnCompletion = Effect.fn("captureCheckpointFromTurnCompletion")(
     function* (event: Extract<ProviderRuntimeEvent, { type: "turn.completed" }>) {
       const turnId = toTurnId(event.turnId);
@@ -866,6 +891,19 @@ const make = Effect.gen(function* () {
         owner: event.participantId ?? null,
       });
       if (!checkpointCwd) {
+        // Ingestion ends the turns of a checkout without git; a session
+        // working outside its git checkout is left to this reactor.
+        const checkpointContext = yield* projectionSnapshotQuery
+          .getThreadCheckpointContext(thread.id)
+          .pipe(Effect.map(Option.getOrUndefined));
+        if (checkoutEndsTurnsWithCheckpoints(checkpointContext)) {
+          yield* settleTurnWithoutCheckpoint({
+            threadId: thread.id,
+            turnId,
+            runtimeState: event.payload.state,
+            createdAt: event.createdAt,
+          });
+        }
         return;
       }
 
@@ -1365,12 +1403,23 @@ const make = Effect.gen(function* () {
       yield* captureCheckpointFromTurnCompletion(event).pipe(
         Effect.catch((error) =>
           Effect.flatMap(nowIso, (createdAt) =>
-            appendCaptureFailureActivity({
-              threadId: event.threadId,
-              turnId,
-              detail: error.message,
-              createdAt,
-            }).pipe(Effect.catch(() => Effect.void)),
+            Effect.andThen(
+              appendCaptureFailureActivity({
+                threadId: event.threadId,
+                turnId,
+                detail: error.message,
+                createdAt,
+              }).pipe(Effect.catch(() => Effect.void)),
+              // The capture that would have ended the turn failed; end it anyway.
+              turnId
+                ? settleTurnWithoutCheckpoint({
+                    threadId: event.threadId,
+                    turnId,
+                    runtimeState: event.payload.state,
+                    createdAt,
+                  }).pipe(Effect.catch(() => Effect.void))
+                : Effect.void,
+            ),
           ),
         ),
         // Captured, skipped or failed: the turn's final capture is over.

@@ -2062,6 +2062,40 @@ describe("incremental orchestration updates", () => {
     expect(threadsOf(next)[0]?.latestTurn).toEqual(threadsOf(state)[0]?.latestTurn);
   });
 
+  it("settles the running turn when a turn ends without a checkpoint", () => {
+    const state = makeState(
+      makeThread({
+        latestTurn: {
+          turnId: TurnId.make("turn-2"),
+          state: "running",
+          requestedAt: "2026-02-27T00:00:02.000Z",
+          startedAt: "2026-02-27T00:00:03.000Z",
+          completedAt: null,
+          assistantMessageId: null,
+        },
+      }),
+    );
+    const turnCompleted = (turnId: string) =>
+      makeEvent("thread.turn-completed", {
+        threadId: ThreadId.make("thread-1"),
+        turnId: TurnId.make(turnId),
+        state: "error",
+        completedAt: "2026-02-27T00:00:04.000Z",
+      });
+
+    // An end for an older turn leaves the running one alone.
+    const stale = applyOrchestrationEvent(state, turnCompleted("turn-1"), localEnvironmentId);
+    expect(threadsOf(stale)[0]?.latestTurn).toEqual(threadsOf(state)[0]?.latestTurn);
+
+    const ended = applyOrchestrationEvent(stale, turnCompleted("turn-2"), localEnvironmentId);
+    expect(threadsOf(ended)[0]?.latestTurn).toMatchObject({
+      turnId: "turn-2",
+      state: "error",
+      startedAt: "2026-02-27T00:00:03.000Z",
+      completedAt: "2026-02-27T00:00:04.000Z",
+    });
+  });
+
   it("rebinds live turn diffs to the authoritative assistant message when it arrives later", () => {
     const turnId = TurnId.make("turn-1");
     const state = makeState(

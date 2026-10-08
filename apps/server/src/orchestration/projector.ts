@@ -84,6 +84,7 @@ import {
   ThreadFollowUpQueuedPayload,
   ThreadFollowUpUnqueuedPayload,
   ThreadTurnDiffCompletedPayload,
+  ThreadTurnCompletedPayload,
   ThreadTurnDiffSummaryUpdatedPayload,
   ThreadDiffStatRebasedPayload,
 } from "./Schemas.ts";
@@ -1451,6 +1452,32 @@ export function projectEvent(
           }),
         };
       });
+
+    case "thread.turn-completed":
+      return decodeForEvent(ThreadTurnCompletedPayload, event.payload, event.type, "payload").pipe(
+        Effect.map((payload) => {
+          const thread = nextBase.threads.find((entry) => entry.id === payload.threadId);
+          // Only the turn still running settles: a late event for an older
+          // turn, or one a checkpoint already ended, changes nothing.
+          if (
+            !thread?.latestTurn ||
+            thread.latestTurn.turnId !== payload.turnId ||
+            thread.latestTurn.state !== "running"
+          ) {
+            return nextBase;
+          }
+          return {
+            ...nextBase,
+            threads: updateThread(nextBase.threads, payload.threadId, {
+              latestTurn: {
+                ...thread.latestTurn,
+                state: payload.state,
+                completedAt: payload.completedAt,
+              },
+            }),
+          };
+        }),
+      );
 
     case "thread.turn-diff-summary-updated":
       return Effect.gen(function* () {

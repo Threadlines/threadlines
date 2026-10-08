@@ -990,6 +990,10 @@ const OrchestrationLatestTurnState = Schema.Literals([
 ]);
 export type OrchestrationLatestTurnState = typeof OrchestrationLatestTurnState.Type;
 
+/** How a finished turn ended: the states a turn can settle into. */
+export const OrchestrationTurnEndState = Schema.Literals(["completed", "interrupted", "error"]);
+export type OrchestrationTurnEndState = typeof OrchestrationTurnEndState.Type;
+
 export const OrchestrationLatestTurn = Schema.Struct({
   turnId: TurnId,
   state: OrchestrationLatestTurnState,
@@ -2554,6 +2558,22 @@ const ThreadTurnDiffCompleteCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+/**
+ * Server-internal: the provider finished a turn that no checkpoint ends. A
+ * turn normally ends with its final capture (`thread.turn.diff.complete` with
+ * `completesTurn`); a folder without git has no capture to take, and a failed
+ * capture never lands, so this ends the turn instead.
+ */
+const ThreadTurnCompleteCommand = Schema.Struct({
+  type: Schema.Literal("thread.turn.complete"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  turnId: TurnId,
+  state: OrchestrationTurnEndState,
+  completedAt: IsoDateTime,
+  createdAt: IsoDateTime,
+});
+
 /** Provider-internal: refresh the file summary of an existing turn checkpoint
  * while the turn is still streaming. Never touches the checkpoint ref, status,
  * or turn count — those belong to `thread.turn.diff.complete`. */
@@ -2884,6 +2904,7 @@ const InternalOrchestrationCommand = Schema.Union([
   ThreadMessageAssistantCompleteCommand,
   ThreadProposedPlanUpsertCommand,
   ThreadTurnDiffCompleteCommand,
+  ThreadTurnCompleteCommand,
   ThreadTurnDiffSummaryUpdateCommand,
   ThreadDiffStatRebaseCommand,
   ThreadActivityAppendCommand,
@@ -2971,6 +2992,7 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.proposed-plan-upserted",
   "thread.turn-diff-completed",
   "thread.turn-diff-summary-updated",
+  "thread.turn-completed",
   "thread.diffstat-rebased",
   "thread.activity-appended",
 ]);
@@ -3502,6 +3524,14 @@ export const ThreadTurnDiffCompletedPayload = Schema.Struct({
   completesTurn: Schema.optional(Schema.Boolean),
 });
 
+/** See ThreadTurnCompleteCommand. Only ever settles the turn it names while it runs. */
+export const ThreadTurnCompletedPayload = Schema.Struct({
+  threadId: ThreadId,
+  turnId: TurnId,
+  state: OrchestrationTurnEndState,
+  completedAt: IsoDateTime,
+});
+
 export const ThreadTurnDiffSummaryUpdatedPayload = Schema.Struct({
   threadId: ThreadId,
   turnId: TurnId,
@@ -3845,6 +3875,11 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.turn-diff-summary-updated"),
     payload: ThreadTurnDiffSummaryUpdatedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.turn-completed"),
+    payload: ThreadTurnCompletedPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,

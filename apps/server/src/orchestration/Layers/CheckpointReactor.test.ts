@@ -1872,6 +1872,100 @@ describe("CheckpointReactor", () => {
     );
   });
 
+  it("ends a turn whose session works outside its git checkout", async () => {
+    // The final capture is what ends a turn. Ingestion ends the turns of a
+    // checkout without git; a session working outside its git checkout gets
+    // no capture either, and that one is this reactor's to end.
+    const scratchFolder = fs.mkdtempSync(path.join(os.tmpdir(), "t3-checkpoint-no-git-"));
+    tempDirs.push(scratchFolder);
+    const harness = await createHarness({
+      seedFilesystemCheckpoints: false,
+      providerSessionCwd: scratchFolder,
+    });
+    const threadId = ThreadId.make("thread-1");
+    const createdAt = "2026-01-01T00:00:00.000Z";
+    const session = (status: "running" | "ready", activeTurnId: TurnId | null) =>
+      Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.make(`cmd-session-no-git-${status}-${activeTurnId ?? "none"}`),
+          threadId,
+          session: {
+            threadId,
+            status,
+            providerName: "codex",
+            runtimeMode: "approval-required",
+            activeTurnId,
+            lastError: null,
+            updatedAt: createdAt,
+          },
+          createdAt,
+        }),
+      );
+    const latestTurn = async () =>
+      (await harness.readModel()).threads.find((entry) => entry.id === threadId)?.latestTurn;
+    const finishTurn = (turnId: TurnId, state: "completed" | "failed") =>
+      harness.provider.emit({
+        type: "turn.completed",
+        eventId: EventId.make(`evt-turn-completed-${turnId}`),
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: "2026-01-01T00:00:05.000Z",
+        threadId,
+        turnId,
+        payload: { state },
+      });
+
+    // A turn that answered: its reply finishing is not the turn finishing.
+    const answered = asTurnId("turn-no-git-answered");
+    const messageId = MessageId.make("assistant:turn-no-git-answered");
+    await session("running", answered);
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.message.assistant.delta",
+        commandId: CommandId.make("cmd-delta-no-git"),
+        threadId,
+        messageId,
+        delta: "Here is the answer.",
+        turnId: answered,
+        createdAt,
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.message.assistant.complete",
+        commandId: CommandId.make("cmd-complete-no-git"),
+        threadId,
+        messageId,
+        turnId: answered,
+        completesTurn: false,
+        createdAt,
+      }),
+    );
+    await session("ready", null);
+    expect((await latestTurn())?.state).toBe("running");
+    finishTurn(answered, "completed");
+    await vi.waitFor(async () => expect((await latestTurn())?.state).toBe("completed"), {
+      timeout: 15_000,
+    });
+    expect((await latestTurn())?.completedAt).not.toBeNull();
+
+    // A turn that failed before saying anything still ends, as an error.
+    const refused = asTurnId("turn-no-git-refused");
+    await session("running", refused);
+    await session("ready", null);
+    finishTurn(refused, "failed");
+    await vi.waitFor(
+      async () => expect(await latestTurn()).toMatchObject({ turnId: refused, state: "error" }),
+      { timeout: 15_000 },
+    );
+
+    const thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+    expect(thread?.checkpoints).toHaveLength(0);
+    expect(thread?.messages.find((message) => message.id === messageId)?.text).toBe(
+      "Here is the answer.",
+    );
+  });
+
   it("continues processing runtime events after a single checkpoint runtime failure", async () => {
     const nonRepositorySessionCwd = fs.mkdtempSync(
       path.join(os.tmpdir(), "t3-checkpoint-runtime-non-repo-"),

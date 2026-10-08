@@ -1216,6 +1216,23 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           return;
         }
 
+        case "thread.turn-completed": {
+          // The turns projector settled the row; the shell carries it out. No
+          // updatedAt bump: the turn's own messages already dated its work,
+          // and a late or repeated end must not move it.
+          const existingRow = yield* projectionThreadRepository.getById({
+            threadId: event.payload.threadId,
+          });
+          if (
+            Option.isNone(existingRow) ||
+            existingRow.value.latestTurnId !== event.payload.turnId
+          ) {
+            return;
+          }
+          yield* refreshThreadShellSummary(event.payload.threadId);
+          return;
+        }
+
         case "thread.diffstat-rebased": {
           const existingRow = yield* projectionThreadRepository.getById({
             threadId: event.payload.threadId,
@@ -1963,6 +1980,49 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             checkpointFiles: event.payload.files,
             checkpointThreadDiffStat: event.payload.threadDiffStat ?? null,
             checkpointCompletedAt: event.payload.completedAt,
+          });
+          return;
+        }
+
+        case "thread.turn-completed": {
+          // Settles only a turn still running: one a checkpoint already ended
+          // keeps that ending. An end that got here before its turn did
+          // records the turn as ended, the way an early checkpoint does, so
+          // the turn's late start cannot reopen it.
+          const existingTurn = yield* projectionTurnRepository.getByTurnId({
+            threadId: event.payload.threadId,
+            turnId: event.payload.turnId,
+          });
+          if (Option.isNone(existingTurn)) {
+            yield* projectionTurnRepository.upsertByTurnId({
+              turnId: event.payload.turnId,
+              threadId: event.payload.threadId,
+              pendingMessageId: null,
+              sourceProposedPlanThreadId: null,
+              sourceProposedPlanId: null,
+              assistantMessageId: null,
+              state: event.payload.state,
+              requestedAt: event.payload.completedAt,
+              startedAt: event.payload.completedAt,
+              completedAt: event.payload.completedAt,
+              checkpointTurnCount: null,
+              checkpointRef: null,
+              checkpointStatus: null,
+              checkpointFiles: [],
+              checkpointThreadDiffStat: null,
+              checkpointCompletedAt: null,
+            });
+            return;
+          }
+          if (existingTurn.value.state !== "running") {
+            return;
+          }
+          yield* projectionTurnRepository.upsertByTurnId({
+            ...existingTurn.value,
+            state: event.payload.state,
+            startedAt: existingTurn.value.startedAt ?? event.payload.completedAt,
+            requestedAt: existingTurn.value.requestedAt ?? event.payload.completedAt,
+            completedAt: existingTurn.value.completedAt ?? event.payload.completedAt,
           });
           return;
         }
