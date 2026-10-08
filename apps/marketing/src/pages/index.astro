@@ -82,7 +82,7 @@ const playGlyphs = `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="tr
 
 <Layout
   title="Threadlines: a local workspace for coding agents"
-  description="Run Codex and Claude Code in one local workspace, and bring them into the same thread. Follow project threads, review pull requests and CI, preview your site, and inspect Git changes."
+  description="Run Codex, Claude Code, OpenCode, and other coding agents in one local workspace, and bring them into the same thread. Follow project threads, review pull requests and CI, preview your site, and inspect Git changes."
   canonicalPath="/"
   structuredData={[appStructuredData]}
 >
@@ -148,14 +148,14 @@ const playGlyphs = `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="tr
           style="--pv-delay: 1.6s"></circle>
       </svg>
 
-      <a class="pv-new pv-rise" style="--pv-d: 0.15s" href="/changelog/v0.5.0"
-        ><span class="pv-new-tag">New in 0.5.0</span><span>Rooms</span><span aria-hidden="true">&rarr;</span></a
+      <a class="pv-new pv-rise" style="--pv-d: 0.15s" href="/changelog/v0.6.0"
+        ><span class="pv-new-tag">New in 0.6.0</span><span>Agents start threads</span><span aria-hidden="true">&rarr;</span></a
       >
       <h1 class="pv-display pv-rise" style="--pv-d: 0.25s">Your coding agents,<br />together in one thread.</h1>
       <p class="pv-sub pv-rise" style="--pv-d: 0.4s">
-        Threadlines is a local desktop workspace for Claude&nbsp;Code and Codex.{" "}
-        <span class="pv-accent">Add another model</span> to a thread, let the agents ask each other
-        for help, and keep pull requests, the browser, and Git changes beside the chat.
+        Threadlines is a local desktop workspace for Claude&nbsp;Code, Codex, OpenCode, and more.{" "}
+        <span class="pv-accent">Add&nbsp;another&nbsp;model</span> to a thread, let agents start their
+        own threads, and keep pull requests, the browser, and Git changes beside the chat.
       </p>
       <div class="pv-cta-row pv-rise" style="--pv-d: 0.55s">
         <a class="pv-cta pv-cta-primary" id="pv-download" href="/download"><span class="pv-cta-ico" id="pv-dl-mac" hidden><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12.152 6.896c-.948 0-2.415-1.078-3.96-1.04-2.04.027-3.91 1.183-4.961 3.014-2.117 3.675-.546 9.103 1.519 12.09 1.013 1.454 2.208 3.09 3.792 3.039 1.52-.065 2.09-.987 3.935-.987 1.831 0 2.35.987 3.96.948 1.637-.026 2.676-1.48 3.676-2.948 1.156-1.688 1.636-3.325 1.662-3.415-.039-.013-3.182-1.221-3.22-4.857-.026-3.04 2.48-4.494 2.597-4.559-1.429-2.09-3.623-2.324-4.39-2.376-2-.156-3.675 1.09-4.61 1.09zM15.53 3.83c.843-1.012 1.4-2.427 1.245-3.83-1.207.052-2.662.805-3.532 1.818-.78.896-1.454 2.338-1.273 3.714 1.338.104 2.715-.688 3.559-1.701"/></svg></span><span class="pv-cta-ico" id="pv-dl-win" hidden><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 3h8.5v8.5H3zM12.5 3H21v8.5h-8.5zM3 12.5h8.5V21H3zM12.5 12.5H21V21h-8.5z"/></svg></span><span id="pv-dl-label">Download Threadlines</span></a>
@@ -167,7 +167,7 @@ const playGlyphs = `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="tr
         >
       </div>
       <p class="pv-note pv-rise" style="--pv-d: 0.7s">
-        Free and open source · Bring your own Codex or Claude account · Runs locally
+        Free and open source · Use the accounts you already have · Runs locally
       </p>
       <div class="pv-providers pv-rise" style="--pv-d: 0.8s" aria-label="Supported agents">
         <span class="pv-providers-label">Runs the agents you already use</span>
@@ -180,8 +180,16 @@ const playGlyphs = `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="tr
           Claude Code
         </span>
         <span class="pv-provider">
+          <svg viewBox="2 1 12 14" aria-hidden="true"><path fill="currentColor" fill-rule="evenodd" clip-rule="evenodd" d="M13 14H3V2H13V14ZM10.5 4.4H5.5V11.6H10.5V4.4Z"/></svg>
+          OpenCode
+        </span>
+        <span class="pv-provider">
           <svg viewBox="0 0 466.73 532.09" aria-hidden="true"><path fill="currentColor" d="M457.43,125.94L244.42,2.96c-6.84-3.95-15.28-3.95-22.12,0L9.3,125.94c-5.75,3.32-9.3,9.46-9.3,16.11v247.99c0,6.65,3.55,12.79,9.3,16.11l213.01,122.98c6.84,3.95,15.28,3.95,22.12,0l213.01-122.98c5.75-3.32,9.3-9.46,9.3-16.11v-247.99c0-6.65-3.55-12.79-9.3-16.11h-.01ZM444.05,151.99l-205.63,356.16c-1.39,2.4-5.06,1.42-5.06-1.36v-233.21c0-4.66-2.49-8.97-6.53-11.31L24.87,145.67c-2.4-1.39-1.42-5.06,1.36-5.06h411.26c5.84,0,9.49,6.33,6.57,11.39h-.01Z"/></svg>
           Cursor
+        </span>
+        <span class="pv-provider">
+          <img src="/harnesses/antigravity.png" alt="" width="20" height="20" />
+          Antigravity
         </span>
         <span class="pv-provider">
           <svg viewBox="166.241 0 155.861 156" preserveAspectRatio="xMidYMid" role="img" aria-label="fx"><path fill="currentColor" d="M237.89 0C243.18 0 249.38 1.42 253.03 3.07L255.09 4.01L250.08 18.63L247.68 17.75C244.9 16.72 241.94 15.8 238.49 15.8C234.98 15.8 232.79 16.56 231.08 18.32C229.23 20.23 227.63 23.64 226.23 29.76L226.23 29.76L226.23 29.76L225.14 34.85H241.67L260.43 34.95L260.69 34.95L260.84 35.17L278.85 61.63L296.74 34.95H320.87L291.68 76.74L322.1 119.75H299.33L299.18 119.55L241.14 40.48L239.35 49.4H222.07L205.69 127.21C203.93 135.71 201.19 142.84 196.78 147.87C192.27 153.01 186.2 155.75 178.34 155.75C174.18 155.75 170.75 155.11 167.91 154.11L166.24 153.52V137.18L166.9 137.4L169.53 138.28C172.18 139.16 174.41 139.8 177.14 139.8C178.53 139.8 179.7 139.53 180.73 138.98C181.76 138.43 182.68 137.6 183.52 136.44C185.3 133.99 186.72 130.13 187.9 124.67L203.76 49.4H189.87L191.76 39.44L192.04 39.35L206.82 34.47L208.15 28.64C210.52 18.21 213.77 10.94 218.71 6.32C223.74 1.61 230.13 0 237.89 0ZM273.99 99.08L260.07 120.25H234.54L261 82.02L273.99 99.08Z"/></svg>
@@ -312,7 +320,7 @@ const playGlyphs = `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="tr
       <p class="pv-kicker">Free and open source</p>
       <h2>Your projects, on your machine</h2>
       <p class="pv-lede">
-        Threadlines runs locally with your Codex or Claude account. The app is MIT-licensed,
+        Threadlines runs locally with your own agent accounts. The app is MIT-licensed,
         with its source and full history on GitHub. It began as a fork of T3 Code.
       </p>
       <div class="pv-cta-row">
@@ -712,7 +720,8 @@ const playGlyphs = `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="tr
     font-weight: 600;
     color: var(--fg-muted);
   }
-  .pv-provider svg { width: 20px; height: 20px; }
+  .pv-provider svg,
+  .pv-provider img { width: 20px; height: 20px; }
   .pv-frame .pv-hero-tall { display: none; }
 
   .pv-new {
