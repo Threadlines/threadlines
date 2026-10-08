@@ -3505,7 +3505,11 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
             ),
             false,
           );
-          assert.strictEqual(status.message, undefined);
+          // Every model up to this version is in; only the newer Haiku 5.5 is not.
+          assert.strictEqual(
+            status.message,
+            "Claude Code v2.1.284 is too old for Claude Haiku 5.5. Upgrade to v2.1.293 or newer to access it.",
+          );
         }).pipe(
           Effect.provide(
             mockSpawnerLayer((args) => {
@@ -3615,7 +3619,10 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
             ),
             false,
           );
-          assert.strictEqual(status.message, undefined);
+          assert.strictEqual(
+            status.message,
+            "Claude Code v2.1.284 is too old for Claude Haiku 5.5. Upgrade to v2.1.293 or newer to access it.",
+          );
         }).pipe(
           Effect.provide(
             mockSpawnerLayer((args) => {
@@ -4191,6 +4198,91 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
             mockSpawnerLayer((args) => {
               const joined = args.join(" ");
               if (joined === "--version") return { stdout: "2.1.283\n", stderr: "", code: 0 };
+              if (joined === "auth status")
+                return { stdout: '{"loggedIn":true}\n', stderr: "", code: 0 };
+              throw new Error(`Unexpected args: ${joined}`);
+            }),
+          ),
+        ),
+      );
+
+      it.effect("includes Claude Haiku 5.5 with launch capabilities on supported versions", () =>
+        Effect.gen(function* () {
+          const status = yield* checkClaudeProviderStatus(
+            defaultClaudeSettings,
+            claudeCapabilities(),
+          );
+          const haiku55 = status.models.find((model) => model.slug === "claude-haiku-5-5");
+          if (!haiku55?.capabilities) {
+            assert.fail("Expected Claude Haiku 5.5 capabilities for Claude Code v2.1.293.");
+          }
+          assert.strictEqual(haiku55.name, "Claude Haiku 5.5");
+          const effortDescriptor = haiku55.capabilities.optionDescriptors?.find(
+            (descriptor) => descriptor.type === "select" && descriptor.id === "effort",
+          );
+          // Medium is Claude Code's own default for Haiku 5.5.
+          assert.deepStrictEqual(
+            effortDescriptor?.type === "select" ? effortDescriptor.options : undefined,
+            [
+              { id: "low", label: "Low" },
+              { id: "medium", label: "Medium", isDefault: true },
+              { id: "high", label: "High" },
+              { id: "xhigh", label: "Extra High" },
+              { id: "max", label: "Max" },
+            ],
+          );
+          assert.strictEqual(
+            haiku55.capabilities.optionDescriptors?.some(
+              (descriptor) => descriptor.id === "ultracode",
+            ),
+            true,
+          );
+          assert.strictEqual(
+            haiku55.capabilities.optionDescriptors?.some(
+              (descriptor) =>
+                descriptor.id === "contextWindow" ||
+                descriptor.id === "fastMode" ||
+                descriptor.id === "thinking",
+            ),
+            false,
+          );
+          assert.strictEqual(status.message, undefined);
+        }).pipe(
+          Effect.provide(
+            mockSpawnerLayer((args) => {
+              const joined = args.join(" ");
+              if (joined === "--version") return { stdout: "2.1.293\n", stderr: "", code: 0 };
+              if (joined === "auth status")
+                return { stdout: '{"loggedIn":true}\n', stderr: "", code: 0 };
+              throw new Error(`Unexpected args: ${joined}`);
+            }),
+          ),
+        ),
+      );
+
+      it.effect("hides Claude Haiku 5.5 before the Claude Code version that exposes it", () =>
+        Effect.gen(function* () {
+          const status = yield* checkClaudeProviderStatus(
+            defaultClaudeSettings,
+            claudeCapabilities(),
+          );
+          assert.strictEqual(
+            status.models.some((model) => model.slug === "claude-haiku-5-5"),
+            false,
+          );
+          assert.strictEqual(
+            status.models.some((model) => model.slug === "claude-haiku-4-5"),
+            true,
+          );
+          assert.strictEqual(
+            status.message,
+            "Claude Code v2.1.292 is too old for Claude Haiku 5.5. Upgrade to v2.1.293 or newer to access it.",
+          );
+        }).pipe(
+          Effect.provide(
+            mockSpawnerLayer((args) => {
+              const joined = args.join(" ");
+              if (joined === "--version") return { stdout: "2.1.292\n", stderr: "", code: 0 };
               if (joined === "auth status")
                 return { stdout: '{"loggedIn":true}\n', stderr: "", code: 0 };
               throw new Error(`Unexpected args: ${joined}`);
