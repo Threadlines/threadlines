@@ -3356,6 +3356,31 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       };
     }
 
+    case "thread.turn.complete": {
+      // Whether the turn is still the one running is the projections' call:
+      // the command read model's latest turn can trail them.
+      yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.turn-completed",
+        payload: {
+          threadId: command.threadId,
+          turnId: command.turnId,
+          state: command.state,
+          completedAt: command.completedAt,
+        },
+      };
+    }
+
     case "thread.turn.diff.summary.update": {
       // Checkpoint existence is not an invariant here: the command read model
       // does not hydrate checkpoint bodies, so the projector no-ops instead

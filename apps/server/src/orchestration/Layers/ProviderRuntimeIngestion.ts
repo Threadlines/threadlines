@@ -45,7 +45,7 @@ import { resolveThreadProviderCwd } from "../generalChats.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { ProjectionTurnRepository } from "../../persistence/Services/ProjectionTurns.ts";
 import { ProjectionTurnRepositoryLive } from "../../persistence/Layers/ProjectionTurns.ts";
-import { isGitRepository } from "../../git/Utils.ts";
+import { checkoutEndsTurnsWithCheckpoints, turnEndStateFromRuntime } from "../turnEnd.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
 import { SubagentWorktreeFollower } from "../Services/SubagentWorktreeFollower.ts";
@@ -1396,9 +1396,7 @@ const make = Effect.gen(function* () {
     const checkpointContext = yield* projectionSnapshotQuery
       .getThreadCheckpointContext(input.thread.id)
       .pipe(Effect.map(Option.getOrUndefined));
-    const workspaceCwd =
-      checkpointContext?.worktreePath ?? checkpointContext?.workspaceRoot ?? undefined;
-    if (!checkpointContext || !workspaceCwd || !isGitRepository(workspaceCwd)) {
+    if (!checkpointContext || !checkoutEndsTurnsWithCheckpoints(checkpointContext)) {
       return;
     }
 
@@ -3640,6 +3638,17 @@ const make = Effect.gen(function* () {
         const proposedPlans = detailedThread?.proposedPlans ?? [];
         const turnId = toTurnId(event.turnId);
         if (turnId) {
+          // A turn ends with its final checkpoint, and a checkout without git
+          // gets none, so its turn ends here, below, once everything the turn
+          // said has been recorded: no other reactor can promise that order.
+          const endsWithoutCheckpoint =
+            event.type === "turn.completed" &&
+            shouldApplyThreadLifecycle &&
+            !checkoutEndsTurnsWithCheckpoints(
+              yield* projectionSnapshotQuery
+                .getThreadCheckpointContext(thread.id)
+                .pipe(Effect.map(Option.getOrUndefined)),
+            );
           const assistantMessageIds = yield* getAssistantMessageIdsForTurn(thread.id, turnId);
           yield* Effect.forEach(
             assistantMessageIds,
@@ -3653,7 +3662,13 @@ const make = Effect.gen(function* () {
                 commandTag: "assistant-complete-finalize",
                 finalDeltaCommandTag: "assistant-delta-finalize-fallback",
                 hasProjectedMessage: findMessageById(messages, assistantMessageId) !== undefined,
-                completesTurn: event.type === "turn.completed",
+                // The turn end below carries the turn's own state; with a
+                // checkpoint, a failed turn waits for the capture's "error"
+                // rather than settling here as completed.
+                completesTurn:
+                  event.type === "turn.completed" &&
+                  !endsWithoutCheckpoint &&
+                  normalizeRuntimeTurnState(event.payload.state) !== "failed",
               }),
             { concurrency: 1 },
           ).pipe(Effect.asVoid);
@@ -3700,6 +3715,17 @@ const make = Effect.gen(function* () {
           });
           if (shouldApplyThreadLifecycle) {
             yield* sealSubagentResultState(`${thread.id}:${turnId}:`);
+          }
+          if (endsWithoutCheckpoint && event.type === "turn.completed") {
+            yield* orchestrationEngine.dispatch({
+              type: "thread.turn.complete",
+              commandId: providerCommandId(event, "turn-complete-without-checkpoint"),
+              threadId: thread.id,
+              turnId,
+              state: turnEndStateFromRuntime(event.payload.state),
+              completedAt: now,
+              createdAt: now,
+            });
           }
         }
       }

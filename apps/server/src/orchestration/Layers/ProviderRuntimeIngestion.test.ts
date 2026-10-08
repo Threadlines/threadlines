@@ -281,9 +281,15 @@ describe("ProviderRuntimeIngestion", () => {
     }
   });
 
-  async function createHarness(options?: { serverSettings?: Partial<ServerSettings> }) {
+  async function createHarness(options?: {
+    serverSettings?: Partial<ServerSettings>;
+    /** False: the project's folder has no git (a general chat's, say). */
+    git?: boolean;
+  }) {
     const workspaceRoot = makeTempDir("t3-provider-project-");
-    fs.mkdirSync(path.join(workspaceRoot, ".git"));
+    if (options?.git ?? true) {
+      fs.mkdirSync(path.join(workspaceRoot, ".git"));
+    }
     const provider = createProviderServiceHarness();
     const gitWorkflow = createGitWorkflowHarness();
     const orchestrationLayer = OrchestrationEngineLive.pipe(
@@ -804,6 +810,113 @@ describe("ProviderRuntimeIngestion", () => {
     );
     expect(thread.session?.status).toBe("error");
     expect(thread.session?.lastError).toBe("turn failed");
+  });
+
+  it("ends the turns of a checkout without git, each the way it ended", async () => {
+    // No checkpoint ends these turns (a general chat's scratch folder, a
+    // project outside git), so ingestion does, after the turn's last word.
+    const harness = await createHarness({ git: false });
+    const threadId = asThreadId("thread-1");
+    const provider = ProviderDriverKind.make("codex");
+    const now = "2026-01-01T00:00:00.000Z";
+    const runTurn = async (input: {
+      turnId: string;
+      text: string;
+      state: "completed" | "failed";
+      /** False: the turn ends with its reply still unfinished. */
+      finishReply: boolean;
+    }) => {
+      const turnId = asTurnId(input.turnId);
+      const itemId = `msg-${input.turnId}`;
+      harness.emit({
+        type: "turn.started",
+        eventId: asEventId(`${input.turnId}-start`),
+        provider,
+        threadId,
+        createdAt: now,
+        turnId,
+      });
+      harness.emit({
+        type: "content.delta",
+        eventId: asEventId(`${input.turnId}-delta`),
+        provider,
+        threadId,
+        createdAt: now,
+        turnId,
+        itemId,
+        payload: { streamKind: "assistant_text", delta: input.text },
+      } as never);
+      if (input.finishReply) {
+        // The reply finishing on its own: a turn can hold several, so this
+        // never ends the turn.
+        harness.emit({
+          type: "item.completed",
+          eventId: asEventId(`${input.turnId}-item`),
+          provider,
+          threadId,
+          createdAt: now,
+          turnId,
+          itemId,
+          payload: { itemType: "assistant_message", status: "completed" },
+        } as never);
+      }
+      harness.emit({
+        type: "turn.completed",
+        eventId: asEventId(`${input.turnId}-done`),
+        provider,
+        threadId,
+        createdAt: now,
+        turnId,
+        payload: { state: input.state },
+      });
+      await harness.drain();
+      return (await harness.readModel()).threads.find((thread) => thread.id === threadId);
+    };
+
+    const answered = await runTurn({
+      turnId: "turn-answered",
+      text: "Here it is.",
+      state: "completed",
+      finishReply: true,
+    });
+    expect(answered?.latestTurn).toMatchObject({ turnId: "turn-answered", state: "completed" });
+    expect(answered?.latestTurn?.completedAt).not.toBeNull();
+
+    const failed = await runTurn({
+      turnId: "turn-failed",
+      text: "Partial",
+      state: "failed",
+      finishReply: false,
+    });
+    expect(failed?.latestTurn).toMatchObject({ turnId: "turn-failed", state: "error" });
+  });
+
+  it("leaves a git checkout's turn for its final checkpoint to end", async () => {
+    const harness = await createHarness();
+    const threadId = asThreadId("thread-1");
+    const provider = ProviderDriverKind.make("codex");
+    const now = "2026-01-01T00:00:00.000Z";
+    const turnId = asTurnId("turn-git");
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("git-start"),
+      provider,
+      threadId,
+      createdAt: now,
+      turnId,
+    });
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("git-done"),
+      provider,
+      threadId,
+      createdAt: now,
+      turnId,
+      payload: { state: "completed" },
+    });
+    await harness.drain();
+    const thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+    expect(thread?.latestTurn).toMatchObject({ turnId: "turn-git", state: "running" });
   });
 
   it("settles a running session from a fresh provider thread idle signal", async () => {

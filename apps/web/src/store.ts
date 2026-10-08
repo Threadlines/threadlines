@@ -2482,6 +2482,27 @@ function applyEnvironmentOrchestrationEvent(
         };
       });
 
+    // A turn no checkpoint ends (a checkout without git, a failed capture).
+    // Only the turn still running settles.
+    case "thread.turn-completed":
+      return updateThreadState(state, event.payload.threadId, (thread) =>
+        thread.latestTurn?.turnId === event.payload.turnId && thread.latestTurn.state === "running"
+          ? {
+              ...thread,
+              latestTurn: buildLatestTurn({
+                previous: thread.latestTurn,
+                turnId: event.payload.turnId,
+                state: event.payload.state,
+                requestedAt: thread.latestTurn.requestedAt,
+                startedAt: thread.latestTurn.startedAt ?? event.payload.completedAt,
+                completedAt: event.payload.completedAt,
+                assistantMessageId: thread.latestTurn.assistantMessageId,
+                sourceProposedPlan: thread.latestTurn.sourceProposedPlan,
+              }),
+            }
+          : thread,
+      );
+
     // Live refresh of an in-flight turn's file summary. Only the files move;
     // ref/status/turn count (and thread updatedAt) stay with the completion
     // event so streaming updates don't churn ordering or lifecycle state.
