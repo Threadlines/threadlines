@@ -691,22 +691,22 @@ export const INBOX_AUTO_DONE_AFTER_DAYS = 2;
  *    last activity. New work outranks an old word in both directions: a done
  *    thread that starts again pulls itself back without being un-marked, and
  *    a reopened thread that goes quiet again is allowed to re-file itself.
- * 3. A finished child thread (the "wrap up finished child threads" setting):
+ * 3. A pin. It is "keep this at hand", the one placement the user made by
+ *    hand, so none of the automatic rules below may file it; only the user's
+ *    own word above can. Unpinning hands it back to them.
+ * 4. A finished child thread (the "wrap up finished child threads" setting):
  *    one still part of its parent's family files itself
  *    once its latest work went back to the parent -- the parent's agent read
  *    that answer, so it needs no visit -- or once the parent itself is
  *    wrapped, since the user is finished with that work. Only the exact
  *    completion handed back skips the unread rule; later work does not.
- * 4. A merged or closed pull request. The branch landing is a stronger signal
+ * 5. A merged or closed pull request. The branch landing is a stronger signal
  *    than idleness, so it files the thread at once rather than waiting out the
- *    timer, and a pin does not hold it back -- finished work is finished
- *    wherever it was placed. Unread work still stays out, and a moving thread
- *    was already excluded above.
- * 5. Auto-done on idle, unless the thread is pinned or holds a completion the
- *    user has not seen. A pin is "keep this at hand" -- filing it on a timer
- *    would undo the one placement the user made by hand -- and unread work is
- *    the inbox's reason to exist; filing it unread would be the sidebar
- *    reading your mail for you.
+ *    timer. Unread work still stays out, and a moving thread was already
+ *    excluded above.
+ * 6. Auto-done on idle, unless the thread holds a completion the user has not
+ *    seen. Unread work is the inbox's reason to exist; filing it unread would
+ *    be the sidebar reading your mail for you.
  */
 export function isThreadDone(
   thread: InboxLifecycleInput &
@@ -724,7 +724,7 @@ export function isThreadDone(
     readonly pullRequestSettledAt?: string | null;
     /**
      * Set for a thread in its parent's family while "wrap up finished child
-     * threads" is on: whether that parent is wrapped. Absent: rule 3 is off.
+     * threads" is on: whether that parent is wrapped. Absent: rule 4 is off.
      */
     readonly childWrapUp?: { readonly parentDone: boolean } | null;
   },
@@ -745,6 +745,7 @@ export function isThreadDone(
   if (override != null && !overrideIsStale) {
     return override.state === "done";
   }
+  if (thread.pinnedAt !== null) return false;
   if (childWrapUp !== null && (handedBackCompletionSeen || childWrapUp.parentDone)) {
     return true;
   }
@@ -755,7 +756,6 @@ export function isThreadDone(
     return true;
   }
   if (options.autoDoneAfterDays == null) return false;
-  if (thread.pinnedAt !== null) return false;
   if (hasUnseenCompletion(thread)) return false;
   if (lastActivityAt === null) return false;
   return Date.parse(lastActivityAt) < Date.parse(options.now) - options.autoDoneAfterDays * DAY_MS;
