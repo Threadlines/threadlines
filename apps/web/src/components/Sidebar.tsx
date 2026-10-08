@@ -132,7 +132,6 @@ import { SidebarHoverCardGroup } from "./sidebar/hoverCard";
 import { ThreadHoverCardProvider } from "./sidebar/ThreadHoverCard";
 import { resolveThreadActionProjectRef, startNewGeneralChatThread } from "../lib/chatThreadActions";
 import { SidebarPullRequestsRow } from "./sidebar/SidebarPullRequestsRow";
-import { SidebarRoomsRow } from "./sidebar/SidebarRoomsRow";
 import { isRoom } from "../rooms";
 import {
   PULL_REQUEST_COUNT_REFETCH_INTERVAL_MS,
@@ -497,8 +496,9 @@ export default function Sidebar() {
   const wrapUpOnPullRequestSettled = useSettings((s) => s.wrapUpThreadsOnPullRequestSettled);
   const wrapUpChildThreadsOnFinish = useSettings((s) => s.wrapUpChildThreadsOnFinish);
   const roomsEnabled = useRoomsEnabled();
-  // The Rooms row narrows what the inbox shows, never what the wrap-up rules
-  // read, so it can not change which threads get filed away.
+  // The Rooms filter (in the scope menu) narrows what the inbox shows, never
+  // what the wrap-up rules read, so it can not change which threads get filed
+  // away.
   const [roomsOnly, setRoomsOnly] = useState(false);
   const roomsFilterActive = roomsEnabled && roomsOnly;
   const appSettingsConfirmThreadArchive = useSettings<boolean>(
@@ -879,10 +879,6 @@ export default function Sidebar() {
           (!roomsFilterActive || isRoom(entry.thread)),
       ),
     [entries, roomsFilterActive, scopedEnvironmentIdValue],
-  );
-  const roomCount = useMemo(
-    () => (roomsEnabled ? entries.filter((entry) => isRoom(entry.thread)).length : 0),
-    [entries, roomsEnabled],
   );
 
   // Everything a draft row needs about its project, resolved once here: a
@@ -1931,13 +1927,6 @@ export default function Sidebar() {
                     </div>
 
                     <SidebarPullRequestsRow snapshot={openPullRequests} />
-                    {roomsEnabled ? (
-                      <SidebarRoomsRow
-                        active={roomsOnly}
-                        roomCount={roomCount}
-                        onToggle={() => setRoomsOnly((current) => !current)}
-                      />
-                    ) : null}
                   </div>
 
                   <ProjectScopeMenu
@@ -1948,6 +1937,8 @@ export default function Sidebar() {
                     environmentOptions={environmentScopeOptions}
                     scopedEnvironmentId={scopedEnvironmentIdValue}
                     onEnvironmentScopeChange={handleEnvironmentScopeChange}
+                    roomsOnly={roomsEnabled ? roomsOnly : null}
+                    onRoomsOnlyChange={setRoomsOnly}
                     onAddProject={() => openAddProjectCommandPalette()}
                     onNewThread={handleComposeClick}
                     newThreadShortcutLabel={newThreadShortcutLabel}
@@ -1970,7 +1961,13 @@ export default function Sidebar() {
                     ) : (
                       <div className="flex flex-col items-start gap-1.5 px-3 py-2">
                         <span className="text-[11px] text-muted-foreground/60">
-                          {hasWorkspaceProjects ? "No threads yet" : "No projects yet"}
+                          {!hasWorkspaceProjects
+                            ? "No projects yet"
+                            : roomsFilterActive
+                              ? // Wrapped rooms may still list below, so
+                                // this speaks only for the active ones.
+                                "No active rooms"
+                              : "No threads yet"}
                         </span>
                         {hasWorkspaceProjects ? null : (
                           <button

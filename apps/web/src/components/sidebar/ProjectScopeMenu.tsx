@@ -4,9 +4,11 @@ import {
   EllipsisIcon,
   FolderIcon,
   FolderPlusIcon,
+  MessageSquareIcon,
   MonitorIcon,
   MonitorSmartphoneIcon,
   SquarePenIcon,
+  UsersRoundIcon,
 } from "lucide-react";
 import React, { memo, useCallback, useState } from "react";
 import type {
@@ -106,6 +108,9 @@ export interface ProjectScopeMenuProps {
   environmentOptions: readonly EnvironmentScopeOption[];
   scopedEnvironmentId: string | null;
   onEnvironmentScopeChange: (environmentId: string | null) => void;
+  /** Whether the list shows only rooms. Null while Rooms is off: no filter is offered. */
+  roomsOnly: boolean | null;
+  onRoomsOnlyChange: (roomsOnly: boolean) => void;
   onAddProject: () => void;
   onNewThread: () => void;
   newThreadShortcutLabel: string | null;
@@ -119,6 +124,9 @@ export interface ProjectScopeMenuProps {
  * header used to hold (rename, grouping, path, removal), which keeps those
  * off the menu itself. A menu scales with the pane where a chip row could
  * not, so only "Add project" stays out here as a visible button.
+ *
+ * The machine and rooms filters live here too, as sections under the
+ * projects: each narrows the same list, and none is worth a permanent row.
  */
 export const ProjectScopeMenu = memo(function ProjectScopeMenu(props: ProjectScopeMenuProps) {
   const {
@@ -129,6 +137,8 @@ export const ProjectScopeMenu = memo(function ProjectScopeMenu(props: ProjectSco
     environmentOptions,
     scopedEnvironmentId,
     onEnvironmentScopeChange,
+    roomsOnly,
+    onRoomsOnlyChange,
     onAddProject,
     onNewThread,
     newThreadShortcutLabel,
@@ -543,6 +553,15 @@ export const ProjectScopeMenu = memo(function ProjectScopeMenu(props: ProjectSco
                 ? `${scopedProject.displayName}${scopedEnvironment ? ` · ${scopedEnvironment.label}` : ""}`
                 : (scopedEnvironment?.label ?? "All projects")}
             </span>
+            {roomsOnly === true ? (
+              // A glyph rather than a word: it survives any label width, and
+              // it is the same mark every room row carries.
+              <UsersRoundIcon
+                aria-label="Rooms only"
+                data-testid="inbox-rooms-filter-mark"
+                className="size-3 shrink-0 text-foreground"
+              />
+            ) : null}
             <ChevronsUpDownIcon className="size-3 shrink-0 text-muted-foreground/60" />
           </MenuTrigger>
           <MenuPopup align="start" side="bottom" className="min-w-56">
@@ -651,6 +670,32 @@ export const ProjectScopeMenu = memo(function ProjectScopeMenu(props: ProjectSco
                     <span className="min-w-0 flex-1 truncate">{option.label}</span>
                   </MenuItem>
                 ))}
+              </MenuGroup>
+            ) : null}
+            {roomsOnly !== null ? (
+              <MenuGroup>
+                <MenuSeparator />
+                <MenuGroupLabel>Threads</MenuGroupLabel>
+                <MenuItem
+                  data-testid="inbox-rooms-filter-all"
+                  className={cn(SCOPE_ITEM_CLASS_NAME, !roomsOnly && SCOPE_ITEM_SELECTED)}
+                  onClick={() => {
+                    onRoomsOnlyChange(false);
+                  }}
+                >
+                  <MessageSquareIcon className="size-3.5 shrink-0 text-muted-foreground/70" />
+                  <span className="min-w-0 flex-1 truncate">All threads</span>
+                </MenuItem>
+                <MenuItem
+                  data-testid="inbox-rooms-filter-only"
+                  className={cn(SCOPE_ITEM_CLASS_NAME, roomsOnly && SCOPE_ITEM_SELECTED)}
+                  onClick={() => {
+                    onRoomsOnlyChange(true);
+                  }}
+                >
+                  <UsersRoundIcon className="size-3.5 shrink-0 text-muted-foreground/70" />
+                  <span className="min-w-0 flex-1 truncate">Rooms only</span>
+                </MenuItem>
               </MenuGroup>
             ) : null}
             <MenuSeparator />
