@@ -1,4 +1,9 @@
-import { scopeThreadRef } from "@threadlines/client-runtime";
+import {
+  scopedProjectKey,
+  scopedThreadKey,
+  scopeProjectRef,
+  scopeThreadRef,
+} from "@threadlines/client-runtime";
 import { useNavigate } from "@tanstack/react-router";
 import { MessageCirclePlusIcon } from "lucide-react";
 import { useMemo } from "react";
@@ -7,19 +12,23 @@ import { useShallow } from "zustand/react/shallow";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
 import { startNewGeneralChatThread } from "../lib/chatThreadActions";
 import { resolveGeneralChatsProjectRef } from "../lib/generalChats";
+import { useThreadSeenSources } from "../lib/threadInboxSync";
 import { sortThreads } from "../lib/threadSort";
 import { usePrimaryEnvironmentId } from "../environments/primary";
 import {
   selectGeneralChatsProjectAcrossEnvironments,
+  selectProjectsAcrossEnvironments,
   selectSidebarThreadsAcrossEnvironments,
   useStore,
 } from "../store";
 import { buildThreadRouteParams } from "../threadRoutes";
 import { formatRelativeTimeLabel } from "../timestampFormat";
+import { cn } from "../lib/utils";
 import { PageTitlebar } from "./PageTitlebar";
 import { ProviderGlyph } from "./chat/ProviderInstanceIcon";
 import { PROVIDER_OPTIONS } from "../session-logic";
-import { resolveThreadStatusPill } from "./Sidebar.logic";
+import { resolveSeenThreadStatus, type ThreadStatusPill } from "./Sidebar.logic";
+import { ThreadEnvironmentBadge, ThreadStatusText } from "./sidebar/InboxRows";
 import { ThreadHoverCard, ThreadHoverCardProvider } from "./sidebar/ThreadHoverCard";
 import { SidebarHoverCardGroup } from "./sidebar/hoverCard";
 import type { SidebarThreadSummary } from "../types";
@@ -56,9 +65,11 @@ export function ChatsDestinationView() {
   const navigate = useNavigate();
   const { handleNewThread } = useHandleNewThread();
   const threads = useStore(useShallow(selectSidebarThreadsAcrossEnvironments));
+  const projects = useStore(useShallow(selectProjectsAcrossEnvironments));
   const generalChatsProject = useStore(selectGeneralChatsProjectAcrossEnvironments);
   const activeEnvironmentId = useStore((state) => state.activeEnvironmentId);
   const primaryEnvironmentId = usePrimaryEnvironmentId();
+  const seenSources = useThreadSeenSources();
 
   const generalChatsProjectRef = useMemo(
     () =>
@@ -70,19 +81,24 @@ export function ChatsDestinationView() {
     [activeEnvironmentId, generalChatsProject, primaryEnvironmentId],
   );
 
+  // Every connected machine's general chats, like the sidebar's lines that
+  // lead here: a chat folded behind "N more" must be on this page.
   const chats = useMemo(() => {
-    if (generalChatsProject === null) {
-      return [];
-    }
+    const generalChatProjectKeys = new Set(
+      projects
+        .filter((project) => project.kind === "general-chat")
+        .map((project) => scopedProjectKey(scopeProjectRef(project.environmentId, project.id))),
+    );
     return sortThreads(
       threads.filter(
         (thread) =>
           thread.archivedAt === null &&
-          thread.environmentId === generalChatsProject.environmentId &&
-          thread.projectId === generalChatsProject.id,
+          generalChatProjectKeys.has(
+            scopedProjectKey(scopeProjectRef(thread.environmentId, thread.projectId)),
+          ),
       ),
     );
-  }, [generalChatsProject, threads]);
+  }, [projects, threads]);
 
   const groups = useMemo(() => {
     const nowMs = Date.now();
@@ -161,6 +177,13 @@ export function ChatsDestinationView() {
                         <ChatRow
                           key={`${thread.environmentId}:${thread.id}`}
                           thread={thread}
+                          status={
+                            resolveSeenThreadStatus(
+                              thread,
+                              scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
+                              seenSources,
+                            ).status
+                          }
                           onOpen={() => {
                             void navigate({
                               to: "/$environmentId/$threadId",
@@ -183,7 +206,19 @@ export function ChatsDestinationView() {
   );
 }
 
-function ChatRow({ thread, onOpen }: { thread: SidebarThreadSummary; onOpen: () => void }) {
+/**
+ * One chat: its title and what it is doing now, in the words and colours the
+ * sidebar uses ("input", "working · 4m"), or when it was last active.
+ */
+function ChatRow({
+  thread,
+  status,
+  onOpen,
+}: {
+  thread: SidebarThreadSummary;
+  status: ThreadStatusPill | null;
+  onOpen: () => void;
+}) {
   const provider = thread.session?.provider ?? null;
   // The listing carries no message text and this page adds no fetching of its
   // own, so the provider is what the second line can honestly say.
@@ -192,7 +227,7 @@ function ChatRow({ thread, onOpen }: { thread: SidebarThreadSummary; onOpen: () 
     : null;
 
   return (
-    <ThreadHoverCard thread={thread} status={resolveThreadStatusPill({ thread })}>
+    <ThreadHoverCard thread={thread} status={status}>
       <button
         type="button"
         className="-mx-2 flex w-[calc(100%+1rem)] min-w-0 cursor-pointer flex-col gap-0.5 rounded-md px-2 py-2.5 text-left transition-colors select-none hover:bg-muted focus-ring"
@@ -203,14 +238,27 @@ function ChatRow({ thread, onOpen }: { thread: SidebarThreadSummary; onOpen: () 
           <span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground/90">
             {thread.title}
           </span>
-          <span className="shrink-0 font-mono text-xs tabular-nums text-muted-foreground/50">
-            {formatRelativeTimeLabel(chatActivityAt(thread))}
+          <span className="flex shrink-0 items-center gap-1.5 self-center">
+            {status ? (
+              <span
+                aria-label={status.label}
+                className={cn("size-[7px] shrink-0 rounded-full", status.dotClass)}
+              />
+            ) : null}
+            <ThreadStatusText
+              thread={thread}
+              status={status}
+              testId="chats-view-row-status"
+              resting={formatRelativeTimeLabel(chatActivityAt(thread))}
+              restingClassName="text-muted-foreground"
+            />
           </span>
         </span>
         <span className="flex w-full min-w-0 items-center gap-2">
           <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground/55">
             {providerLabel}
           </span>
+          <ThreadEnvironmentBadge thread={thread} />
           {provider ? (
             <ProviderGlyph
               instanceId={thread.session?.providerInstanceId}

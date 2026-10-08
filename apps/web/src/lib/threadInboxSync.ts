@@ -14,9 +14,10 @@
  */
 import { parseScopedThreadKey, scopeThreadRef, scopedThreadKey } from "@threadlines/client-runtime";
 import type { EnvironmentId, ScopedThreadRef } from "@threadlines/contracts";
+import { useShallow } from "zustand/react/shallow";
 
 import { mergeThreadDoneOverride, mergeThreadLastSeenAt } from "../components/Sidebar.logic";
-import type { ThreadDoneOverride } from "../components/Sidebar.logic";
+import type { ThreadDoneOverride, ThreadSeenSources } from "../components/Sidebar.logic";
 import { readEnvironmentApi } from "../environmentApi";
 import {
   selectSidebarThreadSummaryByRef,
@@ -38,6 +39,19 @@ export function selectThreadDoneOverride(
   serverDoneOverride: ThreadDoneOverride | null | undefined,
 ): ThreadDoneOverride | null {
   return mergeThreadDoneOverride(uiState.doneThreadOverlays[threadKey], serverDoneOverride);
+}
+
+/**
+ * What a list outside the inbox reads to tell a new result from a seen one
+ * (`resolveSeenThreadStatus`). Stable until either map changes.
+ */
+export function useThreadSeenSources(): ThreadSeenSources {
+  return useUiStateStore(
+    useShallow((state) => ({
+      seenThreadOverlays: state.seenThreadOverlays,
+      threadSeedVisitedAtById: state.threadSeedVisitedAtById,
+    })),
+  );
 }
 
 /** This device's answer for when a thread was last seen: overlay, server, seed. */
