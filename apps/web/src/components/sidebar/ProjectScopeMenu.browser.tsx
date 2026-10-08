@@ -36,6 +36,8 @@ async function renderMenu(
         environmentOptions={TWO_MACHINES}
         scopedEnvironmentId={null}
         onEnvironmentScopeChange={onEnvironmentScopeChange}
+        roomsOnly={null}
+        onRoomsOnlyChange={vi.fn()}
         onAddProject={vi.fn()}
         onNewThread={vi.fn()}
         newThreadShortcutLabel={null}
@@ -76,6 +78,8 @@ describe("ProjectScopeMenu", () => {
       await page.getByTestId("inbox-scope-trigger").click();
       await expect.element(page.getByTestId("inbox-scope-all")).toBeVisible();
       expect(document.querySelector("[data-testid='inbox-machine-scope-all']")).toBeNull();
+      // Rooms off: no rooms section either.
+      expect(document.querySelector("[data-testid='inbox-rooms-filter-only']")).toBeNull();
     } finally {
       await mounted.unmount();
     }
@@ -92,6 +96,29 @@ describe("ProjectScopeMenu", () => {
       );
     } finally {
       await scopedMounted.unmount();
+    }
+  });
+
+  it("narrows to rooms from the menu and marks the trigger while it does", async () => {
+    const onRoomsOnlyChange = vi.fn();
+    const { mounted } = await renderMenu({ roomsOnly: false, onRoomsOnlyChange });
+    try {
+      expect(document.querySelector("[data-testid='inbox-rooms-filter-mark']")).toBeNull();
+      await page.getByTestId("inbox-scope-trigger").click();
+      await page.getByTestId("inbox-rooms-filter-only").click();
+      expect(onRoomsOnlyChange).toHaveBeenCalledWith(true);
+    } finally {
+      await mounted.unmount();
+    }
+
+    const { mounted: filteredMounted } = await renderMenu({ roomsOnly: true, onRoomsOnlyChange });
+    try {
+      await expect.element(page.getByTestId("inbox-rooms-filter-mark")).toBeVisible();
+      await page.getByTestId("inbox-scope-trigger").click();
+      await page.getByTestId("inbox-rooms-filter-all").click();
+      expect(onRoomsOnlyChange).toHaveBeenLastCalledWith(false);
+    } finally {
+      await filteredMounted.unmount();
     }
   });
 });
