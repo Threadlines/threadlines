@@ -12,6 +12,10 @@ ones that get the browser panel). Turn them off in Settings, Threads, Agent
 pages. Turning them off applies to new agent sessions at once and makes running
 ones answer in text; pages already in a thread stay.
 
+While the agent is still working, a page stays where it was shown, among the
+steps. When the turn finishes it settles right above the reply, after the
+steps. A page never folds away with the steps around it.
+
 ## What you can do with a page
 
 - Click its title to fold it to one line, and again to open it.

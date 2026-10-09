@@ -505,7 +505,7 @@ describe("deriveMessagesTimelineRows", () => {
     ]);
   });
 
-  it("keeps a page as a row of its own while its agent works on, and once the steps around it fold", () => {
+  it("keeps a page where it was shown while its agent works on, then settles it above the reply", () => {
     const at = (second: number) => `2026-01-01T00:00:${String(second).padStart(2, "0")}Z`;
     const step = (second: number) => ({
       id: `step-${second}`,
@@ -519,25 +519,33 @@ describe("deriveMessagesTimelineRows", () => {
         turnId: "turn-1" as never,
       },
     });
-    const shown = {
-      id: "page:page-1:turn-1",
+    const shown = (pageId: string, second: number) => ({
+      id: `page:${pageId}:turn-1`,
       kind: "page" as const,
-      createdAt: at(3),
+      createdAt: at(second),
       page: {
-        pageId: "page-1" as never,
-        versionId: "v1" as never,
+        pageId: pageId as never,
+        versionId: `${pageId}-v1` as never,
         version: 1,
         turnId: "turn-1" as never,
         participantId: null,
         title: "Funnel",
         kind: "html" as const,
         height: 400,
-        createdAt: at(3),
-        updatedAt: at(3),
+        createdAt: at(second),
+        updatedAt: at(second),
       },
-    };
-    // Two steps, the page, then many more steps than a working chat lists.
-    const turn = [step(1), step(2), shown, ...[4, 5, 6, 7, 8, 9, 10, 11].map(step)];
+    });
+    // Two steps, a page, many more steps than a working chat lists, a second
+    // page, one more step.
+    const turn = [
+      step(1),
+      step(2),
+      shown("first", 3),
+      ...[4, 5, 6, 7, 8, 9, 10, 11].map(step),
+      shown("second", 12),
+      step(13),
+    ];
     const derive = (
       timelineEntries: Parameters<typeof deriveMessagesTimelineRows>[0]["timelineEntries"],
       isWorking: boolean,
@@ -552,17 +560,53 @@ describe("deriveMessagesTimelineRows", () => {
       });
     const stepsOf = (rows: ReturnType<typeof derive>) =>
       rows.map((row) =>
-        row.kind === "work" ? `work:${row.groupedEntries.length}:${row.folded}` : row.kind,
+        row.kind === "work"
+          ? `work:${row.groupedEntries.length}:${row.folded}`
+          : row.kind === "page"
+            ? `page:${row.page.pageId}`
+            : row.kind,
       );
 
-    // Still working: the page stands between the steps before and after it.
-    expect(stepsOf(derive(turn, true)).slice(0, 3)).toEqual([
+    // Still working: each page stands between the steps before and after it.
+    expect(stepsOf(derive(turn, true)).slice(0, 5)).toEqual([
       "work:2:true",
-      "page",
-      "work:8:false",
+      "page:first",
+      "work:8:true",
+      "page:second",
+      "work:1:false",
     ]);
 
-    // Answered: every stretch of steps folds, and the page is still there.
+    // Working, but the chat has not been told the turn's id: the page still
+    // stays put while the turn's note is streaming.
+    const unnamed = deriveMessagesTimelineRows({
+      timelineEntries: [
+        step(1),
+        shown("first", 3),
+        step(4),
+        {
+          id: "note-entry",
+          kind: "message" as const,
+          createdAt: at(5),
+          message: {
+            id: "note" as never,
+            role: "assistant" as const,
+            text: "Checking the numbers",
+            turnId: "turn-1" as never,
+            createdAt: at(5),
+            streaming: true,
+          },
+        },
+      ],
+      isWorking: true,
+      activeTurnStartedAt: at(0),
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+    });
+    expect(unnamed.slice(0, 4).map((row) => row.kind)).toEqual(["work", "page", "work", "message"]);
+
+    // Answered: the steps read as one folded stretch, then the pages in the
+    // order they were shown, then the reply. The turn's late bookkeeping
+    // joins the steps.
     const answered = derive(
       [
         ...turn,
@@ -580,10 +624,11 @@ describe("deriveMessagesTimelineRows", () => {
             streaming: false,
           },
         },
+        step(21),
       ],
       false,
     );
-    expect(stepsOf(answered)).toEqual(["work:2:true", "page", "work:8:true", "message"]);
+    expect(stepsOf(answered)).toEqual(["work:12:true", "page:first", "page:second", "message"]);
   });
 
   it("keeps the active turn's trailing work below its streamed commentary", () => {

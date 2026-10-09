@@ -415,6 +415,7 @@ export const AGENT_PAGE_THEME_GUIDE = [
 export const AGENT_PAGE_LAYOUT_GUIDE = [
   `The page sits borderless in the reply column, on the thread's own background: about ${AGENT_PAGE_COLUMN_WIDTH}px wide on desktop, about 360px on phones.`,
   "Leave html, body and the outermost element without a background color, border, card or banner title: the page is part of your reply. This overrides any general style preference such as a black page background.",
+  "The title you give the page shows right above it, so do not repeat it as the page's first heading.",
   "Use a fluid width with no horizontal padding on the outermost element.",
   "The look is dense and flat: structure from type and spacing, quiet fills to group things, thin borders only where needed, no shadows except on things that float. Body text 13-14px, small headings, no hero sizes.",
   "If a box needs its own background (a mock of a specific screen, a panel that must stand apart), give it at least 16px of padding and var(--radius) corners.",

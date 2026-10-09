@@ -393,7 +393,7 @@ export function deriveMessagesTimelineRows(input: {
 }): MessagesTimelineRow[] {
   const nextRows: MessagesTimelineRow[] = [];
   const shownPageIds = new Set<string>();
-  const visibleTimelineEntries = hoistTrailingTurnWorkAboveResponse(
+  const visibleTimelineEntries = settleTurnsAboveResponse(
     deriveVisibleTimelineEntries(input),
     input.isWorking ? (input.activeTurnId ?? null) : null,
   );
@@ -1545,15 +1545,30 @@ function deriveTrackerAgentSpawnIds(
 }
 
 /**
- * A turn's response reads as its final word, but turn-end bookkeeping — the
- * checkpoint's changed-files activity, a tool event that settles late — is
- * recorded after the assistant message and would otherwise render below it.
+ * A turn's response reads as its final word, and what the turn made for the
+ * reader sits with it. Left in recorded order, two things break that:
+ *
+ * - Turn-end bookkeeping (the checkpoint's changed-files activity, a tool
+ *   event that settles late) is recorded after the assistant message and
+ *   would render below it.
+ * - A page stands where the agent showed it, which is among its steps when
+ *   it kept working afterwards.
+ *
  * For every settled turn, work entries trailing the turn's last assistant
- * message move to just above that message. The turn named by `activeTurnId`
- * keeps raw order: while it is still working, activity that starts after a
- * streamed commentary segment really is the newest thing and belongs below it.
+ * message move to just above that message, and the turn's pages move there
+ * after them: the steps, then the pages, then the reply. A settled page
+ * stands at its reply in time as well, so what the timeline places by time (a
+ * side exchange) falls where it was asked, above the pair, never between a
+ * page and its reply.
+ *
+ * The turn named by `activeTurnId` keeps raw order. While it is still
+ * working, activity that starts after a streamed commentary segment really
+ * is the newest thing and belongs below it, a page shows where it was
+ * published, and no message can be called the reply yet. A page also stays
+ * put while its turn's last message is still streaming, whatever the turn is
+ * called.
  */
-function hoistTrailingTurnWorkAboveResponse(
+function settleTurnsAboveResponse(
   entries: TimelineEntry[],
   activeTurnId: TurnId | null,
 ): TimelineEntry[] {
@@ -1572,42 +1587,57 @@ function hoistTrailingTurnWorkAboveResponse(
     return entries;
   }
 
-  const hoistedByAnchorIndex = new Map<number, TimelineEntry[]>();
-  const hoistedIndices = new Set<number>();
+  const trailingWorkByAnchorIndex = new Map<number, TimelineEntry[]>();
+  const pagesByAnchorIndex = new Map<number, TimelineEntry[]>();
+  const movedIndices = new Set<number>();
   for (let index = 0; index < entries.length; index += 1) {
     const entry = entries[index]!;
-    // A turn's work, and a page it showed after writing its reply, go above
-    // that reply: the reply is what the turn ends on.
     const turnId =
       entry.kind === "work" ? entry.entry.turnId : entry.kind === "page" ? entry.page.turnId : null;
     if (turnId == null) {
       continue;
     }
     const anchorIndex = lastAssistantIndexByTurn.get(turnId);
-    if (anchorIndex === undefined || index <= anchorIndex) {
+    if (anchorIndex === undefined) {
       continue;
     }
-    const hoisted = hoistedByAnchorIndex.get(anchorIndex) ?? [];
-    hoisted.push(entry);
-    hoistedByAnchorIndex.set(anchorIndex, hoisted);
-    hoistedIndices.add(index);
+    if (entry.kind !== "page") {
+      if (index > anchorIndex) {
+        const trailing = trailingWorkByAnchorIndex.get(anchorIndex) ?? [];
+        trailing.push(entry);
+        trailingWorkByAnchorIndex.set(anchorIndex, trailing);
+        movedIndices.add(index);
+      }
+      continue;
+    }
+    const reply = entries[anchorIndex]!;
+    if (reply.kind === "message" && reply.message.streaming) {
+      continue;
+    }
+    const pages = pagesByAnchorIndex.get(anchorIndex) ?? [];
+    pages.push(
+      entry.createdAt === reply.createdAt ? entry : { ...entry, createdAt: reply.createdAt },
+    );
+    pagesByAnchorIndex.set(anchorIndex, pages);
+    movedIndices.add(index);
   }
-  if (hoistedIndices.size === 0) {
+  if (movedIndices.size === 0) {
     return entries;
   }
 
   const result: TimelineEntry[] = [];
   for (let index = 0; index < entries.length; index += 1) {
-    if (hoistedIndices.has(index)) {
+    if (movedIndices.has(index)) {
       continue;
     }
-    const hoisted = hoistedByAnchorIndex.get(index);
-    if (hoisted) {
-      result.push(...hoisted);
-    }
-    result.push(entries[index]!);
+    result.push(
+      ...(trailingWorkByAnchorIndex.get(index) ?? []),
+      ...(pagesByAnchorIndex.get(index) ?? []),
+      entries[index]!,
+    );
   }
-  return result;
+  // A page already at its reply, in place and in time, moved nowhere.
+  return result.every((entry, index) => entry === entries[index]) ? entries : result;
 }
 
 function deriveVisibleTimelineEntries(input: {

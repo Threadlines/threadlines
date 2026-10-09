@@ -344,6 +344,57 @@ describe("side exchanges in the timeline", () => {
     ]);
   });
 
+  it("stays where it was asked when a settled turn stands its page at the answer", () => {
+    const response = {
+      id: "response-entry",
+      kind: "message" as const,
+      createdAt: at(20),
+      message: {
+        id: MessageId.make("response"),
+        role: "assistant" as const,
+        text: "Fixed the lock.",
+        turnId: "turn-1" as never,
+        createdAt: at(20),
+        completedAt: at(21),
+        streaming: false,
+      },
+    };
+    const page = {
+      id: "page-entry",
+      kind: "page" as const,
+      createdAt: at(3),
+      page: {
+        pageId: "page-1" as never,
+        versionId: "v1" as never,
+        version: 1,
+        turnId: "turn-1" as never,
+        participantId: null,
+        title: "Lock timeline",
+        kind: "html" as const,
+        height: 400,
+        createdAt: at(3),
+        updatedAt: at(3),
+      },
+    };
+    // The agent showed a page, was asked a question, and kept working. The
+    // page settles at the answer; the exchange keeps its place among the steps.
+    const rows = derive(
+      [userEntry, step("read", 2), page, step("edit", 10), response],
+      [exchange({ answeredAt: 8 })],
+      { working: false },
+    );
+    expect(layout(rows)).toEqual([
+      "user-entry",
+      "read",
+      "question-side-1",
+      "side-status:side-1 answered-below",
+      "side-answer:side-1",
+      "edit",
+      "page-entry",
+      "response-entry",
+    ]);
+  });
+
   describe("on agents' lines", () => {
     const lines = (rows: ReadonlyArray<MessagesTimelineRow>) =>
       rows.map((row) =>

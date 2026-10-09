@@ -11,11 +11,14 @@ import {
   agentPageShareLink,
 } from "@threadlines/shared/agentPages";
 import {
+  AppWindowIcon,
   CheckIcon,
-  ChevronRightIcon,
+  ChevronDownIcon,
+  ChevronUpIcon,
   CodeIcon,
   DownloadIcon,
   ExternalLinkIcon,
+  FileTextIcon,
   LinkIcon,
   Maximize2Icon,
 } from "lucide-react";
@@ -30,7 +33,6 @@ import {
 
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { openExternalUrl } from "../../lib/externalLinks";
-import { cn } from "../../lib/utils";
 import { Button } from "../ui/button";
 import { Dialog, DialogPopup, DialogTitle } from "../ui/dialog";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -55,13 +57,19 @@ const setMinimized = (key: string, minimized: boolean) => {
 export const agentPageRowId = (page: Pick<OrchestrationAgentPage, "pageId" | "turnId">) =>
   `page:${page.pageId}:${page.turnId}`;
 
-/** The chrome above a page: one text line, like a folded stretch of work. */
+/** The chrome above a page: its one title line. */
 export const AGENT_PAGE_ROW_CHROME_PX = 28;
 
+// The row's actions are plain until the row is hovered, as row actions are.
+const ROW_ACTION_CLASS =
+  "opacity-0 transition-opacity duration-150 focus-visible:opacity-100 group-hover/page:opacity-100 pointer-coarse:opacity-100";
+
 /**
- * An agent page in the chat (docs/agent-pages.md): a one-line title that
- * folds it away, and the page itself on the thread's own background, fitted
- * to its height. The frame keeps the server's measured height until the page
+ * An agent page in the chat (docs/agent-pages.md): a title line and the page
+ * itself on the thread's own background, fitted to its height. The page is
+ * part of the answer, so its title reads as content (a row title with the
+ * page's glyph), not as one of the agent's steps; clicking it folds the page
+ * to that line. The frame keeps the server's measured height until the page
  * reports its own, so nothing below it moves while it loads. A page its
  * provider also put online (a Claude artifact) says where, and opens there.
  */
@@ -86,26 +94,31 @@ export function AgentPageRow(props: {
     [page.pageId, page.versionId, props.environmentId, props.threadId],
   );
   const share = useMemo(() => agentPageShareLink(page.shareUrl), [page.shareUrl]);
+  const PageGlyph = page.kind === "markdown" ? FileTextIcon : AppWindowIcon;
+  const notes = [
+    ...(props.updated ? ["Updated"] : []),
+    ...(share ? [`On ${share.host}`] : []),
+  ].join(" · ");
 
   return (
     <div className="group/page min-w-0" data-agent-page-row={page.pageId}>
       <div className="flex min-w-0 items-center gap-1">
         <button
           type="button"
-          className="flex min-w-0 flex-1 items-center gap-[7px] text-left text-xs leading-5 text-muted-foreground transition-colors duration-150 hover:text-foreground"
+          className="group/title flex min-w-0 flex-1 items-center gap-2 text-left"
           aria-expanded={!minimized}
           onClick={() => setMinimized(key, !minimized)}
         >
-          <ChevronRightIcon
-            className={cn(
-              "size-3 shrink-0 transition-transform duration-150",
-              !minimized && "rotate-90",
-            )}
+          <PageGlyph
+            className="size-3.5 shrink-0 text-muted-foreground transition-colors duration-150 group-hover/title:text-foreground"
             aria-hidden="true"
           />
-          <span className="min-w-0 truncate">{page.title}</span>
-          {props.updated ? <span className="shrink-0">· Updated</span> : null}
-          {share ? <span className="shrink-0">· On {share.host}</span> : null}
+          <span className="min-w-0 truncate text-[13.5px] leading-5 font-medium text-foreground">
+            {page.title}
+          </span>
+          {notes.length > 0 ? (
+            <span className="shrink-0 text-[12.5px] leading-5 text-muted-foreground">{notes}</span>
+          ) : null}
         </button>
         {share ? (
           <Tooltip>
@@ -115,7 +128,7 @@ export function AgentPageRow(props: {
                   size="icon-xs"
                   variant="ghost"
                   aria-label={`Open ${page.title} on ${share.host}`}
-                  className="opacity-0 transition-opacity duration-150 focus-visible:opacity-100 group-hover/page:opacity-100 pointer-coarse:opacity-100"
+                  className={ROW_ACTION_CLASS}
                   onClick={() => openExternalUrl(share.url)}
                 />
               }
@@ -132,7 +145,7 @@ export function AgentPageRow(props: {
                 size="icon-xs"
                 variant="ghost"
                 aria-label={`Open ${page.title} full size`}
-                className="opacity-0 transition-opacity duration-150 focus-visible:opacity-100 group-hover/page:opacity-100 pointer-coarse:opacity-100"
+                className={ROW_ACTION_CLASS}
                 onClick={() => setFullSize(true)}
               />
             }
@@ -140,6 +153,27 @@ export function AgentPageRow(props: {
             <Maximize2Icon className="size-3.5" />
           </TooltipTrigger>
           <TooltipPopup side="left">Open full size</TooltipPopup>
+        </Tooltip>
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <Button
+                size="icon-xs"
+                variant="ghost"
+                aria-label={minimized ? `Show ${page.title}` : `Minimize ${page.title}`}
+                // A folded page keeps its way back in view.
+                className={minimized ? undefined : ROW_ACTION_CLASS}
+                onClick={() => setMinimized(key, !minimized)}
+              />
+            }
+          >
+            {minimized ? (
+              <ChevronDownIcon className="size-3.5" />
+            ) : (
+              <ChevronUpIcon className="size-3.5" />
+            )}
+          </TooltipTrigger>
+          <TooltipPopup side="left">{minimized ? "Show page" : "Minimize"}</TooltipPopup>
         </Tooltip>
       </div>
       {minimized ? null : <InlinePage version={version} page={page} />}
