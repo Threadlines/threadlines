@@ -33,6 +33,14 @@ describe("buildAgentPageDocument", () => {
     expect(policyIndex(document)).toBeLessThan(document.indexOf("steal()"));
   });
 
+  it("reads a page that repeats comment markers in one pass", () => {
+    // A pattern with a repeated lazy comment group took exponential time on this.
+    const page = `<!--${"--><!--".repeat(50_000)}x`;
+    const document = buildAgentPageDocument({ content: page, kind: "html", theme });
+    expect(document.startsWith("<!doctype html>")).toBe(true);
+    expect(document.endsWith(page)).toBe(true);
+  });
+
   it("adds a doctype when the page has none, so it never renders in quirks mode", () => {
     const document = buildAgentPageDocument({
       content: "<div>chart</div>",
