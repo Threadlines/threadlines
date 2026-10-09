@@ -13,7 +13,7 @@ import { Clicks, DOTS, threadBottom, tiltIn } from "./shared";
 /**
  * 01: the window settles in on the user's report of the bug and Opus's first
  * answer ("Opus can't find the cause"); the camera closes on the model picker, which the
- * rest of the app dims around while GPT-6-Astra is added; then it settles on
+ * rest of the app dims around while GPT-6.1-Sol is added; then it settles on
  * the message box while the user points it back at Opus ("Sending to Opus")
  * and asks the two to work together.
  */

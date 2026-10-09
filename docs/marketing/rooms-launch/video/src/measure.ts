@@ -49,7 +49,7 @@ export const textWidth = (text: string, style: TextStyle): number => {
 
 /**
  * Break text into as few lines as fit `maxWidth`, keeping the lines close
- * in length (so "Ask Astra while / Opus keeps working." rather than leaving
+ * in length (so "Ask Sol while / Opus keeps working." rather than leaving
  * one word on its own).
  */
 export const balancedLines = (text: string, maxWidth: number, style: TextStyle): string[] => {

@@ -1,0 +1,732 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>0.6.0 launch video: storyboard</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      :root {
+        --bg: #0b0b0d;
+        --surface: #151518;
+        --surface-2: #1c1c20;
+        --border: rgba(255, 255, 255, 0.08);
+        --border-strong: rgba(255, 255, 255, 0.14);
+        --fg: #fafafa;
+        --fg-muted: #a1a1aa;
+        --fg-dim: #71717a;
+        --accent: #7aa2ff;
+        --opus: #d97757;
+        --codex: #e4e4e7;
+        --sonnet: #c9a37a;
+        --amber: #e0b04a;
+        --cyan: #5ec8d8;
+        --font-mono: ui-monospace, "SF Mono", Menlo, monospace;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--fg);
+        font:
+          15px/1.5 -apple-system,
+          BlinkMacSystemFont,
+          "Inter",
+          sans-serif;
+      }
+      main {
+        max-width: 1120px;
+        margin: 0 auto;
+        padding: 32px 24px 64px;
+      }
+      h1 {
+        font-size: 28px;
+        margin: 0 0 4px;
+        letter-spacing: -0.01em;
+      }
+      h2 {
+        font-size: 19px;
+        margin: 0;
+      }
+      .meta,
+      .kicker,
+      .time {
+        font-family: var(--font-mono);
+        font-size: 12px;
+        letter-spacing: 0.06em;
+        color: var(--fg-dim);
+      }
+      .kicker {
+        color: var(--accent);
+        text-transform: uppercase;
+      }
+      .lede {
+        color: var(--fg-muted);
+        max-width: 760px;
+        margin: 8px 0 0;
+      }
+      ul.why {
+        margin: 12px 0 0;
+        padding-left: 18px;
+        color: var(--fg-muted);
+      }
+      ul.why li {
+        margin: 2px 0;
+      }
+      section.scene {
+        display: grid;
+        grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+        gap: 28px;
+        padding: 24px 0;
+        border-top: 1px solid var(--border);
+      }
+      section.scene:first-of-type {
+        margin-top: 24px;
+      }
+      .head {
+        grid-column: 1 / -1;
+        display: flex;
+        align-items: baseline;
+        gap: 14px;
+        flex-wrap: wrap;
+      }
+      .head .caption {
+        font-size: 19px;
+        font-weight: 600;
+      }
+      /* The mock screen: what the chat shows at the scene's key moment. */
+      .screen {
+        background: var(--surface);
+        border: 1px solid var(--border-strong);
+        border-radius: 12px;
+        padding: 18px 20px 14px;
+        font-size: 14px;
+      }
+      .screen.title-card {
+        display: grid;
+        place-items: center;
+        text-align: center;
+        min-height: 220px;
+      }
+      .title-card .big {
+        font-size: 34px;
+        font-weight: 700;
+      }
+      .title-card .line {
+        color: var(--fg-muted);
+      }
+      .title-card .tag {
+        font-family: var(--font-mono);
+        font-size: 12px;
+        letter-spacing: 0.14em;
+        color: var(--accent);
+        margin-top: 8px;
+      }
+      .you {
+        margin: 0 0 14px auto;
+        max-width: 80%;
+        background: var(--surface-2);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 9px 12px;
+      }
+      .to {
+        font-family: var(--font-mono);
+        font-size: 11px;
+        color: var(--fg-dim);
+        margin-bottom: 3px;
+      }
+      .you .to {
+        text-align: right;
+      }
+      .agent {
+        margin: 0 0 12px;
+      }
+      .who {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        font-weight: 600;
+        font-size: 13px;
+      }
+      .who .dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+      }
+      .who .effort {
+        font-weight: 400;
+        color: var(--fg-dim);
+      }
+      .said {
+        margin: 3px 0 0 15px;
+      }
+      .tool {
+        margin: 4px 0 0 15px;
+        color: var(--fg-dim);
+        font-size: 13px;
+      }
+      .nested {
+        margin: 8px 0 4px 15px;
+        padding-left: 12px;
+        border-left: 1px solid var(--border-strong);
+      }
+      .working {
+        color: var(--fg-dim);
+        font-size: 13px;
+        margin-left: 15px;
+      }
+      .action {
+        font-family: var(--font-mono);
+        font-size: 11.5px;
+        color: var(--accent);
+        border: 1px dashed rgba(122, 162, 255, 0.4);
+        border-radius: 8px;
+        padding: 6px 10px;
+        margin: 0 0 12px;
+      }
+      .label {
+        display: inline-block;
+        margin-left: 10px;
+        font-size: 12px;
+        border: 1px solid var(--border-strong);
+        border-radius: 999px;
+        padding: 1px 9px;
+        color: var(--fg);
+      }
+      /* Notes beside each screen. */
+      .notes ol {
+        margin: 0;
+        padding-left: 20px;
+      }
+      .notes li {
+        margin: 0 0 8px;
+      }
+      .notes .t {
+        font-family: var(--font-mono);
+        font-size: 12px;
+        color: var(--fg-dim);
+        margin-right: 6px;
+      }
+      .notes h3 {
+        font-size: 13px;
+        margin: 16px 0 4px;
+        color: var(--fg-muted);
+        font-weight: 600;
+      }
+      .notes p {
+        margin: 0;
+        color: var(--fg-muted);
+      }
+      .rules {
+        border-top: 1px solid var(--border);
+        margin-top: 8px;
+        padding-top: 20px;
+      }
+      .rules ul {
+        color: var(--fg-muted);
+        padding-left: 18px;
+      }
+      .alt {
+        border-top: 1px solid var(--border);
+        padding-top: 20px;
+      }
+      .screen .split {
+        display: grid;
+        grid-template-columns: 170px minmax(0, 1fr);
+        gap: 14px;
+      }
+      /* The sidebar mock: one family, parent row plus its summary line. */
+      .side {
+        border-right: 1px solid var(--border);
+        padding-right: 12px;
+        font-size: 12.5px;
+      }
+      .side .row {
+        padding: 3px 0;
+      }
+      .side .sub {
+        font-family: var(--font-mono);
+        font-size: 10.5px;
+        color: var(--fg-dim);
+      }
+      .side .fam {
+        font-family: var(--font-mono);
+        font-size: 10.5px;
+        color: var(--fg-muted);
+        margin: 2px 0 4px;
+      }
+      .side .child {
+        display: flex;
+        gap: 6px;
+        align-items: center;
+        padding: 2px 0 2px 8px;
+        color: var(--fg-muted);
+      }
+      .pip {
+        display: inline-block;
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: var(--accent);
+        flex-shrink: 0;
+      }
+      .pip.cyan {
+        background: var(--cyan);
+      }
+      .check {
+        color: var(--fg-dim);
+        font-size: 11px;
+        width: 6px;
+      }
+      .cyan {
+        color: var(--cyan);
+      }
+      /* The approval box docked above the message box. */
+      .request {
+        border: 1px solid var(--border-strong);
+        border-radius: 10px;
+        padding: 10px 12px;
+        margin: 10px 0 12px;
+        background: var(--surface-2);
+      }
+      .request .kind {
+        font-size: 11px;
+        letter-spacing: 0.2em;
+        color: var(--fg-dim);
+        margin-right: 8px;
+      }
+      .request .line {
+        display: flex;
+        gap: 8px;
+        font-size: 13px;
+        margin-top: 4px;
+      }
+      .request .meta-r {
+        margin-left: auto;
+        font-family: var(--font-mono);
+        font-size: 11px;
+        color: var(--fg-dim);
+      }
+      .request .buttons {
+        text-align: right;
+        margin-top: 8px;
+        font-size: 12.5px;
+      }
+      .request .btn {
+        display: inline-block;
+        padding: 2px 10px;
+        border-radius: 6px;
+        margin-left: 6px;
+      }
+      .request .btn.primary {
+        background: var(--fg);
+        color: var(--bg);
+      }
+      /* The "Started 3 threads" record in the parent's chat. */
+      .record {
+        margin: 4px 0 12px 15px;
+        font-size: 12.5px;
+        color: var(--fg-muted);
+      }
+      .record .t-line {
+        display: flex;
+        gap: 6px;
+        align-items: center;
+        margin-left: 14px;
+      }
+      /* A message another thread wrote: its title, then "reply". */
+      .reply {
+        margin: 0 0 10px;
+      }
+      .reply .from {
+        font-family: var(--font-mono);
+        font-size: 10.5px;
+        color: var(--fg-muted);
+      }
+      .reply .body {
+        border-left: 1px solid var(--border-strong);
+        padding-left: 10px;
+        margin-top: 2px;
+      }
+      .chip {
+        display: inline-block;
+        font-family: var(--font-mono);
+        font-size: 11px;
+        color: var(--fg-muted);
+        border: 1px solid var(--border-strong);
+        border-radius: 999px;
+        padding: 1px 8px;
+        margin-bottom: 10px;
+      }
+      .open {
+        color: var(--amber);
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="meta">0.6.0 LAUNCH VIDEO · STORYBOARD V3 · APPROVED</div>
+      <h1>Slow checkout</h1>
+      <p class="lede">
+        About 53 seconds, silent, in landscape, portrait and square. One real problem from start to
+        finish: checkout got slow this week. Opus 5.5 finds three suspects and asks to check each
+        one in its own thread. You click Start. The three threads work at once, their answers come
+        back to Opus one by one, and the last one names the cause. Opus fixes it.
+      </p>
+      <ul class="why">
+        <li>
+          <strong>Why this story:</strong> "check three things at once" is the job people already
+          split by hand, opening three chats and pasting results back. Here the agent does the
+          splitting and the answers come back to it.
+        </li>
+        <li>
+          <strong>Why this bug:</strong> a page that got slow needs no code to understand, and the
+          cause fits in one line: one database query per item in the cart.
+        </li>
+        <li>
+          <strong>What it has to show that subagents don't:</strong> these are real threads. They
+          sit in the sidebar, each has its own worktree, and you can open one and read along.
+        </li>
+      </ul>
+
+      <!-- Intro -->
+      <section class="scene">
+        <div class="head">
+          <span class="time">0:00–0:04</span>
+          <span class="kicker">Intro</span>
+        </div>
+        <div class="screen title-card">
+          <div>
+            <div class="meta">Threadlines</div>
+            <div class="big">Agents start threads</div>
+            <div class="line">Split a big job across threads. The answers come back.</div>
+            <div class="tag">NEW IN 0.6.0</div>
+          </div>
+        </div>
+        <div class="notes">
+          <ol>
+            <li><span class="t">0.0</span>The logo animation, then all three lines at once.</li>
+            <li><span class="t">0.5</span>Everything is readable and holds still.</li>
+            <li><span class="t">3.6</span>Fade into scene 1.</li>
+          </ol>
+          <h3>From last time</h3>
+          <p>4 s with the words on screen right away worked for 0.5.0. Same here.</p>
+        </div>
+      </section>
+
+      <!-- Scene 1 -->
+      <section class="scene">
+        <div class="head">
+          <span class="time">0:04–0:16</span>
+          <span class="kicker">01 · Ask first</span>
+          <span class="caption">Opus asks to start three threads.</span>
+        </div>
+        <div class="screen">
+          <div class="you">Checkout got slow this week. Find out why.</div>
+          <div class="agent">
+            <div class="who">
+              <span class="dot" style="background: var(--opus)"></span>Opus 5.5
+              <span class="effort">· High</span>
+            </div>
+            <div class="tool">Read the checkout code</div>
+            <div class="said">Three suspects. I'll check each one in its own thread.</div>
+          </div>
+          <div class="request">
+            <div><span class="kind">AGENT REQUEST</span>Opus 5.5 wants to start 3 threads</div>
+            <div class="line">
+              Time the payment service<span class="meta-r">Sonnet 5.5 · own worktree</span>
+            </div>
+            <div class="line">
+              Count the database queries<span class="meta-r">GPT-6.1-Sol · own worktree</span>
+            </div>
+            <div class="line">
+              Measure the page size<span class="meta-r">Opus 5.5 · own worktree</span>
+            </div>
+            <div class="buttons">
+              <span class="btn">Not now</span><span class="btn primary">Start</span>
+            </div>
+          </div>
+          <div class="action">click Start</div>
+          <div class="record">
+            ⑂ Started 3 threads · you said start
+            <div class="t-line"><span class="pip"></span>Time the payment service</div>
+            <div class="t-line"><span class="pip"></span>Count the database queries</div>
+            <div class="t-line"><span class="pip"></span>Measure the page size</div>
+          </div>
+        </div>
+        <div class="notes">
+          <ol>
+            <li>
+              <span class="t">0:04</span>Opens on your request and Opus's plan. Its line holds 3 s.
+            </li>
+            <li>
+              <span class="t">0:08</span>The request box rises above the message box. The camera
+              closes on it and holds 3 s so the three titles can be read.
+            </li>
+            <li>
+              <span class="t">0:13</span>You click Start. The box goes away and the chat shows
+              "Started 3 threads" with three blue dots, one per working thread.
+            </li>
+          </ol>
+          <h3>On screen</h3>
+          <p>One label, above the request box: "Opus asks first".</p>
+          <h3>Real app behavior</h3>
+          <p>
+            "Ask me first" is the default, so this box is what a new user sees. Each line shows the
+            thread's model and that it gets its own worktree (this is a Git project). Opus's turn
+            ends once it has asked; each answer that comes back starts it again.
+          </p>
+        </div>
+      </section>
+
+      <!-- Scene 2 -->
+      <section class="scene">
+        <div class="head">
+          <span class="time">0:16–0:27</span>
+          <span class="kicker">02 · Three at once</span>
+          <span class="caption">Each thread works in its own worktree.</span>
+        </div>
+        <div class="screen">
+          <div class="split">
+            <div class="side">
+              <div class="row">Checkout got slow</div>
+              <div class="sub">
+                shop · <span class="pip cyan"></span> <span class="cyan">3 threads 0:09</span>
+              </div>
+              <div class="fam">
+                <span class="pip"></span> <span class="pip"></span> <span class="pip"></span> 3
+                threads · 3 working ›
+              </div>
+              <div class="child"><span class="pip"></span>Time the payment service</div>
+              <div class="child"><span class="pip"></span>Count the database queries</div>
+              <div class="child"><span class="pip"></span>Measure the page size</div>
+            </div>
+            <div>
+              <div class="action">click "Count the database queries" in the sidebar</div>
+              <div class="chip">⑂ Started by Checkout got slow</div>
+              <div class="reply">
+                <div class="from">Checkout got slow · request</div>
+                <div class="body">
+                  Count the queries one checkout runs, and say where they come from.
+                </div>
+              </div>
+              <div class="agent">
+                <div class="who">
+                  <span class="dot" style="background: var(--codex)"></span>GPT-6.1-Sol
+                  <span class="effort">· Extra High</span>
+                </div>
+                <div class="tool">Ran a checkout with query logging on</div>
+              </div>
+              <div class="action">click "Checkout got slow" to go back</div>
+            </div>
+          </div>
+        </div>
+        <div class="notes">
+          <ol>
+            <li>
+              <span class="t">0:16</span>The camera moves to the sidebar. Opus's row shows a cyan "3
+              threads" with a clock, meaning it's waiting on them, and a new line under it: three
+              blue dots, "3 threads · 3 working". You click the line and the three threads open
+              under it.
+            </li>
+            <li>
+              <span class="t">0:19</span>You click one. Its chat opens: "Started by Checkout got
+              slow" in the header, the request Opus wrote, and Sol at work. Holds 3 s.
+            </li>
+            <li>
+              <span class="t">0:24</span>You go back to Opus's thread. The first thread finishes and
+              its dot turns into a grey check.
+            </li>
+          </ol>
+          <h3>On screen</h3>
+          <p>One label, beside the threads in the sidebar: "Each in its own worktree".</p>
+          <h3>Real app behavior</h3>
+          <p>
+            Each thread gets a new worktree off Opus's branch. A thread you open is a normal thread:
+            you could type to it. Opening it doesn't change what it reports back.
+          </p>
+        </div>
+      </section>
+
+      <!-- Scene 3 -->
+      <section class="scene">
+        <div class="head">
+          <span class="time">0:27–0:49</span>
+          <span class="kicker">03 · The answers come back</span>
+          <span class="caption">Opus reads each answer and fixes the cause.</span>
+        </div>
+        <div class="screen">
+          <div class="reply">
+            <div class="from">Time the payment service · reply</div>
+            <div class="body">Payments answer in 40 ms. They're not the cause.</div>
+          </div>
+          <div class="agent">
+            <div class="who"><span class="dot" style="background: var(--opus)"></span>Opus 5.5</div>
+            <div class="said">Not payments. Waiting on the other two.</div>
+          </div>
+          <div class="reply">
+            <div class="from">Measure the page size · reply</div>
+            <div class="body">The page is 180 KB, same as last week.</div>
+          </div>
+          <div class="agent">
+            <div class="who"><span class="dot" style="background: var(--opus)"></span>Opus 5.5</div>
+            <div class="said">Not the page either.</div>
+          </div>
+          <div class="reply">
+            <div class="from">Count the database queries · reply</div>
+            <div class="body">One checkout runs 120 queries: one for each item in the cart.</div>
+          </div>
+          <div class="agent">
+            <div class="who"><span class="dot" style="background: var(--opus)"></span>Opus 5.5</div>
+            <div class="said">That's it. I'll load the whole cart in one query.</div>
+            <div class="tool">Edited cart/load.ts · tests passed</div>
+            <div class="said">Checkout takes 0.3 s again, down from 2.4 s.</div>
+          </div>
+        </div>
+        <div class="notes">
+          <ol>
+            <li>
+              <span class="t">0:27</span>The first answer lands under the thread's name with "reply"
+              and holds 3 s. Opus picks up by itself with one short line (1.5 s).
+            </li>
+            <li><span class="t">0:32</span>The second answer, same rhythm.</li>
+            <li>
+              <span class="t">0:38</span>The third answer names the cause. It holds 4 s with the
+              camera still. This is the line the video is about.
+            </li>
+            <li>
+              <span class="t">0:43</span>Opus fixes it. "Checkout takes 0.3 s again" holds 3 s. The
+              sidebar line now reads "3 threads finished".
+            </li>
+          </ol>
+          <h3>On screen</h3>
+          <p>
+            One label, after the third answer: "Sol's thread finds the cause". The thread names on
+            each answer say where it came from, but not which agent ran it.
+          </p>
+          <h3>Real app behavior</h3>
+          <p>
+            Each answer comes back as a message from that thread, and Opus takes a turn for each
+            one. That's why it says something after every answer; the two short lines are real, not
+            filler. A finished thread wraps itself once its answer is back and stays listed under
+            Opus's thread with a grey check.
+          </p>
+        </div>
+      </section>
+
+      <!-- Outro -->
+      <section class="scene">
+        <div class="head">
+          <span class="time">0:49–0:53</span>
+          <span class="kicker">End card</span>
+        </div>
+        <div class="screen title-card">
+          <div>
+            <div class="big">Agents start threads</div>
+            <div class="line">Each in its own worktree. The answers come back.</div>
+            <div class="tag">v0.6.0 · threadlines.dev</div>
+          </div>
+        </div>
+        <div class="notes">
+          <p>Same card as the intro, 4 s. The X cut opens on this card, as last time.</p>
+        </div>
+      </section>
+
+      <section class="alt">
+        <h2>Decided (Will, Oct 6)</h2>
+        <ul class="why">
+          <li><strong>The story:</strong> approved as written.</li>
+          <li>
+            <strong>Mixed models:</strong> payments on Sonnet 5.5 at High, database queries on
+            GPT-6.1-Sol at Extra High, page size on Opus 5.5 at Extra High. Sol's thread is the one
+            we peek into and the one that finds the cause, so a different provider makes the key
+            find, as Astra did in the 0.5.0 video. The request box shows only model names; the
+            reasoning level shows in each thread's own chat. Opus, the thread you talk to, stays at
+            High.
+          </li>
+          <li><strong>The peek:</strong> kept.</li>
+        </ul>
+      </section>
+
+      <section class="alt">
+        <h2>Portrait and square</h2>
+        <p class="lede">
+          At the tall take's width the sidebar is a drawer, and the header keeps the parent's name
+          but drops the words "Started by". So the tall and square takes open the drawer to show the
+          three threads, tap one, and rely on its first message ("Checkout got slow · request") to
+          show who started it, then go back through the drawer. If that runs long, those two formats
+          skip the peek.
+        </p>
+      </section>
+
+      <section class="alt">
+        <h2>What Sol said (v1 → v2)</h2>
+        <ul class="why">
+          <li>
+            <strong>The story contradicted itself:</strong> if the checkout API answers in 40 ms,
+            the slow cart queries can't be behind it. The first suspect is now the payment service,
+            which really is separate.
+          </li>
+          <li>
+            <strong>The screens were off in three places:</strong> Opus's row shows a cyan "3
+            threads" with a clock (not the word "Waiting"), working threads have blue dots, and
+            finished threads stay listed with a grey check. Fixed.
+          </li>
+          <li>
+            <strong>Scene 3 was too tight:</strong> the second answer couldn't get its reading time.
+            Sol suggested cutting Opus's short lines, but they're real (Opus takes a turn after
+            every answer), so I gave the scene 3 more seconds instead. The video is about 53 s.
+          </li>
+          <li>
+            <strong>"Any signed-in agent" was too broad:</strong> agents billed per use can't take a
+            thread. Reworded.
+          </li>
+          <li>
+            <strong>The tall take needs its own path</strong> through the sidebar drawer (above),
+            and the recorder needs more work than "play four threads" (below).
+          </li>
+        </ul>
+      </section>
+
+      <section class="alt">
+        <h2>What it takes to record</h2>
+        <p class="lede">
+          The recorder from 0.5.0 plays one scripted thread through the real app, with no agent
+          running and no usage spent. This story needs more from it:
+        </p>
+        <ul class="why">
+          <li>
+            Script the parts a background service does in the real app: setting up the three threads
+            and their worktrees, and delivering each answer to Opus.
+          </li>
+          <li>
+            Play four threads at once and keep all of them scripted when the camera moves from one
+            to another. Today, opening another thread loads its real state and would wipe the
+            script.
+          </li>
+          <li>Play the request box and your click on Start.</li>
+          <li>
+            New camera paths and labels for the sidebar, and the drawer path for the tall take.
+          </li>
+        </ul>
+        <p class="lede">The edit, the title cards and the export from last time carry over.</p>
+      </section>
+
+      <section class="rules">
+        <h2>Rules for the edit</h2>
+        <ul>
+          <li>Every line is plain English, about 12 words or fewer.</li>
+          <li>
+            The key line holds 4 s and the others 3 s after they finish, with the camera still.
+            Opus's two short lines hold about 1.5 s.
+          </li>
+          <li>Captions say the point of the scene in plain words.</li>
+          <li>One label at a time, and never over text being read.</li>
+          <li>Every step is something the app really does.</li>
+        </ul>
+      </section>
+    </main>
+  </body>
+</html>

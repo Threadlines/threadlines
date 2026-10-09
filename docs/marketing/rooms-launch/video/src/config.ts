@@ -16,16 +16,4 @@ export const TIMING = {
   maxZoom: 1.1,
 } as const;
 
-/** The release the video announces, shown in the intro and on the end card. */
-export const RELEASE = { version: "0.5.0" } as const;
-
-export const INTRO = {
-  title: "Rooms",
-  line: "Your coding agents, working together in one thread.",
-} as const;
-
-export const OUTRO = {
-  title: "Rooms",
-  line: "Claude, Codex and more, in one thread.",
-  url: "threadlines.dev",
-} as const;
+export const SITE_URL = "threadlines.dev";
