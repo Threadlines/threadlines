@@ -1,7 +1,9 @@
 """Encodes a take's screencast frames as constant 30 fps video on the take's
 own clock, so the marks in take.json line up with video time exactly. With
---export, also writes it into the edit as public/rooms-<id>.mp4 plus its marks
-and clicks as src/takes/<id>.json.
+--export, also writes it into the edit as public/<story>-<id>.mp4 plus its
+marks and clicks as src/takes/<id>.json (the Rooms story) or
+src/takes/<story>-<id>.json (any other). The story comes from the take
+(take.ts --story), so one story's export never replaces another's.
 
     python3 encode-take.py /tmp/rooms-promo/takes/<name> [--export wide|tall]
 """
@@ -17,6 +19,13 @@ take_dir = sys.argv[1]
 export_id = sys.argv[sys.argv.index("--export") + 1] if "--export" in sys.argv else None
 video_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "video")
 take = json.load(open(os.path.join(take_dir, "take.json")))
+if take.get("shellResyncs", 0) > 0:
+    # take.ts failed this take: the app reloaded its thread list mid-take,
+    # which drops the threads only the engine knows.
+    sys.exit(f"{take_dir} was rejected by take.ts (thread list reloaded mid-take). Record it again.")
+# The edit's name for each story's files; takes recorded before stories had names are Rooms.
+STORY_PREFIX = {"rooms": "rooms", "child-threads": "threads"}
+prefix = STORY_PREFIX[take.get("story", "rooms")]
 
 # frames.txt: "file 'x'" / "duration d" pairs, starting at take.firstFrameAt.
 frames = []
@@ -57,7 +66,7 @@ if export_id is not None:
             "-framerate", str(FPS), "-i", os.path.join(cfr, "%06d.jpg"),
             "-c:v", "libx264", "-preset", "slow", "-crf", "16", "-pix_fmt", "yuv420p",
             "-movflags", "+faststart", "-an",
-            os.path.join(video_dir, "public", f"rooms-{export_id}.mp4"),
+            os.path.join(video_dir, "public", f"{prefix}-{export_id}.mp4"),
         ],
         check=True,
     )
@@ -70,7 +79,8 @@ if export_id is not None:
         ],
         "tracks": take.get("tracks", {}),
     }
-    with open(os.path.join(video_dir, "src", "takes", f"{export_id}.json"), "w") as out:
+    log_name = export_id if prefix == "rooms" else f"{prefix}-{export_id}"
+    with open(os.path.join(video_dir, "src", "takes", f"{log_name}.json"), "w") as out:
         json.dump(log, out, indent=2)
         out.write("\n")
 

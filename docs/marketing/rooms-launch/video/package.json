@@ -2,7 +2,7 @@
   "name": "threadlines-rooms-launch-video",
   "version": "0.0.0",
   "private": true,
-  "description": "Remotion edit for the Rooms launch video (landscape, portrait, square).",
+  "description": "Remotion edits for the Threadlines launch videos (landscape, portrait, square): Rooms (0.5.0) and agents starting threads (0.6.0).",
   "type": "module",
   "scripts": {
     "studio": "remotion studio",
@@ -13,7 +13,14 @@
     "render:square": "remotion render RoomsPromoSquare out/rooms-promo-square.mp4",
     "render:x": "ffmpeg -v error -y -ss 1.8 -i out/rooms-promo-square.mp4 -vf tpad=start_duration=0.8:start_mode=clone -an -c:v libx264 -crf 18 -preset slow -pix_fmt yuv420p -movflags +faststart out/rooms-promo-x.mp4",
     "render:site": "remotion render RoomsSiteClip out/rooms-site.mp4 --crf 23 && remotion still RoomsSitePoster out/rooms-site-poster.png && remotion render RoomsSiteClipTall out/rooms-site-tall.mp4 --crf 23 && remotion still RoomsSitePosterTall out/rooms-site-tall-poster.png",
-    "render:posters": "remotion still RoomsPosterLandscape out/rooms-promo-landscape-poster.png && remotion still RoomsPosterPortrait out/rooms-promo-portrait-poster.png && remotion still RoomsPosterSquare out/rooms-promo-square-poster.png"
+    "render:posters": "remotion still RoomsPosterLandscape out/rooms-promo-landscape-poster.png && remotion still RoomsPosterPortrait out/rooms-promo-portrait-poster.png && remotion still RoomsPosterSquare out/rooms-promo-square-poster.png",
+    "render:threads": "npm run render:threads:landscape && npm run render:threads:portrait && npm run render:threads:square && npm run render:threads:posters",
+    "render:threads:landscape": "remotion render ThreadsPromoLandscape out/threads-promo-landscape.mp4",
+    "render:threads:portrait": "remotion render ThreadsPromoPortrait out/threads-promo-portrait.mp4",
+    "render:threads:square": "remotion render ThreadsPromoSquare out/threads-promo-square.mp4",
+    "render:threads:x": "ffmpeg -v error -y -ss 1.8 -i out/threads-promo-square.mp4 -vf tpad=start_duration=0.8:start_mode=clone -an -c:v libx264 -crf 18 -preset slow -pix_fmt yuv420p -movflags +faststart out/threads-promo-x.mp4",
+    "render:threads:site": "remotion render ThreadsSiteClip out/threads-site.mp4 --crf 23 && remotion still ThreadsSitePoster out/threads-site-poster.png && remotion render ThreadsSiteClipTall out/threads-site-tall.mp4 --crf 23 && remotion still ThreadsSitePosterTall out/threads-site-tall-poster.png",
+    "render:threads:posters": "remotion still ThreadsPosterLandscape out/threads-promo-landscape-poster.png && remotion still ThreadsPosterPortrait out/threads-promo-portrait-poster.png && remotion still ThreadsPosterSquare out/threads-promo-square-poster.png"
   },
   "dependencies": {
     "@remotion/cli": "4.0.530",

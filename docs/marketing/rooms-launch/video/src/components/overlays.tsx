@@ -100,7 +100,8 @@ export const ClickRing: React.FC<{ x: number; y: number; at: number }> = ({ x, y
  * ends where the line ends (the row above a message is usually a short
  * header or step line, so its right side is free). With `side: "above"`, the pill sits over `anchor`
  * (a control such as the message box's agent button), joined by a short
- * thread. It draws in from `at` and fades from `out`.
+ * thread; with `side: "below"`, under it (a group of rows whose own text must
+ * stay readable). It draws in from `at` and fades from `out`.
  */
 export const Note: React.FC<{
   anchor: Box;
@@ -110,7 +111,7 @@ export const Note: React.FC<{
   at: number;
   out?: number;
   dot?: string;
-  side?: "after" | "above";
+  side?: "after" | "above" | "below";
 }> = ({ anchor, clip, text, size, at, out, dot, side = "after" }) => {
   const frame = useCurrentFrame();
   const fontsReady = useFontsReady();
@@ -137,6 +138,11 @@ export const Note: React.FC<{
     thread = { x, y: anchor.y - gap, w: 1.5, h: gap };
     pillX = Math.min(Math.max(anchor.x, clip.x + size * 0.6), right - pillW);
     pillY = anchor.y - gap - pillH;
+  } else if (side === "below") {
+    const x = anchor.x + Math.min(anchor.w / 2, size * 2);
+    thread = { x, y: anchor.y + anchor.h, w: 1.5, h: gap };
+    pillX = Math.min(Math.max(anchor.x, clip.x + size * 0.6), right - pillW);
+    pillY = anchor.y + anchor.h + gap;
   } else if (anchor.x + anchor.w + gap + pillW <= right) {
     const y = anchor.y + anchor.h / 2;
     thread = { x: anchor.x + anchor.w + size * 0.3, y, w: gap - size * 0.3, h: 1.5 };

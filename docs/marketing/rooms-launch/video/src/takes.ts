@@ -1,9 +1,14 @@
-// The two recordings the edit is cut from, with what ../source/take.ts noted
-// while recording them: when each story moment happened (marks), where the
-// pointer clicked, and where key elements were on screen over time (tracks).
+// The recordings the edit is cut from, two per story, with what
+// ../source/take.ts noted while recording them: when each story moment
+// happened (marks), where the pointer clicked, and where key elements were on
+// screen over time (tracks).
 import tallTake from "./takes/tall.json";
+import threadsTallTake from "./takes/threads-tall.json";
+import threadsWideTake from "./takes/threads-wide.json";
 import wideTake from "./takes/wide.json";
 
+/** The videos this project cuts: Rooms (0.5.0) and agents starting threads (0.6.0). */
+export type StoryId = "rooms" | "threads";
 export type TakeId = "wide" | "tall";
 
 /** A region of a take, in its pixels. */
@@ -18,27 +23,39 @@ type TakeLog = {
   tracks: Record<string, TrackPoint[]>;
 };
 
-export type Take = TakeLog & { id: TakeId; file: string; width: number; height: number };
+export type Take = TakeLog & {
+  story: StoryId;
+  id: TakeId;
+  file: string;
+  width: number;
+  height: number;
+};
 
-export const TAKES: Record<TakeId, Take> = {
-  // The 1600x934 studio window at 2x.
+// wide: the 1600x934 studio window at 2x. tall: the same story laid out at
+// 480x800 (a phone's width and shape) at 2x, so its text reads large in the
+// portrait and square frames and the whole exchange fits on screen at the end.
+const takesOf = (story: StoryId, wide: unknown, tall: unknown): Record<TakeId, Take> => ({
   wide: {
-    ...(wideTake as unknown as TakeLog),
+    ...(wide as TakeLog),
+    story,
     id: "wide",
-    file: "rooms-wide.mp4",
+    file: `${story}-wide.mp4`,
     width: 3200,
     height: 1868,
   },
-  // The same story laid out at 480x800 (a phone's width and shape) at 2x,
-  // so its text reads large in the portrait and square frames and the whole
-  // exchange fits on screen at the end.
   tall: {
-    ...(tallTake as unknown as TakeLog),
+    ...(tall as TakeLog),
+    story,
     id: "tall",
-    file: "rooms-tall.mp4",
+    file: `${story}-tall.mp4`,
     width: 960,
     height: 1600,
   },
+});
+
+export const TAKES: Record<StoryId, Record<TakeId, Take>> = {
+  rooms: takesOf("rooms", wideTake, tallTake),
+  threads: takesOf("threads", threadsWideTake, threadsTallTake),
 };
 
 export const full = (take: Take): Rect => ({ x: 0, y: 0, w: take.width, h: take.height });
@@ -46,7 +63,7 @@ export const full = (take: Take): Rect => ({ x: 0, y: 0, w: take.width, h: take.
 /** When a story moment happened (see the marks in ../source/story.ts and take.ts). */
 export const mark = (take: Take, name: string): number => {
   const at = take.marks[name];
-  if (at === undefined) throw new Error(`Take "${take.id}" has no mark "${name}".`);
+  if (at === undefined) throw new Error(`Take "${take.story}-${take.id}" has no mark "${name}".`);
   return at;
 };
 
@@ -67,7 +84,9 @@ export const rectAt = (take: Take, name: string, t: number): Rect | null => {
 /** `rectAt`, failing loudly: the edit relies on this element being there. */
 export const rectOf = (take: Take, name: string, t: number): Rect => {
   const rect = rectAt(take, name, t);
-  if (rect === null) throw new Error(`Take "${take.id}" has no "${name}" on screen at ${t}s.`);
+  if (rect === null) {
+    throw new Error(`Take "${take.story}-${take.id}" has no "${name}" on screen at ${t}s.`);
+  }
   return rect;
 };
 
@@ -93,7 +112,20 @@ export const pad = (rect: Rect, by: number, byY = by): Rect => ({
  * two samples. Nearby jumps merge into one window. The edit crossfades
  * across them instead of showing the jump.
  */
-const NOT_THREAD_ROWS = new Set(["thread", "composer", "trigger", "picker"]);
+const NOT_THREAD_ROWS = new Set([
+  "thread",
+  "composer",
+  "trigger",
+  "picker",
+  "request-box",
+  "started-by",
+  "child-heading",
+  // The sidebar: its rows move when a family opens, which is the point.
+  "sidebar",
+  "parent-row",
+  "family",
+]);
+const isThreadRow = (name: string) => !NOT_THREAD_ROWS.has(name) && !name.startsWith("child-row-");
 
 export const jumpsBetween = (
   take: Take,
@@ -105,7 +137,7 @@ export const jumpsBetween = (
   for (const [name, track] of Object.entries(take.tracks)) {
     // Only rows of the thread count: the menus and the request card change
     // shape on purpose, and crossfading those would double their text.
-    if (NOT_THREAD_ROWS.has(name)) continue;
+    if (!isThreadRow(name)) continue;
     let previous: TrackPoint | undefined;
     for (const point of track) {
       if (previous !== undefined && previous[1] !== null && point[1] !== null) {

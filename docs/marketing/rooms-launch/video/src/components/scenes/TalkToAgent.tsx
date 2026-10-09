@@ -12,10 +12,10 @@ import { DOTS, rowsFocus, threadBottom } from "./shared";
 import { resultFocus } from "./WorkTogether";
 
 /**
- * 03: the user points the message box at Astra ("Sending to Astra") and asks
- * it to check the fix; Astra reads the change and the test and answers. Once
- * the question is sent the camera settles close on it and Astra's reply, lit
- * softly and labelled "Astra checks the fix", and stays still while it is read.
+ * 03: the user points the message box at Sol ("Sending to Sol") and asks
+ * it to check the fix; Sol reads the change and the test and answers. Once
+ * the question is sent the camera settles close on it and Sol's reply, lit
+ * softly and labelled "Sol checks the fix", and stays still while it is read.
  */
 export const TalkToAgent: React.FC<{ layout: Layout; plan: Plan; spec: SceneSpec }> = ({
   layout,
@@ -38,7 +38,7 @@ export const TalkToAgent: React.FC<{ layout: Layout; plan: Plan; spec: SceneSpec
     },
     {
       at: f("check-sent") + 4,
-      focus: rowsFocus(rectOf(take, "check-msg", settled), rectOf(take, "astra-reply", settled)),
+      focus: rowsFocus(rectOf(take, "check-msg", settled), rectOf(take, "sol-reply", settled)),
       glide: 36,
     },
   ];
@@ -52,7 +52,7 @@ export const TalkToAgent: React.FC<{ layout: Layout; plan: Plan; spec: SceneSpec
         radius={layout.windowRadius}
         renderOverlay={(camera) => {
           const trigger = rectAt(take, "trigger", t);
-          const reply = rectAt(take, "astra-reply", t);
+          const reply = rectAt(take, "sol-reply", t);
           const replyEnd = rectAt(take, "reply-end", t);
           return (
             <>
@@ -60,7 +60,7 @@ export const TalkToAgent: React.FC<{ layout: Layout; plan: Plan; spec: SceneSpec
                 <Spotlight
                   clip={camera.visible}
                   target={camera.toScreen(reply)}
-                  amount={0.3 * presence(frame, f("astra-done") + 2, 16)}
+                  amount={0.3 * presence(frame, f("sol-done") + 2, 16)}
                 />
               ) : null}
               {trigger ? (
@@ -68,7 +68,7 @@ export const TalkToAgent: React.FC<{ layout: Layout; plan: Plan; spec: SceneSpec
                   side="above"
                   anchor={camera.toScreen(trigger)}
                   clip={camera.visible}
-                  text="Sending to Astra"
+                  text="Sending to Sol"
                   size={layout.chip}
                   at={f("check-recipient") + 2}
                   out={f("check-sent")}
@@ -79,9 +79,9 @@ export const TalkToAgent: React.FC<{ layout: Layout; plan: Plan; spec: SceneSpec
                 <Note
                   anchor={camera.toScreen(replyEnd)}
                   clip={camera.visible}
-                  text="Astra checks the fix"
+                  text="Sol checks the fix"
                   size={layout.chip}
-                  at={f("astra-done") + 6}
+                  at={f("sol-done") + 6}
                   dot={DOTS.codex}
                 />
               ) : null}

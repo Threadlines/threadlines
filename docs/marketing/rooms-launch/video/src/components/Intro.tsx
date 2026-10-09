@@ -2,7 +2,8 @@ import type React from "react";
 import { AbsoluteFill, Easing, interpolate, spring, useCurrentFrame } from "remotion";
 import type { Layout } from "../layout";
 import { textWidth, useFontsReady } from "../measure";
-import { FPS, INTRO, RELEASE } from "../config";
+import { FPS } from "../config";
+import type { Story } from "../stories";
 import { colors, fonts, tracking } from "../theme";
 import { GLYPH_ASPECT, GLYPH_MAIN_LINE_Y, Glyph } from "./Glyph";
 import { enter, riseStyle } from "./motion";
@@ -21,9 +22,9 @@ const TITLE_AT = 24; // the title, its line and the release tag rise in together
 
 /**
  * A thread draws across the frame, the glyph branches off it, then settles
- * into the Threadlines lockup while "Rooms" rises in beneath.
+ * into the Threadlines lockup while the story's title rises in beneath.
  */
-export const Intro: React.FC<{ layout: Layout }> = ({ layout }) => {
+export const Intro: React.FC<{ layout: Layout; story: Story }> = ({ layout, story }) => {
   const frame = useCurrentFrame();
   const { width, height, title } = layout;
 
@@ -133,8 +134,8 @@ export const Intro: React.FC<{ layout: Layout }> = ({ layout }) => {
       <TitleBlock
         layout={layout}
         top={stackTop + title.lockupGlyphHeight + lockupToTitle}
-        title={INTRO.title}
-        line={INTRO.line}
+        title={story.intro.title}
+        line={story.intro.line}
         titleStyle={riseStyle(enter(frame - TITLE_AT, 20), 34, 10)}
         lineStyle={riseStyle(enter(frame - TITLE_AT, 20), 22, 6)}
       />
@@ -159,7 +160,7 @@ export const Intro: React.FC<{ layout: Layout }> = ({ layout }) => {
           ...riseStyle(enter(frame - TITLE_AT, 20), 14, 4),
         }}
       >
-        NEW IN {RELEASE.version}
+        NEW IN {story.release}
       </div>
     </AbsoluteFill>
   );

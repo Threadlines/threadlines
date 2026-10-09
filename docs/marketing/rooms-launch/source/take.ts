@@ -8,6 +8,8 @@
 //   node take.ts <name>             record a take to /tmp/rooms-promo/takes/<name>
 //   node take.ts <name> --rehearse  same, without recording frames
 //   node take.ts --cleanup          delete every promo thread from the studio
+//   --story=child-threads           record the 0.6.0 story (story-child-threads.ts);
+//                                   the default is the 0.5.0 Rooms story (story.ts)
 //   --viewport=480x800              lay the app out at that size (the tall take)
 //   PROMO_DEBUG=1                   log every command the app sends for the thread
 import fs from "node:fs";
@@ -15,7 +17,6 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import { createEngine, root } from "./engine.ts";
-import { createStory, OPUS, THREAD_TITLE } from "./story.ts";
 
 const STUDIO = "/Users/Shared/Threadlines Marketing Studio/";
 const RENDERER = "http://127.0.0.1:6066";
@@ -25,6 +26,32 @@ const args = process.argv.slice(2);
 const cleanupOnly = args.includes("--cleanup");
 const rehearse = args.includes("--rehearse");
 const takeName = args.find((arg) => !arg.startsWith("--")) ?? `take-${Date.now()}`;
+
+/**
+ * The stories this recorder plays. A story whose threads include ones the
+ * studio server never hears of (child threads) sets `isolated`: every thread
+ * of the take is then answered by the engine alone, for commands and for
+ * thread detail, and its studio fixtures are set up and removed around the take.
+ */
+const STORIES = {
+  rooms: { module: "./story.ts", isolated: false },
+  "child-threads": { module: "./story-child-threads.ts", isolated: true },
+} as const;
+const storyName = (args.find((arg) => arg.startsWith("--story="))?.slice("--story=".length) ??
+  "rooms") as keyof typeof STORIES;
+if (!(storyName in STORIES)) {
+  throw new Error(`--story is one of ${Object.keys(STORIES).join(", ")}: ${storyName}`);
+}
+const STORY = STORIES[storyName];
+// Every story's module: cleanup removes what any of them left in the studio.
+const storyModules: Record<string, any> = Object.fromEntries(
+  await Promise.all(
+    Object.entries(STORIES).map(async ([name, entry]) => [name, await import(entry.module)]),
+  ),
+);
+const storyModule = storyModules[storyName];
+const { createStory, OPUS, THREAD_TITLE } = storyModule;
+const PROMO_TITLES: string[] = Object.values(storyModules).map((module) => module.THREAD_TITLE);
 // --viewport=864x1080 lays the app out at that size (the tall and square cuts);
 // --hide-sidebar gives the thread the whole width.
 const viewportArg = args.find((arg) => arg.startsWith("--viewport="))?.slice("--viewport=".length);
@@ -62,7 +89,7 @@ page.on("console", (message: any) => {
 /** Deletes the promo threads on the studio server, then reloads to drop staged state. */
 async function cleanup() {
   const removed = await page.evaluate(
-    async ({ title, studio }: { title: string; studio: string }) => {
+    async ({ titles, studio }: { titles: string[]; studio: string }) => {
       const [{ useStore }, apiModule] = await Promise.all([
         import("/src/store.ts" as string),
         import("/src/environmentApi.ts" as string),
@@ -74,7 +101,8 @@ async function cleanup() {
       const api = apiModule.readEnvironmentApi(env);
       const promo = Object.values(envState.threadShellById).filter(
         (thread: any) =>
-          thread.title === title && envState.projectById[thread.projectId]?.cwd.startsWith(studio),
+          titles.includes(thread.title) &&
+          envState.projectById[thread.projectId]?.cwd.startsWith(studio),
       ) as any[];
       for (const thread of promo) {
         await api.orchestration.dispatchCommand({
@@ -85,7 +113,7 @@ async function cleanup() {
       }
       return promo.length;
     },
-    { title: THREAD_TITLE, studio: STUDIO },
+    { titles: PROMO_TITLES, studio: STUDIO },
   );
   await page.reload();
   // waitForFunction would take an async predicate's promise as truthy.
@@ -102,6 +130,8 @@ async function cleanup() {
     await new Promise((resolve) => setTimeout(resolve, 200));
   }
   await new Promise((resolve) => setTimeout(resolve, 800));
+  // Studio fixtures a story made for its take (child threads' worktrees).
+  for (const module of Object.values(storyModules)) await module.cleanupStudio?.();
   return removed;
 }
 
@@ -127,11 +157,28 @@ if (hideSidebar) await toggleSidebar.click();
 // --- The renderer: theme, noise, the intercepting API. ---
 const threadId = randomUUID();
 const setup = await page.evaluate(
-  async ({ threadId, studio }: { threadId: string; studio: string }) => {
-    const [{ useStore }, apiModule] = await Promise.all([
+  async ({
+    threadId,
+    studio,
+    isolated,
+  }: {
+    threadId: string;
+    studio: string;
+    isolated: boolean;
+  }) => {
+    const [{ useStore }, apiModule, runtime, settingsModule] = await Promise.all([
       import("/src/store.ts" as string),
       import("/src/environmentApi.ts" as string),
+      import("/src/environments/runtime/service.ts" as string),
+      import("/src/hooks/useSettings.ts" as string),
     ]);
+    // Checked before anything is changed: finished child threads wrap
+    // themselves only with this client setting.
+    if (isolated && settingsModule.getClientSettings().wrapUpChildThreadsOnFinish !== true) {
+      throw new Error(
+        'Turn on "Wrap up finished child threads" in the studio (Settings › Threads) first.',
+      );
+    }
     localStorage.setItem("threadlines:theme", "dark");
     window.dispatchEvent(
       new StorageEvent("storage", { key: "threadlines:theme", newValue: "dark" }),
@@ -193,6 +240,8 @@ const setup = await page.evaluate(
       });
     }
 
+    // The take's threads: the promo thread, and any a story registers later.
+    const ids = new Set<string>([threadId]);
     const original = apiModule.readEnvironmentApi(env);
     const queue: any[] = [];
     apiModule.__setEnvironmentApiOverrideForTests(env, {
@@ -200,7 +249,7 @@ const setup = await page.evaluate(
       orchestration: {
         ...original.orchestration,
         dispatchCommand: async (command: any) => {
-          if (command.threadId === threadId) {
+          if (ids.has(command.threadId)) {
             queue.push(command);
             return { sequence: 0 };
           }
@@ -208,14 +257,44 @@ const setup = await page.evaluate(
         },
       },
     });
-    (window as any).__promo = {
+    const promo: any = {
+      ids,
       queue,
+      shellResyncs: 0,
       apply: (events: any[]) => useStore.getState().applyOrchestrationEvents(events, env),
       forward: (command: any) => original.orchestration.dispatchCommand(command),
     };
+    (window as any).__promo = promo;
+
+    if (isolated) {
+      // The engine is the only server for the take's threads: a detail
+      // subscription the app opens for one (opening it, prewarming its row)
+      // gets nothing from the studio server, whose copy would replace the
+      // story. Installed before the promo thread exists anywhere.
+      const connection = runtime.readEnvironmentConnection(env);
+      const orchestration = connection?.client.orchestration;
+      if (!orchestration) throw new Error("The studio app has no server connection.");
+      const subscribeThread = orchestration.subscribeThread;
+      orchestration.subscribeThread = (input: any, listener: any, options: any) =>
+        ids.has(input.threadId)
+          ? () => {}
+          : subscribeThread.call(orchestration, input, listener, options);
+      if (orchestration.subscribeThread === subscribeThread) {
+        throw new Error("Could not route the take's thread subscriptions to the engine.");
+      }
+      // A thread list reloaded from the server drops threads only the engine
+      // knows, so a take where that happened is not used (see the end).
+      const syncServerShellSnapshot = useStore.getState().syncServerShellSnapshot;
+      useStore.setState({
+        syncServerShellSnapshot: (...input: any[]) => {
+          promo.shellResyncs += 1;
+          return syncServerShellSnapshot(...input);
+        },
+      });
+    }
     return { env, projectId: orbit.id, projectCwd: orbit.cwd };
   },
-  { threadId, studio: STUDIO },
+  { threadId, studio: STUDIO, isolated: STORY.isolated },
 );
 
 // --- The stand-in server for the thread. ---
@@ -247,7 +326,7 @@ const create = {
   worktreePath: null,
   createdAt: new Date(Date.now() - 8 * 60_000).toISOString(),
 };
-await engine.run(create, { push: false });
+const created = await engine.run(create, { push: false });
 await page.evaluate((command: any) => (window as any).__promo.forward(command), create);
 
 // Commands the app sends for the thread, decided here in order.
@@ -364,9 +443,18 @@ async function rest() {
   await move({ x: box.x + box.width * 0.8, y: box.y + box.height * 0.5 }, 300);
 }
 
+// PROMO_SHOTS=<dir> saves a screenshot at every mark, to check a rehearsal by eye.
+const shots: Array<Promise<unknown>> = [];
 function mark(name: string) {
   log.marks.push({ name, at: at() });
   console.log(`mark ${name} @ ${at().toFixed(2)}s`);
+  if (process.env.PROMO_SHOTS) {
+    fs.mkdirSync(process.env.PROMO_SHOTS, { recursive: true });
+    const file = `${String(log.marks.length).padStart(2, "0")}-${name}.png`;
+    shots.push(
+      page.screenshot({ path: path.join(process.env.PROMO_SHOTS, file) }).catch(() => undefined),
+    );
+  }
 }
 
 // --- Frames. ---
@@ -518,7 +606,7 @@ const story = createStory({
   engine,
   threadId,
   ui: {
-    async addAstra() {
+    async addSol() {
       const trigger = page.locator('[data-chat-provider-model-picker="true"]').last();
       await click(trigger, { duration: 1100, hover: 500, hold: 300 });
       mark("picker-open");
@@ -534,10 +622,18 @@ const story = createStory({
       await pause(1200);
       const added = nextCommand("thread.participant.add");
       await click(
-        page.locator("[data-model-picker-model-name]").filter({ hasText: /^GPT-6-Astra$/ }),
+        page.locator("[data-model-picker-model-name]").filter({ hasText: /^GPT-6\.1-Sol$/ }),
         { hover: 900, hold: 200 },
       );
       const command = await added;
+      await engine.run({
+        type: "thread.participant.update",
+        commandId: `promo:${randomUUID()}`,
+        threadId,
+        participantId: command.participant.id,
+        modelOptions: storyModule.SOL_OPTIONS,
+        createdAt: new Date().toISOString(),
+      });
       mark("added");
       await rest();
       return command.participant.id;
@@ -561,13 +657,66 @@ const story = createStory({
       mark(`${marks}-sent`);
       return command.message.messageId;
     },
+    async registerThread(id: string) {
+      await page.evaluate((id: string) => (window as any).__promo.ids.add(id), id);
+    },
+    async clickStart() {
+      const responded = nextCommand("thread.child-request.respond");
+      await click(
+        page.locator('[data-testid="child-threads-panel"] button').filter({ hasText: /^Start$/ }),
+        { duration: 1100, hover: 700, hold: 250 },
+      );
+      await responded;
+      await rest();
+    },
+    async openFamily(parentId: string) {
+      await openSidebar();
+      await click(page.locator(`[data-testid="thread-family-${parentId}"]`), {
+        hover: 500,
+        hold: 300,
+      });
+    },
+    async openThread(id: string, kind: "child" | "parent") {
+      await openSidebar();
+      // The title, not the row's middle: hovering a row shows its wrap-up
+      // button there, and a click on that files the thread under Wrapped.
+      const title = kind === "child" ? `child-title-${id}` : `thread-title-${id}`;
+      await click(page.locator(`[data-testid="${title}"]`), { hover: 500, hold: 250 });
+      await until("the thread to open", () =>
+        page.evaluate((id: string) => location.hash.endsWith(id), id),
+      );
+      await rest();
+    },
     mark,
-    track(name, messageId, part) {
+    track(name: string, messageId: string, part?: "row" | "body" | "end") {
       void track(name, { message: messageId, body: part === "body", end: part === "end" });
+    },
+    trackSelector(name: string, selector: string, closest?: string) {
+      void track(name, closest === undefined ? { selector } : { selector, closest });
     },
     sleep: pause,
   },
 });
+
+/**
+ * At phone width the sidebar is a sheet: open it before reaching a row in it.
+ * The pointer shows again for the trip (rest() faded it).
+ */
+async function openSidebar() {
+  await page.evaluate(() => {
+    const element = document.getElementById("capture-pointer");
+    if (element) element.style.opacity = "1";
+  });
+  const sheetOpen = await page
+    .locator('[data-mobile="true"][data-sidebar="sidebar"]')
+    .isVisible()
+    .catch(() => false);
+  const narrow = viewport.width < 768;
+  if (narrow && !sheetOpen) {
+    // At this width the header's own button opens the sheet.
+    await click(page.locator('[data-slot="sidebar-trigger"]').first(), { hover: 300, hold: 600 });
+  }
+}
 
 async function until(label: string, predicate: () => Promise<boolean>, timeoutMs = 20_000) {
   const deadline = Date.now() + timeoutMs;
@@ -579,8 +728,12 @@ async function until(label: string, predicate: () => Promise<boolean>, timeoutMs
 
 let seconds = 0;
 let trackOffset = 0;
+let shellResyncs = 0;
 let tracks: Awaited<ReturnType<typeof stopTracking>> = {};
 try {
+  // Studio fixtures the story needs before its threads appear (worktrees).
+  // Inside the guarded part, so a failure here is cleaned up below.
+  await storyModule.prepareStudio?.(threadId);
   await until("the studio server to create the thread", () =>
     page.evaluate(async (threadId: string) => {
       const { useStore } = await import("/src/store.ts" as string);
@@ -599,6 +752,11 @@ try {
   await until("the thread to open", () =>
     page.evaluate((threadId: string) => location.hash.endsWith(threadId), threadId),
   );
+  if (STORY.isolated) {
+    // No detail snapshot comes from the server for an isolated story's
+    // threads, so the app learns the promo thread from the engine as well.
+    await page.evaluate((batch: any[]) => (window as any).__promo.apply(batch), created);
+  }
   await pause(1500);
   const prologue = await story.prologue();
   await pause(1200);
@@ -612,7 +770,16 @@ try {
   await story.take(prologue);
 } finally {
   seconds = at();
+  await Promise.all(shots);
+  if (process.env.PROMO_SHOTS) {
+    await page
+      .screenshot({ path: path.join(process.env.PROMO_SHOTS, "zz-last.png") })
+      .catch(() => undefined);
+  }
   tracks = await stopTracking(trackOffset).catch(() => ({}));
+  shellResyncs = await page
+    .evaluate(() => (window as any).__promo?.shellResyncs ?? 0)
+    .catch(() => 0);
   if (!rehearse) await cdp.send("Page.stopScreencast").catch(() => {});
   if (hideSidebar) await toggleSidebar.click().catch(() => {});
   if (viewportArg) await cdp.send("Emulation.clearDeviceMetricsOverride").catch(() => {});
@@ -637,11 +804,26 @@ if (!rehearse) {
   fs.writeFileSync(
     path.join(outDir, "take.json"),
     JSON.stringify(
-      { seconds, scale: SCALE, viewport, firstFrameAt: frames[0]?.at ?? 0, ...log, tracks },
+      {
+        story: storyName,
+        seconds,
+        scale: SCALE,
+        viewport,
+        firstFrameAt: frames[0]?.at ?? 0,
+        shellResyncs,
+        ...log,
+        tracks,
+      },
       null,
       2,
     ),
   );
 }
 console.log(JSON.stringify({ take: takeName, frames: frames.length, handled, threadId }));
+if (shellResyncs > 0) {
+  console.error(
+    `The app reloaded its thread list from the server ${shellResyncs} time(s) during the take, which drops the story's child threads. Don't use this take; record it again.`,
+  );
+  process.exitCode = 1;
+}
 await browser.close();

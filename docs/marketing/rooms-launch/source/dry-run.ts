@@ -3,7 +3,7 @@
 // fails here first. `node dry-run.ts`
 import { randomUUID } from "node:crypto";
 import { createEngine } from "./engine.ts";
-import { createStory, OPUS, THREAD_TITLE } from "./story.ts";
+import { createStory, OPUS, SOL_OPTIONS, THREAD_TITLE } from "./story.ts";
 
 const threadId = randomUUID();
 const projectId = randomUUID();
@@ -39,24 +39,25 @@ const story = createStory({
   engine,
   threadId,
   ui: {
-    async addAstra() {
+    async addSol() {
       const id = randomUUID();
       await client("thread.participant.add", {
         participant: {
           id,
-          handle: "GPT-6-Astra",
-          modelSelection: { instanceId: "codex", model: "gpt-6-astra" },
+          handle: "GPT-6.1-Sol",
+          modelSelection: { instanceId: "codex", model: "gpt-6.1-sol" },
         },
       });
+      await client("thread.participant.update", { participantId: id, modelOptions: SOL_OPTIONS });
       return id;
     },
     async sendTo(agent, text) {
-      const astra = engine.thread(threadId).participants.find((p: any) => !p.guest);
+      const sol = engine.thread(threadId).participants.find((p: any) => !p.guest);
       const messageId = randomUUID();
       await client("thread.turn.start", {
         message: { messageId, role: "user", text, attachments: [] },
-        ...(agent === "astra"
-          ? { participantId: astra.id, modelSelection: astra.modelSelection }
+        ...(agent === "sol"
+          ? { participantId: sol.id, modelSelection: sol.modelSelection }
           : { modelSelection: OPUS }),
         runtimeMode: "full-access",
         interactionMode: "default",

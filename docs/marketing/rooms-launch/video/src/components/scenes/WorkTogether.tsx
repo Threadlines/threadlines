@@ -10,17 +10,17 @@ import { Note, presence, Spotlight } from "../overlays";
 import { Stage } from "../Stage";
 import { DOTS, rowsFocus, threadBottom } from "./shared";
 
-/** Opus's question to Astra, Astra's answer, and Opus's result, once Opus is done. */
+/** Opus's question to Sol, Sol's answer, and Opus's result, once Opus is done. */
 export const resultFocus = (take: Take): Rect => {
   const done = mark(take, "opus-done") + 1;
   return rowsFocus(rectOf(take, "opus-ask", done), rectOf(take, "opus-done-text", done));
 };
 
 /**
- * 02: Opus asks Astra an open question and keeps reading while Astra
- * answers; Astra's answer holds, lit softly; Opus reproduces the double charge
- * and fixes it. One label at a time names each step ("Opus asks Astra",
- * "Astra finds the cause", "Opus fixes it"), pinned after the line it is
+ * 02: Opus asks Sol an open question and keeps reading while Sol
+ * answers; Sol's answer holds, lit softly; Opus reproduces the double charge
+ * and fixes it. One label at a time names each step ("Opus asks Sol",
+ * "Sol finds the cause", "Opus fixes it"), pinned after the line it is
  * about; the result is lit softly once it lands. The camera frames your
  * request and the exchange, follows Opus's work, and settles on question,
  * answer and result.
@@ -47,7 +47,7 @@ export const WorkTogether: React.FC<{ layout: Layout; plan: Plan; spec: SceneSpe
     },
     {
       at: f("repro") + 6,
-      focus: rowsFocus(rectOf(take, "astra-answer", fixed), rectOf(take, "working", fixed)),
+      focus: rowsFocus(rectOf(take, "sol-answer", fixed), rectOf(take, "working", fixed)),
       glide: 40,
     },
     { at: f("opus-done") + 2, focus: resultFocus(take), glide: 30 },
@@ -62,7 +62,7 @@ export const WorkTogether: React.FC<{ layout: Layout; plan: Plan; spec: SceneSpe
         radius={layout.windowRadius}
         renderOverlay={(camera) => {
           const askEnd = rectAt(take, "ask-end", t);
-          const answer = rectAt(take, "astra-answer", t);
+          const answer = rectAt(take, "sol-answer", t);
           const answerEnd = rectAt(take, "answer-end", t);
           const reproEnd = rectAt(take, "repro-end", t);
           const result = rectAt(take, "opus-done-text", t);
@@ -87,7 +87,7 @@ export const WorkTogether: React.FC<{ layout: Layout; plan: Plan; spec: SceneSpe
                 <Note
                   anchor={camera.toScreen(askEnd)}
                   clip={camera.visible}
-                  text="Opus asks Astra"
+                  text="Opus asks Sol"
                   size={layout.chip}
                   at={f("asked") + 8}
                   out={f("answer-published") - 2}
@@ -98,7 +98,7 @@ export const WorkTogether: React.FC<{ layout: Layout; plan: Plan; spec: SceneSpe
                 <Note
                   anchor={camera.toScreen(answerEnd)}
                   clip={camera.visible}
-                  text="Astra finds the cause"
+                  text="Sol finds the cause"
                   size={layout.chip}
                   at={f("answer-published") + 4}
                   out={answerOut}

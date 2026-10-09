@@ -1,15 +1,15 @@
 import type React from "react";
 import { AbsoluteFill, useCurrentFrame } from "remotion";
 import type { Layout } from "../layout";
-import { OUTRO, RELEASE } from "../config";
+import type { Story } from "../stories";
 import { TRANSITION_FRAMES } from "../timeline";
 import { colors, fonts } from "../theme";
 import { GLYPH_ASPECT, Glyph } from "./Glyph";
 import { enter, riseStyle } from "./motion";
 import { TitleBlock, titleBlockHeight } from "./TitleBlock";
 
-/** Glyph, "Rooms", the closing line, and the release and site address. */
-export const Outro: React.FC<{ layout: Layout }> = ({ layout }) => {
+/** Glyph, the story's title, the closing line, and the release and site address. */
+export const Outro: React.FC<{ layout: Layout; story: Story }> = ({ layout, story }) => {
   const frame = useCurrentFrame();
   const { width, height, title } = layout;
   const start = TRANSITION_FRAMES - 4;
@@ -37,8 +37,8 @@ export const Outro: React.FC<{ layout: Layout }> = ({ layout }) => {
       <TitleBlock
         layout={layout}
         top={titleTop}
-        title={OUTRO.title}
-        line={OUTRO.line}
+        title={story.outro.title}
+        line={story.outro.line}
         titleStyle={riseStyle(enter(frame - start - 8, 20), 30, 10)}
         lineStyle={riseStyle(enter(frame - start - 12, 20), 20, 6)}
       />
@@ -59,9 +59,9 @@ export const Outro: React.FC<{ layout: Layout }> = ({ layout }) => {
           ...riseStyle(enter(frame - start - 16, 20), 14, 4),
         }}
       >
-        <span style={{ color: colors.accentBright }}>v{RELEASE.version}</span>
+        <span style={{ color: colors.accentBright }}>v{story.release}</span>
         {"  ·  "}
-        {OUTRO.url}
+        {story.outro.url}
       </div>
     </AbsoluteFill>
   );
