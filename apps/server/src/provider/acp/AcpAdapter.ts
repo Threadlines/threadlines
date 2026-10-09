@@ -56,8 +56,10 @@ import { ServerConfig } from "../../config.ts";
 import {
   BROWSER_MCP_SERVER_NAME,
   mcpEndpointUrl,
+  mcpPagesEndpointUrl,
   mcpRoomEndpointUrl,
 } from "../../mcp/McpHttpServer.ts";
+import { PAGES_MCP_SERVER_NAME } from "../../mcp/pageTools.ts";
 import { mcpSessionRegistry } from "../../mcp/McpSessionRegistry.ts";
 import { ROOM_MCP_SERVER_NAME } from "../../mcp/roomToolAccess.ts";
 import {
@@ -683,11 +685,16 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
           // with the session's scope.
           const reachesHost = descriptor.reachesHostLoopback?.(process.platform) !== false;
           const roomToolsRequested = input.roomTools === true;
+          // The page tools ride the same credential. An ACP agent hears no
+          // instructions of ours, so the tool descriptions carry the rules and
+          // a misplaced image's error names the thread's image folder.
+          const agentPagesRequested = input.agentPages === true;
           const credential = reachesHost
             ? yield* mcpSessionRegistry.credentialFor({
                 sessionKey: input.threadId,
                 browser: true,
                 room: roomToolsRequested,
+                pages: agentPagesRequested,
               })
             : undefined;
           if (credential !== undefined) {
@@ -715,6 +722,16 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
                           type: "http" as const,
                           name: ROOM_MCP_SERVER_NAME,
                           url: mcpRoomEndpointUrl(serverConfig.port),
+                          headers: authorization,
+                        },
+                      ]
+                    : []),
+                  ...(agentPagesRequested
+                    ? [
+                        {
+                          type: "http" as const,
+                          name: PAGES_MCP_SERVER_NAME,
+                          url: mcpPagesEndpointUrl(serverConfig.port),
                           headers: authorization,
                         },
                       ]

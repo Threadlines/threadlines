@@ -73,6 +73,9 @@ const rpcClientMock = {
   visualizations: {
     read: vi.fn(),
   },
+  pages: {
+    read: vi.fn(),
+  },
   filesystem: {
     browse: vi.fn(),
   },

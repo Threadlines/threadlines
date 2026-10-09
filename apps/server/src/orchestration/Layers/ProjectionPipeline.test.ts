@@ -1,5 +1,7 @@
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
 import {
+  AgentPageId,
+  AgentPageVersionId,
   CheckpointRef,
   ChildRequestBatchId,
   ChildRequestId,
@@ -2099,6 +2101,32 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
       });
 
       yield* appendAndProject({
+        type: "thread.page-published",
+        eventId: EventId.make("evt-revert-page-1"),
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-revert"),
+        occurredAt: "2026-02-26T12:00:02.200Z",
+        commandId: CommandId.make("cmd-evt-revert-page-1"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-evt-revert-page-1"),
+        metadata: {},
+        payload: {
+          threadId: ThreadId.make("thread-revert"),
+          page: {
+            pageId: AgentPageId.make("page-1"),
+            versionId: AgentPageVersionId.make("version-1"),
+            version: 1,
+            turnId: TurnId.make("turn-1"),
+            participantId: null,
+            title: "Funnel",
+            kind: "html",
+            height: 400,
+          },
+          createdAt: "2026-02-26T12:00:02.200Z",
+        },
+      });
+
+      yield* appendAndProject({
         type: "thread.turn-diff-completed",
         eventId: EventId.make("evt-revert-5"),
         aggregateKind: "thread",
@@ -2139,6 +2167,32 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
           streaming: false,
           createdAt: "2026-02-26T12:00:03.050Z",
           updatedAt: "2026-02-26T12:00:03.050Z",
+        },
+      });
+
+      yield* appendAndProject({
+        type: "thread.page-published",
+        eventId: EventId.make("evt-revert-page-2"),
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-revert"),
+        occurredAt: "2026-02-26T12:00:03.070Z",
+        commandId: CommandId.make("cmd-evt-revert-page-2"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-evt-revert-page-2"),
+        metadata: {},
+        payload: {
+          threadId: ThreadId.make("thread-revert"),
+          page: {
+            pageId: AgentPageId.make("page-1"),
+            versionId: AgentPageVersionId.make("version-2"),
+            version: 2,
+            turnId: TurnId.make("turn-2"),
+            participantId: null,
+            title: "Funnel",
+            kind: "html",
+            height: 400,
+          },
+          createdAt: "2026-02-26T12:00:03.070Z",
         },
       });
 
@@ -2200,6 +2254,13 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
           role: "assistant",
         },
       ]);
+      // The page keeps the version its kept turn showed; the reverted turn's update goes.
+      const pageRows = yield* sql<{ readonly turnId: string; readonly versionId: string }>`
+        SELECT turn_id AS "turnId", version_id AS "versionId"
+        FROM projection_thread_pages
+        WHERE thread_id = 'thread-revert'
+      `;
+      assert.deepEqual(pageRows, [{ turnId: "turn-1", versionId: "version-1" }]);
     }),
   );
 });

@@ -18,6 +18,7 @@ import {
   type OrchestrationMessage,
   type OrchestrationProjectShell,
   type OrchestrationProposedPlan,
+  type OrchestrationAgentPage,
   type OrchestrationProject,
   type OrchestrationSession,
   type OrchestrationSubagent,
@@ -82,7 +83,12 @@ import { ProjectionProject } from "../../persistence/Services/ProjectionProjects
 import { ProjectionState } from "../../persistence/Services/ProjectionState.ts";
 import { ProjectionThreadActivity } from "../../persistence/Services/ProjectionThreadActivities.ts";
 import { ProjectionThreadMessage } from "../../persistence/Services/ProjectionThreadMessages.ts";
+import { MAX_THREAD_AGENT_PAGES } from "@threadlines/shared/agentPages";
 import { ProjectionThreadProposedPlan } from "../../persistence/Services/ProjectionThreadProposedPlans.ts";
+import {
+  ProjectionThreadPageDbRowSchema,
+  projectionThreadPageFromDbRow,
+} from "../../persistence/Layers/ProjectionThreadPages.ts";
 import { ProjectionThreadSession } from "../../persistence/Services/ProjectionThreadSessions.ts";
 import {
   ProjectionThreadSubagentDbRowSchema,
@@ -555,6 +561,28 @@ function mapProjectShellRow(
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
+}
+
+/** A page row as the thread detail carries it. */
+function mapPageRow(row: typeof ProjectionThreadPageDbRowSchema.Type): OrchestrationAgentPage {
+  const { threadId: _threadId, ...page } = projectionThreadPageFromDbRow(row);
+  return page;
+}
+
+/** Page rows grouped by thread, newest kept when a thread has more than its cap. */
+function pagesByThreadOf(
+  rows: ReadonlyArray<typeof ProjectionThreadPageDbRowSchema.Type>,
+): Map<string, Array<OrchestrationAgentPage>> {
+  const byThread = new Map<string, Array<OrchestrationAgentPage>>();
+  for (const row of rows) {
+    const pages = byThread.get(row.threadId) ?? [];
+    pages.push(mapPageRow(row));
+    byThread.set(row.threadId, pages);
+  }
+  for (const [threadId, pages] of byThread) {
+    byThread.set(threadId, pages.slice(-MAX_THREAD_AGENT_PAGES));
+  }
+  return byThread;
 }
 
 function mapProposedPlanRow(
@@ -1569,6 +1597,61 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       `,
   });
 
+  const listThreadPageRows = SqlSchema.findAll({
+    Request: Schema.Void,
+    Result: ProjectionThreadPageDbRowSchema,
+    execute: () =>
+      sql`
+        SELECT
+          thread_id AS "threadId",
+          page_id AS "pageId",
+          turn_id AS "turnId",
+          version_id AS "versionId",
+          version,
+          participant_id AS "participantId",
+          title,
+          kind,
+          height,
+          heights_json AS "heights",
+          icon,
+          share_url AS "shareUrl",
+          placement_sequence AS "placementSequence",
+          event_sequence AS "eventSequence",
+          created_at AS "createdAt",
+          updated_at AS "updatedAt"
+        FROM projection_thread_pages
+        ORDER BY thread_id ASC, placement_sequence ASC, created_at ASC, version_id ASC
+      `,
+  });
+
+  const listThreadPageRowsByThread = SqlSchema.findAll({
+    Request: ThreadIdLookupInput,
+    Result: ProjectionThreadPageDbRowSchema,
+    execute: ({ threadId }) =>
+      sql`
+        SELECT
+          thread_id AS "threadId",
+          page_id AS "pageId",
+          turn_id AS "turnId",
+          version_id AS "versionId",
+          version,
+          participant_id AS "participantId",
+          title,
+          kind,
+          height,
+          heights_json AS "heights",
+          icon,
+          share_url AS "shareUrl",
+          placement_sequence AS "placementSequence",
+          event_sequence AS "eventSequence",
+          created_at AS "createdAt",
+          updated_at AS "updatedAt"
+        FROM projection_thread_pages
+        WHERE thread_id = ${threadId}
+        ORDER BY placement_sequence ASC, created_at ASC, version_id ASC
+      `,
+  });
+
   const listThreadProposedPlanRowsByThread = SqlSchema.findAll({
     Request: ThreadIdLookupInput,
     Result: ProjectionThreadProposedPlanDbRowSchema,
@@ -2008,6 +2091,14 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               ),
             ),
           ),
+          listThreadPageRows(undefined).pipe(
+            Effect.mapError(
+              toPersistenceSqlOrDecodeError(
+                "ProjectionSnapshotQuery.getSnapshot:listThreadPages:query",
+                "ProjectionSnapshotQuery.getSnapshot:listThreadPages:decodeRows",
+              ),
+            ),
+          ),
         ]),
       )
       .pipe(
@@ -2023,8 +2114,10 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             checkpointRows,
             latestTurnRows,
             stateRows,
+            pageRows,
           ]) =>
             Effect.gen(function* () {
+              const pagesByThread = pagesByThreadOf(pageRows);
               const messagesByThread = new Map<string, Array<OrchestrationMessage>>();
               const proposedPlansByThread = new Map<string, Array<OrchestrationProposedPlan>>();
               const activitiesByThread = new Map<string, Array<OrchestrationThreadActivity>>();
@@ -2187,6 +2280,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                 deletedAt: row.deletedAt,
                 messages: messagesByThread.get(row.threadId) ?? [],
                 proposedPlans: proposedPlansByThread.get(row.threadId) ?? [],
+                pages: pagesByThread.get(row.threadId) ?? [],
                 activities: dropStaleContextWindowActivities(
                   retainThreadActivities(
                     activitiesByThread.get(row.threadId) ?? [],
@@ -2281,6 +2375,14 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               ),
             ),
           ),
+          listThreadPageRows(undefined).pipe(
+            Effect.mapError(
+              toPersistenceSqlOrDecodeError(
+                "ProjectionSnapshotQuery.getCommandReadModel:listThreadPages:query",
+                "ProjectionSnapshotQuery.getCommandReadModel:listThreadPages:decodeRows",
+              ),
+            ),
+          ),
         ]),
       )
       .pipe(
@@ -2293,8 +2395,10 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             sessionRows,
             latestTurnRows,
             stateRows,
+            pageRows,
           ]) =>
             Effect.sync(() => {
+              const pagesByThread = pagesByThreadOf(pageRows);
               let updatedAt: string | null = null;
               const projects: OrchestrationProject[] = [];
               const threads: OrchestrationThread[] = [];
@@ -2448,6 +2552,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   deletedAt: row.deletedAt,
                   messages: messagesByThread.get(row.threadId) ?? [],
                   proposedPlans: proposedPlansByThread.get(row.threadId) ?? [],
+                  pages: pagesByThread.get(row.threadId) ?? [],
                   activities: [],
                   checkpoints: [],
                   session: sessionByThread.get(row.threadId) ?? null,
@@ -3081,6 +3186,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         checkpointRows,
         latestTurnRow,
         sessionRow,
+        pageRows,
       ] = yield* Effect.all([
         getActiveThreadRowById({ threadId }).pipe(
           Effect.mapError(
@@ -3146,6 +3252,14 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             ),
           ),
         ),
+        listThreadPageRowsByThread({ threadId }).pipe(
+          Effect.mapError(
+            toPersistenceSqlOrDecodeError(
+              "ProjectionSnapshotQuery.getThreadDetailById:listPages:query",
+              "ProjectionSnapshotQuery.getThreadDetailById:listPages:decodeRows",
+            ),
+          ),
+        ),
       ]);
 
       if (Option.isNone(threadRow)) {
@@ -3190,6 +3304,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         deletedAt: null,
         messages: messageRows.map(mapThreadMessageRow),
         proposedPlans: proposedPlanRows.map(mapProposedPlanRow),
+        pages: pageRows.map(mapPageRow),
         activities: dropStaleContextWindowActivities(
           retainThreadActivities(activityRows.map(mapThreadActivityRow), MAX_THREAD_ACTIVITIES),
         ),

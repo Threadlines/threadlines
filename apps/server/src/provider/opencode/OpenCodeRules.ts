@@ -33,6 +33,7 @@ export interface OpenCodeRule {
 
 const BROWSER_SERVER_PREFIX = "threadlines_b_";
 const ROOM_SERVER_PREFIX = "threadlines_r_";
+const PAGES_SERVER_PREFIX = "threadlines_p_";
 
 /** Short, stable, tool-name-safe key for one thread's tool servers. */
 export function openCodeThreadToolKey(threadKey: string): string {
@@ -45,6 +46,10 @@ export function openCodeBrowserServerName(toolKey: string): string {
 
 export function openCodeRoomServerName(toolKey: string): string {
   return `${ROOM_SERVER_PREFIX}${toolKey}`;
+}
+
+export function openCodePagesServerName(toolKey: string): string {
+  return `${PAGES_SERVER_PREFIX}${toolKey}`;
 }
 
 /** OpenCode's own wildcard: `*` is any run of characters, `?` any one. */
@@ -108,12 +113,15 @@ export function openCodeSessionRules(input: {
   readonly agentRules: ReadonlyArray<OpenCodeRule>;
   readonly toolKey: string;
   readonly roomTools: boolean;
+  /** The page tools: a page shows only in the caller's own thread, so they never ask. */
+  readonly agentPages?: boolean;
 }): ReadonlyArray<OpenCodeRule> {
   const mode = modeRules(input.runtimeMode);
   return [
     ...mode,
     { action: `${BROWSER_SERVER_PREFIX}*`, resource: "*", effect: "deny" },
     { action: `${ROOM_SERVER_PREFIX}*`, resource: "*", effect: "deny" },
+    { action: `${PAGES_SERVER_PREFIX}*`, resource: "*", effect: "deny" },
     {
       action: `${openCodeBrowserServerName(input.toolKey)}_*`,
       resource: "*",
@@ -123,6 +131,15 @@ export function openCodeSessionRules(input: {
       ? [
           {
             action: `${openCodeRoomServerName(input.toolKey)}_*`,
+            resource: "*",
+            effect: "allow",
+          } satisfies OpenCodeRule,
+        ]
+      : []),
+    ...(input.agentPages === true
+      ? [
+          {
+            action: `${openCodePagesServerName(input.toolKey)}_*`,
             resource: "*",
             effect: "allow",
           } satisfies OpenCodeRule,

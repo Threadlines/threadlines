@@ -27,7 +27,8 @@ import {
   withInviteChoice,
   withUnqueuedAgentMessage,
 } from "@threadlines/shared/roomAgentRequests";
-import { retainMessagesAfterRevert } from "@threadlines/shared/transcriptRevert";
+import { applyAgentPagePublication } from "@threadlines/shared/agentPages";
+import { retainTurnItemsAfterRevert, revertMessages } from "@threadlines/shared/transcriptRevert";
 import { childRequestStateOn } from "@threadlines/shared/childThreads";
 
 import { toProjectorDecodeError, type OrchestrationProjectorDecodeError } from "./Errors.ts";
@@ -44,6 +45,7 @@ import {
   ThreadInteractionModeSetPayload,
   ThreadMetaUpdatedPayload,
   ThreadPinnedPayload,
+  ThreadPagePublishedPayload,
   ThreadProposedPlanUpsertedPayload,
   ThreadRuntimeModeSetPayload,
   ThreadSeenSetPayload,
@@ -196,12 +198,12 @@ function decodeForEvent<A>(
   );
 }
 
-function retainThreadMessagesAfterRevert(
+function revertThreadMessages(
   messages: ReadonlyArray<OrchestrationMessage>,
   retainedTurnIds: ReadonlySet<string>,
   turnCount: number,
-): ReadonlyArray<OrchestrationMessage> {
-  return retainMessagesAfterRevert({
+) {
+  return revertMessages({
     messages,
     idOf: (message) => message.id,
     retainedTurnIds,
@@ -1378,6 +1380,27 @@ export function projectEvent(
         };
       });
 
+    case "thread.page-published":
+      return decodeForEvent(ThreadPagePublishedPayload, event.payload, event.type, "payload").pipe(
+        Effect.map((payload) => {
+          const thread = nextBase.threads.find((entry) => entry.id === payload.threadId);
+          if (!thread) {
+            return nextBase;
+          }
+          return {
+            ...nextBase,
+            threads: updateThread(nextBase.threads, payload.threadId, {
+              // No updatedAt bump: the SQL thread row keeps its own, and a page
+              // is part of a turn whose messages already move the thread.
+              pages: applyAgentPagePublication(thread.pages ?? [], payload.page, {
+                sequence: event.sequence,
+                occurredAt: event.occurredAt,
+              }),
+            }),
+          };
+        }),
+      );
+
     case "thread.turn-diff-completed":
       return Effect.gen(function* () {
         const payload = yield* decodeForEvent(
@@ -1554,11 +1577,14 @@ export function projectEvent(
             .toSorted((left, right) => left.checkpointTurnCount - right.checkpointTurnCount)
             .slice(-MAX_THREAD_CHECKPOINTS);
           const retainedTurnIds = new Set(checkpoints.map((checkpoint) => checkpoint.turnId));
-          const messages = retainThreadMessagesAfterRevert(
+          const reverted = revertThreadMessages(
             thread.messages,
             retainedTurnIds,
             payload.turnCount,
-          ).slice(-MAX_THREAD_MESSAGES);
+          );
+          const messages = reverted.messages.slice(-MAX_THREAD_MESSAGES);
+          // Pages go with the messages of the turns that showed them.
+          const pages = retainTurnItemsAfterRevert(thread.pages ?? [], reverted);
           const proposedPlans = retainThreadProposedPlansAfterRevert(
             thread.proposedPlans,
             retainedTurnIds,
@@ -1588,6 +1614,7 @@ export function projectEvent(
               checkpoints,
               messages,
               proposedPlans,
+              pages,
               activities,
               subagents,
               latestTurn,

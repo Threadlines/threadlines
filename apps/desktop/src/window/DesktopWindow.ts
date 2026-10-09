@@ -817,6 +817,18 @@ const make = Effect.gen(function* () {
       return { action: "deny" };
     });
 
+    // An embedded srcdoc frame (an agent page, a Codex visualization) never
+    // leaves its own document: navigating itself away is a way to carry what
+    // it shows to a server of its own. The web frame stops one after the fact;
+    // here it never gets there. Its links go through the app instead.
+    window.webContents.on("will-frame-navigate", (details) => {
+      if (details.isMainFrame) return;
+      const current = details.frame?.url ?? "";
+      if (current.startsWith("about:srcdoc") && !details.url.startsWith("about:srcdoc")) {
+        details.preventDefault();
+      }
+    });
+
     window.on("page-title-updated", (event) => {
       event.preventDefault();
       window.setTitle(environment.displayName);

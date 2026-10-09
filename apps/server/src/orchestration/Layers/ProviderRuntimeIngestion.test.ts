@@ -33,7 +33,7 @@ import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as PubSub from "effect/PubSub";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
-import { afterEach, describe, expect, it } from "vite-plus/test";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { OrchestrationEventStoreLive } from "../../persistence/Layers/OrchestrationEventStore.ts";
 import { OrchestrationCommandReceiptRepositoryLive } from "../../persistence/Layers/OrchestrationCommandReceipts.ts";
@@ -57,6 +57,7 @@ import { ProviderRuntimeIngestionService } from "../Services/ProviderRuntimeInge
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
 import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
+import { type AdoptPageInput, AgentPages } from "../../pages/AgentPages.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 
 function makeTestServerSettingsLayer(overrides: Partial<ServerSettings> = {}) {
@@ -292,6 +293,7 @@ describe("ProviderRuntimeIngestion", () => {
     }
     const provider = createProviderServiceHarness();
     const gitWorkflow = createGitWorkflowHarness();
+    const adoptedPages: Array<AdoptPageInput> = [];
     const orchestrationLayer = OrchestrationEngineLive.pipe(
       Layer.provide(OrchestrationProjectionSnapshotQueryLive),
       Layer.provide(OrchestrationProjectionPipelineLive),
@@ -314,6 +316,16 @@ describe("ProviderRuntimeIngestion", () => {
         ),
       ),
       Layer.provideMerge(Layer.succeed(GitWorkflowService, gitWorkflow.service)),
+      Layer.provideMerge(
+        Layer.mock(AgentPages)({
+          adopt: (input) =>
+            Effect.sync(() => {
+              adoptedPages.push(input);
+              return { outcome: "shown" as const, pageId: "page", version: 1, message: "" };
+            }),
+          assetsDirOf: () => null,
+        }),
+      ),
       Layer.provideMerge(orchestrationLayer),
       Layer.provideMerge(projectionSnapshotLayer),
       Layer.provideMerge(SqlitePersistenceMemory),
@@ -398,6 +410,7 @@ describe("ProviderRuntimeIngestion", () => {
       setSubagentWorktree: provider.setSubagentWorktree,
       setRepositoryWorktrees: gitWorkflow.setWorktrees,
       interruptedThreadIds: provider.interruptedThreadIds,
+      adoptedPages,
       drain,
     };
   }
@@ -1153,6 +1166,41 @@ describe("ProviderRuntimeIngestion", () => {
       payload: { cwd: equivalentConfiguredCwd, reason: "session-init" },
     });
     await waitForThread(harness.readModel, (thread) => thread.effectiveCwd === null);
+  });
+
+  it("shows a page the provider published in the turn that published it", async () => {
+    const harness = await createHarness();
+    await waitForThread(harness.readModel, (thread) => thread.session?.status === "ready");
+    const published = {
+      type: "page.published",
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:01.000Z",
+      payload: {
+        path: "/work/report.html",
+        url: "https://claude.ai/artifact/abc",
+        title: "Report",
+      },
+    } as const;
+
+    // Published before the thread has had any turn: nowhere to show it.
+    harness.emit({ ...published, eventId: asEventId("evt-page-no-turn") });
+    harness.emit({
+      ...published,
+      eventId: asEventId("evt-page-in-turn"),
+      turnId: asTurnId("turn-page"),
+    });
+    await harness.drain();
+
+    await vi.waitFor(() => expect(harness.adoptedPages).toHaveLength(1));
+    expect(harness.adoptedPages[0]).toMatchObject({
+      threadId: "thread-1",
+      turnId: "turn-page",
+      participantId: null,
+      path: "/work/report.html",
+      shareUrl: "https://claude.ai/artifact/abc",
+      title: "Report",
+    });
   });
 
   describe("subagent worktree inference", () => {

@@ -39,6 +39,10 @@
       "types": "./src/advertisedEndpoint.ts",
       "import": "./src/advertisedEndpoint.ts"
     },
+    "./agentPages": {
+      "types": "./src/agentPages.ts",
+      "import": "./src/agentPages.ts"
+    },
     "./desktopIdentity": {
       "types": "./src/desktopIdentity.ts",
       "import": "./src/desktopIdentity.ts"
@@ -284,6 +288,8 @@
     "@threadlines/contracts": "workspace:*",
     "diff": "^9.0.0",
     "effect": "catalog:",
+    "micromark": "^4.0.2",
+    "micromark-extension-gfm": "^3.0.0",
     "yaml": "catalog:"
   },
   "devDependencies": {

@@ -505,8 +505,8 @@ function serverLabel(server: string): string {
   return capitalize(words(name));
 }
 
-/** Threadlines' own MCP servers: the room, the browser panel, and `threadlines` itself. */
-const THREADLINES_MCP_SERVER = "threadlines(?:_room|_browser)?";
+/** Threadlines' own MCP servers: the room, the browser panel, pages, and `threadlines` itself. */
+const THREADLINES_MCP_SERVER = "threadlines(?:_room|_browser|_pages)?";
 
 /**
  * An MCP call as a provider names it: `server · tool: args` (Claude's step
@@ -577,6 +577,21 @@ function mcpDraft(
         detail: { call: `${call.server} · ${call.tool}${call.args ? `: ${call.args}` : ""}` },
       };
     }
+  }
+  // Agent pages: showing one is part of the answer; a preview is checking work.
+  if (call.server === "threadlines_pages") {
+    const showing = tool === "show_page";
+    const wording = showing
+      ? phrase("Showed a page", "Showing a page")
+      : phrase("Previewed a page", "Previewing a page");
+    return {
+      routine: !showing,
+      tallies: showing ? [] : [{ tally: "tool" }],
+      icon: "tool",
+      label: wording.past,
+      liveLabel: wording.live,
+      detail: { call: `${call.server} · ${call.tool}${call.args ? `: ${call.args}` : ""}` },
+    };
   }
   if (call.server === "threadlines" && tool === "mark_long_running") {
     const wording = phrase(
@@ -797,6 +812,16 @@ function dynamicToolDraft(entry: WorkLogEntry, options: ActivityStepOptions): St
         label: "Asked you a question",
         liveLabel: "Asking you a question",
         note: entry.detail ? truncate(entry.detail, 200) : null,
+      };
+    // Claude's own publishing tool. A publish also shows as a page in the chat.
+    case "artifact":
+      return {
+        routine: true,
+        tallies: [{ tally: "tool" }],
+        icon: "tool",
+        label: "Used Claude artifacts",
+        liveLabel: "Using Claude artifacts",
+        detail: entry.detail ? { call: entry.detail } : {},
       };
     case "skill": {
       const skill = entry.detail?.split(":")[0]?.trim();

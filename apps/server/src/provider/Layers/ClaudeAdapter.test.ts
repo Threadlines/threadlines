@@ -59,6 +59,7 @@ import {
   mapClaudeSubagentTranscript,
   pageClaudeSubagentTranscriptEntries,
   parseEnterWorktreeCwd,
+  publishedArtifactFromToolResult,
   type ClaudeAdapterLiveOptions,
 } from "./ClaudeAdapter.ts";
 const decodeClaudeSettings = Schema.decodeSync(ClaudeSettings);
@@ -586,6 +587,36 @@ describe("mapClaudeSubagentTranscript", () => {
         totalEntries: 8,
       },
     );
+  });
+});
+
+describe("publishedArtifactFromToolResult", () => {
+  // What Claude Code 2.1.295 reported for a real publish.
+  const published = {
+    url: "https://claude.ai/artifact/2vMm3R6NhqMe1ZDt7Y5v4k",
+    path: "/tmp/probe/threadlines-artifact-test.html",
+    artifact_id: "0f8c5a13-f4dc-47b8-8b31-195ff30a295d",
+    title: "Threadlines artifact test",
+    updated: false,
+    icon: "chart",
+    audience: "owner",
+    seq: 1,
+  };
+
+  it("reads the file and link of a publish", () => {
+    assert.deepStrictEqual(
+      publishedArtifactFromToolResult({ file_path: published.path, icon: "chart" }, published),
+      { path: published.path, url: published.url, title: published.title, icon: "chart" },
+    );
+  });
+
+  it("ignores the tool's other actions and results that name no file", () => {
+    assert.strictEqual(publishedArtifactFromToolResult({ action: "read" }, published), undefined);
+    assert.strictEqual(
+      publishedArtifactFromToolResult({ action: "list" }, { artifacts: [{ url: published.url }] }),
+      undefined,
+    );
+    assert.strictEqual(publishedArtifactFromToolResult({}, { url: published.url }), undefined);
   });
 });
 

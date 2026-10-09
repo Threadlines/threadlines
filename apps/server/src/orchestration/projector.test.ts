@@ -114,6 +114,7 @@ describe("orchestration projector", () => {
         deletedAt: null,
         messages: [],
         proposedPlans: [],
+        pages: [],
         activities: [],
         subagents: [],
         checkpoints: [],
@@ -1337,6 +1338,28 @@ describe("orchestration projector", () => {
         },
       }),
       makeEvent({
+        sequence: 5,
+        type: "thread.page-published",
+        aggregateKind: "thread",
+        aggregateId: "thread-1",
+        occurredAt: "2026-02-23T10:00:02.800Z",
+        commandId: "cmd-page-version-1",
+        payload: {
+          threadId: "thread-1",
+          page: {
+            pageId: "page-1",
+            versionId: "version-1",
+            version: 1,
+            turnId: "turn-1",
+            participantId: null,
+            title: "Funnel",
+            kind: "html",
+            height: 400,
+          },
+          createdAt: "2026-02-23T10:00:02.800Z",
+        },
+      }),
+      makeEvent({
         sequence: 6,
         type: "thread.message-sent",
         aggregateKind: "thread",
@@ -1411,6 +1434,28 @@ describe("orchestration projector", () => {
         },
       }),
       makeEvent({
+        sequence: 9,
+        type: "thread.page-published",
+        aggregateKind: "thread",
+        aggregateId: "thread-1",
+        occurredAt: "2026-02-23T10:00:04.800Z",
+        commandId: "cmd-page-version-2",
+        payload: {
+          threadId: "thread-1",
+          page: {
+            pageId: "page-1",
+            versionId: "version-2",
+            version: 2,
+            turnId: "turn-2",
+            participantId: null,
+            title: "Funnel",
+            kind: "html",
+            height: 400,
+          },
+          createdAt: "2026-02-23T10:00:04.800Z",
+        },
+      }),
+      makeEvent({
         sequence: 10,
         type: "thread.reverted",
         aggregateKind: "thread",
@@ -1440,6 +1485,10 @@ describe("orchestration projector", () => {
     expect(
       thread?.activities.map((activity) => ({ id: activity.id, turnId: activity.turnId })),
     ).toEqual([{ id: "activity-1", turnId: "turn-1" }]);
+    // The page keeps the version its kept turn showed; the reverted turn's update goes.
+    expect(thread?.pages?.map((page) => [page.turnId, page.versionId])).toEqual([
+      ["turn-1", "version-1"],
+    ]);
     expect(thread?.checkpoints.map((checkpoint) => checkpoint.checkpointTurnCount)).toEqual([1]);
     expect(thread?.latestTurn?.turnId).toBe("turn-1");
   });

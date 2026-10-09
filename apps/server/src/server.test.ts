@@ -3,6 +3,7 @@ import * as NodeSocket from "@effect/platform-node/NodeSocket";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 
 import {
+  AgentPageReadError,
   CommandId,
   DEFAULT_SERVER_SETTINGS,
   EnvironmentId,
@@ -141,6 +142,7 @@ import { WorkspacePathsLive } from "./workspace/Layers/WorkspacePaths.ts";
 import * as GitVcsDriver from "./vcs/GitVcsDriver.ts";
 import * as VcsDriver from "./vcs/VcsDriver.ts";
 import * as PreviewAutomationBroker from "./preview/PreviewAutomationBroker.ts";
+import { AgentPages } from "./pages/AgentPages.ts";
 import * as VcsStatusBroadcaster from "./vcs/VcsStatusBroadcaster.ts";
 import * as VcsDriverRegistry from "./vcs/VcsDriverRegistry.ts";
 import * as VcsProvisioningService from "./vcs/VcsProvisioningService.ts";
@@ -683,6 +685,15 @@ const buildAppUnderTest = (options?: {
           // Real rather than mocked: it holds no resources and its whole
           // behaviour is the rendezvous, so a mock would only assert wiring.
           PreviewAutomationBroker.layer,
+          // Pages are tested on their own (AgentPages.test.ts); here only the
+          // endpoint and the read route need something to call.
+          Layer.mock(AgentPages)({
+            show: () => Effect.succeed({ outcome: "off" as const, detail: "off in this test" }),
+            preview: () => Effect.succeed({ outcome: "off" as const, detail: "off in this test" }),
+            read: () => Effect.fail(new AgentPageReadError({ message: "No pages in this test." })),
+            pendingVersionIds: Effect.succeed(new Set<string>()),
+            assetsDirOf: () => null,
+          }),
           // Real too: with no models on disk it only reports "missing" and
           // never starts the worker, so a mock would assert nothing.
           DictationLive,

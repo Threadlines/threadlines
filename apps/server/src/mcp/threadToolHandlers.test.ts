@@ -137,6 +137,7 @@ const mainCaller = (): McpInvocationScope => ({
   generation: 1,
   agentId: "agent-test",
   browser: true,
+  pages: true,
   roomTools: new Set(roomToolsFor(undefined)),
 });
 
