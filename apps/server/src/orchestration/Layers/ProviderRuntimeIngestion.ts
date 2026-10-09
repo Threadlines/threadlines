@@ -55,6 +55,7 @@ import {
 } from "../Services/ProviderRuntimeIngestion.ts";
 import { toOrchestrationThreadGoal } from "../threadGoalLifecycle.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
+import { AgentPages } from "../../pages/AgentPages.ts";
 import {
   projectRuntimeEventToActivities,
   subagentSessionProviderStamp,
@@ -1215,6 +1216,7 @@ const make = Effect.gen(function* () {
   const providerService = yield* ProviderService;
   const projectionTurnRepository = yield* ProjectionTurnRepository;
   const serverSettingsService = yield* ServerSettingsService;
+  const agentPages = yield* AgentPages;
   const path = yield* Path.Path;
 
   const turnMessageIdsByTurnKey = yield* Cache.make<string, Set<MessageId>>({
@@ -2854,6 +2856,44 @@ const make = Effect.gen(function* () {
             createdAt: event.createdAt,
           });
         }
+        return;
+      }
+
+      if (event.type === "page.published") {
+        // The provider's own tool put a page online (a Claude artifact); the
+        // chat shows the local copy in the turn that published it. A publish
+        // between turns (a background agent finishing late) shows with the
+        // latest turn, the nearest place the reader will look. Reading and
+        // measuring the page takes a moment, so it runs beside this queue
+        // rather than holding every thread's events behind it.
+        const pageTurnId = event.turnId ?? thread.latestTurn?.turnId;
+        if (pageTurnId === undefined) {
+          return;
+        }
+        yield* agentPages
+          .adopt({
+            threadId: thread.id,
+            turnId: pageTurnId,
+            participantId: event.participantId ?? null,
+            path: event.payload.path,
+            shareUrl: event.payload.url,
+            title: event.payload.title,
+            icon: event.payload.icon,
+          })
+          .pipe(
+            Effect.tap((result) =>
+              result.outcome === "shown"
+                ? Effect.void
+                : Effect.logInfo("provider runtime ingestion did not show a published page", {
+                    threadId: thread.id,
+                    turnId: pageTurnId,
+                    outcome: result.outcome,
+                    detail: result.detail,
+                  }),
+            ),
+            Effect.ignoreCause({ log: true }),
+            Effect.forkDetach,
+          );
         return;
       }
 

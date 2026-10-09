@@ -29,6 +29,7 @@ import { ChildProcessSpawner } from "effect/unstable/process";
 
 import { makeClaudeTextGeneration } from "../../textGeneration/ClaudeTextGeneration.ts";
 import { ServerConfig } from "../../config.ts";
+import { ServerSettingsService } from "../../serverSettings.ts";
 import { ProviderDriverError } from "../Errors.ts";
 import { makeClaudeAdapter } from "../Layers/ClaudeAdapter.ts";
 import {
@@ -308,7 +309,8 @@ export type ClaudeDriverEnv =
   | HttpClient.HttpClient
   | Path.Path
   | ProviderEventLoggers
-  | ServerConfig;
+  | ServerConfig
+  | ServerSettingsService;
 
 const withInstanceIdentity =
   (input: {
@@ -342,6 +344,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
       const httpClient = yield* HttpClient.HttpClient;
       const eventLoggers = yield* ProviderEventLoggers;
       const serverConfig = yield* ServerConfig;
+      const serverSettings = yield* ServerSettingsService;
       const processEnv = mergeProviderInstanceEnvironment(
         environment,
         claudeInstanceBaseEnvironment(config),
@@ -550,6 +553,12 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
             Effect.map((provider) => provider.models.find((candidate) => candidate.slug === model)),
           ),
         ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
+        // Read live, so turning Claude artifacts off stops a running
+        // session's next upload. Unreadable settings count as off.
+        artifactsAllowed: serverSettings.getSettings.pipe(
+          Effect.map((settings) => settings.enableAgentPages && settings.enableClaudeArtifacts),
+          Effect.orElseSucceed(() => false),
+        ),
         onAccountRateLimitsUpdated: (rateLimitInfo) =>
           Effect.gen(function* () {
             const checkedAt = DateTime.formatIso(yield* DateTime.now);

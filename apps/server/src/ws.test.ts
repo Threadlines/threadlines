@@ -1,4 +1,6 @@
 import {
+  AgentPageId,
+  AgentPageVersionId,
   CommandId,
   EventId,
   MessageId,
@@ -31,6 +33,25 @@ function makeThreadEvent<T extends OrchestrationEvent["type"]>(
 }
 
 describe("isThreadDetailEvent", () => {
+  it("streams a page an agent shows, so it appears without a reload", () => {
+    const event = makeThreadEvent("thread.page-published", {
+      threadId: ThreadId.make("thread-1"),
+      page: {
+        pageId: AgentPageId.make("page-1"),
+        versionId: AgentPageVersionId.make("version-1"),
+        version: 1,
+        turnId: TurnId.make("turn-1"),
+        participantId: null,
+        title: "Funnel",
+        kind: "html",
+        height: 400,
+      },
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+
+    expect(isThreadDetailEvent(event)).toBe(true);
+  });
+
   it("streams accepted follow-ups to active thread subscribers", () => {
     const event = makeThreadEvent("thread.follow-up-accepted", {
       threadId: ThreadId.make("thread-1"),

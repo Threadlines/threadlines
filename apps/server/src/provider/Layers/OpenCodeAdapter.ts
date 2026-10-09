@@ -68,7 +68,13 @@ import * as Stream from "effect/Stream";
 
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
-import { mcpEndpointUrl, mcpRoomEndpointUrl } from "../../mcp/McpHttpServer.ts";
+import {
+  mcpEndpointUrl,
+  mcpPagesEndpointUrl,
+  mcpRoomEndpointUrl,
+} from "../../mcp/McpHttpServer.ts";
+import { buildAgentPageInstructions } from "../../mcp/pageTools.ts";
+import { ensurePageAssetsDir } from "../../pages/PageStore.ts";
 import { mcpSessionRegistry } from "../../mcp/McpSessionRegistry.ts";
 import { isLinkedWorktreeCheckout } from "../../vcs/CheckoutPresence.ts";
 import {
@@ -105,6 +111,7 @@ import {
   type OpenCodeRule,
   openCodeBrowserServerName,
   openCodeRoomServerName,
+  openCodePagesServerName,
   openCodeSessionGrantRules,
   openCodeSessionRules,
   openCodeThreadToolKey,
@@ -124,6 +131,7 @@ import {
   openCodeToolOutputText,
 } from "../opencode/OpenCodeToolItems.ts";
 import { buildPreviewPanelInstructions } from "../previewPanelInstructions.ts";
+import { parseSessionKey } from "@threadlines/shared/threadParticipants";
 import type { OpenCodeAdapterShape } from "../Services/OpenCodeAdapter.ts";
 import type { EventNdjsonLogger } from "./EventNdjsonLogger.ts";
 
@@ -229,6 +237,8 @@ interface SessionContext {
   readonly scope: Scope.Closeable;
   readonly toolKey: string;
   readonly roomTools: boolean;
+  /** The page tools' image folder, when the session has them. */
+  readonly agentPageAssetsDir: string | undefined;
   readonly runtimeMode: RuntimeMode;
   agent: string;
   model: OpenCodeModelRef | undefined;
@@ -506,6 +516,7 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
           agentRules: agents.find((agent) => agent.id === agentId)?.rules ?? [],
           toolKey: ctx.toolKey,
           roomTools: ctx.roomTools,
+          agentPages: ctx.agentPageAssetsDir !== undefined,
         });
       });
 
@@ -1871,6 +1882,14 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
                 },
               ]
             : []),
+          ...(ctx.agentPageAssetsDir !== undefined
+            ? [
+                {
+                  name: openCodePagesServerName(ctx.toolKey),
+                  url: mcpPagesEndpointUrl(serverConfig.port),
+                },
+              ]
+            : []),
         ];
         for (const server of servers) {
           yield* runOpenCode("mcp.add", (signal) =>
@@ -1907,6 +1926,14 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
     const instructionsFor = (ctx: SessionContext, managedWorktree: boolean) =>
       [
         buildPreviewPanelInstructions("opencode", `${openCodeBrowserServerName(ctx.toolKey)}_`),
+        ...(ctx.agentPageAssetsDir !== undefined
+          ? [
+              buildAgentPageInstructions({
+                assetsDir: ctx.agentPageAssetsDir,
+                toolPrefix: `${openCodePagesServerName(ctx.toolKey)}_`,
+              }),
+            ]
+          : []),
         FILE_LINK_INSTRUCTIONS,
         ...(managedWorktree ? [MANAGED_WORKTREE_INSTRUCTION] : []),
       ].join("\n\n");
@@ -2038,6 +2065,14 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
           yield* active.streamReady.pipe(Effect.timeout(Duration.seconds(15)), Effect.ignore);
           const client = active.server.client;
           const roomTools = input.roomTools === true;
+          // The page tools, with their image folder (OpenCode refuses side runtimes).
+          const agentPageAssetsDir =
+            input.agentPages === true
+              ? yield* ensurePageAssetsDir(parseSessionKey(input.threadId).threadId).pipe(
+                  Effect.map((dir): string | undefined => dir),
+                  Effect.orElseSucceed(() => undefined),
+                )
+              : undefined;
           const boundSelection =
             input.modelSelection?.instanceId === boundInstanceId ? input.modelSelection : undefined;
           const model = resolveModel(boundSelection);
@@ -2138,6 +2173,7 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
             scope,
             toolKey: openCodeThreadToolKey(input.threadId),
             roomTools,
+            agentPageAssetsDir,
             runtimeMode: input.runtimeMode,
             agent: BUILD_AGENT,
             model,
@@ -2175,6 +2211,7 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
             sessionKey: input.threadId,
             browser: true,
             room: roomTools,
+            pages: agentPageAssetsDir !== undefined,
           });
           yield* Scope.addFinalizer(
             scope,

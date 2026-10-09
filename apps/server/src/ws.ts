@@ -70,6 +70,7 @@ import { normalizeDispatchCommand } from "./orchestration/Normalizer.ts";
 import { coalesceLatestAggregateEvents } from "./orchestration/shellStreamCoalescing.ts";
 import { OrchestrationEngineService } from "./orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnapshotQuery.ts";
+import { AgentPages } from "./pages/AgentPages.ts";
 import { ThreadBootstrap } from "./orchestration/Services/ThreadBootstrap.ts";
 import { ThreadSearch } from "./orchestration/Services/ThreadSearch.ts";
 import { UsageService } from "./usage/UsageService.ts";
@@ -178,6 +179,7 @@ export function isThreadDetailEvent(event: OrchestrationEvent): event is Extract
       | "thread.follow-up-queued"
       | "thread.follow-up-unqueued"
       | "thread.proposed-plan-upserted"
+      | "thread.page-published"
       | "thread.activity-appended"
       | "thread.turn-diff-completed"
       | "thread.turn-completed"
@@ -226,6 +228,7 @@ export function isThreadDetailEvent(event: OrchestrationEvent): event is Extract
     event.type === "thread.follow-up-queued" ||
     event.type === "thread.follow-up-unqueued" ||
     event.type === "thread.proposed-plan-upserted" ||
+    event.type === "thread.page-published" ||
     event.type === "thread.activity-appended" ||
     event.type === "thread.turn-diff-completed" ||
     event.type === "thread.turn-completed" ||
@@ -296,6 +299,7 @@ const makeWsRpcLayer = (currentSession: {
           : Effect.fail(new WsOwnerRequiredError({ method }));
       const relayHost = yield* RelayHost;
       const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
+      const agentPages = yield* AgentPages;
       const threadSearch = yield* ThreadSearch;
       const usage = yield* UsageService;
       const orchestrationEngine = yield* OrchestrationEngineService;
@@ -1712,6 +1716,10 @@ const makeWsRpcLayer = (currentSession: {
             }),
             { "rpc.aggregate": "workspace" },
           ),
+        [WS_METHODS.pagesRead]: (input) =>
+          observeRpcEffect(WS_METHODS.pagesRead, agentPages.read(input), {
+            "rpc.aggregate": "pages",
+          }),
         [WS_METHODS.visualizationsRead]: (input) =>
           observeRpcEffect(
             WS_METHODS.visualizationsRead,

@@ -3,6 +3,7 @@ import * as Schema from "effect/Schema";
 import * as Arr from "effect/Array";
 import { compareTranscriptPosition } from "@threadlines/shared/transcriptOrder";
 import {
+  type OrchestrationAgentPage,
   ApprovalRequestId,
   McpElicitation,
   isToolLifecycleItemType,
@@ -508,6 +509,12 @@ export type TimelineEntry = { eventSequence?: number | undefined } & (
       kind: "fork-context";
       createdAt: string;
       forkContext: ForkContextEntry;
+    }
+  | {
+      id: string;
+      kind: "page";
+      createdAt: string;
+      page: OrchestrationAgentPage;
     }
 );
 
@@ -5646,6 +5653,10 @@ function compareActivityLifecycleRank(kind: string): number {
   return 1;
 }
 
+/** A page's timeline id: one page as one turn left it. */
+export const agentPageEntryId = (page: Pick<OrchestrationAgentPage, "pageId" | "turnId">) =>
+  `page:${page.pageId}:${page.turnId}`;
+
 export function deriveTimelineEntries(
   messages: ChatMessage[],
   proposedPlans: ProposedPlan[],
@@ -5653,6 +5664,7 @@ export function deriveTimelineEntries(
   subagentResults: SubagentResultEntry[] = [],
   forkContexts: ForkContextEntry[] = [],
   subagentLiveEntries: SubagentLiveEntry[] = [],
+  pages: ReadonlyArray<OrchestrationAgentPage> = [],
 ): TimelineEntry[] {
   const suppressedAssistantEchoIds = findSubagentResultEchoMessageIds(messages, subagentResults);
   const messageRows: TimelineEntry[] = messages
@@ -5703,11 +5715,21 @@ export function deriveTimelineEntries(
       : {}),
     forkContext,
   }));
+  // A page stands where its turn first showed it; later versions in the same
+  // turn replace it there (agentPages.ts).
+  const pageRows: TimelineEntry[] = pages.map((page) => ({
+    id: agentPageEntryId(page),
+    kind: "page",
+    createdAt: page.createdAt,
+    ...(page.placementSequence !== undefined ? { eventSequence: page.placementSequence } : {}),
+    page,
+  }));
   return [
     ...forkContextRows,
     ...messageRows,
     ...proposedPlanRows,
     ...workRows,
+    ...pageRows,
     ...subagentLiveRows,
     ...subagentResultRows,
   ].toSorted((a, b) => {

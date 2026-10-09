@@ -451,6 +451,141 @@ describe("deriveMessagesTimelineRows", () => {
     ).toEqual(["ran-command", "checkpoint-files"]);
   });
 
+  it("puts a page a settled turn showed after its reply above that reply, and marks a later turn's update", () => {
+    const page = (turnId: string, versionId: string, createdAt: string) => ({
+      id: `page:page-1:${turnId}`,
+      kind: "page" as const,
+      createdAt,
+      page: {
+        pageId: "page-1" as never,
+        versionId: versionId as never,
+        version: versionId === "v1" ? 1 : 2,
+        turnId: turnId as never,
+        participantId: null,
+        title: "Funnel",
+        kind: "html" as const,
+        height: 400,
+        createdAt,
+        updatedAt: createdAt,
+      },
+    });
+    const reply = (id: string, turnId: string, createdAt: string) => ({
+      id: `${id}-entry`,
+      kind: "message" as const,
+      createdAt,
+      message: {
+        id: id as never,
+        role: "assistant" as const,
+        text: "Here it is.",
+        turnId: turnId as never,
+        createdAt,
+        completedAt: createdAt,
+        streaming: false,
+      },
+    });
+
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [
+        reply("reply-1", "turn-1", "2026-01-01T00:00:10Z"),
+        page("turn-1", "v1", "2026-01-01T00:00:11Z"),
+        page("turn-2", "v2", "2026-01-01T00:00:20Z"),
+        reply("reply-2", "turn-2", "2026-01-01T00:00:21Z"),
+      ],
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+    });
+
+    expect(rows.map((row) => (row.kind === "page" ? `page:${row.updated}` : row.id))).toEqual([
+      "page:false",
+      "reply-1-entry",
+      "page:true",
+      "reply-2-entry",
+    ]);
+  });
+
+  it("keeps a page as a row of its own while its agent works on, and once the steps around it fold", () => {
+    const at = (second: number) => `2026-01-01T00:00:${String(second).padStart(2, "0")}Z`;
+    const step = (second: number) => ({
+      id: `step-${second}`,
+      kind: "work" as const,
+      createdAt: at(second),
+      entry: {
+        id: `step-${second}`,
+        createdAt: at(second),
+        label: `step-${second}`,
+        tone: "tool" as const,
+        turnId: "turn-1" as never,
+      },
+    });
+    const shown = {
+      id: "page:page-1:turn-1",
+      kind: "page" as const,
+      createdAt: at(3),
+      page: {
+        pageId: "page-1" as never,
+        versionId: "v1" as never,
+        version: 1,
+        turnId: "turn-1" as never,
+        participantId: null,
+        title: "Funnel",
+        kind: "html" as const,
+        height: 400,
+        createdAt: at(3),
+        updatedAt: at(3),
+      },
+    };
+    // Two steps, the page, then many more steps than a working chat lists.
+    const turn = [step(1), step(2), shown, ...[4, 5, 6, 7, 8, 9, 10, 11].map(step)];
+    const derive = (
+      timelineEntries: Parameters<typeof deriveMessagesTimelineRows>[0]["timelineEntries"],
+      isWorking: boolean,
+    ) =>
+      deriveMessagesTimelineRows({
+        timelineEntries,
+        isWorking,
+        ...(isWorking ? { activeTurnId: "turn-1" as never, activeTurnInProgress: true } : {}),
+        activeTurnStartedAt: isWorking ? at(0) : null,
+        turnDiffSummaryByAssistantMessageId: new Map(),
+        revertTurnCountByUserMessageId: new Map(),
+      });
+    const stepsOf = (rows: ReturnType<typeof derive>) =>
+      rows.map((row) =>
+        row.kind === "work" ? `work:${row.groupedEntries.length}:${row.folded}` : row.kind,
+      );
+
+    // Still working: the page stands between the steps before and after it.
+    expect(stepsOf(derive(turn, true)).slice(0, 3)).toEqual([
+      "work:2:true",
+      "page",
+      "work:8:false",
+    ]);
+
+    // Answered: every stretch of steps folds, and the page is still there.
+    const answered = derive(
+      [
+        ...turn,
+        {
+          id: "reply-entry",
+          kind: "message" as const,
+          createdAt: at(20),
+          message: {
+            id: "reply" as never,
+            role: "assistant" as const,
+            text: "Here it is.",
+            turnId: "turn-1" as never,
+            createdAt: at(20),
+            completedAt: at(20),
+            streaming: false,
+          },
+        },
+      ],
+      false,
+    );
+    expect(stepsOf(answered)).toEqual(["work:2:true", "page", "work:8:true", "message"]);
+  });
+
   it("keeps the active turn's trailing work below its streamed commentary", () => {
     const rows = deriveMessagesTimelineRows({
       timelineEntries: [

@@ -10,6 +10,7 @@
  *
  * @module pages/preview/previewProxy
  */
+import { AGENT_PAGE_ALLOWED_HOSTS } from "@threadlines/shared/agentPages";
 import * as NodeDnsPromises from "node:dns/promises";
 import * as NodeNet from "node:net";
 import * as NodeOS from "node:os";
@@ -22,17 +23,7 @@ import { isPublicAddress } from "../../provider/managedRuntime/HttpsFetch.ts";
  * The hosts a page may load from in a preview, by exact name. Pages load
  * libraries, styles, and fonts from these CDNs; nothing else is reachable.
  */
-export const PAGE_PREVIEW_ALLOWED_HOSTS: ReadonlyArray<string> = [
-  "cdnjs.cloudflare.com",
-  "cdn.jsdelivr.net",
-  "unpkg.com",
-  "esm.sh",
-  "cdn.tailwindcss.com",
-  "code.jquery.com",
-  "fonts.googleapis.com",
-  "fonts.gstatic.com",
-  "fonts.bunny.net",
-];
+export const PAGE_PREVIEW_ALLOWED_HOSTS: ReadonlyArray<string> = AGENT_PAGE_ALLOWED_HOSTS;
 
 /**
  * IPv6 ranges `isPublicAddress` lets through that carry an IPv4 address a

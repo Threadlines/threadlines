@@ -204,6 +204,8 @@ import type {
   ChatAttachmentReadResult,
   CodexInlineVisualizationReadInput,
   CodexInlineVisualizationReadResult,
+  AgentPageReadInput,
+  AgentPageReadResult,
   ClientOrchestrationCommand,
   OrchestrationGetFullThreadDiffInput,
   OrchestrationGetFullThreadDiffResult,
@@ -1504,6 +1506,10 @@ export interface EnvironmentApi {
   /** Optional so newer clients can still connect to older Threadlines servers. */
   visualizations?: {
     read: (input: CodexInlineVisualizationReadInput) => Promise<CodexInlineVisualizationReadResult>;
+  };
+  /** Optional so newer clients can still connect to older Threadlines servers. */
+  pages?: {
+    read: (input: AgentPageReadInput) => Promise<AgentPageReadResult>;
   };
   filesystem: {
     browse: (input: FilesystemBrowseInput) => Promise<FilesystemBrowseResult>;

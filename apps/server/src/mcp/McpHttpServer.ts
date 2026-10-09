@@ -60,6 +60,15 @@ export function mcpRoomEndpointUrl(port: number): string {
   return `http://127.0.0.1:${port}${MCP_ROOM_ROUTE_PATH}`;
 }
 
+/** The page tools' endpoint (McpPagesServer): its own server, so Codex can
+ *  approve its calls without approving the browser's. */
+export const MCP_PAGES_ROUTE_PATH = "/mcp/pages";
+
+/** The page tools' address, on loopback for the same reason. */
+export function mcpPagesEndpointUrl(port: number): string {
+  return `http://127.0.0.1:${port}${MCP_PAGES_ROUTE_PATH}`;
+}
+
 /**
  * The same endpoint, in the shape Codex takes it.
  *

@@ -125,6 +125,9 @@ export interface WsRpcClient {
   readonly visualizations: {
     readonly read: RpcUnaryMethod<typeof WS_METHODS.visualizationsRead>;
   };
+  readonly pages: {
+    readonly read: RpcUnaryMethod<typeof WS_METHODS.pagesRead>;
+  };
   readonly filesystem: {
     readonly browse: RpcUnaryMethod<typeof WS_METHODS.filesystemBrowse>;
   };
@@ -542,6 +545,12 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
           (client) => client[WS_METHODS.visualizationsRead](input),
           { label: WS_METHODS.visualizationsRead },
         ),
+    },
+    pages: {
+      read: (input) =>
+        transport.requestWithReconnectRetry((client) => client[WS_METHODS.pagesRead](input), {
+          label: WS_METHODS.pagesRead,
+        }),
     },
     filesystem: {
       browse: (input) => transport.request((client) => client[WS_METHODS.filesystemBrowse](input)),

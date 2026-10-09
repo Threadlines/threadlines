@@ -77,6 +77,9 @@ export function createEnvironmentApi(rpcClient: WsRpcClient): EnvironmentApi {
     visualizations: {
       read: rpcClient.visualizations.read,
     },
+    pages: {
+      read: rpcClient.pages.read,
+    },
     filesystem: {
       browse: rpcClient.filesystem.browse,
     },

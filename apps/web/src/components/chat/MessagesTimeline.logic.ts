@@ -8,9 +8,11 @@ import {
   type WorkLogEntry,
 } from "../../session-logic";
 import { isUserWrittenMessage } from "@threadlines/shared/roomAgentRequests";
+import { agentPageFrameHeight } from "@threadlines/shared/agentPages";
 import { type ChatMessage, type ProposedPlan, type TurnDiffSummary } from "../../types";
 import { type RoomAgentNames, roomAgentKey, roomTurnOwners } from "../../rooms";
 import {
+  type OrchestrationAgentPage,
   type MessageAgentModel,
   type MessageId,
   type OrchestrationAwaitedBackgroundTask,
@@ -185,6 +187,15 @@ export type MessagesTimelineRow = TimelineRowPlacement &
         id: string;
         createdAt: string;
         forkContext: ForkContextEntry;
+      }
+    | {
+        /** An agent page as one turn left it (AgentPageRow). */
+        kind: "page";
+        id: string;
+        createdAt: string;
+        page: OrchestrationAgentPage;
+        /** A later turn's version of a page an earlier row shows. */
+        updated: boolean;
       }
     | {
         kind: "working";
@@ -381,6 +392,7 @@ export function deriveMessagesTimelineRows(input: {
   roomAgentNames?: RoomAgentNames | null | undefined;
 }): MessagesTimelineRow[] {
   const nextRows: MessagesTimelineRow[] = [];
+  const shownPageIds = new Set<string>();
   const visibleTimelineEntries = hoistTrailingTurnWorkAboveResponse(
     deriveVisibleTimelineEntries(input),
     input.isWorking ? (input.activeTurnId ?? null) : null,
@@ -532,6 +544,19 @@ export function deriveMessagesTimelineRows(input: {
         createdAt: timelineEntry.createdAt,
         forkContext: timelineEntry.forkContext,
       });
+      continue;
+    }
+
+    if (timelineEntry.kind === "page") {
+      nextRows.push({
+        ...UNPLACED,
+        kind: "page",
+        id: timelineEntry.id,
+        createdAt: timelineEntry.createdAt,
+        page: timelineEntry.page,
+        updated: shownPageIds.has(timelineEntry.page.pageId),
+      });
+      shownPageIds.add(timelineEntry.page.pageId);
       continue;
     }
 
@@ -1551,10 +1576,14 @@ function hoistTrailingTurnWorkAboveResponse(
   const hoistedIndices = new Set<number>();
   for (let index = 0; index < entries.length; index += 1) {
     const entry = entries[index]!;
-    if (entry.kind !== "work" || entry.entry.turnId == null) {
+    // A turn's work, and a page it showed after writing its reply, go above
+    // that reply: the reply is what the turn ends on.
+    const turnId =
+      entry.kind === "work" ? entry.entry.turnId : entry.kind === "page" ? entry.page.turnId : null;
+    if (turnId == null) {
       continue;
     }
-    const anchorIndex = lastAssistantIndexByTurn.get(entry.entry.turnId);
+    const anchorIndex = lastAssistantIndexByTurn.get(turnId);
     if (anchorIndex === undefined || index <= anchorIndex) {
       continue;
     }
@@ -1809,6 +1838,9 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
     case "fork-context":
       return a.forkContext === (b as typeof a).forkContext;
 
+    case "page":
+      return a.page === (b as typeof a).page && a.updated === (b as typeof a).updated;
+
     case "side-status": {
       const bs = b as typeof a;
       return (
@@ -1908,6 +1940,9 @@ const rowHeightEstimates = new WeakMap<
 >();
 
 /** The guessed height of `row` in a timeline `width` pixels wide. */
+/** An agent page's title line above its frame (AgentPageRow), margin included. */
+export const AGENT_PAGE_TITLE_LINE_PX = 24;
+
 export function estimateTimelineRowHeight(row: MessagesTimelineRow, width: number): number {
   const cached = rowHeightEstimates.get(row);
   if (cached?.width === width) {
@@ -1993,6 +2028,9 @@ function estimateRowContentHeight(row: MessagesTimelineRow, width: number): numb
       return 90;
     case "proposed-plan":
       return 240;
+    case "page":
+      // Its title line, then the page at the height measured for this width.
+      return AGENT_PAGE_TITLE_LINE_PX + agentPageFrameHeight(row.page, column);
     case "side-status":
       return 30;
   }

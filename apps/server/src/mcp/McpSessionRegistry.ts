@@ -45,6 +45,8 @@ export interface McpInvocationScope {
   readonly agentId: string;
   /** May call the browser tools at `/mcp`. */
   readonly browser: boolean;
+  /** May show agent pages at `/mcp/pages` (McpPagesServer). */
+  readonly pages: boolean;
   /** Room tools this credential may call at `/mcp/room`. Empty: none. */
   readonly roomTools: ReadonlySet<RoomToolName>;
 }
@@ -56,6 +58,8 @@ export interface McpCredentialRequest {
   readonly browser: boolean;
   /** The room tools this runtime's kind allows (see roomToolAccess). */
   readonly room: boolean;
+  /** The page tools. Never granted to a side runtime, whatever is asked. */
+  readonly pages?: boolean | undefined;
   /**
    * A side runtime's kind. A side key without one is treated as a review,
    * the narrowest.
@@ -120,6 +124,7 @@ export const makeMcpSessionRegistry = (): McpSessionRegistryShape => {
           ...(side !== undefined ? { side } : {}),
           agentId: `agent-${randomBytes(12).toString("base64url")}`,
           browser: request.browser && sideKind === undefined,
+          pages: request.pages === true && sideKind === undefined,
           roomTools: new Set(request.room ? roomToolsFor(sideKind) : []),
         });
         return { token, generation };

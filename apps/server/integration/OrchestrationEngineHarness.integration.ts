@@ -38,6 +38,7 @@ import { makeAdapterRegistryMock } from "../src/provider/testUtils/providerAdapt
 import { ProviderAdapterRegistry } from "../src/provider/Services/ProviderAdapterRegistry.ts";
 import { ProviderSessionDirectoryLive } from "../src/provider/Layers/ProviderSessionDirectory.ts";
 import { ServerSettingsService } from "../src/serverSettings.ts";
+import { AgentPages } from "../src/pages/AgentPages.ts";
 import { makeProviderServiceLive } from "../src/provider/Layers/ProviderService.ts";
 import { makeCodexAdapter } from "../src/provider/Layers/CodexAdapter.ts";
 import {
@@ -317,6 +318,8 @@ export const makeOrchestrationIntegrationHarness = (
           observeSessionEnded: () => Effect.void,
         }),
       ),
+      // No provider publishes a page in these tests.
+      Layer.provideMerge(Layer.mock(AgentPages)({ assetsDirOf: () => null })),
       Layer.provideMerge(runtimeServicesLayer),
       Layer.provideMerge(serverSettingsLayer),
     );

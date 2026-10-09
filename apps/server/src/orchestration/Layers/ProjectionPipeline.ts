@@ -6,7 +6,8 @@ import {
   withInviteChoice,
   withUnqueuedAgentMessage,
 } from "@threadlines/shared/roomAgentRequests";
-import { retainMessagesAfterRevert } from "@threadlines/shared/transcriptRevert";
+import { applyAgentPagePublication } from "@threadlines/shared/agentPages";
+import { retainTurnItemsAfterRevert, revertMessages } from "@threadlines/shared/transcriptRevert";
 import { childRequestStateOn } from "@threadlines/shared/childThreads";
 import {
   ApprovalRequestId,
@@ -57,6 +58,11 @@ import { ProjectionStateRepositoryLive } from "../../persistence/Layers/Projecti
 import { ProjectionThreadActivityRepositoryLive } from "../../persistence/Layers/ProjectionThreadActivities.ts";
 import { ProjectionThreadMessageRepositoryLive } from "../../persistence/Layers/ProjectionThreadMessages.ts";
 import { ProjectionThreadProposedPlanRepositoryLive } from "../../persistence/Layers/ProjectionThreadProposedPlans.ts";
+import { ProjectionThreadPageRepositoryLive } from "../../persistence/Layers/ProjectionThreadPages.ts";
+import {
+  type ProjectionThreadPage,
+  ProjectionThreadPageRepository,
+} from "../../persistence/Services/ProjectionThreadPages.ts";
 import { ProjectionThreadSessionRepositoryLive } from "../../persistence/Layers/ProjectionThreadSessions.ts";
 import { ProjectionThreadSubagentRepositoryLive } from "../../persistence/Layers/ProjectionThreadSubagents.ts";
 import { ProjectionTurnRepositoryLive } from "../../persistence/Layers/ProjectionTurns.ts";
@@ -189,11 +195,11 @@ function deriveHasActionableProposedPlan(input: {
   return latestPlan !== null && latestPlan.implementedAt === null;
 }
 
-function retainProjectionMessagesAfterRevert(
+function revertProjectionMessages(
   messages: ReadonlyArray<ProjectionThreadMessage>,
   turns: ReadonlyArray<ProjectionTurn>,
   turnCount: number,
-): ReadonlyArray<ProjectionThreadMessage> {
+) {
   const retainedMessageIds = new Set<string>();
   const retainedTurnIds = new Set<string>();
   const keptTurns = turns.filter(
@@ -213,7 +219,7 @@ function retainProjectionMessagesAfterRevert(
       retainedMessageIds.add(turn.assistantMessageId);
     }
   }
-  return retainMessagesAfterRevert({
+  return revertMessages({
     messages,
     idOf: (message) => message.messageId,
     retainedTurnIds,
@@ -413,6 +419,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
     const projectionThreadRepository = yield* ProjectionThreadRepository;
     const projectionThreadMessageRepository = yield* ProjectionThreadMessageRepository;
     const projectionThreadProposedPlanRepository = yield* ProjectionThreadProposedPlanRepository;
+    const projectionThreadPageRepository = yield* ProjectionThreadPageRepository;
     const projectionThreadActivityRepository = yield* ProjectionThreadActivityRepository;
     const projectionThreadSessionRepository = yield* ProjectionThreadSessionRepository;
     const projectionThreadSubagentRepository = yield* ProjectionThreadSubagentRepository;
@@ -1456,6 +1463,48 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           return;
         }
 
+        case "thread.page-published": {
+          const existingPages = yield* projectionThreadPageRepository.listByThreadId({
+            threadId: event.payload.threadId,
+          });
+          const next = applyAgentPagePublication(existingPages, event.payload.page, {
+            sequence: event.sequence,
+            occurredAt: event.occurredAt,
+          });
+          const published = next.find(
+            (page) =>
+              page.pageId === event.payload.page.pageId &&
+              page.turnId === event.payload.page.turnId &&
+              page.versionId === event.payload.page.versionId,
+          );
+          if (published === undefined) {
+            return;
+          }
+          const kept = new Set(next.map((page) => `${page.pageId}\u0000${page.turnId}`));
+          if (existingPages.some((page) => !kept.has(`${page.pageId}\u0000${page.turnId}`))) {
+            // Past the thread's page cap the oldest go, as in the read model;
+            // their files go with the rows (PageFileSweep).
+            yield* projectionThreadPageRepository.deleteByThreadId({
+              threadId: event.payload.threadId,
+            });
+            yield* Effect.forEach(
+              next,
+              (page) =>
+                projectionThreadPageRepository.upsert({
+                  ...page,
+                  threadId: event.payload.threadId,
+                } satisfies ProjectionThreadPage),
+              { concurrency: 1 },
+            ).pipe(Effect.asVoid);
+            return;
+          }
+          yield* projectionThreadPageRepository.upsert({
+            ...published,
+            threadId: event.payload.threadId,
+          } satisfies ProjectionThreadPage);
+          return;
+        }
+
         case "thread.reverted": {
           const existingRows = yield* projectionThreadMessageRepository.listByThreadId({
             threadId: event.payload.threadId,
@@ -1467,13 +1516,31 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           const existingTurns = yield* projectionTurnRepository.listByThreadId({
             threadId: event.payload.threadId,
           });
-          const keptRows = retainProjectionMessagesAfterRevert(
+          const reverted = revertProjectionMessages(
             existingRows,
             existingTurns,
             event.payload.turnCount,
           );
+          const keptRows = reverted.messages;
           if (keptRows.length === existingRows.length) {
             return;
+          }
+
+          // Pages go with the messages of the turns that showed them. Pruned
+          // here rather than in a projector of their own: which messages stay
+          // is only known from the messages before this revert, so the two
+          // must move together, replays included.
+          const existingPages = yield* projectionThreadPageRepository.listByThreadId({
+            threadId: event.payload.threadId,
+          });
+          const keptPages = retainTurnItemsAfterRevert(existingPages, reverted);
+          if (keptPages.length !== existingPages.length) {
+            yield* projectionThreadPageRepository.deleteByThreadId({
+              threadId: event.payload.threadId,
+            });
+            yield* Effect.forEach(keptPages, projectionThreadPageRepository.upsert, {
+              concurrency: 1,
+            }).pipe(Effect.asVoid);
           }
 
           yield* projectionThreadMessageRepository.deleteByThreadId({
@@ -2380,6 +2447,7 @@ export const OrchestrationProjectionPipelineLive = Layer.effect(
   Layer.provideMerge(ProjectionThreadRepositoryLive),
   Layer.provideMerge(ProjectionThreadMessageRepositoryLive),
   Layer.provideMerge(ProjectionThreadProposedPlanRepositoryLive),
+  Layer.provideMerge(ProjectionThreadPageRepositoryLive),
   Layer.provideMerge(ProjectionThreadActivityRepositoryLive),
   Layer.provideMerge(ProjectionThreadSessionRepositoryLive),
   Layer.provideMerge(ProjectionThreadSubagentRepositoryLive),
