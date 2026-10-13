@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useEffectEvent, useRef, useState } from "react";
 
 import { cn } from "~/lib/utils";
 
@@ -19,6 +19,13 @@ import { cn } from "~/lib/utils";
  * Drawn over the webview rather than inside the page: it is a thing our UI is
  * saying about the page, not a thing on the page. That also keeps it out of
  * screenshots, which should show what the user would see, not our annotations.
+ *
+ * It acts out each thing the agent does once, as it happens on screen. The
+ * mark leaves the screen with its page (another thread, another tab, Settings)
+ * and comes back with it, and it comes back at rest: a click played again on
+ * every return reads as the agent clicking again. That relies on a mark never
+ * being taken away and handed back while it is on screen, which holds because
+ * each page keeps its own (`usePageAgentPoint`).
  */
 
 /** How long after the last action the pointer settles to its resting state. */
@@ -40,6 +47,15 @@ const POINTER_PING_MS = 620;
  * the whole fade.
  */
 export const POINTER_RETIRE_MS = 420;
+
+/**
+ * How long a mark whose page has gone is left alone before it starts to leave.
+ *
+ * A click that changes the page is sometimes only reported after the page has
+ * changed, so its mark is out of date the moment it appears. It has to be
+ * painted before there is anything to see going.
+ */
+export const POINTER_RETIRE_HOLD_MS = 60;
 
 /** One frame at the start of a drag, so there is somewhere to travel from. */
 const HOLD_SETTLE_MS = 60;
@@ -72,7 +88,10 @@ export interface AgentPointerPosition {
   /** Viewport coordinates, as the agent's input was dispatched. */
   readonly x: number;
   readonly y: number;
-  /** Distinguishes two actions in the same spot, which should read as two. */
+  /**
+   * Which action this is. Distinguishes two actions in the same spot, which
+   * should read as two, and one already shown from one that just happened.
+   */
   readonly sequence: number;
   /**
    * Where a drag began, when this point is the end of one.
@@ -113,21 +132,26 @@ export function AgentPointer({
   retiring?: boolean;
   className?: string;
 }) {
-  const [settled, setSettled] = useState(false);
-  const previous = useRef<{ x: number; y: number } | null>(null);
-  const gesture = useDragReplay(position, scale);
-
   const sequence = position?.sequence ?? null;
+  // The action that had already happened when this came on screen, if there
+  // was one. It is not acted out again; what the agent does after it is.
+  const [arrivedWith] = useState(sequence);
+  const fresh = sequence !== arrivedWith;
+
+  const [settledSequence, setSettledSequence] = useState<number | null>(null);
+  const previous = useRef<{ x: number; y: number } | null>(null);
+  const gesture = useDragReplay(position, scale, fresh);
+
   useEffect(() => {
-    if (sequence === null) {
+    if (sequence === null || !fresh) {
       return;
     }
     // Every action resets the clock: the pointer only rests once the agent has
     // stopped moving it.
-    setSettled(false);
-    const timer = window.setTimeout(() => setSettled(true), POINTER_SETTLE_MS);
+    const timer = window.setTimeout(() => setSettledSequence(sequence), POINTER_SETTLE_MS);
     return () => window.clearTimeout(timer);
-  }, [sequence]);
+  }, [sequence, fresh]);
+  const settled = !fresh || settledSequence === sequence;
 
   if (position === null) {
     previous.current = null;
@@ -157,7 +181,7 @@ export function AgentPointer({
         transitionTimingFunction: `${POINTER_TRAVEL_EASING}, ease-out`,
       }}
     >
-      {gesture.held ? <HeldRing /> : <ClickRing sequence={position.sequence} />}
+      {gesture.held ? <HeldRing /> : fresh ? <ClickRing sequence={position.sequence} /> : null}
       {/* An arrow, because an arrow is what a pointer looks like and this
           should need no explaining. Filled in our colour with a rim around it,
           rather than the hollow outline every system cursor uses, so it reads
@@ -185,43 +209,53 @@ export function AgentPointer({
  * Two renders, because a single state change would batch into one and the mark
  * would simply appear at the destination -- there has to be a frame where it is
  * at the start for there to be anything to travel from.
+ *
+ * Keeps which part of which drag is showing rather than where the mark is, so
+ * a replay belongs to its drag alone: the page being shown at a new size moves
+ * both ends without starting the gesture over.
  */
 function useDragReplay(
   position: AgentPointerPosition | null,
   scale: number,
+  /** Whether this action is being acted out. One that is not shows where it ended. */
+  fresh: boolean,
 ): { point: { x: number; y: number } | null; held: boolean } {
-  const [state, setState] = useState<{
-    point: { x: number; y: number } | null;
-    held: boolean;
-  }>({ point: null, held: false });
+  const [replay, setReplay] = useState<{
+    sequence: number;
+    step: "pressed" | "travelling";
+  } | null>(null);
 
   const sequence = position?.sequence ?? null;
   const from = position?.from;
-  const x = position?.x ?? 0;
-  const y = position?.y ?? 0;
+  const start = from === undefined ? null : { x: from.x * scale, y: from.y * scale };
+  const end = { x: (position?.x ?? 0) * scale, y: (position?.y ?? 0) * scale };
+  const dragged = start !== null;
+  // Read when a replay starts, never a reason to start one.
+  const travelMs = useEffectEvent(() => (start === null ? 0 : travelDurationMs(start, end)));
 
   useEffect(() => {
-    if (sequence === null || from === undefined) {
-      setState({ point: null, held: false });
+    if (sequence === null || !dragged || !fresh) {
       return;
     }
-    const start = { x: from.x * scale, y: from.y * scale };
-    const end = { x: x * scale, y: y * scale };
-    setState({ point: start, held: true });
+    setReplay({ sequence, step: "pressed" });
 
-    const travel = window.setTimeout(() => setState({ point: end, held: true }), HOLD_SETTLE_MS);
-    // Let go once it has arrived, so the ring expands where the drag ended.
-    const release = window.setTimeout(
-      () => setState({ point: end, held: false }),
-      HOLD_SETTLE_MS + travelDurationMs(start, end),
+    const travel = window.setTimeout(
+      () => setReplay({ sequence, step: "travelling" }),
+      HOLD_SETTLE_MS,
     );
+    // Let go once it has arrived, so the ring expands where the drag ended.
+    const release = window.setTimeout(() => setReplay(null), HOLD_SETTLE_MS + travelMs());
     return () => {
       window.clearTimeout(travel);
       window.clearTimeout(release);
     };
-  }, [sequence, from, x, y, scale]);
+  }, [sequence, dragged, fresh]);
 
-  return state;
+  // A replay cut short by the agent's next action says nothing about that one.
+  if (replay === null || replay.sequence !== sequence || start === null) {
+    return { point: null, held: false };
+  }
+  return { point: replay.step === "pressed" ? start : end, held: true };
 }
 
 /**
@@ -253,6 +287,7 @@ function ClickRing({ sequence }: { sequence: number }) {
   return (
     <span
       key={sequence}
+      data-testid="agent-pointer-click"
       className="absolute -left-3 -top-3 size-6 animate-ping rounded-full bg-primary-readable/30 motion-reduce:hidden"
     />
   );

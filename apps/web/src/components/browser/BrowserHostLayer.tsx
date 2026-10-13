@@ -1,12 +1,11 @@
 import { scopeThreadRef, scopedThreadKey } from "@threadlines/client-runtime";
 import type { EnvironmentId, ScopedThreadRef, ThreadId } from "@threadlines/contracts";
 import { useNavigate } from "@tanstack/react-router";
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useMemo, useRef, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
 
 import {
   selectActiveTab,
-  selectThreadAgentState,
   selectThreadBrowserState,
   subscribePreviewWebviews,
   useBrowserPanelStore,
@@ -25,7 +24,6 @@ import { useTheme } from "../../hooks/useTheme";
 import { useBrowserProfilePartition } from "../../lib/browserProfiles";
 import { useStore } from "../../store";
 import { buildThreadRouteParams } from "../../threadRoutes";
-import { POINTER_RETIRE_MS, type AgentPointerPosition } from "./AgentPointer";
 import { resolveBrowserSiteAccess } from "@threadlines/shared/preview";
 import { pushNavigationPolicy } from "./browserApprovals";
 import { nextBrowserApprovalId } from "./browserApprovalRequests";
@@ -408,10 +406,6 @@ export function LiveThreadBrowserView({ browser }: { browser: LiveThreadBrowserR
   const setOverlayElement = useBrowserLiveStore((store) => store.setOverlayElement);
   const setTabViewport = useBrowserPanelStore((store) => store.setTabViewport);
   const appearance = useBrowserPanelStore((store) => store.appearance);
-  const agentState = useBrowserPanelStore((store) =>
-    selectThreadAgentState(store.agentStateByThreadKey, threadRef),
-  );
-  const setAgentPoint = useBrowserPanelStore((store) => store.setAgentPoint);
   const { resolvedTheme } = useTheme();
   const colorScheme = appearance === "system" ? resolvedTheme : appearance;
   const profile = useBrowserProfilePartition(threadRef.environmentId, projectId);
@@ -429,25 +423,6 @@ export function LiveThreadBrowserView({ browser }: { browser: LiveThreadBrowserR
     if (visibleTabId !== null && visibleTabId !== "") notePageShown(threadRef, visibleTabId);
     previousVisible.current = visibleTabId;
   }, [threadRef, visibleTabId]);
-
-  // The agent's mark is in page coordinates, so it stops meaning anything the
-  // moment the page under it changes. It fades rather than blinking out:
-  // clicking a link is the most common way to navigate, and cutting the mark on
-  // the click leaves the one action you most want confirmed with no trace.
-  const agentPoint = agentState.point as AgentPointerPosition | null;
-  const agentPointRef = useRef(agentPoint);
-  agentPointRef.current = agentPoint;
-  const [agentPointRetiring, setAgentPointRetiring] = useState(false);
-  const activeUrl = activeTab?.url ?? null;
-  useEffect(() => {
-    if (agentPointRef.current === null) return;
-    setAgentPointRetiring(true);
-    const timer = window.setTimeout(() => {
-      setAgentPoint(threadRef, null);
-      setAgentPointRetiring(false);
-    }, POINTER_RETIRE_MS);
-    return () => window.clearTimeout(timer);
-  }, [activeUrl, setAgentPoint, threadRef]);
 
   if (profile.status !== "ready") {
     return null;
@@ -497,8 +472,6 @@ export function LiveThreadBrowserView({ browser }: { browser: LiveThreadBrowserR
             onResize={
               mode === "visible" ? (next) => setTabViewport(threadRef, tab.id, next) : undefined
             }
-            agentPoint={tab.id === agentState.tabId ? agentPoint : null}
-            agentPointRetiring={agentPointRetiring}
           />
         );
       })}

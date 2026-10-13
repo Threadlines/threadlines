@@ -262,6 +262,9 @@ export function resolveThreadBrowserTarget(
   }
   store.setAgentTab(threadRef, tabId === "" ? null : tabId);
   const webview = tabId === "" ? null : getPreviewWebview(threadRef, tabId);
+  // The page the agent is about to act on, read before it does: a click that
+  // takes the tab somewhere else is often only reported after it has.
+  const pageUrl = browserState.tabs.find((tab) => tab.id === tabId)?.url ?? null;
 
   /**
    * Lets an agent's navigation through, asking the user first when the
@@ -382,7 +385,15 @@ export function resolveThreadBrowserTarget(
     beginWork: tabId === "" ? undefined : () => beginAgentWork(threadRef, tabId),
     withKeyboard:
       webview instanceof HTMLElement ? (send) => withPageKeyboard(webview, send) : undefined,
-    onAgentPoint: (point) => useBrowserPanelStore.getState().setAgentPoint(threadRef, point),
+    onAgentPoint: (point) => {
+      // On the page this request acted on, which is not always the agent tab
+      // the store names (another agent may have acted since), and only while
+      // that page is still there: the answer to a click can arrive after its
+      // tab, or the whole browser, has been closed.
+      if (webview !== null && getPreviewWebview(threadRef, tabId) === webview) {
+        useBrowserPanelStore.getState().setAgentPoint(threadRef, tabId, { ...point, pageUrl });
+      }
+    },
     onAgentActivity: (activity) =>
       useBrowserPanelStore.getState().setAgentActivity(threadRef, activity),
     onUserTakeover: () => useBrowserPanelStore.getState().markBrowserUserControlled(threadRef),

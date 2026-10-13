@@ -9,7 +9,12 @@ import { flushSync } from "react-dom";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { render } from "vitest-browser-react";
 
-import { makeBrowserTab, useBrowserPanelStore } from "../../browserPanelStore";
+import {
+  makeBrowserTab,
+  selectThreadAgentState,
+  useBrowserPanelStore,
+  type BrowserTab,
+} from "../../browserPanelStore";
 import { resetBrowserLiveStoreForTests, useBrowserLiveStore } from "../../browserLiveStore";
 import {
   __resetEnvironmentApiOverridesForTests,
@@ -27,6 +32,10 @@ import {
   LiveThreadBrowserView,
   usePruneGoneThreadBrowsers,
 } from "./BrowserHostLayer";
+import {
+  resetThreadBrowserAutomationForTests,
+  resolveThreadBrowserTarget,
+} from "./threadBrowserAutomation";
 
 // The runtime keeps its own behaviour; spying is how the test reaches the
 // listeners its connection registry was given.
@@ -37,6 +46,60 @@ const SHOWN = scopeThreadRef(ENVIRONMENT, ThreadId.make("thread-shown"));
 const AWAY = scopeThreadRef(ENVIRONMENT, ThreadId.make("thread-away"));
 const PROJECT = "project-layer" as ProjectId;
 
+/** The thread on screen with these tabs open, the first one in front. */
+async function renderThreadOnScreen(tabs: readonly [BrowserTab, ...BrowserTab[]]) {
+  window.desktopBridge = {
+    setTheme: () => Promise.resolve(),
+    previewProfilePartition: () =>
+      Promise.resolve({ partition: `persist:threadlines-preview-${"a".repeat(32)}` }),
+  } as unknown as NonNullable<typeof window.desktopBridge>;
+  useBrowserPanelStore.setState({
+    browserStateByThreadKey: {
+      [scopedThreadKey(SHOWN)]: { open: true, tabs: [...tabs], activeTabId: tabs[0].id },
+    },
+  });
+  const live = useBrowserLiveStore.getState();
+  live.ensureLive(SHOWN, PROJECT);
+  live.setShown(SHOWN);
+  const screen = await render(
+    <LiveThreadBrowserView browser={{ threadRef: SHOWN, projectId: PROJECT }} />,
+  );
+  await vi.waitFor(
+    () =>
+      expect(document.querySelector(`[data-testid="browser-frame-${tabs[0].id}"]`)).not.toBeNull(),
+    { timeout: 4_000 },
+  );
+  return screen;
+}
+
+/**
+ * The agent's pointer on the page in front, read in the same task as the
+ * change that caused it, so none of its own timers can have run in between.
+ */
+function agentPointerAfter(change: () => void) {
+  flushSync(change);
+  const mark = document.querySelector<HTMLElement>('[data-testid="agent-pointer"]');
+  return mark === null
+    ? null
+    : {
+        settled: mark.dataset.settled,
+        clicking: mark.querySelector('[data-testid="agent-pointer-click"]') !== null,
+        at: mark.style.transform,
+      };
+}
+
+/** An agent's request to act on a tab, as the browser host resolves one. */
+function agentRequestOn(tabId: string) {
+  return resolveThreadBrowserTarget(SHOWN, {
+    requestId: "request",
+    agentId: "agent",
+    operation: "click",
+    input: { tabId },
+  });
+}
+const acting = (at: string) => ({ settled: "false", clicking: true, at });
+const resting = (at: string) => ({ settled: "true", clicking: false, at });
+
 /**
  * The layer draws one thread's pages over its panel and keeps every other
  * thread's running out of sight. A real document, so CSS anchor positioning
@@ -45,7 +108,8 @@ const PROJECT = "project-layer" as ProjectId;
 describe("LiveThreadBrowserView", () => {
   afterEach(() => {
     resetBrowserLiveStoreForTests();
-    useBrowserPanelStore.setState({ browserStateByThreadKey: {} });
+    resetThreadBrowserAutomationForTests();
+    useBrowserPanelStore.setState({ browserStateByThreadKey: {}, agentStateByThreadKey: {} });
     Reflect.deleteProperty(window, "desktopBridge");
   });
 
@@ -127,6 +191,89 @@ describe("LiveThreadBrowserView", () => {
       )!;
       expect(getComputedStyle(awayContainer).zIndex).toBe("-1");
       expect(awayContainer.getBoundingClientRect().width).toBe(500);
+    } finally {
+      screen.unmount();
+    }
+  });
+
+  it("shows each thing the agent does once, and its pointer at rest when the thread comes back on screen", async () => {
+    const tab = { ...makeBrowserTab(), url: "http://localhost:5173/" };
+    const screen = await renderThreadOnScreen([tab]);
+
+    try {
+      const live = useBrowserLiveStore.getState();
+      const first = "translate3d(40px, 30px, 0px)";
+
+      // The agent clicks while the page is being watched: the click is shown.
+      expect(
+        agentPointerAfter(() => agentRequestOn(tab.id).onAgentPoint({ x: 40, y: 30 })),
+      ).toEqual(acting(first));
+
+      // Another thread and straight back: nothing happened in between, so
+      // nothing is acted out again.
+      expect(agentPointerAfter(() => live.setShown(AWAY))).toBeNull();
+      expect(agentPointerAfter(() => live.setShown(SHOWN))).toEqual(resting(first));
+
+      // The next thing the agent does is shown as usual.
+      expect(
+        agentPointerAfter(() => agentRequestOn(tab.id).onAgentPoint({ x: 120, y: 80 })),
+      ).toEqual(acting("translate3d(120px, 80px, 0px)"));
+    } finally {
+      screen.unmount();
+    }
+  });
+
+  it("keeps the agent's pointer with the page it touched", async () => {
+    const watched = { ...makeBrowserTab(), url: "http://localhost:5173/" };
+    const other = { ...makeBrowserTab(), url: "http://localhost:5173/settings" };
+    const screen = await renderThreadOnScreen([watched, other]);
+
+    try {
+      const panel = useBrowserPanelStore.getState();
+      const gone = () =>
+        vi.waitFor(() => expect(agentPointerAfter(() => {})).toBeNull(), { timeout: 2_000 });
+      const onWatched = "translate3d(40px, 30px, 0px)";
+      const onOther = "translate3d(300px, 200px, 0px)";
+      expect(
+        agentPointerAfter(() => agentRequestOn(watched.id).onAgentPoint({ x: 40, y: 30 })),
+      ).toEqual(acting(onWatched));
+
+      // The agent goes to work in its other tab. The page being watched keeps
+      // its mark where it was, and is not given the other page's.
+      expect(
+        agentPointerAfter(() => agentRequestOn(other.id).onAgentPoint({ x: 300, y: 200 })),
+      ).toEqual(acting(onWatched));
+
+      // Each tab shows where the agent was on its own page, whichever the
+      // user looks at and however often.
+      expect(agentPointerAfter(() => panel.selectTab(SHOWN, other.id))).toEqual(resting(onOther));
+      expect(agentPointerAfter(() => panel.selectTab(SHOWN, watched.id))).toEqual(
+        resting(onWatched),
+      );
+
+      // A page that moves on takes its mark with it, fading rather than
+      // blinking out. So does a click made on that page and only reported
+      // once it had gone: it is seen, and then it goes.
+      const reportedLate = agentRequestOn(watched.id);
+      expect(
+        agentPointerAfter(() => panel.setTabUrl(SHOWN, watched.id, "http://localhost:5173/next")),
+      ).toEqual(resting(onWatched));
+      await gone();
+      expect(agentPointerAfter(() => reportedLate.onAgentPoint({ x: 10, y: 10 }))).toEqual(
+        acting("translate3d(10px, 10px, 0px)"),
+      );
+      await gone();
+
+      // The other page's mark is its own, and goes when its tab is closed. An
+      // answer that arrives after that has no page left to mark.
+      const answeredAfterClose = agentRequestOn(other.id);
+      expect(agentPointerAfter(() => panel.selectTab(SHOWN, other.id))).toEqual(resting(onOther));
+      flushSync(() => panel.closeTab(SHOWN, other.id));
+      answeredAfterClose.onAgentPoint({ x: 5, y: 5 });
+      expect(
+        selectThreadAgentState(useBrowserPanelStore.getState().agentStateByThreadKey, SHOWN)
+          .pointByTabId,
+      ).toEqual({});
     } finally {
       screen.unmount();
     }

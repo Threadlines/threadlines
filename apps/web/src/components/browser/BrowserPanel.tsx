@@ -228,13 +228,13 @@ export function BrowserPanel({
     };
   }, [projectId, threadRef]);
 
-  // The agent's last touch on the page, shown over the webview so it is
-  // visible working rather than silently changing things. Produced by the
-  // automation mount, which runs whether or not this panel is here.
+  // Which tab is the agent's and what it is doing there, so it is visible
+  // working rather than silently changing things. Produced by the automation
+  // mount, which runs whether or not this panel is here. Its pointer is drawn
+  // with the page it touched, by that page's frame.
   const agentState = useBrowserPanelStore((store) =>
     selectThreadAgentState(store.agentStateByThreadKey, threadRef),
   );
-  const setAgentPoint = useBrowserPanelStore((store) => store.setAgentPoint);
   const setAgentTab = useBrowserPanelStore((store) => store.setAgentTab);
   const setAgentActivity = useBrowserPanelStore((store) => store.setAgentActivity);
   const agentTabId = agentState.tabId;
@@ -276,9 +276,8 @@ export function BrowserPanel({
     if (agentTabId !== null && !browserState.tabs.some((tab) => tab.id === agentTabId)) {
       setAgentTab(threadRef, null);
       setAgentActivity(threadRef, null);
-      setAgentPoint(threadRef, null);
     }
-  }, [agentTabId, browserState.tabs, setAgentActivity, setAgentPoint, setAgentTab, threadRef]);
+  }, [agentTabId, browserState.tabs, setAgentActivity, setAgentTab, threadRef]);
 
   // The page area: the layer anchors the visible page to it, and pages kept
   // running off screen keep its size.
