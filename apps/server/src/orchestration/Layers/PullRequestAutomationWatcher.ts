@@ -68,6 +68,16 @@ const MAX_IN_MOTION_MS = 30 * 60 * 1_000;
  */
 const MAX_AUTO_TURNS_PER_PULL_REQUEST = 3;
 
+/**
+ * The longest a thread with nothing to watch goes without a look. Such a
+ * thread is looked at again after a tenth of the time it has sat untouched, no
+ * sooner than a sweep apart and no later than this: one that changed minutes
+ * ago keeps nearly the usual pace, and one whose pull request merged days ago
+ * costs the host a read twice an hour.
+ */
+const MAX_REST_MS = 30 * 60 * 1_000;
+const REST_SHARE_OF_IDLE_TIME = 10;
+
 /** Only GitHub answers the reads this needs; see `WRITE_ACCESS_HOSTS`. */
 const SUPPORTED_PROVIDER = "github";
 
@@ -89,6 +99,30 @@ interface PendingRequeue {
   readonly removalId: string;
   /** When the agent's turn was asked for. */
   readonly requestedAt: string;
+}
+
+/**
+ * What a look at a thread's pull requests found. `started`: a turn. `watching`:
+ * an open pull request there is something left to do for, or a host that did
+ * not answer, which is not known to be nothing. `nothing`: no pull request on
+ * the thread's branch, or one that is merged, closed, in another repository,
+ * or out of turns.
+ */
+type LookOutcome = "started" | "watching" | "nothing";
+
+/** A thread found with nothing to watch, and until when it is left alone. */
+interface Resting {
+  /** What the thread looked like then; a change to any of it ends the rest. */
+  readonly stamp: string;
+  readonly nextLookAt: number;
+}
+
+/**
+ * What about a thread says its pull requests may have changed: it was touched
+ * (a turn, a switch, a link), or its checkout moved to another branch or folder.
+ */
+function restStamp(thread: OrchestrationThreadShell): string {
+  return [thread.updatedAt, thread.branch, thread.worktreePath, thread.effectiveCwd].join("\n");
 }
 
 /** One remark, flattened out of wherever the host filed it. */
@@ -296,6 +330,11 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
     // checks chip keeps, so a check that fails goes to the agent about when the
     // chip turns red, not up to a whole interval later.
     const inMotionRef = yield* Ref.make(new Map<string, number>());
+    // Threads whose last look found nothing to watch. A sweep passes over them
+    // until their rest is over or they change, so the armed threads whose
+    // pull requests are long merged do not each cost a read of the host every
+    // interval. In memory, so a restart looks at everything once.
+    const restingRef = yield* Ref.make(new Map<string, Resting>());
     // When every armed thread was last looked at, which the interval counts from.
     const lastFullSweepAtRef = yield* Ref.make(Number.NEGATIVE_INFINITY);
     // One sweep at a time: the interval fiber and `sweepNow` would otherwise
@@ -716,17 +755,20 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
     );
 
     /**
-     * The pull request on the thread's own branch. Answers whether it started a
-     * turn, and leaves the baseline holding what the pull request looks like now.
+     * The pull request on the thread's own branch. Answers what it found, and
+     * leaves the baseline holding what the pull request looks like now.
      */
     const sweepOwnPullRequest = Effect.fn("PullRequestAutomationWatcher.sweepOwnPullRequest")(
-      function* (input: SweepCandidate) {
+      function* (input: SweepCandidate): Effect.fn.Return<LookOutcome> {
         const { thread, project, repository } = input;
         const cwd = threadWorkingCwd(input);
 
         const remote = yield* attempt("status-read", thread.id, gitManager.remoteStatus({ cwd }));
-        if (remote === null || remote.pr === null) {
-          return false;
+        if (remote === null) {
+          return "watching";
+        }
+        if (remote.pr === null) {
+          return "nothing";
         }
         const pullRequest = remote.pr;
         const autoMerge = thread.pullRequestAutoMerge;
@@ -736,7 +778,7 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
           if (autoMerge !== null) {
             yield* disarmAutoMerge(thread.id, null);
           }
-          return false;
+          return "nothing";
         }
 
         const key = pairKey(thread.id, pullRequest.number);
@@ -763,7 +805,7 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
         // A hand-off already made is seen through, even once the cap is reached.
         const pendingRequeue = yield* Ref.get(requeuesRef).pipe(Effect.map((map) => map.get(key)));
         if (!autoFixActive && autoMerge === null && pendingRequeue === undefined) {
-          return false;
+          return "nothing";
         }
 
         const reference = {
@@ -774,7 +816,7 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
         } as const;
         const detail = yield* readDetail(thread.id, reference, pullRequest.url);
         if (detail === "unread" || detail === "elsewhere") {
-          return false;
+          return detail === "unread" ? "watching" : "nothing";
         }
 
         if (autoMerge !== null) {
@@ -788,7 +830,7 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
             pullRequestNumber: null,
           });
           if (merged) {
-            return false;
+            return "nothing";
           }
         }
         if (pendingRequeue !== undefined) {
@@ -802,7 +844,7 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
           });
         }
         if (!autoFixActive) {
-          return false;
+          return "watching";
         }
 
         const activity = yield* attempt(
@@ -811,7 +853,7 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
           pullRequestService.activity(reference),
         );
         if (activity === null) {
-          return false;
+          return "watching";
         }
 
         const currentFailing = failingCheckNames(detail);
@@ -840,7 +882,7 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
               queueRemovalId: queueRemoval?.id ?? null,
             }),
           );
-          return false;
+          return "watching";
         }
 
         // A check that has stopped failing leaves the baseline, so the same check
@@ -889,7 +931,7 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
           yield* Ref.update(baselinesRef, (map) =>
             map.set(key, { failingCheckNames: carriedFailing, commentIds, queueRemovalId }),
           );
-          return false;
+          return "watching";
         }
 
         // The reads above take seconds, and in that time the user may have sent
@@ -910,7 +952,7 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
           hasWorkInProgress(latest.value)
         ) {
           yield* Ref.update(baselinesRef, (map) => map.set(key, baseline));
-          return false;
+          return "watching";
         }
 
         const requestedAt = yield* startTurn({
@@ -935,7 +977,7 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
           }),
         );
         if (requestedAt === null) {
-          return false;
+          return "watching";
         }
         yield* Ref.update(turnCountsRef, (counts) => counts.set(key, turnCount + 1));
         // The queue gets it back once the agent has had its turn at the failure.
@@ -944,7 +986,7 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
             map.set(key, { removalId: newQueueRemoval.id, requestedAt }),
           );
         }
-        return true;
+        return "started";
       },
     );
 
@@ -952,12 +994,14 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
      * "Merge when checks pass" for the pull requests the agent opened on other
      * branches. The thread's checkout is not on those branches, so there are no
      * unpushed commits to count and no auto-fix to run; otherwise it is the
-     * same rule as for the thread's own pull request.
+     * same rule as for the thread's own pull request. Answers whether any of
+     * them is still open and waiting, or could not be read.
      */
     const sweepLinkedPullRequests = Effect.fn(
       "PullRequestAutomationWatcher.sweepLinkedPullRequests",
     )(function* (candidate: SweepCandidate) {
       const { thread, project, repository } = candidate;
+      let watching = false;
       for (const linked of thread.linkedPullRequests) {
         if (linked.autoMerge === null) {
           continue;
@@ -970,6 +1014,7 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
         } as const;
         const detail = yield* readDetail(thread.id, reference, linked.url);
         if (detail === "unread" || detail === "elsewhere") {
+          watching ||= detail === "unread";
           continue;
         }
         if (detail.state !== "open") {
@@ -989,6 +1034,7 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
                 gitManager.remoteStatus({ cwd: threadWorkingCwd(candidate) }),
               ))?.aheadCount ?? null)
             : 0;
+        watching = true;
         if (unpushedCommits === null) {
           continue;
         }
@@ -1002,12 +1048,16 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
           pullRequestNumber: linked.number,
         });
       }
+      return watching;
     });
 
-    /** One candidate thread. Answers whether it started an auto-fix turn. */
+    /**
+     * One candidate thread. Answers what it found, and puts a thread with
+     * nothing to watch to rest.
+     */
     const sweepThread = Effect.fn("PullRequestAutomationWatcher.sweepThread")(function* (
       candidate: SweepCandidate,
-    ) {
+    ): Effect.fn.Return<LookOutcome> {
       const { thread } = candidate;
       // This look decides the pace again: checks it finds in motion put the
       // thread back on the quicker one, in the stretch it was already in.
@@ -1019,15 +1069,29 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
       // The thread's own pull request is the one on its branch, so a thread
       // with no branch has only linked ones.
       const ownArmed = thread.pullRequestAutoFix || thread.pullRequestAutoMerge !== null;
-      const started =
-        thread.branch !== null && ownArmed ? yield* sweepOwnPullRequest(candidate) : false;
-      yield* sweepLinkedPullRequests(candidate);
+      const own =
+        thread.branch !== null && ownArmed ? yield* sweepOwnPullRequest(candidate) : "nothing";
+      const linkedWatching = yield* sweepLinkedPullRequests(candidate);
+      const outcome = own === "nothing" && linkedWatching ? "watching" : own;
       if (inMotionSince !== undefined) {
         yield* Ref.update(inMotionRef, (threads) =>
           threads.has(thread.id) ? threads.set(thread.id, inMotionSince) : threads,
         );
       }
-      return started;
+      const now = yield* Clock.currentTimeMillis;
+      yield* Ref.update(restingRef, (threads) => {
+        if (outcome !== "nothing") {
+          threads.delete(thread.id);
+          return threads;
+        }
+        // A time that does not parse says nothing about how long it has sat.
+        const idleMs = now - Date.parse(thread.updatedAt);
+        const restMs = Number.isFinite(idleMs)
+          ? Math.min(Math.max(idleMs / REST_SHARE_OF_IDLE_TIME, sweepIntervalMs), MAX_REST_MS)
+          : sweepIntervalMs;
+        return threads.set(thread.id, { stamp: restStamp(thread), nextLookAt: now + restMs });
+      });
+      return outcome;
     });
 
     /**
@@ -1035,7 +1099,8 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
      * thread and its project are read here, not carried in from a listing. A
      * sweep reaches its last thread long after it listed them, and by then the
      * thread may have started a turn, changed its switches, or had a look of
-     * its own. Answers whether it started a turn. Run under the look permit.
+     * its own. Answers what it found, or null where the thread is busy, no
+     * longer watched, or on a host this cannot read. Run under the look permit.
      */
     const lookAt = Effect.fn("PullRequestAutomationWatcher.lookAt")(function* (threadId: ThreadId) {
       const thread = yield* attempt(
@@ -1049,7 +1114,7 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
         !isWatched(thread.value) ||
         hasWorkInProgress(thread.value)
       ) {
-        return false;
+        return null;
       }
       const project = yield* attempt(
         "project-read",
@@ -1060,22 +1125,22 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
         project === null || Option.isNone(project)
           ? null
           : candidateOf(thread.value, project.value);
-      return candidate === null ? false : yield* sweepThread(candidate);
+      return candidate === null ? null : yield* sweepThread(candidate);
     });
 
     /**
-     * The threads a sweep looks at: every watched, idle one, or only the ones
-     * whose checks were in motion at their last look. Forgets what was held
-     * for threads that are no longer armed. Run under the look permit, since
-     * it reads and clears what looks leave behind.
+     * The threads a sweep looks at: every watched, idle one that is not
+     * resting, or only the ones whose checks were in motion at their last
+     * look. Forgets what was held for threads that are no longer armed. Run
+     * under the look permit, since it reads and clears what looks leave behind.
      */
     const listThreads = Effect.fn("PullRequestAutomationWatcher.listThreads")(function* (
       scope: "all" | "in-motion",
     ) {
+      const now = yield* Clock.currentTimeMillis;
       // Nothing in motion reads nothing at all.
       const inMotion = new Set<string>();
       if (scope === "in-motion") {
-        const now = yield* Clock.currentTimeMillis;
         for (const [threadId, since] of yield* Ref.get(inMotionRef)) {
           if (now - since < MAX_IN_MOTION_MS) {
             inMotion.add(threadId);
@@ -1149,8 +1214,25 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
         return threads;
       });
 
+      // A rest ends with the watch: a thread armed again starts from a look.
+      const watchedThreadIds = new Set<string>(
+        snapshot.threads.filter(isWatched).map((thread) => thread.id as string),
+      );
+      const resting = yield* Ref.updateAndGet(restingRef, (threads) => {
+        for (const threadId of threads.keys()) {
+          if (!watchedThreadIds.has(threadId)) {
+            threads.delete(threadId);
+          }
+        }
+        return threads;
+      });
+
       return snapshot.threads.flatMap((thread): ThreadId[] => {
         if (!idleThreadIds.has(thread.id) || (scope === "in-motion" && !inMotion.has(thread.id))) {
+          return [];
+        }
+        const rest = resting.get(thread.id);
+        if (rest !== undefined && rest.stamp === restStamp(thread) && now < rest.nextLookAt) {
           return [];
         }
         const project = projectsById.get(thread.projectId);
@@ -1169,8 +1251,8 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
       let startedCount = 0;
       for (const threadId of threadIds) {
         yield* noSwitchWaiting.await;
-        const started = yield* lookSemaphore.withPermits(1)(lookAt(threadId));
-        if (started) {
+        const outcome = yield* lookSemaphore.withPermits(1)(lookAt(threadId));
+        if (outcome === "started") {
           startedCount += 1;
         }
       }

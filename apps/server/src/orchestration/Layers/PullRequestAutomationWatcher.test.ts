@@ -343,6 +343,7 @@ describe("PullRequestAutomationWatcher", () => {
     readonly threads: readonly OrchestrationThreadShell[];
     readonly projects?: readonly OrchestrationProjectShell[];
     readonly script: HostScript;
+    readonly sweepIntervalMs?: number;
     readonly inMotionIntervalMs?: number;
     /** Keeps the status read of one checkout open until the promise it answers settles. */
     readonly holdStatusRead?: (cwd: string) => Promise<void> | undefined;
@@ -442,7 +443,7 @@ describe("PullRequestAutomationWatcher", () => {
     };
 
     const layer = makePullRequestAutomationWatcherLive({
-      sweepIntervalMs: 60_000,
+      sweepIntervalMs: input.sweepIntervalMs ?? 60_000,
       ...(input.inMotionIntervalMs === undefined
         ? {}
         : { inMotionIntervalMs: input.inMotionIntervalMs }),
@@ -641,6 +642,34 @@ describe("PullRequestAutomationWatcher", () => {
 
     expect(await sweep()).toBe(0);
     expect(dispatched).toEqual([]);
+  });
+
+  it("leaves a thread with nothing to watch alone until its rest is over or the thread changes", async () => {
+    // Touched just now, so its rest is as short as it gets: one sweep interval.
+    const settled = thread({ updatedAt: new Date().toISOString() });
+    const { setThreads, statusReads, sweep } = await createHarness({
+      threads: [settled],
+      script: {
+        remote: { ...OPEN_PULL_REQUEST, pr: { ...OPEN_PULL_REQUEST.pr!, state: "merged" } },
+        detail: detail([PASSING_CHECK]),
+        activity: activity(),
+      },
+      sweepIntervalMs: 300,
+    });
+
+    await sweep();
+    await sweep();
+    expect(statusReads).toHaveLength(1);
+
+    // Its rest over, it is looked at again, in case the pull request was reopened.
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    await sweep();
+    expect(statusReads).toHaveLength(2);
+
+    // A turn, a switch, a move to another branch: any change ends the rest at once.
+    setThreads([{ ...settled, branch: "another-branch" }]);
+    await sweep();
+    expect(statusReads).toHaveLength(3);
   });
 
   it("waits out a busy thread without forgetting what it had already seen", async () => {
