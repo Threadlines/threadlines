@@ -6358,6 +6358,30 @@ describe("resolveForkTurnBoundary", () => {
     });
   });
 
+  it("never cuts inside a turn: a fork from a message steered into one takes the context seed", () => {
+    // The prompt that starts a turn carries no turn id; the steer carries its turn's.
+    const steeredAfterWork = [
+      message("u1", "user", null),
+      message("a1", "assistant", "turn-1"),
+      message("u2", "user", null),
+      message("note", "assistant", "turn-2"),
+      message("steer", "user", "turn-2"),
+      message("a2", "assistant", "turn-2"),
+    ];
+    expect(resolveForkTurnBoundary(steeredAfterWork, asMessageId("steer"))).toBeUndefined();
+    const steeredAtOnce = [
+      message("u1", "user", null),
+      message("steer", "user", "turn-1"),
+      message("a1", "assistant", "turn-1"),
+    ];
+    expect(resolveForkTurnBoundary(steeredAtOnce, asMessageId("steer"))).toBeUndefined();
+    // The prompt itself still cuts before its own turn.
+    expect(resolveForkTurnBoundary(steeredAfterWork, asMessageId("u2"))).toEqual({
+      beforeTurnId: asTurnId("turn-2"),
+      lastTurnId: asTurnId("turn-1"),
+    });
+  });
+
   it("skips messages without turn ids when walking back", () => {
     const messages = [message("a1", "assistant", "turn-1"), message("a2", "assistant", null)];
     expect(resolveForkTurnBoundary(messages, asMessageId("a2"))).toEqual({

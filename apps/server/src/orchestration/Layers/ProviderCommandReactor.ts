@@ -176,13 +176,51 @@ export interface ForkTurnBoundary {
   readonly lastTurnId?: TurnId;
 }
 
-/** Resolves provider turn boundaries for a message-anchored native fork. */
+interface ForkBoundaryMessage {
+  readonly id: MessageId;
+  readonly role: string;
+  readonly turnId: TurnId | null;
+}
+
+/**
+ * Whether a user message joined its turn while the turn ran (the user's
+ * steer, an answer to the agent's question, a reply or report steered in),
+ * rather than being where that turn begins in the transcript (an imported
+ * prompt, stamped with its provider's turn). One that joined has before it a
+ * message of the same turn, or the prompt that started the turn, which
+ * carries no turn id.
+ */
+function joinedRunningTurn(messages: ReadonlyArray<ForkBoundaryMessage>, index: number): boolean {
+  const turnId = messages[index]?.turnId ?? null;
+  if (turnId === null) {
+    return false;
+  }
+  for (let earlier = index - 1; earlier >= 0; earlier -= 1) {
+    const message = messages[earlier];
+    if (message === undefined) {
+      continue;
+    }
+    if (message.turnId === turnId) {
+      return true;
+    }
+    if (message.turnId !== null) {
+      return false;
+    }
+    if (message.role === "user") {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Resolves provider turn boundaries for a message-anchored native fork. A
+ * provider forks at a turn's edge, never inside one, so a fork from a message
+ * that joined a running turn has no boundary: it takes the context seed, which
+ * carries the turn's own prompt and the work before that message.
+ */
 export function resolveForkTurnBoundary(
-  messages: ReadonlyArray<{
-    readonly id: MessageId;
-    readonly role: string;
-    readonly turnId: TurnId | null;
-  }>,
+  messages: ReadonlyArray<ForkBoundaryMessage>,
   sourceMessageId: MessageId,
 ): ForkTurnBoundary | undefined {
   const sourceIndex = messages.findIndex((message) => message.id === sourceMessageId);
@@ -191,6 +229,9 @@ export function resolveForkTurnBoundary(
   }
 
   if (messages[sourceIndex]?.role === "user") {
+    if (joinedRunningTurn(messages, sourceIndex)) {
+      return undefined;
+    }
     let beforeTurnId: TurnId | undefined;
     for (let index = sourceIndex; index < messages.length; index += 1) {
       const message = messages[index];

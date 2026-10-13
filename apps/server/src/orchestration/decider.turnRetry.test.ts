@@ -139,7 +139,7 @@ const retryCommand: Extract<OrchestrationCommand, { type: "thread.turn.retry" }>
 };
 
 describe("decider turn retry", () => {
-  it("retries the turn's own message, not an invite the agent made during it", async () => {
+  it("retries the turn's own message, not an invite or a steer that came during it", async () => {
     const thread = makeThread();
     const decided = await Effect.runPromise(
       decideOrchestrationCommand({
@@ -158,6 +158,16 @@ describe("decider turn retry", () => {
               streaming: false,
               createdAt: "2026-01-01T00:00:03.500Z",
               updatedAt: "2026-01-01T00:00:03.500Z",
+            },
+            // The user steered this into the turn before it failed.
+            {
+              id: MessageId.make("message-steer"),
+              role: "user",
+              text: "also update the docs",
+              turnId: TurnId.make("turn-failed"),
+              streaming: false,
+              createdAt: "2026-01-01T00:00:03.700Z",
+              updatedAt: "2026-01-01T00:00:03.700Z",
             },
           ],
         }),

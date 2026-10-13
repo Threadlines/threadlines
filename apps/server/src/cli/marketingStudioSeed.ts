@@ -230,8 +230,9 @@ const seedThreads = (input: MarketingStudioSeedInput) =>
           commandId: commandId("user-message"),
           threadId,
           messageId: userMessageId,
+          // No turn id: a turn's own first message is written before the turn
+          // exists, and one that carries an id reads as steered into it.
           text: scenario.prompt,
-          turnId,
           createdAt: requestedAt,
         });
 

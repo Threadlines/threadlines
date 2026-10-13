@@ -2189,8 +2189,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           detail: `Thread '${command.threadId}' already has a turn in flight and cannot retry.`,
         });
       }
-      // What agents did beside a turn (an invite, an invited review) is never
-      // the turn's own message, so it is never what a retry sends again.
+      // What sits beside a turn (an invite, an invited review, a message
+      // steered into it while it ran) is never the turn's own message, so it
+      // is never what a retry sends again.
       const turnMessages = targetThread.messages.filter((message) => !isTurnAside(message));
       const providerAuthRetryUserMessageIndex = findProviderAuthRetryUserMessageIndex(turnMessages);
       if (!session || (session.lastError === null && providerAuthRetryUserMessageIndex === null)) {

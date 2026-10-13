@@ -2180,7 +2180,7 @@ describe("CheckpointReactor", () => {
     expect(thread.checkpoints[0]?.checkpointTurnCount).toBe(1);
   });
 
-  it("rewinds Claude to the removed user message after a clock rollback", async () => {
+  it("rewinds Claude to the removed turn's first message, past a steer and after a clock rollback", async () => {
     const harness = await createHarness({
       providerName: ProviderDriverKind.make("claudeAgent"),
       projectWorkspaceRoot: path.join(os.tmpdir(), "t3-isolated-project-root-claude"),
@@ -2221,6 +2221,23 @@ describe("CheckpointReactor", () => {
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
         runtimeMode: "approval-required",
         createdAt: "2026-01-01T00:00:10.000Z",
+      }),
+    );
+    // A message the user steered into the first turn is part of that turn,
+    // not the first message of one: it must not become the rewind target.
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.follow-up.accept",
+        commandId: CommandId.make("cmd-steer-claude-1"),
+        threadId: ThreadId.make("thread-1"),
+        turnId: asTurnId("turn-claude-1"),
+        message: {
+          messageId: MessageId.make("33333333-3333-4333-8333-333333333333"),
+          role: "user",
+          text: "also check the logs",
+          attachments: [],
+        },
+        createdAt: "2026-01-01T00:00:11.000Z",
       }),
     );
     await Effect.runPromise(

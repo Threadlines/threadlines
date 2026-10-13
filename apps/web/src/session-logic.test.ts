@@ -17,6 +17,7 @@ import {
   deriveActivePlanState,
   derivePendingApprovals,
   derivePendingUserInputs,
+  deriveRevertTurnCountByUserMessageId,
   isBlockingUserInput,
   deriveSubagentActivityState,
   deriveSubagentLiveEntries,
@@ -4879,6 +4880,56 @@ describe("deriveTimelineEntries", () => {
       "assistant-summary",
       "assistant-other-turn",
       "subagent-result:turn-1:agent-1",
+    ]);
+  });
+});
+
+describe("deriveRevertTurnCountByUserMessageId", () => {
+  const messageEntry = (
+    id: string,
+    role: "user" | "assistant",
+    turnId: string | null,
+    extra: Record<string, unknown> = {},
+  ) => ({
+    id: `${id}-entry`,
+    kind: "message" as const,
+    createdAt: "2026-01-01T00:00:00.000Z",
+    message: {
+      id: MessageId.make(id),
+      role,
+      text: id,
+      turnId: turnId === null ? null : TurnId.make(turnId),
+      createdAt: "2026-01-01T00:00:00.000Z",
+      streaming: false,
+      ...extra,
+    },
+  });
+  const summary = (turnId: string, checkpointTurnCount: number) => ({
+    turnId: TurnId.make(turnId),
+    completedAt: "2026-01-01T00:00:00.000Z",
+    files: [],
+    checkpointTurnCount,
+  });
+
+  it("offers the revert on the message that started the turn, not on one sent while it ran", () => {
+    const reverts = deriveRevertTurnCountByUserMessageId({
+      timelineEntries: [
+        messageEntry("prompt-1", "user", null),
+        messageEntry("answer-1", "assistant", "turn-1"),
+        messageEntry("prompt-2", "user", null),
+        // Typed while turn 2 ran, so it carries that turn's id.
+        messageEntry("steer", "user", "turn-2"),
+        messageEntry("answer-2", "assistant", "turn-2"),
+      ],
+      turnDiffSummaryByAssistantMessageId: new Map([
+        [MessageId.make("answer-1"), summary("turn-1", 1)],
+        [MessageId.make("answer-2"), summary("turn-2", 2)],
+      ]),
+      inferredCheckpointTurnCountByTurnId: {},
+    });
+    expect([...reverts]).toEqual([
+      ["prompt-1", 0],
+      ["prompt-2", 1],
     ]);
   });
 });
