@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { retainMessagesAfterRevert } from "./transcriptRevert.ts";
+import {
+  retainTurnItemsAfterRevert,
+  retainMessagesAfterRevert,
+  revertMessages,
+} from "./transcriptRevert.ts";
 
 let sequence = 0;
 const message = (
@@ -58,5 +62,52 @@ describe("retainMessagesAfterRevert", () => {
       "review-answer",
       "a2",
     ]);
+  });
+});
+
+describe("retainTurnItemsAfterRevert", () => {
+  it("keeps what a kept turn showed and drops what came after the first removed message", () => {
+    const messages = [
+      message("u1", "user"),
+      message("a1", "assistant", { turnId: "t1" }),
+      message("u2", "user"),
+      message("a2", "assistant", { turnId: "t2" }),
+    ];
+    // Pages placed by event order: one in each turn, each before its turn's reply.
+    const after = (index: number) => messages[index]!.eventSequence + 0.5;
+    const at = "2026-01-01T00:00:00.000Z";
+    const pages = [
+      { id: "page-t1", turnId: "t1", createdAt: at, eventSequence: after(0) },
+      { id: "page-t2", turnId: "t2", createdAt: at, eventSequence: after(2) },
+      // Turn 1's page that arrived late, behind turn 2's first message.
+      { id: "page-t1-late", turnId: "t1", createdAt: at, eventSequence: after(2) + 0.1 },
+      // The same for a kept turn that was stopped before it wrote a message.
+      { id: "page-t0-late", turnId: "t0", createdAt: at, eventSequence: after(2) + 0.2 },
+    ];
+    const reverted = revertMessages({
+      messages,
+      idOf: (entry) => entry.id,
+      retainedTurnIds: new Set(["t0", "t1"]),
+      turnCount: 1,
+    });
+    expect(retainTurnItemsAfterRevert(pages, reverted).map((page) => page.id)).toEqual([
+      "page-t1",
+      "page-t1-late",
+      "page-t0-late",
+    ]);
+  });
+
+  it("keeps everything when a revert removes no message", () => {
+    const messages = [message("u1", "user"), message("a1", "assistant", { turnId: "t1" })];
+    const reverted = revertMessages({
+      messages,
+      idOf: (entry) => entry.id,
+      retainedTurnIds: new Set(["t1"]),
+      turnCount: 1,
+    });
+    const pages = [
+      { id: "page", turnId: "t9", createdAt: "2026-01-01T00:00:00.000Z", eventSequence: 99 },
+    ];
+    expect(retainTurnItemsAfterRevert(pages, reverted)).toBe(pages);
   });
 });

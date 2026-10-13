@@ -8,9 +8,11 @@ import {
   type WorkLogEntry,
 } from "../../session-logic";
 import { isUserWrittenMessage } from "@threadlines/shared/roomAgentRequests";
+import { agentPageFrameHeight } from "@threadlines/shared/agentPages";
 import { type ChatMessage, type ProposedPlan, type TurnDiffSummary } from "../../types";
 import { type RoomAgentNames, roomAgentKey, roomTurnOwners } from "../../rooms";
 import {
+  type OrchestrationAgentPage,
   type MessageAgentModel,
   type MessageId,
   type OrchestrationAwaitedBackgroundTask,
@@ -185,6 +187,15 @@ export type MessagesTimelineRow = TimelineRowPlacement &
         id: string;
         createdAt: string;
         forkContext: ForkContextEntry;
+      }
+    | {
+        /** An agent page as one turn left it (AgentPageRow). */
+        kind: "page";
+        id: string;
+        createdAt: string;
+        page: OrchestrationAgentPage;
+        /** A later turn's version of a page an earlier row shows. */
+        updated: boolean;
       }
     | {
         kind: "working";
@@ -381,7 +392,8 @@ export function deriveMessagesTimelineRows(input: {
   roomAgentNames?: RoomAgentNames | null | undefined;
 }): MessagesTimelineRow[] {
   const nextRows: MessagesTimelineRow[] = [];
-  const visibleTimelineEntries = hoistTrailingTurnWorkAboveResponse(
+  const shownPageIds = new Set<string>();
+  const visibleTimelineEntries = settleTurnsAboveResponse(
     deriveVisibleTimelineEntries(input),
     input.isWorking ? (input.activeTurnId ?? null) : null,
   );
@@ -532,6 +544,19 @@ export function deriveMessagesTimelineRows(input: {
         createdAt: timelineEntry.createdAt,
         forkContext: timelineEntry.forkContext,
       });
+      continue;
+    }
+
+    if (timelineEntry.kind === "page") {
+      nextRows.push({
+        ...UNPLACED,
+        kind: "page",
+        id: timelineEntry.id,
+        createdAt: timelineEntry.createdAt,
+        page: timelineEntry.page,
+        updated: shownPageIds.has(timelineEntry.page.pageId),
+      });
+      shownPageIds.add(timelineEntry.page.pageId);
       continue;
     }
 
@@ -1520,15 +1545,30 @@ function deriveTrackerAgentSpawnIds(
 }
 
 /**
- * A turn's response reads as its final word, but turn-end bookkeeping — the
- * checkpoint's changed-files activity, a tool event that settles late — is
- * recorded after the assistant message and would otherwise render below it.
+ * A turn's response reads as its final word, and what the turn made for the
+ * reader sits with it. Left in recorded order, two things break that:
+ *
+ * - Turn-end bookkeeping (the checkpoint's changed-files activity, a tool
+ *   event that settles late) is recorded after the assistant message and
+ *   would render below it.
+ * - A page stands where the agent showed it, which is among its steps when
+ *   it kept working afterwards.
+ *
  * For every settled turn, work entries trailing the turn's last assistant
- * message move to just above that message. The turn named by `activeTurnId`
- * keeps raw order: while it is still working, activity that starts after a
- * streamed commentary segment really is the newest thing and belongs below it.
+ * message move to just above that message, and the turn's pages move there
+ * after them: the steps, then the pages, then the reply. A settled page
+ * stands at its reply in time as well, so what the timeline places by time (a
+ * side exchange) falls where it was asked, above the pair, never between a
+ * page and its reply.
+ *
+ * The turn named by `activeTurnId` keeps raw order. While it is still
+ * working, activity that starts after a streamed commentary segment really
+ * is the newest thing and belongs below it, a page shows where it was
+ * published, and no message can be called the reply yet. A page also stays
+ * put while its turn's last message is still streaming, whatever the turn is
+ * called.
  */
-function hoistTrailingTurnWorkAboveResponse(
+function settleTurnsAboveResponse(
   entries: TimelineEntry[],
   activeTurnId: TurnId | null,
 ): TimelineEntry[] {
@@ -1547,38 +1587,57 @@ function hoistTrailingTurnWorkAboveResponse(
     return entries;
   }
 
-  const hoistedByAnchorIndex = new Map<number, TimelineEntry[]>();
-  const hoistedIndices = new Set<number>();
+  const trailingWorkByAnchorIndex = new Map<number, TimelineEntry[]>();
+  const pagesByAnchorIndex = new Map<number, TimelineEntry[]>();
+  const movedIndices = new Set<number>();
   for (let index = 0; index < entries.length; index += 1) {
     const entry = entries[index]!;
-    if (entry.kind !== "work" || entry.entry.turnId == null) {
+    const turnId =
+      entry.kind === "work" ? entry.entry.turnId : entry.kind === "page" ? entry.page.turnId : null;
+    if (turnId == null) {
       continue;
     }
-    const anchorIndex = lastAssistantIndexByTurn.get(entry.entry.turnId);
-    if (anchorIndex === undefined || index <= anchorIndex) {
+    const anchorIndex = lastAssistantIndexByTurn.get(turnId);
+    if (anchorIndex === undefined) {
       continue;
     }
-    const hoisted = hoistedByAnchorIndex.get(anchorIndex) ?? [];
-    hoisted.push(entry);
-    hoistedByAnchorIndex.set(anchorIndex, hoisted);
-    hoistedIndices.add(index);
+    if (entry.kind !== "page") {
+      if (index > anchorIndex) {
+        const trailing = trailingWorkByAnchorIndex.get(anchorIndex) ?? [];
+        trailing.push(entry);
+        trailingWorkByAnchorIndex.set(anchorIndex, trailing);
+        movedIndices.add(index);
+      }
+      continue;
+    }
+    const reply = entries[anchorIndex]!;
+    if (reply.kind === "message" && reply.message.streaming) {
+      continue;
+    }
+    const pages = pagesByAnchorIndex.get(anchorIndex) ?? [];
+    pages.push(
+      entry.createdAt === reply.createdAt ? entry : { ...entry, createdAt: reply.createdAt },
+    );
+    pagesByAnchorIndex.set(anchorIndex, pages);
+    movedIndices.add(index);
   }
-  if (hoistedIndices.size === 0) {
+  if (movedIndices.size === 0) {
     return entries;
   }
 
   const result: TimelineEntry[] = [];
   for (let index = 0; index < entries.length; index += 1) {
-    if (hoistedIndices.has(index)) {
+    if (movedIndices.has(index)) {
       continue;
     }
-    const hoisted = hoistedByAnchorIndex.get(index);
-    if (hoisted) {
-      result.push(...hoisted);
-    }
-    result.push(entries[index]!);
+    result.push(
+      ...(trailingWorkByAnchorIndex.get(index) ?? []),
+      ...(pagesByAnchorIndex.get(index) ?? []),
+      entries[index]!,
+    );
   }
-  return result;
+  // A page already at its reply, in place and in time, moved nowhere.
+  return result.every((entry, index) => entry === entries[index]) ? entries : result;
 }
 
 function deriveVisibleTimelineEntries(input: {
@@ -1809,6 +1868,9 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
     case "fork-context":
       return a.forkContext === (b as typeof a).forkContext;
 
+    case "page":
+      return a.page === (b as typeof a).page && a.updated === (b as typeof a).updated;
+
     case "side-status": {
       const bs = b as typeof a;
       return (
@@ -1908,6 +1970,9 @@ const rowHeightEstimates = new WeakMap<
 >();
 
 /** The guessed height of `row` in a timeline `width` pixels wide. */
+/** An agent page's title line above its frame (AgentPageRow), margin included. */
+export const AGENT_PAGE_TITLE_LINE_PX = 24;
+
 export function estimateTimelineRowHeight(row: MessagesTimelineRow, width: number): number {
   const cached = rowHeightEstimates.get(row);
   if (cached?.width === width) {
@@ -1993,6 +2058,9 @@ function estimateRowContentHeight(row: MessagesTimelineRow, width: number): numb
       return 90;
     case "proposed-plan":
       return 240;
+    case "page":
+      // Its title line, then the page at the height measured for this width.
+      return AGENT_PAGE_TITLE_LINE_PX + agentPageFrameHeight(row.page, column);
     case "side-status":
       return 30;
   }

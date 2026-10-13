@@ -164,6 +164,7 @@ const makeServerConfig = (input: MarketingStudioSeedInput): ServerConfigShape =>
     providerStatusCacheDir: NodePath.join(input.baseDir, "caches"),
     worktreesDir: NodePath.join(input.baseDir, "worktrees"),
     attachmentsDir: NodePath.join(stateDir, "attachments"),
+    pagesDir: NodePath.join(stateDir, "pages"),
     logsDir,
     serverLogPath: NodePath.join(logsDir, "server.log"),
     serverTracePath: NodePath.join(logsDir, "server.trace.ndjson"),

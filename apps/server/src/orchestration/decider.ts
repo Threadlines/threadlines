@@ -29,6 +29,7 @@ import {
   sentAgentModel,
 } from "./messageAgentModels.ts";
 
+import { isStaleAgentPagePublication, threadHasTurn } from "@threadlines/shared/agentPages";
 import { isTurnAside } from "@threadlines/shared/transcriptRevert";
 import { isAttachedChild } from "@threadlines/shared/childThreads";
 import { isAgentOrigin } from "@threadlines/shared/roomAgentRequests";
@@ -3283,6 +3284,44 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         payload: {
           threadId: command.threadId,
           proposedPlan: command.proposedPlan,
+        },
+      };
+    }
+
+    case "thread.page.publish": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      // A page belongs to the turn that published it. A publish that lands
+      // after that turn was taken back has no turn left to show in.
+      if (!threadHasTurn(thread, command.page.turnId)) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `The turn that published page '${command.page.pageId}' is no longer part of this thread.`,
+        });
+      }
+      // Versions count up per page; a slow publish that lands after a newer
+      // one is refused rather than shown in its place.
+      if (isStaleAgentPagePublication(thread.pages ?? [], command.page)) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `A newer version of page '${command.page.pageId}' is already shown.`,
+        });
+      }
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.page-published",
+        payload: {
+          threadId: command.threadId,
+          page: command.page,
+          createdAt: command.createdAt,
         },
       };
     }

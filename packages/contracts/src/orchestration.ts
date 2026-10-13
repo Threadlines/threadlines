@@ -7,6 +7,8 @@ import * as Struct from "effect/Struct";
 import { ProviderOptionSelection, ProviderOptionSelections } from "./model.ts";
 import { RepositoryIdentity } from "./environment.ts";
 import {
+  AgentPageId,
+  AgentPageVersionId,
   ApprovalRequestId,
   CheckpointRef,
   ChildRequestBatchId,
@@ -711,6 +713,84 @@ export const OrchestrationProposedPlan = Schema.Struct({
   updatedAt: IsoDateTime,
 });
 export type OrchestrationProposedPlan = typeof OrchestrationProposedPlan.Type;
+
+export const AgentPageKind = Schema.Literals(["html", "markdown"]);
+export type AgentPageKind = typeof AgentPageKind.Type;
+
+/** `[width, contentHeight]` pairs the server measured a page at, ascending by width. */
+export const AgentPageHeights = Schema.Array(Schema.Tuple([PositiveInt, PositiveInt]));
+export type AgentPageHeights = typeof AgentPageHeights.Type;
+
+/**
+ * What an agent published with `show_page` (docs/agent-pages.md): one
+ * version of a page, shown in the turn that published it. The content lives
+ * on the server, read with `pages.read`.
+ */
+export const AgentPagePublication = Schema.Struct({
+  pageId: AgentPageId,
+  versionId: AgentPageVersionId,
+  /** Counts up per page across the thread, so an older publish never replaces a newer one. */
+  version: PositiveInt,
+  turnId: TurnId,
+  /** The agent that showed it. Null: the thread's own agent. */
+  participantId: Schema.NullOr(ThreadParticipantId),
+  title: TrimmedNonEmptyString,
+  kind: AgentPageKind,
+  /** The agent's frame height in CSS px; caps the frame only when it is below the page's own. */
+  height: PositiveInt,
+  heights: Schema.optional(AgentPageHeights),
+  icon: Schema.optional(TrimmedNonEmptyString),
+  /**
+   * Where the agent's provider also put this page online (a Claude artifact
+   * on claude.ai): an https link. The version stored here is the copy the
+   * chat shows; the online one is its provider's to keep and share.
+   */
+  shareUrl: Schema.optional(TrimmedNonEmptyString),
+});
+export type AgentPagePublication = typeof AgentPagePublication.Type;
+
+/**
+ * A page as one turn left it. Publishing the same page again in the same turn
+ * replaces it in place (a live status board); a later turn that updates it
+ * gets an entry of its own, so each turn keeps the version it showed.
+ */
+export const OrchestrationAgentPage = Schema.Struct({
+  ...AgentPagePublication.fields,
+  /** The event that first showed this page in its turn; later versions keep its place. */
+  placementSequence: Schema.optional(NonNegativeInt),
+  /** The event that published this version. */
+  eventSequence: Schema.optional(NonNegativeInt),
+  /** When this page first showed in its turn. */
+  createdAt: IsoDateTime,
+  /** When this version was published. */
+  updatedAt: IsoDateTime,
+});
+export type OrchestrationAgentPage = typeof OrchestrationAgentPage.Type;
+
+/**
+ * Reads one stored version of an agent page. Ids only: the server finds the
+ * file, so no filesystem path crosses the RPC boundary.
+ */
+export const AgentPageReadInput = Schema.Struct({
+  threadId: ThreadId,
+  pageId: AgentPageId,
+  versionId: AgentPageVersionId,
+});
+export type AgentPageReadInput = typeof AgentPageReadInput.Type;
+
+export const AgentPageReadResult = Schema.Struct({
+  kind: AgentPageKind,
+  content: Schema.String,
+});
+export type AgentPageReadResult = typeof AgentPageReadResult.Type;
+
+export class AgentPageReadError extends Schema.TaggedError<AgentPageReadError>()(
+  "AgentPageReadError",
+  {
+    message: TrimmedNonEmptyString,
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {}
 
 const SourceProposedPlanReference = Schema.Struct({
   threadId: ThreadId,
@@ -1455,6 +1535,11 @@ export const OrchestrationThread = Schema.Struct({
   deletedAt: Schema.NullOr(IsoDateTime),
   messages: Schema.Array(OrchestrationMessage),
   proposedPlans: Schema.Array(OrchestrationProposedPlan).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
+  /** See OrchestrationAgentPage. */
+  pages: Schema.Array(OrchestrationAgentPage).pipe(
+    Schema.optional,
     Schema.withDecodingDefault(Effect.succeed([])),
   ),
   activities: Schema.Array(OrchestrationThreadActivity),
@@ -2534,6 +2619,14 @@ const ThreadProposedPlanUpsertCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+const ThreadPagePublishCommand = Schema.Struct({
+  type: Schema.Literal("thread.page.publish"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  page: AgentPagePublication,
+  createdAt: IsoDateTime,
+});
+
 const ThreadTurnDiffCompleteCommand = Schema.Struct({
   type: Schema.Literal("thread.turn.diff.complete"),
   commandId: CommandId,
@@ -2903,6 +2996,7 @@ const InternalOrchestrationCommand = Schema.Union([
   ThreadMessageAssistantDeltaCommand,
   ThreadMessageAssistantCompleteCommand,
   ThreadProposedPlanUpsertCommand,
+  ThreadPagePublishCommand,
   ThreadTurnDiffCompleteCommand,
   ThreadTurnCompleteCommand,
   ThreadTurnDiffSummaryUpdateCommand,
@@ -2990,6 +3084,7 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.goal-clear-requested",
   "thread.goal-state-set",
   "thread.proposed-plan-upserted",
+  "thread.page-published",
   "thread.turn-diff-completed",
   "thread.turn-diff-summary-updated",
   "thread.turn-completed",
@@ -3504,6 +3599,12 @@ export const ThreadProposedPlanUpsertedPayload = Schema.Struct({
   proposedPlan: OrchestrationProposedPlan,
 });
 
+export const ThreadPagePublishedPayload = Schema.Struct({
+  threadId: ThreadId,
+  page: AgentPagePublication,
+  createdAt: IsoDateTime,
+});
+
 export const ThreadDiffStatRebasedPayload = Schema.Struct({
   threadId: ThreadId,
   baselineTurnCount: NonNegativeInt,
@@ -3865,6 +3966,11 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.proposed-plan-upserted"),
     payload: ThreadProposedPlanUpsertedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.page-published"),
+    payload: ThreadPagePublishedPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,

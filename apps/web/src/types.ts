@@ -1,5 +1,6 @@
 import { DEFAULT_NEW_THREAD_RUNTIME_MODE } from "@threadlines/contracts";
 import type {
+  OrchestrationAgentPage,
   PullRequestMergeMethod,
   ChatFileAttachmentKind,
   ChatSkillReference,
@@ -171,6 +172,8 @@ export interface Thread {
   session: ThreadSession | null;
   messages: ChatMessage[];
   proposedPlans: ProposedPlan[];
+  /** Agent pages (OrchestrationAgentPage), in thread order. Absent until the detail loads. */
+  pages?: ReadonlyArray<OrchestrationAgentPage>;
   error: string | null;
   createdAt: string;
   archivedAt: string | null;

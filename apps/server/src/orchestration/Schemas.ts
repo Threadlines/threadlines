@@ -39,6 +39,7 @@ import {
   ThreadSeenSetPayload as ContractsThreadSeenSetPayloadSchema,
   ThreadMessageSentPayload as ContractsThreadMessageSentPayloadSchema,
   ThreadProposedPlanUpsertedPayload as ContractsThreadProposedPlanUpsertedPayloadSchema,
+  ThreadPagePublishedPayload as ContractsThreadPagePublishedPayloadSchema,
   ThreadSessionSetPayload as ContractsThreadSessionSetPayloadSchema,
   ThreadRealtimeStateSetPayload as ContractsThreadRealtimeStateSetPayloadSchema,
   ThreadEffectiveCwdSetPayload as ContractsThreadEffectiveCwdSetPayloadSchema,
@@ -106,6 +107,7 @@ export const ThreadSeenSetPayload = ContractsThreadSeenSetPayloadSchema;
 
 export const MessageSentPayloadSchema = ContractsThreadMessageSentPayloadSchema;
 export const ThreadProposedPlanUpsertedPayload = ContractsThreadProposedPlanUpsertedPayloadSchema;
+export const ThreadPagePublishedPayload = ContractsThreadPagePublishedPayloadSchema;
 export const ThreadSessionSetPayload = ContractsThreadSessionSetPayloadSchema;
 export const ThreadRealtimeStateSetPayload = ContractsThreadRealtimeStateSetPayloadSchema;
 export const ThreadEffectiveCwdSetPayload = ContractsThreadEffectiveCwdSetPayloadSchema;

@@ -729,6 +729,21 @@ export const ServerSettings = Schema.Struct({
    */
   enableRooms: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   /**
+   * Agent pages: agents may show a page (chart, diagram, mockup, document)
+   * inline in their reply with `show_page` (docs/agent-pages.md). Read
+   * when a provider session starts and again on every call, so turning it off
+   * applies at once. Pages already in threads stay. Never chosen: on.
+   */
+  enableAgentPages: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  /**
+   * Claude artifacts: Claude may also publish a page to claude.ai with its
+   * own Artifact tool, which uploads the page to Anthropic; the chat shows
+   * the local copy with a link to the online one (docs/agent-pages.md). Only
+   * with agent pages on. Read when a Claude session starts; turning it off
+   * also refuses a running session's next publish. Never chosen: off.
+   */
+  enableClaudeArtifacts: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  /**
    * The model and reasoning a new thread starts with on this computer.
    * `null`: the model last picked on the device opening the thread.
    */
@@ -872,6 +887,8 @@ export const ServerSettingsPatch = Schema.Struct({
   agentInvites: Schema.optionalKey(AgentInvitesMode),
   agentThreads: Schema.optionalKey(AgentThreadsMode),
   enableRooms: Schema.optionalKey(Schema.Boolean),
+  enableAgentPages: Schema.optionalKey(Schema.Boolean),
+  enableClaudeArtifacts: Schema.optionalKey(Schema.Boolean),
   // Whole values, replaced as sent: a new default never keeps an old one's
   // reasoning, and the list is the whole list.
   newThreadModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelection)),

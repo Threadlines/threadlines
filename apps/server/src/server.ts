@@ -59,6 +59,10 @@ import { SleepInhibitorLive } from "./power/Layers/SleepInhibitor.ts";
 import { StorageMaintenanceDaemonLive } from "./persistence/Layers/StorageMaintenance.ts";
 import * as McpHttpServer from "./mcp/McpHttpServer.ts";
 import * as McpRoomServer from "./mcp/McpRoomServer.ts";
+import * as McpPagesServer from "./mcp/McpPagesServer.ts";
+import * as AgentPages from "./pages/AgentPages.ts";
+import { PageFileSweepLive } from "./pages/PageFileSweep.ts";
+import * as PagePreview from "./pages/preview/PagePreview.ts";
 import { DictationLive } from "./dictation/DictationService.ts";
 import * as PreviewAutomationBroker from "./preview/PreviewAutomationBroker.ts";
 import { ProviderAccountsLive } from "./provider/accounts/ProviderAccounts.ts";
@@ -229,6 +233,7 @@ const ReactorLayerLive = Layer.empty.pipe(
   Layer.provideMerge(ThreadDiffStatBaselineReactorLive),
   Layer.provideMerge(SleepInhibitorLive),
   Layer.provideMerge(StorageMaintenanceDaemonLive),
+  Layer.provideMerge(PageFileSweepLive),
   Layer.provideMerge(RuntimeReceiptBusLive),
   Layer.provideMerge(AutomaticGitFetchSupervisorLive),
   Layer.provideMerge(PullRequestAutomationWatcherLive),
@@ -382,7 +387,9 @@ const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
   // orchestration transcript when a thread switches drivers. Provided *before*
   // `ProviderRuntimeLayerLive` so that layer's `ProjectionSnapshotQuery` output
   // satisfies the builder's dependency; consumed by `ProviderCommandReactorLive`.
-  Layer.provideMerge(ThreadContextSeedBuilderLive),
+  // Agent pages (what `show_page` does) sit here for the same reason: they
+  // record pages through the engine and projections that layer supplies.
+  Layer.provideMerge(Layer.mergeAll(ThreadContextSeedBuilderLive, AgentPages.layer)),
   Layer.provideMerge(ProviderRuntimeLayerLive),
   // Settings-owned provider sign-in. Listed before the terminal layer so it
   // receives that layer's PTY adapter, but it keeps its own ephemeral,
@@ -407,7 +414,9 @@ const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
   // from the settings layer below.
   // `RelayLayerLive` ("Connect a device") rides along here: like the broker it
   // owns no project state, only sockets and the relay_devices table below.
-  Layer.provideMerge(Layer.mergeAll(PreviewAutomationBroker.layer, DictationLive, RelayLayerLive)),
+  Layer.provideMerge(
+    Layer.mergeAll(PreviewAutomationBroker.layer, PagePreview.layer, DictationLive, RelayLayerLive),
+  ),
   Layer.provideMerge(PersistenceLayerLive),
   Layer.provideMerge(KeybindingsLive),
   Layer.provideMerge(ProviderRegistryLive),
@@ -455,6 +464,7 @@ const RuntimeServicesLive = Layer.mergeAll(
 export const makeRoutesLayer = Layer.mergeAll(
   McpHttpServer.layer,
   McpRoomServer.layer,
+  McpPagesServer.layer,
   authBearerBootstrapRouteLayer,
   authBootstrapRouteLayer,
   authClientsRevokeOthersRouteLayer,

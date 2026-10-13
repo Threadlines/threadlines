@@ -131,6 +131,9 @@ import {
   CodexInlineVisualizationReadError,
   CodexInlineVisualizationReadInput,
   CodexInlineVisualizationReadResult,
+  AgentPageReadError,
+  AgentPageReadInput,
+  AgentPageReadResult,
   ClientOrchestrationCommand,
   ORCHESTRATION_WS_METHODS,
   OrchestrationDispatchCommandError,
@@ -329,6 +332,9 @@ export const WS_METHODS = {
 
   // Codex inline visualization methods
   visualizationsRead: "visualizations.read",
+
+  // Agent page methods
+  pagesRead: "pages.read",
 
   // Shell methods
   shellOpenInEditor: "shell.openInEditor",
@@ -955,6 +961,12 @@ export const WsVisualizationsReadRpc = Rpc.make(WS_METHODS.visualizationsRead, {
   payload: CodexInlineVisualizationReadInput,
   success: CodexInlineVisualizationReadResult,
   error: CodexInlineVisualizationReadError,
+});
+
+export const WsPagesReadRpc = Rpc.make(WS_METHODS.pagesRead, {
+  payload: AgentPageReadInput,
+  success: AgentPageReadResult,
+  error: AgentPageReadError,
 });
 
 export const WsShellOpenInEditorRpc = Rpc.make(WS_METHODS.shellOpenInEditor, {
@@ -1604,6 +1616,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsProjectsFaviconRpc,
   WsAttachmentsReadRpc,
   WsVisualizationsReadRpc,
+  WsPagesReadRpc,
   WsShellOpenInEditorRpc,
   WsFilesystemBrowseRpc,
   WsPreviewAutomationConnectRpc,

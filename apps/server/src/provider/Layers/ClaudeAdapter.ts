@@ -84,6 +84,18 @@ import {
   THREADLINES_CLAUDE_MCP_SERVER_NAME,
 } from "../claudeLongRunningTool.ts";
 import { CLAUDE_PREVIEW_PANEL_INSTRUCTIONS } from "../previewPanelInstructions.ts";
+import {
+  buildAgentPageInstructions,
+  CLAUDE_ARTIFACT_ENVIRONMENT,
+  CLAUDE_ARTIFACT_INSTRUCTIONS,
+  CLAUDE_ARTIFACT_OFF_ENVIRONMENT,
+  CLAUDE_ARTIFACT_TOOL_NAME,
+  CLAUDE_ARTIFACT_TOOL_NAMES,
+  CLAUDE_ARTIFACTS_OFF_REASON,
+  CLAUDE_PAGE_TOOL_IDS,
+  PAGES_MCP_SERVER_NAME,
+} from "../../mcp/pageTools.ts";
+import { ensurePageAssetsDir } from "../../pages/PageStore.ts";
 import { FILE_LINK_INSTRUCTIONS } from "../fileLinkInstructions.ts";
 import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
@@ -104,11 +116,13 @@ import * as Stream from "effect/Stream";
 
 import { countStructuredPatchStats, type FileChangeStat } from "@threadlines/shared/diffStats";
 
+import { parseSessionKey } from "@threadlines/shared/threadParticipants";
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import {
   BROWSER_MCP_SERVER_NAME,
   mcpEndpointUrl,
+  mcpPagesEndpointUrl,
   mcpRoomEndpointUrl,
 } from "../../mcp/McpHttpServer.ts";
 import { mcpSessionRegistry } from "../../mcp/McpSessionRegistry.ts";
@@ -568,6 +582,50 @@ export interface ClaudeAdapterLiveOptions {
    * the snapshot in seconds instead of after the next scheduled probe.
    */
   readonly onUnclassifiedRuntimeError?: () => Effect.Effect<void>;
+  /**
+   * Whether Claude may publish artifacts right now, asked before each use of
+   * its Artifact tools in a session that started with them on. Lets turning
+   * the setting off stop a running session's next upload. Absent: as started.
+   */
+  readonly artifactsAllowed?: Effect.Effect<boolean>;
+}
+
+/**
+ * What Claude's Artifact tool reports for a publish: the local file it
+ * uploaded and the claude.ai link it now lives at. The tool's other actions
+ * (list, read, assets) answer in other shapes and yield undefined.
+ */
+export function publishedArtifactFromToolResult(
+  toolInput: Record<string, unknown>,
+  structuredResult: unknown,
+):
+  | { readonly path: string; readonly url: string; readonly title?: string; readonly icon?: string }
+  | undefined {
+  const action = toolInput["action"];
+  if (action !== undefined && action !== "publish") {
+    return undefined;
+  }
+  if (
+    !structuredResult ||
+    typeof structuredResult !== "object" ||
+    Array.isArray(structuredResult)
+  ) {
+    return undefined;
+  }
+  const raw = structuredResult as Record<string, unknown>;
+  const path = nonEmptyString(raw.path);
+  const url = nonEmptyString(raw.url);
+  if (path === undefined || url === undefined) {
+    return undefined;
+  }
+  const title = nonEmptyString(raw.title);
+  const icon = nonEmptyString(raw.icon);
+  return {
+    path,
+    url,
+    ...(title !== undefined ? { title } : {}),
+    ...(icon !== undefined ? { icon } : {}),
+  };
 }
 
 /**
@@ -1974,6 +2032,10 @@ function titleForToolName(toolName: string, itemType: CanonicalItemType): string
       return "Tasks";
     case "skill":
       return "Skill";
+    case "artifact":
+    case "artifactcomments":
+    case "artifactdata":
+      return "Artifact";
     case "askuserquestion":
       return "Question";
     case "enterplanmode":
@@ -6761,6 +6823,74 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         );
       };
 
+      // A session that started with artifacts on keeps the tool for its
+      // whole life; this is what makes turning the setting off take effect
+      // on its next publish rather than on the next session.
+      const artifactsAllowedNow = options?.artifactsAllowed ?? Effect.succeed(true);
+      const artifactSwitchGuard: HookCallback = () =>
+        runPromise(artifactsAllowedNow).then((allowed) =>
+          allowed
+            ? {}
+            : {
+                hookSpecificOutput: {
+                  hookEventName: "PreToolUse" as const,
+                  permissionDecision: "deny" as const,
+                  permissionDecisionReason: CLAUDE_ARTIFACTS_OFF_REASON,
+                },
+              },
+        );
+
+      // Claude's own Artifact tool put a page on claude.ai. Report it, so the
+      // chat shows the local copy with its link (docs/agent-pages.md). A hook
+      // rather than the tool result in the stream: it names its tool, and it
+      // sees a subagent's publish too, which the stream keeps to itself.
+      const reportPublishedArtifact: HookCallback = (hookInput) => {
+        const record = hookInput as {
+          readonly hook_event_name?: unknown;
+          readonly tool_name?: unknown;
+          readonly tool_input?: unknown;
+          readonly tool_response?: unknown;
+          readonly tool_use_id?: unknown;
+        };
+        const toolInput = record.tool_input;
+        const published =
+          record.hook_event_name === "PostToolUse" && record.tool_name === CLAUDE_ARTIFACT_TOOL_NAME
+            ? publishedArtifactFromToolResult(
+                toolInput && typeof toolInput === "object" && !Array.isArray(toolInput)
+                  ? (toolInput as Record<string, unknown>)
+                  : {},
+                record.tool_response,
+              )
+            : undefined;
+        if (published === undefined) {
+          return Promise.resolve({});
+        }
+        return runPromise(
+          Effect.gen(function* () {
+            const context = yield* Ref.get(contextRef);
+            if (!context) {
+              return {};
+            }
+            const stamp = yield* makeEventStamp();
+            const toolUseId = nonEmptyString(record.tool_use_id);
+            yield* offerRuntimeEvent({
+              type: "page.published",
+              eventId: stamp.eventId,
+              provider: PROVIDER,
+              createdAt: stamp.createdAt,
+              threadId: context.session.threadId,
+              ...(context.turnState ? { turnId: asCanonicalTurnId(context.turnState.turnId) } : {}),
+              payload: published,
+              providerRefs: nativeProviderRefs(
+                context,
+                toolUseId !== undefined ? { providerItemId: toolUseId } : undefined,
+              ),
+            });
+            return {};
+          }),
+        );
+      };
+
       /**
        * Handle AskUserQuestion tool calls by emitting a `user-input.requested`
        * runtime event and waiting for the user to respond via `respondToUserInput`.
@@ -7054,7 +7184,23 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       });
 
       const canUseTool: CanUseTool = (toolName, toolInput, callbackOptions) =>
-        runPromise(canUseToolEffect(toolName, toolInput, callbackOptions));
+        runPromise(
+          canUseToolEffect(toolName, toolInput, callbackOptions).pipe(
+            // The switch guard ran before the approval prompt. Asked again
+            // after it, so an approval given once artifacts are off uploads
+            // nothing.
+            Effect.flatMap((result) =>
+              result.behavior === "allow" &&
+              (CLAUDE_ARTIFACT_TOOL_NAMES as ReadonlyArray<string>).includes(toolName)
+                ? artifactsAllowedNow.pipe(
+                    Effect.map((allowed): PermissionResult =>
+                      allowed ? result : { behavior: "deny", message: CLAUDE_ARTIFACTS_OFF_REASON },
+                    ),
+                  )
+                : Effect.succeed<PermissionResult>(result),
+            ),
+          ),
+        );
 
       const claudeBinaryPath = claudeSettings.binaryPath;
       const extraArgs = {
@@ -7126,12 +7272,25 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       // and is minted only once nothing is left to wait on before the query
       // starts, so a start that is cancelled cannot strand it.
       const roomTools = input.roomTools === true;
+      // Agent pages: `show_page` and `preview_page`, with a folder of its own
+      // for the page's images that Claude may write to like its workspace.
+      const agentPages = input.agentPages === true && !lockdown;
+      const pageAssets = agentPages
+        ? yield* ensurePageAssetsDir(parseSessionKey(threadId).threadId).pipe(
+            Effect.map((dir): string | undefined => dir),
+            Effect.orElseSucceed(() => undefined),
+          )
+        : undefined;
+      // Claude's own Artifact tool, which uploads a page to claude.ai. Only
+      // beside agent pages: the chat shows the local copy of each publish.
+      const artifacts = input.artifacts === true && agentPages;
       const credential =
         !lockdown || roomTools
           ? yield* mcpSessionRegistry.credentialFor({
               sessionKey: threadId,
               browser: !lockdown,
               room: roomTools,
+              pages: agentPages,
               sideKind,
             })
           : undefined;
@@ -7169,6 +7328,18 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             ),
           ),
           ...(roomServer !== undefined ? { [ROOM_MCP_SERVER_NAME]: roomServer } : {}),
+          ...(credential !== undefined && agentPages
+            ? {
+                [PAGES_MCP_SERVER_NAME]: {
+                  type: "http" as const,
+                  url: mcpPagesEndpointUrl(serverConfig.port),
+                  headers: { Authorization: `Bearer ${credential.token}` },
+                  // Listed in the prompt, like the browser tools: a model that
+                  // cannot see show_page writes an HTML file instead.
+                  alwaysLoad: true,
+                },
+              }
+            : {}),
         },
         ...(apiModelId ? { model: apiModelId } : {}),
         pathToClaudeCodeExecutable: claudeBinaryPath,
@@ -7177,6 +7348,10 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           preset: "claude_code",
           append: [
             CLAUDE_PREVIEW_PANEL_INSTRUCTIONS,
+            ...(agentPages && pageAssets !== undefined
+              ? [buildAgentPageInstructions({ assetsDir: pageAssets })]
+              : []),
+            ...(artifacts ? [CLAUDE_ARTIFACT_INSTRUCTIONS] : []),
             FILE_LINK_INSTRUCTIONS,
             ...(runsInManagedWorktree ? [MANAGED_WORKTREE_INSTRUCTION] : []),
           ].join("\n\n"),
@@ -7196,6 +7371,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           "TaskList",
           MARK_LONG_RUNNING_TOOL_ID,
           ...(roomServer !== undefined ? ROOM_TOOL_NAMES.map(claudeRoomToolId) : []),
+          // A page shows only in the caller's own thread; nothing to approve.
+          ...(credential !== undefined && agentPages ? CLAUDE_PAGE_TOOL_IDS : []),
         ],
         ...(effectiveEffort
           ? {
@@ -7231,10 +7408,30 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
               matcher: "Edit|Write|MultiEdit|NotebookEdit",
               hooks: [recordFileChangeStats],
             },
+            { matcher: CLAUDE_ARTIFACT_TOOL_NAME, hooks: [reportPublishedArtifact] },
           ],
+          ...(artifacts
+            ? {
+                PreToolUse: [
+                  { matcher: CLAUDE_ARTIFACT_TOOL_NAMES.join("|"), hooks: [artifactSwitchGuard] },
+                ],
+              }
+            : {}),
         },
-        env: claudeEnvironment,
-        ...(input.cwd ? { additionalDirectories: [input.cwd] } : {}),
+        // The setting decides, whatever the environment Threadlines was
+        // started in says: on asks for the tool, off refuses it.
+        env: {
+          ...claudeEnvironment,
+          ...(artifacts ? CLAUDE_ARTIFACT_ENVIRONMENT : CLAUDE_ARTIFACT_OFF_ENVIRONMENT),
+        },
+        ...(input.cwd || pageAssets !== undefined
+          ? {
+              additionalDirectories: [
+                ...(input.cwd ? [input.cwd] : []),
+                ...(pageAssets !== undefined ? [pageAssets] : []),
+              ],
+            }
+          : {}),
         extraArgs,
       };
       const queryOptions: ClaudeQueryOptions = lockdown

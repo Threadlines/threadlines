@@ -86,6 +86,47 @@ export function isScrollMetricsAtEnd(input: {
   return scrollMetricsDistanceFromEnd(input) <= tolerancePx;
 }
 
+/**
+ * Notices the reader scrolling up while the list follows its end, from scroll
+ * positions alone. A wheel or touch over an embedded frame (an agent page)
+ * scrolls the list without any of the list's own input listeners hearing it,
+ * so following would otherwise pull the list back down on the next layout
+ * change. Following only ever moves toward the end and streaming never lowers
+ * the offset, so neither trips this; content that got shorter (a fold closing)
+ * can only clamp the offset up, so it is ignored.
+ */
+export function createUpwardScrollDetector() {
+  let last: { readonly scrollOffset: number; readonly contentLength: number } | null = null;
+  let climbed = 0;
+  return {
+    /** True when this report is the reader leaving the end. */
+    observe(metrics: {
+      readonly scrollOffset: number;
+      readonly viewportLength: number;
+      readonly contentLength: number;
+    }): boolean {
+      const previous = last;
+      last = { scrollOffset: metrics.scrollOffset, contentLength: metrics.contentLength };
+      if (previous === null || metrics.contentLength < previous.contentLength) {
+        climbed = 0;
+        return false;
+      }
+      const moved = metrics.scrollOffset - previous.scrollOffset;
+      if (moved >= 0) {
+        climbed = 0;
+        return false;
+      }
+      // Slow scrolls can move under a pixel per report; they add up.
+      climbed -= moved;
+      if (climbed <= 1 || isScrollMetricsAtEnd(metrics)) {
+        return false;
+      }
+      climbed = 0;
+      return true;
+    },
+  };
+}
+
 // Collapsing the composer questions panel shrinks the composer, which grows the
 // timeline viewport and can flip the at-end signal right back — an expand/collapse
 // oscillation. Hysteresis breaks the loop: only collapse once the user is farther

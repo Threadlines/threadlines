@@ -164,6 +164,7 @@ const ProviderRuntimeEventType = Schema.Literals([
   "session.configured",
   "session.state.changed",
   "session.cwd.changed",
+  "page.published",
   "session.exited",
   "thread.started",
   "thread.state.changed",
@@ -224,6 +225,7 @@ const SessionStartedType = Schema.Literal("session.started");
 const SessionConfiguredType = Schema.Literal("session.configured");
 const SessionStateChangedType = Schema.Literal("session.state.changed");
 const SessionCwdChangedType = Schema.Literal("session.cwd.changed");
+const PagePublishedType = Schema.Literal("page.published");
 const SessionExitedType = Schema.Literal("session.exited");
 const ThreadStartedType = Schema.Literal("thread.started");
 const ThreadStateChangedType = Schema.Literal("thread.state.changed");
@@ -334,6 +336,20 @@ const SessionCwdChangedPayload = Schema.Struct({
   reason: Schema.optional(Schema.Literals(["worktree-entered", "worktree-exited", "session-init"])),
 });
 export type SessionCwdChangedPayload = typeof SessionCwdChangedPayload.Type;
+
+/**
+ * The provider's own publishing tool put a local page file online (Claude
+ * Code's Artifact tool). `path` is the file it published, as the provider
+ * names it, and `url` where the page now lives. Threadlines shows the local
+ * copy in the turn, with the link (docs/agent-pages.md).
+ */
+const PagePublishedPayload = Schema.Struct({
+  path: TrimmedNonEmptyStringSchema,
+  url: TrimmedNonEmptyStringSchema,
+  title: Schema.optional(TrimmedNonEmptyStringSchema),
+  icon: Schema.optional(TrimmedNonEmptyStringSchema),
+});
+export type PagePublishedPayload = typeof PagePublishedPayload.Type;
 
 const SessionExitedPayload = Schema.Struct({
   reason: Schema.optional(TrimmedNonEmptyStringSchema),
@@ -943,6 +959,13 @@ const ProviderRuntimeSessionCwdChangedEvent = Schema.Struct({
 export type ProviderRuntimeSessionCwdChangedEvent =
   typeof ProviderRuntimeSessionCwdChangedEvent.Type;
 
+const ProviderRuntimePagePublishedEvent = Schema.Struct({
+  ...ProviderRuntimeEventBase.fields,
+  type: PagePublishedType,
+  payload: PagePublishedPayload,
+});
+export type ProviderRuntimePagePublishedEvent = typeof ProviderRuntimePagePublishedEvent.Type;
+
 const ProviderRuntimeSessionExitedEvent = Schema.Struct({
   ...ProviderRuntimeEventBase.fields,
   type: SessionExitedType,
@@ -1342,6 +1365,7 @@ export const ProviderRuntimeEventV2 = Schema.Union([
   ProviderRuntimeSessionConfiguredEvent,
   ProviderRuntimeSessionStateChangedEvent,
   ProviderRuntimeSessionCwdChangedEvent,
+  ProviderRuntimePagePublishedEvent,
   ProviderRuntimeSessionExitedEvent,
   ProviderRuntimeThreadStartedEvent,
   ProviderRuntimeThreadStateChangedEvent,

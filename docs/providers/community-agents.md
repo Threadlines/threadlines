@@ -76,7 +76,10 @@ when the agent asks for permission to do something.
 - With every agent: chats, tool calls shown as they happen, stopping a turn,
   permission requests, the model and mode the agent offers.
 - Depends on the agent: resuming a thread after a restart, images and file
-  attachments, plans, the browser panel and room tools.
+  attachments, plans, the browser panel, room tools and agent pages
+  (docs/agent-pages.md). Pages need an agent that can reach Threadlines'
+  tools; it learns the folder for a page's images from the error when it uses
+  one elsewhere, since Threadlines cannot give it instructions.
 - Not available: usage meters, importing the agent's own past sessions,
   extra accounts, and writing thread titles or commit messages (a tested
   agent does those).

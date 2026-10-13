@@ -173,6 +173,18 @@ export const ProviderSessionStartInput = Schema.Struct({
    * kind allows. See docs/design/rooms-slice-2.md, Part B.
    */
   roomTools: Schema.optional(Schema.Boolean),
+  /**
+   * Attach the page tools endpoint (`threadlines_pages`): `show_page` and
+   * `preview_page`, docs/agent-pages.md. Never for a locked-down side
+   * runtime.
+   */
+  agentPages: Schema.optional(Schema.Boolean),
+  /**
+   * Turn on the provider's own page publishing (Claude Code artifacts, which
+   * upload a page to claude.ai). Only with `agentPages`: the chat shows the
+   * local copy of what was published. Drivers without one ignore it.
+   */
+  artifacts: Schema.optional(Schema.Boolean),
   approvalPolicy: Schema.optional(ProviderApprovalPolicy),
   sandboxMode: Schema.optional(ProviderSandboxMode),
   runtimeMode: RuntimeMode,

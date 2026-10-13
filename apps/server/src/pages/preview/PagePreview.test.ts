@@ -1,4 +1,10 @@
 // @effect-diagnostics nodeBuiltinImport:off - plain local servers stand in for LAN services.
+import {
+  AGENT_PAGE_FALLBACK_THEMES,
+  AGENT_PAGE_MEASURE_FONTS,
+  agentPageTheme,
+  buildAgentPageDocument,
+} from "@threadlines/shared/agentPages";
 import * as NodeDgram from "node:dgram";
 import * as NodeHttp from "node:http";
 import * as NodeOS from "node:os";
@@ -145,6 +151,29 @@ describe.runIf(REAL_BROWSER)("PagePreview in the real browser", () => {
             },
           ]),
         );
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    REAL_BROWSER_TIMEOUT,
+  );
+
+  it.live(
+    "measures a page wrapped by the real page wrapper, which blocks a request off the CDN list",
+    () =>
+      Effect.gen(function* () {
+        const pagePreview = yield* realPagePreview;
+        const document = buildAgentPageDocument({
+          content:
+            '<div style="height:240px"></div><script>fetch("https://example.com/").then(() => console.log("reached"), () => console.log("blocked"));</script>',
+          kind: "html",
+          theme: agentPageTheme(AGENT_PAGE_FALLBACK_THEMES.dark, AGENT_PAGE_MEASURE_FONTS),
+        });
+        const preview = yield* pagePreview.preview({ document, width: 400 });
+        expect(preview.contentHeight).toBe(240);
+        expect(preview.consoleMessages).not.toContainEqual({ level: "log", text: "reached" });
+        const heights = yield* pagePreview.measure({ document, widths: [320, 880] });
+        expect(Option.getOrUndefined(heights)).toEqual([
+          [320, 240],
+          [880, 240],
+        ]);
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
     REAL_BROWSER_TIMEOUT,
   );

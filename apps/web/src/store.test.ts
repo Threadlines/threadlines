@@ -1,5 +1,7 @@
 import { scopeProjectRef, scopeThreadRef } from "@threadlines/client-runtime";
 import {
+  AgentPageId,
+  AgentPageVersionId,
   CheckpointRef,
   ChildRequestBatchId,
   ChildRequestId,
@@ -2260,6 +2262,83 @@ describe("incremental orchestration updates", () => {
     expect(threadsOf(next)[0]?.turnDiffSummaries.map((summary) => summary.turnId)).toEqual([
       TurnId.make("turn-1"),
     ]);
+  });
+
+  it("shows a page a turn published, and drops the pages of turns a revert took back", () => {
+    const message = (
+      id: string,
+      role: "user" | "assistant",
+      turn: string,
+      eventSequence: number,
+    ) => ({
+      id: MessageId.make(id),
+      role,
+      text: id,
+      turnId: TurnId.make(turn),
+      createdAt: `2026-02-27T00:00:0${eventSequence}.000Z`,
+      completedAt: `2026-02-27T00:00:0${eventSequence}.000Z`,
+      eventSequence,
+      streaming: false,
+    });
+    const publish = (turn: string, versionId: string, version: number, sequence: number) =>
+      makeEvent(
+        "thread.page-published",
+        {
+          threadId: ThreadId.make("thread-1"),
+          page: {
+            pageId: AgentPageId.make("page-1"),
+            versionId: AgentPageVersionId.make(versionId),
+            version,
+            turnId: TurnId.make(turn),
+            participantId: null,
+            title: "Funnel",
+            kind: "html",
+            height: 400,
+          },
+          createdAt: "2026-02-27T00:00:05.000Z",
+        },
+        { sequence },
+      );
+    let state = makeState(
+      makeThread({
+        messages: [
+          message("user-1", "user", "turn-1", 1),
+          message("assistant-1", "assistant", "turn-1", 3),
+          message("user-2", "user", "turn-2", 4),
+        ],
+        turnDiffSummaries: [
+          {
+            turnId: TurnId.make("turn-1"),
+            completedAt: "2026-02-27T00:00:03.000Z",
+            status: "ready",
+            checkpointTurnCount: 1,
+            checkpointRef: CheckpointRef.make("ref-1"),
+            files: [],
+          },
+        ],
+      }),
+    );
+    state = applyOrchestrationEvent(
+      state,
+      publish("turn-1", "version-1", 1, 2),
+      localEnvironmentId,
+    );
+    state = applyOrchestrationEvent(
+      state,
+      publish("turn-2", "version-2", 2, 5),
+      localEnvironmentId,
+    );
+    expect(threadsOf(state)[0]?.pages?.map((page) => page.versionId)).toEqual([
+      "version-1",
+      "version-2",
+    ]);
+
+    state = applyOrchestrationEvent(
+      state,
+      makeEvent("thread.reverted", { threadId: ThreadId.make("thread-1"), turnCount: 1 }),
+      localEnvironmentId,
+    );
+    expect(threadsOf(state)[0]?.pages?.map((page) => page.versionId)).toEqual(["version-1"]);
   });
 
   it("clears pending source proposed plans after revert before a new session-set event", () => {

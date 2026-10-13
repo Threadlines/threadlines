@@ -55,7 +55,12 @@ import {
   type LiveAgentStatusRoster,
   type TurnAgentSummary,
 } from "./agentsPanel.logic";
-import { DEFAULT_SCROLL_END_TOLERANCE_PX, isScrollMetricsAtEnd } from "../ChatView.logic";
+import {
+  createUpwardScrollDetector,
+  DEFAULT_SCROLL_END_TOLERANCE_PX,
+  isScrollMetricsAtEnd,
+} from "../ChatView.logic";
+import { AgentPageRow } from "./AgentPageRow";
 import {
   type ChatAttachment,
   type ChatMessage,
@@ -1045,6 +1050,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   const initialAutoStickToBottom = searchTargetRowIndex < 0;
   const [autoStickToBottom, setAutoStickToBottom] = useState(initialAutoStickToBottom);
   const autoStickToBottomRef = useRef(initialAutoStickToBottom);
+  const upwardScrollDetectorRef = useRef(createUpwardScrollDetector());
   const [legendListReady, setLegendListReady] = useState(false);
   const [activeSearchTargetMessageId, setActiveSearchTargetMessageId] = useState<MessageId | null>(
     null,
@@ -1406,6 +1412,17 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       // lines that streamed in meanwhile, so reaching the end of the list as
       // long as it was at the gesture's previous move counts as the bottom.
       const metrics = getTimelineScrollMetrics(event);
+      // A wheel or touch over an agent page scrolls the list with none of its
+      // own listeners hearing it; the scroll itself says the reader left.
+      if (
+        metrics !== null &&
+        upwardScrollDetectorRef.current.observe(metrics) &&
+        autoStickToBottomRef.current &&
+        !stickToBottomRequestPending
+      ) {
+        markUserScrollIntent({ notifyAwayFromEnd: true });
+        return;
+      }
       const lastMove = touchLastMoveRef.current;
       if (
         touchScrollActiveRef.current &&
@@ -1438,6 +1455,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     },
     [
       listRef,
+      markUserScrollIntent,
       onIsAtEndChange,
       refreshTranscriptNoteHighlightRects,
       scheduleTouchScrollSettle,
@@ -2474,6 +2492,14 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
       ) : null}
       {row.kind === "fork-context" ? <ForkContextTimelineRow row={row} /> : null}
       {row.kind === "proposed-plan" ? <ProposedPlanTimelineRow row={row} /> : null}
+      {row.kind === "page" && ctx.activeThreadId !== null ? (
+        <AgentPageRow
+          environmentId={ctx.activeThreadEnvironmentId}
+          threadId={ctx.activeThreadId}
+          page={row.page}
+          updated={row.updated}
+        />
+      ) : null}
       {row.kind === "subagent-result" ? <SubagentReceiptTimelineRow row={row} /> : null}
       {row.kind === "working" ? <WorkingTimelineRow row={row} /> : null}
       {row.kind === "side-status" ? <SideStatusTimelineRow row={row} /> : null}

@@ -1080,6 +1080,11 @@ const make = Effect.gen(function* () {
           ...(input?.contextSeed !== undefined ? { contextSeed: input.contextSeed } : {}),
           ...(input?.forkFrom !== undefined ? { forkFrom: input.forkFrom } : {}),
           ...(roomToolsWanted ? { roomTools: true } : {}),
+          ...(toolSettings?.enableAgentPages !== false ? { agentPages: true } : {}),
+          ...(toolSettings?.enableAgentPages !== false &&
+          toolSettings?.enableClaudeArtifacts === true
+            ? { artifacts: true }
+            : {}),
           runtimeMode: desiredRuntimeMode,
         })
         .pipe(

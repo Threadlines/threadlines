@@ -3,6 +3,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   type OpenCodeRule,
   openCodeBrowserServerName,
+  openCodePagesServerName,
   openCodeSessionGrantRules,
   openCodeSessionRules,
   openCodeThreadToolKey,
@@ -96,6 +97,21 @@ describe("openCodeSessionRules", () => {
     // A last-matching deny on resource `*` is also what hides the tool.
     expect(effect(rules, other, "*")).toBe("deny");
     expect(effect(rules, `threadlines_r_${ownKey}_room_agents`, "*")).toBe("deny");
+  });
+
+  it("lets a session with pages show them without asking, on its own thread only", () => {
+    const rules = [
+      ...BUILD_AGENT,
+      ...openCodeSessionRules({
+        runtimeMode: "approval-required",
+        agentRules: BUILD_AGENT,
+        toolKey: ownKey,
+        roomTools: false,
+        agentPages: true,
+      }),
+    ];
+    expect(effect(rules, `${openCodePagesServerName(ownKey)}_show_page`, "*")).toBe("allow");
+    expect(effect(rules, `${openCodePagesServerName(otherKey)}_show_page`, "*")).toBe("deny");
   });
 
   it("honours a user's deny of Threadlines' own tools", () => {

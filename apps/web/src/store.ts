@@ -9,6 +9,7 @@ import type {
   OrchestrationLatestTurn,
   OrchestrationMessage,
   OrchestrationProposedPlan,
+  OrchestrationAgentPage,
   OrchestrationReadModel,
   OrchestrationShellSnapshot,
   OrchestrationShellStreamEvent,
@@ -79,7 +80,8 @@ import {
   withInviteChoice,
   withUnqueuedAgentMessage,
 } from "@threadlines/shared/roomAgentRequests";
-import { retainMessagesAfterRevert } from "@threadlines/shared/transcriptRevert";
+import { applyAgentPagePublication } from "@threadlines/shared/agentPages";
+import { retainTurnItemsAfterRevert, revertMessages } from "@threadlines/shared/transcriptRevert";
 import {
   awaitedChildRequestCount,
   childRequestStateOn,
@@ -127,6 +129,8 @@ export interface EnvironmentState {
   turnDiffSummaryByThreadId: Record<ThreadId, Record<TurnId, TurnDiffSummary>>;
   /** Room tools: open agent requests, the Stop hold and the limit's count. */
   agentRequestsByThreadId: Record<ThreadId, OrchestrationAgentRequestState>;
+  /** Agent pages per thread (OrchestrationAgentPage); absent until a thread's detail loads. */
+  pagesByThreadId?: Record<ThreadId, ReadonlyArray<OrchestrationAgentPage>>;
   /** Child threads: what each thread's agent asked of the threads it started. */
   childRequestsByThreadId: Record<ThreadId, OrchestrationChildRequestState>;
 
@@ -163,6 +167,7 @@ const initialEnvironmentState: EnvironmentState = {
   turnDiffIdsByThreadId: {},
   turnDiffSummaryByThreadId: {},
   agentRequestsByThreadId: {},
+  pagesByThreadId: {},
   childRequestsByThreadId: {},
   sidebarThreadSummaryById: {},
   bootstrapComplete: false,
@@ -423,6 +428,7 @@ function mapThread(thread: OrchestrationThread, environmentId: EnvironmentId): T
     session: thread.session ? mapSession(thread.session) : null,
     messages: thread.messages.map((message) => mapMessage(environmentId, message)),
     proposedPlans: thread.proposedPlans.map(mapProposedPlan),
+    pages: thread.pages ?? [],
     error: sanitizeThreadErrorMessage(thread.session?.lastError),
     createdAt: thread.createdAt,
     archivedAt: thread.archivedAt,
@@ -1189,6 +1195,16 @@ function writeThreadState(
     };
   }
 
+  if (nextThread.pages !== undefined && previousThread?.pages !== nextThread.pages) {
+    nextState = {
+      ...nextState,
+      pagesByThreadId: {
+        ...nextState.pagesByThreadId,
+        [nextThread.id]: nextThread.pages,
+      },
+    };
+  }
+
   if (
     nextThread.agentRequests !== undefined &&
     previousThread?.agentRequests !== nextThread.agentRequests
@@ -1360,6 +1376,7 @@ function removeThreadState(state: EnvironmentState, threadId: ThreadId): Environ
     state.turnDiffSummaryByThreadId;
   const { [threadId]: _removedAgentRequests, ...agentRequestsByThreadId } =
     state.agentRequestsByThreadId;
+  const { [threadId]: _removedPages, ...pagesByThreadId } = state.pagesByThreadId ?? {};
   const { [threadId]: _removedChildRequests, ...childRequestsByThreadId } =
     state.childRequestsByThreadId;
   const { [threadId]: _removedSidebarSummary, ...sidebarThreadSummaryById } =
@@ -1381,6 +1398,7 @@ function removeThreadState(state: EnvironmentState, threadId: ThreadId): Environ
     turnDiffIdsByThreadId,
     turnDiffSummaryByThreadId,
     agentRequestsByThreadId,
+    pagesByThreadId,
     childRequestsByThreadId,
     sidebarThreadSummaryById,
   };
@@ -1566,19 +1584,17 @@ function rebindTurnDiffSummariesForAssistantMessage(
   return changed ? nextSummaries : [...turnDiffSummaries];
 }
 
-function retainThreadMessagesAfterRevert(
+function revertThreadMessages(
   messages: ReadonlyArray<ChatMessage>,
   retainedTurnIds: ReadonlySet<string>,
   turnCount: number,
-): ChatMessage[] {
-  return [
-    ...retainMessagesAfterRevert({
-      messages,
-      idOf: (message) => message.id,
-      retainedTurnIds,
-      turnCount,
-    }),
-  ];
+) {
+  return revertMessages({
+    messages,
+    idOf: (message) => message.id,
+    retainedTurnIds,
+    turnCount,
+  });
 }
 
 function retainThreadActivitiesAfterRevert(
@@ -1740,6 +1756,7 @@ function syncEnvironmentShellSnapshot(
       nextThreadIds,
     ),
     agentRequestsByThreadId: retainThreadScopedRecord(state.agentRequestsByThreadId, nextThreadIds),
+    pagesByThreadId: retainThreadScopedRecord(state.pagesByThreadId ?? {}, nextThreadIds),
     childRequestsByThreadId: retainThreadScopedRecord(state.childRequestsByThreadId, nextThreadIds),
     bootstrapComplete: true,
   };
@@ -2429,6 +2446,16 @@ function applyEnvironmentOrchestrationEvent(
         };
       });
 
+    case "thread.page-published":
+      return updateThreadState(state, event.payload.threadId, (thread) => {
+        const current = thread.pages ?? [];
+        const pages = applyAgentPagePublication(current, event.payload.page, {
+          sequence: event.sequence,
+          occurredAt: event.occurredAt,
+        });
+        return pages === current ? thread : { ...thread, pages };
+      });
+
     case "thread.turn-diff-completed":
       return updateThreadState(state, event.payload.threadId, (thread) => {
         const checkpoint = mapTurnDiffSummary({
@@ -2539,11 +2566,14 @@ function applyEnvironmentOrchestrationEvent(
           )
           .slice(-MAX_THREAD_CHECKPOINTS);
         const retainedTurnIds = new Set(turnDiffSummaries.map((entry) => entry.turnId));
-        const messages = retainThreadMessagesAfterRevert(
+        const reverted = revertThreadMessages(
           thread.messages,
           retainedTurnIds,
           event.payload.turnCount,
-        ).slice(-MAX_THREAD_MESSAGES);
+        );
+        const messages = reverted.messages.slice(-MAX_THREAD_MESSAGES);
+        // Pages go with the messages after the cut (agentPages.ts).
+        const pages = retainTurnItemsAfterRevert(thread.pages ?? [], reverted);
         const proposedPlans = retainThreadProposedPlansAfterRevert(
           thread.proposedPlans,
           retainedTurnIds,
@@ -2556,6 +2586,7 @@ function applyEnvironmentOrchestrationEvent(
           turnDiffSummaries,
           messages,
           proposedPlans,
+          pages,
           activities,
           pendingSourceProposedPlan: undefined,
           latestTurn:

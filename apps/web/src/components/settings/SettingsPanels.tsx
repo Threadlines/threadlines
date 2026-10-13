@@ -438,6 +438,8 @@ export function useSettingsRestore(onRestored?: () => void) {
         ? ["Sites agents can visit"]
         : []),
       ...(!roomsEnabledFor(settings) ? ["Rooms"] : []),
+      ...(settings.enableAgentPages === false ? ["Agent pages"] : []),
+      ...(settings.enableClaudeArtifacts === true ? ["Claude artifacts"] : []),
       ...(agentInvitesChoice(settings) !== "ask" ? ["Agents bringing in other agents"] : []),
       ...(agentThreadsMode(settings) !== "ask" ? ["Agents can start threads"] : []),
       ...(settings.wrapUpChildThreadsOnFinish !==
@@ -463,6 +465,8 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.newThreadModelSelection,
       settings.newThreadRoomAgents,
       settings.enableRooms,
+      settings.enableAgentPages,
+      settings.enableClaudeArtifacts,
       settings.agentInvites,
       settings.agentThreads,
       settings.wrapUpChildThreadsOnFinish,
@@ -517,6 +521,8 @@ export function useSettingsRestore(onRestored?: () => void) {
       newThreadRoomAgents: DEFAULT_UNIFIED_SETTINGS.newThreadRoomAgents,
       agentBrowserSitePolicy: DEFAULT_UNIFIED_SETTINGS.agentBrowserSitePolicy,
       enableRooms: true,
+      enableAgentPages: true,
+      enableClaudeArtifacts: false,
       agentInvites: "ask",
       agentThreads: "ask",
       wrapUpChildThreadsOnFinish: DEFAULT_UNIFIED_SETTINGS.wrapUpChildThreadsOnFinish,

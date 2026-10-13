@@ -1,8 +1,16 @@
+import { parseSessionKey } from "@threadlines/shared/threadParticipants";
 import {
   BROWSER_MCP_SERVER_NAME,
   mcpEndpointUrl,
+  mcpPagesEndpointUrl,
   mcpRoomEndpointUrl,
 } from "../../mcp/McpHttpServer.ts";
+import {
+  buildAgentPageInstructions,
+  CODEX_PAGE_RIVAL,
+  PAGES_MCP_SERVER_NAME,
+} from "../../mcp/pageTools.ts";
+import { ensurePageAssetsDir } from "../../pages/PageStore.ts";
 import { mcpSessionRegistry } from "../../mcp/McpSessionRegistry.ts";
 import { ROOM_MCP_SERVER_NAME, roomToolsFor } from "../../mcp/roomToolAccess.ts";
 import {
@@ -218,6 +226,8 @@ export interface CodexSessionRuntimeOptions {
    * for a working runtime, the read tools its kind allows for a side one.
    */
   readonly roomTools?: boolean;
+  /** Attach the page tools (ProviderSessionStartInput.agentPages). Never for a side runtime. */
+  readonly agentPages?: boolean;
   readonly onRealtimeAudio?: (audio: ProviderRealtimeAudioChunk) => Effect.Effect<void>;
 }
 
@@ -610,6 +620,8 @@ function buildCodexCollaborationMode(input: {
   readonly effort?: EffectCodexSchema.V2TurnStartParams__ReasoningEffort;
   /** Session runs in a git worktree Threadlines created and must not delete. */
   readonly managedWorktree?: boolean;
+  /** The session has the page tools; their images go in this folder. */
+  readonly agentPageAssetsDir?: string;
 }): EffectCodexSchema.V2TurnStartParams__CollaborationMode | undefined {
   if (input.interactionMode === undefined) {
     return undefined;
@@ -628,6 +640,14 @@ function buildCodexCollaborationMode(input: {
           ? CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS
           : CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS,
         CODEX_PREVIEW_PANEL_DEVELOPER_INSTRUCTIONS,
+        ...(input.agentPageAssetsDir !== undefined
+          ? [
+              buildAgentPageInstructions({
+                assetsDir: input.agentPageAssetsDir,
+                rival: CODEX_PAGE_RIVAL,
+              }),
+            ]
+          : []),
         FILE_LINK_INSTRUCTIONS,
         ...(input.managedWorktree ? [MANAGED_WORKTREE_INSTRUCTION] : []),
       ].join("\n\n"),
@@ -648,6 +668,8 @@ export function buildTurnStartParams(input: {
   readonly interactionMode?: ProviderInteractionMode;
   /** Session runs in a git worktree Threadlines created and must not delete. */
   readonly managedWorktree?: boolean;
+  /** The session has the page tools; their images go in this folder. */
+  readonly agentPageAssetsDir?: string;
   /** A side answer: every turn is read-only with no approvals. */
   readonly lockdown?: boolean;
 }): Effect.Effect<
@@ -676,6 +698,9 @@ export function buildTurnStartParams(input: {
     ...(input.model ? { model: input.model } : {}),
     ...(input.effort ? { effort: input.effort } : {}),
     ...(input.managedWorktree ? { managedWorktree: true } : {}),
+    ...(input.agentPageAssetsDir !== undefined
+      ? { agentPageAssetsDir: input.agentPageAssetsDir }
+      : {}),
   });
 
   return decodeCodexTurnStartParams({
@@ -1851,6 +1876,15 @@ export const makeCodexSessionRuntime = (
       Effect.provideService(FileSystem.FileSystem, fileSystem),
       Effect.cached,
     );
+    // The page tools' image folder, made once; workspace-write sandboxes can
+    // write there because it sits in the system temp folder.
+    const agentPageAssetsDir =
+      options.agentPages === true && options.lockdown === undefined
+        ? yield* ensurePageAssetsDir(parseSessionKey(options.threadId).threadId).pipe(
+            Effect.map((dir): string | undefined => dir),
+            Effect.orElseSucceed(() => undefined),
+          )
+        : undefined;
     const events = yield* Queue.unbounded<ProviderEvent>();
     const pendingApprovalsRef = yield* Ref.make(new Map<ApprovalRequestId, PendingApproval>());
     const approvalCorrelationsRef = yield* Ref.make(new Map<string, ApprovalCorrelation>());
@@ -1885,12 +1919,14 @@ export const makeCodexSessionRuntime = (
     // never gets the browser; in a room it gets the room's read tools. The
     // credential dies with the runtime's scope, whichever way it ends.
     const roomTools = options.roomTools === true;
+    const agentPages = options.agentPages === true && lockdown === undefined;
     const credential =
       lockdown === undefined || roomTools
         ? yield* mcpSessionRegistry.credentialFor({
             sessionKey: options.threadId,
             browser: lockdown === undefined,
             room: roomTools,
+            pages: agentPages,
             ...(lockdown !== undefined ? { sideKind: lockdown.kind } : {}),
           })
         : undefined;
@@ -1923,6 +1959,14 @@ export const makeCodexSessionRuntime = (
               serverName: BROWSER_MCP_SERVER_NAME,
             },
             ...(roomTools ? { room: roomServer } : {}),
+            ...(agentPages
+              ? {
+                  pages: {
+                    url: mcpPagesEndpointUrl(options.serverPort),
+                    serverName: PAGES_MCP_SERVER_NAME,
+                  },
+                }
+              : {}),
           }),
       env,
     );
@@ -2787,6 +2831,7 @@ export const makeCodexSessionRuntime = (
             ...(input.effort ? { effort: input.effort } : {}),
             ...(input.interactionMode ? { interactionMode: input.interactionMode } : {}),
             ...((yield* runsInManagedWorktree) ? { managedWorktree: true } : {}),
+            ...(agentPageAssetsDir !== undefined ? { agentPageAssetsDir } : {}),
             ...(lockdown !== undefined ? { lockdown: true } : {}),
           });
           const rawResponse = yield* withCodexRequestTimeout(

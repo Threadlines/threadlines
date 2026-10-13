@@ -16,6 +16,7 @@ import type { CanonicalItemType } from "@threadlines/contracts";
 
 import { BROWSER_MCP_SERVER_NAME } from "../../mcp/McpHttpServer.ts";
 import { ROOM_MCP_SERVER_NAME } from "../../mcp/roomToolAccess.ts";
+import { PAGES_MCP_SERVER_NAME } from "../../mcp/pageTools.ts";
 
 const DETAIL_MAX_CHARS = 400;
 const OUTPUT_MAX_CHARS = 20_000;
@@ -57,14 +58,19 @@ function truncate(value: string, max: number): string {
 
 /**
  * Threadlines' own tool servers are registered per thread under
- * `threadlines_b_<key>` / `threadlines_r_<key>`; the chat knows them by their
+ * `threadlines_b_<key>` / `threadlines_r_<key>` / `threadlines_p_<key>`; the chat knows them by their
  * stable names, so that is what it is told.
  */
 function threadlinesMcpTool(name: string): OpenCodeToolIdentity["mcp"] | undefined {
-  const match = /^threadlines_([br])_[0-9a-f]+_(.+)$/u.exec(name);
+  const match = /^threadlines_([brp])_[0-9a-f]+_(.+)$/u.exec(name);
   if (!match) return undefined;
   return {
-    server: match[1] === "b" ? BROWSER_MCP_SERVER_NAME : ROOM_MCP_SERVER_NAME,
+    server:
+      match[1] === "b"
+        ? BROWSER_MCP_SERVER_NAME
+        : match[1] === "p"
+          ? PAGES_MCP_SERVER_NAME
+          : ROOM_MCP_SERVER_NAME,
     tool: match[2]!,
   };
 }

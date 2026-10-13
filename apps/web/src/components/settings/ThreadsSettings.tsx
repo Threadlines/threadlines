@@ -62,6 +62,8 @@ export function ThreadsSettingsPanel({ surface = "full" }: { surface?: "full" | 
         <NewThreadRoomRow />
         <DefaultThreadEnvModeRow />
         <AgentThreadsRow />
+        <AgentPagesRow />
+        <ClaudeArtifactsRow />
       </SettingsSection>
 
       <SettingsSection title="Rooms" description={computerNote}>
@@ -357,6 +359,70 @@ function RoomsRow() {
           checked={roomsOn}
           onCheckedChange={(checked) => updateSettings({ enableRooms: Boolean(checked) })}
           aria-label="Enable rooms"
+        />
+      }
+    />
+  );
+}
+
+function AgentPagesRow() {
+  const settings = useSettings();
+  const { updateSettings } = useUpdateSettings();
+  const pagesOn = settings.enableAgentPages !== false;
+  return (
+    <SettingsRow
+      title="Agent pages"
+      description="Agents can show a chart, diagram, mockup or document as a page in their reply. Pages already shown stay when this is off."
+      resetAction={
+        !pagesOn ? (
+          <SettingResetButton
+            label="agent pages"
+            onClick={() => updateSettings({ enableAgentPages: true })}
+          />
+        ) : null
+      }
+      control={
+        <Switch
+          checked={pagesOn}
+          onCheckedChange={(checked) => updateSettings({ enableAgentPages: Boolean(checked) })}
+          aria-label="Enable agent pages"
+        />
+      }
+    />
+  );
+}
+
+/**
+ * Claude's own publishing, beside agent pages: off unless chosen, because it
+ * uploads the page. It rides on agent pages, so it is off while they are.
+ */
+function ClaudeArtifactsRow() {
+  const settings = useSettings();
+  const { updateSettings } = useUpdateSettings();
+  const pagesOn = settings.enableAgentPages !== false;
+  const artifactsOn = settings.enableClaudeArtifacts === true;
+  return (
+    <SettingsRow
+      title="Claude artifacts"
+      description={
+        pagesOn
+          ? "Claude can also publish a page to claude.ai for a link you can share, which uploads it to Anthropic."
+          : "Turn on agent pages to use this."
+      }
+      resetAction={
+        artifactsOn ? (
+          <SettingResetButton
+            label="Claude artifacts"
+            onClick={() => updateSettings({ enableClaudeArtifacts: false })}
+          />
+        ) : null
+      }
+      control={
+        <Switch
+          checked={artifactsOn && pagesOn}
+          disabled={!pagesOn}
+          onCheckedChange={(checked) => updateSettings({ enableClaudeArtifacts: Boolean(checked) })}
+          aria-label="Enable Claude artifacts"
         />
       }
     />

@@ -16,6 +16,7 @@ import { type EnvironmentState, useStore } from "../store";
 import { type ChatMessage, type Thread } from "../types";
 
 import {
+  createUpwardScrollDetector,
   buildRevertConfirmView,
   resolveRemoteBehindCount,
   resolveWorkingTreeChanges,
@@ -3021,5 +3022,34 @@ describe("resolveThreadBranchToRecord", () => {
         checkoutRef: "feature/two",
       }),
     ).toBeNull();
+  });
+});
+
+describe("createUpwardScrollDetector", () => {
+  const at = (scrollOffset: number, contentLength = 5_000) => ({
+    scrollOffset,
+    viewportLength: 800,
+    contentLength,
+  });
+
+  it("notices the reader scrolling up away from the end, slow scrolls included", () => {
+    const detector = createUpwardScrollDetector();
+    detector.observe(at(4_200));
+    expect(detector.observe(at(4_199.5))).toBe(false);
+    expect(detector.observe(at(4_100))).toBe(true);
+  });
+
+  it("ignores following, streaming growth and content that got shorter", () => {
+    const detector = createUpwardScrollDetector();
+    detector.observe(at(4_200));
+    expect(detector.observe(at(4_400, 5_200))).toBe(false);
+    // A fold closing clamps the offset up the page; that is not the reader.
+    expect(detector.observe(at(3_900, 4_700))).toBe(false);
+  });
+
+  it("ignores a small move that stays at the end", () => {
+    const detector = createUpwardScrollDetector();
+    detector.observe(at(4_200));
+    expect(detector.observe(at(4_190))).toBe(false);
   });
 });

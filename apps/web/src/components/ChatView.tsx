@@ -1,4 +1,5 @@
 import {
+  type OrchestrationAgentPage,
   type ApprovalRequestId,
   type ChatSkillReference,
   DEFAULT_MODEL,
@@ -391,6 +392,7 @@ const ThreadTerminalDrawer = lazy(() => import("./ThreadTerminalDrawer"));
 
 const ATTACHMENT_ONLY_BOOTSTRAP_PROMPT =
   "[User attached one or more files without additional text. Respond using the conversation context and the attached file(s).]";
+const EMPTY_AGENT_PAGES: ReadonlyArray<OrchestrationAgentPage> = [];
 const EMPTY_ACTIVITIES: OrchestrationThreadActivity[] = [];
 const EMPTY_TURN_IDS: ReadonlyArray<TurnId> = [];
 const NO_SEEN_TURNS = { threadId: null, turnIds: EMPTY_TURN_IDS } as const;
@@ -2497,8 +2499,10 @@ export default function ChatView(props: ChatViewProps) {
         subagentActivityState.resultEntries,
         forkContextEntries,
         subagentActivityState.liveEntries,
+        activeThread?.pages ?? EMPTY_AGENT_PAGES,
       ),
     [
+      activeThread?.pages,
       activeThread?.proposedPlans,
       forkContextEntries,
       subagentActivityState.liveEntries,
