@@ -388,6 +388,7 @@ describe("PullRequestAutomationWatcher", () => {
     readonly script: HostScript;
     readonly sweepIntervalMs?: number;
     readonly inMotionIntervalMs?: number;
+    readonly pushWaitMs?: number;
     /** Keeps the status read of one checkout open until the promise it answers settles. */
     readonly holdStatusRead?: (cwd: string) => Promise<void> | undefined;
     /** Runs as the watcher picks an event up, just before it acts on it. */
@@ -491,6 +492,7 @@ describe("PullRequestAutomationWatcher", () => {
       ...(input.inMotionIntervalMs === undefined
         ? {}
         : { inMotionIntervalMs: input.inMotionIntervalMs }),
+      ...(input.pushWaitMs === undefined ? {} : { pushWaitMs: input.pushWaitMs }),
     }).pipe(
       Layer.provideMerge(
         Layer.succeed(
@@ -611,12 +613,16 @@ describe("PullRequestAutomationWatcher", () => {
   });
 
   it("looks at a thread as its turn ends, not at the next sweep", async () => {
+    let heard = 0;
     const { dispatched, emit, setScript, start, statusReads } = await createHarness({
       threads: [thread()],
       script: {
         remote: OPEN_PULL_REQUEST,
         detail: detail([PASSING_CHECK]),
         activity: activity(),
+      },
+      onEventHeard: () => {
+        heard += 1;
       },
     });
     const stop = await start();
@@ -633,6 +639,11 @@ describe("PullRequestAutomationWatcher", () => {
       emit(turnEvent("thread.turn-completed"));
       await vi.waitFor(() => expect(dispatched).toHaveLength(1));
       expect(dispatched[0]?.message.text).toContain("These checks failed:\n- typecheck");
+
+      // A turn ends over several events, and it is looked at once for all of them.
+      emit(turnEvent("thread.turn-completed"));
+      await vi.waitFor(() => expect(heard).toBe(3));
+      expect(statusReads).toHaveLength(2);
     } finally {
       await stop();
     }
@@ -695,6 +706,30 @@ describe("PullRequestAutomationWatcher", () => {
       detail: { ...detail([FAILING_CHECK]), headSha: "pushed" },
       activity: activity(),
     });
+    expect(await sweep()).toBe(1);
+  });
+
+  it("believes the host again when it stays a commit apart from the checkout for longer than a push takes", async () => {
+    const { setScript, sweep } = await createHarness({
+      threads: [thread()],
+      script: {
+        remote: { ...OPEN_PULL_REQUEST, upstreamHeadSha: "before" },
+        detail: { ...detail([PASSING_CHECK]), headSha: "before" },
+        activity: activity(),
+      },
+      pushWaitMs: 20,
+    });
+
+    await sweep();
+    // Someone else pushed, and this checkout's fetch keeps failing: it still
+    // has the branch where it was, and that is not the host being behind.
+    setScript({
+      remote: { ...OPEN_PULL_REQUEST, upstreamHeadSha: "before" },
+      detail: { ...detail([FAILING_CHECK]), headSha: "theirs" },
+      activity: activity(),
+    });
+    expect(await sweep()).toBe(0);
+    await new Promise((resolve) => setTimeout(resolve, 40));
     expect(await sweep()).toBe(1);
   });
 
@@ -780,32 +815,58 @@ describe("PullRequestAutomationWatcher", () => {
     expect(dispatched).toEqual([]);
   });
 
-  it("leaves a thread with nothing to watch alone until its rest is over or the thread changes", async () => {
-    // Touched just now, so its rest is as short as it gets: one sweep interval.
-    const settled = thread({ updatedAt: new Date().toISOString() });
-    const { setThreads, statusReads, sweep } = await createHarness({
-      threads: [settled],
+  const MERGED_PULL_REQUEST: VcsStatusRemoteResult = {
+    ...OPEN_PULL_REQUEST,
+    pr: { ...OPEN_PULL_REQUEST.pr!, state: "merged" },
+  };
+
+  it("leaves a thread whose pull request is finished alone until the thread changes", async () => {
+    const { setScript, setThreads, statusReads, sweep } = await createHarness({
+      threads: [thread()],
+      // None found is not rested on: a lookup the host did not answer reads the same.
       script: {
-        remote: { ...OPEN_PULL_REQUEST, pr: { ...OPEN_PULL_REQUEST.pr!, state: "merged" } },
+        remote: { ...OPEN_PULL_REQUEST, pr: null },
         detail: detail([PASSING_CHECK]),
         activity: activity(),
       },
-      sweepIntervalMs: 300,
     });
 
     await sweep();
     await sweep();
-    expect(statusReads).toHaveLength(1);
-
-    // Its rest over, it is looked at again, in case the pull request was reopened.
-    await new Promise((resolve) => setTimeout(resolve, 350));
-    await sweep();
     expect(statusReads).toHaveLength(2);
 
-    // A turn, a switch, a move to another branch: any change ends the rest at once.
-    setThreads([{ ...settled, branch: "another-branch" }]);
+    setScript({
+      remote: MERGED_PULL_REQUEST,
+      detail: detail([PASSING_CHECK]),
+      activity: activity(),
+    });
+    await sweep();
     await sweep();
     expect(statusReads).toHaveLength(3);
+
+    // A turn, a switch, a move to another branch: any change ends the rest at once.
+    setThreads([thread({ branch: "another-branch" })]);
+    await sweep();
+    expect(statusReads).toHaveLength(4);
+  });
+
+  it("looks at a resting thread again once its rest is over", async () => {
+    const { statusReads, sweep } = await createHarness({
+      // Touched just now, so its rest is as short as it gets: one sweep interval.
+      threads: [thread({ updatedAt: new Date().toISOString() })],
+      script: {
+        remote: MERGED_PULL_REQUEST,
+        detail: detail([PASSING_CHECK]),
+        activity: activity(),
+      },
+      sweepIntervalMs: 20,
+    });
+
+    await sweep();
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    // In case the pull request was reopened, or another opened on the branch.
+    await sweep();
+    expect(statusReads).toHaveLength(2);
   });
 
   it("waits out a busy thread without forgetting what it had already seen", async () => {
@@ -1208,7 +1269,7 @@ describe("PullRequestAutomationWatcher", () => {
     it("leaves alone a pull request the checkout found in another repository", async () => {
       // The agent ended its turn in another repository's folder, whose branch
       // has a pull request of its own under the same number.
-      const { actions, commands, sweep } = await createHarness({
+      const { actions, commands, setScript, setThreads, statusReads, sweep } = await createHarness({
         threads: [armed],
         script: {
           remote: {
@@ -1226,6 +1287,25 @@ describe("PullRequestAutomationWatcher", () => {
 
       expect(await sweep()).toBe(0);
       expect(actions).toEqual([]);
+      expect(commands).toEqual([]);
+
+      // Nor does that pull request closing end the wait for the project's own.
+      // The thread has been touched since, so it is looked at again.
+      setThreads([{ ...armed, updatedAt: "2026-05-04T11:00:00.000Z" }]);
+      setScript({
+        remote: {
+          ...OPEN_PULL_REQUEST,
+          pr: {
+            ...OPEN_PULL_REQUEST.pr!,
+            url: `https://github.com/acme/gadgets/pull/${PR_NUMBER}`,
+            state: "closed",
+          },
+        },
+        detail: mergeable([PASSING_CHECK]),
+        activity: activity(),
+      });
+      await sweep();
+      expect(statusReads).toHaveLength(2);
       expect(commands).toEqual([]);
     });
 

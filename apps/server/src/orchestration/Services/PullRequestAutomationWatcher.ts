@@ -22,12 +22,12 @@ import type * as Scope from "effect/Scope";
  * the user sent meanwhile goes alone. A switch coming on is answered by a look
  * at that thread alone, ahead of the rest of a sweep in flight, so the answer
  * does not slow down as more threads are armed. A watched thread gets the same
- * look as its turn ends, when the agent has most likely just pushed, and while
- * the host still answers for the commit before a push, its checks are neither
- * sent to the agent nor merged on. A thread with nothing to watch
- * (no pull request on its branch, or one that is merged or closed) is left
- * alone for a while, longer the longer it has sat untouched and at most half an
- * hour, and looked at again as soon as it changes.
+ * look as its turn ends, when the agent has most likely just pushed, and for
+ * the moment the host still answers for the commit before a push, its checks
+ * are neither sent to the agent nor merged on. A thread whose pull request is
+ * merged or closed is left alone for a while, longer the longer it has sat
+ * untouched and about half an hour at most, and looked at again as soon as it
+ * changes.
  *
  * It runs only while the server does: the auto-fix baseline lives in memory, so
  * a restart re-observes rather than replaying what it missed. The merge switch

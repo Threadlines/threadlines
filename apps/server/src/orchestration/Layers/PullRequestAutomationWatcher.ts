@@ -25,6 +25,7 @@ import {
 } from "@threadlines/shared/pullRequestAutoMerge";
 import {
   PULL_REQUEST_CHECKS_POLL_INTERVAL_MS,
+  PULL_REQUEST_FRESH_PUSH_WATCH_MS,
   pullRequestChecksInMotion,
   pullRequestChecksWait,
 } from "@threadlines/shared/pullRequestPolling";
@@ -105,10 +106,9 @@ interface PendingRequeue {
 
 /**
  * What a look at a thread's pull requests found. `started`: a turn. `watching`:
- * an open pull request there is something left to do for, or a host that did
- * not answer, which is not known to be nothing. `nothing`: no pull request on
- * the thread's branch, or one that is merged, closed, in another repository,
- * or out of turns.
+ * an open pull request there is something left to do for, or none found or a
+ * host that did not answer, neither of which is known to be nothing. `nothing`:
+ * a pull request that is merged, closed, in another repository, or out of turns.
  */
 type LookOutcome = "started" | "watching" | "nothing";
 
@@ -296,6 +296,8 @@ export interface PullRequestAutomationWatcherLiveOptions {
   readonly sweepIntervalMs?: number;
   /** How soon a thread whose pull request is in motion is looked at again. */
   readonly inMotionIntervalMs?: number;
+  /** How long a read that is a commit behind the checkout is held back for the host to catch up. */
+  readonly pushWaitMs?: number;
 }
 
 const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcherLiveOptions) =>
@@ -310,6 +312,7 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
       1,
       options?.inMotionIntervalMs ?? PULL_REQUEST_CHECKS_POLL_INTERVAL_MS,
     );
+    const pushWaitMs = options?.pushWaitMs ?? PULL_REQUEST_FRESH_PUSH_WATCH_MS;
     // What each armed pull request looked like at the last look. It lives in
     // memory only, so a restart re-observes instead of acting on what was
     // already there.
@@ -338,6 +341,14 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
     // pull requests are long merged do not each cost a read of the host every
     // interval. In memory, so a restart looks at everything once.
     const restingRef = yield* Ref.make(new Map<string, Resting>());
+    // When each pull request was first read a commit apart from its thread's
+    // checkout, and which two commits. The host has a push within seconds, so
+    // a difference that outlasts the wait is the checkout's own view gone
+    // stale (someone else pushed and its fetch keeps failing), and the host is
+    // believed again rather than held to it for good.
+    const pushWaitsRef = yield* Ref.make(
+      new Map<string, { readonly commits: string; readonly since: number }>(),
+    );
     // When every armed thread was last looked at, which the interval counts from.
     const lastFullSweepAtRef = yield* Ref.make(Number.NEGATIVE_INFINITY);
     // One sweep at a time: the interval fiber and `sweepNow` would otherwise
@@ -372,13 +383,41 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
       );
 
     /**
+     * The commit to hold a read of a pull request to: where the checkout has
+     * its branch on the host (what it last pushed or fetched), or null where
+     * there is nothing to hold it to. That is so where the checkout does not
+     * know, and where the read has been a commit apart from it for longer
+     * than a push takes to arrive.
+     */
+    const pushedHeadToAwait = (
+      key: string,
+      detail: PullRequestDetail,
+      pushedHead: string | null,
+      now: number,
+    ) =>
+      Ref.modify(pushWaitsRef, (waits) => {
+        if (pullRequestChecksWait(detail, pushedHead, now) !== "push") {
+          waits.delete(key);
+          return [pushedHead, waits];
+        }
+        const commits = `${pushedHead}..${detail.headSha}`;
+        const prior = waits.get(key);
+        const since = prior?.commits === commits ? prior.since : now;
+        waits.set(key, { commits, since });
+        return [now - since < pushWaitMs ? pushedHead : null, waits];
+      });
+
+    /**
      * A pull request as the host has it now, past the service's cache, or why
      * there is none to act on: `unread` where the host did not answer, and
      * `elsewhere` where the project's repository has a different pull request
      * under that number than the one at `url`, which is the one that was
-     * meant. One whose checks are in motion puts its thread on the quicker pace.
+     * meant. A null `url` takes the number at its word: a linked pull request
+     * was matched to the project's repository when it was linked, and the
+     * address stored then goes stale when the repository is renamed. One whose
+     * checks are in motion puts its thread on the quicker pace.
      */
-    const readDetail = (threadId: ThreadId, reference: PullRequestRef, url: string) =>
+    const readDetail = (threadId: ThreadId, reference: PullRequestRef, url: string | null) =>
       Effect.gen(function* () {
         const detail = yield* attempt(
           "detail-read",
@@ -388,7 +427,7 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
         if (detail === null) {
           return "unread";
         }
-        if (!isSamePullRequest(detail.url, url)) {
+        if (url !== null && !isSamePullRequest(detail.url, url)) {
           yield* Effect.logWarning("pull-request.auto-fix.other-repository", {
             threadId,
             number: reference.number,
@@ -528,7 +567,7 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
         readonly detail: PullRequestDetail;
         readonly mergeMethod: PullRequestMergeMethod;
         readonly unpushedCommits: number;
-        /** Where the thread's checkout last pushed this pull request's branch, if it is on it. */
+        /** The commit a read is held to before it is merged on; see `pushedHeadToAwait`. */
         readonly pushedHead: string | null;
         /** The auto-fix watch is on and still has turns left to fix a failure. */
         readonly autoFix: boolean;
@@ -774,19 +813,32 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
         const cwd = threadWorkingCwd(input);
 
         const remote = yield* attempt("status-read", thread.id, gitManager.remoteStatus({ cwd }));
-        if (remote === null) {
+        // No pull request is not known to be none: a lookup the host did not
+        // answer reads the same, so the thread keeps the usual pace.
+        if (remote === null || remote.pr === null) {
           return "watching";
-        }
-        if (remote.pr === null) {
-          return "nothing";
         }
         const pullRequest = remote.pr;
         const autoMerge = thread.pullRequestAutoMerge;
+        const reference = {
+          projectId: project.id,
+          repository,
+          number: pullRequest.number,
+          force: true,
+        } as const;
         if (pullRequest.state !== "open") {
           // Merged or closed some other way: the instruction has nothing left
-          // to act on, and must not carry over to the next pull request.
+          // to act on, and must not carry over to the next pull request. That
+          // holds for the project's own pull request, so the host is asked
+          // first whether this is it.
           if (autoMerge !== null) {
-            yield* disarmAutoMerge(thread.id, null);
+            const settled = yield* readDetail(thread.id, reference, pullRequest.url);
+            if (settled === "unread") {
+              return "watching";
+            }
+            if (settled !== "elsewhere") {
+              yield* disarmAutoMerge(thread.id, null);
+            }
           }
           return "nothing";
         }
@@ -818,12 +870,6 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
           return "nothing";
         }
 
-        const reference = {
-          projectId: project.id,
-          repository,
-          number: pullRequest.number,
-          force: true,
-        } as const;
         const detail = yield* readDetail(thread.id, reference, pullRequest.url);
         if (detail === "unread" || detail === "elsewhere") {
           return detail === "unread" ? "watching" : "nothing";
@@ -832,8 +878,13 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
         // A read that still names the commit before says nothing about the
         // push: its checks are that commit's, so they are neither sent to the
         // agent nor merged on, and the thread is looked at again soon.
-        const pushedHead = remote.upstreamHeadSha ?? null;
         const now = yield* Clock.currentTimeMillis;
+        const pushedHead = yield* pushedHeadToAwait(
+          key,
+          detail,
+          remote.upstreamHeadSha ?? null,
+          now,
+        );
         const awaitingPush = pullRequestChecksWait(detail, pushedHead, now) === "push";
         if (awaitingPush) {
           yield* keepInMotion(thread.id, now);
@@ -1035,7 +1086,7 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
           number: linked.number,
           force: true,
         } as const;
-        const detail = yield* readDetail(thread.id, reference, linked.url);
+        const detail = yield* readDetail(thread.id, reference, null);
         if (detail === "unread" || detail === "elsewhere") {
           watching ||= detail === "unread";
           continue;
@@ -1067,7 +1118,12 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
           detail,
           mergeMethod: linked.autoMerge,
           unpushedCommits: checkout?.aheadCount ?? 0,
-          pushedHead: checkout?.upstreamHeadSha ?? null,
+          pushedHead: yield* pushedHeadToAwait(
+            pairKey(thread.id, linked.number),
+            detail,
+            checkout?.upstreamHeadSha ?? null,
+            yield* Clock.currentTimeMillis,
+          ),
           autoFix: false,
           pullRequestNumber: linked.number,
         });
@@ -1249,6 +1305,14 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
         }
         return threads;
       });
+      yield* Ref.update(pushWaitsRef, (waits) => {
+        for (const key of waits.keys()) {
+          if (!watchedThreadIds.has(threadIdFromPairKey(key))) {
+            waits.delete(key);
+          }
+        }
+        return waits;
+      });
 
       return snapshot.threads.flatMap((thread): ThreadId[] => {
         if (!idleThreadIds.has(thread.id) || (scope === "in-motion" && !inMotion.has(thread.id))) {
@@ -1343,9 +1407,13 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
             ),
           ),
         );
-        // Threads with a turn under way, to be looked at as it ends. Only this
-        // event fiber touches it, and a thread nobody watches leaves it at the
-        // end of its turn. A turn end it misses is no loss: the next sweep looks.
+        // Threads with a turn asked for, to be looked at as it ends. Only this
+        // event fiber touches it. A thread enters when its turn is asked for
+        // and not on later word that it is running: this fiber can fall behind
+        // while a look reads the host, and a stale "running" taken up after
+        // the turn's end would have the thread looked at twice. A thread
+        // nobody watches leaves at the first sign of its turn. A turn end it
+        // misses is no loss: the next sweep looks.
         const awaitingTurnEnd = new Set<string>();
 
         /** A look asked for; a thread found busy gets another as its turn ends. */
@@ -1403,12 +1471,14 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
               case "thread.turn-start-requested":
                 awaitingTurnEnd.add(event.payload.threadId);
                 return Effect.void;
+              case "thread.deleted":
+                awaitingTurnEnd.delete(event.payload.threadId);
+                return Effect.void;
               case "thread.session-set":
-                if (sessionHasWorkInProgress(event.payload.session)) {
-                  awaitingTurnEnd.add(event.payload.threadId);
-                  return Effect.void;
-                }
-                return lookAfterTurn(event.payload.threadId);
+                // Still working by its own word, so not worth a read of the thread.
+                return sessionHasWorkInProgress(event.payload.session)
+                  ? Effect.void
+                  : lookAfterTurn(event.payload.threadId);
               case "thread.turn-diff-completed":
               case "thread.turn-completed":
                 return lookAfterTurn(event.payload.threadId);

@@ -57,8 +57,10 @@ export interface PullRequestAutoMergeInput {
   /** Commits on the thread's branch that have not reached the host yet. */
   readonly unpushedCommits: number;
   /**
-   * The commit the thread's checkout last pushed its branch at, or null where
-   * it does not know: no upstream, or a pull request on another branch.
+   * The commit the thread's checkout has its branch at on the host (what it
+   * last pushed or fetched), or null where there is nothing to hold the read
+   * to: no upstream, a pull request on another branch, or a checkout whose
+   * view the caller has stopped trusting.
    */
   readonly pushedHead: string | null;
   readonly now: number;
@@ -79,7 +81,7 @@ export function resolvePullRequestAutoMergeStep(
     return { kind: "stop", reason: "Write access is needed to merge" };
   }
   // Before the checks are weighed at all: a read of another commit than the
-  // one that was pushed shows an older commit's checks, green or red.
+  // checkout's shows an older commit's checks, green or red.
   if (pullRequestChecksWait(detail, input.pushedHead, input.now) === "push") {
     return { kind: "wait", reason: "Waiting for GitHub to see the latest push" };
   }
