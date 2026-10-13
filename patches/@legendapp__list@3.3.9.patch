@@ -15,7 +15,7 @@ index c424d3ce576ea8205713d2e34bc5c0ad6de34db9..9f2abe8b8ec7fc4bbbefad87768591eb
       * Returns a stable item type used for pooling and size estimation.
       */
 diff --git a/react-native.web.js b/react-native.web.js
-index 5b7b716e1edb046cbb6386b417490fab793f666b..34b79d7de27f5ae9e4f4b6fc4a8879c5d705560f 100644
+index 5b7b716e1edb046cbb6386b417490fab793f666b..71afbaa0a6a1f9b8d48e67c3128cc0ea5bd778cc 100644
 --- a/react-native.web.js
 +++ b/react-native.web.js
 @@ -1223,6 +1223,15 @@ function getItemSize(ctx, key, index, data, useAverageSize, preferCachedSize, no
@@ -99,7 +99,44 @@ index 5b7b716e1edb046cbb6386b417490fab793f666b..34b79d7de27f5ae9e4f4b6fc4a8879c5
          const index = indexByKey.get(id);
          if (index !== void 0) {
            const position = positions[index];
-@@ -6338,7 +6378,19 @@ var ListComponentScrollView = React3.forwardRef(function ListComponentScrollView
+@@ -5765,6 +5805,23 @@ var ContainerSlot = typedMemo(function ContainerSlot2(props) {
+ });
+ 
+ // src/utils/reordering.ts
++// Threadlines: a row moved with insertBefore loses its state, and a frame
++// inside it loads again from scratch. moveBefore moves it as it is, where the
++// browser has it.
++function moveElementInPlace(container, element, before) {
++  if (typeof container.moveBefore === "function") {
++    try {
++      container.moveBefore(element, before);
++      return;
++    } catch (e) {
++    }
++  }
++  if (before) {
++    container.insertBefore(element, before);
++  } else {
++    container.appendChild(element);
++  }
++}
+ function sortDOMElements(container, indexByElement) {
+   const elements = Array.from(container.children);
+   if (elements.length <= 1) return elements;
+@@ -5803,11 +5860,7 @@ function sortDOMElements(container, indexByElement) {
+           break;
+         }
+       }
+-      if (nextStableElement) {
+-        container.insertBefore(element, nextStableElement);
+-      } else {
+-        container.appendChild(element);
+-      }
++      moveElementInPlace(container, element, nextStableElement);
+     }
+   }
+ }
+@@ -6338,7 +6391,19 @@ var ListComponentScrollView = React3.forwardRef(function ListComponentScrollView
      if ("onscrollend" in target) {
        target.addEventListener("scrollend", emitScrollEnd);
      }
@@ -119,7 +156,7 @@ index 5b7b716e1edb046cbb6386b417490fab793f666b..34b79d7de27f5ae9e4f4b6fc4a8879c5
        target.removeEventListener("scroll", handleScroll);
        if ("onscrollend" in target) {
          target.removeEventListener("scrollend", emitScrollEnd);
-@@ -6560,8 +6612,11 @@ function ScrollAdjust() {
+@@ -6560,8 +6625,11 @@ function ScrollAdjust() {
                window.getComputedStyle(contentNode)[axis.paddingEndProp]
              );
              const temporaryPaddingEnd = `${(currentPaddingEnd || 0) + pad}px`;
@@ -132,7 +169,7 @@ index 5b7b716e1edb046cbb6386b417490fab793f666b..34b79d7de27f5ae9e4f4b6fc4a8879c5
              void contentNode.offsetHeight;
              scrollBy();
              if (resetPaddingRafRef.current !== void 0) {
-@@ -7848,6 +7903,7 @@ var LegendListInner = typedForwardRef(function LegendListInner2(props, forwarded
+@@ -7848,6 +7916,7 @@ var LegendListInner = typedForwardRef(function LegendListInner2(props, forwarded
      estimatedListSize,
      extraData,
      getFixedItemSize,
@@ -140,7 +177,7 @@ index 5b7b716e1edb046cbb6386b417490fab793f666b..34b79d7de27f5ae9e4f4b6fc4a8879c5
      getItemType,
      horizontal,
      rtl,
-@@ -8122,6 +8178,7 @@ var LegendListInner = typedForwardRef(function LegendListInner2(props, forwarded
+@@ -8122,6 +8191,7 @@ var LegendListInner = typedForwardRef(function LegendListInner2(props, forwarded
      drawDistance,
      estimatedItemSize,
      getFixedItemSize: useWrapIfItem(getFixedItemSize),
@@ -149,7 +186,7 @@ index 5b7b716e1edb046cbb6386b417490fab793f666b..34b79d7de27f5ae9e4f4b6fc4a8879c5
      hideItemsUntilMeasured: experimental_hideItemsUntilMeasured,
      horizontal: !!horizontal,
 diff --git a/react-native.web.mjs b/react-native.web.mjs
-index f64169616ea5d761bf82a562084e04f2b98ce7c2..cf1641c53490ae116a767ba63192887d9c6542e5 100644
+index f64169616ea5d761bf82a562084e04f2b98ce7c2..0f86d0e22094d2136107cce778440e123f476fc0 100644
 --- a/react-native.web.mjs
 +++ b/react-native.web.mjs
 @@ -1202,6 +1202,15 @@ function getItemSize(ctx, key, index, data, useAverageSize, preferCachedSize, no
@@ -233,7 +270,44 @@ index f64169616ea5d761bf82a562084e04f2b98ce7c2..cf1641c53490ae116a767ba63192887d
          const index = indexByKey.get(id);
          if (index !== void 0) {
            const position = positions[index];
-@@ -6317,7 +6357,19 @@ var ListComponentScrollView = forwardRef(function ListComponentScrollView2({
+@@ -5744,6 +5784,23 @@ var ContainerSlot = typedMemo(function ContainerSlot2(props) {
+ });
+ 
+ // src/utils/reordering.ts
++// Threadlines: a row moved with insertBefore loses its state, and a frame
++// inside it loads again from scratch. moveBefore moves it as it is, where the
++// browser has it.
++function moveElementInPlace(container, element, before) {
++  if (typeof container.moveBefore === "function") {
++    try {
++      container.moveBefore(element, before);
++      return;
++    } catch (e) {
++    }
++  }
++  if (before) {
++    container.insertBefore(element, before);
++  } else {
++    container.appendChild(element);
++  }
++}
+ function sortDOMElements(container, indexByElement) {
+   const elements = Array.from(container.children);
+   if (elements.length <= 1) return elements;
+@@ -5782,11 +5839,7 @@ function sortDOMElements(container, indexByElement) {
+           break;
+         }
+       }
+-      if (nextStableElement) {
+-        container.insertBefore(element, nextStableElement);
+-      } else {
+-        container.appendChild(element);
+-      }
++      moveElementInPlace(container, element, nextStableElement);
+     }
+   }
+ }
+@@ -6317,7 +6370,19 @@ var ListComponentScrollView = forwardRef(function ListComponentScrollView2({
      if ("onscrollend" in target) {
        target.addEventListener("scrollend", emitScrollEnd);
      }
@@ -253,7 +327,7 @@ index f64169616ea5d761bf82a562084e04f2b98ce7c2..cf1641c53490ae116a767ba63192887d
        target.removeEventListener("scroll", handleScroll);
        if ("onscrollend" in target) {
          target.removeEventListener("scrollend", emitScrollEnd);
-@@ -6539,8 +6591,11 @@ function ScrollAdjust() {
+@@ -6539,8 +6604,11 @@ function ScrollAdjust() {
                window.getComputedStyle(contentNode)[axis.paddingEndProp]
              );
              const temporaryPaddingEnd = `${(currentPaddingEnd || 0) + pad}px`;
@@ -266,7 +340,7 @@ index f64169616ea5d761bf82a562084e04f2b98ce7c2..cf1641c53490ae116a767ba63192887d
              void contentNode.offsetHeight;
              scrollBy();
              if (resetPaddingRafRef.current !== void 0) {
-@@ -7827,6 +7882,7 @@ var LegendListInner = typedForwardRef(function LegendListInner2(props, forwarded
+@@ -7827,6 +7895,7 @@ var LegendListInner = typedForwardRef(function LegendListInner2(props, forwarded
      estimatedListSize,
      extraData,
      getFixedItemSize,
@@ -274,7 +348,7 @@ index f64169616ea5d761bf82a562084e04f2b98ce7c2..cf1641c53490ae116a767ba63192887d
      getItemType,
      horizontal,
      rtl,
-@@ -8101,6 +8157,7 @@ var LegendListInner = typedForwardRef(function LegendListInner2(props, forwarded
+@@ -8101,6 +8170,7 @@ var LegendListInner = typedForwardRef(function LegendListInner2(props, forwarded
      drawDistance,
      estimatedItemSize,
      getFixedItemSize: useWrapIfItem(getFixedItemSize),
@@ -299,7 +373,7 @@ index c424d3ce576ea8205713d2e34bc5c0ad6de34db9..9f2abe8b8ec7fc4bbbefad87768591eb
       * Returns a stable item type used for pooling and size estimation.
       */
 diff --git a/react.js b/react.js
-index 5b7b716e1edb046cbb6386b417490fab793f666b..34b79d7de27f5ae9e4f4b6fc4a8879c5d705560f 100644
+index 5b7b716e1edb046cbb6386b417490fab793f666b..71afbaa0a6a1f9b8d48e67c3128cc0ea5bd778cc 100644
 --- a/react.js
 +++ b/react.js
 @@ -1223,6 +1223,15 @@ function getItemSize(ctx, key, index, data, useAverageSize, preferCachedSize, no
@@ -383,7 +457,44 @@ index 5b7b716e1edb046cbb6386b417490fab793f666b..34b79d7de27f5ae9e4f4b6fc4a8879c5
          const index = indexByKey.get(id);
          if (index !== void 0) {
            const position = positions[index];
-@@ -6338,7 +6378,19 @@ var ListComponentScrollView = React3.forwardRef(function ListComponentScrollView
+@@ -5765,6 +5805,23 @@ var ContainerSlot = typedMemo(function ContainerSlot2(props) {
+ });
+ 
+ // src/utils/reordering.ts
++// Threadlines: a row moved with insertBefore loses its state, and a frame
++// inside it loads again from scratch. moveBefore moves it as it is, where the
++// browser has it.
++function moveElementInPlace(container, element, before) {
++  if (typeof container.moveBefore === "function") {
++    try {
++      container.moveBefore(element, before);
++      return;
++    } catch (e) {
++    }
++  }
++  if (before) {
++    container.insertBefore(element, before);
++  } else {
++    container.appendChild(element);
++  }
++}
+ function sortDOMElements(container, indexByElement) {
+   const elements = Array.from(container.children);
+   if (elements.length <= 1) return elements;
+@@ -5803,11 +5860,7 @@ function sortDOMElements(container, indexByElement) {
+           break;
+         }
+       }
+-      if (nextStableElement) {
+-        container.insertBefore(element, nextStableElement);
+-      } else {
+-        container.appendChild(element);
+-      }
++      moveElementInPlace(container, element, nextStableElement);
+     }
+   }
+ }
+@@ -6338,7 +6391,19 @@ var ListComponentScrollView = React3.forwardRef(function ListComponentScrollView
      if ("onscrollend" in target) {
        target.addEventListener("scrollend", emitScrollEnd);
      }
@@ -403,7 +514,7 @@ index 5b7b716e1edb046cbb6386b417490fab793f666b..34b79d7de27f5ae9e4f4b6fc4a8879c5
        target.removeEventListener("scroll", handleScroll);
        if ("onscrollend" in target) {
          target.removeEventListener("scrollend", emitScrollEnd);
-@@ -6560,8 +6612,11 @@ function ScrollAdjust() {
+@@ -6560,8 +6625,11 @@ function ScrollAdjust() {
                window.getComputedStyle(contentNode)[axis.paddingEndProp]
              );
              const temporaryPaddingEnd = `${(currentPaddingEnd || 0) + pad}px`;
@@ -416,7 +527,7 @@ index 5b7b716e1edb046cbb6386b417490fab793f666b..34b79d7de27f5ae9e4f4b6fc4a8879c5
              void contentNode.offsetHeight;
              scrollBy();
              if (resetPaddingRafRef.current !== void 0) {
-@@ -7848,6 +7903,7 @@ var LegendListInner = typedForwardRef(function LegendListInner2(props, forwarded
+@@ -7848,6 +7916,7 @@ var LegendListInner = typedForwardRef(function LegendListInner2(props, forwarded
      estimatedListSize,
      extraData,
      getFixedItemSize,
@@ -424,7 +535,7 @@ index 5b7b716e1edb046cbb6386b417490fab793f666b..34b79d7de27f5ae9e4f4b6fc4a8879c5
      getItemType,
      horizontal,
      rtl,
-@@ -8122,6 +8178,7 @@ var LegendListInner = typedForwardRef(function LegendListInner2(props, forwarded
+@@ -8122,6 +8191,7 @@ var LegendListInner = typedForwardRef(function LegendListInner2(props, forwarded
      drawDistance,
      estimatedItemSize,
      getFixedItemSize: useWrapIfItem(getFixedItemSize),
@@ -433,7 +544,7 @@ index 5b7b716e1edb046cbb6386b417490fab793f666b..34b79d7de27f5ae9e4f4b6fc4a8879c5
      hideItemsUntilMeasured: experimental_hideItemsUntilMeasured,
      horizontal: !!horizontal,
 diff --git a/react.mjs b/react.mjs
-index f64169616ea5d761bf82a562084e04f2b98ce7c2..cf1641c53490ae116a767ba63192887d9c6542e5 100644
+index f64169616ea5d761bf82a562084e04f2b98ce7c2..0f86d0e22094d2136107cce778440e123f476fc0 100644
 --- a/react.mjs
 +++ b/react.mjs
 @@ -1202,6 +1202,15 @@ function getItemSize(ctx, key, index, data, useAverageSize, preferCachedSize, no
@@ -517,7 +628,44 @@ index f64169616ea5d761bf82a562084e04f2b98ce7c2..cf1641c53490ae116a767ba63192887d
          const index = indexByKey.get(id);
          if (index !== void 0) {
            const position = positions[index];
-@@ -6317,7 +6357,19 @@ var ListComponentScrollView = forwardRef(function ListComponentScrollView2({
+@@ -5744,6 +5784,23 @@ var ContainerSlot = typedMemo(function ContainerSlot2(props) {
+ });
+ 
+ // src/utils/reordering.ts
++// Threadlines: a row moved with insertBefore loses its state, and a frame
++// inside it loads again from scratch. moveBefore moves it as it is, where the
++// browser has it.
++function moveElementInPlace(container, element, before) {
++  if (typeof container.moveBefore === "function") {
++    try {
++      container.moveBefore(element, before);
++      return;
++    } catch (e) {
++    }
++  }
++  if (before) {
++    container.insertBefore(element, before);
++  } else {
++    container.appendChild(element);
++  }
++}
+ function sortDOMElements(container, indexByElement) {
+   const elements = Array.from(container.children);
+   if (elements.length <= 1) return elements;
+@@ -5782,11 +5839,7 @@ function sortDOMElements(container, indexByElement) {
+           break;
+         }
+       }
+-      if (nextStableElement) {
+-        container.insertBefore(element, nextStableElement);
+-      } else {
+-        container.appendChild(element);
+-      }
++      moveElementInPlace(container, element, nextStableElement);
+     }
+   }
+ }
+@@ -6317,7 +6370,19 @@ var ListComponentScrollView = forwardRef(function ListComponentScrollView2({
      if ("onscrollend" in target) {
        target.addEventListener("scrollend", emitScrollEnd);
      }
@@ -537,7 +685,7 @@ index f64169616ea5d761bf82a562084e04f2b98ce7c2..cf1641c53490ae116a767ba63192887d
        target.removeEventListener("scroll", handleScroll);
        if ("onscrollend" in target) {
          target.removeEventListener("scrollend", emitScrollEnd);
-@@ -6539,8 +6591,11 @@ function ScrollAdjust() {
+@@ -6539,8 +6604,11 @@ function ScrollAdjust() {
                window.getComputedStyle(contentNode)[axis.paddingEndProp]
              );
              const temporaryPaddingEnd = `${(currentPaddingEnd || 0) + pad}px`;
@@ -550,7 +698,7 @@ index f64169616ea5d761bf82a562084e04f2b98ce7c2..cf1641c53490ae116a767ba63192887d
              void contentNode.offsetHeight;
              scrollBy();
              if (resetPaddingRafRef.current !== void 0) {
-@@ -7827,6 +7882,7 @@ var LegendListInner = typedForwardRef(function LegendListInner2(props, forwarded
+@@ -7827,6 +7895,7 @@ var LegendListInner = typedForwardRef(function LegendListInner2(props, forwarded
      estimatedListSize,
      extraData,
      getFixedItemSize,
@@ -558,7 +706,7 @@ index f64169616ea5d761bf82a562084e04f2b98ce7c2..cf1641c53490ae116a767ba63192887d
      getItemType,
      horizontal,
      rtl,
-@@ -8101,6 +8157,7 @@ var LegendListInner = typedForwardRef(function LegendListInner2(props, forwarded
+@@ -8101,6 +8170,7 @@ var LegendListInner = typedForwardRef(function LegendListInner2(props, forwarded
      drawDistance,
      estimatedItemSize,
      getFixedItemSize: useWrapIfItem(getFixedItemSize),

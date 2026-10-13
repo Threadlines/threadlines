@@ -81,14 +81,16 @@ A page runs in a sealed frame, apart from Threadlines and your session:
   Fonts and Bunny Fonts). Nothing else loads: no other requests, no remote
   images, no frames, no forms.
 - A page cannot open tabs or windows by itself. In the desktop app it cannot
-  navigate away. In a web browser, a page that navigates away is stopped at
-  once, though that first request still goes out.
+  navigate away. In a web browser, a page that navigates away after it has
+  loaded is stopped, though that first request still goes out.
 - A page cannot keep keyboard focus it takes by script while you are typing
   elsewhere. Clicking into a page, or tabbing into it, gives it focus.
 
 Known gaps: in a web browser the first request of a page that navigates away
-cannot be refused, and a determined page can still make a request through
-browser features no content policy covers, such as a DNS prefetch.
+cannot be refused, and a page that navigates away before it has finished
+loading is not stopped at all (the desktop app refuses both). A determined
+page can still make a request through browser features no content policy
+covers, such as a DNS prefetch.
 
 ## Where pages live
 
