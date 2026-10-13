@@ -407,7 +407,15 @@ describe("PullRequestAutomationWatcher", () => {
 
     const pullRequestService: PullRequestServiceShape = {
       list: () => Effect.die("unused"),
-      detail: () => Effect.sync(() => script.detail),
+      // The host answers for the pull request that was asked for, as the
+      // script says one looks.
+      detail: ({ repository, number }) =>
+        Effect.sync(() => ({
+          ...script.detail,
+          repository,
+          number,
+          url: `https://github.com/${repository}/pull/${number}`,
+        })),
       activity: () => Effect.sync(() => script.activity),
       diff: () => Effect.die("unused"),
       comment: () => Effect.die("unused"),
@@ -1021,6 +1029,30 @@ describe("PullRequestAutomationWatcher", () => {
         type: "thread.pull-request-automation.set",
         autoMerge: null,
       });
+    });
+
+    it("leaves alone a pull request the checkout found in another repository", async () => {
+      // The agent ended its turn in another repository's folder, whose branch
+      // has a pull request of its own under the same number.
+      const { actions, commands, sweep } = await createHarness({
+        threads: [armed],
+        script: {
+          remote: {
+            ...OPEN_PULL_REQUEST,
+            pr: {
+              ...OPEN_PULL_REQUEST.pr!,
+              url: `https://github.com/acme/gadgets/pull/${PR_NUMBER}`,
+            },
+          },
+          detail: mergeable([PASSING_CHECK]),
+          activity: activity(),
+          merge: () => Effect.succeed({ state: "merged" }),
+        },
+      });
+
+      expect(await sweep()).toBe(0);
+      expect(actions).toEqual([]);
+      expect(commands).toEqual([]);
     });
 
     it("does not merge once the switch went off while the host was being read", async () => {

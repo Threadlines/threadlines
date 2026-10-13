@@ -168,6 +168,18 @@ function failingCheckNames(detail: PullRequestDetail): ReadonlySet<string> {
 }
 
 /**
+ * Whether two addresses name the same pull request. The thread's own is found
+ * from its checkout and then read from the project's repository by number, and
+ * the two answers agree only when the checkout is in that repository. An agent
+ * that ended its turn in another repository's folder has a different pull
+ * request there, under what may be the same number.
+ */
+function isSamePullRequest(left: string, right: string): boolean {
+  const normalize = (url: string) => url.trim().replace(/\/+$/u, "").toLowerCase();
+  return normalize(left) === normalize(right);
+}
+
+/**
  * Whether the watcher has anything to do for a thread's pull requests: fixing
  * its own, or merging its own or a linked one. An archived thread has nothing.
  */
@@ -312,18 +324,33 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
       );
 
     /**
-     * A pull request as the host has it now, past the service's cache. One
-     * whose checks are in motion puts its thread on the quicker pace.
+     * A pull request as the host has it now, past the service's cache, or why
+     * there is none to act on: `unread` where the host did not answer, and
+     * `elsewhere` where the project's repository has a different pull request
+     * under that number than the one at `url`, which is the one that was
+     * meant. One whose checks are in motion puts its thread on the quicker pace.
      */
-    const readDetail = (threadId: ThreadId, reference: PullRequestRef) =>
+    const readDetail = (threadId: ThreadId, reference: PullRequestRef, url: string) =>
       Effect.gen(function* () {
         const detail = yield* attempt(
           "detail-read",
           threadId,
           pullRequestService.detail({ ...reference, force: true }),
         );
+        if (detail === null) {
+          return "unread";
+        }
+        if (!isSamePullRequest(detail.url, url)) {
+          yield* Effect.logWarning("pull-request.auto-fix.other-repository", {
+            threadId,
+            number: reference.number,
+            expected: url,
+            read: detail.url,
+          });
+          return "elsewhere";
+        }
         const now = yield* Clock.currentTimeMillis;
-        if (detail !== null && pullRequestChecksInMotion(detail, now)) {
+        if (pullRequestChecksInMotion(detail, now)) {
           yield* Ref.update(inMotionRef, (threads) =>
             threads.has(threadId) ? threads : threads.set(threadId, now),
           );
@@ -745,8 +772,8 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
           number: pullRequest.number,
           force: true,
         } as const;
-        const detail = yield* readDetail(thread.id, reference);
-        if (detail === null) {
+        const detail = yield* readDetail(thread.id, reference, pullRequest.url);
+        if (detail === "unread" || detail === "elsewhere") {
           return false;
         }
 
@@ -941,8 +968,8 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
           number: linked.number,
           force: true,
         } as const;
-        const detail = yield* readDetail(thread.id, reference);
-        if (detail === null) {
+        const detail = yield* readDetail(thread.id, reference, linked.url);
+        if (detail === "unread" || detail === "elsewhere") {
           continue;
         }
         if (detail.state !== "open") {
