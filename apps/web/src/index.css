@@ -590,6 +590,14 @@ code {
   --muted-foreground: var(--group-muted-foreground);
 }
 
+/* The group fill made solid, for a part of a group that pins while the group's
+   rows scroll under it (the turn changes header in the chat). --group is
+   translucent, so this lays it over --background: the same shade the group
+   around it shows, for a group that sits on the canvas. */
+@utility surface-group-solid {
+  background: linear-gradient(var(--group), var(--group)) var(--background);
+}
+
 /* A group drawn per run of rows, for lists that must stay one keyed list while
    headings split them into groups (the Providers page's In use / Not in use: a
    row moving between them is reordered, not remounted). Rows carry
