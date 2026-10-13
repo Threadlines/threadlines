@@ -11,10 +11,15 @@ import {
 import { stackedThreadToast, toastManager } from "./ui/toast";
 import { getPrimaryEnvironmentConnection } from "../environments/runtime";
 import {
+  type DesktopSessionOutcome,
+  ensureDesktopSession,
+  fetchSessionState,
+  hasDesktopSessionCredential,
   isPrimaryAccessRemoved,
   probePrimaryAccess,
   setPrimaryAccessRemoved,
   usePrimaryAccessRemoved,
+  watchDesktopSessionExpiry,
 } from "../environments/primary";
 import { AccessRemovedState } from "./ConnectionStatusStates";
 
@@ -125,6 +130,26 @@ export function shouldProbeAccessRemoval(status: WsConnectionStatus): boolean {
   return status.online && status.hasConnected && getWsConnectionUiState(status) === "reconnecting";
 }
 
+/**
+ * Whether the socket has to be swapped once the desktop window holds a new
+ * session, given the connection as it stood when the renewal began and as it
+ * stands now. The socket that was already up is still tied to the session that
+ * ended, and a transport sitting out a retry delay has nothing in flight to
+ * lose by going now. Anything else is left alone: a socket that connected
+ * while the renewal ran got in on the new session, and an attempt in flight
+ * either does the same or fails into a short retry.
+ */
+export function shouldReconnectAfterSessionRenewal(
+  before: WsConnectionStatus,
+  after: WsConnectionStatus,
+): boolean {
+  if (after.phase === "connected") {
+    return before.phase === "connected" && before.attemptCount === after.attemptCount;
+  }
+
+  return after.reconnectPhase === "waiting";
+}
+
 export function shouldShowReconnectIssueToast(status: WsConnectionStatus, nowMs: number): boolean {
   const disconnectedAtMs = parseConnectionMomentMs(status.disconnectedAt);
   return (
@@ -140,6 +165,7 @@ export function WebSocketConnectionCoordinator() {
   const accessRemoved = usePrimaryAccessRemoved();
   const [nowMs, setNowMs] = useState(() => Date.now());
   const lastForcedReconnectAtRef = useRef(0);
+  const sessionRestoreRef = useRef<Promise<DesktopSessionOutcome> | null>(null);
   const toastIdRef = useRef<ReturnType<typeof toastManager.add> | null>(null);
   const toastResetTimerRef = useRef<number | null>(null);
   const hasShownConnectionIssueToastRef = useRef(false);
@@ -176,6 +202,27 @@ export function WebSocketConnectionCoordinator() {
           }),
         );
       });
+  });
+  // A socket that dropped on wake and the expiry watch often ask at the same
+  // moment, so they share one renewal and the one reconnect decision it needs.
+  const restoreDesktopSession = useEffectEvent(() => {
+    if (sessionRestoreRef.current === null) {
+      const statusBefore = getWsConnectionStatus();
+      sessionRestoreRef.current = ensureDesktopSession()
+        .then((outcome) => {
+          if (
+            outcome === "renewed" &&
+            shouldReconnectAfterSessionRenewal(statusBefore, getWsConnectionStatus())
+          ) {
+            runReconnect(false);
+          }
+          return outcome;
+        })
+        .finally(() => {
+          sessionRestoreRef.current = null;
+        });
+    }
+    return sessionRestoreRef.current;
   });
   const syncBrowserOnlineStatus = useEffectEvent(() => {
     setBrowserOnlineStatus(navigator.onLine !== false);
@@ -222,7 +269,7 @@ export function WebSocketConnectionCoordinator() {
     }
 
     let cancelled = false;
-    void probePrimaryAccess().then((outcome) => {
+    void probePrimaryAccess(fetchSessionState, () => restoreDesktopSession()).then((outcome) => {
       if (cancelled || outcome !== "removed") {
         return;
       }
@@ -244,6 +291,21 @@ export function WebSocketConnectionCoordinator() {
     if (status.phase === "connected") {
       setPrimaryAccessRemoved(false);
     }
+  }, [status.phase]);
+
+  useEffect(() => {
+    if (status.phase !== "connected" || !hasDesktopSessionCredential()) {
+      return;
+    }
+
+    const controller = new AbortController();
+    void watchDesktopSessionExpiry({
+      signal: controller.signal,
+      restoreSession: () => restoreDesktopSession(),
+    });
+    return () => {
+      controller.abort();
+    };
   }, [status.phase]);
 
   useEffect(() => {

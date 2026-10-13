@@ -17,10 +17,13 @@ export {
 
 export {
   createServerPairingCredential,
+  ensureDesktopSession,
   fetchSessionState,
+  hasDesktopSessionCredential,
   listServerClientSessions,
   listServerPairingLinks,
   peekPairingTokenFromUrl,
+  readSessionExpiryMs,
   resolveInitialServerAuthGateState,
   revokeOtherServerClientSessions,
   revokeServerClientSession,
@@ -28,12 +31,15 @@ export {
   stripPairingTokenFromUrl,
   submitServerAuthCredential,
   takePairingTokenFromUrl,
+  type DesktopSessionOutcome,
   type ServerClientSessionRecord,
   type ServerPairingLinkRecord,
   __resetServerAuthBootstrapForTests,
 } from "./auth";
 
 export { resolvePrimaryEnvironmentHttpUrl, isLoopbackHostname } from "./target";
+
+export { watchDesktopSessionExpiry } from "./desktopSession";
 
 export {
   isPrimaryAccessRemoved,
