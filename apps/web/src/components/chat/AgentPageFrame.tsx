@@ -90,8 +90,15 @@ function useFocusGuard(frameRef: React.RefObject<HTMLIFrameElement | null>) {
  * ahead of it; it gets the app's theme as it loads and every change after,
  * reports its height, and asks the app to open links. A page that navigates
  * itself away is stopped: that would be a way to carry what it shows to a
- * server of its own. A browser cannot refuse that first request; the desktop
- * app does (DesktopWindow), and here the frame goes as soon as it is made.
+ * server of its own. The desktop app refuses the navigation outright
+ * (DesktopWindow). A browser cannot, and here the frame goes on the load
+ * that follows: a page that leaves once it has loaded is stopped, one that
+ * leaves before its first load finished is not (docs/agent-pages.md).
+ *
+ * A frame whose element is moved in the document is another matter: the
+ * timeline re-sorts its rows, and a browser that cannot move a frame in place
+ * loads its page again from scratch, in a new window. That is the same page
+ * under the same policy, so it stays.
  */
 export function AgentPageFrame(props: {
   readonly version: AgentPageVersionRef;
@@ -113,7 +120,9 @@ export function AgentPageFrame(props: {
   });
   const [stopped, setStopped] = useState(false);
   const frameRef = useRef<HTMLIFrameElement>(null);
-  const loadsRef = useRef(0);
+  // The window the page last loaded in: kept through a page's own
+  // navigations, new once the frame's element was put back into the document.
+  const loadedWindowRef = useRef<Window | null>(null);
   const latestThemeRef = useRef(theme);
 
   const { environmentId, threadId, pageId, versionId } = version;
@@ -159,6 +168,10 @@ export function AgentPageFrame(props: {
     const onMessage = (event: MessageEvent) => {
       const frame = frameRef.current;
       if (frame === null || event.source !== frame.contentWindow) return;
+      // Seldom reached for a page that navigates: in Chromium the leaving
+      // document's message arrives with no source once the frame holds the
+      // next document (measured on 151), and is dropped by the check above.
+      // The load rule below is what stops a page there.
       if (isAgentPageLeftMessage(event.data)) {
         setStopped(true);
         return;
@@ -205,10 +218,21 @@ export function AgentPageFrame(props: {
           sandbox={AGENT_PAGE_FRAME_SANDBOX}
           referrerPolicy="no-referrer"
           className="block size-full border-0 bg-transparent"
-          onLoad={() => {
-            // The page itself loads once; any later load is the frame leaving it.
-            loadsRef.current += 1;
-            if (loadsRef.current > 1) setStopped(true);
+          onLoad={(event) => {
+            const loaded = event.currentTarget.contentWindow;
+            // The page loads once in a window; a second load in the same
+            // window is the page leaving for another document.
+            if (loaded !== null && loaded === loadedWindowRef.current) {
+              setStopped(true);
+              return;
+            }
+            const movedInDocument = loadedWindowRef.current !== null;
+            loadedWindowRef.current = loaded;
+            // Loaded again after a move, the document carries the theme it was
+            // first built with.
+            if (movedInDocument) {
+              loaded?.postMessage(agentPageThemeMessage(latestThemeRef.current), "*");
+            }
           }}
         />
       ) : null}
