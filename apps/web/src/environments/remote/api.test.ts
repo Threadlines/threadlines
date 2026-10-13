@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
+import { TransportUrlUnavailableError } from "../../rpc/transportError";
 import {
   bootstrapRemoteBearerSession,
   fetchRemoteEnvironmentDescriptor,
@@ -267,6 +268,36 @@ describe("remote environment api", () => {
         bearerToken: "bearer-token",
       }),
     ).resolves.toBe("wss://remote.example.com/?wsToken=ws-token");
+  });
+
+  it("tells a computer that cannot be reached from one that refuses the credential", async () => {
+    const mint = () =>
+      resolveRemoteWebSocketConnectionUrl({
+        wsBaseUrl: "ws://10.0.0.5:3773/",
+        httpBaseUrl: "http://10.0.0.5:3773/",
+        bearerToken: "bearer-token",
+      });
+
+    // Asleep: the request gets no answer at all.
+    globalThis.fetch = vi.fn().mockRejectedValue(new TypeError("Failed to fetch")) as typeof fetch;
+    await expect(mint()).rejects.toBeInstanceOf(TransportUrlUnavailableError);
+
+    // Restarting or busy: something answers "not now".
+    for (const status of [503, 429, 408]) {
+      globalThis.fetch = vi.fn().mockResolvedValue(new Response("", { status })) as typeof fetch;
+      await expect(mint()).rejects.toBeInstanceOf(TransportUrlUnavailableError);
+    }
+
+    // Awake, and the saved credential is no longer accepted.
+    globalThis.fetch = vi
+      .fn()
+      .mockResolvedValue(
+        new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401 }),
+      ) as typeof fetch;
+    await expect(mint()).rejects.toMatchObject({
+      name: "RemoteEnvironmentAuthHttpError",
+      status: 401,
+    });
   });
 });
 

@@ -8,9 +8,10 @@
  *
  * Every write is optimistic: the row moves immediately from an in-memory
  * overlay, the command goes out, and the overlay retires once the server's
- * value moves off the baseline the write was made against. A rejected
- * dispatch drops its overlay, so no path leaves a device showing a state the
- * server never heard of.
+ * value moves off the baseline the write was made against. A filing the
+ * server did not take drops its overlay, so the row never sits in a list the
+ * server has not heard of. A visit it did not take keeps its overlay and
+ * is offered again when the environment answers (see `sendSeen`).
  */
 import { parseScopedThreadKey, scopeThreadRef, scopedThreadKey } from "@threadlines/client-runtime";
 import type { EnvironmentId, ScopedThreadRef } from "@threadlines/contracts";
@@ -183,9 +184,22 @@ export function markThreadUnreadByKey(
   if (Number.isNaN(completedAtMs)) return;
   const unreadAt = new Date(completedAtMs - 1).toISOString();
   const server = readServerLifecycle(threadRef);
-  if (server.lastSeenAt === unreadAt) return;
+  // Skipped only when this device already says so. The server holding the
+  // stamp is not enough: a visit still pending here speaks over it now and
+  // would overwrite it later.
+  const overlay = useUiStateStore.getState().seenThreadOverlays[threadKey];
+  if ((overlay?.at ?? server.lastSeenAt) === unreadAt) return;
   writeSeen(threadRef, threadKey, unreadAt, server.lastSeenAt);
 }
+
+/**
+ * How many more times a seen write the server did not take is offered.
+ * Bounded so that no kind of failure, including one that makes the
+ * environment list its threads again, can keep a write going out forever.
+ */
+const SEEN_RESEND_LIMIT = 3;
+
+let nextSeenWriteId = 0;
 
 function writeSeen(
   threadRef: ScopedThreadRef,
@@ -193,11 +207,67 @@ function writeSeen(
   at: string,
   baselineAt: string | null,
 ): void {
-  useUiStateStore.getState().setSeenOverlay(threadKey, { at, baselineAt, settled: false });
-  void dispatchSeen(threadRef, at).then(
-    () => useUiStateStore.getState().resolveSeenOverlay(threadKey, at, "confirmed"),
-    () => useUiStateStore.getState().resolveSeenOverlay(threadKey, at, "failed"),
+  nextSeenWriteId += 1;
+  const write = { at, baselineAt, writeId: nextSeenWriteId, settled: false };
+  useUiStateStore.getState().setSeenOverlay(threadKey, write);
+  sendSeen(threadRef, threadKey, write, SEEN_RESEND_LIMIT);
+}
+
+/**
+ * One attempt at a seen write. `markThreadSeen` is called from a render
+ * effect that reads the overlay, so a failed visit that dropped its overlay
+ * re-armed the effect and went out again at once: a computer that had gone to
+ * sleep was sent the same command about 85 times a second until the window
+ * froze. A failed write is kept instead, so failing changes nothing the
+ * effect reads.
+ */
+function sendSeen(
+  threadRef: ScopedThreadRef,
+  threadKey: string,
+  write: { readonly at: string; readonly writeId: number },
+  resendsLeft: number,
+): void {
+  // The server's value is read when the attempt ends: it may have moved while
+  // the attempt was in flight, and then its answer is the newer one.
+  const settle = (outcome: { readonly resendsLeft?: number }) =>
+    useUiStateStore.getState().settleSeenOverlay(threadKey, write.writeId, {
+      serverLastSeenAt: readServerLifecycle(threadRef).lastSeenAt,
+      ...outcome,
+    });
+  void dispatchSeen(threadRef, write.at).then(
+    () => settle({}),
+    () => settle({ resendsLeft }),
   );
+}
+
+/**
+ * Offer an environment the seen writes it did not take, once each. Called
+ * when the environment lists its threads, which is the first proof it is
+ * answering again.
+ */
+export function resendUndeliveredThreadSeen(environmentId: EnvironmentId): void {
+  const uiStore = useUiStateStore.getState();
+  for (const [threadKey, held] of Object.entries(uiStore.seenThreadOverlays)) {
+    if (!held.settled || !held.resendsLeft) continue;
+    const threadRef = parseScopedThreadKey(threadKey);
+    if (threadRef?.environmentId !== environmentId) continue;
+    const serverLastSeenAt = readServerLifecycle(threadRef).lastSeenAt;
+    if (serverLastSeenAt !== held.baselineAt) {
+      // The server moved while the write waited: settling it again retires it.
+      uiStore.settleSeenOverlay(threadKey, held.writeId, {
+        serverLastSeenAt,
+        resendsLeft: held.resendsLeft,
+      });
+      continue;
+    }
+    uiStore.setSeenOverlay(threadKey, {
+      at: held.at,
+      baselineAt: held.baselineAt,
+      writeId: held.writeId,
+      settled: false,
+    });
+    sendSeen(threadRef, threadKey, held, held.resendsLeft - 1);
+  }
 }
 
 const LEGACY_MIGRATION_FLAG_PREFIX = "threadlines:inbox-lifecycle-migrated:v1:";

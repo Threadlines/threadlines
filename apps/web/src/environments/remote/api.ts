@@ -5,6 +5,8 @@ import type {
   ExecutionEnvironmentDescriptor,
 } from "@threadlines/contracts";
 
+import { describeUnknownError, TransportUrlUnavailableError } from "../../rpc/transportError";
+
 class RemoteEnvironmentAuthHttpError extends Error {
   readonly status: number;
 
@@ -144,6 +146,23 @@ export async function issueRemoteWebSocketToken(input: {
   });
 }
 
+/** A refusal that asking again cannot change, as opposed to "not now" (408, 429). */
+function isRefusedRequest(error: unknown): boolean {
+  return (
+    isRemoteEnvironmentAuthHttpError(error) &&
+    error.status >= 400 &&
+    error.status < 500 &&
+    error.status !== 408 &&
+    error.status !== 429
+  );
+}
+
+/**
+ * The address for one connection attempt; the transport asks again before
+ * every attempt. A computer that is asleep, restarting or busy cannot issue a
+ * token, which is worth another attempt (`TransportUrlUnavailableError`). A
+ * request it answers and refuses is not.
+ */
 export async function resolveRemoteWebSocketConnectionUrl(input: {
   readonly wsBaseUrl: string;
   readonly httpBaseUrl: string;
@@ -152,6 +171,10 @@ export async function resolveRemoteWebSocketConnectionUrl(input: {
   const issued = await issueRemoteWebSocketToken({
     httpBaseUrl: input.httpBaseUrl,
     bearerToken: input.bearerToken,
+  }).catch((error: unknown) => {
+    throw isRefusedRequest(error)
+      ? error
+      : new TransportUrlUnavailableError(describeUnknownError(error), { cause: error });
   });
   const url = new URL(input.wsBaseUrl, window.location.origin);
   url.searchParams.set("wsToken", issued.token);

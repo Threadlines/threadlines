@@ -69,6 +69,15 @@ export class TransportRequestLostError extends Error {
   }
 }
 
+/**
+ * Thrown by a websocket url provider when the server could not be reached to
+ * issue an address. The protocol keeps trying to connect after this one; any
+ * other provider failure ends the session's connect loop.
+ */
+export class TransportUrlUnavailableError extends Error {
+  override readonly name = "TransportUrlUnavailableError";
+}
+
 /** Every retry attempt failed on transport-level errors within the budget. */
 export class TransportRequestRetriesExhaustedError extends Error {
   override readonly name = "TransportRequestRetriesExhaustedError";

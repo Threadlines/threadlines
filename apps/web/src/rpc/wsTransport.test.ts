@@ -17,7 +17,11 @@ import {
   getWsConnectionUiState,
   resetWsConnectionStateForTests,
 } from "../rpc/wsConnectionState";
-import { TransportRequestLostError, TransportRequestRetriesExhaustedError } from "./transportError";
+import {
+  TransportRequestLostError,
+  TransportRequestRetriesExhaustedError,
+  TransportUrlUnavailableError,
+} from "./transportError";
 import { WsTransport } from "./wsTransport";
 
 const encodeServerSettings = Schema.encodeSync(ServerSettings);
@@ -761,6 +765,81 @@ describe("WsTransport", () => {
       }),
     );
     await expect(nextRequest).resolves.toEqual(result);
+  }, 5_000);
+
+  it("connects again on its own after a computer that went to sleep wakes up", async () => {
+    // A direct connection asks the computer for a socket token before every
+    // attempt. With the computer asleep that call fails, which used to end the
+    // connect loop for good and fail every later request at once.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    let awake = true;
+    const onError = vi.fn();
+    const transport = createTransport(
+      async () => {
+        if (!awake) {
+          throw new TransportUrlUnavailableError("The computer is not answering.");
+        }
+        return "ws://192.168.1.44:3773/?wsToken=fresh";
+      },
+      { onError },
+    );
+    const input = { command: "terminal.toggle", key: "ctrl+k" } as const;
+    const result = { keybindings: [], issues: [] };
+    await waitFor(() => {
+      expect(sockets).toHaveLength(1);
+    });
+    getSocket().open();
+
+    // Asleep: no pong comes back, the socket is given up on, and the token
+    // request for the next attempt fails.
+    awake = false;
+    await vi.advanceTimersByTimeAsync(12_000);
+    await waitFor(() => {
+      expect(onError).toHaveBeenCalledWith("The computer is not answering.");
+    });
+
+    // A request made while it is away waits for it instead of failing.
+    const request = transport.request((client) => client[WS_METHODS.serverUpsertKeybinding](input));
+    awake = true;
+    await vi.advanceTimersByTimeAsync(5_000);
+    await waitFor(() => {
+      expect(sockets).toHaveLength(2);
+    });
+    const secondSocket = getSocket();
+    secondSocket.open();
+    // A ping held back while there was no socket goes out first.
+    let sent: { id: string } | undefined;
+    await waitFor(() => {
+      sent = secondSocket.sent
+        .map((raw) => JSON.parse(raw) as { id: string; tag?: string })
+        .find((message) => message.tag === WS_METHODS.serverUpsertKeybinding);
+      expect(sent).toBeDefined();
+    });
+    secondSocket.serverMessage(
+      JSON.stringify({
+        _tag: "Exit",
+        requestId: sent?.id,
+        exit: { _tag: "Success", value: result },
+      }),
+    );
+    await expect(request).resolves.toEqual(result);
+  }, 5_000);
+
+  it("stops connecting when the url provider refuses, and fails requests instead of holding them", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const provider = vi.fn(async (): Promise<string> => {
+      throw new Error("Unauthorized");
+    });
+    const transport = createTransport(provider);
+
+    await expect(
+      transport.request((client) =>
+        client[WS_METHODS.serverUpsertKeybinding]({ command: "terminal.toggle", key: "ctrl+k" }),
+      ),
+    ).rejects.toThrow();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(provider).toHaveBeenCalledTimes(1);
+    expect(sockets).toHaveLength(0);
   }, 5_000);
 
   it("delivers stream chunks to subscribers", async () => {

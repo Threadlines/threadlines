@@ -37,7 +37,10 @@ import {
 } from "~/composerDraftStore";
 import { ensureLocalApi } from "~/localApi";
 import { collectActiveTerminalThreadIds } from "~/lib/terminalStateCleanup";
-import { migrateLegacyInboxStateForEnvironment } from "~/lib/threadInboxSync";
+import {
+  migrateLegacyInboxStateForEnvironment,
+  resendUndeliveredThreadSeen,
+} from "~/lib/threadInboxSync";
 import {
   deriveOrchestrationBatchEffects,
   serverMergeSwitchTurnedOff,
@@ -1451,26 +1454,27 @@ function createEnvironmentConnectionHandlers() {
     applyShellEvent,
     syncShellSnapshot: (snapshot: OrchestrationShellSnapshot, environmentId: EnvironmentId) => {
       if (
-        !shouldApplyProjectionSnapshot({
+        shouldApplyProjectionSnapshot({
           current: readLastAppliedProjectionVersion(environmentId),
           next: snapshot,
         })
       ) {
-        return;
+        useStore.getState().syncServerShellSnapshot(snapshot, environmentId);
+        markAppliedProjectionSnapshot(environmentId, snapshot);
+        warmNonIdleThreadDetailSubscriptionsForEnvironment(environmentId, snapshot.threads);
+        reconcileThreadDetailSubscriptionsForEnvironment(
+          environmentId,
+          snapshot.threads.map((thread) => thread.id),
+        );
+        reconcileThreadDetailSubscriptionEvictionForEnvironment(environmentId);
+        reconcileSnapshotDerivedState();
+        // Deferred inside; the first snapshot is what makes the environment's
+        // threads (and their server-held lifecycle state) knowable.
+        migrateLegacyInboxStateForEnvironment(environmentId);
       }
-
-      useStore.getState().syncServerShellSnapshot(snapshot, environmentId);
-      markAppliedProjectionSnapshot(environmentId, snapshot);
-      warmNonIdleThreadDetailSubscriptionsForEnvironment(environmentId, snapshot.threads);
-      reconcileThreadDetailSubscriptionsForEnvironment(
-        environmentId,
-        snapshot.threads.map((thread) => thread.id),
-      );
-      reconcileThreadDetailSubscriptionEvictionForEnvironment(environmentId);
-      reconcileSnapshotDerivedState();
-      // Deferred inside; the first snapshot is what makes the environment's
-      // threads (and their server-held lifecycle state) knowable.
-      migrateLegacyInboxStateForEnvironment(environmentId);
+      // Any thread list means the environment is answering, including one
+      // that carries nothing new after a reconnect.
+      resendUndeliveredThreadSeen(environmentId);
     },
     applyTerminalEvent: (event: TerminalEvent, environmentId: EnvironmentId) => {
       const threadRef = scopeThreadRef(environmentId, ThreadId.make(event.threadId));

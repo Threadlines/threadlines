@@ -54,7 +54,7 @@ export interface UiProjectState {
 export interface ThreadOverlayWrite {
   readonly at: string;
   readonly baselineAt: string | null;
-  /** True once the dispatch resolved; only settled overlays are retired. */
+  /** True once the write is no longer being sent; only settled overlays are retired. */
   readonly settled: boolean;
 }
 
@@ -62,9 +62,29 @@ export interface ThreadDoneOverlayWrite extends ThreadOverlayWrite {
   readonly state: "done" | "active";
 }
 
+/**
+ * A seen write. Unlike a filing, one the server did not take is kept:
+ * dropping it hands the thread back to whatever marked it seen, which sends
+ * it again at once.
+ */
+export interface ThreadSeenOverlayWrite extends ThreadOverlayWrite {
+  /**
+   * Tells this write from an earlier one that carried the same stamp (seen,
+   * unread, seen again), so a late answer to the old one cannot close out the
+   * new one.
+   */
+  readonly writeId: number;
+  /**
+   * On a write the server did not take: how many more times it may be
+   * offered. Riding on the overlay means whatever removes or replaces the
+   * overlay also calls the resend off.
+   */
+  readonly resendsLeft?: number;
+}
+
 export interface UiThreadState {
   /** Unconfirmed local "seen" writes, by scoped thread key. */
-  seenThreadOverlays: Record<string, ThreadOverlayWrite>;
+  seenThreadOverlays: Record<string, ThreadSeenOverlayWrite>;
   /**
    * Seen-as-of stamp for threads the server has no visit recorded for,
    * captured the first time this device sees the thread so a backlog does not
@@ -743,7 +763,7 @@ export function setDoneOverlay(
 export function setSeenOverlay(
   state: UiState,
   threadKey: string,
-  overlay: ThreadOverlayWrite,
+  overlay: ThreadSeenOverlayWrite,
 ): UiState {
   return {
     ...state,
@@ -776,21 +796,35 @@ export function resolveDoneOverlay(
   return { ...state, doneThreadOverlays: nextOverlays };
 }
 
-export function resolveSeenOverlay(
+/**
+ * Close out one attempt at a seen write. Without `resendsLeft` the server
+ * took it; with it the server did not, and the write is kept to be offered
+ * that many more times. Settled either way, so it retires on the spot when
+ * the server's value already moved off its baseline while the attempt was in
+ * flight, and on the next thread update otherwise.
+ */
+export function settleSeenOverlay(
   state: UiState,
   threadKey: string,
-  at: string,
-  outcome: "confirmed" | "failed",
+  writeId: number,
+  outcome: { readonly serverLastSeenAt: string | null; readonly resendsLeft?: number },
 ): UiState {
   const overlay = state.seenThreadOverlays[threadKey];
-  if (overlay === undefined || overlay.at !== at) {
+  if (overlay === undefined || overlay.writeId !== writeId) {
     return state;
   }
+  const settled: ThreadSeenOverlayWrite = {
+    at: overlay.at,
+    baselineAt: overlay.baselineAt,
+    writeId,
+    settled: true,
+    ...(outcome.resendsLeft === undefined ? {} : { resendsLeft: outcome.resendsLeft }),
+  };
   const nextOverlays = { ...state.seenThreadOverlays };
-  if (outcome === "failed") {
+  if (shouldRetireOverlay(settled, outcome.serverLastSeenAt)) {
     delete nextOverlays[threadKey];
   } else {
-    nextOverlays[threadKey] = { ...overlay, settled: true };
+    nextOverlays[threadKey] = settled;
   }
   return { ...state, seenThreadOverlays: nextOverlays };
 }
@@ -1014,9 +1048,13 @@ interface UiStateStore extends UiState {
     options?: { readonly loadedEnvironmentIds?: ReadonlySet<string> },
   ) => void;
   setDoneOverlay: (threadKey: string, overlay: ThreadDoneOverlayWrite) => void;
-  setSeenOverlay: (threadKey: string, overlay: ThreadOverlayWrite) => void;
+  setSeenOverlay: (threadKey: string, overlay: ThreadSeenOverlayWrite) => void;
   resolveDoneOverlay: (threadKey: string, at: string, outcome: "confirmed" | "failed") => void;
-  resolveSeenOverlay: (threadKey: string, at: string, outcome: "confirmed" | "failed") => void;
+  settleSeenOverlay: (
+    threadKey: string,
+    writeId: number,
+    outcome: { readonly serverLastSeenAt: string | null; readonly resendsLeft?: number },
+  ) => void;
   setInboxProjectScope: (projectKey: string | null) => void;
   setInboxEnvironmentScope: (environmentId: string | null) => void;
   clearThreadUi: (threadKey: string) => void;
@@ -1045,8 +1083,8 @@ export const useUiStateStore = create<UiStateStore>((set) => ({
   setSeenOverlay: (threadKey, overlay) => set((state) => setSeenOverlay(state, threadKey, overlay)),
   resolveDoneOverlay: (threadKey, at, outcome) =>
     set((state) => resolveDoneOverlay(state, threadKey, at, outcome)),
-  resolveSeenOverlay: (threadKey, at, outcome) =>
-    set((state) => resolveSeenOverlay(state, threadKey, at, outcome)),
+  settleSeenOverlay: (threadKey, writeId, outcome) =>
+    set((state) => settleSeenOverlay(state, threadKey, writeId, outcome)),
   setInboxProjectScope: (projectKey) =>
     set((state) =>
       state.inboxProjectScopeKey === projectKey
