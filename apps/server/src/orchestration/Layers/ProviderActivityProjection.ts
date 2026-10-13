@@ -780,8 +780,11 @@ export function projectRuntimeEventToActivities(
           tone: "info",
           kind: "prompt-suggestion.updated",
           summary: "Prompt suggestion",
+          // The provider lets the composer show a suggestion only while the
+          // next message goes to the same kind of agent that made it.
           payload: {
             suggestion: event.payload.suggestion,
+            provider: event.provider,
           },
         }),
       ];

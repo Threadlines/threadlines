@@ -2,6 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   EventId,
   type OrchestrationThreadActivity,
+  ProviderDriverKind,
   ThreadParticipantId,
   TurnId,
 } from "@threadlines/contracts";
@@ -9,8 +10,12 @@ import {
 import {
   deriveLatestPromptSuggestion,
   type PromptSuggestionSelectionInput,
+  resolvePromptSuggestionView,
   selectPromptSuggestion,
 } from "./promptSuggestions";
+
+const CLAUDE = ProviderDriverKind.make("claudeAgent");
+const CODEX = ProviderDriverKind.make("codex");
 
 function makeActivity(
   id: string,
@@ -38,9 +43,9 @@ describe("promptSuggestions", () => {
         }),
         makeActivity("activity-2", "tool.started", {}),
         makeActivity("activity-3", "prompt-suggestion.updated", {
-          suggestion: "Run the test suite.",
+          suggestion: "run the test suite.",
         }),
-      ]),
+      ])?.text,
     ).toBe("Run the test suite.");
   });
 
@@ -61,7 +66,7 @@ describe("promptSuggestions", () => {
           ),
         ],
         { turnId: TurnId.make("turn-1") },
-      ),
+      )?.text,
     ).toBe("Old suggestion.");
   });
 
@@ -82,8 +87,7 @@ describe("selectPromptSuggestion", () => {
     overrides?: Partial<PromptSuggestionSelectionInput>,
   ): PromptSuggestionSelectionInput {
     return {
-      isSuggestionProvider: true,
-      composerIsEmpty: true,
+      recipientDriverKind: CLAUDE,
       phase: "ready",
       sideAnswerInProgress: false,
       isSendBusy: false,
@@ -101,11 +105,29 @@ describe("selectPromptSuggestion", () => {
   }
 
   it("surfaces the suggestion for a completed turn on an idle, empty composer", () => {
-    expect(selectPromptSuggestion(makeInput())).toBe("Add tests.");
+    expect(selectPromptSuggestion(makeInput())).toEqual({
+      id: "activity-1",
+      text: "Add tests.",
+    });
   });
 
-  it("hides the suggestion for other providers", () => {
-    expect(selectPromptSuggestion(makeInput({ isSuggestionProvider: false }))).toBeNull();
+  it("shows a suggestion only while the next message goes to the kind of agent that made it", () => {
+    // Recorded before the provider was stamped: only Claude made those.
+    expect(selectPromptSuggestion(makeInput({ recipientDriverKind: CODEX }))).toBeNull();
+
+    const fromCodex = [
+      makeActivity("activity-codex", "prompt-suggestion.updated", {
+        suggestion: "Ship it.",
+        provider: "codex",
+      }),
+    ];
+    expect(
+      selectPromptSuggestion(makeInput({ activities: fromCodex, recipientDriverKind: CODEX }))
+        ?.text,
+    ).toBe("Ship it.");
+    expect(
+      selectPromptSuggestion(makeInput({ activities: fromCodex, recipientDriverKind: CLAUDE })),
+    ).toBeNull();
   });
 
   it("in a room, shows only the suggestion of the agent the next message goes to", () => {
@@ -122,18 +144,15 @@ describe("selectPromptSuggestion", () => {
       (activity.participantId ?? null) === participantId;
 
     expect(
-      selectPromptSuggestion(makeInput({ activities, isFromRecipient: fromAgent("agent-2") })),
+      selectPromptSuggestion(makeInput({ activities, isFromRecipient: fromAgent("agent-2") }))
+        ?.text,
     ).toBe("Make a PR.");
     expect(
-      selectPromptSuggestion(makeInput({ activities, isFromRecipient: fromAgent(null) })),
+      selectPromptSuggestion(makeInput({ activities, isFromRecipient: fromAgent(null) }))?.text,
     ).toBe("Add tests.");
     expect(
       selectPromptSuggestion(makeInput({ activities, isFromRecipient: fromAgent("agent-3") })),
     ).toBeNull();
-  });
-
-  it("hides the suggestion while the composer has text", () => {
-    expect(selectPromptSuggestion(makeInput({ composerIsEmpty: false }))).toBeNull();
   });
 
   it.each([
@@ -180,7 +199,38 @@ describe("selectPromptSuggestion", () => {
             ),
           ],
         }),
-      ),
+      )?.text,
     ).toBe("Ship it.");
+  });
+});
+
+describe("resolvePromptSuggestionView", () => {
+  const suggestion = "Add a test for midnight";
+  const view = (prompt: string, cursor = prompt.length) =>
+    resolvePromptSuggestionView({ prompt, cursor, suggestion });
+
+  it("takes the hint's place in an empty box", () => {
+    expect(view("")).toEqual({ kind: "placeholder" });
+  });
+
+  it("keeps the rest after the cursor while the typed text starts it, ignoring case", () => {
+    expect(view("add a te")).toEqual({ kind: "completion", remainder: "st for midnight" });
+    expect(view("Add a test ")).toEqual({ kind: "completion", remainder: "for midnight" });
+  });
+
+  it("goes away once the typed text leaves it, fills it, or the cursor moves back", () => {
+    expect(view("Add a toast")).toBeNull();
+    expect(view("Add a test for midnight")).toBeNull();
+    expect(view("Add a te", 3)).toBeNull();
+    expect(view("   ")).toBeNull();
+  });
+
+  it("never completes text the editor draws as chips or commands", () => {
+    const resolve = (prompt: string, text: string) =>
+      resolvePromptSuggestionView({ prompt, cursor: prompt.length, suggestion: text });
+    expect(resolve("Look at @src", "Look at @src/app.ts")).toBeNull();
+    expect(resolve("Use $rev", "Use $review on it")).toBeNull();
+    expect(resolve("/comp", "/compact the thread")).toBeNull();
+    expect(resolve("First\nsec", "First\nsecond line")).toBeNull();
   });
 });

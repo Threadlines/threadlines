@@ -2217,3 +2217,18 @@ label:has(> select#reasoning-effort) select {
     opacity: 1;
   }
 }
+
+/* An agent's suggestion in the composer (ComposerPromptSuggestion) fades in
+   once when it arrives; the element stays mounted while the box fills and
+   empties, so it does not replay. */
+@media (prefers-reduced-motion: no-preference) {
+  .composer-prompt-suggestion {
+    animation: composer-prompt-suggestion-in 220ms ease-out both;
+  }
+}
+
+@keyframes composer-prompt-suggestion-in {
+  from {
+    opacity: 0;
+  }
+}
