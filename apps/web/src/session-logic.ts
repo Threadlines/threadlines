@@ -2,6 +2,8 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Arr from "effect/Array";
 import { compareTranscriptPosition } from "@threadlines/shared/transcriptOrder";
+import { isTurnAside } from "@threadlines/shared/transcriptRevert";
+import { isAgentOrigin } from "@threadlines/shared/roomAgentRequests";
 import {
   type OrchestrationAgentPage,
   ApprovalRequestId,
@@ -5789,6 +5791,59 @@ export function inferCheckpointTurnCountByTurnId(
     result[summary.turnId] = index + 1;
   }
   return result;
+}
+
+/**
+ * The turn count each of the user's messages reverts to: the turns before the
+ * one it started, for a message whose turn left a checkpoint. Only a message
+ * that starts a turn offers a revert. What agents wrote never does (an invite,
+ * its review, another thread's request or answer), and neither does a message
+ * that joined a turn already running (the user's steer, an answer to the
+ * agent's question, a reply or report steered in): it has no checkpoint of its
+ * own, and it must not hide the one of the message that started its turn.
+ */
+export function deriveRevertTurnCountByUserMessageId(input: {
+  readonly timelineEntries: ReadonlyArray<TimelineEntry>;
+  readonly turnDiffSummaryByAssistantMessageId: ReadonlyMap<MessageId, TurnDiffSummary>;
+  readonly inferredCheckpointTurnCountByTurnId: Readonly<Record<TurnId, number>>;
+}): Map<MessageId, number> {
+  const byUserMessageId = new Map<MessageId, number>();
+  const { timelineEntries } = input;
+  for (let index = 0; index < timelineEntries.length; index += 1) {
+    const entry = timelineEntries[index];
+    if (
+      !entry ||
+      entry.kind !== "message" ||
+      entry.message.role !== "user" ||
+      isAgentOrigin(entry.message) ||
+      isTurnAside(entry.message)
+    ) {
+      continue;
+    }
+
+    for (let nextIndex = index + 1; nextIndex < timelineEntries.length; nextIndex += 1) {
+      const nextEntry = timelineEntries[nextIndex];
+      if (!nextEntry || nextEntry.kind !== "message" || isTurnAside(nextEntry.message)) {
+        continue;
+      }
+      // Anything else the user or an agent sent starts the next turn.
+      if (nextEntry.message.role === "user") {
+        break;
+      }
+      const summary = input.turnDiffSummaryByAssistantMessageId.get(nextEntry.message.id);
+      if (!summary) {
+        continue;
+      }
+      const turnCount =
+        summary.checkpointTurnCount ?? input.inferredCheckpointTurnCountByTurnId[summary.turnId];
+      if (typeof turnCount !== "number") {
+        break;
+      }
+      byUserMessageId.set(entry.message.id, Math.max(0, turnCount - 1));
+      break;
+    }
+  }
+  return byUserMessageId;
 }
 
 /**

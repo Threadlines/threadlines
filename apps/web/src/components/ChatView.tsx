@@ -41,7 +41,6 @@ import { projectScriptCwd, projectScriptRuntimeEnv } from "@threadlines/shared/p
 import { resolveThreadWorkingCwd } from "@threadlines/shared/threadCwd";
 import { formatForkSourceExcerpt, truncate } from "@threadlines/shared/String";
 import { isAgentOrigin } from "@threadlines/shared/roomAgentRequests";
-import { isTurnAside } from "@threadlines/shared/transcriptRevert";
 import { Debouncer } from "@tanstack/react-pacer";
 import * as Option from "effect/Option";
 import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -93,6 +92,7 @@ import {
   derivePendingUserInputs,
   isBlockingUserInput,
   derivePhase,
+  deriveRevertTurnCountByUserMessageId,
   deriveTimelineEntries,
   deriveForkContextEntries,
   deriveActiveStatusLabel,
@@ -2539,64 +2539,17 @@ export default function ChatView(props: ChatViewProps) {
     (activeThread?.childRequests?.open.length ?? 0) > 0 ||
     (activeThread?.queuedFollowUps ?? []).some(isAgentOrigin);
   const revertTurnCountByUserMessageId = useMemo(() => {
-    const byUserMessageId = new Map<MessageId, number>();
     // Rooms have no revert, even once their added agents left: rewinding one
     // agent cannot take back what the others already read. The server
     // refuses it too.
     if (threadHasRoomHistory || agentRequestsInFlight) {
-      return byUserMessageId;
+      return new Map<MessageId, number>();
     }
-    // Only the user's own messages offer a revert, never what agents wrote
-    // (an invite, its review, the review's way back, another thread's
-    // request or answer).
-    const isUserWritten = (message: {
-      readonly fromAgent?: unknown;
-      readonly fromThread?: unknown;
-      readonly sideTurnId?: unknown;
-    }) => !isAgentOrigin(message) && message.sideTurnId === undefined;
-    for (let index = 0; index < timelineEntries.length; index += 1) {
-      const entry = timelineEntries[index];
-      if (
-        !entry ||
-        entry.kind !== "message" ||
-        entry.message.role !== "user" ||
-        !isUserWritten(entry.message)
-      ) {
-        continue;
-      }
-
-      for (let nextIndex = index + 1; nextIndex < timelineEntries.length; nextIndex += 1) {
-        const nextEntry = timelineEntries[nextIndex];
-        if (
-          !nextEntry ||
-          nextEntry.kind !== "message" ||
-          nextEntry.message.sideTurnId !== undefined
-        ) {
-          continue;
-        }
-        if (nextEntry.message.role === "user") {
-          // An invite, or a reply or report steered into the turn, comes
-          // mid-turn; anything else starts the next turn.
-          if (isTurnAside(nextEntry.message)) {
-            continue;
-          }
-          break;
-        }
-        const summary = turnDiffSummaryByAssistantMessageId.get(nextEntry.message.id);
-        if (!summary) {
-          continue;
-        }
-        const turnCount =
-          summary.checkpointTurnCount ?? inferredCheckpointTurnCountByTurnId[summary.turnId];
-        if (typeof turnCount !== "number") {
-          break;
-        }
-        byUserMessageId.set(entry.message.id, Math.max(0, turnCount - 1));
-        break;
-      }
-    }
-
-    return byUserMessageId;
+    return deriveRevertTurnCountByUserMessageId({
+      timelineEntries,
+      turnDiffSummaryByAssistantMessageId,
+      inferredCheckpointTurnCountByTurnId,
+    });
   }, [
     inferredCheckpointTurnCountByTurnId,
     timelineEntries,
@@ -5892,11 +5845,7 @@ export default function ChatView(props: ChatViewProps) {
 
   const failedTurnRetryAction = useMemo(() => {
     const failedMessageId = deriveFailedTurnRetryMessageId({
-      // A side question is never the failed turn's message, and Retry sits on
-      // the user's own message, not on one an agent wrote to another.
-      messages: (activeThread?.messages ?? []).filter(
-        (message) => !isSideMessage(message) && !isAgentOrigin(message),
-      ),
+      messages: activeThread?.messages ?? [],
       sessionLastError: activeThread?.session?.lastError,
     });
     if (

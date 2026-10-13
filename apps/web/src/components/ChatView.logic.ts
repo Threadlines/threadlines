@@ -20,6 +20,8 @@ import {
   serverProviderCanSignIn,
 } from "@threadlines/shared/providerAuth";
 import { isTemporaryWorktreeBranch } from "@threadlines/shared/git";
+import { isAgentOrigin } from "@threadlines/shared/roomAgentRequests";
+import { isTurnAside } from "@threadlines/shared/transcriptRevert";
 import { isFilesystemPathWithin } from "@threadlines/shared/path";
 import { normalizeTerminalActivityCommand } from "@threadlines/shared/terminalCommandTracker";
 import type { DesktopCapturedScreenshot } from "@threadlines/contracts";
@@ -1810,11 +1812,33 @@ export function deriveProviderAuthReconnectPrompt(input: {
   return null;
 }
 
+/**
+ * The message a failed turn's Retry sits on: the turn's own first message,
+ * which is the one the server sends again (`thread.turn.retry`). Never one
+ * beside the turn (a side question, an invite, a message steered in while the
+ * turn ran), and never one an agent wrote to another.
+ */
 export function deriveFailedTurnRetryMessageId(input: {
-  readonly messages: ReadonlyArray<Pick<ChatMessage, "id" | "role" | "text">>;
+  readonly messages: ReadonlyArray<
+    Pick<
+      ChatMessage,
+      | "id"
+      | "role"
+      | "text"
+      | "turnId"
+      | "sideTurnId"
+      | "requestKind"
+      | "requestOutcome"
+      | "fromAgent"
+      | "fromThread"
+    >
+  >;
   readonly sessionLastError: string | null | undefined;
 }): MessageId | null {
-  const lastUserMessage = input.messages.findLast((message) => message.role === "user");
+  const messages = input.messages.filter(
+    (message) => !isTurnAside(message) && !isAgentOrigin(message),
+  );
+  const lastUserMessage = messages.findLast((message) => message.role === "user");
   if (!lastUserMessage) {
     return null;
   }
@@ -1822,10 +1846,10 @@ export function deriveFailedTurnRetryMessageId(input: {
     return lastUserMessage.id;
   }
 
-  const authRetryUserMessageIndex = findProviderAuthRetryUserMessageIndex(input.messages);
+  const authRetryUserMessageIndex = findProviderAuthRetryUserMessageIndex(messages);
   return authRetryUserMessageIndex === null
     ? null
-    : (input.messages[authRetryUserMessageIndex]?.id ?? null);
+    : (messages[authRetryUserMessageIndex]?.id ?? null);
 }
 
 export function shouldOfferFailedTurnRetry(input: {

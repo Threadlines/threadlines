@@ -18,28 +18,31 @@ export interface RevertableMessage {
   readonly sideTurnId?: string | undefined;
   readonly requestKind?: string | undefined;
   readonly requestOutcome?: string | undefined;
-  readonly fromThread?: { readonly kind: string } | undefined;
   readonly createdAt: string;
   readonly eventSequence?: number | undefined;
 }
 
 /**
  * A message beside a turn, never the one that starts it: an invite, a side
- * exchange, a reply taken back (Stop) before it was sent, or an agent's reply
- * or a thread's report steered into a running turn (only such a one carries
- * a turn id; one sent as a turn of its own does not).
+ * exchange, a reply taken back (Stop) before it was sent, or a user-role
+ * message that carries a turn id. A turn's own first message is written
+ * before the turn exists, so it carries none. One that does joined a turn
+ * that was already there (the user's steer, their answer to the agent's
+ * question, an agent's reply or a thread's report steered in), or came with
+ * an imported transcript, which has its provider's turns and none of ours.
+ * Revert, checkpoint rewind and retry count turns by their first messages,
+ * so none of these may be counted as one.
  */
 export const isTurnAside = (
   message: Pick<
     RevertableMessage,
-    "turnId" | "sideTurnId" | "requestKind" | "requestOutcome" | "fromThread"
+    "role" | "turnId" | "sideTurnId" | "requestKind" | "requestOutcome"
   >,
 ) =>
   message.sideTurnId !== undefined ||
   message.requestKind === "invite" ||
   (message.requestKind === "reply" && message.requestOutcome === "cancelled") ||
-  (message.turnId != null &&
-    (message.requestKind === "reply" || message.fromThread?.kind === "report"));
+  (message.role === "user" && message.turnId != null);
 
 export interface MessageRevertInput<Message extends RevertableMessage> {
   readonly messages: ReadonlyArray<Message>;
@@ -102,12 +105,39 @@ export function revertMessages<Message extends RevertableMessage>(
     }
   }
 
-  const firstRemoved = main
-    .filter((message) => !retained.has(idOf(message)))
+  // A message that joined a turn follows that turn, wherever it sits: kept
+  // with a kept turn (one the revert was told to keep, or one a kept message
+  // of its own names), gone with any other.
+  const keptMainTurnIds = new Set(
+    main.flatMap((message) =>
+      message.turnId != null && retained.has(idOf(message)) ? [message.turnId] : [],
+    ),
+  );
+  const asides = messages.filter(isTurnAside);
+  const removedWithTurn = new Set<Message>();
+  for (const message of asides) {
+    const turnId = message.turnId ?? null;
+    if (turnId === null || retained.has(idOf(message))) continue;
+    if (retainedTurnIds.has(turnId) || keptMainTurnIds.has(turnId)) {
+      retained.add(idOf(message));
+    } else {
+      removedWithTurn.add(message);
+    }
+  }
+  // The cut is the first message a removed turn left, its own or one that
+  // joined it. An aside that belongs to no turn (an invite, a side exchange)
+  // is kept when it came before the cut.
+  const firstRemoved = [
+    ...main.filter((message) => !retained.has(idOf(message))),
+    ...removedWithTurn,
+  ]
     .toSorted(order)
     .at(0);
-  for (const message of messages) {
-    if (isTurnAside(message) && (firstRemoved === undefined || order(message, firstRemoved) < 0)) {
+  for (const message of asides) {
+    if (
+      message.turnId == null &&
+      (firstRemoved === undefined || order(message, firstRemoved) < 0)
+    ) {
       retained.add(idOf(message));
     }
   }

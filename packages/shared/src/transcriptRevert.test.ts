@@ -38,13 +38,15 @@ describe("retainMessagesAfterRevert", () => {
       // A review's reply that Stop took back before it was sent.
       message("reply-stopped", "user", { requestKind: "reply", requestOutcome: "cancelled" }),
       message("u2", "user"),
-      // A thread's report steered into the running turn.
+      // The user's own message, and a thread's report, steered into the running turn.
+      message("steer", "user", { turnId: "t2" }),
       message("report-steered", "user", { turnId: "t2", fromThread: { kind: "report" } }),
       message("invite", "user", { requestKind: "invite" }),
       message("review", "user", { requestKind: "review", sideTurnId: "s1" }),
       message("review-answer", "assistant", { sideTurnId: "s1" }),
       message("a2", "assistant", { turnId: "t2" }),
       message("reply", "user", { requestKind: "reply" }),
+      message("steer-late", "user", { turnId: "t3" }),
       message("reply-steered", "user", { requestKind: "reply", turnId: "t3" }),
       message("a3", "assistant", { turnId: "t3" }),
       message("invite-late", "user", { requestKind: "invite" }),
@@ -61,6 +63,7 @@ describe("retainMessagesAfterRevert", () => {
       "a1",
       "reply-stopped",
       "u2",
+      "steer",
       "report-steered",
       "invite",
       "review",

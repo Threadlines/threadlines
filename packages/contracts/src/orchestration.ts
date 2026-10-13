@@ -608,6 +608,14 @@ export const OrchestrationMessage = Schema.Struct({
    * recorded before it was kept.
    */
   agentModels: Schema.optional(Schema.Record(Schema.String, MessageAgentModel)),
+  /**
+   * The turn the message belongs to. A user message that starts a turn is
+   * written before the turn exists and keeps null. One that carries a turn id
+   * joined that turn while it ran (the user's steer, their answer to the
+   * agent's question, a reply or a report steered in), or was imported with
+   * its provider's turn: it never counts as a turn's first message (see
+   * `isTurnAside` in `@threadlines/shared/transcriptRevert`).
+   */
   turnId: Schema.NullOr(TurnId),
   streaming: Schema.Boolean,
   createdAt: IsoDateTime,

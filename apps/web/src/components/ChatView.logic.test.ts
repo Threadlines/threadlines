@@ -617,6 +617,24 @@ describe("deriveFailedTurnRetryMessageId", () => {
     text: "retry me",
   };
 
+  it("sits on the message that started the failed turn, not on one steered into it", () => {
+    expect(
+      deriveFailedTurnRetryMessageId({
+        messages: [
+          userMessage,
+          {
+            id: MessageId.make("message-steer"),
+            role: "user",
+            text: "also update the docs",
+            // Typed while the turn ran, so it carries that turn's id.
+            turnId: TurnId.make("turn-failed"),
+          },
+        ],
+        sessionLastError: "Provider process exited",
+      }),
+    ).toBe(userMessage.id);
+  });
+
   it("targets a session failure or a completed provider-auth response", () => {
     expect(
       deriveFailedTurnRetryMessageId({
