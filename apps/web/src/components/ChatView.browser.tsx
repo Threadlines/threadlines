@@ -12666,9 +12666,9 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
-  // Mount a Claude thread that ended with a prompt suggestion, wait for the
-  // chip to show it, then hover to open its tooltip.
-  const mountPromptSuggestionChip = async (suggestion: string) => {
+  // Mount a Claude thread that ended with a prompt suggestion and wait for
+  // the composer to show it in place of the hint.
+  const mountPromptSuggestion = async (suggestion: string) => {
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
       snapshot: createSnapshotWithPromptSuggestion(suggestion),
@@ -12679,52 +12679,60 @@ describe("ChatView timeline estimator parity (full app)", () => {
         };
       },
     });
-    const chip = await waitForElement(
-      () => document.querySelector<HTMLElement>('[data-prompt-suggestion="true"]'),
-      "Unable to find the prompt suggestion chip.",
-    );
     const text = await waitForElement(
       () => {
-        const found = chip.querySelector<HTMLElement>('[data-prompt-suggestion-text="true"]');
+        const found = document.querySelector<HTMLElement>('[data-prompt-suggestion-text="true"]');
         return found?.textContent === suggestion ? found : null;
       },
       () =>
-        `Prompt suggestion chip never showed "${suggestion}"; it shows "${
-          chip.querySelector('[data-prompt-suggestion-text="true"]')?.textContent ?? ""
+        `The composer never showed the suggestion "${suggestion}"; it shows "${
+          document.querySelector('[data-prompt-suggestion-text="true"]')?.textContent ?? ""
         }".`,
     );
-    await page.getByRole("button", { name: /^Use Claude suggested prompt:/ }).hover();
-    const tooltip = await waitForElement(
-      () => document.querySelector<HTMLElement>('[data-prompt-suggestion-tooltip="true"]'),
-      "Hovering the prompt suggestion chip never opened its tooltip.",
-    );
-    return { mounted, chip, text, tooltip };
+    const composerEditor = await waitForComposerEditor();
+    return { mounted, text, composerEditor };
   };
 
-  it("shows the full prompt suggestion in the tooltip when the chip clips it", async () => {
-    const suggestion =
-      "Run the full browser suite against the composer changes, then update the changelog entry for the suggestion chip";
-    const { mounted, chip, text, tooltip } = await mountPromptSuggestionChip(suggestion);
-    try {
-      expect(text.scrollWidth).toBeGreaterThan(text.clientWidth + 1);
-      expect(tooltip.textContent).toContain(suggestion);
-      expect(tooltip.textContent).toContain("Claude suggested this prompt");
-      // The full text wraps inside a capped-width tooltip instead of running
-      // off as one long line.
-      const tooltipRect = tooltip.getBoundingClientRect();
-      expect(tooltipRect.width).toBeLessThanOrEqual(400);
-      expect(tooltipRect.height).toBeGreaterThan(chip.getBoundingClientRect().height);
-    } finally {
-      await mounted.cleanup();
-    }
-  });
+  const waitForSuggestionGone = (message: string) =>
+    waitForElement(
+      () =>
+        document.querySelector(
+          '[data-prompt-suggestion-text="true"], [data-prompt-suggestion-remainder="true"]',
+        )
+          ? null
+          : document.body,
+      message,
+    );
 
-  it("keeps the short tooltip label when the prompt suggestion fits the chip", async () => {
-    const suggestion = "Run the tests";
-    const { mounted, text, tooltip } = await mountPromptSuggestionChip(suggestion);
+  it("shows the agent's suggestion inside the composer in place of the hint", async () => {
+    const suggestion = "Commit this and open the PR";
+    const { mounted, text, composerEditor } = await mountPromptSuggestion(suggestion);
     try {
-      expect(text.scrollWidth).toBeLessThanOrEqual(text.clientWidth + 1);
-      expect(tooltip.textContent).toBe("Claude suggested this prompt");
+      // Inside the message box, over the editor, not floating above it.
+      const editorRect = composerEditor.getBoundingClientRect();
+      const textRect = text.getBoundingClientRect();
+      expect(textRect.top).toBeGreaterThanOrEqual(editorRect.top - 1);
+      expect(textRect.bottom).toBeLessThanOrEqual(editorRect.bottom + 1);
+      expect(composerEditor.getAttribute("aria-placeholder")).toBe(
+        `Suggested: ${suggestion}. Press Tab to use it.`,
+      );
+      // The usual hint gives way; its "@ / $" help moves under the suggestion.
+      const composerForm = document.querySelector('[data-chat-composer-form="true"]');
+      expect(composerForm?.textContent).not.toContain("Ask anything");
+      expect(document.querySelector('[data-prompt-suggestion="true"]')?.textContent).toContain(
+        "/ commands",
+      );
+
+      // Clicking its Tab key takes it too.
+      document.querySelector<HTMLElement>('[data-prompt-suggestion-accept="true"]')?.click();
+      await waitForElement(
+        () => (composerEditor.textContent?.trim() === suggestion ? composerEditor : null),
+        () =>
+          `Clicking the Tab key never moved the suggestion into the composer; it holds "${
+            composerEditor.textContent ?? ""
+          }".`,
+      );
+      await waitForSuggestionGone("The suggestion stayed drawn over the text it filled in.");
     } finally {
       await mounted.cleanup();
     }
@@ -12732,9 +12740,8 @@ describe("ChatView timeline estimator parity (full app)", () => {
 
   it("accepts the prompt suggestion with Tab from the focused composer", async () => {
     const suggestion = "Commit this and open the PR";
-    const { mounted } = await mountPromptSuggestionChip(suggestion);
+    const { mounted, composerEditor } = await mountPromptSuggestion(suggestion);
     try {
-      const composerEditor = await waitForComposerEditor();
       composerEditor.focus();
       composerEditor.dispatchEvent(
         new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true }),
@@ -12747,13 +12754,173 @@ describe("ChatView timeline estimator parity (full app)", () => {
             composerEditor.textContent ?? ""
           }".`,
       );
-      // Accepting the suggestion consumes it, so the chip goes away.
-      await waitForElement(
-        () => (document.querySelector('[data-prompt-suggestion="true"]') ? null : document.body),
-        "The prompt suggestion chip stayed visible after Tab accepted it.",
-      );
+      await waitForSuggestionGone("The suggestion stayed drawn over the text Tab filled in.");
       // Focus stays in the composer instead of tabbing out to the toolbar.
       expect(document.activeElement).toBe(composerEditor);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("keeps the rest of the suggestion after the cursor while typing its first words", async () => {
+    const suggestion = "Commit this and open the PR";
+    const { mounted, composerEditor } = await mountPromptSuggestion(suggestion);
+    try {
+      await page.getByTestId("composer-editor").fill("commit this");
+      const remainder = await waitForElement(
+        () => document.querySelector<HTMLElement>('[data-prompt-suggestion-remainder="true"]'),
+        "Typing the suggestion's first words dropped the rest of it.",
+      );
+      const rest = remainder.querySelector<HTMLElement>("span:nth-of-type(2)");
+      expect(rest?.textContent).toBe(" and open the PR");
+
+      // Tab finishes it, keeping what was typed.
+      composerEditor.focus();
+      composerEditor.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true }),
+      );
+      await waitForElement(
+        () =>
+          composerEditor.textContent?.trim() === "commit this and open the PR"
+            ? composerEditor
+            : null,
+        () =>
+          `Tab never finished the suggestion; the composer holds "${
+            composerEditor.textContent ?? ""
+          }".`,
+      );
+
+      // With words selected the rest would read as continuing the selection:
+      // it hides, and Tab leaves the text alone.
+      await page.getByTestId("composer-editor").fill("commit this");
+      await waitForElement(
+        () => document.querySelector<HTMLElement>('[data-prompt-suggestion-remainder="true"]'),
+        "The rest did not come back after retyping the suggestion's first words.",
+      );
+      await userEvent.keyboard("{Shift>}{ArrowLeft}{ArrowLeft}{/Shift}");
+      await waitForSuggestionGone("The rest stayed after the cursor while words were selected.");
+      composerEditor.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true }),
+      );
+      await waitForLayout();
+      expect(composerEditor.textContent?.trim()).toBe("commit this");
+
+      // Words that leave the suggestion drop it, and so does a box of spaces,
+      // which Tab could not fill.
+      await page.getByTestId("composer-editor").fill("commit that");
+      await waitForSuggestionGone("The suggestion stayed after the typed words left it.");
+      await page.getByTestId("composer-editor").fill("   ");
+      await waitForSuggestionGone("The suggestion stayed over a box of spaces.");
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("lines the rest of the suggestion up with the typed words wherever they wrap", async () => {
+    // The long word starts past the middle of the first line, so while it is
+    // half typed it fits there, but the whole word does not.
+    const suggestion =
+      "Rename the configuration loader and then double check that pneumonoultramicroscopicsilicovolcanoconiosis still wraps";
+    const { mounted, composerEditor } = await mountPromptSuggestion(suggestion);
+    try {
+      let previousTop: number | null = null;
+      let wrappedMidWord = false;
+      for (let length = 20; length < suggestion.length; length += 1) {
+        // A trailing space hangs at a line's end, where it has no box to measure.
+        if (suggestion[length - 1] === " ") continue;
+        const typed = suggestion.slice(0, length);
+        await page.getByTestId("composer-editor").fill(typed);
+        const rest = await waitForElement(() => {
+          const found = document.querySelector<HTMLElement>(
+            '[data-prompt-suggestion-remainder="true"] span:nth-of-type(2)',
+          );
+          return found?.textContent === suggestion.slice(length) ? found : null;
+        }, `The rest never followed "${typed}".`);
+        const typedRange = document.createRange();
+        typedRange.selectNodeContents(composerEditor);
+        const typedRects = typedRange.getClientRects();
+        const typedEnd = typedRects[typedRects.length - 1]!;
+        // The invisible copy of the typed words wraps exactly like them, even
+        // when the word the rest completes no longer fits on their line...
+        const mirrorRects = rest.parentElement!.querySelector("span")!.getClientRects();
+        const mirrorEnd = mirrorRects[mirrorRects.length - 1]!;
+        expect(
+          Math.abs(mirrorEnd.right - typedEnd.right) < 1.5 &&
+            Math.abs(mirrorEnd.top - typedEnd.top) < 1.5,
+          `"${typed}" ends at (${typedEnd.right}, ${typedEnd.top}) but its copy ends at (${mirrorEnd.right}, ${mirrorEnd.top}).`,
+        ).toBe(true);
+        // ...so the gray rest goes on right after them, or at the start of
+        // the next line when it does not fit.
+        const restStart = rest.getClientRects()[0]!;
+        const lineStart = composerEditor.getBoundingClientRect().left;
+        const continuesLine =
+          Math.abs(restStart.left - typedEnd.right) < 1.5 &&
+          Math.abs(restStart.top - typedEnd.top) < 1.5;
+        const startsNextLine =
+          Math.abs(restStart.left - lineStart) < 1.5 && restStart.top > typedEnd.top + 1;
+        expect(
+          continuesLine || startsNextLine,
+          `"${typed}" ends at (${typedEnd.right}, ${typedEnd.top}) but its rest starts at (${restStart.left}, ${restStart.top}).`,
+        ).toBe(true);
+        if (
+          previousTop !== null &&
+          typedEnd.top > previousTop + 1 &&
+          suggestion[length - 2] !== " "
+        ) {
+          wrappedMidWord = true;
+        }
+        previousTop = typedEnd.top;
+      }
+      // The case under test happened: typing more of a word moved it down.
+      expect(wrappedMidWord).toBe(true);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("offers no rest once the typed words make the composer scroll", async () => {
+    const suggestion = `${"Check the next module and note anything odd. ".repeat(24)}Then stop.`;
+    const { mounted, composerEditor } = await mountPromptSuggestion(suggestion.trim());
+    try {
+      const typed = suggestion.slice(0, suggestion.length - "Then stop.".length - 1);
+      await page.getByTestId("composer-editor").fill(typed);
+      await waitForElement(
+        () =>
+          composerEditor.scrollHeight > composerEditor.clientHeight + 1 ? composerEditor : null,
+        "The typed words never made the composer scroll.",
+      );
+      // The overlay does not follow the editor's scroll, so the rest would sit
+      // off screen; it is not offered, and Tab adds nothing unseen.
+      await waitForSuggestionGone("The rest stayed after the composer started scrolling.");
+      composerEditor.focus();
+      composerEditor.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true }),
+      );
+      await waitForLayout();
+      expect(composerEditor.textContent?.endsWith("Then stop.")).toBe(false);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("puts the usual hint back when Escape dismisses the suggestion", async () => {
+    const { mounted, composerEditor } = await mountPromptSuggestion("Run the tests");
+    try {
+      composerEditor.focus();
+      composerEditor.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }),
+      );
+      await waitForSuggestionGone("Escape did not dismiss the suggestion.");
+      await waitForElement(
+        () =>
+          document
+            .querySelector('[data-chat-composer-form="true"]')
+            ?.textContent?.includes("Ask anything")
+            ? document.body
+            : null,
+        "The usual hint did not come back after Escape.",
+      );
+      expect(composerEditor.getAttribute("aria-placeholder")).toContain("Ask anything");
     } finally {
       await mounted.cleanup();
     }
@@ -12796,8 +12963,8 @@ describe("ChatView timeline estimator parity (full app)", () => {
 
     try {
       await waitForElement(
-        () => document.querySelector<HTMLElement>('[data-prompt-suggestion="true"]'),
-        "Unable to find the prompt suggestion chip.",
+        () => document.querySelector<HTMLElement>('[data-prompt-suggestion-text="true"]'),
+        "Unable to find the prompt suggestion in the composer.",
       );
 
       // The suggestion is the thread's own agent's guess at what you'd say to

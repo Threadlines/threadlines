@@ -106,10 +106,12 @@ import {
   shouldUseCompactComposerPrimaryActions,
 } from "../composerFooterLayout";
 import {
+  type ComposerCommandKey,
   type ComposerPromptEditorHandle,
   type ComposerSkillAvailability,
   ComposerPromptEditor,
 } from "../ComposerPromptEditor";
+import { type ComposerPromptSuggestionDisplay } from "./ComposerPromptSuggestion";
 import { ProviderModelPicker } from "./ProviderModelPicker";
 import { type ComposerCommandItem, ComposerCommandMenu } from "./ComposerCommandMenu";
 import { useComposerMenuRoom } from "./useComposerMenuRoom";
@@ -142,7 +144,10 @@ import { ComposerPendingTranscriptHighlightContexts } from "./ComposerPendingTra
 import { ComposerPendingTerminalContexts } from "./ComposerPendingTerminalContexts";
 import { resolveComposerMenuActiveItemId } from "./composerMenuHighlight";
 import { isPluginSkillCommandName, searchSlashCommandItems } from "./composerSlashCommandSearch";
-import { buildDefaultComposerPlaceholder } from "./composerPlaceholder";
+import {
+  buildComposerCapabilityHint,
+  buildDefaultComposerPlaceholder,
+} from "./composerPlaceholder";
 import {
   getComposerProviderState,
   renderProviderTraitsMenuContent,
@@ -188,8 +193,7 @@ import {
   canRequestProviderRateLimitResetCredit,
   useProviderRateLimitResetCredit,
 } from "../ProviderRateLimitResetCredit";
-import { CircleAlertIcon, FileTextIcon, SparklesIcon, XIcon } from "lucide-react";
-import { Kbd } from "../ui/kbd";
+import { CircleAlertIcon, FileTextIcon, XIcon } from "lucide-react";
 import { proposedPlanTitle } from "../../proposedPlan";
 import {
   getProviderDisplayName,
@@ -217,7 +221,7 @@ import {
   type PendingUserInput,
 } from "../../session-logic";
 import { deriveLatestContextWindowSnapshot } from "../../lib/contextWindow";
-import { selectPromptSuggestion } from "../../lib/promptSuggestions";
+import { resolvePromptSuggestionView, selectPromptSuggestion } from "../../lib/promptSuggestions";
 import {
   deriveProviderAccountUsagePresentationForProvider,
   type ProviderAccountUsagePresentation,
@@ -229,7 +233,6 @@ import {
 } from "@threadlines/shared/fileAttachments";
 import { searchProviderSkills } from "../../providerSkillSearch";
 import { resolveComposerSkillReferences } from "../../providerSkillReferences";
-import { useHorizontalOverflow } from "../../hooks/useHorizontalOverflow";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { ComposerDictationControl } from "./ComposerDictationControl";
 import { useDictation } from "../../dictation/useDictation";
@@ -239,7 +242,6 @@ const ALL_ATTACHMENT_ACCEPT = `image/*,${FILE_ATTACHMENT_ACCEPT}`;
 
 const COMPOSER_PATH_QUERY_DEBOUNCE_MS = 120;
 const CODEX_AGENT_PROVIDER = ProviderDriverKind.make("codex");
-const CLAUDE_AGENT_PROVIDER = ProviderDriverKind.make("claudeAgent");
 const EMPTY_PROJECT_ENTRIES: ProjectEntry[] = [];
 const EMPTY_PROVIDER_SKILLS: ServerProvider["skills"] = [];
 /** A thread with no agents besides its own, while there is no thread yet. */
@@ -281,14 +283,6 @@ const extendReplacementRangeForTrailingSpace = (
   }
   return text[rangeEnd] === " " ? rangeEnd + 1 : rangeEnd;
 };
-
-function formatPromptSuggestionDisplayText(value: string): string {
-  const trimmed = value.trim();
-  if (trimmed.length === 0) {
-    return "";
-  }
-  return `${trimmed.charAt(0).toUpperCase()}${trimmed.slice(1)}`;
-}
 
 const syncTerminalContextsByIds = (
   contexts: ReadonlyArray<TerminalContextDraft>,
@@ -635,8 +629,7 @@ export interface ChatComposerProps {
 
   /**
    * Lines that sit on top of the message box, such as queued messages. They
-   * render inside the composer above the input, so the floating prompt
-   * suggestion always clears them instead of drawing over them.
+   * render inside the composer form, above the input.
    */
   stackedAbove?: ReactNode;
 
@@ -1610,6 +1603,15 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     projectSkillsQuery.isError,
     workspaceEntriesQuery.isError,
   ]);
+  const composerCapabilityHint = useMemo(
+    () =>
+      buildComposerCapabilityHint({
+        canReferenceFiles: canReferenceWorkspaceFiles,
+        canInvokeSkills: composerSkills.some((skill) => skill.enabled),
+        canMentionAgents: roomMentionAgents.length > 0,
+      }),
+    [canReferenceWorkspaceFiles, composerSkills, roomMentionAgents.length],
+  );
   const defaultComposerPlaceholder = useMemo(
     () =>
       buildDefaultComposerPlaceholder({
@@ -1707,12 +1709,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const recipientDriverKind = addressedRoomAgent
     ? addressedRoomAgentEntry?.driverKind
     : selectedProvider;
-  const latestPromptSuggestion = useMemo(
+  const promptSuggestion = useMemo(
     () =>
       selectPromptSuggestion({
-        isSuggestionProvider: recipientDriverKind === CLAUDE_AGENT_PROVIDER,
+        recipientDriverKind,
         isFromRecipient: isFromRecipientAgent,
-        composerIsEmpty: prompt.trim().length === 0,
         phase,
         sideAnswerInProgress,
         isSendBusy,
@@ -1733,19 +1734,22 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       isSendBusy,
       pendingUserInputs.length,
       phase,
-      prompt,
       queuedFollowUpCount,
       recipientDriverKind,
       showPlanFollowUpPrompt,
       sideAnswerInProgress,
     ],
   );
-  const latestPromptSuggestionDisplayText = latestPromptSuggestion
-    ? formatPromptSuggestionDisplayText(latestPromptSuggestion)
-    : null;
-  const promptSuggestionOverflow = useHorizontalOverflow(
-    latestPromptSuggestionDisplayText ?? "",
-    latestPromptSuggestionDisplayText !== null,
+  const promptSuggestionView = useMemo(
+    () =>
+      promptSuggestion
+        ? resolvePromptSuggestionView({
+            prompt,
+            cursor: composerCursor,
+            suggestion: promptSuggestion.text,
+          })
+        : null,
+    [composerCursor, prompt, promptSuggestion],
   );
   const meterContextWindowLabel = roomAgentTraitsProps
     ? getComposerProviderState({
@@ -1869,22 +1873,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       setComposerDraftPrompt(composerDraftTarget, nextPrompt);
     },
     [composerDraftTarget, setComposerDraftPrompt],
-  );
-
-  const applyPromptSuggestion = useCallback(
-    (suggestion: string) => {
-      const nextPrompt = formatPromptSuggestionDisplayText(suggestion);
-      if (nextPrompt.length === 0) return;
-      promptRef.current = nextPrompt;
-      setPrompt(nextPrompt);
-      const nextCursor = collapseExpandedComposerCursor(nextPrompt, nextPrompt.length);
-      setComposerCursor(nextCursor);
-      setComposerTrigger(detectComposerTrigger(nextPrompt, nextPrompt.length));
-      window.requestAnimationFrame(() => {
-        composerEditorRef.current?.focusAt(nextCursor);
-      });
-    },
-    [promptRef, setPrompt],
   );
 
   const addComposerAttachment = useCallback(
@@ -2755,6 +2743,70 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     };
   }, [composerCursor, composerTerminalContexts, promptRef]);
 
+  // Tab, or a click on its key, takes the suggestion: all of it into an empty
+  // box, or the rest of it after the words typed so far.
+  const acceptPromptSuggestion = useCallback((): boolean => {
+    if (!promptSuggestion || promptSuggestionView === null) {
+      return false;
+    }
+    const snapshot = readComposerSnapshot();
+    const view = resolvePromptSuggestionView({
+      prompt: snapshot.value,
+      cursor: snapshot.cursor,
+      suggestion: promptSuggestion.text,
+    });
+    // Only the rest that is on screen: not with words selected or the editor scrolled.
+    if (
+      !view ||
+      (view.kind === "completion" && composerEditorRef.current?.canShowCompletion() === false)
+    ) {
+      return false;
+    }
+    const nextPrompt =
+      view.kind === "placeholder" ? promptSuggestion.text : snapshot.value + view.remainder;
+    promptRef.current = nextPrompt;
+    setPrompt(nextPrompt);
+    const nextCursor = collapseExpandedComposerCursor(nextPrompt, nextPrompt.length);
+    setComposerCursor(nextCursor);
+    setComposerTrigger(detectComposerTrigger(nextPrompt, nextPrompt.length));
+    window.requestAnimationFrame(() => {
+      composerEditorRef.current?.focusAt(nextCursor);
+    });
+    return true;
+  }, [promptRef, promptSuggestion, promptSuggestionView, readComposerSnapshot, setPrompt]);
+  // Stays set while the box fills and empties again, so the editor keeps the
+  // suggestion mounted and its fade-in plays once.
+  const promptSuggestionDisplay = useMemo<ComposerPromptSuggestionDisplay | null>(() => {
+    if (
+      !promptSuggestion ||
+      isConnecting ||
+      isComposerApprovalState ||
+      hasBlockingQuestion ||
+      environmentUnavailable !== null
+    ) {
+      return null;
+    }
+    return {
+      id: promptSuggestion.id,
+      text: promptSuggestion.text,
+      remainder:
+        promptSuggestionView?.kind === "completion" ? promptSuggestionView.remainder : null,
+      hint: composerCapabilityHint,
+      onAccept: () => {
+        acceptPromptSuggestion();
+      },
+    };
+  }, [
+    acceptPromptSuggestion,
+    composerCapabilityHint,
+    environmentUnavailable,
+    hasBlockingQuestion,
+    isComposerApprovalState,
+    isConnecting,
+    promptSuggestion,
+    promptSuggestionView,
+  ]);
+
   const resolveActiveComposerTrigger = useCallback((): {
     snapshot: { value: string; cursor: number; expandedCursor: number };
     trigger: ComposerTrigger | null;
@@ -2994,10 +3046,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   // ------------------------------------------------------------------
   // Callbacks: command key
   // ------------------------------------------------------------------
-  const onComposerCommandKey = (
-    key: "ArrowDown" | "ArrowUp" | "Enter" | "Tab",
-    event: KeyboardEvent,
-  ) => {
+  const onComposerCommandKey = (key: ComposerCommandKey, event: KeyboardEvent) => {
     if (key === "Tab" && event.shiftKey) {
       toggleInteractionMode();
       return true;
@@ -3020,12 +3069,24 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         return true;
       }
     }
-    // Tab accepts the Claude suggestion floating above the composer. The
-    // suggestion only exists while the composer is empty, so this never
-    // clobbers typed text, and the menu branch above already claimed Tab when
-    // a slash or mention menu is open.
-    if (key === "Tab" && latestPromptSuggestion) {
-      applyPromptSuggestion(latestPromptSuggestion);
+    // Tab takes the agent's suggestion in the box: all of it when the box is
+    // empty, or the rest when the typed words start it, so it never clobbers
+    // other text. The menu branch above already claimed Tab when a slash or
+    // mention menu is open.
+    if (key === "Tab" && acceptPromptSuggestion()) {
+      return true;
+    }
+    // Escape puts the usual hint back until a newer turn leaves a suggestion.
+    if (
+      key === "Escape" &&
+      !menuIsActive &&
+      promptSuggestionView !== null &&
+      !(
+        promptSuggestionView.kind === "completion" &&
+        composerEditorRef.current?.canShowCompletion() === false
+      )
+    ) {
+      setDismissedSuggestionTurnId(activeThread?.latestTurn?.turnId ?? null);
       return true;
     }
     if (key === "Enter" && !event.shiftKey) {
@@ -3469,66 +3530,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       className="relative mx-auto w-full min-w-0 max-w-4xl"
       data-chat-composer-form="true"
     >
-      {/* Float the suggestion above the composer (like the scroll-to-bottom button) so it
-          overlays the bottom of the message list instead of consuming input-bar height.
-          It is bare text rather than a chip: no border, fill, or shadow, so it reads as
-          a quiet hint instead of a second card stacked on the composer. Width is capped
-          below half the composer so it never reaches the centered scroll-to-bottom
-          button that shares this band. The lines stacked on the composer
-          (`stackedAbove`) render inside this form, so it floats above them too. */}
-      {latestPromptSuggestion && latestPromptSuggestionDisplayText && !isComposerCollapsedMobile ? (
-        <div className="absolute inset-x-0 bottom-full z-20 mb-1.5 flex px-2">
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <button
-                  type="button"
-                  data-prompt-suggestion="true"
-                  className="group inline-flex max-w-[calc(50%-2rem)] cursor-pointer items-center gap-2 rounded-sm px-1 py-0.5 text-left text-muted-foreground text-xs transition-colors hover:text-foreground focus-ring"
-                  aria-label={`Use Claude suggested prompt: ${latestPromptSuggestion}`}
-                  onClick={() => applyPromptSuggestion(latestPromptSuggestion)}
-                >
-                  <SparklesIcon className="size-3.5 shrink-0 text-muted-foreground/65 transition-colors group-hover:text-foreground/80" />
-                  <span
-                    ref={promptSuggestionOverflow.elementRef}
-                    data-prompt-suggestion-text="true"
-                    className="truncate"
-                  >
-                    {latestPromptSuggestionDisplayText}
-                  </span>
-                  {/* Tab hint stays hidden until hover or keyboard focus so the
-                      resting state is just the sparkle and the words. */}
-                  <Kbd
-                    aria-hidden="true"
-                    className="h-4 shrink-0 rounded-sm px-1 text-[10px] opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100"
-                  >
-                    Tab
-                  </Kbd>
-                </button>
-              }
-            />
-            {/* The chip clips long suggestions, so the tooltip carries the full text
-                whenever it is clipped; a suggestion that fits keeps the short label. */}
-            <TooltipPopup
-              side="top"
-              align="start"
-              className="max-w-96"
-              data-prompt-suggestion-tooltip="true"
-            >
-              {promptSuggestionOverflow.overflows ? (
-                <span className="block text-pretty">
-                  {latestPromptSuggestionDisplayText}
-                  <span className="mt-1 block text-muted-foreground">
-                    Claude suggested this prompt
-                  </span>
-                </span>
-              ) : (
-                "Claude suggested this prompt"
-              )}
-            </TooltipPopup>
-          </Tooltip>
-        </div>
-      ) : null}
       {/* Clipped sideways so a long line never widens the form, whose scroll
           width the right panel's resize check reads. */}
       <div className="min-w-0 overflow-x-clip">{stackedAbove}</div>
@@ -3932,6 +3933,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     onChange={onPromptChange}
                     onCommandKeyDown={onComposerCommandKey}
                     onPaste={onComposerPaste}
+                    suggestion={promptSuggestionDisplay}
                     placeholder={
                       isComposerApprovalState
                         ? "Resolve this approval request to continue"

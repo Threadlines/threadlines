@@ -24,6 +24,7 @@ import {
   KEY_ARROW_RIGHT_COMMAND,
   KEY_ARROW_UP_COMMAND,
   KEY_ENTER_COMMAND,
+  KEY_ESCAPE_COMMAND,
   KEY_TAB_COMMAND,
   COMMAND_PRIORITY_HIGH,
   KEY_BACKSPACE_COMMAND,
@@ -77,6 +78,12 @@ import {
   SKILL_CHIP_ICON_SVG,
 } from "./composerInlineChip";
 import { ComposerPendingTerminalContextChip } from "./chat/ComposerPendingTerminalContexts";
+import {
+  ComposerPromptSuggestion,
+  type ComposerPromptSuggestionDisplay,
+  canShowPromptCompletion,
+  promptSuggestionAriaPlaceholder,
+} from "./chat/ComposerPromptSuggestion";
 import { formatProviderSkillDisplayName } from "~/providerSkillPresentation";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 
@@ -1044,6 +1051,8 @@ export interface ComposerPromptEditorHandle {
   focus: () => void;
   focusAt: (cursor: number) => void;
   focusAtEnd: () => void;
+  /** Whether a suggestion's rest can show after the cursor; see `canShowPromptCompletion`. */
+  canShowCompletion: () => boolean;
   readSnapshot: () => {
     value: string;
     cursor: number;
@@ -1051,6 +1060,9 @@ export interface ComposerPromptEditorHandle {
     terminalContextIds: string[];
   };
 }
+
+/** Keys the composer may claim before the editor acts on them. */
+export type ComposerCommandKey = "ArrowDown" | "ArrowUp" | "Enter" | "Tab" | "Escape";
 
 interface ComposerPromptEditorProps {
   value: string;
@@ -1066,6 +1078,8 @@ interface ComposerPromptEditorProps {
   skillAvailability?: ComposerSkillAvailability;
   disabled: boolean;
   placeholder: string;
+  /** An agent's guess at the next message; it takes the placeholder's place. */
+  suggestion?: ComposerPromptSuggestionDisplay | null;
   className?: string;
   onRemoveTerminalContext: (contextId: string) => void;
   onChange: (
@@ -1075,27 +1089,18 @@ interface ComposerPromptEditorProps {
     cursorAdjacentToMention: boolean,
     terminalContextIds: string[],
   ) => void;
-  onCommandKeyDown?: (
-    key: "ArrowDown" | "ArrowUp" | "Enter" | "Tab",
-    event: KeyboardEvent,
-  ) => boolean;
+  onCommandKeyDown?: (key: ComposerCommandKey, event: KeyboardEvent) => boolean;
   onPaste: React.ClipboardEventHandler<HTMLElement>;
   editorRef: React.RefObject<ComposerPromptEditorHandle | null>;
 }
 
 function ComposerCommandKeyPlugin(props: {
-  onCommandKeyDown?: (
-    key: "ArrowDown" | "ArrowUp" | "Enter" | "Tab",
-    event: KeyboardEvent,
-  ) => boolean;
+  onCommandKeyDown?: (key: ComposerCommandKey, event: KeyboardEvent) => boolean;
 }) {
   const [editor] = useLexicalComposerContext();
 
   useEffect(() => {
-    const handleCommand = (
-      key: "ArrowDown" | "ArrowUp" | "Enter" | "Tab",
-      event: KeyboardEvent | null,
-    ): boolean => {
+    const handleCommand = (key: ComposerCommandKey, event: KeyboardEvent | null): boolean => {
       if (!props.onCommandKeyDown || !event) {
         return false;
       }
@@ -1131,12 +1136,18 @@ function ComposerCommandKeyPlugin(props: {
       (event) => handleCommand("Tab", event),
       COMMAND_PRIORITY_HIGH,
     );
+    const unregisterEscape = editor.registerCommand(
+      KEY_ESCAPE_COMMAND,
+      (event) => handleCommand("Escape", event),
+      COMMAND_PRIORITY_HIGH,
+    );
 
     return () => {
       unregisterArrowDown();
       unregisterArrowUp();
       unregisterEnter();
       unregisterTab();
+      unregisterEscape();
     };
   }, [editor, props]);
 
@@ -1624,6 +1635,7 @@ function ComposerPromptEditorInner({
   recognizedSlashCommands,
   disabled,
   placeholder,
+  suggestion,
   className,
   onRemoveTerminalContext,
   onChange,
@@ -1767,6 +1779,7 @@ function ComposerPromptEditorInner({
     snapshotRef.current = snapshot;
     return snapshot;
   }, [editor]);
+  const canShowCompletion = useCallback(() => canShowPromptCompletion(editor), [editor]);
 
   useImperativeHandle(
     editorRef,
@@ -1775,6 +1788,7 @@ function ComposerPromptEditorInner({
         focusAt(snapshotRef.current.cursor);
       },
       focusAt,
+      canShowCompletion,
       focusAtEnd: () => {
         focusAt(
           collapseExpandedComposerCursor(
@@ -1785,7 +1799,7 @@ function ComposerPromptEditorInner({
       },
       readSnapshot,
     }),
-    [focusAt, readSnapshot],
+    [canShowCompletion, focusAt, readSnapshot],
   );
 
   const handleEditorChange = useCallback((editorState: EditorState) => {
@@ -1848,7 +1862,9 @@ function ComposerPromptEditorInner({
                 className,
               )}
               data-testid="composer-editor"
-              aria-placeholder={placeholder}
+              aria-placeholder={
+                suggestion ? promptSuggestionAriaPlaceholder(suggestion.text) : placeholder
+              }
               placeholder={<span />}
               // Native browser spellcheck. Blink attaches spelling markers to
               // DOM text nodes and drops every marker a script rewrite
@@ -1865,7 +1881,7 @@ function ComposerPromptEditorInner({
             />
           }
           placeholder={
-            terminalContexts.length > 0 ? null : (
+            terminalContexts.length > 0 || suggestion ? null : (
               <div className="pointer-events-none absolute inset-0 text-[16px] leading-relaxed text-muted-foreground/35 sm:text-[14px]">
                 {placeholder}
               </div>
@@ -1873,6 +1889,9 @@ function ComposerPromptEditorInner({
           }
           ErrorBoundary={LexicalErrorBoundary}
         />
+        {suggestion && terminalContexts.length === 0 ? (
+          <ComposerPromptSuggestion key={suggestion.id} suggestion={suggestion} value={value} />
+        ) : null}
         <OnChangePlugin onChange={handleEditorChange} />
         <ComposerCommandHighlightPlugin recognizedSlashCommands={recognizedSlashCommands ?? []} />
         <ComposerCommandKeyPlugin {...(onCommandKeyDown ? { onCommandKeyDown } : {})} />
@@ -1896,6 +1915,7 @@ export function ComposerPromptEditor({
   skillAvailability,
   disabled,
   placeholder,
+  suggestion,
   className,
   onRemoveTerminalContext,
   onChange,
@@ -1942,6 +1962,7 @@ export function ComposerPromptEditor({
           skills={skills}
           disabled={disabled}
           placeholder={placeholder}
+          suggestion={suggestion ?? null}
           onRemoveTerminalContext={onRemoveTerminalContext}
           onChange={onChange}
           onPaste={onPaste}

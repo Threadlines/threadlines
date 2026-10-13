@@ -199,6 +199,7 @@ describe("ProviderActivityProjection", () => {
         summary: "Prompt suggestion",
         payload: {
           suggestion: "Add regression tests for this edge case.",
+          provider: "claudeAgent",
         },
       }),
     ]);

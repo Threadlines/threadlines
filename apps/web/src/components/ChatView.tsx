@@ -7379,9 +7379,7 @@ export default function ChatView(props: ChatViewProps) {
               onOpenThread={onOpenForkSourceThread}
             />
 
-            {/* scroll to bottom button — shown when user has scrolled away from the bottom.
-                The prompt-suggestion pill floats left-aligned in the same band and caps its
-                width at half the composer, so the centered button stays clear of it. */}
+            {/* scroll to bottom button — shown when user has scrolled away from the bottom. */}
             {showScrollToBottom && (
               <div className="pointer-events-none absolute bottom-2 left-1/2 z-30 -translate-x-1/2 py-1.5">
                 <button
