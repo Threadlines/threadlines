@@ -8,6 +8,7 @@ import {
   type WorkLogEntry,
 } from "../../session-logic";
 import { isUserWrittenMessage } from "@threadlines/shared/roomAgentRequests";
+import { isTurnAside } from "@threadlines/shared/transcriptRevert";
 import { agentPageFrameHeight } from "@threadlines/shared/agentPages";
 import { type ChatMessage, type ProposedPlan, type TurnDiffSummary } from "../../types";
 import { type RoomAgentNames, roomAgentKey, roomTurnOwners } from "../../rooms";
@@ -105,10 +106,17 @@ const UNPLACED: TimelineRowPlacement = { padTop: false };
  * another (a hand-off, its reply) happens inside the exchange: it neither
  * splits the turn that wrote it nor ends the user's exchange. A message from
  * another thread (child threads: a parent's request, a child's answer) starts
- * a turn of its own, so it starts an exchange the way the user's would.
+ * a turn of its own, so it starts an exchange the way the user's would,
+ * unless it was steered into the turn already running (isTurnAside).
  */
-const startsExchange = (message: Pick<ChatMessage, "role" | "fromAgent" | "fromThread">) =>
-  isUserWrittenMessage(message) || (message.role === "user" && message.fromThread !== undefined);
+const startsExchange = (
+  message: Pick<
+    ChatMessage,
+    "role" | "fromAgent" | "fromThread" | "turnId" | "sideTurnId" | "requestKind" | "requestOutcome"
+  >,
+) =>
+  isUserWrittenMessage(message) ||
+  (message.role === "user" && message.fromThread !== undefined && !isTurnAside(message));
 
 export type MessagesTimelineRow = TimelineRowPlacement &
   (

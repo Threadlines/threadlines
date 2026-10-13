@@ -33,7 +33,8 @@ they opted out of being asked.
   - **Not now**: nothing runs, and the agent cannot ask again in this thread
     until the user writes.
 - The review's answer shows like a side answer and goes back to the agent
-  that asked, as its next message.
+  that asked, as its next message: into its running turn if it is still
+  working, otherwise as its next turn.
 - Settings, under Rooms: "Agents bringing in other agents": Off, Ask me
   first (the default), or Without asking. Without asking applies the agent's own pick
   (review only or teammate) at once; its description says that can spend

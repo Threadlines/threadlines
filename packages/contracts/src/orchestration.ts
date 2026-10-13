@@ -2750,6 +2750,12 @@ const ThreadFollowUpSendQueuedCommand = Schema.Struct({
   commandId: CommandId,
   threadId: ThreadId,
   messageId: MessageId,
+  /**
+   * An agent's reply or a thread's report the server already steered into
+   * this running turn of the agent it was for: it is taken out of the queue
+   * and recorded in that turn instead of starting one.
+   */
+  steeredTurnId: Schema.optional(TurnId),
   createdAt: IsoDateTime,
 });
 

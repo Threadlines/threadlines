@@ -2478,6 +2478,50 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       const fromAgent = queued.fromAgent;
       const fromThread = queued.fromThread;
       const agentQueued = isAgentOrigin(queued);
+      // A reply or a report the server already steered into the running turn
+      // of the agent it was for (it checked first what a send checks): it is
+      // part of that turn now, recorded there like a steer, with who wrote it
+      // and its place in the chat kept.
+      if (command.steeredTurnId !== undefined) {
+        if (!agentQueued) {
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: "Only a message an agent queued is steered into a running turn.",
+          });
+        }
+        const written = targetThread.messages.find((message) => message.id === queued.messageId);
+        return [
+          unqueuedEvent,
+          ...(written === undefined
+            ? []
+            : [
+                {
+                  ...sendBase(),
+                  type: "thread.message-sent" as const,
+                  payload: {
+                    threadId: command.threadId,
+                    messageId: written.id,
+                    role: written.role,
+                    text: written.text,
+                    attachments: [],
+                    ...(written.participantId !== undefined
+                      ? { participantId: written.participantId }
+                      : {}),
+                    ...(written.fromAgent !== undefined ? { fromAgent: written.fromAgent } : {}),
+                    ...(written.requestId !== undefined ? { requestId: written.requestId } : {}),
+                    ...(written.requestKind !== undefined
+                      ? { requestKind: written.requestKind }
+                      : {}),
+                    ...(written.fromThread !== undefined ? { fromThread: written.fromThread } : {}),
+                    turnId: command.steeredTurnId,
+                    streaming: false,
+                    createdAt: written.createdAt,
+                    updatedAt: command.createdAt,
+                  },
+                },
+              ]),
+        ];
+      }
       // A child's report whose delivery was cancelled after it was queued
       // (Stop, wrap, the child separated or gone) is taken back, not sent.
       // Likewise a parent's request cancelled meanwhile (Stop, wrap) in a child

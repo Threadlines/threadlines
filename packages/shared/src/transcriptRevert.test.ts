@@ -15,6 +15,7 @@ const message = (
     sideTurnId?: string;
     requestKind?: string;
     requestOutcome?: string;
+    fromThread?: { kind: string };
   } = {},
 ) => {
   sequence += 1;
@@ -37,11 +38,14 @@ describe("retainMessagesAfterRevert", () => {
       // A review's reply that Stop took back before it was sent.
       message("reply-stopped", "user", { requestKind: "reply", requestOutcome: "cancelled" }),
       message("u2", "user"),
+      // A thread's report steered into the running turn.
+      message("report-steered", "user", { turnId: "t2", fromThread: { kind: "report" } }),
       message("invite", "user", { requestKind: "invite" }),
       message("review", "user", { requestKind: "review", sideTurnId: "s1" }),
       message("review-answer", "assistant", { sideTurnId: "s1" }),
       message("a2", "assistant", { turnId: "t2" }),
       message("reply", "user", { requestKind: "reply" }),
+      message("reply-steered", "user", { requestKind: "reply", turnId: "t3" }),
       message("a3", "assistant", { turnId: "t3" }),
       message("invite-late", "user", { requestKind: "invite" }),
     ];
@@ -57,6 +61,7 @@ describe("retainMessagesAfterRevert", () => {
       "a1",
       "reply-stopped",
       "u2",
+      "report-steered",
       "invite",
       "review",
       "review-answer",

@@ -40,18 +40,42 @@ type CommandOf<Type extends OrchestrationCommand["type"]> = Extract<
   { readonly type: Type }
 >;
 
-/** How much of a hand-off's reply goes back to the agent that handed off. */
-const HAND_OFF_REPLY_CHAR_LIMIT = 24_000;
+/** How much of a reply or an answer goes back to the agent that asked for it. */
+export const AGENT_REPLY_CHAR_LIMIT = 24_000;
+
+const NO_REPLY_TEXT = "(The agent finished without writing a reply.)";
 
 /** A hand-off's reply as the agent that handed off receives it. */
 export function handOffReplyText(text: string | undefined): string {
   const trimmed = text?.trim() ?? "";
   if (trimmed.length === 0) {
-    return "(The agent finished without writing a reply.)";
+    return NO_REPLY_TEXT;
   }
-  return trimmed.length > HAND_OFF_REPLY_CHAR_LIMIT
-    ? `${trimmed.slice(0, HAND_OFF_REPLY_CHAR_LIMIT)} [clipped; the full reply is in the chat]`
+  return trimmed.length > AGENT_REPLY_CHAR_LIMIT
+    ? `${trimmed.slice(0, AGENT_REPLY_CHAR_LIMIT)} [clipped; the full reply is in the chat]`
     : trimmed;
+}
+
+/**
+ * A side answer (to an ask, a review or an invite) as the agent that asked
+ * receives it, in its tool call or as a reply. The answer is everything the
+ * answering agent wrote, progress notes first and its conclusion last, so a
+ * long one loses its start rather than its conclusion.
+ */
+export function clipSideAnswer(text: string): { readonly text: string; readonly clipped: boolean } {
+  const trimmed = text.trim();
+  return trimmed.length > AGENT_REPLY_CHAR_LIMIT
+    ? {
+        text: `[earlier part clipped; the full answer is in the chat]\n${trimmed.slice(-AGENT_REPLY_CHAR_LIMIT).trimStart()}`,
+        clipped: true,
+      }
+    : { text: trimmed, clipped: false };
+}
+
+/** A side answer that comes back as a reply message; see clipSideAnswer. */
+export function sideAnswerReplyText(text: string | undefined): string {
+  const clipped = clipSideAnswer(text ?? "").text;
+  return clipped.length === 0 ? NO_REPLY_TEXT : clipped;
 }
 
 /** Events to plan, or why the command is refused. */
@@ -839,7 +863,7 @@ export function settleAgentRequestForSideTurn(
     return [settled];
   }
   const text =
-    mapped === "answered" ? handOffReplyText(answer?.text) : missingAnswerReplyText(error);
+    mapped === "answered" ? sideAnswerReplyText(answer?.text) : missingAnswerReplyText(error);
   return [settled, ...replyEvents(base, thread, request, replyId, text, settledAt)];
 }
 

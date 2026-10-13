@@ -41,6 +41,7 @@ import { projectScriptCwd, projectScriptRuntimeEnv } from "@threadlines/shared/p
 import { resolveThreadWorkingCwd } from "@threadlines/shared/threadCwd";
 import { formatForkSourceExcerpt, truncate } from "@threadlines/shared/String";
 import { isAgentOrigin } from "@threadlines/shared/roomAgentRequests";
+import { isTurnAside } from "@threadlines/shared/transcriptRevert";
 import { Debouncer } from "@tanstack/react-pacer";
 import * as Option from "effect/Option";
 import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -2574,8 +2575,9 @@ export default function ChatView(props: ChatViewProps) {
           continue;
         }
         if (nextEntry.message.role === "user") {
-          // An invite is made mid-turn; anything else starts the next turn.
-          if (nextEntry.message.requestKind === "invite") {
+          // An invite, or a reply or report steered into the turn, comes
+          // mid-turn; anything else starts the next turn.
+          if (isTurnAside(nextEntry.message)) {
             continue;
           }
           break;

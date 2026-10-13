@@ -583,9 +583,14 @@ chainEpoch, status, requestMessageId, sideTurnId?, targetTurnId? }`. Status
   `continuing` and the answer goes on. The server sends
   `thread.agent-request.detach`, which marks the request `replyAsMessage`;
   when its side answer settles, the answer comes back to the caller as a
-  reply message queued as its next turn, the way an invite's review does.
-  A failure comes back too ("No answer came: ..."), so a caller told to
-  expect an answer is never left waiting; one the user stopped does not.
+  reply message, the way an invite's review does. If the caller is still
+  working, the reply is steered into its running turn (Claude, Codex and
+  OpenCode), framed as the review or answer it asked for; otherwise, or if
+  the steer cannot land, it is queued as its next turn. A failure comes back
+  too ("No answer came: ..."), so a caller told to expect an answer is never
+  left waiting; one the user stopped does not. A side answer over the reply
+  limit keeps its end (the conclusion), not its start (the progress notes),
+  in the call's result and in the reply alike.
   - Detach is refused once the caller's turn is over, so it cannot cross
     the turn's end stopping the answer. Refused (the answer landed, or Stop
     came, as time ran out), the call waits a moment for that settle, and

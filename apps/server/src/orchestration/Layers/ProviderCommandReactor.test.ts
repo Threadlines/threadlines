@@ -1217,6 +1217,126 @@ describe("ProviderCommandReactor", () => {
     expect(thread?.sideTurn?.status).not.toBe("cancelling");
   });
 
+  /** A review by astra whose call ran out of time, answered while the asking turn still runs. */
+  async function answerLateReviewWhileAskerWorks(
+    room: Awaited<ReturnType<typeof startRoomWithMessageQueuedForAstra>>,
+  ) {
+    const { harness, threadId, astraId, dispatch, now } = room;
+    const requestId = RoomAgentRequestId.make("request-late-review");
+    const sideTurnId = SideTurnId.make("0d9e8f7a-6b5c-4d3e-8f1a-2b3c4d5e6f73");
+    await dispatch({
+      type: "thread.agent-request.submit",
+      commandId: CommandId.make("cmd-late-review"),
+      threadId,
+      requestId,
+      kind: "review",
+      from: { participantId: null },
+      to: { participantId: astraId },
+      callerTurnId: asTurnId("turn-1"),
+      chainEpoch: 0,
+      message: { messageId: asMessageId("late-review"), text: "Check the retry backoff." },
+      sideTurnId,
+      reviewInput: {
+        basis: { kind: "uncommitted", files: 1, truncated: false, capturedAt: now },
+        diff: "diff --git a/retry.ts b/retry.ts\n+const backoff = 2;",
+      },
+      createdAt: now,
+    });
+    await dispatch({
+      type: "thread.agent-request.detach",
+      commandId: CommandId.make("cmd-late-review-detach"),
+      threadId,
+      requestId,
+      createdAt: now,
+    });
+    await waitFor(async () => {
+      const thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+      return thread?.sideTurn?.status === "running";
+    });
+    await dispatch({
+      type: "thread.message.assistant.delta",
+      commandId: CommandId.make("cmd-late-review-answer"),
+      threadId,
+      messageId: asMessageId(`side-answer:${sideTurnId}`),
+      participantId: astraId,
+      sideTurnId,
+      delta: "The backoff never caps.",
+      createdAt: now,
+    });
+    await dispatch({
+      type: "thread.side-turn.settle",
+      commandId: CommandId.make("cmd-late-review-settle"),
+      threadId,
+      sideTurnId,
+      outcome: "completed",
+      createdAt: now,
+    });
+    return { replyId: asMessageId(`review-reply:${requestId}`) };
+  }
+
+  it("puts an answer that outran its call into the running turn of the agent that asked", async () => {
+    const room = await startRoomWithMessageQueuedForAstra();
+    const { harness, threadId, astraId, settle } = room;
+    const { replyId } = await answerLateReviewWhileAskerWorks(room);
+
+    await waitFor(() => harness.steerTurn.mock.calls.length === 1);
+    const steered = harness.steerTurn.mock.calls[0]?.[0] as {
+      threadId: string;
+      expectedTurnId: string;
+      messageId: string;
+      input: string;
+    };
+    expect(steered).toMatchObject({ threadId, expectedTurnId: "turn-1", messageId: replyId });
+    expect(steered.input).toContain(
+      "independent review, which you asked for. It came back after your call stopped waiting for it.",
+    );
+    expect(steered.input.endsWith("The backoff never caps.")).toBe(true);
+    await harness.drain();
+    const thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+    // Out of the queue, and part of the turn that took it.
+    expect(thread?.queuedFollowUps?.map((entry) => entry.messageId)).toEqual(["queue-for-astra"]);
+    expect(thread?.messages.find((message) => message.id === replyId)).toMatchObject({
+      turnId: "turn-1",
+      fromAgent: { participantId: astraId },
+      requestKind: "reply",
+    });
+
+    // The turn ends: astra's message goes next, and the answer is not sent again.
+    await settle(0, 0, "cmd-asker-done");
+    const toAstra = participantSessionKey(threadId, astraId);
+    await waitFor(() =>
+      harness.sendTurn.mock.calls.some(
+        ([request]) => (request as { threadId: string }).threadId === toAstra,
+      ),
+    );
+    await harness.drain();
+    expect(
+      harness.sendTurn.mock.calls.filter(
+        ([request]) => (request as { messageId?: string }).messageId === replyId,
+      ),
+    ).toEqual([]);
+  });
+
+  it("keeps an answer queued when its asking turn ended before it could go in", async () => {
+    const room = await startRoomWithMessageQueuedForAstra();
+    const { harness, threadId } = room;
+    harness.steerTurn.mockImplementationOnce(() =>
+      Effect.fail(
+        new ProviderAdapterRequestError({
+          provider: "codex",
+          method: "turn/steer",
+          detail: "no active turn to steer",
+        }),
+      ),
+    );
+    const { replyId } = await answerLateReviewWhileAskerWorks(room);
+
+    await waitFor(() => harness.steerTurn.mock.calls.length === 1);
+    await harness.drain();
+    const thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+    expect(thread?.queuedFollowUps?.map((entry) => entry.messageId)).toContain(replyId);
+  });
+
   it("queues a hand-off when the turn that made it completes, behind the user's own message", async () => {
     const { harness, threadId, astraId, dispatch, settle, now } =
       await startRoomWithMessageQueuedForAstra();

@@ -174,7 +174,7 @@ export const RoomInviteResult = Schema.Struct({
   /**
    * `asked_user`: the user decides; `started`: the review is running
    * (invites need no approval here). Either way its review comes back to you
-   * as a message after your turn, if it runs.
+   * as a message (into your turn if you are still working), if it runs.
    */
   outcome: Schema.Literals(["asked_user", "started", "failed", "busy", "limit", "refused"]),
   detail: Schema.optional(Schema.String),

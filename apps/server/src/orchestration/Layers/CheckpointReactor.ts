@@ -135,14 +135,17 @@ function targetUserMessageIdForCheckpointRewind(input: {
       readonly role: string;
       readonly createdAt: string;
       readonly eventSequence?: number | undefined;
+      readonly turnId?: string | null | undefined;
       readonly sideTurnId?: string | undefined;
       readonly requestKind?: string | undefined;
       readonly requestOutcome?: string | undefined;
+      readonly fromThread?: { readonly kind: string } | undefined;
     }>;
   };
   readonly targetTurnCount: number;
 }): MessageId | undefined {
-  // An invite or an invited review sits beside a turn and never starts one.
+  // What sits beside a turn (an invite, an invited review, a reply or report
+  // steered into it) never starts one.
   const userMessages = input.thread.messages
     .filter((message) => message.role === "user" && !isTurnAside(message))
     .toSorted(compareTranscriptOrder);
