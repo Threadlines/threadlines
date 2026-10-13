@@ -5,6 +5,7 @@ import {
   EventId,
   MessageId,
   type OrchestrationProjectShell,
+  type OrchestrationSession,
   type OrchestrationThreadShell,
   type PullRequestActivity,
   type PullRequestDetail,
@@ -25,6 +26,7 @@ import {
 import {
   PULL_REQUEST_CHECKS_POLL_INTERVAL_MS,
   pullRequestChecksInMotion,
+  pullRequestChecksWait,
 } from "@threadlines/shared/pullRequestPolling";
 import { changeRequestRepositoryName } from "@threadlines/shared/sourceControl";
 import { resolveThreadWorkingCwd } from "@threadlines/shared/threadCwd";
@@ -161,10 +163,11 @@ function hasWorkInProgress(thread: OrchestrationThreadShell): boolean {
   ) {
     return true;
   }
-  const session = thread.session;
-  if (session === null) {
-    return false;
-  }
+  return thread.session !== null && sessionHasWorkInProgress(thread.session);
+}
+
+/** The session's part of `hasWorkInProgress`: a turn starting or running, or a run it waits on. */
+function sessionHasWorkInProgress(session: OrchestrationSession): boolean {
   return (
     session.status === "starting" ||
     session.status === "running" ||
@@ -342,14 +345,14 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
     const sweepSemaphore = yield* Semaphore.make(1);
     // One look at a time: every look reaches for the same baselines, and two
     // racing over one thread would start the same turn twice. A sweep holds
-    // this a thread at a time, not for its whole run, so that a switch coming
-    // on waits for one thread and not for every armed one.
+    // this a thread at a time, not for its whole run, so that a look asked for
+    // meanwhile waits for one thread and not for every armed one.
     const lookSemaphore = yield* Semaphore.make(1);
-    // Closed while a switch that has just come on waits for its look and has
-    // it. A sweep stops here between two threads: the permit alone would not
-    // make it stand aside, since whoever gives it back can take it again
-    // before a waiter wakes.
-    const noSwitchWaiting = yield* Latch.make(true);
+    // Closed while a look asked for by a switch coming on or a turn ending
+    // waits and runs. A sweep stops here between two threads: the permit
+    // alone would not make it stand aside, since whoever gives it back can
+    // take it again before a waiter wakes.
+    const noLookAskedFor = yield* Latch.make(true);
 
     /** A read that must not take the sweep down with it. */
     const attempt = <A, E>(operation: string, threadId: ThreadId, effect: Effect.Effect<A, E>) =>
@@ -360,6 +363,12 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
             cause: Cause.pretty(cause),
           }).pipe(Effect.as(null)),
         ),
+      );
+
+    /** Puts a thread on the quicker pace, in the stretch it is already in if it is in one. */
+    const keepInMotion = (threadId: ThreadId, now: number) =>
+      Ref.update(inMotionRef, (threads) =>
+        threads.has(threadId) ? threads : threads.set(threadId, now),
       );
 
     /**
@@ -390,9 +399,7 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
         }
         const now = yield* Clock.currentTimeMillis;
         if (pullRequestChecksInMotion(detail, now)) {
-          yield* Ref.update(inMotionRef, (threads) =>
-            threads.has(threadId) ? threads : threads.set(threadId, now),
-          );
+          yield* keepInMotion(threadId, now);
         }
         return detail;
       });
@@ -521,6 +528,8 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
         readonly detail: PullRequestDetail;
         readonly mergeMethod: PullRequestMergeMethod;
         readonly unpushedCommits: number;
+        /** Where the thread's checkout last pushed this pull request's branch, if it is on it. */
+        readonly pushedHead: string | null;
         /** The auto-fix watch is on and still has turns left to fix a failure. */
         readonly autoFix: boolean;
         /** Whose switch this is: null for the thread's own branch, else a linked pull request's. */
@@ -533,6 +542,7 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
           detail,
           autoFix: input.autoFix,
           unpushedCommits: input.unpushedCommits,
+          pushedHead: input.pushedHead,
           now,
         });
         if (step.kind === "wait") {
@@ -818,6 +828,16 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
         if (detail === "unread" || detail === "elsewhere") {
           return detail === "unread" ? "watching" : "nothing";
         }
+        // A look can come seconds after the agent pushed, when its turn ends.
+        // A read that still names the commit before says nothing about the
+        // push: its checks are that commit's, so they are neither sent to the
+        // agent nor merged on, and the thread is looked at again soon.
+        const pushedHead = remote.upstreamHeadSha ?? null;
+        const now = yield* Clock.currentTimeMillis;
+        const awaitingPush = pullRequestChecksWait(detail, pushedHead, now) === "push";
+        if (awaitingPush) {
+          yield* keepInMotion(thread.id, now);
+        }
 
         if (autoMerge !== null) {
           const merged = yield* sweepAutoMerge({
@@ -826,6 +846,7 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
             detail,
             mergeMethod: autoMerge,
             unpushedCommits: remote.aheadCount,
+            pushedHead,
             autoFix: autoFixActive,
             pullRequestNumber: null,
           });
@@ -833,7 +854,9 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
             return "nothing";
           }
         }
-        if (pendingRequeue !== undefined) {
+        // Arming the host's merge on the commit before the fix would queue it
+        // without the fix, so this waits for the push like everything else.
+        if (pendingRequeue !== undefined && !awaitingPush) {
           yield* requeueAfterFix({
             threadId: thread.id,
             key,
@@ -893,7 +916,7 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
         // A rollup still running is not a verdict: wait for it rather than send
         // the agent after a check that may pass on its own.
         const newlyFailing: PullRequestAutoFixCheck[] =
-          detail.checksState === "pending"
+          detail.checksState === "pending" || awaitingPush
             ? []
             : detail.checks
                 .filter((check) => check.status === "failure" && !carriedFailing.has(check.name))
@@ -1026,16 +1049,16 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
         // thread moves onto that branch. Its checkout can then hold commits for
         // it that are not pushed yet, and a checkout that cannot be read is no
         // answer, so the merge waits.
-        const unpushedCommits =
+        const checkout =
           thread.branch !== null && detail.headBranch === thread.branch
-            ? ((yield* attempt(
+            ? yield* attempt(
                 "status-read",
                 thread.id,
                 gitManager.remoteStatus({ cwd: threadWorkingCwd(candidate) }),
-              ))?.aheadCount ?? null)
-            : 0;
+              )
+            : undefined;
         watching = true;
-        if (unpushedCommits === null) {
+        if (checkout === null) {
           continue;
         }
         yield* sweepAutoMerge({
@@ -1043,7 +1066,8 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
           reference,
           detail,
           mergeMethod: linked.autoMerge,
-          unpushedCommits,
+          unpushedCommits: checkout?.aheadCount ?? 0,
+          pushedHead: checkout?.upstreamHeadSha ?? null,
           autoFix: false,
           pullRequestNumber: linked.number,
         });
@@ -1099,8 +1123,9 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
      * thread and its project are read here, not carried in from a listing. A
      * sweep reaches its last thread long after it listed them, and by then the
      * thread may have started a turn, changed its switches, or had a look of
-     * its own. Answers what it found, or null where the thread is busy, no
-     * longer watched, or on a host this cannot read. Run under the look permit.
+     * its own. Answers what it found; `busy` where the thread has work in
+     * progress, which is "not yet"; null where it is no longer watched or is on
+     * a host this cannot read. Run under the look permit.
      */
     const lookAt = Effect.fn("PullRequestAutomationWatcher.lookAt")(function* (threadId: ThreadId) {
       const thread = yield* attempt(
@@ -1108,13 +1133,11 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
         threadId,
         projectionSnapshotQuery.getThreadShellById(threadId),
       );
-      if (
-        thread === null ||
-        Option.isNone(thread) ||
-        !isWatched(thread.value) ||
-        hasWorkInProgress(thread.value)
-      ) {
+      if (thread === null || Option.isNone(thread) || !isWatched(thread.value)) {
         return null;
+      }
+      if (hasWorkInProgress(thread.value)) {
+        return "busy";
       }
       const project = yield* attempt(
         "project-read",
@@ -1250,7 +1273,7 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
       const threadIds = yield* lookSemaphore.withPermits(1)(listThreads(scope));
       let startedCount = 0;
       for (const threadId of threadIds) {
-        yield* noSwitchWaiting.await;
+        yield* noLookAskedFor.await;
         const outcome = yield* lookSemaphore.withPermits(1)(lookAt(threadId));
         if (outcome === "started") {
           startedCount += 1;
@@ -1285,27 +1308,28 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
     });
 
     /**
-     * The look a thread gets as one of its switches comes on: at that thread
-     * alone, and ahead of whatever a sweep in flight has yet to reach, so the
-     * answer takes as long as reading one pull request however many threads
-     * are armed. `autoFix` marks the thread as just armed first, under the
-     * same permit as the look, so no listing can clear the mark on the
-     * strength of a read taken before the switch came on.
+     * A look asked for by something that just happened to one thread, a switch
+     * coming on or a turn ending: at that thread alone, and ahead of whatever a
+     * sweep in flight has yet to reach, so the answer takes as long as reading
+     * one pull request however many threads are armed. `justArmed` marks the
+     * thread's fixing switch as just turned on first, under the same permit as
+     * the look, so no listing can clear the mark on the strength of a read
+     * taken before the switch came on. Answers as `lookAt` does.
      */
-    const lookAtSwitchedOn = (threadId: ThreadId, autoFix: boolean) =>
-      noSwitchWaiting.close.pipe(
+    const lookNow = (threadId: ThreadId, justArmed: boolean) =>
+      noLookAskedFor.close.pipe(
         Effect.andThen(
           lookSemaphore.withPermits(1)(
             Effect.gen(function* () {
-              if (autoFix) {
+              if (justArmed) {
                 yield* Ref.update(freshlyArmedRef, (armed) => armed.add(threadId));
               }
-              yield* lookAt(threadId);
+              return yield* lookAt(threadId);
             }),
           ),
         ),
-        Effect.ensuring(noSwitchWaiting.open),
-        Effect.withSpan("PullRequestAutomationWatcher.lookAtSwitchedOn"),
+        Effect.ensuring(noLookAskedFor.open),
+        Effect.withSpan("PullRequestAutomationWatcher.lookNow"),
       );
 
     const sweepNow: PullRequestAutomationWatcherShape["sweepNow"] = () => sweep;
@@ -1319,19 +1343,78 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
             ),
           ),
         );
-        // Turning either switch on is answered at once rather than at the next
-        // interval: a check already failing goes to the agent, and a pull
-        // request with nothing left to wait for merges, when the box is
-        // ticked, not up to two minutes later.
+        // Threads with a turn under way, to be looked at as it ends. Only this
+        // event fiber touches it, and a thread nobody watches leaves it at the
+        // end of its turn. A turn end it misses is no loss: the next sweep looks.
+        const awaitingTurnEnd = new Set<string>();
+
+        /** A look asked for; a thread found busy gets another as its turn ends. */
+        const lookNowOrAfterTurn = (threadId: ThreadId, justArmed: boolean) =>
+          lookNow(threadId, justArmed).pipe(
+            Effect.map((outcome) => {
+              if (outcome === "busy") {
+                awaitingTurnEnd.add(threadId);
+              }
+            }),
+          );
+
+        /**
+         * The look a watched thread gets as its turn ends, when the agent has
+         * most likely just pushed: its checks go on the quicker pace from the
+         * start, and a switch that came on mid-turn is answered now. A turn
+         * ends over several events, so one that still finds work in progress
+         * waits for the next.
+         */
+        const lookAfterTurn = (threadId: ThreadId) =>
+          Effect.gen(function* () {
+            if (!awaitingTurnEnd.has(threadId)) {
+              return;
+            }
+            const read = yield* attempt(
+              "thread-read",
+              threadId,
+              projectionSnapshotQuery.getThreadShellById(threadId),
+            );
+            const watched =
+              read !== null && Option.isSome(read) && isWatched(read.value) ? read.value : null;
+            if (watched !== null && hasWorkInProgress(watched)) {
+              return;
+            }
+            awaitingTurnEnd.delete(threadId);
+            if (watched !== null) {
+              yield* lookNowOrAfterTurn(threadId, false);
+            }
+          });
+
+        // What happens to one thread is answered at once rather than at the
+        // next interval. A switch coming on: a check already failing goes to
+        // the agent, and a pull request with nothing left to wait for merges,
+        // when the box is ticked. A turn ending: the pull request it pushed to
+        // is watched from then, not from up to two minutes later.
         yield* Effect.forkScoped(
           Stream.runForEach(orchestrationEngine.streamDomainEvents, (event) => {
-            if (event.type !== "thread.pull-request-automation-changed") {
-              return Effect.void;
+            switch (event.type) {
+              case "thread.pull-request-automation-changed": {
+                const autoFix = event.payload.autoFix === true;
+                return autoFix || event.payload.autoMerge != null
+                  ? lookNowOrAfterTurn(event.payload.threadId, autoFix)
+                  : Effect.void;
+              }
+              case "thread.turn-start-requested":
+                awaitingTurnEnd.add(event.payload.threadId);
+                return Effect.void;
+              case "thread.session-set":
+                if (sessionHasWorkInProgress(event.payload.session)) {
+                  awaitingTurnEnd.add(event.payload.threadId);
+                  return Effect.void;
+                }
+                return lookAfterTurn(event.payload.threadId);
+              case "thread.turn-diff-completed":
+              case "thread.turn-completed":
+                return lookAfterTurn(event.payload.threadId);
+              default:
+                return Effect.void;
             }
-            const autoFix = event.payload.autoFix === true;
-            return autoFix || event.payload.autoMerge != null
-              ? lookAtSwitchedOn(event.payload.threadId, autoFix)
-              : Effect.void;
           }),
         );
         yield* Effect.logInfo("pull-request.auto-fix.started", {

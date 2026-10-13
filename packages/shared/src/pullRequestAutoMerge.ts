@@ -11,6 +11,8 @@
  */
 import type { PullRequestDetail } from "@threadlines/contracts";
 
+import { pullRequestChecksWait } from "./pullRequestPolling.ts";
+
 /**
  * How long after the pull request last changed the server holds off. A push
  * leaves a moment where the host has the commit but has not yet listed every
@@ -42,6 +44,7 @@ export interface PullRequestAutoMergeInput {
     | "mergeGate"
     | "checks"
     | "checksState"
+    | "headSha"
     | "updatedAt"
     | "viewer"
     | "capabilities"
@@ -53,6 +56,11 @@ export interface PullRequestAutoMergeInput {
   readonly autoFix: boolean;
   /** Commits on the thread's branch that have not reached the host yet. */
   readonly unpushedCommits: number;
+  /**
+   * The commit the thread's checkout last pushed its branch at, or null where
+   * it does not know: no upstream, or a pull request on another branch.
+   */
+  readonly pushedHead: string | null;
   readonly now: number;
 }
 
@@ -69,6 +77,11 @@ export function resolvePullRequestAutoMergeStep(
   }
   if (!detail.viewer.canWrite || !detail.capabilities.actions.includes("merge")) {
     return { kind: "stop", reason: "Write access is needed to merge" };
+  }
+  // Before the checks are weighed at all: a read of another commit than the
+  // one that was pushed shows an older commit's checks, green or red.
+  if (pullRequestChecksWait(detail, input.pushedHead, input.now) === "push") {
+    return { kind: "wait", reason: "Waiting for GitHub to see the latest push" };
   }
   const failing =
     detail.checksState === "failure" || detail.checks.some((check) => check.status === "failure");

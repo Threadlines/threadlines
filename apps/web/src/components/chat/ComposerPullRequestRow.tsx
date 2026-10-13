@@ -509,6 +509,7 @@ function ComposerPullRequestAutoMergeSection({
     autoFix: pullRequest.autoFix?.checked ?? false,
     agentWorking: pullRequest.agentWorking,
     unpushedCommits: pullRequest.unpushedCommits,
+    pushedHead: pullRequest.pushedHead,
     now: openedAt,
   });
   const detailQueryKey = pullRequestQueryKeys.detail(

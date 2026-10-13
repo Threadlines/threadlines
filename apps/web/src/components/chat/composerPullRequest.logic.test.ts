@@ -324,6 +324,7 @@ function control(
     readonly autoFix?: boolean;
     readonly agentWorking?: boolean;
     readonly unpushedCommits?: number;
+    readonly pushedHead?: string | null;
   } = {},
 ) {
   return composerAutoMergeControl({
@@ -332,6 +333,7 @@ function control(
     autoFix: thread.autoFix ?? false,
     agentWorking: thread.agentWorking ?? false,
     unpushedCommits: thread.unpushedCommits ?? 0,
+    pushedHead: thread.pushedHead ?? null,
     now: NOW,
   });
 }
@@ -410,6 +412,14 @@ describe("composerAutoMergeControl", () => {
       kind: "server",
       checked: true,
       status: "Waiting for local commits to be pushed",
+    });
+    // Pushed, but this read is still of the commit before.
+    expect(
+      control({ ...ready, headSha: "before" }, { pushedHead: "pushed", threadAutoMerge: "squash" }),
+    ).toEqual({
+      kind: "server",
+      checked: true,
+      status: "Waiting for GitHub to see the latest push",
     });
   });
 
