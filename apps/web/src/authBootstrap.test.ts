@@ -513,6 +513,98 @@ describe("resolveInitialServerAuthGateState", () => {
     expect(fetchMock.mock.calls[3]?.[0]).toBe("http://localhost:3773/api/auth/session");
   });
 
+  describe("ensureDesktopSession", () => {
+    const auth = {
+      policy: "desktop-managed-local",
+      bootstrapMethods: ["desktop-bootstrap"],
+      sessionMethods: ["browser-session-cookie"],
+      sessionCookieName: "threadlines_session",
+    };
+    const signedIn = {
+      authenticated: true,
+      auth,
+      sessionMethod: "browser-session-cookie",
+      expiresAt: "2026-04-05T00:00:00.000Z",
+    };
+
+    function installDesktopWindow() {
+      const testWindow = installTestBrowser("http://localhost/");
+      testWindow.desktopBridge = {
+        getLocalEnvironmentBootstrap: () => ({
+          label: "Local environment",
+          httpBaseUrl: "http://localhost:3773",
+          wsBaseUrl: "ws://localhost:3773",
+          bootstrapToken: "desktop-bootstrap-token",
+        }),
+      } as DesktopBridge;
+    }
+
+    it("signs the desktop window back in once its session is gone", async () => {
+      const fetchMock = vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(sessionResponse({ authenticated: false, auth }))
+        .mockResolvedValueOnce(jsonResponse({ authenticated: true, expiresAt: signedIn.expiresAt }))
+        .mockResolvedValueOnce(sessionResponse(signedIn))
+        .mockResolvedValueOnce(sessionResponse(signedIn));
+      vi.stubGlobal("fetch", fetchMock);
+      installDesktopWindow();
+
+      const { ensureDesktopSession, fetchSessionState, readSessionExpiryMs } =
+        await import("./environments/primary");
+
+      await expect(ensureDesktopSession()).resolves.toBe("renewed");
+      expect(fetchMock).toHaveBeenCalledWith("http://localhost:3773/api/auth/bootstrap", {
+        body: JSON.stringify({ credential: "desktop-bootstrap-token" }),
+        credentials: "include",
+        headers: {
+          "content-type": "application/json",
+        },
+        method: "POST",
+      });
+      // The window times its next renewal off the expiry in the session reply.
+      expect(readSessionExpiryMs(await fetchSessionState())).toBe(
+        Date.parse("2026-04-05T00:00:00.000Z"),
+      );
+    });
+
+    it("leaves a live session alone instead of signing in again", async () => {
+      const fetchMock = vi.fn<typeof fetch>().mockResolvedValueOnce(sessionResponse(signedIn));
+      vi.stubGlobal("fetch", fetchMock);
+      installDesktopWindow();
+
+      const { ensureDesktopSession } = await import("./environments/primary");
+
+      await expect(ensureDesktopSession()).resolves.toBe("active");
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(fetchMock.mock.calls[0]?.[0]).toBe("http://localhost:3773/api/auth/session");
+    });
+
+    it("counts the session as renewed even when the check that follows fails", async () => {
+      const fetchMock = vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(sessionResponse({ authenticated: false, auth }))
+        .mockResolvedValueOnce(jsonResponse({ authenticated: true, expiresAt: signedIn.expiresAt }))
+        .mockResolvedValueOnce(new Response("Internal Server Error", { status: 500 }));
+      vi.stubGlobal("fetch", fetchMock);
+      installDesktopWindow();
+
+      const { ensureDesktopSession } = await import("./environments/primary");
+
+      // The new cookie is already in place, so the socket still has to move to it.
+      await expect(ensureDesktopSession()).resolves.toBe("renewed");
+    });
+
+    it("has nothing to sign in with in a browser, which was paired instead", async () => {
+      const fetchMock = vi.fn<typeof fetch>();
+      vi.stubGlobal("fetch", fetchMock);
+
+      const { ensureDesktopSession } = await import("./environments/primary");
+
+      await expect(ensureDesktopSession()).resolves.toBe("unavailable");
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+  });
+
   it("memoizes the authenticated gate state after the first successful read", async () => {
     const fetchMock = vi
       .fn<typeof fetch>()

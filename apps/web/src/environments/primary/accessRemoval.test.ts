@@ -11,10 +11,19 @@ const auth: AuthSessionState["auth"] = {
 };
 
 describe("probePrimaryAccess", () => {
+  const signedOut = async () => ({ authenticated: false, auth }) as AuthSessionState;
+
   it("reports removed access when the computer no longer knows this session", async () => {
-    await expect(
-      probePrimaryAccess(async () => ({ authenticated: false, auth }) as AuthSessionState),
-    ).resolves.toBe("removed");
+    // A paired browser holds nothing it could sign back in with.
+    await expect(probePrimaryAccess(signedOut, async () => "unavailable")).resolves.toBe("removed");
+  });
+
+  it("treats the desktop app's own window as still having access once it signed back in", async () => {
+    await expect(probePrimaryAccess(signedOut, async () => "renewed")).resolves.toBe("active");
+  });
+
+  it("keeps reconnecting when the desktop window could not get a new session yet", async () => {
+    await expect(probePrimaryAccess(signedOut, async () => "failed")).resolves.toBe("unknown");
   });
 
   it("keeps a network failure inconclusive so reconnecting continues", async () => {

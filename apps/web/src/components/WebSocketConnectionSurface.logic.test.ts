@@ -5,6 +5,7 @@ import { describeSlowRpcAckToast, formatSlowRpcTagLabel } from "../rpc/requestLa
 import {
   shouldAutoReconnect,
   shouldProbeAccessRemoval,
+  shouldReconnectAfterSessionRenewal,
   shouldRestartStalledReconnect,
   shouldShowReconnectIssueToast,
 } from "./WebSocketConnectionSurface";
@@ -204,6 +205,43 @@ describe("WebSocketConnectionSurface.logic", () => {
         }),
       ),
     ).toBe(false);
+  });
+
+  describe("after the desktop window gets a new session", () => {
+    const connected = makeStatus({ attemptCount: 3, hasConnected: true, phase: "connected" });
+    const dropped = makeStatus({
+      attemptCount: 4,
+      disconnectedAt: "2026-04-03T20:00:09.000Z",
+      hasConnected: true,
+      phase: "disconnected",
+      reconnectAttemptCount: 1,
+      reconnectPhase: "waiting",
+    });
+
+    it("moves the socket that was already up onto the new session", () => {
+      expect(shouldReconnectAfterSessionRenewal(connected, connected)).toBe(true);
+    });
+
+    it("leaves alone a socket that connected while the session was being renewed", () => {
+      const reconnected = makeStatus({ attemptCount: 5, hasConnected: true, phase: "connected" });
+
+      expect(shouldReconnectAfterSessionRenewal(dropped, reconnected)).toBe(false);
+      // The old socket dropped and a new one came up before the renewal finished.
+      expect(shouldReconnectAfterSessionRenewal(connected, reconnected)).toBe(false);
+    });
+
+    it("cuts a retry delay short but does not interrupt an attempt in flight", () => {
+      const attempting = makeStatus({
+        attemptCount: 5,
+        hasConnected: true,
+        phase: "connecting",
+        reconnectAttemptCount: 2,
+        reconnectPhase: "attempting",
+      });
+
+      expect(shouldReconnectAfterSessionRenewal(dropped, dropped)).toBe(true);
+      expect(shouldReconnectAfterSessionRenewal(dropped, attempting)).toBe(false);
+    });
   });
 
   it("formats slow RPC method tags for user-facing summaries", () => {

@@ -85,10 +85,34 @@ export function takePairingTokenFromUrl(): string | null {
 }
 
 function getDesktopBootstrapCredential(): string | null {
-  const bootstrap = window.desktopBridge?.getLocalEnvironmentBootstrap();
+  const bootstrap = window.desktopBridge?.getLocalEnvironmentBootstrap?.();
   return typeof bootstrap?.bootstrapToken === "string" && bootstrap.bootstrapToken.length > 0
     ? bootstrap.bootstrapToken
     : null;
+}
+
+/**
+ * Whether this is the desktop app's own window, holding the credential the app
+ * hands it. Such a window can sign itself back in whenever its session ends; a
+ * browser has to be paired again instead.
+ */
+export function hasDesktopSessionCredential(): boolean {
+  return getDesktopBootstrapCredential() !== null;
+}
+
+/**
+ * When the session in a session-state reply ends, in epoch milliseconds, or
+ * null when it is signed out or names no expiry. The reply is read as raw
+ * JSON, so the expiry is the ISO string the server sent rather than the
+ * decoded date its type names.
+ */
+export function readSessionExpiryMs(session: AuthSessionState): number | null {
+  const expiresAt: unknown = session.expiresAt;
+  if (!session.authenticated || typeof expiresAt !== "string") {
+    return null;
+  }
+  const expiresAtMs = Date.parse(expiresAt);
+  return Number.isFinite(expiresAtMs) ? expiresAtMs : null;
 }
 
 export async function fetchSessionState(): Promise<AuthSessionState> {
@@ -252,6 +276,39 @@ async function bootstrapServerAuth(): Promise<ServerAuthGateState> {
       errorMessage: error instanceof Error ? error.message : "Authentication failed.",
     };
   }
+}
+
+export type DesktopSessionOutcome = "active" | "renewed" | "failed" | "unavailable";
+
+/**
+ * Makes sure the desktop app's own window holds a live session, signing it
+ * back in when the one it had is gone. A session lasts 30 days and the app can
+ * stay open past that, so the window has to be able to replace its session
+ * without a reload. The server is asked first, which makes this safe to call
+ * again: `active` means the session is fine and nothing was done. `unavailable`
+ * means this is a browser, which holds no credential to sign in with; `failed`
+ * means the server could not be asked right now, and it is worth asking again.
+ */
+export async function ensureDesktopSession(): Promise<DesktopSessionOutcome> {
+  const credential = getDesktopBootstrapCredential();
+  if (!credential) {
+    return "unavailable";
+  }
+
+  try {
+    if ((await fetchSessionState()).authenticated) {
+      return "active";
+    }
+    await exchangeBootstrapCredential(credential);
+  } catch {
+    return "failed";
+  }
+
+  // The exchange is what replaces the session. Seeing it take effect only
+  // smooths the reconnect that follows, so a slow or failed answer here must
+  // not report a renewed session as one that was not.
+  await waitForAuthenticatedSessionAfterBootstrap().catch(() => undefined);
+  return "renewed";
 }
 
 export async function submitServerAuthCredential(credential: string): Promise<void> {
