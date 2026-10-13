@@ -12738,6 +12738,27 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
+  it("sweeps the suggestion as it arrives, and typing ends the sweep for good", async () => {
+    const { mounted, text } = await mountPromptSuggestion("Run the tests");
+    try {
+      const overlay = text.closest<HTMLElement>('[data-prompt-suggestion="true"]')!;
+      expect(overlay.dataset.sweeping).toBe("true");
+
+      // A sweep needs its words on screen from the start. Typing ends it, so
+      // emptying the box again shows them at rest instead of replaying it.
+      await page.getByTestId("composer-editor").fill("no");
+      await vi.waitFor(() => expect(overlay.dataset.sweeping).toBeUndefined(), { timeout: 600 });
+      await page.getByTestId("composer-editor").fill("");
+      await waitForElement(
+        () => overlay.querySelector<HTMLElement>('[data-prompt-suggestion-text="true"]'),
+        "Emptying the composer did not bring the suggestion back.",
+      );
+      expect(overlay.dataset.sweeping).toBeUndefined();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("accepts the prompt suggestion with Tab from the focused composer", async () => {
     const suggestion = "Commit this and open the PR";
     const { mounted, composerEditor } = await mountPromptSuggestion(suggestion);

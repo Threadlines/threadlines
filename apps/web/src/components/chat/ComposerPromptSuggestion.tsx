@@ -1,8 +1,9 @@
 import { useLexicalComposerContext } from "@lexical/react/LexicalComposerContext";
 import { useLexicalIsTextContentEmpty } from "@lexical/react/useLexicalIsTextContentEmpty";
-import { $getSelection, $isRangeSelection, type LexicalEditor } from "lexical";
-import { type CSSProperties, useLayoutEffect, useRef, useState } from "react";
+import { $getRoot, $getSelection, $isRangeSelection, type LexicalEditor } from "lexical";
+import { type CSSProperties, useEffect, useLayoutEffect, useRef, useState } from "react";
 
+import { startPromptSuggestionSweeps } from "~/lib/promptSuggestions";
 import { cn } from "~/lib/utils";
 
 /**
@@ -46,6 +47,13 @@ export function canShowPromptCompletion(editor: LexicalEditor): boolean {
   return root === null || root.scrollHeight <= root.clientHeight + 1;
 }
 
+/** What `useLexicalIsTextContentEmpty(editor, false)` tracks, read on demand. */
+function isEditorEmpty(editor: LexicalEditor): boolean {
+  return (
+    !editor.isComposing() && editor.getEditorState().read(() => $getRoot().getTextContent() === "")
+  );
+}
+
 /**
  * Laid over the editor, in its type. An empty box shows the suggestion where
  * the hint goes, with the hint's "@ / $" help on a small line below. While
@@ -53,7 +61,8 @@ export function canShowPromptCompletion(editor: LexicalEditor): boolean {
  * rest to just after the cursor, so the gray words continue the typed ones;
  * the rest stops at the editor's last whole line instead of running into the
  * toolbar. Mount it keyed by the suggestion's id: it stays mounted while the
- * box fills and empties, so the fade-in plays once per suggestion.
+ * box fills and empties, so the fade-in and the sheen that sweeps the words
+ * play for a suggestion's arrival, not each time the box empties.
  */
 export function ComposerPromptSuggestion({
   suggestion,
@@ -67,6 +76,15 @@ export function ComposerPromptSuggestion({
   // own check, so a space hides a suggestion that Tab could no longer take.
   const isEmpty = useLexicalIsTextContentEmpty(editor, false);
   const [completionShown, setCompletionShown] = useState(() => canShowPromptCompletion(editor));
+  // index.css sweeps a sheen through the words and lights the Tab key while
+  // this is set: as the suggestion arrives, then a few reminders. A sweep
+  // needs its words on screen from the start: it is skipped over typed text
+  // and typing ends it, so emptying the box again never replays one part-way.
+  const [sweeping, setSweeping] = useState(() => isEditorEmpty(editor));
+  useEffect(
+    () => startPromptSuggestionSweeps((next) => setSweeping(next && isEditorEmpty(editor))),
+    [editor],
+  );
   // Whole lines that fit in the editor as it stands; it grows with the typed
   // text, so the rest always gets at least the last typed line's remainder.
   const rootRef = useRef<HTMLDivElement>(null);
@@ -76,6 +94,9 @@ export function ComposerPromptSuggestion({
     if (!root) return;
     const measure = () => {
       setCompletionShown(canShowPromptCompletion(editor));
+      if (!isEditorEmpty(editor)) {
+        setSweeping(false);
+      }
       const lineHeight = Number.parseFloat(getComputedStyle(root).lineHeight);
       if (lineHeight > 0) {
         setVisibleLines(Math.max(1, Math.floor((root.clientHeight + 1) / lineHeight)));
@@ -97,6 +118,7 @@ export function ComposerPromptSuggestion({
     <div
       ref={rootRef}
       data-prompt-suggestion="true"
+      data-sweeping={sweeping ? "true" : undefined}
       className="composer-prompt-suggestion pointer-events-none absolute inset-0 text-[16px] leading-relaxed sm:text-[14px]"
     >
       {isEmpty ? (
@@ -104,12 +126,17 @@ export function ComposerPromptSuggestion({
           <p
             aria-hidden="true"
             data-prompt-suggestion-text="true"
-            className="line-clamp-2 text-muted-foreground/70"
+            className="composer-prompt-suggestion-text line-clamp-2"
           >
-            {suggestion.text}
+            {/* The sheen runs through this inline box, so it follows the
+                words line by line instead of crossing the empty box. */}
+            <span>{suggestion.text}</span>
           </p>
           <p className="mt-0.5 flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground/35">
-            <PromptSuggestionAcceptKey onAccept={suggestion.onAccept} />
+            <PromptSuggestionAcceptKey
+              onAccept={suggestion.onAccept}
+              className="composer-prompt-suggestion-key"
+            />
             <span aria-hidden="true" className="truncate">
               <span className="pointer-coarse:hidden">to use · </span>
               <span className="hidden pointer-coarse:inline">· </span>
