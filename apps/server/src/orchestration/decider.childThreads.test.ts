@@ -303,6 +303,31 @@ describe("decider child threads", () => {
     expect(threadIn(delivered.model, CHILD).handedBackTurnId).toBe("child-turn-1");
   });
 
+  it("records a report steered into the parent's running turn there, without starting another", async () => {
+    const delivered = await run(await familyWithRunningChild(), settleAnswered());
+    const steered = await run(delivered.model, {
+      type: "thread.follow-up.send-queued",
+      commandId: CommandId.make("steer-report"),
+      threadId: PARENT,
+      messageId: childReportMessageId(REQUEST),
+      steeredTurnId: CALLER_TURN,
+      createdAt: at(12),
+    });
+    expect(steered.events.map((event) => event.type)).toEqual([
+      "thread.follow-up-unqueued",
+      "thread.message-sent",
+    ]);
+    const parent = threadIn(steered.model, PARENT);
+    expect(parent.queuedFollowUps).toEqual([]);
+    expect(
+      parent.messages.find((message) => message.id === childReportMessageId(REQUEST)),
+    ).toMatchObject({
+      turnId: CALLER_TURN,
+      fromThread: { threadId: CHILD, kind: "report" },
+      createdAt: at(10),
+    });
+  });
+
   it("Stop in the parent cancels what its children owe it, and a late answer comes back to no one", async () => {
     const stopped = await run(await familyWithRunningChild(), {
       type: "thread.turn.interrupt",

@@ -18,20 +18,28 @@ export interface RevertableMessage {
   readonly sideTurnId?: string | undefined;
   readonly requestKind?: string | undefined;
   readonly requestOutcome?: string | undefined;
+  readonly fromThread?: { readonly kind: string } | undefined;
   readonly createdAt: string;
   readonly eventSequence?: number | undefined;
 }
 
 /**
  * A message beside a turn, never the one that starts it: an invite, a side
- * exchange, or a reply taken back (Stop) before it was sent.
+ * exchange, a reply taken back (Stop) before it was sent, or an agent's reply
+ * or a thread's report steered into a running turn (only such a one carries
+ * a turn id; one sent as a turn of its own does not).
  */
 export const isTurnAside = (
-  message: Pick<RevertableMessage, "sideTurnId" | "requestKind" | "requestOutcome">,
+  message: Pick<
+    RevertableMessage,
+    "turnId" | "sideTurnId" | "requestKind" | "requestOutcome" | "fromThread"
+  >,
 ) =>
   message.sideTurnId !== undefined ||
   message.requestKind === "invite" ||
-  (message.requestKind === "reply" && message.requestOutcome === "cancelled");
+  (message.requestKind === "reply" && message.requestOutcome === "cancelled") ||
+  (message.turnId != null &&
+    (message.requestKind === "reply" || message.fromThread?.kind === "report"));
 
 export interface MessageRevertInput<Message extends RevertableMessage> {
   readonly messages: ReadonlyArray<Message>;

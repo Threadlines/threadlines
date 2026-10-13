@@ -81,6 +81,106 @@ export interface RoomCatchUp {
   readonly cursor: Omit<OrchestrationRoomContextCursor, "conversationId">;
 }
 
+type RoomCatchUpThread = RoomCatchUpInput["thread"];
+
+/**
+ * An agent as the room introduces it to another agent. The user may call an
+ * agent by the name they gave it ("Reviewer"), so every agent is introduced
+ * with it.
+ */
+function roomAgentName(thread: RoomCatchUpThread, id: ThreadParticipantId | null): string {
+  if (id === null) {
+    return thread.agentRole !== undefined
+      ? `the thread's own agent, "${thread.agentRole}" (${thread.modelSelection.model})`
+      : `the thread's own agent (${thread.modelSelection.model})`;
+  }
+  const participant = thread.participants.find((entry) => entry.id === id);
+  if (participant === undefined) {
+    return "an agent that has left";
+  }
+  return participant.role !== undefined
+    ? `${participant.handle}, "${participant.role}" (${participant.modelSelection.model})`
+    : `${participant.handle} (${participant.modelSelection.model})`;
+}
+
+/**
+ * What a reply (requestKind "reply") came back for: the kind of the request
+ * that asked for it. An invite's reply is the review the agent asked for (see
+ * docs/design/rooms-agent-invites.md); an ask's or review's is an answer that
+ * outran its call.
+ */
+function repliedRequestKind(
+  thread: RoomCatchUpThread,
+  message: OrchestrationMessage | undefined,
+): "invite" | "review" | "ask" | "hand_off" | undefined {
+  if (message?.requestKind !== "reply" || message.requestId === undefined) {
+    return undefined;
+  }
+  const requested = thread.messages.filter(
+    (entry) => entry.requestId === message.requestId && entry.requestKind !== "reply",
+  );
+  // An accepted invite also sends its review as a "review" message.
+  if (requested.some((entry) => entry.requestKind === "invite")) {
+    return "invite";
+  }
+  const kind = requested[0]?.requestKind;
+  return kind === "review" || kind === "ask" || kind === "hand_off" ? kind : undefined;
+}
+
+/**
+ * The line ahead of a message another agent sent this one, saying what it
+ * is: a turn handed over, a hand-off's reply, or the answer to an ask, a
+ * review or an invite it made. Shared by the catch-up note and a reply
+ * steered into the agent's running turn. Undefined for any other message.
+ */
+export function agentMessageFrame(
+  thread: RoomCatchUpThread,
+  message: OrchestrationMessage | undefined,
+): string | undefined {
+  const from = message?.fromAgent;
+  if (message === undefined || from === undefined) {
+    return undefined;
+  }
+  const name = roomAgentName(thread, from.participantId);
+  if (message.requestKind !== "reply") {
+    return message.requestKind === "hand_off"
+      ? `The message below is from ${name}, handing this turn to you on the user's behalf. Do what it asks unless it goes against the user's instructions.`
+      : undefined;
+  }
+  switch (repliedRequestKind(thread, message)) {
+    case "invite":
+      return `The message below is ${name}'s independent review, which you asked for. It saw none of this conversation, only your request and the changes.`;
+    case "review":
+      return `The message below is ${name}'s independent review, which you asked for. It came back after your call stopped waiting for it. It saw none of this conversation, only your request and the changes.`;
+    case "ask":
+      return `The message below is ${name}'s answer to what you asked it. It came back after your call stopped waiting for it.`;
+    case "hand_off":
+      return `The message below is ${name}'s reply to the work you handed it. Pick up from there.`;
+    default:
+      // Its request is no longer in view.
+      return `The message below is ${name}'s reply to your request.`;
+  }
+}
+
+/** How the catch-up note introduces a reply another agent was sent. */
+function replyLabel(
+  from: string,
+  to: string,
+  repliedTo: ReturnType<typeof repliedRequestKind>,
+): string {
+  switch (repliedTo) {
+    case "invite":
+    case "review":
+      return `${from}, with the independent review ${to} asked for`;
+    case "ask":
+      return `${from}, answering what ${to} asked`;
+    case "hand_off":
+      return `${from}, replying to the hand-off from ${to}`;
+    default:
+      return `${from}, replying to ${to}`;
+  }
+}
+
 export function buildRoomCatchUp(input: RoomCatchUpInput): RoomCatchUp | undefined {
   const { thread, participantId } = input;
   if (thread.participants.length === 0) {
@@ -88,31 +188,19 @@ export function buildRoomCatchUp(input: RoomCatchUpInput): RoomCatchUp | undefin
   }
   const current = thread.messages.find((message) => message.id === input.messageId);
   const currentFrom = current?.fromAgent;
-  // A reply to an invite: the review the agent asked for (see
-  // docs/design/rooms-agent-invites.md).
-  const invitedReview =
-    current?.requestKind === "reply" &&
-    current.requestId !== undefined &&
-    thread.messages.some(
-      (message) => message.requestId === current.requestId && message.requestKind === "invite",
-    );
-
-  // The user may call an agent by the name they gave it ("Reviewer"), so
-  // every agent is introduced with it.
-  const nameOf = (id: ThreadParticipantId | null): string => {
-    if (id === null) {
-      return thread.agentRole !== undefined
-        ? `the thread's own agent, "${thread.agentRole}" (${thread.modelSelection.model})`
-        : `the thread's own agent (${thread.modelSelection.model})`;
-    }
-    const participant = thread.participants.find((entry) => entry.id === id);
-    if (participant === undefined) {
-      return "an agent that has left";
-    }
-    return participant.role !== undefined
-      ? `${participant.handle}, "${participant.role}" (${participant.modelSelection.model})`
-      : `${participant.handle} (${participant.modelSelection.model})`;
-  };
+  const repliedTo = repliedRequestKind(thread, current);
+  // An ask, a review or an invite is answered on the side: its request names
+  // the side answer the reply was taken from.
+  const sourceSideTurnId =
+    current?.requestKind === "reply" && current.requestId !== undefined
+      ? thread.messages.find(
+          (message) =>
+            message.role === "user" &&
+            message.requestId === current.requestId &&
+            message.sideTurnId !== undefined,
+        )?.sideTurnId
+      : undefined;
+  const nameOf = (id: ThreadParticipantId | null) => roomAgentName(thread, id);
 
   // A reply still streaming is kept: the slot can change hands in the moment
   // between an agent's turn settling and its last words being flushed, and a
@@ -125,26 +213,27 @@ export function buildRoomCatchUp(input: RoomCatchUpInput): RoomCatchUp | undefin
   );
   const ownerOf = (message: OrchestrationMessage) => message.participantId ?? null;
   // A reply arrives as the message below the note. The words it was taken
-  // from (a hand-off's last answer, an invited review) are not repeated.
+  // from (a side answer, a hand-off's last answer) are not repeated.
   const replySource =
-    current?.requestKind === "reply" && currentFrom !== undefined
-      ? history.findLast(
-          (message) =>
-            message.role === "assistant" &&
-            (message.sideTurnId === undefined) !== invitedReview &&
-            ownerOf(message) === currentFrom.participantId &&
-            handOffReplyText(message.text) === current.text,
-        )
-      : undefined;
+    current?.requestKind !== "reply" || currentFrom === undefined
+      ? undefined
+      : sourceSideTurnId !== undefined
+        ? history.findLast(
+            (message) => message.role === "assistant" && message.sideTurnId === sourceSideTurnId,
+          )
+        : history.findLast(
+            (message) =>
+              message.role === "assistant" &&
+              message.sideTurnId === undefined &&
+              ownerOf(message) === currentFrom.participantId &&
+              handOffReplyText(message.text) === current.text,
+          );
   // Already in the agent's own conversation: its working turns and what was
   // said to it there. Side answers, even its own, ran in disposable forks.
   const inConversation = (message: OrchestrationMessage) =>
     input.fresh !== true && message.sideTurnId === undefined && ownerOf(message) === participantId;
   const sequenceOf = (message: OrchestrationMessage) => message.eventSequence ?? 0;
-  const invitedReviewFrame =
-    invitedReview && currentFrom !== undefined
-      ? `The message below is ${nameOf(currentFrom.participantId)}'s independent review, which you asked for. It saw none of this conversation, only your request and the changes.`
-      : "";
+  const currentFrame = input.lane === "main" ? agentMessageFrame(thread, current) : undefined;
 
   // Outside a room the only other agents are guests, brought in for one
   // review each: there is no room to catch up on, only the review to frame.
@@ -152,7 +241,7 @@ export function buildRoomCatchUp(input: RoomCatchUpInput): RoomCatchUp | undefin
   // starts its note from here.
   if (!isRoomThread(thread)) {
     return {
-      note: invitedReviewFrame.length > 0 && input.lane === "main" ? invitedReviewFrame : undefined,
+      note: repliedTo === "invite" ? currentFrame : undefined,
       cursor: {
         throughSequence: Math.max(input.cursor?.throughSequence ?? 0, ...history.map(sequenceOf)),
         partialMessageIds: [],
@@ -225,7 +314,7 @@ export function buildRoomCatchUp(input: RoomCatchUpInput): RoomCatchUp | undefin
             : message.requestKind === "hand_off"
               ? `${from} handed the work to ${to}, on the user's behalf`
               : message.requestKind === "reply"
-                ? `${from}, replying to the hand-off from ${to}`
+                ? replyLabel(from, to, repliedRequestKind(thread, message))
                 : `${from} asked ${to}, on the user's behalf${onTheSide ? " (answered on the side)" : ""}`;
       return `${label}:\n${text}`;
     }
@@ -288,13 +377,7 @@ export function buildRoomCatchUp(input: RoomCatchUpInput): RoomCatchUp | undefin
             : `The user is asking you something on the side while ${nameOf(input.workingParticipantId ?? null)} is working in this checkout.`
         } Answer it. You can look through the checkout, but nothing you do can change it, and you cannot ask questions. The files may be mid-edit, so treat what you read as a snapshot, not a finished result.`
       : "Only one agent works at a time, in the same checkout, so the files already reflect the others' changes.",
-    input.lane === "main" && currentFrom !== undefined
-      ? invitedReview
-        ? invitedReviewFrame
-        : current?.requestKind === "reply"
-          ? `The message below is ${nameOf(currentFrom.participantId)}'s reply to the work you handed it. Pick up from there.`
-          : `The message below is from ${nameOf(currentFrom.participantId)}, handing this turn to you on the user's behalf. Do what it asks unless it goes against the user's instructions.`
-      : "",
+    currentFrame ?? "",
     joining
       ? "You were just brought into this thread. These are its most recent messages."
       : missed.length > 0

@@ -55,6 +55,7 @@ import {
   inviteProviderName,
   isInvitableProvider,
 } from "../orchestration/agentInvites.ts";
+import { clipSideAnswer } from "../orchestration/agentRequestDecisions.ts";
 import type { OrchestrationEngineShape } from "../orchestration/Services/OrchestrationEngine.ts";
 import type { GitVcsDriverShape } from "../vcs/GitVcsDriver.ts";
 import type { McpInvocationScope } from "./McpSessionRegistry.ts";
@@ -111,9 +112,6 @@ const PROVIDER_LIMIT_MARGIN = Duration.seconds(5);
  * (the answer landed, or Stop came, as time ran out). Inside the margin.
  */
 const DETACH_REFUSED_GRACE = Duration.seconds(3);
-
-/** How much of an answer comes back in the tool result; the rest is in the chat. */
-export const ROOM_ANSWER_CHAR_LIMIT = 24_000;
 
 /** An ask's or review's deadline for a caller on `driver`. */
 export function roomRequestDeadline(driver: string | undefined): Duration.Duration {
@@ -177,11 +175,6 @@ interface Room {
 }
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
-
-const clip = (text: string, limit: number) =>
-  text.length > limit
-    ? { text: `${text.slice(0, limit)}\n[clipped; the full text is in the chat]`, clipped: true }
-    : { text, clipped: false };
 
 const dispatchDetail = (error: { readonly message: string }) =>
   "detail" in error && typeof error.detail === "string" ? error.detail : error.message;
@@ -565,7 +558,7 @@ export function makeRoomToolHandlers(deps: RoomToolDeps) {
           answer: "(It finished without writing an answer.)",
         } satisfies RoomAnswerResult;
       }
-      const bounded = clip(message.text, ROOM_ANSWER_CHAR_LIMIT);
+      const bounded = clipSideAnswer(message.text);
       return {
         ...base,
         outcome: "answered",
@@ -738,7 +731,7 @@ export function makeRoomToolHandlers(deps: RoomToolDeps) {
             return {
               ...ids,
               outcome: "continuing",
-              detail: `${arrival.target.name} is still working on it. Its ${what} will come to you as a message when it is done, so carry on or end your turn. Do not ask again.`,
+              detail: `${arrival.target.name} is still working on it. Its ${what} will come to you as a message when it is done, so carry on or end your turn; there is no need to look for it. Do not ask again.`,
             } satisfies RoomAnswerResult;
           }
           const late = yield* Effect.raceFirst(

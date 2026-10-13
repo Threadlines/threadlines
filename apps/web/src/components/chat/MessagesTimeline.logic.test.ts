@@ -1549,6 +1549,31 @@ describe("finished turns and the live step", () => {
     expect(messageRow(rows, "answer")?.turnSummary).toMatchObject({ workedMs: 75_000 });
   });
 
+  it("keeps a turn whole when a thread it started reports back into it partway", () => {
+    const report = {
+      ...userEntry("report", "2026-01-01T00:00:50Z"),
+      message: {
+        ...userEntry("report", "2026-01-01T00:00:50Z").message,
+        text: "Changelog written: 14 entries.",
+        // Steered into the running turn, so it carries that turn's id.
+        turnId: "turn-1" as never,
+        fromThread: {
+          threadId: "child" as never,
+          requestId: "request-1" as never,
+          kind: "report" as const,
+        },
+      },
+    };
+    const rows = derive([
+      userEntry("user-1", "2026-01-01T00:00:00Z"),
+      workEntry("read", "2026-01-01T00:00:07Z"),
+      report,
+      assistantEntry("answer", "2026-01-01T00:01:00Z", "2026-01-01T00:01:15Z"),
+    ]);
+
+    expect(messageRow(rows, "answer")?.turnSummary).toMatchObject({ workedMs: 75_000 });
+  });
+
   it("leaves the turn in flight alone, and a turn with no answer keeps its tracker", () => {
     const inFlight = derive(settledTurn, {
       isWorking: true,

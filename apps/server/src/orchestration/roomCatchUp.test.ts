@@ -10,6 +10,7 @@ import {
 } from "@threadlines/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
+import { sideAnswerReplyText } from "./agentRequestDecisions.ts";
 import { buildRoomCatchUp, ROOM_JOIN_MESSAGE_COUNT, type RoomCatchUpInput } from "./roomCatchUp.ts";
 
 const at = "2026-01-01T00:00:00.000Z";
@@ -295,6 +296,7 @@ describe("buildRoomCatchUp", () => {
       message("a1", "assistant", "Handing the tests to astra."),
       message("h1", "user", "Write the retry tests.", astraId, {
         fromAgent: { participantId: null },
+        requestId: RoomAgentRequestId.make("hand-off-1"),
         requestKind: "hand_off",
       }),
       message("x1", "assistant", "Writing the tests now.", astraId),
@@ -302,6 +304,7 @@ describe("buildRoomCatchUp", () => {
     ];
     const reply = message("reply-1", "user", "Added retry.test.ts; all 4 tests pass.", null, {
       fromAgent: { participantId: astraId },
+      requestId: RoomAgentRequestId.make("hand-off-1"),
       requestKind: "reply",
     });
     const note = buildRoomCatchUp({
@@ -314,6 +317,47 @@ describe("buildRoomCatchUp", () => {
     // Its progress notes are context; its last words are the message itself.
     expect(note).toContain("Writing the tests now.");
     expect(note).not.toContain("all 4 tests pass");
+  });
+
+  it("frames a review that outran its call as that review, without repeating it", () => {
+    const requestId = RoomAgentRequestId.make("review-1");
+    const sideTurnId = SideTurnId.make("side-review");
+    // Progress notes first and the verdict last, longer than a reply carries.
+    const answer = `I'll read the retry code first.\n\n${"x".repeat(30_000)}\n\nVerdict: the backoff never caps.`;
+    const messages = [
+      message("u1", "user", "fix retry"),
+      message("r1", "user", "Review the retry fix.", astraId, {
+        fromAgent: { participantId: null },
+        requestId,
+        requestKind: "review",
+        sideTurnId,
+      }),
+      message("s1", "assistant", answer, astraId, { sideTurnId }),
+    ];
+    const reply = message("reply-1", "user", sideAnswerReplyText(answer), null, {
+      fromAgent: { participantId: astraId },
+      requestId,
+      requestKind: "reply",
+    });
+    const note = buildRoomCatchUp({
+      thread: thread([...messages, reply]),
+      participantId: null,
+      messageId: reply.id,
+      cursor: {
+        conversationId: "c1",
+        throughSequence: messages[0]!.eventSequence!,
+        partialMessageIds: [],
+      },
+      lane: "main",
+    })?.note;
+    expect(note).toContain(
+      "The message below is GPT-6 Astra (gpt-6-astra)'s independent review, which you asked for. It came back after your call stopped waiting for it.",
+    );
+    expect(note).not.toContain("the work you handed it");
+    // The review is the message itself, not repeated above it.
+    expect(note).not.toContain("I'll read the retry code first.");
+    // A long answer keeps its verdict.
+    expect(reply.text).toContain("Verdict: the backoff never caps.");
   });
 
   it("frames a side answer an agent asked for as that agent's request", () => {

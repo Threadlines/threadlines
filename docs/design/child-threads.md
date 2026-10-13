@@ -300,7 +300,7 @@ Pure rules live in `packages/shared/src/childThreads.ts` (refusals, limits, fami
 - on the parent, unless the epoch moved, the child is no longer attached, the parent is wrapped, or the reply already exists: `message-sent` (user role, `fromThread.kind = "report"`, author stamps) and `follow-up-queued` addressed to `request.from`;
 - on the child, `handed-back { at, turnId }`.
 
-**Pickup** uses the existing queue: an idle parent starts a turn via `maybeSendNextQueuedFollowUp`; a busy parent waits behind its current turn. The user's own queued messages still go first.
+**Pickup** uses the existing queue: an idle parent starts a turn via `maybeSendNextQueuedFollowUp`. A parent whose agent the report is for is working: the report is steered into that running turn (`steerQueuedAgentMessage`, on providers that can steer), with the same preamble a report turn gets, and `send-queued` with `steeredTurnId` records it in that turn and takes it off the queue. Waiting behind the turn instead left the report queued for as long as the turn ran (an hour, in practice) while the agent fetched it itself, then sent it again as a turn of its own. A report that cannot be steered (the turn just ended, the provider can't steer, another room agent holds the thread) waits behind the current turn, and the user's own queued messages still go first.
 
 **Before sending any `fromThread.kind = "report"` turn**, the reactor re-checks all of these:
 
