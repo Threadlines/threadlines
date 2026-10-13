@@ -81,7 +81,7 @@ export function resolvePullRequestAutoMergeStep(
     return { kind: "stop", reason: "Write access is needed to merge" };
   }
   // Before the checks are weighed at all: a read of another commit than the
-  // checkout's shows an older commit's checks, green or red.
+  // checkout's shows that other commit's checks, green or red.
   if (pullRequestChecksWait(detail, input.pushedHead, input.now) === "push") {
     return { kind: "wait", reason: "Waiting for GitHub to see the latest push" };
   }

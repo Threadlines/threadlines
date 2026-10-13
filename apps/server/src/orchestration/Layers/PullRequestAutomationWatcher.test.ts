@@ -244,6 +244,8 @@ interface HostScript {
   readonly merge?: () => Effect.Effect<{ state: "merged" | "open" }, PullRequestServiceError>;
   /** What the host reports once `merge` has run, where that differs from `detail`. */
   readonly detailAfterMerge?: PullRequestDetail;
+  /** The repository the host answers from, where it has been renamed since. */
+  readonly renamedTo?: string;
 }
 
 /** The engine's word that one of the thread's pull request switches came on. */
@@ -268,7 +270,7 @@ function switchedOn(
 
 /** The engine's word that a turn was asked for, and later that it ended. */
 function turnEvent(
-  type: "thread.turn-start-requested" | "thread.turn-completed",
+  type: "thread.turn-start-requested" | "thread.session-set" | "thread.turn-completed",
 ): OrchestrationEvent {
   const base = {
     sequence: 1,
@@ -281,8 +283,9 @@ function turnEvent(
     correlationId: null,
     metadata: {},
   } as const;
-  return type === "thread.turn-start-requested"
-    ? {
+  switch (type) {
+    case "thread.turn-start-requested":
+      return {
         ...base,
         type,
         payload: {
@@ -292,8 +295,27 @@ function turnEvent(
           interactionMode: "default",
           createdAt: NOW_ISO,
         },
-      }
-    : {
+      };
+    // The session's word, mid-turn, that the agent is working.
+    case "thread.session-set":
+      return {
+        ...base,
+        type,
+        payload: {
+          threadId: THREAD_ID,
+          session: {
+            threadId: THREAD_ID,
+            status: "running",
+            providerName: null,
+            runtimeMode: "full-access",
+            activeTurnId: RUNNING_TURN.turnId,
+            lastError: null,
+            updatedAt: NOW_ISO,
+          },
+        },
+      };
+    case "thread.turn-completed":
+      return {
         ...base,
         type,
         payload: {
@@ -303,6 +325,7 @@ function turnEvent(
           completedAt: NOW_ISO,
         },
       };
+  }
 }
 
 /** Where a thread with a checkout of its own works, which is how a status read names it. */
@@ -460,7 +483,7 @@ describe("PullRequestAutomationWatcher", () => {
           ...script.detail,
           repository,
           number,
-          url: `https://github.com/${repository}/pull/${number}`,
+          url: `https://github.com/${script.renamedTo ?? repository}/pull/${number}`,
         })),
       activity: () => Effect.sync(() => script.activity),
       diff: () => Effect.die("unused"),
@@ -640,9 +663,11 @@ describe("PullRequestAutomationWatcher", () => {
       await vi.waitFor(() => expect(dispatched).toHaveLength(1));
       expect(dispatched[0]?.message.text).toContain("These checks failed:\n- typecheck");
 
-      // A turn ends over several events, and it is looked at once for all of them.
+      // A turn ends over several events, and it is looked at once for all of
+      // them, even where word from mid-turn is only picked up after its end.
+      emit(turnEvent("thread.session-set"));
       emit(turnEvent("thread.turn-completed"));
-      await vi.waitFor(() => expect(heard).toBe(3));
+      await vi.waitFor(() => expect(heard).toBe(4));
       expect(statusReads).toHaveLength(2);
     } finally {
       await stop();
@@ -848,6 +873,22 @@ describe("PullRequestAutomationWatcher", () => {
     setThreads([thread({ branch: "another-branch" })]);
     await sweep();
     expect(statusReads).toHaveLength(4);
+  });
+
+  it("does not rest on a closed pull request the host says is open again", async () => {
+    const { statusReads, sweep } = await createHarness({
+      threads: [thread()],
+      script: {
+        // What the checkout last saw of it, from before it was reopened.
+        remote: { ...OPEN_PULL_REQUEST, pr: { ...OPEN_PULL_REQUEST.pr!, state: "closed" } },
+        detail: detail([PASSING_CHECK]),
+        activity: activity(),
+      },
+    });
+
+    await sweep();
+    await sweep();
+    expect(statusReads).toHaveLength(2);
   });
 
   it("looks at a resting thread again once its rest is over", async () => {
@@ -1364,6 +1405,8 @@ describe("PullRequestAutomationWatcher", () => {
         detail: mergeable([PASSING_CHECK]),
         activity: activity(),
         merge: () => Effect.succeed({ state: "merged" }),
+        // Renamed on the host since it was linked: the same pull request, at a new address.
+        renamedTo: "acme/widgets-two",
       });
       await sweep();
       expect(actions).toEqual([
@@ -1386,6 +1429,83 @@ describe("PullRequestAutomationWatcher", () => {
           summary: "Merged #294 after its checks passed",
         },
       });
+    });
+
+    it("does not merge a linked pull request once the project points at another repository", async () => {
+      const gadgets = project();
+      const { actions, commands, sweep } = await createHarness({
+        threads: [
+          thread({
+            pullRequestAutoFix: false,
+            linkedPullRequests: [
+              {
+                number: 294,
+                url: `https://github.com/${REPOSITORY}/pull/294`,
+                autoMerge: "squash",
+              },
+            ],
+          }),
+        ],
+        // The other repository has a pull request of its own under that number.
+        projects: [
+          {
+            ...gadgets,
+            repositoryIdentity: {
+              ...gadgets.repositoryIdentity!,
+              displayName: "acme/gadgets",
+              name: "gadgets",
+            },
+          },
+        ],
+        script: {
+          remote: OPEN_PULL_REQUEST,
+          detail: mergeable([PASSING_CHECK]),
+          activity: activity(),
+          merge: () => Effect.succeed({ state: "merged" }),
+        },
+      });
+
+      await sweep();
+      expect(actions).toEqual([]);
+      expect(commands).toEqual([]);
+    });
+
+    it("counts the checkout's unpushed commits for a linked pull request it is on, whatever the thread's branch is called", async () => {
+      const { actions, setScript, sweep } = await createHarness({
+        threads: [
+          thread({
+            pullRequestAutoFix: false,
+            // The agent checked the linked pull request's branch out, and the
+            // thread has not caught up with the name yet.
+            branch: "the-branch-before",
+            linkedPullRequests: [
+              {
+                number: PR_NUMBER,
+                url: `https://github.com/${REPOSITORY}/pull/${PR_NUMBER}`,
+                autoMerge: "squash",
+              },
+            ],
+          }),
+        ],
+        script: {
+          remote: { ...OPEN_PULL_REQUEST, aheadCount: 1 },
+          detail: mergeable([PASSING_CHECK]),
+          activity: activity(),
+          merge: () => Effect.succeed({ state: "merged" }),
+        },
+      });
+
+      await sweep();
+      expect(actions).toEqual([]);
+
+      setScript({
+        remote: OPEN_PULL_REQUEST,
+        detail: mergeable([PASSING_CHECK]),
+        activity: activity(),
+        merge: () => Effect.succeed({ state: "merged" }),
+      });
+      await sweep();
+      expect(actions).toHaveLength(1);
     });
 
     it("counts a place in the merge queue as handed over, not as a failed merge", async () => {

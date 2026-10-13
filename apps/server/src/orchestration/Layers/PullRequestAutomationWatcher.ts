@@ -13,6 +13,7 @@ import {
   type PullRequestRef,
   PullRequestServiceError,
   type ThreadId,
+  type VcsStatusRemoteResult,
 } from "@threadlines/contracts";
 import {
   buildPullRequestAutoFixPrompt,
@@ -29,7 +30,10 @@ import {
   pullRequestChecksInMotion,
   pullRequestChecksWait,
 } from "@threadlines/shared/pullRequestPolling";
-import { changeRequestRepositoryName } from "@threadlines/shared/sourceControl";
+import {
+  changeRequestRepositoryName,
+  parsePullRequestUrl,
+} from "@threadlines/shared/sourceControl";
 import { resolveThreadWorkingCwd } from "@threadlines/shared/threadCwd";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
@@ -74,9 +78,9 @@ const MAX_AUTO_TURNS_PER_PULL_REQUEST = 3;
 /**
  * The longest a thread with nothing to watch goes without a look. Such a
  * thread is looked at again after a tenth of the time it has sat untouched, no
- * sooner than a sweep apart and no later than this: one that changed minutes
- * ago keeps nearly the usual pace, and one whose pull request merged days ago
- * costs the host a read twice an hour.
+ * sooner than a sweep apart and no later than the first sweep after this: one
+ * that changed minutes ago keeps nearly the usual pace, and one whose pull
+ * request merged days ago costs the host a read twice an hour.
  */
 const MAX_REST_MS = 30 * 60 * 1_000;
 const REST_SHARE_OF_IDLE_TIME = 10;
@@ -411,13 +415,17 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
      * A pull request as the host has it now, past the service's cache, or why
      * there is none to act on: `unread` where the host did not answer, and
      * `elsewhere` where the project's repository has a different pull request
-     * under that number than the one at `url`, which is the one that was
-     * meant. A null `url` takes the number at its word: a linked pull request
-     * was matched to the project's repository when it was linked, and the
-     * address stored then goes stale when the repository is renamed. One whose
-     * checks are in motion puts its thread on the quicker pace.
+     * under that number than the one meant, the one at `meant`. `isMeant`
+     * says which answers are that one; by default, an answer at the same
+     * address. One whose checks are in motion puts its thread on the quicker
+     * pace.
      */
-    const readDetail = (threadId: ThreadId, reference: PullRequestRef, url: string | null) =>
+    const readDetail = (
+      threadId: ThreadId,
+      reference: PullRequestRef,
+      meant: string,
+      isMeant = (detail: PullRequestDetail) => isSamePullRequest(detail.url, meant),
+    ) =>
       Effect.gen(function* () {
         const detail = yield* attempt(
           "detail-read",
@@ -427,11 +435,11 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
         if (detail === null) {
           return "unread";
         }
-        if (url !== null && !isSamePullRequest(detail.url, url)) {
+        if (!isMeant(detail)) {
           yield* Effect.logWarning("pull-request.auto-fix.other-repository", {
             threadId,
             number: reference.number,
-            expected: url,
+            expected: meant,
             read: detail.url,
           });
           return "elsewhere";
@@ -829,15 +837,23 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
         if (pullRequest.state !== "open") {
           // Merged or closed some other way: the instruction has nothing left
           // to act on, and must not carry over to the next pull request. That
-          // holds for the project's own pull request, so the host is asked
-          // first whether this is it.
-          if (autoMerge !== null) {
+          // holds for the project's own pull request, so before the switch
+          // goes off the host is asked whether this is it. It is asked about
+          // a closed one either way: unlike a merged one it can be reopened,
+          // and the status read falls back on what it last saw when its own
+          // lookup fails.
+          if (autoMerge !== null || pullRequest.state === "closed") {
             const settled = yield* readDetail(thread.id, reference, pullRequest.url);
             if (settled === "unread") {
               return "watching";
             }
             if (settled !== "elsewhere") {
-              yield* disarmAutoMerge(thread.id, null);
+              if (pullRequest.state === "closed" && settled.state === "open") {
+                return "watching";
+              }
+              if (autoMerge !== null) {
+                yield* disarmAutoMerge(thread.id, null);
+              }
             }
           }
           return "nothing";
@@ -1076,6 +1092,9 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
     )(function* (candidate: SweepCandidate) {
       const { thread, project, repository } = candidate;
       let watching = false;
+      // Where the thread's checkout stands: read once, and only for a linked
+      // pull request that is armed and open.
+      let checkout: VcsStatusRemoteResult | null | undefined;
       for (const linked of thread.linkedPullRequests) {
         if (linked.autoMerge === null) {
           continue;
@@ -1086,7 +1105,18 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
           number: linked.number,
           force: true,
         } as const;
-        const detail = yield* readDetail(thread.id, reference, null);
+        // The one that was linked: still at the address stored then, or, where
+        // the host has since renamed the repository and moved its address,
+        // still in the repository it was matched to. A project that now points
+        // at another repository has another pull request under the number.
+        const detail = yield* readDetail(
+          thread.id,
+          reference,
+          linked.url,
+          (read) =>
+            isSamePullRequest(read.url, linked.url) ||
+            parsePullRequestUrl(linked.url)?.repository.toLowerCase() === repository.toLowerCase(),
+        );
         if (detail === "unread" || detail === "elsewhere") {
           watching ||= detail === "unread";
           continue;
@@ -1096,32 +1126,35 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
           yield* disarmAutoMerge(thread.id, linked.number);
           continue;
         }
+        watching = true;
         // One linked from another branch becomes the thread's own when the
         // thread moves onto that branch. Its checkout can then hold commits for
-        // it that are not pushed yet, and a checkout that cannot be read is no
-        // answer, so the merge waits.
-        const checkout =
-          thread.branch !== null && detail.headBranch === thread.branch
-            ? yield* attempt(
-                "status-read",
-                thread.id,
-                gitManager.remoteStatus({ cwd: threadWorkingCwd(candidate) }),
-              )
-            : undefined;
-        watching = true;
-        if (checkout === null) {
+        // it that are not pushed yet, or be a push ahead of this read. The
+        // checkout is on it when its own pull request is this one, or, where
+        // the checkout cannot be read, when the thread's branch is this one's.
+        // A checkout on it that cannot be read is no answer, so the merge waits.
+        checkout ??= yield* attempt(
+          "status-read",
+          thread.id,
+          gitManager.remoteStatus({ cwd: threadWorkingCwd(candidate) }),
+        );
+        const onItsBranch = thread.branch !== null && detail.headBranch === thread.branch;
+        const onIt =
+          onItsBranch || (checkout?.pr != null && isSamePullRequest(checkout.pr.url, detail.url));
+        if (onIt && checkout === null) {
           continue;
         }
+        const standing = onIt ? checkout : null;
         yield* sweepAutoMerge({
           thread,
           reference,
           detail,
           mergeMethod: linked.autoMerge,
-          unpushedCommits: checkout?.aheadCount ?? 0,
+          unpushedCommits: standing?.aheadCount ?? 0,
           pushedHead: yield* pushedHeadToAwait(
             pairKey(thread.id, linked.number),
             detail,
-            checkout?.upstreamHeadSha ?? null,
+            standing?.upstreamHeadSha ?? null,
             yield* Clock.currentTimeMillis,
           ),
           autoFix: false,
