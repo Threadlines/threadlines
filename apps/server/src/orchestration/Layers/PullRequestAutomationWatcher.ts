@@ -34,6 +34,7 @@ import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Latch from "effect/Latch";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
@@ -185,6 +186,18 @@ interface SweepCandidate {
   readonly repository: string;
 }
 
+/** The thread with where its pull requests live, or null on a host this cannot read. */
+function candidateOf(
+  thread: OrchestrationThreadShell,
+  project: OrchestrationProjectShell,
+): SweepCandidate | null {
+  if (project.repositoryIdentity?.provider !== SUPPORTED_PROVIDER) {
+    return null;
+  }
+  const repository = changeRequestRepositoryName(project.repositoryIdentity);
+  return repository === null ? null : { thread, project, repository };
+}
+
 /** Where the thread's agent works, which is where its unpushed commits are. */
 function threadWorkingCwd({ thread, project }: SweepCandidate): string {
   return resolveThreadWorkingCwd({
@@ -273,9 +286,19 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
     const inMotionRef = yield* Ref.make(new Map<string, number>());
     // When every armed thread was last looked at, which the interval counts from.
     const lastFullSweepAtRef = yield* Ref.make(Number.NEGATIVE_INFINITY);
-    // One sweep at a time: the interval fiber and `sweepNow` reach for the same
-    // baselines, and two sweeps racing would start the same turn twice.
+    // One sweep at a time: the interval fiber and `sweepNow` would otherwise
+    // read the same pull requests back to back.
     const sweepSemaphore = yield* Semaphore.make(1);
+    // One look at a time: every look reaches for the same baselines, and two
+    // racing over one thread would start the same turn twice. A sweep holds
+    // this a thread at a time, not for its whole run, so that a switch coming
+    // on waits for one thread and not for every armed one.
+    const lookSemaphore = yield* Semaphore.make(1);
+    // Closed while a switch that has just come on waits for its look and has
+    // it. A sweep stops here between two threads: the permit alone would not
+    // make it stand aside, since whoever gives it back can take it again
+    // before a waiter wakes.
+    const noSwitchWaiting = yield* Latch.make(true);
 
     /** A read that must not take the sweep down with it. */
     const attempt = <A, E>(operation: string, threadId: ThreadId, effect: Effect.Effect<A, E>) =>
@@ -980,10 +1003,62 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
       return started;
     });
 
-    /** Every armed thread, or only the ones named in `only`. */
-    const runSweep = Effect.fn("PullRequestAutomationWatcher.runSweep")(function* (
-      only?: ReadonlySet<string>,
+    /**
+     * One look at a thread, starting from the read model as it stands: the
+     * thread and its project are read here, not carried in from a listing. A
+     * sweep reaches its last thread long after it listed them, and by then the
+     * thread may have started a turn, changed its switches, or had a look of
+     * its own. Answers whether it started a turn. Run under the look permit.
+     */
+    const lookAt = Effect.fn("PullRequestAutomationWatcher.lookAt")(function* (threadId: ThreadId) {
+      const thread = yield* attempt(
+        "thread-read",
+        threadId,
+        projectionSnapshotQuery.getThreadShellById(threadId),
+      );
+      if (
+        thread === null ||
+        Option.isNone(thread) ||
+        !isWatched(thread.value) ||
+        hasWorkInProgress(thread.value)
+      ) {
+        return false;
+      }
+      const project = yield* attempt(
+        "project-read",
+        threadId,
+        projectionSnapshotQuery.getProjectShellById(thread.value.projectId),
+      );
+      const candidate =
+        project === null || Option.isNone(project)
+          ? null
+          : candidateOf(thread.value, project.value);
+      return candidate === null ? false : yield* sweepThread(candidate);
+    });
+
+    /**
+     * The threads a sweep looks at: every watched, idle one, or only the ones
+     * whose checks were in motion at their last look. Forgets what was held
+     * for threads that are no longer armed. Run under the look permit, since
+     * it reads and clears what looks leave behind.
+     */
+    const listThreads = Effect.fn("PullRequestAutomationWatcher.listThreads")(function* (
+      scope: "all" | "in-motion",
     ) {
+      // Nothing in motion reads nothing at all.
+      const inMotion = new Set<string>();
+      if (scope === "in-motion") {
+        const now = yield* Clock.currentTimeMillis;
+        for (const [threadId, since] of yield* Ref.get(inMotionRef)) {
+          if (now - since < MAX_IN_MOTION_MS) {
+            inMotion.add(threadId);
+          }
+        }
+        if (inMotion.size === 0) {
+          return [];
+        }
+      }
+
       const snapshot = yield* projectionSnapshotQuery.getShellSnapshot().pipe(
         Effect.catchCause((cause) =>
           Effect.logWarning("pull-request.auto-fix.snapshot-query-failed", {
@@ -992,7 +1067,7 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
         ),
       );
       if (snapshot === null) {
-        return 0;
+        return [];
       }
 
       const projectsById = new Map(snapshot.projects.map((project) => [project.id, project]));
@@ -1047,24 +1122,27 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
         return threads;
       });
 
-      const candidates = snapshot.threads.flatMap((thread): SweepCandidate[] => {
-        if (!idleThreadIds.has(thread.id) || (only !== undefined && !only.has(thread.id))) {
+      return snapshot.threads.flatMap((thread): ThreadId[] => {
+        if (!idleThreadIds.has(thread.id) || (scope === "in-motion" && !inMotion.has(thread.id))) {
           return [];
         }
         const project = projectsById.get(thread.projectId);
-        if (project === undefined || project.repositoryIdentity?.provider !== SUPPORTED_PROVIDER) {
-          return [];
-        }
-        const repository = changeRequestRepositoryName(project.repositoryIdentity);
-        if (repository === null) {
-          return [];
-        }
-        return [{ thread, project, repository }];
+        return project !== undefined && candidateOf(thread, project) !== null ? [thread.id] : [];
       });
+    });
 
+    /**
+     * Every armed thread, or only the ones whose checks are in motion, one
+     * look at a time. Answers how many turns it started.
+     */
+    const runSweep = Effect.fn("PullRequestAutomationWatcher.runSweep")(function* (
+      scope: "all" | "in-motion",
+    ) {
+      const threadIds = yield* lookSemaphore.withPermits(1)(listThreads(scope));
       let startedCount = 0;
-      for (const candidate of candidates) {
-        const started = yield* sweepThread(candidate);
+      for (const threadId of threadIds) {
+        yield* noSwitchWaiting.await;
+        const started = yield* lookSemaphore.withPermits(1)(lookAt(threadId));
         if (started) {
           startedCount += 1;
         }
@@ -1075,27 +1153,16 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
     const sweep = sweepSemaphore.withPermits(1)(
       Clock.currentTimeMillis.pipe(
         Effect.flatMap((now) => Ref.set(lastFullSweepAtRef, now)),
-        Effect.andThen(runSweep()),
+        Effect.andThen(runSweep("all")),
       ),
     );
 
     /**
      * Looks again at the threads whose checks were in motion at their last
      * look, and only those, so the host is not asked about every armed pull
-     * request at this pace. Nothing in motion reads nothing at all.
+     * request at this pace.
      */
-    const sweepInMotion = sweepSemaphore.withPermits(1)(
-      Effect.gen(function* () {
-        const now = yield* Clock.currentTimeMillis;
-        const due = new Set<string>();
-        for (const [threadId, since] of yield* Ref.get(inMotionRef)) {
-          if (now - since < MAX_IN_MOTION_MS) {
-            due.add(threadId);
-          }
-        }
-        return due.size === 0 ? 0 : yield* runSweep(due);
-      }),
-    );
+    const sweepInMotion = sweepSemaphore.withPermits(1)(runSweep("in-motion"));
 
     /**
      * One beat of the watcher's own pace: every armed thread once an
@@ -1109,15 +1176,27 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
     });
 
     /**
-     * Marks the thread's fixing switch as just turned on, then sweeps. Both
-     * under the sweep's own permit, so a sweep already running cannot clear
-     * the mark on the strength of a read taken before the switch came on.
+     * The look a thread gets as one of its switches comes on: at that thread
+     * alone, and ahead of whatever a sweep in flight has yet to reach, so the
+     * answer takes as long as reading one pull request however many threads
+     * are armed. `autoFix` marks the thread as just armed first, under the
+     * same permit as the look, so no listing can clear the mark on the
+     * strength of a read taken before the switch came on.
      */
-    const sweepFreshlyArmed = (threadId: ThreadId) =>
-      sweepSemaphore.withPermits(1)(
-        Ref.update(freshlyArmedRef, (armed) => armed.add(threadId)).pipe(
-          Effect.andThen(runSweep()),
+    const lookAtSwitchedOn = (threadId: ThreadId, autoFix: boolean) =>
+      noSwitchWaiting.close.pipe(
+        Effect.andThen(
+          lookSemaphore.withPermits(1)(
+            Effect.gen(function* () {
+              if (autoFix) {
+                yield* Ref.update(freshlyArmedRef, (armed) => armed.add(threadId));
+              }
+              yield* lookAt(threadId);
+            }),
+          ),
         ),
+        Effect.ensuring(noSwitchWaiting.open),
+        Effect.withSpan("PullRequestAutomationWatcher.lookAtSwitchedOn"),
       );
 
     const sweepNow: PullRequestAutomationWatcherShape["sweepNow"] = () => sweep;
@@ -1140,10 +1219,10 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
             if (event.type !== "thread.pull-request-automation-changed") {
               return Effect.void;
             }
-            if (event.payload.autoFix === true) {
-              return sweepFreshlyArmed(event.payload.threadId).pipe(Effect.asVoid);
-            }
-            return event.payload.autoMerge != null ? sweep.pipe(Effect.asVoid) : Effect.void;
+            const autoFix = event.payload.autoFix === true;
+            return autoFix || event.payload.autoMerge != null
+              ? lookAtSwitchedOn(event.payload.threadId, autoFix)
+              : Effect.void;
           }),
         );
         yield* Effect.logInfo("pull-request.auto-fix.started", {

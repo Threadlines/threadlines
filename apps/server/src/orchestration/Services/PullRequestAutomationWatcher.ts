@@ -19,7 +19,9 @@ import type * as Scope from "effect/Scope";
  * hour, at an idle thread whose checks are in motion (one running, or a push
  * whose checks are not listed yet), the same pace the composer's checks chip
  * keeps. It reads the thread again just before starting a turn, so a message
- * the user sent meanwhile goes alone.
+ * the user sent meanwhile goes alone. A switch coming on is answered by a look
+ * at that thread alone, ahead of the rest of a sweep in flight, so the answer
+ * does not slow down as more threads are armed.
  *
  * It runs only while the server does: the auto-fix baseline lives in memory, so
  * a restart re-observes rather than replaying what it missed. The merge switch
