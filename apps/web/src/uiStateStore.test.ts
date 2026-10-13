@@ -11,11 +11,11 @@ import {
   readLegacyInboxState,
   readPersistedState,
   reorderProjects,
-  resolveSeenOverlay,
   setDefaultAdvertisedEndpointKey,
   setProjectExpanded,
   setThreadChangedFilesExpanded,
   setThreadWrapUpOnPullRequestSettled,
+  settleSeenOverlay,
   syncProjects,
   syncThreads,
   type UiState,
@@ -43,11 +43,16 @@ describe("uiStateStore pure functions", () => {
     const threadId = ThreadId.make("thread-1");
     const seen = makeUiState({
       seenThreadOverlays: {
-        [threadId]: { at: "2026-02-25T12:30:00.700Z", baselineAt: null, settled: false },
+        [threadId]: {
+          at: "2026-02-25T12:30:00.700Z",
+          baselineAt: null,
+          writeId: 1,
+          settled: false,
+        },
       },
     });
 
-    const confirmed = resolveSeenOverlay(seen, threadId, "2026-02-25T12:30:00.700Z", "confirmed");
+    const confirmed = settleSeenOverlay(seen, threadId, 1, { serverLastSeenAt: null });
     const stillPending = syncThreads(confirmed, [{ key: threadId, serverLastSeenAt: null }]);
     expect(stillPending.seenThreadOverlays[threadId]?.at).toBe("2026-02-25T12:30:00.700Z");
 
@@ -57,17 +62,28 @@ describe("uiStateStore pure functions", () => {
     expect(retired.seenThreadOverlays).toEqual({});
   });
 
-  it("a failed overlay write is dropped so the row cannot diverge from the server", () => {
+  it("a seen write the server did not take is kept until the server says something else", () => {
     const threadId = ThreadId.make("thread-1");
-    const seen = makeUiState({
-      seenThreadOverlays: {
-        [threadId]: { at: "2026-02-25T12:30:00.700Z", baselineAt: null, settled: false },
-      },
+    const write = {
+      at: "2026-02-25T12:30:00.700Z",
+      baselineAt: null,
+      writeId: 2,
+      settled: false,
+    };
+    const seen = makeUiState({ seenThreadOverlays: { [threadId]: write } });
+
+    const kept = settleSeenOverlay(seen, threadId, 2, { serverLastSeenAt: null, resendsLeft: 3 });
+    expect(kept.seenThreadOverlays[threadId]).toEqual({ ...write, settled: true, resendsLeft: 3 });
+
+    // A late answer to an earlier write that carried the same stamp.
+    expect(settleSeenOverlay(seen, threadId, 1, { serverLastSeenAt: null })).toBe(seen);
+
+    // The server's value moved while the attempt was in flight.
+    const overtaken = settleSeenOverlay(seen, threadId, 2, {
+      serverLastSeenAt: "2026-02-25T12:30:00.699Z",
+      resendsLeft: 0,
     });
-
-    const next = resolveSeenOverlay(seen, threadId, "2026-02-25T12:30:00.700Z", "failed");
-
-    expect(next.seenThreadOverlays).toEqual({});
+    expect(overtaken.seenThreadOverlays).toEqual({});
   });
 
   it("reorderProjects moves a project to a target index", () => {

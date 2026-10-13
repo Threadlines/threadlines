@@ -14,6 +14,7 @@ import {
   trackRpcRequestSent,
 } from "./requestLatencyState";
 import { applyRelayFrameChunking } from "./relayFrameChunking";
+import { TransportUrlUnavailableError } from "./transportError";
 import {
   getWsReconnectDelayMsForRetry,
   recordWsConnectionAttempt,
@@ -219,81 +220,91 @@ export function createWsRpcProtocolLayer(
   options?: WsRpcProtocolOptions,
 ) {
   const lifecycle = composeLifecycleHandlers(handlers);
+  // A provider that could not reach the server fails the attempt the way a
+  // socket that would not open does, so the retry policy below keeps trying.
+  // Any other provider failure is a defect, which ends the protocol's connect
+  // loop for good: every later request on the session fails at once. That is
+  // right for a refused credential and was wrong for a computer that had gone
+  // to sleep, which was never reconnected after it woke up.
   const resolvedUrl =
     typeof url === "function"
-      ? Effect.promise(() => url()).pipe(
+      ? Effect.tryPromise({ try: () => url(), catch: (cause) => cause }).pipe(
           Effect.map((rawUrl) => resolveWsRpcSocketUrl(rawUrl, options)),
-          Effect.tapError((error) =>
-            Effect.sync(() => {
-              lifecycle.onError(formatSocketErrorMessage(error));
-            }),
-          ),
-          Effect.orDie,
+          Effect.catch((cause) => {
+            lifecycle.onError(formatSocketErrorMessage(cause));
+            return cause instanceof TransportUrlUnavailableError
+              ? Effect.fail(
+                  new Socket.SocketError({
+                    reason: new Socket.SocketOpenError({ kind: "Unknown", cause }),
+                  }),
+                )
+              : Effect.die(cause);
+          }),
         )
-      : resolveWsRpcSocketUrl(url, options);
+      : Effect.succeed(resolveWsRpcSocketUrl(url, options));
 
-  const trackingWebSocketConstructorLayer = Layer.succeed(
-    Socket.WebSocketConstructor,
-    (socketUrl, protocols) => {
-      lifecycle.onAttempt(socketUrl);
-      const socket = options?.secureSocket
-        ? options.secureSocket(socketUrl)
-        : new globalThis.WebSocket(socketUrl, protocols);
-      if (options?.chunkFrames && !options.secureSocket) {
-        applyRelayFrameChunking(socket);
+  const openSocket = (socketUrl: string) => {
+    lifecycle.onAttempt(socketUrl);
+    const socket = options?.secureSocket
+      ? options.secureSocket(socketUrl)
+      : new globalThis.WebSocket(socketUrl, normalizeProtocols(options?.protocols));
+    if (options?.chunkFrames && !options.secureSocket) {
+      applyRelayFrameChunking(socket);
+    }
+
+    socket.addEventListener(
+      "open",
+      () => {
+        lifecycle.onOpen();
+      },
+      { once: true },
+    );
+    // Self-guarded instead of { once: true }: the relay chunking patch
+    // funnels message listeners and does not honor listener options.
+    let sawFirstMessage = false;
+    socket.addEventListener("message", () => {
+      if (sawFirstMessage) {
+        return;
       }
+      sawFirstMessage = true;
+      lifecycle.onFirstMessage();
+    });
+    socket.addEventListener(
+      "error",
+      () => {
+        lifecycle.onError("Unable to connect to the Threadlines server WebSocket.");
+      },
+      { once: true },
+    );
+    socket.addEventListener(
+      "close",
+      (event) => {
+        lifecycle.onClose(
+          {
+            code: event.code,
+            reason: event.reason,
+          },
+          {
+            intentional: handlers?.isCloseIntentional?.() ?? false,
+          },
+        );
+      },
+      { once: true },
+    );
 
-      socket.addEventListener(
-        "open",
-        () => {
-          lifecycle.onOpen();
-        },
-        { once: true },
-      );
-      // Self-guarded instead of { once: true }: the relay chunking patch
-      // funnels message listeners and does not honor listener options.
-      let sawFirstMessage = false;
-      socket.addEventListener("message", () => {
-        if (sawFirstMessage) {
-          return;
-        }
-        sawFirstMessage = true;
-        lifecycle.onFirstMessage();
-      });
-      socket.addEventListener(
-        "error",
-        () => {
-          lifecycle.onError("Unable to connect to the Threadlines server WebSocket.");
-        },
-        { once: true },
-      );
-      socket.addEventListener(
-        "close",
-        (event) => {
-          lifecycle.onClose(
-            {
-              code: event.code,
-              reason: event.reason,
-            },
-            {
-              intentional: handlers?.isCloseIntentional?.() ?? false,
-            },
-          );
-        },
-        { once: true },
-      );
-
-      return socket;
-    },
+    return socket;
+  };
+  const socketLayer = Layer.effect(
+    Socket.Socket,
+    Socket.fromWebSocket(
+      Effect.acquireRelease(Effect.map(resolvedUrl, openSocket), (socket) =>
+        Effect.sync(() => socket.close(1000)),
+      ),
+      options?.openTimeoutMs === undefined
+        ? undefined
+        : { openTimeout: Duration.millis(options.openTimeoutMs) },
+    ),
   );
-  const socketLayer = Socket.layerWebSocket(resolvedUrl, {
-    ...(options?.protocols === undefined || options.secureSocket
-      ? {}
-      : { protocols: normalizeProtocols(options.protocols) }),
-    ...(options?.openTimeoutMs === undefined
-      ? {}
-      : { openTimeout: Duration.millis(options.openTimeoutMs) }),
-  }).pipe(Layer.provide(trackingWebSocketConstructorLayer));
   // Retry forever with capped backoff: giving up permanently meant mobile
   // browsers that dropped the socket while backgrounded came back to a dead
   // page. The online/visibility handlers reset the loop with a fresh session.

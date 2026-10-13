@@ -14,6 +14,7 @@ import {
   type DesktopPreviewUserControl,
   type DesktopPreviewTarget,
   MessageId,
+  OrchestrationDispatchCommandError,
   type OrchestrationEvent,
   type PreviewAutomationRequest,
   type PreviewAutomationResponse,
@@ -41,6 +42,7 @@ import { createModelCapabilities, createModelSelection } from "@threadlines/shar
 import { MAX_THREAD_ACTIVITIES } from "@threadlines/shared/threadLimits";
 import { RouterProvider, createMemoryHistory } from "@tanstack/react-router";
 import { StrictMode, useEffect } from "react";
+import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { HttpResponse, http, ws } from "msw";
@@ -7306,6 +7308,61 @@ describe("ChatView timeline estimator parity (full app)", () => {
         document.querySelector(`[data-testid="thread-done-${pinnedThreadId}"]`),
         "A pinned thread never offers Wrap up; the pin means keep it here.",
       ).toBeNull();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("does not keep sending a visit the server will not take", async () => {
+    // A computer that went to sleep fails every command at once. The failed
+    // visit used to un-mark the thread, which sent the visit again: about 85
+    // commands a second until the window stopped answering.
+    const snapshot = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-unseen-visit" as MessageId,
+      targetText: "unseen visit target",
+    });
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...snapshot,
+        threads: snapshot.threads.map((thread) => ({
+          ...thread,
+          latestTurn: {
+            turnId: "turn-unseen-visit" as TurnId,
+            state: "completed",
+            requestedAt: NOW_ISO,
+            startedAt: NOW_ISO,
+            completedAt: NOW_ISO,
+            assistantMessageId: null,
+          },
+          lastSeenAt: "2026-01-01T00:00:00.000Z",
+        })),
+      },
+      resolveRpc: (body) =>
+        body._tag === ORCHESTRATION_WS_METHODS.dispatchCommand && body.type === "thread.seen.set"
+          ? Effect.fail(
+              new OrchestrationDispatchCommandError({ message: "The computer is not answering." }),
+            )
+          : undefined,
+    });
+
+    try {
+      const visits = () =>
+        wsRequests.filter(
+          (request) =>
+            request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+            request.type === "thread.seen.set",
+        );
+      await vi.waitFor(
+        () => {
+          expect(visits().length).toBeGreaterThan(0);
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+      // Long enough for a loop to show itself many times over. A thread list
+      // arriving in that time may offer the visit again, a few times at most.
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      expect(visits().length).toBeLessThanOrEqual(4);
     } finally {
       await mounted.cleanup();
     }
