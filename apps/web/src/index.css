@@ -2228,15 +2228,69 @@ label:has(> select#reasoning-effort) select {
 
 /* An agent's suggestion in the composer (ComposerPromptSuggestion) fades in
    once when it arrives; the element stays mounted while the box fills and
-   empties, so it does not replay. */
+   empties, so it does not replay.
+
+   A soft sheen also sweeps through its words, and its Tab key lights up, as
+   it arrives and for a few reminders after. The component sets data-sweeping
+   for each sweep and clears it when the sweep is done, so nothing animates in
+   between or once the reminders are over. The sheen is the working anchor's
+   (.working-shimmer), dimmer: this is an offer, not work in progress. */
+.composer-prompt-suggestion-text {
+  --sheen-base: color-mix(in oklab, var(--muted-foreground) 70%, transparent);
+  --sheen-glint: color-mix(in srgb, var(--foreground) 62%, var(--muted-foreground));
+  color: var(--sheen-base);
+}
+
 @media (prefers-reduced-motion: no-preference) {
   .composer-prompt-suggestion {
     animation: composer-prompt-suggestion-in 220ms ease-out both;
+  }
+
+  /* Clipped to the text at rest too, so the words don't change how they are
+     drawn when a sweep starts; the glint rests off the left edge. On the
+     inline box, so the sheen is as long as the words and runs through a
+     second line after the first. */
+  .composer-prompt-suggestion-text > span {
+    background-image: linear-gradient(
+      100deg,
+      var(--sheen-base) 42%,
+      var(--sheen-glint) 50%,
+      var(--sheen-base) 58%
+    );
+    background-size: 300% 100%;
+    background-position: 100% 0;
+    background-clip: text;
+    -webkit-background-clip: text;
+    color: transparent;
+  }
+
+  .composer-prompt-suggestion[data-sweeping] .composer-prompt-suggestion-text > span {
+    animation: composer-prompt-suggestion-sweep 1.15s cubic-bezier(0.4, 0, 0.2, 1) 0.12s both;
+  }
+
+  .composer-prompt-suggestion[data-sweeping] .composer-prompt-suggestion-key {
+    animation: composer-prompt-suggestion-key 1.5s ease-out 0.15s both;
   }
 }
 
 @keyframes composer-prompt-suggestion-in {
   from {
     opacity: 0;
+  }
+}
+
+@keyframes composer-prompt-suggestion-sweep {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: 0% 0;
+  }
+}
+
+@keyframes composer-prompt-suggestion-key {
+  25% {
+    background-color: color-mix(in srgb, var(--foreground) 16%, var(--muted));
+    color: var(--foreground);
   }
 }

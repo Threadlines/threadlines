@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vite-plus/test";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import {
   EventId,
   type OrchestrationThreadActivity,
@@ -10,8 +10,10 @@ import {
 import {
   deriveLatestPromptSuggestion,
   type PromptSuggestionSelectionInput,
+  PROMPT_SUGGESTION_SWEEP,
   resolvePromptSuggestionView,
   selectPromptSuggestion,
+  startPromptSuggestionSweeps,
 } from "./promptSuggestions";
 
 const CLAUDE = ProviderDriverKind.make("claudeAgent");
@@ -232,5 +234,48 @@ describe("resolvePromptSuggestionView", () => {
     expect(resolve("Use $rev", "Use $review on it")).toBeNull();
     expect(resolve("/comp", "/compact the thread")).toBeNull();
     expect(resolve("First\nsec", "First\nsecond line")).toBeNull();
+  });
+});
+
+describe("startPromptSuggestionSweeps", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("sweeps as the suggestion arrives, a few more times, then stops for good", () => {
+    vi.useFakeTimers();
+    const { durationMs, everyMs, times } = PROMPT_SUGGESTION_SWEEP;
+    const starts: number[] = [];
+    let sweeping = false;
+    startPromptSuggestionSweeps((next) => {
+      sweeping = next;
+      if (next) starts.push(Date.now());
+    });
+    const arrivedAt = Date.now();
+
+    // On right away, off once the sweep's CSS has run, still until the next.
+    expect(sweeping).toBe(true);
+    vi.advanceTimersByTime(durationMs);
+    expect(sweeping).toBe(false);
+    vi.advanceTimersByTime(everyMs - durationMs - 1);
+    expect(sweeping).toBe(false);
+
+    vi.advanceTimersByTime(everyMs * times * 2);
+    expect(starts.map((at) => at - arrivedAt)).toEqual(
+      Array.from({ length: times }, (_, index) => index * everyMs),
+    );
+    expect(sweeping).toBe(false);
+    // Nothing left running: a suggestion that sits there never animates again.
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("stops early when the suggestion goes away", () => {
+    vi.useFakeTimers();
+    const changes: boolean[] = [];
+    const stop = startPromptSuggestionSweeps((next) => changes.push(next));
+    stop();
+    vi.advanceTimersByTime(PROMPT_SUGGESTION_SWEEP.everyMs * PROMPT_SUGGESTION_SWEEP.times);
+    expect(changes).toEqual([true]);
+    expect(vi.getTimerCount()).toBe(0);
   });
 });

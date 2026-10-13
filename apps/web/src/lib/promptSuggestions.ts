@@ -185,3 +185,39 @@ export function resolvePromptSuggestionView(input: {
   }
   return { kind: "completion", remainder: suggestion.slice(prompt.length) };
 }
+
+/**
+ * A suggestion's sheen: one sweep as it arrives, a few reminders after in case
+ * the user looked away, then never again.
+ */
+export const PROMPT_SUGGESTION_SWEEP = {
+  /** One sweep's CSS from start to finish, the Tab key's glow included. */
+  durationMs: 1_700,
+  /** From the start of one sweep to the start of the next. */
+  everyMs: 7_000,
+  times: 4,
+} as const;
+
+/**
+ * Runs the sweeps for a suggestion that just arrived. `onSweepingChange` hears
+ * when each one starts and when it has finished, so the composer animates only
+ * during a sweep and holds still between them. Returns a stop for a suggestion
+ * that goes away early.
+ */
+export function startPromptSuggestionSweeps(
+  onSweepingChange: (sweeping: boolean) => void,
+): () => void {
+  const { durationMs, everyMs, times } = PROMPT_SUGGESTION_SWEEP;
+  let remaining = times;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const sweep = () => {
+    remaining -= 1;
+    onSweepingChange(true);
+    timer = setTimeout(() => {
+      onSweepingChange(false);
+      timer = remaining > 0 ? setTimeout(sweep, everyMs - durationMs) : undefined;
+    }, durationMs);
+  };
+  sweep();
+  return () => clearTimeout(timer);
+}
