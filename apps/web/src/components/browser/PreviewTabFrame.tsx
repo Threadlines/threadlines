@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, type CSSProperties } from "react";
 import {
   callWhenReady,
   registerPreviewWebview,
+  selectThreadAgentState,
   useBrowserPanelStore,
   type BrowserTab,
   type BrowserViewport,
@@ -11,7 +12,12 @@ import {
 import { useBrowserLiveStore } from "../../browserLiveStore";
 import { isElectron } from "../../env";
 import { cn } from "../../lib/utils";
-import { AgentPointer, type AgentPointerPosition } from "./AgentPointer";
+import {
+  AgentPointer,
+  POINTER_RETIRE_HOLD_MS,
+  POINTER_RETIRE_MS,
+  type AgentPointerPosition,
+} from "./AgentPointer";
 import { resolveBrowserViewportLayout } from "./browserViewportLayout";
 import { hostOf } from "./previewUrl";
 
@@ -79,8 +85,6 @@ export function PreviewTabFrame({
   zoomFactor,
   colorScheme,
   onResize,
-  agentPoint,
-  agentPointRetiring,
 }: {
   tab: BrowserTab;
   threadRef: ScopedThreadRef;
@@ -93,12 +97,10 @@ export function PreviewTabFrame({
   zoomFactor: number;
   colorScheme: "light" | "dark";
   onResize?: ((viewport: BrowserViewport) => void) | undefined;
-  /** The agent's last touch, drawn over this tab when it is the visible one. */
-  agentPoint: AgentPointerPosition | null;
-  /** Whether that touch is fading out, its page having been navigated away. */
-  agentPointRetiring: boolean;
 }) {
   const elementRef = useRef<PreviewWebview | null>(null);
+  // The agent's last touch on this page, drawn over it while it is on screen.
+  const agent = usePageAgentPoint(threadRef, tab.id, tab.url);
   // Fixed at mount and never rewritten: navigation goes through `loadURL`, and
   // a `src` that tracked the tab's URL would re-load pages React re-rendered.
   // `about:blank` rather than no `src` because a webview with no `src` never
@@ -317,11 +319,7 @@ export function PreviewTabFrame({
             className="pointer-events-none absolute"
             style={{ left: `${layout.x}px`, top: `${layout.y}px` }}
           >
-            <AgentPointer
-              position={agentPoint}
-              scale={layout.scale}
-              retiring={agentPointRetiring}
-            />
+            <AgentPointer position={agent.point} scale={layout.scale} retiring={agent.retiring} />
           </div>
         ) : null}
         {!layout.fills && mode === "visible" && onResize !== undefined ? (
@@ -357,6 +355,58 @@ export function PreviewTabFrame({
       </div>
     </div>
   );
+}
+
+/**
+ * The agent's mark on one tab's page, and whether it is on its way out.
+ *
+ * The mark is a place on this page and belongs to it alone. The user looking
+ * at another tab, or an agent working in one, does nothing to it.
+ *
+ * It is in page coordinates, so it stops meaning anything once the tab is no
+ * longer at the address the agent acted on. It fades rather than blinking out:
+ * clicking a link is the most common way to navigate, and cutting the mark on
+ * the click leaves the one action you most want confirmed with no trace. That
+ * goes for a click reported only after the page has moved on, too: it is
+ * shown, and then it goes.
+ */
+function usePageAgentPoint(
+  threadRef: ScopedThreadRef,
+  tabId: string,
+  url: string | null,
+): { point: AgentPointerPosition | null; retiring: boolean } {
+  const point = useBrowserPanelStore(
+    (store) =>
+      selectThreadAgentState(store.agentStateByThreadKey, threadRef).pointByTabId[tabId] ?? null,
+  );
+  const clearAgentPoint = useBrowserPanelStore((store) => store.clearAgentPoint);
+
+  // The mark on a page this tab has left, if that is what is here.
+  const leaving = point !== null && point.pageUrl !== url ? point.sequence : null;
+  const [fading, setFading] = useState<number | null>(null);
+  useEffect(() => {
+    if (leaving === null) {
+      return;
+    }
+    // Held for a moment first, so a mark that arrived already out of date is
+    // on screen before it starts to go.
+    const fade = window.setTimeout(() => setFading(leaving), POINTER_RETIRE_HOLD_MS);
+    const clear = window.setTimeout(
+      () => clearAgentPoint(threadRef, tabId, leaving),
+      POINTER_RETIRE_HOLD_MS + POINTER_RETIRE_MS,
+    );
+    return () => {
+      window.clearTimeout(fade);
+      window.clearTimeout(clear);
+    };
+  }, [clearAgentPoint, leaving, tabId, threadRef]);
+
+  // The frame going takes its page with it: the tab was closed, the browser
+  // was, or the page was put away to save memory. Nothing records a mark for a
+  // page that is not there, so this is the last of it.
+  useEffect(() => () => clearAgentPoint(threadRef, tabId), [clearAgentPoint, tabId, threadRef]);
+
+  return { point, retiring: leaving !== null && fading === leaving };
 }
 
 /**

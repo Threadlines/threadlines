@@ -315,7 +315,13 @@ export const PREVIEW_WEBVIEW_WAIT_MS = 5_000;
 export interface ThreadBrowserAgentState {
   /** The tab the agent pinned itself to; null until it acts. */
   tabId: string | null;
-  point: { x: number; y: number; from?: { x: number; y: number }; sequence: number } | null;
+  /**
+   * Where an agent last touched each tab's page; `sequence` says which action
+   * it was. Kept by tab because a point is a place on one page: the agent
+   * turning to another tab, or a second agent working in one, leaves it where
+   * it is. A tab nothing has touched has no entry.
+   */
+  pointByTabId: Record<string, ThreadBrowserAgentPoint>;
   activity: {
     phase: "running" | "done";
     verb: string;
@@ -324,11 +330,32 @@ export interface ThreadBrowserAgentState {
   } | null;
 }
 
+export interface ThreadBrowserAgentPoint {
+  x: number;
+  y: number;
+  /** Where a drag began, when this point is the end of one. */
+  from?: { x: number; y: number };
+  /**
+   * The address the tab was at when the agent acted. The point is a place on
+   * that page, so it is out of date once the tab is anywhere else, whichever
+   * of the two the panel hears about first.
+   */
+  pageUrl: string | null;
+  sequence: number;
+}
+
 export const EMPTY_AGENT_STATE: ThreadBrowserAgentState = Object.freeze({
   tabId: null,
-  point: null,
+  pointByTabId: Object.freeze({}),
   activity: null,
 });
+
+/**
+ * Numbers every touch an agent makes. Never handed out twice, not even after a
+ * tab's point has been cleared: the pointer tells an action it has already
+ * shown from one that just happened by this number alone.
+ */
+let lastAgentPointSequence = 0;
 
 /**
  * A site something tried to reach that this project has not approved.
@@ -426,8 +453,15 @@ interface BrowserPanelStoreState {
   setAgentTab: (threadRef: ScopedThreadRef, tabId: string | null) => void;
   setAgentPoint: (
     threadRef: ScopedThreadRef,
-    point: { x: number; y: number; from?: { x: number; y: number } } | null,
+    tabId: string,
+    point: Omit<ThreadBrowserAgentPoint, "sequence">,
   ) => void;
+  /**
+   * Takes the agent's point off a tab whose page it no longer describes. With
+   * a `sequence`, only if that is still the action there: one made while the
+   * old one was on its way out stays.
+   */
+  clearAgentPoint: (threadRef: ScopedThreadRef, tabId: string, sequence?: number) => void;
   setAgentActivity: (
     threadRef: ScopedThreadRef,
     activity: ThreadBrowserAgentState["activity"],
@@ -550,7 +584,7 @@ function isOnlyEmptyTab(state: ThreadBrowserState): boolean {
 
 export const useBrowserPanelStore = create<BrowserPanelStoreState>()(
   persist(
-    (set) => ({
+    (set, get) => ({
       browserStateByThreadKey: {},
       agentStateByThreadKey: {},
       browserOwnershipByThreadKey: {},
@@ -781,14 +815,31 @@ export const useBrowserPanelStore = create<BrowserPanelStoreState>()(
       setAppearance: (appearance) => set(() => ({ appearance })),
       setAgentTab: (threadRef, tabId) =>
         set((state) => updateAgentState(state, threadRef, (current) => ({ ...current, tabId }))),
-      setAgentPoint: (threadRef, point) =>
+      setAgentPoint: (threadRef, tabId, point) => {
+        const next = { ...point, sequence: ++lastAgentPointSequence };
         set((state) =>
           updateAgentState(state, threadRef, (current) => ({
             ...current,
-            point:
-              point === null ? null : { ...point, sequence: (current.point?.sequence ?? 0) + 1 },
+            pointByTabId: { ...current.pointByTabId, [tabId]: next },
           })),
-        ),
+        );
+      },
+      clearAgentPoint: (threadRef, tabId, sequence) => {
+        const point = selectThreadAgentState(get().agentStateByThreadKey, threadRef).pointByTabId[
+          tabId
+        ];
+        // Usually there is nothing to take away, and that is not worth an
+        // update: every one of them is written through to storage.
+        if (point === undefined || (sequence !== undefined && point.sequence !== sequence)) {
+          return;
+        }
+        set((state) =>
+          updateAgentState(state, threadRef, (current) => {
+            const { [tabId]: _cleared, ...others } = current.pointByTabId;
+            return { ...current, pointByTabId: others };
+          }),
+        );
+      },
       setAgentActivity: (threadRef, activity) =>
         set((state) => updateAgentState(state, threadRef, (current) => ({ ...current, activity }))),
       enqueueBrowserApproval: (threadRef, approval) =>
