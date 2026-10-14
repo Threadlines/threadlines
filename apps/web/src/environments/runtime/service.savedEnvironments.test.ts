@@ -5,6 +5,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test"
 const mockCreateEnvironmentConnection = vi.fn();
 const mockCreateWsRpcClient = vi.fn();
 const mockFetchRemoteSessionState = vi.fn();
+const mockFetchRemoteEnvironmentDescriptor = vi.fn();
+const mockIsRemoteEnvironmentUnreachableError = vi.fn();
+const mockIsRemoteEnvironmentAuthHttpError = vi.fn();
 const mockWaitForSavedEnvironmentRegistryHydration = vi.fn();
 const mockListSavedEnvironmentRecords = vi.fn();
 const mockSavedEnvironmentRegistrySubscribe = vi.fn();
@@ -33,8 +36,10 @@ vi.mock("../primary", () => ({
 
 vi.mock("../remote/api", () => ({
   bootstrapRemoteBearerSession: vi.fn(),
-  fetchRemoteEnvironmentDescriptor: vi.fn(),
+  fetchRemoteEnvironmentDescriptor: mockFetchRemoteEnvironmentDescriptor,
   fetchRemoteSessionState: mockFetchRemoteSessionState,
+  isRemoteEnvironmentAuthHttpError: mockIsRemoteEnvironmentAuthHttpError,
+  isRemoteEnvironmentUnreachableError: mockIsRemoteEnvironmentUnreachableError,
   resolveRemoteWebSocketConnectionUrl: vi.fn(() => "ws://remote.example.test"),
 }));
 
@@ -169,6 +174,11 @@ const savedRecord = {
   wsBaseUrl: "wss://remote.example.test/",
 };
 
+/** What a request to a computer that is asleep fails with. */
+const UNREACHABLE = new Error("Failed to fetch remote auth endpoint (Failed to fetch).");
+/** What a computer that no longer accepts the saved sign-in answers. */
+const REFUSED = Object.assign(new Error("Unauthorized"), { status: 401 });
+
 const configSnapshot = {
   environment: {
     environmentId: savedRecord.environmentId,
@@ -246,6 +256,11 @@ describe("saved environment startup", () => {
       authenticated: true,
       role: "owner",
     });
+    mockFetchRemoteEnvironmentDescriptor.mockResolvedValue(configSnapshot.environment);
+    mockIsRemoteEnvironmentUnreachableError.mockImplementation(
+      (error: unknown) => error === UNREACHABLE,
+    );
+    mockIsRemoteEnvironmentAuthHttpError.mockImplementation((error: unknown) => error === REFUSED);
     mockGetSavedEnvironmentRecord.mockImplementation((environmentId: EnvironmentId) =>
       environmentId === savedRecord.environmentId ? savedRecord : null,
     );
@@ -391,5 +406,213 @@ describe("saved environment startup", () => {
 
     stop();
     await resetEnvironmentServiceForTests();
+  });
+  it("keeps checking a computer that was asleep at startup and connects once it answers", async () => {
+    mockFetchRemoteSessionState.mockRejectedValueOnce(UNREACHABLE);
+    mockFetchRemoteEnvironmentDescriptor.mockRejectedValueOnce(UNREACHABLE);
+    const { startEnvironmentConnectionService, readEnvironmentConnection } =
+      await import("./service");
+
+    const stop = startEnvironmentConnectionService(new QueryClient());
+    await vi.advanceTimersByTimeAsync(200);
+    expect(readEnvironmentConnection(savedRecord.environmentId)).toBeNull();
+    expect(savedEnvironmentRuntimeById[savedRecord.environmentId]).toMatchObject({
+      connectionState: "disconnected",
+      lastError:
+        "Can't reach Remote environment. It may be asleep, off, or offline. Threadlines will connect when it's back.",
+    });
+
+    // Still asleep at the first check.
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(mockFetchRemoteEnvironmentDescriptor).toHaveBeenCalledTimes(1);
+    expect(readEnvironmentConnection(savedRecord.environmentId)).toBeNull();
+
+    // Awake at the next one.
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(mockFetchRemoteEnvironmentDescriptor).toHaveBeenCalledTimes(2);
+    expect(readEnvironmentConnection(savedRecord.environmentId)).not.toBeNull();
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(mockFetchRemoteEnvironmentDescriptor).toHaveBeenCalledTimes(2);
+    stop();
+  });
+
+  it("leaves a computer that refuses the saved sign-in for the user", async () => {
+    mockFetchRemoteSessionState.mockRejectedValueOnce(REFUSED);
+    const { startEnvironmentConnectionService, readEnvironmentConnection } =
+      await import("./service");
+
+    const stop = startEnvironmentConnectionService(new QueryClient());
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    expect(mockFetchRemoteEnvironmentDescriptor).not.toHaveBeenCalled();
+    expect(mockFetchRemoteSessionState).toHaveBeenCalledTimes(1);
+    expect(readEnvironmentConnection(savedRecord.environmentId)).toBeNull();
+    stop();
+  });
+
+  it("does not start checking when the user disconnects while the first attempt is out", async () => {
+    let failSessionFetch!: (error: Error) => void;
+    mockFetchRemoteSessionState.mockImplementationOnce(
+      () =>
+        new Promise((_resolve, reject) => {
+          failSessionFetch = reject;
+        }),
+    );
+    const { startEnvironmentConnectionService, disconnectSavedEnvironment } =
+      await import("./service");
+
+    const stop = startEnvironmentConnectionService(new QueryClient());
+    await vi.advanceTimersByTimeAsync(200);
+    await disconnectSavedEnvironment(savedRecord.environmentId);
+    failSessionFetch(UNREACHABLE);
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    expect(mockFetchRemoteEnvironmentDescriptor).not.toHaveBeenCalled();
+    stop();
+  });
+
+  it("leaves a computer being checked alone when other saved computers change", async () => {
+    mockFetchRemoteSessionState.mockRejectedValueOnce(UNREACHABLE);
+    mockFetchRemoteEnvironmentDescriptor.mockRejectedValue(UNREACHABLE);
+    const { startEnvironmentConnectionService } = await import("./service");
+
+    const stop = startEnvironmentConnectionService(new QueryClient());
+    await vi.advanceTimersByTimeAsync(200);
+    const registryListener = mockSavedEnvironmentRegistrySubscribe.mock.calls[0]?.[0];
+    registryListener?.();
+    await vi.advanceTimersByTimeAsync(200);
+
+    expect(mockFetchRemoteSessionState).toHaveBeenCalledTimes(1);
+    stop();
+  });
+
+  it("does not reconnect again when Connect wins the race with a check", async () => {
+    mockFetchRemoteSessionState.mockRejectedValueOnce(UNREACHABLE);
+    let answerCheck!: () => void;
+    mockFetchRemoteEnvironmentDescriptor.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          answerCheck = () => resolve(configSnapshot.environment);
+        }),
+    );
+    const {
+      startEnvironmentConnectionService,
+      reconnectSavedEnvironment,
+      readEnvironmentConnection,
+    } = await import("./service");
+
+    const stop = startEnvironmentConnectionService(new QueryClient());
+    await vi.advanceTimersByTimeAsync(1_200);
+    expect(mockFetchRemoteEnvironmentDescriptor).toHaveBeenCalledTimes(1);
+
+    await reconnectSavedEnvironment(savedRecord.environmentId);
+    answerCheck();
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    expect(readEnvironmentConnection(savedRecord.environmentId)?.reconnect).not.toHaveBeenCalled();
+    expect(mockFetchRemoteEnvironmentDescriptor).toHaveBeenCalledTimes(1);
+    stop();
+  });
+  it("takes back its promise to reconnect when the user disconnects a computer being checked", async () => {
+    mockFetchRemoteSessionState.mockRejectedValueOnce(UNREACHABLE);
+    const { startEnvironmentConnectionService, disconnectSavedEnvironment } =
+      await import("./service");
+
+    const stop = startEnvironmentConnectionService(new QueryClient());
+    await vi.advanceTimersByTimeAsync(200);
+    await disconnectSavedEnvironment(savedRecord.environmentId);
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    expect(mockFetchRemoteEnvironmentDescriptor).not.toHaveBeenCalled();
+    expect(savedEnvironmentRuntimeById[savedRecord.environmentId]?.lastError).toBeNull();
+    stop();
+  });
+
+  it("does not start checking when the user disconnects while a failed attempt cleans up", async () => {
+    mockFetchRemoteSessionState.mockRejectedValueOnce(UNREACHABLE);
+    let finishCleanup!: () => void;
+    const createConnection = mockCreateEnvironmentConnection.getMockImplementation()!;
+    let slowedSavedCleanup = false;
+    mockCreateEnvironmentConnection.mockImplementation((input) => {
+      const connection = createConnection(input);
+      if (input.kind !== "saved" || slowedSavedCleanup) return connection;
+      slowedSavedCleanup = true;
+      return {
+        ...connection,
+        dispose: vi.fn(
+          () =>
+            new Promise<void>((resolve) => {
+              finishCleanup = resolve;
+            }),
+        ),
+      };
+    });
+    const { startEnvironmentConnectionService, disconnectSavedEnvironment } =
+      await import("./service");
+
+    const stop = startEnvironmentConnectionService(new QueryClient());
+    await vi.advanceTimersByTimeAsync(200);
+    await disconnectSavedEnvironment(savedRecord.environmentId);
+    finishCleanup();
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    expect(mockFetchRemoteEnvironmentDescriptor).not.toHaveBeenCalled();
+    stop();
+  });
+
+  it("keeps checking after a newer attempt even when an older, disconnected one fails late", async () => {
+    let failFirstAttempt!: (error: Error) => void;
+    mockFetchRemoteSessionState
+      .mockImplementationOnce(
+        () =>
+          new Promise((_resolve, reject) => {
+            failFirstAttempt = reject;
+          }),
+      )
+      .mockRejectedValueOnce(UNREACHABLE);
+    mockFetchRemoteEnvironmentDescriptor.mockRejectedValue(UNREACHABLE);
+    const {
+      startEnvironmentConnectionService,
+      disconnectSavedEnvironment,
+      reconnectSavedEnvironment,
+    } = await import("./service");
+
+    const stop = startEnvironmentConnectionService(new QueryClient());
+    await vi.advanceTimersByTimeAsync(200);
+    await disconnectSavedEnvironment(savedRecord.environmentId);
+    await reconnectSavedEnvironment(savedRecord.environmentId).catch(() => undefined);
+    failFirstAttempt(UNREACHABLE);
+    await vi.advanceTimersByTimeAsync(1_200);
+
+    expect(mockFetchRemoteEnvironmentDescriptor).toHaveBeenCalled();
+    stop();
+  });
+  it("leaves a newer connection alone when an older, disconnected attempt fails late", async () => {
+    let failFirstAttempt!: (error: Error) => void;
+    mockFetchRemoteSessionState.mockImplementationOnce(
+      () =>
+        new Promise((_resolve, reject) => {
+          failFirstAttempt = reject;
+        }),
+    );
+    const {
+      startEnvironmentConnectionService,
+      disconnectSavedEnvironment,
+      reconnectSavedEnvironment,
+      readEnvironmentConnection,
+    } = await import("./service");
+
+    const stop = startEnvironmentConnectionService(new QueryClient());
+    await vi.advanceTimersByTimeAsync(200);
+    await disconnectSavedEnvironment(savedRecord.environmentId);
+    await reconnectSavedEnvironment(savedRecord.environmentId);
+    const connected = readEnvironmentConnection(savedRecord.environmentId);
+    failFirstAttempt(UNREACHABLE);
+    await vi.advanceTimersByTimeAsync(200);
+
+    expect(readEnvironmentConnection(savedRecord.environmentId)).toBe(connected);
+    expect(connected?.dispose).not.toHaveBeenCalled();
+    stop();
   });
 });

@@ -288,6 +288,20 @@ describe("remote environment api", () => {
       await expect(mint()).rejects.toBeInstanceOf(TransportUrlUnavailableError);
     }
 
+    // Cut off partway through the answer.
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () => Promise.reject(new TypeError("network error")),
+    } as unknown as Response) as typeof fetch;
+    await expect(mint()).rejects.toBeInstanceOf(TransportUrlUnavailableError);
+
+    // Something other than Threadlines answered at that address.
+    globalThis.fetch = vi
+      .fn()
+      .mockResolvedValue(new Response("<html></html>", { status: 200 })) as typeof fetch;
+    await expect(mint()).rejects.toBeInstanceOf(SyntaxError);
+
     // Awake, and the saved credential is no longer accepted.
     globalThis.fetch = vi
       .fn()

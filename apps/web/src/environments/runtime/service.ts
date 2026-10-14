@@ -54,6 +54,7 @@ import {
   fetchRemoteEnvironmentDescriptor,
   fetchRemoteSessionState,
   isRemoteEnvironmentAuthHttpError,
+  isRemoteEnvironmentUnreachableError,
   resolveRemoteWebSocketConnectionUrl,
 } from "../remote/api";
 import { resolveRemotePairingTarget } from "../remote/target";
@@ -85,6 +86,8 @@ import { useUiStateStore } from "~/uiStateStore";
 import type { WsProtocolCloseContext } from "../../rpc/protocol";
 import { applyServerConfigStreamEvent } from "../../rpc/serverConfigEvents";
 import { getServerConfig } from "../../rpc/serverState";
+import { TransportRequestRetriesExhaustedError } from "../../rpc/transportError";
+import { getWsReconnectDelayMsForRetry } from "../../rpc/wsConnectionState";
 import { WsTransport } from "../../rpc/wsTransport";
 import { createWsRpcClient, type WsRpcClient } from "../../rpc/wsRpcClient";
 import { relayWebSocketProtocols } from "../../relayTransport";
@@ -1045,6 +1048,122 @@ function clearRelayHold(environmentId: EnvironmentId): void {
   relayHolds.delete(environmentId);
 }
 
+function cantReachComputerMessage(label: string): string {
+  return `Can't reach ${label}. It may be asleep, off, or offline. Threadlines will connect when it's back.`;
+}
+
+interface UnreachableSavedEnvironment {
+  readonly attempt: number;
+  timer: ReturnType<typeof setTimeout> | null;
+}
+
+/**
+ * Direct computers (not relay, not SSH) whose connection could not be made
+ * because they did not answer, most often a computer that was asleep when
+ * this app started. Each is checked now and then with one unauthenticated
+ * request and reconnected as soon as it answers. Relay computers have their
+ * own holds; SSH ones wait for the user, since every attempt starts an SSH
+ * session.
+ */
+const unreachableSavedEnvironments = new Map<EnvironmentId, UnreachableSavedEnvironment>();
+
+/** The computer did not answer, which can clear up on its own. */
+function isUnreachableConnectFailure(error: unknown): boolean {
+  return (
+    isRemoteEnvironmentUnreachableError(error) ||
+    error instanceof TransportRequestRetriesExhaustedError
+  );
+}
+
+/**
+ * After a connect failed: a direct computer that did not answer is checked
+ * again until it does. Any other failure, like a refused or missing
+ * credential, waits for the user.
+ */
+function waitForUnreachableSavedEnvironment(record: SavedEnvironmentRecord, error: unknown): void {
+  if (isSavedEnvironmentConnectionCancelledError(error)) {
+    return;
+  }
+  if (
+    activeService === null ||
+    record.relay ||
+    record.desktopSsh ||
+    !isUnreachableConnectFailure(error)
+  ) {
+    stopWaitingForUnreachableSavedEnvironment(record.environmentId);
+    return;
+  }
+  const previous = unreachableSavedEnvironments.get(record.environmentId);
+  scheduleUnreachableSavedEnvironmentCheck(
+    record.environmentId,
+    previous === undefined ? 0 : previous.attempt + 1,
+  );
+  setRuntimeDisconnected(record.environmentId, cantReachComputerMessage(record.label));
+}
+
+function scheduleUnreachableSavedEnvironmentCheck(
+  environmentId: EnvironmentId,
+  attempt: number,
+  delayMs = getWsReconnectDelayMsForRetry(attempt),
+): void {
+  const previous = unreachableSavedEnvironments.get(environmentId);
+  if (previous?.timer) clearTimeout(previous.timer);
+  const entry: UnreachableSavedEnvironment = { attempt, timer: null };
+  entry.timer = setTimeout(() => {
+    entry.timer = null;
+    void checkUnreachableSavedEnvironment(environmentId, entry);
+  }, delayMs);
+  unreachableSavedEnvironments.set(environmentId, entry);
+}
+
+function stopWaitingForUnreachableSavedEnvironment(environmentId: EnvironmentId): void {
+  const entry = unreachableSavedEnvironments.get(environmentId);
+  if (entry?.timer) clearTimeout(entry.timer);
+  unreachableSavedEnvironments.delete(environmentId);
+}
+
+/**
+ * Check every computer waiting to answer right away, starting its backoff
+ * over. One whose check is already out is left to finish it.
+ */
+function checkUnreachableSavedEnvironmentsNow(): void {
+  for (const [environmentId, entry] of unreachableSavedEnvironments) {
+    if (entry.timer !== null) {
+      scheduleUnreachableSavedEnvironmentCheck(environmentId, 0, 0);
+    }
+  }
+}
+
+async function checkUnreachableSavedEnvironment(
+  environmentId: EnvironmentId,
+  entry: UnreachableSavedEnvironment,
+): Promise<void> {
+  const isCurrent = () => unreachableSavedEnvironments.get(environmentId) === entry;
+  const record = getSavedEnvironmentRecord(environmentId);
+  if (!record || environmentConnections.has(environmentId)) {
+    if (isCurrent()) unreachableSavedEnvironments.delete(environmentId);
+    return;
+  }
+  const answers = await fetchRemoteEnvironmentDescriptor({ httpBaseUrl: record.httpBaseUrl }).then(
+    () => true,
+    (error: unknown) => !isRemoteEnvironmentUnreachableError(error),
+  );
+  // Stopped, or rescheduled from elsewhere, while the check was out.
+  if (!isCurrent()) return;
+  if (!answers) {
+    scheduleUnreachableSavedEnvironmentCheck(environmentId, entry.attempt + 1);
+    return;
+  }
+  // It answers, so connect the way Reconnect does. If that still finds it
+  // unreachable, the failure schedules the next check.
+  await reconnectSavedEnvironment(environmentId).then(
+    () => {
+      if (isCurrent()) unreachableSavedEnvironments.delete(environmentId);
+    },
+    () => undefined,
+  );
+}
+
 /**
  * Everything a secure connection to a "Connect a device" computer needs: its
  * pinned key, this device's key, the direct routes it last reported, and the
@@ -1169,7 +1288,7 @@ function handleRelayV2Close(environmentId: EnvironmentId, code: number): boolean
       holdRelayEnvironment(
         environmentId,
         RELAY_OFFLINE_RETRY_MS[Math.min(attempt, RELAY_OFFLINE_RETRY_MS.length - 1)]!,
-        `Can't reach ${label}. It may be asleep, off, or offline.`,
+        cantReachComputerMessage(label),
       );
       return true;
     }
@@ -1718,6 +1837,7 @@ function registerConnection(connection: EnvironmentConnection): EnvironmentConne
     throw new Error(`Environment ${connection.environmentId} already has an active connection.`);
   }
   environmentConnections.set(connection.environmentId, connection);
+  stopWaitingForUnreachableSavedEnvironment(connection.environmentId);
   attachThreadDetailSubscriptionsForEnvironment(connection.environmentId);
   emitEnvironmentConnectionRegistryChange();
   return connection;
@@ -1934,10 +2054,21 @@ async function ensureSavedEnvironmentConnection(
         if (error instanceof SavedEnvironmentConnectionCancelledError) {
           throw error;
         }
-        setRuntimeError(activeRecord.environmentId, error);
-        const removed = await removeConnection(activeRecord.environmentId).catch(() => false);
+        if (!pendingEntry.cancelled) {
+          setRuntimeError(activeRecord.environmentId, error);
+        }
+        // Only this attempt's own connection: a newer attempt may have
+        // connected the computer in the meantime.
+        const removed =
+          environmentConnections.get(activeRecord.environmentId) === connection &&
+          (await removeConnection(activeRecord.environmentId).catch(() => false));
         if (!removed) {
           await connection.dispose().catch(() => undefined);
+        }
+        // Disconnected while this attempt was out or cleaning up, so its
+        // failure no longer says anything about the computer.
+        if (pendingEntry.cancelled) {
+          throw new SavedEnvironmentConnectionCancelledError(activeRecord.environmentId);
         }
         throw error;
       }
@@ -1966,8 +2097,17 @@ async function syncSavedEnvironmentConnections(
   );
   await Promise.all(
     records
-      .filter((record) => !isPendingRelayJoin(record) && !isRelayHeld(record.environmentId))
-      .map((record) => ensureSavedEnvironmentConnection(record).catch(() => undefined)),
+      .filter(
+        (record) =>
+          !isPendingRelayJoin(record) &&
+          !isRelayHeld(record.environmentId) &&
+          !unreachableSavedEnvironments.has(record.environmentId),
+      )
+      .map((record) =>
+        ensureSavedEnvironmentConnection(record).catch((error: unknown) =>
+          waitForUnreachableSavedEnvironment(record, error),
+        ),
+      ),
   );
 }
 
@@ -1981,6 +2121,7 @@ function reconnectEnvironmentConnectionsAfterBrowserResume(reason: string): void
   if (now - lastBrowserResumeReconnectAt < BROWSER_RESUME_RECONNECT_COOLDOWN_MS) {
     return;
   }
+  checkUnreachableSavedEnvironmentsNow();
 
   for (const connection of environmentConnections.values()) {
     if (connection.client.isHeartbeatFresh()) {
@@ -2020,11 +2161,16 @@ function subscribeBrowserResumeReconnects(): () => void {
     }
   };
 
+  // Back on a network: a computer that was out of reach may answer now.
+  const handleOnline = () => checkUnreachableSavedEnvironmentsNow();
+
   document.addEventListener("visibilitychange", handleVisibilityChange);
   window.addEventListener("pageshow", handlePageShow);
+  window.addEventListener("online", handleOnline);
   return () => {
     document.removeEventListener("visibilitychange", handleVisibilityChange);
     window.removeEventListener("pageshow", handlePageShow);
+    window.removeEventListener("online", handleOnline);
   };
 }
 
@@ -2074,6 +2220,8 @@ export function readBackendEnvironmentConnection(): EnvironmentConnection | null
 }
 
 export async function disconnectSavedEnvironment(environmentId: EnvironmentId): Promise<void> {
+  const wasWaiting = unreachableSavedEnvironments.has(environmentId);
+  stopWaitingForUnreachableSavedEnvironment(environmentId);
   const record = getSavedEnvironmentRecord(environmentId);
   const pendingConnection = pendingSavedEnvironmentConnections.get(environmentId);
   if (pendingConnection) {
@@ -2086,6 +2234,13 @@ export async function disconnectSavedEnvironment(environmentId: EnvironmentId): 
     await removeConnection(environmentId).catch(() => false);
   }
   setRuntimeDisconnected(environmentId);
+  if (wasWaiting) {
+    // It no longer connects when it's back, so stop saying it will.
+    useSavedEnvironmentRuntimeStore.getState().patch(environmentId, {
+      lastError: null,
+      lastErrorAt: null,
+    });
+  }
 
   if (record?.desktopSsh && typeof window !== "undefined") {
     await window.desktopBridge?.disconnectSshEnvironment(record.desktopSsh);
@@ -2111,6 +2266,7 @@ export async function reconnectSavedEnvironment(environmentId: EnvironmentId): P
         return;
       }
       setRuntimeError(environmentId, error);
+      waitForUnreachableSavedEnvironment(record, error);
       throw error;
     }
   }
@@ -2394,6 +2550,9 @@ export function startEnvironmentConnectionService(queryClient: QueryClient): () 
       unsubscribeSavedEnvironments();
       unsubscribeBrowserResumeReconnects();
       queryInvalidationThrottler.cancel();
+      for (const environmentId of unreachableSavedEnvironments.keys()) {
+        stopWaitingForUnreachableSavedEnvironment(environmentId);
+      }
     },
   };
 

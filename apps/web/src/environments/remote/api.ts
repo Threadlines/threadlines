@@ -23,6 +23,26 @@ export function isRemoteEnvironmentAuthHttpError(
   return error instanceof RemoteEnvironmentAuthHttpError;
 }
 
+/** A request to a computer that got no answer at all: asleep, off, or offline. */
+class RemoteEnvironmentUnreachableError extends Error {
+  override readonly name = "RemoteEnvironmentUnreachableError";
+}
+
+/**
+ * Whether a request to a computer failed in a way that can clear up on its
+ * own: it got no answer, or the answer was "not now" (5xx, 408, 429). Any
+ * other failure is a refusal or a fault that needs the user.
+ */
+export function isRemoteEnvironmentUnreachableError(error: unknown): boolean {
+  if (error instanceof RemoteEnvironmentUnreachableError) {
+    return true;
+  }
+  return (
+    isRemoteEnvironmentAuthHttpError(error) &&
+    (error.status >= 500 || error.status === 408 || error.status === 429)
+  );
+}
+
 function remoteEndpointUrl(httpBaseUrl: string, pathname: string): string {
   const url = new URL(httpBaseUrl);
   url.pathname = pathname;
@@ -35,7 +55,9 @@ async function readRemoteAuthErrorMessage(
   response: Response,
   fallbackMessage: string,
 ): Promise<string> {
-  const text = await response.text();
+  // The status already says what happened; a body cut off midway is no reason
+  // to lose it.
+  const text = await response.text().catch(() => "");
   if (!text) {
     return fallbackMessage;
   }
@@ -81,7 +103,7 @@ async function fetchRemoteJson<T>(input: {
         : {}),
     });
   } catch (error) {
-    throw new Error(
+    throw new RemoteEnvironmentUnreachableError(
       `Failed to fetch remote auth endpoint ${requestUrl} (${(error as Error).message}).`,
       { cause: error },
     );
@@ -97,7 +119,18 @@ async function fetchRemoteJson<T>(input: {
     );
   }
 
-  return (await response.json()) as T;
+  try {
+    return (await response.json()) as T;
+  } catch (error) {
+    // An answer that is not JSON is a fault; one cut off midway is no answer.
+    if (error instanceof SyntaxError) {
+      throw error;
+    }
+    throw new RemoteEnvironmentUnreachableError(
+      `Lost the answer from remote auth endpoint ${requestUrl} (${(error as Error).message}).`,
+      { cause: error },
+    );
+  }
 }
 
 export async function bootstrapRemoteBearerSession(input: {
@@ -146,17 +179,6 @@ export async function issueRemoteWebSocketToken(input: {
   });
 }
 
-/** A refusal that asking again cannot change, as opposed to "not now" (408, 429). */
-function isRefusedRequest(error: unknown): boolean {
-  return (
-    isRemoteEnvironmentAuthHttpError(error) &&
-    error.status >= 400 &&
-    error.status < 500 &&
-    error.status !== 408 &&
-    error.status !== 429
-  );
-}
-
 /**
  * The address for one connection attempt; the transport asks again before
  * every attempt. A computer that is asleep, restarting or busy cannot issue a
@@ -172,9 +194,9 @@ export async function resolveRemoteWebSocketConnectionUrl(input: {
     httpBaseUrl: input.httpBaseUrl,
     bearerToken: input.bearerToken,
   }).catch((error: unknown) => {
-    throw isRefusedRequest(error)
-      ? error
-      : new TransportUrlUnavailableError(describeUnknownError(error), { cause: error });
+    throw isRemoteEnvironmentUnreachableError(error)
+      ? new TransportUrlUnavailableError(describeUnknownError(error), { cause: error })
+      : error;
   });
   const url = new URL(input.wsBaseUrl, window.location.origin);
   url.searchParams.set("wsToken", issued.token);
