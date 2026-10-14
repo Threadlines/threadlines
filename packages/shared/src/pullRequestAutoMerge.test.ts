@@ -39,6 +39,7 @@ function input(
     } as PullRequestAutoMergeInput["detail"],
     autoFix: false,
     unpushedCommits: 0,
+    pushedHead: null,
     now: SETTLED,
     ...rest,
   };
@@ -71,6 +72,20 @@ describe("resolvePullRequestAutoMergeStep", () => {
     expect(resolvePullRequestAutoMergeStep(input({}, { unpushedCommits: 2 }))).toEqual({
       kind: "wait",
       reason: "Waiting for local commits to be pushed",
+    });
+  });
+
+  it("waits for the host to see a push before it believes any check, passed or failed", () => {
+    const pushed = { pushedHead: "new" };
+    const wait = { kind: "wait", reason: "Waiting for GitHub to see the latest push" };
+    // Green, but for the commit before the push: merging now would land without it.
+    expect(resolvePullRequestAutoMergeStep(input({ headSha: "old" }, pushed))).toEqual(wait);
+    // Red, but the push may be the fix: not a reason to give up.
+    expect(
+      resolvePullRequestAutoMergeStep(input({ headSha: "old", checksState: "failure" }, pushed)),
+    ).toEqual(wait);
+    expect(resolvePullRequestAutoMergeStep(input({ headSha: "new" }, pushed))).toEqual({
+      kind: "merge",
     });
   });
 

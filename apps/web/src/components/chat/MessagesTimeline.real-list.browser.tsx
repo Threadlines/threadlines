@@ -516,7 +516,11 @@ describe("MessagesTimeline with the real virtual list", () => {
         expect(anchorRect.top, label).toBeLessThan(listRect.bottom);
         expect(listRect.bottom - anchorRect.bottom, label).toBeLessThan(48);
       };
-      expectWorkingAnchorAtBottom("initial snapshot");
+      // The list's first scroll to the end can land a frame after the anchor
+      // mounts, so this waits for it the way each replay tick below does.
+      await vi.waitFor(() => {
+        expectWorkingAnchorAtBottom("initial snapshot");
+      });
       const finalCutoffMs = Date.parse(fixture.cutoff);
       const replayTicks = Array.from(
         new Set(

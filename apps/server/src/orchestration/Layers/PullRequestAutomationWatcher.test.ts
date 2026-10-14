@@ -1,6 +1,7 @@
 import {
   CommandId,
   EventId,
+  MessageId,
   ProjectId,
   ProviderInstanceId,
   ThreadId,
@@ -243,37 +244,129 @@ interface HostScript {
   readonly merge?: () => Effect.Effect<{ state: "merged" | "open" }, PullRequestServiceError>;
   /** What the host reports once `merge` has run, where that differs from `detail`. */
   readonly detailAfterMerge?: PullRequestDetail;
+  /** The repository the host answers from, where it has been renamed since. */
+  readonly renamedTo?: string;
 }
 
 /** The engine's word that one of the thread's pull request switches came on. */
 function switchedOn(
   change: { readonly autoFix: true } | { readonly autoMerge: PullRequestMergeMethod },
+  threadId = THREAD_ID,
 ): OrchestrationEvent {
   return {
     sequence: 1,
     eventId: EventId.make("event-switched-on"),
     aggregateKind: "thread",
-    aggregateId: THREAD_ID,
+    aggregateId: threadId,
     occurredAt: NOW_ISO,
     commandId: CommandId.make("command-switched-on"),
     causationEventId: null,
     correlationId: null,
     metadata: {},
     type: "thread.pull-request-automation-changed",
-    payload: { threadId: THREAD_ID, ...change, updatedAt: NOW_ISO },
+    payload: { threadId, ...change, updatedAt: NOW_ISO },
   };
+}
+
+/** The engine's word that a turn was asked for, and later that it ended. */
+function turnEvent(
+  type: "thread.turn-start-requested" | "thread.session-set" | "thread.turn-completed",
+): OrchestrationEvent {
+  const base = {
+    sequence: 1,
+    eventId: EventId.make(`event-${type}`),
+    aggregateKind: "thread",
+    aggregateId: THREAD_ID,
+    occurredAt: NOW_ISO,
+    commandId: null,
+    causationEventId: null,
+    correlationId: null,
+    metadata: {},
+  } as const;
+  switch (type) {
+    case "thread.turn-start-requested":
+      return {
+        ...base,
+        type,
+        payload: {
+          threadId: THREAD_ID,
+          messageId: MessageId.make("message-1"),
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          createdAt: NOW_ISO,
+        },
+      };
+    // The session's word, mid-turn, that the agent is working.
+    case "thread.session-set":
+      return {
+        ...base,
+        type,
+        payload: {
+          threadId: THREAD_ID,
+          session: {
+            threadId: THREAD_ID,
+            status: "running",
+            providerName: null,
+            runtimeMode: "full-access",
+            activeTurnId: RUNNING_TURN.turnId,
+            lastError: null,
+            updatedAt: NOW_ISO,
+          },
+        },
+      };
+    case "thread.turn-completed":
+      return {
+        ...base,
+        type,
+        payload: {
+          threadId: THREAD_ID,
+          turnId: RUNNING_TURN.turnId,
+          state: "completed",
+          completedAt: NOW_ISO,
+        },
+      };
+  }
+}
+
+/** Where a thread with a checkout of its own works, which is how a status read names it. */
+function worktree(name: string): string {
+  return `/repos/widgets-${name}`;
+}
+
+/** One of several threads, each in its own checkout so their reads can be told apart. */
+function threadIn(
+  name: string,
+  overrides: Partial<OrchestrationThreadShell> = {},
+): OrchestrationThreadShell {
+  return thread({ id: ThreadId.make(name), worktreePath: worktree(name), ...overrides });
+}
+
+/** A read of the host that stays open until the test lets it go. */
+function heldRead() {
+  let release = () => {};
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return { held, release };
 }
 
 function makeSnapshotQuery(input: {
   readonly readThreads: () => readonly OrchestrationThreadShell[];
   readonly projects: readonly OrchestrationProjectShell[];
+  /** Told of every read of the whole shell, which is what a sweep lists its threads from. */
+  readonly onShellSnapshot: () => void;
+  /** Told of every read of one thread, which is how a look starts. */
+  readonly onThreadRead: () => void;
 }): ProjectionSnapshotQueryShape {
-  const shellSnapshot = () => ({
-    snapshotSequence: 1,
-    projects: [...input.projects],
-    threads: [...input.readThreads()],
-    updatedAt: NOW_ISO,
-  });
+  const shellSnapshot = () => {
+    input.onShellSnapshot();
+    return {
+      snapshotSequence: 1,
+      projects: [...input.projects],
+      threads: [...input.readThreads()],
+      updatedAt: NOW_ISO,
+    };
+  };
   return {
     getProjectCatalog: () => Effect.die("unused"),
     getCommandReadModel: () => Effect.die("unused"),
@@ -283,16 +376,20 @@ function makeSnapshotQuery(input: {
     getSnapshotSequence: () => Effect.succeed({ snapshotSequence: 1 }),
     getCounts: () => Effect.die("unused"),
     getActiveProjectByWorkspaceRoot: () => Effect.succeed(Option.none()),
-    getProjectShellById: () => Effect.succeed(Option.none()),
+    getProjectShellById: (projectId) =>
+      Effect.sync(() =>
+        Option.fromUndefinedOr(input.projects.find((project) => project.id === projectId)),
+      ),
     getFirstActiveThreadIdByProjectId: () => Effect.succeed(Option.none()),
     getThreadCheckpointContext: () => Effect.succeed(Option.none()),
     getFullThreadDiffContext: () => Effect.succeed(Option.none()),
     listThreadDiffStatBaselines: () => Effect.succeed([]),
     listThreadTurnOverlapsSince: () => Effect.succeed([]),
     getThreadShellById: (threadId) =>
-      Effect.sync(() =>
-        Option.fromUndefinedOr(input.readThreads().find((thread) => thread.id === threadId)),
-      ),
+      Effect.sync(() => {
+        input.onThreadRead();
+        return Option.fromUndefinedOr(input.readThreads().find((thread) => thread.id === threadId));
+      }),
     getTurnActivities: () => Effect.succeed([]),
     getThreadDetailById: () => Effect.succeed(Option.none()),
   };
@@ -312,11 +409,20 @@ describe("PullRequestAutomationWatcher", () => {
     readonly threads: readonly OrchestrationThreadShell[];
     readonly projects?: readonly OrchestrationProjectShell[];
     readonly script: HostScript;
+    readonly sweepIntervalMs?: number;
     readonly inMotionIntervalMs?: number;
+    readonly pushWaitMs?: number;
+    /** Keeps the status read of one checkout open until the promise it answers settles. */
+    readonly holdStatusRead?: (cwd: string) => Promise<void> | undefined;
+    /** Runs as the watcher picks an event up, just before it acts on it. */
+    readonly onEventHeard?: () => void;
   }) {
     let script = input.script;
     let threads = input.threads;
     let snapshotReads = 0;
+    let threadReads = 0;
+    // The checkout of every status read, in order: one per look at a thread.
+    const statusReads: string[] = [];
     const domainEvents = Effect.runSync(Queue.unbounded<OrchestrationEvent>());
     const dispatched: Array<Extract<OrchestrationCommand, { type: "thread.turn.start" }>> = [];
     // Everything else the watcher dispatches: switches turned off, timeline notes.
@@ -344,14 +450,21 @@ describe("PullRequestAutomationWatcher", () => {
           return { sequence: dispatched.length };
         });
       },
-      streamDomainEvents: Stream.fromQueue(domainEvents),
+      streamDomainEvents: Stream.fromQueue(domainEvents).pipe(
+        Stream.tap(() => Effect.sync(() => input.onEventHeard?.())),
+      ),
       subscribeDomainEvents: Effect.succeed(Stream.empty),
     };
 
     const gitManager: GitManagerShape = {
       status: () => Effect.die("unused"),
       localStatus: () => Effect.die("unused"),
-      remoteStatus: () => Effect.sync(() => script.remote),
+      remoteStatus: ({ cwd }) =>
+        Effect.suspend(() => {
+          statusReads.push(cwd);
+          const held = input.holdStatusRead?.(cwd);
+          return held === undefined ? Effect.void : Effect.promise(() => held);
+        }).pipe(Effect.map(() => script.remote)),
       invalidateLocalStatus: () => Effect.void,
       invalidateRemoteStatus: () => Effect.void,
       invalidateStatus: () => Effect.void,
@@ -363,7 +476,15 @@ describe("PullRequestAutomationWatcher", () => {
 
     const pullRequestService: PullRequestServiceShape = {
       list: () => Effect.die("unused"),
-      detail: () => Effect.sync(() => script.detail),
+      // The host answers for the pull request that was asked for, as the
+      // script says one looks.
+      detail: ({ repository, number }) =>
+        Effect.sync(() => ({
+          ...script.detail,
+          repository,
+          number,
+          url: `https://github.com/${script.renamedTo ?? repository}/pull/${number}`,
+        })),
       activity: () => Effect.sync(() => script.activity),
       diff: () => Effect.die("unused"),
       comment: () => Effect.die("unused"),
@@ -390,18 +511,22 @@ describe("PullRequestAutomationWatcher", () => {
     };
 
     const layer = makePullRequestAutomationWatcherLive({
-      sweepIntervalMs: 60_000,
+      sweepIntervalMs: input.sweepIntervalMs ?? 60_000,
       ...(input.inMotionIntervalMs === undefined
         ? {}
         : { inMotionIntervalMs: input.inMotionIntervalMs }),
+      ...(input.pushWaitMs === undefined ? {} : { pushWaitMs: input.pushWaitMs }),
     }).pipe(
       Layer.provideMerge(
         Layer.succeed(
           ProjectionSnapshotQuery,
           makeSnapshotQuery({
-            readThreads: () => {
+            readThreads: () => threads,
+            onShellSnapshot: () => {
               snapshotReads += 1;
-              return threads;
+            },
+            onThreadRead: () => {
+              threadReads += 1;
             },
             projects: input.projects ?? [project()],
           }),
@@ -436,7 +561,9 @@ describe("PullRequestAutomationWatcher", () => {
       setThreads,
       snapshotReads: () => snapshotReads,
       start,
+      statusReads,
       sweep,
+      threadReads: () => threadReads,
     };
   }
 
@@ -476,6 +603,159 @@ describe("PullRequestAutomationWatcher", () => {
     } finally {
       await stop();
     }
+  });
+
+  it("answers a switch coming on with a look at that thread alone, ahead of the rest of a sweep", async () => {
+    const others = [threadIn("a"), threadIn("b"), threadIn("c")];
+    const { held, release } = heldRead();
+    const { dispatched, emit, setThreads, start, statusReads } = await createHarness({
+      threads: [...others, threadIn("late", { pullRequestAutoFix: false })],
+      script: {
+        remote: OPEN_PULL_REQUEST,
+        detail: detail([FAILING_CHECK]),
+        activity: activity(),
+      },
+      holdStatusRead: (cwd) => (cwd === worktree("a") ? held : undefined),
+      // The sweep's look in flight is let go only as the switch is heard, so
+      // the switch is waiting on it by the time the sweep could move on.
+      onEventHeard: release,
+    });
+    const stop = await start();
+    try {
+      // Starting sweeps every armed thread, and this sweep is still on its first.
+      await vi.waitFor(() => expect(statusReads).toEqual([worktree("a")]));
+      setThreads([...others, threadIn("late")]);
+      emit(switchedOn({ autoFix: true }, ThreadId.make("late")));
+      await vi.waitFor(() => expect(statusReads).toHaveLength(4));
+      // Its own thread next, read once; the others are not read again to get to it.
+      expect(statusReads).toEqual([worktree("a"), worktree("late"), worktree("b"), worktree("c")]);
+      expect(dispatched.map((command) => command.threadId)).toEqual([ThreadId.make("late")]);
+    } finally {
+      await stop();
+    }
+  });
+
+  it("looks at a thread as its turn ends, not at the next sweep", async () => {
+    let heard = 0;
+    const { dispatched, emit, setScript, start, statusReads } = await createHarness({
+      threads: [thread()],
+      script: {
+        remote: OPEN_PULL_REQUEST,
+        detail: detail([PASSING_CHECK]),
+        activity: activity(),
+      },
+      onEventHeard: () => {
+        heard += 1;
+      },
+    });
+    const stop = await start();
+    try {
+      // Starting sweeps once; the next sweep is a minute away.
+      await vi.waitFor(() => expect(statusReads).toHaveLength(1));
+      emit(turnEvent("thread.turn-start-requested"));
+      // A check fails while the agent works, and is still failing when it is done.
+      setScript({
+        remote: OPEN_PULL_REQUEST,
+        detail: detail([FAILING_CHECK]),
+        activity: activity(),
+      });
+      emit(turnEvent("thread.turn-completed"));
+      await vi.waitFor(() => expect(dispatched).toHaveLength(1));
+      expect(dispatched[0]?.message.text).toContain("These checks failed:\n- typecheck");
+
+      // A turn ends over several events, and it is looked at once for all of
+      // them, even where word from mid-turn is only picked up after its end.
+      emit(turnEvent("thread.session-set"));
+      emit(turnEvent("thread.turn-completed"));
+      await vi.waitFor(() => expect(heard).toBe(4));
+      expect(statusReads).toHaveLength(2);
+    } finally {
+      await stop();
+    }
+  });
+
+  it("answers a switch that came on mid-turn as soon as the turn ends", async () => {
+    const working = thread({ pullRequestAutoFix: false, latestTurn: RUNNING_TURN });
+    const { dispatched, emit, setThreads, snapshotReads, start, statusReads, threadReads } =
+      await createHarness({
+        threads: [working],
+        script: {
+          remote: OPEN_PULL_REQUEST,
+          detail: detail([FAILING_CHECK]),
+          activity: activity(),
+        },
+      });
+    const stop = await start();
+    try {
+      await vi.waitFor(() => expect(snapshotReads()).toBe(1));
+      setThreads([{ ...working, pullRequestAutoFix: true }]);
+      emit(switchedOn({ autoFix: true }));
+      // The switch has its answer once the thread was read: nothing yet, the agent is working.
+      await vi.waitFor(() => expect(threadReads()).toBe(1));
+      expect(statusReads).toEqual([]);
+
+      setThreads([thread()]);
+      emit(turnEvent("thread.turn-completed"));
+      await vi.waitFor(() => expect(dispatched).toHaveLength(1));
+      // The check that was already failing when the box was ticked.
+      expect(dispatched[0]?.message.text).toContain("These checks failed:\n- typecheck");
+    } finally {
+      await stop();
+    }
+  });
+
+  it("does not send the agent after an older commit's checks while the host has yet to see a push", async () => {
+    const pushed = { ...OPEN_PULL_REQUEST, upstreamHeadSha: "pushed" };
+    const { setScript, sweep } = await createHarness({
+      threads: [thread()],
+      script: {
+        remote: { ...OPEN_PULL_REQUEST, upstreamHeadSha: "before" },
+        detail: { ...detail([PASSING_CHECK]), headSha: "before" },
+        activity: activity(),
+      },
+    });
+
+    await sweep();
+    // A check failed while the agent worked, and it pushed a fix. The host
+    // still answers for the commit before the push.
+    setScript({
+      remote: pushed,
+      detail: { ...detail([FAILING_CHECK]), headSha: "before" },
+      activity: activity(),
+    });
+    expect(await sweep()).toBe(0);
+
+    // Once the host has the push, a check failing on it is news.
+    setScript({
+      remote: pushed,
+      detail: { ...detail([FAILING_CHECK]), headSha: "pushed" },
+      activity: activity(),
+    });
+    expect(await sweep()).toBe(1);
+  });
+
+  it("believes the host again when it stays a commit apart from the checkout for longer than a push takes", async () => {
+    const { setScript, sweep } = await createHarness({
+      threads: [thread()],
+      script: {
+        remote: { ...OPEN_PULL_REQUEST, upstreamHeadSha: "before" },
+        detail: { ...detail([PASSING_CHECK]), headSha: "before" },
+        activity: activity(),
+      },
+      pushWaitMs: 20,
+    });
+
+    await sweep();
+    // Someone else pushed, and this checkout's fetch keeps failing: it still
+    // has the branch where it was, and that is not the host being behind.
+    setScript({
+      remote: { ...OPEN_PULL_REQUEST, upstreamHeadSha: "before" },
+      detail: { ...detail([FAILING_CHECK]), headSha: "theirs" },
+      activity: activity(),
+    });
+    expect(await sweep()).toBe(0);
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(await sweep()).toBe(1);
   });
 
   it("starts a turn when a passing check begins to fail", async () => {
@@ -560,6 +840,76 @@ describe("PullRequestAutomationWatcher", () => {
     expect(dispatched).toEqual([]);
   });
 
+  const MERGED_PULL_REQUEST: VcsStatusRemoteResult = {
+    ...OPEN_PULL_REQUEST,
+    pr: { ...OPEN_PULL_REQUEST.pr!, state: "merged" },
+  };
+
+  it("leaves a thread whose pull request is finished alone until the thread changes", async () => {
+    const { setScript, setThreads, statusReads, sweep } = await createHarness({
+      threads: [thread()],
+      // None found is not rested on: a lookup the host did not answer reads the same.
+      script: {
+        remote: { ...OPEN_PULL_REQUEST, pr: null },
+        detail: detail([PASSING_CHECK]),
+        activity: activity(),
+      },
+    });
+
+    await sweep();
+    await sweep();
+    expect(statusReads).toHaveLength(2);
+
+    setScript({
+      remote: MERGED_PULL_REQUEST,
+      detail: detail([PASSING_CHECK]),
+      activity: activity(),
+    });
+    await sweep();
+    await sweep();
+    expect(statusReads).toHaveLength(3);
+
+    // A turn, a switch, a move to another branch: any change ends the rest at once.
+    setThreads([thread({ branch: "another-branch" })]);
+    await sweep();
+    expect(statusReads).toHaveLength(4);
+  });
+
+  it("does not rest on a closed pull request the host says is open again", async () => {
+    const { statusReads, sweep } = await createHarness({
+      threads: [thread()],
+      script: {
+        // What the checkout last saw of it, from before it was reopened.
+        remote: { ...OPEN_PULL_REQUEST, pr: { ...OPEN_PULL_REQUEST.pr!, state: "closed" } },
+        detail: detail([PASSING_CHECK]),
+        activity: activity(),
+      },
+    });
+
+    await sweep();
+    await sweep();
+    expect(statusReads).toHaveLength(2);
+  });
+
+  it("looks at a resting thread again once its rest is over", async () => {
+    const { statusReads, sweep } = await createHarness({
+      // Touched just now, so its rest is as short as it gets: one sweep interval.
+      threads: [thread({ updatedAt: new Date().toISOString() })],
+      script: {
+        remote: MERGED_PULL_REQUEST,
+        detail: detail([PASSING_CHECK]),
+        activity: activity(),
+      },
+      sweepIntervalMs: 20,
+    });
+
+    await sweep();
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    // In case the pull request was reopened, or another opened on the branch.
+    await sweep();
+    expect(statusReads).toHaveLength(2);
+  });
+
   it("waits out a busy thread without forgetting what it had already seen", async () => {
     const { dispatched, setScript, setThreads, sweep } = await createHarness({
       threads: [thread()],
@@ -620,6 +970,34 @@ describe("PullRequestAutomationWatcher", () => {
     setThreads([thread()]);
     setScript({ remote: OPEN_PULL_REQUEST, detail: detail([FAILING_CHECK]), activity: activity() });
     expect(await sweep()).toBe(1);
+  });
+
+  it("looks at each thread of a sweep as it stands by then, not as it was when the sweep began", async () => {
+    // Waiting to merge with a check failing, which is given up on unless the thread is fixing it.
+    const merging = threadIn("merging", {
+      pullRequestAutoFix: false,
+      pullRequestAutoMerge: "squash",
+    });
+    const { held, release } = heldRead();
+    const { commands, setThreads, statusReads, sweep } = await createHarness({
+      threads: [threadIn("a"), merging],
+      script: {
+        remote: OPEN_PULL_REQUEST,
+        detail: mergeable([FAILING_CHECK]),
+        activity: activity(),
+      },
+      holdStatusRead: (cwd) => (cwd === worktree("a") ? held : undefined),
+    });
+
+    const sweeping = sweep();
+    await vi.waitFor(() => expect(statusReads).toEqual([worktree("a")]));
+    // The fixing switch comes on while the sweep is still on the thread before.
+    setThreads([threadIn("a"), { ...merging, pullRequestAutoFix: true }]);
+    release();
+    await sweeping;
+
+    expect(statusReads).toEqual([worktree("a"), worktree("merging")]);
+    expect(commands).toEqual([]);
   });
 
   it("looks again soon while checks run, so a failure reaches the agent before the next sweep", async () => {
@@ -818,6 +1196,15 @@ describe("PullRequestAutomationWatcher", () => {
       await sweep();
       expect(actions).toEqual([]);
 
+      // Pushed, but the host still answers for the commit before it.
+      setScript({
+        remote: { ...OPEN_PULL_REQUEST, upstreamHeadSha: "pushed" },
+        detail: { ...mergeable([PASSING_CHECK]), headSha: "before" },
+        activity: activity(),
+      });
+      await sweep();
+      expect(actions).toEqual([]);
+
       setScript({
         remote: OPEN_PULL_REQUEST,
         detail: mergeable([PASSING_CHECK]),
@@ -920,6 +1307,49 @@ describe("PullRequestAutomationWatcher", () => {
       });
     });
 
+    it("leaves alone a pull request the checkout found in another repository", async () => {
+      // The agent ended its turn in another repository's folder, whose branch
+      // has a pull request of its own under the same number.
+      const { actions, commands, setScript, setThreads, statusReads, sweep } = await createHarness({
+        threads: [armed],
+        script: {
+          remote: {
+            ...OPEN_PULL_REQUEST,
+            pr: {
+              ...OPEN_PULL_REQUEST.pr!,
+              url: `https://github.com/acme/gadgets/pull/${PR_NUMBER}`,
+            },
+          },
+          detail: mergeable([PASSING_CHECK]),
+          activity: activity(),
+          merge: () => Effect.succeed({ state: "merged" }),
+        },
+      });
+
+      expect(await sweep()).toBe(0);
+      expect(actions).toEqual([]);
+      expect(commands).toEqual([]);
+
+      // Nor does that pull request closing end the wait for the project's own.
+      // The thread has been touched since, so it is looked at again.
+      setThreads([{ ...armed, updatedAt: "2026-05-04T11:00:00.000Z" }]);
+      setScript({
+        remote: {
+          ...OPEN_PULL_REQUEST,
+          pr: {
+            ...OPEN_PULL_REQUEST.pr!,
+            url: `https://github.com/acme/gadgets/pull/${PR_NUMBER}`,
+            state: "closed",
+          },
+        },
+        detail: mergeable([PASSING_CHECK]),
+        activity: activity(),
+      });
+      await sweep();
+      expect(statusReads).toHaveLength(2);
+      expect(commands).toEqual([]);
+    });
+
     it("does not merge once the switch went off while the host was being read", async () => {
       let untick = () => {};
       const { actions, commands, setThreads, sweep } = await createHarness({
@@ -975,6 +1405,8 @@ describe("PullRequestAutomationWatcher", () => {
         detail: mergeable([PASSING_CHECK]),
         activity: activity(),
         merge: () => Effect.succeed({ state: "merged" }),
+        // Renamed on the host since it was linked: the same pull request, at a new address.
+        renamedTo: "acme/widgets-two",
       });
       await sweep();
       expect(actions).toEqual([
@@ -997,6 +1429,83 @@ describe("PullRequestAutomationWatcher", () => {
           summary: "Merged #294 after its checks passed",
         },
       });
+    });
+
+    it("does not merge a linked pull request once the project points at another repository", async () => {
+      const gadgets = project();
+      const { actions, commands, sweep } = await createHarness({
+        threads: [
+          thread({
+            pullRequestAutoFix: false,
+            linkedPullRequests: [
+              {
+                number: 294,
+                url: `https://github.com/${REPOSITORY}/pull/294`,
+                autoMerge: "squash",
+              },
+            ],
+          }),
+        ],
+        // The other repository has a pull request of its own under that number.
+        projects: [
+          {
+            ...gadgets,
+            repositoryIdentity: {
+              ...gadgets.repositoryIdentity!,
+              displayName: "acme/gadgets",
+              name: "gadgets",
+            },
+          },
+        ],
+        script: {
+          remote: OPEN_PULL_REQUEST,
+          detail: mergeable([PASSING_CHECK]),
+          activity: activity(),
+          merge: () => Effect.succeed({ state: "merged" }),
+        },
+      });
+
+      await sweep();
+      expect(actions).toEqual([]);
+      expect(commands).toEqual([]);
+    });
+
+    it("counts the checkout's unpushed commits for a linked pull request it is on, whatever the thread's branch is called", async () => {
+      const { actions, setScript, sweep } = await createHarness({
+        threads: [
+          thread({
+            pullRequestAutoFix: false,
+            // The agent checked the linked pull request's branch out, and the
+            // thread has not caught up with the name yet.
+            branch: "the-branch-before",
+            linkedPullRequests: [
+              {
+                number: PR_NUMBER,
+                url: `https://github.com/${REPOSITORY}/pull/${PR_NUMBER}`,
+                autoMerge: "squash",
+              },
+            ],
+          }),
+        ],
+        script: {
+          remote: { ...OPEN_PULL_REQUEST, aheadCount: 1 },
+          detail: mergeable([PASSING_CHECK]),
+          activity: activity(),
+          merge: () => Effect.succeed({ state: "merged" }),
+        },
+      });
+
+      await sweep();
+      expect(actions).toEqual([]);
+
+      setScript({
+        remote: OPEN_PULL_REQUEST,
+        detail: mergeable([PASSING_CHECK]),
+        activity: activity(),
+        merge: () => Effect.succeed({ state: "merged" }),
+      });
+      await sweep();
+      expect(actions).toHaveLength(1);
     });
 
     it("counts a place in the merge queue as handed over, not as a failed merge", async () => {

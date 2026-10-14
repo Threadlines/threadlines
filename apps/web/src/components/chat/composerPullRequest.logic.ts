@@ -283,6 +283,8 @@ interface ServerAutoMergeContext {
   readonly agentWorking: boolean;
   /** Commits on the thread's branch that the host has not seen yet. */
   readonly unpushedCommits: number;
+  /** Where the checkout has its branch on the host, or null where it cannot say. */
+  readonly pushedHead: string | null;
   readonly now: number;
 }
 
@@ -384,6 +386,7 @@ function serverAutoMergeStep(
     detail,
     autoFix: context.autoFix,
     unpushedCommits: context.unpushedCommits,
+    pushedHead: context.pushedHead,
     now: context.now,
   });
   return step.kind !== "stop" && context.agentWorking
