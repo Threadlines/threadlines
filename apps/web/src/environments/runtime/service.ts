@@ -1067,6 +1067,19 @@ interface UnreachableSavedEnvironment {
  */
 const unreachableSavedEnvironments = new Map<EnvironmentId, UnreachableSavedEnvironment>();
 
+/** See `SavedEnvironmentRuntimeState.disconnectedByUser`. */
+function isDisconnectedByUser(environmentId: EnvironmentId): boolean {
+  return (
+    useSavedEnvironmentRuntimeStore.getState().byId[environmentId]?.disconnectedByUser === true
+  );
+}
+
+function liftUserDisconnect(environmentId: EnvironmentId): void {
+  if (isDisconnectedByUser(environmentId)) {
+    useSavedEnvironmentRuntimeStore.getState().patch(environmentId, { disconnectedByUser: false });
+  }
+}
+
 /** The computer did not answer, which can clear up on its own. */
 function isUnreachableConnectFailure(error: unknown): boolean {
   return (
@@ -1088,6 +1101,7 @@ function waitForUnreachableSavedEnvironment(record: SavedEnvironmentRecord, erro
     activeService === null ||
     record.relay ||
     record.desktopSsh ||
+    isDisconnectedByUser(record.environmentId) ||
     !isUnreachableConnectFailure(error)
   ) {
     stopWaitingForUnreachableSavedEnvironment(record.environmentId);
@@ -1099,6 +1113,9 @@ function waitForUnreachableSavedEnvironment(record: SavedEnvironmentRecord, erro
     previous === undefined ? 0 : previous.attempt + 1,
   );
   setRuntimeDisconnected(record.environmentId, cantReachComputerMessage(record.label));
+  useSavedEnvironmentRuntimeStore
+    .getState()
+    .patch(record.environmentId, { waitingToReconnect: true });
 }
 
 function scheduleUnreachableSavedEnvironmentCheck(
@@ -1118,8 +1135,10 @@ function scheduleUnreachableSavedEnvironmentCheck(
 
 function stopWaitingForUnreachableSavedEnvironment(environmentId: EnvironmentId): void {
   const entry = unreachableSavedEnvironments.get(environmentId);
-  if (entry?.timer) clearTimeout(entry.timer);
+  if (entry === undefined) return;
+  if (entry.timer) clearTimeout(entry.timer);
   unreachableSavedEnvironments.delete(environmentId);
+  useSavedEnvironmentRuntimeStore.getState().patch(environmentId, { waitingToReconnect: false });
 }
 
 /**
@@ -1141,7 +1160,7 @@ async function checkUnreachableSavedEnvironment(
   const isCurrent = () => unreachableSavedEnvironments.get(environmentId) === entry;
   const record = getSavedEnvironmentRecord(environmentId);
   if (!record || environmentConnections.has(environmentId)) {
-    if (isCurrent()) unreachableSavedEnvironments.delete(environmentId);
+    if (isCurrent()) stopWaitingForUnreachableSavedEnvironment(environmentId);
     return;
   }
   const answers = await fetchRemoteEnvironmentDescriptor({ httpBaseUrl: record.httpBaseUrl }).then(
@@ -1158,7 +1177,7 @@ async function checkUnreachableSavedEnvironment(
   // unreachable, the failure schedules the next check.
   await reconnectSavedEnvironment(environmentId).then(
     () => {
-      if (isCurrent()) unreachableSavedEnvironments.delete(environmentId);
+      if (isCurrent()) stopWaitingForUnreachableSavedEnvironment(environmentId);
     },
     () => undefined,
   );
@@ -1837,7 +1856,10 @@ function registerConnection(connection: EnvironmentConnection): EnvironmentConne
     throw new Error(`Environment ${connection.environmentId} already has an active connection.`);
   }
   environmentConnections.set(connection.environmentId, connection);
-  stopWaitingForUnreachableSavedEnvironment(connection.environmentId);
+  if (connection.kind === "saved") {
+    stopWaitingForUnreachableSavedEnvironment(connection.environmentId);
+    liftUserDisconnect(connection.environmentId);
+  }
   attachThreadDetailSubscriptionsForEnvironment(connection.environmentId);
   emitEnvironmentConnectionRegistryChange();
   return connection;
@@ -2101,7 +2123,8 @@ async function syncSavedEnvironmentConnections(
         (record) =>
           !isPendingRelayJoin(record) &&
           !isRelayHeld(record.environmentId) &&
-          !unreachableSavedEnvironments.has(record.environmentId),
+          !unreachableSavedEnvironments.has(record.environmentId) &&
+          !isDisconnectedByUser(record.environmentId),
       )
       .map((record) =>
         ensureSavedEnvironmentConnection(record).catch((error: unknown) =>
@@ -2248,11 +2271,25 @@ export async function disconnectSavedEnvironment(environmentId: EnvironmentId): 
   }
 }
 
+/**
+ * Disconnect, or Stop trying, from Settings: disconnect and stay disconnected
+ * until the user connects it again, instead of being picked up by the next
+ * sync or check.
+ */
+export async function disconnectSavedEnvironmentByUser(
+  environmentId: EnvironmentId,
+): Promise<void> {
+  useSavedEnvironmentRuntimeStore.getState().patch(environmentId, { disconnectedByUser: true });
+  clearRelayHold(environmentId);
+  await disconnectSavedEnvironment(environmentId);
+}
+
 export async function reconnectSavedEnvironment(environmentId: EnvironmentId): Promise<void> {
   const record = getSavedEnvironmentRecord(environmentId);
   if (!record) {
     throw new Error("Saved environment not found.");
   }
+  liftUserDisconnect(environmentId);
   clearRelayHold(environmentId);
 
   const connection = environmentConnections.get(environmentId);

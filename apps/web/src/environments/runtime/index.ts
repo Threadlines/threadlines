@@ -21,6 +21,7 @@ export {
   addSavedEnvironment,
   connectDesktopSshEnvironment,
   disconnectSavedEnvironment,
+  disconnectSavedEnvironmentByUser,
   ensureEnvironmentConnectionBootstrapped,
   getPrimaryEnvironmentConnection,
   markRelaySavedEnvironmentLinkExpired,

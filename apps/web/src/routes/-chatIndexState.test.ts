@@ -26,6 +26,8 @@ function runtime(input: Partial<SavedEnvironmentRuntimeState> = {}): SavedEnviro
     connectedAt: null,
     disconnectedAt: null,
     route: null,
+    waitingToReconnect: false,
+    disconnectedByUser: false,
     ...input,
   };
 }
