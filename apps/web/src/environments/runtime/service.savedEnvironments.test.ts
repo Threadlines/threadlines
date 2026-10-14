@@ -615,4 +615,33 @@ describe("saved environment startup", () => {
     expect(connected?.dispose).not.toHaveBeenCalled();
     stop();
   });
+  it("stays stopped after Stop trying until the user connects it again", async () => {
+    mockFetchRemoteSessionState.mockRejectedValueOnce(UNREACHABLE);
+    const {
+      startEnvironmentConnectionService,
+      disconnectSavedEnvironmentByUser,
+      reconnectSavedEnvironment,
+      readEnvironmentConnection,
+    } = await import("./service");
+
+    const stop = startEnvironmentConnectionService(new QueryClient());
+    await vi.advanceTimersByTimeAsync(200);
+    expect(savedEnvironmentRuntimeById[savedRecord.environmentId]?.waitingToReconnect).toBe(true);
+
+    await disconnectSavedEnvironmentByUser(savedRecord.environmentId);
+    expect(savedEnvironmentRuntimeById[savedRecord.environmentId]).toMatchObject({
+      waitingToReconnect: false,
+      disconnectedByUser: true,
+    });
+    // Another saved computer connecting, or a rename, does not undo it.
+    mockSavedEnvironmentRegistrySubscribe.mock.calls[0]?.[0]?.();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(mockFetchRemoteEnvironmentDescriptor).not.toHaveBeenCalled();
+    expect(mockFetchRemoteSessionState).toHaveBeenCalledTimes(1);
+
+    await reconnectSavedEnvironment(savedRecord.environmentId);
+    expect(readEnvironmentConnection(savedRecord.environmentId)).not.toBeNull();
+    expect(savedEnvironmentRuntimeById[savedRecord.environmentId]?.disconnectedByUser).toBe(false);
+    stop();
+  });
 });

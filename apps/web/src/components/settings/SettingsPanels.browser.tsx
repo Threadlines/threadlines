@@ -300,6 +300,21 @@ const providerAuthHarness = vi.hoisted(() => {
 
 const mockConnectDesktopSshEnvironment = vi.hoisted(() => vi.fn());
 
+/** The saved computers Settings lists, and what it does when told to stop. */
+const savedComputersHarness = vi.hoisted(() => {
+  const harness = {
+    registryById: {} as Record<string, unknown>,
+    runtimeById: {} as Record<string, unknown>,
+    disconnectByUser: vi.fn(async () => undefined),
+    reset: () => {
+      harness.registryById = {};
+      harness.runtimeById = {};
+      harness.disconnectByUser.mockClear();
+    },
+  };
+  return harness;
+});
+
 const relayAccessHarness = vi.hoisted(() => {
   let snapshot: RelayAccessSnapshot | null = null;
   const listeners = new Set<(snapshot: RelayAccessSnapshot) => void>();
@@ -379,6 +394,7 @@ vi.mock("../../environments/runtime", () => {
     canJoinWithCode: () => true,
     connectDesktopSshEnvironment: mockConnectDesktopSshEnvironment,
     disconnectSavedEnvironment: vi.fn(),
+    disconnectSavedEnvironmentByUser: savedComputersHarness.disconnectByUser,
     ensureEnvironmentConnectionBootstrapped: async () => undefined,
     getPrimaryEnvironmentConnection: () => primaryConnection,
     readBackendEnvironmentConnection: () => primaryConnection,
@@ -403,11 +419,11 @@ vi.mock("../../environments/runtime", () => {
       { getState: () => ({ dismiss: () => undefined }) },
     ),
     useSavedEnvironmentRegistryStore: (
-      selector: (state: { byId: Record<string, never> }) => unknown,
-    ) => selector({ byId: {} }),
+      selector: (state: { byId: Record<string, unknown> }) => unknown,
+    ) => selector({ byId: savedComputersHarness.registryById }),
     useSavedEnvironmentRuntimeStore: (
-      selector: (state: { byId: Record<string, never> }) => unknown,
-    ) => selector({ byId: {} }),
+      selector: (state: { byId: Record<string, unknown> }) => unknown,
+    ) => selector({ byId: savedComputersHarness.runtimeById }),
   };
 });
 
@@ -967,6 +983,7 @@ describe("GeneralSettingsPanel observability", () => {
     providerAuthHarness.reset();
     relayAccessHarness.reset();
     mockConnectDesktopSshEnvironment.mockReset();
+    savedComputersHarness.reset();
   });
 
   afterEach(async () => {
@@ -1827,6 +1844,50 @@ describe("GeneralSettingsPanel observability", () => {
         },
         { label: "" },
       );
+    });
+  });
+
+  it("offers Stop trying for a computer it is waiting on, and stops when asked", async () => {
+    const environmentId = EnvironmentId.make("environment-macbook");
+    savedComputersHarness.registryById[environmentId] = {
+      environmentId,
+      label: "Denys's MacBook Pro",
+      httpBaseUrl: "http://10.0.0.219:3773/",
+      wsBaseUrl: "ws://10.0.0.219:3773/",
+      createdAt: "2036-04-07T00:00:00.000Z",
+      lastConnectedAt: "2036-04-07T00:00:00.000Z",
+    };
+    savedComputersHarness.runtimeById[environmentId] = {
+      connectionState: "disconnected",
+      authState: "unknown",
+      lastError:
+        "Can't reach Denys's MacBook Pro. It may be asleep, off, or offline. Threadlines will connect when it's back.",
+      lastErrorAt: null,
+      role: null,
+      descriptor: null,
+      serverConfig: null,
+      connectedAt: null,
+      disconnectedAt: null,
+      route: null,
+      waitingToReconnect: true,
+      disconnectedByUser: false,
+    };
+    setServerConfigSnapshot(createBaseServerConfig());
+
+    mounted = await renderWithTestRouter(
+      <TestAppProviders>
+        <ConnectionsSettings />
+      </TestAppProviders>,
+    );
+
+    await expect
+      .element(page.getByText("Threadlines will connect when it's back.", { exact: false }), {
+        timeout: 5_000,
+      })
+      .toBeInTheDocument();
+    await page.getByRole("button", { name: "Stop trying", exact: true }).click({ timeout: 5_000 });
+    await vi.waitFor(() => {
+      expect(savedComputersHarness.disconnectByUser).toHaveBeenCalledWith(environmentId);
     });
   });
 

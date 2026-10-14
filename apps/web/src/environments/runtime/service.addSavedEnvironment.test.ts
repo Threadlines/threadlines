@@ -97,6 +97,7 @@ vi.mock("./catalog", () => ({
   },
   useSavedEnvironmentRuntimeStore: {
     getState: () => ({
+      byId: {},
       ensure: vi.fn(),
       patch: mockPatchRuntime,
       clear: mockClearRuntime,

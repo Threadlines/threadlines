@@ -187,6 +187,32 @@ describe("deriveSavedEnvironmentOverlayPhase", () => {
   });
 });
 
+describe("a computer the user disconnected", () => {
+  it("says it stays disconnected and offers Connect, without a spinner or a wait", () => {
+    const phase = deriveSavedEnvironmentOverlayPhase(
+      makeInput({ disconnectedByUser: true, hasConnectedThisLoad: true, msSinceDisconnect: 0 }),
+    );
+    expect(phase).toBe("disconnected-by-user");
+    // A sign-in that is gone still says so: Connect could not fix it.
+    expect(
+      deriveSavedEnvironmentOverlayPhase(
+        makeInput({ disconnectedByUser: true, authState: "requires-auth" }),
+      ),
+    ).toBe("link-expired");
+    expect(
+      describeSavedEnvironmentOverlay("disconnected-by-user", {
+        label: "Denys's MacBook Pro",
+        isRelay: false,
+      }),
+    ).toMatchObject({
+      title: "Disconnected from Denys's MacBook Pro",
+      showSpinner: false,
+      showRetry: true,
+      retryLabel: "Connect",
+    });
+  });
+});
+
 describe("describeSavedEnvironmentOverlay", () => {
   it("offers re-pair instructions for expired phone links", () => {
     const copy = describeSavedEnvironmentOverlay("link-expired", {

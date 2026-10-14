@@ -29,6 +29,7 @@ const RELAY_STATUS_PROBE_INTERVAL_MS = 10_000;
 
 export type SavedEnvironmentOverlayPhase =
   | "hidden"
+  | "disconnected-by-user"
   | "connecting"
   | "reconnecting"
   | "desktop-offline"
@@ -51,6 +52,8 @@ export interface SavedEnvironmentOverlayInput {
   readonly deviceProbe?: RelayDeviceStatusProbe | null;
   /** A code join still waiting for the host to click Allow. */
   readonly awaitingApproval?: boolean;
+  /** The user disconnected it, so it stays disconnected until they connect. */
+  readonly disconnectedByUser?: boolean;
 }
 
 export function deriveSavedEnvironmentOverlayPhase(
@@ -78,6 +81,10 @@ export function deriveSavedEnvironmentOverlayPhase(
     device?.kind === "unauthorized"
   ) {
     return "link-expired";
+  }
+  // After the states only a new pairing fixes, which Connect cannot.
+  if (input.disconnectedByUser) {
+    return "disconnected-by-user";
   }
   if (device?.kind === "status" && device.status.limited) {
     return "daily-limit";
@@ -112,6 +119,8 @@ interface OverlayCopy {
   readonly description: string;
   readonly showSpinner: boolean;
   readonly showRetry: boolean;
+  /** The retry button's word when it is not "Retry now". */
+  readonly retryLabel?: string;
 }
 
 export function describeSavedEnvironmentOverlay(
@@ -120,6 +129,14 @@ export function describeSavedEnvironmentOverlay(
 ): OverlayCopy {
   const target = input.isRelay ? "your computer" : input.label;
   switch (phase) {
+    case "disconnected-by-user":
+      return {
+        title: `Disconnected from ${input.label}`,
+        description: "You disconnected it, so it stays that way until you connect again.",
+        showSpinner: false,
+        showRetry: true,
+        retryLabel: "Connect",
+      };
     case "awaiting-approval":
       return {
         title: `Waiting for ${input.label}`,
@@ -258,6 +275,7 @@ export function SavedEnvironmentConnectionOverlay() {
     relayOrigin !== null &&
     (relaySessionId !== null || relayDeviceId !== null) &&
     !isConnected &&
+    runtime?.disconnectedByUser !== true &&
     online;
 
   useEffect(() => {
@@ -318,6 +336,7 @@ export function SavedEnvironmentConnectionOverlay() {
           probe,
           deviceProbe,
           awaitingApproval: pendingApproval !== null,
+          disconnectedByUser: runtime?.disconnectedByUser === true,
         });
 
   useEffect(() => {
@@ -383,7 +402,7 @@ export function SavedEnvironmentConnectionOverlay() {
         <div className="mt-6 flex flex-wrap gap-2">
           {copy.showRetry ? (
             <Button disabled={isRetrying} onClick={handleRetry} size="sm">
-              {isRetrying ? "Retrying..." : "Retry now"}
+              {isRetrying ? "Retrying..." : (copy.retryLabel ?? "Retry now")}
             </Button>
           ) : null}
           <Button onClick={() => window.location.reload()} size="sm" variant="outline">

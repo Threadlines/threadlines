@@ -303,6 +303,17 @@ export interface SavedEnvironmentRuntimeState {
   readonly disconnectedAt: string | null;
   /** "Connect a device" computers: how the current connection reaches it. */
   readonly route: "direct" | "relay" | null;
+  /**
+   * The computer did not answer, and the app checks now and then to connect
+   * once it does. Settings offers Stop trying while this is on.
+   */
+  readonly waitingToReconnect: boolean;
+  /**
+   * The user disconnected it (Disconnect or Stop trying) in this run of the
+   * app. Nothing reconnects it until they connect it again; the next launch
+   * connects it as usual.
+   */
+  readonly disconnectedByUser: boolean;
 }
 
 interface SavedEnvironmentRuntimeStoreState {
@@ -327,6 +338,8 @@ const DEFAULT_SAVED_ENVIRONMENT_RUNTIME_STATE: SavedEnvironmentRuntimeState = Ob
   connectedAt: null,
   disconnectedAt: null,
   route: null,
+  waitingToReconnect: false,
+  disconnectedByUser: false,
 });
 
 function createDefaultSavedEnvironmentRuntimeState(): SavedEnvironmentRuntimeState {

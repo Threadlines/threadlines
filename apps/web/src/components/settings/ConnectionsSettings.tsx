@@ -103,7 +103,7 @@ import {
   connectDesktopSshEnvironment,
   RelayJoinError,
   type SubmitCodeJoinViaServer,
-  disconnectSavedEnvironment,
+  disconnectSavedEnvironmentByUser,
   getPrimaryEnvironmentConnection,
   reconnectSavedEnvironment,
   removeSavedEnvironment,
@@ -1161,8 +1161,9 @@ type SavedBackendListRowProps = {
 /**
  * One computer this device uses. Computers joined with a code that the host
  * hasn't allowed yet say so (with the number to match) and offer Cancel; the
- * rest show live state, the last problem in plain words, and Disconnect /
- * Connect and Forget. Forget only removes it from this list.
+ * rest show live state, the last problem in plain words, and Disconnect,
+ * Stop trying (while the app waits for one that did not answer) or Connect,
+ * plus Forget. Forget only removes it from this list.
  */
 function SavedBackendListRow({
   environmentId,
@@ -1189,6 +1190,10 @@ function SavedBackendListRow({
   const isConnecting =
     connectionState === "connecting" || reconnectingEnvironmentId === environmentId;
   const isDisconnecting = disconnectingEnvironmentId === environmentId;
+  // Checking in the background until it answers: the user can call that off.
+  const isWaitingToReconnect =
+    !isConnected && !isConnecting && runtime?.waitingToReconnect === true;
+  const canDisconnect = isConnected || isWaitingToReconnect;
   const displayLabel = runtime?.descriptor?.label ?? record.label;
   const versionMismatch = resolveServerConfigVersionMismatch(runtime?.serverConfig);
   // A code-joined computer that removed this one needs a new code, not a retry.
@@ -1269,18 +1274,22 @@ function SavedBackendListRow({
                 <Button
                   size="xs"
                   variant="outline"
-                  disabled={isConnected ? isDisconnecting : isConnecting}
+                  disabled={canDisconnect ? isDisconnecting : isConnecting}
                   onClick={() =>
-                    void (isConnected ? onDisconnect(environmentId) : onConnect(environmentId))
+                    void (canDisconnect ? onDisconnect(environmentId) : onConnect(environmentId))
                   }
                 >
                   {isConnected
                     ? isDisconnecting
                       ? "Disconnecting…"
                       : "Disconnect"
-                    : isConnecting
-                      ? "Connecting…"
-                      : "Connect"}
+                    : isWaitingToReconnect
+                      ? isDisconnecting
+                        ? "Stopping…"
+                        : "Stop trying"
+                      : isConnecting
+                        ? "Connecting…"
+                        : "Connect"}
                 </Button>
               )}
               <Button
@@ -1807,7 +1816,7 @@ export function ConnectionsSettings({ surface = "full" }: { surface?: "full" | "
     (environmentId: EnvironmentId) =>
       void runSavedBackendAction(
         environmentId,
-        disconnectSavedEnvironment,
+        disconnectSavedEnvironmentByUser,
         setDisconnectingSavedEnvironmentId,
         { title: "Could not disconnect", fallback: "Failed to disconnect." },
       ),
