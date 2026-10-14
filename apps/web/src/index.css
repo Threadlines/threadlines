@@ -2072,6 +2072,19 @@ label:has(> select#reasoning-effort) select {
   text-decoration: underline 2px color-mix(in srgb, var(--primary-readable) 85%, transparent);
 }
 
+/* Find in chat (chatFindDom.ts): every match drawn on screen reads as found,
+   the current one as the one the bar is on. No animation; a highlight only
+   repaints when the matches change. */
+::highlight(threadlines-chat-find-match) {
+  background-color: color-mix(in srgb, var(--primary-readable) 22%, transparent);
+}
+
+::highlight(threadlines-chat-find-current) {
+  color: var(--foreground);
+  background-color: color-mix(in srgb, var(--primary-readable) 58%, transparent);
+  text-decoration: underline 2px color-mix(in srgb, var(--primary-readable) 85%, transparent);
+}
+
 .thread-search-title-match,
 .thread-search-palette-match,
 .thread-search-inline-match {

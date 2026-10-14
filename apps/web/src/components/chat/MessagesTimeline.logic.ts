@@ -2018,6 +2018,39 @@ function sameIds(a: ReadonlyArray<string>, b: ReadonlyArray<string>): boolean {
 const MAX_COLLAPSED_USER_MESSAGE_LINES = 8;
 const MAX_COLLAPSED_USER_MESSAGE_LENGTH = 600;
 
+/**
+ * How a message row is drawn (TimelineRowContent): the agent's own answer, a
+ * message from another thread, the user's message, an agent's invite or side
+ * reply, or a message one room agent wrote to another. Null draws nothing.
+ * Find in chat reads the same choice to know what text the row shows.
+ */
+export type TimelineMessageView =
+  | "assistant"
+  | "thread-message"
+  | "user"
+  | "invite"
+  | "side-answer-reply"
+  | "agent-message";
+
+export function timelineMessageView(
+  message: Pick<ChatMessage, "role" | "fromThread" | "fromAgent" | "requestKind" | "requestId">,
+  sideAnswerRequests: { has(requestId: NonNullable<ChatMessage["requestId"]>): boolean },
+): TimelineMessageView | null {
+  if (message.role === "assistant") return "assistant";
+  if (message.role !== "user") return null;
+  if (message.fromThread !== undefined) return "thread-message";
+  if (message.fromAgent === undefined) return "user";
+  if (message.requestKind === "invite") return "invite";
+  if (
+    message.requestKind === "reply" &&
+    message.requestId !== undefined &&
+    sideAnswerRequests.has(message.requestId)
+  ) {
+    return "side-answer-reply";
+  }
+  return "agent-message";
+}
+
 /** A long message of yours shows folded, behind a fade and a way to open it. */
 export function shouldCollapseUserMessage(text: string): boolean {
   if (text.trim().length === 0) {

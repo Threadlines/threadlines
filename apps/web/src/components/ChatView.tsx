@@ -146,9 +146,12 @@ import {
 } from "../types";
 import { useTheme } from "../hooks/useTheme";
 import { useTurnDiffSummaries } from "../hooks/useTurnDiffSummaries";
-import { useMediaQuery } from "../hooks/useMediaQuery";
+import { useIsMobile, useMediaQuery } from "../hooks/useMediaQuery";
 import { useNewThreadHandler } from "../hooks/useHandleNewThread";
 import { useCommandPaletteStore } from "../commandPaletteStore";
+import { useChatFindStore } from "../chatFindStore";
+import { installFindRegionTracking, resolveFindShortcutOwner } from "../lib/findShortcutOwner";
+import { selectedChatText } from "./chat/chatFind/ChatFind";
 import {
   RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY,
   draftRightPanelStateKey,
@@ -2879,6 +2882,15 @@ export default function ChatView(props: ChatViewProps) {
   // General chats have no project and therefore no dev server to look at.
   const browserAvailable = isElectron && !isGeneralChatThread;
   const browserOpen = browserAvailable && browserPanelState.open;
+  // Find in chat opens for a saved chat whose column is on screen, on any
+  // screen but a phone's (a small touch screen); narrow desktop windows keep it.
+  const isPhoneLayout = useIsMobile() && isCoarsePointer;
+  const canFindInChat = isServerThread && !(browserOpen && browserExpanded) && !isPhoneLayout;
+  useEffect(() => {
+    useChatFindStore.getState().setAvailable(canFindInChat);
+  }, [canFindInChat]);
+  useEffect(() => () => useChatFindStore.getState().setAvailable(false), []);
+  useEffect(() => installFindRegionTracking(), []);
 
   const handleToggleBrowser = useCallback(() => {
     if (routeThreadRef !== null) {
@@ -4548,6 +4560,18 @@ export default function ChatView(props: ChatViewProps) {
         context: shortcutContext,
       });
       if (!command) return;
+
+      if (command === "chat.find") {
+        // The browser panel answers the same key; whichever region the
+        // reader is in owns it (findShortcutOwner).
+        if (resolveFindShortcutOwner() !== "chat") return;
+        event.preventDefault();
+        event.stopPropagation();
+        useChatFindStore
+          .getState()
+          .requestOpen(selectedChatText(document.querySelector("[data-chat-messages-list]")));
+        return;
+      }
 
       if (command === "terminal.toggle") {
         event.preventDefault();
@@ -7146,6 +7170,7 @@ export default function ChatView(props: ChatViewProps) {
       {/* Top bar */}
       <header
         ref={chatHeaderBottomVarRef}
+        data-find-region="chat"
         className={cn(
           "border-b border-border transition-[padding-left] duration-200 ease-linear motion-reduce:transition-none",
           isElectron
@@ -7266,6 +7291,7 @@ export default function ChatView(props: ChatViewProps) {
         <div
           ref={setChatColumnElement}
           data-chat-column=""
+          data-find-region="chat"
           className={cn(
             "flex min-h-0 min-w-0 flex-col draft-hero:overflow-y-auto draft-hero:overscroll-y-contain",
             browserOpen && browserExpanded && "hidden",

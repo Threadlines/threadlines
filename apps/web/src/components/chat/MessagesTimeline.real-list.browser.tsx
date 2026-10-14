@@ -11,6 +11,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createRef, type ReactElement, type ReactNode } from "react";
 import { LegendList, type LegendListRef } from "@legendapp/list/react";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
+import { page, userEvent } from "vite-plus/test/browser";
 import { render } from "vitest-browser-react";
 
 import { MessagesTimeline } from "./MessagesTimeline";
@@ -25,7 +26,9 @@ import {
   type TimelineEntry,
   type WorkLogEntry,
 } from "../../session-logic";
-import type { ChatMessage } from "../../types";
+import type { ChatMessage, ProposedPlan } from "../../types";
+import { useChatFindStore } from "../../chatFindStore";
+import { CHAT_FIND_CURRENT_HIGHLIGHT, CHAT_FIND_MATCH_HIGHLIGHT } from "./chatFind/chatFindDom";
 
 const ACTIVE_TURN_ID = "turn-active" as TurnId;
 const queryClient = new QueryClient();
@@ -1061,6 +1064,308 @@ describe("MessagesTimeline with the real virtual list", () => {
       const listRect = currentList!.getBoundingClientRect();
       const finalRowRect = finalRow!.getBoundingClientRect();
       expect(listRect.bottom - finalRowRect.bottom).toBeLessThan(64);
+    } finally {
+      await screen.unmount();
+    }
+  });
+});
+
+/** The text and place of the one range find in chat paints as current. */
+function currentFindHighlight(): { text: string; rect: DOMRect } | null {
+  const highlight = CSS.highlights.get(CHAT_FIND_CURRENT_HIGHLIGHT);
+  const [range] = highlight ? [...highlight] : [];
+  if (!range) return null;
+  const live = document.createRange();
+  live.setStart(range.startContainer, range.startOffset);
+  live.setEnd(range.endContainer, range.endOffset);
+  return { text: live.toString(), rect: live.getBoundingClientRect() };
+}
+
+function findTally(): string | null {
+  return document.querySelector('[data-testid="chat-find-tally"]')?.textContent ?? null;
+}
+
+function isInsideList(rect: DOMRect): boolean {
+  const list = document.querySelector<HTMLElement>('[data-chat-messages-list="true"]')!;
+  const listRect = list.getBoundingClientRect();
+  return rect.height > 0 && rect.top >= listRect.top && rect.bottom <= listRect.bottom;
+}
+
+function chatMessage(
+  id: string,
+  role: ChatMessage["role"],
+  text: string,
+  index: number,
+): ChatMessage {
+  return {
+    id: id as ChatMessage["id"],
+    role,
+    text,
+    streaming: false,
+    createdAt: new Date(Date.UTC(2026, 3, 13, 12, 0, index)).toISOString(),
+  };
+}
+
+function messageEntries(messages: ReadonlyArray<ChatMessage>): TimelineEntry[] {
+  return messages.map((message) => ({
+    id: message.id,
+    kind: "message" as const,
+    createdAt: message.createdAt,
+    message,
+  }));
+}
+
+const FILLER =
+  "A paragraph that is long enough to wrap onto a second line in a narrow list, so the chat scrolls well past one screen.";
+
+async function openFind(query: string) {
+  useChatFindStore.getState().setAvailable(true);
+  useChatFindStore.getState().requestOpen();
+  const input = page.getByTestId("chat-find-input");
+  await expect.element(input).toBeInTheDocument();
+  await userEvent.fill(input, query);
+}
+
+describe("find in chat with the real virtual list", () => {
+  afterEach(() => {
+    useChatFindStore.setState({ available: false, open: false, query: "" });
+    queryClient.clear();
+    document.body.innerHTML = "";
+  });
+
+  it("counts a match the list has not drawn, jumps to it and paints it current", async () => {
+    const props = buildProps();
+    const messages = Array.from({ length: 80 }, (_, index) => {
+      const role = index % 2 === 0 ? "user" : "assistant";
+      const word = index === 3 || index === 79 ? " The pelican was here." : "";
+      return chatMessage(`message-${index}`, role, `${FILLER}${word}`, index);
+    });
+    const screen = await renderTimeline(
+      <div style={{ height: 400, width: 600 }}>
+        <MessagesTimeline
+          {...props}
+          isWorking={false}
+          activeTurnInProgress={false}
+          timelineEntries={messageEntries(messages)}
+        />
+      </div>,
+    );
+    try {
+      await vi.waitFor(() => {
+        expect(document.querySelector('[data-message-id="message-79"]')).not.toBeNull();
+      });
+      expect(document.querySelector('[data-message-id="message-3"]')).toBeNull();
+
+      await openFind("PELICAN");
+      // Read where the reader is: the match on screen comes first.
+      await vi.waitFor(() => expect(findTally()).toBe("2 of 2"));
+      await vi.waitFor(() => {
+        expect(currentFindHighlight()?.text).toBe("pelican");
+      });
+
+      await userEvent.keyboard("{Enter}");
+      await vi.waitFor(() => expect(findTally()).toBe("1 of 2"));
+      await vi.waitFor(() => {
+        const current = currentFindHighlight();
+        expect(current?.text).toBe("pelican");
+        expect(document.querySelector('[data-message-id="message-3"]')).not.toBeNull();
+        expect(isInsideList(current!.rect)).toBe(true);
+      });
+      expect(CSS.highlights.get(CHAT_FIND_MATCH_HIGHLIGHT)?.size).toBeGreaterThan(0);
+
+      // The count is the chat's, not the screen's: scrolling the first match
+      // away does not change it.
+      const list = document.querySelector<HTMLElement>('[data-chat-messages-list="true"]')!;
+      list.scrollTop = list.scrollHeight;
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      expect(findTally()).toBe("1 of 2");
+
+      await userEvent.keyboard("{Escape}");
+      await vi.waitFor(() => {
+        expect(document.querySelector('[data-testid="chat-find-bar"]')).toBeNull();
+      });
+      expect(CSS.highlights.has(CHAT_FIND_CURRENT_HIGHLIGHT)).toBe(false);
+      expect(CSS.highlights.has(CHAT_FIND_MATCH_HIGHLIGHT)).toBe(false);
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("keeps the current match where it is while the agent writes more", async () => {
+    const props = buildProps();
+    const base = `${FILLER} The pelican came first.`;
+    const streaming = (text: string): ChatMessage => ({
+      ...chatMessage("message-streaming", "assistant", text, 1),
+      streaming: true,
+    });
+    const renderList = (text: string) => (
+      <div style={{ height: 400, width: 600 }}>
+        <MessagesTimeline
+          {...props}
+          timelineEntries={messageEntries([
+            chatMessage("message-question", "user", FILLER, 0),
+            streaming(text),
+          ])}
+        />
+      </div>
+    );
+    const screen = await renderTimeline(renderList(base));
+    try {
+      await openFind("pelican");
+      await vi.waitFor(() => expect(findTally()).toBe("1 of 1"));
+      await vi.waitFor(() => expect(currentFindHighlight()?.text).toBe("pelican"));
+
+      await screen.rerender(renderList(`${base}\n\nThen another pelican, and a third pelican.`));
+      await vi.waitFor(() => expect(findTally()).toBe("1 of 3"));
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      const current = currentFindHighlight();
+      expect(current?.text).toBe("pelican");
+      // Still the first one: the earlier paragraph, above the new text.
+      const firstParagraph = document.querySelector<HTMLElement>(
+        '[data-message-id="message-streaming"] [data-chat-find-body] p',
+      )!;
+      expect(firstParagraph.textContent).toContain("came first");
+      const paragraphRect = firstParagraph.getBoundingClientRect();
+      expect(current!.rect.top).toBeGreaterThanOrEqual(paragraphRect.top - 1);
+      expect(current!.rect.bottom).toBeLessThanOrEqual(paragraphRect.bottom + 1);
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("selects a match the agent writes after the search found none", async () => {
+    const props = buildProps();
+    const base = `${FILLER} Nothing to see yet.`;
+    const renderList = (text: string) => (
+      <div style={{ height: 400, width: 600 }}>
+        <MessagesTimeline
+          {...props}
+          timelineEntries={messageEntries([
+            chatMessage("message-question", "user", FILLER, 0),
+            { ...chatMessage("message-streaming", "assistant", text, 1), streaming: true },
+          ])}
+        />
+      </div>
+    );
+    const screen = await renderTimeline(renderList(base));
+    try {
+      await openFind("heron");
+      await vi.waitFor(() => expect(findTally()).toBe("No results"));
+      await screen.rerender(renderList(`${base}\n\nA heron landed.`));
+      await vi.waitFor(() => {
+        expect(findTally()).toBe("1 of 1");
+        expect(currentFindHighlight()?.text).toBe("heron");
+      });
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("opens a folded message to show its match, and leaves it open", async () => {
+    const props = buildProps();
+    const longText = Array.from({ length: 30 }, (_, line) =>
+      line === 27 ? "The walrus line is near the end." : `Line ${line} of a long message.`,
+    ).join("\n");
+    const messages = [
+      chatMessage("message-long", "user", longText, 0),
+      ...Array.from({ length: 12 }, (_, index) =>
+        chatMessage(
+          `message-after-${index}`,
+          index % 2 === 0 ? "assistant" : "user",
+          FILLER,
+          index + 1,
+        ),
+      ),
+    ];
+    const screen = await renderTimeline(
+      <div style={{ height: 400, width: 600 }}>
+        <MessagesTimeline
+          {...props}
+          isWorking={false}
+          activeTurnInProgress={false}
+          timelineEntries={messageEntries(messages)}
+        />
+      </div>,
+    );
+    try {
+      await openFind("walrus");
+      await vi.waitFor(() => expect(findTally()).toBe("1 of 1"));
+      await vi.waitFor(() => {
+        const body = document.querySelector<HTMLElement>(
+          '[data-message-id="message-long"] [data-user-message-body="true"]',
+        );
+        expect(body?.dataset.userMessageCollapsed).toBe("false");
+        const current = currentFindHighlight();
+        expect(current?.text).toBe("walrus");
+        expect(isInsideList(current!.rect)).toBe(true);
+      });
+
+      await userEvent.keyboard("{Escape}");
+      await vi.waitFor(() => {
+        expect(document.querySelector('[data-testid="chat-find-bar"]')).toBeNull();
+      });
+      const body = () =>
+        document.querySelector<HTMLElement>(
+          '[data-message-id="message-long"] [data-user-message-body="true"]',
+        );
+      expect(body()?.dataset.userMessageCollapsed).toBe("false");
+
+      // Folded again by the reader, it opens again for the next find.
+      await userEvent.click(page.getByRole("button", { name: "Show less" }));
+      await vi.waitFor(() => expect(body()?.dataset.userMessageCollapsed).toBe("true"));
+      useChatFindStore.getState().requestOpen();
+      await vi.waitFor(() => {
+        expect(body()?.dataset.userMessageCollapsed).toBe("false");
+        expect(currentFindHighlight()?.text).toBe("walrus");
+      });
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("counts the whole of a collapsed plan and opens it on the way to a match", async () => {
+    const props = buildProps();
+    const planMarkdown = [
+      "# Ship the importer",
+      "",
+      ...Array.from({ length: 24 }, (_, step) =>
+        step === 20 ? "- Step 20: move the narwhal fixtures" : `- Step ${step}: keep going`,
+      ),
+    ].join("\n");
+    const plan: ProposedPlan = {
+      id: "plan-1" as ProposedPlan["id"],
+      turnId: null,
+      planMarkdown,
+      implementedAt: null,
+      implementationThreadId: null,
+      dismissedAt: null,
+      createdAt: "2026-04-13T12:00:00.000Z",
+      updatedAt: "2026-04-13T12:00:00.000Z",
+    };
+    const screen = await renderTimeline(
+      <div style={{ height: 500, width: 600 }}>
+        <MessagesTimeline
+          {...props}
+          isWorking={false}
+          activeTurnInProgress={false}
+          timelineEntries={[
+            { id: plan.id, kind: "proposed-plan", createdAt: plan.createdAt, proposedPlan: plan },
+            ...messageEntries([chatMessage("message-after", "assistant", FILLER, 1)]),
+          ]}
+        />
+      </div>,
+    );
+    try {
+      await vi.waitFor(() => {
+        expect(document.querySelector("[data-chat-find-folded]")).not.toBeNull();
+      });
+      await openFind("narwhal");
+      // Not in the plan's preview, but counted all the same.
+      await vi.waitFor(() => expect(findTally()).toBe("1 of 1"));
+      await vi.waitFor(() => {
+        expect(document.querySelector("[data-chat-find-folded]")).toBeNull();
+        expect(currentFindHighlight()?.text).toBe("narwhal");
+      });
     } finally {
       await screen.unmount();
     }
