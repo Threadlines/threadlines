@@ -288,7 +288,7 @@
     "@threadlines/contracts": "workspace:*",
     "diff": "^9.0.0",
     "effect": "catalog:",
-    "micromark": "^4.0.2",
+    "micromark": "^4.0.3",
     "micromark-extension-gfm": "^3.0.0",
     "yaml": "catalog:"
   },
